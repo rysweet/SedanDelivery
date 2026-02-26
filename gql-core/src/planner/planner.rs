@@ -127,6 +127,16 @@ impl<'s> QueryPlanner<'s> {
                     let merge_op = self.plan_merge(mc, pipeline.take())?;
                     pipeline = Some(merge_op);
                 }
+
+                Clause::Call(cc) => {
+                    // CALL clause: return an unsupported-feature error for now.
+                    // This allows TCK tests to detect a runtime error rather than
+                    // a parse error, which is the correct behavior.
+                    return Err(GqlError::Execution(ExecutionError::unsupported(format!(
+                        "CALL procedure: {}",
+                        cc.procedure
+                    ))));
+                }
             }
         }
 
@@ -247,6 +257,14 @@ impl<'s> QueryPlanner<'s> {
             }
         }
 
+        // Inline WHERE clause on the start node pattern.
+        if let Some(pred) = &start.where_clause {
+            op = Operator::Filter {
+                predicate: pred.clone(),
+                child: Box::new(op),
+            };
+        }
+
         // Process each step (rel + node) in the path.
         for (step_idx, step) in pattern.steps.iter().enumerate() {
             let PathStep { rel, node } = step;
@@ -282,6 +300,14 @@ impl<'s> QueryPlanner<'s> {
                 };
             }
 
+            // Inline WHERE clause on the relationship pattern.
+            if let Some(pred) = &rel.where_clause {
+                op = Operator::Filter {
+                    predicate: pred.clone(),
+                    child: Box::new(op),
+                };
+            }
+
             // If the destination node has label constraints, add a label filter.
             if let Some(dst_label) = node.labels.first() {
                 let pred = label_filter_expr(&dst_alias, dst_label);
@@ -300,6 +326,14 @@ impl<'s> QueryPlanner<'s> {
                         child: Box::new(op),
                     };
                 }
+            }
+
+            // Inline WHERE clause on the destination node pattern.
+            if let Some(pred) = &node.where_clause {
+                op = Operator::Filter {
+                    predicate: pred.clone(),
+                    child: Box::new(op),
+                };
             }
         }
 
@@ -915,6 +949,7 @@ mod tests {
                             variable: Some(Identifier::new(alias)),
                             labels: vec![Label::new(label)],
                             properties: None,
+                            where_clause: None,
                         },
                         steps: vec![],
                     }],
@@ -943,6 +978,7 @@ mod tests {
                     variable: Some(Identifier::new(alias)),
                     labels: vec![Label::new(label)],
                     properties: None,
+                    where_clause: None,
                 },
                 steps: vec![],
             }],
@@ -973,6 +1009,7 @@ mod tests {
                             variable: Some(Identifier::new("n")),
                             labels: vec![Label::new("Person")],
                             properties: None,
+                            where_clause: None,
                         },
                         steps: vec![],
                     }],
@@ -1015,6 +1052,7 @@ mod tests {
                             variable: Some(Identifier::new("n")),
                             labels: vec![Label::new("Person")],
                             properties: None,
+                            where_clause: None,
                         },
                         steps: vec![],
                     }],
@@ -1050,6 +1088,7 @@ mod tests {
                             variable: Some(Identifier::new("n")),
                             labels: vec![Label::new("Person")],
                             properties: None,
+                            where_clause: None,
                         },
                         steps: vec![],
                     }],
@@ -1568,6 +1607,7 @@ mod tests {
                         variable: Some(Identifier::new("n")),
                         labels: vec![Label::new("Person")],
                         properties: None,
+                        where_clause: None,
                     },
                     steps: vec![],
                 },
@@ -1594,6 +1634,7 @@ mod tests {
                         variable: Some(Identifier::new("n")),
                         labels: vec![Label::new("Person")],
                         properties: None,
+                        where_clause: None,
                     },
                     steps: vec![],
                 },
@@ -1630,6 +1671,7 @@ mod tests {
                             variable: Some(Identifier::new("n")),
                             labels: vec![Label::new("City")],
                             properties: None,
+                            where_clause: None,
                         },
                         steps: vec![],
                     },
@@ -1659,6 +1701,7 @@ mod tests {
                             variable: Some(Identifier::new("n")),
                             labels: vec![],
                             properties: None,
+                            where_clause: None,
                         },
                         steps: vec![PathStep {
                             rel: RelPattern {
@@ -1667,11 +1710,13 @@ mod tests {
                                 direction: Direction::Outgoing,
                                 range: None,
                                 properties: None,
+                                where_clause: None,
                             },
                             node: NodePattern {
                                 variable: Some(Identifier::new("m")),
                                 labels: vec![],
                                 properties: None,
+                                where_clause: None,
                             },
                         }],
                     }],
@@ -1713,6 +1758,7 @@ mod tests {
                             variable: Some(Identifier::new("n")),
                             labels: vec![Label::new("Person")],
                             properties: None,
+                            where_clause: None,
                         },
                         steps: vec![],
                     }],
@@ -1752,6 +1798,7 @@ mod tests {
                                 variable: Some(Identifier::new("a")),
                                 labels: vec![Label::new("Person")],
                                 properties: None,
+                                where_clause: None,
                             },
                             steps: vec![],
                         },
@@ -1761,6 +1808,7 @@ mod tests {
                                 variable: Some(Identifier::new("b")),
                                 labels: vec![Label::new("Movie")],
                                 properties: None,
+                                where_clause: None,
                             },
                             steps: vec![],
                         },
@@ -1805,6 +1853,7 @@ mod tests {
                                 variable: Some(Identifier::new("a")),
                                 labels: vec![Label::new("Person")],
                                 properties: None,
+                                where_clause: None,
                             },
                             steps: vec![],
                         },
@@ -1814,6 +1863,7 @@ mod tests {
                                 variable: Some(Identifier::new("b")),
                                 labels: vec![Label::new("Movie")],
                                 properties: None,
+                                where_clause: None,
                             },
                             steps: vec![],
                         },
@@ -1873,6 +1923,7 @@ mod tests {
                                 smol_str::SmolStr::new("name"),
                                 Expr::Str("Alice".into()),
                             )]),
+                            where_clause: None,
                         },
                         steps: vec![],
                     }],
@@ -1914,6 +1965,7 @@ mod tests {
                                 smol_str::SmolStr::new("name"),
                                 Expr::Str("Alice".into()),
                             )]),
+                            where_clause: None,
                         },
                         steps: vec![],
                     }],

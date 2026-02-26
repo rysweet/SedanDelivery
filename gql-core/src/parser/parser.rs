@@ -12,10 +12,10 @@
 use smol_str::SmolStr;
 
 use crate::ast::{
-    BinaryOp, Clause, CreateClause, DeleteClause, Direction, Expr, Identifier, Label, MapLiteral,
-    MatchClause, MergeClause, NodePattern, PathPattern, PathStep, Query, RangeQuantifier,
-    RelPattern, RelType, RemoveClause, RemoveClauseItem, ReturnClause, ReturnItem, SetClause,
-    SetClauseItem, SortItem, UnaryOp, UnwindClause, WithClause,
+    BinaryOp, CallClause, Clause, CreateClause, DeleteClause, Direction, Expr, Identifier, Label,
+    MapLiteral, MatchClause, MergeClause, NodePattern, PathPattern, PathStep, Query,
+    RangeQuantifier, RelPattern, RelType, RemoveClause, RemoveClauseItem, ReturnClause, ReturnItem,
+    SetClause, SetClauseItem, SortItem, UnaryOp, UnwindClause, WithClause,
 };
 use crate::error::ParseError;
 use crate::parser::lexer::{Token, TokenKind};
@@ -154,7 +154,15 @@ fn is_keyword_usable_as_ident(kind: &TokenKind) -> bool {
             | TokenKind::Distinct
             | TokenKind::As
             | TokenKind::Call
+            | TokenKind::Yield
     )
+}
+
+/// Returns `true` for keyword tokens that can be used as map keys or property names.
+/// This is a superset of `is_keyword_usable_as_ident` that includes literal keywords.
+fn is_keyword_usable_as_property(kind: &TokenKind) -> bool {
+    is_keyword_usable_as_ident(kind)
+        || matches!(kind, TokenKind::Null | TokenKind::True | TokenKind::False)
 }
 
 // ── Top-level entry point ─────────────────────────────────────────────────────
@@ -261,6 +269,11 @@ impl<'src> Parser<'src> {
                 self.advance();
                 let mc = self.parse_merge()?;
                 Ok(Some(Clause::Merge(mc)))
+            }
+            TokenKind::Call => {
+                self.advance();
+                let cc = self.parse_call()?;
+                Ok(Some(Clause::Call(cc)))
             }
             TokenKind::Eof | TokenKind::Semicolon => Ok(None),
             _ => Err(self.syntax_err("clause keyword (MATCH, RETURN, CREATE, ...)")),
@@ -553,6 +566,62 @@ impl<'src> Parser<'src> {
         })
     }
 
+    // ── CALL ──────────────────────────────────────────────────────────────────
+
+    fn parse_call(&mut self) -> Result<CallClause, ParseError> {
+        // Parse procedure name: `proc.name` or just `name`
+        let mut procedure = self.expect_identifier()?;
+        while self.eat(&TokenKind::Dot) {
+            let part = self.expect_identifier()?;
+            procedure = format!("{}.{}", procedure, part);
+        }
+
+        // Parse arguments: `(arg1, arg2, ...)`
+        let args = if self.eat(&TokenKind::LParen) {
+            let mut a = Vec::new();
+            if !self.at(&TokenKind::RParen) {
+                a.push(self.parse_expr()?);
+                while self.eat(&TokenKind::Comma) {
+                    a.push(self.parse_expr()?);
+                }
+            }
+            self.expect(&TokenKind::RParen)?;
+            a
+        } else {
+            Vec::new()
+        };
+
+        // Optional YIELD clause: `YIELD var1 AS alias1, var2`
+        let yield_items = if self.eat(&TokenKind::Yield) {
+            let mut items = Vec::new();
+            let name = Identifier::new(self.expect_identifier()?);
+            let alias = if self.eat(&TokenKind::As) {
+                Some(Identifier::new(self.expect_identifier()?))
+            } else {
+                None
+            };
+            items.push((name, alias));
+            while self.eat(&TokenKind::Comma) {
+                let name = Identifier::new(self.expect_identifier()?);
+                let alias = if self.eat(&TokenKind::As) {
+                    Some(Identifier::new(self.expect_identifier()?))
+                } else {
+                    None
+                };
+                items.push((name, alias));
+            }
+            items
+        } else {
+            Vec::new()
+        };
+
+        Ok(CallClause {
+            procedure,
+            args,
+            yield_items,
+        })
+    }
+
     // ── Path patterns ─────────────────────────────────────────────────────────
 
     fn parse_path_pattern(&mut self) -> Result<PathPattern, ParseError> {
@@ -599,7 +668,7 @@ impl<'src> Parser<'src> {
                 let name = self.expect_identifier()?;
                 Some(Identifier::new(name))
             }
-            TokenKind::Colon | TokenKind::RParen | TokenKind::LBrace => None,
+            TokenKind::Colon | TokenKind::RParen | TokenKind::LBrace | TokenKind::Where => None,
             _ => None,
         };
 
@@ -615,12 +684,20 @@ impl<'src> Parser<'src> {
             None
         };
 
+        // Optional inline WHERE clause: `(n:Person WHERE n.age > 25)`
+        let where_clause = if self.eat(&TokenKind::Where) {
+            Some(self.parse_expr()?)
+        } else {
+            None
+        };
+
         self.expect(&TokenKind::RParen)?;
 
         Ok(NodePattern {
             variable,
             labels,
             properties,
+            where_clause,
         })
     }
 
@@ -636,7 +713,9 @@ impl<'src> Parser<'src> {
         }
 
         // Parse optional `[...]` bracket block.
-        let (variable, rel_types, range, properties) = if self.at(&TokenKind::LBracket) {
+        let (variable, rel_types, range, properties, where_clause) = if self
+            .at(&TokenKind::LBracket)
+        {
             self.advance(); // consume [
 
             // Optional variable.
@@ -649,7 +728,7 @@ impl<'src> Parser<'src> {
                     let name = self.expect_identifier()?;
                     Some(Identifier::new(name))
                 }
-                TokenKind::Colon | TokenKind::RBracket | TokenKind::Star => None,
+                TokenKind::Colon | TokenKind::RBracket | TokenKind::Star | TokenKind::Where => None,
                 _ => None,
             };
 
@@ -674,11 +753,18 @@ impl<'src> Parser<'src> {
                 None
             };
 
+            // Optional inline WHERE clause: `-[r:KNOWS WHERE r.since > 2020]->`
+            let wc = if self.eat(&TokenKind::Where) {
+                Some(self.parse_expr()?)
+            } else {
+                None
+            };
+
             self.expect(&TokenKind::RBracket)?;
-            (var, types, range, props)
+            (var, types, range, props, wc)
         } else {
             // No bracket block — anonymous untyped relationship.
-            (None, Vec::new(), None, None)
+            (None, Vec::new(), None, None, None)
         };
 
         // Determine direction by what follows.
@@ -707,6 +793,7 @@ impl<'src> Parser<'src> {
             direction,
             range,
             properties,
+            where_clause,
         };
 
         let node = self.parse_node_pattern()?;
@@ -787,7 +874,7 @@ impl<'src> Parser<'src> {
         self.expect(&TokenKind::LBrace)?;
         let mut pairs = Vec::new();
         if !self.at(&TokenKind::RBrace) {
-            let key = SmolStr::new(self.expect_identifier()?);
+            let key = SmolStr::new(self.expect_map_key()?);
             self.expect(&TokenKind::Colon)?;
             let val = self.parse_expr()?;
             pairs.push((key, val));
@@ -795,7 +882,7 @@ impl<'src> Parser<'src> {
                 if self.at(&TokenKind::RBrace) {
                     break; // trailing comma
                 }
-                let key = SmolStr::new(self.expect_identifier()?);
+                let key = SmolStr::new(self.expect_map_key()?);
                 self.expect(&TokenKind::Colon)?;
                 let val = self.parse_expr()?;
                 pairs.push((key, val));
@@ -803,6 +890,26 @@ impl<'src> Parser<'src> {
         }
         self.expect(&TokenKind::RBrace)?;
         Ok(pairs)
+    }
+
+    /// Accept an identifier or a keyword that can be used as a map key or property name.
+    fn expect_map_key(&mut self) -> Result<String, ParseError> {
+        match self.peek().clone() {
+            TokenKind::Identifier => {
+                let tok = self.advance();
+                let text = tok.text;
+                if text.starts_with('`') && text.ends_with('`') && text.len() >= 2 {
+                    Ok(text[1..text.len() - 1].to_string())
+                } else {
+                    Ok(text.to_string())
+                }
+            }
+            kind if is_keyword_usable_as_property(&kind) => {
+                let tok = self.advance();
+                Ok(tok.text.to_string())
+            }
+            _ => Err(self.syntax_err("identifier or property name")),
+        }
     }
 
     // ── Expression parsing (Pratt / recursive descent) ────────────────────────
@@ -866,30 +973,33 @@ impl<'src> Parser<'src> {
     }
 
     fn parse_comparison(&mut self) -> Result<Expr, ParseError> {
-        let left = self.parse_string_pred()?;
+        let mut left = self.parse_string_pred()?;
 
         // Check for chained IS NULL / IS NOT NULL (post-fix predicates).
-        let left = self.parse_null_check(left)?;
+        left = self.parse_null_check(left)?;
 
-        let op = match self.peek().clone() {
-            TokenKind::Eq => BinaryOp::Eq,
-            TokenKind::Neq => BinaryOp::Neq,
-            TokenKind::Lt => BinaryOp::Lt,
-            TokenKind::Lte => BinaryOp::Lte,
-            TokenKind::Gt => BinaryOp::Gt,
-            TokenKind::Gte => BinaryOp::Gte,
-            TokenKind::RegexEq => BinaryOp::RegexMatch,
-            TokenKind::In => BinaryOp::In,
-            _ => return Ok(left),
-        };
-        self.advance();
-        let right = self.parse_string_pred()?;
-        let right = self.parse_null_check(right)?;
-        Ok(Expr::BinaryOp {
-            op,
-            left: Box::new(left),
-            right: Box::new(right),
-        })
+        loop {
+            let op = match self.peek().clone() {
+                TokenKind::Eq => BinaryOp::Eq,
+                TokenKind::Neq => BinaryOp::Neq,
+                TokenKind::Lt => BinaryOp::Lt,
+                TokenKind::Lte => BinaryOp::Lte,
+                TokenKind::Gt => BinaryOp::Gt,
+                TokenKind::Gte => BinaryOp::Gte,
+                TokenKind::RegexEq => BinaryOp::RegexMatch,
+                TokenKind::In => BinaryOp::In,
+                _ => break,
+            };
+            self.advance();
+            let right = self.parse_string_pred()?;
+            let right = self.parse_null_check(right)?;
+            left = Expr::BinaryOp {
+                op,
+                left: Box::new(left),
+                right: Box::new(right),
+            };
+        }
+        Ok(left)
     }
 
     /// Handles postfix `IS NULL` / `IS NOT NULL`.
@@ -1014,11 +1124,53 @@ impl<'src> Parser<'src> {
         let mut expr = self.parse_primary()?;
         loop {
             match self.peek().clone() {
-                // Property access: expr.key
+                // Property access: expr.key — but peek ahead for namespaced function call
                 TokenKind::Dot => {
                     self.advance();
-                    let key = SmolStr::new(self.expect_identifier()?);
-                    expr = Expr::Property(Box::new(expr), key);
+                    let key = SmolStr::new(self.expect_map_key()?);
+                    // Check if this is a namespaced function call: `ns.func(args)`
+                    if self.at(&TokenKind::LParen) {
+                        // Build the dotted function name from the expression chain.
+                        let func_name = match &expr {
+                            Expr::Variable(id) => format!("{}.{}", id.0, key),
+                            Expr::Property(inner, prev_key) => {
+                                // Handle deeper nesting like a.b.c()
+                                fn build_name(e: &Expr) -> Option<String> {
+                                    match e {
+                                        Expr::Variable(id) => Some(id.0.clone()),
+                                        Expr::Property(inner, k) => {
+                                            build_name(inner).map(|n| format!("{}.{}", n, k))
+                                        }
+                                        _ => None,
+                                    }
+                                }
+                                match build_name(inner) {
+                                    Some(base) => format!("{}.{}.{}", base, prev_key, key),
+                                    None => format!("{}", key), // fallback
+                                }
+                            }
+                            _ => key.to_string(),
+                        };
+                        self.advance(); // consume (
+                        let distinct = self.eat(&TokenKind::Distinct);
+                        let mut args = Vec::new();
+                        if !self.at(&TokenKind::RParen) {
+                            let first = self.parse_expr()?;
+                            let first = self.maybe_rewrite_quantifier_arg(first)?;
+                            args.push(first);
+                            while self.eat(&TokenKind::Comma) {
+                                args.push(self.parse_expr()?);
+                            }
+                        }
+                        self.expect(&TokenKind::RParen)?;
+                        expr = Expr::FunctionCall {
+                            name: SmolStr::new(func_name),
+                            args,
+                            distinct,
+                        };
+                    } else {
+                        expr = Expr::Property(Box::new(expr), key);
+                    }
                 }
                 // Subscript or slice: expr[index] or expr[start..end]
                 TokenKind::LBracket => {
@@ -1146,27 +1298,7 @@ impl<'src> Parser<'src> {
                 self.advance();
 
                 if self.at(&TokenKind::LParen) {
-                    // Function call
-                    self.advance();
-                    let distinct = self.eat(&TokenKind::Distinct);
-                    let mut args = Vec::new();
-                    if !self.at(&TokenKind::RParen) {
-                        if self.at(&TokenKind::Star) {
-                            self.advance();
-                            args.push(Expr::Variable(Identifier::new("*")));
-                        } else {
-                            args.push(self.parse_expr()?);
-                            while self.eat(&TokenKind::Comma) {
-                                args.push(self.parse_expr()?);
-                            }
-                        }
-                    }
-                    self.expect(&TokenKind::RParen)?;
-                    Ok(Expr::FunctionCall {
-                        name: SmolStr::new(name_text),
-                        args,
-                        distinct,
-                    })
+                    self.parse_func_call(name_text)
                 } else {
                     Ok(Expr::Variable(Identifier::new(name_text)))
                 }
@@ -1176,31 +1308,79 @@ impl<'src> Parser<'src> {
                 let name_text = self.tokens[self.pos].text.to_string();
                 self.advance();
                 if self.at(&TokenKind::LParen) {
-                    self.advance();
-                    let distinct = self.eat(&TokenKind::Distinct);
-                    let mut args = Vec::new();
-                    if !self.at(&TokenKind::RParen) {
-                        if self.at(&TokenKind::Star) {
-                            self.advance();
-                            args.push(Expr::Variable(Identifier::new("*")));
-                        } else {
-                            args.push(self.parse_expr()?);
-                            while self.eat(&TokenKind::Comma) {
-                                args.push(self.parse_expr()?);
-                            }
-                        }
-                    }
-                    self.expect(&TokenKind::RParen)?;
-                    Ok(Expr::FunctionCall {
-                        name: SmolStr::new(name_text),
-                        args,
-                        distinct,
-                    })
+                    self.parse_func_call(name_text)
                 } else {
                     Ok(Expr::Variable(Identifier::new(name_text)))
                 }
             }
             _ => Err(self.syntax_err("expression")),
+        }
+    }
+
+    // ── Function call ─────────────────────────────────────────────────────────
+
+    /// Parse a function call: `name(args)`. The name has already been consumed;
+    /// the current token is `(`.
+    ///
+    /// Also handles the quantifier pattern: `all(x IN list WHERE pred)`.
+    fn parse_func_call(&mut self, name_text: String) -> Result<Expr, ParseError> {
+        self.advance(); // consume (
+        let distinct = self.eat(&TokenKind::Distinct);
+        let mut args = Vec::new();
+        if !self.at(&TokenKind::RParen) {
+            if self.at(&TokenKind::Star) {
+                self.advance();
+                args.push(Expr::Variable(Identifier::new("*")));
+            } else {
+                let first = self.parse_expr()?;
+                // Rewrite quantifier pattern: func(x IN list WHERE pred)
+                let first = self.maybe_rewrite_quantifier_arg(first)?;
+                args.push(first);
+                while self.eat(&TokenKind::Comma) {
+                    args.push(self.parse_expr()?);
+                }
+            }
+        }
+        self.expect(&TokenKind::RParen)?;
+        Ok(Expr::FunctionCall {
+            name: SmolStr::new(name_text),
+            args,
+            distinct,
+        })
+    }
+
+    /// If the parsed argument is `x IN list` and the current token is WHERE,
+    /// rewrite it as a ListComp quantifier argument:
+    /// `all(x IN list WHERE pred)` → `FunctionCall("all", [ListComp(...)])`
+    fn maybe_rewrite_quantifier_arg(&mut self, arg: Expr) -> Result<Expr, ParseError> {
+        if !self.at(&TokenKind::Where) {
+            return Ok(arg);
+        }
+        match arg {
+            Expr::BinaryOp {
+                op: BinaryOp::In,
+                left,
+                right,
+            } => {
+                if let Expr::Variable(ref var) = *left {
+                    self.advance(); // consume WHERE
+                    let pred = self.parse_expr()?;
+                    Ok(Expr::ListComp {
+                        variable: var.clone(),
+                        list: right,
+                        filter: Some(Box::new(pred)),
+                        map: Box::new(Expr::Variable(var.clone())),
+                    })
+                } else {
+                    // Not a simple variable on the left of IN — don't rewrite.
+                    Ok(Expr::BinaryOp {
+                        op: BinaryOp::In,
+                        left,
+                        right,
+                    })
+                }
+            }
+            other => Ok(other),
         }
     }
 
