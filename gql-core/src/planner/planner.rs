@@ -639,8 +639,8 @@ fn label_filter_expr(alias: &Identifier, label: &Label) -> Expr {
 mod tests {
     use super::*;
     use crate::ast::{
-        Direction, Expr, Identifier, Label, MatchClause, NodePattern, PathPattern, PathStep, Query,
-        RelPattern, RelType, ReturnClause, ReturnItem, SortItem,
+        Expr, Identifier, Label, MatchClause, NodePattern, PathPattern, Query, ReturnClause,
+        ReturnItem, SortItem,
     };
     use crate::storage::InMemoryGraphStore;
 
