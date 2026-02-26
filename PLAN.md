@@ -12,11 +12,9 @@
 
 We build `gql-redis` — a Redis module written in Rust that implements a Cypher/GQL subset over Redis data structures. The engine exposes `GQL.QUERY` and `GQL.MUTATE` commands identical in wire format to FalkorDB's `GRAPH.QUERY`/`GRAPH.RO_QUERY`, enabling a drop-in swap via a DI registration change in the .NET application layer.
 
-**Why clean-room Rust, not FalkorDB-core-rs?**
-FalkorDB-core-rs is SSPL v1 (same license as FalkorDB). We need MIT/Apache 2.0 for a Microsoft security product that may be offered as a service.
+**Clean-room Rust, not FalkorDB-core-rs**: FalkorDB-core-rs is SSPL v1 (same license as FalkorDB). MIT/Apache 2.0 is required for a Microsoft security product that may be offered as a service.
 
-**Why not GraphBLAS/sparse matrices?**
-At CyberGym's scale (≤1M nodes, security graph topology), Redis-native adjacency lists (sorted sets) provide adequate performance with dramatically less implementation complexity. GraphBLAS would add ~8 weeks of effort for negligible benefit at this scale.
+**Redis-native storage, not GraphBLAS**: At CyberGym's scale (≤1M nodes, security graph topology), Redis-native adjacency lists (sorted sets) provide adequate performance with dramatically less implementation complexity. GraphBLAS would add ~8 weeks of effort for negligible benefit at this scale.
 
 ---
 
