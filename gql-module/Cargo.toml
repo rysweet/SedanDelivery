@@ -13,4 +13,4 @@ gql-core        = { path = "../gql-core" }
 gql-redis-store = { path = "../gql-redis-store" }
 thiserror       = { workspace = true }
 tracing         = { workspace = true }
-redis-module    = "0.24"
+redis-module    = "2.0"
