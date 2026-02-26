@@ -1,8 +1,8 @@
-//! End-to-end integration tests: AST → QueryPlanner → QueryExecutor → results.
+//! End-to-end integration tests: parser → AST → QueryPlanner → QueryExecutor → results.
 //!
-//! The parser is still a Phase 0 stub (returns `()`), so these tests construct
-//! the Query AST directly.  This exercises the full planner + executor pipeline
-//! against the in-memory graph store.
+//! These tests construct the Query AST directly (bypassing the text parser)
+//! to exercise the planner and executor in isolation. For full round-trip tests
+//! that go through the recursive descent parser, see the TCK runner in tests/tck/.
 
 use std::collections::HashMap;
 use std::time::Duration;
