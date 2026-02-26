@@ -1,0 +1,615 @@
+[2026-02-26T05:12:10.814316] INFO: pre_tool_use hook starting (Python 3.11.14)
+[2026-02-26T05:12:10.819393] INFO: Received input with keys: ['session_id', 'transcript_path', 'cwd', 'permission_mode', 'hook_event_name', 'tool_name', 'tool_input', 'tool_use_id']
+[2026-02-26T05:12:10.819442] INFO: Event type: PreToolUse
+[2026-02-26T05:12:10.819476] INFO: Returning empty output (allows default behavior)
+[2026-02-26T05:12:10.819634] INFO: pre_tool_use hook completed successfully
+[2026-02-26T05:12:13.684927] INFO: pre_tool_use hook starting (Python 3.11.14)
+[2026-02-26T05:12:13.689958] INFO: Received input with keys: ['session_id', 'transcript_path', 'cwd', 'permission_mode', 'hook_event_name', 'tool_name', 'tool_input', 'tool_use_id']
+[2026-02-26T05:12:13.690016] INFO: Event type: PreToolUse
+[2026-02-26T05:12:13.690053] INFO: Returning empty output (allows default behavior)
+[2026-02-26T05:12:13.690196] INFO: pre_tool_use hook completed successfully
+[2026-02-26T05:12:20.748725] INFO: pre_tool_use hook starting (Python 3.11.14)
+[2026-02-26T05:12:20.753712] INFO: Received input with keys: ['session_id', 'transcript_path', 'cwd', 'permission_mode', 'hook_event_name', 'tool_name', 'tool_input', 'tool_use_id']
+[2026-02-26T05:12:20.753762] INFO: Event type: PreToolUse
+[2026-02-26T05:12:20.753798] INFO: Returning empty output (allows default behavior)
+[2026-02-26T05:12:20.753931] INFO: pre_tool_use hook completed successfully
+[2026-02-26T05:12:27.134821] INFO: pre_tool_use hook starting (Python 3.11.14)
+[2026-02-26T05:12:27.139882] INFO: Received input with keys: ['session_id', 'transcript_path', 'cwd', 'permission_mode', 'hook_event_name', 'tool_name', 'tool_input', 'tool_use_id']
+[2026-02-26T05:12:27.139932] INFO: Event type: PreToolUse
+[2026-02-26T05:12:27.139968] INFO: Returning empty output (allows default behavior)
+[2026-02-26T05:12:27.140113] INFO: pre_tool_use hook completed successfully
+[2026-02-26T05:12:40.355224] INFO: pre_tool_use hook starting (Python 3.11.14)
+[2026-02-26T05:12:40.360293] INFO: Received input with keys: ['session_id', 'transcript_path', 'cwd', 'permission_mode', 'hook_event_name', 'tool_name', 'tool_input', 'tool_use_id']
+[2026-02-26T05:12:40.360343] INFO: Event type: PreToolUse
+[2026-02-26T05:12:40.360380] INFO: Returning empty output (allows default behavior)
+[2026-02-26T05:12:40.360525] INFO: pre_tool_use hook completed successfully
+[2026-02-26T05:12:41.509284] INFO: pre_tool_use hook starting (Python 3.11.14)
+[2026-02-26T05:12:41.514396] INFO: Received input with keys: ['session_id', 'transcript_path', 'cwd', 'permission_mode', 'hook_event_name', 'tool_name', 'tool_input', 'tool_use_id']
+[2026-02-26T05:12:41.514445] INFO: Event type: PreToolUse
+[2026-02-26T05:12:41.514482] INFO: Returning empty output (allows default behavior)
+[2026-02-26T05:12:41.514644] INFO: pre_tool_use hook completed successfully
+[2026-02-26T05:12:41.703217] INFO: pre_tool_use hook starting (Python 3.11.14)
+[2026-02-26T05:12:41.708294] INFO: Received input with keys: ['session_id', 'transcript_path', 'cwd', 'permission_mode', 'hook_event_name', 'tool_name', 'tool_input', 'tool_use_id']
+[2026-02-26T05:12:41.708343] INFO: Event type: PreToolUse
+[2026-02-26T05:12:41.708380] INFO: Returning empty output (allows default behavior)
+[2026-02-26T05:12:41.708524] INFO: pre_tool_use hook completed successfully
+[2026-02-26T05:12:41.885807] INFO: pre_tool_use hook starting (Python 3.11.14)
+[2026-02-26T05:12:41.890952] INFO: Received input with keys: ['session_id', 'transcript_path', 'cwd', 'permission_mode', 'hook_event_name', 'tool_name', 'tool_input', 'tool_use_id']
+[2026-02-26T05:12:41.891001] INFO: Event type: PreToolUse
+[2026-02-26T05:12:41.891037] INFO: Returning empty output (allows default behavior)
+[2026-02-26T05:12:41.891189] INFO: pre_tool_use hook completed successfully
+[2026-02-26T05:12:42.068751] INFO: pre_tool_use hook starting (Python 3.11.14)
+[2026-02-26T05:12:42.073808] INFO: Received input with keys: ['session_id', 'transcript_path', 'cwd', 'permission_mode', 'hook_event_name', 'tool_name', 'tool_input', 'tool_use_id']
+[2026-02-26T05:12:42.073858] INFO: Event type: PreToolUse
+[2026-02-26T05:12:42.073903] INFO: Returning empty output (allows default behavior)
+[2026-02-26T05:12:42.074048] INFO: pre_tool_use hook completed successfully
+[2026-02-26T05:12:42.254963] INFO: pre_tool_use hook starting (Python 3.11.14)
+[2026-02-26T05:12:42.260047] INFO: Received input with keys: ['session_id', 'transcript_path', 'cwd', 'permission_mode', 'hook_event_name', 'tool_name', 'tool_input', 'tool_use_id']
+[2026-02-26T05:12:42.260095] INFO: Event type: PreToolUse
+[2026-02-26T05:12:42.260129] INFO: Returning empty output (allows default behavior)
+[2026-02-26T05:12:42.260271] INFO: pre_tool_use hook completed successfully
+[2026-02-26T05:12:42.499380] INFO: pre_tool_use hook starting (Python 3.11.14)
+[2026-02-26T05:12:42.504427] INFO: Received input with keys: ['session_id', 'transcript_path', 'cwd', 'permission_mode', 'hook_event_name', 'tool_name', 'tool_input', 'tool_use_id']
+[2026-02-26T05:12:42.504475] INFO: Event type: PreToolUse
+[2026-02-26T05:12:42.504510] INFO: Returning empty output (allows default behavior)
+[2026-02-26T05:12:42.504670] INFO: pre_tool_use hook completed successfully
+[2026-02-26T05:12:51.853102] INFO: pre_tool_use hook starting (Python 3.11.14)
+[2026-02-26T05:12:51.858125] INFO: Received input with keys: ['session_id', 'transcript_path', 'cwd', 'permission_mode', 'hook_event_name', 'tool_name', 'tool_input', 'tool_use_id']
+[2026-02-26T05:12:51.858174] INFO: Event type: PreToolUse
+[2026-02-26T05:12:51.858210] INFO: Returning empty output (allows default behavior)
+[2026-02-26T05:12:51.858364] INFO: pre_tool_use hook completed successfully
+[2026-02-26T05:12:52.346610] INFO: pre_tool_use hook starting (Python 3.11.14)
+[2026-02-26T05:12:52.351650] INFO: Received input with keys: ['session_id', 'transcript_path', 'cwd', 'permission_mode', 'hook_event_name', 'tool_name', 'tool_input', 'tool_use_id']
+[2026-02-26T05:12:52.351702] INFO: Event type: PreToolUse
+[2026-02-26T05:12:52.351739] INFO: Returning empty output (allows default behavior)
+[2026-02-26T05:12:52.351886] INFO: pre_tool_use hook completed successfully
+[2026-02-26T05:12:53.505031] INFO: pre_tool_use hook starting (Python 3.11.14)
+[2026-02-26T05:12:53.510101] INFO: Received input with keys: ['session_id', 'transcript_path', 'cwd', 'permission_mode', 'hook_event_name', 'tool_name', 'tool_input', 'tool_use_id']
+[2026-02-26T05:12:53.510150] INFO: Event type: PreToolUse
+[2026-02-26T05:12:53.510186] INFO: Returning empty output (allows default behavior)
+[2026-02-26T05:12:53.510323] INFO: pre_tool_use hook completed successfully
+[2026-02-26T05:12:54.056959] INFO: pre_tool_use hook starting (Python 3.11.14)
+[2026-02-26T05:12:54.061978] INFO: Received input with keys: ['session_id', 'transcript_path', 'cwd', 'permission_mode', 'hook_event_name', 'tool_name', 'tool_input', 'tool_use_id']
+[2026-02-26T05:12:54.062027] INFO: Event type: PreToolUse
+[2026-02-26T05:12:54.062064] INFO: Returning empty output (allows default behavior)
+[2026-02-26T05:12:54.062214] INFO: pre_tool_use hook completed successfully
+[2026-02-26T05:12:54.506767] INFO: pre_tool_use hook starting (Python 3.11.14)
+[2026-02-26T05:12:54.511876] INFO: Received input with keys: ['session_id', 'transcript_path', 'cwd', 'permission_mode', 'hook_event_name', 'tool_name', 'tool_input', 'tool_use_id']
+[2026-02-26T05:12:54.511927] INFO: Event type: PreToolUse
+[2026-02-26T05:12:54.511963] INFO: Returning empty output (allows default behavior)
+[2026-02-26T05:12:54.512108] INFO: pre_tool_use hook completed successfully
+[2026-02-26T05:12:54.578941] INFO: pre_tool_use hook starting (Python 3.11.14)
+[2026-02-26T05:12:54.584011] INFO: Received input with keys: ['session_id', 'transcript_path', 'cwd', 'permission_mode', 'hook_event_name', 'tool_name', 'tool_input', 'tool_use_id']
+[2026-02-26T05:12:54.584061] INFO: Event type: PreToolUse
+[2026-02-26T05:12:54.584098] INFO: Returning empty output (allows default behavior)
+[2026-02-26T05:12:54.584235] INFO: pre_tool_use hook completed successfully
+[2026-02-26T05:12:54.599124] INFO: pre_tool_use hook starting (Python 3.11.14)
+[2026-02-26T05:12:54.604204] INFO: Received input with keys: ['session_id', 'transcript_path', 'cwd', 'permission_mode', 'hook_event_name', 'tool_name', 'tool_input', 'tool_use_id']
+[2026-02-26T05:12:54.604252] INFO: Event type: PreToolUse
+[2026-02-26T05:12:54.604286] INFO: Returning empty output (allows default behavior)
+[2026-02-26T05:12:54.604419] INFO: pre_tool_use hook completed successfully
+[2026-02-26T05:12:55.212439] INFO: pre_tool_use hook starting (Python 3.11.14)
+[2026-02-26T05:12:55.217497] INFO: Received input with keys: ['session_id', 'transcript_path', 'cwd', 'permission_mode', 'hook_event_name', 'tool_name', 'tool_input', 'tool_use_id']
+[2026-02-26T05:12:55.217545] INFO: Event type: PreToolUse
+[2026-02-26T05:12:55.217601] INFO: Returning empty output (allows default behavior)
+[2026-02-26T05:12:55.217745] INFO: pre_tool_use hook completed successfully
+[2026-02-26T05:12:57.450013] INFO: pre_tool_use hook starting (Python 3.11.14)
+[2026-02-26T05:12:57.455134] INFO: Received input with keys: ['session_id', 'transcript_path', 'cwd', 'permission_mode', 'hook_event_name', 'tool_name', 'tool_input', 'tool_use_id']
+[2026-02-26T05:12:57.455184] INFO: Event type: PreToolUse
+[2026-02-26T05:12:57.455219] INFO: Returning empty output (allows default behavior)
+[2026-02-26T05:12:57.455356] INFO: pre_tool_use hook completed successfully
+[2026-02-26T05:12:58.171428] INFO: pre_tool_use hook starting (Python 3.11.14)
+[2026-02-26T05:12:58.176485] INFO: Received input with keys: ['session_id', 'transcript_path', 'cwd', 'permission_mode', 'hook_event_name', 'tool_name', 'tool_input', 'tool_use_id']
+[2026-02-26T05:12:58.176535] INFO: Event type: PreToolUse
+[2026-02-26T05:12:58.176591] INFO: Returning empty output (allows default behavior)
+[2026-02-26T05:12:58.176739] INFO: pre_tool_use hook completed successfully
+[2026-02-26T05:13:04.562188] INFO: pre_tool_use hook starting (Python 3.11.14)
+[2026-02-26T05:13:04.567228] INFO: Received input with keys: ['session_id', 'transcript_path', 'cwd', 'permission_mode', 'hook_event_name', 'tool_name', 'tool_input', 'tool_use_id']
+[2026-02-26T05:13:04.567277] INFO: Event type: PreToolUse
+[2026-02-26T05:13:04.567314] INFO: Returning empty output (allows default behavior)
+[2026-02-26T05:13:04.567457] INFO: pre_tool_use hook completed successfully
+[2026-02-26T05:13:04.846349] INFO: pre_tool_use hook starting (Python 3.11.14)
+[2026-02-26T05:13:04.851370] INFO: Received input with keys: ['session_id', 'transcript_path', 'cwd', 'permission_mode', 'hook_event_name', 'tool_name', 'tool_input', 'tool_use_id']
+[2026-02-26T05:13:04.851419] INFO: Event type: PreToolUse
+[2026-02-26T05:13:04.851454] INFO: Returning empty output (allows default behavior)
+[2026-02-26T05:13:04.851617] INFO: pre_tool_use hook completed successfully
+[2026-02-26T05:13:05.201926] INFO: pre_tool_use hook starting (Python 3.11.14)
+[2026-02-26T05:13:05.206960] INFO: Received input with keys: ['session_id', 'transcript_path', 'cwd', 'permission_mode', 'hook_event_name', 'tool_name', 'tool_input', 'tool_use_id']
+[2026-02-26T05:13:05.207010] INFO: Event type: PreToolUse
+[2026-02-26T05:13:05.207047] INFO: Returning empty output (allows default behavior)
+[2026-02-26T05:13:05.207183] INFO: pre_tool_use hook completed successfully
+[2026-02-26T05:13:05.475986] INFO: pre_tool_use hook starting (Python 3.11.14)
+[2026-02-26T05:13:05.481013] INFO: Received input with keys: ['session_id', 'transcript_path', 'cwd', 'permission_mode', 'hook_event_name', 'tool_name', 'tool_input', 'tool_use_id']
+[2026-02-26T05:13:05.481063] INFO: Event type: PreToolUse
+[2026-02-26T05:13:05.481099] INFO: Returning empty output (allows default behavior)
+[2026-02-26T05:13:05.481241] INFO: pre_tool_use hook completed successfully
+[2026-02-26T05:13:06.014813] INFO: pre_tool_use hook starting (Python 3.11.14)
+[2026-02-26T05:13:06.019935] INFO: Received input with keys: ['session_id', 'transcript_path', 'cwd', 'permission_mode', 'hook_event_name', 'tool_name', 'tool_input', 'tool_use_id']
+[2026-02-26T05:13:06.019985] INFO: Event type: PreToolUse
+[2026-02-26T05:13:06.020029] INFO: Returning empty output (allows default behavior)
+[2026-02-26T05:13:06.020167] INFO: pre_tool_use hook completed successfully
+[2026-02-26T05:13:14.720400] INFO: pre_tool_use hook starting (Python 3.11.14)
+[2026-02-26T05:13:14.725423] INFO: Received input with keys: ['session_id', 'transcript_path', 'cwd', 'permission_mode', 'hook_event_name', 'tool_name', 'tool_input', 'tool_use_id']
+[2026-02-26T05:13:14.725473] INFO: Event type: PreToolUse
+[2026-02-26T05:13:14.725509] INFO: Returning empty output (allows default behavior)
+[2026-02-26T05:13:14.725678] INFO: pre_tool_use hook completed successfully
+[2026-02-26T05:13:14.976376] INFO: pre_tool_use hook starting (Python 3.11.14)
+[2026-02-26T05:13:14.981448] INFO: Received input with keys: ['session_id', 'transcript_path', 'cwd', 'permission_mode', 'hook_event_name', 'tool_name', 'tool_input', 'tool_use_id']
+[2026-02-26T05:13:14.981497] INFO: Event type: PreToolUse
+[2026-02-26T05:13:14.981534] INFO: Returning empty output (allows default behavior)
+[2026-02-26T05:13:14.981704] INFO: pre_tool_use hook completed successfully
+[2026-02-26T05:13:15.264072] INFO: pre_tool_use hook starting (Python 3.11.14)
+[2026-02-26T05:13:15.269153] INFO: Received input with keys: ['session_id', 'transcript_path', 'cwd', 'permission_mode', 'hook_event_name', 'tool_name', 'tool_input', 'tool_use_id']
+[2026-02-26T05:13:15.269202] INFO: Event type: PreToolUse
+[2026-02-26T05:13:15.269239] INFO: Returning empty output (allows default behavior)
+[2026-02-26T05:13:15.269384] INFO: pre_tool_use hook completed successfully
+[2026-02-26T05:13:15.612152] INFO: pre_tool_use hook starting (Python 3.11.14)
+[2026-02-26T05:13:15.617220] INFO: Received input with keys: ['session_id', 'transcript_path', 'cwd', 'permission_mode', 'hook_event_name', 'tool_name', 'tool_input', 'tool_use_id']
+[2026-02-26T05:13:15.617269] INFO: Event type: PreToolUse
+[2026-02-26T05:13:15.617305] INFO: Returning empty output (allows default behavior)
+[2026-02-26T05:13:15.617441] INFO: pre_tool_use hook completed successfully
+[2026-02-26T05:13:25.682868] INFO: pre_tool_use hook starting (Python 3.11.14)
+[2026-02-26T05:13:25.687879] INFO: Received input with keys: ['session_id', 'transcript_path', 'cwd', 'permission_mode', 'hook_event_name', 'tool_name', 'tool_input', 'tool_use_id']
+[2026-02-26T05:13:25.687929] INFO: Event type: PreToolUse
+[2026-02-26T05:13:25.687965] INFO: Returning empty output (allows default behavior)
+[2026-02-26T05:13:25.688102] INFO: pre_tool_use hook completed successfully
+[2026-02-26T05:13:27.069382] INFO: pre_tool_use hook starting (Python 3.11.14)
+[2026-02-26T05:13:27.074447] INFO: Received input with keys: ['session_id', 'transcript_path', 'cwd', 'permission_mode', 'hook_event_name', 'tool_name', 'tool_input', 'tool_use_id']
+[2026-02-26T05:13:27.074496] INFO: Event type: PreToolUse
+[2026-02-26T05:13:27.074532] INFO: Returning empty output (allows default behavior)
+[2026-02-26T05:13:27.074698] INFO: pre_tool_use hook completed successfully
+[2026-02-26T05:13:27.235638] INFO: pre_tool_use hook starting (Python 3.11.14)
+[2026-02-26T05:13:27.240681] INFO: Received input with keys: ['session_id', 'transcript_path', 'cwd', 'permission_mode', 'hook_event_name', 'tool_name', 'tool_input', 'tool_use_id']
+[2026-02-26T05:13:27.240731] INFO: Event type: PreToolUse
+[2026-02-26T05:13:27.240767] INFO: Returning empty output (allows default behavior)
+[2026-02-26T05:13:27.240911] INFO: pre_tool_use hook completed successfully
+[2026-02-26T05:13:27.269468] INFO: pre_tool_use hook starting (Python 3.11.14)
+[2026-02-26T05:13:27.274428] INFO: Received input with keys: ['session_id', 'transcript_path', 'cwd', 'permission_mode', 'hook_event_name', 'tool_name', 'tool_input', 'tool_use_id']
+[2026-02-26T05:13:27.274478] INFO: Event type: PreToolUse
+[2026-02-26T05:13:27.274514] INFO: Returning empty output (allows default behavior)
+[2026-02-26T05:13:27.274674] INFO: pre_tool_use hook completed successfully
+[2026-02-26T05:13:38.213231] INFO: pre_tool_use hook starting (Python 3.11.14)
+[2026-02-26T05:13:38.218251] INFO: Received input with keys: ['session_id', 'transcript_path', 'cwd', 'permission_mode', 'hook_event_name', 'tool_name', 'tool_input', 'tool_use_id']
+[2026-02-26T05:13:38.218308] INFO: Event type: PreToolUse
+[2026-02-26T05:13:38.218344] INFO: Returning empty output (allows default behavior)
+[2026-02-26T05:13:38.218496] INFO: pre_tool_use hook completed successfully
+[2026-02-26T05:13:38.475004] INFO: pre_tool_use hook starting (Python 3.11.14)
+[2026-02-26T05:13:38.480058] INFO: Received input with keys: ['session_id', 'transcript_path', 'cwd', 'permission_mode', 'hook_event_name', 'tool_name', 'tool_input', 'tool_use_id']
+[2026-02-26T05:13:38.480106] INFO: Event type: PreToolUse
+[2026-02-26T05:13:38.480141] INFO: Returning empty output (allows default behavior)
+[2026-02-26T05:13:38.480274] INFO: pre_tool_use hook completed successfully
+[2026-02-26T05:13:45.968675] INFO: pre_tool_use hook starting (Python 3.11.14)
+[2026-02-26T05:13:45.973765] INFO: Received input with keys: ['session_id', 'transcript_path', 'cwd', 'permission_mode', 'hook_event_name', 'tool_name', 'tool_input', 'tool_use_id']
+[2026-02-26T05:13:45.973816] INFO: Event type: PreToolUse
+[2026-02-26T05:13:45.973853] INFO: Returning empty output (allows default behavior)
+[2026-02-26T05:13:45.973997] INFO: pre_tool_use hook completed successfully
+[2026-02-26T05:13:46.180720] INFO: pre_tool_use hook starting (Python 3.11.14)
+[2026-02-26T05:13:46.185784] INFO: Received input with keys: ['session_id', 'transcript_path', 'cwd', 'permission_mode', 'hook_event_name', 'tool_name', 'tool_input', 'tool_use_id']
+[2026-02-26T05:13:46.185833] INFO: Event type: PreToolUse
+[2026-02-26T05:13:46.185869] INFO: Returning empty output (allows default behavior)
+[2026-02-26T05:13:46.186015] INFO: pre_tool_use hook completed successfully
+[2026-02-26T05:13:46.368951] INFO: pre_tool_use hook starting (Python 3.11.14)
+[2026-02-26T05:13:46.374019] INFO: Received input with keys: ['session_id', 'transcript_path', 'cwd', 'permission_mode', 'hook_event_name', 'tool_name', 'tool_input', 'tool_use_id']
+[2026-02-26T05:13:46.374068] INFO: Event type: PreToolUse
+[2026-02-26T05:13:46.374104] INFO: Returning empty output (allows default behavior)
+[2026-02-26T05:13:46.374245] INFO: pre_tool_use hook completed successfully
+[2026-02-26T05:13:57.416942] INFO: pre_tool_use hook starting (Python 3.11.14)
+[2026-02-26T05:13:57.422042] INFO: Received input with keys: ['session_id', 'transcript_path', 'cwd', 'permission_mode', 'hook_event_name', 'tool_name', 'tool_input', 'tool_use_id']
+[2026-02-26T05:13:57.422092] INFO: Event type: PreToolUse
+[2026-02-26T05:13:57.422129] INFO: Returning empty output (allows default behavior)
+[2026-02-26T05:13:57.422274] INFO: pre_tool_use hook completed successfully
+[2026-02-26T05:13:57.839061] INFO: pre_tool_use hook starting (Python 3.11.14)
+[2026-02-26T05:13:57.844087] INFO: Received input with keys: ['session_id', 'transcript_path', 'cwd', 'permission_mode', 'hook_event_name', 'tool_name', 'tool_input', 'tool_use_id']
+[2026-02-26T05:13:57.844137] INFO: Event type: PreToolUse
+[2026-02-26T05:13:57.844174] INFO: Returning empty output (allows default behavior)
+[2026-02-26T05:13:57.844320] INFO: pre_tool_use hook completed successfully
+[2026-02-26T05:13:58.033598] INFO: pre_tool_use hook starting (Python 3.11.14)
+[2026-02-26T05:13:58.038644] INFO: Received input with keys: ['session_id', 'transcript_path', 'cwd', 'permission_mode', 'hook_event_name', 'tool_name', 'tool_input', 'tool_use_id']
+[2026-02-26T05:13:58.038694] INFO: Event type: PreToolUse
+[2026-02-26T05:13:58.038731] INFO: Returning empty output (allows default behavior)
+[2026-02-26T05:13:58.038876] INFO: pre_tool_use hook completed successfully
+[2026-02-26T05:13:58.256805] INFO: pre_tool_use hook starting (Python 3.11.14)
+[2026-02-26T05:13:58.261824] INFO: Received input with keys: ['session_id', 'transcript_path', 'cwd', 'permission_mode', 'hook_event_name', 'tool_name', 'tool_input', 'tool_use_id']
+[2026-02-26T05:13:58.261873] INFO: Event type: PreToolUse
+[2026-02-26T05:13:58.261909] INFO: Returning empty output (allows default behavior)
+[2026-02-26T05:13:58.262059] INFO: pre_tool_use hook completed successfully
+[2026-02-26T05:14:08.146883] INFO: pre_tool_use hook starting (Python 3.11.14)
+[2026-02-26T05:14:08.151932] INFO: Received input with keys: ['session_id', 'transcript_path', 'cwd', 'permission_mode', 'hook_event_name', 'tool_name', 'tool_input', 'tool_use_id']
+[2026-02-26T05:14:08.151981] INFO: Event type: PreToolUse
+[2026-02-26T05:14:08.152017] INFO: Returning empty output (allows default behavior)
+[2026-02-26T05:14:08.152162] INFO: pre_tool_use hook completed successfully
+[2026-02-26T05:14:08.463195] INFO: pre_tool_use hook starting (Python 3.11.14)
+[2026-02-26T05:14:08.468225] INFO: Received input with keys: ['session_id', 'transcript_path', 'cwd', 'permission_mode', 'hook_event_name', 'tool_name', 'tool_input', 'tool_use_id']
+[2026-02-26T05:14:08.468275] INFO: Event type: PreToolUse
+[2026-02-26T05:14:08.468313] INFO: Returning empty output (allows default behavior)
+[2026-02-26T05:14:08.468460] INFO: pre_tool_use hook completed successfully
+[2026-02-26T05:15:52.606864] INFO: pre_tool_use hook starting (Python 3.11.14)
+[2026-02-26T05:15:52.611970] INFO: Received input with keys: ['session_id', 'transcript_path', 'cwd', 'permission_mode', 'hook_event_name', 'tool_name', 'tool_input', 'tool_use_id']
+[2026-02-26T05:15:52.612021] INFO: Event type: PreToolUse
+[2026-02-26T05:15:52.612057] INFO: Returning empty output (allows default behavior)
+[2026-02-26T05:15:52.612194] INFO: pre_tool_use hook completed successfully
+[2026-02-26T05:15:53.578619] INFO: pre_tool_use hook starting (Python 3.11.14)
+[2026-02-26T05:15:53.583668] INFO: Received input with keys: ['session_id', 'transcript_path', 'cwd', 'permission_mode', 'hook_event_name', 'tool_name', 'tool_input', 'tool_use_id']
+[2026-02-26T05:15:53.583718] INFO: Event type: PreToolUse
+[2026-02-26T05:15:53.583754] INFO: Returning empty output (allows default behavior)
+[2026-02-26T05:15:53.583898] INFO: pre_tool_use hook completed successfully
+[2026-02-26T05:15:54.116456] INFO: pre_tool_use hook starting (Python 3.11.14)
+[2026-02-26T05:15:54.121529] INFO: Received input with keys: ['session_id', 'transcript_path', 'cwd', 'permission_mode', 'hook_event_name', 'tool_name', 'tool_input', 'tool_use_id']
+[2026-02-26T05:15:54.121595] INFO: Event type: PreToolUse
+[2026-02-26T05:15:54.121633] INFO: Returning empty output (allows default behavior)
+[2026-02-26T05:15:54.121769] INFO: pre_tool_use hook completed successfully
+[2026-02-26T05:16:13.494827] INFO: pre_tool_use hook starting (Python 3.11.14)
+[2026-02-26T05:16:13.499940] INFO: Received input with keys: ['session_id', 'transcript_path', 'cwd', 'permission_mode', 'hook_event_name', 'tool_name', 'tool_input', 'tool_use_id']
+[2026-02-26T05:16:13.499990] INFO: Event type: PreToolUse
+[2026-02-26T05:16:13.500028] INFO: Returning empty output (allows default behavior)
+[2026-02-26T05:16:13.500176] INFO: pre_tool_use hook completed successfully
+[2026-02-26T05:16:14.460972] INFO: pre_tool_use hook starting (Python 3.11.14)
+[2026-02-26T05:16:14.466046] INFO: Received input with keys: ['session_id', 'transcript_path', 'cwd', 'permission_mode', 'hook_event_name', 'tool_name', 'tool_input', 'tool_use_id']
+[2026-02-26T05:16:14.466096] INFO: Event type: PreToolUse
+[2026-02-26T05:16:14.466133] INFO: Returning empty output (allows default behavior)
+[2026-02-26T05:16:14.466280] INFO: pre_tool_use hook completed successfully
+[2026-02-26T05:16:25.483501] INFO: pre_tool_use hook starting (Python 3.11.14)
+[2026-02-26T05:16:25.488599] INFO: Received input with keys: ['session_id', 'transcript_path', 'cwd', 'permission_mode', 'hook_event_name', 'tool_name', 'tool_input', 'tool_use_id']
+[2026-02-26T05:16:25.488650] INFO: Event type: PreToolUse
+[2026-02-26T05:16:25.488687] INFO: Returning empty output (allows default behavior)
+[2026-02-26T05:16:25.488821] INFO: pre_tool_use hook completed successfully
+[2026-02-26T05:18:54.593342] INFO: pre_tool_use hook starting (Python 3.11.14)
+[2026-02-26T05:18:54.598643] INFO: Received input with keys: ['session_id', 'transcript_path', 'cwd', 'permission_mode', 'hook_event_name', 'tool_name', 'tool_input', 'tool_use_id']
+[2026-02-26T05:18:54.598714] INFO: Event type: PreToolUse
+[2026-02-26T05:18:54.598752] INFO: Returning empty output (allows default behavior)
+[2026-02-26T05:18:54.598894] INFO: pre_tool_use hook completed successfully
+[2026-02-26T05:19:30.061016] INFO: pre_tool_use hook starting (Python 3.11.14)
+[2026-02-26T05:19:30.066095] INFO: Received input with keys: ['session_id', 'transcript_path', 'cwd', 'permission_mode', 'hook_event_name', 'tool_name', 'tool_input', 'tool_use_id']
+[2026-02-26T05:19:30.066145] INFO: Event type: PreToolUse
+[2026-02-26T05:19:30.066183] INFO: Returning empty output (allows default behavior)
+[2026-02-26T05:19:30.066331] INFO: pre_tool_use hook completed successfully
+[2026-02-26T05:19:46.078695] INFO: pre_tool_use hook starting (Python 3.11.14)
+[2026-02-26T05:19:46.083772] INFO: Received input with keys: ['session_id', 'transcript_path', 'cwd', 'permission_mode', 'hook_event_name', 'tool_name', 'tool_input', 'tool_use_id']
+[2026-02-26T05:19:46.083824] INFO: Event type: PreToolUse
+[2026-02-26T05:19:46.083861] INFO: Returning empty output (allows default behavior)
+[2026-02-26T05:19:46.083998] INFO: pre_tool_use hook completed successfully
+[2026-02-26T05:19:48.245917] INFO: pre_tool_use hook starting (Python 3.11.14)
+[2026-02-26T05:19:48.250974] INFO: Received input with keys: ['session_id', 'transcript_path', 'cwd', 'permission_mode', 'hook_event_name', 'tool_name', 'tool_input', 'tool_use_id']
+[2026-02-26T05:19:48.251023] INFO: Event type: PreToolUse
+[2026-02-26T05:19:48.251060] INFO: Returning empty output (allows default behavior)
+[2026-02-26T05:19:48.251194] INFO: pre_tool_use hook completed successfully
+[2026-02-26T05:19:48.533267] INFO: pre_tool_use hook starting (Python 3.11.14)
+[2026-02-26T05:19:48.538322] INFO: Received input with keys: ['session_id', 'transcript_path', 'cwd', 'permission_mode', 'hook_event_name', 'tool_name', 'tool_input', 'tool_use_id']
+[2026-02-26T05:19:48.538371] INFO: Event type: PreToolUse
+[2026-02-26T05:19:48.538408] INFO: Returning empty output (allows default behavior)
+[2026-02-26T05:19:48.538544] INFO: pre_tool_use hook completed successfully
+[2026-02-26T05:19:50.415527] INFO: pre_tool_use hook starting (Python 3.11.14)
+[2026-02-26T05:19:50.420595] INFO: Received input with keys: ['session_id', 'transcript_path', 'cwd', 'permission_mode', 'hook_event_name', 'tool_name', 'tool_input', 'tool_use_id']
+[2026-02-26T05:19:50.420653] INFO: Event type: PreToolUse
+[2026-02-26T05:19:50.420689] INFO: Returning empty output (allows default behavior)
+[2026-02-26T05:19:50.420825] INFO: pre_tool_use hook completed successfully
+[2026-02-26T05:20:04.880510] INFO: pre_tool_use hook starting (Python 3.11.14)
+[2026-02-26T05:20:04.885610] INFO: Received input with keys: ['session_id', 'transcript_path', 'cwd', 'permission_mode', 'hook_event_name', 'tool_name', 'tool_input', 'tool_use_id']
+[2026-02-26T05:20:04.885662] INFO: Event type: PreToolUse
+[2026-02-26T05:20:04.885700] INFO: Returning empty output (allows default behavior)
+[2026-02-26T05:20:04.885837] INFO: pre_tool_use hook completed successfully
+[2026-02-26T05:20:07.357069] INFO: pre_tool_use hook starting (Python 3.11.14)
+[2026-02-26T05:20:07.362091] INFO: Received input with keys: ['session_id', 'transcript_path', 'cwd', 'permission_mode', 'hook_event_name', 'tool_name', 'tool_input', 'tool_use_id']
+[2026-02-26T05:20:07.362140] INFO: Event type: PreToolUse
+[2026-02-26T05:20:07.362176] INFO: Returning empty output (allows default behavior)
+[2026-02-26T05:20:07.362320] INFO: pre_tool_use hook completed successfully
+[2026-02-26T05:20:08.679918] INFO: pre_tool_use hook starting (Python 3.11.14)
+[2026-02-26T05:20:08.685120] INFO: Received input with keys: ['session_id', 'transcript_path', 'cwd', 'permission_mode', 'hook_event_name', 'tool_name', 'tool_input', 'tool_use_id']
+[2026-02-26T05:20:08.685171] INFO: Event type: PreToolUse
+[2026-02-26T05:20:08.685207] INFO: Returning empty output (allows default behavior)
+[2026-02-26T05:20:08.685351] INFO: pre_tool_use hook completed successfully
+[2026-02-26T05:20:11.948941] INFO: pre_tool_use hook starting (Python 3.11.14)
+[2026-02-26T05:20:11.953983] INFO: Received input with keys: ['session_id', 'transcript_path', 'cwd', 'permission_mode', 'hook_event_name', 'tool_name', 'tool_input', 'tool_use_id']
+[2026-02-26T05:20:11.954032] INFO: Event type: PreToolUse
+[2026-02-26T05:20:11.954067] INFO: Returning empty output (allows default behavior)
+[2026-02-26T05:20:11.954201] INFO: pre_tool_use hook completed successfully
+[2026-02-26T05:20:15.325418] INFO: pre_tool_use hook starting (Python 3.11.14)
+[2026-02-26T05:20:15.330464] INFO: Received input with keys: ['session_id', 'transcript_path', 'cwd', 'permission_mode', 'hook_event_name', 'tool_name', 'tool_input', 'tool_use_id']
+[2026-02-26T05:20:15.330514] INFO: Event type: PreToolUse
+[2026-02-26T05:20:15.330551] INFO: Returning empty output (allows default behavior)
+[2026-02-26T05:20:15.330721] INFO: pre_tool_use hook completed successfully
+[2026-02-26T05:20:15.957702] INFO: pre_tool_use hook starting (Python 3.11.14)
+[2026-02-26T05:20:15.962736] INFO: Received input with keys: ['session_id', 'transcript_path', 'cwd', 'permission_mode', 'hook_event_name', 'tool_name', 'tool_input', 'tool_use_id']
+[2026-02-26T05:20:15.962786] INFO: Event type: PreToolUse
+[2026-02-26T05:20:15.962821] INFO: Returning empty output (allows default behavior)
+[2026-02-26T05:20:15.962956] INFO: pre_tool_use hook completed successfully
+[2026-02-26T05:20:20.159853] INFO: pre_tool_use hook starting (Python 3.11.14)
+[2026-02-26T05:20:20.164937] INFO: Received input with keys: ['session_id', 'transcript_path', 'cwd', 'permission_mode', 'hook_event_name', 'tool_name', 'tool_input', 'tool_use_id']
+[2026-02-26T05:20:20.164987] INFO: Event type: PreToolUse
+[2026-02-26T05:20:20.165023] INFO: Returning empty output (allows default behavior)
+[2026-02-26T05:20:20.165161] INFO: pre_tool_use hook completed successfully
+[2026-02-26T05:20:22.183853] INFO: pre_tool_use hook starting (Python 3.11.14)
+[2026-02-26T05:20:22.188939] INFO: Received input with keys: ['session_id', 'transcript_path', 'cwd', 'permission_mode', 'hook_event_name', 'tool_name', 'tool_input', 'tool_use_id']
+[2026-02-26T05:20:22.188989] INFO: Event type: PreToolUse
+[2026-02-26T05:20:22.189026] INFO: Returning empty output (allows default behavior)
+[2026-02-26T05:20:22.189174] INFO: pre_tool_use hook completed successfully
+[2026-02-26T05:20:26.173619] INFO: pre_tool_use hook starting (Python 3.11.14)
+[2026-02-26T05:20:26.178658] INFO: Received input with keys: ['session_id', 'transcript_path', 'cwd', 'permission_mode', 'hook_event_name', 'tool_name', 'tool_input', 'tool_use_id']
+[2026-02-26T05:20:26.178707] INFO: Event type: PreToolUse
+[2026-02-26T05:20:26.178743] INFO: Returning empty output (allows default behavior)
+[2026-02-26T05:20:26.178891] INFO: pre_tool_use hook completed successfully
+[2026-02-26T05:20:26.226257] INFO: pre_tool_use hook starting (Python 3.11.14)
+[2026-02-26T05:20:26.231323] INFO: Received input with keys: ['session_id', 'transcript_path', 'cwd', 'permission_mode', 'hook_event_name', 'tool_name', 'tool_input', 'tool_use_id']
+[2026-02-26T05:20:26.231373] INFO: Event type: PreToolUse
+[2026-02-26T05:20:26.231410] INFO: Returning empty output (allows default behavior)
+[2026-02-26T05:20:26.231546] INFO: pre_tool_use hook completed successfully
+[2026-02-26T05:20:26.912001] INFO: pre_tool_use hook starting (Python 3.11.14)
+[2026-02-26T05:20:26.917184] INFO: Received input with keys: ['session_id', 'transcript_path', 'cwd', 'permission_mode', 'hook_event_name', 'tool_name', 'tool_input', 'tool_use_id']
+[2026-02-26T05:20:26.917233] INFO: Event type: PreToolUse
+[2026-02-26T05:20:26.917270] INFO: Returning empty output (allows default behavior)
+[2026-02-26T05:20:26.917404] INFO: pre_tool_use hook completed successfully
+[2026-02-26T05:20:27.879476] INFO: pre_tool_use hook starting (Python 3.11.14)
+[2026-02-26T05:20:27.884480] INFO: Received input with keys: ['session_id', 'transcript_path', 'cwd', 'permission_mode', 'hook_event_name', 'tool_name', 'tool_input', 'tool_use_id']
+[2026-02-26T05:20:27.884536] INFO: Event type: PreToolUse
+[2026-02-26T05:20:27.884596] INFO: Returning empty output (allows default behavior)
+[2026-02-26T05:20:27.884733] INFO: pre_tool_use hook completed successfully
+[2026-02-26T05:20:37.558986] INFO: pre_tool_use hook starting (Python 3.11.14)
+[2026-02-26T05:20:37.564029] INFO: Received input with keys: ['session_id', 'transcript_path', 'cwd', 'permission_mode', 'hook_event_name', 'tool_name', 'tool_input', 'tool_use_id']
+[2026-02-26T05:20:37.564079] INFO: Event type: PreToolUse
+[2026-02-26T05:20:37.564115] INFO: Returning empty output (allows default behavior)
+[2026-02-26T05:20:37.564249] INFO: pre_tool_use hook completed successfully
+[2026-02-26T05:20:38.386610] INFO: pre_tool_use hook starting (Python 3.11.14)
+[2026-02-26T05:20:38.391692] INFO: Received input with keys: ['session_id', 'transcript_path', 'cwd', 'permission_mode', 'hook_event_name', 'tool_name', 'tool_input', 'tool_use_id']
+[2026-02-26T05:20:38.391743] INFO: Event type: PreToolUse
+[2026-02-26T05:20:38.391781] INFO: Returning empty output (allows default behavior)
+[2026-02-26T05:20:38.391924] INFO: pre_tool_use hook completed successfully
+[2026-02-26T05:20:39.280074] INFO: pre_tool_use hook starting (Python 3.11.14)
+[2026-02-26T05:20:39.285122] INFO: Received input with keys: ['session_id', 'transcript_path', 'cwd', 'permission_mode', 'hook_event_name', 'tool_name', 'tool_input', 'tool_use_id']
+[2026-02-26T05:20:39.285172] INFO: Event type: PreToolUse
+[2026-02-26T05:20:39.285209] INFO: Returning empty output (allows default behavior)
+[2026-02-26T05:20:39.285342] INFO: pre_tool_use hook completed successfully
+[2026-02-26T05:20:39.913982] INFO: pre_tool_use hook starting (Python 3.11.14)
+[2026-02-26T05:20:39.919023] INFO: Received input with keys: ['session_id', 'transcript_path', 'cwd', 'permission_mode', 'hook_event_name', 'tool_name', 'tool_input', 'tool_use_id']
+[2026-02-26T05:20:39.919072] INFO: Event type: PreToolUse
+[2026-02-26T05:20:39.919108] INFO: Returning empty output (allows default behavior)
+[2026-02-26T05:20:39.919242] INFO: pre_tool_use hook completed successfully
+[2026-02-26T05:20:40.086141] INFO: pre_tool_use hook starting (Python 3.11.14)
+[2026-02-26T05:20:40.091223] INFO: Received input with keys: ['session_id', 'transcript_path', 'cwd', 'permission_mode', 'hook_event_name', 'tool_name', 'tool_input', 'tool_use_id']
+[2026-02-26T05:20:40.091272] INFO: Event type: PreToolUse
+[2026-02-26T05:20:40.091308] INFO: Returning empty output (allows default behavior)
+[2026-02-26T05:20:40.091443] INFO: pre_tool_use hook completed successfully
+[2026-02-26T05:20:40.441994] INFO: pre_tool_use hook starting (Python 3.11.14)
+[2026-02-26T05:20:40.447118] INFO: Received input with keys: ['session_id', 'transcript_path', 'cwd', 'permission_mode', 'hook_event_name', 'tool_name', 'tool_input', 'tool_use_id']
+[2026-02-26T05:20:40.447168] INFO: Event type: PreToolUse
+[2026-02-26T05:20:40.447205] INFO: Returning empty output (allows default behavior)
+[2026-02-26T05:20:40.447351] INFO: pre_tool_use hook completed successfully
+[2026-02-26T05:20:44.460997] INFO: pre_tool_use hook starting (Python 3.11.14)
+[2026-02-26T05:20:44.466094] INFO: Received input with keys: ['session_id', 'transcript_path', 'cwd', 'permission_mode', 'hook_event_name', 'tool_name', 'tool_input', 'tool_use_id']
+[2026-02-26T05:20:44.466143] INFO: Event type: PreToolUse
+[2026-02-26T05:20:44.466180] INFO: Returning empty output (allows default behavior)
+[2026-02-26T05:20:44.466315] INFO: pre_tool_use hook completed successfully
+[2026-02-26T05:20:45.694438] INFO: pre_tool_use hook starting (Python 3.11.14)
+[2026-02-26T05:20:45.699595] INFO: Received input with keys: ['session_id', 'transcript_path', 'cwd', 'permission_mode', 'hook_event_name', 'tool_name', 'tool_input', 'tool_use_id']
+[2026-02-26T05:20:45.699649] INFO: Event type: PreToolUse
+[2026-02-26T05:20:45.699686] INFO: Returning empty output (allows default behavior)
+[2026-02-26T05:20:45.699842] INFO: pre_tool_use hook completed successfully
+[2026-02-26T05:20:49.229867] INFO: pre_tool_use hook starting (Python 3.11.14)
+[2026-02-26T05:20:49.234987] INFO: Received input with keys: ['session_id', 'transcript_path', 'cwd', 'permission_mode', 'hook_event_name', 'tool_name', 'tool_input', 'tool_use_id']
+[2026-02-26T05:20:49.235036] INFO: Event type: PreToolUse
+[2026-02-26T05:20:49.235072] INFO: Returning empty output (allows default behavior)
+[2026-02-26T05:20:49.235206] INFO: pre_tool_use hook completed successfully
+[2026-02-26T05:20:49.794259] INFO: pre_tool_use hook starting (Python 3.11.14)
+[2026-02-26T05:20:49.799300] INFO: Received input with keys: ['session_id', 'transcript_path', 'cwd', 'permission_mode', 'hook_event_name', 'tool_name', 'tool_input', 'tool_use_id']
+[2026-02-26T05:20:49.800855] INFO: Event type: PreToolUse
+[2026-02-26T05:20:49.800913] INFO: Returning empty output (allows default behavior)
+[2026-02-26T05:20:49.801093] INFO: pre_tool_use hook completed successfully
+[2026-02-26T05:20:50.015034] INFO: pre_tool_use hook starting (Python 3.11.14)
+[2026-02-26T05:20:50.020111] INFO: Received input with keys: ['session_id', 'transcript_path', 'cwd', 'permission_mode', 'hook_event_name', 'tool_name', 'tool_input', 'tool_use_id']
+[2026-02-26T05:20:50.020180] INFO: Event type: PreToolUse
+[2026-02-26T05:20:50.020217] INFO: Returning empty output (allows default behavior)
+[2026-02-26T05:20:50.020355] INFO: pre_tool_use hook completed successfully
+[2026-02-26T05:20:50.494116] INFO: pre_tool_use hook starting (Python 3.11.14)
+[2026-02-26T05:20:50.499156] INFO: Received input with keys: ['session_id', 'transcript_path', 'cwd', 'permission_mode', 'hook_event_name', 'tool_name', 'tool_input', 'tool_use_id']
+[2026-02-26T05:20:50.499206] INFO: Event type: PreToolUse
+[2026-02-26T05:20:50.499241] INFO: Returning empty output (allows default behavior)
+[2026-02-26T05:20:50.499383] INFO: pre_tool_use hook completed successfully
+[2026-02-26T05:20:50.761710] INFO: pre_tool_use hook starting (Python 3.11.14)
+[2026-02-26T05:20:50.766770] INFO: Received input with keys: ['session_id', 'transcript_path', 'cwd', 'permission_mode', 'hook_event_name', 'tool_name', 'tool_input', 'tool_use_id']
+[2026-02-26T05:20:50.766819] INFO: Event type: PreToolUse
+[2026-02-26T05:20:50.766855] INFO: Returning empty output (allows default behavior)
+[2026-02-26T05:20:50.767001] INFO: pre_tool_use hook completed successfully
+[2026-02-26T05:20:51.384880] INFO: pre_tool_use hook starting (Python 3.11.14)
+[2026-02-26T05:20:51.389941] INFO: Received input with keys: ['session_id', 'transcript_path', 'cwd', 'permission_mode', 'hook_event_name', 'tool_name', 'tool_input', 'tool_use_id']
+[2026-02-26T05:20:51.389990] INFO: Event type: PreToolUse
+[2026-02-26T05:20:51.390027] INFO: Returning empty output (allows default behavior)
+[2026-02-26T05:20:51.390163] INFO: pre_tool_use hook completed successfully
+[2026-02-26T05:20:51.648855] INFO: pre_tool_use hook starting (Python 3.11.14)
+[2026-02-26T05:20:51.654004] INFO: Received input with keys: ['session_id', 'transcript_path', 'cwd', 'permission_mode', 'hook_event_name', 'tool_name', 'tool_input', 'tool_use_id']
+[2026-02-26T05:20:51.654054] INFO: Event type: PreToolUse
+[2026-02-26T05:20:51.654091] INFO: Returning empty output (allows default behavior)
+[2026-02-26T05:20:51.654228] INFO: pre_tool_use hook completed successfully
+[2026-02-26T05:20:52.159980] INFO: pre_tool_use hook starting (Python 3.11.14)
+[2026-02-26T05:20:52.165033] INFO: Received input with keys: ['session_id', 'transcript_path', 'cwd', 'permission_mode', 'hook_event_name', 'tool_name', 'tool_input', 'tool_use_id']
+[2026-02-26T05:20:52.165084] INFO: Event type: PreToolUse
+[2026-02-26T05:20:52.165121] INFO: Returning empty output (allows default behavior)
+[2026-02-26T05:20:52.165259] INFO: pre_tool_use hook completed successfully
+[2026-02-26T05:20:56.789740] INFO: pre_tool_use hook starting (Python 3.11.14)
+[2026-02-26T05:20:56.794825] INFO: Received input with keys: ['session_id', 'transcript_path', 'cwd', 'permission_mode', 'hook_event_name', 'tool_name', 'tool_input', 'tool_use_id']
+[2026-02-26T05:20:56.794881] INFO: Event type: PreToolUse
+[2026-02-26T05:20:56.794917] INFO: Returning empty output (allows default behavior)
+[2026-02-26T05:20:56.795048] INFO: pre_tool_use hook completed successfully
+[2026-02-26T05:20:58.463864] INFO: pre_tool_use hook starting (Python 3.11.14)
+[2026-02-26T05:20:58.468953] INFO: Received input with keys: ['session_id', 'transcript_path', 'cwd', 'permission_mode', 'hook_event_name', 'tool_name', 'tool_input', 'tool_use_id']
+[2026-02-26T05:20:58.469001] INFO: Event type: PreToolUse
+[2026-02-26T05:20:58.469035] INFO: Returning empty output (allows default behavior)
+[2026-02-26T05:20:58.469168] INFO: pre_tool_use hook completed successfully
+[2026-02-26T05:21:01.022696] INFO: pre_tool_use hook starting (Python 3.11.14)
+[2026-02-26T05:21:01.027778] INFO: Received input with keys: ['session_id', 'transcript_path', 'cwd', 'permission_mode', 'hook_event_name', 'tool_name', 'tool_input', 'tool_use_id']
+[2026-02-26T05:21:01.027829] INFO: Event type: PreToolUse
+[2026-02-26T05:21:01.027866] INFO: Returning empty output (allows default behavior)
+[2026-02-26T05:21:01.028008] INFO: pre_tool_use hook completed successfully
+[2026-02-26T05:21:01.564331] INFO: pre_tool_use hook starting (Python 3.11.14)
+[2026-02-26T05:21:01.569374] INFO: Received input with keys: ['session_id', 'transcript_path', 'cwd', 'permission_mode', 'hook_event_name', 'tool_name', 'tool_input', 'tool_use_id']
+[2026-02-26T05:21:01.569424] INFO: Event type: PreToolUse
+[2026-02-26T05:21:01.569461] INFO: Returning empty output (allows default behavior)
+[2026-02-26T05:21:01.569617] INFO: pre_tool_use hook completed successfully
+[2026-02-26T05:21:01.839179] INFO: pre_tool_use hook starting (Python 3.11.14)
+[2026-02-26T05:21:01.844233] INFO: Received input with keys: ['session_id', 'transcript_path', 'cwd', 'permission_mode', 'hook_event_name', 'tool_name', 'tool_input', 'tool_use_id']
+[2026-02-26T05:21:01.844283] INFO: Event type: PreToolUse
+[2026-02-26T05:21:01.844321] INFO: Returning empty output (allows default behavior)
+[2026-02-26T05:21:01.844466] INFO: pre_tool_use hook completed successfully
+[2026-02-26T05:21:02.200789] INFO: pre_tool_use hook starting (Python 3.11.14)
+[2026-02-26T05:21:02.205828] INFO: Received input with keys: ['session_id', 'transcript_path', 'cwd', 'permission_mode', 'hook_event_name', 'tool_name', 'tool_input', 'tool_use_id']
+[2026-02-26T05:21:02.205877] INFO: Event type: PreToolUse
+[2026-02-26T05:21:02.205914] INFO: Returning empty output (allows default behavior)
+[2026-02-26T05:21:02.206049] INFO: pre_tool_use hook completed successfully
+[2026-02-26T05:21:07.260125] INFO: pre_tool_use hook starting (Python 3.11.14)
+[2026-02-26T05:21:07.265188] INFO: Received input with keys: ['session_id', 'transcript_path', 'cwd', 'permission_mode', 'hook_event_name', 'tool_name', 'tool_input', 'tool_use_id']
+[2026-02-26T05:21:07.265237] INFO: Event type: PreToolUse
+[2026-02-26T05:21:07.265273] INFO: Returning empty output (allows default behavior)
+[2026-02-26T05:21:07.265423] INFO: pre_tool_use hook completed successfully
+[2026-02-26T05:21:08.268934] INFO: pre_tool_use hook starting (Python 3.11.14)
+[2026-02-26T05:21:08.273953] INFO: Received input with keys: ['session_id', 'transcript_path', 'cwd', 'permission_mode', 'hook_event_name', 'tool_name', 'tool_input', 'tool_use_id']
+[2026-02-26T05:21:08.274003] INFO: Event type: PreToolUse
+[2026-02-26T05:21:08.274039] INFO: Returning empty output (allows default behavior)
+[2026-02-26T05:21:08.274176] INFO: pre_tool_use hook completed successfully
+[2026-02-26T05:21:12.547193] INFO: pre_tool_use hook starting (Python 3.11.14)
+[2026-02-26T05:21:12.554388] INFO: Received input with keys: ['session_id', 'transcript_path', 'cwd', 'permission_mode', 'hook_event_name', 'tool_name', 'tool_input', 'tool_use_id']
+[2026-02-26T05:21:12.554463] INFO: Event type: PreToolUse
+[2026-02-26T05:21:12.554512] INFO: Returning empty output (allows default behavior)
+[2026-02-26T05:21:12.554746] INFO: pre_tool_use hook completed successfully
+[2026-02-26T05:21:13.389809] INFO: pre_tool_use hook starting (Python 3.11.14)
+[2026-02-26T05:21:13.395144] INFO: Received input with keys: ['session_id', 'transcript_path', 'cwd', 'permission_mode', 'hook_event_name', 'tool_name', 'tool_input', 'tool_use_id']
+[2026-02-26T05:21:13.395193] INFO: Event type: PreToolUse
+[2026-02-26T05:21:13.395227] INFO: Returning empty output (allows default behavior)
+[2026-02-26T05:21:13.395377] INFO: pre_tool_use hook completed successfully
+[2026-02-26T05:21:14.049256] INFO: pre_tool_use hook starting (Python 3.11.14)
+[2026-02-26T05:21:14.054330] INFO: Received input with keys: ['session_id', 'transcript_path', 'cwd', 'permission_mode', 'hook_event_name', 'tool_name', 'tool_input', 'tool_use_id']
+[2026-02-26T05:21:14.054378] INFO: Event type: PreToolUse
+[2026-02-26T05:21:14.054413] INFO: Returning empty output (allows default behavior)
+[2026-02-26T05:21:14.054547] INFO: pre_tool_use hook completed successfully
+[2026-02-26T05:21:15.161660] INFO: pre_tool_use hook starting (Python 3.11.14)
+[2026-02-26T05:21:15.166981] INFO: Received input with keys: ['session_id', 'transcript_path', 'cwd', 'permission_mode', 'hook_event_name', 'tool_name', 'tool_input', 'tool_use_id']
+[2026-02-26T05:21:15.167034] INFO: Event type: PreToolUse
+[2026-02-26T05:21:15.167070] INFO: Returning empty output (allows default behavior)
+[2026-02-26T05:21:15.167221] INFO: pre_tool_use hook completed successfully
+[2026-02-26T05:21:19.209274] INFO: pre_tool_use hook starting (Python 3.11.14)
+[2026-02-26T05:21:19.214321] INFO: Received input with keys: ['session_id', 'transcript_path', 'cwd', 'permission_mode', 'hook_event_name', 'tool_name', 'tool_input', 'tool_use_id']
+[2026-02-26T05:21:19.214370] INFO: Event type: PreToolUse
+[2026-02-26T05:21:19.214406] INFO: Returning empty output (allows default behavior)
+[2026-02-26T05:21:19.214566] INFO: pre_tool_use hook completed successfully
+[2026-02-26T05:21:19.875445] INFO: pre_tool_use hook starting (Python 3.11.14)
+[2026-02-26T05:21:19.880823] INFO: Received input with keys: ['session_id', 'transcript_path', 'cwd', 'permission_mode', 'hook_event_name', 'tool_name', 'tool_input', 'tool_use_id']
+[2026-02-26T05:21:19.880874] INFO: Event type: PreToolUse
+[2026-02-26T05:21:19.880910] INFO: Returning empty output (allows default behavior)
+[2026-02-26T05:21:19.881050] INFO: pre_tool_use hook completed successfully
+[2026-02-26T05:21:20.044053] INFO: pre_tool_use hook starting (Python 3.11.14)
+[2026-02-26T05:21:20.049222] INFO: Received input with keys: ['session_id', 'transcript_path', 'cwd', 'permission_mode', 'hook_event_name', 'tool_name', 'tool_input', 'tool_use_id']
+[2026-02-26T05:21:20.049276] INFO: Event type: PreToolUse
+[2026-02-26T05:21:20.049312] INFO: Returning empty output (allows default behavior)
+[2026-02-26T05:21:20.049465] INFO: pre_tool_use hook completed successfully
+[2026-02-26T05:21:20.738404] INFO: pre_tool_use hook starting (Python 3.11.14)
+[2026-02-26T05:21:20.743490] INFO: Received input with keys: ['session_id', 'transcript_path', 'cwd', 'permission_mode', 'hook_event_name', 'tool_name', 'tool_input', 'tool_use_id']
+[2026-02-26T05:21:20.743540] INFO: Event type: PreToolUse
+[2026-02-26T05:21:20.743596] INFO: Returning empty output (allows default behavior)
+[2026-02-26T05:21:20.743733] INFO: pre_tool_use hook completed successfully
+[2026-02-26T05:21:22.382271] INFO: pre_tool_use hook starting (Python 3.11.14)
+[2026-02-26T05:21:22.387285] INFO: Received input with keys: ['session_id', 'transcript_path', 'cwd', 'permission_mode', 'hook_event_name', 'tool_name', 'tool_input', 'tool_use_id']
+[2026-02-26T05:21:22.387334] INFO: Event type: PreToolUse
+[2026-02-26T05:21:22.387369] INFO: Returning empty output (allows default behavior)
+[2026-02-26T05:21:22.387506] INFO: pre_tool_use hook completed successfully
+[2026-02-26T05:21:23.730405] INFO: pre_tool_use hook starting (Python 3.11.14)
+[2026-02-26T05:21:23.735505] INFO: Received input with keys: ['session_id', 'transcript_path', 'cwd', 'permission_mode', 'hook_event_name', 'tool_name', 'tool_input', 'tool_use_id']
+[2026-02-26T05:21:23.735571] INFO: Event type: PreToolUse
+[2026-02-26T05:21:23.735624] INFO: Returning empty output (allows default behavior)
+[2026-02-26T05:21:23.735769] INFO: pre_tool_use hook completed successfully
+[2026-02-26T05:21:29.397402] INFO: pre_tool_use hook starting (Python 3.11.14)
+[2026-02-26T05:21:29.402501] INFO: Received input with keys: ['session_id', 'transcript_path', 'cwd', 'permission_mode', 'hook_event_name', 'tool_name', 'tool_input', 'tool_use_id']
+[2026-02-26T05:21:29.402550] INFO: Event type: PreToolUse
+[2026-02-26T05:21:29.402613] INFO: Returning empty output (allows default behavior)
+[2026-02-26T05:21:29.402748] INFO: pre_tool_use hook completed successfully
+[2026-02-26T05:21:30.054694] INFO: pre_tool_use hook starting (Python 3.11.14)
+[2026-02-26T05:21:30.059870] INFO: Received input with keys: ['session_id', 'transcript_path', 'cwd', 'permission_mode', 'hook_event_name', 'tool_name', 'tool_input', 'tool_use_id']
+[2026-02-26T05:21:30.059919] INFO: Event type: PreToolUse
+[2026-02-26T05:21:30.059954] INFO: Returning empty output (allows default behavior)
+[2026-02-26T05:21:30.060090] INFO: pre_tool_use hook completed successfully
+[2026-02-26T05:21:30.138368] INFO: pre_tool_use hook starting (Python 3.11.14)
+[2026-02-26T05:21:30.143758] INFO: Received input with keys: ['session_id', 'transcript_path', 'cwd', 'permission_mode', 'hook_event_name', 'tool_name', 'tool_input', 'tool_use_id']
+[2026-02-26T05:21:30.143810] INFO: Event type: PreToolUse
+[2026-02-26T05:21:30.143845] INFO: Returning empty output (allows default behavior)
+[2026-02-26T05:21:30.143989] INFO: pre_tool_use hook completed successfully
+[2026-02-26T05:21:31.424116] INFO: pre_tool_use hook starting (Python 3.11.14)
+[2026-02-26T05:21:31.429250] INFO: Received input with keys: ['session_id', 'transcript_path', 'cwd', 'permission_mode', 'hook_event_name', 'tool_name', 'tool_input', 'tool_use_id']
+[2026-02-26T05:21:31.429298] INFO: Event type: PreToolUse
+[2026-02-26T05:21:31.429331] INFO: Returning empty output (allows default behavior)
+[2026-02-26T05:21:31.429465] INFO: pre_tool_use hook completed successfully
+[2026-02-26T05:21:38.275773] INFO: pre_tool_use hook starting (Python 3.11.14)
+[2026-02-26T05:21:38.280887] INFO: Received input with keys: ['session_id', 'transcript_path', 'cwd', 'permission_mode', 'hook_event_name', 'tool_name', 'tool_input', 'tool_use_id']
+[2026-02-26T05:21:38.280937] INFO: Event type: PreToolUse
+[2026-02-26T05:21:38.280974] INFO: Returning empty output (allows default behavior)
+[2026-02-26T05:21:38.281113] INFO: pre_tool_use hook completed successfully
+[2026-02-26T05:21:39.326302] INFO: pre_tool_use hook starting (Python 3.11.14)
+[2026-02-26T05:21:39.331367] INFO: Received input with keys: ['session_id', 'transcript_path', 'cwd', 'permission_mode', 'hook_event_name', 'tool_name', 'tool_input', 'tool_use_id']
+[2026-02-26T05:21:39.331417] INFO: Event type: PreToolUse
+[2026-02-26T05:21:39.331454] INFO: Returning empty output (allows default behavior)
+[2026-02-26T05:21:39.331620] INFO: pre_tool_use hook completed successfully
+[2026-02-26T05:21:40.291952] INFO: pre_tool_use hook starting (Python 3.11.14)
+[2026-02-26T05:21:40.297153] INFO: Received input with keys: ['session_id', 'transcript_path', 'cwd', 'permission_mode', 'hook_event_name', 'tool_name', 'tool_input', 'tool_use_id']
+[2026-02-26T05:21:40.297203] INFO: Event type: PreToolUse
+[2026-02-26T05:21:40.297240] INFO: Returning empty output (allows default behavior)
+[2026-02-26T05:21:40.297387] INFO: pre_tool_use hook completed successfully
+[2026-02-26T05:21:40.895921] INFO: pre_tool_use hook starting (Python 3.11.14)
+[2026-02-26T05:21:40.900988] INFO: Received input with keys: ['session_id', 'transcript_path', 'cwd', 'permission_mode', 'hook_event_name', 'tool_name', 'tool_input', 'tool_use_id']
+[2026-02-26T05:21:40.901037] INFO: Event type: PreToolUse
+[2026-02-26T05:21:40.901074] INFO: Returning empty output (allows default behavior)
+[2026-02-26T05:21:40.901224] INFO: pre_tool_use hook completed successfully
+[2026-02-26T05:21:44.676040] INFO: pre_tool_use hook starting (Python 3.11.14)
+[2026-02-26T05:21:44.681139] INFO: Received input with keys: ['session_id', 'transcript_path', 'cwd', 'permission_mode', 'hook_event_name', 'tool_name', 'tool_input', 'tool_use_id']
+[2026-02-26T05:21:44.681196] INFO: Event type: PreToolUse
+[2026-02-26T05:21:44.681232] INFO: Returning empty output (allows default behavior)
+[2026-02-26T05:21:44.681363] INFO: pre_tool_use hook completed successfully
+[2026-02-26T05:21:45.110150] INFO: pre_tool_use hook starting (Python 3.11.14)
+[2026-02-26T05:21:45.115241] INFO: Received input with keys: ['session_id', 'transcript_path', 'cwd', 'permission_mode', 'hook_event_name', 'tool_name', 'tool_input', 'tool_use_id']
+[2026-02-26T05:21:45.115289] INFO: Event type: PreToolUse
+[2026-02-26T05:21:45.115324] INFO: Returning empty output (allows default behavior)
+[2026-02-26T05:21:45.115467] INFO: pre_tool_use hook completed successfully
+[2026-02-26T05:21:45.714126] INFO: pre_tool_use hook starting (Python 3.11.14)
+[2026-02-26T05:21:45.719197] INFO: Received input with keys: ['session_id', 'transcript_path', 'cwd', 'permission_mode', 'hook_event_name', 'tool_name', 'tool_input', 'tool_use_id']
+[2026-02-26T05:21:45.719245] INFO: Event type: PreToolUse
+[2026-02-26T05:21:45.719280] INFO: Returning empty output (allows default behavior)
+[2026-02-26T05:21:45.719416] INFO: pre_tool_use hook completed successfully
+[2026-02-26T05:21:46.898031] INFO: pre_tool_use hook starting (Python 3.11.14)
+[2026-02-26T05:21:46.903218] INFO: Received input with keys: ['session_id', 'transcript_path', 'cwd', 'permission_mode', 'hook_event_name', 'tool_name', 'tool_input', 'tool_use_id']
+[2026-02-26T05:21:46.903265] INFO: Event type: PreToolUse
+[2026-02-26T05:21:46.903300] INFO: Returning empty output (allows default behavior)
+[2026-02-26T05:21:46.903438] INFO: pre_tool_use hook completed successfully
+[2026-02-26T05:21:49.213322] INFO: pre_tool_use hook starting (Python 3.11.14)
+[2026-02-26T05:21:49.219015] INFO: Received input with keys: ['session_id', 'transcript_path', 'cwd', 'permission_mode', 'hook_event_name', 'tool_name', 'tool_input', 'tool_use_id']
+[2026-02-26T05:21:49.219066] INFO: Event type: PreToolUse
+[2026-02-26T05:21:49.219102] INFO: Returning empty output (allows default behavior)
+[2026-02-26T05:21:49.219238] INFO: pre_tool_use hook completed successfully
+[2026-02-26T05:21:49.779932] INFO: pre_tool_use hook starting (Python 3.11.14)
+[2026-02-26T05:21:49.784971] INFO: Received input with keys: ['session_id', 'transcript_path', 'cwd', 'permission_mode', 'hook_event_name', 'tool_name', 'tool_input', 'tool_use_id']
+[2026-02-26T05:21:49.785020] INFO: Event type: PreToolUse
+[2026-02-26T05:21:49.785057] INFO: Returning empty output (allows default behavior)
+[2026-02-26T05:21:49.785194] INFO: pre_tool_use hook completed successfully
+[2026-02-26T05:21:50.315994] INFO: pre_tool_use hook starting (Python 3.11.14)
+[2026-02-26T05:21:50.321061] INFO: Received input with keys: ['session_id', 'transcript_path', 'cwd', 'permission_mode', 'hook_event_name', 'tool_name', 'tool_input', 'tool_use_id']
+[2026-02-26T05:21:50.321113] INFO: Event type: PreToolUse
+[2026-02-26T05:21:50.321150] INFO: Returning empty output (allows default behavior)
+[2026-02-26T05:21:50.321286] INFO: pre_tool_use hook completed successfully
+[2026-02-26T05:21:51.386453] INFO: pre_tool_use hook starting (Python 3.11.14)
+[2026-02-26T05:21:51.391515] INFO: Received input with keys: ['session_id', 'transcript_path', 'cwd', 'permission_mode', 'hook_event_name', 'tool_name', 'tool_input', 'tool_use_id']
+[2026-02-26T05:21:51.393133] INFO: Event type: PreToolUse
+[2026-02-26T05:21:51.393183] INFO: Returning empty output (allows default behavior)
+[2026-02-26T05:21:51.393352] INFO: pre_tool_use hook completed successfully
+[2026-02-26T05:21:52.446243] INFO: pre_tool_use hook starting (Python 3.11.14)
+[2026-02-26T05:21:52.451340] INFO: Received input with keys: ['session_id', 'transcript_path', 'cwd', 'permission_mode', 'hook_event_name', 'tool_name', 'tool_input', 'tool_use_id']
+[2026-02-26T05:21:52.451389] INFO: Event type: PreToolUse
+[2026-02-26T05:21:52.451425] INFO: Returning empty output (allows default behavior)
+[2026-02-26T05:21:52.451585] INFO: pre_tool_use hook completed successfully
+[2026-02-26T05:21:52.625398] INFO: pre_tool_use hook starting (Python 3.11.14)
+[2026-02-26T05:21:52.630475] INFO: Received input with keys: ['session_id', 'transcript_path', 'cwd', 'permission_mode', 'hook_event_name', 'tool_name', 'tool_input', 'tool_use_id']
+[2026-02-26T05:21:52.630523] INFO: Event type: PreToolUse
+[2026-02-26T05:21:52.630578] INFO: Returning empty output (allows default behavior)
+[2026-02-26T05:21:52.630717] INFO: pre_tool_use hook completed successfully
+[2026-02-26T05:21:53.144717] INFO: pre_tool_use hook starting (Python 3.11.14)
+[2026-02-26T05:21:53.149854] INFO: Received input with keys: ['session_id', 'transcript_path', 'cwd', 'permission_mode', 'hook_event_name', 'tool_name', 'tool_input', 'tool_use_id']
+[2026-02-26T05:21:53.149904] INFO: Event type: PreToolUse
+[2026-02-26T05:21:53.149938] INFO: Returning empty output (allows default behavior)
+[2026-02-26T05:21:53.150084] INFO: pre_tool_use hook completed successfully
+[2026-02-26T05:21:58.589893] INFO: pre_tool_use hook starting (Python 3.11.14)
+[2026-02-26T05:21:58.594973] INFO: Received input with keys: ['session_id', 'transcript_path', 'cwd', 'permission_mode', 'hook_event_name', 'tool_name', 'tool_input', 'tool_use_id']
+[2026-02-26T05:21:58.595024] INFO: Event type: PreToolUse
+[2026-02-26T05:21:58.595061] INFO: Returning empty output (allows default behavior)
+[2026-02-26T05:21:58.595197] INFO: pre_tool_use hook completed successfully

@@ -1,0 +1,50 @@
+{
+  "session_id": "20260226_070545",
+  "turn_count": 1,
+  "consecutive_blocks": 1,
+  "first_block_timestamp": "2026-02-26T07:06:11.223669",
+  "last_block_timestamp": "2026-02-26T07:06:11.223669",
+  "block_history": [
+    {
+      "block_number": 1,
+      "timestamp": "2026-02-26T07:06:11.223669",
+      "transcript_index": 0,
+      "transcript_length": 1721,
+      "failed_evidence": [
+        {
+          "consideration_id": "next_steps",
+          "reason": "SDK analysis: Check not satisfied",
+          "evidence_quote": null,
+          "timestamp": "2026-02-26T07:06:11.223413",
+          "was_claimed_complete": false
+        },
+        {
+          "consideration_id": "philosophy_compliance",
+          "reason": "SDK analysis: Check not satisfied",
+          "evidence_quote": null,
+          "timestamp": "2026-02-26T07:06:11.223572",
+          "was_claimed_complete": false
+        },
+        {
+          "consideration_id": "review_responses",
+          "reason": "SDK analysis: Check not satisfied",
+          "evidence_quote": "...)\\n- PR #2 OPEN and READY FOR REVIEW: https://github.com/rysweet_microsoft/SedanDelivery/pull/2\\n  - 3 com...",
+          "timestamp": "2026-02-26T07:06:11.223621",
+          "was_claimed_complete": false
+        },
+        {
+          "consideration_id": "ci_status",
+          "reason": "SDK analysis: The session explicitly documents that CI runners are disabled at the org level (GitHub Enterprise / EMU org policy). Around messages 1508-1537, the assistant checked CI status via `gh run list`, found no runners available, created a `.github/workflows/ci.yml` workflow file, pushed it, then confirmed \"CI runners are disabled at the org level (GitHub Enterprise policy). The workflow is correct \u2014 verified locally.\" The memory file also notes \"CI runners disabled (GitHub Enterprise / EMU org policy).\" While all 237 tests pass locally and the code is clean (clippy, fmt), no GitHub Actions checks actually executed on PR #2, so CI passing/mergeability via GitHub CI cannot be verified.",
+          "evidence_quote": "...en, interactive demo runs.\n\n**CI note**: GitHub Actions runners are disabled at the org level (GitHub...",
+          "timestamp": "2026-02-26T07:06:11.223638",
+          "was_claimed_complete": false
+        }
+      ],
+      "user_claims_detected": []
+    }
+  ],
+  "last_analyzed_transcript_index": 1721,
+  "failure_fingerprints": [
+    "6e3ec3da276dcb64"
+  ]
+}

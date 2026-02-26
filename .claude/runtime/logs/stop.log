@@ -1,0 +1,128 @@
+[2026-02-26T05:21:10.763082] INFO: stop hook starting (Python 3.11.14)
+[2026-02-26T05:21:10.768004] INFO: Received input with keys: ['session_id', 'transcript_path', 'cwd', 'permission_mode', 'hook_event_name', 'stop_hook_active', 'last_assistant_message']
+[2026-02-26T05:21:10.768053] INFO: Event type: Stop
+[2026-02-26T05:21:10.794132] INFO: Using strategy: ClaudeStrategy
+[2026-02-26T05:21:10.794187] INFO: === STOP HOOK STARTED ===
+[2026-02-26T05:21:10.794226] INFO: Input keys: ['session_id', 'transcript_path', 'cwd', 'permission_mode', 'hook_event_name', 'stop_hook_active', 'last_assistant_message']
+[2026-02-26T05:21:10.794272] DEBUG: Neo4j cleanup skipped - Neo4j removed from amplihack
+[2026-02-26T05:21:10.794306] DEBUG: Neo4j learning capture skipped - Neo4j removed from amplihack
+[2026-02-26T05:21:11.770668] INFO: Running power-steering analysis...
+[2026-02-26T05:21:36.769928] DEBUG: File lock acquired
+[2026-02-26T05:21:36.770033] DEBUG: Power-steering counter incremented to 1 (with lock)
+[2026-02-26T05:21:36.770076] DEBUG: File lock released
+[2026-02-26T05:21:36.770151] INFO: First stop - displaying all consideration results for visibility
+[2026-02-26T05:21:36.770465] INFO: === STOP HOOK ENDED (decision: block - power-steering) ===
+[2026-02-26T05:21:36.770537] INFO: Returning output with keys: ['decision', 'reason']
+[2026-02-26T05:21:36.770652] INFO: stop hook completed successfully
+[2026-02-26T06:01:52.850102] INFO: stop hook starting (Python 3.11.14)
+[2026-02-26T06:01:52.861791] INFO: Received input with keys: ['session_id', 'transcript_path', 'cwd', 'permission_mode', 'hook_event_name', 'stop_hook_active', 'last_assistant_message']
+[2026-02-26T06:01:52.861847] INFO: Event type: Stop
+[2026-02-26T06:01:52.888221] INFO: Using strategy: ClaudeStrategy
+[2026-02-26T06:01:52.888281] INFO: === STOP HOOK STARTED ===
+[2026-02-26T06:01:52.888324] INFO: Input keys: ['session_id', 'transcript_path', 'cwd', 'permission_mode', 'hook_event_name', 'stop_hook_active', 'last_assistant_message']
+[2026-02-26T06:01:52.888368] DEBUG: Neo4j cleanup skipped - Neo4j removed from amplihack
+[2026-02-26T06:01:52.888403] DEBUG: Neo4j learning capture skipped - Neo4j removed from amplihack
+[2026-02-26T06:01:53.364528] INFO: Running power-steering analysis...
+[2026-02-26T06:02:15.604759] DEBUG: File lock acquired
+[2026-02-26T06:02:15.604857] DEBUG: Power-steering counter incremented to 1 (with lock)
+[2026-02-26T06:02:15.604900] DEBUG: File lock released
+[2026-02-26T06:02:15.604968] INFO: First stop - displaying all consideration results for visibility
+[2026-02-26T06:02:15.607833] INFO: === STOP HOOK ENDED (decision: block - power-steering) ===
+[2026-02-26T06:02:15.607916] INFO: Returning output with keys: ['decision', 'reason']
+[2026-02-26T06:02:15.608003] INFO: stop hook completed successfully
+[2026-02-26T06:49:05.619156] INFO: stop hook starting (Python 3.11.14)
+[2026-02-26T06:49:05.624189] INFO: Received input with keys: ['session_id', 'transcript_path', 'cwd', 'permission_mode', 'hook_event_name', 'stop_hook_active', 'last_assistant_message']
+[2026-02-26T06:49:05.624241] INFO: Event type: Stop
+[2026-02-26T06:49:05.650787] INFO: Using strategy: ClaudeStrategy
+[2026-02-26T06:49:05.650845] INFO: === STOP HOOK STARTED ===
+[2026-02-26T06:49:05.650886] INFO: Input keys: ['session_id', 'transcript_path', 'cwd', 'permission_mode', 'hook_event_name', 'stop_hook_active', 'last_assistant_message']
+[2026-02-26T06:49:05.650931] DEBUG: Neo4j cleanup skipped - Neo4j removed from amplihack
+[2026-02-26T06:49:05.650966] DEBUG: Neo4j learning capture skipped - Neo4j removed from amplihack
+[2026-02-26T06:49:06.113903] INFO: Running power-steering analysis...
+[2026-02-26T06:49:31.731744] DEBUG: File lock acquired
+[2026-02-26T06:49:31.731851] DEBUG: Power-steering counter incremented to 1 (with lock)
+[2026-02-26T06:49:31.731895] DEBUG: File lock released
+[2026-02-26T06:49:31.731976] INFO: First stop - displaying all consideration results for visibility
+[2026-02-26T06:49:31.732283] INFO: === STOP HOOK ENDED (decision: block - power-steering) ===
+[2026-02-26T06:49:31.732367] INFO: Returning output with keys: ['decision', 'reason']
+[2026-02-26T06:49:31.732466] INFO: stop hook completed successfully
+[2026-02-26T07:05:45.085917] INFO: stop hook starting (Python 3.11.14)
+[2026-02-26T07:05:45.090925] INFO: Received input with keys: ['session_id', 'transcript_path', 'cwd', 'permission_mode', 'hook_event_name', 'stop_hook_active', 'last_assistant_message']
+[2026-02-26T07:05:45.090976] INFO: Event type: Stop
+[2026-02-26T07:05:45.117506] INFO: Using strategy: ClaudeStrategy
+[2026-02-26T07:05:45.117574] INFO: === STOP HOOK STARTED ===
+[2026-02-26T07:05:45.117616] INFO: Input keys: ['session_id', 'transcript_path', 'cwd', 'permission_mode', 'hook_event_name', 'stop_hook_active', 'last_assistant_message']
+[2026-02-26T07:05:45.117661] DEBUG: Neo4j cleanup skipped - Neo4j removed from amplihack
+[2026-02-26T07:05:45.117697] DEBUG: Neo4j learning capture skipped - Neo4j removed from amplihack
+[2026-02-26T07:05:45.623824] INFO: Running power-steering analysis...
+[2026-02-26T07:06:11.241855] DEBUG: File lock acquired
+[2026-02-26T07:06:11.241960] DEBUG: Power-steering counter incremented to 1 (with lock)
+[2026-02-26T07:06:11.242004] DEBUG: File lock released
+[2026-02-26T07:06:11.242097] INFO: First stop - displaying all consideration results for visibility
+[2026-02-26T07:06:11.242374] INFO: === STOP HOOK ENDED (decision: block - power-steering) ===
+[2026-02-26T07:06:11.242447] INFO: Returning output with keys: ['decision', 'reason']
+[2026-02-26T07:06:11.242525] INFO: stop hook completed successfully
+[2026-02-26T07:21:09.256592] INFO: stop hook starting (Python 3.11.14)
+[2026-02-26T07:21:09.261678] INFO: Received input with keys: ['session_id', 'transcript_path', 'cwd', 'permission_mode', 'hook_event_name', 'stop_hook_active', 'last_assistant_message']
+[2026-02-26T07:21:09.261732] INFO: Event type: Stop
+[2026-02-26T07:21:09.288547] INFO: Using strategy: ClaudeStrategy
+[2026-02-26T07:21:09.288608] INFO: === STOP HOOK STARTED ===
+[2026-02-26T07:21:09.288650] INFO: Input keys: ['session_id', 'transcript_path', 'cwd', 'permission_mode', 'hook_event_name', 'stop_hook_active', 'last_assistant_message']
+[2026-02-26T07:21:09.288696] DEBUG: Neo4j cleanup skipped - Neo4j removed from amplihack
+[2026-02-26T07:21:09.288733] DEBUG: Neo4j learning capture skipped - Neo4j removed from amplihack
+[2026-02-26T07:21:09.747259] INFO: Running power-steering analysis...
+[2026-02-26T07:21:35.451356] DEBUG: File lock acquired
+[2026-02-26T07:21:35.451461] DEBUG: Power-steering counter incremented to 1 (with lock)
+[2026-02-26T07:21:35.451506] DEBUG: File lock released
+[2026-02-26T07:21:35.451583] INFO: First stop - displaying all consideration results for visibility
+[2026-02-26T07:21:35.451858] INFO: === STOP HOOK ENDED (decision: block - power-steering) ===
+[2026-02-26T07:21:35.451932] INFO: Returning output with keys: ['decision', 'reason']
+[2026-02-26T07:21:35.452007] INFO: stop hook completed successfully
+[2026-02-26T07:25:22.896570] INFO: stop hook starting (Python 3.11.14)
+[2026-02-26T07:25:22.901544] INFO: Received input with keys: ['session_id', 'transcript_path', 'cwd', 'permission_mode', 'hook_event_name', 'stop_hook_active', 'last_assistant_message']
+[2026-02-26T07:25:22.901595] INFO: Event type: Stop
+[2026-02-26T07:25:22.928215] INFO: Using strategy: ClaudeStrategy
+[2026-02-26T07:25:22.928277] INFO: === STOP HOOK STARTED ===
+[2026-02-26T07:25:22.928319] INFO: Input keys: ['session_id', 'transcript_path', 'cwd', 'permission_mode', 'hook_event_name', 'stop_hook_active', 'last_assistant_message']
+[2026-02-26T07:25:22.928364] DEBUG: Neo4j cleanup skipped - Neo4j removed from amplihack
+[2026-02-26T07:25:22.928399] DEBUG: Neo4j learning capture skipped - Neo4j removed from amplihack
+[2026-02-26T07:25:23.396718] INFO: Running power-steering analysis...
+[2026-02-26T07:25:49.071681] DEBUG: File lock acquired
+[2026-02-26T07:25:49.071809] DEBUG: Power-steering counter incremented to 1 (with lock)
+[2026-02-26T07:25:49.071856] DEBUG: File lock released
+[2026-02-26T07:25:49.071934] INFO: First stop - displaying all consideration results for visibility
+[2026-02-26T07:25:49.072322] INFO: === STOP HOOK ENDED (decision: block - power-steering) ===
+[2026-02-26T07:25:49.072406] INFO: Returning output with keys: ['decision', 'reason']
+[2026-02-26T07:25:49.072495] INFO: stop hook completed successfully
+[2026-02-26T07:45:45.333707] INFO: stop hook starting (Python 3.11.14)
+[2026-02-26T07:45:45.338760] INFO: Received input with keys: ['session_id', 'transcript_path', 'cwd', 'permission_mode', 'hook_event_name', 'stop_hook_active', 'last_assistant_message']
+[2026-02-26T07:45:45.338823] INFO: Event type: Stop
+[2026-02-26T07:45:45.365624] INFO: Using strategy: ClaudeStrategy
+[2026-02-26T07:45:45.365689] INFO: === STOP HOOK STARTED ===
+[2026-02-26T07:45:45.365730] INFO: Input keys: ['session_id', 'transcript_path', 'cwd', 'permission_mode', 'hook_event_name', 'stop_hook_active', 'last_assistant_message']
+[2026-02-26T07:45:45.365774] DEBUG: Neo4j cleanup skipped - Neo4j removed from amplihack
+[2026-02-26T07:45:45.365809] DEBUG: Neo4j learning capture skipped - Neo4j removed from amplihack
+[2026-02-26T07:45:45.841671] INFO: Running power-steering analysis...
+[2026-02-26T07:46:11.551680] DEBUG: File lock acquired
+[2026-02-26T07:46:11.551789] DEBUG: Power-steering counter incremented to 1 (with lock)
+[2026-02-26T07:46:11.551834] DEBUG: File lock released
+[2026-02-26T07:46:11.551915] INFO: First stop - displaying all consideration results for visibility
+[2026-02-26T07:46:11.552229] INFO: === STOP HOOK ENDED (decision: block - power-steering) ===
+[2026-02-26T07:46:11.552314] INFO: Returning output with keys: ['decision', 'reason']
+[2026-02-26T07:46:11.552395] INFO: stop hook completed successfully
+[2026-02-26T07:49:52.768554] INFO: stop hook starting (Python 3.11.14)
+[2026-02-26T07:49:52.773554] INFO: Received input with keys: ['session_id', 'transcript_path', 'cwd', 'permission_mode', 'hook_event_name', 'stop_hook_active', 'last_assistant_message']
+[2026-02-26T07:49:52.773610] INFO: Event type: Stop
+[2026-02-26T07:49:52.801661] INFO: Using strategy: ClaudeStrategy
+[2026-02-26T07:49:52.801739] INFO: === STOP HOOK STARTED ===
+[2026-02-26T07:49:52.801784] INFO: Input keys: ['session_id', 'transcript_path', 'cwd', 'permission_mode', 'hook_event_name', 'stop_hook_active', 'last_assistant_message']
+[2026-02-26T07:49:52.801830] DEBUG: Neo4j cleanup skipped - Neo4j removed from amplihack
+[2026-02-26T07:49:52.801866] DEBUG: Neo4j learning capture skipped - Neo4j removed from amplihack
+[2026-02-26T07:49:53.284694] INFO: Running power-steering analysis...
+[2026-02-26T07:50:19.139481] DEBUG: File lock acquired
+[2026-02-26T07:50:19.139593] DEBUG: Power-steering counter incremented to 1 (with lock)
+[2026-02-26T07:50:19.139638] DEBUG: File lock released
+[2026-02-26T07:50:19.139725] INFO: First stop - displaying all consideration results for visibility
+[2026-02-26T07:50:19.140009] INFO: === STOP HOOK ENDED (decision: block - power-steering) ===
+[2026-02-26T07:50:19.140105] INFO: Returning output with keys: ['decision', 'reason']
+[2026-02-26T07:50:19.140182] INFO: stop hook completed successfully
