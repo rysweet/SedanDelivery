@@ -3,6 +3,8 @@
 **Issue**: cloud-ecosystem-security/cybergym#431
 **Goal**: Build a production-quality Rust GraphQL/Cypher query engine as a Redis module, serving as a clean-room, MIT/Apache-2.0-licensed alternative to RedisGraph/FalkorDB (SSPL).
 **Date**: 2026-02-26
+**Usage guide**: [docs/TUTORIAL.md](docs/TUTORIAL.md)
+**Docs index**: [docs/README.md](docs/README.md)
 
 ---
 
@@ -10,11 +12,9 @@
 
 We build `gql-redis` — a Redis module written in Rust that implements a Cypher/GQL subset over Redis data structures. The engine exposes `GQL.QUERY` and `GQL.MUTATE` commands identical in wire format to FalkorDB's `GRAPH.QUERY`/`GRAPH.RO_QUERY`, enabling a drop-in swap via a DI registration change in the .NET application layer.
 
-**Why clean-room Rust, not FalkorDB-core-rs?**
-FalkorDB-core-rs is SSPL v1 (same license as FalkorDB). We need MIT/Apache 2.0 for a Microsoft security product that may be offered as a service.
+**Clean-room Rust, not FalkorDB-core-rs**: FalkorDB-core-rs is SSPL v1 (same license as FalkorDB). MIT/Apache 2.0 is required for a Microsoft security product that may be offered as a service.
 
-**Why not GraphBLAS/sparse matrices?**
-At CyberGym's scale (≤1M nodes, security graph topology), Redis-native adjacency lists (sorted sets) provide adequate performance with dramatically less implementation complexity. GraphBLAS would add ~8 weeks of effort for negligible benefit at this scale.
+**Redis-native storage, not GraphBLAS**: At CyberGym's scale (≤1M nodes, security graph topology), Redis-native adjacency lists (sorted sets) provide adequate performance with dramatically less implementation complexity. GraphBLAS would add ~8 weeks of effort for negligible benefit at this scale.
 
 ---
 
@@ -609,14 +609,16 @@ Redis modules run in Redis's main thread for command handlers. Long-running quer
 
 ---
 
-## 12. Questions for Stakeholders
+## 12. Resolved Design Decisions
 
-1. **Cypher subset**: Is `CALL` subquery support required for Phase 1, or can it be Phase 2?
-2. **Redis version**: Can we require Redis 7.4+ (for latest Module API features), or must we support 6.x?
-3. **Multi-tenancy**: Should each graph be a separate Redis DB, or all graphs in DB 0 with key prefixes?
-4. **Persistence**: Is RDB persistence sufficient, or do we need AOF for durability?
-5. **Cluster support**: Is Redis Cluster required, or single-instance Redis sufficient for Phase 1?
-6. **Parquet sync**: Should the sync be push (Redis → OneLake) or pull (OneLake polls Redis)?
+| Decision | Resolution | Rationale |
+|---|---|---|
+| `CALL` subquery support | Deferred — grammar accepts it, executor returns `UnsupportedFeature` | Full grammar from day one; execution deferred cleanly per ADR-002 |
+| Valkey vs. Redis version | Target Valkey 8.x (BSD-3-Clause) with `use-redismodule-api` flag for Redis 7.4 compatibility | Redis 8 is AGPLv3 — licensing risk for Microsoft products offered as services |
+| Multi-tenancy model | All graphs in DB 0 with `{graphname}:` key prefixes + Redis Cluster hash tags | Avoids DB-level isolation complexity; hash tags ensure cluster slot affinity per graph |
+| Persistence | RDB persistence is sufficient for Phase 1; AOF optional via Redis config | RDB provides crash recovery; AOF is an ops decision, not an engine decision |
+| Cluster support | Single-instance sufficient for Phase 1; Cluster-compatible by design (hash tags) | Key naming uses `{graphname}` hash tags so Cluster upgrade requires no code changes |
+| Parquet sync direction | Push model (Redis → OneLake) triggered on demand or schedule | Consistent with existing `OneLakeGraphSync.ExportAsync()` pattern in LadybugDB |
 
 ---
 

@@ -1,0 +1,75 @@
+[workspace]
+members = [
+    "gql-core",
+    "gql-redis-store",
+    "gql-module",
+    "gql-cli",
+]
+resolver = "2"
+
+[workspace.package]
+version     = "0.1.0"
+edition     = "2021"
+license     = "MIT OR Apache-2.0"
+authors     = ["SedanDelivery contributors"]
+repository  = "https://github.com/rysweet/SedanDelivery"
+
+# Shared dependency versions — all members reference these with { workspace = true }
+[workspace.dependencies]
+# Error handling
+thiserror    = "1.0"
+
+# Collections
+indexmap     = "2.0"
+rustc-hash   = "2.0"
+
+# Parsing — hand-written recursive descent (lalrpop rejected: cannot handle Cypher's
+# "|" ambiguity across label disjunction / rel-type disjunction / list comprehension)
+# See ADR-003 update and Rust expert review notes.
+regex = "1.10"
+
+# Arena allocation
+typed-arena  = "2.0"
+
+# Temporal types
+jiff         = "0.2"
+
+# Short inline strings for labels, rel-types, and property keys (avoid heap alloc for <23 bytes)
+smol_str     = "0.3"
+
+# SIMD (optional — mark optional in the crate-level Cargo.toml, not here)
+wide         = { version = "0.7" }
+
+# Graph algorithms (executor use only)
+# petgraph 0.6 does not have an "algo" feature — algorithms are compiled by default.
+petgraph     = { version = "0.6", default-features = true }
+
+# Serialization
+serde        = { version = "1.0", features = ["derive"] }
+serde_json   = "1.0"
+
+# Logging
+tracing      = "0.1"
+
+# Dev / test
+proptest     = "1.6"
+criterion    = { version = "0.5", features = ["html_reports"] }
+insta        = { version = "1.40", features = ["yaml"] }
+cucumber     = "0.21"
+tokio        = { version = "1", features = ["full"] }
+
+[profile.release]
+lto           = "fat"
+opt-level     = 3
+codegen-units = 1
+# DO NOT set panic = "abort" — the .so runs in a host process (Redis/Valkey).
+# An abort kills ALL clients, not just the failing query.
+# Instead, every extern "C" command handler uses std::panic::catch_unwind.
+# See Rust expert review note on panic safety in Redis modules.
+strip         = "symbols"
+
+[profile.dev]
+opt-level = 1   # small opt for arena-heavy code
+
+[profile.test]
+opt-level = 1

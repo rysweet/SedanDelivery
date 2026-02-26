@@ -1,0 +1,45 @@
+[package]
+name    = "gql-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+default    = []
+simd       = ["dep:wide"]
+test-utils = []   # enables ExecutionBudget::unlimited() in non-test code
+
+[dependencies]
+thiserror  = { workspace = true }
+indexmap   = { workspace = true }
+rustc-hash = { workspace = true }
+regex      = { workspace = true }
+typed-arena = { workspace = true }
+jiff       = { workspace = true }
+petgraph   = { workspace = true }
+serde      = { workspace = true }
+serde_json = { workspace = true }
+tracing    = { workspace = true }
+smol_str   = { workspace = true }
+wide       = { workspace = true, optional = true }
+
+[dev-dependencies]
+proptest  = { workspace = true }
+insta     = { workspace = true }
+criterion = { workspace = true }
+cucumber  = { workspace = true }
+tokio     = { workspace = true }
+futures   = "0.3"
+
+[[bench]]
+name    = "parser"
+harness = false
+
+[[bench]]
+name    = "executor"
+harness = false
+
+[[test]]
+name    = "tck"
+path    = "tests/tck/runner.rs"
+harness = false
