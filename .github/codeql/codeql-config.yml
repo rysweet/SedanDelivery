@@ -1,0 +1,22 @@
+name: "CodeQL Configuration"
+
+# Use explicit path inclusion instead of exclusion for better control
+# Only analyze production code, not test violation examples
+paths:
+  - src/CyberGym.GameboardTenant
+  - src/CyberGym.Catalog
+  - src/CyberGym.TenantScanning  
+  - src/CyberGym.AppHost
+  - tools/CyberGym.Catalog.Cli
+  - tools/CyberGym.TenantScanning.Cli
+  - tools/lighthouse-template-generator
+
+# Also explicitly exclude test violation examples (defense in depth)
+paths-ignore:
+  - "tests/CyberGym.*Rules.Tests/**"
+  - "tests/**/testdata/**"
+  - "tools/DatabaseSeeder/**"
+
+# Query configuration
+queries:
+  - uses: security-and-quality

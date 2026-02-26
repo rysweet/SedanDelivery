@@ -3,17 +3,32 @@
 # metadata
 id: id
 name: JIT_Access
-description: Policy for admin JIT for repos in this org
-
+# description: Policy for admin JIT for repos in this org
+#
 # filters
+#resource: repository
+#
+# # Approval Required configuration
+# configuration:
+#     jitAccess:
+#         enabled: true
+#         maxHours: 2
+#         approvers:
+#             role: Maintain
+#         requestors:
+#             role: Write
+
+description: Auto-approve requests from users with Maintain role
+
 resource: repository
 
-# primitive configuration
 configuration:
     jitAccess:
         enabled: true
         maxHours: 2
         approvers:
-            role: Maintain
+            role:
+            users:
         requestors:
-            role: Write
+            role: maintain
+            users:

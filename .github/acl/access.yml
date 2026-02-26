@@ -6,7 +6,42 @@ resource: repository
 where:
 configuration:
   manageAccess:
-  - member: atwumbarimah
-    role: Maintain
+  - team: MSECAIFTE_WW
+    role: Push
   - member: rysweet
     role: Maintain
+  - member: rysweet_microsoft
+    role: Maintain
+  - member: atwumbarimah
+    role: Maintain
+  - member: jonesmalachi
+    role: Maintain
+  - member: csiska
+    role: Maintain
+  - member: mvelazco
+    role: Maintain
+  - team: adapt-fte-all
+    role: Push
+# nested groups not suppported yet
+  - team: juparikhdir
+    role: Push
+  - team: juparikh-team
+    role: Push
+  - team: dddirects
+    role: Push
+  - team: malachijonesdirects
+    role: Maintain
+  - team: mvelazcodirects
+    role: Maintain
+  - team: klakkaraju-reports
+    role: Push
+  - team: MSECAI_LT
+    role: Push
+  - team: MSECAI_FTEIDC
+    role: Push
+  - team: MSECAI_FTEILDC
+    role: Push
+  - team: MSECAI_FTEINTL
+    role: Push
+  - team: MSECAI_FTEUS
+    role: Push
