@@ -1,0 +1,59 @@
+name: CI
+
+on:
+  push:
+    branches: [main, "feat/**"]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  test:
+    name: Test (stable)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      # redis-module (used by gql-redis-store and gql-module) requires libclang
+      # for its bindgen build script. Install it before cargo check --workspace.
+      - name: Install libclang (required by redis-module bindgen)
+        run: sudo apt-get update -q && sudo apt-get install -y -q libclang-dev
+
+      - name: Check formatting
+        run: cargo fmt --check
+
+      - name: Clippy (deny warnings on gql-core)
+        run: cargo clippy -p gql-core -- -D warnings
+
+      - name: Run unit tests
+        run: cargo test -p gql-core
+
+      - name: Check all crates compile
+        run: cargo check --workspace
+
+  msrv:
+    # smol_str 0.3.5 requires rustc 1.89. MSRV is 1.89.
+    name: MSRV check (1.89.0)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.89.0
+      - run: cargo check -p gql-core
