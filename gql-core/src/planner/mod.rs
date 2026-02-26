@@ -212,8 +212,10 @@ pub enum RemoveItem {
 
 #[allow(clippy::module_inception)]
 pub mod planner;
+pub mod validator;
 
 pub use planner::QueryPlanner;
+pub use validator::validate_query;
 
 /// Validate and normalize variable-length expand bounds.
 /// Returns `(effective_min, effective_max)`, capping unbounded `max` at DEFAULT_VARLEN_MAX_DEPTH.

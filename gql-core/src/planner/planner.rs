@@ -43,6 +43,9 @@ impl<'s> QueryPlanner<'s> {
 
     /// Plan a query: produce the root [`Operator`] for execution.
     pub fn plan(&self, query: &Query) -> Result<Operator, GqlError> {
+        // Run compile-time validation before planning.
+        crate::planner::validator::validate_query(query)?;
+
         let mut pipeline: Option<Operator> = None;
         let mut return_clause: Option<&ReturnClause> = None;
 
