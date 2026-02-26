@@ -291,6 +291,10 @@ pub enum Expr {
     IsNull(Box<Expr>),
     IsNotNull(Box<Expr>),
 
+    // ── Label check ──────────────────────────────────────────────────────────
+    /// `a:Label` — checks if a node has a specific label.
+    HasLabel(Box<Expr>, Label),
+
     // ── Function calls ────────────────────────────────────────────────────────
     FunctionCall {
         name: SmolStr,

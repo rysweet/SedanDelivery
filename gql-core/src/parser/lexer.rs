@@ -565,6 +565,32 @@ impl<'src> Lexer<'src> {
             return Ok(Some(Token::new(TokenKind::DollarSign, text, start)));
         }
 
+        // ── Float literal starting with '.' (e.g. .1, .5e3) ─────────────────
+        if b0 == b'.' && matches!(b1, Some(b'0'..=b'9')) {
+            self.pos += 1; // consume the '.'
+            // Read remaining digits
+            while matches!(self.peek_byte(0), Some(b'0'..=b'9')) {
+                self.pos += 1;
+            }
+            // Check for exponent
+            if matches!(self.peek_byte(0), Some(b'e') | Some(b'E')) {
+                self.pos += 1;
+                if matches!(self.peek_byte(0), Some(b'+') | Some(b'-')) {
+                    self.pos += 1;
+                }
+                while matches!(self.peek_byte(0), Some(b'0'..=b'9')) {
+                    self.pos += 1;
+                }
+            }
+            let text = &self.src[start..self.pos];
+            let val: f64 = text.parse().map_err(|_| ParseError::Syntax {
+                offset: start,
+                expected: "valid float literal".into(),
+                found: text.into(),
+            })?;
+            return Ok(Some(Token::new(TokenKind::FloatLiteral(val), text, start)));
+        }
+
         // ── Two-character operators ────────────────────────────────────────────
         let tok = match (b0, b1) {
             (b'<', Some(b'>')) => {

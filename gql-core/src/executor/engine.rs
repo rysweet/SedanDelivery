@@ -74,6 +74,7 @@ impl<'a> QueryExecutor<'a> {
             Operator::Distinct { child } => child.as_ref(),
             other => other,
         };
+        let has_produce_results = has_produce_results(effective_root);
         let columns = if let Operator::ProduceResults { columns, .. } = effective_root {
             columns.iter().map(|(name, _)| name.clone()).collect()
         } else {
@@ -633,8 +634,22 @@ impl<'a> QueryExecutor<'a> {
                                 let val = row
                                     .get(alias.0.as_str())
                                     .ok_or_else(|| undefined_var(&alias.0))?;
-                                let node_id = extract_node_id(val, &alias.0)?;
-                                self.store.remove_node_property(graph, node_id, key)?;
+                                match val {
+                                    Value::Node(node_id) => {
+                                        self.store.remove_node_property(graph, *node_id, key)?;
+                                    }
+                                    Value::Edge(edge_id) => {
+                                        self.store.remove_edge_property(graph, *edge_id, key)?;
+                                    }
+                                    other => {
+                                        return Err(GqlError::Execution(
+                                            ExecutionError::TypeMismatch {
+                                                expected: "Node or Relationship".to_string(),
+                                                actual: other.type_name().to_string(),
+                                            },
+                                        ));
+                                    }
+                                }
                                 stats.properties_set += 1;
                             }
                             RemoveItem::Labels { alias, labels } => {
@@ -1193,6 +1208,26 @@ impl<'a> QueryExecutor<'a> {
             Expr::IsNotNull(inner) => {
                 let v = self.eval_with_storage(graph, inner, row, ctx)?;
                 Ok(Value::Bool(!v.is_null()))
+            }
+            // Label check: n:Label — check if node has the specified label
+            Expr::HasLabel(inner, label) => {
+                let v = self.eval_with_storage(graph, inner, row, ctx)?;
+                match v {
+                    Value::Null => Ok(Value::Null),
+                    Value::Node(node_id) => {
+                        match self.store.get_node(graph, node_id)? {
+                            Some(node_data) => {
+                                let has = node_data
+                                    .labels
+                                    .iter()
+                                    .any(|l| l == label.as_str());
+                                Ok(Value::Bool(has))
+                            }
+                            None => Ok(Value::Bool(false)),
+                        }
+                    }
+                    _ => Ok(Value::Bool(false)),
+                }
             }
             // FunctionCall: evaluate arguments via eval_with_storage, then handle
             // storage-aware functions or delegate to eval_expr with literal args.
@@ -1856,6 +1891,62 @@ fn undefined_var(name: &str) -> GqlError {
 }
 
 /// Get adjacency entries for a node in the given direction and with the given type filter.
+/// Check if the plan's top-level operator (or outermost chain) is a write-only operation.
+/// This is used to suppress result rows for queries without RETURN (e.g., `CREATE ()`, `DELETE n`).
+/// Note: MERGE is excluded because it can return rows when used with RETURN.
+fn is_toplevel_write(op: &Operator) -> bool {
+    match op {
+        Operator::Create { .. } | Operator::Delete { .. }
+        | Operator::Set { .. } | Operator::Remove { .. } => true,
+        // Transparent wrappers that don't change write/read semantics
+        Operator::Distinct { child }
+        | Operator::Sort { child, .. }
+        | Operator::Limit { child, .. }
+        | Operator::Skip { child, .. } => is_toplevel_write(child),
+        _ => false,
+    }
+}
+
+/// Check if the operator tree contains write operations (CREATE, DELETE, SET, etc.).
+fn has_write_operations(op: &Operator) -> bool {
+    match op {
+        Operator::Create { .. } | Operator::Delete { .. } | Operator::Merge { .. } => true,
+        Operator::Set { child, .. }
+        | Operator::Remove { child, .. } => true,
+        Operator::Distinct { child }
+        | Operator::Sort { child, .. }
+        | Operator::Limit { child, .. }
+        | Operator::Skip { child, .. }
+        | Operator::Filter { child, .. }
+        | Operator::Project { child, .. }
+        | Operator::Unwind { child, .. } => has_write_operations(child),
+        Operator::Aggregate { child, .. } => has_write_operations(child),
+        Operator::AssemblePath { child, .. } => has_write_operations(child),
+        Operator::ProduceResults { child, .. } => has_write_operations(child),
+        _ => false,
+    }
+}
+
+/// Check if the operator tree contains a ProduceResults node (i.e., has a RETURN clause).
+fn has_produce_results(op: &Operator) -> bool {
+    match op {
+        Operator::ProduceResults { .. } => true,
+        Operator::Distinct { child }
+        | Operator::Sort { child, .. }
+        | Operator::Limit { child, .. }
+        | Operator::Skip { child, .. }
+        | Operator::Filter { child, .. }
+        | Operator::Project { child, .. }
+        | Operator::Set { child, .. }
+        | Operator::Remove { child, .. }
+        | Operator::Delete { child, .. }
+        | Operator::Unwind { child, .. } => has_produce_results(child),
+        Operator::Aggregate { child, .. } => has_produce_results(child),
+        Operator::AssemblePath { child, .. } => has_produce_results(child),
+        _ => false,
+    }
+}
+
 fn get_adj_entries(
     store: &dyn GraphStore,
     graph: &str,
@@ -1923,6 +2014,18 @@ fn discover_operator_aliases(op: &Operator) -> Vec<String> {
         | Operator::Remove { child, .. }
         | Operator::Delete { child, .. }
         | Operator::Unwind { child, .. } => {
+            aliases.extend(discover_operator_aliases(child));
+        }
+        Operator::AssemblePath {
+            path_alias, child, ..
+        } => {
+            aliases.extend(discover_operator_aliases(child));
+            aliases.push(path_alias.0.clone());
+        }
+        Operator::Project { child, .. } => {
+            aliases.extend(discover_operator_aliases(child));
+        }
+        Operator::Aggregate { child, .. } => {
             aliases.extend(discover_operator_aliases(child));
         }
         _ => {}
