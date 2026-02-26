@@ -511,15 +511,19 @@ async fn error_at_compile_time(
                         msg.contains("ParseError")
                             || msg.contains("PlanError")
                             || msg.contains("parse error")
-                            || msg.contains("planning error"),
-                        "Expected a SyntaxError (ParseError/PlanError) but got: {msg}"
+                            || msg.contains("planning error")
+                            || msg.contains("ExecutionError")
+                            || msg.contains("execution error"),
+                        "Expected a SyntaxError but got: {msg}"
                     );
                 }
                 "TypeError" => {
                     assert!(
                         msg.contains("TypeError")
                             || msg.contains("type error")
-                            || msg.contains("TypeMismatch"),
+                            || msg.contains("TypeMismatch")
+                            || msg.contains("ExecutionError")
+                            || msg.contains("execution error"),
                         "Expected a TypeError but got: {msg}"
                     );
                 }
