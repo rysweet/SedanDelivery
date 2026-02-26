@@ -528,10 +528,7 @@ impl<'s> QueryPlanner<'s> {
     /// WITH a, count(b) AS cnt     →  Aggregate
     /// WITH a ORDER BY a.name SKIP 1 LIMIT 5  →  Project + Sort + Skip + Limit
     fn plan_with(&self, wc: &WithClause, child: Option<Operator>) -> Result<Operator, GqlError> {
-        let child = child.unwrap_or_else(|| Operator::NodeScan {
-            label: None,
-            alias: Identifier::new("__empty__"),
-        });
+        let child = child.unwrap_or(Operator::SingleRow);
 
         // Detect WITH * — if so, skip the projection entirely (passthrough).
         // WITH * means "pass through all row bindings from the previous clause".
@@ -618,6 +615,8 @@ impl<'s> QueryPlanner<'s> {
     ) -> Result<Operator, GqlError> {
         let mut keys: Vec<Expr> = Vec::new();
         let mut aggregations: Vec<(AggFunction, Expr, bool, Identifier)> = Vec::new();
+        // Track key aliases: (generated_column_name, user_alias) pairs.
+        let mut key_renames: Vec<(String, String)> = Vec::new();
 
         for item in items {
             if has_agg_function(&item.expr) {
@@ -628,15 +627,55 @@ impl<'s> QueryPlanner<'s> {
                     .unwrap_or_else(|| Identifier::new(return_item_name(item)));
                 aggregations.push((func, arg, distinct, alias));
             } else {
+                let gen_name = expr_to_col_name(&item.expr);
+                if let Some(a) = &item.alias {
+                    if a.0 != gen_name {
+                        key_renames.push((gen_name, a.0.clone()));
+                    }
+                }
                 keys.push(item.expr.clone());
             }
         }
 
-        Ok(Operator::Aggregate {
+        let agg = Operator::Aggregate {
             keys,
             aggregations,
             child: Box::new(child),
-        })
+        };
+
+        // If any keys have aliases that differ from the generated column name,
+        // wrap with a Project that renames them and passes through all columns.
+        if key_renames.is_empty() {
+            Ok(agg)
+        } else {
+            // Build project items: for each WITH item, produce the correct alias.
+            let mut project_items: Vec<(Expr, Option<Identifier>)> = Vec::new();
+            for item in items {
+                let name = return_item_name(item);
+                if has_agg_function(&item.expr) {
+                    // Aggregation output: reference by alias
+                    let agg_alias = item
+                        .alias
+                        .clone()
+                        .unwrap_or_else(|| Identifier::new(name.clone()));
+                    project_items.push((
+                        Expr::Variable(agg_alias.clone()),
+                        item.alias.clone(),
+                    ));
+                } else {
+                    // Key: reference by generated column name, alias to user alias
+                    let gen_name = expr_to_col_name(&item.expr);
+                    project_items.push((
+                        Expr::Variable(Identifier::new(gen_name)),
+                        item.alias.clone(),
+                    ));
+                }
+            }
+            Ok(Operator::Project {
+                items: project_items,
+                child: Box::new(agg),
+            })
+        }
     }
 
     // ── UNWIND planning ───────────────────────────────────────────────────────
@@ -646,10 +685,7 @@ impl<'s> QueryPlanner<'s> {
         uc: &UnwindClause,
         child: Option<Operator>,
     ) -> Result<Operator, GqlError> {
-        let child = child.unwrap_or_else(|| Operator::NodeScan {
-            label: None,
-            alias: Identifier::new("__empty__"),
-        });
+        let child = child.unwrap_or(Operator::SingleRow);
 
         Ok(Operator::Unwind {
             list_expr: uc.expr.clone(),
@@ -847,26 +883,36 @@ impl<'s> QueryPlanner<'s> {
 
 /// If `items` contains a `RETURN *` / `WITH *` placeholder, expand it to
 /// all user-visible variables discovered from the child operator tree.
-/// Non-star items are returned unchanged.
+/// Non-star items are returned unchanged.  Handles both pure `RETURN *`
+/// and mixed forms like `RETURN *, n.name AS extra`.
 fn expand_star_items(items: &[ReturnItem], child: &Operator) -> Vec<ReturnItem> {
-    let is_star = items.len() == 1
-        && matches!(&items[0].expr, Expr::Variable(id) if id.0 == "*")
-        && items[0].alias.is_none();
+    let has_star = items
+        .iter()
+        .any(|item| matches!(&item.expr, Expr::Variable(id) if id.0 == "*") && item.alias.is_none());
 
-    if !is_star {
+    if !has_star {
         return items.to_vec();
     }
 
     let aliases = crate::planner::collect_visible_aliases(child);
-    // When no user-visible aliases are found, return empty (no columns).
-    // The query still executes but produces rows with no projected columns.
-    aliases
+    let star_items: Vec<ReturnItem> = aliases
         .into_iter()
         .map(|name| ReturnItem {
             expr: Expr::Variable(Identifier::new(name)),
             alias: None,
         })
-        .collect()
+        .collect();
+
+    // Replace each `*` placeholder with the expanded aliases; keep non-star items.
+    let mut result = Vec::new();
+    for item in items {
+        if matches!(&item.expr, Expr::Variable(id) if id.0 == "*") && item.alias.is_none() {
+            result.extend(star_items.clone());
+        } else {
+            result.push(item.clone());
+        }
+    }
+    result
 }
 
 /// Rewrite an ORDER BY expression when aggregation is active.
@@ -1065,6 +1111,22 @@ fn label_filter_expr(alias: &Identifier, label: &Label) -> Expr {
             Expr::Str(label.as_str().into()),
         ],
         distinct: false,
+    }
+}
+
+/// Derive a column name from an expression (mirrors executor's `expr_to_column_name`).
+fn expr_to_col_name(expr: &Expr) -> String {
+    match expr {
+        Expr::Variable(id) => id.0.clone(),
+        Expr::Property(obj, key) => format!("{}.{}", expr_to_col_name(obj), key),
+        Expr::FunctionCall { name, args, .. } => {
+            let arg_strs: Vec<String> = args.iter().map(|a| expr_to_col_name(a)).collect();
+            format!("{}({})", name, arg_strs.join(", "))
+        }
+        Expr::Integer(n) => n.to_string(),
+        Expr::Float(f) => f.to_string(),
+        Expr::Str(s) => s.to_string(),
+        _ => format!("{:?}", expr),
     }
 }
 

@@ -335,21 +335,30 @@ fn collect_all_aliases(op: &Operator) -> Vec<String> {
                 aliases.push(a.0.clone());
             }
         }
-        Operator::Project { items, child } => {
-            // After a Project, only the projected items are visible
+        Operator::Project { items, .. } => {
+            // After a Project (WITH), only the projected items are visible.
+            // Child aliases are hidden (WITH introduces a new scope).
             for (expr, alias) in items {
                 if let Some(a) = alias {
                     aliases.push(a.0.clone());
-                } else if let Expr::Variable(id) = expr {
-                    aliases.push(id.0.clone());
+                } else {
+                    // Derive column name from expression.
+                    match expr {
+                        Expr::Variable(id) => aliases.push(id.0.clone()),
+                        Expr::Property(obj, key) => {
+                            if let Expr::Variable(id) = obj.as_ref() {
+                                aliases.push(format!("{}.{}", id.0, key));
+                            }
+                        }
+                        _ => {}
+                    }
                 }
             }
-            // Also include child aliases for expressions that reference them
-            aliases.extend(collect_all_aliases(child));
         }
         Operator::Aggregate {
             keys, aggregations, ..
         } => {
+            // After Aggregate, only the key and aggregation aliases are visible.
             for key in keys {
                 if let Expr::Variable(id) = key {
                     aliases.push(id.0.clone());
