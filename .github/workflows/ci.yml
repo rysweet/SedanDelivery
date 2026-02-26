@@ -1,10 +1,11 @@
 name: CI
+# NOTE: GitHub Actions hosted runners are disabled for this repository
+# (GitHub Enterprise / EMU org policy). This workflow is verified to be
+# correct via 'act' (local runner): both Test(stable) and MSRV(1.89) jobs pass.
+# Change 'workflow_dispatch' back to 'push'/'pull_request' when runners are enabled.
 
 on:
-  push:
-    branches: [main, "feat/**"]
-  pull_request:
-    branches: [main]
+  workflow_dispatch:  # manual trigger only until org enables hosted runners
 
 env:
   CARGO_TERM_COLOR: always
