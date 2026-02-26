@@ -221,7 +221,6 @@ impl<'src> Lexer<'src> {
         self.src.as_bytes().get(self.pos + offset).copied()
     }
 
-
     /// Skip whitespace (space, tab, CR, LF).
     fn skip_whitespace(&mut self) {
         while let Some(b) = self.peek_byte(0) {
