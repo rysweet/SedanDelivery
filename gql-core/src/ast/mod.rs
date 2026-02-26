@@ -400,7 +400,7 @@ mod tests {
     #[test]
     fn expr_is_literal() {
         assert!(Expr::Integer(1).is_literal());
-        assert!(Expr::Float(3.14).is_literal());
+        assert!(Expr::Float(1.23456).is_literal());
         assert!(Expr::str_lit("hello").is_literal());
         assert!(Expr::Bool(false).is_literal());
         assert!(Expr::Null.is_literal());

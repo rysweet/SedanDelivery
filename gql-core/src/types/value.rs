@@ -305,7 +305,7 @@ mod tests {
     #[test]
     fn as_float_coerces_int() {
         assert_eq!(Value::Int(3).as_float(), Some(3.0));
-        assert_eq!(Value::Float(3.14).as_float(), Some(3.14));
+        assert_eq!(Value::Float(1.23456).as_float(), Some(1.23456));
         assert_eq!(Value::Null.as_float(), None);
     }
 

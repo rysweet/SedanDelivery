@@ -935,8 +935,8 @@ mod tests {
 
     #[test]
     fn float_with_decimal() {
-        let toks = kinds("3.14");
-        assert_eq!(toks[0], TokenKind::FloatLiteral(3.14));
+        let toks = kinds("1.23456");
+        assert_eq!(toks[0], TokenKind::FloatLiteral(1.23456));
     }
 
     #[test]

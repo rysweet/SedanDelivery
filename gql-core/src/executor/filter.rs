@@ -1031,8 +1031,8 @@ mod tests {
     #[test]
     fn eval_float_literal() {
         assert_eq!(
-            eval_expr(&Expr::Float(3.14), &empty_row()).unwrap(),
-            Value::Float(3.14)
+            eval_expr(&Expr::Float(1.23456), &empty_row()).unwrap(),
+            Value::Float(1.23456)
         );
     }
 
