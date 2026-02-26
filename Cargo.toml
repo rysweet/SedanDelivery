@@ -42,7 +42,7 @@ wide         = { version = "1.1" }
 
 # Graph algorithms (executor use only)
 # petgraph 0.6 does not have an "algo" feature — algorithms are compiled by default.
-petgraph     = { version = "0.6", default-features = true }
+petgraph     = { version = "0.8", default-features = true }
 
 # Serialization
 serde        = { version = "1.0", features = ["derive"] }
