@@ -326,6 +326,27 @@ pub enum Expr {
 
     /// `list[start..end]` — list slice (either bound may be None).
     Slice(Box<Expr>, Option<Box<Expr>>, Option<Box<Expr>>),
+
+    // ── List comprehension ────────────────────────────────────────────────────
+    /// `[variable IN list WHERE filter | map]`
+    ///
+    /// - `variable`: the loop variable bound to each element.
+    /// - `list`: the source list expression.
+    /// - `filter`: an optional predicate; when `None` all elements pass.
+    /// - `map`: the projection applied to each surviving element.
+    ///
+    /// Evaluating this expression:
+    /// 1. Evaluates `list` to a `Value::List`.
+    /// 2. For each element, binds `variable` and evaluates `filter` (if present).
+    ///    Elements for which the filter is false or null are dropped.
+    /// 3. Maps each surviving element through `map` with `variable` bound.
+    /// 4. Returns a new `Value::List` of the mapped values.
+    ListComp {
+        variable: Identifier,
+        list: Box<Expr>,
+        filter: Option<Box<Expr>>,
+        map: Box<Expr>,
+    },
 }
 
 impl Expr {

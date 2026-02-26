@@ -26,9 +26,7 @@ use crate::storage::GraphStore;
 
 /// Translates a [`Query`] AST into a physical [`Operator`] tree.
 pub struct QueryPlanner<'s> {
-    #[allow(dead_code)]
     store: &'s dyn GraphStore,
-    #[allow(dead_code)]
     graph: &'s str,
 }
 
@@ -185,12 +183,48 @@ impl<'s> QueryPlanner<'s> {
         let start_label = start.labels.first().cloned();
 
         // Build the node scan for the first node.
-        let mut op = self.plan_node_scan(start_alias.clone(), start_label.clone());
+        // If the node pattern has a label and a single equality property filter,
+        // check whether a matching index exists. If so, emit IndexScan directly
+        // (skipping the post-filter); otherwise fall back to NodeScan + Filter.
+        let mut index_consumed_prop: Option<smol_str::SmolStr> = None;
+        let mut op = if let (Some(label), Some(props)) = (&start_label, &start.properties) {
+            // Look for a single-property equality that maps to a literal value.
+            // We take the first one that has an index; remaining props become a Filter.
+            let indexes = self.store.list_indexes(self.graph).unwrap_or_default();
+            let indexed_prop = props.iter().find(|(prop_key, _val)| {
+                indexes
+                    .iter()
+                    .any(|idx| idx.label == label.as_str() && idx.property == prop_key.as_str())
+            });
+            if let Some((prop_key, _)) = indexed_prop {
+                index_consumed_prop = Some(prop_key.clone());
+                Operator::IndexScan {
+                    label: label.clone(),
+                    property: prop_key.to_string(),
+                    alias: start_alias.clone(),
+                }
+            } else {
+                self.plan_node_scan(start_alias.clone(), start_label.clone())
+            }
+        } else {
+            self.plan_node_scan(start_alias.clone(), start_label.clone())
+        };
 
-        // Optionally wrap with a label filter if the node has an inline property map.
+        // Wrap with a property filter for any inline properties that weren't
+        // consumed by an IndexScan above.
         if let Some(props) = &start.properties {
-            if !props.is_empty() {
-                let pred = props_to_filter_expr(&start_alias, props);
+            let remaining: Vec<_> = props
+                .iter()
+                .filter(|(k, _)| {
+                    index_consumed_prop
+                        .as_ref()
+                        .map(|consumed| consumed != k)
+                        .unwrap_or(true)
+                })
+                .cloned()
+                .collect();
+            if !remaining.is_empty() {
+                let pred = props_to_filter_expr(&start_alias, &remaining);
                 op = Operator::Filter {
                     predicate: pred,
                     child: Box::new(op),
@@ -501,6 +535,13 @@ fn has_agg_function(expr: &Expr) -> bool {
         Expr::UnaryOp { expr, .. } => has_agg_function(expr),
         Expr::Property(obj, _) => has_agg_function(obj),
         Expr::List(items) => items.iter().any(has_agg_function),
+        Expr::ListComp {
+            list, filter, map, ..
+        } => {
+            has_agg_function(list)
+                || filter.as_deref().map(has_agg_function).unwrap_or(false)
+                || has_agg_function(map)
+        }
         _ => false,
     }
 }
@@ -807,5 +848,110 @@ mod tests {
             Operator::Skip { child, .. } => plan_contains_sort(child),
             _ => false,
         }
+    }
+
+    fn plan_contains_index_scan(op: &Operator) -> bool {
+        match op {
+            Operator::IndexScan { .. } => true,
+            Operator::ProduceResults { child, .. } => plan_contains_index_scan(child),
+            Operator::Filter { child, .. } => plan_contains_index_scan(child),
+            Operator::Sort { child, .. } => plan_contains_index_scan(child),
+            Operator::Limit { child, .. } => plan_contains_index_scan(child),
+            Operator::Skip { child, .. } => plan_contains_index_scan(child),
+            Operator::Aggregate { child, .. } => plan_contains_index_scan(child),
+            Operator::Expand { child, .. } => plan_contains_index_scan(child),
+            _ => false,
+        }
+    }
+
+    #[test]
+    fn plan_node_scan_upgrades_to_index_scan_when_index_exists() {
+        // Given a store with an index on Person.name
+        let store = InMemoryGraphStore::new();
+        store.create_graph("g").unwrap();
+        store.create_index("g", "Person", "name").unwrap();
+
+        let planner = QueryPlanner::new(&store, "g");
+        // MATCH (n:Person {name: 'Alice'}) RETURN n
+        let query = Query {
+            clauses: vec![
+                Clause::Match(MatchClause {
+                    patterns: vec![PathPattern {
+                        variable: None,
+                        start: NodePattern {
+                            variable: Some(Identifier::new("n")),
+                            labels: vec![Label::new("Person")],
+                            properties: Some(vec![(
+                                smol_str::SmolStr::new("name"),
+                                Expr::Str("Alice".into()),
+                            )]),
+                        },
+                        steps: vec![],
+                    }],
+                    where_clause: None,
+                }),
+                Clause::Return(ReturnClause {
+                    distinct: false,
+                    items: vec![ReturnItem {
+                        expr: Expr::Variable(Identifier::new("n")),
+                        alias: None,
+                    }],
+                    order_by: vec![],
+                    skip: None,
+                    limit: None,
+                }),
+            ],
+        };
+        let plan = planner.plan(&query).unwrap();
+        assert!(
+            plan_contains_index_scan(&plan),
+            "Expected IndexScan in plan when index exists for Person.name, got: {plan:?}"
+        );
+    }
+
+    #[test]
+    fn plan_node_scan_stays_node_scan_when_no_index() {
+        // No index created — must fall back to NodeScan + Filter.
+        let store = make_store(); // no indexes
+        let planner = QueryPlanner::new(&store, "g");
+        let query = Query {
+            clauses: vec![
+                Clause::Match(MatchClause {
+                    patterns: vec![PathPattern {
+                        variable: None,
+                        start: NodePattern {
+                            variable: Some(Identifier::new("n")),
+                            labels: vec![Label::new("Person")],
+                            properties: Some(vec![(
+                                smol_str::SmolStr::new("name"),
+                                Expr::Str("Alice".into()),
+                            )]),
+                        },
+                        steps: vec![],
+                    }],
+                    where_clause: None,
+                }),
+                Clause::Return(ReturnClause {
+                    distinct: false,
+                    items: vec![ReturnItem {
+                        expr: Expr::Variable(Identifier::new("n")),
+                        alias: None,
+                    }],
+                    order_by: vec![],
+                    skip: None,
+                    limit: None,
+                }),
+            ],
+        };
+        let plan = planner.plan(&query).unwrap();
+        assert!(
+            !plan_contains_index_scan(&plan),
+            "Expected NodeScan (not IndexScan) when no index exists, got: {plan:?}"
+        );
+        // Should still have a Filter for the inline property predicate.
+        assert!(
+            plan_contains_filter(&plan),
+            "Expected Filter wrapping NodeScan when no index, got: {plan:?}"
+        );
     }
 }

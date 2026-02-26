@@ -212,6 +212,58 @@ pub fn eval_expr<'r>(expr: &Expr, row: &Row<'r>) -> Result<Value, GqlError> {
                 })),
             }
         }
+
+        // ── List comprehension ────────────────────────────────────────────────
+        // `[variable IN list WHERE filter | map]`
+        //
+        // 1. Evaluate `list` → must be Value::List (or Null → return Null).
+        // 2. For each element, bind `variable` in an extended row, evaluate
+        //    the optional `filter`; skip elements where filter is false/null.
+        // 3. Evaluate `map` for each surviving element with `variable` bound.
+        // 4. Return Value::List of mapped values.
+        Expr::ListComp {
+            variable,
+            list,
+            filter,
+            map,
+        } => {
+            let list_val = eval_expr(list, row)?;
+            match list_val {
+                Value::Null => Ok(Value::Null),
+                Value::List(items) => {
+                    let var_name: &str = variable.0.as_str();
+                    let mut result = Vec::with_capacity(items.len());
+                    for item in &items {
+                        // Build an extended row with the loop variable bound.
+                        let mut extended: HashMap<&str, &Value> =
+                            row.iter().map(|(&k, v)| (k, *v)).collect();
+                        extended.insert(var_name, item);
+
+                        // Evaluate filter if present; skip element on false/null.
+                        if let Some(pred) = filter {
+                            match eval_expr(pred, &extended)? {
+                                Value::Bool(true) => {}
+                                Value::Bool(false) | Value::Null => continue,
+                                other => {
+                                    return Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                                        expected: "Boolean".to_string(),
+                                        actual: other.type_name().to_string(),
+                                    }))
+                                }
+                            }
+                        }
+
+                        // Map the surviving element.
+                        result.push(eval_expr(map, &extended)?);
+                    }
+                    Ok(Value::List(result))
+                }
+                other => Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                    expected: "List".to_string(),
+                    actual: other.type_name().to_string(),
+                })),
+            }
+        }
     }
 }
 
@@ -1409,5 +1461,128 @@ mod tests {
             default: None,
         };
         assert_eq!(eval_expr(&expr, &row).unwrap(), Value::Null);
+    }
+
+    // ── List comprehension ────────────────────────────────────────────────────
+
+    #[test]
+    fn list_comp_identity_no_filter_no_map() {
+        // [x IN [1, 2, 3]] — no filter, map is identity (variable itself)
+        let expr = Expr::ListComp {
+            variable: Identifier::new("x"),
+            list: Box::new(Expr::List(vec![
+                Expr::Integer(1),
+                Expr::Integer(2),
+                Expr::Integer(3),
+            ])),
+            filter: None,
+            map: Box::new(Expr::Variable(Identifier::new("x"))),
+        };
+        assert_eq!(
+            eval_expr(&expr, &empty_row()).unwrap(),
+            Value::List(vec![Value::Int(1), Value::Int(2), Value::Int(3)])
+        );
+    }
+
+    #[test]
+    fn list_comp_with_filter() {
+        // [x IN [1, 2, 3, 4, 5] WHERE x > 2] → [3, 4, 5]
+        let expr = Expr::ListComp {
+            variable: Identifier::new("x"),
+            list: Box::new(Expr::List(vec![
+                Expr::Integer(1),
+                Expr::Integer(2),
+                Expr::Integer(3),
+                Expr::Integer(4),
+                Expr::Integer(5),
+            ])),
+            filter: Some(Box::new(Expr::BinaryOp {
+                op: BOp::Gt,
+                left: Box::new(Expr::Variable(Identifier::new("x"))),
+                right: Box::new(Expr::Integer(2)),
+            })),
+            map: Box::new(Expr::Variable(Identifier::new("x"))),
+        };
+        assert_eq!(
+            eval_expr(&expr, &empty_row()).unwrap(),
+            Value::List(vec![Value::Int(3), Value::Int(4), Value::Int(5)])
+        );
+    }
+
+    #[test]
+    fn list_comp_with_map() {
+        // [x IN [1, 2, 3] | x * 2] → [2, 4, 6]
+        let expr = Expr::ListComp {
+            variable: Identifier::new("x"),
+            list: Box::new(Expr::List(vec![
+                Expr::Integer(1),
+                Expr::Integer(2),
+                Expr::Integer(3),
+            ])),
+            filter: None,
+            map: Box::new(Expr::BinaryOp {
+                op: BOp::Mul,
+                left: Box::new(Expr::Variable(Identifier::new("x"))),
+                right: Box::new(Expr::Integer(2)),
+            }),
+        };
+        assert_eq!(
+            eval_expr(&expr, &empty_row()).unwrap(),
+            Value::List(vec![Value::Int(2), Value::Int(4), Value::Int(6)])
+        );
+    }
+
+    #[test]
+    fn list_comp_with_filter_and_map() {
+        // [x IN [1, 2, 3, 4] WHERE x % 2 = 0 | x * 10] → [20, 40]
+        let expr = Expr::ListComp {
+            variable: Identifier::new("x"),
+            list: Box::new(Expr::List(vec![
+                Expr::Integer(1),
+                Expr::Integer(2),
+                Expr::Integer(3),
+                Expr::Integer(4),
+            ])),
+            filter: Some(Box::new(Expr::BinaryOp {
+                op: BOp::Eq,
+                left: Box::new(Expr::BinaryOp {
+                    op: BOp::Mod,
+                    left: Box::new(Expr::Variable(Identifier::new("x"))),
+                    right: Box::new(Expr::Integer(2)),
+                }),
+                right: Box::new(Expr::Integer(0)),
+            })),
+            map: Box::new(Expr::BinaryOp {
+                op: BOp::Mul,
+                left: Box::new(Expr::Variable(Identifier::new("x"))),
+                right: Box::new(Expr::Integer(10)),
+            }),
+        };
+        assert_eq!(
+            eval_expr(&expr, &empty_row()).unwrap(),
+            Value::List(vec![Value::Int(20), Value::Int(40)])
+        );
+    }
+
+    #[test]
+    fn list_comp_on_null_returns_null() {
+        let expr = Expr::ListComp {
+            variable: Identifier::new("x"),
+            list: Box::new(Expr::Null),
+            filter: None,
+            map: Box::new(Expr::Variable(Identifier::new("x"))),
+        };
+        assert_eq!(eval_expr(&expr, &empty_row()).unwrap(), Value::Null);
+    }
+
+    #[test]
+    fn list_comp_empty_list_returns_empty() {
+        let expr = Expr::ListComp {
+            variable: Identifier::new("x"),
+            list: Box::new(Expr::List(vec![])),
+            filter: None,
+            map: Box::new(Expr::Variable(Identifier::new("x"))),
+        };
+        assert_eq!(eval_expr(&expr, &empty_row()).unwrap(), Value::List(vec![]));
     }
 }

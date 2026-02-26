@@ -82,6 +82,20 @@ pub struct InMemoryGraphStore {
     inner: RwLock<HashMap<String, GraphInner>>,
 }
 
+impl std::fmt::Debug for InMemoryGraphStore {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Expose only graph names (not full contents) to keep output readable.
+        let graph_names: Vec<String> = self
+            .inner
+            .read()
+            .map(|g| g.keys().cloned().collect())
+            .unwrap_or_default();
+        f.debug_struct("InMemoryGraphStore")
+            .field("graphs", &graph_names)
+            .finish()
+    }
+}
+
 impl InMemoryGraphStore {
     /// Create a new empty store.
     pub fn new() -> Self {

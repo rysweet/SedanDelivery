@@ -221,30 +221,6 @@ impl<'src> Lexer<'src> {
         self.src.as_bytes().get(self.pos + offset).copied()
     }
 
-    /// Peek at the char at the current position.
-    #[allow(dead_code)]
-    fn peek_char(&self) -> Option<char> {
-        self.rest().chars().next()
-    }
-
-    /// Advance `self.pos` by one Unicode scalar value; returns the char consumed.
-    #[allow(dead_code)]
-    fn advance(&mut self) -> Option<char> {
-        let c = self.rest().chars().next()?;
-        self.pos += c.len_utf8();
-        Some(c)
-    }
-
-    /// Advance only if the next byte equals `b`. Returns `true` if consumed.
-    #[allow(dead_code)]
-    fn eat_byte_if(&mut self, b: u8) -> bool {
-        if self.peek_byte(0) == Some(b) {
-            self.pos += 1;
-            true
-        } else {
-            false
-        }
-    }
 
     /// Skip whitespace (space, tab, CR, LF).
     fn skip_whitespace(&mut self) {

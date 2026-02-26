@@ -1264,7 +1264,7 @@ impl<'src> Parser<'src> {
             let list_expr = self.parse_expr()?;
 
             // Optional WHERE clause inside comprehension.
-            let _filter = if self.eat(&TokenKind::Where) {
+            let filter = if self.eat(&TokenKind::Where) {
                 Some(self.parse_expr()?)
             } else {
                 None
@@ -1279,28 +1279,12 @@ impl<'src> Parser<'src> {
 
             self.expect(&TokenKind::RBracket)?;
 
-            // Represent as a FunctionCall for now (the executor will handle it).
-            // Alternatively we could add a ListComprehension variant; using a
-            // function call is a common AST encoding in graph DBs.
-            // We encode as: comprehension(var, list, filter, map).
-            // For simplicity we encode as a nested structure via existing Expr variants:
-            // Actually per spec we just return the map expression for now since
-            // the AST doesn't have a dedicated comprehension node.
-            // We represent comprehension as FunctionCall with synthetic name.
-            let _ = var_name; // used above
-            let _ = list_expr;
-            let _ = map_expr;
-
-            // Return a synthetic comprehension expression encoded as a function call.
-            // This is a valid trade-off: the executor can pattern-match on the function name.
-            // We won't do this — instead we represent it as a list containing the map expr.
-            // The caller can interrogate this further.
-            // Re-parse properly: the actual AST doesn't have a Comprehension node yet,
-            // so we use List with a single element as a placeholder.
-            // NOTE: This is a known limitation. The spec says to build a ListComp node,
-            // but since the AST doesn't have one we represent it as-is.
-            // For the tests we verify parsing does not error, not the exact shape.
-            Ok(Expr::List(vec![map_expr]))
+            Ok(Expr::ListComp {
+                variable: Identifier::new(var_name),
+                list: Box::new(list_expr),
+                filter: filter.map(Box::new),
+                map: Box::new(map_expr),
+            })
         } else {
             // Ordinary list literal.
             let mut items = Vec::new();
@@ -2119,5 +2103,50 @@ mod tests {
             panic!()
         };
         assert_eq!(mc.patterns[0].steps.len(), 2);
+    }
+
+    // ── List comprehension parsing ─────────────────────────────────────────────
+
+    #[test]
+    fn list_comprehension_identity() {
+        // [x IN [1,2,3]] — no filter, no explicit map (variable itself)
+        let q = parse("RETURN [x IN [1, 2, 3]]");
+        let Clause::Return(rc) = &q.clauses[0] else {
+            panic!()
+        };
+        match &rc.items[0].expr {
+            Expr::ListComp {
+                variable, filter, ..
+            } => {
+                assert_eq!(variable.0, "x");
+                assert!(filter.is_none());
+            }
+            other => panic!("expected ListComp, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn list_comprehension_with_filter_and_map() {
+        // [x IN range(1,10) WHERE x > 5 | x * 2]
+        let q = parse("RETURN [x IN range(1, 10) WHERE x > 5 | x * 2]");
+        let Clause::Return(rc) = &q.clauses[0] else {
+            panic!()
+        };
+        match &rc.items[0].expr {
+            Expr::ListComp {
+                variable,
+                filter,
+                map,
+                ..
+            } => {
+                assert_eq!(variable.0, "x");
+                assert!(filter.is_some(), "expected a filter");
+                assert!(
+                    matches!(**map, Expr::BinaryOp { .. }),
+                    "expected BinaryOp map expr"
+                );
+            }
+            other => panic!("expected ListComp, got {other:?}"),
+        }
     }
 }

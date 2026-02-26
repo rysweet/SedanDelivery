@@ -28,6 +28,7 @@ use crate::types::Value;
 pub type Row = HashMap<String, Value>;
 
 /// The final result of executing a query.
+#[derive(Debug)]
 pub struct QueryResult {
     pub columns: Vec<String>,
     pub rows: Vec<Row>,
@@ -374,8 +375,10 @@ impl<'a> QueryExecutor<'a> {
                             let props = eval_prop_map(graph, self, prop_exprs, &row, &ctx)?;
                             let label_strings: Vec<String> =
                                 labels.iter().map(|l| l.as_str().to_string()).collect();
+                            let label_count = label_strings.len() as u64;
                             let node_id = self.store.create_node(graph, label_strings, props)?;
                             stats.nodes_created += 1;
+                            stats.labels_added += label_count;
                             if let Some(a) = alias {
                                 alias_to_id.insert(a.0.clone(), node_id);
                                 row.insert(a.0.clone(), Value::Node(node_id));
