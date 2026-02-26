@@ -1,1 +1,2 @@
-msrv = "1.75.0"
+# smol_str 0.3.5 requires rustc 1.89. MSRV is 1.89.
+msrv = "1.89.0"
