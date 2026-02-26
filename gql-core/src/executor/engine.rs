@@ -445,6 +445,37 @@ impl<'a> QueryExecutor<'a> {
                 Ok(out)
             }
 
+            // ── AssemblePath ──────────────────────────────────────────────────
+            Operator::AssemblePath {
+                path_alias,
+                node_aliases,
+                edge_aliases,
+                child,
+            } => {
+                use crate::storage::{NodeId, EdgeId};
+                let input = self.exec_operator(graph, child, budget, outer_rows, stats)?;
+                let mut out = Vec::with_capacity(input.len());
+                for mut row in input {
+                    budget.check_or_err()?;
+                    let mut nodes: Vec<NodeId> = Vec::new();
+                    let mut edges: Vec<EdgeId> = Vec::new();
+                    for na in node_aliases {
+                        if let Some(Value::Node(nid)) = row.get(&na.0) {
+                            nodes.push(*nid);
+                        }
+                    }
+                    for ea in edge_aliases {
+                        if let Some(Value::Edge(eid)) = row.get(&ea.0) {
+                            edges.push(*eid);
+                        }
+                    }
+                    let path_val = Value::Path { nodes, edges };
+                    row.insert(path_alias.0.clone(), path_val);
+                    out.push(row);
+                }
+                Ok(out)
+            }
+
             // ── ProduceResults ────────────────────────────────────────────────
             Operator::ProduceResults { columns, child } => {
                 let input = self.exec_operator(graph, child, budget, outer_rows, stats)?;
