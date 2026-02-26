@@ -132,14 +132,8 @@ impl<'s> QueryPlanner<'s> {
 
         // If we have a RETURN clause, build the return pipeline.
         if let Some(rc) = return_clause {
-            let child = pipeline.unwrap_or_else(|| {
-                // RETURN without MATCH: just return the literal expressions.
-                // Use a single-row "leaf" represented by an empty NodeScan.
-                Operator::NodeScan {
-                    label: None,
-                    alias: Identifier::new("__empty__"),
-                }
-            });
+            // RETURN without MATCH: produce exactly one row with no bindings.
+            let child = pipeline.unwrap_or(Operator::SingleRow);
             return self.plan_return(rc, child);
         }
 
@@ -768,7 +762,10 @@ fn return_item_name(item: &ReturnItem) -> String {
         Expr::Property(obj, key) => {
             format!("{}.{}", expr_name(obj), key)
         }
-        Expr::FunctionCall { name, .. } => name.to_string(),
+        Expr::FunctionCall { name, args, .. } => {
+            let arg_strs: Vec<String> = args.iter().map(expr_name).collect();
+            format!("{}({})", name, arg_strs.join(", "))
+        }
         other => format!("{:?}", other),
     }
 }
@@ -777,6 +774,15 @@ fn expr_name(expr: &Expr) -> String {
     match expr {
         Expr::Variable(id) => id.0.clone(),
         Expr::Property(obj, key) => format!("{}.{}", expr_name(obj), key),
+        Expr::FunctionCall { name, args, .. } => {
+            let arg_strs: Vec<String> = args.iter().map(expr_name).collect();
+            format!("{}({})", name, arg_strs.join(", "))
+        }
+        Expr::Integer(n) => n.to_string(),
+        Expr::Float(f) => f.to_string(),
+        Expr::Str(s) => s.to_string(),
+        Expr::Bool(b) => b.to_string(),
+        Expr::Null => "null".to_string(),
         _ => "expr".to_string(),
     }
 }
@@ -2073,7 +2079,8 @@ mod tests {
     /// Extract all child operators from an operator for recursive tree searches.
     fn children_of(op: &Operator) -> Vec<&Operator> {
         match op {
-            Operator::NodeScan { .. }
+            Operator::SingleRow
+            | Operator::NodeScan { .. }
             | Operator::IndexScan { .. }
             | Operator::NodeByIdSeek { .. }
             | Operator::ShortestPath { .. } => vec![],

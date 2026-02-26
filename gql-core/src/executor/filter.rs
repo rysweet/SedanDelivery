@@ -65,6 +65,12 @@ pub fn eval_expr<'r>(expr: &Expr, row: &Row<'r>) -> Result<Value, GqlError> {
                 // (the full executor hydrates node/edge data from storage before
                 // calling eval_expr).
                 Value::Node(_) | Value::Edge(_) => Ok(Value::Null),
+                // Temporal property access
+                Value::Date(_)
+                | Value::LocalTime(_)
+                | Value::LocalDateTime(_)
+                | Value::DateTime(_)
+                | Value::Duration(_) => temporal_property_access(&obj, key.as_str()),
                 other => Err(GqlError::Execution(ExecutionError::TypeMismatch {
                     expected: "Node, Relationship, or Map".to_string(),
                     actual: other.type_name().to_string(),
@@ -631,6 +637,11 @@ fn cypher_compare(a: &Value, b: &Value) -> Result<std::cmp::Ordering, GqlError> 
         }),
         (Value::Str(x), Value::Str(y)) => Ok(x.as_ref().cmp(y.as_ref())),
         (Value::Bool(x), Value::Bool(y)) => Ok(x.cmp(y)),
+        // Temporal comparisons
+        (Value::Date(x), Value::Date(y)) => Ok(x.cmp(y)),
+        (Value::LocalTime(x), Value::LocalTime(y)) => Ok(x.cmp(y)),
+        (Value::LocalDateTime(x), Value::LocalDateTime(y)) => Ok(x.cmp(y)),
+        (Value::DateTime(x), Value::DateTime(y)) => Ok(x.cmp(y)),
         (l, r) => Err(GqlError::Execution(ExecutionError::InvalidOperator {
             op: "</>".to_string(),
             left: l.type_name().to_string(),
@@ -976,6 +987,81 @@ fn eval_function<'r>(
             Ok(Value::Bool(vals[0].is_null()))
         }
 
+        // ── Map / collection functions ──────────────────────────────────────
+        "keys" => {
+            require_arity("keys", 1, &vals)?;
+            match &vals[0] {
+                Value::Null => Ok(Value::Null),
+                Value::Map(m) => Ok(Value::List(
+                    m.keys().map(|k| Value::Str(k.clone())).collect(),
+                )),
+                other => type_error("keys", other),
+            }
+        }
+        "properties" => {
+            require_arity("properties", 1, &vals)?;
+            match &vals[0] {
+                Value::Null => Ok(Value::Null),
+                Value::Map(m) => Ok(Value::Map(m.clone())),
+                other => type_error("properties", other),
+            }
+        }
+
+        // ── range() ─────────────────────────────────────────────────────────
+        "range" => {
+            if vals.len() < 2 || vals.len() > 3 {
+                return Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                    expected: "range(Integer, Integer[, Integer])".to_string(),
+                    actual: format!("{} arguments", vals.len()),
+                }));
+            }
+            match (&vals[0], &vals[1]) {
+                (Value::Int(start), Value::Int(end)) => {
+                    let step = if vals.len() == 3 {
+                        match &vals[2] {
+                            Value::Int(s) => *s,
+                            other => return type_error("range", other),
+                        }
+                    } else {
+                        1
+                    };
+                    if step == 0 {
+                        return Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                            expected: "non-zero step for range()".to_string(),
+                            actual: "0".to_string(),
+                        }));
+                    }
+                    let mut result = Vec::new();
+                    let mut i = *start;
+                    if step > 0 {
+                        while i <= *end {
+                            result.push(Value::Int(i));
+                            i += step;
+                        }
+                    } else {
+                        while i >= *end {
+                            result.push(Value::Int(i));
+                            i += step;
+                        }
+                    }
+                    Ok(Value::List(result))
+                }
+                (Value::Null, _) | (_, Value::Null) => Ok(Value::Null),
+                _ => Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                    expected: "Integer, Integer".to_string(),
+                    actual: format!("{}, {}", vals[0].type_name(), vals[1].type_name()),
+                })),
+            }
+        }
+
+        // ── Temporal constructor functions ───────────────────────────────────
+        "date" => eval_date_constructor(&vals),
+        "time" => eval_time_constructor(&vals),
+        "localtime" => eval_localtime_constructor(&vals),
+        "datetime" => eval_datetime_constructor(&vals),
+        "localdatetime" => eval_localdatetime_constructor(&vals),
+        "duration" => eval_duration_constructor(&vals),
+
         // ── Aggregation functions are handled at the planner/executor level (Aggregate operator),
         //    not in scalar expression evaluation. Calling them in a non-aggregating context
         //    returns an explicit error that guides the user to use WITH/RETURN clauses. ──
@@ -991,6 +1077,494 @@ fn eval_function<'r>(
         other => Err(GqlError::Execution(ExecutionError::unsupported(format!(
             "unknown function '{other}'"
         )))),
+    }
+}
+
+// ── Temporal property access ──────────────────────────────────────────────────
+
+pub fn temporal_property_access(val: &Value, key: &str) -> Result<Value, GqlError> {
+    match val {
+        Value::Date(d) => match key {
+            "year" => Ok(Value::Int(d.year() as i64)),
+            "month" => Ok(Value::Int(d.month() as i64)),
+            "day" => Ok(Value::Int(d.day() as i64)),
+            "week" => {
+                let iso = d.iso_week_date();
+                Ok(Value::Int(iso.week() as i64))
+            }
+            "dayOfWeek" => Ok(Value::Int(d.weekday().to_monday_one_offset() as i64)),
+            "dayOfYear" => Ok(Value::Int(d.day_of_year() as i64)),
+            "quarter" => Ok(Value::Int(((d.month() as i64 - 1) / 3) + 1)),
+            "ordinalDay" => Ok(Value::Int(d.day_of_year() as i64)),
+            _ => Ok(Value::Null),
+        },
+        Value::LocalTime(t) => match key {
+            "hour" => Ok(Value::Int(t.hour() as i64)),
+            "minute" => Ok(Value::Int(t.minute() as i64)),
+            "second" => Ok(Value::Int(t.second() as i64)),
+            "millisecond" => Ok(Value::Int((t.subsec_nanosecond() / 1_000_000) as i64)),
+            "microsecond" => Ok(Value::Int((t.subsec_nanosecond() / 1_000) as i64)),
+            "nanosecond" => Ok(Value::Int(t.subsec_nanosecond() as i64)),
+            _ => Ok(Value::Null),
+        },
+        Value::LocalDateTime(dt) => match key {
+            "year" => Ok(Value::Int(dt.year() as i64)),
+            "month" => Ok(Value::Int(dt.month() as i64)),
+            "day" => Ok(Value::Int(dt.day() as i64)),
+            "hour" => Ok(Value::Int(dt.hour() as i64)),
+            "minute" => Ok(Value::Int(dt.minute() as i64)),
+            "second" => Ok(Value::Int(dt.second() as i64)),
+            "millisecond" => Ok(Value::Int((dt.subsec_nanosecond() / 1_000_000) as i64)),
+            "microsecond" => Ok(Value::Int((dt.subsec_nanosecond() / 1_000) as i64)),
+            "nanosecond" => Ok(Value::Int(dt.subsec_nanosecond() as i64)),
+            "week" => {
+                let d = dt.date();
+                let iso = d.iso_week_date();
+                Ok(Value::Int(iso.week() as i64))
+            }
+            "dayOfWeek" => Ok(Value::Int(dt.date().weekday().to_monday_one_offset() as i64)),
+            "dayOfYear" => Ok(Value::Int(dt.date().day_of_year() as i64)),
+            "quarter" => Ok(Value::Int(((dt.month() as i64 - 1) / 3) + 1)),
+            _ => Ok(Value::Null),
+        },
+        Value::DateTime(zdt) => match key {
+            "year" => Ok(Value::Int(zdt.year() as i64)),
+            "month" => Ok(Value::Int(zdt.month() as i64)),
+            "day" => Ok(Value::Int(zdt.day() as i64)),
+            "hour" => Ok(Value::Int(zdt.hour() as i64)),
+            "minute" => Ok(Value::Int(zdt.minute() as i64)),
+            "second" => Ok(Value::Int(zdt.second() as i64)),
+            "millisecond" => Ok(Value::Int((zdt.subsec_nanosecond() / 1_000_000) as i64)),
+            "microsecond" => Ok(Value::Int((zdt.subsec_nanosecond() / 1_000) as i64)),
+            "nanosecond" => Ok(Value::Int(zdt.subsec_nanosecond() as i64)),
+            "timezone" => Ok(Value::Str(
+                zdt.time_zone()
+                    .iana_name()
+                    .unwrap_or("UTC")
+                    .to_string()
+                    .into_boxed_str(),
+            )),
+            "offset" => {
+                let off = zdt.offset();
+                let total_secs = off.seconds();
+                let h = total_secs / 3600;
+                let m = (total_secs.abs() % 3600) / 60;
+                Ok(Value::Str(format!("{:+03}:{:02}", h, m).into_boxed_str()))
+            }
+            "offsetMinutes" => {
+                let off = zdt.offset();
+                Ok(Value::Int((off.seconds() / 60) as i64))
+            }
+            "offsetSeconds" => {
+                let off = zdt.offset();
+                Ok(Value::Int(off.seconds() as i64))
+            }
+            "week" => {
+                let d = jiff::civil::Date::from(&**zdt);
+                let iso = d.iso_week_date();
+                Ok(Value::Int(iso.week() as i64))
+            }
+            "dayOfWeek" => {
+                let d = jiff::civil::Date::from(&**zdt);
+                Ok(Value::Int(d.weekday().to_monday_one_offset() as i64))
+            }
+            "dayOfYear" => {
+                let d = jiff::civil::Date::from(&**zdt);
+                Ok(Value::Int(d.day_of_year() as i64))
+            }
+            "quarter" => Ok(Value::Int(((zdt.month() as i64 - 1) / 3) + 1)),
+            "epochMillis" => {
+                let ts = zdt.timestamp();
+                Ok(Value::Int(ts.as_millisecond()))
+            }
+            "epochSeconds" => {
+                let ts = zdt.timestamp();
+                Ok(Value::Int(ts.as_second()))
+            }
+            _ => Ok(Value::Null),
+        },
+        Value::Duration(sp) => match key {
+            "years" => Ok(Value::Int(sp.get_years() as i64)),
+            "months" => Ok(Value::Int(sp.get_months() as i64)),
+            "weeks" => Ok(Value::Int(sp.get_weeks() as i64)),
+            "days" => Ok(Value::Int(sp.get_days() as i64)),
+            "hours" => Ok(Value::Int(sp.get_hours() as i64)),
+            "minutes" => Ok(Value::Int(sp.get_minutes())),
+            "seconds" => Ok(Value::Int(sp.get_seconds())),
+            "milliseconds" => Ok(Value::Int(sp.get_milliseconds())),
+            "microseconds" => Ok(Value::Int(sp.get_microseconds())),
+            "nanoseconds" => Ok(Value::Int(sp.get_nanoseconds())),
+            _ => Ok(Value::Null),
+        },
+        _ => Ok(Value::Null),
+    }
+}
+
+// ── Temporal constructor helpers ───────────────────────────────────────────────
+
+/// Extract an i64 field from a Value::Map, returning a default if missing.
+fn map_get_int(
+    m: &indexmap::IndexMap<Box<str>, Value>,
+    key: &str,
+    default: i64,
+) -> Result<i64, GqlError> {
+    match m.get(key) {
+        Some(Value::Int(n)) => Ok(*n),
+        Some(Value::Null) | None => Ok(default),
+        Some(other) => Err(GqlError::Execution(ExecutionError::TypeMismatch {
+            expected: format!("Integer for '{key}'"),
+            actual: other.type_name().to_string(),
+        })),
+    }
+}
+
+/// Extract an optional string field from a Value::Map.
+fn map_get_str(m: &indexmap::IndexMap<Box<str>, Value>, key: &str) -> Option<String> {
+    match m.get(key) {
+        Some(Value::Str(s)) => Some(s.to_string()),
+        _ => None,
+    }
+}
+
+/// Parse a timezone string, supporting both IANA names (e.g. "America/New_York")
+/// and fixed UTC offsets (e.g. "+01:00", "-05:30", "Z").
+fn parse_timezone(tz_str: &str) -> Result<jiff::tz::TimeZone, String> {
+    // Try IANA name first
+    if let Ok(tz) = jiff::tz::TimeZone::get(tz_str) {
+        return Ok(tz);
+    }
+    // Try fixed offset: "Z", "+HH:MM", "-HH:MM", "+HHMM", "-HHMM"
+    if tz_str == "Z" || tz_str == "UTC" {
+        return Ok(jiff::tz::TimeZone::UTC);
+    }
+    if let Some(offset_str) = tz_str
+        .strip_prefix('+')
+        .or_else(|| tz_str.strip_prefix('-'))
+    {
+        let negative = tz_str.starts_with('-');
+        let parts: Vec<&str> = offset_str.split(':').collect();
+        let (hours, minutes) = if parts.len() == 2 {
+            let h: i32 = parts[0]
+                .parse()
+                .map_err(|e: std::num::ParseIntError| e.to_string())?;
+            let m: i32 = parts[1]
+                .parse()
+                .map_err(|e: std::num::ParseIntError| e.to_string())?;
+            (h, m)
+        } else if offset_str.len() == 4 {
+            let h: i32 = offset_str[..2]
+                .parse()
+                .map_err(|e: std::num::ParseIntError| e.to_string())?;
+            let m: i32 = offset_str[2..]
+                .parse()
+                .map_err(|e: std::num::ParseIntError| e.to_string())?;
+            (h, m)
+        } else if offset_str.len() == 2 {
+            let h: i32 = offset_str
+                .parse()
+                .map_err(|e: std::num::ParseIntError| e.to_string())?;
+            (h, 0)
+        } else {
+            return Err(format!("invalid timezone offset: {tz_str}"));
+        };
+        let total_seconds = (hours * 3600 + minutes * 60) * if negative { -1 } else { 1 };
+        let offset = jiff::tz::Offset::from_seconds(total_seconds).map_err(|e| e.to_string())?;
+        return Ok(jiff::tz::TimeZone::fixed(offset));
+    }
+    Err(format!("unknown timezone: {tz_str}"))
+}
+
+fn temporal_parse_error(func: &str, msg: impl std::fmt::Display) -> GqlError {
+    GqlError::Execution(ExecutionError::TypeMismatch {
+        expected: format!("valid {func}() argument"),
+        actual: msg.to_string(),
+    })
+}
+
+fn eval_date_constructor(vals: &[Value]) -> Result<Value, GqlError> {
+    if vals.is_empty() {
+        // date() with no args → current date (use today)
+        let today = jiff::civil::Date::from(jiff::Zoned::now());
+        return Ok(Value::Date(today));
+    }
+    if vals.len() != 1 {
+        return Err(GqlError::Execution(ExecutionError::TypeMismatch {
+            expected: "date() expects 0 or 1 argument".to_string(),
+            actual: format!("{} arguments", vals.len()),
+        }));
+    }
+    match &vals[0] {
+        Value::Null => Ok(Value::Null),
+        Value::Str(s) => {
+            let d: jiff::civil::Date = s.parse().map_err(|e| temporal_parse_error("date", e))?;
+            Ok(Value::Date(d))
+        }
+        Value::Map(m) => {
+            // Check if this is a week-based date construction
+            if m.contains_key("week") {
+                let year = map_get_int(m, "year", 0)?;
+                let week = map_get_int(m, "week", 1)?;
+                let day_of_week = map_get_int(m, "dayOfWeek", 1)?; // 1=Monday, 7=Sunday
+
+                // If 'date' key is present, use it as base for year and dayOfWeek
+                let (base_year, base_dow) = if let Some(Value::Date(base_date)) = m.get("date") {
+                    let iso_dow = base_date.weekday().to_monday_one_offset();
+                    let y = if m.contains_key("year") {
+                        year
+                    } else {
+                        base_date.year() as i64
+                    };
+                    let dow = if m.contains_key("dayOfWeek") {
+                        day_of_week
+                    } else {
+                        iso_dow as i64
+                    };
+                    (y, dow)
+                } else {
+                    (year, day_of_week)
+                };
+
+                // Calculate ISO week date
+                // ISO 8601: Week 1 contains the first Thursday of the year
+                // January 4th is always in week 1
+                let jan4 = jiff::civil::Date::new(base_year as i16, 1, 4)
+                    .map_err(|e| temporal_parse_error("date", e))?;
+                let jan4_dow = jan4.weekday().to_monday_one_offset() as i64; // 1=Mon, 7=Sun
+                                                                             // Monday of week 1
+                let week1_monday_ordinal = 4 - jan4_dow + 1; // ordinal of Monday of week 1
+                let target_ordinal = week1_monday_ordinal + (week - 1) * 7 + (base_dow - 1);
+
+                let d = jiff::civil::Date::new(base_year as i16, 1, 1)
+                    .map_err(|e| temporal_parse_error("date", e))?;
+                let d = d
+                    .checked_add(jiff::Span::new().days(target_ordinal - 1))
+                    .map_err(|e| temporal_parse_error("date", e))?;
+                Ok(Value::Date(d))
+            } else {
+                let year = map_get_int(m, "year", 0)? as i16;
+                let month = map_get_int(m, "month", 1)? as i8;
+                let day = map_get_int(m, "day", 1)? as i8;
+                let d = jiff::civil::Date::new(year, month, day)
+                    .map_err(|e| temporal_parse_error("date", e))?;
+                Ok(Value::Date(d))
+            }
+        }
+        other => type_error("date", other),
+    }
+}
+
+fn eval_time_constructor(vals: &[Value]) -> Result<Value, GqlError> {
+    if vals.is_empty() {
+        let now = jiff::Zoned::now();
+        return Ok(Value::LocalTime(jiff::civil::Time::from(now)));
+    }
+    if vals.len() != 1 {
+        return Err(GqlError::Execution(ExecutionError::TypeMismatch {
+            expected: "time() expects 0 or 1 argument".to_string(),
+            actual: format!("{} arguments", vals.len()),
+        }));
+    }
+    match &vals[0] {
+        Value::Null => Ok(Value::Null),
+        Value::Str(s) => {
+            // Try parsing as time only, stripping timezone info if present
+            let t: jiff::civil::Time = s.parse().map_err(|e| temporal_parse_error("time", e))?;
+            Ok(Value::LocalTime(t))
+        }
+        Value::Map(m) => {
+            let hour = map_get_int(m, "hour", 0)? as i8;
+            let minute = map_get_int(m, "minute", 0)? as i8;
+            let second = map_get_int(m, "second", 0)? as i8;
+            let nanosecond = map_get_int(m, "nanosecond", 0)? as i32;
+            let t = jiff::civil::Time::new(hour, minute, second, nanosecond)
+                .map_err(|e| temporal_parse_error("time", e))?;
+            Ok(Value::LocalTime(t))
+        }
+        other => type_error("time", other),
+    }
+}
+
+fn eval_localtime_constructor(vals: &[Value]) -> Result<Value, GqlError> {
+    if vals.is_empty() {
+        let now = jiff::Zoned::now();
+        return Ok(Value::LocalTime(jiff::civil::Time::from(now)));
+    }
+    if vals.len() != 1 {
+        return Err(GqlError::Execution(ExecutionError::TypeMismatch {
+            expected: "localtime() expects 0 or 1 argument".to_string(),
+            actual: format!("{} arguments", vals.len()),
+        }));
+    }
+    match &vals[0] {
+        Value::Null => Ok(Value::Null),
+        Value::Str(s) => {
+            let t: jiff::civil::Time = s
+                .parse()
+                .map_err(|e| temporal_parse_error("localtime", e))?;
+            Ok(Value::LocalTime(t))
+        }
+        Value::Map(m) => {
+            let hour = map_get_int(m, "hour", 0)? as i8;
+            let minute = map_get_int(m, "minute", 0)? as i8;
+            let second = map_get_int(m, "second", 0)? as i8;
+            let nanosecond = map_get_int(m, "nanosecond", 0)? as i32;
+            let t = jiff::civil::Time::new(hour, minute, second, nanosecond)
+                .map_err(|e| temporal_parse_error("localtime", e))?;
+            Ok(Value::LocalTime(t))
+        }
+        other => type_error("localtime", other),
+    }
+}
+
+fn eval_datetime_constructor(vals: &[Value]) -> Result<Value, GqlError> {
+    if vals.is_empty() {
+        return Ok(Value::DateTime(Box::new(jiff::Zoned::now())));
+    }
+    if vals.len() != 1 {
+        return Err(GqlError::Execution(ExecutionError::TypeMismatch {
+            expected: "datetime() expects 0 or 1 argument".to_string(),
+            actual: format!("{} arguments", vals.len()),
+        }));
+    }
+    match &vals[0] {
+        Value::Null => Ok(Value::Null),
+        Value::Str(s) => {
+            // Try parsing as a full zoned datetime first, fallback to timestamp
+            let zoned: jiff::Zoned = s.parse().map_err(|e| temporal_parse_error("datetime", e))?;
+            Ok(Value::DateTime(Box::new(zoned)))
+        }
+        Value::Map(m) => {
+            let year = map_get_int(m, "year", 0)? as i16;
+            let month = map_get_int(m, "month", 1)? as i8;
+            let day = map_get_int(m, "day", 1)? as i8;
+            let hour = map_get_int(m, "hour", 0)? as i8;
+            let minute = map_get_int(m, "minute", 0)? as i8;
+            let second = map_get_int(m, "second", 0)? as i8;
+            let nanosecond = map_get_int(m, "nanosecond", 0)? as i32;
+            let tz_name = map_get_str(m, "timezone");
+
+            let dt = jiff::civil::DateTime::new(year, month, day, hour, minute, second, nanosecond)
+                .map_err(|e| temporal_parse_error("datetime", e))?;
+
+            let tz = if let Some(ref tz_str) = tz_name {
+                parse_timezone(tz_str).map_err(|e| temporal_parse_error("datetime", e))?
+            } else {
+                jiff::tz::TimeZone::UTC
+            };
+            let zoned = dt
+                .to_zoned(tz)
+                .map_err(|e| temporal_parse_error("datetime", e))?;
+            Ok(Value::DateTime(Box::new(zoned)))
+        }
+        other => type_error("datetime", other),
+    }
+}
+
+fn eval_localdatetime_constructor(vals: &[Value]) -> Result<Value, GqlError> {
+    if vals.is_empty() {
+        let now = jiff::Zoned::now();
+        return Ok(Value::LocalDateTime(jiff::civil::DateTime::from(now)));
+    }
+    if vals.len() != 1 {
+        return Err(GqlError::Execution(ExecutionError::TypeMismatch {
+            expected: "localdatetime() expects 0 or 1 argument".to_string(),
+            actual: format!("{} arguments", vals.len()),
+        }));
+    }
+    match &vals[0] {
+        Value::Null => Ok(Value::Null),
+        Value::Str(s) => {
+            let dt: jiff::civil::DateTime = s
+                .parse()
+                .map_err(|e| temporal_parse_error("localdatetime", e))?;
+            Ok(Value::LocalDateTime(dt))
+        }
+        Value::Map(m) => {
+            let year = map_get_int(m, "year", 0)? as i16;
+            let month = map_get_int(m, "month", 1)? as i8;
+            let day = map_get_int(m, "day", 1)? as i8;
+            let hour = map_get_int(m, "hour", 0)? as i8;
+            let minute = map_get_int(m, "minute", 0)? as i8;
+            let second = map_get_int(m, "second", 0)? as i8;
+            let nanosecond = map_get_int(m, "nanosecond", 0)? as i32;
+            let dt = jiff::civil::DateTime::new(year, month, day, hour, minute, second, nanosecond)
+                .map_err(|e| temporal_parse_error("localdatetime", e))?;
+            Ok(Value::LocalDateTime(dt))
+        }
+        other => type_error("localdatetime", other),
+    }
+}
+
+fn eval_duration_constructor(vals: &[Value]) -> Result<Value, GqlError> {
+    if vals.is_empty() {
+        return Ok(Value::Duration(jiff::Span::new()));
+    }
+    if vals.len() != 1 {
+        return Err(GqlError::Execution(ExecutionError::TypeMismatch {
+            expected: "duration() expects 0 or 1 argument".to_string(),
+            actual: format!("{} arguments", vals.len()),
+        }));
+    }
+    match &vals[0] {
+        Value::Null => Ok(Value::Null),
+        Value::Str(s) => {
+            let sp: jiff::Span = s.parse().map_err(|e| temporal_parse_error("duration", e))?;
+            Ok(Value::Duration(sp))
+        }
+        Value::Map(m) => {
+            let mut sp = jiff::Span::new();
+            if let Some(Value::Int(v)) = m.get("years") {
+                sp = sp.years(*v);
+            }
+            if let Some(Value::Int(v)) = m.get("months") {
+                sp = sp.months(*v);
+            }
+            if let Some(Value::Int(v)) = m.get("weeks") {
+                sp = sp.weeks(*v);
+            }
+            if let Some(Value::Int(v)) = m.get("days") {
+                sp = sp.days(*v);
+            }
+            if let Some(Value::Int(v)) = m.get("hours") {
+                sp = sp.hours(*v);
+            }
+            if let Some(Value::Int(v)) = m.get("minutes") {
+                sp = sp.minutes(*v);
+            }
+            if let Some(Value::Int(v)) = m.get("seconds") {
+                sp = sp.seconds(*v);
+            }
+            if let Some(Value::Int(v)) = m.get("nanoseconds") {
+                sp = sp.nanoseconds(*v);
+            }
+            // Also support singular forms
+            if let Some(Value::Int(v)) = m.get("year") {
+                sp = sp.years(*v);
+            }
+            if let Some(Value::Int(v)) = m.get("month") {
+                sp = sp.months(*v);
+            }
+            if let Some(Value::Int(v)) = m.get("week") {
+                sp = sp.weeks(*v);
+            }
+            if let Some(Value::Int(v)) = m.get("day") {
+                sp = sp.days(*v);
+            }
+            if let Some(Value::Int(v)) = m.get("hour") {
+                sp = sp.hours(*v);
+            }
+            if let Some(Value::Int(v)) = m.get("minute") {
+                sp = sp.minutes(*v);
+            }
+            if let Some(Value::Int(v)) = m.get("second") {
+                sp = sp.seconds(*v);
+            }
+            if let Some(Value::Int(v)) = m.get("nanosecond") {
+                sp = sp.nanoseconds(*v);
+            }
+            Ok(Value::Duration(sp))
+        }
+        other => type_error("duration", other),
     }
 }
 
