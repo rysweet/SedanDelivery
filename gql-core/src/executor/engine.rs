@@ -16,7 +16,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use crate::ast::{Direction, Expr};
 use crate::error::{ExecutionError, GqlError};
 use crate::executor::budget::ExecutionBudget;
-use crate::executor::filter::eval_expr;
+use crate::executor::filter::{eval_expr, eval_function_with_vals};
 use crate::executor::filter::Row as FilterRow;
 use crate::planner::{AggFunction, Operator, RemoveItem, SetItem};
 use crate::storage::{EdgeId, GraphStore, NodeId, RangeQuery};
@@ -1433,16 +1433,8 @@ impl<'a> QueryExecutor<'a> {
                             })),
                         }
                     }
-                    // All other functions: rebuild with literal args and delegate.
-                    _ => {
-                        let lit_args: Vec<Expr> = evaled_args.iter().map(value_to_expr).collect();
-                        let rebuilt = Expr::FunctionCall {
-                            name: name.clone(),
-                            args: lit_args,
-                            distinct: *distinct,
-                        };
-                        eval_expr(&rebuilt, ctx)
-                    }
+                    // All other functions: call directly with evaluated args.
+                    _ => eval_function_with_vals(name, evaled_args)
                 }
             }
             // For all other expressions, delegate to eval_expr.
@@ -1847,6 +1839,69 @@ fn eval_binary_values(
                 _ => unreachable!(),
             };
             Ok(Value::Bool(result))
+        }
+        // Temporal arithmetic: temporal +/- duration, duration +/- duration, duration * int, etc.
+        BinaryOp::Add | BinaryOp::Concat => {
+            use crate::executor::filter::{temporal_add_duration, duration_add};
+            match (&lv, &rv) {
+                (Value::Null, _) | (_, Value::Null) => Ok(Value::Null),
+                (temporal @ (Value::Date(_) | Value::LocalTime(_) | Value::LocalDateTime(_) | Value::DateTime(_)), Value::Duration(dur)) => {
+                    temporal_add_duration(temporal, dur, false)
+                }
+                (Value::Duration(dur), temporal @ (Value::Date(_) | Value::LocalTime(_) | Value::LocalDateTime(_) | Value::DateTime(_))) => {
+                    temporal_add_duration(temporal, dur, false)
+                }
+                (Value::Duration(a), Value::Duration(b)) => Ok(Value::Duration(duration_add(a, b))),
+                _ => {
+                    let left_lit = value_to_expr(&lv);
+                    let right_lit = value_to_expr(&rv);
+                    let rebuilt = Expr::BinaryOp { op, left: Box::new(left_lit), right: Box::new(right_lit) };
+                    eval_expr(&rebuilt, ctx)
+                }
+            }
+        }
+        BinaryOp::Sub => {
+            use crate::executor::filter::{temporal_add_duration, duration_sub};
+            match (&lv, &rv) {
+                (Value::Null, _) | (_, Value::Null) => Ok(Value::Null),
+                (temporal @ (Value::Date(_) | Value::LocalTime(_) | Value::LocalDateTime(_) | Value::DateTime(_)), Value::Duration(dur)) => {
+                    temporal_add_duration(temporal, dur, true)
+                }
+                (Value::Duration(a), Value::Duration(b)) => Ok(Value::Duration(duration_sub(a, b))),
+                _ => {
+                    let left_lit = value_to_expr(&lv);
+                    let right_lit = value_to_expr(&rv);
+                    let rebuilt = Expr::BinaryOp { op, left: Box::new(left_lit), right: Box::new(right_lit) };
+                    eval_expr(&rebuilt, ctx)
+                }
+            }
+        }
+        BinaryOp::Mul => {
+            use crate::executor::filter::duration_mul;
+            match (&lv, &rv) {
+                (Value::Null, _) | (_, Value::Null) => Ok(Value::Null),
+                (Value::Duration(d), Value::Int(n)) => Ok(Value::Duration(duration_mul(d, *n))),
+                (Value::Int(n), Value::Duration(d)) => Ok(Value::Duration(duration_mul(d, *n))),
+                _ => {
+                    let left_lit = value_to_expr(&lv);
+                    let right_lit = value_to_expr(&rv);
+                    let rebuilt = Expr::BinaryOp { op, left: Box::new(left_lit), right: Box::new(right_lit) };
+                    eval_expr(&rebuilt, ctx)
+                }
+            }
+        }
+        BinaryOp::Div => {
+            use crate::executor::filter::duration_div;
+            match (&lv, &rv) {
+                (Value::Null, _) | (_, Value::Null) => Ok(Value::Null),
+                (Value::Duration(d), Value::Int(n)) => duration_div(d, *n).map(Value::Duration),
+                _ => {
+                    let left_lit = value_to_expr(&lv);
+                    let right_lit = value_to_expr(&rv);
+                    let rebuilt = Expr::BinaryOp { op, left: Box::new(left_lit), right: Box::new(right_lit) };
+                    eval_expr(&rebuilt, ctx)
+                }
+            }
         }
         // For other ops (And, Or, In, etc.) fall through to eval_expr with best-effort conversion.
         _ => {

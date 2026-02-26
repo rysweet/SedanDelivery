@@ -1025,10 +1025,27 @@ fn value_matches(
         }
         // Temporal values: compare against string representation
         (Value::Date(d), Value::Str(s)) => format!("{d}") == s.as_ref(),
-        (Value::LocalTime(t), Value::Str(s)) => format!("{t}") == s.as_ref(),
-        (Value::LocalDateTime(dt), Value::Str(s)) => format!("{dt}") == s.as_ref(),
-        (Value::DateTime(dt), Value::Str(s)) => format!("{dt}") == s.as_ref(),
-        (Value::Duration(sp), Value::Str(s)) => format!("{sp}") == s.as_ref(),
+        (Value::LocalTime(t), Value::Str(s)) => {
+            let actual = format!("{t}");
+            actual == s.as_ref() || normalize_time_str(&actual) == normalize_time_str(s)
+        }
+        (Value::LocalDateTime(dt), Value::Str(s)) => {
+            let actual = format!("{dt}");
+            actual == s.as_ref() || normalize_datetime_str(&actual) == normalize_datetime_str(s)
+        }
+        (Value::DateTime(dt), Value::Str(s)) => {
+            let actual = format_zoned_datetime(dt);
+            if actual == s.as_ref() || normalize_datetime_str(&actual) == normalize_datetime_str(s) {
+                return true;
+            }
+            // Also try matching as a zoned time (time+offset) - Neo4j's Time type
+            let time_str = format_zoned_time(dt);
+            time_str == s.as_ref() || normalize_time_str(&time_str) == normalize_time_str(s)
+        }
+        (Value::Duration(sp), Value::Str(s)) => {
+            let actual = format!("{sp}");
+            actual == s.as_ref() || normalize_duration_str(&actual) == normalize_duration_str(s)
+        }
         // Temporal equality
         (Value::Date(_), Value::Date(_))
         | (Value::LocalTime(_), Value::LocalTime(_))
@@ -1127,6 +1144,127 @@ fn edge_matches_pattern(
     }
 
     true
+}
+
+/// Format a Zoned datetime to match Neo4j's canonical format.
+/// jiff outputs `2000-01-02T00:00:00+00:00[UTC]` but Neo4j expects `2000-01-02T00:00Z`.
+fn format_zoned_datetime(zdt: &jiff::Zoned) -> String {
+    let dt = jiff::civil::DateTime::from(zdt);
+    let off = zdt.offset();
+    let total_secs = off.seconds();
+
+    // Format the datetime part, omitting trailing :00 seconds and .000 nanos
+    let base = if dt.subsec_nanosecond() != 0 {
+        format!("{dt}")
+    } else if dt.second() != 0 {
+        format!(
+            "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}",
+            dt.year(),
+            dt.month(),
+            dt.day(),
+            dt.hour(),
+            dt.minute(),
+            dt.second()
+        )
+    } else {
+        format!(
+            "{:04}-{:02}-{:02}T{:02}:{:02}",
+            dt.year(),
+            dt.month(),
+            dt.day(),
+            dt.hour(),
+            dt.minute()
+        )
+    };
+
+    // Format timezone
+    let tz = zdt.time_zone();
+    if let Some(iana) = tz.iana_name() {
+        if iana == "UTC" && total_secs == 0 {
+            format!("{base}Z")
+        } else {
+            let h = total_secs / 3600;
+            let m = (total_secs.abs() % 3600) / 60;
+            format!("{base}{:+03}:{:02}[{iana}]", h, m)
+        }
+    } else if total_secs == 0 {
+        format!("{base}Z")
+    } else {
+        let h = total_secs / 3600;
+        let m = (total_secs.abs() % 3600) / 60;
+        format!("{base}{:+03}:{:02}", h, m)
+    }
+}
+
+/// Format a Zoned datetime as a zoned time (HH:MM:SS.nnn+offset).
+/// Used for Neo4j's Time type, which we represent as DateTime with epoch date.
+fn format_zoned_time(zdt: &jiff::Zoned) -> String {
+    let t = jiff::civil::Time::from(zdt);
+    let off = zdt.offset();
+    let total_secs = off.seconds();
+
+    let time_part = if t.subsec_nanosecond() != 0 {
+        format!("{t}")
+    } else if t.second() != 0 {
+        format!("{:02}:{:02}:{:02}", t.hour(), t.minute(), t.second())
+    } else {
+        format!("{:02}:{:02}", t.hour(), t.minute())
+    };
+
+    if total_secs == 0 {
+        format!("{time_part}Z")
+    } else {
+        let h = total_secs / 3600;
+        let m = (total_secs.abs() % 3600) / 60;
+        format!("{time_part}{:+03}:{:02}", h, m)
+    }
+}
+
+/// Normalize datetime string for comparison:
+/// Strip trailing `:00` seconds, `Z` ↔ `+00:00`, `[UTC]`, etc.
+fn normalize_datetime_str(s: &str) -> String {
+    let s = s.replace("[UTC]", "");
+    let s = s.replace("+00:00", "Z");
+    let s = s.replace("-00:00", "Z");
+    // Remove trailing :00 seconds when no subseconds
+    let s = if s.contains('T') {
+        let mut result = s.replace(":00Z", "Z")
+            .replace(":00+", "+")
+            .replace(":00-", "-");
+        // Also handle trailing :00 at end of string (localdatetime without tz)
+        if result.ends_with(":00") {
+            let colon_count = result.matches(':').count();
+            if colon_count >= 2 {
+                result.truncate(result.len() - 3);
+            }
+        }
+        result
+    } else {
+        s
+    };
+    s.trim().to_string()
+}
+
+/// Normalize time string for comparison.
+fn normalize_time_str(s: &str) -> String {
+    // Remove trailing :00 seconds
+    let s = s.to_string();
+    let s = if s.ends_with(":00") && s.matches(':').count() >= 2 {
+        s[..s.len() - 3].to_string()
+    } else {
+        s
+    };
+    s
+}
+
+/// Normalize duration string for comparison.
+/// PT0S is equivalent to P0D, etc.
+fn normalize_duration_str(s: &str) -> String {
+    // Both represent zero duration
+    if s == "PT0S" || s == "P0D" {
+        return "PT0S".to_string();
+    }
+    s.to_string()
 }
 
 /// Create a sortable string representation of a Value for list-order-ignoring comparisons.
