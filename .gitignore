@@ -6,3 +6,7 @@ Cargo.lock
 *.dylib
 *.d
 /dist/
+.claude/runtime/
+.claude/context/
+.claude/settings.json
+worktrees/
