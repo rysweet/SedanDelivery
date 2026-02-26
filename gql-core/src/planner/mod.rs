@@ -199,22 +199,12 @@ pub enum RemoveItem {
     },
 }
 
-// ── Planner stub ──────────────────────────────────────────────────────────────
+// ── Planner module ────────────────────────────────────────────────────────────
 
-/// Query planner. Phase 0: type definitions only; plan() is not yet implemented.
-pub struct QueryPlanner;
+#[allow(clippy::module_inception)]
+pub mod planner;
 
-impl QueryPlanner {
-    pub fn new() -> Self {
-        Self
-    }
-}
-
-impl Default for QueryPlanner {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+pub use planner::QueryPlanner;
 
 /// Validate and normalize variable-length expand bounds.
 /// Returns `(effective_min, effective_max)`, capping unbounded `max` at DEFAULT_VARLEN_MAX_DEPTH.

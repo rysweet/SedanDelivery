@@ -343,6 +343,193 @@ impl Expr {
     }
 }
 
+// ── Clause-level AST types ────────────────────────────────────────────────────
+
+/// A complete parsed query, consisting of one or more clauses.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Query {
+    pub clauses: Vec<Clause>,
+}
+
+/// A single top-level Cypher/GQL clause.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Clause {
+    Match(MatchClause),
+    OptionalMatch(MatchClause),
+    Where(Expr),
+    Return(ReturnClause),
+    Create(CreateClause),
+    Delete(DeleteClause),
+    With(WithClause),
+    Unwind(UnwindClause),
+    Set(SetClause),
+    Remove(RemoveClause),
+    Merge(MergeClause),
+}
+
+/// A MATCH or OPTIONAL MATCH clause.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MatchClause {
+    pub patterns: Vec<PathPattern>,
+    pub where_clause: Option<Expr>,
+}
+
+/// A RETURN clause with optional modifiers.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ReturnClause {
+    pub distinct: bool,
+    pub items: Vec<ReturnItem>,
+    pub order_by: Vec<SortItem>,
+    pub skip: Option<Expr>,
+    pub limit: Option<Expr>,
+}
+
+/// A single expression in a RETURN or WITH projection.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ReturnItem {
+    pub expr: Expr,
+    pub alias: Option<Identifier>,
+}
+
+/// A single item in an ORDER BY clause.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SortItem {
+    pub expr: Expr,
+    pub ascending: bool,
+}
+
+/// A path pattern such as `p = (a)-[r:KNOWS]->(b)`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PathPattern {
+    /// Optional variable binding for the whole path (before `=`).
+    pub variable: Option<Identifier>,
+    /// The first node in the path.
+    pub start: NodePattern,
+    /// Zero or more alternating relationship + node steps.
+    pub steps: Vec<PathStep>,
+}
+
+/// A single step in a path: relationship followed by the next node.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PathStep {
+    pub rel: RelPattern,
+    pub node: NodePattern,
+}
+
+/// A node pattern: `(variable:Label {props})`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct NodePattern {
+    pub variable: Option<Identifier>,
+    pub labels: Vec<Label>,
+    pub properties: Option<MapLiteral>,
+}
+
+/// A relationship pattern: `-[variable:TYPE*min..max {props}]->`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RelPattern {
+    pub variable: Option<Identifier>,
+    /// Relationship types separated by `|`, e.g. `KNOWS|LIKES`.
+    pub rel_types: Vec<RelType>,
+    pub direction: Direction,
+    pub range: Option<RangeQuantifier>,
+    pub properties: Option<MapLiteral>,
+}
+
+/// Variable-length quantifier `*min..max`. Both bounds are optional.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RangeQuantifier {
+    pub min: Option<u32>,
+    pub max: Option<u32>,
+}
+
+/// An inline property map `{ key: expr, ... }` used in node/rel patterns.
+pub type MapLiteral = Vec<(SmolStr, Expr)>;
+
+/// A CREATE clause.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CreateClause {
+    pub patterns: Vec<PathPattern>,
+}
+
+/// A DELETE or DETACH DELETE clause.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DeleteClause {
+    pub exprs: Vec<Expr>,
+    pub detach: bool,
+}
+
+/// A SET clause.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SetClause {
+    pub items: Vec<SetClauseItem>,
+}
+
+/// A REMOVE clause.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RemoveClause {
+    pub items: Vec<RemoveClauseItem>,
+}
+
+/// A MERGE clause with optional ON CREATE SET / ON MATCH SET actions.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MergeClause {
+    pub pattern: PathPattern,
+    pub on_create: Vec<SetClauseItem>,
+    pub on_match: Vec<SetClauseItem>,
+}
+
+/// A WITH clause (like RETURN but feeds the next query part).
+#[derive(Debug, Clone, PartialEq)]
+pub struct WithClause {
+    pub distinct: bool,
+    pub items: Vec<ReturnItem>,
+    pub where_clause: Option<Expr>,
+    pub order_by: Vec<SortItem>,
+    pub skip: Option<Expr>,
+    pub limit: Option<Expr>,
+}
+
+/// An UNWIND clause.
+#[derive(Debug, Clone, PartialEq)]
+pub struct UnwindClause {
+    pub expr: Expr,
+    pub alias: Identifier,
+}
+
+/// A single item in a SET clause.
+#[derive(Debug, Clone, PartialEq)]
+pub enum SetClauseItem {
+    /// `n.prop = expr`
+    SetProperty {
+        alias: Identifier,
+        prop: SmolStr,
+        value: Expr,
+    },
+    /// `n = expr` (replace map) or `n += expr` (merge map).
+    SetMap {
+        alias: Identifier,
+        map: Expr,
+        merge: bool,
+    },
+    /// `n:Label1:Label2`
+    SetLabels {
+        alias: Identifier,
+        labels: Vec<Label>,
+    },
+}
+
+/// A single item in a REMOVE clause.
+#[derive(Debug, Clone, PartialEq)]
+pub enum RemoveClauseItem {
+    /// `n.prop`
+    RemoveProperty { alias: Identifier, prop: SmolStr },
+    /// `n:Label1:Label2`
+    RemoveLabels {
+        alias: Identifier,
+        labels: Vec<Label>,
+    },
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]

@@ -273,13 +273,26 @@ pub trait GraphStore: Send + Sync {
     fn graph_stats(&self, graph: &str) -> Result<GraphStats, StorageError>;
 }
 
-/// Validate a graph name: must be non-empty, must not contain `:` (Redis key separator)
-/// or `{`/`}` (Redis hash tags, which would interfere with cluster slot routing).
+/// Maximum allowed length for a graph name.
+pub const GRAPH_NAME_MAX_LEN: usize = 64;
+
+/// Validate a graph name. Rules (security rationale in docs/RESEARCH.md):
+/// - Non-empty
+/// - At most 64 bytes
+/// - No `:` (Redis key separator — would break the `G:node:{id}` key namespace)
+/// - No `{` or `}` (Redis Cluster hash tags — would corrupt slot routing)
+/// - Characters: `[a-zA-Z0-9_.-]` only (whitelist)
 pub fn validate_graph_name(name: &str) -> Result<(), StorageError> {
     if name.is_empty() {
         return Err(StorageError::InvalidGraphName {
             name: name.to_string(),
             reason: "graph name must not be empty",
+        });
+    }
+    if name.len() > GRAPH_NAME_MAX_LEN {
+        return Err(StorageError::InvalidGraphName {
+            name: name.to_string(),
+            reason: "graph name must not exceed 64 bytes",
         });
     }
     if name.contains(':') {
@@ -292,6 +305,15 @@ pub fn validate_graph_name(name: &str) -> Result<(), StorageError> {
         return Err(StorageError::InvalidGraphName {
             name: name.to_string(),
             reason: "graph name must not contain '{' or '}' (reserved as Redis hash tags)",
+        });
+    }
+    if !name
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.')
+    {
+        return Err(StorageError::InvalidGraphName {
+            name: name.to_string(),
+            reason: "graph name may only contain [a-zA-Z0-9_.-]",
         });
     }
     Ok(())
