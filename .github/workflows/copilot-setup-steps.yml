@@ -1,0 +1,33 @@
+name: "Copilot Setup Steps"
+
+# This workflow configures the environment for GitHub Copilot Agent with gh-aw MCP server
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - .github/workflows/copilot-setup-steps.yml
+
+jobs:
+  # The job MUST be called 'copilot-setup-steps' to be recognized by GitHub Copilot Agent
+  copilot-setup-steps:
+    runs-on: ubuntu-latest
+
+    # Set minimal permissions for setup steps
+    # Copilot Agent receives its own token with appropriate permissions
+    permissions:
+      contents: read
+      # Add pull-requests write permission to enable posting PR comments and reviews
+      pull-requests: write
+
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    # You can define any steps you want, and they will run before the agent starts.
+    # If you do not check out your code, Copilot will do this for you.
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Install gh-aw extension
+        uses: github/gh-aw/actions/setup-cli@7a970851c1090295e55a16e549c61ba1ce227f16 # v0.42.17
+        with:
+          version: v0.42.17
