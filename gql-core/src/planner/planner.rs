@@ -10,16 +10,21 @@
 //!    - `DISTINCT` → `Distinct` wrapper.
 //!    - `ORDER BY` → `Sort` wrapper.
 //!    - `SKIP` / `LIMIT` → `Skip` / `Limit` wrappers.
-//!
-//! Unsupported constructs (OPTIONAL MATCH, MERGE, WITH, UNWIND, SET, REMOVE, DELETE)
-//! return `GqlError::Execution(ExecutionError::UnsupportedFeature)`.
+//! 5. `DELETE` / `DETACH DELETE` → `Delete` operator wrapping the current pipeline.
+//! 6. `WITH` → mid-query projection/aggregation with optional `Filter`, `Sort`, `Skip`, `Limit`.
+//! 7. `UNWIND` → `Unwind` operator for list expansion.
+//! 8. `SET` → `Set` operator for property/label mutation.
+//! 9. `REMOVE` → `Remove` operator for property/label removal.
+//! 10. `MERGE` → `Merge` operator with `ON CREATE SET` / `ON MATCH SET` actions.
+//! 11. `OPTIONAL MATCH` → `LeftOuterApply` wrapping the match pipeline.
 
 use crate::ast::{
-    Clause, CreateClause, Expr, Identifier, Label, MatchClause, PathPattern, PathStep, Query,
-    ReturnClause, ReturnItem,
+    Clause, CreateClause, DeleteClause, Expr, Identifier, Label, MatchClause, MergeClause,
+    PathPattern, PathStep, Query, RemoveClause, RemoveClauseItem, ReturnClause, ReturnItem,
+    SetClause, SetClauseItem, UnwindClause, WithClause,
 };
 use crate::error::{ExecutionError, GqlError, PlanError};
-use crate::planner::{AggFunction, CreatePattern, Operator};
+use crate::planner::{AggFunction, CreatePattern, Operator, RemoveItem, SetItem};
 use crate::storage::GraphStore;
 
 // ── Planner ───────────────────────────────────────────────────────────────────
@@ -49,10 +54,8 @@ impl<'s> QueryPlanner<'s> {
                         None => op,
                         Some(prev) => {
                             // Chain: apply operator on top of previous pipeline.
-                            // For now, nested MATCH clauses are treated as independent scans
-                            // joined via a cross-product (simple Apply placeholder).
-                            // The executor will get UnsupportedFeature for Apply anyway,
-                            // but we keep the structure valid.
+                            // Multiple MATCH clauses (whether single- or multi-pattern)
+                            // are joined via Apply (cross-product semantics).
                             Operator::Apply {
                                 outer: Box::new(prev),
                                 inner: Box::new(op),
@@ -61,10 +64,16 @@ impl<'s> QueryPlanner<'s> {
                     });
                 }
 
-                Clause::OptionalMatch(_) => {
-                    return Err(GqlError::Execution(ExecutionError::unsupported(
-                        "OPTIONAL MATCH",
-                    )));
+                Clause::OptionalMatch(mc) => {
+                    let match_op = self.plan_match(mc)?;
+                    let preserved = pipeline.unwrap_or_else(|| Operator::NodeScan {
+                        label: None,
+                        alias: Identifier::new("__empty__"),
+                    });
+                    pipeline = Some(Operator::LeftOuterApply {
+                        preserved: Box::new(preserved),
+                        optional_pattern: Box::new(match_op),
+                    });
                 }
 
                 Clause::Where(pred) => {
@@ -89,28 +98,34 @@ impl<'s> QueryPlanner<'s> {
                     pipeline = Some(create_op);
                 }
 
-                Clause::Delete(_) => {
-                    return Err(GqlError::Execution(ExecutionError::unsupported("DELETE")));
+                Clause::Delete(dc) => {
+                    let delete_op = self.plan_delete(dc, pipeline.take())?;
+                    pipeline = Some(delete_op);
                 }
 
-                Clause::With(_) => {
-                    return Err(GqlError::Execution(ExecutionError::unsupported("WITH")));
+                Clause::With(wc) => {
+                    let with_op = self.plan_with(wc, pipeline.take())?;
+                    pipeline = Some(with_op);
                 }
 
-                Clause::Unwind(_) => {
-                    return Err(GqlError::Execution(ExecutionError::unsupported("UNWIND")));
+                Clause::Unwind(uc) => {
+                    let unwind_op = self.plan_unwind(uc, pipeline.take())?;
+                    pipeline = Some(unwind_op);
                 }
 
-                Clause::Set(_) => {
-                    return Err(GqlError::Execution(ExecutionError::unsupported("SET")));
+                Clause::Set(sc) => {
+                    let set_op = self.plan_set(sc, pipeline.take())?;
+                    pipeline = Some(set_op);
                 }
 
-                Clause::Remove(_) => {
-                    return Err(GqlError::Execution(ExecutionError::unsupported("REMOVE")));
+                Clause::Remove(rc) => {
+                    let remove_op = self.plan_remove(rc, pipeline.take())?;
+                    pipeline = Some(remove_op);
                 }
 
-                Clause::Merge(_) => {
-                    return Err(GqlError::Execution(ExecutionError::unsupported("MERGE")));
+                Clause::Merge(mc) => {
+                    let merge_op = self.plan_merge(mc, pipeline.take())?;
+                    pipeline = Some(merge_op);
                 }
             }
         }
@@ -128,7 +143,7 @@ impl<'s> QueryPlanner<'s> {
             return self.plan_return(rc, child);
         }
 
-        // If we only have a CREATE (no RETURN), wrap in ProduceResults with no columns.
+        // If we only have a CREATE/DELETE/SET/etc. (no RETURN), wrap in ProduceResults with no columns.
         if let Some(op) = pipeline {
             return Ok(Operator::ProduceResults {
                 columns: vec![],
@@ -146,8 +161,8 @@ impl<'s> QueryPlanner<'s> {
             return Err(GqlError::Plan(PlanError::ReturnStarNoVariables));
         }
 
-        // Plan each pattern, then join them (multiple patterns = cross-product in
-        // current Phase 2 implementation; Apply is returned for multi-pattern matches).
+        // Plan each pattern, then join them (multiple patterns = cross-product
+        // via Apply for disconnected patterns).
         let mut pattern_ops: Vec<Operator> = mc
             .patterns
             .iter()
@@ -391,6 +406,211 @@ impl<'s> QueryPlanner<'s> {
         })
     }
 
+    // ── DELETE planning ───────────────────────────────────────────────────────
+
+    fn plan_delete(
+        &self,
+        dc: &DeleteClause,
+        child: Option<Operator>,
+    ) -> Result<Operator, GqlError> {
+        let child = child.ok_or_else(|| {
+            GqlError::Plan(PlanError::UndefinedVariable {
+                name: "DELETE without preceding MATCH or WITH".to_string(),
+                offset: 0,
+            })
+        })?;
+
+        Ok(Operator::Delete {
+            exprs: dc.exprs.clone(),
+            detach: dc.detach,
+            child: Box::new(child),
+        })
+    }
+
+    // ── WITH planning ─────────────────────────────────────────────────────────
+
+    /// Plan a WITH clause. WITH is semantically identical to RETURN but feeds
+    /// the next clause instead of producing final output.
+    ///
+    /// WITH a, b WHERE a.age > 25  →  Project then Filter
+    /// WITH a, count(b) AS cnt     →  Aggregate
+    /// WITH a ORDER BY a.name SKIP 1 LIMIT 5  →  Project + Sort + Skip + Limit
+    fn plan_with(&self, wc: &WithClause, child: Option<Operator>) -> Result<Operator, GqlError> {
+        let child = child.unwrap_or_else(|| Operator::NodeScan {
+            label: None,
+            alias: Identifier::new("__empty__"),
+        });
+
+        let has_aggregation = wc.items.iter().any(|item| has_agg_function(&item.expr));
+
+        // Build the projection or aggregation pipeline.
+        let mut pipeline = if has_aggregation {
+            self.plan_with_aggregation(&wc.items, child)?
+        } else {
+            // Plain projection: wrap in Project operator.
+            let items: Vec<(Expr, Option<Identifier>)> = wc
+                .items
+                .iter()
+                .map(|item| (item.expr.clone(), item.alias.clone()))
+                .collect();
+            Operator::Project {
+                items,
+                child: Box::new(child),
+            }
+        };
+
+        // ORDER BY.
+        if !wc.order_by.is_empty() {
+            pipeline = Operator::Sort {
+                items: wc
+                    .order_by
+                    .iter()
+                    .map(|s| (s.expr.clone(), s.ascending))
+                    .collect(),
+                child: Box::new(pipeline),
+            };
+        }
+
+        // SKIP.
+        if let Some(skip_expr) = &wc.skip {
+            pipeline = Operator::Skip {
+                count: skip_expr.clone(),
+                child: Box::new(pipeline),
+            };
+        }
+
+        // LIMIT.
+        if let Some(limit_expr) = &wc.limit {
+            pipeline = Operator::Limit {
+                count: limit_expr.clone(),
+                child: Box::new(pipeline),
+            };
+        }
+
+        // DISTINCT.
+        if wc.distinct && !has_aggregation {
+            pipeline = Operator::Distinct {
+                child: Box::new(pipeline),
+            };
+        }
+
+        // WHERE clause (applied after projection to filter on projected aliases).
+        if let Some(pred) = &wc.where_clause {
+            pipeline = Operator::Filter {
+                predicate: pred.clone(),
+                child: Box::new(pipeline),
+            };
+        }
+
+        Ok(pipeline)
+    }
+
+    /// Build an Aggregate operator from WITH items that contain aggregate functions.
+    fn plan_with_aggregation(
+        &self,
+        items: &[ReturnItem],
+        child: Operator,
+    ) -> Result<Operator, GqlError> {
+        let mut keys: Vec<Expr> = Vec::new();
+        let mut aggregations: Vec<(AggFunction, Expr, bool, Identifier)> = Vec::new();
+
+        for item in items {
+            if has_agg_function(&item.expr) {
+                let (func, arg, distinct) = extract_agg_function(&item.expr)?;
+                let alias = item
+                    .alias
+                    .clone()
+                    .unwrap_or_else(|| Identifier::new(return_item_name(item)));
+                aggregations.push((func, arg, distinct, alias));
+            } else {
+                keys.push(item.expr.clone());
+            }
+        }
+
+        Ok(Operator::Aggregate {
+            keys,
+            aggregations,
+            child: Box::new(child),
+        })
+    }
+
+    // ── UNWIND planning ───────────────────────────────────────────────────────
+
+    fn plan_unwind(
+        &self,
+        uc: &UnwindClause,
+        child: Option<Operator>,
+    ) -> Result<Operator, GqlError> {
+        let child = child.unwrap_or_else(|| Operator::NodeScan {
+            label: None,
+            alias: Identifier::new("__empty__"),
+        });
+
+        Ok(Operator::Unwind {
+            list_expr: uc.expr.clone(),
+            alias: uc.alias.clone(),
+            child: Box::new(child),
+        })
+    }
+
+    // ── SET planning ──────────────────────────────────────────────────────────
+
+    fn plan_set(&self, sc: &SetClause, child: Option<Operator>) -> Result<Operator, GqlError> {
+        let child = child.ok_or_else(|| {
+            GqlError::Plan(PlanError::UndefinedVariable {
+                name: "SET without preceding MATCH or WITH".to_string(),
+                offset: 0,
+            })
+        })?;
+
+        let items: Vec<SetItem> = sc.items.iter().map(map_set_clause_item).collect();
+
+        Ok(Operator::Set {
+            items,
+            child: Box::new(child),
+        })
+    }
+
+    // ── REMOVE planning ───────────────────────────────────────────────────────
+
+    fn plan_remove(
+        &self,
+        rc: &RemoveClause,
+        child: Option<Operator>,
+    ) -> Result<Operator, GqlError> {
+        let child = child.ok_or_else(|| {
+            GqlError::Plan(PlanError::UndefinedVariable {
+                name: "REMOVE without preceding MATCH or WITH".to_string(),
+                offset: 0,
+            })
+        })?;
+
+        let items: Vec<RemoveItem> = rc.items.iter().map(map_remove_clause_item).collect();
+
+        Ok(Operator::Remove {
+            items,
+            child: Box::new(child),
+        })
+    }
+
+    // ── MERGE planning ────────────────────────────────────────────────────────
+
+    fn plan_merge(&self, mc: &MergeClause, child: Option<Operator>) -> Result<Operator, GqlError> {
+        let node_alias = mc.pattern.start.variable.clone();
+        let labels = mc.pattern.start.labels.clone();
+
+        let on_create: Vec<SetItem> = mc.on_create.iter().map(map_set_clause_item).collect();
+        let on_match: Vec<SetItem> = mc.on_match.iter().map(map_set_clause_item).collect();
+
+        Ok(Operator::Merge {
+            node_alias,
+            labels,
+            on_create,
+            on_match,
+            child: child.map(Box::new),
+        })
+    }
+
     // ── RETURN planning ───────────────────────────────────────────────────────
 
     fn plan_return(&self, rc: &ReturnClause, child: Operator) -> Result<Operator, GqlError> {
@@ -407,7 +627,7 @@ impl<'s> QueryPlanner<'s> {
             child
         };
 
-        // ORDER BY — sort expressions reference raw variable names.
+        // ORDER BY -- sort expressions reference raw variable names.
         let pipeline = if !rc.order_by.is_empty() {
             Operator::Sort {
                 items: rc
@@ -503,6 +723,40 @@ impl<'s> QueryPlanner<'s> {
 }
 
 // ── Free helpers ──────────────────────────────────────────────────────────────
+
+/// Map an AST `SetClauseItem` to a planner `SetItem`.
+fn map_set_clause_item(item: &SetClauseItem) -> SetItem {
+    match item {
+        SetClauseItem::SetProperty { alias, prop, value } => SetItem::Property {
+            alias: alias.clone(),
+            key: prop.to_string(),
+            value: value.clone(),
+        },
+        SetClauseItem::SetMap { alias, map, merge } => SetItem::Map {
+            alias: alias.clone(),
+            map: map.clone(),
+            merge: *merge,
+        },
+        SetClauseItem::SetLabels { alias, labels } => SetItem::Labels {
+            alias: alias.clone(),
+            labels: labels.clone(),
+        },
+    }
+}
+
+/// Map an AST `RemoveClauseItem` to a planner `RemoveItem`.
+fn map_remove_clause_item(item: &RemoveClauseItem) -> RemoveItem {
+    match item {
+        RemoveClauseItem::RemoveProperty { alias, prop } => RemoveItem::Property {
+            alias: alias.clone(),
+            key: prop.to_string(),
+        },
+        RemoveClauseItem::RemoveLabels { alias, labels } => RemoveItem::Labels {
+            alias: alias.clone(),
+            labels: labels.clone(),
+        },
+    }
+}
 
 /// Return the output column name for a RETURN item.
 fn return_item_name(item: &ReturnItem) -> String {
@@ -639,8 +893,9 @@ fn label_filter_expr(alias: &Identifier, label: &Label) -> Expr {
 mod tests {
     use super::*;
     use crate::ast::{
-        Expr, Identifier, Label, MatchClause, NodePattern, PathPattern, Query, ReturnClause,
-        ReturnItem, SortItem,
+        BinaryOp, DeleteClause, Direction, Expr, Identifier, Label, MatchClause, MergeClause,
+        NodePattern, PathPattern, PathStep, Query, RelPattern, RemoveClause, RemoveClauseItem,
+        ReturnClause, ReturnItem, SetClause, SetClauseItem, SortItem, UnwindClause, WithClause,
     };
     use crate::storage::InMemoryGraphStore;
 
@@ -677,6 +932,22 @@ mod tests {
                 }),
             ],
         }
+    }
+
+    /// Build a simple MATCH (n:Label) pipeline (no RETURN) for use in write-clause tests.
+    fn make_match_clause(label: &str, alias: &str) -> Clause {
+        Clause::Match(MatchClause {
+            patterns: vec![PathPattern {
+                variable: None,
+                start: NodePattern {
+                    variable: Some(Identifier::new(alias)),
+                    labels: vec![Label::new(label)],
+                    properties: None,
+                },
+                steps: vec![],
+            }],
+            where_clause: None,
+        })
     }
 
     #[test]
@@ -806,63 +1077,780 @@ mod tests {
         assert!(plan_contains_sort(&plan));
     }
 
-    fn plan_contains_filter(op: &Operator) -> bool {
-        match op {
-            Operator::Filter { .. } => true,
-            Operator::ProduceResults { child, .. } => plan_contains_filter(child),
-            Operator::Project { child, .. } => plan_contains_filter(child),
-            Operator::Sort { child, .. } => plan_contains_filter(child),
-            Operator::Limit { child, .. } => plan_contains_filter(child),
-            Operator::Skip { child, .. } => plan_contains_filter(child),
-            Operator::Aggregate { child, .. } => plan_contains_filter(child),
-            Operator::Expand { child, .. } => plan_contains_filter(child),
-            _ => false,
-        }
+    // ── DELETE tests ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn plan_delete_basic() {
+        // MATCH (n:Person) DELETE n
+        let store = make_store();
+        let planner = QueryPlanner::new(&store, "g");
+        let query = Query {
+            clauses: vec![
+                make_match_clause("Person", "n"),
+                Clause::Delete(DeleteClause {
+                    exprs: vec![Expr::Variable(Identifier::new("n"))],
+                    detach: false,
+                }),
+            ],
+        };
+        let plan = planner.plan(&query).unwrap();
+        assert!(plan_contains_delete(&plan));
     }
 
-    fn plan_contains_limit(op: &Operator) -> bool {
-        match op {
-            Operator::Limit { .. } => true,
-            Operator::ProduceResults { child, .. } => plan_contains_limit(child),
-            Operator::Sort { child, .. } => plan_contains_limit(child),
-            Operator::Skip { child, .. } => plan_contains_limit(child),
-            _ => false,
-        }
+    #[test]
+    fn plan_detach_delete() {
+        // MATCH (n:Person) DETACH DELETE n
+        let store = make_store();
+        let planner = QueryPlanner::new(&store, "g");
+        let query = Query {
+            clauses: vec![
+                make_match_clause("Person", "n"),
+                Clause::Delete(DeleteClause {
+                    exprs: vec![Expr::Variable(Identifier::new("n"))],
+                    detach: true,
+                }),
+            ],
+        };
+        let plan = planner.plan(&query).unwrap();
+        assert!(plan_contains_delete(&plan));
+        // Verify detach flag is set.
+        assert!(plan_delete_is_detach(&plan));
     }
 
-    fn plan_contains_skip(op: &Operator) -> bool {
-        match op {
-            Operator::Skip { .. } => true,
-            Operator::ProduceResults { child, .. } => plan_contains_skip(child),
-            Operator::Sort { child, .. } => plan_contains_skip(child),
-            Operator::Limit { child, .. } => plan_contains_skip(child),
-            _ => false,
-        }
+    #[test]
+    fn plan_delete_without_match_is_error() {
+        let store = make_store();
+        let planner = QueryPlanner::new(&store, "g");
+        let query = Query {
+            clauses: vec![Clause::Delete(DeleteClause {
+                exprs: vec![Expr::Variable(Identifier::new("n"))],
+                detach: false,
+            })],
+        };
+        assert!(planner.plan(&query).is_err());
     }
 
-    fn plan_contains_sort(op: &Operator) -> bool {
-        match op {
-            Operator::Sort { .. } => true,
-            Operator::ProduceResults { child, .. } => plan_contains_sort(child),
-            Operator::Limit { child, .. } => plan_contains_sort(child),
-            Operator::Skip { child, .. } => plan_contains_sort(child),
-            _ => false,
-        }
+    // ── WITH tests ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn plan_with_simple_projection() {
+        // MATCH (n:Person) WITH n RETURN n
+        let store = make_store();
+        let planner = QueryPlanner::new(&store, "g");
+        let query = Query {
+            clauses: vec![
+                make_match_clause("Person", "n"),
+                Clause::With(WithClause {
+                    distinct: false,
+                    items: vec![ReturnItem {
+                        expr: Expr::Variable(Identifier::new("n")),
+                        alias: None,
+                    }],
+                    where_clause: None,
+                    order_by: vec![],
+                    skip: None,
+                    limit: None,
+                }),
+                Clause::Return(ReturnClause {
+                    distinct: false,
+                    items: vec![ReturnItem {
+                        expr: Expr::Variable(Identifier::new("n")),
+                        alias: None,
+                    }],
+                    order_by: vec![],
+                    skip: None,
+                    limit: None,
+                }),
+            ],
+        };
+        let plan = planner.plan(&query).unwrap();
+        assert!(matches!(plan, Operator::ProduceResults { .. }));
+        assert!(plan_contains_project(&plan));
     }
 
-    fn plan_contains_index_scan(op: &Operator) -> bool {
-        match op {
-            Operator::IndexScan { .. } => true,
-            Operator::ProduceResults { child, .. } => plan_contains_index_scan(child),
-            Operator::Filter { child, .. } => plan_contains_index_scan(child),
-            Operator::Sort { child, .. } => plan_contains_index_scan(child),
-            Operator::Limit { child, .. } => plan_contains_index_scan(child),
-            Operator::Skip { child, .. } => plan_contains_index_scan(child),
-            Operator::Aggregate { child, .. } => plan_contains_index_scan(child),
-            Operator::Expand { child, .. } => plan_contains_index_scan(child),
-            _ => false,
-        }
+    #[test]
+    fn plan_with_where_filter() {
+        // MATCH (n:Person) WITH n WHERE n.age > 25 RETURN n
+        let store = make_store();
+        let planner = QueryPlanner::new(&store, "g");
+        let query = Query {
+            clauses: vec![
+                make_match_clause("Person", "n"),
+                Clause::With(WithClause {
+                    distinct: false,
+                    items: vec![ReturnItem {
+                        expr: Expr::Variable(Identifier::new("n")),
+                        alias: None,
+                    }],
+                    where_clause: Some(Expr::BinaryOp {
+                        op: BinaryOp::Gt,
+                        left: Box::new(Expr::Property(
+                            Box::new(Expr::Variable(Identifier::new("n"))),
+                            "age".into(),
+                        )),
+                        right: Box::new(Expr::Integer(25)),
+                    }),
+                    order_by: vec![],
+                    skip: None,
+                    limit: None,
+                }),
+                Clause::Return(ReturnClause {
+                    distinct: false,
+                    items: vec![ReturnItem {
+                        expr: Expr::Variable(Identifier::new("n")),
+                        alias: None,
+                    }],
+                    order_by: vec![],
+                    skip: None,
+                    limit: None,
+                }),
+            ],
+        };
+        let plan = planner.plan(&query).unwrap();
+        assert!(plan_contains_filter(&plan));
+        assert!(plan_contains_project(&plan));
     }
+
+    #[test]
+    fn plan_with_aggregation() {
+        // MATCH (n:Person) WITH n.city AS city, count(n) AS cnt RETURN city, cnt
+        let store = make_store();
+        let planner = QueryPlanner::new(&store, "g");
+        let query = Query {
+            clauses: vec![
+                make_match_clause("Person", "n"),
+                Clause::With(WithClause {
+                    distinct: false,
+                    items: vec![
+                        ReturnItem {
+                            expr: Expr::Property(
+                                Box::new(Expr::Variable(Identifier::new("n"))),
+                                "city".into(),
+                            ),
+                            alias: Some(Identifier::new("city")),
+                        },
+                        ReturnItem {
+                            expr: Expr::FunctionCall {
+                                name: "count".into(),
+                                args: vec![Expr::Variable(Identifier::new("n"))],
+                                distinct: false,
+                            },
+                            alias: Some(Identifier::new("cnt")),
+                        },
+                    ],
+                    where_clause: None,
+                    order_by: vec![],
+                    skip: None,
+                    limit: None,
+                }),
+                Clause::Return(ReturnClause {
+                    distinct: false,
+                    items: vec![
+                        ReturnItem {
+                            expr: Expr::Variable(Identifier::new("city")),
+                            alias: None,
+                        },
+                        ReturnItem {
+                            expr: Expr::Variable(Identifier::new("cnt")),
+                            alias: None,
+                        },
+                    ],
+                    order_by: vec![],
+                    skip: None,
+                    limit: None,
+                }),
+            ],
+        };
+        let plan = planner.plan(&query).unwrap();
+        assert!(plan_contains_aggregate(&plan));
+    }
+
+    #[test]
+    fn plan_with_order_skip_limit() {
+        // MATCH (n:Person) WITH n ORDER BY n.name SKIP 1 LIMIT 5 RETURN n
+        let store = make_store();
+        let planner = QueryPlanner::new(&store, "g");
+        let query = Query {
+            clauses: vec![
+                make_match_clause("Person", "n"),
+                Clause::With(WithClause {
+                    distinct: false,
+                    items: vec![ReturnItem {
+                        expr: Expr::Variable(Identifier::new("n")),
+                        alias: None,
+                    }],
+                    where_clause: None,
+                    order_by: vec![SortItem {
+                        expr: Expr::Property(
+                            Box::new(Expr::Variable(Identifier::new("n"))),
+                            "name".into(),
+                        ),
+                        ascending: true,
+                    }],
+                    skip: Some(Expr::Integer(1)),
+                    limit: Some(Expr::Integer(5)),
+                }),
+                Clause::Return(ReturnClause {
+                    distinct: false,
+                    items: vec![ReturnItem {
+                        expr: Expr::Variable(Identifier::new("n")),
+                        alias: None,
+                    }],
+                    order_by: vec![],
+                    skip: None,
+                    limit: None,
+                }),
+            ],
+        };
+        let plan = planner.plan(&query).unwrap();
+        assert!(plan_contains_sort(&plan));
+        assert!(plan_contains_skip(&plan));
+        assert!(plan_contains_limit(&plan));
+    }
+
+    #[test]
+    fn plan_with_distinct() {
+        // MATCH (n:Person) WITH DISTINCT n.city AS city RETURN city
+        let store = make_store();
+        let planner = QueryPlanner::new(&store, "g");
+        let query = Query {
+            clauses: vec![
+                make_match_clause("Person", "n"),
+                Clause::With(WithClause {
+                    distinct: true,
+                    items: vec![ReturnItem {
+                        expr: Expr::Property(
+                            Box::new(Expr::Variable(Identifier::new("n"))),
+                            "city".into(),
+                        ),
+                        alias: Some(Identifier::new("city")),
+                    }],
+                    where_clause: None,
+                    order_by: vec![],
+                    skip: None,
+                    limit: None,
+                }),
+                Clause::Return(ReturnClause {
+                    distinct: false,
+                    items: vec![ReturnItem {
+                        expr: Expr::Variable(Identifier::new("city")),
+                        alias: None,
+                    }],
+                    order_by: vec![],
+                    skip: None,
+                    limit: None,
+                }),
+            ],
+        };
+        let plan = planner.plan(&query).unwrap();
+        assert!(plan_contains_distinct(&plan));
+    }
+
+    // ── UNWIND tests ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn plan_unwind_basic() {
+        // UNWIND [1, 2, 3] AS x RETURN x
+        let store = make_store();
+        let planner = QueryPlanner::new(&store, "g");
+        let query = Query {
+            clauses: vec![
+                Clause::Unwind(UnwindClause {
+                    expr: Expr::List(vec![Expr::Integer(1), Expr::Integer(2), Expr::Integer(3)]),
+                    alias: Identifier::new("x"),
+                }),
+                Clause::Return(ReturnClause {
+                    distinct: false,
+                    items: vec![ReturnItem {
+                        expr: Expr::Variable(Identifier::new("x")),
+                        alias: None,
+                    }],
+                    order_by: vec![],
+                    skip: None,
+                    limit: None,
+                }),
+            ],
+        };
+        let plan = planner.plan(&query).unwrap();
+        assert!(plan_contains_unwind(&plan));
+    }
+
+    #[test]
+    fn plan_unwind_after_match() {
+        // MATCH (n:Person) UNWIND n.hobbies AS h RETURN n, h
+        let store = make_store();
+        let planner = QueryPlanner::new(&store, "g");
+        let query = Query {
+            clauses: vec![
+                make_match_clause("Person", "n"),
+                Clause::Unwind(UnwindClause {
+                    expr: Expr::Property(
+                        Box::new(Expr::Variable(Identifier::new("n"))),
+                        "hobbies".into(),
+                    ),
+                    alias: Identifier::new("h"),
+                }),
+                Clause::Return(ReturnClause {
+                    distinct: false,
+                    items: vec![
+                        ReturnItem {
+                            expr: Expr::Variable(Identifier::new("n")),
+                            alias: None,
+                        },
+                        ReturnItem {
+                            expr: Expr::Variable(Identifier::new("h")),
+                            alias: None,
+                        },
+                    ],
+                    order_by: vec![],
+                    skip: None,
+                    limit: None,
+                }),
+            ],
+        };
+        let plan = planner.plan(&query).unwrap();
+        assert!(plan_contains_unwind(&plan));
+        assert!(matches!(plan, Operator::ProduceResults { .. }));
+    }
+
+    // ── SET tests ─────────────────────────────────────────────────────────────
+
+    #[test]
+    fn plan_set_property() {
+        // MATCH (n:Person) SET n.age = 30
+        let store = make_store();
+        let planner = QueryPlanner::new(&store, "g");
+        let query = Query {
+            clauses: vec![
+                make_match_clause("Person", "n"),
+                Clause::Set(SetClause {
+                    items: vec![SetClauseItem::SetProperty {
+                        alias: Identifier::new("n"),
+                        prop: "age".into(),
+                        value: Expr::Integer(30),
+                    }],
+                }),
+            ],
+        };
+        let plan = planner.plan(&query).unwrap();
+        assert!(plan_contains_set(&plan));
+    }
+
+    #[test]
+    fn plan_set_labels() {
+        // MATCH (n:Person) SET n:Admin:Active
+        let store = make_store();
+        let planner = QueryPlanner::new(&store, "g");
+        let query = Query {
+            clauses: vec![
+                make_match_clause("Person", "n"),
+                Clause::Set(SetClause {
+                    items: vec![SetClauseItem::SetLabels {
+                        alias: Identifier::new("n"),
+                        labels: vec![Label::new("Admin"), Label::new("Active")],
+                    }],
+                }),
+            ],
+        };
+        let plan = planner.plan(&query).unwrap();
+        assert!(plan_contains_set(&plan));
+    }
+
+    #[test]
+    fn plan_set_map_merge() {
+        // MATCH (n:Person) SET n += {age: 30, city: 'NY'}
+        let store = make_store();
+        let planner = QueryPlanner::new(&store, "g");
+        let query = Query {
+            clauses: vec![
+                make_match_clause("Person", "n"),
+                Clause::Set(SetClause {
+                    items: vec![SetClauseItem::SetMap {
+                        alias: Identifier::new("n"),
+                        map: Expr::MapLiteral(vec![
+                            (smol_str::SmolStr::new("age"), Expr::Integer(30)),
+                            (smol_str::SmolStr::new("city"), Expr::Str("NY".into())),
+                        ]),
+                        merge: true,
+                    }],
+                }),
+            ],
+        };
+        let plan = planner.plan(&query).unwrap();
+        assert!(plan_contains_set(&plan));
+    }
+
+    #[test]
+    fn plan_set_without_match_is_error() {
+        let store = make_store();
+        let planner = QueryPlanner::new(&store, "g");
+        let query = Query {
+            clauses: vec![Clause::Set(SetClause {
+                items: vec![SetClauseItem::SetProperty {
+                    alias: Identifier::new("n"),
+                    prop: "age".into(),
+                    value: Expr::Integer(30),
+                }],
+            })],
+        };
+        assert!(planner.plan(&query).is_err());
+    }
+
+    // ── REMOVE tests ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn plan_remove_property() {
+        // MATCH (n:Person) REMOVE n.age
+        let store = make_store();
+        let planner = QueryPlanner::new(&store, "g");
+        let query = Query {
+            clauses: vec![
+                make_match_clause("Person", "n"),
+                Clause::Remove(RemoveClause {
+                    items: vec![RemoveClauseItem::RemoveProperty {
+                        alias: Identifier::new("n"),
+                        prop: "age".into(),
+                    }],
+                }),
+            ],
+        };
+        let plan = planner.plan(&query).unwrap();
+        assert!(plan_contains_remove(&plan));
+    }
+
+    #[test]
+    fn plan_remove_labels() {
+        // MATCH (n:Person) REMOVE n:Admin
+        let store = make_store();
+        let planner = QueryPlanner::new(&store, "g");
+        let query = Query {
+            clauses: vec![
+                make_match_clause("Person", "n"),
+                Clause::Remove(RemoveClause {
+                    items: vec![RemoveClauseItem::RemoveLabels {
+                        alias: Identifier::new("n"),
+                        labels: vec![Label::new("Admin")],
+                    }],
+                }),
+            ],
+        };
+        let plan = planner.plan(&query).unwrap();
+        assert!(plan_contains_remove(&plan));
+    }
+
+    #[test]
+    fn plan_remove_without_match_is_error() {
+        let store = make_store();
+        let planner = QueryPlanner::new(&store, "g");
+        let query = Query {
+            clauses: vec![Clause::Remove(RemoveClause {
+                items: vec![RemoveClauseItem::RemoveProperty {
+                    alias: Identifier::new("n"),
+                    prop: "age".into(),
+                }],
+            })],
+        };
+        assert!(planner.plan(&query).is_err());
+    }
+
+    // ── MERGE tests ───────────────────────────────────────────────────────────
+
+    #[test]
+    fn plan_merge_basic() {
+        // MERGE (n:Person)
+        let store = make_store();
+        let planner = QueryPlanner::new(&store, "g");
+        let query = Query {
+            clauses: vec![Clause::Merge(MergeClause {
+                pattern: PathPattern {
+                    variable: None,
+                    start: NodePattern {
+                        variable: Some(Identifier::new("n")),
+                        labels: vec![Label::new("Person")],
+                        properties: None,
+                    },
+                    steps: vec![],
+                },
+                on_create: vec![],
+                on_match: vec![],
+            })],
+        };
+        let plan = planner.plan(&query).unwrap();
+        assert!(plan_contains_merge(&plan));
+    }
+
+    #[test]
+    fn plan_merge_with_on_create_on_match() {
+        // MERGE (n:Person)
+        //   ON CREATE SET n.created = true
+        //   ON MATCH SET n.accessed = true
+        let store = make_store();
+        let planner = QueryPlanner::new(&store, "g");
+        let query = Query {
+            clauses: vec![Clause::Merge(MergeClause {
+                pattern: PathPattern {
+                    variable: None,
+                    start: NodePattern {
+                        variable: Some(Identifier::new("n")),
+                        labels: vec![Label::new("Person")],
+                        properties: None,
+                    },
+                    steps: vec![],
+                },
+                on_create: vec![SetClauseItem::SetProperty {
+                    alias: Identifier::new("n"),
+                    prop: "created".into(),
+                    value: Expr::Bool(true),
+                }],
+                on_match: vec![SetClauseItem::SetProperty {
+                    alias: Identifier::new("n"),
+                    prop: "accessed".into(),
+                    value: Expr::Bool(true),
+                }],
+            })],
+        };
+        let plan = planner.plan(&query).unwrap();
+        assert!(plan_contains_merge(&plan));
+        // Verify merge has ON CREATE and ON MATCH items.
+        assert!(plan_merge_has_actions(&plan));
+    }
+
+    #[test]
+    fn plan_merge_after_match() {
+        // MATCH (a:Person) MERGE (n:City)
+        let store = make_store();
+        let planner = QueryPlanner::new(&store, "g");
+        let query = Query {
+            clauses: vec![
+                make_match_clause("Person", "a"),
+                Clause::Merge(MergeClause {
+                    pattern: PathPattern {
+                        variable: None,
+                        start: NodePattern {
+                            variable: Some(Identifier::new("n")),
+                            labels: vec![Label::new("City")],
+                            properties: None,
+                        },
+                        steps: vec![],
+                    },
+                    on_create: vec![],
+                    on_match: vec![],
+                }),
+            ],
+        };
+        let plan = planner.plan(&query).unwrap();
+        assert!(plan_contains_merge(&plan));
+    }
+
+    // ── OPTIONAL MATCH tests ──────────────────────────────────────────────────
+
+    #[test]
+    fn plan_optional_match_basic() {
+        // MATCH (n:Person) OPTIONAL MATCH (n)-[:KNOWS]->(m) RETURN n, m
+        let store = make_store();
+        let planner = QueryPlanner::new(&store, "g");
+        let query = Query {
+            clauses: vec![
+                make_match_clause("Person", "n"),
+                Clause::OptionalMatch(MatchClause {
+                    patterns: vec![PathPattern {
+                        variable: None,
+                        start: NodePattern {
+                            variable: Some(Identifier::new("n")),
+                            labels: vec![],
+                            properties: None,
+                        },
+                        steps: vec![PathStep {
+                            rel: RelPattern {
+                                variable: None,
+                                rel_types: vec![crate::ast::RelType::new("KNOWS")],
+                                direction: Direction::Outgoing,
+                                range: None,
+                                properties: None,
+                            },
+                            node: NodePattern {
+                                variable: Some(Identifier::new("m")),
+                                labels: vec![],
+                                properties: None,
+                            },
+                        }],
+                    }],
+                    where_clause: None,
+                }),
+                Clause::Return(ReturnClause {
+                    distinct: false,
+                    items: vec![
+                        ReturnItem {
+                            expr: Expr::Variable(Identifier::new("n")),
+                            alias: None,
+                        },
+                        ReturnItem {
+                            expr: Expr::Variable(Identifier::new("m")),
+                            alias: None,
+                        },
+                    ],
+                    order_by: vec![],
+                    skip: None,
+                    limit: None,
+                }),
+            ],
+        };
+        let plan = planner.plan(&query).unwrap();
+        assert!(plan_contains_left_outer_apply(&plan));
+    }
+
+    #[test]
+    fn plan_optional_match_without_prior_match() {
+        // OPTIONAL MATCH (n:Person) RETURN n
+        let store = make_store();
+        let planner = QueryPlanner::new(&store, "g");
+        let query = Query {
+            clauses: vec![
+                Clause::OptionalMatch(MatchClause {
+                    patterns: vec![PathPattern {
+                        variable: None,
+                        start: NodePattern {
+                            variable: Some(Identifier::new("n")),
+                            labels: vec![Label::new("Person")],
+                            properties: None,
+                        },
+                        steps: vec![],
+                    }],
+                    where_clause: None,
+                }),
+                Clause::Return(ReturnClause {
+                    distinct: false,
+                    items: vec![ReturnItem {
+                        expr: Expr::Variable(Identifier::new("n")),
+                        alias: None,
+                    }],
+                    order_by: vec![],
+                    skip: None,
+                    limit: None,
+                }),
+            ],
+        };
+        let plan = planner.plan(&query).unwrap();
+        // Should still produce a LeftOuterApply even without a prior MATCH.
+        assert!(plan_contains_left_outer_apply(&plan));
+    }
+
+    // ── Multi-pattern MATCH tests ─────────────────────────────────────────────
+
+    #[test]
+    fn plan_multi_pattern_match() {
+        // MATCH (a:Person), (b:Movie) RETURN a, b
+        let store = make_store();
+        let planner = QueryPlanner::new(&store, "g");
+        let query = Query {
+            clauses: vec![
+                Clause::Match(MatchClause {
+                    patterns: vec![
+                        PathPattern {
+                            variable: None,
+                            start: NodePattern {
+                                variable: Some(Identifier::new("a")),
+                                labels: vec![Label::new("Person")],
+                                properties: None,
+                            },
+                            steps: vec![],
+                        },
+                        PathPattern {
+                            variable: None,
+                            start: NodePattern {
+                                variable: Some(Identifier::new("b")),
+                                labels: vec![Label::new("Movie")],
+                                properties: None,
+                            },
+                            steps: vec![],
+                        },
+                    ],
+                    where_clause: None,
+                }),
+                Clause::Return(ReturnClause {
+                    distinct: false,
+                    items: vec![
+                        ReturnItem {
+                            expr: Expr::Variable(Identifier::new("a")),
+                            alias: None,
+                        },
+                        ReturnItem {
+                            expr: Expr::Variable(Identifier::new("b")),
+                            alias: None,
+                        },
+                    ],
+                    order_by: vec![],
+                    skip: None,
+                    limit: None,
+                }),
+            ],
+        };
+        let plan = planner.plan(&query).unwrap();
+        // Multi-pattern MATCH produces an Apply (cross-product) in the tree.
+        assert!(plan_contains_apply(&plan));
+    }
+
+    #[test]
+    fn plan_multi_pattern_match_with_where() {
+        // MATCH (a:Person), (b:Movie) WHERE a.name = 'Alice' RETURN a, b
+        let store = make_store();
+        let planner = QueryPlanner::new(&store, "g");
+        let query = Query {
+            clauses: vec![
+                Clause::Match(MatchClause {
+                    patterns: vec![
+                        PathPattern {
+                            variable: None,
+                            start: NodePattern {
+                                variable: Some(Identifier::new("a")),
+                                labels: vec![Label::new("Person")],
+                                properties: None,
+                            },
+                            steps: vec![],
+                        },
+                        PathPattern {
+                            variable: None,
+                            start: NodePattern {
+                                variable: Some(Identifier::new("b")),
+                                labels: vec![Label::new("Movie")],
+                                properties: None,
+                            },
+                            steps: vec![],
+                        },
+                    ],
+                    where_clause: Some(Expr::BinaryOp {
+                        op: BinaryOp::Eq,
+                        left: Box::new(Expr::Property(
+                            Box::new(Expr::Variable(Identifier::new("a"))),
+                            "name".into(),
+                        )),
+                        right: Box::new(Expr::Str("Alice".into())),
+                    }),
+                }),
+                Clause::Return(ReturnClause {
+                    distinct: false,
+                    items: vec![
+                        ReturnItem {
+                            expr: Expr::Variable(Identifier::new("a")),
+                            alias: None,
+                        },
+                        ReturnItem {
+                            expr: Expr::Variable(Identifier::new("b")),
+                            alias: None,
+                        },
+                    ],
+                    order_by: vec![],
+                    skip: None,
+                    limit: None,
+                }),
+            ],
+        };
+        let plan = planner.plan(&query).unwrap();
+        assert!(plan_contains_apply(&plan));
+        assert!(plan_contains_filter(&plan));
+    }
+
+    // ── Index scan tests ──────────────────────────────────────────────────────
 
     #[test]
     fn plan_node_scan_upgrades_to_index_scan_when_index_exists() {
@@ -911,7 +1899,7 @@ mod tests {
 
     #[test]
     fn plan_node_scan_stays_node_scan_when_no_index() {
-        // No index created — must fall back to NodeScan + Filter.
+        // No index created -- must fall back to NodeScan + Filter.
         let store = make_store(); // no indexes
         let planner = QueryPlanner::new(&store, "g");
         let query = Query {
@@ -953,5 +1941,175 @@ mod tests {
             plan_contains_filter(&plan),
             "Expected Filter wrapping NodeScan when no index, got: {plan:?}"
         );
+    }
+
+    // ── Operator tree search helpers ──────────────────────────────────────────
+
+    fn plan_contains_filter(op: &Operator) -> bool {
+        match op {
+            Operator::Filter { .. } => true,
+            _ => children_of(op).iter().any(|c| plan_contains_filter(c)),
+        }
+    }
+
+    fn plan_contains_limit(op: &Operator) -> bool {
+        match op {
+            Operator::Limit { .. } => true,
+            _ => children_of(op).iter().any(|c| plan_contains_limit(c)),
+        }
+    }
+
+    fn plan_contains_skip(op: &Operator) -> bool {
+        match op {
+            Operator::Skip { .. } => true,
+            _ => children_of(op).iter().any(|c| plan_contains_skip(c)),
+        }
+    }
+
+    fn plan_contains_sort(op: &Operator) -> bool {
+        match op {
+            Operator::Sort { .. } => true,
+            _ => children_of(op).iter().any(|c| plan_contains_sort(c)),
+        }
+    }
+
+    fn plan_contains_delete(op: &Operator) -> bool {
+        match op {
+            Operator::Delete { .. } => true,
+            _ => children_of(op).iter().any(|c| plan_contains_delete(c)),
+        }
+    }
+
+    fn plan_delete_is_detach(op: &Operator) -> bool {
+        match op {
+            Operator::Delete { detach, .. } => *detach,
+            _ => children_of(op).iter().any(|c| plan_delete_is_detach(c)),
+        }
+    }
+
+    fn plan_contains_project(op: &Operator) -> bool {
+        match op {
+            Operator::Project { .. } => true,
+            _ => children_of(op).iter().any(|c| plan_contains_project(c)),
+        }
+    }
+
+    fn plan_contains_aggregate(op: &Operator) -> bool {
+        match op {
+            Operator::Aggregate { .. } => true,
+            _ => children_of(op).iter().any(|c| plan_contains_aggregate(c)),
+        }
+    }
+
+    fn plan_contains_unwind(op: &Operator) -> bool {
+        match op {
+            Operator::Unwind { .. } => true,
+            _ => children_of(op).iter().any(|c| plan_contains_unwind(c)),
+        }
+    }
+
+    fn plan_contains_set(op: &Operator) -> bool {
+        match op {
+            Operator::Set { .. } => true,
+            _ => children_of(op).iter().any(|c| plan_contains_set(c)),
+        }
+    }
+
+    fn plan_contains_remove(op: &Operator) -> bool {
+        match op {
+            Operator::Remove { .. } => true,
+            _ => children_of(op).iter().any(|c| plan_contains_remove(c)),
+        }
+    }
+
+    fn plan_contains_merge(op: &Operator) -> bool {
+        match op {
+            Operator::Merge { .. } => true,
+            _ => children_of(op).iter().any(|c| plan_contains_merge(c)),
+        }
+    }
+
+    fn plan_merge_has_actions(op: &Operator) -> bool {
+        match op {
+            Operator::Merge {
+                on_create,
+                on_match,
+                ..
+            } => !on_create.is_empty() && !on_match.is_empty(),
+            _ => children_of(op).iter().any(|c| plan_merge_has_actions(c)),
+        }
+    }
+
+    fn plan_contains_left_outer_apply(op: &Operator) -> bool {
+        match op {
+            Operator::LeftOuterApply { .. } => true,
+            _ => children_of(op)
+                .iter()
+                .any(|c| plan_contains_left_outer_apply(c)),
+        }
+    }
+
+    fn plan_contains_apply(op: &Operator) -> bool {
+        match op {
+            Operator::Apply { .. } => true,
+            _ => children_of(op).iter().any(|c| plan_contains_apply(c)),
+        }
+    }
+
+    fn plan_contains_distinct(op: &Operator) -> bool {
+        match op {
+            Operator::Distinct { .. } => true,
+            _ => children_of(op).iter().any(|c| plan_contains_distinct(c)),
+        }
+    }
+
+    fn plan_contains_index_scan(op: &Operator) -> bool {
+        match op {
+            Operator::IndexScan { .. } => true,
+            _ => children_of(op).iter().any(|c| plan_contains_index_scan(c)),
+        }
+    }
+
+    /// Extract all child operators from an operator for recursive tree searches.
+    fn children_of(op: &Operator) -> Vec<&Operator> {
+        match op {
+            Operator::NodeScan { .. }
+            | Operator::IndexScan { .. }
+            | Operator::NodeByIdSeek { .. }
+            | Operator::ShortestPath { .. } => vec![],
+
+            Operator::Filter { child, .. }
+            | Operator::Project { child, .. }
+            | Operator::Aggregate { child, .. }
+            | Operator::Distinct { child }
+            | Operator::Sort { child, .. }
+            | Operator::Limit { child, .. }
+            | Operator::Skip { child, .. }
+            | Operator::Unwind { child, .. }
+            | Operator::Set { child, .. }
+            | Operator::Remove { child, .. }
+            | Operator::Delete { child, .. }
+            | Operator::ProduceResults { child, .. }
+            | Operator::Expand { child, .. }
+            | Operator::VarLenExpand { child, .. } => vec![child],
+
+            Operator::Apply { outer, inner }
+            | Operator::LeftOuterApply {
+                preserved: outer,
+                optional_pattern: inner,
+            } => vec![outer, inner],
+
+            Operator::Union { left, right, .. } => vec![left, right],
+
+            Operator::Create { child, .. } => match child {
+                Some(c) => vec![c],
+                None => vec![],
+            },
+
+            Operator::Merge { child, .. } => match child {
+                Some(c) => vec![c],
+                None => vec![],
+            },
+        }
     }
 }

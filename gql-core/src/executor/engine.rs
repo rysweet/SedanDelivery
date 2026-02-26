@@ -11,15 +11,15 @@
 //!
 //! Every operator checks `budget.check_or_err()` before doing any work.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use crate::ast::{Direction, Expr};
 use crate::error::{ExecutionError, GqlError};
 use crate::executor::budget::ExecutionBudget;
 use crate::executor::filter::eval_expr;
 use crate::executor::filter::Row as FilterRow;
-use crate::planner::{AggFunction, Operator};
-use crate::storage::{GraphStore, NodeId};
+use crate::planner::{AggFunction, Operator, RemoveItem, SetItem};
+use crate::storage::{EdgeId, GraphStore, NodeId, RangeQuery};
 use crate::types::Value;
 
 // ── Public types ──────────────────────────────────────────────────────────────
@@ -458,19 +458,572 @@ impl<'a> QueryExecutor<'a> {
                 Ok(out)
             }
 
-            // ── Unsupported operators ─────────────────────────────────────────
-            Operator::VarLenExpand { .. } => Err(unsupported("VarLenExpand")),
-            Operator::ShortestPath { .. } => Err(unsupported("ShortestPath")),
-            Operator::Merge { .. } => Err(unsupported("Merge")),
-            Operator::Apply { .. } => Err(unsupported("Apply")),
-            Operator::LeftOuterApply { .. } => Err(unsupported("LeftOuterApply")),
-            Operator::Union { .. } => Err(unsupported("Union")),
-            Operator::Unwind { .. } => Err(unsupported("Unwind")),
-            Operator::Set { .. } => Err(unsupported("Set")),
-            Operator::Remove { .. } => Err(unsupported("Remove")),
-            Operator::Delete { .. } => Err(unsupported("Delete")),
-            Operator::IndexScan { .. } => Err(unsupported("IndexScan")),
-            Operator::NodeByIdSeek { .. } => Err(unsupported("NodeByIdSeek")),
+            // ── VarLenExpand ──────────────────────────────────────────────────
+            Operator::VarLenExpand {
+                direction,
+                rel_types,
+                min,
+                max,
+                src_alias,
+                path_alias,
+                dst_alias,
+                child,
+            } => {
+                let input = self.exec_operator(graph, child, budget, outer_rows, stats)?;
+                let type_strs: Vec<&str> = rel_types.iter().map(|r| r.as_str()).collect();
+                let mut out = Vec::new();
+
+                for row in input {
+                    budget.check_or_err()?;
+                    let src_val = row
+                        .get(src_alias.0.as_str())
+                        .ok_or_else(|| undefined_var(&src_alias.0))?;
+                    let src_id = extract_node_id(src_val, &src_alias.0)?;
+
+                    // BFS tracking full paths: queue entries are (node_id, path_nodes, path_edges)
+                    let mut queue: VecDeque<(NodeId, Vec<NodeId>, Vec<EdgeId>)> = VecDeque::new();
+                    queue.push_back((src_id, vec![src_id], vec![]));
+                    // Track visited to avoid cycles
+                    let mut visited = HashSet::new();
+                    visited.insert(src_id);
+
+                    while let Some((current, path_nodes, path_edges)) = queue.pop_front() {
+                        budget.check_or_err()?;
+                        let depth = path_edges.len() as u32;
+
+                        // Yield this path if depth is within [min, max]
+                        if depth >= *min && depth <= *max {
+                            let mut new_row = row.clone();
+                            let end_node = *path_nodes.last().unwrap();
+                            new_row.insert(dst_alias.0.clone(), Value::Node(end_node));
+                            if let Some(pa) = path_alias {
+                                new_row.insert(
+                                    pa.0.clone(),
+                                    Value::Path {
+                                        nodes: path_nodes.clone(),
+                                        edges: path_edges.clone(),
+                                    },
+                                );
+                            }
+                            budget.record_row();
+                            out.push(new_row);
+                        }
+
+                        // Expand further if depth < max
+                        if depth < *max {
+                            let adj_entries =
+                                get_adj_entries(self.store, graph, current, direction, &type_strs)?;
+                            for adj in adj_entries {
+                                budget.check_or_err()?;
+                                // Allow revisiting nodes for different paths, but avoid
+                                // infinite cycles by not revisiting at the expansion level.
+                                // For VarLenExpand, we only skip nodes already in the
+                                // current path to allow different paths through the graph.
+                                if path_nodes.contains(&adj.neighbor_id) {
+                                    continue;
+                                }
+                                let mut new_path_nodes = path_nodes.clone();
+                                new_path_nodes.push(adj.neighbor_id);
+                                let mut new_path_edges = path_edges.clone();
+                                new_path_edges.push(adj.edge_id);
+                                queue.push_back((adj.neighbor_id, new_path_nodes, new_path_edges));
+                            }
+                        }
+                    }
+                }
+                Ok(out)
+            }
+
+            // ── Set ──────────────────────────────────────────────────────────────
+            Operator::Set { items, child } => {
+                let input = self.exec_operator(graph, child, budget, outer_rows, stats)?;
+                let mut out = Vec::new();
+
+                for row in input {
+                    budget.check_or_err()?;
+                    let current_row = row;
+                    for item in items {
+                        self.apply_set_item(graph, &current_row, item, stats)?;
+                    }
+                    budget.record_row();
+                    out.push(current_row);
+                }
+                Ok(out)
+            }
+
+            // ── Remove ───────────────────────────────────────────────────────────
+            Operator::Remove { items, child } => {
+                let input = self.exec_operator(graph, child, budget, outer_rows, stats)?;
+                let mut out = Vec::new();
+
+                for row in input {
+                    budget.check_or_err()?;
+                    for item in items {
+                        match item {
+                            RemoveItem::Property { alias, key } => {
+                                let val = row
+                                    .get(alias.0.as_str())
+                                    .ok_or_else(|| undefined_var(&alias.0))?;
+                                let node_id = extract_node_id(val, &alias.0)?;
+                                self.store.remove_node_property(graph, node_id, key)?;
+                                stats.properties_set += 1;
+                            }
+                            RemoveItem::Labels { alias, labels } => {
+                                let val = row
+                                    .get(alias.0.as_str())
+                                    .ok_or_else(|| undefined_var(&alias.0))?;
+                                let node_id = extract_node_id(val, &alias.0)?;
+                                let label_strings: Vec<String> =
+                                    labels.iter().map(|l| l.as_str().to_string()).collect();
+                                self.store
+                                    .remove_node_labels(graph, node_id, &label_strings)?;
+                                stats.labels_added += label_strings.len() as u64;
+                            }
+                        }
+                    }
+                    budget.record_row();
+                    out.push(row);
+                }
+                Ok(out)
+            }
+
+            // ── Delete ───────────────────────────────────────────────────────────
+            Operator::Delete {
+                exprs,
+                detach,
+                child,
+            } => {
+                let input = self.exec_operator(graph, child, budget, outer_rows, stats)?;
+                let mut out = Vec::new();
+
+                for row in input {
+                    budget.check_or_err()?;
+                    let ctx = self.build_filter_ctx(graph, &row)?;
+                    for expr in exprs {
+                        let val = self.eval_with_storage(graph, expr, &row, &ctx)?;
+                        match val {
+                            Value::Node(node_id) => {
+                                self.store.delete_node(graph, node_id, *detach)?;
+                                stats.nodes_deleted += 1;
+                            }
+                            Value::Edge(edge_id) => {
+                                self.store.delete_edge(graph, edge_id)?;
+                                stats.edges_deleted += 1;
+                            }
+                            Value::Null => {
+                                // Deleting NULL is a no-op in Cypher
+                            }
+                            other => {
+                                return Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                                    expected: "Node or Relationship for DELETE".to_string(),
+                                    actual: other.type_name().to_string(),
+                                }));
+                            }
+                        }
+                    }
+                    budget.record_row();
+                    out.push(row);
+                }
+                Ok(out)
+            }
+
+            // ── Merge ────────────────────────────────────────────────────────────
+            Operator::Merge {
+                node_alias,
+                labels,
+                on_create,
+                on_match,
+                child,
+            } => {
+                let input = if let Some(ch) = child {
+                    self.exec_operator(graph, ch, budget, outer_rows, stats)?
+                } else {
+                    vec![Row::new()]
+                };
+
+                let mut out = Vec::new();
+                for mut row in input {
+                    budget.check_or_err()?;
+
+                    // Try to find existing nodes matching ALL labels
+                    let mut candidates: Option<HashSet<u64>> = None;
+                    for label in labels {
+                        let ids = self.store.find_nodes_by_label(graph, label.as_str())?;
+                        let id_set: HashSet<u64> = ids.iter().map(|n| n.0).collect();
+                        candidates = Some(match candidates {
+                            None => id_set,
+                            Some(existing) => existing.intersection(&id_set).copied().collect(),
+                        });
+                    }
+
+                    let matched_id = candidates.and_then(|cands| {
+                        // No label filtering means no candidates unless labels is empty
+                        if labels.is_empty() {
+                            return None;
+                        }
+                        // Return first candidate (MERGE finds or creates exactly one)
+                        cands.into_iter().next().map(NodeId)
+                    });
+
+                    if let Some(node_id) = matched_id {
+                        // ON MATCH: apply on_match set items
+                        if let Some(alias) = node_alias {
+                            row.insert(alias.0.clone(), Value::Node(node_id));
+                        }
+                        for item in on_match {
+                            self.apply_set_item(graph, &row, item, stats)?;
+                        }
+                    } else {
+                        // Not found: CREATE the node, then apply ON CREATE set items
+                        let label_strings: Vec<String> =
+                            labels.iter().map(|l| l.as_str().to_string()).collect();
+                        let label_count = label_strings.len() as u64;
+                        let node_id =
+                            self.store
+                                .create_node(graph, label_strings, HashMap::new())?;
+                        stats.nodes_created += 1;
+                        stats.labels_added += label_count;
+                        if let Some(alias) = node_alias {
+                            row.insert(alias.0.clone(), Value::Node(node_id));
+                        }
+                        for item in on_create {
+                            self.apply_set_item(graph, &row, item, stats)?;
+                        }
+                    }
+                    budget.record_row();
+                    out.push(row);
+                }
+                Ok(out)
+            }
+
+            // ── Unwind ───────────────────────────────────────────────────────────
+            Operator::Unwind {
+                list_expr,
+                alias,
+                child,
+            } => {
+                let input = self.exec_operator(graph, child, budget, outer_rows, stats)?;
+                let mut out = Vec::new();
+
+                for row in input {
+                    budget.check_or_err()?;
+                    let ctx = self.build_filter_ctx(graph, &row)?;
+                    let list_val = self.eval_with_storage(graph, list_expr, &row, &ctx)?;
+                    match list_val {
+                        Value::List(items) => {
+                            for item in items {
+                                budget.check_or_err()?;
+                                let mut new_row = row.clone();
+                                new_row.insert(alias.0.clone(), item);
+                                budget.record_row();
+                                out.push(new_row);
+                            }
+                        }
+                        Value::Null => {
+                            // UNWIND null produces zero rows (Cypher semantics)
+                        }
+                        other => {
+                            return Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                                expected: "List for UNWIND".to_string(),
+                                actual: other.type_name().to_string(),
+                            }));
+                        }
+                    }
+                }
+                Ok(out)
+            }
+
+            // ── Union ────────────────────────────────────────────────────────────
+            Operator::Union { left, right, all } => {
+                let left_rows = self.exec_operator(graph, left, budget, outer_rows, stats)?;
+                let right_rows = self.exec_operator(graph, right, budget, outer_rows, stats)?;
+
+                let mut out = Vec::with_capacity(left_rows.len() + right_rows.len());
+                if *all {
+                    // UNION ALL: concatenate without deduplication
+                    out.extend(left_rows);
+                    out.extend(right_rows);
+                } else {
+                    // UNION: deduplicate
+                    let mut seen: HashSet<String> = HashSet::new();
+                    for row in left_rows.into_iter().chain(right_rows) {
+                        budget.check_or_err()?;
+                        let key = row_key(&row);
+                        if seen.insert(key) {
+                            out.push(row);
+                        }
+                    }
+                }
+                Ok(out)
+            }
+
+            // ── LeftOuterApply ───────────────────────────────────────────────────
+            Operator::LeftOuterApply {
+                preserved,
+                optional_pattern,
+            } => {
+                let left_rows = self.exec_operator(graph, preserved, budget, outer_rows, stats)?;
+                let mut out = Vec::new();
+
+                for left_row in left_rows {
+                    budget.check_or_err()?;
+                    // Execute right side with the left row as context
+                    let right_rows = self.exec_operator(
+                        graph,
+                        optional_pattern,
+                        budget,
+                        std::slice::from_ref(&left_row),
+                        stats,
+                    )?;
+
+                    if right_rows.is_empty() {
+                        // No matches on right side: extend left row with NULLs
+                        // for any columns the right side would have produced.
+                        let mut result_row = left_row;
+                        // Discover right-side columns from the pattern structure
+                        let null_cols = discover_operator_aliases(optional_pattern);
+                        for col in null_cols {
+                            result_row.entry(col).or_insert(Value::Null);
+                        }
+                        budget.record_row();
+                        out.push(result_row);
+                    } else {
+                        // Combine left and right rows
+                        for right_row in right_rows {
+                            budget.check_or_err()?;
+                            let mut combined = left_row.clone();
+                            for (k, v) in right_row {
+                                combined.insert(k, v);
+                            }
+                            budget.record_row();
+                            out.push(combined);
+                        }
+                    }
+                }
+                Ok(out)
+            }
+
+            // ── Apply ────────────────────────────────────────────────────────────
+            Operator::Apply { outer, inner } => {
+                let outer_rows = self.exec_operator(graph, outer, budget, outer_rows, stats)?;
+                let mut out = Vec::new();
+
+                for outer_row in &outer_rows {
+                    budget.check_or_err()?;
+                    let inner_rows = self.exec_operator(
+                        graph,
+                        inner,
+                        budget,
+                        std::slice::from_ref(outer_row),
+                        stats,
+                    )?;
+
+                    if inner_rows.is_empty() {
+                        // If inner produces nothing, the outer row is still passed through
+                        budget.record_row();
+                        out.push(outer_row.clone());
+                    } else {
+                        for inner_row in inner_rows {
+                            budget.check_or_err()?;
+                            let mut combined = outer_row.clone();
+                            for (k, v) in inner_row {
+                                combined.insert(k, v);
+                            }
+                            budget.record_row();
+                            out.push(combined);
+                        }
+                    }
+                }
+                Ok(out)
+            }
+
+            // ── IndexScan ────────────────────────────────────────────────────────
+            Operator::IndexScan {
+                label,
+                property,
+                alias,
+            } => {
+                // Use the property index to find matching nodes.
+                // For a bare IndexScan (no specific value predicate), we scan all nodes
+                // with the label that have the property defined (using Gte on lowest value).
+                // In practice, the planner pairs this with a Filter for the predicate.
+                let node_ids = self.store.find_nodes_by_label_and_property(
+                    graph,
+                    label.as_str(),
+                    property,
+                    RangeQuery::Gte(&Value::Null),
+                )?;
+
+                // Fallback: if the range query returns empty (Null comparison issue),
+                // fall back to label scan with property existence check.
+                let effective_ids = if node_ids.is_empty() {
+                    let all_label = self.store.find_nodes_by_label(graph, label.as_str())?;
+                    let mut with_prop = Vec::new();
+                    for id in all_label {
+                        if let Some(node) = self.store.get_node(graph, id)? {
+                            if node.properties.contains_key(property.as_str()) {
+                                with_prop.push(id);
+                            }
+                        }
+                    }
+                    with_prop
+                } else {
+                    node_ids
+                };
+
+                let mut rows = Vec::with_capacity(effective_ids.len());
+                for id in effective_ids {
+                    budget.check_or_err()?;
+                    let mut row = Row::new();
+                    row.insert(alias.0.clone(), Value::Node(id));
+                    budget.record_row();
+                    rows.push(row);
+                }
+                Ok(rows)
+            }
+
+            // ── NodeByIdSeek ─────────────────────────────────────────────────────
+            Operator::NodeByIdSeek { id_expr, alias } => {
+                let ctx: FilterRow<'_> = HashMap::new();
+                let id_val = eval_expr(id_expr, &ctx)?;
+                let raw_id = match id_val {
+                    Value::Int(n) if n >= 0 => n as u64,
+                    Value::Int(n) => {
+                        return Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                            expected: "non-negative integer for node ID".to_string(),
+                            actual: n.to_string(),
+                        }));
+                    }
+                    other => {
+                        return Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                            expected: "integer for node ID".to_string(),
+                            actual: other.type_name().to_string(),
+                        }));
+                    }
+                };
+
+                let node_id = NodeId(raw_id);
+                let mut rows = Vec::new();
+                if let Some(_node_data) = self.store.get_node(graph, node_id)? {
+                    let mut row = Row::new();
+                    row.insert(alias.0.clone(), Value::Node(node_id));
+                    budget.record_row();
+                    rows.push(row);
+                }
+                Ok(rows)
+            }
+
+            // ── ShortestPath ─────────────────────────────────────────────────────
+            Operator::ShortestPath {
+                src_alias,
+                dst_alias,
+                rel_types,
+                direction,
+                min: _min,
+                max,
+                path_alias,
+                all_paths,
+            } => {
+                // ShortestPath requires both src and dst to be bound in outer context.
+                // For now, work from outer_rows or require them to be bound.
+                let type_strs: Vec<&str> = rel_types.iter().map(|r| r.as_str()).collect();
+                let mut out = Vec::new();
+
+                // If there are outer rows, use them. Otherwise create an empty row.
+                let context_rows = if outer_rows.is_empty() {
+                    vec![Row::new()]
+                } else {
+                    outer_rows.to_vec()
+                };
+
+                for row in &context_rows {
+                    budget.check_or_err()?;
+                    let src_val = row
+                        .get(src_alias.0.as_str())
+                        .ok_or_else(|| undefined_var(&src_alias.0))?;
+                    let src_id = extract_node_id(src_val, &src_alias.0)?;
+
+                    let dst_val = row
+                        .get(dst_alias.0.as_str())
+                        .ok_or_else(|| undefined_var(&dst_alias.0))?;
+                    let dst_id = extract_node_id(dst_val, &dst_alias.0)?;
+
+                    // BFS from src to dst, tracking full paths
+                    // Queue: (current_node, path_nodes, path_edges)
+                    let mut queue: VecDeque<(NodeId, Vec<NodeId>, Vec<EdgeId>)> = VecDeque::new();
+                    queue.push_back((src_id, vec![src_id], vec![]));
+                    let mut visited = HashSet::new();
+                    visited.insert(src_id);
+
+                    let mut found_paths: Vec<(Vec<NodeId>, Vec<EdgeId>)> = Vec::new();
+                    let mut shortest_len: Option<u32> = None;
+
+                    while let Some((current, path_nodes, path_edges)) = queue.pop_front() {
+                        budget.check_or_err()?;
+                        let depth = path_edges.len() as u32;
+
+                        // If we already found shortest paths and current depth exceeds
+                        // that length, stop (BFS guarantees depth ordering).
+                        if let Some(sl) = shortest_len {
+                            if depth > sl {
+                                break;
+                            }
+                        }
+
+                        // Check if we reached the destination
+                        if current == dst_id && depth > 0 {
+                            found_paths.push((path_nodes.clone(), path_edges.clone()));
+                            shortest_len = Some(depth);
+                            if !*all_paths {
+                                // shortestPath: just need the first one
+                                break;
+                            }
+                            // For allShortestPaths, continue at same depth level
+                            continue;
+                        }
+
+                        // Don't expand beyond max depth
+                        if depth >= *max {
+                            continue;
+                        }
+
+                        let adj_entries =
+                            get_adj_entries(self.store, graph, current, direction, &type_strs)?;
+                        for adj in adj_entries {
+                            budget.check_or_err()?;
+                            // For shortest path BFS, we track visited globally
+                            // but allow reaching dst through different paths at same depth.
+                            let is_dst = adj.neighbor_id == dst_id;
+                            if !is_dst && visited.contains(&adj.neighbor_id) {
+                                continue;
+                            }
+                            if !is_dst {
+                                visited.insert(adj.neighbor_id);
+                            }
+                            let mut new_nodes = path_nodes.clone();
+                            new_nodes.push(adj.neighbor_id);
+                            let mut new_edges = path_edges.clone();
+                            new_edges.push(adj.edge_id);
+                            queue.push_back((adj.neighbor_id, new_nodes, new_edges));
+                        }
+                    }
+
+                    // Produce output rows for each found path
+                    for (pn, pe) in found_paths {
+                        let mut new_row = row.clone();
+                        new_row.insert(
+                            path_alias.0.clone(),
+                            Value::Path {
+                                nodes: pn,
+                                edges: pe,
+                            },
+                        );
+                        budget.record_row();
+                        out.push(new_row);
+                    }
+                }
+                Ok(out)
+            }
         }
     }
 
@@ -623,6 +1176,70 @@ impl<'a> QueryExecutor<'a> {
             _ => eval_expr(expr, ctx),
         }
     }
+
+    /// Apply a single `SetItem` (SET n.prop = val, SET n = {map}, SET n += {map}, SET n:Label).
+    fn apply_set_item(
+        &self,
+        graph: &str,
+        row: &Row,
+        item: &SetItem,
+        stats: &mut MutationStats,
+    ) -> Result<(), GqlError> {
+        match item {
+            SetItem::Property { alias, key, value } => {
+                let val = row
+                    .get(alias.0.as_str())
+                    .ok_or_else(|| undefined_var(&alias.0))?;
+                let node_id = extract_node_id(val, &alias.0)?;
+                let ctx = self.build_filter_ctx(graph, row)?;
+                let prop_val = self.eval_with_storage(graph, value, row, &ctx)?;
+                let mut props = HashMap::new();
+                props.insert(key.clone(), prop_val);
+                self.store.set_node_properties(graph, node_id, props)?;
+                stats.properties_set += 1;
+            }
+            SetItem::Map { alias, map, merge } => {
+                let val = row
+                    .get(alias.0.as_str())
+                    .ok_or_else(|| undefined_var(&alias.0))?;
+                let node_id = extract_node_id(val, &alias.0)?;
+                let ctx = self.build_filter_ctx(graph, row)?;
+                let map_val = self.eval_with_storage(graph, map, row, &ctx)?;
+                let props = match map_val {
+                    Value::Map(m) => m
+                        .into_iter()
+                        .map(|(k, v)| (k.to_string(), v))
+                        .collect::<HashMap<String, Value>>(),
+                    Value::Null => HashMap::new(),
+                    other => {
+                        return Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                            expected: "Map for SET assignment".to_string(),
+                            actual: other.type_name().to_string(),
+                        }));
+                    }
+                };
+                let prop_count = props.len() as u64;
+                if *merge {
+                    self.store.set_node_properties(graph, node_id, props)?;
+                } else {
+                    self.store.replace_node_properties(graph, node_id, props)?;
+                }
+                stats.properties_set += prop_count;
+            }
+            SetItem::Labels { alias, labels } => {
+                let val = row
+                    .get(alias.0.as_str())
+                    .ok_or_else(|| undefined_var(&alias.0))?;
+                let node_id = extract_node_id(val, &alias.0)?;
+                let label_strings: Vec<String> =
+                    labels.iter().map(|l| l.as_str().to_string()).collect();
+                let label_count = label_strings.len() as u64;
+                self.store.add_node_labels(graph, node_id, &label_strings)?;
+                stats.labels_added += label_count;
+            }
+        }
+        Ok(())
+    }
 }
 
 // ── Aggregation state ─────────────────────────────────────────────────────────
@@ -745,9 +1362,79 @@ fn undefined_var(name: &str) -> GqlError {
     })
 }
 
-/// Return an `UnsupportedFeature` error for the given operator name.
-fn unsupported(op: &str) -> GqlError {
-    GqlError::Execution(ExecutionError::unsupported(op))
+/// Get adjacency entries for a node in the given direction and with the given type filter.
+fn get_adj_entries(
+    store: &dyn GraphStore,
+    graph: &str,
+    node_id: NodeId,
+    direction: &Direction,
+    type_strs: &[&str],
+) -> Result<Vec<crate::storage::AdjEntry>, GqlError> {
+    let entries = match direction {
+        Direction::Outgoing => store.out_edges_by_type(graph, node_id, type_strs)?,
+        Direction::Incoming => store.in_edges_by_type(graph, node_id, type_strs)?,
+        Direction::Undirected => {
+            let mut out = store.out_edges_by_type(graph, node_id, type_strs)?;
+            let in_ = store.in_edges_by_type(graph, node_id, type_strs)?;
+            out.extend(in_);
+            out
+        }
+    };
+    Ok(entries)
+}
+
+/// Discover the aliases (column names) that an operator tree would produce.
+/// Used by LeftOuterApply to fill NULLs for the right side when it produces no rows.
+fn discover_operator_aliases(op: &Operator) -> Vec<String> {
+    let mut aliases = Vec::new();
+    match op {
+        Operator::NodeScan { alias, .. } => {
+            aliases.push(alias.0.clone());
+        }
+        Operator::IndexScan { alias, .. } => {
+            aliases.push(alias.0.clone());
+        }
+        Operator::NodeByIdSeek { alias, .. } => {
+            aliases.push(alias.0.clone());
+        }
+        Operator::Expand {
+            rel_alias,
+            dst_alias,
+            child,
+            ..
+        } => {
+            aliases.extend(discover_operator_aliases(child));
+            if let Some(ra) = rel_alias {
+                aliases.push(ra.0.clone());
+            }
+            aliases.push(dst_alias.0.clone());
+        }
+        Operator::VarLenExpand {
+            path_alias,
+            dst_alias,
+            child,
+            ..
+        } => {
+            aliases.extend(discover_operator_aliases(child));
+            if let Some(pa) = path_alias {
+                aliases.push(pa.0.clone());
+            }
+            aliases.push(dst_alias.0.clone());
+        }
+        Operator::Filter { child, .. }
+        | Operator::Sort { child, .. }
+        | Operator::Limit { child, .. }
+        | Operator::Skip { child, .. }
+        | Operator::Distinct { child, .. }
+        | Operator::Set { child, .. }
+        | Operator::Remove { child, .. }
+        | Operator::Delete { child, .. }
+        | Operator::Unwind { child, .. } => {
+            aliases.extend(discover_operator_aliases(child));
+        }
+        _ => {}
+    }
+    aliases
 }
 
 /// Generate a deterministic string key for a row, used by `Distinct`.
@@ -1154,5 +1841,966 @@ mod tests {
         let result = executor.execute("g", &plan, &mut budget).unwrap();
         assert_eq!(result.rows.len(), 1);
         assert_eq!(result.rows[0]["count"], Value::Int(3));
+    }
+
+    // ── VarLenExpand tests ──────────────────────────────────────────────────
+
+    #[test]
+    fn varlen_expand_linear_chain() {
+        let store = make_store();
+        let a = store
+            .create_node("g", vec!["N".to_string()], HashMap::new())
+            .unwrap();
+        let b = store
+            .create_node("g", vec!["N".to_string()], HashMap::new())
+            .unwrap();
+        let c = store
+            .create_node("g", vec!["N".to_string()], HashMap::new())
+            .unwrap();
+        store
+            .create_edge("g", a, b, "R".to_string(), HashMap::new())
+            .unwrap();
+        store
+            .create_edge("g", b, c, "R".to_string(), HashMap::new())
+            .unwrap();
+
+        let executor = QueryExecutor::new(&store);
+        // MATCH (a)-[*1..2]->(b) starting from all N nodes
+        let plan = Operator::VarLenExpand {
+            direction: Direction::Outgoing,
+            rel_types: vec![RelType::new("R")],
+            min: 1,
+            max: 2,
+            src_alias: Identifier::new("a"),
+            path_alias: Some(Identifier::new("p")),
+            dst_alias: Identifier::new("b"),
+            child: Box::new(Operator::NodeScan {
+                label: Some(Label::new("N")),
+                alias: Identifier::new("a"),
+            }),
+        };
+        let mut budget = ExecutionBudget::unlimited();
+        let result = executor.execute("g", &plan, &mut budget).unwrap();
+        // From a: depth1->b, depth2->c
+        // From b: depth1->c
+        // From c: nothing (no outgoing)
+        // Total: 3 result rows
+        assert_eq!(result.rows.len(), 3);
+        // Check that paths are produced
+        let paths: Vec<_> = result
+            .rows
+            .iter()
+            .filter(|r| matches!(r.get("p"), Some(Value::Path { .. })))
+            .collect();
+        assert_eq!(paths.len(), 3);
+    }
+
+    #[test]
+    fn varlen_expand_min_zero_includes_self() {
+        let store = make_store();
+        let a = store
+            .create_node("g", vec!["N".to_string()], HashMap::new())
+            .unwrap();
+        let b = store
+            .create_node("g", vec!["N".to_string()], HashMap::new())
+            .unwrap();
+        store
+            .create_edge("g", a, b, "R".to_string(), HashMap::new())
+            .unwrap();
+
+        let executor = QueryExecutor::new(&store);
+        // (n)-[*0..1]->(m) from a specific node
+        let mut start_row = Row::new();
+        start_row.insert("src".to_string(), Value::Node(a));
+
+        let plan = Operator::VarLenExpand {
+            direction: Direction::Outgoing,
+            rel_types: vec![],
+            min: 0,
+            max: 1,
+            src_alias: Identifier::new("src"),
+            path_alias: None,
+            dst_alias: Identifier::new("dst"),
+            child: Box::new(Operator::NodeScan {
+                label: Some(Label::new("N")),
+                alias: Identifier::new("src"),
+            }),
+        };
+        let mut budget = ExecutionBudget::unlimited();
+        let result = executor.execute("g", &plan, &mut budget).unwrap();
+        // From a: depth0->a, depth1->b
+        // From b: depth0->b (no outgoing from b in our graph, b has no edges out except from a)
+        assert!(result.rows.len() >= 2);
+    }
+
+    #[test]
+    fn varlen_expand_avoids_cycles() {
+        let store = make_store();
+        let a = store
+            .create_node("g", vec!["N".to_string()], HashMap::new())
+            .unwrap();
+        let b = store
+            .create_node("g", vec!["N".to_string()], HashMap::new())
+            .unwrap();
+        // a -> b -> a (cycle)
+        store
+            .create_edge("g", a, b, "R".to_string(), HashMap::new())
+            .unwrap();
+        store
+            .create_edge("g", b, a, "R".to_string(), HashMap::new())
+            .unwrap();
+
+        let executor = QueryExecutor::new(&store);
+        let mut start_row = Row::new();
+        start_row.insert("src".to_string(), Value::Node(a));
+
+        let plan = Operator::VarLenExpand {
+            direction: Direction::Outgoing,
+            rel_types: vec![],
+            min: 1,
+            max: 5,
+            src_alias: Identifier::new("src"),
+            path_alias: None,
+            dst_alias: Identifier::new("dst"),
+            child: Box::new(Operator::NodeScan {
+                label: Some(Label::new("N")),
+                alias: Identifier::new("src"),
+            }),
+        };
+        let mut budget = ExecutionBudget::unlimited();
+        let result = executor.execute("g", &plan, &mut budget).unwrap();
+        // Should terminate and not loop infinitely
+        assert!(result.rows.len() > 0);
+        assert!(result.rows.len() < 100); // bounded by cycle avoidance
+    }
+
+    // ── Set tests ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn set_property() {
+        let store = make_store();
+        let mut props = HashMap::new();
+        props.insert("name".to_string(), Value::Str("Alice".into()));
+        let node_id = store
+            .create_node("g", vec!["Person".to_string()], props)
+            .unwrap();
+
+        let executor = QueryExecutor::new(&store);
+        let plan = Operator::Set {
+            items: vec![SetItem::Property {
+                alias: Identifier::new("n"),
+                key: "age".to_string(),
+                value: Expr::Integer(30),
+            }],
+            child: Box::new(Operator::NodeScan {
+                label: Some(Label::new("Person")),
+                alias: Identifier::new("n"),
+            }),
+        };
+        let mut budget = ExecutionBudget::unlimited();
+        let result = executor.execute("g", &plan, &mut budget).unwrap();
+        assert_eq!(result.stats.properties_set, 1);
+
+        // Verify property was set
+        let node = store.get_node("g", node_id).unwrap().unwrap();
+        assert_eq!(node.properties.get("age"), Some(&Value::Int(30)));
+        assert_eq!(
+            node.properties.get("name"),
+            Some(&Value::Str("Alice".into()))
+        );
+    }
+
+    #[test]
+    fn set_labels() {
+        let store = make_store();
+        let node_id = store
+            .create_node("g", vec!["Person".to_string()], HashMap::new())
+            .unwrap();
+
+        let executor = QueryExecutor::new(&store);
+        let plan = Operator::Set {
+            items: vec![SetItem::Labels {
+                alias: Identifier::new("n"),
+                labels: vec![Label::new("Employee")],
+            }],
+            child: Box::new(Operator::NodeScan {
+                label: Some(Label::new("Person")),
+                alias: Identifier::new("n"),
+            }),
+        };
+        let mut budget = ExecutionBudget::unlimited();
+        let result = executor.execute("g", &plan, &mut budget).unwrap();
+        assert_eq!(result.stats.labels_added, 1);
+
+        let node = store.get_node("g", node_id).unwrap().unwrap();
+        assert!(node.labels.contains(&"Employee".to_string()));
+        assert!(node.labels.contains(&"Person".to_string()));
+    }
+
+    #[test]
+    fn set_map_merge() {
+        let store = make_store();
+        let mut props = HashMap::new();
+        props.insert("name".to_string(), Value::Str("Alice".into()));
+        let node_id = store
+            .create_node("g", vec!["Person".to_string()], props)
+            .unwrap();
+
+        let executor = QueryExecutor::new(&store);
+        let plan = Operator::Set {
+            items: vec![SetItem::Map {
+                alias: Identifier::new("n"),
+                map: Expr::MapLiteral(vec![(smol_str::SmolStr::new("age"), Expr::Integer(25))]),
+                merge: true,
+            }],
+            child: Box::new(Operator::NodeScan {
+                label: Some(Label::new("Person")),
+                alias: Identifier::new("n"),
+            }),
+        };
+        let mut budget = ExecutionBudget::unlimited();
+        let result = executor.execute("g", &plan, &mut budget).unwrap();
+        assert_eq!(result.stats.properties_set, 1);
+
+        let node = store.get_node("g", node_id).unwrap().unwrap();
+        // Merge preserves existing properties
+        assert_eq!(
+            node.properties.get("name"),
+            Some(&Value::Str("Alice".into()))
+        );
+        assert_eq!(node.properties.get("age"), Some(&Value::Int(25)));
+    }
+
+    // ── Remove tests ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn remove_property() {
+        let store = make_store();
+        let mut props = HashMap::new();
+        props.insert("name".to_string(), Value::Str("Alice".into()));
+        props.insert("age".to_string(), Value::Int(30));
+        let node_id = store
+            .create_node("g", vec!["Person".to_string()], props)
+            .unwrap();
+
+        let executor = QueryExecutor::new(&store);
+        let plan = Operator::Remove {
+            items: vec![RemoveItem::Property {
+                alias: Identifier::new("n"),
+                key: "age".to_string(),
+            }],
+            child: Box::new(Operator::NodeScan {
+                label: Some(Label::new("Person")),
+                alias: Identifier::new("n"),
+            }),
+        };
+        let mut budget = ExecutionBudget::unlimited();
+        let result = executor.execute("g", &plan, &mut budget).unwrap();
+        assert_eq!(result.stats.properties_set, 1);
+
+        let node = store.get_node("g", node_id).unwrap().unwrap();
+        assert!(!node.properties.contains_key("age"));
+        assert_eq!(
+            node.properties.get("name"),
+            Some(&Value::Str("Alice".into()))
+        );
+    }
+
+    #[test]
+    fn remove_labels() {
+        let store = make_store();
+        let node_id = store
+            .create_node(
+                "g",
+                vec!["Person".to_string(), "Employee".to_string()],
+                HashMap::new(),
+            )
+            .unwrap();
+
+        let executor = QueryExecutor::new(&store);
+        let plan = Operator::Remove {
+            items: vec![RemoveItem::Labels {
+                alias: Identifier::new("n"),
+                labels: vec![Label::new("Employee")],
+            }],
+            child: Box::new(Operator::NodeScan {
+                label: Some(Label::new("Person")),
+                alias: Identifier::new("n"),
+            }),
+        };
+        let mut budget = ExecutionBudget::unlimited();
+        let _result = executor.execute("g", &plan, &mut budget).unwrap();
+
+        let node = store.get_node("g", node_id).unwrap().unwrap();
+        assert!(node.labels.contains(&"Person".to_string()));
+        assert!(!node.labels.contains(&"Employee".to_string()));
+    }
+
+    // ── Delete tests ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn delete_node_detach() {
+        let store = make_store();
+        let a = store
+            .create_node("g", vec!["Person".to_string()], HashMap::new())
+            .unwrap();
+        let b = store
+            .create_node("g", vec!["Person".to_string()], HashMap::new())
+            .unwrap();
+        store
+            .create_edge("g", a, b, "KNOWS".to_string(), HashMap::new())
+            .unwrap();
+
+        let executor = QueryExecutor::new(&store);
+        let plan = Operator::Delete {
+            exprs: vec![Expr::Variable(Identifier::new("n"))],
+            detach: true,
+            child: Box::new(Operator::Filter {
+                predicate: Expr::Bool(true),
+                child: Box::new(Operator::NodeScan {
+                    label: Some(Label::new("Person")),
+                    alias: Identifier::new("n"),
+                }),
+            }),
+        };
+        let mut budget = ExecutionBudget::unlimited();
+        let result = executor.execute("g", &plan, &mut budget).unwrap();
+        assert_eq!(result.stats.nodes_deleted, 2);
+    }
+
+    #[test]
+    fn delete_null_is_noop() {
+        let store = make_store();
+        let executor = QueryExecutor::new(&store);
+        // Build a row with a null and try to delete it
+        let plan = Operator::Delete {
+            exprs: vec![Expr::Null],
+            detach: false,
+            child: Box::new(Operator::NodeScan {
+                label: None,
+                alias: Identifier::new("n"),
+            }),
+        };
+        // Need at least one row for the delete to iterate
+        store.create_node("g", vec![], HashMap::new()).unwrap();
+        let mut budget = ExecutionBudget::unlimited();
+        let result = executor.execute("g", &plan, &mut budget).unwrap();
+        assert_eq!(result.stats.nodes_deleted, 0);
+    }
+
+    #[test]
+    fn delete_edge() {
+        let store = make_store();
+        let a = store
+            .create_node("g", vec!["N".to_string()], HashMap::new())
+            .unwrap();
+        let b = store
+            .create_node("g", vec!["N".to_string()], HashMap::new())
+            .unwrap();
+        let eid = store
+            .create_edge("g", a, b, "R".to_string(), HashMap::new())
+            .unwrap();
+
+        // Build a plan that scans and expands, then deletes the edge
+        let executor = QueryExecutor::new(&store);
+        let plan = Operator::Delete {
+            exprs: vec![Expr::Variable(Identifier::new("r"))],
+            detach: false,
+            child: Box::new(Operator::Expand {
+                direction: Direction::Outgoing,
+                rel_types: vec![RelType::new("R")],
+                src_alias: Identifier::new("a"),
+                rel_alias: Some(Identifier::new("r")),
+                dst_alias: Identifier::new("b"),
+                child: Box::new(Operator::NodeScan {
+                    label: Some(Label::new("N")),
+                    alias: Identifier::new("a"),
+                }),
+            }),
+        };
+        let mut budget = ExecutionBudget::unlimited();
+        let result = executor.execute("g", &plan, &mut budget).unwrap();
+        assert_eq!(result.stats.edges_deleted, 1);
+        assert!(store.get_edge("g", eid).unwrap().is_none());
+    }
+
+    // ── Merge tests ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn merge_creates_when_not_found() {
+        let store = make_store();
+        let executor = QueryExecutor::new(&store);
+
+        let plan = Operator::Merge {
+            node_alias: Some(Identifier::new("n")),
+            labels: vec![Label::new("Person")],
+            on_create: vec![SetItem::Property {
+                alias: Identifier::new("n"),
+                key: "name".to_string(),
+                value: Expr::Str("Alice".into()),
+            }],
+            on_match: vec![],
+            child: None,
+        };
+        let mut budget = ExecutionBudget::unlimited();
+        let result = executor.execute("g", &plan, &mut budget).unwrap();
+        assert_eq!(result.stats.nodes_created, 1);
+        assert_eq!(result.stats.properties_set, 1);
+
+        // Verify node created
+        let ids = store.find_nodes_by_label("g", "Person").unwrap();
+        assert_eq!(ids.len(), 1);
+        let node = store.get_node("g", ids[0]).unwrap().unwrap();
+        assert_eq!(
+            node.properties.get("name"),
+            Some(&Value::Str("Alice".into()))
+        );
+    }
+
+    #[test]
+    fn merge_matches_existing() {
+        let store = make_store();
+        let mut props = HashMap::new();
+        props.insert("name".to_string(), Value::Str("Alice".into()));
+        let existing = store
+            .create_node("g", vec!["Person".to_string()], props)
+            .unwrap();
+
+        let executor = QueryExecutor::new(&store);
+        let plan = Operator::Merge {
+            node_alias: Some(Identifier::new("n")),
+            labels: vec![Label::new("Person")],
+            on_create: vec![],
+            on_match: vec![SetItem::Property {
+                alias: Identifier::new("n"),
+                key: "seen".to_string(),
+                value: Expr::Bool(true),
+            }],
+            child: None,
+        };
+        let mut budget = ExecutionBudget::unlimited();
+        let result = executor.execute("g", &plan, &mut budget).unwrap();
+        assert_eq!(result.stats.nodes_created, 0);
+        assert_eq!(result.stats.properties_set, 1);
+
+        let node = store.get_node("g", existing).unwrap().unwrap();
+        assert_eq!(node.properties.get("seen"), Some(&Value::Bool(true)));
+    }
+
+    #[test]
+    fn merge_without_child() {
+        let store = make_store();
+        let executor = QueryExecutor::new(&store);
+
+        let plan = Operator::Merge {
+            node_alias: Some(Identifier::new("n")),
+            labels: vec![Label::new("City")],
+            on_create: vec![],
+            on_match: vec![],
+            child: None,
+        };
+        let mut budget = ExecutionBudget::unlimited();
+        let result = executor.execute("g", &plan, &mut budget).unwrap();
+        assert_eq!(result.stats.nodes_created, 1);
+        assert_eq!(result.rows.len(), 1);
+        assert!(result.rows[0].contains_key("n"));
+    }
+
+    // ── Unwind tests ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn unwind_list() {
+        let store = make_store();
+        store.create_node("g", vec![], HashMap::new()).unwrap();
+
+        let executor = QueryExecutor::new(&store);
+        let plan = Operator::Unwind {
+            list_expr: Expr::List(vec![Expr::Integer(1), Expr::Integer(2), Expr::Integer(3)]),
+            alias: Identifier::new("x"),
+            child: Box::new(Operator::NodeScan {
+                label: None,
+                alias: Identifier::new("n"),
+            }),
+        };
+        let mut budget = ExecutionBudget::unlimited();
+        let result = executor.execute("g", &plan, &mut budget).unwrap();
+        assert_eq!(result.rows.len(), 3);
+        let values: Vec<&Value> = result.rows.iter().map(|r| &r["x"]).collect();
+        assert_eq!(values, vec![&Value::Int(1), &Value::Int(2), &Value::Int(3)]);
+    }
+
+    #[test]
+    fn unwind_null_produces_zero_rows() {
+        let store = make_store();
+        store.create_node("g", vec![], HashMap::new()).unwrap();
+
+        let executor = QueryExecutor::new(&store);
+        let plan = Operator::Unwind {
+            list_expr: Expr::Null,
+            alias: Identifier::new("x"),
+            child: Box::new(Operator::NodeScan {
+                label: None,
+                alias: Identifier::new("n"),
+            }),
+        };
+        let mut budget = ExecutionBudget::unlimited();
+        let result = executor.execute("g", &plan, &mut budget).unwrap();
+        assert_eq!(result.rows.len(), 0);
+    }
+
+    #[test]
+    fn unwind_empty_list_produces_zero_rows() {
+        let store = make_store();
+        store.create_node("g", vec![], HashMap::new()).unwrap();
+
+        let executor = QueryExecutor::new(&store);
+        let plan = Operator::Unwind {
+            list_expr: Expr::List(vec![]),
+            alias: Identifier::new("x"),
+            child: Box::new(Operator::NodeScan {
+                label: None,
+                alias: Identifier::new("n"),
+            }),
+        };
+        let mut budget = ExecutionBudget::unlimited();
+        let result = executor.execute("g", &plan, &mut budget).unwrap();
+        assert_eq!(result.rows.len(), 0);
+    }
+
+    // ── Union tests ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn union_all_concatenates() {
+        let store = make_store();
+        store
+            .create_node("g", vec!["Person".to_string()], HashMap::new())
+            .unwrap();
+        store
+            .create_node("g", vec!["Movie".to_string()], HashMap::new())
+            .unwrap();
+
+        let executor = QueryExecutor::new(&store);
+        let plan = Operator::Union {
+            left: Box::new(Operator::NodeScan {
+                label: Some(Label::new("Person")),
+                alias: Identifier::new("n"),
+            }),
+            right: Box::new(Operator::NodeScan {
+                label: Some(Label::new("Movie")),
+                alias: Identifier::new("n"),
+            }),
+            all: true,
+        };
+        let mut budget = ExecutionBudget::unlimited();
+        let result = executor.execute("g", &plan, &mut budget).unwrap();
+        assert_eq!(result.rows.len(), 2);
+    }
+
+    #[test]
+    fn union_deduplicates() {
+        let store = make_store();
+        let _node = store
+            .create_node("g", vec!["Both".to_string()], HashMap::new())
+            .unwrap();
+
+        let executor = QueryExecutor::new(&store);
+        // Both sides return the same node
+        let plan = Operator::Union {
+            left: Box::new(Operator::NodeScan {
+                label: Some(Label::new("Both")),
+                alias: Identifier::new("n"),
+            }),
+            right: Box::new(Operator::NodeScan {
+                label: Some(Label::new("Both")),
+                alias: Identifier::new("n"),
+            }),
+            all: false,
+        };
+        let mut budget = ExecutionBudget::unlimited();
+        let result = executor.execute("g", &plan, &mut budget).unwrap();
+        // Should deduplicate to 1 row
+        assert_eq!(result.rows.len(), 1);
+    }
+
+    // ── LeftOuterApply tests ─────────────────────────────────────────────────
+
+    #[test]
+    fn left_outer_apply_with_match() {
+        let store = make_store();
+        let a = store
+            .create_node("g", vec!["Person".to_string()], HashMap::new())
+            .unwrap();
+        let b = store
+            .create_node("g", vec!["Person".to_string()], HashMap::new())
+            .unwrap();
+        store
+            .create_edge("g", a, b, "KNOWS".to_string(), HashMap::new())
+            .unwrap();
+
+        let executor = QueryExecutor::new(&store);
+        // OPTIONAL MATCH (a)-[:KNOWS]->(b) — a has a match, b does not
+        let plan = Operator::LeftOuterApply {
+            preserved: Box::new(Operator::NodeScan {
+                label: Some(Label::new("Person")),
+                alias: Identifier::new("a"),
+            }),
+            optional_pattern: Box::new(Operator::Expand {
+                direction: Direction::Outgoing,
+                rel_types: vec![RelType::new("KNOWS")],
+                src_alias: Identifier::new("a"),
+                rel_alias: Some(Identifier::new("r")),
+                dst_alias: Identifier::new("friend"),
+                child: Box::new(Operator::NodeScan {
+                    label: Some(Label::new("Person")),
+                    alias: Identifier::new("a"),
+                }),
+            }),
+        };
+        let mut budget = ExecutionBudget::unlimited();
+        let result = executor.execute("g", &plan, &mut budget).unwrap();
+        // 2 Person nodes: a has 1 KNOWS edge, b has 0 KNOWS edges
+        // a produces a row with friend, b produces a row with NULL friend
+        assert_eq!(result.rows.len(), 2);
+    }
+
+    #[test]
+    fn left_outer_apply_no_match_produces_nulls() {
+        let store = make_store();
+        store
+            .create_node("g", vec!["Person".to_string()], HashMap::new())
+            .unwrap();
+        // No edges at all
+
+        let executor = QueryExecutor::new(&store);
+        let plan = Operator::LeftOuterApply {
+            preserved: Box::new(Operator::NodeScan {
+                label: Some(Label::new("Person")),
+                alias: Identifier::new("a"),
+            }),
+            optional_pattern: Box::new(Operator::Expand {
+                direction: Direction::Outgoing,
+                rel_types: vec![RelType::new("KNOWS")],
+                src_alias: Identifier::new("a"),
+                rel_alias: None,
+                dst_alias: Identifier::new("b"),
+                child: Box::new(Operator::NodeScan {
+                    label: Some(Label::new("Person")),
+                    alias: Identifier::new("a"),
+                }),
+            }),
+        };
+        let mut budget = ExecutionBudget::unlimited();
+        let result = executor.execute("g", &plan, &mut budget).unwrap();
+        assert_eq!(result.rows.len(), 1);
+        // 'b' should be Null
+        assert_eq!(result.rows[0].get("b"), Some(&Value::Null));
+    }
+
+    // ── Apply tests ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn apply_combines_outer_inner() {
+        let store = make_store();
+        store
+            .create_node("g", vec!["A".to_string()], HashMap::new())
+            .unwrap();
+        store
+            .create_node("g", vec!["B".to_string()], HashMap::new())
+            .unwrap();
+
+        let executor = QueryExecutor::new(&store);
+        let plan = Operator::Apply {
+            outer: Box::new(Operator::NodeScan {
+                label: Some(Label::new("A")),
+                alias: Identifier::new("a"),
+            }),
+            inner: Box::new(Operator::NodeScan {
+                label: Some(Label::new("B")),
+                alias: Identifier::new("b"),
+            }),
+        };
+        let mut budget = ExecutionBudget::unlimited();
+        let result = executor.execute("g", &plan, &mut budget).unwrap();
+        // 1 outer * 1 inner = 1 combined row
+        assert_eq!(result.rows.len(), 1);
+        assert!(result.rows[0].contains_key("a"));
+        assert!(result.rows[0].contains_key("b"));
+    }
+
+    #[test]
+    fn apply_empty_inner_passes_outer() {
+        let store = make_store();
+        store
+            .create_node("g", vec!["A".to_string()], HashMap::new())
+            .unwrap();
+
+        let executor = QueryExecutor::new(&store);
+        let plan = Operator::Apply {
+            outer: Box::new(Operator::NodeScan {
+                label: Some(Label::new("A")),
+                alias: Identifier::new("a"),
+            }),
+            inner: Box::new(Operator::NodeScan {
+                label: Some(Label::new("NonExistent")),
+                alias: Identifier::new("b"),
+            }),
+        };
+        let mut budget = ExecutionBudget::unlimited();
+        let result = executor.execute("g", &plan, &mut budget).unwrap();
+        // Inner produces nothing, outer row is still passed through
+        assert_eq!(result.rows.len(), 1);
+        assert!(result.rows[0].contains_key("a"));
+    }
+
+    // ── IndexScan tests ──────────────────────────────────────────────────────
+
+    #[test]
+    fn index_scan_finds_nodes() {
+        let store = make_store();
+        let mut p1 = HashMap::new();
+        p1.insert("age".to_string(), Value::Int(30));
+        let _a = store
+            .create_node("g", vec!["Person".to_string()], p1)
+            .unwrap();
+
+        let mut p2 = HashMap::new();
+        p2.insert("age".to_string(), Value::Int(25));
+        let _b = store
+            .create_node("g", vec!["Person".to_string()], p2)
+            .unwrap();
+
+        // Create without the age property
+        store
+            .create_node("g", vec!["Person".to_string()], HashMap::new())
+            .unwrap();
+
+        let executor = QueryExecutor::new(&store);
+        let plan = Operator::IndexScan {
+            label: Label::new("Person"),
+            property: "age".to_string(),
+            alias: Identifier::new("n"),
+        };
+        let mut budget = ExecutionBudget::unlimited();
+        let result = executor.execute("g", &plan, &mut budget).unwrap();
+        // Should find 2 nodes (those with the 'age' property)
+        assert_eq!(result.rows.len(), 2);
+    }
+
+    #[test]
+    fn index_scan_empty_result() {
+        let store = make_store();
+        store
+            .create_node("g", vec!["Person".to_string()], HashMap::new())
+            .unwrap();
+
+        let executor = QueryExecutor::new(&store);
+        let plan = Operator::IndexScan {
+            label: Label::new("Person"),
+            property: "nonexistent".to_string(),
+            alias: Identifier::new("n"),
+        };
+        let mut budget = ExecutionBudget::unlimited();
+        let result = executor.execute("g", &plan, &mut budget).unwrap();
+        assert_eq!(result.rows.len(), 0);
+    }
+
+    // ── NodeByIdSeek tests ───────────────────────────────────────────────────
+
+    #[test]
+    fn node_by_id_seek_found() {
+        let store = make_store();
+        let node_id = store
+            .create_node("g", vec!["Person".to_string()], HashMap::new())
+            .unwrap();
+
+        let executor = QueryExecutor::new(&store);
+        let plan = Operator::NodeByIdSeek {
+            id_expr: Expr::Integer(node_id.0 as i64),
+            alias: Identifier::new("n"),
+        };
+        let mut budget = ExecutionBudget::unlimited();
+        let result = executor.execute("g", &plan, &mut budget).unwrap();
+        assert_eq!(result.rows.len(), 1);
+        assert_eq!(result.rows[0]["n"], Value::Node(node_id));
+    }
+
+    #[test]
+    fn node_by_id_seek_not_found() {
+        let store = make_store();
+
+        let executor = QueryExecutor::new(&store);
+        let plan = Operator::NodeByIdSeek {
+            id_expr: Expr::Integer(99999),
+            alias: Identifier::new("n"),
+        };
+        let mut budget = ExecutionBudget::unlimited();
+        let result = executor.execute("g", &plan, &mut budget).unwrap();
+        assert_eq!(result.rows.len(), 0);
+    }
+
+    #[test]
+    fn node_by_id_seek_negative_id_is_error() {
+        let store = make_store();
+
+        let executor = QueryExecutor::new(&store);
+        let plan = Operator::NodeByIdSeek {
+            id_expr: Expr::Integer(-1),
+            alias: Identifier::new("n"),
+        };
+        let mut budget = ExecutionBudget::unlimited();
+        let result = executor.execute("g", &plan, &mut budget);
+        assert!(result.is_err());
+    }
+
+    // ── ShortestPath tests ───────────────────────────────────────────────────
+
+    #[test]
+    fn shortest_path_finds_path() {
+        let store = make_store();
+        let a = store
+            .create_node("g", vec!["N".to_string()], HashMap::new())
+            .unwrap();
+        let b = store
+            .create_node("g", vec!["N".to_string()], HashMap::new())
+            .unwrap();
+        let c = store
+            .create_node("g", vec!["N".to_string()], HashMap::new())
+            .unwrap();
+        store
+            .create_edge("g", a, b, "R".to_string(), HashMap::new())
+            .unwrap();
+        store
+            .create_edge("g", b, c, "R".to_string(), HashMap::new())
+            .unwrap();
+        // Also add a direct edge a->c (shorter path)
+        store
+            .create_edge("g", a, c, "R".to_string(), HashMap::new())
+            .unwrap();
+
+        // We need src and dst bound in context
+        let mut start_row = Row::new();
+        start_row.insert("src".to_string(), Value::Node(a));
+        start_row.insert("dst".to_string(), Value::Node(c));
+
+        let executor = QueryExecutor::new(&store);
+        let plan = Operator::ShortestPath {
+            src_alias: Identifier::new("src"),
+            dst_alias: Identifier::new("dst"),
+            rel_types: vec![],
+            direction: Direction::Outgoing,
+            min: 1,
+            max: 10,
+            path_alias: Identifier::new("p"),
+            all_paths: false,
+        };
+        let mut budget = ExecutionBudget::unlimited();
+        let mut stats = MutationStats::default();
+        let rows = executor
+            .exec_operator("g", &plan, &mut budget, &[start_row], &mut stats)
+            .unwrap();
+        assert_eq!(rows.len(), 1);
+        // The shortest path should be a->c (length 1, not a->b->c length 2)
+        match &rows[0]["p"] {
+            Value::Path { nodes, edges } => {
+                assert_eq!(edges.len(), 1); // shortest path is direct
+                assert_eq!(nodes[0], a);
+                assert_eq!(nodes[1], c);
+            }
+            other => panic!("expected Path, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn shortest_path_all_paths() {
+        let store = make_store();
+        let a = store
+            .create_node("g", vec!["N".to_string()], HashMap::new())
+            .unwrap();
+        let b = store
+            .create_node("g", vec!["N".to_string()], HashMap::new())
+            .unwrap();
+        let c = store
+            .create_node("g", vec!["N".to_string()], HashMap::new())
+            .unwrap();
+        // Two paths of length 2: a->b->c and a->X->c... but let's make two
+        // equal-length paths. a->b->c and a->d->c
+        let d = store
+            .create_node("g", vec!["N".to_string()], HashMap::new())
+            .unwrap();
+        store
+            .create_edge("g", a, b, "R".to_string(), HashMap::new())
+            .unwrap();
+        store
+            .create_edge("g", b, c, "R".to_string(), HashMap::new())
+            .unwrap();
+        store
+            .create_edge("g", a, d, "R".to_string(), HashMap::new())
+            .unwrap();
+        store
+            .create_edge("g", d, c, "R".to_string(), HashMap::new())
+            .unwrap();
+
+        let mut start_row = Row::new();
+        start_row.insert("src".to_string(), Value::Node(a));
+        start_row.insert("dst".to_string(), Value::Node(c));
+
+        let executor = QueryExecutor::new(&store);
+        let plan = Operator::ShortestPath {
+            src_alias: Identifier::new("src"),
+            dst_alias: Identifier::new("dst"),
+            rel_types: vec![],
+            direction: Direction::Outgoing,
+            min: 1,
+            max: 10,
+            path_alias: Identifier::new("p"),
+            all_paths: true,
+        };
+        let mut budget = ExecutionBudget::unlimited();
+        let mut stats = MutationStats::default();
+        let rows = executor
+            .exec_operator("g", &plan, &mut budget, &[start_row], &mut stats)
+            .unwrap();
+        // Should find both paths of length 2
+        assert_eq!(rows.len(), 2);
+        for row in &rows {
+            match &row["p"] {
+                Value::Path { edges, .. } => assert_eq!(edges.len(), 2),
+                other => panic!("expected Path, got {:?}", other),
+            }
+        }
+    }
+
+    #[test]
+    fn shortest_path_no_path_exists() {
+        let store = make_store();
+        let a = store
+            .create_node("g", vec!["N".to_string()], HashMap::new())
+            .unwrap();
+        let b = store
+            .create_node("g", vec!["N".to_string()], HashMap::new())
+            .unwrap();
+        // No edges at all
+
+        let mut start_row = Row::new();
+        start_row.insert("src".to_string(), Value::Node(a));
+        start_row.insert("dst".to_string(), Value::Node(b));
+
+        let executor = QueryExecutor::new(&store);
+        let plan = Operator::ShortestPath {
+            src_alias: Identifier::new("src"),
+            dst_alias: Identifier::new("dst"),
+            rel_types: vec![],
+            direction: Direction::Outgoing,
+            min: 1,
+            max: 5,
+            path_alias: Identifier::new("p"),
+            all_paths: false,
+        };
+        let mut budget = ExecutionBudget::unlimited();
+        let mut stats = MutationStats::default();
+        let rows = executor
+            .exec_operator("g", &plan, &mut budget, &[start_row], &mut stats)
+            .unwrap();
+        assert_eq!(rows.len(), 0);
     }
 }
