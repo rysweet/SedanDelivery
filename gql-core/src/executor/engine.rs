@@ -326,7 +326,14 @@ impl<'a> QueryExecutor<'a> {
                     for (agg_idx, (func, arg_expr, distinct, _alias)) in
                         aggregations.iter().enumerate()
                     {
-                        let arg_val = self.eval_with_storage(graph, arg_expr, row, &ctx)?;
+                        // count(*) — the `*` argument is a sentinel meaning "count rows".
+                        // Use a non-null placeholder so the accumulator counts every row.
+                        let arg_val =
+                            if matches!(arg_expr, Expr::Variable(ref id) if id.0 == "*") {
+                                Value::Bool(true)
+                            } else {
+                                self.eval_with_storage(graph, arg_expr, row, &ctx)?
+                            };
                         groups[idx].1[agg_idx].accumulate(func, arg_val, *distinct);
                     }
                 }
