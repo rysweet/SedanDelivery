@@ -1,0 +1,16 @@
+[package]
+name    = "gql-module"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+name       = "gql_module"
+
+[dependencies]
+gql-core        = { path = "../gql-core" }
+gql-redis-store = { path = "../gql-redis-store" }
+thiserror       = { workspace = true }
+tracing         = { workspace = true }
+redis-module    = "0.24"

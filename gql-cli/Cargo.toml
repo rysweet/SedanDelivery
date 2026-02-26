@@ -1,0 +1,13 @@
+[package]
+name    = "gql-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+gql-core = { path = "../gql-core" }
+tracing  = { workspace = true }
+
+[[bin]]
+name = "gql-cli"
+path = "src/main.rs"
