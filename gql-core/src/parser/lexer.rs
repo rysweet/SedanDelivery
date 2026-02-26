@@ -57,6 +57,7 @@ pub enum TokenKind {
     Ends,
     Contains,
     Count,
+    Yield,
 
     // ── Punctuation ───────────────────────────────────────────────────────────
     LParen,   // (
@@ -193,6 +194,7 @@ fn keyword(lower: &str) -> Option<TokenKind> {
         "ends" => Some(TokenKind::Ends),
         "contains" => Some(TokenKind::Contains),
         "count" => Some(TokenKind::Count),
+        "yield" => Some(TokenKind::Yield),
         _ => None,
     }
 }

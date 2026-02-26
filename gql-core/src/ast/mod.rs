@@ -386,6 +386,7 @@ pub enum Clause {
     Set(SetClause),
     Remove(RemoveClause),
     Merge(MergeClause),
+    Call(CallClause),
 }
 
 /// A MATCH or OPTIONAL MATCH clause.
@@ -437,15 +438,16 @@ pub struct PathStep {
     pub node: NodePattern,
 }
 
-/// A node pattern: `(variable:Label {props})`.
+/// A node pattern: `(variable:Label {props} WHERE predicate)`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct NodePattern {
     pub variable: Option<Identifier>,
     pub labels: Vec<Label>,
     pub properties: Option<MapLiteral>,
+    pub where_clause: Option<Expr>,
 }
 
-/// A relationship pattern: `-[variable:TYPE*min..max {props}]->`.
+/// A relationship pattern: `-[variable:TYPE*min..max {props} WHERE predicate]->`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RelPattern {
     pub variable: Option<Identifier>,
@@ -454,6 +456,7 @@ pub struct RelPattern {
     pub direction: Direction,
     pub range: Option<RangeQuantifier>,
     pub properties: Option<MapLiteral>,
+    pub where_clause: Option<Expr>,
 }
 
 /// Variable-length quantifier `*min..max`. Both bounds are optional.
@@ -515,6 +518,15 @@ pub struct WithClause {
 pub struct UnwindClause {
     pub expr: Expr,
     pub alias: Identifier,
+}
+
+/// A CALL clause: `CALL procedure.name(args) YIELD var1 AS alias1, var2`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CallClause {
+    pub procedure: String,
+    pub args: Vec<Expr>,
+    /// YIELD items: `(name, optional_alias)`.
+    pub yield_items: Vec<(Identifier, Option<Identifier>)>,
 }
 
 /// A single item in a SET clause.
