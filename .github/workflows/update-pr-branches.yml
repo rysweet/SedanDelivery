@@ -1,0 +1,149 @@
+---
+name: Update PR Branches
+
+'on':
+  workflow_dispatch:
+    inputs:
+      pr_numbers:
+        description: >-
+          Comma-separated PR numbers to update
+          (leave empty for all open PRs)
+        required: false
+        type: string
+  schedule:
+    # Run daily at 2 AM UTC
+    - cron: '0 2 * * *'
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  update-pr-branches:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configure Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Get open PRs
+        id: get-prs
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ -n "${{ inputs.pr_numbers }}" ]; then
+            # Use specific PR numbers if provided
+            PR_NUMBERS="${{ inputs.pr_numbers }}"
+          else
+            # Get all open PR numbers
+            PR_NUMBERS=$(gh pr list --state open \
+              --json number --jq '.[].number' | tr '\n' ',')
+          fi
+          echo "pr_numbers=$PR_NUMBERS" >> $GITHUB_OUTPUT
+          echo "Found PRs to update: $PR_NUMBERS"
+
+      - name: Update PR branches
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          IFS=',' read -ra PRS <<< "${{ steps.get-prs.outputs.pr_numbers }}"
+
+          updated_count=0
+          skipped_count=0
+          failed_count=0
+
+          for pr_num in "${PRS[@]}"; do
+            # Skip empty entries
+            [ -z "$pr_num" ] && continue
+
+            echo "Processing PR #$pr_num..."
+
+            # Get PR details
+            pr_info=$(gh pr view "$pr_num" \
+              --json headRefName,baseRefName,mergeable,state)
+
+            # Check if PR is still open
+            state=$(echo "$pr_info" | jq -r '.state')
+            if [ "$state" != "OPEN" ]; then
+              echo "  Skipping PR #$pr_num (not open)"
+              ((skipped_count++))
+              continue
+            fi
+
+            head_branch=$(echo "$pr_info" | jq -r '.headRefName')
+            base_branch=$(echo "$pr_info" | jq -r '.baseRefName')
+            mergeable=$(echo "$pr_info" | jq -r '.mergeable')
+
+            echo "  Head: $head_branch"
+            echo "  Base: $base_branch"
+            echo "  Mergeable: $mergeable"
+
+            # Fetch latest changes
+            git fetch origin "$base_branch" "$head_branch" || {
+              echo "  Failed to fetch branches for PR #$pr_num"
+              ((failed_count++))
+              continue
+            }
+
+            # Check if PR branch is behind base branch
+            behind_count=$(git rev-list --count \
+              "origin/$head_branch..origin/$base_branch")
+
+            if [ "$behind_count" -eq 0 ]; then
+              echo "  PR #$pr_num is up to date"
+              ((skipped_count++))
+              continue
+            fi
+
+            echo "  PR #$pr_num is $behind_count commits behind"
+
+            # Checkout PR branch
+            git checkout -B "$head_branch" "origin/$head_branch" || {
+              echo "  Failed to checkout $head_branch"
+              ((failed_count++))
+              continue
+            }
+
+            # Attempt to merge base branch
+            merge_msg="chore: Merge $base_branch into $head_branch"
+            if git merge "origin/$base_branch" --no-edit -m "$merge_msg"
+            then
+              # Push updated branch
+              if git push origin "$head_branch"; then
+                echo "  Successfully updated PR #$pr_num"
+                ((updated_count++))
+              else
+                echo "  Failed to push updates for PR #$pr_num"
+                ((failed_count++))
+                git merge --abort 2>/dev/null || true
+              fi
+            else
+              echo "  Merge conflict for PR #$pr_num"
+              ((failed_count++))
+              git merge --abort
+            fi
+
+            # Return to main branch for next iteration
+            git checkout main 2>/dev/null || true
+          done
+
+          echo ""
+          echo "Summary:"
+          echo "  Updated: $updated_count"
+          echo "  Skipped: $skipped_count"
+          echo "  Failed: $failed_count"
+
+          # Set job summary
+          {
+            echo "# PR Branch Update Summary"
+            echo ""
+            echo "- Updated: $updated_count"
+            echo "- Skipped: $skipped_count"
+            echo "- Failed: $failed_count"
+          } >> $GITHUB_STEP_SUMMARY
