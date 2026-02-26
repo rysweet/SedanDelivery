@@ -1019,6 +1019,17 @@ fn value_matches(
             // Paths are complex; for now just check if both are paths
             matches!(expected, Value::Path { .. })
         }
+        // Temporal values: compare against string representation
+        (Value::Date(d), Value::Str(s)) => format!("{d}") == s.as_ref(),
+        (Value::LocalTime(t), Value::Str(s)) => format!("{t}") == s.as_ref(),
+        (Value::LocalDateTime(dt), Value::Str(s)) => format!("{dt}") == s.as_ref(),
+        (Value::DateTime(dt), Value::Str(s)) => format!("{dt}") == s.as_ref(),
+        (Value::Duration(sp), Value::Str(s)) => format!("{sp}") == s.as_ref(),
+        // Temporal equality
+        (Value::Date(_), Value::Date(_))
+        | (Value::LocalTime(_), Value::LocalTime(_))
+        | (Value::LocalDateTime(_), Value::LocalDateTime(_))
+        | (Value::DateTime(_), Value::DateTime(_)) => actual == expected,
         _ => {
             // Fallback: compare display strings
             format!("{actual}") == format!("{expected}")

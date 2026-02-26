@@ -11,6 +11,8 @@ use crate::executor::budget::DEFAULT_VARLEN_MAX_DEPTH;
 
 #[derive(Debug, Clone)]
 pub enum Operator {
+    /// Produces exactly one empty row. Used as a leaf for bare `RETURN` (no MATCH).
+    SingleRow,
     NodeScan {
         label: Option<Label>,
         alias: Identifier,

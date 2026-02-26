@@ -111,6 +111,12 @@ impl<'a> QueryExecutor<'a> {
         budget.check_or_err()?;
 
         match op {
+            // ── SingleRow ─────────────────────────────────────────────────────
+            Operator::SingleRow => {
+                budget.record_row();
+                Ok(vec![Row::new()])
+            }
+
             // ── NodeScan ──────────────────────────────────────────────────────
             Operator::NodeScan { label, alias } => {
                 let node_ids = if let Some(lbl) = label {
@@ -1079,6 +1085,14 @@ impl<'a> QueryExecutor<'a> {
                     },
                     Value::Map(m) => Ok(m.get(key.as_str()).cloned().unwrap_or(Value::Null)),
                     Value::Null => Ok(Value::Null),
+                    // Temporal property access (e.g. d.year, t.hour)
+                    Value::Date(_)
+                    | Value::LocalTime(_)
+                    | Value::LocalDateTime(_)
+                    | Value::DateTime(_)
+                    | Value::Duration(_) => {
+                        crate::executor::filter::temporal_property_access(&obj_val, key.as_str())
+                    }
                     other => Err(GqlError::Execution(ExecutionError::TypeMismatch {
                         expected: "Node, Relationship, or Map".to_string(),
                         actual: other.type_name().to_string(),
@@ -1099,15 +1113,9 @@ impl<'a> QueryExecutor<'a> {
                 // Evaluate both sides with storage-awareness.
                 let lv = self.eval_with_storage(graph, left, row, ctx)?;
                 let rv = self.eval_with_storage(graph, right, row, ctx)?;
-                // Build an inline expression with literal values so eval_expr can operate on it.
-                let left_lit = value_to_expr(&lv);
-                let right_lit = value_to_expr(&rv);
-                let rebuilt = Expr::BinaryOp {
-                    op: *op,
-                    left: Box::new(left_lit),
-                    right: Box::new(right_lit),
-                };
-                eval_expr(&rebuilt, ctx)
+                // Handle equality/comparison directly for types that value_to_expr
+                // can't represent (Node, Edge, Path, temporal, spatial).
+                eval_binary_values(*op, lv, rv, ctx)
             }
             Expr::UnaryOp { op, expr: inner } => {
                 let v = self.eval_with_storage(graph, inner, row, ctx)?;
@@ -1158,6 +1166,240 @@ impl<'a> QueryExecutor<'a> {
                                 None => Ok(Value::Bool(false)),
                             },
                             _ => Ok(Value::Bool(false)),
+                        }
+                    }
+                    // Storage-aware: labels(node) → list of label strings
+                    "labels" => {
+                        if evaled_args.len() != 1 {
+                            return Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                                expected: "labels() expects 1 argument".to_string(),
+                                actual: format!("{} arguments", evaled_args.len()),
+                            }));
+                        }
+                        match &evaled_args[0] {
+                            Value::Null => Ok(Value::Null),
+                            Value::Node(node_id) => match self.store.get_node(graph, *node_id)? {
+                                Some(data) => Ok(Value::List(
+                                    data.labels
+                                        .iter()
+                                        .map(|l| Value::Str(l.clone().into_boxed_str()))
+                                        .collect(),
+                                )),
+                                None => Ok(Value::List(vec![])),
+                            },
+                            other => Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                                expected: "Node".to_string(),
+                                actual: other.type_name().to_string(),
+                            })),
+                        }
+                    }
+                    // Storage-aware: type(relationship) → relationship type string
+                    "type" => {
+                        if evaled_args.len() != 1 {
+                            return Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                                expected: "type() expects 1 argument".to_string(),
+                                actual: format!("{} arguments", evaled_args.len()),
+                            }));
+                        }
+                        match &evaled_args[0] {
+                            Value::Null => Ok(Value::Null),
+                            Value::Edge(edge_id) => match self.store.get_edge(graph, *edge_id)? {
+                                Some(data) => Ok(Value::Str(data.rel_type.into_boxed_str())),
+                                None => Ok(Value::Null),
+                            },
+                            other => Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                                expected: "Relationship".to_string(),
+                                actual: other.type_name().to_string(),
+                            })),
+                        }
+                    }
+                    // Storage-aware: id(node_or_edge) → integer ID
+                    "id" => {
+                        if evaled_args.len() != 1 {
+                            return Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                                expected: "id() expects 1 argument".to_string(),
+                                actual: format!("{} arguments", evaled_args.len()),
+                            }));
+                        }
+                        match &evaled_args[0] {
+                            Value::Null => Ok(Value::Null),
+                            Value::Node(node_id) => Ok(Value::Int(node_id.0 as i64)),
+                            Value::Edge(edge_id) => Ok(Value::Int(edge_id.0 as i64)),
+                            other => Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                                expected: "Node or Relationship".to_string(),
+                                actual: other.type_name().to_string(),
+                            })),
+                        }
+                    }
+                    // Storage-aware: properties(node_or_edge) → map of properties
+                    "properties" => {
+                        if evaled_args.len() != 1 {
+                            return Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                                expected: "properties() expects 1 argument".to_string(),
+                                actual: format!("{} arguments", evaled_args.len()),
+                            }));
+                        }
+                        match &evaled_args[0] {
+                            Value::Null => Ok(Value::Null),
+                            Value::Node(node_id) => match self.store.get_node(graph, *node_id)? {
+                                Some(data) => {
+                                    let map: indexmap::IndexMap<Box<str>, Value> = data
+                                        .properties
+                                        .into_iter()
+                                        .map(|(k, v)| (k.into_boxed_str(), v))
+                                        .collect();
+                                    Ok(Value::Map(map))
+                                }
+                                None => Ok(Value::Map(indexmap::IndexMap::new())),
+                            },
+                            Value::Edge(edge_id) => match self.store.get_edge(graph, *edge_id)? {
+                                Some(data) => {
+                                    let map: indexmap::IndexMap<Box<str>, Value> = data
+                                        .properties
+                                        .into_iter()
+                                        .map(|(k, v)| (k.into_boxed_str(), v))
+                                        .collect();
+                                    Ok(Value::Map(map))
+                                }
+                                None => Ok(Value::Map(indexmap::IndexMap::new())),
+                            },
+                            Value::Map(m) => Ok(Value::Map(m.clone())),
+                            other => Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                                expected: "Node, Relationship, or Map".to_string(),
+                                actual: other.type_name().to_string(),
+                            })),
+                        }
+                    }
+                    // Storage-aware: keys(node_or_edge) → list of property keys
+                    "keys" => {
+                        if evaled_args.len() != 1 {
+                            return Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                                expected: "keys() expects 1 argument".to_string(),
+                                actual: format!("{} arguments", evaled_args.len()),
+                            }));
+                        }
+                        match &evaled_args[0] {
+                            Value::Null => Ok(Value::Null),
+                            Value::Node(node_id) => match self.store.get_node(graph, *node_id)? {
+                                Some(data) => Ok(Value::List(
+                                    data.properties
+                                        .keys()
+                                        .map(|k| Value::Str(k.clone().into_boxed_str()))
+                                        .collect(),
+                                )),
+                                None => Ok(Value::List(vec![])),
+                            },
+                            Value::Edge(edge_id) => match self.store.get_edge(graph, *edge_id)? {
+                                Some(data) => Ok(Value::List(
+                                    data.properties
+                                        .keys()
+                                        .map(|k| Value::Str(k.clone().into_boxed_str()))
+                                        .collect(),
+                                )),
+                                None => Ok(Value::List(vec![])),
+                            },
+                            Value::Map(m) => Ok(Value::List(
+                                m.keys().map(|k| Value::Str(k.clone())).collect(),
+                            )),
+                            other => Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                                expected: "Node, Relationship, or Map".to_string(),
+                                actual: other.type_name().to_string(),
+                            })),
+                        }
+                    }
+                    // Storage-aware: nodes(path) → list of nodes in a path
+                    "nodes" => {
+                        if evaled_args.len() != 1 {
+                            return Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                                expected: "nodes() expects 1 argument".to_string(),
+                                actual: format!("{} arguments", evaled_args.len()),
+                            }));
+                        }
+                        match &evaled_args[0] {
+                            Value::Null => Ok(Value::Null),
+                            Value::Path { nodes, .. } => {
+                                Ok(Value::List(nodes.iter().map(|n| Value::Node(*n)).collect()))
+                            }
+                            other => Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                                expected: "Path".to_string(),
+                                actual: other.type_name().to_string(),
+                            })),
+                        }
+                    }
+                    // Storage-aware: relationships(path) → list of edges in a path
+                    "relationships" => {
+                        if evaled_args.len() != 1 {
+                            return Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                                expected: "relationships() expects 1 argument".to_string(),
+                                actual: format!("{} arguments", evaled_args.len()),
+                            }));
+                        }
+                        match &evaled_args[0] {
+                            Value::Null => Ok(Value::Null),
+                            Value::Path { edges, .. } => {
+                                Ok(Value::List(edges.iter().map(|e| Value::Edge(*e)).collect()))
+                            }
+                            other => Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                                expected: "Path".to_string(),
+                                actual: other.type_name().to_string(),
+                            })),
+                        }
+                    }
+                    // Storage-aware: length(path) → number of edges
+                    "length" => {
+                        match evaled_args.first() {
+                            Some(Value::Path { edges, .. }) => Ok(Value::Int(edges.len() as i64)),
+                            _ => {
+                                // Fall through to eval_expr for string/list length
+                                let lit_args: Vec<Expr> =
+                                    evaled_args.iter().map(value_to_expr).collect();
+                                let rebuilt = Expr::FunctionCall {
+                                    name: name.clone(),
+                                    args: lit_args,
+                                    distinct: *distinct,
+                                };
+                                eval_expr(&rebuilt, ctx)
+                            }
+                        }
+                    }
+                    // Storage-aware: startNode(relationship) → source node
+                    "startnode" => {
+                        if evaled_args.len() != 1 {
+                            return Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                                expected: "startNode() expects 1 argument".to_string(),
+                                actual: format!("{} arguments", evaled_args.len()),
+                            }));
+                        }
+                        match &evaled_args[0] {
+                            Value::Null => Ok(Value::Null),
+                            Value::Edge(edge_id) => match self.store.get_edge(graph, *edge_id)? {
+                                Some(data) => Ok(Value::Node(data.src)),
+                                None => Ok(Value::Null),
+                            },
+                            other => Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                                expected: "Relationship".to_string(),
+                                actual: other.type_name().to_string(),
+                            })),
+                        }
+                    }
+                    // Storage-aware: endNode(relationship) → destination node
+                    "endnode" => {
+                        if evaled_args.len() != 1 {
+                            return Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                                expected: "endNode() expects 1 argument".to_string(),
+                                actual: format!("{} arguments", evaled_args.len()),
+                            }));
+                        }
+                        match &evaled_args[0] {
+                            Value::Null => Ok(Value::Null),
+                            Value::Edge(edge_id) => match self.store.get_edge(graph, *edge_id)? {
+                                Some(data) => Ok(Value::Node(data.dst)),
+                                None => Ok(Value::Null),
+                            },
+                            other => Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                                expected: "Relationship".to_string(),
+                                actual: other.type_name().to_string(),
+                            })),
                         }
                     }
                     // All other functions: rebuild with literal args and delegate.
@@ -1477,7 +1719,19 @@ fn expr_to_column_name(expr: &Expr) -> String {
         Expr::Float(f) => f.to_string(),
         Expr::Str(s) => s.to_string(),
         Expr::Bool(b) => b.to_string(),
-        Expr::FunctionCall { name, .. } => name.to_string(),
+        Expr::Null => "null".to_string(),
+        Expr::FunctionCall { name, args, .. } => {
+            let arg_strs: Vec<String> = args.iter().map(expr_to_column_name).collect();
+            format!("{}({})", name, arg_strs.join(", "))
+        }
+        Expr::UnaryOp {
+            op: crate::ast::UnaryOp::Neg,
+            expr: inner,
+        } => format!("-{}", expr_to_column_name(inner)),
+        Expr::UnaryOp {
+            op: crate::ast::UnaryOp::Not,
+            expr: inner,
+        } => format!("NOT {}", expr_to_column_name(inner)),
         _ => "expr".to_string(),
     }
 }
@@ -1496,6 +1750,85 @@ fn eval_prop_map(
         map.insert(key.clone(), val);
     }
     Ok(map)
+}
+
+/// Evaluate a binary operation directly on two already-evaluated `Value`s.
+///
+/// This handles all types including temporal, Node, Edge which cannot be
+/// round-tripped through `value_to_expr` → `eval_expr`.
+fn eval_binary_values(
+    op: crate::ast::BinaryOp,
+    lv: Value,
+    rv: Value,
+    ctx: &FilterRow<'_>,
+) -> Result<Value, GqlError> {
+    use crate::ast::BinaryOp;
+    // For types that value_to_expr can represent losslessly, delegate to eval_expr.
+    let needs_direct = matches!(
+        (&lv, &rv),
+        (Value::Date(_), _)
+            | (_, Value::Date(_))
+            | (Value::LocalTime(_), _)
+            | (_, Value::LocalTime(_))
+            | (Value::LocalDateTime(_), _)
+            | (_, Value::LocalDateTime(_))
+            | (Value::DateTime(_), _)
+            | (_, Value::DateTime(_))
+            | (Value::Duration(_), _)
+            | (_, Value::Duration(_))
+            | (Value::Node(_), _)
+            | (_, Value::Node(_))
+            | (Value::Edge(_), _)
+            | (_, Value::Edge(_))
+            | (Value::Path { .. }, _)
+            | (_, Value::Path { .. })
+    );
+    if !needs_direct {
+        let left_lit = value_to_expr(&lv);
+        let right_lit = value_to_expr(&rv);
+        let rebuilt = Expr::BinaryOp {
+            op,
+            left: Box::new(left_lit),
+            right: Box::new(right_lit),
+        };
+        return eval_expr(&rebuilt, ctx);
+    }
+    // Handle comparison operators directly for temporal/graph types.
+    match op {
+        BinaryOp::Eq => Ok(match lv.cypher_eq(&rv) {
+            Some(b) => Value::Bool(b),
+            None => Value::Null,
+        }),
+        BinaryOp::Neq => Ok(match lv.cypher_eq(&rv) {
+            Some(b) => Value::Bool(!b),
+            None => Value::Null,
+        }),
+        BinaryOp::Lt | BinaryOp::Lte | BinaryOp::Gt | BinaryOp::Gte => {
+            if lv.is_null() || rv.is_null() {
+                return Ok(Value::Null);
+            }
+            let ord = cmp_values(&lv, &rv);
+            let result = match op {
+                BinaryOp::Lt => ord == std::cmp::Ordering::Less,
+                BinaryOp::Lte => ord != std::cmp::Ordering::Greater,
+                BinaryOp::Gt => ord == std::cmp::Ordering::Greater,
+                BinaryOp::Gte => ord != std::cmp::Ordering::Less,
+                _ => unreachable!(),
+            };
+            Ok(Value::Bool(result))
+        }
+        // For other ops (And, Or, In, etc.) fall through to eval_expr with best-effort conversion.
+        _ => {
+            let left_lit = value_to_expr(&lv);
+            let right_lit = value_to_expr(&rv);
+            let rebuilt = Expr::BinaryOp {
+                op,
+                left: Box::new(left_lit),
+                right: Box::new(right_lit),
+            };
+            eval_expr(&rebuilt, ctx)
+        }
+    }
 }
 
 /// Convert a `Value` back to a literal `Expr` for re-evaluation.
@@ -1533,8 +1866,12 @@ pub fn cmp_values(a: &Value, b: &Value) -> std::cmp::Ordering {
             Value::Bool(_) => 1,
             Value::Int(_) | Value::Float(_) => 2,
             Value::Str(_) => 3,
-            Value::List(_) => 4,
-            _ => 5,
+            Value::Date(_) => 4,
+            Value::LocalTime(_) => 5,
+            Value::LocalDateTime(_) => 6,
+            Value::DateTime(_) => 7,
+            Value::List(_) => 8,
+            _ => 9,
         }
     }
 
@@ -1552,6 +1889,10 @@ pub fn cmp_values(a: &Value, b: &Value) -> std::cmp::Ordering {
         (Value::Int(x), Value::Float(y)) => (*x as f64).partial_cmp(y).unwrap_or(Equal),
         (Value::Float(x), Value::Int(y)) => x.partial_cmp(&(*y as f64)).unwrap_or(Equal),
         (Value::Str(x), Value::Str(y)) => x.cmp(y),
+        (Value::Date(x), Value::Date(y)) => x.cmp(y),
+        (Value::LocalTime(x), Value::LocalTime(y)) => x.cmp(y),
+        (Value::LocalDateTime(x), Value::LocalDateTime(y)) => x.cmp(y),
+        (Value::DateTime(x), Value::DateTime(y)) => x.cmp(y),
         (Value::List(x), Value::List(y)) => {
             for (a, b) in x.iter().zip(y.iter()) {
                 let ord = cmp_values(a, b);
