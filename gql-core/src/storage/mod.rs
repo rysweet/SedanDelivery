@@ -169,6 +169,9 @@ pub trait GraphStore: Send + Sync {
     /// All node IDs in the graph. Used for `MATCH (n) RETURN n` with no label filter.
     fn all_node_ids(&self, graph: &str) -> Result<Vec<NodeId>, StorageError>;
 
+    /// All edge IDs in the graph. Used for `MATCH ()-[r]->() RETURN r` with no type filter.
+    fn all_edge_ids(&self, graph: &str) -> Result<Vec<EdgeId>, StorageError>;
+
     // ── Write operations ──────────────────────────────────────────────────────
 
     fn create_node(
@@ -187,6 +190,8 @@ pub trait GraphStore: Send + Sync {
         properties: HashMap<String, Value>,
     ) -> Result<EdgeId, StorageError>;
 
+    /// Merge-update node properties: overlays given keys onto existing properties.
+    /// Implements Cypher `SET n += {…}` semantics.
     fn set_node_properties(
         &self,
         graph: &str,
@@ -194,7 +199,25 @@ pub trait GraphStore: Send + Sync {
         properties: HashMap<String, Value>,
     ) -> Result<(), StorageError>;
 
+    /// Full-replace node properties: removes ALL existing properties, sets exactly the given ones.
+    /// Implements Cypher `SET n = {…}` semantics.
+    fn replace_node_properties(
+        &self,
+        graph: &str,
+        id: NodeId,
+        properties: HashMap<String, Value>,
+    ) -> Result<(), StorageError>;
+
+    /// Merge-update edge properties. Implements Cypher `SET r += {…}` semantics.
     fn set_edge_properties(
+        &self,
+        graph: &str,
+        id: EdgeId,
+        properties: HashMap<String, Value>,
+    ) -> Result<(), StorageError>;
+
+    /// Full-replace edge properties. Implements Cypher `SET r = {…}` semantics.
+    fn replace_edge_properties(
         &self,
         graph: &str,
         id: EdgeId,

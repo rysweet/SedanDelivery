@@ -90,8 +90,10 @@ pub enum TokenKind {
     RegexEq, // =~
 
     // ── Arithmetic operators ──────────────────────────────────────────────────
-    Plus,    // +
-    Minus,   // - (alias for Dash — emitted by the operator path, not the minus path)
+    Plus, // +
+    // Note: there is no Minus variant — the lexer emits Dash for '-'.
+    // Phase 1 parser resolves Dash as either a subtraction operator or
+    // part of a relationship pattern based on context.
     Star,    // *
     Slash,   // /
     Percent, // %
@@ -431,12 +433,6 @@ impl<'src> Lexer<'src> {
         // Consume the rest of the integer part.
         while matches!(self.peek_byte(0), Some(b'0'..=b'9') | Some(b'_')) {
             self.pos += 1;
-        }
-
-        // Check for hex literal: 0x...
-        let raw = &self.src[start..self.pos];
-        if raw == "0" || raw.starts_with("0x") || raw.starts_with("0X") {
-            // handle 0x prefix
         }
 
         // Attempt hex literal detection: starts at position `start`, first char was '0'

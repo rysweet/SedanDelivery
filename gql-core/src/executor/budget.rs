@@ -79,9 +79,11 @@ impl ExecutionBudget {
     /// Call this as the FIRST STATEMENT in every operator's `next()` implementation.
     #[inline]
     pub fn check_or_err(&self) -> Result<(), GqlError> {
-        if Instant::now() > self.deadline {
+        let now = Instant::now();
+        if now > self.deadline {
+            let elapsed = now.duration_since(self.deadline - self.timeout);
             return Err(GqlError::Execution(ExecutionError::Timeout {
-                elapsed_ms: self.timeout.as_millis() as u64,
+                elapsed_ms: elapsed.as_millis() as u64,
                 limit_ms: self.timeout.as_millis() as u64,
             }));
         }

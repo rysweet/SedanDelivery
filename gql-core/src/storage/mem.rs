@@ -368,6 +368,12 @@ impl GraphStore for InMemoryGraphStore {
         Ok(g.nodes.keys().copied().map(NodeId).collect())
     }
 
+    fn all_edge_ids(&self, graph: &str) -> Result<Vec<EdgeId>, StorageError> {
+        let guard = self.read()?;
+        let g = Self::require_graph(&guard, graph)?;
+        Ok(g.edges.keys().copied().map(EdgeId).collect())
+    }
+
     // ── Write operations ───────────────────────────────────────────────────────
 
     fn create_node(
@@ -459,6 +465,22 @@ impl GraphStore for InMemoryGraphStore {
         Ok(())
     }
 
+    fn replace_node_properties(
+        &self,
+        graph: &str,
+        id: NodeId,
+        properties: HashMap<String, Value>,
+    ) -> Result<(), StorageError> {
+        let mut guard = self.write()?;
+        let g = Self::require_graph_mut(&mut guard, graph)?;
+        let node = g
+            .nodes
+            .get_mut(&id.0)
+            .ok_or(StorageError::NodeNotFound { id: id.0 })?;
+        node.properties = properties;
+        Ok(())
+    }
+
     fn set_edge_properties(
         &self,
         graph: &str,
@@ -474,6 +496,22 @@ impl GraphStore for InMemoryGraphStore {
         for (k, v) in properties {
             edge.properties.insert(k, v);
         }
+        Ok(())
+    }
+
+    fn replace_edge_properties(
+        &self,
+        graph: &str,
+        id: EdgeId,
+        properties: HashMap<String, Value>,
+    ) -> Result<(), StorageError> {
+        let mut guard = self.write()?;
+        let g = Self::require_graph_mut(&mut guard, graph)?;
+        let edge = g
+            .edges
+            .get_mut(&id.0)
+            .ok_or(StorageError::EdgeNotFound { id: id.0 })?;
+        edge.properties = properties;
         Ok(())
     }
 
@@ -574,48 +612,44 @@ impl GraphStore for InMemoryGraphStore {
         }
 
         if detach {
-            // Collect all edge IDs attached to this node.
-            let out_edges: Vec<(u64, NodeId)> = g
-                .out_adj
-                .get(&id.0)
-                .map(|v| v.iter().map(|e| (e.edge_id.0, e.neighbor_id)).collect())
-                .unwrap_or_default();
-            let in_edges: Vec<(u64, NodeId)> = g
-                .in_adj
-                .get(&id.0)
-                .map(|v| v.iter().map(|e| (e.edge_id.0, e.neighbor_id)).collect())
-                .unwrap_or_default();
-
-            // Remove each outgoing edge.
-            for (eid, dst) in &out_edges {
-                // Remove from reltype index.
-                if let Some(edge) = g.edges.remove(eid) {
-                    if let Some(set) = g.reltype_index.get_mut(&edge.rel_type) {
-                        set.remove(eid);
-                        if set.is_empty() {
-                            g.reltype_index.remove(&edge.rel_type);
-                        }
-                    }
+            // Collect all edge IDs attached to this node (both directions).
+            // Deduplicate to handle self-loops: a self-loop a->a appears in both
+            // out_adj and in_adj; without dedup, g.edges.remove(eid) is called
+            // twice and the second call skips reltype cleanup (returns None silently).
+            let mut all_edge_ids: std::collections::HashSet<u64> = std::collections::HashSet::new();
+            if let Some(adj) = g.out_adj.get(&id.0) {
+                for e in adj {
+                    all_edge_ids.insert(e.edge_id.0);
                 }
-                // Remove from dst's in_adj.
-                if let Some(v) = g.in_adj.get_mut(&dst.0) {
-                    v.retain(|e| e.edge_id.0 != *eid);
+            }
+            if let Some(adj) = g.in_adj.get(&id.0) {
+                for e in adj {
+                    all_edge_ids.insert(e.edge_id.0);
                 }
             }
 
-            // Remove each incoming edge.
-            for (eid, src) in &in_edges {
+            // Remove each incident edge exactly once.
+            for eid in &all_edge_ids {
                 if let Some(edge) = g.edges.remove(eid) {
+                    // Clean reltype index.
                     if let Some(set) = g.reltype_index.get_mut(&edge.rel_type) {
                         set.remove(eid);
                         if set.is_empty() {
                             g.reltype_index.remove(&edge.rel_type);
                         }
                     }
-                }
-                // Remove from src's out_adj.
-                if let Some(v) = g.out_adj.get_mut(&src.0) {
-                    v.retain(|e| e.edge_id.0 != *eid);
+                    // Clean the *other* endpoint's adjacency lists
+                    // (we will bulk-remove id's own lists after this loop).
+                    if edge.src.0 != id.0 {
+                        if let Some(v) = g.out_adj.get_mut(&edge.src.0) {
+                            v.retain(|e| e.edge_id.0 != *eid);
+                        }
+                    }
+                    if edge.dst.0 != id.0 {
+                        if let Some(v) = g.in_adj.get_mut(&edge.dst.0) {
+                            v.retain(|e| e.edge_id.0 != *eid);
+                        }
+                    }
                 }
             }
 

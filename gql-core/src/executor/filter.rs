@@ -363,9 +363,25 @@ fn eval_binary<'r>(
                 Err(GqlError::Execution(ExecutionError::DivisionByZero))
             }
             (Value::Int(a), Value::Int(b)) => Ok(Value::Int(a / b)),
-            (Value::Float(a), Value::Float(b)) => Ok(Value::Float(a / b)),
-            (Value::Int(a), Value::Float(b)) => Ok(Value::Float(a as f64 / b)),
-            (Value::Float(a), Value::Int(b)) => Ok(Value::Float(a / b as f64)),
+            // Guard float zero: IEEE 754 would return Inf/NaN; Cypher spec requires an error.
+            (Value::Float(a), Value::Float(b)) => {
+                if b == 0.0 {
+                    return Err(GqlError::Execution(ExecutionError::DivisionByZero));
+                }
+                Ok(Value::Float(a / b))
+            }
+            (Value::Int(a), Value::Float(b)) => {
+                if b == 0.0 {
+                    return Err(GqlError::Execution(ExecutionError::DivisionByZero));
+                }
+                Ok(Value::Float(a as f64 / b))
+            }
+            (Value::Float(a), Value::Int(b)) => {
+                if b == 0 {
+                    return Err(GqlError::Execution(ExecutionError::DivisionByZero));
+                }
+                Ok(Value::Float(a / b as f64))
+            }
             (l, r) => Err(GqlError::Execution(ExecutionError::InvalidOperator {
                 op: "/".to_string(),
                 left: l.type_name().to_string(),
@@ -379,9 +395,24 @@ fn eval_binary<'r>(
                 Err(GqlError::Execution(ExecutionError::DivisionByZero))
             }
             (Value::Int(a), Value::Int(b)) => Ok(Value::Int(a % b)),
-            (Value::Float(a), Value::Float(b)) => Ok(Value::Float(a % b)),
-            (Value::Int(a), Value::Float(b)) => Ok(Value::Float(a as f64 % b)),
-            (Value::Float(a), Value::Int(b)) => Ok(Value::Float(a % b as f64)),
+            (Value::Float(a), Value::Float(b)) => {
+                if b == 0.0 {
+                    return Err(GqlError::Execution(ExecutionError::DivisionByZero));
+                }
+                Ok(Value::Float(a % b))
+            }
+            (Value::Int(a), Value::Float(b)) => {
+                if b == 0.0 {
+                    return Err(GqlError::Execution(ExecutionError::DivisionByZero));
+                }
+                Ok(Value::Float(a as f64 % b))
+            }
+            (Value::Float(a), Value::Int(b)) => {
+                if b == 0 {
+                    return Err(GqlError::Execution(ExecutionError::DivisionByZero));
+                }
+                Ok(Value::Float(a % b as f64))
+            }
             (l, r) => Err(GqlError::Execution(ExecutionError::InvalidOperator {
                 op: "%".to_string(),
                 left: l.type_name().to_string(),
@@ -626,7 +657,7 @@ fn eval_function<'r>(
                 other => type_error("sign", other),
             }
         }
-        "tostring" | "tostring()" => {
+        "tostring" => {
             require_arity("toString", 1, &vals)?;
             match &vals[0] {
                 Value::Null => Ok(Value::Null),

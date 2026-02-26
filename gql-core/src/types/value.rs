@@ -78,11 +78,13 @@ pub struct GeoPoint {
 pub enum Crs {
     /// `srid:4326` — WGS-84 geographic (latitude/longitude)
     Wgs84,
-    /// `srid:7203` — WGS-84 3D geographic (latitude/longitude/height)
+    /// `srid:4979` — WGS-84 3D geographic (latitude/longitude/height)
+    /// NOTE: GeoPoint has no z-field yet; this variant is reserved for Phase N.
     Wgs843d,
     /// `srid:7203` — Cartesian 2D
     Cartesian,
-    /// Cartesian 3D
+    /// `srid:9157` — Cartesian 3D
+    /// NOTE: GeoPoint has no z-field yet; this variant is reserved for Phase N.
     Cartesian3d,
 }
 
