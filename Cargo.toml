@@ -17,7 +17,7 @@ repository  = "https://github.com/rysweet/SedanDelivery"
 # Shared dependency versions — all members reference these with { workspace = true }
 [workspace.dependencies]
 # Error handling
-thiserror    = "1.0"
+thiserror    = "2.0"
 
 # Collections
 indexmap     = "2.0"
