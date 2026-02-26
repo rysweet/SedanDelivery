@@ -127,6 +127,13 @@ pub enum Operator {
         detach: bool,
         child: Box<Operator>,
     },
+    /// Assembles a named path from node and edge aliases already in the row.
+    AssemblePath {
+        path_alias: Identifier,
+        node_aliases: Vec<Identifier>,
+        edge_aliases: Vec<Identifier>,
+        child: Box<Operator>,
+    },
     /// Root of every plan tree. Explicit result boundary.
     ProduceResults {
         columns: Vec<(String, Expr)>,
@@ -218,6 +225,141 @@ pub fn validate_varlen_bounds(min: u32, max: Option<u32>) -> Result<(u32, u32), 
         ))));
     }
     Ok((min, effective_max))
+}
+
+/// Collect user-visible variable aliases from an operator tree.
+///
+/// Returns aliases that would be available in the row at the output of this operator.
+/// Filters out internal aliases (those starting with `__`).
+pub fn collect_visible_aliases(op: &Operator) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    let mut result = Vec::new();
+    for alias in collect_all_aliases(op) {
+        if !alias.starts_with("__") && seen.insert(alias.clone()) {
+            result.push(alias);
+        }
+    }
+    result
+}
+
+fn collect_all_aliases(op: &Operator) -> Vec<String> {
+    let mut aliases = Vec::new();
+    match op {
+        Operator::NodeScan { alias, .. }
+        | Operator::IndexScan { alias, .. }
+        | Operator::NodeByIdSeek { alias, .. } => {
+            aliases.push(alias.0.clone());
+        }
+        Operator::Expand {
+            rel_alias,
+            dst_alias,
+            child,
+            ..
+        } => {
+            aliases.extend(collect_all_aliases(child));
+            if let Some(ra) = rel_alias {
+                aliases.push(ra.0.clone());
+            }
+            aliases.push(dst_alias.0.clone());
+        }
+        Operator::VarLenExpand {
+            path_alias,
+            dst_alias,
+            child,
+            ..
+        } => {
+            aliases.extend(collect_all_aliases(child));
+            if let Some(pa) = path_alias {
+                aliases.push(pa.0.clone());
+            }
+            aliases.push(dst_alias.0.clone());
+        }
+        Operator::AssemblePath {
+            path_alias, child, ..
+        } => {
+            aliases.extend(collect_all_aliases(child));
+            aliases.push(path_alias.0.clone());
+        }
+        Operator::Filter { child, .. }
+        | Operator::Sort { child, .. }
+        | Operator::Limit { child, .. }
+        | Operator::Skip { child, .. }
+        | Operator::Distinct { child, .. }
+        | Operator::Set { child, .. }
+        | Operator::Remove { child, .. }
+        | Operator::Delete { child, .. } => {
+            aliases.extend(collect_all_aliases(child));
+        }
+        Operator::Unwind { alias, child, .. } => {
+            aliases.extend(collect_all_aliases(child));
+            aliases.push(alias.0.clone());
+        }
+        Operator::Apply { outer, inner } => {
+            aliases.extend(collect_all_aliases(outer));
+            aliases.extend(collect_all_aliases(inner));
+        }
+        Operator::LeftOuterApply {
+            preserved,
+            optional_pattern,
+        } => {
+            aliases.extend(collect_all_aliases(preserved));
+            aliases.extend(collect_all_aliases(optional_pattern));
+        }
+        Operator::Create { patterns, child } => {
+            if let Some(ch) = child {
+                aliases.extend(collect_all_aliases(ch));
+            }
+            // Extract aliases from CREATE patterns (newly created nodes/edges).
+            for pattern in patterns {
+                for (alias, _, _) in &pattern.nodes {
+                    if let Some(a) = alias {
+                        aliases.push(a.0.clone());
+                    }
+                }
+                for (alias, _, _, _, _, _) in &pattern.edges {
+                    if let Some(a) = alias {
+                        aliases.push(a.0.clone());
+                    }
+                }
+            }
+        }
+        Operator::Merge {
+            child, node_alias, ..
+        } => {
+            if let Some(ch) = child {
+                aliases.extend(collect_all_aliases(ch));
+            }
+            if let Some(a) = node_alias {
+                aliases.push(a.0.clone());
+            }
+        }
+        Operator::Project { items, child } => {
+            // After a Project, only the projected items are visible
+            for (expr, alias) in items {
+                if let Some(a) = alias {
+                    aliases.push(a.0.clone());
+                } else if let Expr::Variable(id) = expr {
+                    aliases.push(id.0.clone());
+                }
+            }
+            // Also include child aliases for expressions that reference them
+            aliases.extend(collect_all_aliases(child));
+        }
+        Operator::Aggregate {
+            keys, aggregations, ..
+        } => {
+            for key in keys {
+                if let Expr::Variable(id) = key {
+                    aliases.push(id.0.clone());
+                }
+            }
+            for (_, _, _, alias) in aggregations {
+                aliases.push(alias.0.clone());
+            }
+        }
+        _ => {}
+    }
+    aliases
 }
 
 #[cfg(test)]

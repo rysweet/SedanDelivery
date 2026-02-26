@@ -193,13 +193,25 @@ impl<'s> QueryPlanner<'s> {
     }
 
     /// Plan a single `PathPattern` into nested `NodeScan` + `Expand` operators.
+    ///
+    /// When the pattern has a named path variable (e.g. `p = (a)-[r]->(b)`),
+    /// wraps the result with an `AssemblePath` operator that collects node and
+    /// edge IDs into a `Value::Path`.
     fn plan_path_pattern(&self, pattern: &PathPattern) -> Result<Operator, GqlError> {
+        let has_path_var = pattern.variable.is_some();
         let start = &pattern.start;
         let start_alias = start
             .variable
             .clone()
             .unwrap_or_else(|| Identifier::new("__anon0__"));
         let start_label = start.labels.first().cloned();
+
+        // Track node/edge aliases for path assembly when a path variable is present.
+        let mut path_node_aliases: Vec<Identifier> = Vec::new();
+        let mut path_edge_aliases: Vec<Identifier> = Vec::new();
+        if has_path_var {
+            path_node_aliases.push(start_alias.clone());
+        }
 
         // Build the node scan for the first node.
         // If the node pattern has a label and a single equality property filter,
@@ -259,6 +271,9 @@ impl<'s> QueryPlanner<'s> {
             };
         }
 
+        // Track the most recent src alias for multi-hop paths.
+        let mut current_src = start_alias.clone();
+
         // Process each step (rel + node) in the path.
         for (step_idx, step) in pattern.steps.iter().enumerate() {
             let PathStep { rel, node } = step;
@@ -271,23 +286,55 @@ impl<'s> QueryPlanner<'s> {
             if let Some(range) = &rel.range {
                 let (min, max) =
                     crate::planner::validate_varlen_bounds(range.min.unwrap_or(1), range.max)?;
+                let path_alias =
+                    if has_path_var {
+                        // Ensure a path alias exists for VarLenExpand when tracking a named path.
+                        Some(rel.variable.clone().unwrap_or_else(|| {
+                            Identifier::new(format!("__path_rel_{}__", step_idx))
+                        }))
+                    } else {
+                        rel.variable.clone()
+                    };
+                // For VarLenExpand with a named path, the VarLenExpand itself
+                // produces a Path value; the AssemblePath wrapper will merge it.
+                if has_path_var {
+                    if let Some(ref pa) = path_alias {
+                        path_edge_aliases.push(pa.clone());
+                    }
+                    path_node_aliases.push(dst_alias.clone());
+                }
                 op = Operator::VarLenExpand {
                     direction: rel.direction,
                     rel_types: rel.rel_types.clone(),
                     min,
                     max,
-                    src_alias: start_alias.clone(),
-                    path_alias: rel.variable.clone(),
+                    src_alias: current_src.clone(),
+                    path_alias,
                     dst_alias: dst_alias.clone(),
                     child: Box::new(op),
                 };
             } else {
                 // Single-hop expand.
-                let rel_alias = rel.variable.clone();
+                // When tracking a named path, ensure we always have a rel_alias
+                // so the edge ID is available for path assembly.
+                let rel_alias =
+                    if has_path_var {
+                        Some(rel.variable.clone().unwrap_or_else(|| {
+                            Identifier::new(format!("__path_rel_{}__", step_idx))
+                        }))
+                    } else {
+                        rel.variable.clone()
+                    };
+                if has_path_var {
+                    if let Some(ref ra) = rel_alias {
+                        path_edge_aliases.push(ra.clone());
+                    }
+                    path_node_aliases.push(dst_alias.clone());
+                }
                 op = Operator::Expand {
                     direction: rel.direction,
                     rel_types: rel.rel_types.clone(),
-                    src_alias: start_alias.clone(),
+                    src_alias: current_src.clone(),
                     rel_alias,
                     dst_alias: dst_alias.clone(),
                     child: Box::new(op),
@@ -329,6 +376,19 @@ impl<'s> QueryPlanner<'s> {
                     child: Box::new(op),
                 };
             }
+
+            // Update current_src for multi-hop patterns.
+            current_src = dst_alias;
+        }
+
+        // If the pattern has a named path variable, wrap with AssemblePath.
+        if let Some(path_var) = &pattern.variable {
+            op = Operator::AssemblePath {
+                path_alias: path_var.clone(),
+                node_aliases: path_node_aliases,
+                edge_aliases: path_edge_aliases,
+                child: Box::new(op),
+            };
         }
 
         Ok(op)
@@ -346,14 +406,20 @@ impl<'s> QueryPlanner<'s> {
         child: Option<Operator>,
     ) -> Result<Operator, GqlError> {
         let mut patterns = Vec::new();
+        let mut anon_counter: usize = 0;
 
-        for path_pattern in &cc.patterns {
+        for (pat_idx, path_pattern) in cc.patterns.iter().enumerate() {
             let mut nodes: Vec<crate::planner::CreateNodeSpec> = Vec::new();
             let mut edges: Vec<crate::planner::CreateEdgeSpec> = Vec::new();
 
             // Extract nodes from the pattern.
+            // Generate unique aliases for anonymous nodes so the executor can
+            // track them across node creation and edge creation.
             let start = &path_pattern.start;
-            let start_alias = start.variable.clone();
+            let start_alias = start.variable.clone().unwrap_or_else(|| {
+                anon_counter += 1;
+                Identifier::new(format!("__anon_{pat_idx}_{anon_counter}__"))
+            });
             let node_props = start
                 .properties
                 .as_ref()
@@ -363,13 +429,19 @@ impl<'s> QueryPlanner<'s> {
                         .collect::<Vec<_>>()
                 })
                 .unwrap_or_default();
-            nodes.push((start_alias.clone(), start.labels.clone(), node_props));
+            nodes.push((Some(start_alias.clone()), start.labels.clone(), node_props));
+
+            // Track the resolved alias for the previous node in the path.
+            let mut prev_alias = start_alias.clone();
 
             for (step_idx, step) in path_pattern.steps.iter().enumerate() {
                 let PathStep { rel, node } = step;
 
-                // Destination node.
-                let dst_alias = node.variable.clone();
+                // Destination node — generate alias if anonymous.
+                let dst_alias = node.variable.clone().unwrap_or_else(|| {
+                    anon_counter += 1;
+                    Identifier::new(format!("__anon_{pat_idx}_{anon_counter}__"))
+                });
                 let dst_props = node
                     .properties
                     .as_ref()
@@ -379,7 +451,7 @@ impl<'s> QueryPlanner<'s> {
                             .collect::<Vec<_>>()
                     })
                     .unwrap_or_default();
-                nodes.push((dst_alias.clone(), node.labels.clone(), dst_props));
+                nodes.push((Some(dst_alias.clone()), node.labels.clone(), dst_props));
 
                 // Edge specification.
                 let rel_type = rel.rel_types.first().ok_or_else(|| {
@@ -389,21 +461,8 @@ impl<'s> QueryPlanner<'s> {
                     })
                 })?;
 
-                let src_for_edge = if step_idx == 0 {
-                    start_alias
-                        .clone()
-                        .unwrap_or_else(|| Identifier::new("__src__"))
-                } else {
-                    // Previous step's destination node alias.
-                    path_pattern.steps[step_idx - 1]
-                        .node
-                        .variable
-                        .clone()
-                        .unwrap_or_else(|| Identifier::new(format!("__node{}__", step_idx)))
-                };
-
-                let dst_for_edge = dst_alias
-                    .unwrap_or_else(|| Identifier::new(format!("__node{}__", step_idx + 1)));
+                let src_for_edge = prev_alias.clone();
+                let dst_for_edge = dst_alias.clone();
 
                 let rel_props = rel
                     .properties
@@ -423,6 +482,8 @@ impl<'s> QueryPlanner<'s> {
                     rel.direction,
                     rel_props,
                 ));
+
+                prev_alias = dst_alias;
             }
 
             patterns.push(CreatePattern { nodes, edges });
@@ -469,10 +530,23 @@ impl<'s> QueryPlanner<'s> {
             alias: Identifier::new("__empty__"),
         });
 
-        let has_aggregation = wc.items.iter().any(|item| has_agg_function(&item.expr));
+        // Detect WITH * — if so, skip the projection entirely (passthrough).
+        // WITH * means "pass through all row bindings from the previous clause".
+        let is_star = wc.items.len() == 1
+            && matches!(&wc.items[0].expr, Expr::Variable(id) if id.0 == "*")
+            && wc.items[0].alias.is_none();
+
+        let has_aggregation = if is_star {
+            false
+        } else {
+            wc.items.iter().any(|item| has_agg_function(&item.expr))
+        };
 
         // Build the projection or aggregation pipeline.
-        let mut pipeline = if has_aggregation {
+        let mut pipeline = if is_star {
+            // WITH * is a passthrough — no projection needed.
+            child
+        } else if has_aggregation {
             self.plan_with_aggregation(&wc.items, child)?
         } else {
             // Plain projection: wrap in Project operator.
@@ -642,27 +716,40 @@ impl<'s> QueryPlanner<'s> {
     // ── RETURN planning ───────────────────────────────────────────────────────
 
     fn plan_return(&self, rc: &ReturnClause, child: Operator) -> Result<Operator, GqlError> {
+        // Expand RETURN * to all user-visible variables in scope.
+        let items = expand_star_items(&rc.items, &child);
+
         // Determine whether any item uses an aggregate function.
-        let has_aggregation = rc.items.iter().any(|item| has_agg_function(&item.expr));
+        let has_aggregation = items.iter().any(|item| has_agg_function(&item.expr));
 
         // For aggregation, wrap the pipeline now so ORDER BY can sort on aggregate output.
         // For plain queries, Sort/Distinct/Skip/Limit all run on the raw variable rows,
         // BEFORE ProduceResults does the final projection.  This matches Cypher semantics:
         // ORDER BY `n.name` sorts on the real value, not on the projection alias.
         let pipeline = if has_aggregation {
-            self.plan_aggregation(rc, child)?
+            self.plan_aggregation_from_items(&items, child)?
         } else {
             child
         };
 
         // ORDER BY -- sort expressions reference raw variable names.
+        // When aggregation is active, rewrite aggregate function calls in ORDER BY
+        // to reference their output aliases (the Aggregate operator stores results
+        // under alias names, not as live function calls).
         let pipeline = if !rc.order_by.is_empty() {
+            let sort_items: Vec<(Expr, bool)> = rc
+                .order_by
+                .iter()
+                .map(|s| {
+                    if has_aggregation {
+                        (rewrite_agg_order_expr(&s.expr, &items), s.ascending)
+                    } else {
+                        (s.expr.clone(), s.ascending)
+                    }
+                })
+                .collect();
             Operator::Sort {
-                items: rc
-                    .order_by
-                    .iter()
-                    .map(|s| (s.expr.clone(), s.ascending))
-                    .collect(),
+                items: sort_items,
                 child: Box::new(pipeline),
             }
         } else {
@@ -691,8 +778,7 @@ impl<'s> QueryPlanner<'s> {
 
         // ProduceResults does the final projection from raw rows (or aggregate output rows)
         // to the output column names the caller asked for.
-        let columns: Vec<(String, Expr)> = rc
-            .items
+        let columns: Vec<(String, Expr)> = items
             .iter()
             .map(|item| {
                 let name = return_item_name(item);
@@ -725,11 +811,15 @@ impl<'s> QueryPlanner<'s> {
         }
     }
 
-    fn plan_aggregation(&self, rc: &ReturnClause, child: Operator) -> Result<Operator, GqlError> {
+    fn plan_aggregation_from_items(
+        &self,
+        items: &[ReturnItem],
+        child: Operator,
+    ) -> Result<Operator, GqlError> {
         let mut keys: Vec<Expr> = Vec::new();
         let mut aggregations: Vec<(AggFunction, Expr, bool, Identifier)> = Vec::new();
 
-        for item in &rc.items {
+        for item in items {
             if has_agg_function(&item.expr) {
                 let (func, arg, distinct) = extract_agg_function(&item.expr)?;
                 let alias = item
@@ -751,6 +841,54 @@ impl<'s> QueryPlanner<'s> {
 }
 
 // ── Free helpers ──────────────────────────────────────────────────────────────
+
+/// If `items` contains a `RETURN *` / `WITH *` placeholder, expand it to
+/// all user-visible variables discovered from the child operator tree.
+/// Non-star items are returned unchanged.
+fn expand_star_items(items: &[ReturnItem], child: &Operator) -> Vec<ReturnItem> {
+    let is_star = items.len() == 1
+        && matches!(&items[0].expr, Expr::Variable(id) if id.0 == "*")
+        && items[0].alias.is_none();
+
+    if !is_star {
+        return items.to_vec();
+    }
+
+    let aliases = crate::planner::collect_visible_aliases(child);
+    // When no user-visible aliases are found, return empty (no columns).
+    // The query still executes but produces rows with no projected columns.
+    aliases
+        .into_iter()
+        .map(|name| ReturnItem {
+            expr: Expr::Variable(Identifier::new(name)),
+            alias: None,
+        })
+        .collect()
+}
+
+/// Rewrite an ORDER BY expression when aggregation is active.
+/// If the expression is an aggregate function call that matches a RETURN item,
+/// replace it with a variable reference to the output alias.
+fn rewrite_agg_order_expr(expr: &Expr, return_items: &[ReturnItem]) -> Expr {
+    if let Expr::FunctionCall { name, .. } = expr {
+        if is_agg_name(name.as_str()) {
+            // Find the matching RETURN item.
+            for ri in return_items {
+                if let Expr::FunctionCall { name: rn, .. } = &ri.expr {
+                    if name == rn {
+                        let alias = ri
+                            .alias
+                            .clone()
+                            .map(|a| a.0)
+                            .unwrap_or_else(|| return_item_name(ri));
+                        return Expr::Variable(Identifier::new(alias));
+                    }
+                }
+            }
+        }
+    }
+    expr.clone()
+}
 
 /// Map an AST `SetClauseItem` to a planner `SetItem`.
 fn map_set_clause_item(item: &SetClauseItem) -> SetItem {
@@ -2150,7 +2288,8 @@ mod tests {
             | Operator::Delete { child, .. }
             | Operator::ProduceResults { child, .. }
             | Operator::Expand { child, .. }
-            | Operator::VarLenExpand { child, .. } => vec![child],
+            | Operator::VarLenExpand { child, .. }
+            | Operator::AssemblePath { child, .. } => vec![child],
 
             Operator::Apply { outer, inner }
             | Operator::LeftOuterApply {
