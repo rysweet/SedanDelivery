@@ -1,7 +1,7 @@
-//! Query planner — Phase 0 operator-type definitions + stub planner.
+//! Query planner — operator-type definitions and the QueryPlanner implementation.
 //!
-//! Full plan generation is Phase 2. Phase 0 defines all operator types
-//! so the rest of the codebase compiles against them.
+//! This module defines the complete physical plan operator set (28 operators)
+//! and the QueryPlanner that translates a parsed Query AST into an Operator tree.
 
 use crate::ast::{Direction, Expr, Identifier, Label, RelType};
 use crate::error::{ExecutionError, GqlError};

@@ -1,7 +1,7 @@
 //! Expression evaluator for the GQL executor.
 //!
 //! [`eval_expr`] recursively evaluates an [`Expr`] against a row — a map from
-//! variable name to [`Value`].  Every arm is fully implemented; no stubs.
+//! variable name to [`Value`].  Every Expr variant is fully handled.
 //!
 //! Arithmetic follows Cypher semantics:
 //! - Integer op Integer → Integer (with overflow → Float promotion for `/`)
@@ -976,8 +976,9 @@ fn eval_function<'r>(
             Ok(Value::Bool(vals[0].is_null()))
         }
 
-        // ── Aggregation stubs (returns UnsupportedFeature — aggregation is
-        //    handled at the query plan level, not in scalar expression eval) ──
+        // ── Aggregation functions are handled at the planner/executor level (Aggregate operator),
+        //    not in scalar expression evaluation. Calling them in a non-aggregating context
+        //    returns an explicit error that guides the user to use WITH/RETURN clauses. ──
         "count" | "sum" | "avg" | "min" | "max" | "collect" | "stdev" | "stdevp"
         | "percentilecont" | "percentiledisc" => {
             Err(GqlError::Execution(ExecutionError::unsupported(format!(
