@@ -652,12 +652,169 @@ fn cypher_compare(a: &Value, b: &Value) -> Result<std::cmp::Ordering, GqlError> 
 
 // ── Built-in function evaluation ──────────────────────────────────────────────
 
+/// Evaluate a quantifier predicate: `all`, `any`, `none`, or `single`.
+///
+/// These take the form `func(x IN list WHERE pred)` which the parser rewrites
+/// to `FunctionCall(name, [ListComp { variable, list, filter, map }])`.
+/// We must evaluate the predicate for *every* element (not filter/skip) so we
+/// can correctly count true/false/null results.
+fn eval_quantifier<'r>(name: &str, args: &[Expr], row: &Row<'r>) -> Result<Value, GqlError> {
+    if args.len() != 1 {
+        return Err(GqlError::Execution(ExecutionError::TypeMismatch {
+            expected: format!("{name}(variable IN list WHERE predicate)"),
+            actual: format!("{} arguments", args.len()),
+        }));
+    }
+
+    match &args[0] {
+        Expr::ListComp {
+            variable,
+            list,
+            filter,
+            ..
+        } => {
+            let list_val = eval_expr(list, row)?;
+            match list_val {
+                Value::Null => Ok(Value::Null),
+                Value::List(items) => {
+                    let var_name = variable.0.as_str();
+                    let mut true_count: usize = 0;
+                    let mut false_count: usize = 0;
+                    let mut null_count: usize = 0;
+
+                    for item in &items {
+                        let mut extended: HashMap<&str, &Value> =
+                            row.iter().map(|(&k, v)| (k, *v)).collect();
+                        extended.insert(var_name, item);
+
+                        let result = if let Some(pred) = filter {
+                            eval_expr(pred, &extended)?
+                        } else {
+                            // No WHERE — treat the element itself as the predicate value.
+                            item.clone()
+                        };
+
+                        match result {
+                            Value::Bool(true) => true_count += 1,
+                            Value::Bool(false) => false_count += 1,
+                            Value::Null => null_count += 1,
+                            // Non-boolean values are treated as false.
+                            _ => false_count += 1,
+                        }
+                    }
+
+                    match name.to_ascii_lowercase().as_str() {
+                        "all" => {
+                            if false_count > 0 {
+                                Ok(Value::Bool(false))
+                            } else if null_count > 0 {
+                                Ok(Value::Null)
+                            } else {
+                                Ok(Value::Bool(true))
+                            }
+                        }
+                        "any" => {
+                            if true_count > 0 {
+                                Ok(Value::Bool(true))
+                            } else if null_count > 0 {
+                                Ok(Value::Null)
+                            } else {
+                                Ok(Value::Bool(false))
+                            }
+                        }
+                        "none" => {
+                            if true_count > 0 {
+                                Ok(Value::Bool(false))
+                            } else if null_count > 0 {
+                                Ok(Value::Null)
+                            } else {
+                                Ok(Value::Bool(true))
+                            }
+                        }
+                        "single" => Ok(Value::Bool(true_count == 1)),
+                        _ => unreachable!(),
+                    }
+                }
+                other => Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                    expected: "List".to_string(),
+                    actual: other.type_name().to_string(),
+                })),
+            }
+        }
+        // Fallback: if the arg is not a ListComp (e.g. `all(someListVar)`), evaluate
+        // it as a list of values and check their truthiness.
+        other => {
+            let val = eval_expr(other, row)?;
+            match val {
+                Value::Null => Ok(Value::Null),
+                Value::List(items) => {
+                    let mut true_count: usize = 0;
+                    let mut false_count: usize = 0;
+                    let mut null_count: usize = 0;
+
+                    for item in &items {
+                        match item {
+                            Value::Bool(true) => true_count += 1,
+                            Value::Bool(false) => false_count += 1,
+                            Value::Null => null_count += 1,
+                            _ => false_count += 1,
+                        }
+                    }
+
+                    match name.to_ascii_lowercase().as_str() {
+                        "all" => {
+                            if false_count > 0 {
+                                Ok(Value::Bool(false))
+                            } else if null_count > 0 {
+                                Ok(Value::Null)
+                            } else {
+                                Ok(Value::Bool(true))
+                            }
+                        }
+                        "any" => {
+                            if true_count > 0 {
+                                Ok(Value::Bool(true))
+                            } else if null_count > 0 {
+                                Ok(Value::Null)
+                            } else {
+                                Ok(Value::Bool(false))
+                            }
+                        }
+                        "none" => {
+                            if true_count > 0 {
+                                Ok(Value::Bool(false))
+                            } else if null_count > 0 {
+                                Ok(Value::Null)
+                            } else {
+                                Ok(Value::Bool(true))
+                            }
+                        }
+                        "single" => Ok(Value::Bool(true_count == 1)),
+                        _ => unreachable!(),
+                    }
+                }
+                _ => Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                    expected: "List".to_string(),
+                    actual: val.type_name().to_string(),
+                })),
+            }
+        }
+    }
+}
+
 fn eval_function<'r>(
     name: &str,
     args: &[Expr],
     _distinct: bool,
     row: &Row<'r>,
 ) -> Result<Value, GqlError> {
+    // Quantifier predicates need access to the raw ListComp expr —
+    // they must NOT eagerly evaluate args (which would lose predicate info).
+    match name.to_ascii_lowercase().as_str() {
+        "all" | "any" | "none" | "single" => return eval_quantifier(name, args, row),
+        _ => {}
+    }
+
     // Evaluate all arguments eagerly.
     let mut vals: Vec<Value> = Vec::with_capacity(args.len());
     for a in args {
