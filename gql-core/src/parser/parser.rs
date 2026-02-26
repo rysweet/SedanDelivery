@@ -978,6 +978,24 @@ impl<'src> Parser<'src> {
         // Check for chained IS NULL / IS NOT NULL (post-fix predicates).
         left = self.parse_null_check(left)?;
 
+        // Check for label check: `a:Label` or `a:Label1:Label2`
+        while self.at(&TokenKind::Colon) {
+            // Peek ahead: if the next token after colon is an identifier, it's a label check.
+            if self.pos + 1 < self.tokens.len()
+                && matches!(self.tokens[self.pos + 1].kind, TokenKind::Identifier)
+            {
+                self.advance(); // consume ':'
+                let label_name = self.tokens[self.pos].text.to_string();
+                self.advance(); // consume label name
+                left = Expr::HasLabel(
+                    Box::new(left),
+                    Label::new(smol_str::SmolStr::new(&label_name)),
+                );
+            } else {
+                break;
+            }
+        }
+
         loop {
             let op = match self.peek().clone() {
                 TokenKind::Eq => BinaryOp::Eq,

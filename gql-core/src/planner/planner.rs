@@ -617,23 +617,52 @@ impl<'s> QueryPlanner<'s> {
         let mut aggregations: Vec<(AggFunction, Expr, bool, Identifier)> = Vec::new();
         // Track key aliases: (generated_column_name, user_alias) pairs.
         let mut key_renames: Vec<(String, String)> = Vec::new();
+        let mut post_projections: Vec<(Expr, Option<Identifier>)> = Vec::new();
+        let mut needs_post_project = false;
+        let mut agg_counter: usize = 0;
 
         for item in items {
             if has_agg_function(&item.expr) {
-                let (func, arg, distinct) = extract_agg_function(&item.expr)?;
-                let alias = item
-                    .alias
-                    .clone()
-                    .unwrap_or_else(|| Identifier::new(return_item_name(item)));
-                aggregations.push((func, arg, distinct, alias));
+                if let Ok((func, arg, distinct)) = extract_agg_function(&item.expr) {
+                    let alias = item
+                        .alias
+                        .clone()
+                        .unwrap_or_else(|| Identifier::new(return_item_name(item)));
+                    aggregations.push((func, arg, distinct, alias.clone()));
+                    post_projections.push((Expr::Variable(alias), None));
+                } else {
+                    needs_post_project = true;
+                    let temp_alias = Identifier::new(format!("__agg_{agg_counter}"));
+                    agg_counter += 1;
+                    if let Some((func, arg, distinct)) = find_inner_aggregate(&item.expr) {
+                        aggregations.push((func, arg, distinct, temp_alias.clone()));
+                        let rewritten = rewrite_agg_to_var(&item.expr, &temp_alias);
+                        let final_alias = item
+                            .alias
+                            .clone()
+                            .unwrap_or_else(|| Identifier::new(return_item_name(item)));
+                        post_projections.push((rewritten, Some(final_alias)));
+                    } else {
+                        keys.push(item.expr.clone());
+                        let alias = item
+                            .alias
+                            .clone()
+                            .unwrap_or_else(|| Identifier::new(return_item_name(item)));
+                        post_projections.push((Expr::Variable(alias), None));
+                    }
+                }
             } else {
                 let gen_name = expr_to_col_name(&item.expr);
                 if let Some(a) = &item.alias {
                     if a.0 != gen_name {
-                        key_renames.push((gen_name, a.0.clone()));
+                        key_renames.push((gen_name.clone(), a.0.clone()));
                     }
                 }
                 keys.push(item.expr.clone());
+                post_projections.push((
+                    Expr::Variable(Identifier::new(gen_name)),
+                    item.alias.clone(),
+                ));
             }
         }
 
@@ -643,38 +672,40 @@ impl<'s> QueryPlanner<'s> {
             child: Box::new(child),
         };
 
-        // If any keys have aliases that differ from the generated column name,
-        // wrap with a Project that renames them and passes through all columns.
-        if key_renames.is_empty() {
-            Ok(agg)
-        } else {
-            // Build project items: for each WITH item, produce the correct alias.
-            let mut project_items: Vec<(Expr, Option<Identifier>)> = Vec::new();
-            for item in items {
-                let name = return_item_name(item);
-                if has_agg_function(&item.expr) {
-                    // Aggregation output: reference by alias
-                    let agg_alias = item
-                        .alias
-                        .clone()
-                        .unwrap_or_else(|| Identifier::new(name.clone()));
-                    project_items.push((
-                        Expr::Variable(agg_alias.clone()),
-                        item.alias.clone(),
-                    ));
-                } else {
-                    // Key: reference by generated column name, alias to user alias
-                    let gen_name = expr_to_col_name(&item.expr);
-                    project_items.push((
-                        Expr::Variable(Identifier::new(gen_name)),
-                        item.alias.clone(),
-                    ));
+        // If post-project needed (complex agg expressions) or key renames needed
+        if needs_post_project || !key_renames.is_empty() {
+            let project_items: Vec<(Expr, Option<Identifier>)> = if needs_post_project {
+                post_projections
+            } else {
+                // Simple rename case
+                let mut items_out = Vec::new();
+                for item in items {
+                    let name = return_item_name(item);
+                    if has_agg_function(&item.expr) {
+                        let agg_alias = item
+                            .alias
+                            .clone()
+                            .unwrap_or_else(|| Identifier::new(name.clone()));
+                        items_out.push((
+                            Expr::Variable(agg_alias.clone()),
+                            item.alias.clone(),
+                        ));
+                    } else {
+                        let gen_name = expr_to_col_name(&item.expr);
+                        items_out.push((
+                            Expr::Variable(Identifier::new(gen_name)),
+                            item.alias.clone(),
+                        ));
+                    }
                 }
-            }
+                items_out
+            };
             Ok(Operator::Project {
                 items: project_items,
                 child: Box::new(agg),
             })
+        } else {
+            Ok(agg)
         }
     }
 
@@ -857,25 +888,75 @@ impl<'s> QueryPlanner<'s> {
     ) -> Result<Operator, GqlError> {
         let mut keys: Vec<Expr> = Vec::new();
         let mut aggregations: Vec<(AggFunction, Expr, bool, Identifier)> = Vec::new();
+        // Track post-aggregation projections for expressions wrapping aggregates
+        // (e.g., `count(a) + 3`, `count(a) > 0`).
+        let mut post_projections: Vec<(Expr, Option<Identifier>)> = Vec::new();
+        let mut needs_post_project = false;
+        let mut agg_counter: usize = 0;
 
         for item in items {
             if has_agg_function(&item.expr) {
-                let (func, arg, distinct) = extract_agg_function(&item.expr)?;
+                if let Ok((func, arg, distinct)) = extract_agg_function(&item.expr) {
+                    // Simple case: expr is a bare aggregate function
+                    let alias = item
+                        .alias
+                        .clone()
+                        .unwrap_or_else(|| Identifier::new(return_item_name(item)));
+                    aggregations.push((func, arg, distinct, alias.clone()));
+                    post_projections.push((Expr::Variable(alias), None));
+                } else {
+                    // Complex case: aggregate is wrapped (e.g., count(a) + 3)
+                    // Extract inner aggregate(s) and create temp aliases
+                    needs_post_project = true;
+                    let temp_alias = Identifier::new(format!("__agg_{agg_counter}"));
+                    agg_counter += 1;
+
+                    // Find the innermost aggregate function call
+                    if let Some((func, arg, distinct)) = find_inner_aggregate(&item.expr) {
+                        aggregations.push((func, arg, distinct, temp_alias.clone()));
+                        // Rewrite the original expression to reference the temp alias
+                        let rewritten = rewrite_agg_to_var(&item.expr, &temp_alias);
+                        let final_alias = item
+                            .alias
+                            .clone()
+                            .unwrap_or_else(|| Identifier::new(return_item_name(item)));
+                        post_projections.push((rewritten, Some(final_alias)));
+                    } else {
+                        // Fallback: treat as key
+                        keys.push(item.expr.clone());
+                        let alias = item
+                            .alias
+                            .clone()
+                            .unwrap_or_else(|| Identifier::new(return_item_name(item)));
+                        post_projections.push((Expr::Variable(alias), None));
+                    }
+                }
+            } else {
+                keys.push(item.expr.clone());
                 let alias = item
                     .alias
                     .clone()
                     .unwrap_or_else(|| Identifier::new(return_item_name(item)));
-                aggregations.push((func, arg, distinct, alias));
-            } else {
-                keys.push(item.expr.clone());
+                post_projections.push((Expr::Variable(alias), None));
             }
         }
 
-        Ok(Operator::Aggregate {
+        let agg_op = Operator::Aggregate {
             keys,
             aggregations,
             child: Box::new(child),
-        })
+        };
+
+        if needs_post_project {
+            // Wrap with a Project to compute the post-agg expressions
+            let project_items: Vec<(Expr, Option<Identifier>)> = post_projections;
+            Ok(Operator::Project {
+                items: project_items,
+                child: Box::new(agg_op),
+            })
+        } else {
+            Ok(agg_op)
+        }
     }
 }
 
@@ -1064,6 +1145,68 @@ fn extract_agg_function(expr: &Expr) -> Result<(AggFunction, Expr, bool), GqlErr
         _ => Err(GqlError::Execution(ExecutionError::unsupported(
             "non-function aggregate expression",
         ))),
+    }
+}
+
+/// Find the innermost aggregate function call in a compound expression.
+/// Returns (AggFunction, arg_expr, distinct) if found.
+fn find_inner_aggregate(expr: &Expr) -> Option<(AggFunction, Expr, bool)> {
+    match expr {
+        Expr::FunctionCall {
+            name,
+            args,
+            distinct,
+        } => {
+            let func = match name.to_uppercase().as_str() {
+                "COUNT" => AggFunction::Count,
+                "SUM" => AggFunction::Sum,
+                "AVG" => AggFunction::Avg,
+                "MIN" => AggFunction::Min,
+                "MAX" => AggFunction::Max,
+                "COLLECT" => AggFunction::Collect,
+                "STDEV" => AggFunction::StDev,
+                "STDEVP" => AggFunction::StDevP,
+                _ => return None,
+            };
+            let arg = args.first().cloned().unwrap_or(Expr::Null);
+            Some((func, arg, *distinct))
+        }
+        Expr::BinaryOp { left, right, .. } => {
+            find_inner_aggregate(left).or_else(|| find_inner_aggregate(right))
+        }
+        Expr::UnaryOp { expr: inner, .. } => find_inner_aggregate(inner),
+        Expr::Property(inner, _) => find_inner_aggregate(inner),
+        _ => None,
+    }
+}
+
+/// Rewrite an expression by replacing the first aggregate function call with
+/// a variable reference to `alias`.
+fn rewrite_agg_to_var(expr: &Expr, alias: &Identifier) -> Expr {
+    match expr {
+        Expr::FunctionCall { name, .. } if is_agg_name(name) => Expr::Variable(alias.clone()),
+        Expr::BinaryOp { op, left, right } => {
+            if has_agg_function(left) {
+                Expr::BinaryOp {
+                    op: *op,
+                    left: Box::new(rewrite_agg_to_var(left, alias)),
+                    right: right.clone(),
+                }
+            } else if has_agg_function(right) {
+                Expr::BinaryOp {
+                    op: *op,
+                    left: left.clone(),
+                    right: Box::new(rewrite_agg_to_var(right, alias)),
+                }
+            } else {
+                expr.clone()
+            }
+        }
+        Expr::UnaryOp { op, expr: inner } => Expr::UnaryOp {
+            op: *op,
+            expr: Box::new(rewrite_agg_to_var(inner, alias)),
+        },
+        _ => expr.clone(),
     }
 }
 

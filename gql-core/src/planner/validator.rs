@@ -329,10 +329,46 @@ impl ValidationContext {
 
     // ── DELETE validation ────────────────────────────────────────────────────
 
-    fn validate_delete(&self, _dc: &DeleteClause) -> Result<(), GqlError> {
-        // DELETE validation is deliberately lenient — the executor handles
-        // undefined variables and type mismatches.
+    fn validate_delete(&self, dc: &DeleteClause) -> Result<(), GqlError> {
+        for expr in &dc.exprs {
+            self.validate_delete_expr(expr)?;
+        }
         Ok(())
+    }
+
+    fn validate_delete_expr(&self, expr: &Expr) -> Result<(), GqlError> {
+        match expr {
+            Expr::Variable(ref id) => {
+                if !self.vars.contains_key(&id.0) {
+                    return Err(plan_error_syntax(&format!(
+                        "variable '{}' not defined",
+                        id.0
+                    )));
+                }
+                Ok(())
+            }
+            // DELETE n.prop, DELETE map.key
+            Expr::Property(inner, _) => self.validate_delete_expr(inner),
+            // DELETE list[idx]
+            Expr::Subscript(inner, _) => self.validate_delete_expr(inner),
+            // Literal values in DELETE are invalid: DELETE 1+1
+            Expr::Integer(_) | Expr::Float(_) | Expr::Str(_) | Expr::Bool(_) | Expr::Null => {
+                Err(plan_error_syntax(
+                    "DELETE requires a variable reference, got a literal",
+                ))
+            }
+            // Arithmetic expressions on literals: DELETE 1+1
+            Expr::BinaryOp { left, right, .. } => {
+                if is_non_variable_expr(left) && is_non_variable_expr(right) {
+                    return Err(plan_error_syntax(
+                        "DELETE requires a variable reference, got an expression",
+                    ));
+                }
+                Ok(())
+            }
+            // Other expressions (function calls, etc.) — allow through for runtime checking
+            _ => Ok(()),
+        }
     }
 
     // ── RETURN validation ───────────────────────────────────────────────────
@@ -840,6 +876,14 @@ impl ValidationContext {
 }
 
 // ── Literal classification helpers ──────────────────────────────────────────
+
+/// Returns true if expr contains no variable references (pure literal/arithmetic).
+fn is_non_variable_expr(expr: &Expr) -> bool {
+    matches!(
+        expr,
+        Expr::Integer(_) | Expr::Float(_) | Expr::Str(_) | Expr::Bool(_) | Expr::Null
+    )
+}
 
 /// Returns true if expr is a non-boolean literal (includes all literal types except Bool and Null).
 fn is_non_boolean_literal(expr: &Expr) -> bool {
