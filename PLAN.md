@@ -611,14 +611,16 @@ Redis modules run in Redis's main thread for command handlers. Long-running quer
 
 ---
 
-## 12. Questions for Stakeholders
+## 12. Resolved Design Decisions
 
-1. **Cypher subset**: Is `CALL` subquery support required for Phase 1, or can it be Phase 2?
-2. **Redis version**: Can we require Redis 7.4+ (for latest Module API features), or must we support 6.x?
-3. **Multi-tenancy**: Should each graph be a separate Redis DB, or all graphs in DB 0 with key prefixes?
-4. **Persistence**: Is RDB persistence sufficient, or do we need AOF for durability?
-5. **Cluster support**: Is Redis Cluster required, or single-instance Redis sufficient for Phase 1?
-6. **Parquet sync**: Should the sync be push (Redis → OneLake) or pull (OneLake polls Redis)?
+| Decision | Resolution | Rationale |
+|---|---|---|
+| `CALL` subquery support | Deferred — grammar accepts it, executor returns `UnsupportedFeature` | Full grammar from day one; execution deferred cleanly per ADR-002 |
+| Valkey vs. Redis version | Target Valkey 8.x (BSD-3-Clause) with `use-redismodule-api` flag for Redis 7.4 compatibility | Redis 8 is AGPLv3 — licensing risk for Microsoft products offered as services |
+| Multi-tenancy model | All graphs in DB 0 with `{graphname}:` key prefixes + Redis Cluster hash tags | Avoids DB-level isolation complexity; hash tags ensure cluster slot affinity per graph |
+| Persistence | RDB persistence is sufficient for Phase 1; AOF optional via Redis config | RDB provides crash recovery; AOF is an ops decision, not an engine decision |
+| Cluster support | Single-instance sufficient for Phase 1; Cluster-compatible by design (hash tags) | Key naming uses `{graphname}` hash tags so Cluster upgrade requires no code changes |
+| Parquet sync direction | Push model (Redis → OneLake) triggered on demand or schedule | Consistent with existing `OneLakeGraphSync.ExportAsync()` pattern in LadybugDB |
 
 ---
 
