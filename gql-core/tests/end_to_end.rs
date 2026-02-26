@@ -229,7 +229,7 @@ fn test_match_relationship() {
     // The label filter uses `hasLabel()` which may or may not be handled.
     // At minimum, we should have at least one row.
     assert!(
-        result.rows.len() >= 1,
+        !result.rows.is_empty(),
         "should have at least one traversal result, got {}",
         result.rows.len()
     );
