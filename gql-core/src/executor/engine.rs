@@ -488,13 +488,38 @@ impl<'a> QueryExecutor<'a> {
                 let input = self.exec_operator(graph, child, budget, outer_rows, stats)?;
                 let mut out = Vec::with_capacity(input.len());
 
+                // Check if any column is the '*' wildcard that needs
+                // runtime expansion (fallback for planner edge-cases).
+                let has_star = columns
+                    .iter()
+                    .any(|(name, _)| name == "*");
+
                 for row in &input {
                     budget.check_or_err()?;
                     let ctx = self.build_filter_ctx(graph, row)?;
                     let mut new_row = Row::new();
-                    for (col_name, expr) in columns {
-                        let val = self.eval_with_storage(graph, expr, row, &ctx)?;
-                        new_row.insert(col_name.clone(), val);
+
+                    if has_star {
+                        // Expand '*' to all variables in the row.
+                        for (col_name, expr) in columns {
+                            if col_name == "*" {
+                                // Insert all non-internal variables from the
+                                // input row, resolving through storage.
+                                for (var_name, val) in row {
+                                    if !var_name.starts_with("__") {
+                                        new_row.insert(var_name.clone(), val.clone());
+                                    }
+                                }
+                            } else {
+                                let val = self.eval_with_storage(graph, expr, row, &ctx)?;
+                                new_row.insert(col_name.clone(), val);
+                            }
+                        }
+                    } else {
+                        for (col_name, expr) in columns {
+                            let val = self.eval_with_storage(graph, expr, row, &ctx)?;
+                            new_row.insert(col_name.clone(), val);
+                        }
                     }
                     budget.record_row();
                     out.push(new_row);
@@ -848,6 +873,9 @@ impl<'a> QueryExecutor<'a> {
             }
 
             // ── Apply ────────────────────────────────────────────────────────────
+            // Cross-product (inner join) semantics: if the inner side produces
+            // no rows for a given outer row, that outer row is dropped entirely.
+            // This matches Cypher `MATCH (a) MATCH (b)` behaviour.
             Operator::Apply { outer, inner } => {
                 let outer_rows = self.exec_operator(graph, outer, budget, outer_rows, stats)?;
                 let mut out = Vec::new();
@@ -862,20 +890,14 @@ impl<'a> QueryExecutor<'a> {
                         stats,
                     )?;
 
-                    if inner_rows.is_empty() {
-                        // If inner produces nothing, the outer row is still passed through
-                        budget.record_row();
-                        out.push(outer_row.clone());
-                    } else {
-                        for inner_row in inner_rows {
-                            budget.check_or_err()?;
-                            let mut combined = outer_row.clone();
-                            for (k, v) in inner_row {
-                                combined.insert(k, v);
-                            }
-                            budget.record_row();
-                            out.push(combined);
+                    for inner_row in inner_rows {
+                        budget.check_or_err()?;
+                        let mut combined = outer_row.clone();
+                        for (k, v) in inner_row {
+                            combined.insert(k, v);
                         }
+                        budget.record_row();
+                        out.push(combined);
                     }
                 }
                 Ok(out)
@@ -1179,6 +1201,88 @@ impl<'a> QueryExecutor<'a> {
                 args,
                 distinct,
             } => {
+                // List predicate functions (all/any/none/single) need their
+                // ListComp argument evaluated with storage-awareness.
+                match name.to_lowercase().as_str() {
+                    "all" | "any" | "none" | "single" => {
+                        if args.len() == 1 {
+                            if let Expr::ListComp {
+                                variable,
+                                list,
+                                filter,
+                                ..
+                            } = &args[0]
+                            {
+                                // Evaluate list with storage.
+                                let list_val =
+                                    self.eval_with_storage(graph, list, row, ctx)?;
+                                let items = match list_val {
+                                    Value::Null => return Ok(Value::Null),
+                                    Value::List(items) => items,
+                                    other => {
+                                        return Err(GqlError::Execution(
+                                            ExecutionError::TypeMismatch {
+                                                expected: "List".to_string(),
+                                                actual: other.type_name().to_string(),
+                                            },
+                                        ))
+                                    }
+                                };
+                                let lc = name.to_lowercase();
+                                let mut match_count: usize = 0;
+                                let total = items.len();
+                                for item in &items {
+                                    let mut ext_row = row.clone();
+                                    ext_row.insert(variable.0.clone(), item.clone());
+                                    let ext_ctx =
+                                        self.build_filter_ctx(graph, &ext_row)?;
+                                    let pred_result = if let Some(pred) = filter {
+                                        self.eval_with_storage(
+                                            graph, pred, &ext_row, &ext_ctx,
+                                        )?
+                                    } else {
+                                        item.clone()
+                                    };
+                                    if pred_result == Value::Bool(true) {
+                                        match_count += 1;
+                                    }
+                                    // Short-circuit
+                                    match lc.as_str() {
+                                        "any" if match_count > 0 => {
+                                            return Ok(Value::Bool(true))
+                                        }
+                                        "none" if match_count > 0 => {
+                                            return Ok(Value::Bool(false))
+                                        }
+                                        "single" if match_count > 1 => {
+                                            return Ok(Value::Bool(false))
+                                        }
+                                        _ => {}
+                                    }
+                                }
+                                return match lc.as_str() {
+                                    "all" => Ok(Value::Bool(match_count == total)),
+                                    "any" => Ok(Value::Bool(match_count > 0)),
+                                    "none" => Ok(Value::Bool(match_count == 0)),
+                                    "single" => Ok(Value::Bool(match_count == 1)),
+                                    _ => Ok(Value::Bool(false)),
+                                };
+                            }
+                        }
+                        // Fallback: delegate to eval_expr
+                        return eval_expr(expr, ctx);
+                    }
+                    "exists" => {
+                        if args.len() == 1 {
+                            let val =
+                                self.eval_with_storage(graph, &args[0], row, ctx)?;
+                            return Ok(Value::Bool(!val.is_null()));
+                        }
+                        return eval_expr(expr, ctx);
+                    }
+                    _ => {}
+                }
+
                 // Evaluate all arguments through eval_with_storage.
                 let evaled_args: Result<Vec<Value>, GqlError> = args
                     .iter()
@@ -1444,12 +1548,101 @@ impl<'a> QueryExecutor<'a> {
                     _ => eval_function_with_vals(name, evaled_args)
                 }
             }
+            // Case expression: evaluate with storage-awareness.
+            Expr::Case {
+                subject,
+                alternatives,
+                default,
+            } => {
+                if let Some(subj) = subject {
+                    // Value-comparison CASE
+                    let subj_val = self.eval_with_storage(graph, subj, row, ctx)?;
+                    for (when_expr, then_expr) in alternatives {
+                        let when_val = self.eval_with_storage(graph, when_expr, row, ctx)?;
+                        if subj_val == when_val {
+                            return self.eval_with_storage(graph, then_expr, row, ctx);
+                        }
+                    }
+                } else {
+                    // Generic CASE (each WHEN is a predicate)
+                    for (when_expr, then_expr) in alternatives {
+                        let when_val = self.eval_with_storage(graph, when_expr, row, ctx)?;
+                        if when_val == Value::Bool(true) {
+                            return self.eval_with_storage(graph, then_expr, row, ctx);
+                        }
+                    }
+                }
+                match default {
+                    Some(d) => self.eval_with_storage(graph, d, row, ctx),
+                    None => Ok(Value::Null),
+                }
+            }
+            // List literal: evaluate each element with storage-awareness.
+            Expr::List(items) => {
+                let mut result = Vec::with_capacity(items.len());
+                for item in items {
+                    result.push(self.eval_with_storage(graph, item, row, ctx)?);
+                }
+                Ok(Value::List(result))
+            }
+            // Map literal: evaluate each value with storage-awareness.
+            Expr::MapLiteral(pairs) => {
+                let mut map = indexmap::IndexMap::new();
+                for (key, val_expr) in pairs {
+                    let val = self.eval_with_storage(graph, val_expr, row, ctx)?;
+                    map.insert(key.to_string().into_boxed_str(), val);
+                }
+                Ok(Value::Map(map))
+            }
+            // ListComp: evaluate list with storage, then filter/map with storage.
+            Expr::ListComp {
+                variable,
+                list,
+                filter,
+                map,
+            } => {
+                let list_val = self.eval_with_storage(graph, list, row, ctx)?;
+                match list_val {
+                    Value::Null => Ok(Value::Null),
+                    Value::List(items) => {
+                        let mut result = Vec::with_capacity(items.len());
+                        for item in &items {
+                            let mut extended_row = row.clone();
+                            extended_row.insert(variable.0.clone(), item.clone());
+                            let ext_ctx = self.build_filter_ctx(graph, &extended_row)?;
+                            if let Some(pred) = filter {
+                                match self.eval_with_storage(
+                                    graph,
+                                    pred,
+                                    &extended_row,
+                                    &ext_ctx,
+                                )? {
+                                    Value::Bool(true) => {}
+                                    _ => continue,
+                                }
+                            }
+                            result.push(self.eval_with_storage(
+                                graph,
+                                map,
+                                &extended_row,
+                                &ext_ctx,
+                            )?);
+                        }
+                        Ok(Value::List(result))
+                    }
+                    other => Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                        expected: "List".to_string(),
+                        actual: other.type_name().to_string(),
+                    })),
+                }
+            }
             // For all other expressions, delegate to eval_expr.
             _ => eval_expr(expr, ctx),
         }
     }
 
     /// Apply a single `SetItem` (SET n.prop = val, SET n = {map}, SET n += {map}, SET n:Label).
+    /// Handles both Node and Edge targets for property operations.
     fn apply_set_item(
         &self,
         graph: &str,
@@ -1462,19 +1655,30 @@ impl<'a> QueryExecutor<'a> {
                 let val = row
                     .get(alias.0.as_str())
                     .ok_or_else(|| undefined_var(&alias.0))?;
-                let node_id = extract_node_id(val, &alias.0)?;
                 let ctx = self.build_filter_ctx(graph, row)?;
                 let prop_val = self.eval_with_storage(graph, value, row, &ctx)?;
                 let mut props = HashMap::new();
                 props.insert(key.clone(), prop_val);
-                self.store.set_node_properties(graph, node_id, props)?;
+                match val {
+                    Value::Node(node_id) => {
+                        self.store.set_node_properties(graph, *node_id, props)?;
+                    }
+                    Value::Edge(edge_id) => {
+                        self.store.set_edge_properties(graph, *edge_id, props)?;
+                    }
+                    other => {
+                        return Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                            expected: format!("Node or Relationship for variable '{}'", alias.0),
+                            actual: other.type_name().to_string(),
+                        }));
+                    }
+                }
                 stats.properties_set += 1;
             }
             SetItem::Map { alias, map, merge } => {
                 let val = row
                     .get(alias.0.as_str())
                     .ok_or_else(|| undefined_var(&alias.0))?;
-                let node_id = extract_node_id(val, &alias.0)?;
                 let ctx = self.build_filter_ctx(graph, row)?;
                 let map_val = self.eval_with_storage(graph, map, row, &ctx)?;
                 let props = match map_val {
@@ -1491,10 +1695,27 @@ impl<'a> QueryExecutor<'a> {
                     }
                 };
                 let prop_count = props.len() as u64;
-                if *merge {
-                    self.store.set_node_properties(graph, node_id, props)?;
-                } else {
-                    self.store.replace_node_properties(graph, node_id, props)?;
+                match val {
+                    Value::Node(node_id) => {
+                        if *merge {
+                            self.store.set_node_properties(graph, *node_id, props)?;
+                        } else {
+                            self.store.replace_node_properties(graph, *node_id, props)?;
+                        }
+                    }
+                    Value::Edge(edge_id) => {
+                        if *merge {
+                            self.store.set_edge_properties(graph, *edge_id, props)?;
+                        } else {
+                            self.store.replace_edge_properties(graph, *edge_id, props)?;
+                        }
+                    }
+                    other => {
+                        return Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                            expected: format!("Node or Relationship for variable '{}'", alias.0),
+                            actual: other.type_name().to_string(),
+                        }));
+                    }
                 }
                 stats.properties_set += prop_count;
             }
@@ -2981,9 +3202,8 @@ mod tests {
         };
         let mut budget = ExecutionBudget::unlimited();
         let result = executor.execute("g", &plan, &mut budget).unwrap();
-        // Inner produces nothing, outer row is still passed through
-        assert_eq!(result.rows.len(), 1);
-        assert!(result.rows[0].contains_key("a"));
+        // Cross-product semantics: inner produces nothing → outer row is dropped.
+        assert_eq!(result.rows.len(), 0);
     }
 
     // ── IndexScan tests ──────────────────────────────────────────────────────
