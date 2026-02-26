@@ -14,4 +14,4 @@ smol_str   = { workspace = true }
 # NOTE: valkey-module crate may not exist on crates.io yet under that name.
 # Using redis-module as placeholder; swap to valkey-module once available.
 # See ADR update from Rust expert review: use valkeymodule-rs with use-redismodule-api.
-redis-module = "0.24"
+redis-module = "2.0"
