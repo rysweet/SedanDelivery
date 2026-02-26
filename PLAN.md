@@ -3,6 +3,8 @@
 **Issue**: cloud-ecosystem-security/cybergym#431
 **Goal**: Build a production-quality Rust GraphQL/Cypher query engine as a Redis module, serving as a clean-room, MIT/Apache-2.0-licensed alternative to RedisGraph/FalkorDB (SSPL).
 **Date**: 2026-02-26
+**Usage guide**: [docs/TUTORIAL.md](docs/TUTORIAL.md)
+**Docs index**: [docs/README.md](docs/README.md)
 
 ---
 
