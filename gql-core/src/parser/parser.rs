@@ -138,7 +138,7 @@ impl<'src> Parser<'src> {
 }
 
 /// Returns `true` for keyword tokens that are also valid Cypher identifiers
-/// (property keys, variable names, function names, etc.).
+/// (property keys, variable names, function names, relationship type names, etc.).
 fn is_keyword_usable_as_ident(kind: &TokenKind) -> bool {
     matches!(
         kind,
@@ -160,6 +160,7 @@ fn is_keyword_usable_as_ident(kind: &TokenKind) -> bool {
             | TokenKind::False
             | TokenKind::End
             | TokenKind::Foreach
+            | TokenKind::In
     )
 }
 
@@ -522,7 +523,15 @@ impl<'src> Parser<'src> {
     }
 
     fn parse_set_item(&mut self) -> Result<SetClauseItem, ParseError> {
-        let alias = Identifier::new(self.expect_identifier()?);
+        // Handle `(n).prop = expr` — parenthesized variable access (equivalent to `n.prop = expr`)
+        let alias = if self.at(&TokenKind::LParen) {
+            self.advance(); // consume (
+            let id = Identifier::new(self.expect_identifier()?);
+            self.expect(&TokenKind::RParen)?; // consume )
+            id
+        } else {
+            Identifier::new(self.expect_identifier()?)
+        };
 
         match self.peek().clone() {
             // n.prop = expr
@@ -919,12 +928,14 @@ impl<'src> Parser<'src> {
         Ok(labels)
     }
 
-    /// Parse `:A|B|C` — used for relationship types inside `[...]`.
+    /// Parse `:A|B|C` or `:A|:B|:C` — used for relationship types inside `[...]`.
     fn parse_rel_type_list(&mut self) -> Result<Vec<RelType>, ParseError> {
         let mut types = Vec::new();
         self.expect(&TokenKind::Colon)?;
         types.push(RelType::new(SmolStr::new(self.expect_identifier()?)));
         while self.eat(&TokenKind::Pipe) {
+            // Accept optional colon before each subsequent type: `:A|:B` or `:A|B`
+            self.eat(&TokenKind::Colon);
             types.push(RelType::new(SmolStr::new(self.expect_identifier()?)));
         }
         Ok(types)
@@ -1285,6 +1296,12 @@ impl<'src> Parser<'src> {
 
     fn parse_unary(&mut self) -> Result<Expr, ParseError> {
         if self.eat(&TokenKind::Dash) {
+            // Special case: -9223372036854775808 = i64::MIN (the only valid use of
+            // the 2^63 magnitude literal is immediately after unary minus).
+            if self.at(&TokenKind::IntMinMagnitude) {
+                self.advance();
+                return Ok(Expr::Integer(i64::MIN));
+            }
             let expr = self.parse_unary()?;
             Ok(Expr::UnaryOp {
                 op: UnaryOp::Neg,
@@ -1393,6 +1410,14 @@ impl<'src> Parser<'src> {
                 self.advance();
                 Ok(Expr::Integer(n))
             }
+            // 9223372036854775808 (2^63) alone is too large — only valid after unary minus.
+            TokenKind::IntMinMagnitude => {
+                let tok = self.advance();
+                Err(ParseError::IntegerOverflow {
+                    literal: tok.text.to_string(),
+                    offset: tok.offset,
+                })
+            }
             // Float literal
             TokenKind::FloatLiteral(f) => {
                 self.advance();
@@ -1418,10 +1443,18 @@ impl<'src> Parser<'src> {
                 self.advance();
                 Ok(Expr::Null)
             }
-            // Parameter: $name or $0
+            // Parameter: $name or $1 (numeric parameter names are valid in Cypher)
             TokenKind::DollarSign => {
                 self.advance();
-                let name = self.expect_identifier()?;
+                let name = match self.peek().clone() {
+                    TokenKind::IntLiteral(n) => {
+                        let text = self.tokens[self.pos].text.to_string();
+                        self.advance();
+                        let _ = n;
+                        text
+                    }
+                    _ => self.expect_identifier()?,
+                };
                 Ok(Expr::Parameter(name))
             }
             // CASE expression
@@ -1452,10 +1485,14 @@ impl<'src> Parser<'src> {
                 self.expect(&TokenKind::RParen)?;
                 Ok(expr)
             }
-            // count(*) — special case
+            // count(*) — special case; also allow `count` as a plain identifier
             TokenKind::Count => {
                 self.advance();
-                self.expect(&TokenKind::LParen)?;
+                if !self.at(&TokenKind::LParen) {
+                    // Used as a plain variable reference (e.g. `RETURN count` where count is an alias)
+                    return Ok(Expr::Variable(Identifier::new("count")));
+                }
+                self.advance(); // consume (
                 let distinct = self.eat(&TokenKind::Distinct);
                 let args = if self.at(&TokenKind::Star) {
                     self.advance();
@@ -1680,9 +1717,30 @@ impl<'src> Parser<'src> {
     /// Check if the current position looks like a pattern expression.
     /// Scans ahead from `(` to find the matching `)` and checks if it's
     /// followed by `-` or `<-` (relationship indicator).
+    ///
+    /// Also checks that the token immediately after `(` looks like a node pattern
+    /// start (identifier, label colon, property map, or empty `()`) — not an
+    /// arithmetic expression like `(4 ^ 3) - ...` or `(-3) - ...`.
     fn looks_like_pattern_expr(&self) -> bool {
-        // We need to find the matching `)` for the current `(` and check
-        // if it's followed by a relationship indicator.
+        // The token right after `(` determines if this is a pattern or arithmetic:
+        // - Pattern starters: Identifier, keyword-as-ident, `:`, `{`, `)`
+        // - Arithmetic starters: IntLiteral, FloatLiteral, StringLiteral, Dash, Plus, etc.
+        let first_inner_idx = self.pos + 1;
+        if first_inner_idx < self.tokens.len() {
+            let first_inner = &self.tokens[first_inner_idx].kind;
+            let is_pattern_start = matches!(
+                first_inner,
+                TokenKind::Identifier
+                    | TokenKind::Colon
+                    | TokenKind::LBrace
+                    | TokenKind::RParen
+            ) || is_keyword_usable_as_ident(first_inner);
+            if !is_pattern_start {
+                return false;
+            }
+        }
+
+        // Find the matching `)` and check if it's followed by `-` or `<-`.
         let mut depth = 0;
         let mut i = self.pos;
         while i < self.tokens.len() {
