@@ -18,7 +18,7 @@ import { ExportDialog } from './components/dialogs/ExportDialog'
 import { ImportDialog } from './components/dialogs/ImportDialog'
 import { Toast } from './components/ui/Toast'
 import type { GraphNode, GraphEdge } from './types/graph'
-import { mergeGraphData } from './utils/graphology'
+import { mergeGraphData, computeLabelCounts } from './utils/graphology'
 
 // Error boundary for graph canvas
 interface ErrorBoundaryState {
@@ -113,19 +113,7 @@ export default function App() {
   const handleGraphReady = useCallback(
     (graph: Graph) => {
       graphRef.current = graph
-
-      // Compute label counts from graph nodes
-      const labelMap = new Map<string, number>()
-      graph.forEachNode((_id, attrs) => {
-        const nodeData = attrs.nodeData as GraphNode
-        for (const label of nodeData.labels) {
-          labelMap.set(label, (labelMap.get(label) ?? 0) + 1)
-        }
-      })
-      const counts = Array.from(labelMap.entries())
-        .map(([name, count]) => ({ name, count }))
-        .sort((a, b) => a.name.localeCompare(b.name))
-      setLabelCounts(counts)
+      setLabelCounts(computeLabelCounts(graph))
     },
     [],
   )
@@ -154,19 +142,7 @@ export default function App() {
     (nodes: GraphNode[], edges: GraphEdge[]) => {
       mergeGraphData(graphRef.current, nodes, edges)
       handleStatsChange(graphRef.current.order, graphRef.current.size)
-
-      // Update label counts
-      const labelMap = new Map<string, number>()
-      graphRef.current.forEachNode((_id, attrs) => {
-        const nodeData = attrs.nodeData as GraphNode
-        for (const label of nodeData.labels) {
-          labelMap.set(label, (labelMap.get(label) ?? 0) + 1)
-        }
-      })
-      const counts = Array.from(labelMap.entries())
-        .map(([name, count]) => ({ name, count }))
-        .sort((a, b) => a.name.localeCompare(b.name))
-      setLabelCounts(counts)
+      setLabelCounts(computeLabelCounts(graphRef.current))
 
       // Signal GraphContainer to re-render with merged data
       setGraphVersion((v) => v + 1)

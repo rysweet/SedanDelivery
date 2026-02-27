@@ -15,7 +15,7 @@ all three services locally, and loading your first graph.
 | Tool | Minimum version | Purpose |
 |---|---|---|
 | Rust toolchain (`cargo`) | 1.77 | Build and run gql-api |
-| .NET SDK | 8.0 | Run SedanDelivery.Api and AppHost |
+| .NET SDK | 10.0 | Run SedanDelivery.Api and AppHost |
 | Node.js | 20 LTS | Run the Vite dev server |
 | npm | 10 | Install SPA dependencies |
 
@@ -23,7 +23,7 @@ Verify your environment:
 
 ```bash
 cargo --version     # cargo 1.77.0 or later
-dotnet --version    # 8.0.x or later
+dotnet --version    # 10.0.x or later
 node --version      # v20.x.x or later
 npm --version       # 10.x.x or later
 ```
@@ -147,20 +147,20 @@ Click the **Add Node** button in the toolbar (or press `N`). A dialog opens with
 two fields:
 
 - **Labels** — one or more labels separated by spaces, e.g. `Warehouse`
-- **Properties** — key/value pairs in JSON format
+- **Properties** — comma-separated key:value pairs, e.g. `name:Seattle-HQ, capacity:5000`
 
 Enter the following, then click **Create**:
 
-```json
+```
 Labels: Warehouse
-Properties: {"name": "Seattle-HQ", "capacity": 5000}
+Properties: name:Seattle-HQ, capacity:5000
 ```
 
 Repeat to create a second node:
 
-```json
+```
 Labels: Warehouse
-Properties: {"name": "Portland-DC", "capacity": 3200}
+Properties: name:Portland-DC, capacity:3200
 ```
 
 Both nodes appear on the canvas. The Legend Panel on the left shows a `Warehouse`
@@ -199,7 +199,7 @@ Portland-DC    3200
 ### 5. Expand a neighborhood
 
 Right-click one of the warehouse nodes on the canvas and select
-**Expand Neighbors**. Any nodes connected to that node are fetched and merged into
+**Expand Neighborhood**. Any nodes connected to that node are fetched and merged into
 the canvas view.
 
 ### 6. Export the graph

@@ -212,6 +212,23 @@ export function applySelectionHighlight(
 }
 
 /**
+ * Computes label counts from all nodes in a graphology Graph instance.
+ * Returns a sorted array of { name, count } entries.
+ */
+export function computeLabelCounts(graph: Graph): Array<{ name: string; count: number }> {
+  const labelMap = new Map<string, number>()
+  graph.forEachNode((_id, attrs) => {
+    const nodeData = attrs.nodeData as GraphNode
+    for (const label of nodeData.labels) {
+      labelMap.set(label, (labelMap.get(label) ?? 0) + 1)
+    }
+  })
+  return Array.from(labelMap.entries())
+    .map(([name, count]) => ({ name, count }))
+    .sort((a, b) => a.name.localeCompare(b.name))
+}
+
+/**
  * Extracts all unique labels from graph nodes.
  */
 export function extractLabels(nodes: GraphNode[]): string[] {

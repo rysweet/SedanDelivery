@@ -15,7 +15,7 @@ Both the frontend and API must be running before executing any scenario.
 
 ```bash
 # From the repository root
-dotnet run --project sedan-graph-api/SedanGraphApi.AppHost
+dotnet run --project sedan-graph-ui/src/SedanDelivery.AppHost
 ```
 
 This starts:
@@ -26,7 +26,7 @@ This starts:
 
 ```bash
 # Terminal 1 — API
-dotnet run --project sedan-graph-api/SedanGraphApi.Api
+dotnet run --project sedan-graph-ui/src/SedanDelivery.Api
 
 # Terminal 2 — Frontend
 cd sedan-graph-ui/src/sedan-web

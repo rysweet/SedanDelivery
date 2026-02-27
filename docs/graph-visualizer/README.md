@@ -76,7 +76,7 @@ Key capabilities:
 
 See [API Reference](./api-reference.md) for the complete endpoint list.
 
-### SedanDelivery.Api (.NET 8, port 5000)
+### SedanDelivery.Api (.NET 10, port 5000)
 
 Backend-for-Frontend (BFF) that proxies all requests to gql-api with:
 - CORS policy allowing the Vite dev server (`localhost:5173`) and any origins in
@@ -91,7 +91,7 @@ Backend-for-Frontend (BFF) that proxies all requests to gql-api with:
 
 Orchestrates all services as a single distributed application:
 - Registers `gql-api` as an `ExecutableResource` on port 3001
-- Injects `GQL_API_URL=http://localhost:8080` into the .NET API
+- Injects `GQL_API_URL=http://localhost:3001` into the .NET API
 - Registers the Vite dev server as an `NpmApp` on port 5173 (excluded from
   the Azure manifest — the SPA is deployed separately or served as static files)
 

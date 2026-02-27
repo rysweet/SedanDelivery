@@ -33,7 +33,7 @@ Browser (CDN / Static Web Apps)
        | HTTPS  (VITE_API_URL → Container Apps ingress)
        v
 sedan-api  (Azure Container App, port 5000)
-  .NET 8 BFF — CORS, rate limiting, OpenTelemetry
+  .NET 10 BFF — CORS, rate limiting, OpenTelemetry
        |
        | HTTP  (GQL_API_URL → internal Container Apps FQDN)
        v
@@ -79,7 +79,7 @@ docker build -f Dockerfile.gql-api -t <registry>/gql-api:latest .
 docker push <registry>/gql-api:latest
 ```
 
-### SedanDelivery.Api (.NET 8)
+### SedanDelivery.Api (.NET 10)
 
 ```bash
 cd sedan-graph-ui

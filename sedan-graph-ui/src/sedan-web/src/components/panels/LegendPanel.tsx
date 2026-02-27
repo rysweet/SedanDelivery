@@ -42,6 +42,7 @@ export function LegendPanel({ labels, onCollapse }: LegendPanelProps) {
             onClick={handleToggleAll}
             className="text-gray-500 hover:text-gray-300"
             title={allVisible ? 'Hide all' : 'Show all'}
+            aria-label={allVisible ? 'Hide all labels' : 'Show all labels'}
           >
             {allVisible ? <EyeOff size={12} /> : <Eye size={12} />}
           </Button>
@@ -51,6 +52,7 @@ export function LegendPanel({ labels, onCollapse }: LegendPanelProps) {
             onClick={onCollapse}
             className="text-gray-500 hover:text-gray-300"
             title="Collapse panel"
+            aria-label="Collapse legend panel"
           >
             <ChevronLeft size={12} />
           </Button>
@@ -76,6 +78,7 @@ export function LegendPanel({ labels, onCollapse }: LegendPanelProps) {
                 }
                 onClick={() => toggleLabel(entry.name)}
                 title={isVisible ? `Hide ${entry.name}` : `Show ${entry.name}`}
+                aria-label={isVisible ? `Hide ${entry.name}` : `Show ${entry.name}`}
               >
                 {/* Color swatch */}
                 <span

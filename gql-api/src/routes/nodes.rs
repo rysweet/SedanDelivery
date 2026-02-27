@@ -14,8 +14,8 @@ use axum::{Json, Router};
 use gql_core::storage::{validate_graph_name, GraphStore, NodeId};
 
 use crate::error::ApiError;
+use crate::models::{CreateNodeBody, NodeListResponse, PaginationParams, UpdateNodeBody, MAX_PAGE_LIMIT};
 use crate::routes::helpers::{json_map_to_props, parse_node_id};
-use crate::models::{CreateNodeBody, NodeListResponse, PaginationParams, UpdateNodeBody};
 use crate::serialize::node_to_json;
 use crate::state::AppState;
 
@@ -35,6 +35,12 @@ async fn list_nodes(
     Path(name): Path<String>,
     Query(params): Query<PaginationParams>,
 ) -> Result<Json<NodeListResponse>, ApiError> {
+    if params.limit > MAX_PAGE_LIMIT {
+        return Err(ApiError::bad_request(format!(
+            "limit must be ≤ {MAX_PAGE_LIMIT}, got {}",
+            params.limit
+        )));
+    }
     validate_graph_name(&name).map_err(ApiError::from)?;
 
     let store = state
