@@ -1084,19 +1084,40 @@ impl<'src> Parser<'src> {
         left = self.parse_null_check(left)?;
 
         // Check for label check: `a:Label` or `a:Label1:Label2`
-        while self.at(&TokenKind::Colon) {
-            if self.pos + 1 < self.tokens.len()
-                && matches!(self.tokens[self.pos + 1].kind, TokenKind::Identifier)
-            {
-                self.advance(); // consume ':'
-                let label_name = self.tokens[self.pos].text.to_string();
-                self.advance(); // consume label name
-                left = Expr::HasLabel(
-                    Box::new(left),
-                    Label::new(smol_str::SmolStr::new(&label_name)),
-                );
-            } else {
-                break;
+        // `a:A:B` is sugar for `a:A AND a:B` — rewrite to conjunctive AND.
+        if self.at(&TokenKind::Colon)
+            && self.pos + 1 < self.tokens.len()
+            && (matches!(self.tokens[self.pos + 1].kind, TokenKind::Identifier)
+                || is_keyword_usable_as_ident(&self.tokens[self.pos + 1].kind))
+        {
+            let label_inner = left.clone(); // the expression being label-checked
+            let mut label_result: Option<Expr> = None;
+            while self.at(&TokenKind::Colon) {
+                if self.pos + 1 < self.tokens.len()
+                    && (matches!(self.tokens[self.pos + 1].kind, TokenKind::Identifier)
+                        || is_keyword_usable_as_ident(&self.tokens[self.pos + 1].kind))
+                {
+                    self.advance(); // consume ':'
+                    let label_name = self.tokens[self.pos].text.to_string();
+                    self.advance(); // consume label name
+                    let check = Expr::HasLabel(
+                        Box::new(label_inner.clone()),
+                        Label::new(smol_str::SmolStr::new(&label_name)),
+                    );
+                    label_result = Some(match label_result {
+                        None => check,
+                        Some(prev) => Expr::BinaryOp {
+                            op: BinaryOp::And,
+                            left: Box::new(prev),
+                            right: Box::new(check),
+                        },
+                    });
+                } else {
+                    break;
+                }
+            }
+            if let Some(r) = label_result {
+                left = r;
             }
         }
 

@@ -1500,10 +1500,27 @@ pub fn temporal_property_access(val: &Value, key: &str) -> Result<Value, GqlErro
             "days" => Ok(Value::Int(sp.get_days() as i64)),
             "hours" => Ok(Value::Int(sp.get_hours() as i64)),
             "minutes" => Ok(Value::Int(sp.get_minutes())),
-            "seconds" => Ok(Value::Int(sp.get_seconds())),
+            // `seconds` = total time-of-duration seconds (hours*3600 + minutes*60 + seconds)
+            "seconds" => {
+                let total = sp.get_hours() as i64 * 3600
+                    + sp.get_minutes() * 60
+                    + sp.get_seconds();
+                let nanos = sp.get_nanoseconds();
+                // Floor toward negative infinity if sub-second component is negative
+                Ok(Value::Int(if nanos < 0 { total - 1 } else { total }))
+            }
             "milliseconds" => Ok(Value::Int(sp.get_milliseconds())),
             "microseconds" => Ok(Value::Int(sp.get_microseconds())),
             "nanoseconds" => Ok(Value::Int(sp.get_nanoseconds())),
+            // `nanosecondsOfSecond`: sub-second nanoseconds, always non-negative
+            "nanosecondsOfSecond" => {
+                let nanos = sp.get_nanoseconds();
+                Ok(Value::Int(if nanos < 0 {
+                    nanos + 1_000_000_000
+                } else {
+                    nanos
+                }))
+            }
             _ => Ok(Value::Null),
         },
         _ => Ok(Value::Null),
@@ -1539,11 +1556,8 @@ fn map_get_str(m: &indexmap::IndexMap<Box<str>, Value>, key: &str) -> Option<Str
 /// Parse a timezone string, supporting both IANA names (e.g. "America/New_York")
 /// and fixed UTC offsets (e.g. "+01:00", "-05:30", "Z").
 fn parse_timezone(tz_str: &str) -> Result<jiff::tz::TimeZone, String> {
-    // Try IANA name first
-    if let Ok(tz) = jiff::tz::TimeZone::get(tz_str) {
-        return Ok(tz);
-    }
-    // Try fixed offset: "Z", "+HH:MM", "-HH:MM", "+HHMM", "-HHMM"
+    // Try fixed offset FIRST for strings starting with '+' or '-'
+    // to avoid IANA lookup failures or ambiguous matches.
     if tz_str == "Z" || tz_str == "UTC" {
         return Ok(jiff::tz::TimeZone::UTC);
     }
@@ -1580,6 +1594,10 @@ fn parse_timezone(tz_str: &str) -> Result<jiff::tz::TimeZone, String> {
         let total_seconds = (hours * 3600 + minutes * 60) * if negative { -1 } else { 1 };
         let offset = jiff::tz::Offset::from_seconds(total_seconds).map_err(|e| e.to_string())?;
         return Ok(jiff::tz::TimeZone::fixed(offset));
+    }
+    // Try IANA name (for named timezones like 'Europe/Stockholm', 'America/New_York')
+    if let Ok(tz) = jiff::tz::TimeZone::get(tz_str) {
+        return Ok(tz);
     }
     Err(format!("unknown timezone: {tz_str}"))
 }
@@ -1643,11 +1661,7 @@ fn eval_date_constructor(vals: &[Value]) -> Result<Value, GqlError> {
     match &vals[0] {
         Value::Null => Ok(Value::Null),
         Value::Str(s) => {
-            // Handle ISO 8601 week date format: YYYY-Www or YYYY-Www-D
-            if let Some(d) = parse_iso_week_date_str(s) {
-                return d.map(Value::Date);
-            }
-            let d: jiff::civil::Date = s.parse().map_err(|e| temporal_parse_error("date", e))?;
+            let d = parse_date_str(s).map_err(|e| temporal_parse_error("date", e))?;
             Ok(Value::Date(d))
         }
         // Accept temporal values directly — extract date component
@@ -1670,32 +1684,125 @@ fn eval_date_constructor(vals: &[Value]) -> Result<Value, GqlError> {
     }
 }
 
-/// Parse an ISO 8601 week date string: YYYY-Www or YYYY-Www-D.
-/// Returns None if the string doesn't match the week date format.
-/// Returns Some(Ok(date)) on success, Some(Err(e)) on parse failure.
-fn parse_iso_week_date_str(s: &str) -> Option<Result<jiff::civil::Date, GqlError>> {
-    // Match YYYY-Www or YYYY-Www-D
-    let s = s.trim();
-    // Find the W marker
-    let w_pos = s.find('W')?;
-    if w_pos < 4 {
-        return None;
+/// Parse an ISO 8601 date string, handling all abbreviated formats that jiff may not support.
+/// Formats supported beyond jiff's default:
+///   - `YYYY`           (year only → Jan 1)
+///   - `YYYY-MM`        (year-month → day 1)
+///   - `YYYYMM`         (compact year-month)
+///   - `YYYY-Www`       (ISO week date → Monday)
+///   - `YYYY-Www-D`     (ISO week date with day-of-week)
+///   - `YYYYWww`        (compact ISO week)
+///   - `YYYYWwwD`       (compact ISO week + day)
+///   - `YYYY-DDD`       (ordinal date)
+///   - `YYYYDDD`        (compact ordinal date)
+fn parse_date_str(s: &str) -> Result<jiff::civil::Date, String> {
+    // First try jiff's standard parser (handles YYYY-MM-DD and RFC3339 variants)
+    if let Ok(d) = s.parse::<jiff::civil::Date>() {
+        return Ok(d);
     }
-    // Check separator before W
-    let before_w = &s[..w_pos];
-    let year_str = before_w.strip_suffix('-').unwrap_or(before_w);
-    let year: i64 = year_str.parse().ok()?;
-    let after_w = &s[w_pos + 1..];
-    // Parse week and optional day
-    let (week, day) = if let Some(dash) = after_w.find('-') {
-        let week: i64 = after_w[..dash].parse().ok()?;
-        let day: i64 = after_w[dash + 1..].parse().ok()?;
-        (week, day)
-    } else {
-        let week: i64 = after_w.parse().ok()?;
-        (week, 1) // Monday by default
-    };
-    Some(compute_week_date(year, week, day))
+
+    let s = s.trim();
+
+    // YYYY-Www or YYYY-Www-D (ISO week date)
+    if let Some(week_part) = s.strip_prefix(|c: char| c.is_ascii_digit())
+        .and(None::<&str>).or_else(|| {
+            // Extract YYYY-W portion
+            if s.len() >= 8 {
+                let (_year_part, rest) = s.split_at(4);
+                let rest = rest.strip_prefix('-').unwrap_or(rest);
+                if rest.starts_with('W') {
+                    Some(rest)
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        })
+    {
+        let _ = week_part;
+        // Handle YYYY-Www-D and YYYY-Www and YYYYWwwD and YYYYWww
+        let (year_str, rest) = s.split_at(4);
+        let year: i64 = year_str.parse().map_err(|e| format!("{e}"))?;
+        let rest = rest.strip_prefix('-').unwrap_or(rest);
+        if rest.starts_with('W') {
+            let rest = rest.strip_prefix('W').unwrap_or(rest); // skip 'W'
+            let (week_str, rest) = if rest.len() >= 2 { rest.split_at(2) } else { (rest, "") };
+            let week: i64 = week_str.parse().map_err(|e| format!("{e}"))?;
+            let rest = rest.strip_prefix('-').unwrap_or(rest);
+            let day_of_week = if rest.is_empty() {
+                1 // Monday
+            } else {
+                rest[..1].parse::<i64>().map_err(|e| format!("{e}"))?
+            };
+            return compute_week_date_str(year, week, day_of_week);
+        }
+    }
+
+    // Redo parsing more systematically
+    if s.len() == 4 && s.chars().all(|c| c.is_ascii_digit()) {
+        // YYYY → Jan 1
+        let year: i16 = s.parse().map_err(|e| format!("{e}"))?;
+        return jiff::civil::Date::new(year, 1, 1).map_err(|e| e.to_string());
+    }
+
+    // Check for YYYY-Www or YYYY-Www-D or YYYYWwwD or YYYYWww
+    if s.contains('W') {
+        let (year_str, rest) = s.split_at(4);
+        let year: i64 = year_str.parse().map_err(|e| format!("{e}"))?;
+        let rest = rest.strip_prefix('-').unwrap_or(rest);
+        if let Some(rest) = rest.strip_prefix('W') {
+            let (week_str, rest) = if rest.len() >= 2 { rest.split_at(2) } else { (rest, "") };
+            let week: i64 = week_str.parse().map_err(|e| format!("{e}"))?;
+            let rest = rest.strip_prefix('-').unwrap_or(rest);
+            let day_of_week = if rest.is_empty() { 1 } else {
+                rest[..1].parse::<i64>().map_err(|e| format!("{e}"))?
+            };
+            return compute_week_date_str(year, week, day_of_week);
+        }
+    }
+
+    // YYYY-MM (with separator, no day) or YYYYMM (without separator)
+    if s.len() == 7 && s.as_bytes()[4] == b'-' && s[5..].chars().all(|c| c.is_ascii_digit()) {
+        // YYYY-MM
+        let year: i16 = s[..4].parse().map_err(|e| format!("{e}"))?;
+        let month: i8 = s[5..].parse().map_err(|e| format!("{e}"))?;
+        return jiff::civil::Date::new(year, month, 1).map_err(|e| e.to_string());
+    }
+    if s.len() == 6 && s.chars().all(|c| c.is_ascii_digit()) {
+        // YYYYMM
+        let year: i16 = s[..4].parse().map_err(|e| format!("{e}"))?;
+        let month: i8 = s[4..].parse().map_err(|e| format!("{e}"))?;
+        return jiff::civil::Date::new(year, month, 1).map_err(|e| e.to_string());
+    }
+
+    // YYYY-DDD (ordinal date with separator) or YYYYDDD (compact)
+    if s.len() == 8 && s.as_bytes()[4] == b'-' && s[5..].chars().all(|c| c.is_ascii_digit()) {
+        // YYYY-DDD
+        let year: i16 = s[..4].parse().map_err(|e| format!("{e}"))?;
+        let ordinal: i64 = s[5..].parse().map_err(|e| format!("{e}"))?;
+        let d = jiff::civil::Date::new(year, 1, 1).map_err(|e| e.to_string())?;
+        return d.checked_add(jiff::Span::new().days(ordinal - 1)).map_err(|e| e.to_string());
+    }
+    if s.len() == 7 && s.chars().all(|c| c.is_ascii_digit()) {
+        // YYYYDDD
+        let year: i16 = s[..4].parse().map_err(|e| format!("{e}"))?;
+        let ordinal: i64 = s[4..].parse().map_err(|e| format!("{e}"))?;
+        let d = jiff::civil::Date::new(year, 1, 1).map_err(|e| e.to_string())?;
+        return d.checked_add(jiff::Span::new().days(ordinal - 1)).map_err(|e| e.to_string());
+    }
+
+    Err(format!("cannot parse date from '{s}'"))
+}
+
+fn compute_week_date_str(year: i64, week: i64, day_of_week: i64) -> Result<jiff::civil::Date, String> {
+    // Find the Monday of week 1 of the given year using ISO 8601 algorithm
+    let jan4 = jiff::civil::Date::new(year as i16, 1, 4).map_err(|e| e.to_string())?;
+    let jan4_dow = jan4.weekday().to_monday_one_offset() as i64;
+    let week1_monday_ordinal = 4 - jan4_dow + 1;
+    let target_ordinal = week1_monday_ordinal + (week - 1) * 7 + (day_of_week - 1);
+    let d = jiff::civil::Date::new(year as i16, 1, 1).map_err(|e| e.to_string())?;
+    d.checked_add(jiff::Span::new().days(target_ordinal - 1)).map_err(|e| e.to_string())
 }
 
 /// Compute an ISO week date from year, week, and day-of-week.
@@ -1865,26 +1972,31 @@ fn eval_time_constructor(vals: &[Value]) -> Result<Value, GqlError> {
     match &vals[0] {
         Value::Null => Ok(Value::Null),
         Value::Str(s) => {
-            if let Ok(t) = s.parse::<jiff::civil::Time>() {
-                return Ok(Value::LocalTime(t));
-            }
             let time_part = strip_tz_offset_from_time(s);
-            let t: jiff::civil::Time = time_part
-                .parse()
+            let t: jiff::civil::Time = if let Ok(t) = s.parse::<jiff::civil::Time>() {
+                t
+            } else {
+                time_part
+                    .parse()
+                    .map_err(|e| temporal_parse_error("time", e))?
+            };
+            let epoch_dt = jiff::civil::Date::new(1970, 1, 1).unwrap().to_datetime(t);
+            // time() always returns a ZonedTime; use explicit offset if present, else UTC
+            let tz = extract_offset_from_string(s).unwrap_or(jiff::tz::TimeZone::UTC);
+            let zoned = epoch_dt
+                .to_zoned(tz)
                 .map_err(|e| temporal_parse_error("time", e))?;
-            if let Some(tz) = extract_offset_from_string(s) {
-                let dt = jiff::civil::Date::new(1970, 1, 1)
-                    .unwrap()
-                    .to_datetime(t);
-                let zoned = dt
-                    .to_zoned(tz)
-                    .map_err(|e| temporal_parse_error("time", e))?;
-                return Ok(Value::DateTime(Box::new(zoned)));
-            }
-            Ok(Value::LocalTime(t))
+            Ok(Value::DateTime(Box::new(zoned)))
         }
         // Accept temporal values directly — extract time with timezone
-        Value::LocalTime(t) => Ok(Value::LocalTime(*t)),
+        // time() on LocalTime returns a ZonedTime (UTC by default per Cypher spec)
+        Value::LocalTime(t) => {
+            let epoch_dt = jiff::civil::Date::new(1970, 1, 1).unwrap().to_datetime(*t);
+            let zoned = epoch_dt
+                .to_zoned(jiff::tz::TimeZone::UTC)
+                .map_err(|e| temporal_parse_error("time", e))?;
+            Ok(Value::DateTime(Box::new(zoned)))
+        }
         Value::DateTime(zdt) => {
             // time() on a DateTime preserves the timezone as a zoned time
             let dt = jiff::civil::DateTime::from(zdt.as_ref());
@@ -1895,10 +2007,15 @@ fn eval_time_constructor(vals: &[Value]) -> Result<Value, GqlError> {
                 .map_err(|e| temporal_parse_error("time", e))?;
             Ok(Value::DateTime(Box::new(zoned)))
         }
-        Value::LocalDateTime(dt) => Ok(Value::LocalTime(
-            jiff::civil::Time::new(dt.hour(), dt.minute(), dt.second(), dt.subsec_nanosecond())
-                .map_err(|e| temporal_parse_error("time", e))?,
-        )),
+        Value::LocalDateTime(dt) => {
+            // time(LocalDateTime) → ZonedTime with UTC timezone
+            let t = jiff::civil::Time::new(dt.hour(), dt.minute(), dt.second(), dt.subsec_nanosecond())
+                .map_err(|e| temporal_parse_error("time", e))?;
+            let epoch_dt = jiff::civil::Date::new(1970, 1, 1).unwrap().to_datetime(t);
+            let zoned = epoch_dt.to_zoned(jiff::tz::TimeZone::UTC)
+                .map_err(|e| temporal_parse_error("time", e))?;
+            Ok(Value::DateTime(Box::new(zoned)))
+        }
         Value::Map(m) => {
             let base_time = extract_base_time(m)?;
             let hour = if m.contains_key("hour") { map_get_int(m, "hour", 0)? as i8 }
@@ -1907,12 +2024,15 @@ fn eval_time_constructor(vals: &[Value]) -> Result<Value, GqlError> {
                 else if let Some(bt) = &base_time { bt.minute() } else { 0 };
             let second = if m.contains_key("second") { map_get_int(m, "second", 0)? as i8 }
                 else if let Some(bt) = &base_time { bt.second() } else { 0 };
-            let nanosecond = if m.contains_key("nanosecond") {
-                map_get_int(m, "nanosecond", 0)? as i32
-            } else if m.contains_key("microsecond") {
-                (map_get_int(m, "microsecond", 0)? * 1000) as i32
-            } else if m.contains_key("millisecond") {
-                (map_get_int(m, "millisecond", 0)? * 1_000_000) as i32
+            // Combine millisecond + microsecond + nanosecond (Cypher spec: all additive)
+            let nanosecond = if m.contains_key("nanosecond")
+                || m.contains_key("microsecond")
+                || m.contains_key("millisecond")
+            {
+                let millis = map_get_int(m, "millisecond", 0)? * 1_000_000;
+                let micros = map_get_int(m, "microsecond", 0)? * 1_000;
+                let nanos = map_get_int(m, "nanosecond", 0)?;
+                (millis + micros + nanos) as i32
             } else if let Some(bt) = &base_time {
                 bt.subsec_nanosecond()
             } else {
@@ -1921,25 +2041,45 @@ fn eval_time_constructor(vals: &[Value]) -> Result<Value, GqlError> {
             let tz_name = map_get_str(m, "timezone");
             let t = jiff::civil::Time::new(hour, minute, second, nanosecond)
                 .map_err(|e| temporal_parse_error("time", e))?;
-            if let Some(ref tz_str) = tz_name {
-                let tz =
-                    parse_timezone(tz_str).map_err(|e| temporal_parse_error("time", e))?;
-                let dt = jiff::civil::Date::new(1970, 1, 1)
-                    .unwrap()
-                    .to_datetime(t);
-                let zoned = dt
-                    .to_zoned(tz)
+            let epoch_dt = jiff::civil::Date::new(1970, 1, 1).unwrap().to_datetime(t);
+            // Get base timezone if base is a ZonedTime
+            let base_tz = if let Some(Value::DateTime(base_zdt)) = m.get("time") {
+                Some(base_zdt.time_zone().clone())
+            } else {
+                None
+            };
+
+            // Determine the target timezone
+            let target_tz = if let Some(ref tz_str) = tz_name {
+                parse_timezone(tz_str).map_err(|e| temporal_parse_error("time", e))?
+            } else if let Some(ref tz) = base_tz {
+                tz.clone()
+            } else {
+                jiff::tz::TimeZone::UTC
+            };
+
+            // Create zoned time: apply field overrides in the base timezone, then convert to target
+            if let Some(base_tz_val) = base_tz {
+                if tz_name.is_some() {
+                    // Field overrides + timezone change: apply overrides in base TZ, then rebase
+                    let with_base_tz = epoch_dt
+                        .to_zoned(base_tz_val)
+                        .map_err(|e| temporal_parse_error("time", e))?;
+                    let rebase_zoned = with_base_tz.with_time_zone(target_tz);
+                    Ok(Value::DateTime(Box::new(rebase_zoned)))
+                } else {
+                    // No timezone change: just apply field overrides, keep base TZ
+                    let zoned = epoch_dt
+                        .to_zoned(target_tz)
+                        .map_err(|e| temporal_parse_error("time", e))?;
+                    Ok(Value::DateTime(Box::new(zoned)))
+                }
+            } else {
+                let zoned = epoch_dt
+                    .to_zoned(target_tz)
                     .map_err(|e| temporal_parse_error("time", e))?;
-                return Ok(Value::DateTime(Box::new(zoned)));
+                Ok(Value::DateTime(Box::new(zoned)))
             }
-            // Check if base had timezone (from time key being DateTime)
-            if let Some(Value::DateTime(base_zdt)) = m.get("time") {
-                let epoch_dt = jiff::civil::Date::new(1970, 1, 1).unwrap().to_datetime(t);
-                let zoned = epoch_dt.to_zoned(base_zdt.time_zone().clone())
-                    .map_err(|e| temporal_parse_error("time", e))?;
-                return Ok(Value::DateTime(Box::new(zoned)));
-            }
-            Ok(Value::LocalTime(t))
         }
         other => type_error("time", other),
     }
@@ -2019,12 +2159,15 @@ fn eval_localtime_constructor(vals: &[Value]) -> Result<Value, GqlError> {
             } else {
                 0
             };
-            let nanosecond = if m.contains_key("nanosecond") {
-                map_get_int(m, "nanosecond", 0)? as i32
-            } else if m.contains_key("microsecond") {
-                (map_get_int(m, "microsecond", 0)? * 1000) as i32
-            } else if m.contains_key("millisecond") {
-                (map_get_int(m, "millisecond", 0)? * 1_000_000) as i32
+            // Combine millisecond + microsecond + nanosecond (Cypher spec: all additive)
+            let nanosecond = if m.contains_key("nanosecond")
+                || m.contains_key("microsecond")
+                || m.contains_key("millisecond")
+            {
+                let millis = map_get_int(m, "millisecond", 0)? * 1_000_000;
+                let micros = map_get_int(m, "microsecond", 0)? * 1_000;
+                let nanos = map_get_int(m, "nanosecond", 0)?;
+                (millis + micros + nanos) as i32
             } else if let Some(bt) = &base_time {
                 bt.subsec_nanosecond()
             } else {
@@ -2127,21 +2270,58 @@ fn eval_datetime_constructor(vals: &[Value]) -> Result<Value, GqlError> {
             };
 
             let tz_name = map_get_str(m, "timezone");
-            let t = jiff::civil::Time::new(hour, minute, second, nanosecond)
-                .map_err(|e| temporal_parse_error("datetime", e))?;
-            let dt = date_part.to_datetime(t);
 
-            let tz = if let Some(ref tz_str) = tz_name {
-                parse_timezone(tz_str).map_err(|e| temporal_parse_error("datetime", e))?
-            } else if let Some((_, ref base_tz)) = base_zdt {
-                base_tz.clone()
+            // When base_zdt provides the datetime and timezone is overridden,
+            // convert the instant to the new timezone (same UTC moment, different wall clock).
+            // Only do this when no field overrides are applied beyond what's in base_zdt.
+            let has_field_overrides = m.contains_key("year") || m.contains_key("month")
+                || m.contains_key("day") || m.contains_key("hour") || m.contains_key("minute")
+                || m.contains_key("second") || m.contains_key("nanosecond")
+                || m.contains_key("microsecond") || m.contains_key("millisecond")
+                || m.contains_key("week") || m.contains_key("ordinalDay")
+                || m.contains_key("quarter") || m.contains_key("date")
+                || m.contains_key("time");
+
+            if let Some(ref tz_str) = tz_name {
+                let new_tz = parse_timezone(tz_str)
+                    .map_err(|e| temporal_parse_error("datetime", e))?;
+
+                if !has_field_overrides {
+                    // Pure timezone conversion: convert base datetime instant to new timezone
+                    if let Some(Value::DateTime(base_zdt_val)) = m.get("datetime") {
+                        let converted = base_zdt_val.with_time_zone(new_tz);
+                        return Ok(Value::DateTime(Box::new(converted)));
+                    }
+                }
+
+                // Field overrides + timezone: apply overrides, then use new timezone
+                let t = jiff::civil::Time::new(hour, minute, second, nanosecond)
+                    .map_err(|e| temporal_parse_error("datetime", e))?;
+                let dt = date_part.to_datetime(t);
+                // If base had a timezone, apply overrides in base TZ first, then convert
+                if let Some((_, ref base_tz)) = base_zdt {
+                    let with_base_tz = dt.to_zoned(base_tz.clone())
+                        .map_err(|e| temporal_parse_error("datetime", e))?;
+                    let zoned = with_base_tz.with_time_zone(new_tz);
+                    Ok(Value::DateTime(Box::new(zoned)))
+                } else {
+                    let zoned = dt.to_zoned(new_tz)
+                        .map_err(|e| temporal_parse_error("datetime", e))?;
+                    Ok(Value::DateTime(Box::new(zoned)))
+                }
             } else {
-                jiff::tz::TimeZone::UTC
-            };
-            let zoned = dt
-                .to_zoned(tz)
-                .map_err(|e| temporal_parse_error("datetime", e))?;
-            Ok(Value::DateTime(Box::new(zoned)))
+                let t = jiff::civil::Time::new(hour, minute, second, nanosecond)
+                    .map_err(|e| temporal_parse_error("datetime", e))?;
+                let dt = date_part.to_datetime(t);
+                let tz = if let Some((_, ref base_tz)) = base_zdt {
+                    base_tz.clone()
+                } else {
+                    jiff::tz::TimeZone::UTC
+                };
+                let zoned = dt.to_zoned(tz)
+                    .map_err(|e| temporal_parse_error("datetime", e))?;
+                Ok(Value::DateTime(Box::new(zoned)))
+            }
         }
         other => type_error("datetime", other),
     }
@@ -2213,12 +2393,15 @@ fn eval_localdatetime_constructor(vals: &[Value]) -> Result<Value, GqlError> {
             let hour = if m.contains_key("hour") { map_get_int(m, "hour", 0)? as i8 } else { base_h };
             let minute = if m.contains_key("minute") { map_get_int(m, "minute", 0)? as i8 } else { base_mi };
             let second = if m.contains_key("second") { map_get_int(m, "second", 0)? as i8 } else { base_s };
-            let nanosecond = if m.contains_key("nanosecond") {
-                map_get_int(m, "nanosecond", 0)? as i32
-            } else if m.contains_key("microsecond") {
-                (map_get_int(m, "microsecond", 0)? * 1000) as i32
-            } else if m.contains_key("millisecond") {
-                (map_get_int(m, "millisecond", 0)? * 1_000_000) as i32
+            // Combine millisecond + microsecond + nanosecond (Cypher spec: all additive)
+            let nanosecond = if m.contains_key("nanosecond")
+                || m.contains_key("microsecond")
+                || m.contains_key("millisecond")
+            {
+                let millis = map_get_int(m, "millisecond", 0)? * 1_000_000;
+                let micros = map_get_int(m, "microsecond", 0)? * 1_000;
+                let nanos = map_get_int(m, "nanosecond", 0)?;
+                (millis + micros + nanos) as i32
             } else {
                 base_ns
             };
@@ -2667,16 +2850,30 @@ fn temporal_to_civil_datetime(val: &Value) -> Option<jiff::civil::DateTime> {
 }
 
 /// Check if a temporal has only time (no date component meaningful for calendar math).
+/// Includes `time()` values stored as DateTime with epoch date 1970-01-01.
 fn is_time_only(val: &Value) -> bool {
-    matches!(val, Value::LocalTime(_))
+    match val {
+        Value::LocalTime(_) => true,
+        // ZonedTime is stored as DateTime with epoch date 1970-01-01
+        Value::DateTime(zdt) => {
+            let d = jiff::civil::Date::from(zdt.as_ref());
+            d.year() == 1970 && d.month() == 1 && d.day() == 1
+        }
+        _ => false,
+    }
 }
 
 /// Check if a temporal has date component.
 fn has_date_component(val: &Value) -> bool {
-    matches!(
-        val,
-        Value::Date(_) | Value::LocalDateTime(_) | Value::DateTime(_)
-    )
+    match val {
+        Value::Date(_) | Value::LocalDateTime(_) => true,
+        // DateTime has date component unless it's a ZonedTime (epoch date 1970-01-01)
+        Value::DateTime(zdt) => {
+            let d = jiff::civil::Date::from(zdt.as_ref());
+            !(d.year() == 1970 && d.month() == 1 && d.day() == 1)
+        }
+        _ => false,
+    }
 }
 
 fn eval_duration_between(vals: &[Value]) -> Result<Value, GqlError> {
@@ -2692,68 +2889,50 @@ fn eval_duration_between(vals: &[Value]) -> Result<Value, GqlError> {
 
     // For zoned datetime pairs, use timestamp-based calculation
     if let (Value::DateTime(z1), Value::DateTime(z2)) = (&vals[0], &vals[1]) {
-        let _dt1 = jiff::civil::DateTime::from(&**z1);
-        let _dt2 = jiff::civil::DateTime::from(&**z2);
         if both_have_dates {
-            // Calendar-based diff for date components
+            // Calendar-based diff for months only; remaining as pure nanoseconds (no calendar days).
+            // This correctly handles DST transitions (e.g. PT6H instead of P1DT-19H).
             let d1 = jiff::civil::Date::from(&**z1);
             let d2 = jiff::civil::Date::from(&**z2);
-            let months_span = d1.until(d2)
-                .map_err(|e| temporal_parse_error("duration.between", e))?;
+            let months_span = d1.until(
+                jiff::civil::DateDifference::new(d2).largest(jiff::Unit::Year),
+            ).map_err(|e| temporal_parse_error("duration.between", e))?;
             let total_months = months_span.get_years() as i64 * 12 + months_span.get_months() as i64;
 
-            // Advance d1 by those months
-            let d1_advanced = d1
-                .checked_add(jiff::Span::new().months(total_months))
-                .map_err(|e| temporal_parse_error("duration.between", e))?;
-
-            let remaining_days_span = d1_advanced.until(
-                jiff::civil::DateDifference::new(d2).largest(jiff::Unit::Day),
-            ).map_err(|e| temporal_parse_error("duration.between", e))?;
-            let remaining_days = remaining_days_span.get_days() as i64;
-
-            // Time diff: use timestamps for zoned datetimes to account for DST
             let ts1 = z1.timestamp();
             let ts2 = z2.timestamp();
             let total_nanos = ts2.as_nanosecond() - ts1.as_nanosecond();
 
-            // Subtract the date portion in nanos
-            let months_nanos = {
+            // Subtract only the months portion from total nanos
+            let months_nanos = if total_months != 0 {
                 let z1_plus_months = z1.as_ref().clone()
                     .checked_add(jiff::Span::new().months(total_months))
                     .map_err(|e| temporal_parse_error("duration.between", e))?;
-                let z1_plus_months_days = z1_plus_months
-                    .checked_add(jiff::Span::new().days(remaining_days))
-                    .map_err(|e| temporal_parse_error("duration.between", e))?;
-                z1_plus_months_days.timestamp().as_nanosecond() - ts1.as_nanosecond()
+                z1_plus_months.timestamp().as_nanosecond() - ts1.as_nanosecond()
+            } else {
+                0
             };
             let time_nanos = total_nanos - months_nanos;
             let time_secs = (time_nanos / 1_000_000_000) as i64;
             let time_subsec_nanos = (time_nanos % 1_000_000_000) as i32;
 
-            let sp = build_duration_span(total_months, remaining_days, time_secs, time_subsec_nanos);
+            let sp = build_duration_span(total_months, 0, time_secs, time_subsec_nanos);
             return Ok(Value::Duration(sp));
         } else {
-            // Mixed: only time portion
-            let t1 = jiff::civil::Time::from(&**z1);
-            let t2 = jiff::civil::Time::from(&**z2);
-            let ts1 = z1.timestamp();
-            let ts2 = z2.timestamp();
-            let nanos_diff = ts2.as_nanosecond() - ts1.as_nanosecond();
-            // Only keep the time-of-day difference
-            let t1_nanos = t1.hour() as i128 * 3_600_000_000_000
-                + t1.minute() as i128 * 60_000_000_000
-                + t1.second() as i128 * 1_000_000_000
-                + t1.subsec_nanosecond() as i128;
-            let t2_nanos = t2.hour() as i128 * 3_600_000_000_000
-                + t2.minute() as i128 * 60_000_000_000
-                + t2.second() as i128 * 1_000_000_000
-                + t2.subsec_nanosecond() as i128;
-            // For zoned times, use the actual timestamp diff
-            let _ = (t1_nanos, t2_nanos); // suppress unused
+            // Mixed DateTime pair (e.g. time + real-datetime): use UTC time-of-day only.
+            // Using full timestamps would include the date difference (wrong for time-only cases).
+            let utc_tod_nanos = |zdt: &jiff::Zoned| -> i64 {
+                let utc = zdt.with_time_zone(jiff::tz::TimeZone::UTC);
+                let t = jiff::civil::Time::from(&utc);
+                t.hour() as i64 * 3_600_000_000_000
+                    + t.minute() as i64 * 60_000_000_000
+                    + t.second() as i64 * 1_000_000_000
+                    + t.subsec_nanosecond() as i64
+            };
+            let nanos_diff = utc_tod_nanos(z2) - utc_tod_nanos(z1);
             let secs = nanos_diff / 1_000_000_000;
             let subsec = (nanos_diff % 1_000_000_000) as i32;
-            let sp = build_duration_span(0, 0, secs as i64, subsec);
+            let sp = build_duration_span(0, 0, secs, subsec);
             return Ok(Value::Duration(sp));
         }
     }
@@ -2763,8 +2942,11 @@ fn eval_duration_between(vals: &[Value]) -> Result<Value, GqlError> {
     let dt2 = temporal_to_civil_datetime(&vals[1])
         .ok_or_else(|| temporal_parse_error("duration.between", "expected temporal argument"))?;
 
+    // Check if both inputs have a time component (i.e. both are LocalDateTime)
+    let both_local_datetime = matches!(&vals[0], Value::LocalDateTime(_))
+        && matches!(&vals[1], Value::LocalDateTime(_));
+
     if both_have_dates && !either_time_only {
-        // Full calendar math: years + months + days + time
         let d1 = dt1.date();
         let d2 = dt2.date();
 
@@ -2777,11 +2959,34 @@ fn eval_duration_between(vals: &[Value]) -> Result<Value, GqlError> {
             .checked_add(jiff::Span::new().months(total_months))
             .map_err(|e| temporal_parse_error("duration.between", e))?;
 
+        if both_local_datetime {
+            // Both are LocalDateTime: compute remaining as pure nanoseconds (no calendar days).
+            // e.g. 2018-01-01T12:00 → 2018-01-02T10:00 = PT22H (not P1DT-2H)
+            let dt1_advanced_dt = d1_advanced.to_datetime(dt1.time());
+            // Use UTC zone for civil datetime → timestamp conversion (no DST effects)
+            let dt1_adv_ts = dt1_advanced_dt
+                .to_zoned(jiff::tz::TimeZone::UTC)
+                .map_err(|e| temporal_parse_error("duration.between", e))?
+                .timestamp()
+                .as_nanosecond();
+            let dt2_ts = dt2
+                .to_zoned(jiff::tz::TimeZone::UTC)
+                .map_err(|e| temporal_parse_error("duration.between", e))?
+                .timestamp()
+                .as_nanosecond();
+            let diff_nanos = dt2_ts - dt1_adv_ts;
+            let secs = (diff_nanos / 1_000_000_000) as i64;
+            let subsec = (diff_nanos % 1_000_000_000) as i32;
+            let sp = build_duration_span(total_months, 0, secs, subsec);
+            return Ok(Value::Duration(sp));
+        }
+
+        // At least one is Date-only: include calendar days + time diff
         let remaining_days_span = d1_advanced.until(d2)
             .map_err(|e| temporal_parse_error("duration.between", e))?;
-        let remaining_days = remaining_days_span.get_days() as i64;
+        let mut remaining_days = remaining_days_span.get_days() as i64;
 
-        // Time diff
+        // Time diff using local civil times
         let t1 = dt1.time();
         let t2 = dt2.time();
         let t1_nanos = t1.hour() as i64 * 3_600_000_000_000
@@ -2792,7 +2997,17 @@ fn eval_duration_between(vals: &[Value]) -> Result<Value, GqlError> {
             + t2.minute() as i64 * 60_000_000_000
             + t2.second() as i64 * 1_000_000_000
             + t2.subsec_nanosecond() as i64;
-        let time_diff_nanos = t2_nanos - t1_nanos;
+        let mut time_diff_nanos = t2_nanos - t1_nanos;
+
+        // Normalize: avoid mixed-sign days and time (borrow/carry 1 day when needed)
+        // e.g. 3 days + -21:40:36s → 2 days + 2:19:24s
+        if remaining_days > 0 && time_diff_nanos < 0 {
+            remaining_days -= 1;
+            time_diff_nanos += 86_400_000_000_000;
+        } else if remaining_days < 0 && time_diff_nanos > 0 {
+            remaining_days += 1;
+            time_diff_nanos -= 86_400_000_000_000;
+        }
 
         let total_secs = time_diff_nanos / 1_000_000_000;
         let subsec_nanos = (time_diff_nanos % 1_000_000_000) as i32;
@@ -2800,23 +3015,28 @@ fn eval_duration_between(vals: &[Value]) -> Result<Value, GqlError> {
         let sp = build_duration_span(total_months, remaining_days, total_secs, subsec_nanos);
         Ok(Value::Duration(sp))
     } else {
-        // Time-only: just compute time difference
-        let t1 = dt1.time();
-        let t2 = dt2.time();
-        let t1_nanos = t1.hour() as i64 * 3_600_000_000_000
-            + t1.minute() as i64 * 60_000_000_000
-            + t1.second() as i64 * 1_000_000_000
-            + t1.subsec_nanosecond() as i64;
-        let t2_nanos = t2.hour() as i64 * 3_600_000_000_000
-            + t2.minute() as i64 * 60_000_000_000
-            + t2.second() as i64 * 1_000_000_000
-            + t2.subsec_nanosecond() as i64;
+        // Time-only branch: at least one arg is LocalTime (no timezone).
+        // Use civil time-of-day for all comparisons (ignores TZ of any ZonedTime arg).
+        // Note: ZonedTime+ZonedTime is handled by the (DateTime,DateTime) branch above.
+        let t1_nanos = civil_time_nanos(&vals[0]);
+        let t2_nanos = civil_time_nanos(&vals[1]);
         let diff = t2_nanos - t1_nanos;
         let secs = diff / 1_000_000_000;
         let subsec = (diff % 1_000_000_000) as i32;
         let sp = build_duration_span(0, 0, secs, subsec);
         Ok(Value::Duration(sp))
     }
+}
+
+/// Get the civil time-of-day nanoseconds for a temporal value.
+fn civil_time_nanos(val: &Value) -> i64 {
+    let dt = temporal_to_civil_datetime(val)
+        .unwrap_or_else(|| jiff::civil::Date::new(1, 1, 1).unwrap().to_datetime(jiff::civil::Time::midnight()));
+    let t = dt.time();
+    t.hour() as i64 * 3_600_000_000_000
+        + t.minute() as i64 * 60_000_000_000
+        + t.second() as i64 * 1_000_000_000
+        + t.subsec_nanosecond() as i64
 }
 
 fn build_duration_span(total_months: i64, days: i64, secs: i64, subsec_nanos: i32) -> jiff::Span {
