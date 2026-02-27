@@ -12,7 +12,7 @@
 //   All nodes set:   G:{g}:nodes            — SADD node id (string)
 //   All edges set:   G:{g}:edges            — SADD edge id (string)
 //   Index set:       G:{g}:indexes          — SADD "{label}:{property}"
-//   Graph registry:  G:graphs               — SADD graph name
+//   Graph registry:  G:{sd2}:graphs         — SADD graph name
 
 pub mod fanout;
 
@@ -31,6 +31,7 @@ use gql_core::storage::{
     NodeData, NodeId, RangeQuery,
 };
 use gql_core::types::Value;
+use gql_core::types::value::{Crs, GeoPoint};
 
 // ── Value serialisation ───────────────────────────────────────────────────────
 
@@ -113,15 +114,33 @@ fn json_to_value(j: &JsonValue) -> Value {
                 if let Ok(dt) = rest.parse::<jiff::Zoned>() {
                     return Value::DateTime(Box::new(dt));
                 }
-            } else if s.starts_with("__duration:")
-                || s.starts_with("__point:")
-                || s.starts_with("__node:")
-                || s.starts_with("__edge:")
-                || s.starts_with("__path")
-            {
-                // For now return as string; full round-trip for these
-                // exotic types is deferred.
-                return Value::Str(s.as_str().into());
+            } else if let Some(rest) = s.strip_prefix("__duration:") {
+                if let Ok(sp) = rest.parse::<jiff::Span>() {
+                    return Value::Duration(sp);
+                }
+            } else if let Some(rest) = s.strip_prefix("__point:") {
+                // Format: "x,y,CrsVariant" e.g. "1.5,2.5,Wgs84"
+                let parts: Vec<&str> = rest.splitn(3, ',').collect();
+                if parts.len() == 3 {
+                    if let (Ok(x), Ok(y)) = (parts[0].parse::<f64>(), parts[1].parse::<f64>()) {
+                        let crs = match parts[2] {
+                            "Wgs84" => Crs::Wgs84,
+                            "Wgs843d" => Crs::Wgs843d,
+                            "Cartesian" => Crs::Cartesian,
+                            "Cartesian3d" => Crs::Cartesian3d,
+                            _ => Crs::Cartesian,
+                        };
+                        return Value::Point(GeoPoint { x, y, crs });
+                    }
+                }
+            } else if let Some(rest) = s.strip_prefix("__node:") {
+                if let Ok(id) = rest.parse::<u64>() {
+                    return Value::Node(NodeId(id));
+                }
+            } else if let Some(rest) = s.strip_prefix("__edge:") {
+                if let Ok(id) = rest.parse::<u64>() {
+                    return Value::Edge(EdgeId(id));
+                }
             }
             Value::Str(s.as_str().into())
         }
@@ -250,7 +269,7 @@ fn key_indexes(g: &str) -> String {
     format!("G:{{{g}}}:indexes")
 }
 
-const KEY_GRAPHS: &str = "G:graphs";
+const KEY_GRAPHS: &str = "G:{sd2}:graphs";
 
 // ── RedisGraphStore ───────────────────────────────────────────────────────────
 
@@ -381,6 +400,36 @@ impl RedisGraphStore {
             .into_iter()
             .filter_map(|m| decode_adj(&m))
             .collect()
+    }
+
+    /// Delete an edge using an already-locked connection. This avoids dropping
+    /// and re-acquiring the lock when called from `delete_node(detach=true)`.
+    fn delete_edge_inner(
+        &self,
+        conn: &mut Connection,
+        graph: &str,
+        id: EdgeId,
+    ) -> Result<(), StorageError> {
+        let edge = self
+            .read_edge(conn, graph, id.0)?
+            .ok_or(StorageError::EdgeNotFound { id: id.0 })?;
+        // Remove from rel-type index.
+        let _: () = conn.srem(key_reltype(graph, &edge.rel_type), id.0.to_string())
+            .map_err(|e| StorageError::Backend { msg: e.to_string() })?;
+        // Remove from all-edges set.
+        let _: () = conn.srem(key_edges_set(graph), id.0.to_string())
+            .map_err(|e| StorageError::Backend { msg: e.to_string() })?;
+        // Remove from adjacency sets.
+        let out_member = encode_adj(id, edge.dst, &edge.rel_type);
+        let in_member = encode_adj(id, edge.src, &edge.rel_type);
+        let _: () = conn.srem(key_out(graph, edge.src.0), out_member)
+            .map_err(|e| StorageError::Backend { msg: e.to_string() })?;
+        let _: () = conn.srem(key_in(graph, edge.dst.0), in_member)
+            .map_err(|e| StorageError::Backend { msg: e.to_string() })?;
+        // Delete edge hash.
+        let _: () = conn.del(key_edge(graph, id.0))
+            .map_err(|e| StorageError::Backend { msg: e.to_string() })?;
+        Ok(())
     }
 }
 
@@ -666,22 +715,38 @@ impl GraphStore for RedisGraphStore {
     ) -> Result<NodeId, StorageError> {
         self.require_graph(graph)?;
         let mut conn = self.conn()?;
-        // Allocate ID.
-        let raw_id: i64 = conn
-            .incr(key_node_seq(graph), 1)
-            .map_err(|e| StorageError::Backend { msg: e.to_string() })?;
-        if raw_id <= 0 {
-            return Err(StorageError::IdOverflow {
-                graph: graph.to_string(),
-            });
-        }
-        let id = raw_id as u64;
+
+        // If FanoutStore injected _sd2_id, use it instead of INCR.
+        let id = if let Some(Value::Int(i)) = properties.get("_sd2_id") {
+            if *i < 0 {
+                return Err(StorageError::Backend {
+                    msg: format!("_sd2_id must be non-negative, got {i}"),
+                });
+            }
+            *i as u64
+        } else {
+            let raw_id: i64 = conn
+                .incr(key_node_seq(graph), 1)
+                .map_err(|e| StorageError::Backend { msg: e.to_string() })?;
+            if raw_id <= 0 {
+                return Err(StorageError::IdOverflow {
+                    graph: graph.to_string(),
+                });
+            }
+            raw_id as u64
+        };
+
+        // Strip internal FanoutStore keys before storing.
+        let mut clean_props = properties;
+        clean_props.remove("_sd2_id");
+        clean_props.remove("_sd2_eid");
+
         let node_key = key_node(graph, id);
         let labels_json =
             serde_json::to_string(&labels).map_err(|e| StorageError::Serialization {
                 msg: e.to_string(),
             })?;
-        let props_json = props_to_json(&properties)?;
+        let props_json = props_to_json(&clean_props)?;
         // Store node hash.
         redis::cmd("HSET")
             .arg(&node_key)
@@ -719,17 +784,34 @@ impl GraphStore for RedisGraphStore {
         if self.read_node(&mut conn, graph, dst.0)?.is_none() {
             return Err(StorageError::NodeNotFound { id: dst.0 });
         }
-        let raw_id: i64 = conn
-            .incr(key_edge_seq(graph), 1)
-            .map_err(|e| StorageError::Backend { msg: e.to_string() })?;
-        if raw_id <= 0 {
-            return Err(StorageError::IdOverflow {
-                graph: graph.to_string(),
-            });
-        }
-        let id = raw_id as u64;
+
+        // If FanoutStore injected _sd2_eid, use it instead of INCR.
+        let id = if let Some(Value::Int(i)) = properties.get("_sd2_eid") {
+            if *i < 0 {
+                return Err(StorageError::Backend {
+                    msg: format!("_sd2_eid must be non-negative, got {i}"),
+                });
+            }
+            *i as u64
+        } else {
+            let raw_id: i64 = conn
+                .incr(key_edge_seq(graph), 1)
+                .map_err(|e| StorageError::Backend { msg: e.to_string() })?;
+            if raw_id <= 0 {
+                return Err(StorageError::IdOverflow {
+                    graph: graph.to_string(),
+                });
+            }
+            raw_id as u64
+        };
+
+        // Strip internal FanoutStore keys before storing.
+        let mut clean_props = properties;
+        clean_props.remove("_sd2_id");
+        clean_props.remove("_sd2_eid");
+
         let edge_key = key_edge(graph, id);
-        let props_json = props_to_json(&properties)?;
+        let props_json = props_to_json(&clean_props)?;
         redis::cmd("HSET")
             .arg(&edge_key)
             .arg("src")
@@ -958,7 +1040,8 @@ impl GraphStore for RedisGraphStore {
             }
         }
         if detach {
-            // Delete all adjacent edges first.
+            // Delete all adjacent edges first, keeping the lock held throughout
+            // to prevent new edges from arriving during the operation.
             let out_members: Vec<String> = conn
                 .smembers(key_out(graph, id.0))
                 .map_err(|e| StorageError::Backend { msg: e.to_string() })?;
@@ -971,14 +1054,12 @@ impl GraphStore for RedisGraphStore {
                     edge_ids.push(adj.edge_id);
                 }
             }
-            // Deduplicate and delete each edge.
+            // Deduplicate and delete each edge while holding the lock.
             edge_ids.sort_unstable();
             edge_ids.dedup();
-            drop(conn); // release lock before recursive call
             for eid in edge_ids {
-                self.delete_edge(graph, eid)?;
+                self.delete_edge_inner(&mut conn, graph, eid)?;
             }
-            conn = self.conn()?;
         }
         // Remove label indexes.
         for label in &node.labels {
@@ -1001,26 +1082,7 @@ impl GraphStore for RedisGraphStore {
 
     fn delete_edge(&self, graph: &str, id: EdgeId) -> Result<(), StorageError> {
         let mut conn = self.conn()?;
-        let edge = self
-            .read_edge(&mut conn, graph, id.0)?
-            .ok_or(StorageError::EdgeNotFound { id: id.0 })?;
-        // Remove from rel-type index.
-        let _: () = conn.srem(key_reltype(graph, &edge.rel_type), id.0.to_string())
-            .map_err(|e| StorageError::Backend { msg: e.to_string() })?;
-        // Remove from all-edges set.
-        let _: () = conn.srem(key_edges_set(graph), id.0.to_string())
-            .map_err(|e| StorageError::Backend { msg: e.to_string() })?;
-        // Remove from adjacency sets.
-        let out_member = encode_adj(id, edge.dst, &edge.rel_type);
-        let in_member = encode_adj(id, edge.src, &edge.rel_type);
-        let _: () = conn.srem(key_out(graph, edge.src.0), out_member)
-            .map_err(|e| StorageError::Backend { msg: e.to_string() })?;
-        let _: () = conn.srem(key_in(graph, edge.dst.0), in_member)
-            .map_err(|e| StorageError::Backend { msg: e.to_string() })?;
-        // Delete edge hash.
-        let _: () = conn.del(key_edge(graph, id.0))
-            .map_err(|e| StorageError::Backend { msg: e.to_string() })?;
-        Ok(())
+        self.delete_edge_inner(&mut conn, graph, id)
     }
 
     // ── Index management ──────────────────────────────────────────────────────

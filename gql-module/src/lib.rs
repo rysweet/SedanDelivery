@@ -11,9 +11,8 @@
 // Safety: every command handler uses std::panic::catch_unwind to prevent a
 // panic from killing the Redis/Valkey process (and all connected clients).
 
-use std::sync::Mutex;
+use std::sync::OnceLock;
 
-use once_cell::sync::Lazy;
 use redis_module::{redis_module, Context, NextArg, RedisError, RedisResult, RedisValue};
 
 use gql_core::executor::{ExecutionBudget, QueryExecutor};
@@ -24,12 +23,12 @@ use gql_redis_store::RedisGraphStore;
 
 // ── Global engine state ───────────────────────────────────────────────────────
 
-/// The global RedisGraphStore, initialised at module load.
+/// The global RedisGraphStore, initialised once at module load.
 ///
-/// We store it in a Mutex so it is `Sync`. The inner `RedisGraphStore` already
-/// has its own internal `Mutex<Connection>`, so the outer Mutex here guards
-/// the `Option` slot before the store is initialised.
-static STORE: Lazy<Mutex<Option<RedisGraphStore>>> = Lazy::new(|| Mutex::new(None));
+/// Uses `OnceLock` instead of `Mutex<Option<>>` so that query execution
+/// does not serialise behind an outer lock -- the inner `RedisGraphStore`
+/// already guards its connection with its own `Mutex<Connection>`.
+static STORE: OnceLock<RedisGraphStore> = OnceLock::new();
 
 /// Acquire a reference to the store.  Returns a RedisError if the store is
 /// not yet initialised (should not happen after OnLoad succeeds).
@@ -37,10 +36,7 @@ fn with_store<F, T>(f: F) -> RedisResult<T>
 where
     F: FnOnce(&RedisGraphStore) -> RedisResult<T>,
 {
-    let guard = STORE.lock().map_err(|e| {
-        RedisError::String(format!("store mutex poisoned: {e}"))
-    })?;
-    match guard.as_ref() {
+    match STORE.get() {
         Some(store) => f(store),
         None => Err(RedisError::Str("GQL module not initialised")),
     }
@@ -55,22 +51,12 @@ fn module_init(_ctx: &Context, _args: &[redis_module::RedisString]) -> redis_mod
 
     match RedisGraphStore::from_url(&url) {
         Ok(store) => {
-            let mut guard = match STORE.lock() {
-                Ok(g) => g,
-                Err(e) => {
-                    eprintln!("gql-module: store mutex poisoned on init: {e}");
-                    return redis_module::Status::Err;
-                }
-            };
-            *guard = Some(store);
+            let _ = STORE.set(store);
             redis_module::Status::Ok
         }
         Err(e) => {
             eprintln!("gql-module: failed to connect to Redis at {url}: {e}");
-            // Log the error but don't fail the module load — the store may
-            // become available later (e.g. Azure Cache for Redis with retries).
-            // Commands will return errors until the store is initialised.
-            redis_module::Status::Ok
+            redis_module::Status::Err  // Fail fast instead of swallowing
         }
     }
 }
@@ -153,14 +139,38 @@ fn cmd_gql_mutate(_ctx: &Context, args: Vec<redis_module::RedisString>) -> Redis
                 .execute(&graph, &plan, &mut budget)
                 .map_err(|e| RedisError::String(format!("execution error: {e}")))?;
 
+            // Serialise each row to a JSON string (same as GQL.QUERY).
+            let json_rows: Vec<RedisValue> = result
+                .rows
+                .iter()
+                .map(|row| {
+                    let ordered: std::collections::BTreeMap<_, _> = result
+                        .columns
+                        .iter()
+                        .filter_map(|col| row.get(col).map(|v| (col, v)))
+                        .collect();
+                    let json_row: serde_json::Map<String, serde_json::Value> = ordered
+                        .into_iter()
+                        .map(|(k, v)| (k.clone(), cypher_value_to_json(v)))
+                        .collect();
+                    RedisValue::BulkString(
+                        serde_json::to_string(&json_row).unwrap_or_else(|e| {
+                            format!("{{\"error\":\"{e}\"}}")
+                        }),
+                    )
+                })
+                .collect();
+
             let s = result.stats;
             let stats_str = format!(
                 "nodes_created={} nodes_deleted={} edges_created={} edges_deleted={} properties_set={} labels_added={}",
                 s.nodes_created, s.nodes_deleted, s.edges_created, s.edges_deleted,
                 s.properties_set, s.labels_added,
             );
+
+            // Return [rows_array, stats_string] so callers get both data and stats.
             Ok(RedisValue::Array(vec![
-                RedisValue::SimpleStringStatic("OK"),
+                RedisValue::Array(json_rows),
                 RedisValue::BulkString(stats_str),
             ]))
         })
@@ -298,11 +308,11 @@ redis_module! {
     data_types: [],
     init: module_init,
     commands: [
-        ["GQL.QUERY",        cmd_gql_query,        "readonly",  0, 0, 0],
-        ["GQL.MUTATE",       cmd_gql_mutate,       "write",     0, 0, 0],
-        ["GQL.CREATE-GRAPH", cmd_gql_create_graph, "write",     0, 0, 0],
-        ["GQL.DELETE-GRAPH", cmd_gql_delete_graph, "write",     0, 0, 0],
+        ["GQL.QUERY",        cmd_gql_query,        "write",     1, 1, 1],
+        ["GQL.MUTATE",       cmd_gql_mutate,       "write",     1, 1, 1],
+        ["GQL.CREATE-GRAPH", cmd_gql_create_graph, "write",     1, 1, 1],
+        ["GQL.DELETE-GRAPH", cmd_gql_delete_graph, "write",     1, 1, 1],
         ["GQL.LIST-GRAPHS",  cmd_gql_list_graphs,  "readonly",  0, 0, 0],
-        ["GQL.EXPLAIN",      cmd_gql_explain,      "readonly",  0, 0, 0],
+        ["GQL.EXPLAIN",      cmd_gql_explain,      "readonly",  1, 1, 1],
     ],
 }

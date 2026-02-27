@@ -39,6 +39,7 @@ use gql_core::storage::{
     RangeQuery,
 };
 use gql_core::types::Value;
+use gql_core::types::value::{Crs, GeoPoint};
 
 // ── Property name constants ───────────────────────────────────────────────────
 const PROP_GRAPH: &str = "_sd2_graph";
@@ -66,6 +67,8 @@ pub struct FabricGraphStore {
     client_id: String,
     client_secret: String,
     token: Mutex<Option<TokenCache>>,
+    /// Cached HTTP agent with timeout — avoids per-call TLS churn.
+    agent: ureq::Agent,
 }
 
 impl FabricGraphStore {
@@ -82,6 +85,9 @@ impl FabricGraphStore {
             client_id,
             client_secret,
             token: Mutex::new(None),
+            agent: ureq::AgentBuilder::new()
+                .timeout(std::time::Duration::from_secs(10))
+                .build(),
         }
     }
 
@@ -100,12 +106,20 @@ impl FabricGraphStore {
         ))
     }
 
+    // ── HTTP agent ─────────────────────────────────────────────────────────────
+
+    /// Return the cached ureq agent with a 10-second timeout for all HTTP calls.
+    fn http_agent(&self) -> &ureq::Agent {
+        &self.agent
+    }
+
     // ── Token management ──────────────────────────────────────────────────────
 
     fn bearer_token(&self) -> Result<String, StorageError> {
-        let mut cache = self.token.lock().unwrap();
+        let mut cache = self.token.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(ref c) = *cache {
-            if Instant::now() < c.expires_at - Duration::from_secs(60) {
+            // Avoid Instant subtraction panic: check that expiry is far enough in the future.
+            if c.expires_at > Instant::now() + Duration::from_secs(60) {
                 return Ok(c.token.clone());
             }
         }
@@ -119,7 +133,8 @@ impl FabricGraphStore {
             urlenc(&self.client_id),
             urlenc(&self.client_secret),
         );
-        let resp: JValue = ureq::post(&url)
+        let resp: JValue = self.http_agent()
+            .post(&url)
             .set("Content-Type", "application/x-www-form-urlencoded")
             .send_string(&body)
             .map_err(|e| StorageError::Backend { msg: format!("token fetch: {e}") })?
@@ -146,7 +161,8 @@ impl FabricGraphStore {
         debug!(cypher, "fabric query");
         let url = format!("{}/query", self.endpoint);
         let body = json!({ "query": cypher, "parameters": params });
-        let resp: JValue = ureq::post(&url)
+        let resp: JValue = self.http_agent()
+            .post(&url)
             .set("Authorization", &format!("Bearer {token}"))
             .set("Content-Type", "application/json")
             .send_json(body)
@@ -162,7 +178,8 @@ impl FabricGraphStore {
         debug!(cypher, "fabric statement");
         let url = format!("{}/statements", self.endpoint);
         let body = json!({ "query": cypher, "parameters": params });
-        let resp: JValue = ureq::post(&url)
+        let resp: JValue = self.http_agent()
+            .post(&url)
             .set("Authorization", &format!("Bearer {token}"))
             .set("Content-Type", "application/json")
             .send_json(body)
@@ -492,6 +509,11 @@ impl GraphStore for FabricGraphStore {
     ) -> Result<NodeId, StorageError> {
         // Use _sd2_id if injected by FanoutStore, otherwise generate.
         let id = if let Some(Value::Int(i)) = properties.get(PROP_NODE_ID) {
+            if *i < 0 {
+                return Err(StorageError::Backend {
+                    msg: format!("_sd2_id must be non-negative, got {i}"),
+                });
+            }
             NodeId(*i as u64)
         } else {
             self.next_node_id(graph)?
@@ -528,6 +550,11 @@ impl GraphStore for FabricGraphStore {
         properties: HashMap<String, Value>,
     ) -> Result<EdgeId, StorageError> {
         let id = if let Some(Value::Int(i)) = properties.get(PROP_EDGE_ID) {
+            if *i < 0 {
+                return Err(StorageError::Backend {
+                    msg: format!("_sd2_eid must be non-negative, got {i}"),
+                });
+            }
             EdgeId(*i as u64)
         } else {
             self.next_edge_id(graph)?
@@ -578,6 +605,8 @@ impl GraphStore for FabricGraphStore {
             &format!("MATCH (n {{`{PROP_GRAPH}`: $graph, `{PROP_NODE_ID}`: $id}}) SET n = $props"),
             json!({ "graph": graph, "id": id.0, "props": props }),
         )?;
+        // Re-sync _sd2_labels from Fabric's native labels (SET n = $props wipes it).
+        self.refresh_labels_prop(graph, id)?;
         Ok(())
     }
 
@@ -591,9 +620,14 @@ impl GraphStore for FabricGraphStore {
     }
 
     fn replace_edge_properties(&self, graph: &str, id: EdgeId, properties: HashMap<String, Value>) -> Result<(), StorageError> {
+        // Read current edge to preserve internal src/dst properties
+        let edge = self.get_edge(graph, id)?
+            .ok_or(StorageError::EdgeNotFound { id: id.0 })?;
         let mut props = user_props_to_json(&properties);
         props.insert(PROP_GRAPH.into(), json!(graph));
         props.insert(PROP_EDGE_ID.into(), json!(id.0));
+        props.insert(PROP_SRC.into(), json!(edge.src.0));
+        props.insert(PROP_DST.into(), json!(edge.dst.0));
         self.statement(
             &format!("MATCH ()-[r {{`{PROP_GRAPH}`: $graph, `{PROP_EDGE_ID}`: $id}}]->() SET r = $props"),
             json!({ "graph": graph, "id": id.0, "props": props }),
@@ -786,11 +820,18 @@ impl GraphStore for FabricGraphStore {
     }
 
     fn graph_stats(&self, graph: &str) -> Result<GraphStats, StorageError> {
+        // Use UNWIND to count distinct individual labels, not distinct label-lists.
+        // Use OPTIONAL MATCH for edges to handle empty graphs.
         let rows = self.query(
             &format!(
                 "MATCH (n {{`{PROP_GRAPH}`: $graph}}) WHERE NOT n:{SEQ_LABEL} \
-                 WITH count(n) AS nc, count(DISTINCT labels(n)) AS lc \
-                 MATCH ()-[r {{`{PROP_GRAPH}`: $graph}}]->() \
+                 WITH collect(n) AS nodes, count(n) AS nc \
+                 UNWIND CASE WHEN size(nodes) = 0 THEN [null] ELSE nodes END AS n2 \
+                 WITH nc, CASE WHEN n2 IS NOT NULL THEN labels(n2) ELSE [] END AS lbls \
+                 UNWIND CASE WHEN size(lbls) = 0 THEN [null] ELSE lbls END AS lbl \
+                 WITH nc, collect(DISTINCT lbl) AS distinct_labels \
+                 WITH nc, size([x IN distinct_labels WHERE x IS NOT NULL AND NOT x STARTS WITH '__SD2']) AS lc \
+                 OPTIONAL MATCH ()-[r {{`{PROP_GRAPH}`: $graph}}]->() \
                  WITH nc, lc, count(r) AS ec, count(DISTINCT type(r)) AS rtc \
                  RETURN nc, ec, lc, rtc"
             ),
@@ -848,6 +889,10 @@ fn parse_rows(resp: &JValue) -> Result<Vec<Vec<JValue>>, StorageError> {
 
     let mut all_rows: Vec<Vec<JValue>> = Vec::new();
     for result in results {
+        // Check for per-result embedded errors before reading data.
+        if let Some(err) = result.get("error") {
+            return Err(StorageError::Backend { msg: format!("Fabric result error: {err}") });
+        }
         if let Some(data) = result.get("data").and_then(|d| d.as_array()) {
             for row in data {
                 let cells: Vec<JValue> = row.as_array()
@@ -892,14 +937,30 @@ fn value_to_json(v: &Value) -> JValue {
         Value::Int(i) => json!(i),
         Value::Float(f) => json!(f),
         Value::Str(s) => json!(s.as_ref()),
+        // Temporal and spatial types: tagged strings for round-trip fidelity.
+        Value::Date(d) => json!(format!("__date:{d}")),
+        Value::LocalTime(t) => json!(format!("__localtime:{t}")),
+        Value::LocalDateTime(dt) => json!(format!("__localdatetime:{dt}")),
+        Value::DateTime(dt) => json!(format!("__datetime:{dt}")),
+        Value::Duration(sp) => json!(format!("__duration:{sp}")),
+        Value::Point(p) => json!(format!("__point:{},{},{:?}", p.x, p.y, p.crs)),
         Value::List(l) => JValue::Array(l.iter().map(value_to_json).collect()),
         Value::Map(m) => {
             let obj: serde_json::Map<String, JValue> =
                 m.iter().map(|(k, v)| (k.as_ref().to_string(), value_to_json(v))).collect();
             JValue::Object(obj)
         }
-        // Date/time types serialised as ISO strings for JSON round-trip.
-        other => json!(format!("{other:?}")),
+        // Graph element references.
+        Value::Node(id) => json!(format!("__node:{}", id.0)),
+        Value::Edge(id) => json!(format!("__edge:{}", id.0)),
+        Value::Path { nodes, edges } => {
+            let nodes_json: Vec<_> = nodes.iter().map(|n| json!(n.0)).collect();
+            let edges_json: Vec<_> = edges.iter().map(|e| json!(e.0)).collect();
+            let mut m = serde_json::Map::new();
+            m.insert("__path_nodes".into(), JValue::Array(nodes_json));
+            m.insert("__path_edges".into(), JValue::Array(edges_json));
+            JValue::Object(m)
+        }
     }
 }
 
@@ -915,13 +976,82 @@ fn json_to_value(v: &JValue) -> Option<Value> {
                 Value::Float(n.as_f64().unwrap_or(f64::NAN))
             }
         }
-        JValue::String(s) => Value::Str(s.clone().into()),
+        JValue::String(s) => {
+            // Decode tagged temporal/spatial types.
+            if let Some(rest) = s.strip_prefix("__date:") {
+                if let Ok(d) = rest.parse::<jiff::civil::Date>() {
+                    return Some(Value::Date(d));
+                }
+            } else if let Some(rest) = s.strip_prefix("__localtime:") {
+                if let Ok(t) = rest.parse::<jiff::civil::Time>() {
+                    return Some(Value::LocalTime(t));
+                }
+            } else if let Some(rest) = s.strip_prefix("__localdatetime:") {
+                if let Ok(dt) = rest.parse::<jiff::civil::DateTime>() {
+                    return Some(Value::LocalDateTime(dt));
+                }
+            } else if let Some(rest) = s.strip_prefix("__datetime:") {
+                if let Ok(dt) = rest.parse::<jiff::Zoned>() {
+                    return Some(Value::DateTime(Box::new(dt)));
+                }
+            } else if let Some(rest) = s.strip_prefix("__duration:") {
+                if let Ok(sp) = rest.parse::<jiff::Span>() {
+                    return Some(Value::Duration(sp));
+                }
+            } else if let Some(rest) = s.strip_prefix("__point:") {
+                // Format: "x,y,CrsVariant"
+                let parts: Vec<&str> = rest.splitn(3, ',').collect();
+                if parts.len() == 3 {
+                    if let (Ok(x), Ok(y)) = (parts[0].parse::<f64>(), parts[1].parse::<f64>()) {
+                        let crs = match parts[2] {
+                            "Wgs84" => Crs::Wgs84,
+                            "Wgs843d" => Crs::Wgs843d,
+                            "Cartesian" => Crs::Cartesian,
+                            "Cartesian3d" => Crs::Cartesian3d,
+                            _ => Crs::Wgs84,
+                        };
+                        return Some(Value::Point(GeoPoint { x, y, crs }));
+                    }
+                }
+            } else if let Some(rest) = s.strip_prefix("__node:") {
+                if let Ok(id) = rest.parse::<u64>() {
+                    return Some(Value::Node(NodeId(id)));
+                }
+            } else if let Some(rest) = s.strip_prefix("__edge:") {
+                if let Ok(id) = rest.parse::<u64>() {
+                    return Some(Value::Edge(EdgeId(id)));
+                }
+            }
+            Value::Str(s.clone().into())
+        }
         JValue::Array(a) => Value::List(a.iter().filter_map(json_to_value).collect()),
-        JValue::Object(m) => Value::Map(
-            m.iter()
-                .filter_map(|(k, v)| json_to_value(v).map(|val| (k.as_str().into(), val)))
-                .collect(),
-        ),
+        JValue::Object(m) => {
+            // Check for encoded path.
+            if m.contains_key("__path_nodes") && m.contains_key("__path_edges") {
+                let nodes = m["__path_nodes"]
+                    .as_array()
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|v| v.as_u64().map(NodeId))
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+                let edges = m["__path_edges"]
+                    .as_array()
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|v| v.as_u64().map(EdgeId))
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+                return Some(Value::Path { nodes, edges });
+            }
+            Value::Map(
+                m.iter()
+                    .filter_map(|(k, v)| json_to_value(v).map(|val| (k.as_str().into(), val)))
+                    .collect(),
+            )
+        }
     })
 }
 
@@ -942,13 +1072,20 @@ fn sanitize_label(s: &str) -> String {
 }
 
 /// URL-encode a string for use in x-www-form-urlencoded bodies.
+/// Encodes individual UTF-8 bytes rather than Unicode codepoints, which is the
+/// correct behavior per RFC 3986 for multi-byte characters.
 fn urlenc(s: &str) -> String {
-    s.chars()
-        .flat_map(|c| match c {
-            'A'..='Z' | 'a'..='z' | '0'..='9' | '-' | '_' | '.' | '~' => vec![c],
-            c => format!("%{:02X}", c as u32).chars().collect::<Vec<_>>(),
-        })
-        .collect()
+    use std::fmt::Write as _;
+    let mut out = String::with_capacity(s.len() * 3);
+    for &byte in s.as_bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(byte as char)
+            }
+            b => write!(out, "%{b:02X}").unwrap(),
+        }
+    }
+    out
 }
 
 /// Build a Cypher WHERE predicate string and parameter map for a RangeQuery.

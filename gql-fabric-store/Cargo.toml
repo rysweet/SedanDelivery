@@ -10,5 +10,6 @@ thiserror   = { workspace = true }
 tracing     = { workspace = true }
 serde       = { workspace = true }
 serde_json  = "1.0"
+jiff        = { workspace = true }
 # Lightweight synchronous HTTP — GraphStore trait is sync; no async runtime needed.
 ureq        = { version = "2.10", features = ["json"] }
