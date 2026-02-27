@@ -2009,6 +2009,21 @@ fn label_filter_expr(alias: &Identifier, label: &Label) -> Expr {
 }
 
 /// Derive a column name from an expression (mirrors executor's `expr_to_column_name`).
+fn binop_col_prec(op: &crate::ast::BinaryOp) -> i32 {
+    use crate::ast::BinaryOp;
+    match op {
+        BinaryOp::Pow => 6,
+        BinaryOp::Mul | BinaryOp::Div | BinaryOp::Mod => 5,
+        BinaryOp::Add | BinaryOp::Sub | BinaryOp::Concat => 4,
+        _ => 3,
+    }
+}
+
+fn binop_col_nonassoc(op: &crate::ast::BinaryOp) -> bool {
+    use crate::ast::BinaryOp;
+    matches!(op, BinaryOp::Sub | BinaryOp::Div | BinaryOp::Mod)
+}
+
 fn expr_to_col_name(expr: &Expr) -> String {
     match expr {
         Expr::Variable(id) => id.0.clone(),
@@ -2034,7 +2049,7 @@ fn expr_to_col_name(expr: &Expr) -> String {
         }
         Expr::Integer(n) => n.to_string(),
         Expr::Float(f) => f.to_string(),
-        Expr::Str(s) => format!("'{}'", s),
+        Expr::Str(s) => format!("'{s}'"),
         Expr::BinaryOp { op, left, right } => {
             let op_str = match op {
                 crate::ast::BinaryOp::Add => "+",
@@ -2059,12 +2074,23 @@ fn expr_to_col_name(expr: &Expr) -> String {
                 crate::ast::BinaryOp::RegexMatch => "=~",
                 crate::ast::BinaryOp::Concat => "++",
             };
-            format!(
-                "{} {} {}",
-                expr_to_col_name(left),
-                op_str,
-                expr_to_col_name(right)
-            )
+            let parent_prec = binop_col_prec(op);
+            let left_str = match left.as_ref() {
+                Expr::BinaryOp { op: child_op, .. } if binop_col_prec(child_op) < parent_prec => {
+                    format!("({})", expr_to_col_name(left))
+                }
+                _ => expr_to_col_name(left),
+            };
+            let right_str = match right.as_ref() {
+                Expr::BinaryOp { op: child_op, .. }
+                    if binop_col_prec(child_op) < parent_prec
+                        || (binop_col_prec(child_op) == parent_prec && binop_col_nonassoc(op)) =>
+                {
+                    format!("({})", expr_to_col_name(right))
+                }
+                _ => expr_to_col_name(right),
+            };
+            format!("{} {} {}", left_str, op_str, right_str)
         }
         Expr::Bool(b) => b.to_string(),
         Expr::Null => "null".to_string(),

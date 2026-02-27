@@ -587,7 +587,9 @@ fn eval_binary<'r>(
             Value::Null => Ok(Value::Null),
             Value::List(items) => {
                 if lv.is_null() {
-                    // null IN [] → false; null IN [non-empty] → null
+                    // null IN [] → false; null IN [any non-empty list] → null
+                    // Because null == anything is null, so membership is always unknown
+                    // for non-empty lists.
                     if items.is_empty() {
                         Ok(Value::Bool(false))
                     } else {
@@ -1249,7 +1251,10 @@ pub fn eval_function_with_vals(name: &str, vals: Vec<Value>) -> Result<Value, Gq
             match &vals[0] {
                 Value::Null => Ok(Value::Null),
                 Value::Map(m) => Ok(Value::List(
-                    m.keys().map(|k| Value::Str(k.clone())).collect(),
+                    m.iter()
+                        .filter(|(_, v)| !v.is_null())
+                        .map(|(k, _)| Value::Str(k.clone()))
+                        .collect(),
                 )),
                 other => type_error("keys", other),
             }

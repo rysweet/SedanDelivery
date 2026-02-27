@@ -693,6 +693,7 @@ impl<'a> QueryExecutor<'a> {
 
                     let mut fixed_edges_before_varlen: usize = 0;
                     let mut varlen_path_found = false;
+                    let mut varlen_edge_aliases: Vec<String> = Vec::new();
                     for ea in edge_aliases {
                         match row.get(&ea.0) {
                             Some(Value::Edge(eid)) => {
@@ -725,6 +726,9 @@ impl<'a> QueryExecutor<'a> {
                                     // Additional varlen paths: append intermediate+end nodes
                                     nodes.extend_from_slice(&pnodes[1..]);
                                 }
+                                edges.extend_from_slice(pedges);
+                                // Track this alias so we can convert it back to a list of edges
+                                varlen_edge_aliases.push(ea.0.clone());
                             }
                             Some(Value::List(items)) => {
                                 // List of edges (alternative VarLenExpand storage)
@@ -750,6 +754,17 @@ impl<'a> QueryExecutor<'a> {
 
                     let path_val = Value::Path { nodes, edges };
                     row.insert(path_alias.0.clone(), path_val);
+
+                    // Convert VarLenExpand path aliases back to list-of-edges so that
+                    // user-defined relationship variables (e.g. `r` in `[r*]`) hold the
+                    // correct Value::List([Edge, ...]) rather than a Value::Path.
+                    for ea_name in &varlen_edge_aliases {
+                        if let Some(Value::Path { edges: pedges, .. }) = row.get(ea_name).cloned() {
+                            let edge_list: Vec<Value> = pedges.iter().map(|e| Value::Edge(*e)).collect();
+                            row.insert(ea_name.clone(), Value::List(edge_list));
+                        }
+                    }
+
                     out.push(row);
                 }
                 Ok(out)
@@ -2210,8 +2225,9 @@ impl<'a> QueryExecutor<'a> {
                             Value::Node(node_id) => match self.store.get_node(graph, *node_id)? {
                                 Some(data) => Ok(Value::List(
                                     data.properties
-                                        .keys()
-                                        .map(|k| Value::Str(k.clone().into_boxed_str()))
+                                        .iter()
+                                        .filter(|(_, v)| !v.is_null())
+                                        .map(|(k, _)| Value::Str(k.clone().into_boxed_str()))
                                         .collect(),
                                 )),
                                 None => Ok(Value::List(vec![])),
@@ -2219,8 +2235,9 @@ impl<'a> QueryExecutor<'a> {
                             Value::Edge(edge_id) => match self.store.get_edge(graph, *edge_id)? {
                                 Some(data) => Ok(Value::List(
                                     data.properties
-                                        .keys()
-                                        .map(|k| Value::Str(k.clone().into_boxed_str()))
+                                        .iter()
+                                        .filter(|(_, v)| !v.is_null())
+                                        .map(|(k, _)| Value::Str(k.clone().into_boxed_str()))
                                         .collect(),
                                 )),
                                 None => Ok(Value::List(vec![])),
@@ -3123,6 +3140,25 @@ fn eval_count_expr(expr: &Expr, params: &Row) -> Result<usize, GqlError> {
 
 /// Derive a column name string from an expression.
 /// `n.name` → `"n.name"`, `n` → `"n"`, literal → `"literal"`.
+/// Returns the precedence level of a binary operator for column-name parenthesization.
+/// Higher value = higher precedence (binds tighter).
+fn binop_col_prec(op: &crate::ast::BinaryOp) -> i32 {
+    use crate::ast::BinaryOp;
+    match op {
+        BinaryOp::Pow => 6,
+        BinaryOp::Mul | BinaryOp::Div | BinaryOp::Mod => 5,
+        BinaryOp::Add | BinaryOp::Sub | BinaryOp::Concat => 4,
+        _ => 3,
+    }
+}
+
+/// True for operators where `a op (b op c) ≠ (a op b) op c`,
+/// so the right child needs parentheses when it has the same precedence.
+fn binop_col_nonassoc(op: &crate::ast::BinaryOp) -> bool {
+    use crate::ast::BinaryOp;
+    matches!(op, BinaryOp::Sub | BinaryOp::Div | BinaryOp::Mod)
+}
+
 fn expr_to_column_name(expr: &Expr) -> String {
     match expr {
         Expr::Variable(id) => id.0.clone(),
@@ -3137,7 +3173,7 @@ fn expr_to_column_name(expr: &Expr) -> String {
         }
         Expr::Integer(n) => n.to_string(),
         Expr::Float(f) => f.to_string(),
-        Expr::Str(s) => format!("'{}'", s),
+        Expr::Str(s) => format!("'{s}'"),
         Expr::Bool(b) => b.to_string(),
         Expr::Null => "null".to_string(),
         Expr::FunctionCall {
@@ -3184,12 +3220,25 @@ fn expr_to_column_name(expr: &Expr) -> String {
                 crate::ast::BinaryOp::RegexMatch => "=~",
                 crate::ast::BinaryOp::Concat => "++",
             };
-            format!(
-                "{} {} {}",
-                expr_to_column_name(left),
-                op_str,
-                expr_to_column_name(right)
-            )
+            let parent_prec = binop_col_prec(op);
+            // Left child: wrap if strictly lower precedence
+            let left_str = match left.as_ref() {
+                Expr::BinaryOp { op: child_op, .. } if binop_col_prec(child_op) < parent_prec => {
+                    format!("({})", expr_to_column_name(left))
+                }
+                _ => expr_to_column_name(left),
+            };
+            // Right child: wrap if lower precedence, or same prec for non-associative ops
+            let right_str = match right.as_ref() {
+                Expr::BinaryOp { op: child_op, .. }
+                    if binop_col_prec(child_op) < parent_prec
+                        || (binop_col_prec(child_op) == parent_prec && binop_col_nonassoc(op)) =>
+                {
+                    format!("({})", expr_to_column_name(right))
+                }
+                _ => expr_to_column_name(right),
+            };
+            format!("{} {} {}", left_str, op_str, right_str)
         }
         Expr::ListComp {
             variable,
