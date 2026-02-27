@@ -13,8 +13,10 @@ param imageTag string = 'latest'
 
 // ── Variables ─────────────────────────────────────────────────────────────────
 var prefix = 'sd2'
-// ACR names: 5-50 chars, alphanumeric only
-var acrName = take(replace('${prefix}${replace(environmentName, '-', '')}acr', '-', ''), 50)
+// ACR names: 5-50 chars, alphanumeric only.
+// Pad with 'x' chars to guarantee minimum 5 chars even for short env names.
+var acrBase = '${prefix}${replace(environmentName, '-', '')}acr'
+var acrName = take(length(acrBase) < 5 ? '${acrBase}xxxxx' : acrBase, 50)
 var caeName = '${prefix}-${environmentName}-cae'
 var caName = '${prefix}-${environmentName}-redis'
 var logAnalyticsName = '${prefix}-${environmentName}-logs'
@@ -80,7 +82,10 @@ resource sedanRedis 'Microsoft.App/containerApps@2024-03-01' = {
         }
       ]
       ingress: {
-        external: true
+        // Internal TCP: accessible only within the Container Apps Environment.
+        // External TCP requires a custom VNet (too heavy for PR environments).
+        // Connect via the internal FQDN from other apps in the same environment.
+        external: false
         targetPort: 6379
         transport: 'tcp'
         exposedPort: 6379
