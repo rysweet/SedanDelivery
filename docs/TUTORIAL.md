@@ -244,6 +244,43 @@ for row in result.rows {
 }
 ```
 
+## 10. EXISTS { subquery } and Pattern Predicates
+
+`EXISTS { ... }` returns `true` if the inner pattern matches at least one row in the graph.
+Bare pattern expressions (`(n)-[:REL]->()`) used directly in `WHERE` behave identically.
+
+```cypher
+-- Filter: only nodes that have an outgoing KNOWS edge
+MATCH (n) WHERE EXISTS { (n)-[:KNOWS]->() } RETURN n
+
+-- Full MATCH form with WHERE inside the subquery
+MATCH (n) WHERE EXISTS { MATCH (n)-[:KNOWS]->(m) WHERE m.age < 30 } RETURN n
+
+-- Use EXISTS as a projection (returns Bool)
+MATCH (n:Person) RETURN n.name, EXISTS { (n)-[:KNOWS]->() } AS hasKnows
+
+-- Negation
+MATCH (n) WHERE NOT EXISTS { (n)-[:KNOWS]->() } RETURN n
+
+-- Bare pattern predicate (equivalent to EXISTS { ... })
+MATCH (n) WHERE (n)-[:KNOWS]->() RETURN n
+
+-- Pattern predicate with two conditions (conjunction)
+MATCH (n) WHERE (n)-[:KNOWS]-() AND (n)-[:LIKES]-() RETURN n
+```
+
+In Rust:
+```rust
+let result = executor.execute("social",
+    &planner.plan(&parse_query(
+        "MATCH (n) WHERE EXISTS { (n)-[:KNOWS]->() } RETURN n"
+    ).unwrap()).unwrap(),
+    &mut budget).unwrap();
+
+// rows contains only nodes with outgoing KNOWS edges
+println!("{} matches", result.rows.len());
+```
+
 ## Running the Demo
 
 ```bash
