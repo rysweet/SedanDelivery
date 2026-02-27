@@ -5302,32 +5302,30 @@ mod tests {
     // ── Integer boundaries ────────────────────────────────────────────────────
 
     #[test]
-    fn i64_max_plus_one_wraps_to_min() {
-        // The executor uses wrapping_add, so i64::MAX + 1 = i64::MIN.
+    fn i64_max_plus_one_returns_overflow_error() {
+        // Checked arithmetic: i64::MAX + 1 returns an overflow error.
         let expr = Expr::BinaryOp {
             op: BOp::Add,
             left: Box::new(Expr::Integer(i64::MAX)),
             right: Box::new(Expr::Integer(1)),
         };
-        assert_eq!(eval_expr(&expr, &empty_row()).unwrap(), Value::Int(i64::MIN));
+        assert!(eval_expr(&expr, &empty_row()).is_err());
     }
 
     #[test]
-    #[should_panic]
-    fn abs_i64_min_overflows() {
-        // abs() uses plain i64::abs() which panics on i64::MIN in debug mode.
-        let _ = eval_function_with_vals("abs", vec![Value::Int(i64::MIN)]);
+    fn abs_i64_min_returns_overflow_error() {
+        // Checked abs(): i64::MIN returns an overflow error instead of panicking.
+        assert!(eval_function_with_vals("abs", vec![Value::Int(i64::MIN)]).is_err());
     }
 
     #[test]
-    #[should_panic]
-    fn neg_i64_min_overflows() {
-        // Unary negation of i64::MIN overflows in debug mode.
+    fn neg_i64_min_returns_overflow_error() {
+        // Checked negation: i64::MIN returns an overflow error instead of panicking.
         let expr = Expr::UnaryOp {
             op: UOp::Neg,
             expr: Box::new(Expr::Integer(i64::MIN)),
         };
-        let _ = eval_expr(&expr, &empty_row());
+        assert!(eval_expr(&expr, &empty_row()).is_err());
     }
 
     #[test]
