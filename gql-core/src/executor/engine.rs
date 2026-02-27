@@ -455,7 +455,7 @@ impl<'a> QueryExecutor<'a> {
 
                     // Add aggregation result columns.
                     for ((func, _, _, _, alias), state) in aggregations.iter().zip(&agg_states) {
-                        row.insert(alias.0.clone(), state.finalize(func));
+                        row.insert(alias.0.clone(), state.finalize(func)?);
                     }
                     budget.record_row();
                     out.push(row);
@@ -2315,20 +2315,20 @@ impl AggState {
         }
     }
 
-    fn finalize(&self, func: &AggFunction) -> Value {
+    fn finalize(&self, func: &AggFunction) -> Result<Value, GqlError> {
         match func {
-            AggFunction::Count => Value::Int(self.count),
-            AggFunction::Sum => self.sum.map(Value::Float).unwrap_or(Value::Int(0)),
+            AggFunction::Count => Ok(Value::Int(self.count)),
+            AggFunction::Sum => Ok(self.sum.map(Value::Float).unwrap_or(Value::Int(0))),
             AggFunction::Avg => {
                 if self.count == 0 {
-                    Value::Null
+                    Ok(Value::Null)
                 } else {
-                    Value::Float(self.sum.unwrap_or(0.0) / self.count as f64)
+                    Ok(Value::Float(self.sum.unwrap_or(0.0) / self.count as f64))
                 }
             }
-            AggFunction::Min => self.min.clone().unwrap_or(Value::Null),
-            AggFunction::Max => self.max.clone().unwrap_or(Value::Null),
-            AggFunction::Collect => Value::List(self.collected.clone()),
+            AggFunction::Min => Ok(self.min.clone().unwrap_or(Value::Null)),
+            AggFunction::Max => Ok(self.max.clone().unwrap_or(Value::Null)),
+            AggFunction::Collect => Ok(Value::List(self.collected.clone())),
             AggFunction::StDev => {
                 let nums: Vec<f64> = self
                     .collected
@@ -2336,12 +2336,12 @@ impl AggState {
                     .filter_map(|v| v.as_float())
                     .collect();
                 if nums.len() <= 1 {
-                    return Value::Float(0.0);
+                    return Ok(Value::Float(0.0));
                 }
                 let mean = nums.iter().sum::<f64>() / nums.len() as f64;
                 let variance = nums.iter().map(|x| (x - mean).powi(2)).sum::<f64>()
                     / (nums.len() - 1) as f64;
-                Value::Float(variance.sqrt())
+                Ok(Value::Float(variance.sqrt()))
             }
             AggFunction::StDevP => {
                 let nums: Vec<f64> = self
@@ -2350,54 +2350,66 @@ impl AggState {
                     .filter_map(|v| v.as_float())
                     .collect();
                 if nums.is_empty() {
-                    return Value::Float(0.0);
+                    return Ok(Value::Float(0.0));
                 }
                 let mean = nums.iter().sum::<f64>() / nums.len() as f64;
                 let variance = nums.iter().map(|x| (x - mean).powi(2)).sum::<f64>()
                     / nums.len() as f64;
-                Value::Float(variance.sqrt())
+                Ok(Value::Float(variance.sqrt()))
             }
             AggFunction::PercentileDisc => {
+                let p = self.percentile.unwrap_or(0.5);
+                if !(0.0..=1.0).contains(&p) {
+                    return Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                        expected: "percentile in range [0.0, 1.0]".to_string(),
+                        actual: format!("NumberOutOfRange: {p}"),
+                    }));
+                }
                 let mut nums: Vec<f64> = self
                     .collected
                     .iter()
                     .filter_map(|v| v.as_float())
                     .collect();
                 if nums.is_empty() {
-                    return Value::Null;
+                    return Ok(Value::Null);
                 }
                 nums.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-                let p = self.percentile.unwrap_or(0.5).clamp(0.0, 1.0);
                 // Nearest rank method: index = ceil(p * n) - 1 (clamped)
                 let n = nums.len();
                 let idx = ((p * n as f64).ceil() as usize).saturating_sub(1).min(n - 1);
                 // Return as integer if all values are whole numbers
                 let v = nums[idx];
                 if v.fract() == 0.0 && v >= i64::MIN as f64 && v <= i64::MAX as f64 {
-                    Value::Int(v as i64)
+                    Ok(Value::Int(v as i64))
                 } else {
-                    Value::Float(v)
+                    Ok(Value::Float(v))
                 }
             }
             AggFunction::PercentileCont => {
+                let p = self.percentile.unwrap_or(0.5);
+                if !(0.0..=1.0).contains(&p) {
+                    return Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                        expected: "percentile in range [0.0, 1.0]".to_string(),
+                        actual: format!("NumberOutOfRange: {p}"),
+                    }));
+                }
                 let mut nums: Vec<f64> = self
                     .collected
                     .iter()
                     .filter_map(|v| v.as_float())
                     .collect();
                 if nums.is_empty() {
-                    return Value::Null;
+                    return Ok(Value::Null);
                 }
                 nums.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-                let p = self.percentile.unwrap_or(0.5).clamp(0.0, 1.0);
                 let idx = p * (nums.len() - 1) as f64;
                 let lo = idx.floor() as usize;
                 let hi = (idx.ceil() as usize).min(nums.len() - 1);
                 if lo == hi {
-                    Value::Float(nums[lo])
+                    Ok(Value::Float(nums[lo]))
                 } else {
                     let frac = idx - lo as f64;
-                    Value::Float(nums[lo] * (1.0 - frac) + nums[hi] * frac)
+                    Ok(Value::Float(nums[lo] * (1.0 - frac) + nums[hi] * frac))
                 }
             }
         }
