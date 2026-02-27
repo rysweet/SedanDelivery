@@ -358,7 +358,6 @@ pub enum Expr {
         patterns: Vec<PathPattern>,
         where_clause: Option<Box<Expr>>,
     },
-
     // ── Pattern expression ──────────────────────────────────────────────────
     /// `(n)-[:REL]->()` used as a predicate in WHERE — returns true if the
     /// pattern matches at least once.

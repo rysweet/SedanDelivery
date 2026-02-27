@@ -869,18 +869,28 @@ impl<'s> QueryPlanner<'s> {
             // the rows with those aliases before sorting.
             let mut raw = child;
 
-            // Determine if ORDER BY references any projected aliases.
-            let order_by_aliases: std::collections::HashSet<String> = wc
-                .order_by
-                .iter()
-                .filter_map(|s| {
-                    if let Expr::Variable(v) = &s.expr { Some(v.0.clone()) } else { None }
-                })
-                .collect();
-            let needs_augment_for_sort = !order_by_aliases.is_empty()
-                && projected_items.iter().any(|(_, alias)| {
-                    alias.as_ref().map(|a| order_by_aliases.contains(a.0.as_str())).unwrap_or(false)
-                });
+            // Determine if ORDER BY references any projected aliases (at any expression depth).
+            fn with_expr_refs_alias(expr: &Expr, alias: &str) -> bool {
+                match expr {
+                    Expr::Variable(v) => v.0.as_str() == alias,
+                    Expr::Property(obj, _) => with_expr_refs_alias(obj, alias),
+                    Expr::BinaryOp { left, right, .. } => {
+                        with_expr_refs_alias(left, alias) || with_expr_refs_alias(right, alias)
+                    }
+                    Expr::UnaryOp { expr: inner, .. } => with_expr_refs_alias(inner, alias),
+                    Expr::FunctionCall { args, .. } => {
+                        args.iter().any(|a| with_expr_refs_alias(a, alias))
+                    }
+                    _ => false,
+                }
+            }
+            let needs_augment_for_sort = projected_items.iter().any(|(_, alias)| {
+                if let Some(a) = alias {
+                    wc.order_by.iter().any(|s| with_expr_refs_alias(&s.expr, a.0.as_str()))
+                } else {
+                    false
+                }
+            });
 
             // If ORDER BY references projected aliases, pre-augment rows.
             if needs_augment_for_sort && wc.where_clause.is_none() {
@@ -1347,54 +1357,100 @@ impl<'s> QueryPlanner<'s> {
             // For non-aggregation: if ORDER BY references any RETURN alias,
             // pre-project those aliases onto the raw rows before sorting.
             let pipeline = if !has_aggregation {
-                // Collect all RETURN aliases referenced in ORDER BY (as Variable or Property root).
-                let needs_pre_project = rc.order_by.iter().any(|s| {
-                    // Extract the root variable name from the ORDER BY expression.
-                    let root_var = match &s.expr {
-                        Expr::Variable(v) => Some(v.0.as_str()),
-                        Expr::Property(obj, _) => {
-                            if let Expr::Variable(v) = obj.as_ref() {
-                                Some(v.0.as_str())
-                            } else {
-                                None
-                            }
+                // Collect all RETURN aliases referenced in ORDER BY (at any depth in expression).
+                // This handles cases like `ORDER BY n + 2` where `n` is a RETURN alias.
+                fn expr_references_alias(expr: &Expr, alias: &str) -> bool {
+                    match expr {
+                        Expr::Variable(v) => v.0.as_str() == alias,
+                        Expr::Property(obj, _) => expr_references_alias(obj, alias),
+                        Expr::BinaryOp { left, right, .. } => {
+                            expr_references_alias(left, alias) || expr_references_alias(right, alias)
                         }
-                        _ => None,
-                    };
-                    if let Some(root) = root_var {
-                        items.iter().any(|item| {
-                            let alias = item.alias.as_ref().map(|a| a.0.as_str())
-                                .unwrap_or_else(|| "");
-                            root == alias && alias != expr_to_col_name(&item.expr).as_str()
-                        })
-                    } else {
-                        false
+                        Expr::UnaryOp { expr: inner, .. } => expr_references_alias(inner, alias),
+                        Expr::FunctionCall { args, .. } => {
+                            args.iter().any(|a| expr_references_alias(a, alias))
+                        }
+                        _ => false,
                     }
+                }
+                let needs_pre_project = rc.order_by.iter().any(|s| {
+                    items.iter().any(|item| {
+                        if let Some(alias) = &item.alias {
+                            let alias_str = alias.0.as_str();
+                            let orig_name = expr_to_col_name(&item.expr);
+                            alias_str != orig_name.as_str()
+                                && expr_references_alias(&s.expr, alias_str)
+                        } else {
+                            false
+                        }
+                    })
                 });
                 if needs_pre_project {
-                    // Add a Project that exposes RETURN aliases alongside raw vars.
+                    // Add a Project that exposes RETURN aliases for ORDER BY use.
+                    // When an alias shadows an existing variable (e.g. `n.num AS n`),
+                    // use a temp name to avoid overwriting the raw variable, then
+                    // rewrite ORDER BY expressions to reference the temp name.
                     let child_aliases = crate::planner::collect_visible_aliases(&pipeline);
                     let mut aug_items: Vec<(Expr, Option<Identifier>)> = child_aliases
                         .iter()
                         .map(|a| (Expr::Variable(Identifier::new(a.clone())), None))
                         .collect();
+                    // Map from alias name → temp name (when shadowing occurs).
+                    let mut alias_remap: std::collections::HashMap<String, String> = std::collections::HashMap::new();
                     for item in &items {
                         if let Some(alias) = &item.alias {
                             if alias.0 != expr_to_col_name(&item.expr) {
-                                aug_items.push((item.expr.clone(), Some(alias.clone())));
+                                let use_alias = if child_aliases.iter().any(|a| a.as_str() == alias.0.as_str()) {
+                                    // Alias shadows an existing variable: use a temp name.
+                                    let temp = format!("__presort_{}__", alias.0);
+                                    alias_remap.insert(alias.0.to_string(), temp.clone());
+                                    Identifier::new(temp)
+                                } else {
+                                    alias.clone()
+                                };
+                                aug_items.push((item.expr.clone(), Some(use_alias)));
                             }
                         }
                     }
-                    Operator::Project {
+                    (Operator::Project {
                         items: aug_items,
                         child: Box::new(pipeline),
-                    }
+                    }, alias_remap)
                 } else {
-                    pipeline
+                    (pipeline, std::collections::HashMap::new())
                 }
             } else {
-                pipeline
+                (pipeline, std::collections::HashMap::new())
             };
+            // Rewrite ORDER BY expressions to use temp names when aliases were remapped.
+            fn rewrite_alias_refs(expr: Expr, remap: &std::collections::HashMap<String, String>) -> Expr {
+                if remap.is_empty() { return expr; }
+                match expr {
+                    Expr::Variable(v) => {
+                        if let Some(temp) = remap.get(v.0.as_str()) {
+                            Expr::Variable(Identifier::new(temp.clone()))
+                        } else {
+                            Expr::Variable(v)
+                        }
+                    }
+                    Expr::BinaryOp { op, left, right } => Expr::BinaryOp {
+                        op,
+                        left: Box::new(rewrite_alias_refs(*left, remap)),
+                        right: Box::new(rewrite_alias_refs(*right, remap)),
+                    },
+                    Expr::UnaryOp { op, expr: inner } => Expr::UnaryOp {
+                        op,
+                        expr: Box::new(rewrite_alias_refs(*inner, remap)),
+                    },
+                    Expr::FunctionCall { name, args, distinct } => Expr::FunctionCall {
+                        name,
+                        args: args.into_iter().map(|a| rewrite_alias_refs(a, remap)).collect(),
+                        distinct,
+                    },
+                    other => other,
+                }
+            }
+            let (pipeline, alias_remap_final) = pipeline;
             let sort_items: Vec<(Expr, bool)> = rc
                 .order_by
                 .iter()
@@ -1402,7 +1458,7 @@ impl<'s> QueryPlanner<'s> {
                     if has_aggregation {
                         (rewrite_agg_order_expr(&s.expr, &items), s.ascending)
                     } else {
-                        (s.expr.clone(), s.ascending)
+                        (rewrite_alias_refs(s.expr.clone(), &alias_remap_final), s.ascending)
                     }
                 })
                 .collect();

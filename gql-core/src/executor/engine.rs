@@ -328,6 +328,8 @@ impl<'a> QueryExecutor<'a> {
                         // pattern can only be bound once in any single path traversal.
                         // Skip this edge if it is already used by a DIFFERENT rel in the row
                         // (exclude the current rel_alias, which may legitimately re-bind it).
+                        // Note: named path variables (Value::Path) are NOT checked here because
+                        // edges from paths in previous MATCH clauses can be reused independently.
                         let eid = adj.edge_id;
                         let current_alias = rel_alias.as_ref().map(|ra| ra.0.as_str());
                         let edge_already_used = row.iter().any(|(key, v)| {
@@ -340,7 +342,9 @@ impl<'a> QueryExecutor<'a> {
                                 Value::List(items) => items
                                     .iter()
                                     .any(|item| matches!(item, Value::Edge(e) if *e == eid)),
-                                Value::Path { edges, .. } => edges.contains(&eid),
+                                // Named path variables are NOT subject to edge isomorphism
+                                // across MATCH clauses — only relationship variables are.
+                                Value::Path { .. } => false,
                                 _ => false,
                             }
                         });
@@ -704,7 +708,6 @@ impl<'a> QueryExecutor<'a> {
                             }
                             Some(Value::Path { nodes: pnodes, edges: pedges }) => {
                                 // VarLenExpand path: it already has start+intermediate+end nodes.
-                                edges.extend_from_slice(pedges);
                                 if !varlen_path_found {
                                     // First varlen path. Prepend the fixed-edge nodes that
                                     // came before this varlen (node_aliases[0..k] where k is
@@ -1599,7 +1602,9 @@ impl<'a> QueryExecutor<'a> {
                         // across patterns in Apply.
                         let mut compatible = true;
                         for (k, v) in &inner_row {
-                            if k.starts_with("__anon_rel_") {
+                            // Skip all internal anonymous variables — they are scoping
+                            // artifacts and must not constrain cross-pattern joins.
+                            if k.starts_with("__anon") {
                                 continue;
                             }
                             if let Some(outer_v) = outer_row.get(k) {
@@ -2534,6 +2539,10 @@ impl<'a> QueryExecutor<'a> {
         Ok(Value::Bool(has_match))
     }
 
+    /// Evaluate a full existential subquery `exists { MATCH ... WITH ... WHERE ... RETURN ... }`.
+    ///
+    /// Plans and executes the inner query (without the RETURN clause) with the outer row
+    /// as initial binding. Returns true if the inner query produces at least one row
     /// Evaluate a pattern comprehension `[(pattern) | mapExpr WHERE whereExpr]`.
     ///
     /// Executes the pattern against the current outer row, then for each matched row
@@ -2615,6 +2624,21 @@ impl<'a> QueryExecutor<'a> {
                         _ => {}
                     }
                     return Ok(());
+                }
+                // Validate that the property value is a valid Cypher property type.
+                // Maps and lists-of-maps are not allowed as property values.
+                fn is_invalid_prop_value(v: &Value) -> bool {
+                    match v {
+                        Value::Map(_) => true,
+                        Value::List(items) => items.iter().any(is_invalid_prop_value),
+                        _ => false,
+                    }
+                }
+                if is_invalid_prop_value(&prop_val) {
+                    return Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                        expected: "primitive property value (not Map or List of Maps)".to_string(),
+                        actual: prop_val.type_name().to_string(),
+                    }));
                 }
                 let mut props = HashMap::new();
                 props.insert(key.clone(), prop_val);
@@ -3311,6 +3335,15 @@ fn eval_binary_values(
     ctx: &FilterRow<'_>,
 ) -> Result<Value, GqlError> {
     use crate::ast::BinaryOp;
+    // Handle list concatenation directly BEFORE the needs_direct check,
+    // because Value::List may contain Node/Edge values that value_to_expr
+    // would convert to Null.
+    if matches!(op, BinaryOp::Add | BinaryOp::Concat) {
+        if let (Value::List(mut l1), Value::List(l2)) = (lv.clone(), rv.clone()) {
+            l1.extend(l2);
+            return Ok(Value::List(l1));
+        }
+    }
     // For types that value_to_expr can represent losslessly, delegate to eval_expr.
     let needs_direct = matches!(
         (&lv, &rv),
@@ -3377,6 +3410,13 @@ fn eval_binary_values(
                     temporal_add_duration(temporal, dur, false)
                 }
                 (Value::Duration(a), Value::Duration(b)) => Ok(Value::Duration(duration_add(a, b))),
+                // List concatenation: handle directly to preserve Node/Edge/Path values
+                // that value_to_expr would otherwise convert to Null.
+                (Value::List(l1), Value::List(l2)) => {
+                    let mut result = l1.clone();
+                    result.extend_from_slice(l2);
+                    Ok(Value::List(result))
+                }
                 _ => {
                     let left_lit = value_to_expr(&lv);
                     let right_lit = value_to_expr(&rv);
@@ -3479,18 +3519,21 @@ pub fn cmp_values(a: &Value, b: &Value) -> std::cmp::Ordering {
     // Temporal types (Date, Time, DateTime, Duration) sit between Bool and Null.
     fn type_rank(v: &Value) -> u8 {
         match v {
-            Value::Node(_) | Value::Edge(_) | Value::Path { .. } => 0,
-            Value::Map(_) => 1,
-            Value::List(_) => 2,
-            Value::Bool(_) => 3,
-            Value::Str(_) => 4,
-            Value::Int(_) | Value::Float(_) => 5,
-            Value::Date(_) => 6,
-            Value::LocalTime(_) => 7,
-            Value::LocalDateTime(_) => 8,
-            Value::DateTime(_) => 9,
-            Value::Duration(_) => 10,
-            Value::Point(_) => 11,
+            Value::Map(_) => 0,
+            Value::Node(_) => 1,
+            Value::Edge(_) => 2,
+            Value::List(_) => 3,
+            Value::Path { .. } => 4,
+            Value::Str(_) => 5,
+            Value::Bool(_) => 6,
+            Value::Float(f) if f.is_nan() => 8,  // NaN sorts after regular numbers
+            Value::Int(_) | Value::Float(_) => 7,
+            Value::Date(_) => 10,
+            Value::LocalTime(_) => 11,
+            Value::LocalDateTime(_) => 12,
+            Value::DateTime(_) => 13,
+            Value::Duration(_) => 14,
+            Value::Point(_) => 15,
             Value::Null => 255, // Null sorts LAST (largest) in ascending order
         }
     }

@@ -3626,8 +3626,14 @@ fn eval_duration_in_seconds(vals: &[Value]) -> Result<Value, GqlError> {
         let tz = zdt.time_zone().clone();
         // Convert the non-zoned temporal into the same timezone for DST-aware diff.
         let other_val = if zdt_is_first { &vals[1] } else { &vals[0] };
-        let other_dt = temporal_to_civil_datetime(other_val);
-        if let Some(other_civil) = other_dt {
+        // For LocalTime, use the zoned datetime's DATE instead of year-0000 to
+        // avoid computing a huge timestamp diff that overflows when formatted.
+        let zdt_date = jiff::civil::Date::from(zdt);
+        let other_civil = match other_val {
+            Value::LocalTime(t) => Some(zdt_date.to_datetime(*t)),
+            _ => temporal_to_civil_datetime(other_val),
+        };
+        if let Some(other_civil) = other_civil {
             if let Ok(other_zoned) = other_civil.to_zoned(tz) {
                 let (ts1, ts2) = if zdt_is_first {
                     (zdt.timestamp(), other_zoned.timestamp())
