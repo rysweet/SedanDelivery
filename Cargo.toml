@@ -2,6 +2,7 @@
 members = [
     "gql-core",
     "gql-redis-store",
+    "gql-fabric-store",
     "gql-module",
     "gql-cli",
     "gql-api",
