@@ -214,92 +214,10 @@ pub fn eval_expr<'r>(expr: &Expr, row: &Row<'r>) -> Result<Value, GqlError> {
         } => eval_case(subject.as_deref(), alternatives, default.as_deref(), row),
 
         // ── Subscript / slice ─────────────────────────────────────────────────
-        Expr::Subscript(list_expr, index_expr) => {
-            let list = eval_expr(list_expr, row)?;
-            let idx = eval_expr(index_expr, row)?;
-            match (list, idx) {
-                (Value::Null, _) | (_, Value::Null) => Ok(Value::Null),
-                (Value::List(items), Value::Int(i)) => {
-                    let len = items.len();
-                    // Cypher: negative indices count from the end.
-                    // Out-of-bounds returns null in Cypher.
-                    let actual = if i < 0 {
-                        let offset = (-i) as usize;
-                        if offset > len {
-                            return Ok(Value::Null);
-                        }
-                        len - offset
-                    } else {
-                        i as usize
-                    };
-                    if actual >= len {
-                        return Ok(Value::Null);
-                    }
-                    Ok(items[actual].clone())
-                }
-                // Map[String] — dynamic property access: map['key']
-                (Value::Map(m), Value::Str(key)) => {
-                    Ok(m.get(key.as_ref()).cloned().unwrap_or(Value::Null))
-                }
-                (list, idx) => Err(GqlError::Execution(ExecutionError::TypeMismatch {
-                    expected: "List[Integer] or Map[String]".to_string(),
-                    actual: format!("{}[{}]", list.type_name(), idx.type_name()),
-                })),
-            }
-        }
+        Expr::Subscript(list_expr, index_expr) => eval_subscript(list_expr, index_expr, row),
 
         Expr::Slice(list_expr, start_expr, end_expr) => {
-            let list = eval_expr(list_expr, row)?;
-            match list {
-                Value::Null => Ok(Value::Null),
-                Value::List(items) => {
-                    let len = items.len() as i64;
-                    // Cypher: null slice bounds → null result
-                    let start = match start_expr {
-                        Some(e) => match eval_expr(e, row)? {
-                            Value::Int(i) => {
-                                // Negative indices count from end
-                                let idx = if i < 0 { (len + i).max(0) } else { i.min(len) };
-                                idx as usize
-                            }
-                            Value::Null => return Ok(Value::Null),
-                            other => {
-                                return Err(GqlError::Execution(ExecutionError::TypeMismatch {
-                                    expected: "Integer".to_string(),
-                                    actual: other.type_name().to_string(),
-                                }))
-                            }
-                        },
-                        None => 0,
-                    };
-                    let end = match end_expr {
-                        Some(e) => match eval_expr(e, row)? {
-                            Value::Int(i) => {
-                                let idx = if i < 0 { (len + i).max(0) } else { i.min(len) };
-                                idx as usize
-                            }
-                            Value::Null => return Ok(Value::Null),
-                            other => {
-                                return Err(GqlError::Execution(ExecutionError::TypeMismatch {
-                                    expected: "Integer".to_string(),
-                                    actual: other.type_name().to_string(),
-                                }))
-                            }
-                        },
-                        None => len as usize,
-                    };
-                    // Invalid range (start > end) → empty list
-                    if start >= end {
-                        Ok(Value::List(vec![]))
-                    } else {
-                        Ok(Value::List(items[start..end.min(items.len())].to_vec()))
-                    }
-                }
-                other => Err(GqlError::Execution(ExecutionError::TypeMismatch {
-                    expected: "List".to_string(),
-                    actual: other.type_name().to_string(),
-                })),
-            }
+            eval_slice(list_expr, start_expr, end_expr, row)
         }
 
         // ── List comprehension ────────────────────────────────────────────────
@@ -315,49 +233,156 @@ pub fn eval_expr<'r>(expr: &Expr, row: &Row<'r>) -> Result<Value, GqlError> {
             list,
             filter,
             map,
-        } => {
-            let list_val = eval_expr(list, row)?;
-            match list_val {
-                Value::Null => Ok(Value::Null),
-                Value::List(items) => {
-                    let var_name: &str = variable.0.as_str();
-                    let mut result = Vec::with_capacity(items.len());
-                    for item in &items {
-                        // Build an extended row with the loop variable bound.
-                        let mut extended: HashMap<&str, &Value> =
-                            row.iter().map(|(&k, v)| (k, *v)).collect();
-                        extended.insert(var_name, item);
-
-                        // Evaluate filter if present; skip element on false/null.
-                        if let Some(pred) = filter {
-                            match eval_expr(pred, &extended)? {
-                                Value::Bool(true) => {}
-                                Value::Bool(false) | Value::Null => continue,
-                                other => {
-                                    return Err(GqlError::Execution(ExecutionError::TypeMismatch {
-                                        expected: "Boolean".to_string(),
-                                        actual: other.type_name().to_string(),
-                                    }))
-                                }
-                            }
-                        }
-
-                        // Map the surviving element.
-                        result.push(eval_expr(map, &extended)?);
-                    }
-                    Ok(Value::List(result))
-                }
-                other => Err(GqlError::Execution(ExecutionError::TypeMismatch {
-                    expected: "List".to_string(),
-                    actual: other.type_name().to_string(),
-                })),
-            }
-        }
+        } => eval_list_comp(variable, list, filter, map, row),
 
         // ── Existential subquery / pattern expression ─────────────────────────
         Expr::ExistsSubquery { .. } | Expr::PatternExpr(_) => Err(GqlError::Execution(
             ExecutionError::unsupported("existential subquery / pattern expression"),
         )),
+    }
+}
+
+// ── eval_expr extracted helpers ───────────────────────────────────────────────
+
+fn eval_subscript<'r>(
+    list_expr: &Expr,
+    index_expr: &Expr,
+    row: &Row<'r>,
+) -> Result<Value, GqlError> {
+    let list = eval_expr(list_expr, row)?;
+    let idx = eval_expr(index_expr, row)?;
+    match (list, idx) {
+        (Value::Null, _) | (_, Value::Null) => Ok(Value::Null),
+        (Value::List(items), Value::Int(i)) => {
+            let len = items.len();
+            // Cypher: negative indices count from the end.
+            // Out-of-bounds returns null in Cypher.
+            let actual = if i < 0 {
+                let offset = (-i) as usize;
+                if offset > len {
+                    return Ok(Value::Null);
+                }
+                len - offset
+            } else {
+                i as usize
+            };
+            if actual >= len {
+                return Ok(Value::Null);
+            }
+            Ok(items[actual].clone())
+        }
+        // Map[String] — dynamic property access: map['key']
+        (Value::Map(m), Value::Str(key)) => {
+            Ok(m.get(key.as_ref()).cloned().unwrap_or(Value::Null))
+        }
+        (list, idx) => Err(GqlError::Execution(ExecutionError::TypeMismatch {
+            expected: "List[Integer] or Map[String]".to_string(),
+            actual: format!("{}[{}]", list.type_name(), idx.type_name()),
+        })),
+    }
+}
+
+fn eval_slice<'r>(
+    list_expr: &Expr,
+    start_expr: &Option<Box<Expr>>,
+    end_expr: &Option<Box<Expr>>,
+    row: &Row<'r>,
+) -> Result<Value, GqlError> {
+    let list = eval_expr(list_expr, row)?;
+    match list {
+        Value::Null => Ok(Value::Null),
+        Value::List(items) => {
+            let len = items.len() as i64;
+            // Cypher: null slice bounds → null result
+            let start = match start_expr {
+                Some(e) => match eval_expr(e, row)? {
+                    Value::Int(i) => {
+                        // Negative indices count from end
+                        let idx = if i < 0 { (len + i).max(0) } else { i.min(len) };
+                        idx as usize
+                    }
+                    Value::Null => return Ok(Value::Null),
+                    other => {
+                        return Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                            expected: "Integer".to_string(),
+                            actual: other.type_name().to_string(),
+                        }))
+                    }
+                },
+                None => 0,
+            };
+            let end = match end_expr {
+                Some(e) => match eval_expr(e, row)? {
+                    Value::Int(i) => {
+                        let idx = if i < 0 { (len + i).max(0) } else { i.min(len) };
+                        idx as usize
+                    }
+                    Value::Null => return Ok(Value::Null),
+                    other => {
+                        return Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                            expected: "Integer".to_string(),
+                            actual: other.type_name().to_string(),
+                        }))
+                    }
+                },
+                None => len as usize,
+            };
+            // Invalid range (start > end) → empty list
+            if start >= end {
+                Ok(Value::List(vec![]))
+            } else {
+                Ok(Value::List(items[start..end.min(items.len())].to_vec()))
+            }
+        }
+        other => Err(GqlError::Execution(ExecutionError::TypeMismatch {
+            expected: "List".to_string(),
+            actual: other.type_name().to_string(),
+        })),
+    }
+}
+
+fn eval_list_comp<'r>(
+    variable: &Identifier,
+    list: &Expr,
+    filter: &Option<Box<Expr>>,
+    map: &Expr,
+    row: &Row<'r>,
+) -> Result<Value, GqlError> {
+    let list_val = eval_expr(list, row)?;
+    match list_val {
+        Value::Null => Ok(Value::Null),
+        Value::List(items) => {
+            let var_name: &str = variable.0.as_str();
+            let mut result = Vec::with_capacity(items.len());
+            for item in &items {
+                // Build an extended row with the loop variable bound.
+                let mut extended: HashMap<&str, &Value> =
+                    row.iter().map(|(&k, v)| (k, *v)).collect();
+                extended.insert(var_name, item);
+
+                // Evaluate filter if present; skip element on false/null.
+                if let Some(pred) = filter {
+                    match eval_expr(pred, &extended)? {
+                        Value::Bool(true) => {}
+                        Value::Bool(false) | Value::Null => continue,
+                        other => {
+                            return Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                                expected: "Boolean".to_string(),
+                                actual: other.type_name().to_string(),
+                            }))
+                        }
+                    }
+                }
+
+                // Map the surviving element.
+                result.push(eval_expr(map, &extended)?);
+            }
+            Ok(Value::List(result))
+        }
+        other => Err(GqlError::Execution(ExecutionError::TypeMismatch {
+            expected: "List".to_string(),
+            actual: other.type_name().to_string(),
+        })),
     }
 }
 
@@ -994,447 +1019,45 @@ fn eval_function<'r>(
 /// values that have already been resolved from storage.
 pub fn eval_function_with_vals(name: &str, vals: Vec<Value>) -> Result<Value, GqlError> {
     match name.to_ascii_lowercase().as_str() {
-        // ── Scalar functions ──────────────────────────────────────────────────
-        "rand" => {
-            require_arity("rand", 0, &vals)?;
-            // Use a simple hash-based pseudo-random to avoid adding a crate dependency.
-            // The TCK only checks that the result is a float in [0.0, 1.0).
-            use std::collections::hash_map::DefaultHasher;
-            use std::hash::{Hash, Hasher};
-            let mut hasher = DefaultHasher::new();
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos()
-                .hash(&mut hasher);
-            std::thread::current().id().hash(&mut hasher);
-            let bits = hasher.finish();
-            // Convert to f64 in [0.0, 1.0)
-            let val = (bits >> 11) as f64 / ((1u64 << 53) as f64);
-            Ok(Value::Float(val))
-        }
-        "abs" => {
-            require_arity("abs", 1, &vals)?;
-            match &vals[0] {
-                Value::Null => Ok(Value::Null),
-                Value::Int(n) => Ok(Value::Int(n.checked_abs().ok_or_else(|| {
-                    GqlError::Execution(ExecutionError::TypeMismatch {
-                        expected: "integer arithmetic without overflow".to_string(),
-                        actual: "integer overflow".to_string(),
-                    })
-                })?)),
-                Value::Float(f) => Ok(Value::Float(f.abs())),
-                other => type_error("abs", other),
-            }
-        }
-        "ceil" => {
-            require_arity("ceil", 1, &vals)?;
-            match &vals[0] {
-                Value::Null => Ok(Value::Null),
-                Value::Int(n) => Ok(Value::Int(*n)),
-                Value::Float(f) => Ok(Value::Float(f.ceil())),
-                other => type_error("ceil", other),
-            }
-        }
-        "floor" => {
-            require_arity("floor", 1, &vals)?;
-            match &vals[0] {
-                Value::Null => Ok(Value::Null),
-                Value::Int(n) => Ok(Value::Int(*n)),
-                Value::Float(f) => Ok(Value::Float(f.floor())),
-                other => type_error("floor", other),
-            }
-        }
-        "round" => {
-            require_arity("round", 1, &vals)?;
-            match &vals[0] {
-                Value::Null => Ok(Value::Null),
-                Value::Int(n) => Ok(Value::Int(*n)),
-                Value::Float(f) => Ok(Value::Float(f.round())),
-                other => type_error("round", other),
-            }
-        }
-        "sqrt" => {
-            require_arity("sqrt", 1, &vals)?;
-            match &vals[0] {
-                Value::Null => Ok(Value::Null),
-                Value::Int(n) => Ok(Value::Float((*n as f64).sqrt())),
-                Value::Float(f) => Ok(Value::Float(f.sqrt())),
-                other => type_error("sqrt", other),
-            }
-        }
-        "sign" => {
-            require_arity("sign", 1, &vals)?;
-            match &vals[0] {
-                Value::Null => Ok(Value::Null),
-                Value::Int(n) => Ok(Value::Int(n.signum())),
-                Value::Float(f) => Ok(Value::Float(f.signum())),
-                other => type_error("sign", other),
-            }
-        }
-        "tostring" => {
-            require_arity("toString", 1, &vals)?;
-            match &vals[0] {
-                Value::Null => Ok(Value::Null),
-                // A String is already a string — return it as-is (no extra quotes).
-                Value::Str(s) => Ok(Value::Str(s.clone())),
-                Value::Int(_) | Value::Float(_) | Value::Bool(_) => {
-                    Ok(Value::Str(vals[0].to_string().into_boxed_str()))
-                }
-                Value::Date(_)
-                | Value::LocalTime(_)
-                | Value::LocalDateTime(_)
-                | Value::DateTime(_)
-                | Value::Duration(_) => Ok(Value::Str(vals[0].to_string().into_boxed_str())),
-                other => type_error("toString", other),
-            }
-        }
-        "tointeger" | "toint" => {
-            require_arity("toInteger", 1, &vals)?;
-            match &vals[0] {
-                Value::Null => Ok(Value::Null),
-                Value::Int(n) => Ok(Value::Int(*n)),
-                Value::Float(f) => Ok(Value::Int(*f as i64)),
-                Value::Str(s) => {
-                    // Try integer parse first, then float parse (truncating).
-                    // TCK expects NULL for truly non-numeric strings.
-                    if let Ok(n) = s.parse::<i64>() {
-                        Ok(Value::Int(n))
-                    } else if let Ok(f) = s.parse::<f64>() {
-                        Ok(Value::Int(f as i64))
-                    } else {
-                        Ok(Value::Null)
-                    }
-                }
-                other => type_error("toInteger", other),
-            }
-        }
-        "tofloat" => {
-            require_arity("toFloat", 1, &vals)?;
-            match &vals[0] {
-                Value::Null => Ok(Value::Null),
-                Value::Float(f) => Ok(Value::Float(*f)),
-                Value::Int(n) => Ok(Value::Float(*n as f64)),
-                Value::Str(s) => {
-                    // TCK expects NULL for non-numeric strings, not an error.
-                    Ok(s.parse::<f64>().map(Value::Float).unwrap_or(Value::Null))
-                }
-                other => type_error("toFloat", other),
-            }
-        }
-        "toboolean" => {
-            require_arity("toBoolean", 1, &vals)?;
-            match &vals[0] {
-                Value::Null => Ok(Value::Null),
-                Value::Bool(b) => Ok(Value::Bool(*b)),
-                Value::Str(s) => match s.to_ascii_lowercase().as_str() {
-                    "true" => Ok(Value::Bool(true)),
-                    "false" => Ok(Value::Bool(false)),
-                    _ => Ok(Value::Null),
-                },
-                other => type_error("toBoolean", other),
-            }
-        }
+        // ── Math functions ────────────────────────────────────────────────────
+        "rand" => builtin_rand(vals),
+        "abs" => builtin_abs(vals),
+        "ceil" => builtin_ceil(vals),
+        "floor" => builtin_floor(vals),
+        "round" => builtin_round(vals),
+        "sqrt" => builtin_sqrt(vals),
+        "sign" => builtin_sign(vals),
+
+        // ── Type conversion functions ─────────────────────────────────────────
+        "tostring" => builtin_tostring(vals),
+        "tointeger" | "toint" => builtin_tointeger(vals),
+        "tofloat" => builtin_tofloat(vals),
+        "toboolean" => builtin_toboolean(vals),
 
         // ── String functions ──────────────────────────────────────────────────
-        "size" => {
-            require_arity("size", 1, &vals)?;
-            match &vals[0] {
-                Value::Null => Ok(Value::Null),
-                Value::Str(s) => Ok(Value::Int(s.chars().count() as i64)),
-                Value::List(l) => Ok(Value::Int(l.len() as i64)),
-                other => type_error("size", other),
-            }
-        }
-        "length" => {
-            require_arity("length", 1, &vals)?;
-            match &vals[0] {
-                Value::Null => Ok(Value::Null),
-                Value::Str(s) => Ok(Value::Int(s.chars().count() as i64)),
-                other => type_error("length", other),
-            }
-        }
-        "toupper" => {
-            require_arity("toUpper", 1, &vals)?;
-            match &vals[0] {
-                Value::Null => Ok(Value::Null),
-                Value::Str(s) => Ok(Value::Str(s.to_uppercase().into_boxed_str())),
-                other => type_error("toUpper", other),
-            }
-        }
-        "tolower" => {
-            require_arity("toLower", 1, &vals)?;
-            match &vals[0] {
-                Value::Null => Ok(Value::Null),
-                Value::Str(s) => Ok(Value::Str(s.to_lowercase().into_boxed_str())),
-                other => type_error("toLower", other),
-            }
-        }
-        "trim" => {
-            require_arity("trim", 1, &vals)?;
-            match &vals[0] {
-                Value::Null => Ok(Value::Null),
-                Value::Str(s) => Ok(Value::Str(s.trim().to_string().into_boxed_str())),
-                other => type_error("trim", other),
-            }
-        }
-        "ltrim" => {
-            require_arity("ltrim", 1, &vals)?;
-            match &vals[0] {
-                Value::Null => Ok(Value::Null),
-                Value::Str(s) => Ok(Value::Str(s.trim_start().to_string().into_boxed_str())),
-                other => type_error("ltrim", other),
-            }
-        }
-        "rtrim" => {
-            require_arity("rtrim", 1, &vals)?;
-            match &vals[0] {
-                Value::Null => Ok(Value::Null),
-                Value::Str(s) => Ok(Value::Str(s.trim_end().to_string().into_boxed_str())),
-                other => type_error("rtrim", other),
-            }
-        }
-        "left" => {
-            require_arity("left", 2, &vals)?;
-            match (&vals[0], &vals[1]) {
-                (Value::Null, _) | (_, Value::Null) => Ok(Value::Null),
-                (Value::Str(s), Value::Int(n)) => {
-                    let n = (*n).max(0) as usize;
-                    Ok(Value::Str(
-                        s.chars().take(n).collect::<String>().into_boxed_str(),
-                    ))
-                }
-                _ => Err(GqlError::Execution(ExecutionError::TypeMismatch {
-                    expected: "String, Integer".to_string(),
-                    actual: format!("{}, {}", vals[0].type_name(), vals[1].type_name()),
-                })),
-            }
-        }
-        "right" => {
-            require_arity("right", 2, &vals)?;
-            match (&vals[0], &vals[1]) {
-                (Value::Null, _) | (_, Value::Null) => Ok(Value::Null),
-                (Value::Str(s), Value::Int(n)) => {
-                    let n = (*n).max(0) as usize;
-                    let chars: Vec<char> = s.chars().collect();
-                    let start = chars.len().saturating_sub(n);
-                    Ok(Value::Str(
-                        chars[start..].iter().collect::<String>().into_boxed_str(),
-                    ))
-                }
-                _ => Err(GqlError::Execution(ExecutionError::TypeMismatch {
-                    expected: "String, Integer".to_string(),
-                    actual: format!("{}, {}", vals[0].type_name(), vals[1].type_name()),
-                })),
-            }
-        }
-        "substring" => {
-            if vals.len() < 2 || vals.len() > 3 {
-                return Err(GqlError::Execution(ExecutionError::TypeMismatch {
-                    expected: "substring(String, Integer[, Integer])".to_string(),
-                    actual: format!("{} arguments", vals.len()),
-                }));
-            }
-            match (&vals[0], &vals[1]) {
-                (Value::Null, _) | (_, Value::Null) => Ok(Value::Null),
-                (Value::Str(s), Value::Int(start)) => {
-                    let chars: Vec<char> = s.chars().collect();
-                    let len = chars.len();
-                    let start = (*start).max(0) as usize;
-                    let end = if vals.len() == 3 {
-                        match &vals[2] {
-                            Value::Int(n) => (start + (*n).max(0) as usize).min(len),
-                            Value::Null => len,
-                            other => return type_error("substring", other),
-                        }
-                    } else {
-                        len
-                    };
-                    Ok(Value::Str(
-                        chars[start.min(len)..end.min(len)]
-                            .iter()
-                            .collect::<String>()
-                            .into_boxed_str(),
-                    ))
-                }
-                _ => Err(GqlError::Execution(ExecutionError::TypeMismatch {
-                    expected: "String, Integer".to_string(),
-                    actual: format!("{}, {}", vals[0].type_name(), vals[1].type_name()),
-                })),
-            }
-        }
-        "replace" => {
-            require_arity("replace", 3, &vals)?;
-            match (&vals[0], &vals[1], &vals[2]) {
-                (Value::Null, _, _) | (_, Value::Null, _) | (_, _, Value::Null) => Ok(Value::Null),
-                (Value::Str(s), Value::Str(from), Value::Str(to)) => Ok(Value::Str(
-                    s.replace(from.as_ref(), to.as_ref()).into_boxed_str(),
-                )),
-                _ => Err(GqlError::Execution(ExecutionError::TypeMismatch {
-                    expected: "String, String, String".to_string(),
-                    actual: format!(
-                        "{}, {}, {}",
-                        vals[0].type_name(),
-                        vals[1].type_name(),
-                        vals[2].type_name()
-                    ),
-                })),
-            }
-        }
-        "split" => {
-            require_arity("split", 2, &vals)?;
-            match (&vals[0], &vals[1]) {
-                (Value::Null, _) | (_, Value::Null) => Ok(Value::Null),
-                (Value::Str(s), Value::Str(delim)) => {
-                    let parts: Vec<Value> = s
-                        .split(delim.as_ref())
-                        .take(max_list_size())
-                        .map(|p| Value::Str(p.to_string().into_boxed_str()))
-                        .collect();
-                    Ok(Value::List(parts))
-                }
-                _ => Err(GqlError::Execution(ExecutionError::TypeMismatch {
-                    expected: "String, String".to_string(),
-                    actual: format!("{}, {}", vals[0].type_name(), vals[1].type_name()),
-                })),
-            }
-        }
+        "size" => builtin_size(vals),
+        "length" => builtin_length(vals),
+        "toupper" => builtin_toupper(vals),
+        "tolower" => builtin_tolower(vals),
+        "trim" => builtin_trim(vals),
+        "ltrim" => builtin_ltrim(vals),
+        "rtrim" => builtin_rtrim(vals),
+        "left" => builtin_left(vals),
+        "right" => builtin_right(vals),
+        "substring" => builtin_substring(vals),
+        "replace" => builtin_replace(vals),
+        "split" => builtin_split(vals),
 
-        // ── List functions ────────────────────────────────────────────────────
-        "head" => {
-            require_arity("head", 1, &vals)?;
-            match &vals[0] {
-                Value::Null => Ok(Value::Null),
-                Value::List(l) => Ok(l.first().cloned().unwrap_or(Value::Null)),
-                other => type_error("head", other),
-            }
-        }
-        "last" => {
-            require_arity("last", 1, &vals)?;
-            match &vals[0] {
-                Value::Null => Ok(Value::Null),
-                Value::List(l) => Ok(l.last().cloned().unwrap_or(Value::Null)),
-                other => type_error("last", other),
-            }
-        }
-        "tail" => {
-            require_arity("tail", 1, &vals)?;
-            match &vals[0] {
-                Value::Null => Ok(Value::Null),
-                Value::List(l) => Ok(Value::List(l[1.min(l.len())..].to_vec())),
-                other => type_error("tail", other),
-            }
-        }
-        "reverse" => {
-            require_arity("reverse", 1, &vals)?;
-            match vals.into_iter().next().expect("arity checked") {
-                Value::Null => Ok(Value::Null),
-                Value::List(mut l) => {
-                    l.reverse();
-                    Ok(Value::List(l))
-                }
-                Value::Str(s) => Ok(Value::Str(
-                    s.chars().rev().collect::<String>().into_boxed_str(),
-                )),
-                other => type_error("reverse", &other),
-            }
-        }
-        "coalesce" => {
-            // Return first non-null argument.
-            for v in vals {
-                if !v.is_null() {
-                    return Ok(v);
-                }
-            }
-            Ok(Value::Null)
-        }
-        "isnull" => {
-            require_arity("isNull", 1, &vals)?;
-            Ok(Value::Bool(vals[0].is_null()))
-        }
-
-        // ── Map / collection functions ──────────────────────────────────────
-        "keys" => {
-            require_arity("keys", 1, &vals)?;
-            match &vals[0] {
-                Value::Null => Ok(Value::Null),
-                Value::Map(m) => Ok(Value::List(
-                    m.iter()
-                        .filter(|(_, v)| !v.is_null())
-                        .map(|(k, _)| Value::Str(k.clone()))
-                        .collect(),
-                )),
-                other => type_error("keys", other),
-            }
-        }
-        "properties" => {
-            require_arity("properties", 1, &vals)?;
-            match &vals[0] {
-                Value::Null => Ok(Value::Null),
-                Value::Map(m) => Ok(Value::Map(m.clone())),
-                other => type_error("properties", other),
-            }
-        }
-
-        // ── range() ─────────────────────────────────────────────────────────
-        "range" => {
-            if vals.len() < 2 || vals.len() > 3 {
-                return Err(GqlError::Execution(ExecutionError::TypeMismatch {
-                    expected: "range(Integer, Integer[, Integer])".to_string(),
-                    actual: format!("{} arguments", vals.len()),
-                }));
-            }
-            match (&vals[0], &vals[1]) {
-                (Value::Int(start), Value::Int(end)) => {
-                    let step = if vals.len() == 3 {
-                        match &vals[2] {
-                            Value::Int(s) => *s,
-                            other => return type_error("range", other),
-                        }
-                    } else {
-                        1
-                    };
-                    if step == 0 {
-                        return Err(GqlError::Execution(ExecutionError::TypeMismatch {
-                            expected: "non-zero step for range()".to_string(),
-                            actual: "0".to_string(),
-                        }));
-                    }
-                    let list_limit = max_list_size();
-                    let mut result = Vec::new();
-                    let mut i = *start;
-                    if step > 0 {
-                        while i <= *end {
-                            if result.len() >= list_limit {
-                                return Err(GqlError::Execution(ExecutionError::TypeMismatch {
-                                    expected: format!("range() result <= {list_limit} elements"),
-                                    actual: format!("would exceed {list_limit} elements"),
-                                }));
-                            }
-                            result.push(Value::Int(i));
-                            i += step;
-                        }
-                    } else {
-                        while i >= *end {
-                            if result.len() >= list_limit {
-                                return Err(GqlError::Execution(ExecutionError::TypeMismatch {
-                                    expected: format!("range() result <= {list_limit} elements"),
-                                    actual: format!("would exceed {list_limit} elements"),
-                                }));
-                            }
-                            result.push(Value::Int(i));
-                            i += step;
-                        }
-                    }
-                    Ok(Value::List(result))
-                }
-                (Value::Null, _) | (_, Value::Null) => Ok(Value::Null),
-                _ => Err(GqlError::Execution(ExecutionError::TypeMismatch {
-                    expected: "Integer, Integer".to_string(),
-                    actual: format!("{}, {}", vals[0].type_name(), vals[1].type_name()),
-                })),
-            }
-        }
+        // ── List / collection functions ───────────────────────────────────────
+        "head" => builtin_head(vals),
+        "last" => builtin_last(vals),
+        "tail" => builtin_tail(vals),
+        "reverse" => builtin_reverse(vals),
+        "coalesce" => builtin_coalesce(vals),
+        "isnull" => builtin_isnull(vals),
+        "keys" => builtin_keys(vals),
+        "properties" => builtin_properties(vals),
+        "range" => builtin_range(vals),
 
         // ── Temporal constructor functions ───────────────────────────────────
         "date" => eval_date_constructor(&vals),
@@ -1452,95 +1075,22 @@ pub fn eval_function_with_vals(name: &str, vals: Vec<Value>) -> Result<Value, Gq
         "time.truncate" => eval_time_truncate(&vals),
 
         "date.realtime" | "date.statement" | "date.transaction" => {
-            if vals.first().map(|v| v.is_null()).unwrap_or(false) {
-                return Ok(Value::Null);
-            }
-            if !vals.is_empty() {
-                return eval_date_constructor(&vals);
-            }
-            let today = jiff::civil::Date::from(get_query_now());
-            Ok(Value::Date(today))
+            builtin_temporal_realtime_date(vals)
         }
         "datetime.realtime" | "datetime.statement" | "datetime.transaction" => {
-            if vals.first().map(|v| v.is_null()).unwrap_or(false) {
-                return Ok(Value::Null);
-            }
-            if !vals.is_empty() {
-                return eval_datetime_constructor(&vals);
-            }
-            Ok(Value::DateTime(Box::new(get_query_now())))
+            builtin_temporal_realtime_datetime(vals)
         }
         "localdatetime.realtime" | "localdatetime.statement" | "localdatetime.transaction" => {
-            if vals.first().map(|v| v.is_null()).unwrap_or(false) {
-                return Ok(Value::Null);
-            }
-            if !vals.is_empty() {
-                return eval_localdatetime_constructor(&vals);
-            }
-            let now = get_query_now();
-            Ok(Value::LocalDateTime(jiff::civil::DateTime::from(now)))
+            builtin_temporal_realtime_localdatetime(vals)
         }
         "localtime.realtime" | "localtime.statement" | "localtime.transaction" => {
-            if vals.first().map(|v| v.is_null()).unwrap_or(false) {
-                return Ok(Value::Null);
-            }
-            if !vals.is_empty() {
-                return eval_localtime_constructor(&vals);
-            }
-            let now = get_query_now();
-            Ok(Value::LocalTime(jiff::civil::Time::from(now)))
+            builtin_temporal_realtime_localtime(vals)
         }
         "time.realtime" | "time.statement" | "time.transaction" => {
-            if vals.first().map(|v| v.is_null()).unwrap_or(false) {
-                return Ok(Value::Null);
-            }
-            if !vals.is_empty() {
-                return eval_time_constructor(&vals);
-            }
-            Ok(Value::DateTime(Box::new(get_query_now())))
+            builtin_temporal_realtime_time(vals)
         }
-        "datetime.fromepoch" => {
-            // datetime.fromepoch(seconds, nanoseconds)
-            if vals.is_empty() || vals.len() > 2 {
-                return Err(GqlError::Execution(ExecutionError::TypeMismatch {
-                    expected: "datetime.fromEpoch(seconds[, nanoseconds])".to_string(),
-                    actual: format!("{} arguments", vals.len()),
-                }));
-            }
-            let secs = match &vals[0] {
-                Value::Int(n) => *n,
-                other => return type_error("datetime.fromEpoch", other),
-            };
-            let nanos = if vals.len() == 2 {
-                match &vals[1] {
-                    Value::Int(n) => *n,
-                    _ => 0,
-                }
-            } else {
-                0
-            };
-            let ts = jiff::Timestamp::new(secs, nanos as i32)
-                .map_err(|e| temporal_parse_error("datetime.fromEpoch", e))?;
-            let zoned = ts.to_zoned(jiff::tz::TimeZone::UTC);
-            Ok(Value::DateTime(Box::new(zoned)))
-        }
-
-        "datetime.fromepochmillis" => {
-            if vals.len() != 1 {
-                return Err(GqlError::Execution(ExecutionError::TypeMismatch {
-                    expected: "datetime.fromEpochMillis(millis)".to_string(),
-                    actual: format!("{} arguments", vals.len()),
-                }));
-            }
-            let millis = match &vals[0] {
-                Value::Int(n) => *n,
-                other => return type_error("datetime.fromEpochMillis", other),
-            };
-            let ts = jiff::Timestamp::from_millisecond(millis)
-                .map_err(|e| temporal_parse_error("datetime.fromEpochMillis", e))?;
-            let zoned = ts.to_zoned(jiff::tz::TimeZone::UTC);
-            Ok(Value::DateTime(Box::new(zoned)))
-        }
+        "datetime.fromepoch" => builtin_datetime_fromepoch(vals),
+        "datetime.fromepochmillis" => builtin_datetime_fromepochmillis(vals),
 
         "duration.between" => eval_duration_between(&vals),
         "duration.inmonths" => eval_duration_in_months(&vals),
@@ -1563,6 +1113,575 @@ pub fn eval_function_with_vals(name: &str, vals: Vec<Value>) -> Result<Value, Gq
             "unknown function '{other}'"
         )))),
     }
+}
+
+// ── Math functions ────────────────────────────────────────────────────────────
+
+fn builtin_rand(vals: Vec<Value>) -> Result<Value, GqlError> {
+    require_arity("rand", 0, &vals)?;
+    // Use a simple hash-based pseudo-random to avoid adding a crate dependency.
+    // The TCK only checks that the result is a float in [0.0, 1.0).
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let mut hasher = DefaultHasher::new();
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos()
+        .hash(&mut hasher);
+    std::thread::current().id().hash(&mut hasher);
+    let bits = hasher.finish();
+    // Convert to f64 in [0.0, 1.0)
+    let val = (bits >> 11) as f64 / ((1u64 << 53) as f64);
+    Ok(Value::Float(val))
+}
+
+fn builtin_abs(vals: Vec<Value>) -> Result<Value, GqlError> {
+    require_arity("abs", 1, &vals)?;
+    match &vals[0] {
+        Value::Null => Ok(Value::Null),
+        Value::Int(n) => Ok(Value::Int(n.checked_abs().ok_or_else(|| {
+            GqlError::Execution(ExecutionError::TypeMismatch {
+                expected: "integer arithmetic without overflow".to_string(),
+                actual: "integer overflow".to_string(),
+            })
+        })?)),
+        Value::Float(f) => Ok(Value::Float(f.abs())),
+        other => type_error("abs", other),
+    }
+}
+
+fn builtin_ceil(vals: Vec<Value>) -> Result<Value, GqlError> {
+    require_arity("ceil", 1, &vals)?;
+    match &vals[0] {
+        Value::Null => Ok(Value::Null),
+        Value::Int(n) => Ok(Value::Int(*n)),
+        Value::Float(f) => Ok(Value::Float(f.ceil())),
+        other => type_error("ceil", other),
+    }
+}
+
+fn builtin_floor(vals: Vec<Value>) -> Result<Value, GqlError> {
+    require_arity("floor", 1, &vals)?;
+    match &vals[0] {
+        Value::Null => Ok(Value::Null),
+        Value::Int(n) => Ok(Value::Int(*n)),
+        Value::Float(f) => Ok(Value::Float(f.floor())),
+        other => type_error("floor", other),
+    }
+}
+
+fn builtin_round(vals: Vec<Value>) -> Result<Value, GqlError> {
+    require_arity("round", 1, &vals)?;
+    match &vals[0] {
+        Value::Null => Ok(Value::Null),
+        Value::Int(n) => Ok(Value::Int(*n)),
+        Value::Float(f) => Ok(Value::Float(f.round())),
+        other => type_error("round", other),
+    }
+}
+
+fn builtin_sqrt(vals: Vec<Value>) -> Result<Value, GqlError> {
+    require_arity("sqrt", 1, &vals)?;
+    match &vals[0] {
+        Value::Null => Ok(Value::Null),
+        Value::Int(n) => Ok(Value::Float((*n as f64).sqrt())),
+        Value::Float(f) => Ok(Value::Float(f.sqrt())),
+        other => type_error("sqrt", other),
+    }
+}
+
+fn builtin_sign(vals: Vec<Value>) -> Result<Value, GqlError> {
+    require_arity("sign", 1, &vals)?;
+    match &vals[0] {
+        Value::Null => Ok(Value::Null),
+        Value::Int(n) => Ok(Value::Int(n.signum())),
+        Value::Float(f) => Ok(Value::Float(f.signum())),
+        other => type_error("sign", other),
+    }
+}
+
+// ── Type conversion functions ─────────────────────────────────────────────────
+
+fn builtin_tostring(vals: Vec<Value>) -> Result<Value, GqlError> {
+    require_arity("toString", 1, &vals)?;
+    match &vals[0] {
+        Value::Null => Ok(Value::Null),
+        // A String is already a string — return it as-is (no extra quotes).
+        Value::Str(s) => Ok(Value::Str(s.clone())),
+        Value::Int(_) | Value::Float(_) | Value::Bool(_) => {
+            Ok(Value::Str(vals[0].to_string().into_boxed_str()))
+        }
+        Value::Date(_) | Value::LocalTime(_) | Value::LocalDateTime(_)
+        | Value::DateTime(_) | Value::Duration(_) => {
+            Ok(Value::Str(vals[0].to_string().into_boxed_str()))
+        }
+        other => type_error("toString", other),
+    }
+}
+
+fn builtin_tointeger(vals: Vec<Value>) -> Result<Value, GqlError> {
+    require_arity("toInteger", 1, &vals)?;
+    match &vals[0] {
+        Value::Null => Ok(Value::Null),
+        Value::Int(n) => Ok(Value::Int(*n)),
+        Value::Float(f) => Ok(Value::Int(*f as i64)),
+        Value::Str(s) => {
+            // Try integer parse first, then float parse (truncating).
+            // TCK expects NULL for truly non-numeric strings.
+            if let Ok(n) = s.parse::<i64>() {
+                Ok(Value::Int(n))
+            } else if let Ok(f) = s.parse::<f64>() {
+                Ok(Value::Int(f as i64))
+            } else {
+                Ok(Value::Null)
+            }
+        }
+        other => type_error("toInteger", other),
+    }
+}
+
+fn builtin_tofloat(vals: Vec<Value>) -> Result<Value, GqlError> {
+    require_arity("toFloat", 1, &vals)?;
+    match &vals[0] {
+        Value::Null => Ok(Value::Null),
+        Value::Float(f) => Ok(Value::Float(*f)),
+        Value::Int(n) => Ok(Value::Float(*n as f64)),
+        Value::Str(s) => {
+            // TCK expects NULL for non-numeric strings, not an error.
+            Ok(s.parse::<f64>().map(Value::Float).unwrap_or(Value::Null))
+        }
+        other => type_error("toFloat", other),
+    }
+}
+
+fn builtin_toboolean(vals: Vec<Value>) -> Result<Value, GqlError> {
+    require_arity("toBoolean", 1, &vals)?;
+    match &vals[0] {
+        Value::Null => Ok(Value::Null),
+        Value::Bool(b) => Ok(Value::Bool(*b)),
+        Value::Str(s) => match s.to_ascii_lowercase().as_str() {
+            "true" => Ok(Value::Bool(true)),
+            "false" => Ok(Value::Bool(false)),
+            _ => Ok(Value::Null),
+        },
+        other => type_error("toBoolean", other),
+    }
+}
+
+// ── String functions ──────────────────────────────────────────────────────────
+
+fn builtin_size(vals: Vec<Value>) -> Result<Value, GqlError> {
+    require_arity("size", 1, &vals)?;
+    match &vals[0] {
+        Value::Null => Ok(Value::Null),
+        Value::Str(s) => Ok(Value::Int(s.chars().count() as i64)),
+        Value::List(l) => Ok(Value::Int(l.len() as i64)),
+        other => type_error("size", other),
+    }
+}
+
+fn builtin_length(vals: Vec<Value>) -> Result<Value, GqlError> {
+    require_arity("length", 1, &vals)?;
+    match &vals[0] {
+        Value::Null => Ok(Value::Null),
+        Value::Str(s) => Ok(Value::Int(s.chars().count() as i64)),
+        other => type_error("length", other),
+    }
+}
+
+fn builtin_toupper(vals: Vec<Value>) -> Result<Value, GqlError> {
+    require_arity("toUpper", 1, &vals)?;
+    match &vals[0] {
+        Value::Null => Ok(Value::Null),
+        Value::Str(s) => Ok(Value::Str(s.to_uppercase().into_boxed_str())),
+        other => type_error("toUpper", other),
+    }
+}
+
+fn builtin_tolower(vals: Vec<Value>) -> Result<Value, GqlError> {
+    require_arity("toLower", 1, &vals)?;
+    match &vals[0] {
+        Value::Null => Ok(Value::Null),
+        Value::Str(s) => Ok(Value::Str(s.to_lowercase().into_boxed_str())),
+        other => type_error("toLower", other),
+    }
+}
+
+fn builtin_trim(vals: Vec<Value>) -> Result<Value, GqlError> {
+    require_arity("trim", 1, &vals)?;
+    match &vals[0] {
+        Value::Null => Ok(Value::Null),
+        Value::Str(s) => Ok(Value::Str(s.trim().to_string().into_boxed_str())),
+        other => type_error("trim", other),
+    }
+}
+
+fn builtin_ltrim(vals: Vec<Value>) -> Result<Value, GqlError> {
+    require_arity("ltrim", 1, &vals)?;
+    match &vals[0] {
+        Value::Null => Ok(Value::Null),
+        Value::Str(s) => Ok(Value::Str(s.trim_start().to_string().into_boxed_str())),
+        other => type_error("ltrim", other),
+    }
+}
+
+fn builtin_rtrim(vals: Vec<Value>) -> Result<Value, GqlError> {
+    require_arity("rtrim", 1, &vals)?;
+    match &vals[0] {
+        Value::Null => Ok(Value::Null),
+        Value::Str(s) => Ok(Value::Str(s.trim_end().to_string().into_boxed_str())),
+        other => type_error("rtrim", other),
+    }
+}
+
+fn builtin_left(vals: Vec<Value>) -> Result<Value, GqlError> {
+    require_arity("left", 2, &vals)?;
+    match (&vals[0], &vals[1]) {
+        (Value::Null, _) | (_, Value::Null) => Ok(Value::Null),
+        (Value::Str(s), Value::Int(n)) => {
+            let n = (*n).max(0) as usize;
+            Ok(Value::Str(
+                s.chars().take(n).collect::<String>().into_boxed_str(),
+            ))
+        }
+        _ => Err(GqlError::Execution(ExecutionError::TypeMismatch {
+            expected: "String, Integer".to_string(),
+            actual: format!("{}, {}", vals[0].type_name(), vals[1].type_name()),
+        })),
+    }
+}
+
+fn builtin_right(vals: Vec<Value>) -> Result<Value, GqlError> {
+    require_arity("right", 2, &vals)?;
+    match (&vals[0], &vals[1]) {
+        (Value::Null, _) | (_, Value::Null) => Ok(Value::Null),
+        (Value::Str(s), Value::Int(n)) => {
+            let n = (*n).max(0) as usize;
+            let chars: Vec<char> = s.chars().collect();
+            let start = chars.len().saturating_sub(n);
+            Ok(Value::Str(
+                chars[start..].iter().collect::<String>().into_boxed_str(),
+            ))
+        }
+        _ => Err(GqlError::Execution(ExecutionError::TypeMismatch {
+            expected: "String, Integer".to_string(),
+            actual: format!("{}, {}", vals[0].type_name(), vals[1].type_name()),
+        })),
+    }
+}
+
+fn builtin_substring(vals: Vec<Value>) -> Result<Value, GqlError> {
+    if vals.len() < 2 || vals.len() > 3 {
+        return Err(GqlError::Execution(ExecutionError::TypeMismatch {
+            expected: "substring(String, Integer[, Integer])".to_string(),
+            actual: format!("{} arguments", vals.len()),
+        }));
+    }
+    match (&vals[0], &vals[1]) {
+        (Value::Null, _) | (_, Value::Null) => Ok(Value::Null),
+        (Value::Str(s), Value::Int(start)) => {
+            let chars: Vec<char> = s.chars().collect();
+            let len = chars.len();
+            let start = (*start).max(0) as usize;
+            let end = if vals.len() == 3 {
+                match &vals[2] {
+                    Value::Int(n) => (start + (*n).max(0) as usize).min(len),
+                    Value::Null => len,
+                    other => return type_error("substring", other),
+                }
+            } else {
+                len
+            };
+            Ok(Value::Str(
+                chars[start.min(len)..end.min(len)]
+                    .iter()
+                    .collect::<String>()
+                    .into_boxed_str(),
+            ))
+        }
+        _ => Err(GqlError::Execution(ExecutionError::TypeMismatch {
+            expected: "String, Integer".to_string(),
+            actual: format!("{}, {}", vals[0].type_name(), vals[1].type_name()),
+        })),
+    }
+}
+
+fn builtin_replace(vals: Vec<Value>) -> Result<Value, GqlError> {
+    require_arity("replace", 3, &vals)?;
+    match (&vals[0], &vals[1], &vals[2]) {
+        (Value::Null, _, _) | (_, Value::Null, _) | (_, _, Value::Null) => Ok(Value::Null),
+        (Value::Str(s), Value::Str(from), Value::Str(to)) => Ok(Value::Str(
+            s.replace(from.as_ref(), to.as_ref()).into_boxed_str(),
+        )),
+        _ => Err(GqlError::Execution(ExecutionError::TypeMismatch {
+            expected: "String, String, String".to_string(),
+            actual: format!(
+                "{}, {}, {}",
+                vals[0].type_name(),
+                vals[1].type_name(),
+                vals[2].type_name()
+            ),
+        })),
+    }
+}
+
+fn builtin_split(vals: Vec<Value>) -> Result<Value, GqlError> {
+    require_arity("split", 2, &vals)?;
+    match (&vals[0], &vals[1]) {
+        (Value::Null, _) | (_, Value::Null) => Ok(Value::Null),
+        (Value::Str(s), Value::Str(delim)) => {
+            let parts: Vec<Value> = s
+                .split(delim.as_ref())
+                .take(max_list_size())
+                .map(|p| Value::Str(p.to_string().into_boxed_str()))
+                .collect();
+            Ok(Value::List(parts))
+        }
+        _ => Err(GqlError::Execution(ExecutionError::TypeMismatch {
+            expected: "String, String".to_string(),
+            actual: format!("{}, {}", vals[0].type_name(), vals[1].type_name()),
+        })),
+    }
+}
+
+// ── List / collection functions ───────────────────────────────────────────────
+
+fn builtin_head(vals: Vec<Value>) -> Result<Value, GqlError> {
+    require_arity("head", 1, &vals)?;
+    match &vals[0] {
+        Value::Null => Ok(Value::Null),
+        Value::List(l) => Ok(l.first().cloned().unwrap_or(Value::Null)),
+        other => type_error("head", other),
+    }
+}
+
+fn builtin_last(vals: Vec<Value>) -> Result<Value, GqlError> {
+    require_arity("last", 1, &vals)?;
+    match &vals[0] {
+        Value::Null => Ok(Value::Null),
+        Value::List(l) => Ok(l.last().cloned().unwrap_or(Value::Null)),
+        other => type_error("last", other),
+    }
+}
+
+fn builtin_tail(vals: Vec<Value>) -> Result<Value, GqlError> {
+    require_arity("tail", 1, &vals)?;
+    match &vals[0] {
+        Value::Null => Ok(Value::Null),
+        Value::List(l) => Ok(Value::List(l[1.min(l.len())..].to_vec())),
+        other => type_error("tail", other),
+    }
+}
+
+fn builtin_reverse(vals: Vec<Value>) -> Result<Value, GqlError> {
+    require_arity("reverse", 1, &vals)?;
+    match vals.into_iter().next().expect("arity checked") {
+        Value::Null => Ok(Value::Null),
+        Value::List(mut l) => {
+            l.reverse();
+            Ok(Value::List(l))
+        }
+        Value::Str(s) => Ok(Value::Str(
+            s.chars().rev().collect::<String>().into_boxed_str(),
+        )),
+        other => type_error("reverse", &other),
+    }
+}
+
+fn builtin_coalesce(vals: Vec<Value>) -> Result<Value, GqlError> {
+    // Return first non-null argument.
+    for v in vals {
+        if !v.is_null() {
+            return Ok(v);
+        }
+    }
+    Ok(Value::Null)
+}
+
+fn builtin_isnull(vals: Vec<Value>) -> Result<Value, GqlError> {
+    require_arity("isNull", 1, &vals)?;
+    Ok(Value::Bool(vals[0].is_null()))
+}
+
+fn builtin_keys(vals: Vec<Value>) -> Result<Value, GqlError> {
+    require_arity("keys", 1, &vals)?;
+    match &vals[0] {
+        Value::Null => Ok(Value::Null),
+        Value::Map(m) => Ok(Value::List(
+            m.iter()
+                .filter(|(_, v)| !v.is_null())
+                .map(|(k, _)| Value::Str(k.clone()))
+                .collect(),
+        )),
+        other => type_error("keys", other),
+    }
+}
+
+fn builtin_properties(vals: Vec<Value>) -> Result<Value, GqlError> {
+    require_arity("properties", 1, &vals)?;
+    match &vals[0] {
+        Value::Null => Ok(Value::Null),
+        Value::Map(m) => Ok(Value::Map(m.clone())),
+        other => type_error("properties", other),
+    }
+}
+
+fn builtin_range(vals: Vec<Value>) -> Result<Value, GqlError> {
+    if vals.len() < 2 || vals.len() > 3 {
+        return Err(GqlError::Execution(ExecutionError::TypeMismatch {
+            expected: "range(Integer, Integer[, Integer])".to_string(),
+            actual: format!("{} arguments", vals.len()),
+        }));
+    }
+    match (&vals[0], &vals[1]) {
+        (Value::Int(start), Value::Int(end)) => {
+            let step = if vals.len() == 3 {
+                match &vals[2] {
+                    Value::Int(s) => *s,
+                    other => return type_error("range", other),
+                }
+            } else {
+                1
+            };
+            if step == 0 {
+                return Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                    expected: "non-zero step for range()".to_string(),
+                    actual: "0".to_string(),
+                }));
+            }
+            let list_limit = max_list_size();
+            let mut result = Vec::new();
+            let mut i = *start;
+            if step > 0 {
+                while i <= *end {
+                    if result.len() >= list_limit {
+                        return Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                            expected: format!("range() result <= {list_limit} elements"),
+                            actual: format!("would exceed {list_limit} elements"),
+                        }));
+                    }
+                    result.push(Value::Int(i));
+                    i += step;
+                }
+            } else {
+                while i >= *end {
+                    if result.len() >= list_limit {
+                        return Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                            expected: format!("range() result <= {list_limit} elements"),
+                            actual: format!("would exceed {list_limit} elements"),
+                        }));
+                    }
+                    result.push(Value::Int(i));
+                    i += step;
+                }
+            }
+            Ok(Value::List(result))
+        }
+        (Value::Null, _) | (_, Value::Null) => Ok(Value::Null),
+        _ => Err(GqlError::Execution(ExecutionError::TypeMismatch {
+            expected: "Integer, Integer".to_string(),
+            actual: format!("{}, {}", vals[0].type_name(), vals[1].type_name()),
+        })),
+    }
+}
+
+// ── Temporal realtime functions ───────────────────────────────────────────────
+
+fn builtin_temporal_realtime_date(vals: Vec<Value>) -> Result<Value, GqlError> {
+    if vals.first().map(|v| v.is_null()).unwrap_or(false) {
+        return Ok(Value::Null);
+    }
+    if !vals.is_empty() {
+        return eval_date_constructor(&vals);
+    }
+    let today = jiff::civil::Date::from(get_query_now());
+    Ok(Value::Date(today))
+}
+
+fn builtin_temporal_realtime_datetime(vals: Vec<Value>) -> Result<Value, GqlError> {
+    if vals.first().map(|v| v.is_null()).unwrap_or(false) {
+        return Ok(Value::Null);
+    }
+    if !vals.is_empty() {
+        return eval_datetime_constructor(&vals);
+    }
+    Ok(Value::DateTime(Box::new(get_query_now())))
+}
+
+fn builtin_temporal_realtime_localdatetime(vals: Vec<Value>) -> Result<Value, GqlError> {
+    if vals.first().map(|v| v.is_null()).unwrap_or(false) {
+        return Ok(Value::Null);
+    }
+    if !vals.is_empty() {
+        return eval_localdatetime_constructor(&vals);
+    }
+    let now = get_query_now();
+    Ok(Value::LocalDateTime(jiff::civil::DateTime::from(now)))
+}
+
+fn builtin_temporal_realtime_localtime(vals: Vec<Value>) -> Result<Value, GqlError> {
+    if vals.first().map(|v| v.is_null()).unwrap_or(false) {
+        return Ok(Value::Null);
+    }
+    if !vals.is_empty() {
+        return eval_localtime_constructor(&vals);
+    }
+    let now = get_query_now();
+    Ok(Value::LocalTime(jiff::civil::Time::from(now)))
+}
+
+fn builtin_temporal_realtime_time(vals: Vec<Value>) -> Result<Value, GqlError> {
+    if vals.first().map(|v| v.is_null()).unwrap_or(false) {
+        return Ok(Value::Null);
+    }
+    if !vals.is_empty() {
+        return eval_time_constructor(&vals);
+    }
+    Ok(Value::DateTime(Box::new(get_query_now())))
+}
+
+fn builtin_datetime_fromepoch(vals: Vec<Value>) -> Result<Value, GqlError> {
+    // datetime.fromepoch(seconds, nanoseconds)
+    if vals.is_empty() || vals.len() > 2 {
+        return Err(GqlError::Execution(ExecutionError::TypeMismatch {
+            expected: "datetime.fromEpoch(seconds[, nanoseconds])".to_string(),
+            actual: format!("{} arguments", vals.len()),
+        }));
+    }
+    let secs = match &vals[0] {
+        Value::Int(n) => *n,
+        other => return type_error("datetime.fromEpoch", other),
+    };
+    let nanos = if vals.len() == 2 {
+        match &vals[1] {
+            Value::Int(n) => *n,
+            _ => 0,
+        }
+    } else {
+        0
+    };
+    let ts = jiff::Timestamp::new(secs, nanos as i32)
+        .map_err(|e| temporal_parse_error("datetime.fromEpoch", e))?;
+    let zoned = ts.to_zoned(jiff::tz::TimeZone::UTC);
+    Ok(Value::DateTime(Box::new(zoned)))
+}
+
+fn builtin_datetime_fromepochmillis(vals: Vec<Value>) -> Result<Value, GqlError> {
+    if vals.len() != 1 {
+        return Err(GqlError::Execution(ExecutionError::TypeMismatch {
+            expected: "datetime.fromEpochMillis(millis)".to_string(),
+            actual: format!("{} arguments", vals.len()),
+        }));
+    }
+    let millis = match &vals[0] {
+        Value::Int(n) => *n,
+        other => return type_error("datetime.fromEpochMillis", other),
+    };
+    let ts = jiff::Timestamp::from_millisecond(millis)
+        .map_err(|e| temporal_parse_error("datetime.fromEpochMillis", e))?;
+    let zoned = ts.to_zoned(jiff::tz::TimeZone::UTC);
+    Ok(Value::DateTime(Box::new(zoned)))
 }
 
 // ── Temporal property access ──────────────────────────────────────────────────
