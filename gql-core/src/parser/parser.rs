@@ -1263,17 +1263,16 @@ impl<'src> Parser<'src> {
     }
 
     fn parse_mul(&mut self) -> Result<Expr, ParseError> {
-        let mut left = self.parse_unary()?;
+        let mut left = self.parse_pow()?;
         loop {
             let op = match self.peek().clone() {
                 TokenKind::Star => BinaryOp::Mul,
                 TokenKind::Slash => BinaryOp::Div,
                 TokenKind::Percent => BinaryOp::Mod,
-                TokenKind::Caret => BinaryOp::Pow,
                 _ => break,
             };
             self.advance();
-            let right = self.parse_unary()?;
+            let right = self.parse_pow()?;
             left = Expr::BinaryOp {
                 op,
                 left: Box::new(left),
@@ -1281,6 +1280,21 @@ impl<'src> Parser<'src> {
             };
         }
         Ok(left)
+    }
+
+    /// Parse exponentiation (`^`).  Higher precedence than `*`/`/`/`%` and
+    /// left-associative: `a ^ b ^ c` = `(a ^ b) ^ c`.
+    fn parse_pow(&mut self) -> Result<Expr, ParseError> {
+        let mut base = self.parse_unary()?;
+        while self.eat(&TokenKind::Caret) {
+            let exp = self.parse_unary()?; // left-associative: rhs is just unary
+            base = Expr::BinaryOp {
+                op: BinaryOp::Pow,
+                left: Box::new(base),
+                right: Box::new(exp),
+            };
+        }
+        Ok(base)
     }
 
     fn parse_unary(&mut self) -> Result<Expr, ParseError> {

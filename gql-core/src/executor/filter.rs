@@ -520,16 +520,11 @@ fn eval_binary<'r>(
 
         BinaryOp::Pow => match (lv, rv) {
             (Value::Null, _) | (_, Value::Null) => Ok(Value::Null),
-            (Value::Int(a), Value::Int(b)) => {
-                if b < 0 {
-                    Ok(Value::Float((a as f64).powi(b as i32)))
-                } else {
-                    Ok(Value::Int(a.wrapping_pow(b as u32)))
-                }
-            }
+            // Cypher's `^` always returns Float regardless of operand types.
+            (Value::Int(a), Value::Int(b)) => Ok(Value::Float((a as f64).powf(b as f64))),
             (Value::Float(a), Value::Float(b)) => Ok(Value::Float(a.powf(b))),
             (Value::Int(a), Value::Float(b)) => Ok(Value::Float((a as f64).powf(b))),
-            (Value::Float(a), Value::Int(b)) => Ok(Value::Float(a.powi(b as i32))),
+            (Value::Float(a), Value::Int(b)) => Ok(Value::Float(a.powf(b as f64))),
             (l, r) => Err(GqlError::Execution(ExecutionError::InvalidOperator {
                 op: "^".to_string(),
                 left: l.type_name().to_string(),
@@ -592,11 +587,11 @@ fn eval_binary<'r>(
             Value::Null => Ok(Value::Null),
             Value::List(items) => {
                 if lv.is_null() {
-                    // null IN [1,2,null] → null; null IN [1,2] → false
-                    if items.iter().any(|i| i.is_null()) {
-                        Ok(Value::Null)
-                    } else {
+                    // null IN [] → false; null IN non-empty-list → null
+                    if items.is_empty() {
                         Ok(Value::Bool(false))
+                    } else {
+                        Ok(Value::Null)
                     }
                 } else {
                     // x IN list: true if any element equals x; null if null present and not found.

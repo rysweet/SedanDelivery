@@ -2058,7 +2058,7 @@ fn expr_to_col_name(expr: &Expr) -> String {
         }
         Expr::Bool(b) => b.to_string(),
         Expr::Null => "null".to_string(),
-        Expr::HasLabel(e, label) => format!("({}:{})", expr_to_col_name(e), label.0),
+        Expr::HasLabel(e, label) => format!("{}:{}", expr_to_col_name(e), label.0),
         Expr::UnaryOp { op, expr: e } => match op {
             crate::ast::UnaryOp::Not => format!("NOT {}", expr_to_col_name(e)),
             crate::ast::UnaryOp::Neg => format!("-{}", expr_to_col_name(e)),
