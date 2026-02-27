@@ -31,7 +31,7 @@ use serde_json::Value as JsonValue;
 use crate::error::StorageError;
 use crate::storage::{EdgeId, NodeId};
 use crate::types::Value;
-use crate::types::value::{Crs, GeoPoint};
+use crate::types::value::{Crs, CypherDuration, GeoPoint, format_cypher_duration};
 
 /// Serialize a `Value` to a `serde_json::Value` for storage.
 ///
@@ -60,7 +60,7 @@ pub fn value_to_json(v: &Value) -> Result<JsonValue, StorageError> {
         Value::LocalTime(t) => Ok(JsonValue::String(format!("__localtime:{t}"))),
         Value::LocalDateTime(dt) => Ok(JsonValue::String(format!("__localdatetime:{dt}"))),
         Value::DateTime(dt) => Ok(JsonValue::String(format!("__datetime:{dt}"))),
-        Value::Duration(sp) => Ok(JsonValue::String(format!("__duration:{sp}"))),
+        Value::Duration(d) => Ok(JsonValue::String(format!("__duration:{}", format_cypher_duration(d)))),
         // Spatial: tagged string "x,y,CrsVariant"
         Value::Point(p) => Ok(JsonValue::String(format!("__point:{},{},{:?}", p.x, p.y, p.crs))),
         // Collections
@@ -133,7 +133,16 @@ pub fn json_to_value(j: &JsonValue) -> Option<Value> {
                 }
             } else if let Some(rest) = s.strip_prefix("__duration:") {
                 if let Ok(sp) = rest.parse::<jiff::Span>() {
-                    return Some(Value::Duration(sp));
+                    let total_months = sp.get_years() as i64 * 12 + sp.get_months() as i64;
+                    let total_days = sp.get_weeks() as i64 * 7 + sp.get_days() as i64;
+                    let time_secs = sp.get_hours() as i64 * 3600
+                        + sp.get_minutes() * 60
+                        + sp.get_seconds();
+                    let total_nanos = time_secs as i128 * 1_000_000_000
+                        + sp.get_milliseconds() as i128 * 1_000_000
+                        + sp.get_microseconds() as i128 * 1_000
+                        + sp.get_nanoseconds() as i128;
+                    return Some(Value::Duration(CypherDuration { months: total_months, days: total_days, nanos: total_nanos }));
                 }
             } else if let Some(rest) = s.strip_prefix("__point:") {
                 // Format: "x,y,CrsVariant" e.g. "1.5,2.5,Wgs84"
@@ -389,8 +398,9 @@ mod tests {
 
     #[test]
     fn round_trip_duration() {
-        let span = jiff::Span::new().days(3).hours(4).minutes(5);
-        let val = Value::Duration(span);
+        // 3 days + 4 hours + 5 minutes = 3 days + (4*3600+5*60) seconds in nanos
+        let nanos = (4i128 * 3600 + 5 * 60) * 1_000_000_000;
+        let val = Value::Duration(CypherDuration { months: 0, days: 3, nanos });
         let json = value_to_json(&val).unwrap();
         let back = json_to_value(&json).unwrap();
         // Compare via the fieldwise wrapper used by Value's PartialEq
