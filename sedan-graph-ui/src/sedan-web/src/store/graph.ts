@@ -32,6 +32,11 @@ interface GraphState {
   // Zoom
   zoomLevel: number
 
+  // Toast notifications
+  toast: { message: string; type: 'error' | 'success' | 'info' } | null
+  showToast: (message: string, type?: 'error' | 'success' | 'info') => void
+  dismissToast: () => void
+
   // Actions
   setCurrentGraph: (name: string | null) => void
   setAvailableGraphs: (graphs: string[]) => void
@@ -70,6 +75,7 @@ export const useGraphStore = create<GraphState>()(
     schemaPanelOpen: false,
     lastQueryResult: null,
     zoomLevel: 1,
+    toast: null,
 
     // Actions
     setCurrentGraph: (name) =>
@@ -139,5 +145,9 @@ export const useGraphStore = create<GraphState>()(
 
     clearSelection: () =>
       set({ selectedNodeId: null, selectedEdgeId: null }),
+
+    showToast: (message, type = 'error') => set({ toast: { message, type } }),
+
+    dismissToast: () => set({ toast: null }),
   })),
 )

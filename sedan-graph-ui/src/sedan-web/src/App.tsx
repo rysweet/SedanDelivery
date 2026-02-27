@@ -16,6 +16,7 @@ import { CreateNodeDialog } from './components/dialogs/CreateNodeDialog'
 import { CreateEdgeDialog } from './components/dialogs/CreateEdgeDialog'
 import { ExportDialog } from './components/dialogs/ExportDialog'
 import { ImportDialog } from './components/dialogs/ImportDialog'
+import { Toast } from './components/ui/Toast'
 import type { GraphNode, GraphEdge } from './types/graph'
 import { mergeGraphData } from './utils/graphology'
 
@@ -75,6 +76,8 @@ interface DialogState {
 
 export default function App() {
   const currentGraph = useGraphStore((s) => s.currentGraph)
+  const toast = useGraphStore((s) => s.toast)
+  const dismissToast = useGraphStore((s) => s.dismissToast)
   const selectedNodeId = useGraphStore((s) => s.selectedNodeId)
   const selectedEdgeId = useGraphStore((s) => s.selectedEdgeId)
   const setSelectedNode = useGraphStore((s) => s.setSelectedNode)
@@ -322,6 +325,14 @@ export default function App() {
         open={dialogs.import}
         onClose={() => closeDialog('import')}
       />
+
+      {toast && (
+        <Toast
+          message={toast.message}
+          type={toast.type}
+          onDismiss={dismissToast}
+        />
+      )}
     </>
   )
 }
