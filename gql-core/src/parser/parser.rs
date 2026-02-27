@@ -973,14 +973,13 @@ impl<'src> Parser<'src> {
     }
 
     fn parse_comparison(&mut self) -> Result<Expr, ParseError> {
-        let mut left = self.parse_string_pred()?;
+        let mut left = self.parse_in_pred()?;
 
         // Check for chained IS NULL / IS NOT NULL (post-fix predicates).
         left = self.parse_null_check(left)?;
 
         // Check for label check: `a:Label` or `a:Label1:Label2`
         while self.at(&TokenKind::Colon) {
-            // Peek ahead: if the next token after colon is an identifier, it's a label check.
             if self.pos + 1 < self.tokens.len()
                 && matches!(self.tokens[self.pos + 1].kind, TokenKind::Identifier)
             {
@@ -1005,14 +1004,29 @@ impl<'src> Parser<'src> {
                 TokenKind::Gt => BinaryOp::Gt,
                 TokenKind::Gte => BinaryOp::Gte,
                 TokenKind::RegexEq => BinaryOp::RegexMatch,
-                TokenKind::In => BinaryOp::In,
                 _ => break,
             };
             self.advance();
-            let right = self.parse_string_pred()?;
+            let right = self.parse_in_pred()?;
             let right = self.parse_null_check(right)?;
             left = Expr::BinaryOp {
                 op,
+                left: Box::new(left),
+                right: Box::new(right),
+            };
+        }
+        Ok(left)
+    }
+
+    /// Parse IN predicate — higher precedence than comparison operators.
+    /// `expr IN list` binds tighter than `=`, `<>`, `<`, `>`, `<=`, `>=`.
+    fn parse_in_pred(&mut self) -> Result<Expr, ParseError> {
+        let mut left = self.parse_string_pred()?;
+        while self.at(&TokenKind::In) {
+            self.advance();
+            let right = self.parse_string_pred()?;
+            left = Expr::BinaryOp {
+                op: BinaryOp::In,
                 left: Box::new(left),
                 right: Box::new(right),
             };

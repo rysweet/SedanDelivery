@@ -385,14 +385,24 @@ impl<'a> QueryExecutor<'a> {
                         let mut alias_to_id: HashMap<String, NodeId> = HashMap::new();
 
                         for (alias, labels, prop_exprs) in &pattern.nodes {
+                            // If this alias is already bound to a Node in the row,
+                            // reuse the existing node rather than creating a new one.
+                            if let Some(a) = alias {
+                                if let Some(Value::Node(existing_id)) = row.get(&a.0) {
+                                    alias_to_id.insert(a.0.clone(), *existing_id);
+                                    continue;
+                                }
+                            }
                             let ctx = self.build_filter_ctx(graph, &row)?;
                             let props = eval_prop_map(graph, self, prop_exprs, &row, &ctx)?;
+                            let prop_count = props.len() as u64;
                             let label_strings: Vec<String> =
                                 labels.iter().map(|l| l.as_str().to_string()).collect();
                             let label_count = label_strings.len() as u64;
                             let node_id = self.store.create_node(graph, label_strings, props)?;
                             stats.nodes_created += 1;
                             stats.labels_added += label_count;
+                            stats.properties_set += prop_count;
                             if let Some(a) = alias {
                                 alias_to_id.insert(a.0.clone(), node_id);
                                 row.insert(a.0.clone(), Value::Node(node_id));
@@ -434,6 +444,7 @@ impl<'a> QueryExecutor<'a> {
                                 })
                                 .ok_or_else(|| undefined_var(&dst_alias.0))?;
 
+                            let edge_prop_count = props.len() as u64;
                             let edge_id = self.store.create_edge(
                                 graph,
                                 src_id,
@@ -442,6 +453,7 @@ impl<'a> QueryExecutor<'a> {
                                 props,
                             )?;
                             stats.edges_created += 1;
+                            stats.properties_set += edge_prop_count;
                             if let Some(a) = alias {
                                 row.insert(a.0.clone(), Value::Edge(edge_id));
                             }
@@ -487,6 +499,13 @@ impl<'a> QueryExecutor<'a> {
             // ── ProduceResults ────────────────────────────────────────────────
             Operator::ProduceResults { columns, child } => {
                 let input = self.exec_operator(graph, child, budget, outer_rows, stats)?;
+
+                // If columns is empty (write-only query with no RETURN),
+                // return no rows — the mutation was already applied.
+                if columns.is_empty() {
+                    return Ok(vec![]);
+                }
+
                 let mut out = Vec::with_capacity(input.len());
 
                 // Check if any column is the '*' wildcard that needs
@@ -1265,6 +1284,7 @@ impl<'a> QueryExecutor<'a> {
                                 };
                                 let lc = name.to_lowercase();
                                 let mut match_count: usize = 0;
+                                let mut has_null = false;
                                 let total = items.len();
                                 for item in &items {
                                     let mut ext_row = row.clone();
@@ -1280,6 +1300,8 @@ impl<'a> QueryExecutor<'a> {
                                     };
                                     if pred_result == Value::Bool(true) {
                                         match_count += 1;
+                                    } else if pred_result.is_null() {
+                                        has_null = true;
                                     }
                                     // Short-circuit
                                     match lc.as_str() {
@@ -1295,11 +1317,29 @@ impl<'a> QueryExecutor<'a> {
                                         _ => {}
                                     }
                                 }
+                                // Three-valued logic: if has_null and result
+                                // is indeterminate, return null.
                                 return match lc.as_str() {
-                                    "all" => Ok(Value::Bool(match_count == total)),
-                                    "any" => Ok(Value::Bool(match_count > 0)),
-                                    "none" => Ok(Value::Bool(match_count == 0)),
-                                    "single" => Ok(Value::Bool(match_count == 1)),
+                                    "all" => {
+                                        if match_count == total { Ok(Value::Bool(true)) }
+                                        else if has_null { Ok(Value::Null) }
+                                        else { Ok(Value::Bool(false)) }
+                                    }
+                                    "any" => {
+                                        if match_count > 0 { Ok(Value::Bool(true)) }
+                                        else if has_null { Ok(Value::Null) }
+                                        else { Ok(Value::Bool(false)) }
+                                    }
+                                    "none" => {
+                                        if match_count > 0 { Ok(Value::Bool(false)) }
+                                        else if has_null { Ok(Value::Null) }
+                                        else { Ok(Value::Bool(true)) }
+                                    }
+                                    "single" => {
+                                        if match_count > 1 { Ok(Value::Bool(false)) }
+                                        else if has_null { Ok(Value::Null) }
+                                        else { Ok(Value::Bool(match_count == 1)) }
+                                    }
                                     _ => Ok(Value::Bool(false)),
                                 };
                             }
