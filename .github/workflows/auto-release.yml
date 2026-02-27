@@ -55,14 +55,14 @@ jobs:
           echo "$NOTES" > /tmp/release-notes.txt
 
       - name: Generate SBOM (SPDX)
-        uses: anchore/sbom-action@fc46e51dc0fbd0eba64c0fc01c0c311b6c3a8a2f # v0.18.0
+        uses: anchore/sbom-action@17ae1740179002c89186b61233e0f892c3118b11 # v0.23.0
         with:
           path: .
           format: spdx-json
           output-file: sbom-spdx.json
 
       - name: Generate SBOM (CycloneDX)
-        uses: anchore/sbom-action@fc46e51dc0fbd0eba64c0fc01c0c311b6c3a8a2f # v0.18.0
+        uses: anchore/sbom-action@17ae1740179002c89186b61233e0f892c3118b11 # v0.23.0
         with:
           path: .
           format: cyclonedx-json
@@ -71,8 +71,9 @@ jobs:
       - name: Create tag and release
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.tag.outputs.tag }}
         run: |
-          TAG="${{ steps.tag.outputs.tag }}"
+          TAG="${RELEASE_TAG}"
           git tag "$TAG"
           git push origin "$TAG"
           gh release create "$TAG" \
