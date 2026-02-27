@@ -2017,10 +2017,24 @@ fn label_filter_expr(alias: &Identifier, label: &Label) -> Expr {
 fn expr_to_col_name(expr: &Expr) -> String {
     match expr {
         Expr::Variable(id) => id.0.clone(),
-        Expr::Property(obj, key) => format!("{}.{}", expr_to_col_name(obj), key),
-        Expr::FunctionCall { name, args, .. } => {
+        Expr::Property(obj, key) => {
+            let obj_str = match obj.as_ref() {
+                Expr::Subscript(_, _) => format!("({})", expr_to_col_name(obj)),
+                _ => expr_to_col_name(obj),
+            };
+            format!("{}.{}", obj_str, key)
+        }
+        Expr::FunctionCall {
+            name,
+            args,
+            distinct,
+        } => {
             let arg_strs: Vec<String> = args.iter().map(expr_to_col_name).collect();
-            format!("{}({})", name, arg_strs.join(", "))
+            if *distinct {
+                format!("{}(DISTINCT {})", name, arg_strs.join(", "))
+            } else {
+                format!("{}({})", name, arg_strs.join(", "))
+            }
         }
         Expr::Integer(n) => n.to_string(),
         Expr::Float(f) => f.to_string(),
