@@ -299,8 +299,10 @@ jobs:
           echo "🚀 Deploying Container App: ${CA_NAME}"
           echo "   Image: ${IMAGE}"
 
-          # Build volume args — always mount Azure Files share so /data persists across restarts
-          VOLUME_ARGS="--volume valkey-data:azureFile:valkey-data --volume-mount valkey-data=/data"
+          # Volume args — disable persistent storage for now (demo uses ephemeral /data).
+          # To enable Azure Files persistence, use `az containerapp storage set` separately
+          # and then `az containerapp update` with the --yaml mount specification.
+          VOLUME_ARGS=""
 
           # Reuse existing Valkey password on updates to avoid credential churn (Issue #59)
           VALKEY_PASS=""
