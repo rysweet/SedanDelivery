@@ -13,12 +13,12 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
-use crate::ast::{Direction, Expr, Identifier};
+use crate::ast::{Direction, Expr};
 use crate::error::{ExecutionError, GqlError};
 use crate::executor::budget::ExecutionBudget;
 use crate::executor::filter::{eval_expr, eval_function_with_vals};
 use crate::executor::filter::Row as FilterRow;
-use crate::planner::{AggFunction, Operator, RemoveItem, SetItem};
+use crate::planner::{AggFunction, Operator, QueryPlanner, RemoveItem, SetItem};
 use crate::procedure::ProcedureRegistry;
 use crate::storage::{EdgeId, GraphStore, NodeId, RangeQuery};
 use crate::types::Value;
@@ -108,7 +108,7 @@ impl<'a> QueryExecutor<'a> {
             Operator::Distinct { child } => child.as_ref(),
             other => other,
         };
-        let has_produce_results = has_produce_results(effective_root);
+        let _has_produce_results = has_produce_results(effective_root);
         let columns = if let Operator::ProduceResults { columns, .. } = effective_root {
             columns.iter().map(|(name, _)| name.clone()).collect()
         } else {
@@ -2069,9 +2069,48 @@ impl<'a> QueryExecutor<'a> {
                     })),
                 }
             }
+            // ── EXISTS { subquery } and bare pattern predicates ──────────────
+            Expr::ExistsSubquery {
+                patterns,
+                where_clause,
+            } => self.eval_exists_patterns(graph, patterns, where_clause.as_deref(), row),
+
+            // `(n)-[:REL]->(m)` used directly as a boolean predicate in WHERE.
+            Expr::PatternExpr(patterns) => {
+                self.eval_exists_patterns(graph, patterns, None, row)
+            }
+
             // For all other expressions, delegate to eval_expr.
             _ => eval_expr(expr, ctx),
         }
+    }
+
+    /// Evaluate an existential pattern check: return `true` if `patterns`
+    /// (with optional `where_clause`) produce at least one row compatible with
+    /// the current `outer_row` context.
+    fn eval_exists_patterns(
+        &self,
+        graph: &str,
+        patterns: &[crate::ast::PathPattern],
+        where_clause: Option<&Expr>,
+        outer_row: &Row,
+    ) -> Result<Value, GqlError> {
+        let planner = QueryPlanner::new(self.store, graph);
+        let sub_op = planner.plan_exists_subquery(patterns, where_clause)?;
+
+        let outer = vec![outer_row.clone()];
+        let mut budget = ExecutionBudget::default_budget();
+        let mut stats = MutationStats::default();
+        let sub_rows = self.exec_operator(graph, &sub_op, &mut budget, &outer, &mut stats)?;
+
+        // A sub-row is compatible when every variable present in the outer row
+        // either is absent from the sub-row or has the same value.
+        let has_match = sub_rows.iter().any(|sub_row| {
+            outer_row
+                .iter()
+                .all(|(k, v)| sub_row.get(k).is_none_or(|sv| sv == v))
+        });
+        Ok(Value::Bool(has_match))
     }
 
     /// Apply a single `SetItem` (SET n.prop = val, SET n = {map}, SET n += {map}, SET n:Label).
@@ -2292,6 +2331,7 @@ fn undefined_var(name: &str) -> GqlError {
 /// Check if the plan's top-level operator (or outermost chain) is a write-only operation.
 /// This is used to suppress result rows for queries without RETURN (e.g., `CREATE ()`, `DELETE n`).
 /// Note: MERGE is excluded because it can return rows when used with RETURN.
+#[allow(dead_code)]
 fn is_toplevel_write(op: &Operator) -> bool {
     match op {
         Operator::Create { .. } | Operator::Delete { .. }
@@ -2306,12 +2346,13 @@ fn is_toplevel_write(op: &Operator) -> bool {
 }
 
 /// Check if the operator tree contains write operations (CREATE, DELETE, SET, etc.).
+#[allow(dead_code)]
 fn has_write_operations(op: &Operator) -> bool {
     match op {
         Operator::Create { .. } | Operator::Delete { .. } | Operator::Merge { .. }
         | Operator::MergeRelationship { .. } => true,
-        Operator::Set { child, .. }
-        | Operator::Remove { child, .. } => true,
+        Operator::Set { child: _, .. }
+        | Operator::Remove { child: _, .. } => true,
         Operator::Distinct { child }
         | Operator::Sort { child, .. }
         | Operator::Limit { child, .. }
