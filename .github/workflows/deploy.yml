@@ -215,10 +215,12 @@ jobs:
           ACR_SERVER=$(echo "$DEPLOYMENT_OUTPUT" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d['properties']['outputs']['acrLoginServer']['value'])")
           ACR_NAME=$(echo "$DEPLOYMENT_OUTPUT" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d['properties']['outputs']['acrName']['value'])")
           CAE_NAME=$(echo "$DEPLOYMENT_OUTPUT" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d['properties']['outputs']['caeName']['value'])")
+          AZURE_CACHE_CONN=$(echo "$DEPLOYMENT_OUTPUT" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d['properties']['outputs']['azureCacheConnectionString']['value'])")
 
           echo "acr_server=${ACR_SERVER}" >> "$GITHUB_OUTPUT"
           echo "acr_name=${ACR_NAME}" >> "$GITHUB_OUTPUT"
           echo "cae_name=${CAE_NAME}" >> "$GITHUB_OUTPUT"
+          echo "azure_cache_conn=${AZURE_CACHE_CONN}" >> "$GITHUB_OUTPUT"
 
           echo "✅ Infrastructure provisioned:"
           echo "   ACR: ${ACR_SERVER}"
@@ -257,6 +259,7 @@ jobs:
           IMAGE_TAG="${{ steps.build.outputs.image_tag }}"
           IMAGE="${ACR_SERVER}/sedan-delivery:${IMAGE_TAG}"
           CA_NAME="sd2-${ENV_NAME}-redis"
+          AZURE_CACHE_CONN="${{ steps.provision.outputs.azure_cache_conn }}"
 
           # Get ACR credentials
           ACR_USERNAME=$(az acr credential show --name "${ACR_NAME}" --query username -o tsv)
@@ -265,9 +268,18 @@ jobs:
           echo "🚀 Deploying Container App: ${CA_NAME}"
           echo "   Image: ${IMAGE}"
 
+          # Build volume args — always mount Azure Files share so /data persists across restarts
+          VOLUME_ARGS="--volume valkey-data:azureFile:valkey-data --volume-mount valkey-data=/data"
+
+          # Build env-var args
+          ENV_VAR_ARGS="GQL_DATA_DIR=/data"
+          if [[ -n "${AZURE_CACHE_CONN}" ]]; then
+            ENV_VAR_ARGS="${ENV_VAR_ARGS} GQL_REDIS_URL=${AZURE_CACHE_CONN}"
+          fi
+
           # Check if container app already exists
           if az containerapp show --name "${CA_NAME}" --resource-group "${RG}" >/dev/null 2>&1; then
-            echo "🔄 Updating existing container app..."
+            echo "🔄 Updating existing container app (image only — preserving volume mounts)..."
             az containerapp update \
               --name "${CA_NAME}" \
               --resource-group "${RG}" \
@@ -291,6 +303,8 @@ jobs:
               --target-port 6379 \
               --transport tcp \
               --exposed-port 6379 \
+              --env-vars "${ENV_VAR_ARGS}" \
+              ${VOLUME_ARGS} \
               --output none
           fi
 

@@ -43,16 +43,21 @@ FROM valkey/valkey:8.1-bookworm AS runtime
 # Copy the compiled module
 COPY --from=builder /app/target/release/libgql_module.so /usr/local/lib/libgql_module.so
 
-# Write a minimal valkey.conf that loads the GQL module
-RUN mkdir -p /etc/valkey && \
+# Write a minimal valkey.conf that loads the GQL module and persists data to /data
+RUN mkdir -p /etc/valkey /data && \
     echo "loadmodule /usr/local/lib/libgql_module.so" > /etc/valkey/valkey-gql.conf && \
     echo "bind 0.0.0.0" >> /etc/valkey/valkey-gql.conf && \
     echo "protected-mode no" >> /etc/valkey/valkey-gql.conf && \
-    echo "loglevel notice" >> /etc/valkey/valkey-gql.conf
+    echo "loglevel notice" >> /etc/valkey/valkey-gql.conf && \
+    echo "dir /data" >> /etc/valkey/valkey-gql.conf && \
+    echo "save 60 1" >> /etc/valkey/valkey-gql.conf && \
+    echo "save 300 1" >> /etc/valkey/valkey-gql.conf && \
+    echo "appendonly yes" >> /etc/valkey/valkey-gql.conf && \
+    echo "appendfsync everysec" >> /etc/valkey/valkey-gql.conf
 
 EXPOSE 6379
 
-HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
+HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
     CMD valkey-cli ping | grep -q PONG
 
 CMD ["valkey-server", "/etc/valkey/valkey-gql.conf"]
