@@ -186,7 +186,6 @@ jobs:
           echo "✅ Authenticated to Azure"
 
       - name: Create or update resource group
-        id: rg
         run: |
           RG="${{ needs.determine-environment.outputs.resource-group }}"
           ENV_NAME="${{ needs.determine-environment.outputs.env-name }}"
@@ -198,50 +197,44 @@ jobs:
             --tags "environment=${ENV_NAME}" "managed-by=github-actions" "repo=SedanDelivery" \
             --output none
           echo "✅ Resource group ready: ${RG}"
-          echo "resource_group=${RG}" >> "$GITHUB_OUTPUT"
 
-      - name: Provision infrastructure
+      - name: Provision ACR + Container Apps Environment
         id: provision
         run: |
           RG="${{ needs.determine-environment.outputs.resource-group }}"
           ENV_NAME="${{ needs.determine-environment.outputs.env-name }}"
 
-          echo "🔧 Provisioning infrastructure in ${RG}..."
+          echo "🔧 Provisioning ACR + Container Apps Environment in ${RG}..."
           DEPLOYMENT_OUTPUT=$(az deployment group create \
             --resource-group "${RG}" \
             --template-file infra/main.bicep \
             --parameters environmentName="${ENV_NAME}" \
-            --name "sd2-deploy-$(date +%s)" \
+            --name "sd2-infra-$(date +%s)" \
             --output json)
 
           ACR_SERVER=$(echo "$DEPLOYMENT_OUTPUT" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d['properties']['outputs']['acrLoginServer']['value'])")
           ACR_NAME=$(echo "$DEPLOYMENT_OUTPUT" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d['properties']['outputs']['acrName']['value'])")
-          CA_NAME=$(echo "$DEPLOYMENT_OUTPUT" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d['properties']['outputs']['containerAppName']['value'])")
+          CAE_NAME=$(echo "$DEPLOYMENT_OUTPUT" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d['properties']['outputs']['caeName']['value'])")
 
           echo "acr_server=${ACR_SERVER}" >> "$GITHUB_OUTPUT"
           echo "acr_name=${ACR_NAME}" >> "$GITHUB_OUTPUT"
-          echo "ca_name=${CA_NAME}" >> "$GITHUB_OUTPUT"
+          echo "cae_name=${CAE_NAME}" >> "$GITHUB_OUTPUT"
 
           echo "✅ Infrastructure provisioned:"
           echo "   ACR: ${ACR_SERVER}"
-          echo "   Container App: ${CA_NAME}"
+          echo "   Container Apps Env: ${CAE_NAME}"
 
-      - name: Build and push Docker image
+      - name: Build and push Docker image via ACR Tasks
         id: build
         run: |
-          ACR_SERVER="${{ steps.provision.outputs.acr_server }}"
           ACR_NAME="${{ steps.provision.outputs.acr_name }}"
+          ACR_SERVER="${{ steps.provision.outputs.acr_server }}"
           IMAGE_TAG="${{ github.sha }}"
-          IMAGE="${ACR_SERVER}/sedan-delivery:${IMAGE_TAG}"
-          LATEST="${ACR_SERVER}/sedan-delivery:latest"
 
-          echo "🐳 Building Docker image..."
-          echo "   Image: ${IMAGE}"
+          echo "🐳 Building via ACR Tasks (no local Docker daemon needed)..."
+          echo "   ACR: ${ACR_NAME}"
+          echo "   Tag: ${IMAGE_TAG}"
 
-          # Login to ACR
-          az acr login --name "${ACR_NAME}"
-
-          # Build using ACR build tasks (no local Docker daemon needed)
           az acr build \
             --registry "${ACR_NAME}" \
             --image "sedan-delivery:${IMAGE_TAG}" \
@@ -250,46 +243,79 @@ jobs:
             --platform linux/amd64 \
             .
 
-          echo "✅ Image built and pushed: ${IMAGE}"
+          echo "✅ Image built and pushed: ${ACR_SERVER}/sedan-delivery:${IMAGE_TAG}"
           echo "image_tag=${IMAGE_TAG}" >> "$GITHUB_OUTPUT"
-          echo "image=${IMAGE}" >> "$GITHUB_OUTPUT"
 
-      - name: Update container app image
-        id: update-ca
+      - name: Create or update Container App
+        id: deploy-app
         run: |
           RG="${{ needs.determine-environment.outputs.resource-group }}"
-          CA_NAME="${{ steps.provision.outputs.ca_name }}"
+          ENV_NAME="${{ needs.determine-environment.outputs.env-name }}"
+          CAE_NAME="${{ steps.provision.outputs.cae_name }}"
+          ACR_NAME="${{ steps.provision.outputs.acr_name }}"
           ACR_SERVER="${{ steps.provision.outputs.acr_server }}"
           IMAGE_TAG="${{ steps.build.outputs.image_tag }}"
           IMAGE="${ACR_SERVER}/sedan-delivery:${IMAGE_TAG}"
+          CA_NAME="sd2-${ENV_NAME}-redis"
 
-          echo "🚀 Updating container app image to ${IMAGE_TAG}..."
-          az containerapp update \
-            --name "${CA_NAME}" \
-            --resource-group "${RG}" \
-            --image "${IMAGE}" \
-            --output none
+          # Get ACR credentials
+          ACR_USERNAME=$(az acr credential show --name "${ACR_NAME}" --query username -o tsv)
+          ACR_PASSWORD=$(az acr credential show --name "${ACR_NAME}" --query "passwords[0].value" -o tsv)
 
-          # Wait for the revision to become active
-          echo "⏳ Waiting for deployment to stabilize..."
-          for i in $(seq 1 18); do
-            STATUS=$(az containerapp revision list \
+          echo "🚀 Deploying Container App: ${CA_NAME}"
+          echo "   Image: ${IMAGE}"
+
+          # Check if container app already exists
+          if az containerapp show --name "${CA_NAME}" --resource-group "${RG}" >/dev/null 2>&1; then
+            echo "🔄 Updating existing container app..."
+            az containerapp update \
               --name "${CA_NAME}" \
               --resource-group "${RG}" \
-              --query "[0].properties.healthState" \
-              --output tsv 2>/dev/null || echo "Unknown")
+              --image "${IMAGE}" \
+              --output none
+          else
+            echo "🆕 Creating new container app..."
+            az containerapp create \
+              --name "${CA_NAME}" \
+              --resource-group "${RG}" \
+              --environment "${CAE_NAME}" \
+              --image "${IMAGE}" \
+              --registry-server "${ACR_SERVER}" \
+              --registry-username "${ACR_USERNAME}" \
+              --registry-password "${ACR_PASSWORD}" \
+              --cpu 0.5 \
+              --memory 1Gi \
+              --min-replicas 1 \
+              --max-replicas 1 \
+              --ingress internal \
+              --target-port 6379 \
+              --transport tcp \
+              --exposed-port 6379 \
+              --output none
+          fi
+
+          echo "ca_name=${CA_NAME}" >> "$GITHUB_OUTPUT"
+          echo "✅ Container App deployed: ${CA_NAME}"
+
+      - name: Wait for Container App to be running
+        run: |
+          RG="${{ needs.determine-environment.outputs.resource-group }}"
+          CA_NAME="${{ steps.deploy-app.outputs.ca_name }}"
+
+          echo "⏳ Waiting for container app to reach Running state..."
+          for i in $(seq 1 24); do
             RUNNING=$(az containerapp revision list \
               --name "${CA_NAME}" \
               --resource-group "${RG}" \
               --query "[0].properties.runningState" \
               --output tsv 2>/dev/null || echo "Unknown")
-            echo "   Attempt ${i}: healthState=${STATUS}, runningState=${RUNNING}"
+            echo "   Attempt ${i}/24: runningState=${RUNNING}"
             if [[ "$RUNNING" == "Running" ]]; then
               echo "✅ Container app is running"
               break
             fi
-            if [[ $i -eq 18 ]]; then
-              echo "⚠️  Timeout waiting for container app — check logs in Azure portal"
+            if [[ $i -eq 24 ]]; then
+              echo "⚠️  Timeout waiting — check logs in Azure portal"
             fi
             sleep 10
           done
@@ -298,7 +324,7 @@ jobs:
         id: outputs
         run: |
           RG="${{ needs.determine-environment.outputs.resource-group }}"
-          CA_NAME="${{ steps.provision.outputs.ca_name }}"
+          CA_NAME="${{ steps.deploy-app.outputs.ca_name }}"
 
           FQDN=$(az containerapp show \
             --name "${CA_NAME}" \
@@ -307,7 +333,8 @@ jobs:
             --output tsv 2>/dev/null || echo "")
 
           echo "redis_fqdn=${FQDN}" >> "$GITHUB_OUTPUT"
-          echo "✅ SedanDelivery Redis endpoint: ${FQDN}:6379"
+          echo "✅ SedanDelivery Redis internal FQDN: ${FQDN}"
+          echo "   (Accessible on port 6379 within the Container Apps Environment)"
 
       - name: Post deployment comment to PR
         if: github.event_name == 'pull_request'
@@ -318,6 +345,7 @@ jobs:
             const envName = '${{ needs.determine-environment.outputs.env-name }}';
             const imageTag = '${{ steps.build.outputs.image_tag }}'.substring(0, 7);
             const rg = '${{ needs.determine-environment.outputs.resource-group }}';
+            const caName = '${{ steps.deploy-app.outputs.ca_name }}';
 
             const body = `## ✅ SedanDelivery Deployed
 
@@ -325,16 +353,22 @@ jobs:
             |-------|-------|
             | Environment | \`${envName}\` |
             | Resource Group | \`${rg}\` |
-            | Redis Endpoint | \`${fqdn}:6379\` |
+            | Container App | \`${caName}\` |
+            | Redis FQDN (internal) | \`${fqdn}\` |
             | Image Tag | \`${imageTag}\` |
 
-            **Test the deployment:**
+            **Connect from another Container App in the same environment:**
+            \`\`\`
+            HOST=${fqdn}  PORT=6379
+            \`\`\`
+
+            **Verify with redis-cli from a test container in the same CAE:**
             \`\`\`bash
             redis-cli -h ${fqdn} -p 6379 PING
             redis-cli -h ${fqdn} -p 6379 MODULE LIST
             \`\`\`
 
-            To clean up, remove the \`deploy\` label or run the **Undeploy** workflow with resource group \`${rg}\`.`;
+            To clean up: run **Undeploy** workflow with resource group \`${rg}\`.`;
 
             const { data: comments } = await github.rest.issues.listComments({
               owner: context.repo.owner,
