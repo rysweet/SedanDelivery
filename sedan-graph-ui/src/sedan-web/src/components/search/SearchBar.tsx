@@ -61,7 +61,11 @@ export function SearchBar({ onResultsFound }: SearchBarProps) {
 
       setResultCount(nodes.length)
       onResultsFound(nodes, [])
-    } catch {
+    } catch (err) {
+      useGraphStore.getState().showToast(
+        `Search failed: ${err instanceof Error ? err.message : 'Unknown error'}`,
+        'error',
+      )
       setResultCount(0)
     }
   }, [value, currentGraph, queryMutation, onResultsFound])

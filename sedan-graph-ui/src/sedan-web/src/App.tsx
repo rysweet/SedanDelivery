@@ -57,6 +57,16 @@ export default function App() {
   const deleteNode = useDeleteNode(currentGraph)
   const deleteEdge = useDeleteEdge(currentGraph)
 
+  const doDeleteNode = useCallback(
+    (id: string) => deleteNode.mutate(id, { onSuccess: clearSelection }),
+    [deleteNode, clearSelection],
+  )
+
+  const doDeleteEdge = useCallback(
+    (id: string) => deleteEdge.mutate(id, { onSuccess: clearSelection }),
+    [deleteEdge, clearSelection],
+  )
+
   const openDialog = (name: keyof DialogState) =>
     setDialogs((prev) => ({ ...prev, [name]: true }))
 
@@ -80,16 +90,9 @@ export default function App() {
   }, [])
 
   const handleDeleteSelected = useCallback(() => {
-    if (selectedNodeId) {
-      deleteNode.mutate(selectedNodeId, {
-        onSuccess: () => clearSelection(),
-      })
-    } else if (selectedEdgeId) {
-      deleteEdge.mutate(selectedEdgeId, {
-        onSuccess: () => clearSelection(),
-      })
-    }
-  }, [selectedNodeId, selectedEdgeId, deleteNode, deleteEdge, clearSelection])
+    if (selectedNodeId) doDeleteNode(selectedNodeId)
+    else if (selectedEdgeId) doDeleteEdge(selectedEdgeId)
+  }, [selectedNodeId, selectedEdgeId, doDeleteNode, doDeleteEdge])
 
   const handleSearchResults = useCallback(
     (nodes: GraphNode[], edges: GraphEdge[]) => {
@@ -103,24 +106,22 @@ export default function App() {
     [handleStatsChange],
   )
 
-  // Get selected node/edge data from graph
-  const selectedNodeData: GraphNode | null = (() => {
+  // Get selected node/edge data from graph (memoized on selection + graph stats)
+  const selectedNodeData = useMemo((): GraphNode | null => {
     if (!selectedNodeId || !graphRef.current.hasNode(selectedNodeId)) return null
-    const attrs = graphRef.current.getNodeAttributes(selectedNodeId)
-    return attrs.nodeData as GraphNode
-  })()
+    return graphRef.current.getNodeAttributes(selectedNodeId).nodeData as GraphNode
+  }, [selectedNodeId, stats])
 
-  const selectedEdgeData: GraphEdge | null = (() => {
+  const selectedEdgeData = useMemo((): GraphEdge | null => {
     if (!selectedEdgeId || !graphRef.current.hasEdge(selectedEdgeId)) return null
-    const attrs = graphRef.current.getEdgeAttributes(selectedEdgeId)
-    return attrs.edgeData as GraphEdge
-  })()
+    return graphRef.current.getEdgeAttributes(selectedEdgeId).edgeData as GraphEdge
+  }, [selectedEdgeId, stats])
 
-  const nodeDegree = selectedNodeId
-    ? graphRef.current.hasNode(selectedNodeId)
-      ? graphRef.current.degree(selectedNodeId)
-      : 0
-    : 0
+  const nodeDegree = useMemo(() =>
+    selectedNodeId && graphRef.current.hasNode(selectedNodeId)
+      ? graphRef.current.degree(selectedNodeId) : 0,
+    [selectedNodeId, stats],
+  )
 
   // Export data — computed lazily and memoized on graph stats change
   const exportNodes = useMemo((): GraphNode[] => {
@@ -168,13 +169,9 @@ export default function App() {
             graphRef={graphRef}
             graphVersion={graphVersion}
             onEditNode={(nodeId) => setSelectedNode(nodeId)}
-            onDeleteNode={(nodeId) => {
-              deleteNode.mutate(nodeId, { onSuccess: () => clearSelection() })
-            }}
+            onDeleteNode={doDeleteNode}
             onEditEdge={(edgeId) => setSelectedEdge(edgeId)}
-            onDeleteEdge={(edgeId) => {
-              deleteEdge.mutate(edgeId, { onSuccess: () => clearSelection() })
-            }}
+            onDeleteEdge={doDeleteEdge}
             onAddNodeAtPosition={() => openDialog('createNode')}
             onFitView={handleFitView}
             onGraphReady={handleGraphReady}
@@ -210,12 +207,8 @@ export default function App() {
             selectedEdgeData={selectedEdgeData}
             nodeDegree={nodeDegree}
             graphName={currentGraph}
-            onDeleteNode={(id) => {
-              deleteNode.mutate(id, { onSuccess: () => clearSelection() })
-            }}
-            onDeleteEdge={(id) => {
-              deleteEdge.mutate(id, { onSuccess: () => clearSelection() })
-            }}
+            onDeleteNode={doDeleteNode}
+            onDeleteEdge={doDeleteEdge}
             onExpandNode={(nodeId) => {
               setSelectedNode(nodeId)
             }}

@@ -106,7 +106,7 @@ export function GraphContainer({
         onStatsChange(graphRef.current.order, graphRef.current.size)
         setGraphInstance(graphRef.current)
       } catch {
-        // Silently ignore network errors for expansion
+        useGraphStore.getState().showToast('Could not load neighbors', 'error')
       }
     },
     [currentGraph, graphRef, onStatsChange],

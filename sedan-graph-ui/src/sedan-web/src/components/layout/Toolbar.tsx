@@ -1,4 +1,4 @@
-import { useCallback } from 'react'
+import { useCallback, useState } from 'react'
 import {
   MousePointer2,
   Hand,
@@ -109,6 +109,8 @@ export function Toolbar({
     setLayoutRunning(false)
   }, [setLayoutRunning])
 
+  const [layoutDropdownOpen, setLayoutDropdownOpen] = useState(false)
+
   return (
     <div className="flex items-center gap-0.5 px-2 h-12 bg-surface-50 border-b border-surface-300 shrink-0">
       {/* Mode tools */}
@@ -166,39 +168,47 @@ export function Toolbar({
 
       {/* Layout */}
       <div className="flex items-center gap-0.5">
-        <Tooltip content="Layout algorithm" placement="bottom" delay={300}>
-          <div className="relative group">
-            <Button
-              variant="ghost"
-              size="xs"
-              aria-label="Layout algorithm"
-              className="text-gray-400 hover:text-gray-200 flex items-center gap-1"
+        <div
+          className="relative"
+          onKeyDown={(e) => { if (e.key === 'Escape') setLayoutDropdownOpen(false) }}
+        >
+          <ToolbarButton
+            tooltip="Layout algorithm"
+            onClick={() => setLayoutDropdownOpen(!layoutDropdownOpen)}
+          >
+            <Layout size={16} />
+            <span className="text-xs hidden sm:inline">
+              {LAYOUT_LABELS[currentLayout]}
+            </span>
+          </ToolbarButton>
+          {layoutDropdownOpen && (
+            <div
+              role="menu"
+              aria-label="Layout algorithms"
+              className="absolute top-full left-0 mt-1 z-50 bg-surface-100 border border-surface-300 rounded shadow-lg py-1 min-w-36"
+              onBlur={(e) => {
+                if (!e.currentTarget.contains(e.relatedTarget as Node)) setLayoutDropdownOpen(false)
+              }}
             >
-              <Layout size={16} />
-              <span className="text-xs hidden sm:inline">
-                {LAYOUT_LABELS[currentLayout]}
-              </span>
-            </Button>
-            <div className="absolute top-full left-0 mt-1 z-50 hidden group-hover:block">
-              <div className="bg-surface-100 border border-surface-300 rounded shadow-lg py-1 min-w-36">
-                {(Object.entries(LAYOUT_LABELS) as [LayoutAlgorithm, string][]).map(
-                  ([algo, label]) => (
-                    <button
-                      key={algo}
-                      className={
-                        'w-full text-left px-3 py-1.5 text-xs hover:bg-surface-200 transition-colors ' +
-                        (currentLayout === algo ? 'text-accent-400' : 'text-gray-300')
-                      }
-                      onClick={() => handleLayoutChange(algo)}
-                    >
-                      {label}
-                    </button>
-                  ),
-                )}
-              </div>
+              {(Object.entries(LAYOUT_LABELS) as [LayoutAlgorithm, string][]).map(
+                ([algo, label]) => (
+                  <button
+                    key={algo}
+                    role="menuitemradio"
+                    aria-checked={currentLayout === algo}
+                    className={
+                      'w-full text-left px-3 py-1.5 text-xs hover:bg-surface-200 transition-colors ' +
+                      (currentLayout === algo ? 'text-accent-400' : 'text-gray-300')
+                    }
+                    onClick={() => { handleLayoutChange(algo); setLayoutDropdownOpen(false) }}
+                  >
+                    {label}
+                  </button>
+                ),
+              )}
             </div>
-          </div>
-        </Tooltip>
+          )}
+        </div>
         {layoutRunning && (
           <ToolbarButton tooltip="Stop layout" onClick={handleStopLayout}>
             <CircleStop size={16} className="text-accent-400 animate-pulse" />
