@@ -1,6 +1,8 @@
 using System.Threading.RateLimiting;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.RateLimiting;
 using Scalar.AspNetCore;
+using SedanDelivery.Api.Auth;
 using SedanDelivery.Api.Services;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -52,12 +54,42 @@ var gqlApiUrl = builder.Configuration["GQL_API_URL"]
         "GQL_API_URL is required. Set it to the gql-api base URL (e.g. http://localhost:3001). " +
         "When running under .NET Aspire this is injected automatically.");
 
-builder.Services.AddHttpClient<GqlApiClient>(client =>
+builder.Services.AddHttpClient<IGqlApiClient, GqlApiClient>(client =>
 {
     client.BaseAddress = new Uri(gqlApiUrl);
     client.DefaultRequestHeaders.Add("Accept", "application/json");
     client.Timeout = TimeSpan.FromSeconds(30);
 });
+
+// ── Health checks ──────────────────────────────────────────────────────────
+// Add gql-api connectivity check to the readiness probe.
+// The "self" liveness check is already registered in AddServiceDefaults.
+if (!string.IsNullOrEmpty(gqlApiUrl))
+{
+    builder.Services.AddHealthChecks()
+        .AddUrlGroup(
+            new Uri(gqlApiUrl.TrimEnd('/') + "/health"),
+            name: "gql-api",
+            tags: ["ready"],
+            timeout: TimeSpan.FromSeconds(5));
+}
+
+// ── API Key Authentication ─────────────────────────────────────────────────
+// When GQL_API_SECRET_TOKEN is set, require it as a Bearer token on all requests.
+// If not set, auth is disabled (dev/test mode).
+var apiSecretToken = builder.Configuration["GQL_API_SECRET_TOKEN"];
+if (!string.IsNullOrEmpty(apiSecretToken))
+{
+    builder.Services.AddAuthentication("ApiKey")
+        .AddScheme<ApiKeyAuthenticationOptions, ApiKeyAuthenticationHandler>(
+            "ApiKey", options => options.ApiKey = apiSecretToken);
+    builder.Services.AddAuthorization(options =>
+    {
+        options.FallbackPolicy = new AuthorizationPolicyBuilder()
+            .RequireAuthenticatedUser()
+            .Build();
+    });
+}
 
 // ── Problem Details ────────────────────────────────────────────────────────
 // Registers the ProblemDetails services so Problem() helper methods serialize
@@ -111,6 +143,7 @@ if (app.Environment.IsDevelopment())
 
 app.UseRateLimiter();
 app.UseCors();
+app.UseAuthentication();
 app.UseAuthorization();
 app.MapControllers();
 app.MapDefaultEndpoints(); // /health and /alive from ServiceDefaults

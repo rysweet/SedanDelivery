@@ -10,7 +10,7 @@ namespace SedanDelivery.Api.Services;
 /// All methods throw <see cref="HttpRequestException"/> when the upstream returns a
 /// non-success status code, including the upstream error body in the message.
 /// </summary>
-public class GqlApiClient
+public class GqlApiClient : IGqlApiClient
 {
     private readonly HttpClient _http;
     private static readonly JsonSerializerOptions _json = new(JsonSerializerDefaults.Web);

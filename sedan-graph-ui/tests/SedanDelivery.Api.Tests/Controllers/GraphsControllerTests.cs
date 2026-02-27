@@ -13,7 +13,7 @@ namespace SedanDelivery.Api.Tests.Controllers;
 /// <summary>
 /// Integration tests for <see cref="SedanDelivery.Api.Controllers.GraphsController"/>.
 /// Uses <see cref="WebApplicationFactory{TProgram}"/> to spin up the real ASP.NET pipeline
-/// with the <see cref="GqlApiClient"/> replaced by a Moq mock.
+/// with the <see cref="IGqlApiClient"/> replaced by a Moq mock.
 /// </summary>
 public sealed class GraphsControllerTests : IClassFixture<WebApplicationFactory<Program>>
 {
@@ -25,12 +25,9 @@ public sealed class GraphsControllerTests : IClassFixture<WebApplicationFactory<
         _factory = factory;
     }
 
-    private WebApplicationFactory<Program> CreateFactory(Action<Mock<GqlApiClient>> setup)
+    private WebApplicationFactory<Program> CreateFactory(Action<Mock<IGqlApiClient>> setup)
     {
-        var mock = new Mock<GqlApiClient>(MockBehavior.Strict,
-            // GqlApiClient has a single constructor parameter (HttpClient).
-            // We pass a dummy client; the mock will intercept all calls.
-            new HttpClient { BaseAddress = new Uri("http://localhost") });
+        var mock = new Mock<IGqlApiClient>(MockBehavior.Strict);
 
         setup(mock);
 
@@ -38,9 +35,9 @@ public sealed class GraphsControllerTests : IClassFixture<WebApplicationFactory<
         {
             builder.ConfigureServices(services =>
             {
-                // Remove the real GqlApiClient registration and replace with the mock.
+                // Remove the real IGqlApiClient registration and replace with the mock.
                 var descriptor = services.SingleOrDefault(
-                    d => d.ServiceType == typeof(GqlApiClient));
+                    d => d.ServiceType == typeof(IGqlApiClient));
                 if (descriptor is not null)
                 {
                     services.Remove(descriptor);
