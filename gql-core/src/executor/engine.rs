@@ -164,16 +164,34 @@ impl<'a> QueryExecutor<'a> {
                     self.store.all_node_ids(graph)?
                 };
 
+                // When used as the inner side of Apply/LeftOuterApply,
+                // outer_rows carries context variables that inner operators
+                // (e.g., Filter) may reference. Merge them into each produced row.
+                let base_rows: &[Row] = if outer_rows.is_empty() {
+                    &[]
+                } else {
+                    outer_rows
+                };
+
                 let mut rows = Vec::with_capacity(node_ids.len());
-                for id in node_ids {
+                for id in &node_ids {
                     budget.check_or_err()?;
-                    let mut row = Row::new();
-                    row.insert(alias.0.clone(), Value::Node(id));
-                    for (k, v) in &self.parameters {
-                        row.insert(k.clone(), v.clone());
+                    if base_rows.is_empty() {
+                        let mut row = Row::new();
+                        row.insert(alias.0.clone(), Value::Node(*id));
+                        for (k, v) in &self.parameters {
+                            row.insert(k.clone(), v.clone());
+                        }
+                        budget.record_row();
+                        rows.push(row);
+                    } else {
+                        for outer_row in base_rows {
+                            let mut row = outer_row.clone();
+                            row.insert(alias.0.clone(), Value::Node(*id));
+                            budget.record_row();
+                            rows.push(row);
+                        }
                     }
-                    budget.record_row();
-                    rows.push(row);
                 }
                 Ok(rows)
             }
@@ -992,6 +1010,118 @@ impl<'a> QueryExecutor<'a> {
                             self.apply_set_item(graph, &row, item, stats)?;
                         }
                     }
+                    budget.record_row();
+                    out.push(row);
+                }
+                Ok(out)
+            }
+
+            // ── MergeRelationship ────────────────────────────────────────────────
+            Operator::MergeRelationship {
+                src_alias,
+                dst_alias,
+                rel_alias,
+                rel_type,
+                direction,
+                properties,
+                on_create,
+                on_match,
+                child,
+            } => {
+                let input = self.exec_operator(graph, child, budget, outer_rows, stats)?;
+                let type_str = rel_type.as_str();
+                let mut out = Vec::new();
+
+                for mut row in input {
+                    budget.check_or_err()?;
+                    let src_val = row
+                        .get(src_alias.0.as_str())
+                        .ok_or_else(|| undefined_var(&src_alias.0))?;
+                    let src_id = extract_node_id(src_val, &src_alias.0)?;
+
+                    let dst_val = row
+                        .get(dst_alias.0.as_str())
+                        .ok_or_else(|| undefined_var(&dst_alias.0))?;
+                    let dst_id = extract_node_id(dst_val, &dst_alias.0)?;
+
+                    // Determine actual src/dst based on direction.
+                    let (real_src, real_dst) = match direction {
+                        Direction::Incoming => (dst_id, src_id),
+                        _ => (src_id, dst_id),
+                    };
+
+                    // Find existing edges of this type between src and dst.
+                    let existing_edges =
+                        self.store
+                            .out_edges_by_type(graph, real_src, &[type_str])?;
+                    let matching: Vec<_> = existing_edges
+                        .into_iter()
+                        .filter(|adj| adj.neighbor_id == real_dst)
+                        .collect();
+
+                    // Filter by property constraints if any.
+                    let ctx = self.build_filter_ctx(graph, &row)?;
+                    let prop_vals: Vec<(String, Value)> = properties
+                        .iter()
+                        .map(|(k, expr)| {
+                            let v = self.eval_with_storage(graph, expr, &row, &ctx)?;
+                            Ok((k.clone(), v))
+                        })
+                        .collect::<Result<Vec<_>, GqlError>>()?;
+
+                    let matched_edge = if prop_vals.is_empty() {
+                        matching.first().map(|adj| adj.edge_id)
+                    } else {
+                        // Find an edge matching all property constraints.
+                        let mut found = None;
+                        for adj in &matching {
+                            if let Some(edge_data) = self.store.get_edge(graph, adj.edge_id)? {
+                                let all_match = prop_vals.iter().all(|(k, v)| {
+                                    edge_data
+                                        .properties
+                                        .get(k.as_str())
+                                        .map(|ev| ev == v)
+                                        .unwrap_or(false)
+                                });
+                                if all_match {
+                                    found = Some(adj.edge_id);
+                                    break;
+                                }
+                            }
+                        }
+                        found
+                    };
+
+                    if let Some(edge_id) = matched_edge {
+                        // MATCHED: bind and apply ON MATCH actions.
+                        if let Some(ra) = rel_alias {
+                            row.insert(ra.0.clone(), Value::Edge(edge_id));
+                        }
+                        for item in on_match {
+                            self.apply_set_item(graph, &row, item, stats)?;
+                        }
+                    } else {
+                        // NOT FOUND: create the edge with properties.
+                        let prop_map: HashMap<String, Value> =
+                            prop_vals.into_iter().collect();
+                        let prop_count = prop_map.len() as u64;
+                        let edge_id = self.store.create_edge(
+                            graph,
+                            real_src,
+                            real_dst,
+                            type_str.to_string(),
+                            prop_map,
+                        )?;
+                        stats.edges_created += 1;
+                        stats.properties_set += prop_count;
+                        if let Some(ra) = rel_alias {
+                            row.insert(ra.0.clone(), Value::Edge(edge_id));
+                        }
+                        for item in on_create {
+                            self.apply_set_item(graph, &row, item, stats)?;
+                        }
+                    }
+
                     budget.record_row();
                     out.push(row);
                 }
@@ -2178,7 +2308,8 @@ fn is_toplevel_write(op: &Operator) -> bool {
 /// Check if the operator tree contains write operations (CREATE, DELETE, SET, etc.).
 fn has_write_operations(op: &Operator) -> bool {
     match op {
-        Operator::Create { .. } | Operator::Delete { .. } | Operator::Merge { .. } => true,
+        Operator::Create { .. } | Operator::Delete { .. } | Operator::Merge { .. }
+        | Operator::MergeRelationship { .. } => true,
         Operator::Set { child, .. }
         | Operator::Remove { child, .. } => true,
         Operator::Distinct { child }
@@ -2296,6 +2427,14 @@ fn discover_operator_aliases(op: &Operator) -> Vec<String> {
         Operator::Aggregate { child, .. } => {
             aliases.extend(discover_operator_aliases(child));
         }
+        Operator::MergeRelationship {
+            child, rel_alias, ..
+        } => {
+            aliases.extend(discover_operator_aliases(child));
+            if let Some(ra) = rel_alias {
+                aliases.push(ra.0.clone());
+            }
+        }
         _ => {}
     }
     aliases
@@ -2354,7 +2493,63 @@ fn expr_to_column_name(expr: &Expr) -> String {
             op: crate::ast::UnaryOp::Not,
             expr: inner,
         } => format!("NOT {}", expr_to_column_name(inner)),
-        _ => "expr".to_string(),
+        Expr::BinaryOp { op, left, right } => {
+            let op_str = match op {
+                crate::ast::BinaryOp::Add => "+",
+                crate::ast::BinaryOp::Sub => "-",
+                crate::ast::BinaryOp::Mul => "*",
+                crate::ast::BinaryOp::Div => "/",
+                crate::ast::BinaryOp::Mod => "%",
+                crate::ast::BinaryOp::Eq => "=",
+                crate::ast::BinaryOp::Neq => "<>",
+                crate::ast::BinaryOp::Lt => "<",
+                crate::ast::BinaryOp::Lte => "<=",
+                crate::ast::BinaryOp::Gt => ">",
+                crate::ast::BinaryOp::Gte => ">=",
+                crate::ast::BinaryOp::And => "AND",
+                crate::ast::BinaryOp::Or => "OR",
+                crate::ast::BinaryOp::Xor => "XOR",
+                crate::ast::BinaryOp::In => "IN",
+                crate::ast::BinaryOp::Contains => "CONTAINS",
+                crate::ast::BinaryOp::StartsWith => "STARTS WITH",
+                crate::ast::BinaryOp::EndsWith => "ENDS WITH",
+                crate::ast::BinaryOp::Pow => "^",
+                crate::ast::BinaryOp::RegexMatch => "=~",
+                crate::ast::BinaryOp::Concat => "++",
+            };
+            format!(
+                "{} {} {}",
+                expr_to_column_name(left),
+                op_str,
+                expr_to_column_name(right)
+            )
+        }
+        Expr::ListComp {
+            variable,
+            list,
+            filter,
+            map,
+        } => {
+            let list_str = expr_to_column_name(list);
+            let var_str = &variable.0;
+            if let Some(f) = filter {
+                let filter_str = expr_to_column_name(f);
+                if **map != Expr::Variable(variable.clone()) {
+                    format!(
+                        "[{} IN {} WHERE {} | {}]",
+                        var_str,
+                        list_str,
+                        filter_str,
+                        expr_to_column_name(map)
+                    )
+                } else {
+                    format!("[{} IN {} WHERE {}]", var_str, list_str, filter_str)
+                }
+            } else {
+                format!("[{} IN {}]", var_str, list_str)
+            }
+        }
+        _ => format!("{:?}", expr),
     }
 }
 

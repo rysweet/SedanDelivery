@@ -116,6 +116,18 @@ pub enum Operator {
         on_match: Vec<SetItem>,
         child: Option<Box<Operator>>,
     },
+    /// MERGE (a)-[r:TYPE {props}]->(b) — relationship merge.
+    MergeRelationship {
+        src_alias: Identifier,
+        dst_alias: Identifier,
+        rel_alias: Option<Identifier>,
+        rel_type: RelType,
+        direction: Direction,
+        properties: Vec<(String, Expr)>,
+        on_create: Vec<SetItem>,
+        on_match: Vec<SetItem>,
+        child: Box<Operator>,
+    },
     Set {
         items: Vec<SetItem>,
         child: Box<Operator>,
@@ -346,6 +358,14 @@ fn collect_all_aliases(op: &Operator) -> Vec<String> {
                 aliases.extend(collect_all_aliases(ch));
             }
             if let Some(a) = node_alias {
+                aliases.push(a.0.clone());
+            }
+        }
+        Operator::MergeRelationship {
+            child, rel_alias, ..
+        } => {
+            aliases.extend(collect_all_aliases(child));
+            if let Some(a) = rel_alias {
                 aliases.push(a.0.clone());
             }
         }

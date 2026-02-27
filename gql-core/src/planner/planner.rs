@@ -784,6 +784,22 @@ impl<'s> QueryPlanner<'s> {
             wc.items.iter().any(|item| has_agg_function(&item.expr))
         };
 
+        // For non-aggregation WITH, Sort/Skip/Limit must come BEFORE Project
+        // so that ORDER BY expressions can reference pre-projection variables.
+        // For aggregation, Sort/Skip/Limit come after Aggregate (which already
+        // produces alias columns).
+        let needs_late_sort = has_aggregation || is_star;
+
+        // Projected items (used for non-aggregation WITH).
+        let projected_items: Vec<(Expr, Option<Identifier>)> = if !is_star && !has_aggregation {
+            wc.items
+                .iter()
+                .map(|item| (item.expr.clone(), item.alias.clone()))
+                .collect()
+        } else {
+            vec![]
+        };
+
         // Build the projection or aggregation pipeline.
         let mut pipeline = if is_star {
             // WITH * is a passthrough — no projection needed.
@@ -791,44 +807,114 @@ impl<'s> QueryPlanner<'s> {
         } else if has_aggregation {
             self.plan_with_aggregation(&wc.items, child)?
         } else {
-            // Plain projection: wrap in Project operator.
-            let items: Vec<(Expr, Option<Identifier>)> = wc
-                .items
-                .iter()
-                .map(|item| (item.expr.clone(), item.alias.clone()))
-                .collect();
-            Operator::Project {
-                items,
-                child: Box::new(child),
+            // For plain projection, Sort/Skip/Limit run on raw rows first.
+            let mut raw = child;
+
+            // ORDER BY (on raw rows, can reference pre-projection variables).
+            if !wc.order_by.is_empty() {
+                raw = Operator::Sort {
+                    items: wc
+                        .order_by
+                        .iter()
+                        .map(|s| (s.expr.clone(), s.ascending))
+                        .collect(),
+                    child: Box::new(raw),
+                };
+            }
+
+            // SKIP.
+            if let Some(skip_expr) = &wc.skip {
+                raw = Operator::Skip {
+                    count: skip_expr.clone(),
+                    child: Box::new(raw),
+                };
+            }
+
+            // LIMIT.
+            if let Some(limit_expr) = &wc.limit {
+                raw = Operator::Limit {
+                    count: limit_expr.clone(),
+                    child: Box::new(raw),
+                };
+            }
+
+            // WHERE in WITH can reference BOTH pre-projection variables AND
+            // projected aliases. When there's a WHERE clause, we:
+            // 1. First augment raw rows with projected aliases (preserving raw vars)
+            // 2. Filter with WHERE (can see both scopes)
+            // 3. Final project to restrict to only projected aliases
+            if wc.where_clause.is_some() {
+                // Augmented project: adds projected aliases while keeping raw vars.
+                let child_aliases = crate::planner::collect_visible_aliases(&raw);
+                let mut augmented_items: Vec<(Expr, Option<Identifier>)> = child_aliases
+                    .iter()
+                    .map(|a| (Expr::Variable(Identifier::new(a.clone())), None))
+                    .collect();
+                for item in &projected_items {
+                    augmented_items.push(item.clone());
+                }
+                raw = Operator::Project {
+                    items: augmented_items,
+                    child: Box::new(raw),
+                };
+
+                // Filter (WHERE) — can see both raw vars and projected aliases.
+                raw = Operator::Filter {
+                    predicate: wc.where_clause.clone().unwrap(),
+                    child: Box::new(raw),
+                };
+
+                // Final project: restrict to only projected aliases.
+                Operator::Project {
+                    items: projected_items.clone(),
+                    child: Box::new(raw),
+                }
+            } else {
+                // No WHERE — just project after Sort/Skip/Limit.
+                Operator::Project {
+                    items: projected_items.clone(),
+                    child: Box::new(raw),
+                }
             }
         };
 
-        // ORDER BY.
-        if !wc.order_by.is_empty() {
+        // ORDER BY (for aggregation/star — after projection).
+        if needs_late_sort && !wc.order_by.is_empty() {
+            let sort_items: Vec<(Expr, bool)> = wc
+                .order_by
+                .iter()
+                .map(|s| {
+                    if has_aggregation {
+                        (rewrite_with_order_expr(&s.expr, &wc.items), s.ascending)
+                    } else {
+                        (s.expr.clone(), s.ascending)
+                    }
+                })
+                .collect();
             pipeline = Operator::Sort {
-                items: wc
-                    .order_by
-                    .iter()
-                    .map(|s| (s.expr.clone(), s.ascending))
-                    .collect(),
+                items: sort_items,
                 child: Box::new(pipeline),
             };
         }
 
-        // SKIP.
-        if let Some(skip_expr) = &wc.skip {
-            pipeline = Operator::Skip {
-                count: skip_expr.clone(),
-                child: Box::new(pipeline),
-            };
+        // SKIP (for aggregation/star).
+        if needs_late_sort {
+            if let Some(skip_expr) = &wc.skip {
+                pipeline = Operator::Skip {
+                    count: skip_expr.clone(),
+                    child: Box::new(pipeline),
+                };
+            }
         }
 
-        // LIMIT.
-        if let Some(limit_expr) = &wc.limit {
-            pipeline = Operator::Limit {
-                count: limit_expr.clone(),
-                child: Box::new(pipeline),
-            };
+        // LIMIT (for aggregation/star).
+        if needs_late_sort {
+            if let Some(limit_expr) = &wc.limit {
+                pipeline = Operator::Limit {
+                    count: limit_expr.clone(),
+                    child: Box::new(pipeline),
+                };
+            }
         }
 
         // DISTINCT.
@@ -838,12 +924,14 @@ impl<'s> QueryPlanner<'s> {
             };
         }
 
-        // WHERE clause (applied after projection to filter on projected aliases).
-        if let Some(pred) = &wc.where_clause {
-            pipeline = Operator::Filter {
-                predicate: pred.clone(),
-                child: Box::new(pipeline),
-            };
+        // WHERE clause for aggregation/star paths (not handled above).
+        if needs_late_sort {
+            if let Some(pred) = &wc.where_clause {
+                pipeline = Operator::Filter {
+                    predicate: pred.clone(),
+                    child: Box::new(pipeline),
+                };
+            }
         }
 
         Ok(pipeline)
@@ -1010,6 +1098,11 @@ impl<'s> QueryPlanner<'s> {
     // ── MERGE planning ────────────────────────────────────────────────────────
 
     fn plan_merge(&self, mc: &MergeClause, child: Option<Operator>) -> Result<Operator, GqlError> {
+        // Check if this is a relationship merge: MERGE (a)-[r:TYPE]->(b)
+        if !mc.pattern.steps.is_empty() {
+            return self.plan_merge_relationship(mc, child);
+        }
+
         let node_alias = mc.pattern.start.variable.clone();
         let labels = mc.pattern.start.labels.clone();
         let properties: Vec<(String, Expr)> = mc
@@ -1034,6 +1127,66 @@ impl<'s> QueryPlanner<'s> {
             on_create,
             on_match,
             child: child.map(Box::new),
+        })
+    }
+
+    fn plan_merge_relationship(
+        &self,
+        mc: &MergeClause,
+        child: Option<Operator>,
+    ) -> Result<Operator, GqlError> {
+        let child = child.ok_or_else(|| {
+            GqlError::Plan(PlanError::UndefinedVariable {
+                name: "MERGE relationship requires preceding MATCH".to_string(),
+                offset: 0,
+            })
+        })?;
+
+        let step = &mc.pattern.steps[0];
+        let src_alias = mc
+            .pattern
+            .start
+            .variable
+            .clone()
+            .unwrap_or_else(|| Identifier::new("__merge_src__"));
+        let dst_alias = step
+            .node
+            .variable
+            .clone()
+            .unwrap_or_else(|| Identifier::new("__merge_dst__"));
+        let rel_alias = step.rel.variable.clone();
+        let rel_type = step
+            .rel
+            .rel_types
+            .first()
+            .cloned()
+            .unwrap_or_else(|| crate::ast::RelType::new(""));
+        let direction = step.rel.direction;
+        let properties: Vec<(String, Expr)> = step
+            .rel
+            .properties
+            .as_ref()
+            .map(|props| {
+                props
+                    .iter()
+                    .map(|(k, v)| (k.to_string(), v.clone()))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let on_create: Vec<SetItem> = mc.on_create.iter().map(map_set_clause_item).collect();
+        let on_match: Vec<SetItem> = mc.on_match.iter().map(map_set_clause_item).collect();
+
+        Ok(Operator::MergeRelationship {
+            src_alias,
+            dst_alias,
+            rel_alias,
+            rel_type,
+            direction,
+            properties,
+            on_create,
+            on_match,
+            child: Box::new(child),
         })
     }
 
@@ -1253,6 +1406,55 @@ fn expand_star_items(items: &[ReturnItem], child: &Operator) -> Vec<ReturnItem> 
 /// Rewrite an ORDER BY expression when aggregation is active.
 /// If the expression is an aggregate function call that matches a RETURN item,
 /// replace it with a variable reference to the output alias.
+/// Rewrite an ORDER BY expression in a WITH clause that uses aggregation.
+/// Maps pre-projection expressions (like `a.name`) to their post-aggregation aliases
+/// (like `name` if the WITH has `a.name AS name`). Also handles aggregate functions.
+fn rewrite_with_order_expr(expr: &Expr, with_items: &[ReturnItem]) -> Expr {
+    // First check if the expression exactly matches a WITH item's expression.
+    for ri in with_items {
+        if *expr == ri.expr {
+            let alias = ri
+                .alias
+                .clone()
+                .map(|a| a.0)
+                .unwrap_or_else(|| return_item_name(ri));
+            return Expr::Variable(Identifier::new(alias));
+        }
+    }
+    // For compound expressions, try to rewrite sub-expressions.
+    // E.g., `a.name + 'C'` where `a.name AS name` → `name + 'C'`.
+    match expr {
+        Expr::BinaryOp { op, left, right } => {
+            let new_left = rewrite_with_order_expr(left, with_items);
+            let new_right = rewrite_with_order_expr(right, with_items);
+            Expr::BinaryOp {
+                op: *op,
+                left: Box::new(new_left),
+                right: Box::new(new_right),
+            }
+        }
+        Expr::FunctionCall { name, args, distinct } => {
+            if is_agg_name(name.as_str()) {
+                // Map aggregate functions to their output aliases.
+                for ri in with_items {
+                    if let Expr::FunctionCall { name: rn, .. } = &ri.expr {
+                        if name == rn {
+                            let alias = ri
+                                .alias
+                                .clone()
+                                .map(|a| a.0)
+                                .unwrap_or_else(|| return_item_name(ri));
+                            return Expr::Variable(Identifier::new(alias));
+                        }
+                    }
+                }
+            }
+            expr.clone()
+        }
+        _ => expr.clone(),
+    }
+}
+
 fn rewrite_agg_order_expr(expr: &Expr, return_items: &[ReturnItem]) -> Expr {
     if let Expr::FunctionCall { name, .. } = expr {
         if is_agg_name(name.as_str()) {
@@ -1523,6 +1725,64 @@ fn expr_to_col_name(expr: &Expr) -> String {
         Expr::Integer(n) => n.to_string(),
         Expr::Float(f) => f.to_string(),
         Expr::Str(s) => s.to_string(),
+        Expr::BinaryOp { op, left, right } => {
+            let op_str = match op {
+                crate::ast::BinaryOp::Add => "+",
+                crate::ast::BinaryOp::Sub => "-",
+                crate::ast::BinaryOp::Mul => "*",
+                crate::ast::BinaryOp::Div => "/",
+                crate::ast::BinaryOp::Mod => "%",
+                crate::ast::BinaryOp::Eq => "=",
+                crate::ast::BinaryOp::Neq => "<>",
+                crate::ast::BinaryOp::Lt => "<",
+                crate::ast::BinaryOp::Lte => "<=",
+                crate::ast::BinaryOp::Gt => ">",
+                crate::ast::BinaryOp::Gte => ">=",
+                crate::ast::BinaryOp::And => "AND",
+                crate::ast::BinaryOp::Or => "OR",
+                crate::ast::BinaryOp::Xor => "XOR",
+                crate::ast::BinaryOp::In => "IN",
+                crate::ast::BinaryOp::Contains => "CONTAINS",
+                crate::ast::BinaryOp::StartsWith => "STARTS WITH",
+                crate::ast::BinaryOp::EndsWith => "ENDS WITH",
+                crate::ast::BinaryOp::Pow => "^",
+                crate::ast::BinaryOp::RegexMatch => "=~",
+                crate::ast::BinaryOp::Concat => "++",
+            };
+            format!(
+                "{} {} {}",
+                expr_to_col_name(left),
+                op_str,
+                expr_to_col_name(right)
+            )
+        }
+        Expr::Bool(b) => b.to_string(),
+        Expr::Null => "null".to_string(),
+        Expr::ListComp {
+            variable,
+            list,
+            filter,
+            map,
+        } => {
+            let list_str = expr_to_col_name(list);
+            let var_str = &variable.0;
+            if let Some(f) = filter {
+                let filter_str = expr_to_col_name(f);
+                if **map != Expr::Variable(variable.clone()) {
+                    format!(
+                        "[{} IN {} WHERE {} | {}]",
+                        var_str,
+                        list_str,
+                        filter_str,
+                        expr_to_col_name(map)
+                    )
+                } else {
+                    format!("[{} IN {} WHERE {}]", var_str, list_str, filter_str)
+                }
+            } else {
+                format!("[{} IN {}]", var_str, list_str)
+            }
+        }
         _ => format!("{:?}", expr),
     }
 }
@@ -2775,6 +3035,7 @@ mod tests {
                 Some(c) => vec![c],
                 None => vec![],
             },
+            Operator::MergeRelationship { child, .. } => vec![child],
         }
     }
 }
