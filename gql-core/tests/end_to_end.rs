@@ -801,7 +801,7 @@ fn test_optional_match() {
     assert!(alice_row.is_some(), "Alice should be in results");
     let f_name = alice_row.unwrap().get("f.name");
     assert!(
-        f_name.map_or(true, |v| v.is_null()),
+        f_name.is_none_or(|v| v.is_null()),
         "Alice has no outgoing KNOWS — f.name should be null, got {f_name:?}"
     );
 }
@@ -839,7 +839,7 @@ fn test_optional_match_no_match() {
     );
     let f_name = row.get("f.name");
     assert!(
-        f_name.map_or(true, |v| v.is_null()),
+        f_name.is_none_or(|v| v.is_null()),
         "f.name should be null when no match"
     );
 }
@@ -1045,7 +1045,7 @@ fn test_remove_property_and_label() {
     assert_eq!(result.rows.len(), 1);
     let tmp_val = result.rows[0].get("p.tmp");
     assert!(
-        tmp_val.map_or(true, |v| v.is_null()),
+        tmp_val.is_none_or(|v| v.is_null()),
         "p.tmp should be null after REMOVE"
     );
 
