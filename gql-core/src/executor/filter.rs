@@ -957,7 +957,14 @@ pub fn eval_function_with_vals(name: &str, vals: Vec<Value>) -> Result<Value, Gq
             require_arity("toString", 1, &vals)?;
             match &vals[0] {
                 Value::Null => Ok(Value::Null),
-                v => Ok(Value::Str(v.to_string().into_boxed_str())),
+                Value::Int(_) | Value::Float(_) | Value::Str(_) | Value::Bool(_) => {
+                    Ok(Value::Str(vals[0].to_string().into_boxed_str()))
+                }
+                Value::Date(_) | Value::LocalTime(_) | Value::LocalDateTime(_)
+                | Value::DateTime(_) | Value::Duration(_) => {
+                    Ok(Value::Str(vals[0].to_string().into_boxed_str()))
+                }
+                other => type_error("toString", other),
             }
         }
         "tointeger" | "toint" => {
