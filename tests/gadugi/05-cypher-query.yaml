@@ -1,0 +1,246 @@
+name: "Cypher Query Execution"
+description: >
+  Verifies the Cypher Query Editor panel workflow. The user opens the editor via the
+  Terminal toolbar button, types a MATCH query into the Monaco editor, executes it
+  with the Execute button (and separately with Ctrl+Enter), and verifies the results
+  table appears below the editor with correct column headers and data rows. Also
+  confirms mutation queries show the change-count badge instead of a table, and that
+  an invalid query shows an error message.
+app_url: "http://localhost:5173"
+
+setup:
+  - action: api_call
+    method: POST
+    url: "http://localhost:5000/api/graphs"
+    body: '{"name": "test-graph"}'
+    headers:
+      Content-Type: "application/json"
+
+  - action: api_call
+    method: POST
+    url: "http://localhost:5000/api/graphs/test-graph/nodes"
+    body: '{"labels": ["Person"], "properties": {"name": "Alice", "age": 30}}'
+    headers:
+      Content-Type: "application/json"
+
+  - action: api_call
+    method: POST
+    url: "http://localhost:5000/api/graphs/test-graph/nodes"
+    body: '{"labels": ["Person"], "properties": {"name": "Bob", "age": 25}}'
+    headers:
+      Content-Type: "application/json"
+
+  - action: navigate
+    url: "/"
+
+steps:
+  - step: 1
+    description: "Select test-graph"
+    action: click
+    selector: "button:has(svg[data-lucide='database'])"
+    expected: "GraphSelector dropdown opens"
+    timeout_ms: 3000
+
+  - step: 2
+    description: "Click test-graph in the dropdown"
+    action: click
+    selector: "button:has-text('test-graph')"
+    expected: "test-graph selected"
+    timeout_ms: 3000
+
+  - step: 3
+    description: "Cypher editor panel is not visible initially"
+    action: verify
+    selector: "text=Cypher"
+    expected: "The 'CYPHER' panel header is NOT visible before toggling"
+    negate: true
+    timeout_ms: 3000
+
+  - step: 4
+    description: "Click the Terminal (Cypher Query Editor) toolbar button to open the editor"
+    action: click
+    selector: "button[title='Cypher Query Editor'], button:has(svg[data-lucide='terminal'])"
+    expected: "Cypher editor panel slides up from the bottom of the screen"
+    timeout_ms: 3000
+
+  - step: 5
+    description: "Cypher panel header 'CYPHER' is now visible"
+    action: verify
+    selector: "text=CYPHER"
+    expected: "The 'CYPHER' panel label is visible in the bottom panel toolbar"
+    timeout_ms: 3000
+
+  - step: 6
+    description: "Execute button is present in the Cypher panel toolbar"
+    action: verify
+    selector: "button:has-text('Execute')"
+    expected: "Execute button is visible next to the CYPHER label"
+    timeout_ms: 3000
+
+  - step: 7
+    description: "Monaco editor container is rendered"
+    action: verify
+    selector: ".monaco-editor"
+    expected: "The Monaco editor div is present in the DOM"
+    timeout_ms: 5000
+
+  - step: 8
+    description: "Default query text is shown in the editor (MATCH (n) RETURN n LIMIT 25)"
+    action: verify
+    selector: "text=MATCH (n) RETURN n LIMIT 25"
+    expected: "The default placeholder query is visible in the Monaco editor"
+    timeout_ms: 3000
+
+  - step: 9
+    description: "Select all text in the Monaco editor and replace it with the test query"
+    action: key
+    selector: ".monaco-editor textarea"
+    value: "Control+a"
+    expected: "All text in the editor is selected"
+    timeout_ms: 3000
+
+  - step: 10
+    description: "Type the MATCH query to find all Person nodes ordered by age"
+    action: type
+    selector: ".monaco-editor textarea"
+    value: "MATCH (n:Person) RETURN n.name, n.age ORDER BY n.age"
+    expected: "The editor contains the Person query"
+    timeout_ms: 3000
+
+  - step: 11
+    description: "Click Execute to run the query"
+    action: click
+    selector: "button:has-text('Execute')"
+    expected: "Execute button enters loading state; query is sent to the API"
+    timeout_ms: 3000
+
+  - step: 12
+    description: "Results area appears below the editor with a results table"
+    action: verify
+    selector: "table"
+    expected: "A results table is rendered in the bottom results area"
+    timeout_ms: 8000
+
+  - step: 13
+    description: "Results table has a column header 'n.name'"
+    action: verify
+    selector: "th:has-text('n.name')"
+    expected: "The 'n.name' column header is present in the results table"
+    timeout_ms: 5000
+
+  - step: 14
+    description: "Results table has a column header 'n.age'"
+    action: verify
+    selector: "th:has-text('n.age')"
+    expected: "The 'n.age' column header is present in the results table"
+    timeout_ms: 5000
+
+  - step: 15
+    description: "Results table contains a row with 'Bob' (age 25 sorts first)"
+    action: verify
+    selector: "td:has-text('Bob')"
+    expected: "A table cell with 'Bob' is present in the results"
+    timeout_ms: 5000
+
+  - step: 16
+    description: "Results table contains a row with 'Alice'"
+    action: verify
+    selector: "td:has-text('Alice')"
+    expected: "A table cell with 'Alice' is present in the results"
+    timeout_ms: 5000
+
+  - step: 17
+    description: "Row count footer shows '2 rows'"
+    action: verify
+    selector: "text=2 rows"
+    expected: "The results footer shows '2 rows'"
+    timeout_ms: 5000
+
+  - step: 18
+    description: "Execute a mutation query to verify mutate result badge (not a table)"
+    action: key
+    selector: ".monaco-editor textarea"
+    value: "Control+a"
+    expected: "Editor text selected"
+    timeout_ms: 3000
+
+  - step: 19
+    description: "Type a SET mutation query to update Alice's age"
+    action: type
+    selector: ".monaco-editor textarea"
+    value: "MATCH (n:Person {name: 'Alice'}) SET n.age = 30"
+    expected: "Mutation query is typed in the editor"
+    timeout_ms: 3000
+
+  - step: 20
+    description: "Execute with Ctrl+Enter keyboard shortcut"
+    action: key
+    selector: ".monaco-editor textarea"
+    value: "Control+Enter"
+    expected: "The mutation query executes"
+    timeout_ms: 5000
+
+  - step: 21
+    description: "Mutate result badge appears (no table, instead a summary line)"
+    action: verify
+    selector: "svg[data-lucide='check-circle-2']"
+    expected: "A green checkmark icon appears in the result area indicating success"
+    timeout_ms: 8000
+
+  - step: 22
+    description: "Result shows the elapsed time (ms indicator)"
+    action: verify
+    selector: "text=ms"
+    expected: "The result area shows execution time in milliseconds"
+    timeout_ms: 5000
+
+  - step: 23
+    description: "Test that a syntax error query shows an error message"
+    action: key
+    selector: ".monaco-editor textarea"
+    value: "Control+a"
+    expected: "Editor text selected"
+    timeout_ms: 3000
+
+  - step: 24
+    description: "Type an invalid Cypher query"
+    action: type
+    selector: ".monaco-editor textarea"
+    value: "THIS IS NOT VALID CYPHER !!!"
+    expected: "Invalid query is in the editor"
+    timeout_ms: 3000
+
+  - step: 25
+    description: "Execute the invalid query"
+    action: click
+    selector: "button:has-text('Execute')"
+    expected: "API returns an error response"
+    timeout_ms: 5000
+
+  - step: 26
+    description: "Error message is displayed in the result area"
+    action: verify
+    selector: "svg[data-lucide='alert-circle']"
+    expected: "An AlertCircle error icon appears, indicating query failure"
+    timeout_ms: 8000
+
+  - step: 27
+    description: "Close the Cypher editor by clicking the Terminal button again"
+    action: click
+    selector: "button[title='Cypher Query Editor'], button:has(svg[data-lucide='terminal'])"
+    expected: "Cypher editor panel collapses and is hidden"
+    timeout_ms: 3000
+
+  - step: 28
+    description: "Cypher panel header is no longer visible after closing"
+    action: verify
+    selector: "text=CYPHER"
+    expected: "The 'CYPHER' label is no longer visible in the bottom area"
+    negate: true
+    timeout_ms: 3000
+
+teardown:
+  - action: api_call
+    method: DELETE
+    url: "http://localhost:5000/api/graphs/test-graph"
+    description: "Remove test-graph"

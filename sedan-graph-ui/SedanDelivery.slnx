@@ -1,0 +1,10 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/SedanDelivery.Api/SedanDelivery.Api.csproj" />
+    <Project Path="src/SedanDelivery.AppHost/SedanDelivery.AppHost.csproj" />
+    <Project Path="src/SedanDelivery.ServiceDefaults/SedanDelivery.ServiceDefaults.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/SedanDelivery.Api.Tests/SedanDelivery.Api.Tests.csproj" />
+  </Folder>
+</Solution>

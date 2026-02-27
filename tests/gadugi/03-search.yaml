@@ -1,0 +1,184 @@
+name: "Search Graph"
+description: >
+  Verifies the Search Bar behavior for both label-based searches (CamelCase term like
+  "Person") and property-value searches (lowercase term like "Alice"). Confirms that
+  the search result count indicator updates, matched nodes are surfaced into the canvas,
+  and the Legend Panel reflects the loaded labels. Also verifies that clicking a
+  search-result node opens the Inspector Panel with the node's properties.
+app_url: "http://localhost:5173"
+
+setup:
+  - action: api_call
+    method: POST
+    url: "http://localhost:5000/api/graphs"
+    body: '{"name": "test-graph"}'
+    headers:
+      Content-Type: "application/json"
+
+  - action: api_call
+    method: POST
+    url: "http://localhost:5000/api/graphs/test-graph/nodes"
+    body: '{"labels": ["Person"], "properties": {"name": "Alice", "age": 30}}'
+    headers:
+      Content-Type: "application/json"
+
+  - action: api_call
+    method: POST
+    url: "http://localhost:5000/api/graphs/test-graph/nodes"
+    body: '{"labels": ["Person"], "properties": {"name": "Bob", "age": 25}}'
+    headers:
+      Content-Type: "application/json"
+
+  - action: api_call
+    method: POST
+    url: "http://localhost:5000/api/graphs/test-graph/nodes"
+    body: '{"labels": ["Organization"], "properties": {"name": "Acme Corp", "industry": "Technology"}}'
+    headers:
+      Content-Type: "application/json"
+
+  - action: navigate
+    url: "/"
+
+steps:
+  - step: 1
+    description: "Select test-graph from the GraphSelector"
+    action: click
+    selector: "button:has(svg[data-lucide='database'])"
+    expected: "GraphSelector dropdown opens"
+    timeout_ms: 3000
+
+  - step: 2
+    description: "Click test-graph to select it"
+    action: click
+    selector: "button:has-text('test-graph')"
+    expected: "test-graph is now the active graph"
+    timeout_ms: 3000
+
+  - step: 3
+    description: "Wait for canvas to load with the three test nodes"
+    action: verify
+    selector: ".font-mono"
+    expected: "Status bar shows '3 nodes'"
+    timeout_ms: 8000
+
+  - step: 4
+    description: "Search input is visible and enabled (placeholder text present)"
+    action: verify
+    selector: "input[aria-label='Search graph']"
+    expected: "Search input with placeholder 'Search by label or property value...' is visible and enabled"
+    timeout_ms: 3000
+
+  - step: 5
+    description: "Type 'Person' into the search bar (label-based search)"
+    action: type
+    selector: "input[aria-label='Search graph']"
+    value: "Person"
+    expected: "Search input shows 'Person'"
+    timeout_ms: 3000
+
+  - step: 6
+    description: "Press Enter to execute the label search"
+    action: key
+    selector: "input[aria-label='Search graph']"
+    value: "Enter"
+    expected: "Search executes a MATCH (n:Person) RETURN n LIMIT 50 query"
+    timeout_ms: 5000
+
+  - step: 7
+    description: "Result count indicator appears in the search bar"
+    action: verify
+    selector: "text=found"
+    expected: "The search bar shows a result count like '2 found'"
+    timeout_ms: 5000
+
+  - step: 8
+    description: "Legend Panel shows 'Person' label is present"
+    action: verify
+    selector: "text=Person"
+    expected: "'Person' entry is visible in the Legend Panel"
+    timeout_ms: 3000
+
+  - step: 9
+    description: "Clear the search field using the X button"
+    action: click
+    selector: "button[aria-label='Clear search']"
+    expected: "Search input is cleared, result count disappears"
+    timeout_ms: 3000
+
+  - step: 10
+    description: "Search input is empty after clearing"
+    action: verify
+    selector: "input[aria-label='Search graph']"
+    expected: "Search input value is empty"
+    timeout_ms: 3000
+
+  - step: 11
+    description: "Type 'Alice' to perform a property value search"
+    action: type
+    selector: "input[aria-label='Search graph']"
+    value: "Alice"
+    expected: "Search input shows 'Alice'"
+    timeout_ms: 3000
+
+  - step: 12
+    description: "Press Enter to execute the property search"
+    action: key
+    selector: "input[aria-label='Search graph']"
+    value: "Enter"
+    expected: "Search executes a MATCH (n) WHERE any(...) CONTAINS $searchTerm query"
+    timeout_ms: 5000
+
+  - step: 13
+    description: "Result count shows exactly 1 found"
+    action: verify
+    selector: "text=1 found"
+    expected: "The search bar shows '1 found' since only Alice matches"
+    timeout_ms: 5000
+
+  - step: 14
+    description: "Canvas is not in empty state (Alice node is rendered)"
+    action: verify
+    selector: "canvas"
+    expected: "The Sigma.js WebGL canvas element is present and rendering"
+    timeout_ms: 3000
+
+  - step: 15
+    description: "Click somewhere on the canvas to attempt selecting Alice's node"
+    action: click
+    selector: "canvas"
+    expected: "Click registers on the canvas; a node may become selected"
+    timeout_ms: 3000
+
+  - step: 16
+    description: "Inspector Panel header updates to 'Node Inspector' if a node is selected"
+    action: verify
+    selector: "text=Node Inspector"
+    expected: "Inspector Panel header shows 'Node Inspector'"
+    timeout_ms: 5000
+
+  - step: 17
+    description: "Inspector Panel shows a 'name' property"
+    action: verify
+    selector: "label:has-text('name')"
+    expected: "A property label 'name' is visible in the Inspector's property editor"
+    timeout_ms: 3000
+
+  - step: 18
+    description: "Inspector Panel property editor shows 'Alice' as the name value"
+    action: verify
+    selector: "input[value='Alice']"
+    expected: "The 'name' property input field contains 'Alice'"
+    timeout_ms: 3000
+
+  - step: 19
+    description: "Inspector Panel shows 'Person' label badge"
+    action: verify
+    selector: "text=Person"
+    expected: "'Person' label badge is visible in the Inspector Panel"
+    timeout_ms: 3000
+
+teardown:
+  - action: api_call
+    method: DELETE
+    url: "http://localhost:5000/api/graphs/test-graph"
+    description: "Remove test-graph"

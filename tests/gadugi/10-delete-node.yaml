@@ -1,0 +1,209 @@
+name: "Delete Node"
+description: >
+  Verifies the two delete paths for a node: (1) via the Inspector Panel's two-step
+  "Delete Node" / "Confirm Delete?" button flow, and (2) via the keyboard Delete key
+  when a node is selected. Confirms the status bar node count decrements after deletion,
+  the Inspector returns to its empty placeholder state, and the node is no longer
+  accessible via the API. Also verifies that the toolbar "Delete Selected" button is
+  enabled when a node is selected and disabled when nothing is selected.
+app_url: "http://localhost:5173"
+
+setup:
+  - action: api_call
+    method: POST
+    url: "http://localhost:5000/api/graphs"
+    body: '{"name": "test-graph"}'
+    headers:
+      Content-Type: "application/json"
+
+  - action: api_call
+    method: POST
+    url: "http://localhost:5000/api/graphs/test-graph/nodes"
+    body: '{"labels": ["Person"], "properties": {"name": "Alice"}}'
+    headers:
+      Content-Type: "application/json"
+    store_response_as: "alice_node"
+
+  - action: api_call
+    method: POST
+    url: "http://localhost:5000/api/graphs/test-graph/nodes"
+    body: '{"labels": ["Person"], "properties": {"name": "Bob"}}'
+    headers:
+      Content-Type: "application/json"
+    store_response_as: "bob_node"
+
+  - action: navigate
+    url: "/"
+
+steps:
+  - step: 1
+    description: "Select test-graph"
+    action: click
+    selector: "button:has(svg[data-lucide='database'])"
+    expected: "GraphSelector dropdown opens"
+    timeout_ms: 3000
+
+  - step: 2
+    description: "Click test-graph in the dropdown"
+    action: click
+    selector: "button:has-text('test-graph')"
+    expected: "test-graph selected"
+    timeout_ms: 3000
+
+  - step: 3
+    description: "Wait for canvas to show 2 nodes"
+    action: verify
+    selector: ".font-mono"
+    expected: "Status bar shows '2 nodes · 0 edges'"
+    timeout_ms: 8000
+
+  - step: 4
+    description: "Toolbar 'Delete Selected' button is disabled when nothing is selected"
+    action: verify
+    selector: "button[title='Delete Selected (Del)']:disabled, button:has(svg[data-lucide='trash-2']):disabled"
+    expected: "The Trash2 toolbar button is in a disabled state"
+    timeout_ms: 3000
+
+  - step: 5
+    description: "Click on the canvas to select a node (Alice or Bob)"
+    action: click
+    selector: "canvas"
+    expected: "A node is selected; Inspector Panel shows 'Node Inspector'"
+    timeout_ms: 5000
+
+  - step: 6
+    description: "Inspector Panel updates to 'Node Inspector' indicating a node is selected"
+    action: verify
+    selector: "text=Node Inspector"
+    expected: "'Node Inspector' heading is visible"
+    timeout_ms: 5000
+
+  - step: 7
+    description: "Status bar shows the selected node ID"
+    action: verify
+    selector: "text=Node:"
+    expected: "Status bar displays 'Node: <id>' for the selected node"
+    timeout_ms: 3000
+
+  - step: 8
+    description: "Toolbar 'Delete Selected' button is now enabled"
+    action: verify
+    selector: "button[title='Delete Selected (Del)']:not([disabled])"
+    expected: "The Delete button in the toolbar is no longer disabled"
+    timeout_ms: 3000
+
+  - step: 9
+    description: "Inspector shows a 'Delete Node' button in the actions section"
+    action: verify
+    selector: "button:has-text('Delete Node')"
+    expected: "'Delete Node' button is present in the Inspector Panel"
+    timeout_ms: 3000
+
+  - step: 10
+    description: "Click 'Delete Node' once — should show confirmation state"
+    action: click
+    selector: "button:has-text('Delete Node')"
+    expected: "Button text changes to 'Confirm Delete?' (two-step confirmation)"
+    timeout_ms: 3000
+
+  - step: 11
+    description: "Button now reads 'Confirm Delete?'"
+    action: verify
+    selector: "button:has-text('Confirm Delete?')"
+    expected: "The danger button now shows 'Confirm Delete?'"
+    timeout_ms: 3000
+
+  - step: 12
+    description: "Node still exists — count has not changed yet"
+    action: verify
+    selector: ".font-mono"
+    expected: "Status bar still shows '2 nodes'"
+    timeout_ms: 3000
+
+  - step: 13
+    description: "Click 'Confirm Delete?' to actually delete the node"
+    action: click
+    selector: "button:has-text('Confirm Delete?')"
+    expected: "API DELETE request fires; node is removed; Inspector clears"
+    timeout_ms: 8000
+
+  - step: 14
+    description: "Status bar node count drops to 1 after deletion"
+    action: verify
+    selector: ".font-mono"
+    expected: "Status bar shows '1 nodes'"
+    timeout_ms: 8000
+
+  - step: 15
+    description: "Inspector returns to empty placeholder after deletion"
+    action: verify
+    selector: "text=Select a node or edge"
+    expected: "Inspector shows 'Select a node or edge' placeholder"
+    timeout_ms: 5000
+
+  - step: 16
+    description: "Inspector header reverts to generic 'Inspector'"
+    action: verify
+    selector: "text=Inspector"
+    expected: "Inspector header reads 'Inspector' (not 'Node Inspector')"
+    timeout_ms: 3000
+
+  - step: 17
+    description: "Toolbar Delete button is disabled again after selection is cleared"
+    action: verify
+    selector: "button[title='Delete Selected (Del)']:disabled"
+    expected: "Delete toolbar button is disabled"
+    timeout_ms: 3000
+
+  - step: 18
+    description: "Select the remaining node (Bob) for keyboard deletion test"
+    action: click
+    selector: "canvas"
+    expected: "Bob's node is selected; Inspector shows 'Node Inspector'"
+    timeout_ms: 5000
+
+  - step: 19
+    description: "Inspector shows 'Node Inspector' for the remaining node"
+    action: verify
+    selector: "text=Node Inspector"
+    expected: "Node Inspector heading confirms selection"
+    timeout_ms: 5000
+
+  - step: 20
+    description: "Press the Delete key on the keyboard while body is focused (not an input)"
+    action: key
+    selector: "body"
+    value: "Delete"
+    expected: "The keyboard shortcut triggers deletion of the selected node directly (no Inspector confirm)"
+    timeout_ms: 5000
+
+  - step: 21
+    description: "Status bar node count drops to 0 after keyboard deletion"
+    action: verify
+    selector: ".font-mono"
+    expected: "Status bar shows '0 nodes · 0 edges'"
+    timeout_ms: 8000
+
+  - step: 22
+    description: "Canvas transitions to empty graph state"
+    action: verify
+    selector: "text=Graph is empty"
+    expected: "Canvas shows 'Graph is empty' heading"
+    timeout_ms: 5000
+
+  - step: 23
+    description: "Verify via API that neither Alice nor Bob node exists anymore"
+    action: api_call
+    method: POST
+    url: "http://localhost:5000/api/graphs/test-graph/query"
+    body: '{"query": "MATCH (n:Person) RETURN count(n) AS count"}'
+    headers:
+      Content-Type: "application/json"
+    expected: "API response shows count 0"
+    timeout_ms: 5000
+
+teardown:
+  - action: api_call
+    method: DELETE
+    url: "http://localhost:5000/api/graphs/test-graph"
+    description: "Remove test-graph (should already be empty)"
