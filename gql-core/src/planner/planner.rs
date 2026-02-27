@@ -601,19 +601,14 @@ impl<'s> QueryPlanner<'s> {
                 };
             } else {
                 // Single-hop expand.
-                // When tracking a named path, ensure we always have a rel_alias
-                // so the edge ID is available for path assembly.
-                let has_rel_props = rel.properties.as_ref().is_some_and(|p| !p.is_empty());
-                let rel_alias =
-                    if has_path_var || has_rel_props {
-                        // Ensure rel_alias exists when tracking a named path
-                        // or when inline properties need filtering.
-                        Some(rel.variable.clone().unwrap_or_else(|| {
-                            Identifier::new(format!("__path_rel_{}__", step_idx))
-                        }))
-                    } else {
-                        rel.variable.clone()
-                    };
+                // Always assign a rel_alias so that the edge ID is stored in the
+                // row, which enables edge isomorphism checking across multi-hop
+                // patterns (openCypher spec: each relationship can only be bound
+                // once per path traversal). For named paths and inline properties
+                // we also need the alias for path assembly / filtering.
+                let rel_alias = Some(rel.variable.clone().unwrap_or_else(|| {
+                    Identifier::new(format!("__anon_rel_{}__", step_idx))
+                }));
                 if has_path_var {
                     if let Some(ref ra) = rel_alias {
                         path_edge_aliases.push(ra.clone());
@@ -635,9 +630,9 @@ impl<'s> QueryPlanner<'s> {
             // rel_props (each traversed edge is checked during BFS), so skip the Filter.
             if let Some(props) = &rel.properties {
                 if !props.is_empty() && rel.range.is_none() {
-                    // rel_alias is guaranteed to exist because we forced it above.
+                    // rel_alias is guaranteed to exist because we always assign one above.
                     let filter_alias = rel.variable.clone().unwrap_or_else(|| {
-                        Identifier::new(format!("__path_rel_{}__", step_idx))
+                        Identifier::new(format!("__anon_rel_{}__", step_idx))
                     });
                     let pred = props_to_filter_expr(&filter_alias, props);
                     op = Operator::Filter {

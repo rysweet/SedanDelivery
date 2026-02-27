@@ -681,7 +681,6 @@ impl<'src> Lexer<'src> {
 
         // ── Single-character operators and punctuation ────────────────────────
         self.pos += 1;
-        let text = &self.src[start..self.pos];
         let kind = match b0 {
             b'(' => TokenKind::LParen,
             b')' => TokenKind::RParen,
@@ -713,6 +712,8 @@ impl<'src> Lexer<'src> {
                 TokenKind::Unknown(c)
             }
         };
+        // text slice must be computed AFTER pos is fixed (handles multi-byte chars)
+        let text = &self.src[start..self.pos];
         Ok(Some(Token::new(kind, text, start)))
     }
 }
