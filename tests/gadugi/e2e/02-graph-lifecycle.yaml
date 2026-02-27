@@ -1,0 +1,85 @@
+scenario:
+  name: "Graph Lifecycle — Create, Select, Delete"
+  description: "Verifies full graph creation, selection, and deletion flow through the UI"
+  type: web
+  tags: [critical, e2e, graph-management]
+  timeout: 60s
+
+  prerequisites:
+    - "Application stack is running (gql-api :3001, API :5000, SPA :5173)"
+
+  steps:
+    # Phase 1: Create a graph
+    - action: navigate
+      url: "http://localhost:5173"
+
+    - action: wait_for_element
+      selector: "[aria-label='Select graph']"
+      timeout: 10s
+
+    - action: click
+      selector: "[aria-label='Select graph']"
+      description: "Open graph selector dropdown"
+
+    - action: wait_for_element
+      selector: "button:has-text('Create New Graph')"
+      timeout: 3s
+
+    - action: click
+      text: "Create New Graph"
+      description: "Click create new graph"
+
+    - action: wait_for_element
+      selector: "input[placeholder='Graph name...']"
+      timeout: 3s
+
+    - action: type
+      selector: "input[placeholder='Graph name...']"
+      value: "e2e-lifecycle-test"
+
+    - action: click
+      text: "Create"
+      description: "Submit graph creation"
+
+    - action: wait_for_element
+      selector: ":has-text('e2e-lifecycle-test')"
+      timeout: 5s
+      description: "Verify graph name appears in status bar or selector"
+
+    - action: screenshot
+      save_as: "02-graph-created.png"
+
+    # Phase 2: Verify graph appears in list
+    - action: click
+      selector: "[aria-label='Select graph']"
+
+    - action: verify_element
+      text: "e2e-lifecycle-test"
+      exists: true
+      description: "Created graph should appear in dropdown"
+
+    # Phase 3: Delete the graph
+    - action: wait_for_element
+      selector: "button[aria-label*='Delete']"
+      timeout: 3s
+
+    - action: click
+      selector: "button[aria-label*='Delete']"
+      description: "Click delete (first click shows confirm)"
+
+    - action: wait_for_element
+      selector: ":has-text('Confirm')"
+      timeout: 3s
+
+    - action: click
+      text: "Confirm"
+      description: "Confirm deletion"
+
+    - action: screenshot
+      save_as: "02-graph-deleted.png"
+
+  cleanup:
+    - action: api_call
+      method: DELETE
+      url: "http://localhost:5000/api/graphs/e2e-lifecycle-test"
+      continue_on_failure: true

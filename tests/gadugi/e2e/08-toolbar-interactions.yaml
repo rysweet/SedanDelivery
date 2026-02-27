@@ -1,0 +1,98 @@
+scenario:
+  name: "Toolbar Interactions — Modes, Layout, Fit View, Disabled Buttons"
+  description: "Verifies toolbar mode switching, layout algorithm dropdown, fit view, and disabled undo/redo"
+  type: web
+  tags: [e2e, toolbar, layout]
+  timeout: 60s
+
+  variables:
+    graph_name: "e2e-toolbar"
+    api_base: "http://localhost:5000/api"
+
+  steps:
+    - action: api_call
+      method: POST
+      url: "${api_base}/graphs"
+      body: '{"name": "${graph_name}"}'
+
+    - action: api_call
+      method: POST
+      url: "${api_base}/graphs/${graph_name}/mutate"
+      body: '{"cypher": "CREATE (:Person {name: \"A\"}), (:Person {name: \"B\"}), (:Person {name: \"C\"})"}'
+
+    - action: navigate
+      url: "http://localhost:5173"
+
+    - action: wait_for_element
+      selector: "[aria-label='Select graph']"
+      timeout: 10s
+
+    - action: click
+      selector: "[aria-label='Select graph']"
+
+    - action: click
+      text: "${graph_name}"
+
+    - action: wait_for_element
+      selector: ":has-text('3 nodes')"
+      timeout: 8s
+
+    # Phase 1: Mode switching
+    - action: click
+      selector: "[aria-label='Select mode']"
+      description: "Click Select mode (should be default active)"
+
+    - action: click
+      selector: "[aria-label='Pan mode']"
+      description: "Switch to Pan mode"
+
+    - action: screenshot
+      save_as: "08-pan-mode.png"
+
+    - action: click
+      selector: "[aria-label='Select mode']"
+      description: "Switch back to Select mode"
+
+    # Phase 2: Layout algorithm
+    - action: click
+      selector: "[aria-label='Layout algorithm']"
+      description: "Open layout dropdown"
+
+    - action: wait_for_element
+      selector: ":has-text('Circular')"
+      timeout: 3s
+
+    - action: click
+      text: "Circular"
+      description: "Apply circular layout"
+
+    - action: screenshot
+      save_as: "08-circular-layout.png"
+
+    # Phase 3: Fit view
+    - action: click
+      selector: "[aria-label='Fit view']"
+      description: "Fit all nodes in view"
+
+    - action: screenshot
+      save_as: "08-fit-view.png"
+
+    # Phase 4: Verify undo/redo are disabled (Zero-BS)
+    - action: verify_element
+      selector: "[aria-label*='Undo'][disabled]"
+      exists: true
+      description: "Undo button should be disabled with 'coming in v2' tooltip"
+
+    - action: verify_element
+      selector: "[aria-label*='Redo'][disabled]"
+      exists: true
+      description: "Redo button should be disabled with 'coming in v2' tooltip"
+
+    - action: screenshot
+      save_as: "08-undo-redo-disabled.png"
+
+  cleanup:
+    - action: api_call
+      method: DELETE
+      url: "${api_base}/graphs/${graph_name}"
+      continue_on_failure: true

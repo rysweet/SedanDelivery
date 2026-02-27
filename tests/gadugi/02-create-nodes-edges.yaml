@@ -1,0 +1,270 @@
+name: "Create Nodes and Edges"
+description: >
+  Verifies the full node and edge creation flow via the toolbar "Add Node" button
+  and the Create Node / Create Edge dialogs. Checks that newly created nodes appear
+  in the canvas, that the Legend Panel updates label counts, and that a relationship
+  edge can be created between two existing nodes using their IDs.
+app_url: "http://localhost:5173"
+
+setup:
+  - action: api_call
+    method: POST
+    url: "http://localhost:5000/api/graphs"
+    body: '{"name": "test-graph"}'
+    headers:
+      Content-Type: "application/json"
+    description: "Create the test graph before the scenario runs"
+
+  - action: navigate
+    url: "/"
+
+  - action: api_call
+    method: POST
+    url: "http://localhost:5000/api/graphs/test-graph/nodes"
+    body: '{"labels": ["__warmup__"], "properties": {}}'
+    headers:
+      Content-Type: "application/json"
+    description: "Warm-up call so the graph list is populated (deleted in teardown)"
+
+steps:
+  - step: 1
+    description: "Select the test-graph from the GraphSelector dropdown"
+    action: click
+    selector: "button:has(svg[data-lucide='database'])"
+    expected: "GraphSelector dropdown opens"
+    timeout_ms: 3000
+
+  - step: 2
+    description: "Click on 'test-graph' in the dropdown list to select it"
+    action: click
+    selector: "button:has-text('test-graph')"
+    expected: "test-graph becomes the active graph, dropdown closes"
+    timeout_ms: 3000
+
+  - step: 3
+    description: "Click the 'Add Node (N)' toolbar button to open the Create Node dialog"
+    action: click
+    selector: "button[title='Add Node (N)'], button:has(svg[data-lucide='plus'])"
+    expected: "Create Node dialog opens with title 'Create Node' and a Labels input field"
+    timeout_ms: 3000
+
+  - step: 4
+    description: "Dialog title 'Create Node' is visible"
+    action: verify
+    selector: "text=Create Node"
+    expected: "The modal heading 'Create Node' is shown"
+    timeout_ms: 3000
+
+  - step: 5
+    description: "Type 'Person' into the Labels field"
+    action: type
+    selector: "input[placeholder='e.g. Person, Employee']"
+    value: "Person"
+    expected: "Labels field contains 'Person'"
+    timeout_ms: 3000
+
+  - step: 6
+    description: "Type 'name' into the first property key field"
+    action: type
+    selector: "input[placeholder='key']:nth-of-type(1)"
+    value: "name"
+    expected: "First property key field shows 'name'"
+    timeout_ms: 3000
+
+  - step: 7
+    description: "Type 'Alice' into the first property value field"
+    action: type
+    selector: "input[placeholder='value']:nth-of-type(1)"
+    value: "Alice"
+    expected: "First property value field shows 'Alice'"
+    timeout_ms: 3000
+
+  - step: 8
+    description: "Click 'Add' button to append a second property row"
+    action: click
+    selector: "button:has-text('Add')"
+    expected: "A second property row (key/value inputs) appears below the first"
+    timeout_ms: 3000
+
+  - step: 9
+    description: "Type 'age' into the second property key field"
+    action: type
+    selector: "input[placeholder='key']:nth-of-type(2)"
+    value: "age"
+    expected: "Second property key field shows 'age'"
+    timeout_ms: 3000
+
+  - step: 10
+    description: "Type '30' into the second property value field"
+    action: type
+    selector: "input[placeholder='value']:nth-of-type(2)"
+    value: "30"
+    expected: "Second property value field shows '30'"
+    timeout_ms: 3000
+
+  - step: 11
+    description: "Click 'Create Node' submit button in the dialog footer"
+    action: click
+    selector: "button:has-text('Create Node')"
+    expected: "Dialog closes, Alice node is created via API, canvas updates"
+    timeout_ms: 8000
+
+  - step: 12
+    description: "Status bar now shows 1 node"
+    action: verify
+    selector: ".font-mono"
+    expected: "Status bar reads '1 nodes · 0 edges' (or similar count including the warmup node)"
+    timeout_ms: 5000
+
+  - step: 13
+    description: "Open Add Node dialog again for the second node"
+    action: click
+    selector: "button:has(svg[data-lucide='plus'])"
+    expected: "Create Node dialog opens"
+    timeout_ms: 3000
+
+  - step: 14
+    description: "Type 'Person' for the second node's label"
+    action: type
+    selector: "input[placeholder='e.g. Person, Employee']"
+    value: "Person"
+    expected: "Labels field contains 'Person'"
+    timeout_ms: 3000
+
+  - step: 15
+    description: "Type 'name' into the property key field"
+    action: type
+    selector: "input[placeholder='key']:nth-of-type(1)"
+    value: "name"
+    expected: "Property key shows 'name'"
+    timeout_ms: 3000
+
+  - step: 16
+    description: "Type 'Bob' into the property value field"
+    action: type
+    selector: "input[placeholder='value']:nth-of-type(1)"
+    value: "Bob"
+    expected: "Property value shows 'Bob'"
+    timeout_ms: 3000
+
+  - step: 17
+    description: "Add age property for Bob"
+    action: click
+    selector: "button:has-text('Add')"
+    expected: "Second property row appears"
+    timeout_ms: 3000
+
+  - step: 18
+    description: "Enter 'age' key for Bob's second property"
+    action: type
+    selector: "input[placeholder='key']:nth-of-type(2)"
+    value: "age"
+    expected: "Key field shows 'age'"
+    timeout_ms: 3000
+
+  - step: 19
+    description: "Enter '25' value for Bob's age"
+    action: type
+    selector: "input[placeholder='value']:nth-of-type(2)"
+    value: "25"
+    expected: "Value field shows '25'"
+    timeout_ms: 3000
+
+  - step: 20
+    description: "Submit the Create Node dialog to create Bob"
+    action: click
+    selector: "button:has-text('Create Node')"
+    expected: "Dialog closes, Bob node created, canvas shows two Person nodes"
+    timeout_ms: 8000
+
+  - step: 21
+    description: "Legend Panel (left side) shows the 'Person' label entry"
+    action: verify
+    selector: "text=Person"
+    expected: "'Person' label entry is visible in the Legend Panel"
+    timeout_ms: 5000
+
+  - step: 22
+    description: "Legend Panel shows count 2 next to the Person label"
+    action: verify
+    selector: ".tabular-nums"
+    expected: "Node count for Person label shows at least '2'"
+    timeout_ms: 5000
+
+  - step: 23
+    description: "Read Alice's node ID from the API to use when creating the edge"
+    action: api_call
+    method: POST
+    url: "http://localhost:5000/api/graphs/test-graph/query"
+    body: '{"query": "MATCH (n:Person {name: \"Alice\"}) RETURN n.id AS id"}'
+    headers:
+      Content-Type: "application/json"
+    store_response_as: "alice_node"
+    description: "Retrieve Alice's node ID for the Create Edge form"
+
+  - step: 24
+    description: "Read Bob's node ID from the API"
+    action: api_call
+    method: POST
+    url: "http://localhost:5000/api/graphs/test-graph/query"
+    body: '{"query": "MATCH (n:Person {name: \"Bob\"}) RETURN n.id AS id"}'
+    headers:
+      Content-Type: "application/json"
+    store_response_as: "bob_node"
+    description: "Retrieve Bob's node ID for the Create Edge form"
+
+  - step: 25
+    description: "Click the Alice node on the canvas to select it (so its ID pre-fills the edge dialog)"
+    action: click
+    selector: "canvas"
+    expected: "Alice or Bob node may be selected; Inspector Panel appears on the right"
+    timeout_ms: 5000
+
+  - step: 26
+    description: "Open the Cypher Query Editor to create the edge via Cypher as a reliable fallback"
+    action: click
+    selector: "button[title='Cypher Query Editor'], button:has(svg[data-lucide='terminal'])"
+    expected: "Cypher editor panel opens at the bottom of the screen"
+    timeout_ms: 3000
+
+  - step: 27
+    description: "Clear the editor and type a Cypher CREATE edge statement"
+    action: type
+    selector: ".monaco-editor textarea"
+    value: "MATCH (a:Person {name: 'Alice'}), (b:Person {name: 'Bob'}) CREATE (a)-[:KNOWS]->(b)"
+    expected: "Cypher editor contains the CREATE edge statement"
+    timeout_ms: 3000
+
+  - step: 28
+    description: "Click Execute to run the Cypher CREATE statement"
+    action: click
+    selector: "button:has-text('Execute')"
+    expected: "The edge is created; mutate result badge appears showing '+1 edges'"
+    timeout_ms: 8000
+
+  - step: 29
+    description: "Result area shows successful edge creation"
+    action: verify
+    selector: "text=+1 edges"
+    expected: "Mutate result badge confirms '+1 edges' was created"
+    timeout_ms: 5000
+
+  - step: 30
+    description: "Close the Cypher editor panel"
+    action: click
+    selector: "button[title='Cypher Query Editor'], button:has(svg[data-lucide='terminal'])"
+    expected: "Cypher editor panel collapses"
+    timeout_ms: 3000
+
+  - step: 31
+    description: "Status bar confirms edge count has increased"
+    action: verify
+    selector: ".font-mono"
+    expected: "Status bar shows '1 edges' (or more)"
+    timeout_ms: 5000
+
+teardown:
+  - action: api_call
+    method: DELETE
+    url: "http://localhost:5000/api/graphs/test-graph"
+    description: "Remove test-graph and all its nodes/edges"

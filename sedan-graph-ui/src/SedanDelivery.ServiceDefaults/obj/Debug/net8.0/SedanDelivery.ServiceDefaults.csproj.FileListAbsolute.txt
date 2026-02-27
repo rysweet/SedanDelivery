@@ -1,0 +1,13 @@
+/home/azureuser/src/sd3/worktrees/feat-graph-visualizer-spa/sedan-graph-ui/src/SedanDelivery.ServiceDefaults/bin/Debug/net8.0/SedanDelivery.ServiceDefaults.deps.json
+/home/azureuser/src/sd3/worktrees/feat-graph-visualizer-spa/sedan-graph-ui/src/SedanDelivery.ServiceDefaults/bin/Debug/net8.0/SedanDelivery.ServiceDefaults.dll
+/home/azureuser/src/sd3/worktrees/feat-graph-visualizer-spa/sedan-graph-ui/src/SedanDelivery.ServiceDefaults/bin/Debug/net8.0/SedanDelivery.ServiceDefaults.pdb
+/home/azureuser/src/sd3/worktrees/feat-graph-visualizer-spa/sedan-graph-ui/src/SedanDelivery.ServiceDefaults/obj/Debug/net8.0/SedanDelivery.ServiceDefaults.csproj.AssemblyReference.cache
+/home/azureuser/src/sd3/worktrees/feat-graph-visualizer-spa/sedan-graph-ui/src/SedanDelivery.ServiceDefaults/obj/Debug/net8.0/SedanDelivery.ServiceDefaults.GeneratedMSBuildEditorConfig.editorconfig
+/home/azureuser/src/sd3/worktrees/feat-graph-visualizer-spa/sedan-graph-ui/src/SedanDelivery.ServiceDefaults/obj/Debug/net8.0/SedanDelivery.ServiceDefaults.AssemblyInfoInputs.cache
+/home/azureuser/src/sd3/worktrees/feat-graph-visualizer-spa/sedan-graph-ui/src/SedanDelivery.ServiceDefaults/obj/Debug/net8.0/SedanDelivery.ServiceDefaults.AssemblyInfo.cs
+/home/azureuser/src/sd3/worktrees/feat-graph-visualizer-spa/sedan-graph-ui/src/SedanDelivery.ServiceDefaults/obj/Debug/net8.0/SedanDelivery.ServiceDefaults.csproj.CoreCompileInputs.cache
+/home/azureuser/src/sd3/worktrees/feat-graph-visualizer-spa/sedan-graph-ui/src/SedanDelivery.ServiceDefaults/obj/Debug/net8.0/SedanDelivery.ServiceDefaults.sourcelink.json
+/home/azureuser/src/sd3/worktrees/feat-graph-visualizer-spa/sedan-graph-ui/src/SedanDelivery.ServiceDefaults/obj/Debug/net8.0/SedanDelivery.ServiceDefaults.dll
+/home/azureuser/src/sd3/worktrees/feat-graph-visualizer-spa/sedan-graph-ui/src/SedanDelivery.ServiceDefaults/obj/Debug/net8.0/refint/SedanDelivery.ServiceDefaults.dll
+/home/azureuser/src/sd3/worktrees/feat-graph-visualizer-spa/sedan-graph-ui/src/SedanDelivery.ServiceDefaults/obj/Debug/net8.0/SedanDelivery.ServiceDefaults.pdb
+/home/azureuser/src/sd3/worktrees/feat-graph-visualizer-spa/sedan-graph-ui/src/SedanDelivery.ServiceDefaults/obj/Debug/net8.0/ref/SedanDelivery.ServiceDefaults.dll

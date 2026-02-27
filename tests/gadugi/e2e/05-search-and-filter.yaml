@@ -1,0 +1,108 @@
+scenario:
+  name: "Search and Filter — Label Search, Property Search, Legend Toggle"
+  description: "Verifies search bar (label vs property detection), legend panel visibility toggles, and filter behavior"
+  type: web
+  tags: [critical, e2e, search, filter]
+  timeout: 90s
+
+  variables:
+    graph_name: "e2e-search"
+    api_base: "http://localhost:5000/api"
+
+  steps:
+    # Setup: Create graph with diverse labels
+    - action: api_call
+      method: POST
+      url: "${api_base}/graphs"
+      body: '{"name": "${graph_name}"}'
+
+    - action: api_call
+      method: POST
+      url: "${api_base}/graphs/${graph_name}/mutate"
+      body: '{"cypher": "CREATE (:Person {name: \"Alice\"}), (:Person {name: \"Bob\"}), (:Company {name: \"Acme\"}), (:Company {name: \"Beta Corp\"})"}'
+
+    - action: navigate
+      url: "http://localhost:5173"
+
+    - action: wait_for_element
+      selector: "[aria-label='Select graph']"
+      timeout: 10s
+
+    - action: click
+      selector: "[aria-label='Select graph']"
+
+    - action: click
+      text: "${graph_name}"
+
+    - action: wait_for_element
+      selector: ":has-text('4 nodes')"
+      timeout: 8s
+
+    # Phase 1: Label search (capitalized word → MATCH (n:Person))
+    - action: type
+      selector: "input[aria-label='Search graph']"
+      value: "Person"
+
+    - action: send_keypress
+      value: "enter"
+
+    - action: wait_for_element
+      selector: ":has-text('found')"
+      timeout: 8s
+      description: "Search results badge should appear"
+
+    - action: screenshot
+      save_as: "05-label-search.png"
+
+    # Phase 2: Property search (lowercase → CONTAINS query)
+    - action: click
+      selector: "input[aria-label='Search graph']"
+
+    - action: send_keypress
+      value: "ctrl+a"
+
+    - action: type
+      selector: "input[aria-label='Search graph']"
+      value: "alice"
+
+    - action: send_keypress
+      value: "enter"
+
+    - action: wait_for_element
+      selector: ":has-text('found')"
+      timeout: 8s
+      description: "Property search should find Alice"
+
+    - action: screenshot
+      save_as: "05-property-search.png"
+
+    # Phase 3: Legend panel visibility toggle
+    - action: verify_element
+      selector: "[aria-label*='Hide Person']"
+      exists: true
+      description: "Legend panel should show Person label with hide toggle"
+
+    - action: click
+      selector: "[aria-label*='Hide Person']"
+      description: "Hide Person nodes"
+
+    - action: verify_element
+      selector: "[aria-label*='Show Person']"
+      exists: true
+      description: "Toggle should switch to 'Show Person'"
+
+    - action: screenshot
+      save_as: "05-person-hidden.png"
+
+    - action: click
+      selector: "[aria-label*='Show Person']"
+      description: "Show Person nodes again"
+
+    - action: screenshot
+      save_as: "05-person-shown.png"
+
+  cleanup:
+    - action: api_call
+      method: DELETE
+      url: "${api_base}/graphs/${graph_name}"
+      continue_on_failure: true

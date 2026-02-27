@@ -4,6 +4,7 @@ members = [
     "gql-redis-store",
     "gql-module",
     "gql-cli",
+    "gql-api",
 ]
 resolver = "2"
 

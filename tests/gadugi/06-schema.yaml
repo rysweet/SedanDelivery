@@ -1,0 +1,206 @@
+name: "Schema View"
+description: >
+  Verifies the Schema Panel opened via the "Schema View" (Table icon) toolbar button.
+  The Schema Panel renders in the bottom sheet area alongside the Cypher editor slot.
+  It displays two columns: "NODE LABELS" and "RELATIONSHIP TYPES", each with name and
+  count entries fetched from the /api/graphs/{name}/schema endpoint. The scenario also
+  confirms the refresh button re-fetches the schema and that switching away (opening
+  the Cypher editor) replaces the schema panel.
+app_url: "http://localhost:5173"
+
+setup:
+  - action: api_call
+    method: POST
+    url: "http://localhost:5000/api/graphs"
+    body: '{"name": "test-graph"}'
+    headers:
+      Content-Type: "application/json"
+
+  - action: api_call
+    method: POST
+    url: "http://localhost:5000/api/graphs/test-graph/nodes"
+    body: '{"labels": ["Person"], "properties": {"name": "Alice"}}'
+    headers:
+      Content-Type: "application/json"
+    store_response_as: "alice_node"
+
+  - action: api_call
+    method: POST
+    url: "http://localhost:5000/api/graphs/test-graph/nodes"
+    body: '{"labels": ["Person"], "properties": {"name": "Bob"}}'
+    headers:
+      Content-Type: "application/json"
+    store_response_as: "bob_node"
+
+  - action: api_call
+    method: POST
+    url: "http://localhost:5000/api/graphs/test-graph/nodes"
+    body: '{"labels": ["Organization"], "properties": {"name": "Acme Corp"}}'
+    headers:
+      Content-Type: "application/json"
+    store_response_as: "org_node"
+
+  - action: api_call
+    method: POST
+    url: "http://localhost:5000/api/graphs/test-graph/mutate"
+    body: '{"cypher": "MATCH (a:Person {name: \"Alice\"}), (b:Person {name: \"Bob\"}) CREATE (a)-[:KNOWS]->(b)"}'
+    headers:
+      Content-Type: "application/json"
+
+  - action: api_call
+    method: POST
+    url: "http://localhost:5000/api/graphs/test-graph/mutate"
+    body: '{"cypher": "MATCH (p:Person {name: \"Alice\"}), (o:Organization {name: \"Acme Corp\"}) CREATE (p)-[:WORKS_AT]->(o)"}'
+    headers:
+      Content-Type: "application/json"
+
+  - action: navigate
+    url: "/"
+
+steps:
+  - step: 1
+    description: "Select test-graph from the GraphSelector"
+    action: click
+    selector: "button:has(svg[data-lucide='database'])"
+    expected: "GraphSelector dropdown opens"
+    timeout_ms: 3000
+
+  - step: 2
+    description: "Click test-graph in the dropdown"
+    action: click
+    selector: "button:has-text('test-graph')"
+    expected: "test-graph is selected"
+    timeout_ms: 3000
+
+  - step: 3
+    description: "Wait for graph data to load"
+    action: verify
+    selector: ".font-mono"
+    expected: "Status bar shows '3 nodes · 2 edges'"
+    timeout_ms: 8000
+
+  - step: 4
+    description: "Schema panel is not visible before toggling"
+    action: verify
+    selector: "text=NODE LABELS"
+    expected: "NODE LABELS heading is NOT visible before opening schema"
+    negate: true
+    timeout_ms: 3000
+
+  - step: 5
+    description: "Click the 'Schema View' (Table icon) toolbar button"
+    action: click
+    selector: "button[title='Schema View'], button:has(svg[data-lucide='table'])"
+    expected: "Schema Panel appears in the bottom sheet area"
+    timeout_ms: 3000
+
+  - step: 6
+    description: "Schema panel header 'SCHEMA' is visible"
+    action: verify
+    selector: "text=Schema"
+    expected: "The 'Schema' heading is visible in the panel header"
+    timeout_ms: 3000
+
+  - step: 7
+    description: "NODE LABELS section heading is shown"
+    action: verify
+    selector: "text=Node Labels"
+    expected: "The 'Node Labels' column heading is visible in the schema grid"
+    timeout_ms: 3000
+
+  - step: 8
+    description: "RELATIONSHIP TYPES section heading is shown"
+    action: verify
+    selector: "text=Relationship Types"
+    expected: "The 'Relationship Types' column heading is visible"
+    timeout_ms: 3000
+
+  - step: 9
+    description: "Person label is listed in the Node Labels column"
+    action: verify
+    selector: "span.font-mono:has-text('Person')"
+    expected: "A monospace 'Person' label entry is visible in Node Labels"
+    timeout_ms: 5000
+
+  - step: 10
+    description: "Person label count is 2"
+    action: verify
+    selector: "text=2"
+    expected: "The count next to the Person label shows '2'"
+    timeout_ms: 5000
+
+  - step: 11
+    description: "Organization label is listed in the Node Labels column"
+    action: verify
+    selector: "span.font-mono:has-text('Organization')"
+    expected: "A monospace 'Organization' label entry is visible"
+    timeout_ms: 5000
+
+  - step: 12
+    description: "Organization label count is 1"
+    action: verify
+    selector: ".tabular-nums:has-text('1')"
+    expected: "The count next to Organization shows '1'"
+    timeout_ms: 5000
+
+  - step: 13
+    description: "KNOWS relationship type is listed in the Relationship Types column"
+    action: verify
+    selector: "span.font-mono:has-text('KNOWS')"
+    expected: "A monospace 'KNOWS' entry is visible in Relationship Types"
+    timeout_ms: 5000
+
+  - step: 14
+    description: "WORKS_AT relationship type is listed in the Relationship Types column"
+    action: verify
+    selector: "span.font-mono:has-text('WORKS_AT')"
+    expected: "A monospace 'WORKS_AT' entry is visible in Relationship Types"
+    timeout_ms: 5000
+
+  - step: 15
+    description: "Refresh button is present in the Schema panel header"
+    action: verify
+    selector: "button[title='Refresh schema']"
+    expected: "The refresh button with RefreshCw icon is present"
+    timeout_ms: 3000
+
+  - step: 16
+    description: "Click the refresh button to re-fetch schema"
+    action: click
+    selector: "button[title='Refresh schema']"
+    expected: "Schema data is re-fetched; loading spinner may appear briefly"
+    timeout_ms: 3000
+
+  - step: 17
+    description: "After refresh, Person label is still visible"
+    action: verify
+    selector: "span.font-mono:has-text('Person')"
+    expected: "Person label is still shown after refresh"
+    timeout_ms: 5000
+
+  - step: 18
+    description: "Opening the Cypher editor replaces the Schema panel (mutually exclusive)"
+    action: click
+    selector: "button[title='Cypher Query Editor'], button:has(svg[data-lucide='terminal'])"
+    expected: "Cypher editor panel appears; Schema panel is hidden"
+    timeout_ms: 3000
+
+  - step: 19
+    description: "CYPHER label is now shown, Schema section is gone"
+    action: verify
+    selector: "text=CYPHER"
+    expected: "The CYPHER editor header is visible, replacing the schema content"
+    timeout_ms: 3000
+
+  - step: 20
+    description: "Close the Cypher editor to restore clean state"
+    action: click
+    selector: "button[title='Cypher Query Editor'], button:has(svg[data-lucide='terminal'])"
+    expected: "Bottom sheet collapses entirely"
+    timeout_ms: 3000
+
+teardown:
+  - action: api_call
+    method: DELETE
+    url: "http://localhost:5000/api/graphs/test-graph"
+    description: "Remove test-graph"
