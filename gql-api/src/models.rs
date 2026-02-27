@@ -103,6 +103,9 @@ pub struct MutateResponse {
 
 // ── Pagination query params ───────────────────────────────────────────────────
 
+pub const MAX_PAGE_LIMIT: usize = 10_000;
+pub const DEFAULT_PAGE_LIMIT: usize = 100;
+
 #[derive(Deserialize)]
 pub struct PaginationParams {
     #[serde(default = "default_limit")]
@@ -112,7 +115,7 @@ pub struct PaginationParams {
 }
 
 fn default_limit() -> usize {
-    100
+    DEFAULT_PAGE_LIMIT
 }
 
 // ── Schema ────────────────────────────────────────────────────────────────────

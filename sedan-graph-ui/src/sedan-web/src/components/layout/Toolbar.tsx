@@ -45,6 +45,7 @@ function ToolbarButton({ tooltip, onClick, active, disabled, children }: Toolbar
         size="xs"
         onClick={onClick}
         disabled={disabled}
+        aria-label={tooltip}
         className={
           active
             ? 'bg-accent-400/20 text-accent-400 hover:bg-accent-400/30'
@@ -175,6 +176,7 @@ export function Toolbar({
             <Button
               variant="ghost"
               size="xs"
+              aria-label="Layout algorithm"
               className="text-gray-400 hover:text-gray-200 flex items-center gap-1"
             >
               <Layout size={16} />

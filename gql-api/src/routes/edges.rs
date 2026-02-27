@@ -14,7 +14,7 @@ use axum::{Json, Router};
 use gql_core::storage::{validate_graph_name, EdgeId, GraphStore, NodeId};
 
 use crate::error::ApiError;
-use crate::models::{CreateEdgeBody, EdgeListResponse, PaginationParams, UpdateEdgeBody};
+use crate::models::{CreateEdgeBody, EdgeListResponse, PaginationParams, UpdateEdgeBody, MAX_PAGE_LIMIT};
 use crate::routes::nodes::json_map_to_props;
 use crate::serialize::edge_to_json;
 use crate::state::AppState;
@@ -35,6 +35,12 @@ async fn list_edges(
     Path(name): Path<String>,
     Query(params): Query<PaginationParams>,
 ) -> Result<Json<EdgeListResponse>, ApiError> {
+    if params.limit > MAX_PAGE_LIMIT {
+        return Err(ApiError::bad_request(format!(
+            "limit must be ≤ {MAX_PAGE_LIMIT}, got {}",
+            params.limit
+        )));
+    }
     validate_graph_name(&name).map_err(ApiError::from)?;
 
     let store = state

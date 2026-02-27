@@ -73,6 +73,9 @@ export function GraphSelector() {
         variant="ghost"
         size="sm"
         onClick={() => setOpen((prev) => !prev)}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        aria-label={currentGraph ? `Selected graph: ${currentGraph}` : 'Select graph'}
         className="flex items-center gap-2 text-gray-300 hover:text-white max-w-48"
       >
         <Database size={14} className="shrink-0 text-accent-400" />

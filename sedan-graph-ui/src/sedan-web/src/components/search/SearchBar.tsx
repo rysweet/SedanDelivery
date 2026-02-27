@@ -13,10 +13,13 @@ interface SearchBarProps {
  */
 function buildSearchQuery(term: string): string {
   // If it looks like a CamelCase label (no spaces, starts with uppercase)
-  const isLabelSearch = /^[A-Z][A-Za-z0-9]*$/.test(term.trim())
+  const trimmed = term.trim()
+  const isLabelSearch = /^[A-Z][A-Za-z0-9]*$/.test(trimmed)
 
   if (isLabelSearch) {
-    return `MATCH (n:${term.trim()}) RETURN n LIMIT 50`
+    // Strip backticks to prevent Cypher label injection
+    const safeLabelName = trimmed.replace(/`/g, '')
+    return `MATCH (n:\`${safeLabelName}\`) RETURN n LIMIT 50`
   }
 
   return `MATCH (n) WHERE any(prop in keys(n) WHERE toString(n[prop]) CONTAINS $searchTerm) RETURN n LIMIT 50`

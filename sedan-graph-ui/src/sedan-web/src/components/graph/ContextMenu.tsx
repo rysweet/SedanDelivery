@@ -22,6 +22,7 @@ interface MenuItem {
   onClick: () => void
   danger?: boolean
   separator?: boolean
+  comingSoon?: boolean
 }
 
 interface ContextMenuProps {
@@ -88,6 +89,7 @@ export function ContextMenu({
         label: 'Shortest Path From Here',
         icon: <Route size={14} />,
         onClick: () => { onClose() },
+        comingSoon: true,
       },
       {
         label: 'Edit Properties',
@@ -108,6 +110,7 @@ export function ContextMenu({
         label: 'Highlight Path',
         icon: <Minus size={14} />,
         onClick: () => { onClose() },
+        comingSoon: true,
       },
       {
         label: 'Edit Properties',
@@ -156,15 +159,23 @@ export function ContextMenu({
           )}
           <button
             role="menuitem"
+            disabled={item.comingSoon}
             className={clsx(
               'w-full flex items-center gap-2 px-3 py-1.5 text-xs text-left',
-              'hover:bg-surface-200 transition-colors',
-              item.danger ? 'text-red-400 hover:text-red-300' : 'text-gray-300',
+              item.comingSoon
+                ? 'opacity-50 cursor-not-allowed text-gray-500'
+                : clsx(
+                    'hover:bg-surface-200 transition-colors',
+                    item.danger ? 'text-red-400 hover:text-red-300' : 'text-gray-300',
+                  ),
             )}
             onClick={item.onClick}
           >
             <span className="shrink-0">{item.icon}</span>
-            {item.label}
+            <span className="flex-1">{item.label}</span>
+            {item.comingSoon && (
+              <span className="ml-auto text-xs text-gray-600">soon</span>
+            )}
           </button>
         </div>
       ))}

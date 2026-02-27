@@ -43,14 +43,6 @@ export function getDimmedColor(color: string): string {
 }
 
 /**
- * Returns the edge color for a given relationship type.
- */
-export function getEdgeColor(type: string): string {
-  const hash = getLabelColor(type)
-  return hash
-}
-
-/**
  * Builds a mapping of all unique labels in the dataset to their colors.
  */
 export function buildLabelColorMap(labels: string[]): Map<string, string> {
