@@ -19,3 +19,17 @@ index.scip
 
 # Infrastructure artifacts
 infra/*.json
+
+# .NET build artifacts (sedan-graph-ui)
+**/bin/
+**/obj/
+
+# Workstream configs (amplihack multitask)
+workstreams*.json
+
+# SCIP indexes
+*.scip
+index.scip
+
+# Bicep compiled ARM templates
+infra/*.json
