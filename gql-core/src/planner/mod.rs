@@ -250,6 +250,24 @@ pub mod validator;
 pub use planner::QueryPlanner;
 pub use validator::validate_query;
 
+/// Returns `true` if `name` is a Cypher aggregation function.
+/// Single authoritative implementation used by both planner and validator.
+pub(crate) fn is_aggregate_function(name: &str) -> bool {
+    matches!(
+        name.to_ascii_lowercase().as_str(),
+        "count"
+            | "sum"
+            | "avg"
+            | "min"
+            | "max"
+            | "collect"
+            | "stdev"
+            | "stdevp"
+            | "percentilecont"
+            | "percentiledisc"
+    )
+}
+
 /// Validate and normalize variable-length expand bounds.
 /// Returns `(effective_min, effective_max)`, capping unbounded `max` at DEFAULT_VARLEN_MAX_DEPTH.
 pub fn validate_varlen_bounds(min: u32, max: Option<u32>) -> Result<(u32, u32), GqlError> {

@@ -22,6 +22,10 @@ use crate::parser::lexer::{Token, TokenKind};
 
 // ── Parser struct ─────────────────────────────────────────────────────────────
 
+/// Maximum expression nesting depth.  Shared by `parse_expr`, `parse_not`, and
+/// `parse_unary` to protect against stack-overflow DoS inputs.
+const MAX_DEPTH: u32 = 256;
+
 /// Cursor-based recursive descent parser.
 ///
 /// Tokens are pre-collected from the lexer before parsing begins, so every
@@ -1040,7 +1044,6 @@ impl<'src> Parser<'src> {
     // ── Expression parsing (Pratt / recursive descent) ────────────────────────
 
     pub(crate) fn parse_expr(&mut self) -> Result<Expr, ParseError> {
-        const MAX_DEPTH: u32 = 256;
         self.depth += 1;
         if self.depth > MAX_DEPTH {
             self.depth -= 1;
@@ -1094,7 +1097,6 @@ impl<'src> Parser<'src> {
     }
 
     fn parse_not(&mut self) -> Result<Expr, ParseError> {
-        const MAX_DEPTH: u32 = 256;
         self.depth += 1;
         if self.depth > MAX_DEPTH {
             self.depth -= 1;
@@ -1334,7 +1336,6 @@ impl<'src> Parser<'src> {
     }
 
     fn parse_unary(&mut self) -> Result<Expr, ParseError> {
-        const MAX_DEPTH: u32 = 256;
         self.depth += 1;
         if self.depth > MAX_DEPTH {
             self.depth -= 1;

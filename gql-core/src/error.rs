@@ -78,6 +78,22 @@ pub enum PlanError {
 
     #[error("write clause '{clause}' cannot follow read-only clause in the same query")]
     WriteAfterRead { clause: String },
+
+    /// Type conflict: a variable is used with an incompatible type (e.g. Node used as Relationship).
+    #[error("type conflict: {message}")]
+    TypeConflict { message: String },
+
+    /// Invalid aggregation: aggregation function used in a context where it is not allowed.
+    #[error("invalid aggregation: {message}")]
+    InvalidAggregation { message: String },
+
+    /// Constraint violation: a query-level constraint is violated (e.g. CREATE relationship requires direction).
+    #[error("constraint violation: {message}")]
+    ConstraintViolation { message: String },
+
+    /// General semantic error that does not fit a more specific category.
+    #[error("{message}")]
+    SemanticError { message: String },
 }
 
 // ── Execution errors ──────────────────────────────────────────────────────────

@@ -1321,6 +1321,20 @@ impl ValidationContext {
                 }
             }
             Expr::FunctionCall { name, args, .. } => {
+                // Reject direct user calls to __patternComp.
+                // This is an internal function emitted only by the parser for pattern
+                // comprehensions like `[(n:Person) | n.name]`. Parser-generated calls
+                // always have an Expr::PatternExpr as their first argument; user-typed
+                // calls do not, so we can detect and reject them here.
+                if name.to_ascii_lowercase().as_str() == "__patterncomp" {
+                    if !args.first().is_some_and(|a| matches!(a, Expr::PatternExpr(_))) {
+                        return Err(plan_error_syntax(
+                            "function '__patternComp' is an internal function and cannot be called directly",
+                        ));
+                    }
+                    // Parser-generated — skip normal validation for this node.
+                    return Ok(());
+                }
                 for arg in args {
                     self.validate_expr_general(arg)?;
                 }
@@ -2019,19 +2033,7 @@ fn is_nondeterministic_function(name: &str) -> bool {
 }
 
 fn is_aggregation_function(name: &str) -> bool {
-    matches!(
-        name.to_ascii_lowercase().as_str(),
-        "count"
-            | "sum"
-            | "avg"
-            | "min"
-            | "max"
-            | "collect"
-            | "stdev"
-            | "stdevp"
-            | "percentilecont"
-            | "percentiledisc"
-    )
+    super::is_aggregate_function(name)
 }
 
 // ── Function name validation ────────────────────────────────────────────────
@@ -2161,8 +2163,6 @@ fn validate_known_function(name: &str) -> Result<(), GqlError> {
             // Spatial functions
             | "point"
             | "distance"
-            // Internal pattern comprehension
-            | "__patterncomp"
     );
     if !known {
         return Err(plan_error_syntax(&format!("unknown function '{name}'")));
@@ -2261,9 +2261,8 @@ fn op_name(op: BinaryOp) -> &'static str {
 // ── Error constructors ──────────────────────────────────────────────────────
 
 fn plan_error_syntax(msg: &str) -> GqlError {
-    GqlError::Plan(PlanError::UndefinedVariable {
-        name: msg.to_string(),
-        offset: 0,
+    GqlError::Plan(PlanError::SemanticError {
+        message: msg.to_string(),
     })
 }
 
