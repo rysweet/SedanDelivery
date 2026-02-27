@@ -2936,7 +2936,8 @@ impl AggState {
                 }
             }
             AggFunction::Collect => {
-                if !val.is_null() {
+                const MAX_COLLECT: usize = 10_000_000;
+                if !val.is_null() && self.collected.len() < MAX_COLLECT {
                     self.collected.push(val);
                 }
             }

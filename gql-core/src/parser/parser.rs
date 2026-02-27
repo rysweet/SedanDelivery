@@ -29,6 +29,8 @@ use crate::parser::lexer::{Token, TokenKind};
 pub struct Parser<'src> {
     tokens: Vec<Token<'src>>,
     pos: usize,
+    /// Current expression nesting depth; guards against deeply nested DoS inputs.
+    depth: u32,
 }
 
 impl<'src> Parser<'src> {
@@ -36,7 +38,7 @@ impl<'src> Parser<'src> {
     ///
     /// The token stream must end with a [`TokenKind::Eof`] sentinel.
     pub fn new(tokens: Vec<Token<'src>>) -> Self {
-        Self { tokens, pos: 0 }
+        Self { tokens, pos: 0, depth: 0 }
     }
 
     // ── Cursor helpers ────────────────────────────────────────────────────────
@@ -212,6 +214,10 @@ fn is_keyword_usable_as_property(kind: &TokenKind) -> bool {
 /// Returns [`ParseError::EmptyQuery`] for blank/empty input.
 /// Returns [`ParseError::Syntax`] for any structural grammar error.
 pub fn parse_query(src: &str) -> Result<Query, ParseError> {
+    const MAX_QUERY_SIZE: usize = 1_048_576;
+    if src.len() > MAX_QUERY_SIZE {
+        return Err(ParseError::QueryTooLarge { size: src.len(), limit: MAX_QUERY_SIZE });
+    }
     if src.trim().is_empty() {
         return Err(ParseError::EmptyQuery);
     }
@@ -1034,7 +1040,15 @@ impl<'src> Parser<'src> {
     // ── Expression parsing (Pratt / recursive descent) ────────────────────────
 
     pub(crate) fn parse_expr(&mut self) -> Result<Expr, ParseError> {
-        self.parse_or()
+        const MAX_DEPTH: u32 = 256;
+        self.depth += 1;
+        if self.depth > MAX_DEPTH {
+            self.depth -= 1;
+            return Err(ParseError::RecursionLimitExceeded { limit: MAX_DEPTH });
+        }
+        let result = self.parse_or();
+        self.depth -= 1;
+        result
     }
 
     fn parse_or(&mut self) -> Result<Expr, ParseError> {
@@ -1080,7 +1094,13 @@ impl<'src> Parser<'src> {
     }
 
     fn parse_not(&mut self) -> Result<Expr, ParseError> {
-        if self.eat(&TokenKind::Not) {
+        const MAX_DEPTH: u32 = 256;
+        self.depth += 1;
+        if self.depth > MAX_DEPTH {
+            self.depth -= 1;
+            return Err(ParseError::RecursionLimitExceeded { limit: MAX_DEPTH });
+        }
+        let result = if self.eat(&TokenKind::Not) {
             let expr = self.parse_not()?;
             Ok(Expr::UnaryOp {
                 op: UnaryOp::Not,
@@ -1088,7 +1108,9 @@ impl<'src> Parser<'src> {
             })
         } else {
             self.parse_comparison()
-        }
+        };
+        self.depth -= 1;
+        result
     }
 
     fn parse_comparison(&mut self) -> Result<Expr, ParseError> {
@@ -1312,24 +1334,33 @@ impl<'src> Parser<'src> {
     }
 
     fn parse_unary(&mut self) -> Result<Expr, ParseError> {
-        if self.eat(&TokenKind::Dash) {
+        const MAX_DEPTH: u32 = 256;
+        self.depth += 1;
+        if self.depth > MAX_DEPTH {
+            self.depth -= 1;
+            return Err(ParseError::RecursionLimitExceeded { limit: MAX_DEPTH });
+        }
+        let result = if self.eat(&TokenKind::Dash) {
             // Special case: -9223372036854775808 = i64::MIN (the only valid use of
             // the 2^63 magnitude literal is immediately after unary minus).
             if self.at(&TokenKind::IntMinMagnitude) {
                 self.advance();
-                return Ok(Expr::Integer(i64::MIN));
+                Ok(Expr::Integer(i64::MIN))
+            } else {
+                let expr = self.parse_unary()?;
+                Ok(Expr::UnaryOp {
+                    op: UnaryOp::Neg,
+                    expr: Box::new(expr),
+                })
             }
-            let expr = self.parse_unary()?;
-            Ok(Expr::UnaryOp {
-                op: UnaryOp::Neg,
-                expr: Box::new(expr),
-            })
         } else if self.eat(&TokenKind::Plus) {
             // Unary plus is a no-op; just return the inner expression.
             self.parse_unary()
         } else {
             self.parse_postfix()
-        }
+        };
+        self.depth -= 1;
+        result
     }
 
     fn parse_postfix(&mut self) -> Result<Expr, ParseError> {

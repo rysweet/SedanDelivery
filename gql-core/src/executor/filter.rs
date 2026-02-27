@@ -17,12 +17,18 @@ use crate::ast::{BinaryOp, Expr, Identifier, UnaryOp};
 use crate::error::{ExecutionError, GqlError};
 use crate::types::{CypherDuration, Value};
 
+/// Hard cap on list sizes produced by range() and split() to prevent memory exhaustion DoS.
+const MAX_LIST_SIZE: usize = 10_000_000;
+
 // ── Query-level "now" for stable temporal function results ──────────────────────
 
 thread_local! {
     /// The current query's "now" timestamp. Initialized once per query execution so that
     /// temporal no-arg functions (date(), time(), etc.) return the same value throughout.
     static QUERY_NOW: RefCell<Option<jiff::Zoned>> = const { RefCell::new(None) };
+
+    /// Per-thread cache of compiled regexes to avoid recompilation on repeated pattern use.
+    static REGEX_CACHE: RefCell<HashMap<String, regex::Regex>> = RefCell::new(HashMap::new());
 }
 
 /// Initialize the query-level "now". Call once at the start of each query execution.
@@ -590,14 +596,27 @@ fn eval_binary<'r>(
         BinaryOp::RegexMatch => match (lv, rv) {
             (Value::Null, _) | (_, Value::Null) => Ok(Value::Null),
             (Value::Str(s), Value::Str(pattern)) => {
-                // Use the `regex` crate already in scope for the workspace.
-                let re = regex::Regex::new(pattern.as_ref()).map_err(|e| {
-                    GqlError::Execution(ExecutionError::TypeMismatch {
-                        expected: "valid regex pattern".to_string(),
-                        actual: e.to_string(),
-                    })
+                const MAX_PATTERN_LEN: usize = 1024;
+                if pattern.len() > MAX_PATTERN_LEN {
+                    return Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                        expected: format!("regex pattern <= {MAX_PATTERN_LEN} bytes"),
+                        actual: format!("{} bytes", pattern.len()),
+                    }));
+                }
+                let matched = REGEX_CACHE.with(|cache| -> Result<bool, GqlError> {
+                    let mut map = cache.borrow_mut();
+                    if !map.contains_key(pattern.as_ref()) {
+                        let re = regex::Regex::new(pattern.as_ref()).map_err(|e| {
+                            GqlError::Execution(ExecutionError::TypeMismatch {
+                                expected: "valid regex pattern".to_string(),
+                                actual: e.to_string(),
+                            })
+                        })?;
+                        map.insert(pattern.to_string(), re);
+                    }
+                    Ok(map[pattern.as_ref()].is_match(s.as_ref()))
                 })?;
-                Ok(Value::Bool(re.is_match(s.as_ref())))
+                Ok(Value::Bool(matched))
             }
             (l, r) => Err(GqlError::Execution(ExecutionError::InvalidOperator {
                 op: "=~".to_string(),
@@ -1205,6 +1224,7 @@ pub fn eval_function_with_vals(name: &str, vals: Vec<Value>) -> Result<Value, Gq
                 (Value::Str(s), Value::Str(delim)) => {
                     let parts: Vec<Value> = s
                         .split(delim.as_ref())
+                        .take(MAX_LIST_SIZE)
                         .map(|p| Value::Str(p.to_string().into_boxed_str()))
                         .collect();
                     Ok(Value::List(parts))
@@ -1320,11 +1340,23 @@ pub fn eval_function_with_vals(name: &str, vals: Vec<Value>) -> Result<Value, Gq
                     let mut i = *start;
                     if step > 0 {
                         while i <= *end {
+                            if result.len() >= MAX_LIST_SIZE {
+                                return Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                                    expected: format!("range() result <= {MAX_LIST_SIZE} elements"),
+                                    actual: format!("would exceed {MAX_LIST_SIZE} elements"),
+                                }));
+                            }
                             result.push(Value::Int(i));
                             i += step;
                         }
                     } else {
                         while i >= *end {
+                            if result.len() >= MAX_LIST_SIZE {
+                                return Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                                    expected: format!("range() result <= {MAX_LIST_SIZE} elements"),
+                                    actual: format!("would exceed {MAX_LIST_SIZE} elements"),
+                                }));
+                            }
                             result.push(Value::Int(i));
                             i += step;
                         }
