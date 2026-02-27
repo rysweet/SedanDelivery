@@ -351,6 +351,18 @@ pub enum Expr {
         filter: Option<Box<Expr>>,
         map: Box<Expr>,
     },
+
+    // ── Existential subquery ─────────────────────────────────────────────────
+    /// `exists { pattern [WHERE predicate] }` — existential subquery.
+    ExistsSubquery {
+        patterns: Vec<PathPattern>,
+        where_clause: Option<Box<Expr>>,
+    },
+
+    // ── Pattern expression ──────────────────────────────────────────────────
+    /// `(n)-[:REL]->()` used as a predicate in WHERE — returns true if the
+    /// pattern matches at least once.
+    PatternExpr(Vec<PathPattern>),
 }
 
 impl Expr {
@@ -370,10 +382,25 @@ impl Expr {
 
 // ── Clause-level AST types ────────────────────────────────────────────────────
 
-/// A complete parsed query, consisting of one or more clauses.
+/// A complete parsed query, consisting of one or more clauses,
+/// optionally composed via UNION / UNION ALL.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Query {
     pub clauses: Vec<Clause>,
+    /// If non-empty, subsequent UNION parts (each a list of clauses).
+    /// `unions[i].0` is true for UNION ALL, false for plain UNION.
+    #[doc(hidden)]
+    pub unions: Vec<(bool, Vec<Clause>)>,
+}
+
+impl Query {
+    /// Create a simple query with no UNION parts.
+    pub fn new(clauses: Vec<Clause>) -> Self {
+        Self {
+            clauses,
+            unions: Vec::new(),
+        }
+    }
 }
 
 /// A single top-level Cypher/GQL clause.
@@ -391,6 +418,7 @@ pub enum Clause {
     Remove(RemoveClause),
     Merge(MergeClause),
     Call(CallClause),
+    Foreach(ForeachClause),
 }
 
 /// A MATCH or OPTIONAL MATCH clause.
@@ -531,6 +559,14 @@ pub struct CallClause {
     pub args: Vec<Expr>,
     /// YIELD items: `(name, optional_alias)`.
     pub yield_items: Vec<(Identifier, Option<Identifier>)>,
+}
+
+/// A FOREACH clause: `FOREACH (x IN list | CREATE ...)`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ForeachClause {
+    pub variable: Identifier,
+    pub list: Expr,
+    pub clauses: Vec<Clause>,
 }
 
 /// A single item in a SET clause.

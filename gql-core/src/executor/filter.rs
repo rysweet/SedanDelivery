@@ -287,6 +287,13 @@ pub fn eval_expr<'r>(expr: &Expr, row: &Row<'r>) -> Result<Value, GqlError> {
                 })),
             }
         }
+
+        // ── Existential subquery / pattern expression ─────────────────────────
+        Expr::ExistsSubquery { .. } | Expr::PatternExpr(_) => {
+            Err(GqlError::Execution(ExecutionError::unsupported(
+                "existential subquery / pattern expression",
+            )))
+        }
     }
 }
 

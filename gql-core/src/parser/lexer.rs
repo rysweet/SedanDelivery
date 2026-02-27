@@ -437,6 +437,28 @@ impl<'src> Lexer<'src> {
                 });
         }
 
+        // Octal literal detection: `0o...` or `0O...`
+        let is_octal = self.src.as_bytes().get(start) == Some(&b'0')
+            && matches!(self.peek_byte(0), Some(b'o') | Some(b'O'));
+
+        if is_octal {
+            self.pos += 1; // consume 'o'/'O'
+            let oct_start = self.pos;
+            while matches!(self.peek_byte(0), Some(b'0'..=b'7') | Some(b'_')) {
+                self.pos += 1;
+            }
+            let oct_digits: String = self.src[oct_start..self.pos]
+                .chars()
+                .filter(|c| *c != '_')
+                .collect();
+            return i64::from_str_radix(&oct_digits, 8)
+                .map(TokenKind::IntLiteral)
+                .map_err(|_| ParseError::IntegerOverflow {
+                    literal: self.src[start..self.pos].to_string(),
+                    offset: start,
+                });
+        }
+
         let is_float = matches!(self.peek_byte(0), Some(b'.'))
             && !matches!(self.peek_byte(1), Some(b'.')) // avoid `..` being eaten
             || matches!(self.peek_byte(0), Some(b'e') | Some(b'E'));
