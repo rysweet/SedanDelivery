@@ -1675,7 +1675,7 @@ impl<'src> Parser<'src> {
         // Parse MATCH patterns inside the subquery (without the MATCH keyword).
         // The first pattern starts with `(`, or there's an explicit MATCH keyword.
         if self.at(&TokenKind::Match) {
-            // Full subquery with MATCH ... WHERE ... [RETURN ...]
+            // Full subquery with MATCH ... [WITH ... WHERE ... RETURN ...]
             self.advance();
             patterns.push(self.parse_path_pattern()?);
             while self.eat(&TokenKind::Comma) {
@@ -1686,8 +1686,8 @@ impl<'src> Parser<'src> {
             } else {
                 None
             };
-            // Check for write clauses inside EXISTS subquery (InvalidClauseComposition)
-            // then skip any remaining clauses
+            // Check for write clauses; parse additional clauses into a full inner Query.
+            let mut additional_clauses: Vec<Clause> = Vec::new();
             while !self.at(&TokenKind::RBrace) && !self.at(&TokenKind::Eof) {
                 if matches!(
                     self.tokens[self.pos].kind,
@@ -1704,12 +1704,27 @@ impl<'src> Parser<'src> {
                         found: String::new(),
                     });
                 }
-                self.advance();
+                if let Some(clause) = self.parse_clause()? {
+                    additional_clauses.push(clause);
+                }
             }
             self.expect(&TokenKind::RBrace)?;
+            let full_query = if additional_clauses.is_empty() {
+                None
+            } else {
+                // Build a full inner Query: MATCH(patterns+where) + additional clauses
+                let mc = MatchClause {
+                    patterns: patterns.clone(),
+                    where_clause: where_clause.as_deref().cloned(),
+                };
+                let mut inner_clauses = vec![Clause::Match(mc)];
+                inner_clauses.extend(additional_clauses);
+                Some(Box::new(Query { clauses: inner_clauses, unions: Vec::new() }))
+            };
             return Ok(Expr::ExistsSubquery {
                 patterns,
                 where_clause,
+                full_query,
             });
         }
         // Simple pattern form: `exists { (n)-->() }`
@@ -1726,6 +1741,7 @@ impl<'src> Parser<'src> {
         Ok(Expr::ExistsSubquery {
             patterns,
             where_clause,
+            full_query: None,
         })
     }
 

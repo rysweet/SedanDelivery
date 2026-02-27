@@ -10,11 +10,35 @@
 //! - NULL in any binary expression propagates NULL (except IS NULL / IS NOT NULL)
 //! - Division by zero → [`ExecutionError::DivisionByZero`]
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 
 use crate::ast::{BinaryOp, Expr, Identifier, UnaryOp};
 use crate::error::{ExecutionError, GqlError};
 use crate::types::{CypherDuration, Value};
+
+// ── Query-level "now" for stable temporal function results ──────────────────────
+
+thread_local! {
+    /// The current query's "now" timestamp. Initialized once per query execution so that
+    /// temporal no-arg functions (date(), time(), etc.) return the same value throughout.
+    static QUERY_NOW: RefCell<Option<jiff::Zoned>> = const { RefCell::new(None) };
+}
+
+/// Initialize the query-level "now". Call once at the start of each query execution.
+pub fn init_query_now() {
+    QUERY_NOW.with(|c| *c.borrow_mut() = Some(jiff::Zoned::now()));
+}
+
+/// Clear the query-level "now". Call at the end of each query execution.
+pub fn clear_query_now() {
+    QUERY_NOW.with(|c| *c.borrow_mut() = None);
+}
+
+/// Get the query-level "now", falling back to the system time if not initialized.
+fn get_query_now() -> jiff::Zoned {
+    QUERY_NOW.with(|c| c.borrow().clone().unwrap_or_else(jiff::Zoned::now))
+}
 
 /// A single result row: maps variable names to their current [`Value`].
 ///
@@ -1335,30 +1359,30 @@ pub fn eval_function_with_vals(name: &str, vals: Vec<Value>) -> Result<Value, Gq
                 return Ok(Value::Null);
             }
             if !vals.is_empty() { return eval_date_constructor(&vals); }
-            let today = jiff::civil::Date::from(jiff::Zoned::now());
+            let today = jiff::civil::Date::from(get_query_now());
             Ok(Value::Date(today))
         }
         "datetime.realtime" | "datetime.statement" | "datetime.transaction" => {
             if vals.first().map(|v| v.is_null()).unwrap_or(false) { return Ok(Value::Null); }
             if !vals.is_empty() { return eval_datetime_constructor(&vals); }
-            Ok(Value::DateTime(Box::new(jiff::Zoned::now())))
+            Ok(Value::DateTime(Box::new(get_query_now())))
         }
         "localdatetime.realtime" | "localdatetime.statement" | "localdatetime.transaction" => {
             if vals.first().map(|v| v.is_null()).unwrap_or(false) { return Ok(Value::Null); }
             if !vals.is_empty() { return eval_localdatetime_constructor(&vals); }
-            let now = jiff::Zoned::now();
+            let now = get_query_now();
             Ok(Value::LocalDateTime(jiff::civil::DateTime::from(now)))
         }
         "localtime.realtime" | "localtime.statement" | "localtime.transaction" => {
             if vals.first().map(|v| v.is_null()).unwrap_or(false) { return Ok(Value::Null); }
             if !vals.is_empty() { return eval_localtime_constructor(&vals); }
-            let now = jiff::Zoned::now();
+            let now = get_query_now();
             Ok(Value::LocalTime(jiff::civil::Time::from(now)))
         }
         "time.realtime" | "time.statement" | "time.transaction" => {
             if vals.first().map(|v| v.is_null()).unwrap_or(false) { return Ok(Value::Null); }
             if !vals.is_empty() { return eval_time_constructor(&vals); }
-            Ok(Value::DateTime(Box::new(jiff::Zoned::now())))
+            Ok(Value::DateTime(Box::new(get_query_now())))
         }
         "datetime.fromepoch" => {
             // datetime.fromepoch(seconds, nanoseconds)
@@ -1583,17 +1607,17 @@ pub fn temporal_property_access(val: &Value, key: &str) -> Result<Value, GqlErro
             "weeks" => Ok(Value::Int(d.days.div_euclid(7))),
             "days" => Ok(Value::Int(d.days)),
             "daysOfWeek" => Ok(Value::Int(d.days.rem_euclid(7))),
-            "hours" => Ok(Value::Int(d.nanos.div_euclid(3_600_000_000_000))),
-            "minutes" => Ok(Value::Int(d.nanos.div_euclid(60_000_000_000))),
-            "minutesOfHour" => Ok(Value::Int(d.nanos.div_euclid(60_000_000_000).rem_euclid(60))),
-            "seconds" => Ok(Value::Int(d.nanos.div_euclid(1_000_000_000))),
-            "secondsOfMinute" => Ok(Value::Int(d.nanos.div_euclid(1_000_000_000).rem_euclid(60))),
-            "milliseconds" => Ok(Value::Int(d.nanos.div_euclid(1_000_000))),
-            "millisecondsOfSecond" => Ok(Value::Int(d.nanos.rem_euclid(1_000_000_000) / 1_000_000)),
-            "microseconds" => Ok(Value::Int(d.nanos.div_euclid(1_000))),
-            "microsecondsOfSecond" => Ok(Value::Int(d.nanos.rem_euclid(1_000_000_000) / 1_000)),
-            "nanoseconds" => Ok(Value::Int(d.nanos)),
-            "nanosecondsOfSecond" => Ok(Value::Int(d.nanos.rem_euclid(1_000_000_000))),
+            "hours" => Ok(Value::Int(d.nanos.div_euclid(3_600_000_000_000) as i64)),
+            "minutes" => Ok(Value::Int(d.nanos.div_euclid(60_000_000_000) as i64)),
+            "minutesOfHour" => Ok(Value::Int((d.nanos.div_euclid(60_000_000_000).rem_euclid(60)) as i64)),
+            "seconds" => Ok(Value::Int(d.nanos.div_euclid(1_000_000_000) as i64)),
+            "secondsOfMinute" => Ok(Value::Int((d.nanos.div_euclid(1_000_000_000).rem_euclid(60)) as i64)),
+            "milliseconds" => Ok(Value::Int(d.nanos.div_euclid(1_000_000) as i64)),
+            "millisecondsOfSecond" => Ok(Value::Int((d.nanos.rem_euclid(1_000_000_000) / 1_000_000) as i64)),
+            "microseconds" => Ok(Value::Int(d.nanos.div_euclid(1_000) as i64)),
+            "microsecondsOfSecond" => Ok(Value::Int((d.nanos.rem_euclid(1_000_000_000) / 1_000) as i64)),
+            "nanoseconds" => Ok(Value::Int(d.nanos as i64)),
+            "nanosecondsOfSecond" => Ok(Value::Int(d.nanos.rem_euclid(1_000_000_000) as i64)),
             _ => Ok(Value::Null),
         },
         _ => Ok(Value::Null),
@@ -1686,10 +1710,27 @@ fn parse_datetime_with_offset(s: &str) -> Result<jiff::Zoned, String> {
 
         let date = parse_date_str(date_str)?;
 
-        // Extract timezone suffix from the time portion
-        // Handle: Z, +HH:MM, -HH:MM, +HHMM, -HHMM, +HH, -HH at the end
-        let tz = extract_offset_from_string(after_t).unwrap_or(jiff::tz::TimeZone::UTC);
-        let time_no_tz = strip_tz_from_time_str(after_t);
+        // Check for IANA timezone name in brackets at end: e.g. "21:40:32.142[Europe/Stockholm]"
+        // or with offset: "21:40:32.142+02:00[Europe/Stockholm]"
+        let (time_str_base, tz) = if let Some(bracket_start) = after_t.rfind('[') {
+            if let Some(bracket_end) = after_t.rfind(']') {
+                if bracket_end > bracket_start {
+                    let iana_name = &after_t[bracket_start + 1..bracket_end];
+                    let tz = parse_timezone(iana_name)
+                        .unwrap_or(jiff::tz::TimeZone::UTC);
+                    // Strip the [IANA] part; the time_str may still have a numeric offset
+                    (&after_t[..bracket_start], tz)
+                } else {
+                    (after_t, extract_offset_from_string(after_t).unwrap_or(jiff::tz::TimeZone::UTC))
+                }
+            } else {
+                (after_t, extract_offset_from_string(after_t).unwrap_or(jiff::tz::TimeZone::UTC))
+            }
+        } else {
+            (after_t, extract_offset_from_string(after_t).unwrap_or(jiff::tz::TimeZone::UTC))
+        };
+
+        let time_no_tz = strip_tz_from_time_str(time_str_base);
         let time_expanded = expand_compact_time(time_no_tz);
         let time = time_expanded.parse::<jiff::civil::Time>()
             .map_err(|e| format!("cannot parse time '{time_expanded}': {e}"))?;
@@ -1761,9 +1802,151 @@ fn temporal_parse_error(func: &str, msg: impl std::fmt::Display) -> GqlError {
     })
 }
 
+// ── Large-year date handling ──────────────────────────────────────────────────
+// For years outside jiff's supported range (roughly ±9999), we store
+// large dates as special Map values with sentinel keys.
+
+const LARGE_DATE_KEY: &str = "__ldate_y";
+
+/// Parse a date string with potentially extreme years (e.g. -999999999-01-01).
+/// Returns (year, month, day) on success, None if the string doesn't match.
+fn parse_large_date_str(s: &str) -> Option<(i64, i32, i32)> {
+    let s = s.trim();
+    // Match: optional +/- sign, then digits, then -MM-DD
+    let (sign, rest) = if let Some(r) = s.strip_prefix('-') {
+        (-1i64, r)
+    } else if let Some(r) = s.strip_prefix('+') {
+        (1i64, r)
+    } else {
+        (1i64, s)
+    };
+    // Find the two '-' separators for YYYY-MM-DD
+    let mut parts = rest.splitn(3, '-');
+    let year_str = parts.next()?;
+    let month_str = parts.next()?;
+    let day_str = parts.next()?;
+    let year: i64 = year_str.parse().ok()?;
+    let month: i32 = month_str.parse().ok()?;
+    let day: i32 = day_str.parse().ok()?;
+    Some((sign * year, month, day))
+}
+
+/// Create a large-date sentinel Map value.
+fn large_date_value(year: i64, month: i32, day: i32) -> Value {
+    let mut m = indexmap::IndexMap::new();
+    m.insert(LARGE_DATE_KEY.into(), Value::Int(year));
+    m.insert("__ldate_m".into(), Value::Int(month as i64));
+    m.insert("__ldate_d".into(), Value::Int(day as i64));
+    Value::Map(m)
+}
+
+/// Create a large-localdatetime sentinel Map value.
+fn large_ldt_value(year: i64, month: i32, day: i32, hour: i32, minute: i32, second: i32, nanos: i32) -> Value {
+    let mut m = indexmap::IndexMap::new();
+    m.insert("__lldt_y".into(), Value::Int(year));
+    m.insert("__lldt_m".into(), Value::Int(month as i64));
+    m.insert("__lldt_d".into(), Value::Int(day as i64));
+    m.insert("__lldt_h".into(), Value::Int(hour as i64));
+    m.insert("__lldt_min".into(), Value::Int(minute as i64));
+    m.insert("__lldt_s".into(), Value::Int(second as i64));
+    m.insert("__lldt_ns".into(), Value::Int(nanos as i64));
+    Value::Map(m)
+}
+
+/// Extract large-date components from a sentinel Map value.
+fn extract_large_date(val: &Value) -> Option<(i64, i32, i32)> {
+    if let Value::Map(m) = val {
+        if let (Some(Value::Int(y)), Some(Value::Int(mo)), Some(Value::Int(d))) = (
+            m.get(LARGE_DATE_KEY), m.get("__ldate_m"), m.get("__ldate_d"),
+        ) {
+            return Some((*y, *mo as i32, *d as i32));
+        }
+    }
+    None
+}
+
+/// Extract large-localdatetime components from a sentinel Map value.
+fn extract_large_ldt(val: &Value) -> Option<(i64, i32, i32, i32, i32, i32, i32)> {
+    if let Value::Map(m) = val {
+        if let Some(Value::Int(y)) = m.get("__lldt_y") {
+            let get_i32 = |key: &str| m.get(key).and_then(|v| if let Value::Int(i) = v { Some(*i as i32) } else { None }).unwrap_or(0);
+            return Some((*y, get_i32("__lldt_m"), get_i32("__lldt_d"),
+                         get_i32("__lldt_h"), get_i32("__lldt_min"), get_i32("__lldt_s"), get_i32("__lldt_ns")));
+        }
+    }
+    None
+}
+
+/// Compute days from a proleptic Gregorian epoch (year 0, Jan 1) for a given date.
+/// Handles years of arbitrary magnitude using i128 arithmetic.
+fn proleptic_gregorian_days(year: i64, month: i32, day: i32) -> i128 {
+    let y = if month <= 2 { year as i128 - 1 } else { year as i128 };
+    let m = if month <= 2 { month as i128 + 12 } else { month as i128 };
+    let d = day as i128;
+    // Gregorian formula
+    365 * y + y.div_euclid(4) - y.div_euclid(100) + y.div_euclid(400)
+        + (153 * (m - 3) + 2) / 5 + d
+}
+
+/// Compute `duration.between` for large dates using calendar arithmetic.
+fn large_date_duration_between(y1: i64, m1: i32, d1: i32, y2: i64, m2: i32, d2: i32) -> CypherDuration {
+    // Compute calendar diff: years, months, days
+    let mut year_diff = y2 - y1;
+    let mut month_diff = m2 - m1;
+    let mut day_diff = d2 - d1;
+    // Normalize: if day_diff < 0, borrow 1 month
+    if day_diff < 0 {
+        month_diff -= 1;
+        // Add days in the previous month of y2/m2
+        let (prev_y, prev_m) = if m2 == 1 { (y2 - 1, 12) } else { (y2, m2 - 1) };
+        day_diff += days_in_month(prev_y, prev_m);
+    }
+    // Normalize: if month_diff < 0, borrow 1 year
+    if month_diff < 0 {
+        year_diff -= 1;
+        month_diff += 12;
+    }
+    let total_months = year_diff * 12 + month_diff as i64;
+    CypherDuration { months: total_months, days: day_diff as i64, nanos: 0 }
+}
+
+/// Days in a given month of a given year in the proleptic Gregorian calendar.
+fn days_in_month(year: i64, month: i32) -> i32 {
+    match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 => if is_leap_year(year) { 29 } else { 28 },
+        _ => 30,
+    }
+}
+
+fn is_leap_year(year: i64) -> bool {
+    (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0)
+}
+
+type LargeLdt = (i64, i32, i32, i32, i32, i32, i32);
+
+fn ldt_nanos(h: i32, min: i32, s: i32, ns: i32) -> i128 {
+    h as i128 * 3_600_000_000_000 + min as i128 * 60_000_000_000
+        + s as i128 * 1_000_000_000 + ns as i128
+}
+
+/// Compute `duration.inSeconds` between two large-year datetimes.
+fn large_ldt_in_seconds(ldt1: LargeLdt, ldt2: LargeLdt) -> CypherDuration {
+    let (y1, mo1, d1, h1, min1, s1, ns1) = ldt1;
+    let (y2, mo2, d2, h2, min2, s2, ns2) = ldt2;
+    let days1 = proleptic_gregorian_days(y1, mo1, d1);
+    let days2 = proleptic_gregorian_days(y2, mo2, d2);
+    let diff_days = days2 - days1;
+    let t1_nanos = ldt_nanos(h1, min1, s1, ns1);
+    let t2_nanos = ldt_nanos(h2, min2, s2, ns2);
+    let total_nanos = diff_days * 86_400_000_000_000 + (t2_nanos - t1_nanos);
+    CypherDuration { months: 0, days: 0, nanos: total_nanos }
+}
+
 fn eval_date_constructor(vals: &[Value]) -> Result<Value, GqlError> {
     if vals.is_empty() {
-        let today = jiff::civil::Date::from(jiff::Zoned::now());
+        let today = jiff::civil::Date::from(get_query_now());
         return Ok(Value::Date(today));
     }
     if vals.len() != 1 {
@@ -1775,8 +1958,17 @@ fn eval_date_constructor(vals: &[Value]) -> Result<Value, GqlError> {
     match &vals[0] {
         Value::Null => Ok(Value::Null),
         Value::Str(s) => {
-            let d = parse_date_str(s).map_err(|e| temporal_parse_error("date", e))?;
-            Ok(Value::Date(d))
+            match parse_date_str(s) {
+                Ok(d) => Ok(Value::Date(d)),
+                Err(_) => {
+                    // Try large-year fallback (e.g. -999999999-01-01)
+                    if let Some((y, m, d)) = parse_large_date_str(s) {
+                        Ok(large_date_value(y, m, d))
+                    } else {
+                        Err(temporal_parse_error("date", format!("cannot parse date from '{s}'")))
+                    }
+                }
+            }
         }
         // Accept temporal values directly — extract date component
         Value::Date(d) => Ok(Value::Date(*d)),
@@ -2075,8 +2267,14 @@ fn extract_base_time(
 
 fn eval_time_constructor(vals: &[Value]) -> Result<Value, GqlError> {
     if vals.is_empty() {
-        let now = jiff::Zoned::now();
-        return Ok(Value::LocalTime(jiff::civil::Time::from(now)));
+        let now = get_query_now();
+        // time() returns a ZonedTime stored as a DateTime with epoch date 1970-01-01
+        let tz = now.time_zone().clone();
+        let t = jiff::civil::Time::from(&now);
+        let epoch_date = jiff::civil::Date::new(1970, 1, 1).unwrap();
+        return epoch_date.to_datetime(t).to_zoned(tz)
+            .map(|z| Value::DateTime(Box::new(z)))
+            .map_err(|e| temporal_parse_error("time", e));
     }
     if vals.len() != 1 {
         return Err(GqlError::Execution(ExecutionError::TypeMismatch {
@@ -2226,7 +2424,7 @@ fn strip_tz_offset_from_time(s: &str) -> &str {
 
 fn eval_localtime_constructor(vals: &[Value]) -> Result<Value, GqlError> {
     if vals.is_empty() {
-        let now = jiff::Zoned::now();
+        let now = get_query_now();
         return Ok(Value::LocalTime(jiff::civil::Time::from(now)));
     }
     if vals.len() != 1 {
@@ -2303,7 +2501,7 @@ fn eval_localtime_constructor(vals: &[Value]) -> Result<Value, GqlError> {
 
 fn eval_datetime_constructor(vals: &[Value]) -> Result<Value, GqlError> {
     if vals.is_empty() {
-        return Ok(Value::DateTime(Box::new(jiff::Zoned::now())));
+        return Ok(Value::DateTime(Box::new(get_query_now())));
     }
     if vals.len() != 1 {
         return Err(GqlError::Execution(ExecutionError::TypeMismatch {
@@ -2540,7 +2738,7 @@ fn expand_compact_time(s: &str) -> String {
 
 fn eval_localdatetime_constructor(vals: &[Value]) -> Result<Value, GqlError> {
     if vals.is_empty() {
-        let now = jiff::Zoned::now();
+        let now = get_query_now();
         return Ok(Value::LocalDateTime(jiff::civil::DateTime::from(now)));
     }
     if vals.len() != 1 {
@@ -2552,9 +2750,28 @@ fn eval_localdatetime_constructor(vals: &[Value]) -> Result<Value, GqlError> {
     match &vals[0] {
         Value::Null => Ok(Value::Null),
         Value::Str(s) => {
-            let dt = parse_localdatetime_str(s)
-                .map_err(|e| temporal_parse_error("localdatetime", e))?;
-            Ok(Value::LocalDateTime(dt))
+            match parse_localdatetime_str(s) {
+                Ok(dt) => Ok(Value::LocalDateTime(dt)),
+                Err(_) => {
+                    // Try large-year fallback (e.g. -999999999-01-01)
+                    if let Some((y, m, d)) = parse_large_date_str(s) {
+                        Ok(large_ldt_value(y, m, d, 0, 0, 0, 0))
+                    } else if let Some(t_idx) = s.find(['T', 't']) {
+                        let date_part = &s[..t_idx];
+                        let time_part = &s[t_idx + 1..];
+                        if let Some((y, mo, d)) = parse_large_date_str(date_part) {
+                            // Parse time component
+                            let time_str = time_part.trim_end_matches(|c: char| !c.is_ascii_digit() && c != '.' && c != ':');
+                            let time = time_str.parse::<jiff::civil::Time>().unwrap_or(jiff::civil::Time::midnight());
+                            Ok(large_ldt_value(y, mo, d, time.hour() as i32, time.minute() as i32, time.second() as i32, time.subsec_nanosecond()))
+                        } else {
+                            Err(temporal_parse_error("localdatetime", format!("cannot parse datetime from '{s}'")))
+                        }
+                    } else {
+                        Err(temporal_parse_error("localdatetime", format!("cannot parse datetime from '{s}'")))
+                    }
+                }
+            }
         }
         // Accept temporal values directly
         Value::LocalDateTime(dt) => Ok(Value::LocalDateTime(*dt)),
@@ -2800,7 +3017,7 @@ fn eval_duration_constructor(vals: &[Value]) -> Result<Value, GqlError> {
                 + raw_minutes * 60.0
                 + raw_seconds
                 + sub_sec_nanos / 1_000_000_000.0;
-            let total_nanos = (total_time_secs * 1_000_000_000.0).round() as i64;
+            let total_nanos = (total_time_secs * 1_000_000_000.0).round() as i128;
 
             Ok(Value::Duration(CypherDuration { months: total_months, days: int_days, nanos: total_nanos }))
         }
@@ -2852,10 +3069,10 @@ fn parse_duration_str(s: &str) -> Result<CypherDuration, GqlError> {
         let ms = sp.get_milliseconds();
         let us = sp.get_microseconds();
         let ns_sub = sp.get_nanoseconds();
-        let total_nanos = time_secs * 1_000_000_000
-            + ms * 1_000_000
-            + us * 1_000
-            + ns_sub;
+        let total_nanos = time_secs as i128 * 1_000_000_000
+            + ms as i128 * 1_000_000
+            + us as i128 * 1_000
+            + ns_sub as i128;
         return Ok(CypherDuration { months: total_months, days: total_days, nanos: total_nanos });
     }
     // Fall back to custom parser for decimal values and edge cases like 'PT'.
@@ -2912,7 +3129,7 @@ fn parse_decimal_iso_duration(s: &str) -> Result<CypherDuration, GqlError> {
             let int_days = total_days_float.trunc() as i64;
             let frac_days = total_days_float - int_days as f64;
             let total_time_secs = frac_days * 86_400.0 + t_hours * 3_600.0 + t_mins * 60.0 + t_secs;
-            let total_nanos = (total_time_secs * 1_000_000_000.0).round() as i64;
+            let total_nanos = (total_time_secs * 1_000_000_000.0).round() as i128;
             return Ok(CypherDuration { months: total_months, days: int_days, nanos: total_nanos });
         }
     }
@@ -3008,7 +3225,7 @@ fn parse_decimal_iso_duration(s: &str) -> Result<CypherDuration, GqlError> {
         + hours * 3_600.0
         + minutes * 60.0
         + seconds;
-    let total_nanos = (total_time_secs * 1_000_000_000.0).round() as i64;
+    let total_nanos = (total_time_secs * 1_000_000_000.0).round() as i128;
 
     Ok(CypherDuration { months: total_months, days: int_days, nanos: total_nanos })
 }
@@ -3430,6 +3647,10 @@ fn eval_duration_between(vals: &[Value]) -> Result<Value, GqlError> {
     if matches!(&vals[0], Value::Null) || matches!(&vals[1], Value::Null) {
         return Ok(Value::Null);
     }
+    // Handle large-year date sentinels
+    if let (Some((y1, m1, d1)), Some((y2, m2, d2))) = (extract_large_date(&vals[0]), extract_large_date(&vals[1])) {
+        return Ok(Value::Duration(large_date_duration_between(y1, m1, d1, y2, m2, d2)));
+    }
 
     let both_have_dates = has_date_component(&vals[0]) && has_date_component(&vals[1]);
     let either_time_only = is_time_only(&vals[0]) || is_time_only(&vals[1]);
@@ -3587,7 +3808,7 @@ fn civil_time_nanos(val: &Value) -> i64 {
 }
 
 fn build_duration_span(total_months: i64, days: i64, secs: i64, subsec_nanos: i32) -> CypherDuration {
-    let total_nanos = secs * 1_000_000_000 + subsec_nanos as i64;
+    let total_nanos = secs as i128 * 1_000_000_000 + subsec_nanos as i128;
     CypherDuration { months: total_months, days, nanos: total_nanos }
 }
 
@@ -3730,6 +3951,12 @@ fn eval_duration_in_seconds(vals: &[Value]) -> Result<Value, GqlError> {
     if matches!(&vals[0], Value::Null) || matches!(&vals[1], Value::Null) {
         return Ok(Value::Null);
     }
+    // Handle large-year datetime sentinels
+    if let (Some((y1, mo1, d1, h1, min1, s1, ns1)), Some((y2, mo2, d2, h2, min2, s2, ns2))) =
+        (extract_large_ldt(&vals[0]), extract_large_ldt(&vals[1]))
+    {
+        return Ok(Value::Duration(large_ldt_in_seconds((y1, mo1, d1, h1, min1, s1, ns1), (y2, mo2, d2, h2, min2, s2, ns2))));
+    }
 
     // For zoned datetime pairs, use timestamp-based or time-of-day calculation.
     if let (Value::DateTime(z1), Value::DateTime(z2)) = (&vals[0], &vals[1]) {
@@ -3739,7 +3966,7 @@ fn eval_duration_in_seconds(vals: &[Value]) -> Result<Value, GqlError> {
             // Both are real datetimes: use exact timestamp diff.
             let ts1 = z1.timestamp();
             let ts2 = z2.timestamp();
-            let total_nanos = (ts2.as_nanosecond() - ts1.as_nanosecond()) as i64;
+            let total_nanos = ts2.as_nanosecond() - ts1.as_nanosecond();
             return Ok(Value::Duration(CypherDuration { months: 0, days: 0, nanos: total_nanos }));
         } else {
             // Mixed: one is time-only (epoch date). Compare UTC time-of-day only.
@@ -3752,7 +3979,7 @@ fn eval_duration_in_seconds(vals: &[Value]) -> Result<Value, GqlError> {
                     + t.subsec_nanosecond() as i64
             };
             let nanos_diff = utc_tod_nanos(z2) - utc_tod_nanos(z1);
-            return Ok(Value::Duration(CypherDuration { months: 0, days: 0, nanos: nanos_diff }));
+            return Ok(Value::Duration(CypherDuration { months: 0, days: 0, nanos: nanos_diff as i128 }));
         }
     }
 
@@ -3781,7 +4008,7 @@ fn eval_duration_in_seconds(vals: &[Value]) -> Result<Value, GqlError> {
                 } else {
                     (other_zoned.timestamp(), zdt.timestamp())
                 };
-                let total_nanos = (ts2.as_nanosecond() - ts1.as_nanosecond()) as i64;
+                let total_nanos = ts2.as_nanosecond() - ts1.as_nanosecond();
                 return Ok(Value::Duration(CypherDuration { months: 0, days: 0, nanos: total_nanos }));
             }
         }
@@ -3802,20 +4029,20 @@ fn eval_duration_in_seconds(vals: &[Value]) -> Result<Value, GqlError> {
         let days_span = d1.until(
             jiff::civil::DateDifference::new(d2).largest(jiff::Unit::Day),
         ).map_err(|e| temporal_parse_error("duration.inSeconds", e))?;
-        let diff_days = days_span.get_days() as i64;
+        let diff_days = days_span.get_days() as i128;
 
         let t1 = dt1.time();
         let t2 = dt2.time();
-        let t1_nanos = t1.hour() as i64 * 3_600_000_000_000
-            + t1.minute() as i64 * 60_000_000_000
-            + t1.second() as i64 * 1_000_000_000
-            + t1.subsec_nanosecond() as i64;
-        let t2_nanos = t2.hour() as i64 * 3_600_000_000_000
-            + t2.minute() as i64 * 60_000_000_000
-            + t2.second() as i64 * 1_000_000_000
-            + t2.subsec_nanosecond() as i64;
+        let t1_nanos = t1.hour() as i128 * 3_600_000_000_000
+            + t1.minute() as i128 * 60_000_000_000
+            + t1.second() as i128 * 1_000_000_000
+            + t1.subsec_nanosecond() as i128;
+        let t2_nanos = t2.hour() as i128 * 3_600_000_000_000
+            + t2.minute() as i128 * 60_000_000_000
+            + t2.second() as i128 * 1_000_000_000
+            + t2.subsec_nanosecond() as i128;
 
-        let total_nanos = diff_days * 86_400_000_000_000 + (t2_nanos - t1_nanos);
+        let total_nanos = diff_days * 86_400_000_000_000_i128 + (t2_nanos - t1_nanos);
         Ok(Value::Duration(CypherDuration { months: 0, days: 0, nanos: total_nanos }))
     } else {
         // Time-only
@@ -3830,7 +4057,7 @@ fn eval_duration_in_seconds(vals: &[Value]) -> Result<Value, GqlError> {
             + t2.second() as i64 * 1_000_000_000
             + t2.subsec_nanosecond() as i64;
         let diff = t2_nanos - t1_nanos;
-        Ok(Value::Duration(CypherDuration { months: 0, days: 0, nanos: diff }))
+        Ok(Value::Duration(CypherDuration { months: 0, days: 0, nanos: diff as i128 }))
     }
 }
 
@@ -3853,15 +4080,25 @@ pub fn temporal_add_duration(temporal: &Value, dur: &CypherDuration, subtract: b
                 d1.checked_add(jiff::Span::new().days(days))
                     .map_err(|e| temporal_parse_error("temporal arithmetic", e))?
             } else { d1 };
-            Ok(Value::Date(d2))
+            // For Date arithmetic, the nanos (time component) contributes whole days only.
+            // Fractional durations (e.g. 12.5 years) cascade: years→months→days→nanos.
+            // We must apply any whole-day portion from nanos to the date.
+            // Use truncating division (toward zero) to correctly handle both
+            // positive (add) and negative (subtract) nanos without sign errors.
+            let extra_days = nanos / 86_400_000_000_000_i128;
+            let d3 = if extra_days != 0 {
+                d2.checked_add(jiff::Span::new().days(extra_days as i64))
+                    .map_err(|e| temporal_parse_error("temporal arithmetic", e))?
+            } else { d2 };
+            Ok(Value::Date(d3))
         }
         Value::LocalTime(t) => {
-            let cur_nanos = t.hour() as i64 * 3_600_000_000_000
-                + t.minute() as i64 * 60_000_000_000
-                + t.second() as i64 * 1_000_000_000
-                + t.subsec_nanosecond() as i64;
+            let cur_nanos = t.hour() as i128 * 3_600_000_000_000
+                + t.minute() as i128 * 60_000_000_000
+                + t.second() as i128 * 1_000_000_000
+                + t.subsec_nanosecond() as i128;
             let total = cur_nanos + nanos;
-            let day_nanos: i64 = 24 * 3_600_000_000_000;
+            let day_nanos: i128 = 24 * 3_600_000_000_000;
             let wrapped = ((total % day_nanos) + day_nanos) % day_nanos;
             let h = (wrapped / 3_600_000_000_000) as i8;
             let rem = wrapped % 3_600_000_000_000;
@@ -3883,7 +4120,7 @@ pub fn temporal_add_duration(temporal: &Value, dur: &CypherDuration, subtract: b
                     .map_err(|e| temporal_parse_error("temporal arithmetic", e))?
             } else { dt1 };
             let dt3 = if nanos != 0 {
-                dt2.checked_add(jiff::SignedDuration::from_nanos(nanos))
+                dt2.checked_add(jiff::SignedDuration::from_nanos(nanos as i64))
                     .map_err(|e| temporal_parse_error("temporal arithmetic", e))?
             } else { dt2 };
             Ok(Value::LocalDateTime(dt3))
@@ -3898,7 +4135,7 @@ pub fn temporal_add_duration(temporal: &Value, dur: &CypherDuration, subtract: b
                     .map_err(|e| temporal_parse_error("temporal arithmetic", e))?
             } else { zdt1 };
             let zdt3 = if nanos != 0 {
-                zdt2.checked_add(jiff::SignedDuration::from_nanos(nanos))
+                zdt2.checked_add(jiff::SignedDuration::from_nanos(nanos as i64))
                     .map_err(|e| temporal_parse_error("temporal arithmetic", e))?
             } else { zdt2 };
             Ok(Value::DateTime(Box::new(zdt3)))
@@ -3955,7 +4192,7 @@ pub fn duration_mul_f64(d: &CypherDuration, f: f64) -> CypherDuration {
         + d.days as f64 * f * DAY_NANOS_F
         + d.nanos as f64 * f;
     let new_days = (remaining_nanos_f / DAY_NANOS_F).trunc() as i64;
-    let new_nanos = (remaining_nanos_f - new_days as f64 * DAY_NANOS_F).round() as i64;
+    let new_nanos = (remaining_nanos_f - new_days as f64 * DAY_NANOS_F).round() as i128;
     CypherDuration { months: new_months, days: new_days, nanos: new_nanos }
 }
 
@@ -3964,7 +4201,7 @@ pub fn duration_mul(d: &CypherDuration, n: i64) -> CypherDuration {
     CypherDuration {
         months: d.months * n,
         days: d.days * n,
-        nanos: d.nanos * n,
+        nanos: d.nanos * n as i128,
     }
 }
 
@@ -3982,11 +4219,11 @@ pub fn duration_div(d: &CypherDuration, n: i64) -> Result<CypherDuration, GqlErr
     const DAY_NANOS: i128 = 86_400_000_000_000;
     let total_sub: i128 = rem_months as i128 * MONTH_NANOS
         + d.days as i128 * DAY_NANOS
-        + d.nanos as i128;
+        + d.nanos;
     let new_sub = total_sub / n as i128;
     // Split into days and nanos, preserving sign (use floor division for days)
     let new_days = new_sub.div_euclid(DAY_NANOS) as i64;
-    let new_nanos = new_sub.rem_euclid(DAY_NANOS) as i64;
+    let new_nanos = new_sub.rem_euclid(DAY_NANOS);
     Ok(CypherDuration { months: new_months, days: new_days, nanos: new_nanos })
 }
 

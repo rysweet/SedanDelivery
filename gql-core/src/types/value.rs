@@ -16,7 +16,8 @@ pub struct CypherDuration {
     pub days: i64,
     /// Total time in nanoseconds. Independent sign from months and days.
     /// = hours*3_600_000_000_000 + minutes*60_000_000_000 + seconds*1_000_000_000 + sub_nanos
-    pub nanos: i64,
+    /// Uses i128 to support very large durations (e.g. duration.inSeconds spanning billions of years).
+    pub nanos: i128,
 }
 
 impl std::hash::Hash for CypherDuration {
@@ -385,13 +386,13 @@ pub fn format_cypher_duration(d: &CypherDuration) -> String {
     let days = d.days;
 
     // Decompose nanos into hours, minutes, seconds, sub-nanos (all with same sign as nanos)
-    let (time_sign, abs_nanos) = if d.nanos < 0 { (-1i64, -d.nanos) } else { (1i64, d.nanos) };
-    let h_abs = abs_nanos / 3_600_000_000_000i64;
-    let rem = abs_nanos % 3_600_000_000_000i64;
-    let m_abs = rem / 60_000_000_000i64;
-    let rem = rem % 60_000_000_000i64;
-    let s_abs = rem / 1_000_000_000i64;
-    let ns_abs = rem % 1_000_000_000i64;
+    let (time_sign, abs_nanos) = if d.nanos < 0 { (-1i128, -d.nanos) } else { (1i128, d.nanos) };
+    let h_abs = abs_nanos / 3_600_000_000_000i128;
+    let rem = abs_nanos % 3_600_000_000_000i128;
+    let m_abs = rem / 60_000_000_000i128;
+    let rem = rem % 60_000_000_000i128;
+    let s_abs = rem / 1_000_000_000i128;
+    let ns_abs = rem % 1_000_000_000i128;
 
     let norm_h = time_sign * h_abs;
     let norm_m = time_sign * m_abs;
