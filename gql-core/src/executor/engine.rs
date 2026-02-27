@@ -373,7 +373,7 @@ impl<'a> QueryExecutor<'a> {
             Operator::Limit { count, child } => {
                 let input = self.exec_operator(graph, child, budget, outer_rows, stats)?;
                 budget.check_or_err()?;
-                let n = eval_count_expr(count, &HashMap::new())?;
+                let n = eval_count_expr(count, &self.parameters)?;
                 Ok(input.into_iter().take(n).collect())
             }
 
@@ -381,7 +381,7 @@ impl<'a> QueryExecutor<'a> {
             Operator::Skip { count, child } => {
                 let input = self.exec_operator(graph, child, budget, outer_rows, stats)?;
                 budget.check_or_err()?;
-                let n = eval_count_expr(count, &HashMap::new())?;
+                let n = eval_count_expr(count, &self.parameters)?;
                 Ok(input.into_iter().skip(n).collect())
             }
 
@@ -457,6 +457,11 @@ impl<'a> QueryExecutor<'a> {
                     for ((func, _, _, _, alias), state) in aggregations.iter().zip(&agg_states) {
                         row.insert(alias.0.clone(), state.finalize(func)?);
                     }
+                    // Preserve query parameters so downstream operators (e.g. Delete,
+                    // Filter) can still access $param bindings after aggregation.
+                    for (k, v) in &self.parameters {
+                        row.entry(k.clone()).or_insert_with(|| v.clone());
+                    }
                     budget.record_row();
                     out.push(row);
                 }
@@ -469,8 +474,12 @@ impl<'a> QueryExecutor<'a> {
                 let input = if let Some(ch) = child {
                     self.exec_operator(graph, ch, budget, outer_rows, stats)?
                 } else {
-                    // No child means standalone CREATE: one empty row to iterate over.
-                    vec![Row::new()]
+                    // No child means standalone CREATE: one row with parameters.
+                    let mut row = Row::new();
+                    for (k, v) in &self.parameters {
+                        row.insert(k.clone(), v.clone());
+                    }
+                    vec![row]
                 };
 
                 let mut out = Vec::new();
@@ -771,6 +780,7 @@ impl<'a> QueryExecutor<'a> {
                 path_mode,
                 dst_alias,
                 child,
+                rel_props,
             } => {
                 let input = self.exec_operator(graph, child, budget, outer_rows, stats)?;
                 let type_strs: Vec<&str> = rel_types.iter().map(|r| r.as_str()).collect();
@@ -835,6 +845,19 @@ impl<'a> QueryExecutor<'a> {
                                 // current path to allow different paths through the graph.
                                 if path_nodes.contains(&adj.neighbor_id) {
                                     continue;
+                                }
+                                // Check inline property constraints on the traversed edge.
+                                if let Some(pred) = rel_props {
+                                    let mut edge_row = row.clone();
+                                    edge_row.insert(
+                                        "__varlen_edge__".to_string(),
+                                        Value::Edge(adj.edge_id),
+                                    );
+                                    let ctx = self.build_filter_ctx(graph, &edge_row)?;
+                                    match self.eval_with_storage(graph, pred, &edge_row, &ctx) {
+                                        Ok(Value::Bool(true)) => {}
+                                        _ => continue, // edge doesn't satisfy constraints
+                                    }
                                 }
                                 let mut new_path_nodes = path_nodes.clone();
                                 new_path_nodes.push(adj.neighbor_id);
@@ -1781,6 +1804,20 @@ impl<'a> QueryExecutor<'a> {
                         }
                         return eval_expr(expr, ctx);
                     }
+                    // Pattern comprehension: [p = (pattern) | mapExpr] or [(pattern) | mapExpr]
+                    // args: [PatternExpr(patterns), map_expr, where_expr]
+                    "__patterncomp" => {
+                        if args.len() >= 2 {
+                            if let Expr::PatternExpr(patterns) = &args[0] {
+                                let map_expr = &args[1];
+                                let where_expr = args.get(2);
+                                return self.eval_pattern_comprehension(
+                                    graph, patterns, map_expr, where_expr, row,
+                                );
+                            }
+                        }
+                        return Ok(Value::List(vec![]));
+                    }
                     _ => {}
                 }
 
@@ -2179,6 +2216,55 @@ impl<'a> QueryExecutor<'a> {
                 .all(|(k, v)| sub_row.get(k).is_none_or(|sv| sv == v))
         });
         Ok(Value::Bool(has_match))
+    }
+
+    /// Evaluate a pattern comprehension `[(pattern) | mapExpr WHERE whereExpr]`.
+    ///
+    /// Executes the pattern against the current outer row, then for each matched row
+    /// (filtered by whereExpr) evaluates mapExpr and returns a `Value::List`.
+    fn eval_pattern_comprehension(
+        &self,
+        graph: &str,
+        patterns: &[crate::ast::PathPattern],
+        map_expr: &Expr,
+        where_expr: Option<&Expr>,
+        outer_row: &Row,
+    ) -> Result<Value, GqlError> {
+        let planner = QueryPlanner::with_context(self.store, graph, self.registry, &self.parameters);
+        let sub_op = planner.plan_exists_subquery(patterns, None)?;
+
+        let outer = vec![outer_row.clone()];
+        let mut budget = ExecutionBudget::default_budget();
+        let mut stats = MutationStats::default();
+        let sub_rows = self.exec_operator(graph, &sub_op, &mut budget, &outer, &mut stats)?;
+
+        let mut result = Vec::new();
+        for sub_row in &sub_rows {
+            // Compatibility check: bound variables from outer_row must match sub_row.
+            // This handles correlated patterns like `[p = (a)-->(b) | p]` where `a`
+            // and `b` are already bound in the outer row.
+            let compatible = outer_row
+                .iter()
+                .filter(|(k, _)| !k.starts_with('$')) // exclude parameters
+                .all(|(k, v)| sub_row.get(k.as_str()).is_none_or(|sv| sv == v));
+            if !compatible {
+                continue;
+            }
+            // Apply WHERE filter if present.
+            if let Some(pred) = where_expr {
+                if !matches!(pred, Expr::Bool(true)) {
+                    let ctx = self.build_filter_ctx(graph, sub_row)?;
+                    match self.eval_with_storage(graph, pred, sub_row, &ctx)? {
+                        Value::Bool(true) => {}
+                        _ => continue,
+                    }
+                }
+            }
+            // Evaluate the map expression in the matched row context.
+            let ctx = self.build_filter_ctx(graph, sub_row)?;
+            result.push(self.eval_with_storage(graph, map_expr, sub_row, &ctx)?);
+        }
+        Ok(Value::List(result))
     }
 
     /// Apply a single `SetItem` (SET n.prop = val, SET n = {map}, SET n += {map}, SET n:Label).
@@ -2680,9 +2766,9 @@ fn row_key(row: &Row) -> String {
 }
 
 /// Evaluate a `count` expression (LIMIT/SKIP argument) — must be a non-negative integer.
-fn eval_count_expr(expr: &Expr, _row: &Row) -> Result<usize, GqlError> {
-    let empty_ctx: FilterRow<'_> = HashMap::new();
-    match eval_expr(expr, &empty_ctx)? {
+fn eval_count_expr(expr: &Expr, params: &Row) -> Result<usize, GqlError> {
+    let ctx: FilterRow<'_> = params.iter().map(|(k, v)| (k.as_str(), v)).collect();
+    match eval_expr(expr, &ctx)? {
         Value::Int(n) if n >= 0 => Ok(n as usize),
         Value::Int(n) => Err(GqlError::Execution(ExecutionError::TypeMismatch {
             expected: "non-negative integer for LIMIT/SKIP".to_string(),
@@ -2773,6 +2859,18 @@ fn expr_to_column_name(expr: &Expr) -> String {
             } else {
                 format!("[{} IN {}]", var_str, list_str)
             }
+        }
+        // These must match expr_to_col_name in planner.rs exactly.
+        Expr::IsNull(e) => format!("{} IS NULL", expr_to_column_name(e)),
+        Expr::IsNotNull(e) => format!("{} IS NOT NULL", expr_to_column_name(e)),
+        Expr::HasLabel(e, label) => format!("({}:{})", expr_to_column_name(e), label.0),
+        Expr::Parameter(name) => format!("${name}"),
+        Expr::List(items) => {
+            let items_str: Vec<String> = items.iter().map(expr_to_column_name).collect();
+            format!("[{}]", items_str.join(", "))
+        }
+        Expr::Subscript(list, idx) => {
+            format!("{}[{}]", expr_to_column_name(list), expr_to_column_name(idx))
         }
         _ => format!("{:?}", expr),
     }
@@ -3326,6 +3424,7 @@ mod tests {
                 label: Some(Label::new("N")),
                 alias: Identifier::new("a"),
             }),
+            rel_props: None,
         };
         let mut budget = ExecutionBudget::unlimited();
         let result = executor.execute("g", &plan, &mut budget).unwrap();
@@ -3374,6 +3473,7 @@ mod tests {
                 label: Some(Label::new("N")),
                 alias: Identifier::new("src"),
             }),
+            rel_props: None,
         };
         let mut budget = ExecutionBudget::unlimited();
         let result = executor.execute("g", &plan, &mut budget).unwrap();
@@ -3416,6 +3516,7 @@ mod tests {
                 label: Some(Label::new("N")),
                 alias: Identifier::new("src"),
             }),
+            rel_props: None,
         };
         let mut budget = ExecutionBudget::unlimited();
         let result = executor.execute("g", &plan, &mut budget).unwrap();
