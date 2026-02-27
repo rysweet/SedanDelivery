@@ -4,8 +4,6 @@ import {
   Hand,
   Plus,
   Trash2,
-  Undo2,
-  Redo2,
   Layout,
   Maximize2,
   Terminal,
@@ -144,24 +142,6 @@ export function Toolbar({
         disabled={!hasSelection}
       >
         <Trash2 size={16} />
-      </ToolbarButton>
-
-      <Separator />
-
-      {/* History — undo/redo coming in v2, always disabled (Fix #78) */}
-      <ToolbarButton
-        tooltip="Undo coming in v2"
-        onClick={() => { /* undo coming in v2 */ }}
-        disabled={true}
-      >
-        <Undo2 size={16} />
-      </ToolbarButton>
-      <ToolbarButton
-        tooltip="Redo coming in v2"
-        onClick={() => { /* redo coming in v2 */ }}
-        disabled={true}
-      >
-        <Redo2 size={16} />
       </ToolbarButton>
 
       <Separator />

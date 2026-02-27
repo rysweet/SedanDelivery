@@ -106,16 +106,6 @@ Node/edge IDs use `u64` (not `u32`) to prevent silent overflow at 4.29 billion e
 
 See [docs/RESEARCH.md](docs/RESEARCH.md) for the full security analysis.
 
-## Key Design Decisions
-
-| Decision | Rationale | ADR |
-|---|---|---|
-| Hand-written recursive descent parser | lalrpop can't handle Cypher's `\|` ambiguity (LALR(1) showstopper) | [ADR-003](docs/ADR-003-parser-strategy.md) |
-| Redis-native storage (not GraphBLAS) | 8 weeks saved; adequate for ≤1M nodes | [ADR-001](docs/ADR-001-storage-model.md) |
-| Full GQL compliance, not a subset | Grammar is cheap; execution defers gracefully | [ADR-002](docs/ADR-002-full-gql-compliance.md) |
-| `valkey-module` (not `redis-module`) | Redis 8 is AGPLv3; Valkey is BSD-3-Clause | docs/RESEARCH.md |
-| `u64` IDs | `u32` wraps silently at 4.29B → data corruption | docs/RESEARCH.md |
-
 ## License
 
 MIT OR Apache-2.0. **No SSPL. No GPL. No LGPL.**
