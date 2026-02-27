@@ -6,7 +6,6 @@ import {
   edgesApi,
   queryApi,
 } from '../api/client'
-import { useGraphStore } from '../store/graph'
 import type {
   CreateNodeRequest,
   UpdateNodeRequest,
@@ -84,15 +83,9 @@ export function useDeleteGraph() {
 
 export function useCreateNode(graphName: string | null) {
   const queryClient = useQueryClient()
-  const pushAction = useGraphStore((s) => s.pushAction)
   return useMutation({
     mutationFn: (req: CreateNodeRequest) => nodesApi.create(graphName!, req),
-    onSuccess: (created) => {
-      pushAction({
-        type: 'createNode',
-        payload: { nodeId: created.id, labels: created.labels, properties: created.properties },
-        inverse: { nodeId: created.id },
-      })
+    onSuccess: () => {
       if (graphName) {
         queryClient.invalidateQueries({ queryKey: queryKeys.graphData(graphName) })
         queryClient.invalidateQueries({ queryKey: queryKeys.graphSchema(graphName) })
@@ -103,16 +96,10 @@ export function useCreateNode(graphName: string | null) {
 
 export function useUpdateNode(graphName: string | null) {
   const queryClient = useQueryClient()
-  const pushAction = useGraphStore((s) => s.pushAction)
   return useMutation({
     mutationFn: ({ nodeId, req }: { nodeId: string; req: UpdateNodeRequest }) =>
       nodesApi.update(graphName!, nodeId, req),
-    onSuccess: (updated, variables) => {
-      pushAction({
-        type: 'updateNode',
-        payload: { nodeId: variables.nodeId, properties: updated.properties },
-        inverse: { nodeId: variables.nodeId },
-      })
+    onSuccess: () => {
       if (graphName) {
         queryClient.invalidateQueries({ queryKey: queryKeys.graphData(graphName) })
       }
@@ -122,15 +109,9 @@ export function useUpdateNode(graphName: string | null) {
 
 export function useDeleteNode(graphName: string | null) {
   const queryClient = useQueryClient()
-  const pushAction = useGraphStore((s) => s.pushAction)
   return useMutation({
     mutationFn: (nodeId: string) => nodesApi.delete(graphName!, nodeId),
-    onSuccess: (_data, nodeId) => {
-      pushAction({
-        type: 'deleteNode',
-        payload: { nodeId },
-        inverse: { nodeId },
-      })
+    onSuccess: () => {
       if (graphName) {
         queryClient.invalidateQueries({ queryKey: queryKeys.graphData(graphName) })
         queryClient.invalidateQueries({ queryKey: queryKeys.graphSchema(graphName) })
@@ -141,15 +122,9 @@ export function useDeleteNode(graphName: string | null) {
 
 export function useCreateEdge(graphName: string | null) {
   const queryClient = useQueryClient()
-  const pushAction = useGraphStore((s) => s.pushAction)
   return useMutation({
     mutationFn: (req: CreateEdgeRequest) => edgesApi.create(graphName!, req),
-    onSuccess: (created) => {
-      pushAction({
-        type: 'createEdge',
-        payload: { edgeId: created.id, type: created.type, source: created.source, target: created.target },
-        inverse: { edgeId: created.id },
-      })
+    onSuccess: () => {
       if (graphName) {
         queryClient.invalidateQueries({ queryKey: queryKeys.graphData(graphName) })
         queryClient.invalidateQueries({ queryKey: queryKeys.graphSchema(graphName) })
@@ -160,16 +135,10 @@ export function useCreateEdge(graphName: string | null) {
 
 export function useUpdateEdge(graphName: string | null) {
   const queryClient = useQueryClient()
-  const pushAction = useGraphStore((s) => s.pushAction)
   return useMutation({
     mutationFn: ({ edgeId, req }: { edgeId: string; req: UpdateEdgeRequest }) =>
       edgesApi.update(graphName!, edgeId, req),
-    onSuccess: (updated, variables) => {
-      pushAction({
-        type: 'updateEdge',
-        payload: { edgeId: variables.edgeId, properties: updated.properties },
-        inverse: { edgeId: variables.edgeId },
-      })
+    onSuccess: () => {
       if (graphName) {
         queryClient.invalidateQueries({ queryKey: queryKeys.graphData(graphName) })
       }
@@ -179,15 +148,9 @@ export function useUpdateEdge(graphName: string | null) {
 
 export function useDeleteEdge(graphName: string | null) {
   const queryClient = useQueryClient()
-  const pushAction = useGraphStore((s) => s.pushAction)
   return useMutation({
     mutationFn: (edgeId: string) => edgesApi.delete(graphName!, edgeId),
-    onSuccess: (_data, edgeId) => {
-      pushAction({
-        type: 'deleteEdge',
-        payload: { edgeId },
-        inverse: { edgeId },
-      })
+    onSuccess: () => {
       if (graphName) {
         queryClient.invalidateQueries({ queryKey: queryKeys.graphData(graphName) })
         queryClient.invalidateQueries({ queryKey: queryKeys.graphSchema(graphName) })

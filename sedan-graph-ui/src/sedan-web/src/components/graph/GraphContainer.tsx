@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState, useCallback } from 'react'
+import { useEffect, useState, useCallback } from 'react'
+import type { MutableRefObject } from 'react'
 import Graph from 'graphology'
 import { useGraphStore } from '../../store/graph'
 import { useGraphData } from '../../hooks/useGraphData'
@@ -13,6 +14,10 @@ import { GraphCanvas } from './GraphCanvas'
 import type { GraphNode } from '../../types/graph'
 
 interface GraphContainerProps {
+  /** Shared graph ref from App — holds the authoritative Graphology instance */
+  graphRef: MutableRefObject<Graph>
+  /** Incremented by App when external data (e.g. search results) has been merged */
+  graphVersion: number
   onEditNode: (nodeId: string) => void
   onDeleteNode: (nodeId: string) => void
   onEditEdge: (edgeId: string) => void
@@ -28,6 +33,8 @@ interface GraphContainerProps {
  * Passes the graph instance down to GraphCanvas for rendering.
  */
 export function GraphContainer({
+  graphRef,
+  graphVersion,
   onEditNode,
   onDeleteNode,
   onEditEdge,
@@ -41,32 +48,44 @@ export function GraphContainer({
   const visibleLabels = useGraphStore((s) => s.visibleLabels)
   const setVisibleLabels = useGraphStore((s) => s.setVisibleLabels)
 
-  const graphRef = useRef<Graph>(new Graph({ multi: false, type: 'directed' }))
   const [graphInstance, setGraphInstance] = useState<Graph>(graphRef.current)
 
   const { data, isLoading, error } = useGraphData(currentGraph)
 
-  // Rebuild graph when data changes
+  // Rebuild or merge graph when API data changes (Fix #92 — preserve positions)
   useEffect(() => {
     if (!data) return
 
-    const newGraph = buildGraphFromApiData(data.nodes, data.edges)
-    graphRef.current = newGraph
-    setGraphInstance(newGraph)
-    onGraphReady(newGraph)
+    if (graphRef.current.order === 0) {
+      // First load — build a fresh instance with layout positions assigned by FA2
+      const newGraph = buildGraphFromApiData(data.nodes, data.edges)
+      graphRef.current = newGraph
+      setGraphInstance(newGraph)
+      onGraphReady(newGraph)
 
-    // Initialize all labels as visible
-    const labels = extractLabels(data.nodes)
-    setVisibleLabels(new Set(labels))
+      // Initialize all labels as visible
+      const labels = extractLabels(data.nodes)
+      setVisibleLabels(new Set(labels))
 
-    onStatsChange(newGraph.order, newGraph.size)
+      onStatsChange(newGraph.order, newGraph.size)
+    } else {
+      // Subsequent loads (refetch) — merge to preserve FA2 layout positions
+      mergeGraphData(graphRef.current, data.nodes, data.edges)
+      onStatsChange(graphRef.current.order, graphRef.current.size)
+      // Pass same ref — setGraphInstance triggers re-render with updated data
+      setGraphInstance(graphRef.current)
+    }
   }, [data, onGraphReady, setVisibleLabels, onStatsChange])
+
+  // Re-render canvas when App signals external graph mutations (Fix #82 — search results)
+  useEffect(() => {
+    if (graphVersion === 0) return
+    setGraphInstance(graphRef.current)
+  }, [graphVersion])
 
   // Apply label visibility filters
   useEffect(() => {
     if (graphRef.current.order === 0) return
-    // visibleLabels = labels that ARE shown, empty = all shown
-    // We compute hidden labels as those NOT in visibleLabels
     const allLabels = extractLabels(
       graphRef.current
         .nodes()
@@ -90,7 +109,7 @@ export function GraphContainer({
         // Silently ignore network errors for expansion
       }
     },
-    [currentGraph, onStatsChange],
+    [currentGraph, graphRef, onStatsChange],
   )
 
   if (!currentGraph) {
