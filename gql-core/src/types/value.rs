@@ -96,6 +96,9 @@ impl PartialEq for Value {
             (Self::Bool(a), Self::Bool(b)) => a == b,
             (Self::Int(a), Self::Int(b)) => a == b,
             (Self::Float(a), Self::Float(b)) => a == b,
+            // Int/Float cross-type: coerce to f64
+            (Self::Int(a), Self::Float(b)) => (*a as f64) == *b,
+            (Self::Float(a), Self::Int(b)) => *a == (*b as f64),
             (Self::Str(a), Self::Str(b)) => a == b,
             (Self::Date(a), Self::Date(b)) => a == b,
             (Self::LocalTime(a), Self::LocalTime(b)) => a == b,
@@ -203,11 +206,59 @@ impl Value {
 
     /// Compare two values for Cypher equality semantics.
     /// Returns `None` when either operand is `Null` (Cypher three-valued logic).
+    ///
+    /// Handles:
+    /// - NULL propagation: `null = X` → `None`
+    /// - Int/Float coercion: `1 = 1.0` → `Some(true)`
+    /// - List/Map null propagation: `[null] = [1]` → `None`
     pub fn cypher_eq(&self, other: &Self) -> Option<bool> {
-        if self.is_null() || other.is_null() {
-            return None; // NULL = anything is NULL, not false
+        match (self, other) {
+            // NULL = anything is NULL
+            (Self::Null, _) | (_, Self::Null) => None,
+
+            // Int/Float cross-type coercion
+            (Self::Int(a), Self::Float(b)) => Some(*a as f64 == *b),
+            (Self::Float(a), Self::Int(b)) => Some(*a == *b as f64),
+
+            // List equality with null propagation
+            (Self::List(a), Self::List(b)) => {
+                if a.len() != b.len() {
+                    return Some(false);
+                }
+                let mut has_null = false;
+                for (av, bv) in a.iter().zip(b.iter()) {
+                    match av.cypher_eq(bv) {
+                        Some(false) => return Some(false),
+                        None => has_null = true,
+                        Some(true) => {}
+                    }
+                }
+                if has_null { None } else { Some(true) }
+            }
+
+            // Map equality with null propagation
+            (Self::Map(a), Self::Map(b)) => {
+                // Different key sets → false (even with nulls)
+                if a.len() != b.len() {
+                    return Some(false);
+                }
+                let mut has_null = false;
+                for (k, av) in a.iter() {
+                    match b.get(k.as_ref()) {
+                        None => return Some(false), // key missing
+                        Some(bv) => match av.cypher_eq(bv) {
+                            Some(false) => return Some(false),
+                            None => has_null = true,
+                            Some(true) => {}
+                        },
+                    }
+                }
+                if has_null { None } else { Some(true) }
+            }
+
+            // All other types: delegate to PartialEq
+            _ => Some(self == other),
         }
-        Some(self == other)
     }
 }
 

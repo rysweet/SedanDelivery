@@ -780,6 +780,24 @@ fn parse_tck_value(s: &str) -> Value {
         return parse_tck_rel_pattern(s);
     }
 
+    // Relationship list pattern: [[:TYPE], [:TYPE2]] — a list of edges
+    if s.starts_with("[[:") && s.ends_with("]]") {
+        // Parse as a list of relationship patterns
+        let inner = &s[1..s.len() - 1]; // remove outer []
+        let items = split_tck_list(inner);
+        return Value::List(
+            items
+                .into_iter()
+                .map(|item| parse_tck_value(item.trim()))
+                .collect(),
+        );
+    }
+
+    // Path pattern: <(...)-[...]->(...)-[...]->(...) >
+    if s.starts_with('<') && s.ends_with('>') {
+        return parse_tck_path_pattern(s);
+    }
+
     // Integer
     if let Ok(n) = s.parse::<i64>() {
         return Value::Int(n);
@@ -919,6 +937,158 @@ fn parse_tck_rel_pattern(s: &str) -> Value {
     Value::Map(map)
 }
 
+/// Parsed representation of a TCK path pattern.
+/// Stores the expected node patterns and edge patterns in order.
+#[derive(Debug)]
+struct TckPathPattern {
+    /// Node patterns (labels + properties) in path order
+    node_patterns: Vec<indexmap::IndexMap<Box<str>, Value>>,
+    /// Edge patterns (type + properties) in path order, with direction
+    edge_patterns: Vec<(indexmap::IndexMap<Box<str>, Value>, PathDir)>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum PathDir {
+    Forward,  // ->
+    Backward, // <-
+    Both,     // -
+}
+
+/// Parse a TCK path pattern like `<(:A {name: 'A'})-[:KNOWS]->(:B)>`.
+fn parse_tck_path_pattern(s: &str) -> Value {
+    // Strip outer < >
+    let inner = s[1..s.len() - 1].trim();
+    if inner.is_empty() {
+        // Empty path — should not normally occur
+        return Value::Map(indexmap::IndexMap::new());
+    }
+
+    let mut node_patterns = Vec::new();
+    let mut edge_patterns = Vec::new();
+    let mut pos = 0;
+    let bytes = inner.as_bytes();
+    let len = bytes.len();
+
+    while pos < len {
+        // Skip whitespace
+        while pos < len && bytes[pos] == b' ' {
+            pos += 1;
+        }
+        if pos >= len {
+            break;
+        }
+
+        // Expect a node: (...)
+        if bytes[pos] == b'(' {
+            let start = pos;
+            let mut depth = 1;
+            pos += 1;
+            while pos < len && depth > 0 {
+                if bytes[pos] == b'(' {
+                    depth += 1;
+                } else if bytes[pos] == b')' {
+                    depth -= 1;
+                }
+                pos += 1;
+            }
+            let node_str = &inner[start..pos];
+            if let Value::Map(m) = parse_tck_node_pattern(node_str) {
+                node_patterns.push(m);
+            }
+        }
+
+        // After a node, expect either end or an edge pattern
+        if pos >= len {
+            break;
+        }
+
+        // Look for edge direction and edge pattern
+        // Patterns: -[:TYPE]-> or <-[:TYPE]- or -[:TYPE]-
+        let dir;
+        if pos + 1 < len && bytes[pos] == b'<' && bytes[pos + 1] == b'-' {
+            dir = PathDir::Backward;
+            pos += 2; // skip "<-"
+        } else if bytes[pos] == b'-' {
+            pos += 1; // skip "-"
+            dir = PathDir::Forward; // tentative; check for -> at end
+        } else {
+            break;
+        }
+
+        // Now expect [...]
+        if pos < len && bytes[pos] == b'[' {
+            let start = pos;
+            let mut depth = 1;
+            pos += 1;
+            while pos < len && depth > 0 {
+                if bytes[pos] == b'[' {
+                    depth += 1;
+                } else if bytes[pos] == b']' {
+                    depth -= 1;
+                }
+                pos += 1;
+            }
+            let edge_str = &inner[start..pos];
+            if let Value::Map(m) = parse_tck_rel_pattern(edge_str) {
+                let final_dir = if pos + 1 < len && bytes[pos] == b'-' && bytes[pos + 1] == b'>' {
+                    pos += 2;
+                    PathDir::Forward
+                } else if pos < len && bytes[pos] == b'-' {
+                    pos += 1;
+                    if dir == PathDir::Backward {
+                        PathDir::Backward
+                    } else {
+                        PathDir::Both
+                    }
+                } else {
+                    dir
+                };
+                edge_patterns.push((m, final_dir));
+            }
+        } else if pos + 1 < len && bytes[pos] == b'-' && bytes[pos + 1] == b'>' {
+            // No edge pattern, just direction ->
+            pos += 2;
+            edge_patterns.push((indexmap::IndexMap::new(), PathDir::Forward));
+        } else if pos < len && bytes[pos] == b'-' {
+            pos += 1;
+            edge_patterns.push((
+                indexmap::IndexMap::new(),
+                if dir == PathDir::Backward {
+                    PathDir::Backward
+                } else {
+                    PathDir::Both
+                },
+            ));
+        }
+    }
+
+    // Store as a special map with __path__ sentinel
+    let mut map = indexmap::IndexMap::new();
+    map.insert(
+        "__path__".into(),
+        Value::Bool(true),
+    );
+    map.insert(
+        "__path_nodes__".into(),
+        Value::List(
+            node_patterns
+                .into_iter()
+                .map(Value::Map)
+                .collect(),
+        ),
+    );
+    map.insert(
+        "__path_edges__".into(),
+        Value::List(
+            edge_patterns
+                .into_iter()
+                .map(|(m, _dir)| Value::Map(m))
+                .collect(),
+        ),
+    );
+    Value::Map(map)
+}
+
 // ── Row comparison helpers ───────────────────────────────────────────────────
 
 /// Parse the expected rows from a Gherkin table (skipping header).
@@ -1017,11 +1187,15 @@ fn value_matches(
         (Value::Edge(edge_id), Value::Map(expected_map)) => {
             edge_matches_pattern(*edge_id, expected_map, world)
         }
-        // Path comparison -- TCK doesn't usually compare paths directly as values
-        // but we handle it as a best-effort
-        (Value::Path { .. }, _) => {
-            // Paths are complex; for now just check if both are paths
-            matches!(expected, Value::Path { .. })
+        // Path comparison: actual Path against expected path pattern (Map with __path__ sentinel)
+        (Value::Path { nodes, edges }, Value::Map(expected_map))
+            if expected_map.get("__path__").is_some() =>
+        {
+            path_matches_pattern(nodes, edges, expected_map, world, ignore_list_order)
+        }
+        // Path vs Path direct comparison
+        (Value::Path { nodes: n1, edges: e1 }, Value::Path { nodes: n2, edges: e2 }) => {
+            n1 == n2 && e1 == e2
         }
         // Temporal values: compare against string representation
         (Value::Date(d), Value::Str(s)) => format!("{d}") == s.as_ref(),
@@ -1140,6 +1314,56 @@ fn edge_matches_pattern(
                 }
             }
             None => return false,
+        }
+    }
+
+    true
+}
+
+/// Check if a path matches a TCK path pattern.
+fn path_matches_pattern(
+    actual_nodes: &[gql_core::storage::NodeId],
+    actual_edges: &[gql_core::storage::EdgeId],
+    expected_map: &indexmap::IndexMap<Box<str>, Value>,
+    world: &GqlWorld,
+    _ignore_list_order: bool,
+) -> bool {
+    let expected_node_patterns = match expected_map.get("__path_nodes__") {
+        Some(Value::List(patterns)) => patterns,
+        _ => return false,
+    };
+    let expected_edge_patterns = match expected_map.get("__path_edges__") {
+        Some(Value::List(patterns)) => patterns,
+        _ => return false,
+    };
+
+    // Check counts
+    if actual_nodes.len() != expected_node_patterns.len() {
+        return false;
+    }
+    if actual_edges.len() != expected_edge_patterns.len() {
+        return false;
+    }
+
+    // Check each node
+    for (node_id, expected) in actual_nodes.iter().zip(expected_node_patterns.iter()) {
+        if let Value::Map(expected_node_map) = expected {
+            if !node_matches_pattern(*node_id, expected_node_map, world) {
+                return false;
+            }
+        } else {
+            return false;
+        }
+    }
+
+    // Check each edge
+    for (edge_id, expected) in actual_edges.iter().zip(expected_edge_patterns.iter()) {
+        if let Value::Map(expected_edge_map) = expected {
+            if !edge_matches_pattern(*edge_id, expected_edge_map, world) {
+                return false;
+            }
+        } else {
+            return false;
         }
     }
 
