@@ -208,4 +208,5 @@ pub struct ImportEdge {
 pub struct ImportResponse {
     pub nodes_created: usize,
     pub edges_created: usize,
+    pub warnings: Vec<String>,
 }

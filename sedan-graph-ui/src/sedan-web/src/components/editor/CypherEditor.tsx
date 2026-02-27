@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef } from 'react'
+import { useState, useCallback, useRef, useEffect } from 'react'
 import Editor, { type OnMount } from '@monaco-editor/react'
 import type { editor } from 'monaco-editor'
 import { Play, X, AlignLeft, CheckCircle2, AlertCircle } from 'lucide-react'
@@ -112,10 +112,38 @@ export function CypherEditor() {
   const [mutateResult, setMutateResult] = useState<MutateResponse | null>(null)
   const [execError, setExecError] = useState<string | null>(null)
   const editorRef = useRef<editor.IStandaloneCodeEditor | null>(null)
+  const handleExecuteRef = useRef<() => Promise<void>>(() => Promise.resolve())
   const queryMutation = useQuery_(currentGraph)
   const mutateMutation = useMutate(currentGraph)
 
   const isRunning = queryMutation.isPending || mutateMutation.isPending
+
+  const handleExecute = useCallback(async () => {
+    const query = (editorRef.current?.getValue() ?? queryValue).trim()
+    if (!query || !currentGraph) return
+
+    setExecError(null)
+    setQueryResult(null)
+    setMutateResult(null)
+
+    try {
+      if (isMutationQuery(query)) {
+        const result = await mutateMutation.mutateAsync({ statement: query })
+        setMutateResult(result)
+      } else {
+        const result = await queryMutation.mutateAsync({ query })
+        setQueryResult(result)
+        setLastQueryResult(result)
+      }
+    } catch (err) {
+      setExecError(err instanceof Error ? err.message : 'Query failed')
+    }
+  }, [queryValue, currentGraph, queryMutation, mutateMutation, setLastQueryResult])
+
+  // Keep ref in sync so the Monaco command always calls the latest closure (Fix #93)
+  useEffect(() => {
+    handleExecuteRef.current = handleExecute
+  }, [handleExecute])
 
   const handleEditorMount: OnMount = (editorInstance, monaco) => {
     editorRef.current = editorInstance
@@ -171,34 +199,12 @@ export function CypherEditor() {
       ],
     })
 
-    // Ctrl+Enter to execute
+    // Ctrl+Enter to execute — use ref to avoid stale closure (Fix #93)
     editorInstance.addCommand(
       monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter,
-      handleExecute,
+      () => handleExecuteRef.current(),
     )
   }
-
-  const handleExecute = useCallback(async () => {
-    const query = (editorRef.current?.getValue() ?? queryValue).trim()
-    if (!query || !currentGraph) return
-
-    setExecError(null)
-    setQueryResult(null)
-    setMutateResult(null)
-
-    try {
-      if (isMutationQuery(query)) {
-        const result = await mutateMutation.mutateAsync({ statement: query })
-        setMutateResult(result)
-      } else {
-        const result = await queryMutation.mutateAsync({ query })
-        setQueryResult(result)
-        setLastQueryResult(result)
-      }
-    } catch (err) {
-      setExecError(err instanceof Error ? err.message : 'Query failed')
-    }
-  }, [queryValue, currentGraph, queryMutation, mutateMutation, setLastQueryResult])
 
   const handleClear = () => {
     editorRef.current?.setValue('')

@@ -18,6 +18,13 @@ pub struct ApiError {
 }
 
 impl ApiError {
+    pub fn new(status: StatusCode, msg: impl Into<String>) -> Self {
+        Self {
+            status,
+            message: msg.into(),
+        }
+    }
+
     pub fn bad_request(msg: impl Into<String>) -> Self {
         Self {
             status: StatusCode::BAD_REQUEST,
@@ -82,6 +89,21 @@ impl From<gql_core::error::GqlError> for ApiError {
             }
             GqlError::Parse(_) => ApiError::bad_request(e.to_string()),
             GqlError::Plan(_) => ApiError::bad_request(e.to_string()),
+            GqlError::Execution(exec_err) => {
+                use gql_core::error::ExecutionError;
+                match exec_err {
+                    ExecutionError::Timeout { .. } => {
+                        ApiError::new(StatusCode::REQUEST_TIMEOUT, e.to_string())
+                    }
+                    ExecutionError::ResultSetTooLarge { .. } => {
+                        ApiError::new(StatusCode::PAYLOAD_TOO_LARGE, e.to_string())
+                    }
+                    ExecutionError::UnsupportedFeature { .. } => {
+                        ApiError::new(StatusCode::NOT_IMPLEMENTED, e.to_string())
+                    }
+                    _ => ApiError::unprocessable(e.to_string()),
+                }
+            }
             _ => ApiError::unprocessable(e.to_string()),
         }
     }

@@ -11,11 +11,11 @@ use axum::http::StatusCode;
 use axum::routing::{delete, get, post, put};
 use axum::{Json, Router};
 
-use gql_core::storage::{validate_graph_name, EdgeId, GraphStore, NodeId};
+use gql_core::storage::{validate_graph_name, EdgeId, GraphStore};
 
 use crate::error::ApiError;
 use crate::models::{CreateEdgeBody, EdgeListResponse, PaginationParams, UpdateEdgeBody, MAX_PAGE_LIMIT};
-use crate::routes::nodes::json_map_to_props;
+use crate::routes::helpers::{json_map_to_props, parse_edge_id, parse_node_id};
 use crate::serialize::edge_to_json;
 use crate::state::AppState;
 
@@ -182,17 +182,4 @@ async fn delete_edge(
     Ok(StatusCode::NO_CONTENT)
 }
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
-fn parse_node_id(s: &str) -> Result<NodeId, ApiError> {
-    s.parse::<u64>()
-        .map(NodeId)
-        .map_err(|_| ApiError::bad_request(format!("invalid node id: '{s}'")))
-}
-
-fn parse_edge_id(s: &str) -> Result<EdgeId, ApiError> {
-    s.parse::<u64>()
-        .map(EdgeId)
-        .map_err(|_| ApiError::bad_request(format!("invalid edge id: '{s}'")))
-}
 

@@ -1,4 +1,5 @@
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 using SedanDelivery.Api.Models;
 using SedanDelivery.Api.Services;
 using SedanDelivery.Api.Validation;
@@ -10,13 +11,14 @@ namespace SedanDelivery.Api.Controllers;
 /// and exposes the neighbours sub-graph for a node.
 /// </summary>
 [ApiController]
+[EnableRateLimiting("query")]
 [Route("api/graphs/{name}")]
 [Produces("application/json")]
-public sealed class SchemaController : ControllerBase
+public sealed class SchemaController : GraphControllerBase
 {
-    private readonly GqlApiClient _client;
+    private readonly IGqlApiClient _client;
 
-    public SchemaController(GqlApiClient client)
+    public SchemaController(IGqlApiClient client)
     {
         _client = client;
     }
@@ -56,10 +58,4 @@ public sealed class SchemaController : ControllerBase
             return NotFound();
         }
     }
-
-    private IActionResult InvalidName() =>
-        Problem(
-            title: "Invalid graph name",
-            detail: "Graph name must match ^[a-zA-Z0-9_.\\-]{1,64}$",
-            statusCode: StatusCodes.Status400BadRequest);
 }

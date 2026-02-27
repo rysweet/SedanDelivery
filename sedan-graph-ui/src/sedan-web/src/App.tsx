@@ -16,6 +16,7 @@ import { CreateNodeDialog } from './components/dialogs/CreateNodeDialog'
 import { CreateEdgeDialog } from './components/dialogs/CreateEdgeDialog'
 import { ExportDialog } from './components/dialogs/ExportDialog'
 import { ImportDialog } from './components/dialogs/ImportDialog'
+import { Toast } from './components/ui/Toast'
 import type { GraphNode, GraphEdge } from './types/graph'
 import { mergeGraphData, computeLabelCounts } from './utils/graphology'
 
@@ -75,19 +76,20 @@ interface DialogState {
 
 export default function App() {
   const currentGraph = useGraphStore((s) => s.currentGraph)
+  const toast = useGraphStore((s) => s.toast)
+  const dismissToast = useGraphStore((s) => s.dismissToast)
   const selectedNodeId = useGraphStore((s) => s.selectedNodeId)
   const selectedEdgeId = useGraphStore((s) => s.selectedEdgeId)
   const setSelectedNode = useGraphStore((s) => s.setSelectedNode)
   const setSelectedEdge = useGraphStore((s) => s.setSelectedEdge)
   const clearSelection = useGraphStore((s) => s.clearSelection)
   const toggleLeftPanel = useGraphStore((s) => s.toggleLeftPanel)
-  const undo = useGraphStore((s) => s.undo)
-  const redo = useGraphStore((s) => s.redo)
   const queryPanelOpen = useGraphStore((s) => s.queryPanelOpen)
   const schemaPanelOpen = useGraphStore((s) => s.schemaPanelOpen)
 
   const graphRef = useRef<Graph>(new Graph({ multi: false, type: 'directed' }))
   const fitViewRef = useRef<(() => void) | null>(null)
+  const [graphVersion, setGraphVersion] = useState(0)
 
   const [dialogs, setDialogs] = useState<DialogState>({
     createNode: false,
@@ -141,6 +143,9 @@ export default function App() {
       mergeGraphData(graphRef.current, nodes, edges)
       handleStatsChange(graphRef.current.order, graphRef.current.size)
       setLabelCounts(computeLabelCounts(graphRef.current))
+
+      // Signal GraphContainer to re-render with merged data
+      setGraphVersion((v) => v + 1)
     },
     [handleStatsChange],
   )
@@ -184,8 +189,8 @@ export default function App() {
   useKeyboardShortcuts({
     onFitView: handleFitView,
     onDeleteSelected: handleDeleteSelected,
-    onUndo: () => undo(),
-    onRedo: () => redo(),
+    onUndo: () => { /* undo coming in v2 */ },
+    onRedo: () => { /* redo coming in v2 */ },
     onEscape: clearSelection,
   })
 
@@ -207,6 +212,8 @@ export default function App() {
       <div className="flex-1 min-h-0">
         <GraphErrorBoundary>
           <GraphContainer
+            graphRef={graphRef}
+            graphVersion={graphVersion}
             onEditNode={(nodeId) => setSelectedNode(nodeId)}
             onDeleteNode={(nodeId) => {
               deleteNode.mutate(nodeId, { onSuccess: () => clearSelection() })
@@ -294,6 +301,14 @@ export default function App() {
         open={dialogs.import}
         onClose={() => closeDialog('import')}
       />
+
+      {toast && (
+        <Toast
+          message={toast.message}
+          type={toast.type}
+          onDismiss={dismissToast}
+        />
+      )}
     </>
   )
 }

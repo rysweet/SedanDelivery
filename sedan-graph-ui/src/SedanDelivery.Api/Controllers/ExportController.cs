@@ -10,13 +10,14 @@ namespace SedanDelivery.Api.Controllers;
 /// Graph export and import operations.
 /// </summary>
 [ApiController]
+[EnableRateLimiting("query")]
 [Route("api/graphs/{name}")]
 [Produces("application/json")]
-public sealed class ExportController : ControllerBase
+public sealed class ExportController : GraphControllerBase
 {
-    private readonly GqlApiClient _client;
+    private readonly IGqlApiClient _client;
 
-    public ExportController(GqlApiClient client)
+    public ExportController(IGqlApiClient client)
     {
         _client = client;
     }
@@ -41,7 +42,6 @@ public sealed class ExportController : ControllerBase
 
     /// <summary>Bulk-imports nodes and edges into the named graph.</summary>
     [HttpPost("import")]
-    [EnableRateLimiting("query")]
     [ProducesResponseType(typeof(ImportResult), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
@@ -60,10 +60,4 @@ public sealed class ExportController : ControllerBase
             return NotFound();
         }
     }
-
-    private IActionResult InvalidName() =>
-        Problem(
-            title: "Invalid graph name",
-            detail: "Graph name must match ^[a-zA-Z0-9_.\\-]{1,64}$",
-            statusCode: StatusCodes.Status400BadRequest);
 }

@@ -18,8 +18,6 @@ beforeEach(() => {
     queryPanelOpen: false,
     schemaPanelOpen: false,
     lastQueryResult: null,
-    history: [],
-    historyIndex: -1,
     zoomLevel: 1,
   })
 })
@@ -35,16 +33,6 @@ describe('setCurrentGraph', () => {
     useGraphStore.getState().setCurrentGraph('anotherGraph')
     expect(useGraphStore.getState().selectedNodeId).toBeNull()
     expect(useGraphStore.getState().selectedEdgeId).toBeNull()
-  })
-
-  it('resets history when switching graphs', () => {
-    useGraphStore.setState({
-      history: [{ type: 'createNode', payload: {}, inverse: {} }],
-      historyIndex: 0,
-    })
-    useGraphStore.getState().setCurrentGraph('newGraph')
-    expect(useGraphStore.getState().history).toEqual([])
-    expect(useGraphStore.getState().historyIndex).toBe(-1)
   })
 
   it('can set to null', () => {
@@ -142,59 +130,6 @@ describe('toggleQueryPanel', () => {
     useGraphStore.setState({ queryPanelOpen: true })
     useGraphStore.getState().toggleQueryPanel()
     expect(useGraphStore.getState().queryPanelOpen).toBe(false)
-  })
-})
-
-describe('undo/redo history', () => {
-  const sampleAction = {
-    type: 'createNode' as const,
-    payload: { id: 'n1' },
-    inverse: { id: 'n1' },
-  }
-
-  it('pushAction adds to history', () => {
-    useGraphStore.getState().pushAction(sampleAction)
-    expect(useGraphStore.getState().history).toHaveLength(1)
-    expect(useGraphStore.getState().historyIndex).toBe(0)
-  })
-
-  it('undo returns the last action and decrements index', () => {
-    useGraphStore.getState().pushAction(sampleAction)
-    const action = useGraphStore.getState().undo()
-    expect(action).toEqual(sampleAction)
-    expect(useGraphStore.getState().historyIndex).toBe(-1)
-  })
-
-  it('redo re-applies the undone action', () => {
-    useGraphStore.getState().pushAction(sampleAction)
-    useGraphStore.getState().undo()
-    const action = useGraphStore.getState().redo()
-    expect(action).toEqual(sampleAction)
-    expect(useGraphStore.getState().historyIndex).toBe(0)
-  })
-
-  it('undo returns null when at beginning of history', () => {
-    const action = useGraphStore.getState().undo()
-    expect(action).toBeNull()
-  })
-
-  it('redo returns null when at end of history', () => {
-    useGraphStore.getState().pushAction(sampleAction)
-    const action = useGraphStore.getState().redo()
-    expect(action).toBeNull()
-  })
-
-  it('pushAction truncates forward history when branching', () => {
-    useGraphStore.getState().pushAction(sampleAction)
-    useGraphStore.getState().pushAction({ ...sampleAction, type: 'deleteNode' })
-    useGraphStore.getState().undo()
-
-    // Push a new action - should discard the redo action
-    const newAction = { ...sampleAction, type: 'createEdge' as const }
-    useGraphStore.getState().pushAction(newAction)
-
-    expect(useGraphStore.getState().history).toHaveLength(2)
-    expect(useGraphStore.getState().history[1]).toEqual(newAction)
   })
 })
 
