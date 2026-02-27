@@ -1805,9 +1805,14 @@ impl<'src> Parser<'src> {
             && self.pos + 2 < self.tokens.len()
             && matches!(self.tokens[self.pos + 2].kind, TokenKind::LParen);
         if is_named_pattern_comp {
-            let _path_var = self.expect_identifier()?; // consume path variable name
-            self.expect(&TokenKind::Eq)?; // consume 
-            let pattern = self.parse_path_pattern()?;
+            let path_var = self.expect_identifier()?; // consume path variable name
+            self.expect(&TokenKind::Eq)?; // consume `=`
+            let mut pattern = self.parse_path_pattern()?;
+            // Bind the path variable in the PathPattern so the executor can
+            // store the assembled path under that name (e.g. `p`).
+            if pattern.variable.is_none() {
+                pattern.variable = Some(crate::ast::Identifier::new(path_var));
+            }
             let where_clause = if self.eat(&TokenKind::Where) {
                 Some(Box::new(self.parse_expr()?))
             } else {

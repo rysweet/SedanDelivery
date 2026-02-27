@@ -51,6 +51,10 @@ pub enum Operator {
         path_mode: bool,
         dst_alias: Identifier,
         child: Box<Operator>,
+        /// Optional inline property filter applied to each traversed edge during BFS.
+        /// For `[:TYPE* {prop: val}]`, every edge in the path must satisfy this predicate.
+        /// Uses an alias `__varlen_edge__` for the edge being tested.
+        rel_props: Option<crate::ast::Expr>,
     },
     /// OPTIONAL MATCH: preserves left side rows even when right side matches nothing.
     LeftOuterApply {

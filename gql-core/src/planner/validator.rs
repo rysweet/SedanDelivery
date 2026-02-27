@@ -967,12 +967,23 @@ impl ValidationContext {
         let mut new_vars = HashMap::new();
         for item in &wc.items {
             if let Some(ref alias) = item.alias {
-                // Preserve the kind if the expression is a direct variable reference,
-                // otherwise use Value (for computed expressions like count(*))
-                let kind = if let Expr::Variable(ref id) = item.expr {
-                    self.vars.get(&id.0).copied().unwrap_or(VarKind::Value)
-                } else {
-                    VarKind::Value
+                // Preserve the kind if the expression is a direct variable reference.
+                // For literals (known scalars), use Value.
+                // For function calls and other complex expressions use Untyped so
+                // a subsequent MATCH can treat the variable as a node if needed
+                // (e.g. `WITH coalesce(a, b) AS x MATCH (x)-->(d)`).
+                let kind = match &item.expr {
+                    Expr::Variable(ref id) => {
+                        self.vars.get(&id.0).copied().unwrap_or(VarKind::Value)
+                    }
+                    // Known non-node scalar literals.
+                    Expr::Integer(_) | Expr::Float(_) | Expr::Str(_) | Expr::Bool(_) => {
+                        VarKind::Value
+                    }
+                    // Null and all other expressions (function calls, properties, etc.)
+                    // are Untyped — their runtime type is not known at compile time.
+                    // This allows e.g. `WITH null AS a OPTIONAL MATCH (a)-->()`.
+                    _ => VarKind::Untyped,
                 };
                 new_vars.insert(alias.0.clone(), kind);
             } else if let Expr::Variable(ref id) = item.expr {
