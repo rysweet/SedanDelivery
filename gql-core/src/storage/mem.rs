@@ -794,6 +794,12 @@ impl GraphStore for InMemoryGraphStore {
             rel_type_count: g.reltype_index.len() as u32,
         })
     }
+
+    fn all_label_names(&self, graph: &str) -> Result<Vec<String>, StorageError> {
+        let guard = self.read()?;
+        let g = Self::require_graph(&guard, graph)?;
+        Ok(g.label_index.keys().cloned().collect())
+    }
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────

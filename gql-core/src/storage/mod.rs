@@ -271,6 +271,10 @@ pub trait GraphStore: Send + Sync {
     fn list_graphs(&self) -> Result<Vec<String>, StorageError>;
 
     fn graph_stats(&self, graph: &str) -> Result<GraphStats, StorageError>;
+
+    /// Returns the names of all label types currently in the graph.
+    /// Used to compute the diff of labels added by a query.
+    fn all_label_names(&self, graph: &str) -> Result<Vec<String>, StorageError>;
 }
 
 /// Maximum allowed length for a graph name.
