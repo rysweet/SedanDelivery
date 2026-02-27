@@ -1,0 +1,66 @@
+version: v0.1
+testName: CyberGym Performance Test
+testPlan: test-plan.jmx
+engineInstances: 1
+description: |
+  Automated performance testing for CyberGym critical endpoints.
+  Tests key user workflows under realistic load to detect performance regressions.
+
+# Note: This is a placeholder configuration.
+# Actual test execution requires:
+# 1. Azure Load Testing resource provisioned
+# 2. test-plan.jmx file created with endpoint definitions
+# 3. Target environment accessible and configured
+
+configurationFiles: []
+  # - test-config.csv  # Uncomment when parameterized data needed
+
+env:
+  - name: TARGET_URL
+    value: https://SedanDelivery-integration.azurewebsites.net
+  - name: VIRTUAL_USERS
+    value: "50"
+  - name: TEST_DURATION
+    value: "300"
+  - name: RAMP_UP_TIME
+    value: "60"
+
+# Failure criteria - tests fail if these thresholds are exceeded
+failureCriteria:
+  - avg(response_time_ms) > 1000     # Average response time exceeds 1 second
+  - percentage(error) > 5            # Error rate exceeds 5%
+  - pct95(response_time_ms) > 2000   # P95 response time exceeds 2 seconds
+  - pct99(response_time_ms) > 5000   # P99 response time exceeds 5 seconds
+
+# Auto-stop rules - stop test early if critical issues detected
+autoStop:
+  errorPercentage: 20      # Stop if error rate exceeds 20%
+  timeWindow: 60           # Evaluate over 60 second window
+
+# Load profile - defines how virtual users ramp up and hold
+loadProfile:
+  - type: ramp
+    startUsers: 10
+    endUsers: 50
+    duration: 60           # Ramp from 10 to 50 users over 60 seconds
+  - type: hold
+    users: 50
+    duration: 240          # Hold 50 users for 240 seconds (total: 5 min test)
+
+# Performance metrics to collect (default: all)
+# metrics:
+#   - response_time_ms
+#   - requests_per_sec
+#   - error_percentage
+#   - throughput
+#   - latency_p50
+#   - latency_p95
+#   - latency_p99
+
+# Note: To use this configuration:
+# 1. Create Azure Load Testing resource
+# 2. Create test-plan.jmx with HTTP samplers for endpoints
+# 3. Run: az load test start --name SedanDelivery-test --config-file SedanDelivery-load-test.yaml
+# 4. Or use gh-aw workflow: gh workflow run performance-testing.lock.yml
+
+# For full setup instructions, see: ../../docs/PERFORMANCE_TESTING_SETUP.md
