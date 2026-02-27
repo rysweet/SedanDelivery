@@ -1611,8 +1611,24 @@ impl<'src> Parser<'src> {
             } else {
                 None
             };
-            // Skip any RETURN/WITH clauses inside the subquery
+            // Check for write clauses inside EXISTS subquery (InvalidClauseComposition)
+            // then skip any remaining clauses
             while !self.at(&TokenKind::RBrace) && !self.at(&TokenKind::Eof) {
+                if matches!(
+                    self.tokens[self.pos].kind,
+                    TokenKind::Set
+                        | TokenKind::Create
+                        | TokenKind::Delete
+                        | TokenKind::Merge
+                        | TokenKind::Remove
+                ) {
+                    return Err(ParseError::Syntax {
+                        offset: self.tokens[self.pos].offset,
+                        expected:
+                            "write clause not allowed inside existential subquery".to_string(),
+                        found: String::new(),
+                    });
+                }
                 self.advance();
             }
             self.expect(&TokenKind::RBrace)?;

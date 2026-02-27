@@ -2,8 +2,24 @@
 //!
 //! [`validate_query`] runs after parsing but before planning to catch semantic
 //! errors that the grammar allows but the spec forbids. Each check maps to one
-//! or more openCypher TCK error codes (e.g. `VariableAlreadyBound`,
-//! `UndefinedVariable`, `InvalidClauseComposition`).
+//! or more openCypher TCK error codes.
+//!
+//! ## Error codes covered
+//!
+//! | TCK error code               | Where validated                              |
+//! |------------------------------|----------------------------------------------|
+//! | `VariableAlreadyBound`       | CREATE/MERGE patterns, including `{}` maps   |
+//! | `UndefinedVariable`          | RETURN items, SET values, WHERE, ORDER BY     |
+//! | `InvalidDelete`              | DELETE with label predicate (`n:Label`)      |
+//! | `InvalidAggregation`         | WHERE clause, list comprehension body        |
+//! | `AmbiguousAggregationExpression` | ORDER BY mixing agg and non-agg          |
+//! | `NoVariablesInScope`         | `RETURN *` with empty variable scope         |
+//! | `InvalidArgumentType`        | `type(node)`, `length(node/rel)`, `size(path)`, property on path |
+//! | `NonConstantExpression`      | Non-deterministic functions inside agg       |
+//! | `UnexpectedSyntax`           | PatternExpr in RETURN/WITH projections       |
+//! | `FloatingPointOverflow`      | Float literals that exceed f64 range         |
+//! | `InvalidClauseComposition`   | Write clauses inside `EXISTS {}` subquery    |
+//! | `InvalidArgumentType`        | Standalone node/rel variable as WHERE predicate |
 
 use std::collections::{HashMap, HashSet};
 
@@ -15,13 +31,22 @@ use crate::ast::{
 use crate::error::{GqlError, ParseError, PlanError};
 
 /// The kind of a variable in scope — used to detect type conflicts.
+///
+/// Affects whether re-use in MATCH patterns is allowed:
+/// - `Node` → cannot be used as a Relationship or Path
+/// - `Relationship` → cannot be used as a Node or Path
+/// - `Path` → cannot be used as a Node or Relationship; property access is invalid
+/// - `Value` → came from a scalar expression; cannot be used as a Node in MATCH
+///   (e.g. `WITH 1 AS n MATCH (n)` is a compile-time error)
+/// - `Untyped` → came from CALL YIELD or UNWIND; type is unknown at compile time,
+///   no conflicts are raised (the runtime determines the actual type)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum VarKind {
     Node,
     Relationship,
     Path,
-    Value,   // unknown type from UNWIND or WITH pass-through — may be a node/rel at runtime
-    Scalar,  // definitely a scalar literal from WITH (e.g. WITH true AS n) — not a node/rel
+    Value,   // scalar from WITH literal expression (e.g. `WITH 1 AS n`)
+    Untyped, // from CALL YIELD or UNWIND — type not known at compile time
 }
 
 /// Validate `query` for semantic correctness.
@@ -107,8 +132,18 @@ impl ValidationContext {
                     self.has_write = true;
                     self.validate_merge(mc)?;
                 }
-                Clause::Call(_) => {
+                Clause::Call(cc) => {
                     // CALL clauses are validated at the planner level.
+                    // Register YIELD variables into scope so subsequent RETURN can find them.
+                    // Use Untyped kind to avoid false conflicts with subsequent MATCH patterns.
+                    for (name, alias) in &cc.yield_items {
+                        let var_name = if let Some(ref a) = alias {
+                            a.0.clone()
+                        } else {
+                            name.0.clone()
+                        };
+                        self.vars.insert(var_name, VarKind::Untyped);
+                    }
                 }
                 Clause::Foreach(_) => {
                     // FOREACH clauses — validated at the planner level.
@@ -176,9 +211,10 @@ impl ValidationContext {
                         kind_name(existing)
                     )));
                 }
-                // Scalar: a definitely-scalar value (e.g. `WITH true AS n`) cannot be used as a Node.
-                // Value: unknown type (from UNWIND, etc.) — may be a node at runtime, so allow it.
-                if existing == VarKind::Scalar {
+                // Value -> Node: e.g. `WITH true AS n MATCH (n)` is a type conflict
+                // because a literal value cannot be used as a node pattern.
+                // Untyped (from CALL YIELD or UNWIND) can become a Node — no conflict.
+                if existing == VarKind::Value {
                     return Err(plan_error_syntax(&format!(
                         "variable '{name}' already defined as Value, cannot be used as Node",
                     )));
@@ -204,9 +240,10 @@ impl ValidationContext {
                         kind_name(existing)
                     )));
                 }
-                // Scalar: a definitely-scalar value cannot be used as a Relationship.
-                // Value: unknown type (from UNWIND, etc.) — may be a rel at runtime, so allow it.
-                if existing == VarKind::Scalar {
+                // Value -> Relationship: e.g. `WITH true AS r MATCH ()-[r]-()` is a type conflict
+                // Exception: variable-length rel patterns like `-[rs*]->` can use a list variable
+                // Untyped (from CALL YIELD) can become a Relationship — no conflict.
+                if existing == VarKind::Value && rel.range.is_none() {
                     return Err(plan_error_syntax(&format!(
                         "variable '{name}' already defined as Value, cannot be used as Relationship",
                     )));
@@ -225,52 +262,209 @@ impl ValidationContext {
     // ── WHERE expression validation ─────────────────────────────────────────
 
     fn validate_where_expr(&self, expr: &Expr) -> Result<(), GqlError> {
-        // Aggregation functions (count, sum, avg, etc.) are not allowed in WHERE
+        // Aggregation functions are not allowed in WHERE clauses (InvalidAggregation)
         if contains_aggregation(expr) {
             return Err(plan_error_syntax(
-                "aggregation is not allowed in WHERE clause",
+                "aggregation functions are not allowed in WHERE clauses",
             ));
         }
-        // Check for undefined variables in the WHERE expression
-        self.check_expr_undefined_vars(expr)?;
+        // A standalone node/relationship variable used as a boolean predicate is
+        // InvalidArgumentType — e.g. `WHERE n` where n is a node
+        if let Expr::Variable(ref id) = expr {
+            if let Some(&kind) = self.vars.get(&id.0) {
+                if kind == VarKind::Node || kind == VarKind::Relationship {
+                    return Err(plan_error_syntax(&format!(
+                        "variable '{}' is a {} and cannot be used as a boolean predicate",
+                        id.0,
+                        kind_name(kind)
+                    )));
+                }
+            }
+        }
+        // Check PatternExpr in WHERE: named variables must be in scope
+        self.check_where_pattern_vars(expr)?;
+        // Check that all variable references are defined
+        self.check_vars_defined_in_where(expr)?;
         self.validate_expr_general(expr)
     }
 
-    /// Recursively check that all variable references in an expression are in scope.
-    fn check_expr_undefined_vars(&self, expr: &Expr) -> Result<(), GqlError> {
+    /// Check that all variable references in a WHERE expression are defined in scope.
+    /// PatternExpr variables are checked separately by check_where_pattern_vars.
+    fn check_vars_defined_in_where(&self, expr: &Expr) -> Result<(), GqlError> {
         match expr {
-            Expr::Variable(ref id) if id.0 != "*" => {
-                if !self.vars.contains_key(&id.0) {
+            // PatternExpr in WHERE — variable scope is checked by check_where_pattern_vars
+            Expr::PatternExpr(_) | Expr::ExistsSubquery { .. } => Ok(()),
+            Expr::Variable(ref id) => {
+                if id.0 != "*" && !self.vars.contains_key(&id.0) {
                     return Err(plan_error_syntax(&format!(
                         "variable '{}' not defined",
                         id.0
                     )));
                 }
-            }
-            Expr::BinaryOp { left, right, .. } => {
-                self.check_expr_undefined_vars(left)?;
-                self.check_expr_undefined_vars(right)?;
-            }
-            Expr::UnaryOp { expr: inner, .. } => {
-                self.check_expr_undefined_vars(inner)?;
+                Ok(())
             }
             Expr::Property(inner, _) => {
-                self.check_expr_undefined_vars(inner)?;
-            }
-            Expr::FunctionCall { args, .. } => {
-                for arg in args {
-                    self.check_expr_undefined_vars(arg)?;
+                // Property access on a Path variable is invalid (InvalidArgumentType)
+                if let Expr::Variable(ref id) = inner.as_ref() {
+                    if let Some(&kind) = self.vars.get(&id.0) {
+                        if kind == VarKind::Path {
+                            return Err(plan_error_syntax(&format!(
+                                "property access on path variable '{}' is not allowed",
+                                id.0
+                            )));
+                        }
+                    }
                 }
+                self.check_vars_defined_in_where(inner)
             }
-            Expr::IsNull(inner) | Expr::IsNotNull(inner) => {
-                self.check_expr_undefined_vars(inner)?;
+            Expr::BinaryOp { left, right, .. } => {
+                self.check_vars_defined_in_where(left)?;
+                self.check_vars_defined_in_where(right)
+            }
+            Expr::UnaryOp { expr, .. } => self.check_vars_defined_in_where(expr),
+            Expr::FunctionCall { name, args, .. } => {
+                // Pattern comprehensions introduce their own variable scope — skip var checking
+                if name.as_str() == "__patternComp" {
+                    return Ok(());
+                }
+                for arg in args {
+                    self.check_vars_defined_in_where(arg)?;
+                }
+                Ok(())
+            }
+            Expr::IsNull(inner) | Expr::IsNotNull(inner) | Expr::HasLabel(inner, _) => {
+                self.check_vars_defined_in_where(inner)
+            }
+            Expr::ListComp {
+                variable,
+                list,
+                filter,
+                map,
+                ..
+            } => {
+                self.check_vars_defined_in_where(list)?;
+                // loop variable is valid inside filter and map
+                let mut inner_vars = self.vars.clone();
+                inner_vars.insert(variable.0.clone(), VarKind::Value);
+                let inner_ctx = ValidationContext {
+                    vars: inner_vars,
+                    has_read: self.has_read,
+                    has_write: self.has_write,
+                    return_count: self.return_count,
+                };
+                if let Some(f) = filter {
+                    inner_ctx.check_vars_defined_in_where(f)?;
+                }
+                inner_ctx.check_vars_defined_in_where(map)
             }
             Expr::List(items) => {
                 for item in items {
-                    self.check_expr_undefined_vars(item)?;
+                    self.check_vars_defined_in_where(item)?;
+                }
+                Ok(())
+            }
+            Expr::MapLiteral(pairs) => {
+                for (_, v) in pairs {
+                    self.check_vars_defined_in_where(v)?;
+                }
+                Ok(())
+            }
+            Expr::Case {
+                subject,
+                alternatives,
+                default,
+            } => {
+                if let Some(s) = subject {
+                    self.check_vars_defined_in_where(s)?;
+                }
+                for (w, t) in alternatives {
+                    self.check_vars_defined_in_where(w)?;
+                    self.check_vars_defined_in_where(t)?;
+                }
+                if let Some(d) = default {
+                    self.check_vars_defined_in_where(d)?;
+                }
+                Ok(())
+            }
+            Expr::Subscript(a, b) => {
+                self.check_vars_defined_in_where(a)?;
+                self.check_vars_defined_in_where(b)
+            }
+            Expr::Slice(a, b, c) => {
+                self.check_vars_defined_in_where(a)?;
+                if let Some(b) = b {
+                    self.check_vars_defined_in_where(b)?;
+                }
+                if let Some(c) = c {
+                    self.check_vars_defined_in_where(c)?;
+                }
+                Ok(())
+            }
+            _ => Ok(()),
+        }
+    }
+
+    /// Validate PatternExpr in WHERE: all named variables in the pattern must be in scope.
+    /// Also detects standalone node patterns (no relationships) as InvalidArgumentType.
+    fn check_where_pattern_vars(&self, expr: &Expr) -> Result<(), GqlError> {
+        match expr {
+            Expr::PatternExpr(patterns) => {
+                for pattern in patterns {
+                    // Standalone node-only pattern (no relationships) is InvalidArgumentType
+                    if pattern.steps.is_empty() {
+                        if let Some(ref var) = pattern.start.variable {
+                            // (n) with no relationships — checks if node exists but doesn't test a predicate
+                            if self.vars.contains_key(&var.0) {
+                                return Err(plan_error_syntax(
+                                    "standalone node pattern in WHERE is not a valid predicate",
+                                ));
+                            }
+                        }
+                    }
+                    // All named variables in the pattern must be in scope
+                    self.check_pattern_vars_in_scope(pattern)?;
+                }
+                Ok(())
+            }
+            Expr::BinaryOp { left, right, .. } => {
+                self.check_where_pattern_vars(left)?;
+                self.check_where_pattern_vars(right)
+            }
+            Expr::UnaryOp { expr, .. } => self.check_where_pattern_vars(expr),
+            Expr::IsNull(inner) | Expr::IsNotNull(inner) | Expr::HasLabel(inner, _) => {
+                self.check_where_pattern_vars(inner)
+            }
+            _ => Ok(()),
+        }
+    }
+
+    /// Check that all named variables in a path pattern are already in scope.
+    fn check_pattern_vars_in_scope(&self, pattern: &PathPattern) -> Result<(), GqlError> {
+        if let Some(ref var) = pattern.start.variable {
+            if !var.0.is_empty() && !self.vars.contains_key(&var.0) {
+                return Err(plan_error_syntax(&format!(
+                    "variable '{}' not defined",
+                    var.0
+                )));
+            }
+        }
+        for step in &pattern.steps {
+            if let Some(ref var) = step.rel.variable {
+                if !var.0.is_empty() && !self.vars.contains_key(&var.0) {
+                    return Err(plan_error_syntax(&format!(
+                        "variable '{}' not defined",
+                        var.0
+                    )));
                 }
             }
-            _ => {}
+            if let Some(ref var) = step.node.variable {
+                if !var.0.is_empty() && !self.vars.contains_key(&var.0) {
+                    return Err(plan_error_syntax(&format!(
+                        "variable '{}' not defined",
+                        var.0
+                    )));
+                }
+            }
         }
         Ok(())
     }
@@ -309,9 +503,9 @@ impl ValidationContext {
             let name = var.0.clone();
             if self.vars.contains_key(&name) {
                 let has_labels = !node.labels.is_empty();
-                // Any properties map (even empty {}) triggers VariableAlreadyBound
+                // Any explicit property map (even empty {}) is a rebinding attempt
                 let has_props = node.properties.is_some();
-                // VariableAlreadyBound: re-use with labels or properties
+                // VariableAlreadyBound: re-use with labels or any property map
                 if has_labels || has_props {
                     return Err(plan_error_syntax(&format!(
                         "variable '{name}' already bound, cannot be rebound in CREATE with labels/properties"
@@ -460,10 +654,10 @@ impl ValidationContext {
     // ── RETURN validation ───────────────────────────────────────────────────
 
     fn validate_return(&self, rc: &ReturnClause) -> Result<(), GqlError> {
-        // Check RETURN * with empty scope
+        // Check RETURN * with empty scope — `RETURN *` is represented as Variable("*")
         let is_return_star = rc.items.len() == 1
             && matches!(&rc.items[0].expr, Expr::Variable(ref id) if id.0 == "*");
-        if (rc.items.is_empty() || is_return_star) && self.vars.is_empty() {
+        if is_return_star && self.vars.is_empty() {
             return Err(plan_error_syntax(
                 "RETURN * requires at least one variable in scope",
             ));
@@ -483,16 +677,53 @@ impl ValidationContext {
         }
         self.check_column_name_conflicts(&rc.items)?;
         self.validate_aggregation_consistency(&rc.items)?;
-        // Validate RETURN expressions for type errors
+        // Validate RETURN expressions
         for item in &rc.items {
             self.validate_expr_general(&item.expr)?;
+            // Check for PatternExpr in RETURN projection (UnexpectedSyntax)
+            self.check_no_pattern_expr(&item.expr)?;
+            // Check that all variable references are defined (UndefinedVariable)
+            if !is_return_star {
+                self.check_vars_defined(&item.expr, &std::collections::HashSet::new())?;
+            }
         }
         // Validate ORDER BY — check for aggregation in ORDER BY
         let has_agg_in_return = rc.items.iter().any(|item| contains_aggregation(&item.expr));
+
+        // Build the set of names available after RETURN DISTINCT (projected names only)
+        let return_projected_names: HashSet<String> = rc
+            .items
+            .iter()
+            .filter_map(|item| {
+                if let Some(ref alias) = item.alias {
+                    Some(alias.0.clone())
+                } else if let Expr::Variable(ref id) = item.expr {
+                    Some(id.0.clone())
+                } else {
+                    None
+                }
+            })
+            .collect();
+
         for sort_item in &rc.order_by {
             if !has_agg_in_return && contains_aggregation(&sort_item.expr) {
                 return Err(plan_error_syntax(
                     "aggregation in ORDER BY requires aggregation in RETURN",
+                ));
+            }
+            // After RETURN DISTINCT, only projected names are in scope for ORDER BY
+            if rc.distinct && has_agg_in_return {
+                // With aggregation + DISTINCT, strictly check ORDER BY scope
+                self.validate_order_by_expr_scope(&sort_item.expr, &return_projected_names)?;
+            } else if rc.distinct {
+                // DISTINCT without aggregation: ORDER BY must use projected names only
+                // (variables not projected are no longer in scope)
+                self.validate_order_by_expr_scope(&sort_item.expr, &return_projected_names)?;
+            }
+            // Check for ambiguous aggregation in ORDER BY when RETURN has aggregation
+            if has_agg_in_return && has_ambiguous_aggregation(&sort_item.expr) {
+                return Err(plan_error_syntax(
+                    "ambiguous aggregation in ORDER BY: expression mixes aggregation and non-aggregation",
                 ));
             }
             self.validate_order_by_expr(&sort_item.expr, &rc.items)?;
@@ -502,6 +733,61 @@ impl ValidationContext {
         }
         if let Some(ref limit) = rc.limit {
             self.validate_skip_limit(limit, "LIMIT")?;
+        }
+        Ok(())
+    }
+
+    /// Validate that ORDER BY expression only references projected names.
+    fn validate_order_by_expr_scope(
+        &self,
+        expr: &Expr,
+        projected_names: &HashSet<String>,
+    ) -> Result<(), GqlError> {
+        match expr {
+            Expr::Variable(ref id) => {
+                if id.0 != "*" && !projected_names.contains(&id.0) && !self.vars.contains_key(&id.0) {
+                    return Err(plan_error_syntax(&format!(
+                        "variable '{}' not in scope after RETURN/WITH DISTINCT",
+                        id.0
+                    )));
+                }
+            }
+            Expr::Property(inner, _) => {
+                // For property access like `a.age`, check if `a` itself is projected
+                // After DISTINCT, if `a` is not projected but only `a.name` is, then `a.age` is undefined
+                if let Expr::Variable(ref id) = inner.as_ref() {
+                    // Check if the variable `a` is directly projected OR if any property of `a` is projected
+                    if !projected_names.contains(&id.0) && !self.vars.contains_key(&id.0) {
+                        return Err(plan_error_syntax(&format!(
+                            "variable '{}' not in scope after RETURN/WITH DISTINCT",
+                            id.0
+                        )));
+                    }
+                    // Check if the node variable `a` is projected (not just a.name property)
+                    // When DISTINCT is used and only a.name was projected (not `a`), then a.age is invalid
+                    if !projected_names.contains(&id.0) {
+                        // Only the property `a.name` was projected, not `a` itself
+                        // `a.age` would reference the original variable which is no longer in scope
+                        return Err(plan_error_syntax(&format!(
+                            "variable '{}' not projected by DISTINCT",
+                            id.0
+                        )));
+                    }
+                }
+            }
+            Expr::BinaryOp { left, right, .. } => {
+                self.validate_order_by_expr_scope(left, projected_names)?;
+                self.validate_order_by_expr_scope(right, projected_names)?;
+            }
+            Expr::UnaryOp { expr, .. } => {
+                self.validate_order_by_expr_scope(expr, projected_names)?;
+            }
+            Expr::FunctionCall { args, .. } => {
+                for arg in args {
+                    self.validate_order_by_expr_scope(arg, projected_names)?;
+                }
+            }
+            _ => {}
         }
         Ok(())
     }
@@ -525,6 +811,8 @@ impl ValidationContext {
         self.validate_aggregation_consistency(&wc.items)?;
         for item in &wc.items {
             self.validate_expr_general(&item.expr)?;
+            // Check for PatternExpr in WITH projection (UnexpectedSyntax)
+            self.check_no_pattern_expr(&item.expr)?;
         }
         let with_names: HashSet<String> = wc
             .items
@@ -542,13 +830,43 @@ impl ValidationContext {
 
         // Check for aggregation in ORDER BY when WITH projection has no aggregation
         let has_agg_in_projection = wc.items.iter().any(|item| contains_aggregation(&item.expr));
+
+        // Collect variables used in the non-aggregated (grouping key) WITH items.
+        // These variables can be referenced in ORDER BY even after aggregation.
+        let mut grouping_key_vars: HashSet<String> = HashSet::new();
+        if has_agg_in_projection {
+            for item in &wc.items {
+                if !contains_aggregation(&item.expr) {
+                    collect_variable_refs(&item.expr, &mut grouping_key_vars);
+                }
+            }
+        }
+
         for sort_item in &wc.order_by {
             if !has_agg_in_projection && contains_aggregation(&sort_item.expr) {
                 return Err(plan_error_syntax(
                     "aggregation in ORDER BY requires aggregation in WITH projection",
                 ));
             }
-            self.validate_order_by_expr_in_with(&sort_item.expr, &with_names)?;
+            // Check for ambiguous aggregation in ORDER BY when WITH has aggregation
+            if has_agg_in_projection && has_ambiguous_aggregation(&sort_item.expr) {
+                return Err(plan_error_syntax(
+                    "ambiguous aggregation in ORDER BY: expression mixes aggregation and non-aggregation",
+                ));
+            }
+            if has_agg_in_projection {
+                // When aggregation is present, ORDER BY can only reference:
+                // 1. Projected names (with_names)
+                // 2. Variables used in the grouping key expressions
+                // (not arbitrary variables from the previous scope)
+                self.validate_order_by_expr_strict_with(
+                    &sort_item.expr,
+                    &with_names,
+                    &grouping_key_vars,
+                )?;
+            } else {
+                self.validate_order_by_expr_in_with(&sort_item.expr, &with_names)?;
+            }
         }
         // Note: WHERE in WITH is validated loosely — the executor will catch
         // truly undefined variables. We skip strict scope checking here to avoid
@@ -565,23 +883,96 @@ impl ValidationContext {
         Ok(())
     }
 
+    /// Strict ORDER BY scope check for WITH with aggregation.
+    /// Variables outside aggregation calls must be from with_names or grouping_key_vars.
+    /// Variables INSIDE aggregation calls are allowed (they reference pre-aggregation data).
+    fn validate_order_by_expr_strict_with(
+        &self,
+        expr: &Expr,
+        with_names: &HashSet<String>,
+        grouping_key_vars: &HashSet<String>,
+    ) -> Result<(), GqlError> {
+        self.validate_order_by_expr_strict_with_inner(expr, with_names, grouping_key_vars, false)
+    }
+
+    fn validate_order_by_expr_strict_with_inner(
+        &self,
+        expr: &Expr,
+        with_names: &HashSet<String>,
+        grouping_key_vars: &HashSet<String>,
+        inside_aggregation: bool,
+    ) -> Result<(), GqlError> {
+        match expr {
+            Expr::Variable(ref id) => {
+                // Variables inside aggregation calls are allowed (pre-agg data access)
+                if !inside_aggregation
+                    && id.0 != "*"
+                    && !with_names.contains(&id.0)
+                    && !grouping_key_vars.contains(&id.0)
+                {
+                    return Err(plan_error_syntax(&format!(
+                        "variable '{}' not in scope after WITH projection",
+                        id.0
+                    )));
+                }
+            }
+            Expr::FunctionCall { name, args, .. } => {
+                let next_inside_agg =
+                    inside_aggregation || is_aggregation_function(name.as_str());
+                for arg in args {
+                    self.validate_order_by_expr_strict_with_inner(
+                        arg,
+                        with_names,
+                        grouping_key_vars,
+                        next_inside_agg,
+                    )?;
+                }
+            }
+            Expr::Property(inner, _) => {
+                self.validate_order_by_expr_strict_with_inner(
+                    inner,
+                    with_names,
+                    grouping_key_vars,
+                    inside_aggregation,
+                )?;
+            }
+            Expr::BinaryOp { left, right, .. } => {
+                self.validate_order_by_expr_strict_with_inner(
+                    left,
+                    with_names,
+                    grouping_key_vars,
+                    inside_aggregation,
+                )?;
+                self.validate_order_by_expr_strict_with_inner(
+                    right,
+                    with_names,
+                    grouping_key_vars,
+                    inside_aggregation,
+                )?;
+            }
+            Expr::UnaryOp { expr, .. } => {
+                self.validate_order_by_expr_strict_with_inner(
+                    expr,
+                    with_names,
+                    grouping_key_vars,
+                    inside_aggregation,
+                )?;
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
     fn reset_scope_for_with(&mut self, wc: &WithClause) {
         let mut new_vars = HashMap::new();
         for item in &wc.items {
             if let Some(ref alias) = item.alias {
-                // Preserve the source variable kind if the expression is a variable reference.
-                // This ensures that e.g. `WITH r1 AS r2` keeps r2 as Relationship, not Value.
-                let kind = if let Expr::Variable(ref src_id) = item.expr {
-                    self.vars.get(&src_id.0).copied().unwrap_or(VarKind::Value)
+                // Preserve the kind if the expression is a direct variable reference,
+                // otherwise use Value (for computed expressions like count(*))
+                let kind = if let Expr::Variable(ref id) = item.expr {
+                    self.vars.get(&id.0).copied().unwrap_or(VarKind::Value)
                 } else {
-                    // Non-variable expression: determine if it is a definite scalar literal.
-                    // Literals like `true`, `123`, strings, etc. are Scalar (not nodes).
-                    // Other expressions (function calls, operators) produce unknown type (Value).
-                    if is_definitely_scalar_expr(&item.expr) {
-                        VarKind::Scalar
-                    } else {
-                        VarKind::Value
-                    }
+                    VarKind::Value
                 };
                 new_vars.insert(alias.0.clone(), kind);
             } else if let Expr::Variable(ref id) = item.expr {
@@ -659,13 +1050,16 @@ impl ValidationContext {
 
     fn validate_unwind(&mut self, uc: &UnwindClause) -> Result<(), GqlError> {
         self.validate_expr_general(&uc.expr)?;
-        self.vars.insert(uc.alias.0.clone(), VarKind::Value);
+        // UNWIND can produce any type (nodes, relationships, scalars),
+        // so use Untyped to avoid false conflicts in subsequent MATCH patterns
+        self.vars.insert(uc.alias.0.clone(), VarKind::Untyped);
         Ok(())
     }
 
     // ── SET / REMOVE validation ─────────────────────────────────────────────
 
     fn validate_set(&self, sc: &SetClause) -> Result<(), GqlError> {
+        let empty_set = std::collections::HashSet::new();
         for item in &sc.items {
             match item {
                 crate::ast::SetClauseItem::SetProperty { alias, value, .. } => {
@@ -675,7 +1069,9 @@ impl ValidationContext {
                             alias.0
                         )));
                     }
-                    self.validate_expr_in_create(value)?;
+                    // Check for PatternExpr in SET values (UnexpectedSyntax)
+                    self.check_no_pattern_expr(value)?;
+                    self.check_vars_defined(value, &empty_set)?;
                 }
                 crate::ast::SetClauseItem::SetMap { alias, map, .. } => {
                     if !self.vars.contains_key(&alias.0) {
@@ -684,7 +1080,8 @@ impl ValidationContext {
                             alias.0
                         )));
                     }
-                    self.validate_expr_in_create(map)?;
+                    self.check_no_pattern_expr(map)?;
+                    self.check_vars_defined(map, &empty_set)?;
                 }
                 crate::ast::SetClauseItem::SetLabels { alias, .. } => {
                     if !self.vars.contains_key(&alias.0) {
@@ -751,8 +1148,24 @@ impl ValidationContext {
                     "variable-length relationship patterns are not allowed in MERGE",
                 ));
             }
+            // Check end nodes in MERGE steps for VariableAlreadyBound
+            if let Some(ref var) = step.node.variable {
+                if self.vars.contains_key(&var.0) {
+                    let has_labels = !step.node.labels.is_empty();
+                    let has_props = step.node.properties.is_some();
+                    if has_labels || has_props {
+                        return Err(plan_error_syntax(&format!(
+                            "variable '{}' already bound, cannot be rebound in MERGE with labels/properties",
+                            var.0
+                        )));
+                    }
+                }
+            }
         }
-        // Register variables (checking for VariableAlreadyBound on step nodes)
+        // Register variables
+        if let Some(ref var) = mc.pattern.variable {
+            self.vars.insert(var.0.clone(), VarKind::Path);
+        }
         if let Some(ref var) = mc.pattern.start.variable {
             self.vars.insert(var.0.clone(), VarKind::Node);
         }
@@ -823,6 +1236,15 @@ impl ValidationContext {
     /// This catches: `NOT <non-boolean-literal>`, `<non-boolean> AND/OR <expr>`.
     fn validate_expr_general(&self, expr: &Expr) -> Result<(), GqlError> {
         match expr {
+            // Check for floating-point overflow (e.g. 1.34E999 → Infinity)
+            Expr::Float(f) => {
+                if f.is_infinite() {
+                    return Err(plan_error_syntax(
+                        "floating-point literal is too large (overflow to infinity)",
+                    ));
+                }
+                return Ok(());
+            }
             Expr::UnaryOp {
                 op: UnaryOp::Not,
                 expr: inner,
@@ -892,6 +1314,12 @@ impl ValidationContext {
                 validate_known_function(name.as_str())?;
                 // Validate function argument counts for known functions at compile time
                 validate_function_arity(name.as_str(), args)?;
+                // Validate argument kinds for type-restricted functions
+                self.validate_function_arg_kinds(name.as_str(), args)?;
+                // Check for non-constant (non-deterministic) functions inside aggregation
+                if is_aggregation_function(name.as_str()) {
+                    self.check_no_nondeterministic_in_agg(name.as_str(), args)?;
+                }
             }
             Expr::Property(inner, _) => {
                 self.validate_expr_general(inner)?;
@@ -944,6 +1372,19 @@ impl ValidationContext {
                 self.validate_expr_general(list)?;
                 if let Some(f) = filter {
                     self.validate_expr_general(f)?;
+                }
+                // Aggregation functions are not allowed inside list comprehension body
+                if contains_aggregation(map) {
+                    return Err(plan_error_syntax(
+                        "aggregation functions are not allowed inside list comprehension",
+                    ));
+                }
+                if let Some(f) = filter {
+                    if contains_aggregation(f) {
+                        return Err(plan_error_syntax(
+                            "aggregation functions are not allowed inside list comprehension filter",
+                        ));
+                    }
                 }
                 self.validate_expr_general(map)?;
             }
@@ -1069,6 +1510,261 @@ impl ValidationContext {
             }
         }
         Ok(())
+    }
+
+    // ── Function argument type validation ──────────────────────────────────
+
+    /// Validate that type-restricted functions receive the correct argument kinds.
+    fn validate_function_arg_kinds(
+        &self,
+        name: &str,
+        args: &[Expr],
+    ) -> Result<(), GqlError> {
+        let lower = name.to_ascii_lowercase();
+        match lower.as_str() {
+            "type" => {
+                // type(r) requires a Relationship argument
+                if let Some(Expr::Variable(ref id)) = args.first() {
+                    if let Some(&kind) = self.vars.get(&id.0) {
+                        if kind == VarKind::Node {
+                            return Err(plan_error_syntax(
+                                "type() requires a relationship argument, got a node",
+                            ));
+                        }
+                    }
+                }
+            }
+            "length" => {
+                // length(p) requires a Path argument — not a node or relationship
+                if let Some(Expr::Variable(ref id)) = args.first() {
+                    if let Some(&kind) = self.vars.get(&id.0) {
+                        if kind == VarKind::Node || kind == VarKind::Relationship {
+                            return Err(plan_error_syntax(
+                                "length() requires a path argument, not a node or relationship",
+                            ));
+                        }
+                    }
+                }
+            }
+            "size" => {
+                // size(p) where p is a path variable is invalid (InvalidArgumentType)
+                if let Some(Expr::Variable(ref id)) = args.first() {
+                    if let Some(&kind) = self.vars.get(&id.0) {
+                        if kind == VarKind::Path {
+                            return Err(plan_error_syntax(
+                                "size() requires a list or string argument, not a path",
+                            ));
+                        }
+                    }
+                }
+                // size(pattern) where argument is a PatternExpr is UnexpectedSyntax
+                if let Some(arg) = args.first() {
+                    if matches!(arg, Expr::PatternExpr(_)) {
+                        return Err(plan_error_syntax(
+                            "size() does not accept a pattern expression",
+                        ));
+                    }
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    /// Check that aggregation functions don't contain non-deterministic (non-constant) functions.
+    fn check_no_nondeterministic_in_agg(
+        &self,
+        _agg_name: &str,
+        args: &[Expr],
+    ) -> Result<(), GqlError> {
+        for arg in args {
+            if self.contains_nondeterministic(arg) {
+                return Err(plan_error_syntax(
+                    "non-deterministic functions (like rand()) are not allowed inside aggregation",
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn contains_nondeterministic(&self, expr: &Expr) -> bool {
+        match expr {
+            Expr::FunctionCall { name, args, .. } => {
+                if is_nondeterministic_function(name.as_str()) {
+                    return true;
+                }
+                args.iter().any(|a| self.contains_nondeterministic(a))
+            }
+            Expr::BinaryOp { left, right, .. } => {
+                self.contains_nondeterministic(left) || self.contains_nondeterministic(right)
+            }
+            Expr::UnaryOp { expr, .. } => self.contains_nondeterministic(expr),
+            Expr::Property(inner, _) => self.contains_nondeterministic(inner),
+            Expr::List(items) => items.iter().any(|i| self.contains_nondeterministic(i)),
+            _ => false,
+        }
+    }
+
+    // ── Undefined variable checking ─────────────────────────────────────────
+
+    /// Check that all variable references in an expression are defined in scope.
+    /// `extra_vars` provides additional in-scope variables (e.g. list comprehension loop vars).
+    fn check_vars_defined(
+        &self,
+        expr: &Expr,
+        extra_vars: &std::collections::HashSet<String>,
+    ) -> Result<(), GqlError> {
+        match expr {
+            Expr::Variable(ref id) => {
+                if id.0 != "*"
+                    && !self.vars.contains_key(&id.0)
+                    && !extra_vars.contains(&id.0)
+                {
+                    return Err(plan_error_syntax(&format!(
+                        "variable '{}' not defined",
+                        id.0
+                    )));
+                }
+                Ok(())
+            }
+            Expr::Property(inner, _) => self.check_vars_defined(inner, extra_vars),
+            Expr::BinaryOp { left, right, .. } => {
+                self.check_vars_defined(left, extra_vars)?;
+                self.check_vars_defined(right, extra_vars)
+            }
+            Expr::UnaryOp { expr, .. } => self.check_vars_defined(expr, extra_vars),
+            Expr::FunctionCall { name, args, .. } => {
+                // Pattern comprehensions introduce their own variable scope — skip var checking
+                if name.as_str() == "__patternComp" {
+                    return Ok(());
+                }
+                for arg in args {
+                    self.check_vars_defined(arg, extra_vars)?;
+                }
+                Ok(())
+            }
+            Expr::IsNull(inner) | Expr::IsNotNull(inner) | Expr::HasLabel(inner, _) => {
+                self.check_vars_defined(inner, extra_vars)
+            }
+            Expr::ListComp {
+                variable,
+                list,
+                filter,
+                map,
+                ..
+            } => {
+                self.check_vars_defined(list, extra_vars)?;
+                // Add the loop variable to scope for filter and map
+                let mut inner_extra = extra_vars.clone();
+                inner_extra.insert(variable.0.clone());
+                if let Some(f) = filter {
+                    self.check_vars_defined(f, &inner_extra)?;
+                }
+                self.check_vars_defined(map, &inner_extra)
+            }
+            Expr::List(items) => {
+                for item in items {
+                    self.check_vars_defined(item, extra_vars)?;
+                }
+                Ok(())
+            }
+            Expr::MapLiteral(pairs) => {
+                for (_, v) in pairs {
+                    self.check_vars_defined(v, extra_vars)?;
+                }
+                Ok(())
+            }
+            Expr::Case {
+                subject,
+                alternatives,
+                default,
+            } => {
+                if let Some(s) = subject {
+                    self.check_vars_defined(s, extra_vars)?;
+                }
+                for (w, t) in alternatives {
+                    self.check_vars_defined(w, extra_vars)?;
+                    self.check_vars_defined(t, extra_vars)?;
+                }
+                if let Some(d) = default {
+                    self.check_vars_defined(d, extra_vars)?;
+                }
+                Ok(())
+            }
+            Expr::Subscript(a, b) => {
+                self.check_vars_defined(a, extra_vars)?;
+                self.check_vars_defined(b, extra_vars)
+            }
+            Expr::Slice(a, b, c) => {
+                self.check_vars_defined(a, extra_vars)?;
+                if let Some(b) = b {
+                    self.check_vars_defined(b, extra_vars)?;
+                }
+                if let Some(c) = c {
+                    self.check_vars_defined(c, extra_vars)?;
+                }
+                Ok(())
+            }
+            // PatternExpr and ExistsSubquery introduce their own scope — skip
+            Expr::PatternExpr(_) | Expr::ExistsSubquery { .. } => Ok(()),
+            _ => Ok(()),
+        }
+    }
+
+    // ── PatternExpr placement check ─────────────────────────────────────────
+
+    /// Check that no PatternExpr appears in a non-WHERE context (UnexpectedSyntax).
+    /// PatternExpr is allowed as the source of a `__patterncomp` (pattern comprehension).
+    fn check_no_pattern_expr(&self, expr: &Expr) -> Result<(), GqlError> {
+        match expr {
+            Expr::PatternExpr(_) => Err(plan_error_syntax(
+                "pattern expressions are not allowed in RETURN or WITH projections",
+            )),
+            Expr::Property(inner, _) => self.check_no_pattern_expr(inner),
+            Expr::BinaryOp { left, right, .. } => {
+                self.check_no_pattern_expr(left)?;
+                self.check_no_pattern_expr(right)
+            }
+            Expr::UnaryOp { expr, .. } => self.check_no_pattern_expr(expr),
+            Expr::FunctionCall { name, args, .. } => {
+                // __patternComp is a pattern comprehension — its first arg is a PatternExpr
+                // and that's valid; only check the remaining args (the projection expression)
+                if name.as_str() == "__patternComp" {
+                    // Skip the first arg (PatternExpr source), check the rest
+                    for arg in args.iter().skip(1) {
+                        self.check_no_pattern_expr(arg)?;
+                    }
+                } else {
+                    for arg in args {
+                        self.check_no_pattern_expr(arg)?;
+                    }
+                }
+                Ok(())
+            }
+            Expr::IsNull(inner) | Expr::IsNotNull(inner) | Expr::HasLabel(inner, _) => {
+                self.check_no_pattern_expr(inner)
+            }
+            Expr::List(items) => {
+                for item in items {
+                    self.check_no_pattern_expr(item)?;
+                }
+                Ok(())
+            }
+            Expr::MapLiteral(pairs) => {
+                for (_, v) in pairs {
+                    self.check_no_pattern_expr(v)?;
+                }
+                Ok(())
+            }
+            Expr::ListComp { list, filter, map, .. } => {
+                self.check_no_pattern_expr(list)?;
+                if let Some(f) = filter {
+                    self.check_no_pattern_expr(f)?;
+                }
+                self.check_no_pattern_expr(map)
+            }
+            _ => Ok(()),
+        }
     }
 
     // ── SKIP/LIMIT validation ───────────────────────────────────────────────
@@ -1260,6 +1956,50 @@ fn has_nested_aggregation(expr: &Expr, inside_agg: bool) -> bool {
         Expr::IsNull(inner) | Expr::IsNotNull(inner) => has_nested_aggregation(inner, inside_agg),
         _ => false,
     }
+}
+
+/// Collect all variable names referenced in an expression.
+fn collect_variable_refs(expr: &Expr, vars: &mut HashSet<String>) {
+    match expr {
+        Expr::Variable(ref id) => {
+            if id.0 != "*" {
+                vars.insert(id.0.clone());
+            }
+        }
+        Expr::Property(inner, _) => collect_variable_refs(inner, vars),
+        Expr::BinaryOp { left, right, .. } => {
+            collect_variable_refs(left, vars);
+            collect_variable_refs(right, vars);
+        }
+        Expr::UnaryOp { expr, .. } => collect_variable_refs(expr, vars),
+        Expr::FunctionCall { args, .. } => {
+            for arg in args {
+                collect_variable_refs(arg, vars);
+            }
+        }
+        Expr::IsNull(inner) | Expr::IsNotNull(inner) | Expr::HasLabel(inner, _) => {
+            collect_variable_refs(inner, vars);
+        }
+        Expr::List(items) => {
+            for item in items {
+                collect_variable_refs(item, vars);
+            }
+        }
+        Expr::MapLiteral(pairs) => {
+            for (_, v) in pairs {
+                collect_variable_refs(v, vars);
+            }
+        }
+        Expr::Subscript(a, b) => {
+            collect_variable_refs(a, vars);
+            collect_variable_refs(b, vars);
+        }
+        _ => {}
+    }
+}
+
+fn is_nondeterministic_function(name: &str) -> bool {
+    matches!(name.to_ascii_lowercase().as_str(), "rand")
 }
 
 fn is_aggregation_function(name: &str) -> bool {
@@ -1478,18 +2218,10 @@ fn kind_name(k: VarKind) -> &'static str {
         VarKind::Relationship => "Relationship",
         VarKind::Path => "Path",
         VarKind::Value => "Value",
-        VarKind::Scalar => "Scalar",
+        VarKind::Untyped => "Untyped",
     }
 }
 
-/// Returns true if an expression is definitely a scalar literal (not a node/relationship).
-fn is_definitely_scalar_expr(expr: &Expr) -> bool {
-    matches!(
-        expr,
-        Expr::Bool(_) | Expr::Integer(_) | Expr::Float(_) | Expr::Str(_) | Expr::Null
-        | Expr::List(_) | Expr::MapLiteral(_)
-    )
-}
 
 fn op_name(op: BinaryOp) -> &'static str {
     match op {
