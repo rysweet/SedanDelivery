@@ -350,18 +350,27 @@ async fn result_any_order(world: &mut GqlWorld, step: &gherkin::Step) {
         format_rows_for_debug(&result.rows, world),
     );
 
-    // Each expected row must appear somewhere in the actual rows.
-    let mut matched = vec![false; result.rows.len()];
-    for (ei, expected) in expected_rows.iter().enumerate() {
-        let found = result.rows.iter().enumerate().find(|(i, row)| {
-            !matched[*i] && row_matches_tck(row, &headers, expected, world, false)
-        });
-        match found {
-            Some((i, _)) => matched[i] = true,
-            None => panic!(
-                "Expected row #{ei} not found in result.\n  Expected: {expected:?}\n  Got: {:?}",
-                format_rows_for_debug(&result.rows, world),
-            ),
+    // Use backtracking bipartite matching so that a greedy assignment failure
+    // (e.g. a less-specific pattern consuming a more-specific row) does not
+    // cause a false negative.
+    match find_row_assignment(&expected_rows, &result.rows, &headers, world, false) {
+        Some(_) => {} // all expected rows matched
+        None => {
+            // Find the first unmatched expected row for a useful error message.
+            let mut matched = vec![false; result.rows.len()];
+            for (ei, expected) in expected_rows.iter().enumerate() {
+                let found = result.rows.iter().enumerate().find(|(i, row)| {
+                    !matched[*i] && row_matches_tck(row, &headers, expected, world, false)
+                });
+                match found {
+                    Some((i, _)) => matched[i] = true,
+                    None => panic!(
+                        "Expected row #{ei} not found in result.\n  Expected: {expected:?}\n  Got: {:?}",
+                        format_rows_for_debug(&result.rows, world),
+                    ),
+                }
+            }
+            panic!("Row matching failed (bipartite).\n  Got: {:?}", format_rows_for_debug(&result.rows, world));
         }
     }
 }
@@ -418,18 +427,23 @@ async fn result_ignoring_list_order(world: &mut GqlWorld, step: &gherkin::Step) 
         format_rows_for_debug(&result.rows, world),
     );
 
-    let mut matched = vec![false; result.rows.len()];
-    for (ei, expected) in expected_rows.iter().enumerate() {
-        let found =
-            result.rows.iter().enumerate().find(|(i, row)| {
-                !matched[*i] && row_matches_tck(row, &headers, expected, world, true)
-            });
-        match found {
-            Some((i, _)) => matched[i] = true,
-            None => panic!(
-                "Expected row #{ei} not found (ignoring list order).\n  Expected: {expected:?}\n  Got: {:?}",
-                format_rows_for_debug(&result.rows, world),
-            ),
+    match find_row_assignment(&expected_rows, &result.rows, &headers, world, true) {
+        Some(_) => {}
+        None => {
+            let mut matched = vec![false; result.rows.len()];
+            for (ei, expected) in expected_rows.iter().enumerate() {
+                let found = result.rows.iter().enumerate().find(|(i, row)| {
+                    !matched[*i] && row_matches_tck(row, &headers, expected, world, true)
+                });
+                match found {
+                    Some((i, _)) => matched[i] = true,
+                    None => panic!(
+                        "Expected row #{ei} not found (ignoring list order).\n  Expected: {expected:?}\n  Got: {:?}",
+                        format_rows_for_debug(&result.rows, world),
+                    ),
+                }
+            }
+            panic!("Row matching failed (bipartite, ignoring list order).\n  Got: {:?}", format_rows_for_debug(&result.rows, world));
         }
     }
 }
@@ -1157,6 +1171,57 @@ fn normalize_col_name(s: &str) -> String {
     result.trim().to_string()
 }
 
+/// Find a complete bipartite matching between expected rows and actual rows.
+///
+/// Uses backtracking to handle cases where greedy assignment fails (e.g. when a
+/// less-specific pattern matches a more-specific row, preventing a later match).
+/// Returns the assignment as `assignment[ei] = ai` on success, or None on failure.
+fn find_row_assignment(
+    expected_rows: &[Vec<String>],
+    actual_rows: &[Row],
+    headers: &[&str],
+    world: &GqlWorld,
+    ignore_list_order: bool,
+) -> Option<Vec<usize>> {
+    let n = expected_rows.len();
+    let mut assignment = vec![0usize; n];
+    let mut used = vec![false; actual_rows.len()];
+
+    fn backtrack(
+        ei: usize,
+        expected_rows: &[Vec<String>],
+        actual_rows: &[Row],
+        headers: &[&str],
+        world: &GqlWorld,
+        ignore_list_order: bool,
+        assignment: &mut Vec<usize>,
+        used: &mut Vec<bool>,
+    ) -> bool {
+        if ei == expected_rows.len() {
+            return true;
+        }
+        for ai in 0..actual_rows.len() {
+            if !used[ai]
+                && row_matches_tck(&actual_rows[ai], headers, &expected_rows[ei], world, ignore_list_order)
+            {
+                used[ai] = true;
+                assignment[ei] = ai;
+                if backtrack(ei + 1, expected_rows, actual_rows, headers, world, ignore_list_order, assignment, used) {
+                    return true;
+                }
+                used[ai] = false;
+            }
+        }
+        false
+    }
+
+    if backtrack(0, expected_rows, actual_rows, headers, world, ignore_list_order, &mut assignment, &mut used) {
+        Some(assignment)
+    } else {
+        None
+    }
+}
+
 /// `headers` are the column names from the Gherkin table.
 /// `expected_cells` are the raw TCK cell strings for one row.
 /// `ignore_list_order` sorts list elements before comparison.
@@ -1221,18 +1286,27 @@ fn value_matches(
                 return false;
             }
             if ignore_list_order {
-                // Sort both lists by their display representation and compare
-                let mut a_sorted: Vec<String> = a
-                    .iter()
-                    .map(|v| format_value_for_compare(v, world))
-                    .collect();
-                let mut b_sorted: Vec<String> = b
-                    .iter()
-                    .map(|v| format_value_for_compare(v, world))
-                    .collect();
-                a_sorted.sort();
-                b_sorted.sort();
-                a_sorted == b_sorted
+                // Bipartite match: each element in b (expected) must match some element
+                // in a (actual). This correctly handles Edge vs Map pattern comparisons.
+                let mut used = vec![false; a.len()];
+                fn list_backtrack(
+                    bi: usize,
+                    a: &[Value],
+                    b: &[Value],
+                    world: &GqlWorld,
+                    used: &mut Vec<bool>,
+                ) -> bool {
+                    if bi == b.len() { return true; }
+                    for ai in 0..a.len() {
+                        if !used[ai] && value_matches(&a[ai], &b[bi], world, true) {
+                            used[ai] = true;
+                            if list_backtrack(bi + 1, a, b, world, used) { return true; }
+                            used[ai] = false;
+                        }
+                    }
+                    false
+                }
+                list_backtrack(0, a, b, world, &mut used)
             } else {
                 a.iter()
                     .zip(b.iter())
