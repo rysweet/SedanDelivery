@@ -45,6 +45,24 @@ pub struct MutationStats {
     pub edges_deleted: u64,
     pub properties_set: u64,
     pub labels_added: u64,
+    /// Internal: distinct label types seen during this execution.
+    labels_seen: HashSet<String>,
+    /// Internal: label types that existed in the graph before this query.
+    pre_existing_labels: HashSet<String>,
+    /// Internal: distinct (is_edge, entity_raw_id, prop_key) triples seen.
+    props_seen: HashSet<(bool, u64, String)>,
+}
+
+impl MutationStats {
+    /// Finalise derived counters from the tracking sets.
+    /// Must be called once at the end of `execute()`.
+    fn finalize(&mut self) {
+        self.labels_added = self
+            .labels_seen
+            .difference(&self.pre_existing_labels)
+            .count() as u64;
+        self.properties_set = self.props_seen.len() as u64;
+    }
 }
 
 // ── QueryExecutor ─────────────────────────────────────────────────────────────
@@ -100,8 +118,18 @@ impl<'a> QueryExecutor<'a> {
         plan: &Operator,
         budget: &mut ExecutionBudget,
     ) -> Result<QueryResult, GqlError> {
-        let mut stats = MutationStats::default();
+        let pre_existing_labels: HashSet<String> = self
+            .store
+            .all_label_names(graph)
+            .unwrap_or_default()
+            .into_iter()
+            .collect();
+        let mut stats = MutationStats {
+            pre_existing_labels,
+            ..Default::default()
+        };
         let rows = self.exec_operator(graph, plan, budget, &[], &mut stats)?;
+        stats.finalize();
 
         // Derive column list.  Handle the case where the root is Distinct{ProduceResults}.
         let effective_root = match plan {
@@ -494,14 +522,20 @@ impl<'a> QueryExecutor<'a> {
                             }
                             let ctx = self.build_filter_ctx(graph, &row)?;
                             let props = eval_prop_map(graph, self, prop_exprs, &row, &ctx)?;
-                            let prop_count = props.len() as u64;
                             let label_strings: Vec<String> =
                                 labels.iter().map(|l| l.as_str().to_string()).collect();
-                            let label_count = label_strings.len() as u64;
-                            let node_id = self.store.create_node(graph, label_strings, props)?;
+                            let non_null_prop_keys: Vec<String> = props
+                                .iter()
+                                .filter(|(_, v)| !v.is_null())
+                                .map(|(k, _)| k.clone())
+                                .collect();
+                            let node_id =
+                                self.store.create_node(graph, label_strings.clone(), props)?;
                             stats.nodes_created += 1;
-                            stats.labels_added += label_count;
-                            stats.properties_set += prop_count;
+                            stats.labels_seen.extend(label_strings);
+                            for k in non_null_prop_keys {
+                                stats.props_seen.insert((false, node_id.0, k));
+                            }
                             if let Some(a) = alias {
                                 alias_to_id.insert(a.0.clone(), node_id);
                                 row.insert(a.0.clone(), Value::Node(node_id));
@@ -543,7 +577,11 @@ impl<'a> QueryExecutor<'a> {
                                 })
                                 .ok_or_else(|| undefined_var(&dst_alias.0))?;
 
-                            let edge_prop_count = props.len() as u64;
+                            let non_null_edge_keys: Vec<String> = props
+                                .iter()
+                                .filter(|(_, v)| !v.is_null())
+                                .map(|(k, _)| k.clone())
+                                .collect();
                             let edge_id = self.store.create_edge(
                                 graph,
                                 src_id,
@@ -552,7 +590,9 @@ impl<'a> QueryExecutor<'a> {
                                 props,
                             )?;
                             stats.edges_created += 1;
-                            stats.properties_set += edge_prop_count;
+                            for k in non_null_edge_keys {
+                                stats.props_seen.insert((true, edge_id.0, k));
+                            }
                             if let Some(a) = alias {
                                 row.insert(a.0.clone(), Value::Edge(edge_id));
                             }
@@ -899,6 +939,7 @@ impl<'a> QueryExecutor<'a> {
                                         ));
                                     }
                                 }
+                                // REMOVE property does not count as properties_set.
                             }
                             RemoveItem::Labels { alias, labels } => {
                                 let val = row
@@ -913,7 +954,7 @@ impl<'a> QueryExecutor<'a> {
                                     labels.iter().map(|l| l.as_str().to_string()).collect();
                                 self.store
                                     .remove_node_labels(graph, node_id, &label_strings)?;
-                                stats.labels_added += label_strings.len() as u64;
+                                // REMOVE labels does not count as labels_added.
                             }
                         }
                     }
@@ -1082,16 +1123,21 @@ impl<'a> QueryExecutor<'a> {
                         // Not found: CREATE the node with inline properties
                         let label_strings: Vec<String> =
                             labels.iter().map(|l| l.as_str().to_string()).collect();
-                        let label_count = label_strings.len() as u64;
                         let create_props: HashMap<String, Value> =
                             prop_vals.iter().cloned().collect();
-                        let prop_count = create_props.len() as u64;
+                        let non_null_prop_keys: Vec<String> = create_props
+                            .iter()
+                            .filter(|(_, v)| !v.is_null())
+                            .map(|(k, _)| k.clone())
+                            .collect();
                         let node_id =
                             self.store
-                                .create_node(graph, label_strings, create_props)?;
+                                .create_node(graph, label_strings.clone(), create_props)?;
                         stats.nodes_created += 1;
-                        stats.labels_added += label_count;
-                        stats.properties_set += prop_count;
+                        stats.labels_seen.extend(label_strings);
+                        for k in non_null_prop_keys {
+                            stats.props_seen.insert((false, node_id.0, k));
+                        }
                         if let Some(alias) = node_alias {
                             row.insert(alias.0.clone(), Value::Node(node_id));
                         }
@@ -1200,7 +1246,11 @@ impl<'a> QueryExecutor<'a> {
                         // NOT FOUND: create the edge with properties.
                         let prop_map: HashMap<String, Value> =
                             prop_vals.into_iter().collect();
-                        let prop_count = prop_map.len() as u64;
+                        let non_null_edge_keys: Vec<String> = prop_map
+                            .iter()
+                            .filter(|(_, v)| !v.is_null())
+                            .map(|(k, _)| k.clone())
+                            .collect();
                         let edge_id = self.store.create_edge(
                             graph,
                             real_src,
@@ -1209,7 +1259,9 @@ impl<'a> QueryExecutor<'a> {
                             prop_map,
                         )?;
                         stats.edges_created += 1;
-                        stats.properties_set += prop_count;
+                        for k in non_null_edge_keys {
+                            stats.props_seen.insert((true, edge_id.0, k));
+                        }
                         if let Some(ra) = rel_alias {
                             row.insert(ra.0.clone(), Value::Edge(edge_id));
                         }
@@ -2353,14 +2405,21 @@ impl<'a> QueryExecutor<'a> {
                 }
                 let ctx = self.build_filter_ctx(graph, row)?;
                 let prop_val = self.eval_with_storage(graph, value, row, &ctx)?;
+                let is_non_null = !prop_val.is_null();
                 let mut props = HashMap::new();
                 props.insert(key.clone(), prop_val);
                 match val {
                     Value::Node(node_id) => {
                         self.store.set_node_properties(graph, *node_id, props)?;
+                        if is_non_null {
+                            stats.props_seen.insert((false, node_id.0, key.clone()));
+                        }
                     }
                     Value::Edge(edge_id) => {
                         self.store.set_edge_properties(graph, *edge_id, props)?;
+                        if is_non_null {
+                            stats.props_seen.insert((true, edge_id.0, key.clone()));
+                        }
                     }
                     other => {
                         return Err(GqlError::Execution(ExecutionError::TypeMismatch {
@@ -2369,7 +2428,6 @@ impl<'a> QueryExecutor<'a> {
                         }));
                     }
                 }
-                stats.properties_set += 1;
             }
             SetItem::Map { alias, map, merge } => {
                 let val = row
@@ -2408,21 +2466,29 @@ impl<'a> QueryExecutor<'a> {
                         }));
                     }
                 };
-                let prop_count = props.len() as u64;
-                match val {
+                let non_null_keys: Vec<String> = props
+                    .iter()
+                    .filter(|(_, v)| !v.is_null())
+                    .map(|(k, _)| k.clone())
+                    .collect();
+                let (is_edge, raw_id) = match val {
                     Value::Node(node_id) => {
+                        let id = *node_id;
                         if *merge {
-                            self.store.set_node_properties(graph, *node_id, props)?;
+                            self.store.set_node_properties(graph, id, props)?;
                         } else {
-                            self.store.replace_node_properties(graph, *node_id, props)?;
+                            self.store.replace_node_properties(graph, id, props)?;
                         }
+                        (false, id.0)
                     }
                     Value::Edge(edge_id) => {
+                        let id = *edge_id;
                         if *merge {
-                            self.store.set_edge_properties(graph, *edge_id, props)?;
+                            self.store.set_edge_properties(graph, id, props)?;
                         } else {
-                            self.store.replace_edge_properties(graph, *edge_id, props)?;
+                            self.store.replace_edge_properties(graph, id, props)?;
                         }
+                        (true, id.0)
                     }
                     other => {
                         return Err(GqlError::Execution(ExecutionError::TypeMismatch {
@@ -2430,8 +2496,10 @@ impl<'a> QueryExecutor<'a> {
                             actual: other.type_name().to_string(),
                         }));
                     }
+                };
+                for k in non_null_keys {
+                    stats.props_seen.insert((is_edge, raw_id, k));
                 }
-                stats.properties_set += prop_count;
             }
             SetItem::Labels { alias, labels } => {
                 let val = row
@@ -2444,9 +2512,8 @@ impl<'a> QueryExecutor<'a> {
                 let node_id = extract_node_id(val, &alias.0)?;
                 let label_strings: Vec<String> =
                     labels.iter().map(|l| l.as_str().to_string()).collect();
-                let label_count = label_strings.len() as u64;
                 self.store.add_node_labels(graph, node_id, &label_strings)?;
-                stats.labels_added += label_count;
+                stats.labels_seen.extend(label_strings);
             }
         }
         Ok(())
@@ -3716,7 +3783,8 @@ mod tests {
         };
         let mut budget = ExecutionBudget::unlimited();
         let result = executor.execute("g", &plan, &mut budget).unwrap();
-        assert_eq!(result.stats.properties_set, 1);
+        // REMOVE property does not count toward properties_set per TCK semantics.
+        assert_eq!(result.stats.properties_set, 0);
 
         let node = store.get_node("g", node_id).unwrap().unwrap();
         assert!(!node.properties.contains_key("age"));
