@@ -1416,22 +1416,28 @@ fn format_zoned_datetime(zdt: &jiff::Zoned) -> String {
         )
     };
 
-    // Format timezone
+    // Format timezone, including sub-minute seconds when non-zero (e.g. +02:05:59)
+    fn fmt_offset(total_secs: i32) -> String {
+        let h = total_secs / 3600;
+        let m = (total_secs.abs() % 3600) / 60;
+        let s = total_secs.abs() % 60;
+        if s != 0 {
+            format!("{:+03}:{:02}:{:02}", h, m, s)
+        } else {
+            format!("{:+03}:{:02}", h, m)
+        }
+    }
     let tz = zdt.time_zone();
     if let Some(iana) = tz.iana_name() {
         if iana == "UTC" && total_secs == 0 {
             format!("{base}Z")
         } else {
-            let h = total_secs / 3600;
-            let m = (total_secs.abs() % 3600) / 60;
-            format!("{base}{:+03}:{:02}[{iana}]", h, m)
+            format!("{base}{}[{iana}]", fmt_offset(total_secs))
         }
     } else if total_secs == 0 {
         format!("{base}Z")
     } else {
-        let h = total_secs / 3600;
-        let m = (total_secs.abs() % 3600) / 60;
-        format!("{base}{:+03}:{:02}", h, m)
+        format!("{base}{}", fmt_offset(total_secs))
     }
 }
 
@@ -1455,7 +1461,12 @@ fn format_zoned_time(zdt: &jiff::Zoned) -> String {
     } else {
         let h = total_secs / 3600;
         let m = (total_secs.abs() % 3600) / 60;
-        format!("{time_part}{:+03}:{:02}", h, m)
+        let s = total_secs.abs() % 60;
+        if s != 0 {
+            format!("{time_part}{:+03}:{:02}:{:02}", h, m, s)
+        } else {
+            format!("{time_part}{:+03}:{:02}", h, m)
+        }
     }
 }
 
