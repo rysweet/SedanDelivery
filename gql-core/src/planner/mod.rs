@@ -46,6 +46,9 @@ pub enum Operator {
         max: u32,
         src_alias: Identifier,
         path_alias: Option<Identifier>,
+        /// When true, `path_alias` stores `Value::Path` (for AssemblePath named paths).
+        /// When false, `path_alias` stores `Value::List` of edges (for user rel variables).
+        path_mode: bool,
         dst_alias: Identifier,
         child: Box<Operator>,
     },

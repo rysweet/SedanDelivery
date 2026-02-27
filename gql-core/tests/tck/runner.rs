@@ -1232,7 +1232,7 @@ fn value_matches(
             time_str == s.as_ref() || normalize_time_str(&time_str) == normalize_time_str(s)
         }
         (Value::Duration(sp), Value::Str(s)) => {
-            let actual = format!("{sp}");
+            let actual = gql_core::types::value::format_cypher_duration(sp);
             actual == s.as_ref() || normalize_duration_str(&actual) == normalize_duration_str(s)
         }
         // Temporal equality

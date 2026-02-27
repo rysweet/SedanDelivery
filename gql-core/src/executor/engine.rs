@@ -13,7 +13,7 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
-use crate::ast::{Direction, Expr, Identifier};
+use crate::ast::{Direction, Expr};
 use crate::error::{ExecutionError, GqlError};
 use crate::executor::budget::ExecutionBudget;
 use crate::executor::filter::{eval_expr, eval_function_with_vals};
@@ -108,7 +108,7 @@ impl<'a> QueryExecutor<'a> {
             Operator::Distinct { child } => child.as_ref(),
             other => other,
         };
-        let has_produce_results = has_produce_results(effective_root);
+        let _has_produce_results = has_produce_results(effective_root);
         let columns = if let Operator::ProduceResults { columns, .. } = effective_root {
             columns.iter().map(|(name, _)| name.clone()).collect()
         } else {
@@ -567,23 +567,58 @@ impl<'a> QueryExecutor<'a> {
                 edge_aliases,
                 child,
             } => {
-                use crate::storage::{NodeId, EdgeId};
+                use crate::storage::{EdgeId, NodeId};
                 let input = self.exec_operator(graph, child, budget, outer_rows, stats)?;
                 let mut out = Vec::with_capacity(input.len());
                 for mut row in input {
                     budget.check_or_err()?;
+
+                    // Check if any edge alias holds a VarLenExpand path.
+                    // If so, use its nodes and edges directly (it already has all
+                    // intermediate nodes), combining with fixed-hop edges/nodes.
                     let mut nodes: Vec<NodeId> = Vec::new();
                     let mut edges: Vec<EdgeId> = Vec::new();
-                    for na in node_aliases {
-                        if let Some(Value::Node(nid)) = row.get(&na.0) {
-                            nodes.push(*nid);
-                        }
-                    }
+
+                    // Collect edges, checking for VarLenExpand paths
+                    let mut varlen_path_found = false;
                     for ea in edge_aliases {
-                        if let Some(Value::Edge(eid)) = row.get(&ea.0) {
-                            edges.push(*eid);
+                        match row.get(&ea.0) {
+                            Some(Value::Edge(eid)) => edges.push(*eid),
+                            Some(Value::Path { nodes: pnodes, edges: pedges }) => {
+                                // VarLenExpand path: use its nodes and edges.
+                                // The path already has start+intermediate+end nodes.
+                                if !varlen_path_found {
+                                    // First varlen path: use its nodes
+                                    nodes.extend_from_slice(pnodes);
+                                    varlen_path_found = true;
+                                } else {
+                                    // Additional varlen paths: append intermediate+end nodes
+                                    nodes.extend_from_slice(&pnodes[1..]);
+                                }
+                                edges.extend_from_slice(pedges);
+                            }
+                            Some(Value::List(items)) => {
+                                // List of edges (alternative VarLenExpand storage)
+                                for item in items {
+                                    if let Value::Edge(eid) = item {
+                                        edges.push(*eid);
+                                    }
+                                }
+                            }
+                            _ => {}
                         }
                     }
+
+                    // If no varlen path was found, collect nodes from node_aliases normally.
+                    // If varlen path was found, skip node_aliases (nodes already assembled).
+                    if !varlen_path_found {
+                        for na in node_aliases {
+                            if let Some(Value::Node(nid)) = row.get(&na.0) {
+                                nodes.push(*nid);
+                            }
+                        }
+                    }
+
                     let path_val = Value::Path { nodes, edges };
                     row.insert(path_alias.0.clone(), path_val);
                     out.push(row);
@@ -729,6 +764,7 @@ impl<'a> QueryExecutor<'a> {
                 max,
                 src_alias,
                 path_alias,
+                path_mode,
                 dst_alias,
                 child,
             } => {
@@ -760,13 +796,24 @@ impl<'a> QueryExecutor<'a> {
                             let end_node = *path_nodes.last().unwrap();
                             new_row.insert(dst_alias.0.clone(), Value::Node(end_node));
                             if let Some(pa) = path_alias {
-                                new_row.insert(
-                                    pa.0.clone(),
-                                    Value::Path {
-                                        nodes: path_nodes.clone(),
-                                        edges: path_edges.clone(),
-                                    },
-                                );
+                                if *path_mode {
+                                    // Named path mode: store full path for AssemblePath
+                                    new_row.insert(
+                                        pa.0.clone(),
+                                        Value::Path {
+                                            nodes: path_nodes.clone(),
+                                            edges: path_edges.clone(),
+                                        },
+                                    );
+                                } else {
+                                    // Relationship variable mode: store list of edges
+                                    new_row.insert(
+                                        pa.0.clone(),
+                                        Value::List(
+                                            path_edges.iter().map(|e| Value::Edge(*e)).collect(),
+                                        ),
+                                    );
+                                }
                             }
                             budget.record_row();
                             out.push(new_row);
@@ -1586,7 +1633,7 @@ impl<'a> QueryExecutor<'a> {
                 let v = self.eval_with_storage(graph, inner, row, ctx)?;
                 Ok(Value::Bool(!v.is_null()))
             }
-            // Label check: n:Label — check if node has the specified label
+            // Label check: n:Label — check if node has label or edge has rel type
             Expr::HasLabel(inner, label) => {
                 let v = self.eval_with_storage(graph, inner, row, ctx)?;
                 match v {
@@ -1599,6 +1646,15 @@ impl<'a> QueryExecutor<'a> {
                                     .iter()
                                     .any(|l| l == label.as_str());
                                 Ok(Value::Bool(has))
+                            }
+                            None => Ok(Value::Bool(false)),
+                        }
+                    }
+                    Value::Edge(edge_id) => {
+                        // For relationships, check if the rel type matches
+                        match self.store.get_edge(graph, edge_id)? {
+                            Some(edge_data) => {
+                                Ok(Value::Bool(edge_data.rel_type.as_str() == label.as_str()))
                             }
                             None => Ok(Value::Bool(false)),
                         }
@@ -2292,6 +2348,7 @@ fn undefined_var(name: &str) -> GqlError {
 /// Check if the plan's top-level operator (or outermost chain) is a write-only operation.
 /// This is used to suppress result rows for queries without RETURN (e.g., `CREATE ()`, `DELETE n`).
 /// Note: MERGE is excluded because it can return rows when used with RETURN.
+#[allow(dead_code)]
 fn is_toplevel_write(op: &Operator) -> bool {
     match op {
         Operator::Create { .. } | Operator::Delete { .. }
@@ -2306,12 +2363,13 @@ fn is_toplevel_write(op: &Operator) -> bool {
 }
 
 /// Check if the operator tree contains write operations (CREATE, DELETE, SET, etc.).
+#[allow(dead_code)]
 fn has_write_operations(op: &Operator) -> bool {
     match op {
         Operator::Create { .. } | Operator::Delete { .. } | Operator::Merge { .. }
         | Operator::MergeRelationship { .. } => true,
-        Operator::Set { child, .. }
-        | Operator::Remove { child, .. } => true,
+        Operator::Set { child: _, .. }
+        | Operator::Remove { child: _, .. } => true,
         Operator::Distinct { child }
         | Operator::Sort { child, .. }
         | Operator::Limit { child, .. }
@@ -3094,6 +3152,7 @@ mod tests {
             max: 2,
             src_alias: Identifier::new("a"),
             path_alias: Some(Identifier::new("p")),
+            path_mode: true,
             dst_alias: Identifier::new("b"),
             child: Box::new(Operator::NodeScan {
                 label: Some(Label::new("N")),
@@ -3141,6 +3200,7 @@ mod tests {
             max: 1,
             src_alias: Identifier::new("src"),
             path_alias: None,
+            path_mode: false,
             dst_alias: Identifier::new("dst"),
             child: Box::new(Operator::NodeScan {
                 label: Some(Label::new("N")),
@@ -3182,6 +3242,7 @@ mod tests {
             max: 5,
             src_alias: Identifier::new("src"),
             path_alias: None,
+            path_mode: false,
             dst_alias: Identifier::new("dst"),
             child: Box::new(Operator::NodeScan {
                 label: Some(Label::new("N")),

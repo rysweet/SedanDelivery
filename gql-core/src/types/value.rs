@@ -274,7 +274,7 @@ impl fmt::Display for Value {
             Self::LocalTime(t) => write!(f, "{t}"),
             Self::LocalDateTime(dt) => write!(f, "{dt}"),
             Self::DateTime(dt) => write!(f, "{dt}"),
-            Self::Duration(sp) => write!(f, "{sp}"),
+            Self::Duration(sp) => write!(f, "{}", format_cypher_duration(sp)),
             Self::Point(p) => write!(f, "point({{x: {}, y: {}}})", p.x, p.y),
             Self::List(items) => {
                 write!(f, "[")?;
@@ -303,6 +303,56 @@ impl fmt::Display for Value {
             }
         }
     }
+}
+
+/// Format a `jiff::Span` as a Cypher-compatible ISO 8601 duration string.
+///
+/// Cypher uses per-component signs: `PT-22H` instead of jiff's `-PT22H`.
+/// Each non-zero component is written with its own sign.
+pub fn format_cypher_duration(sp: &jiff::Span) -> String {
+    let years = sp.get_years() as i64;
+    let months = sp.get_months() as i64;
+    let days = sp.get_days() as i64;
+    let hours = sp.get_hours() as i64;
+    let minutes = sp.get_minutes();
+    let seconds = sp.get_seconds();
+    let nanos = sp.get_nanoseconds();
+
+    let has_date = years != 0 || months != 0 || days != 0;
+    let has_time = hours != 0 || minutes != 0 || seconds != 0 || nanos != 0;
+
+    let mut s = String::from("P");
+    if years != 0 {
+        s.push_str(&format!("{years}Y"));
+    }
+    if months != 0 {
+        s.push_str(&format!("{months}M"));
+    }
+    if days != 0 {
+        s.push_str(&format!("{days}D"));
+    }
+    if has_time {
+        s.push('T');
+        if hours != 0 {
+            s.push_str(&format!("{hours}H"));
+        }
+        if minutes != 0 {
+            s.push_str(&format!("{minutes}M"));
+        }
+        if nanos != 0 {
+            // Format seconds with fractional nanoseconds
+            let ns_abs = nanos.unsigned_abs();
+            let ns_str = format!("{ns_abs:09}");
+            let ns_trimmed = ns_str.trim_end_matches('0');
+            s.push_str(&format!("{seconds}.{ns_trimmed}S"));
+        } else if seconds != 0 {
+            s.push_str(&format!("{seconds}S"));
+        }
+    }
+    if !has_date && !has_time {
+        s.push_str("T0S");
+    }
+    s
 }
 
 #[cfg(test)]

@@ -340,7 +340,7 @@ impl<'s> QueryPlanner<'s> {
             Operator::Call {
                 procedure,
                 yield_items,
-                yield_star,
+                yield_star: _,
                 ..
             } => {
                 if !yield_items.is_empty() {
@@ -536,6 +536,7 @@ impl<'s> QueryPlanner<'s> {
                     max,
                     src_alias: current_src.clone(),
                     path_alias,
+                    path_mode: has_path_var,
                     dst_alias: dst_alias.clone(),
                     child: Box::new(op),
                 };
@@ -543,7 +544,7 @@ impl<'s> QueryPlanner<'s> {
                 // Single-hop expand.
                 // When tracking a named path, ensure we always have a rel_alias
                 // so the edge ID is available for path assembly.
-                let has_rel_props = rel.properties.as_ref().map_or(false, |p| !p.is_empty());
+                let has_rel_props = rel.properties.as_ref().is_some_and(|p| !p.is_empty());
                 let rel_alias =
                     if has_path_var || has_rel_props {
                         // Ensure rel_alias exists when tracking a named path
@@ -808,9 +809,40 @@ impl<'s> QueryPlanner<'s> {
             self.plan_with_aggregation(&wc.items, child)?
         } else {
             // For plain projection, Sort/Skip/Limit run on raw rows first.
+            // However, if ORDER BY references projected aliases, we need to augment
+            // the rows with those aliases before sorting.
             let mut raw = child;
 
-            // ORDER BY (on raw rows, can reference pre-projection variables).
+            // Determine if ORDER BY references any projected aliases.
+            let order_by_aliases: std::collections::HashSet<String> = wc
+                .order_by
+                .iter()
+                .filter_map(|s| {
+                    if let Expr::Variable(v) = &s.expr { Some(v.0.clone()) } else { None }
+                })
+                .collect();
+            let needs_augment_for_sort = !order_by_aliases.is_empty()
+                && projected_items.iter().any(|(_, alias)| {
+                    alias.as_ref().map(|a| order_by_aliases.contains(a.0.as_str())).unwrap_or(false)
+                });
+
+            // If ORDER BY references projected aliases, pre-augment rows.
+            if needs_augment_for_sort && wc.where_clause.is_none() {
+                let child_aliases = crate::planner::collect_visible_aliases(&raw);
+                let mut augmented_items: Vec<(Expr, Option<Identifier>)> = child_aliases
+                    .iter()
+                    .map(|a| (Expr::Variable(Identifier::new(a.clone())), None))
+                    .collect();
+                for item in &projected_items {
+                    augmented_items.push(item.clone());
+                }
+                raw = Operator::Project {
+                    items: augmented_items,
+                    child: Box::new(raw),
+                };
+            }
+
+            // ORDER BY (can now reference both raw vars and projected aliases).
             if !wc.order_by.is_empty() {
                 raw = Operator::Sort {
                     items: wc
@@ -1433,7 +1465,7 @@ fn rewrite_with_order_expr(expr: &Expr, with_items: &[ReturnItem]) -> Expr {
                 right: Box::new(new_right),
             }
         }
-        Expr::FunctionCall { name, args, distinct } => {
+        Expr::FunctionCall { name, args: _, distinct: _ } => {
             if is_agg_name(name.as_str()) {
                 // Map aggregate functions to their output aliases.
                 for ri in with_items {
@@ -1515,19 +1547,10 @@ fn return_item_name(item: &ReturnItem) -> String {
     if let Some(alias) = &item.alias {
         return alias.0.clone();
     }
-    match &item.expr {
-        Expr::Variable(id) => id.0.clone(),
-        Expr::Property(obj, key) => {
-            format!("{}.{}", expr_name(obj), key)
-        }
-        Expr::FunctionCall { name, args, .. } => {
-            let arg_strs: Vec<String> = args.iter().map(expr_name).collect();
-            format!("{}({})", name, arg_strs.join(", "))
-        }
-        other => format!("{:?}", other),
-    }
+    expr_to_col_name(&item.expr)
 }
 
+#[allow(dead_code)]
 fn expr_name(expr: &Expr) -> String {
     match expr {
         Expr::Variable(id) => id.0.clone(),
@@ -1719,7 +1742,7 @@ fn expr_to_col_name(expr: &Expr) -> String {
         Expr::Variable(id) => id.0.clone(),
         Expr::Property(obj, key) => format!("{}.{}", expr_to_col_name(obj), key),
         Expr::FunctionCall { name, args, .. } => {
-            let arg_strs: Vec<String> = args.iter().map(|a| expr_to_col_name(a)).collect();
+            let arg_strs: Vec<String> = args.iter().map(expr_to_col_name).collect();
             format!("{}({})", name, arg_strs.join(", "))
         }
         Expr::Integer(n) => n.to_string(),
@@ -1758,6 +1781,28 @@ fn expr_to_col_name(expr: &Expr) -> String {
         }
         Expr::Bool(b) => b.to_string(),
         Expr::Null => "null".to_string(),
+        Expr::HasLabel(e, label) => format!("({}:{})", expr_to_col_name(e), label.0),
+        Expr::UnaryOp { op, expr: e } => match op {
+            crate::ast::UnaryOp::Not => format!("NOT {}", expr_to_col_name(e)),
+            crate::ast::UnaryOp::Neg => format!("-{}", expr_to_col_name(e)),
+        },
+        Expr::IsNull(e) => format!("{} IS NULL", expr_to_col_name(e)),
+        Expr::IsNotNull(e) => format!("{} IS NOT NULL", expr_to_col_name(e)),
+        Expr::MapLiteral(pairs) => {
+            let pairs_str: Vec<String> = pairs
+                .iter()
+                .map(|(k, v)| format!("{}: {}", k, expr_to_col_name_quoted(v)))
+                .collect();
+            format!("{{{}}}", pairs_str.join(", "))
+        }
+        Expr::List(items) => {
+            let items_str: Vec<String> = items.iter().map(expr_to_col_name).collect();
+            format!("[{}]", items_str.join(", "))
+        }
+        Expr::Subscript(list, idx) => {
+            format!("{}[{}]", expr_to_col_name(list), expr_to_col_name(idx))
+        }
+        Expr::Parameter(name) => format!("${name}"),
         Expr::ListComp {
             variable,
             list,
@@ -1784,6 +1829,14 @@ fn expr_to_col_name(expr: &Expr) -> String {
             }
         }
         _ => format!("{:?}", expr),
+    }
+}
+
+/// Like `expr_to_col_name` but quotes string literals (for map literal values).
+fn expr_to_col_name_quoted(expr: &Expr) -> String {
+    match expr {
+        Expr::Str(s) => format!("'{s}'"),
+        _ => expr_to_col_name(expr),
     }
 }
 
