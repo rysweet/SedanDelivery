@@ -71,7 +71,12 @@ impl<'s> QueryPlanner<'s> {
     pub fn plan(&self, query: &Query) -> Result<Operator, GqlError> {
         // Run compile-time validation before planning.
         crate::planner::validator::validate_query(query)?;
+        self.plan_unchecked(query)
+    }
 
+    /// Plan a query without running compile-time validation.
+    /// Used for inner EXISTS subqueries that reference outer-scope variables.
+    pub fn plan_unchecked(&self, query: &Query) -> Result<Operator, GqlError> {
         let mut pipeline: Option<Operator> = None;
         let mut return_clause: Option<&ReturnClause> = None;
 
