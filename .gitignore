@@ -13,3 +13,10 @@ worktrees/
 
 # Amplihack runtime directories (auto-generated)
 .claude/logs/
+
+# SCIP index files
+index.scip
+*.scip
+
+# Infrastructure artifacts
+infra/*.json

@@ -36,10 +36,11 @@ jobs:
         id: get-prs
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          INPUT_PR_NUMBERS: ${{ inputs.pr_numbers }}
         run: |
-          if [ -n "${{ inputs.pr_numbers }}" ]; then
+          if [ -n "$INPUT_PR_NUMBERS" ]; then
             # Use specific PR numbers if provided
-            PR_NUMBERS="${{ inputs.pr_numbers }}"
+            PR_NUMBERS="$INPUT_PR_NUMBERS"
           else
             # Get all open PR numbers
             PR_NUMBERS=$(gh pr list --state open \
@@ -51,8 +52,9 @@ jobs:
       - name: Update PR branches
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBERS_CSV: ${{ steps.get-prs.outputs.pr_numbers }}
         run: |
-          IFS=',' read -ra PRS <<< "${{ steps.get-prs.outputs.pr_numbers }}"
+          IFS=',' read -ra PRS <<< "$PR_NUMBERS_CSV"
 
           updated_count=0
           skipped_count=0

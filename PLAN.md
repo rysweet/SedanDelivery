@@ -1,3 +1,5 @@
+> **Note**: This document was the original implementation plan. The source code is the authoritative reference. Some details below (e.g., parser strategy, dependency versions) have evolved since this plan was written.
+
 # Rust GQL Engine over Redis: Implementation Plan
 
 **Issue**: cloud-ecosystem-security/cybergym#431
