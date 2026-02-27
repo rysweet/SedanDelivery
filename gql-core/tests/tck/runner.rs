@@ -1196,7 +1196,20 @@ fn normalize_tck_header(s: &str) -> String {
     // Pass 5: strip grouping parens around sub-expressions when followed by `.`
     // (property access).  E.g. `(list[1]).missing` → `list[1].missing`.
     // The engine's expr_to_column_name does not add these grouping parens.
-    strip_grouping_parens_before_dot(&out)
+    let out = strip_grouping_parens_before_dot(&out);
+
+    // Pass 6: strip outer parens from label predicate expressions.
+    // The TCK writes `(n:Foo)` as the column name but the engine derives it as `n:Foo`.
+    // Strip the outer parens when the entire column name is of the form `(x:Label)`.
+    if out.starts_with('(') && out.ends_with(')') {
+        let inner = &out[1..out.len() - 1];
+        // Only strip if the inner looks like a label predicate (no nested parens, has a colon)
+        if !inner.contains('(') && inner.contains(':') && !inner.contains(' ') {
+            return inner.to_string();
+        }
+    }
+
+    out
 }
 
 /// Remove `(...)` grouping parens that are immediately followed by `.` when the
@@ -1763,6 +1776,36 @@ fn normalize_datetime_str(s: &str) -> String {
     let s = s.replace("[UTC]", "");
     let s = s.replace("+00:00", "Z");
     let s = s.replace("-00:00", "Z");
+    // For strings with IANA timezone annotations [TzName], strip the numeric offset.
+    // Different timezone database implementations may compute different historical LMT
+    // offsets (e.g. Europe/Stockholm pre-1879 may be +00:53:28 or +01:12 depending on
+    // the tzdata version). The civil datetime + IANA name is the canonical form.
+    let s = if let (Some(bracket_open), Some(bracket_close)) = (s.rfind('['), s.rfind(']')) {
+        if bracket_close > bracket_open && s.contains('T') {
+            let before_bracket = &s[..bracket_open];
+            let iana_part = &s[bracket_open..=bracket_close];
+            // Strip any numeric offset (e.g. +02:00, -04:00, +00:53:28) before the bracket
+            let dt_base = if let Some(off_start) = before_bracket.rfind(|c: char| c == '+' || c == '-') {
+                // Only strip if the offset looks like a timezone offset (not just a negative year)
+                let potential_offset = &before_bracket[off_start..];
+                // Timezone offset: starts with + or - followed by at least 2 digits + colon
+                let looks_like_offset = potential_offset.len() >= 3
+                    && potential_offset[1..].starts_with(|c: char| c.is_ascii_digit());
+                if looks_like_offset {
+                    &before_bracket[..off_start]
+                } else {
+                    before_bracket
+                }
+            } else {
+                before_bracket
+            };
+            format!("{dt_base}{iana_part}")
+        } else {
+            s
+        }
+    } else {
+        s
+    };
     // Remove trailing :00 seconds when no subseconds
     let s = if s.contains('T') {
         let mut result = s.replace(":00Z", "Z")

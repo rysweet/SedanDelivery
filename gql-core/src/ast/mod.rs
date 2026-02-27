@@ -354,9 +354,12 @@ pub enum Expr {
 
     // ── Existential subquery ─────────────────────────────────────────────────
     /// `exists { pattern [WHERE predicate] }` — existential subquery.
+    /// When `full_query` is Some, the EXISTS contains a full inner query (with WITH/RETURN).
     ExistsSubquery {
         patterns: Vec<PathPattern>,
         where_clause: Option<Box<Expr>>,
+        /// Full inner query (WITH/RETURN clauses) when present; None for simple pattern form.
+        full_query: Option<Box<crate::ast::Query>>,
     },
     // ── Pattern expression ──────────────────────────────────────────────────
     /// `(n)-[:REL]->()` used as a predicate in WHERE — returns true if the

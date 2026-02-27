@@ -127,6 +127,9 @@ impl<'a> QueryExecutor<'a> {
         plan: &Operator,
         budget: &mut ExecutionBudget,
     ) -> Result<QueryResult, GqlError> {
+        // Initialize the query-level "now" so that temporal no-arg functions (date(), time(), etc.)
+        // return the same value throughout this query execution.
+        crate::executor::filter::init_query_now();
         let pre_existing_labels: HashSet<String> = self
             .store
             .all_label_names(graph)
@@ -138,6 +141,7 @@ impl<'a> QueryExecutor<'a> {
             ..Default::default()
         };
         let rows = self.exec_operator(graph, plan, budget, &[], &mut stats)?;
+        crate::executor::filter::clear_query_now();
         stats.finalize();
 
         // Derive column list.  Handle the case where the root is Distinct{ProduceResults}.
@@ -225,12 +229,43 @@ impl<'a> QueryExecutor<'a> {
                         rows.push(row);
                     } else {
                         for outer_row in base_rows {
+                                                // If the alias is already pre-bound in outer_row to a specific node,
+                            // only produce a row when the scanned node matches that bound node.
+                            // This correctly handles correlated subqueries and repeated MATCH clauses.
+                            // Only apply for non-anonymous variables (anonymous vars like __anon*
+                            // should always scan all nodes independently).
+                            if !alias.0.starts_with("__anon") {
+                                if let Some(Value::Node(pre_bound_id)) = outer_row.get(alias.0.as_str()) {
+                                    if *pre_bound_id != *id {
+                                        continue; // Skip: doesn't match the pre-bound value
+                                    }
+                                }
+                            }
                             let mut row: Row = outer_row
                                 .iter()
                                 .filter(|(k, _)| !k.starts_with("__anon_rel_"))
                                 .map(|(k, v)| (k.clone(), v.clone()))
                                 .collect();
                             row.insert(alias.0.clone(), Value::Node(*id));
+                            // Track outer-scope edge variable names so Expand's isomorphism
+                            // check doesn't block edges from previous MATCH clauses.
+                            let outer_edge_keys: Vec<Value> = outer_row
+                                .iter()
+                                .filter(|(k, v)| {
+                                    !k.starts_with("__anon_rel_")
+                                        && !k.starts_with("__outer_edge_vars__")
+                                        && matches!(v, Value::Edge(_))
+                                })
+                                .map(|(k, _)| Value::Str(k.clone().into_boxed_str()))
+                                .collect();
+                            if !outer_edge_keys.is_empty() {
+                                let mut existing: Vec<Value> = match row.get("__outer_edge_vars__") {
+                                    Some(Value::List(vs)) => vs.clone(),
+                                    _ => vec![],
+                                };
+                                existing.extend(outer_edge_keys);
+                                row.insert("__outer_edge_vars__".to_string(), Value::List(existing));
+                            }
                             budget.record_row();
                             rows.push(row);
                         }
@@ -309,10 +344,15 @@ impl<'a> QueryExecutor<'a> {
                         // If dst_alias is already bound in the row (cyclic patterns
                         // like (a)-->()-->(a)), only keep the result if the bound
                         // value matches the expansion result.
+                        // Skip this check for anonymous variables: they may be
+                        // inherited from an outer scope (e.g. pattern comprehension)
+                        // and should not constrain the inner expansion.
                         let dst_val = Value::Node(adj.neighbor_id);
-                        if let Some(existing) = row.get(dst_alias.0.as_str()) {
-                            if *existing != dst_val {
-                                continue;
+                        if !dst_alias.0.starts_with("__anon") {
+                            if let Some(existing) = row.get(dst_alias.0.as_str()) {
+                                if *existing != dst_val {
+                                    continue;
+                                }
                             }
                         }
                         // Same for rel_alias: if already bound, values must match.
@@ -330,11 +370,23 @@ impl<'a> QueryExecutor<'a> {
                         // (exclude the current rel_alias, which may legitimately re-bind it).
                         // Note: named path variables (Value::Path) are NOT checked here because
                         // edges from paths in previous MATCH clauses can be reused independently.
+                        // Also exclude outer-scope edge variables (from previous WITH/MATCH scopes).
                         let eid = adj.edge_id;
                         let current_alias = rel_alias.as_ref().map(|ra| ra.0.as_str());
+                        let outer_edge_vars: std::collections::HashSet<&str> =
+                            match row.get("__outer_edge_vars__") {
+                                Some(Value::List(vs)) => vs.iter().filter_map(|v| {
+                                    if let Value::Str(s) = v { Some(s.as_ref()) } else { None }
+                                }).collect(),
+                                _ => std::collections::HashSet::new(),
+                            };
                         let edge_already_used = row.iter().any(|(key, v)| {
                             // Don't count the current alias as "already used"
                             if Some(key.as_str()) == current_alias {
+                                return false;
+                            }
+                            // Don't count outer-scope edges (from previous MATCH clauses)
+                            if outer_edge_vars.contains(key.as_str()) {
                                 return false;
                             }
                             match v {
@@ -929,6 +981,29 @@ impl<'a> QueryExecutor<'a> {
 
                     // BFS tracking full paths: queue entries are (node_id, path_nodes, path_edges)
                     let mut queue: VecDeque<(NodeId, Vec<NodeId>, Vec<EdgeId>)> = VecDeque::new();
+                    // Collect edges already used in earlier steps of this named path.
+                    // This enforces cross-operator relationship isomorphism:
+                    // - Direct Value::Edge in the row (from regular Expand steps, incl. pre-bound r)
+                    //   should not be re-traversed.
+                    // - Value::Path and Value::List([Edge]) from __path_rel_* (VarLen internal storage)
+                    //   also shouldn't be re-traversed.
+                    // We intentionally exclude user-defined list variables (like `rs` from WITH)
+                    // that contain edges intended to be FOLLOWED by this VarLen, not avoided.
+                    // Heuristic: collect Value::Edge (direct edge vars) and __path_rel_* (VarLen storage).
+                    let prior_path_edges: std::collections::HashSet<EdgeId> = row.iter()
+                        .flat_map(|(k, v)| match v {
+                            Value::Edge(e) => vec![*e],
+                            Value::List(items) if k.starts_with("__path_rel_") => {
+                                items.iter().filter_map(|i| {
+                                    if let Value::Edge(e) = i { Some(*e) } else { None }
+                                }).collect()
+                            }
+                            Value::Path { edges, .. } if k.starts_with("__path_rel_") => {
+                                edges.clone()
+                            }
+                            _ => vec![],
+                        })
+                        .collect();
                     queue.push_back((src_id, vec![src_id], vec![]));
 
                     while let Some((current, path_nodes, path_edges)) = queue.pop_front() {
@@ -973,7 +1048,9 @@ impl<'a> QueryExecutor<'a> {
                                 // Per openCypher spec: edge isomorphism is enforced (same
                                 // relationship cannot appear twice in one path), but node
                                 // repetition is allowed. This prevents infinite loops.
-                                if path_edges.contains(&adj.edge_id) {
+                                // Also check edges from prior steps in this named path.
+                                if path_edges.contains(&adj.edge_id)
+                                    || prior_path_edges.contains(&adj.edge_id) {
                                     continue;
                                 }
                                 // Check inline property constraints on the traversed edge.
@@ -1243,47 +1320,37 @@ impl<'a> QueryExecutor<'a> {
                         cands.unwrap_or_default()
                     };
 
-                    // Further filter candidates by inline properties.
-                    let matched_id = {
-                        let cands = &candidates;
-                        {
-                            let mut found = None;
-                            for cand_id in cands {
-                                let node_id = NodeId(*cand_id);
-                                if prop_vals.is_empty() {
-                                    found = Some(node_id);
-                                    break;
-                                }
-                                if let Ok(Some(node_data)) = self.store.get_node(graph, node_id) {
-                                    let mut matches = true;
-                                    for (key, expected) in &prop_vals {
-                                        let actual = node_data
-                                            .properties
-                                            .get(key)
-                                            .cloned()
-                                            .unwrap_or(Value::Null);
-                                        if actual != *expected {
-                                            matches = false;
-                                            break;
-                                        }
-                                    }
-                                    if matches {
-                                        found = Some(node_id);
-                                        break;
-                                    }
-                                }
+                    // Collect ALL matching nodes (MERGE returns one row per match).
+                    let mut matched_ids: Vec<NodeId> = Vec::new();
+                    for cand_id in &candidates {
+                        let node_id = NodeId(*cand_id);
+                        if prop_vals.is_empty() {
+                            matched_ids.push(node_id);
+                        } else if let Ok(Some(node_data)) = self.store.get_node(graph, node_id) {
+                            let all_match = prop_vals.iter().all(|(key, expected)| {
+                                node_data.properties.get(key.as_str())
+                                    .map(|v| v == expected)
+                                    .unwrap_or(false)
+                            });
+                            if all_match {
+                                matched_ids.push(node_id);
                             }
-                            found
                         }
-                    };
+                    }
 
-                    if let Some(node_id) = matched_id {
-                        // ON MATCH: apply on_match set items
-                        if let Some(alias) = node_alias {
-                            row.insert(alias.0.clone(), Value::Node(node_id));
-                        }
-                        for item in on_match {
-                            self.apply_set_item(graph, &row, item, stats)?;
+                    if !matched_ids.is_empty() {
+                        // ON MATCH: one output row per matched node
+                        for node_id in matched_ids {
+                            budget.check_or_err()?;
+                            let mut new_row = row.clone();
+                            if let Some(alias) = node_alias {
+                                new_row.insert(alias.0.clone(), Value::Node(node_id));
+                            }
+                            for item in on_match {
+                                self.apply_set_item(graph, &new_row, item, stats)?;
+                            }
+                            budget.record_row();
+                            out.push(new_row);
                         }
                     } else {
                         // Not found: CREATE the node with inline properties
@@ -1311,9 +1378,9 @@ impl<'a> QueryExecutor<'a> {
                         for item in on_create {
                             self.apply_set_item(graph, &row, item, stats)?;
                         }
+                        budget.record_row();
+                        out.push(row);
                     }
-                    budget.record_row();
-                    out.push(row);
                 }
                 Ok(out)
             }
@@ -1388,11 +1455,11 @@ impl<'a> QueryExecutor<'a> {
                         })
                         .collect::<Result<Vec<_>, GqlError>>()?;
 
-                    let matched_edge = if prop_vals.is_empty() {
-                        matching.first().map(|adj| adj.edge_id)
+                    let matched_edges: Vec<EdgeId> = if prop_vals.is_empty() {
+                        matching.iter().map(|adj| adj.edge_id).collect::<Vec<_>>()
                     } else {
-                        // Find an edge matching all property constraints.
-                        let mut found = None;
+                        // Find ALL edges matching property constraints.
+                        let mut found_edges = Vec::new();
                         for adj in &matching {
                             if let Some(edge_data) = self.store.get_edge(graph, adj.edge_id)? {
                                 let all_match = prop_vals.iter().all(|(k, v)| {
@@ -1403,21 +1470,26 @@ impl<'a> QueryExecutor<'a> {
                                         .unwrap_or(false)
                                 });
                                 if all_match {
-                                    found = Some(adj.edge_id);
-                                    break;
+                                    found_edges.push(adj.edge_id);
                                 }
                             }
                         }
-                        found
+                        found_edges
                     };
 
-                    if let Some(edge_id) = matched_edge {
-                        // MATCHED: bind and apply ON MATCH actions.
-                        if let Some(ra) = rel_alias {
-                            row.insert(ra.0.clone(), Value::Edge(edge_id));
-                        }
-                        for item in on_match {
-                            self.apply_set_item(graph, &row, item, stats)?;
+                    if !matched_edges.is_empty() {
+                        // MATCHED: one output row per matched edge.
+                        for edge_id in matched_edges {
+                            budget.check_or_err()?;
+                            let mut new_row = row.clone();
+                            if let Some(ra) = rel_alias {
+                                new_row.insert(ra.0.clone(), Value::Edge(edge_id));
+                            }
+                            for item in on_match {
+                                self.apply_set_item(graph, &new_row, item, stats)?;
+                            }
+                            budget.record_row();
+                            out.push(new_row);
                         }
                     } else {
                         // NOT FOUND: create the edge with properties.
@@ -1445,10 +1517,9 @@ impl<'a> QueryExecutor<'a> {
                         for item in on_create {
                             self.apply_set_item(graph, &row, item, stats)?;
                         }
+                        budget.record_row();
+                        out.push(row);
                     }
-
-                    budget.record_row();
-                    out.push(row);
                 }
                 Ok(out)
             }
@@ -1535,10 +1606,15 @@ impl<'a> QueryExecutor<'a> {
 
                     // Filter right rows for variable sharing consistency
                     // (same as Apply, but incompatible rows are dropped).
+                    // Skip anonymous variables (__anon*) to avoid false conflicts
+                    // when both OPTIONAL MATCHes use the same anonymous alias names.
                     let compatible_rows: Vec<Row> = right_rows
                         .into_iter()
                         .filter(|right_row| {
                             for (k, v) in right_row {
+                                if k.starts_with("__anon") {
+                                    continue;
+                                }
                                 if let Some(left_v) = left_row.get(k) {
                                     if left_v != v {
                                         return false;
@@ -2447,7 +2523,14 @@ impl<'a> QueryExecutor<'a> {
             Expr::ExistsSubquery {
                 patterns,
                 where_clause,
-            } => self.eval_exists_patterns(graph, patterns, where_clause.as_deref(), row),
+                full_query,
+            } => {
+                if let Some(inner_query) = full_query {
+                    self.eval_full_exists_subquery(graph, inner_query, row)
+                } else {
+                    self.eval_exists_patterns(graph, patterns, where_clause.as_deref(), row)
+                }
+            }
 
             // `(n)-[:REL]->(m)` used directly as a boolean predicate in WHERE.
             Expr::PatternExpr(patterns) => {
@@ -2529,11 +2612,13 @@ impl<'a> QueryExecutor<'a> {
         let mut stats = MutationStats::default();
         let sub_rows = self.exec_operator(graph, &sub_op, &mut budget, &outer, &mut stats)?;
 
-        // A sub-row is compatible when every variable present in the outer row
+        // A sub-row is compatible when every named variable present in the outer row
         // either is absent from the sub-row or has the same value.
+        // Skip anonymous variables (__anon*) to avoid false conflicts.
         let has_match = sub_rows.iter().any(|sub_row| {
             outer_row
                 .iter()
+                .filter(|(k, _)| !k.starts_with("__anon"))
                 .all(|(k, v)| sub_row.get(k).is_none_or(|sv| sv == v))
         });
         Ok(Value::Bool(has_match))
@@ -2541,8 +2626,32 @@ impl<'a> QueryExecutor<'a> {
 
     /// Evaluate a full existential subquery `exists { MATCH ... WITH ... WHERE ... RETURN ... }`.
     ///
-    /// Plans and executes the inner query (without the RETURN clause) with the outer row
-    /// as initial binding. Returns true if the inner query produces at least one row
+    /// Plans and executes the inner query with the outer row as initial binding context.
+    /// Returns true if the inner query produces at least one row.
+    fn eval_full_exists_subquery(
+        &self,
+        graph: &str,
+        inner_query: &crate::ast::Query,
+        outer_row: &Row,
+    ) -> Result<Value, GqlError> {
+        let planner = QueryPlanner::with_context(self.store, graph, self.registry, &self.parameters);
+        // Use plan_unchecked to skip validation (inner query may reference outer-scope variables)
+        let inner_op = planner.plan_unchecked(inner_query)?;
+        let outer = vec![outer_row.clone()];
+        let mut budget = ExecutionBudget::default_budget();
+        let mut stats = MutationStats::default();
+        let sub_rows = self.exec_operator(graph, &inner_op, &mut budget, &outer, &mut stats)?;
+        // Return true if any rows are produced (compatible with outer binding).
+        // Skip anonymous variables to avoid false conflicts.
+        let has_match = sub_rows.iter().any(|sub_row| {
+            outer_row
+                .iter()
+                .filter(|(k, _)| !k.starts_with('$') && !k.starts_with("__anon"))
+                .all(|(k, v)| sub_row.get(k).is_none_or(|sv| sv == v))
+        });
+        Ok(Value::Bool(has_match))
+    }
+
     /// Evaluate a pattern comprehension `[(pattern) | mapExpr WHERE whereExpr]`.
     ///
     /// Executes the pattern against the current outer row, then for each matched row
@@ -2568,9 +2677,10 @@ impl<'a> QueryExecutor<'a> {
             // Compatibility check: bound variables from outer_row must match sub_row.
             // This handles correlated patterns like `[p = (a)-->(b) | p]` where `a`
             // and `b` are already bound in the outer row.
+            // Skip anonymous variables (__anon*) since they can clash between outer/inner patterns.
             let compatible = outer_row
                 .iter()
-                .filter(|(k, _)| !k.starts_with('$')) // exclude parameters
+                .filter(|(k, _)| !k.starts_with('$') && !k.starts_with("__anon"))
                 .all(|(k, v)| sub_row.get(k.as_str()).is_none_or(|sv| sv == v));
             if !compatible {
                 continue;
