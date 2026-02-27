@@ -20,6 +20,9 @@ use crate::state::AppState;
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/graphs/{name}/export", get(export_handler))
+        // /data is the same as /export but without schema — returns just {nodes, edges}
+        // Used by the React SPA's graphDataApi.getAll()
+        .route("/graphs/{name}/data", get(export_handler))
         .route("/graphs/{name}/import", post(import_handler))
 }
 
