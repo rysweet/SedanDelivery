@@ -51,6 +51,10 @@ pub struct MutationStats {
     pre_existing_labels: HashSet<String>,
     /// Internal: distinct (is_edge, entity_raw_id, prop_key) triples seen.
     props_seen: HashSet<(bool, u64, String)>,
+    /// Internal: IDs of nodes created in this query (for net-effect tracking).
+    nodes_created_ids: HashSet<u64>,
+    /// Internal: IDs of edges created in this query (for net-effect tracking).
+    edges_created_ids: HashSet<u64>,
 }
 
 impl MutationStats {
@@ -200,6 +204,8 @@ impl<'a> QueryExecutor<'a> {
                 // When used as the inner side of Apply/LeftOuterApply,
                 // outer_rows carries context variables that inner operators
                 // (e.g., Filter) may reference. Merge them into each produced row.
+                // Exclude internal anonymous edge aliases (__anon_rel_*) — these are
+                // per-pattern tracking variables and must not leak into inner patterns.
                 let base_rows: &[Row] = if outer_rows.is_empty() {
                     &[]
                 } else {
@@ -219,7 +225,11 @@ impl<'a> QueryExecutor<'a> {
                         rows.push(row);
                     } else {
                         for outer_row in base_rows {
-                            let mut row = outer_row.clone();
+                            let mut row: Row = outer_row
+                                .iter()
+                                .filter(|(k, _)| !k.starts_with("__anon_rel_"))
+                                .map(|(k, v)| (k.clone(), v.clone()))
+                                .collect();
                             row.insert(alias.0.clone(), Value::Node(*id));
                             budget.record_row();
                             rows.push(row);
@@ -313,6 +323,29 @@ impl<'a> QueryExecutor<'a> {
                                     continue;
                                 }
                             }
+                        }
+                        // Edge isomorphism: per openCypher spec, each relationship in a
+                        // pattern can only be bound once in any single path traversal.
+                        // Skip this edge if it is already used by a DIFFERENT rel in the row
+                        // (exclude the current rel_alias, which may legitimately re-bind it).
+                        let eid = adj.edge_id;
+                        let current_alias = rel_alias.as_ref().map(|ra| ra.0.as_str());
+                        let edge_already_used = row.iter().any(|(key, v)| {
+                            // Don't count the current alias as "already used"
+                            if Some(key.as_str()) == current_alias {
+                                return false;
+                            }
+                            match v {
+                                Value::Edge(e) => *e == eid,
+                                Value::List(items) => items
+                                    .iter()
+                                    .any(|item| matches!(item, Value::Edge(e) if *e == eid)),
+                                Value::Path { edges, .. } => edges.contains(&eid),
+                                _ => false,
+                            }
+                        });
+                        if edge_already_used {
+                            continue;
                         }
                         let mut new_row = row.clone();
                         if let Some(ra) = rel_alias {
@@ -549,6 +582,7 @@ impl<'a> QueryExecutor<'a> {
                             let node_id =
                                 self.store.create_node(graph, label_strings.clone(), props)?;
                             stats.nodes_created += 1;
+                            stats.nodes_created_ids.insert(node_id.0);
                             stats.labels_seen.extend(label_strings);
                             for k in non_null_prop_keys {
                                 stats.props_seen.insert((false, node_id.0, k));
@@ -621,6 +655,7 @@ impl<'a> QueryExecutor<'a> {
                                 props,
                             )?;
                             stats.edges_created += 1;
+                            stats.edges_created_ids.insert(edge_id.0);
                             for k in non_null_edge_keys {
                                 stats.props_seen.insert((true, edge_id.0, k));
                             }
@@ -648,29 +683,48 @@ impl<'a> QueryExecutor<'a> {
                 for mut row in input {
                     budget.check_or_err()?;
 
-                    // Check if any edge alias holds a VarLenExpand path.
-                    // If so, use its nodes and edges directly (it already has all
-                    // intermediate nodes), combining with fixed-hop edges/nodes.
+                    // Assemble nodes and edges for the named path.
+                    // edge_aliases and node_aliases are ordered along the path:
+                    //   node_aliases[0] is the start node,
+                    //   node_aliases[i+1] is the destination of edge_aliases[i].
+                    // VarLenExpand stores a Value::Path with all intermediate nodes.
                     let mut nodes: Vec<NodeId> = Vec::new();
                     let mut edges: Vec<EdgeId> = Vec::new();
 
-                    // Collect edges, checking for VarLenExpand paths
+                    let mut fixed_edges_before_varlen: usize = 0;
                     let mut varlen_path_found = false;
                     for ea in edge_aliases {
                         match row.get(&ea.0) {
-                            Some(Value::Edge(eid)) => edges.push(*eid),
-                            Some(Value::Path { nodes: pnodes, edges: pedges }) => {
-                                // VarLenExpand path: use its nodes and edges.
-                                // The path already has start+intermediate+end nodes.
+                            Some(Value::Edge(eid)) => {
+                                edges.push(*eid);
                                 if !varlen_path_found {
-                                    // First varlen path: use its nodes
+                                    fixed_edges_before_varlen += 1;
+                                }
+                            }
+                            Some(Value::Path { nodes: pnodes, edges: pedges }) => {
+                                // VarLenExpand path: it already has start+intermediate+end nodes.
+                                edges.extend_from_slice(pedges);
+                                if !varlen_path_found {
+                                    // First varlen path. Prepend the fixed-edge nodes that
+                                    // came before this varlen (node_aliases[0..k] where k is
+                                    // the number of fixed hops before varlen). These k+1
+                                    // nodes are node_aliases[0..=fixed_edges_before_varlen-1].
+                                    // The varlen path's first node (pnodes[0]) equals
+                                    // node_aliases[fixed_edges_before_varlen].
+                                    for na in node_aliases
+                                        .iter()
+                                        .take(fixed_edges_before_varlen)
+                                    {
+                                        if let Some(Value::Node(nid)) = row.get(&na.0) {
+                                            nodes.push(*nid);
+                                        }
+                                    }
                                     nodes.extend_from_slice(pnodes);
                                     varlen_path_found = true;
                                 } else {
                                     // Additional varlen paths: append intermediate+end nodes
                                     nodes.extend_from_slice(&pnodes[1..]);
                                 }
-                                edges.extend_from_slice(pedges);
                             }
                             Some(Value::List(items)) => {
                                 // List of edges (alternative VarLenExpand storage)
@@ -685,7 +739,7 @@ impl<'a> QueryExecutor<'a> {
                     }
 
                     // If no varlen path was found, collect nodes from node_aliases normally.
-                    // If varlen path was found, skip node_aliases (nodes already assembled).
+                    // If varlen path was found, nodes are already assembled above.
                     if !varlen_path_found {
                         for na in node_aliases {
                             if let Some(Value::Node(nid)) = row.get(&na.0) {
@@ -858,9 +912,6 @@ impl<'a> QueryExecutor<'a> {
                     // BFS tracking full paths: queue entries are (node_id, path_nodes, path_edges)
                     let mut queue: VecDeque<(NodeId, Vec<NodeId>, Vec<EdgeId>)> = VecDeque::new();
                     queue.push_back((src_id, vec![src_id], vec![]));
-                    // Track visited to avoid cycles
-                    let mut visited = HashSet::new();
-                    visited.insert(src_id);
 
                     while let Some((current, path_nodes, path_edges)) = queue.pop_front() {
                         budget.check_or_err()?;
@@ -901,11 +952,10 @@ impl<'a> QueryExecutor<'a> {
                                 get_adj_entries(self.store, graph, current, direction, &type_strs)?;
                             for adj in adj_entries {
                                 budget.check_or_err()?;
-                                // Allow revisiting nodes for different paths, but avoid
-                                // infinite cycles by not revisiting at the expansion level.
-                                // For VarLenExpand, we only skip nodes already in the
-                                // current path to allow different paths through the graph.
-                                if path_nodes.contains(&adj.neighbor_id) {
+                                // Per openCypher spec: edge isomorphism is enforced (same
+                                // relationship cannot appear twice in one path), but node
+                                // repetition is allowed. This prevents infinite loops.
+                                if path_edges.contains(&adj.edge_id) {
                                     continue;
                                 }
                                 // Check inline property constraints on the traversed edge.
@@ -1075,18 +1125,38 @@ impl<'a> QueryExecutor<'a> {
                             let in_ids = self.store.in_edge_ids(graph, node_id).unwrap_or_default();
                             let mut edge_set: std::collections::HashSet<u64> = out_ids.iter().map(|e| e.0).collect();
                             edge_set.extend(in_ids.iter().map(|e| e.0));
-                            let detach_edge_count = edge_set.len() as u64;
+                            // Net out edges that were created in this same query.
+                            let mut net_deleted_edges: u64 = 0;
+                            for eid in &edge_set {
+                                if stats.edges_created_ids.remove(eid) {
+                                    stats.edges_created = stats.edges_created.saturating_sub(1);
+                                } else {
+                                    net_deleted_edges += 1;
+                                }
+                            }
                             match self.store.delete_node(graph, node_id, true) {
                                 Ok(()) => {
-                                    stats.nodes_deleted += 1;
-                                    stats.edges_deleted += detach_edge_count;
+                                    // Net out: if node was created in this query, cancel the create.
+                                    if stats.nodes_created_ids.remove(&node_id.0) {
+                                        stats.nodes_created = stats.nodes_created.saturating_sub(1);
+                                    } else {
+                                        stats.nodes_deleted += 1;
+                                    }
+                                    stats.edges_deleted += net_deleted_edges;
                                 }
                                 Err(StorageError::NodeNotFound { .. }) => {}
                                 Err(e) => return Err(GqlError::Storage(e)),
                             }
                         } else {
                             match self.store.delete_node(graph, node_id, false) {
-                                Ok(()) => { stats.nodes_deleted += 1; }
+                                Ok(()) => {
+                                    // Net out: if node was created in this query, cancel the create.
+                                    if stats.nodes_created_ids.remove(&node_id.0) {
+                                        stats.nodes_created = stats.nodes_created.saturating_sub(1);
+                                    } else {
+                                        stats.nodes_deleted += 1;
+                                    }
+                                }
                                 Err(StorageError::NodeNotFound { .. }) => {} // already deleted
                                 Err(e) => return Err(GqlError::Storage(e)),
                             }
@@ -1212,6 +1282,7 @@ impl<'a> QueryExecutor<'a> {
                             self.store
                                 .create_node(graph, label_strings.clone(), create_props)?;
                         stats.nodes_created += 1;
+                        stats.nodes_created_ids.insert(node_id.0);
                         stats.labels_seen.extend(label_strings);
                         for k in non_null_prop_keys {
                             stats.props_seen.insert((false, node_id.0, k));
@@ -1264,13 +1335,23 @@ impl<'a> QueryExecutor<'a> {
                     };
 
                     // Find existing edges of this type between src and dst.
+                    // For undirected patterns, check BOTH directions (a→b and b→a).
                     let existing_edges =
                         self.store
                             .out_edges_by_type(graph, real_src, &[type_str])?;
-                    let matching: Vec<_> = existing_edges
+                    let mut matching: Vec<_> = existing_edges
                         .into_iter()
                         .filter(|adj| adj.neighbor_id == real_dst)
                         .collect();
+                    if matches!(direction, Direction::Undirected) && matching.is_empty() {
+                        // Also check the reverse direction (real_dst → real_src).
+                        let reverse_edges =
+                            self.store.out_edges_by_type(graph, real_dst, &[type_str])?;
+                        matching = reverse_edges
+                            .into_iter()
+                            .filter(|adj| adj.neighbor_id == real_src)
+                            .collect();
+                    }
 
                     // Filter by property constraints if any.
                     let ctx = self.build_filter_ctx(graph, &row)?;
@@ -1498,8 +1579,14 @@ impl<'a> QueryExecutor<'a> {
                         // in both outer and inner rows, the values must match.
                         // This handles patterns like MATCH (a)-->(b), (b)-->(c)
                         // where 'b' must be the same node in both patterns.
+                        // Skip hidden internal edge aliases (used for edge isomorphism
+                        // tracking) — these are per-pattern and should not be compared
+                        // across patterns in Apply.
                         let mut compatible = true;
                         for (k, v) in &inner_row {
+                            if k.starts_with("__anon_rel_") {
+                                continue;
+                            }
                             if let Some(outer_v) = outer_row.get(k) {
                                 if outer_v != v {
                                     compatible = false;

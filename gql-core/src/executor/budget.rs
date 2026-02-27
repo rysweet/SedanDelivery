@@ -26,7 +26,7 @@ use crate::error::{ExecutionError, GqlError};
 pub const DEFAULT_TIMEOUT_MS: u64 = 5_000;
 
 /// Default maximum intermediate rows. Can be overridden via `GQL.CONFIG SET query-max-rows`.
-pub const DEFAULT_MAX_ROWS: usize = 1_000_000;
+pub const DEFAULT_MAX_ROWS: usize = 10_000_000;
 
 /// Default maximum depth for unbounded variable-length patterns `[*]`.
 /// A query with `[*]` uses this as the effective upper bound.
