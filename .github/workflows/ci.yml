@@ -53,10 +53,12 @@ jobs:
         run: cargo check --workspace
 
   msrv:
-    # smol_str 0.3.5 requires rustc 1.89
+    # smol_str 0.3.5 requires rustc 1.89; jiff requires 1.70
     name: MSRV check (1.89.0)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v4.1.5
-      - uses: dtolnay/rust-toolchain@1.100.0
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.89.0"
       - run: cargo check -p gql-core
