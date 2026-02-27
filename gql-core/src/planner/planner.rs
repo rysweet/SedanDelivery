@@ -170,24 +170,41 @@ impl<'s> QueryPlanner<'s> {
             }
         }
 
-        // If we have a RETURN clause, build the return pipeline.
-        if let Some(rc) = return_clause {
+        // Build the main pipeline result.
+        let main_op: Operator = if let Some(rc) = return_clause {
             // RETURN without MATCH: produce exactly one row with no bindings.
             let child = pipeline.unwrap_or(Operator::SingleRow);
-            return self.plan_return(rc, child);
-        }
-
-        // If we only have a CREATE/DELETE/SET/etc. (no RETURN), wrap in ProduceResults.
-        if let Some(op) = pipeline {
+            self.plan_return(rc, child)?
+        } else if let Some(op) = pipeline {
             // For standalone CALL, derive output columns from the procedure.
             let columns = self.derive_standalone_call_columns(&op);
-            return Ok(Operator::ProduceResults {
+            Operator::ProduceResults {
                 columns,
                 child: Box::new(op),
-            });
+            }
+        } else {
+            return Err(GqlError::Plan(PlanError::ReturnStarNoVariables));
+        };
+
+        // Handle UNION / UNION ALL parts.
+        if query.unions.is_empty() {
+            return Ok(main_op);
         }
 
-        Err(GqlError::Plan(PlanError::ReturnStarNoVariables))
+        let mut result = main_op;
+        for (all, part_clauses) in &query.unions {
+            let part_query = Query {
+                clauses: part_clauses.clone(),
+                unions: Vec::new(),
+            };
+            let right = self.plan(&part_query)?;
+            result = Operator::Union {
+                left: Box::new(result),
+                right: Box::new(right),
+                all: *all,
+            };
+        }
+        Ok(result)
     }
 
     // ── CALL planning ─────────────────────────────────────────────────────────
@@ -340,7 +357,6 @@ impl<'s> QueryPlanner<'s> {
             Operator::Call {
                 procedure,
                 yield_items,
-                yield_star: _,
                 ..
             } => {
                 if !yield_items.is_empty() {
@@ -976,7 +992,7 @@ impl<'s> QueryPlanner<'s> {
         child: Operator,
     ) -> Result<Operator, GqlError> {
         let mut keys: Vec<Expr> = Vec::new();
-        let mut aggregations: Vec<(AggFunction, Expr, bool, Identifier)> = Vec::new();
+        let mut aggregations: Vec<(AggFunction, Expr, Option<Expr>, bool, Identifier)> = Vec::new();
         // Track key aliases: (generated_column_name, user_alias) pairs.
         let mut key_renames: Vec<(String, String)> = Vec::new();
         let mut post_projections: Vec<(Expr, Option<Identifier>)> = Vec::new();
@@ -985,19 +1001,21 @@ impl<'s> QueryPlanner<'s> {
 
         for item in items {
             if has_agg_function(&item.expr) {
-                if let Ok((func, arg, distinct)) = extract_agg_function(&item.expr) {
+                if let Ok((func, arg, second_arg, distinct)) = extract_agg_function(&item.expr) {
                     let alias = item
                         .alias
                         .clone()
                         .unwrap_or_else(|| Identifier::new(return_item_name(item)));
-                    aggregations.push((func, arg, distinct, alias.clone()));
+                    aggregations.push((func, arg, second_arg, distinct, alias.clone()));
                     post_projections.push((Expr::Variable(alias), None));
                 } else {
                     needs_post_project = true;
                     let temp_alias = Identifier::new(format!("__agg_{agg_counter}"));
                     agg_counter += 1;
-                    if let Some((func, arg, distinct)) = find_inner_aggregate(&item.expr) {
-                        aggregations.push((func, arg, distinct, temp_alias.clone()));
+                    if let Some((func, arg, second_arg, distinct)) =
+                        find_inner_aggregate(&item.expr)
+                    {
+                        aggregations.push((func, arg, second_arg, distinct, temp_alias.clone()));
                         let rewritten = rewrite_agg_to_var(&item.expr, &temp_alias);
                         let final_alias = item
                             .alias
@@ -1326,7 +1344,7 @@ impl<'s> QueryPlanner<'s> {
         child: Operator,
     ) -> Result<Operator, GqlError> {
         let mut keys: Vec<Expr> = Vec::new();
-        let mut aggregations: Vec<(AggFunction, Expr, bool, Identifier)> = Vec::new();
+        let mut aggregations: Vec<(AggFunction, Expr, Option<Expr>, bool, Identifier)> = Vec::new();
         // Track post-aggregation projections for expressions wrapping aggregates
         // (e.g., `count(a) + 3`, `count(a) > 0`).
         let mut post_projections: Vec<(Expr, Option<Identifier>)> = Vec::new();
@@ -1335,13 +1353,13 @@ impl<'s> QueryPlanner<'s> {
 
         for item in items {
             if has_agg_function(&item.expr) {
-                if let Ok((func, arg, distinct)) = extract_agg_function(&item.expr) {
+                if let Ok((func, arg, second_arg, distinct)) = extract_agg_function(&item.expr) {
                     // Simple case: expr is a bare aggregate function
                     let alias = item
                         .alias
                         .clone()
                         .unwrap_or_else(|| Identifier::new(return_item_name(item)));
-                    aggregations.push((func, arg, distinct, alias.clone()));
+                    aggregations.push((func, arg, second_arg, distinct, alias.clone()));
                     post_projections.push((Expr::Variable(alias), None));
                 } else {
                     // Complex case: aggregate is wrapped (e.g., count(a) + 3)
@@ -1351,8 +1369,10 @@ impl<'s> QueryPlanner<'s> {
                     agg_counter += 1;
 
                     // Find the innermost aggregate function call
-                    if let Some((func, arg, distinct)) = find_inner_aggregate(&item.expr) {
-                        aggregations.push((func, arg, distinct, temp_alias.clone()));
+                    if let Some((func, arg, second_arg, distinct)) =
+                        find_inner_aggregate(&item.expr)
+                    {
+                        aggregations.push((func, arg, second_arg, distinct, temp_alias.clone()));
                         // Rewrite the original expression to reference the temp alias
                         let rewritten = rewrite_agg_to_var(&item.expr, &temp_alias);
                         let final_alias = item
@@ -1371,12 +1391,22 @@ impl<'s> QueryPlanner<'s> {
                     }
                 }
             } else {
-                keys.push(item.expr.clone());
+                // Non-aggregate: use as group key.
+                // If the user gave an alias different from the generated column name,
+                // we must add a post-project step to rename the key column.
+                let gen_name = expr_to_col_name(&item.expr);
                 let alias = item
                     .alias
                     .clone()
                     .unwrap_or_else(|| Identifier::new(return_item_name(item)));
-                post_projections.push((Expr::Variable(alias), None));
+                keys.push(item.expr.clone());
+                if gen_name != alias.0 {
+                    needs_post_project = true;
+                    post_projections
+                        .push((Expr::Variable(Identifier::new(gen_name)), Some(alias)));
+                } else {
+                    post_projections.push((Expr::Variable(alias), None));
+                }
             }
         }
 
@@ -1465,7 +1495,7 @@ fn rewrite_with_order_expr(expr: &Expr, with_items: &[ReturnItem]) -> Expr {
                 right: Box::new(new_right),
             }
         }
-        Expr::FunctionCall { name, args: _, distinct: _ } => {
+        Expr::FunctionCall { name, .. } => {
             if is_agg_name(name.as_str()) {
                 // Map aggregate functions to their output aliases.
                 for ri in with_items {
@@ -1488,21 +1518,16 @@ fn rewrite_with_order_expr(expr: &Expr, with_items: &[ReturnItem]) -> Expr {
 }
 
 fn rewrite_agg_order_expr(expr: &Expr, return_items: &[ReturnItem]) -> Expr {
-    if let Expr::FunctionCall { name, .. } = expr {
-        if is_agg_name(name.as_str()) {
-            // Find the matching RETURN item.
-            for ri in return_items {
-                if let Expr::FunctionCall { name: rn, .. } = &ri.expr {
-                    if name == rn {
-                        let alias = ri
-                            .alias
-                            .clone()
-                            .map(|a| a.0)
-                            .unwrap_or_else(|| return_item_name(ri));
-                        return Expr::Variable(Identifier::new(alias));
-                    }
-                }
-            }
+    // After aggregation, ORDER BY expressions must reference output column names.
+    // Try to find the matching RETURN item and rewrite to Variable(output_column_name).
+    let expr_col = expr_to_col_name(expr);
+    for ri in return_items {
+        let ri_col = expr_to_col_name(&ri.expr);
+        let ri_alias = return_item_name(ri);
+        // Match if the ORDER BY expression equals the return item expression,
+        // or if it matches the alias.
+        if expr_col == ri_col || expr_col == ri_alias {
+            return Expr::Variable(Identifier::new(ri_alias));
         }
     }
     expr.clone()
@@ -1556,7 +1581,7 @@ fn return_item_name(item: &ReturnItem) -> String {
             let arg_strs: Vec<String> = args.iter().map(expr_name).collect();
             format!("{}({})", name, arg_strs.join(", "))
         }
-        other => format!("{:?}", other),
+        other => expr_to_col_name(other),
     }
 }
 
@@ -1580,17 +1605,40 @@ fn expr_name(expr: &Expr) -> String {
 /// Returns `true` if the expression is or contains an aggregate function call.
 fn has_agg_function(expr: &Expr) -> bool {
     match expr {
-        Expr::FunctionCall { name, .. } => is_agg_name(name.as_str()),
+        Expr::FunctionCall { name, args, .. } => {
+            // The function itself is an aggregate, OR one of its args contains an aggregate
+            // (e.g. size(collect(a)), all(x IN collect(...) WHERE x))
+            is_agg_name(name.as_str()) || args.iter().any(has_agg_function)
+        }
         Expr::BinaryOp { left, right, .. } => has_agg_function(left) || has_agg_function(right),
         Expr::UnaryOp { expr, .. } => has_agg_function(expr),
         Expr::Property(obj, _) => has_agg_function(obj),
         Expr::List(items) => items.iter().any(has_agg_function),
+        Expr::MapLiteral(pairs) => pairs.iter().any(|(_, v)| has_agg_function(v)),
         Expr::ListComp {
             list, filter, map, ..
         } => {
             has_agg_function(list)
                 || filter.as_deref().map(has_agg_function).unwrap_or(false)
                 || has_agg_function(map)
+        }
+        Expr::Case {
+            subject,
+            alternatives,
+            default,
+        } => {
+            subject.as_deref().map(has_agg_function).unwrap_or(false)
+                || alternatives
+                    .iter()
+                    .any(|(c, r)| has_agg_function(c) || has_agg_function(r))
+                || default.as_deref().map(has_agg_function).unwrap_or(false)
+        }
+        Expr::IsNull(e) | Expr::IsNotNull(e) => has_agg_function(e),
+        Expr::Subscript(a, b) => has_agg_function(a) || has_agg_function(b),
+        Expr::Slice(a, b, c) => {
+            has_agg_function(a)
+                || b.as_deref().map(has_agg_function).unwrap_or(false)
+                || c.as_deref().map(has_agg_function).unwrap_or(false)
         }
         _ => false,
     }
@@ -1599,13 +1647,22 @@ fn has_agg_function(expr: &Expr) -> bool {
 fn is_agg_name(name: &str) -> bool {
     matches!(
         name.to_uppercase().as_str(),
-        "COUNT" | "SUM" | "AVG" | "MIN" | "MAX" | "COLLECT" | "STDEV" | "STDEVP"
+        "COUNT"
+            | "SUM"
+            | "AVG"
+            | "MIN"
+            | "MAX"
+            | "COLLECT"
+            | "STDEV"
+            | "STDEVP"
+            | "PERCENTILECONT"
+            | "PERCENTILEDISC"
     )
 }
 
-/// Extract the aggregate function, argument, and distinct flag from a top-level
-/// `FunctionCall` expression.
-fn extract_agg_function(expr: &Expr) -> Result<(AggFunction, Expr, bool), GqlError> {
+/// Extract the aggregate function, first argument, optional second argument, and distinct flag
+/// from a top-level `FunctionCall` expression.
+fn extract_agg_function(expr: &Expr) -> Result<(AggFunction, Expr, Option<Expr>, bool), GqlError> {
     match expr {
         Expr::FunctionCall {
             name,
@@ -1621,6 +1678,8 @@ fn extract_agg_function(expr: &Expr) -> Result<(AggFunction, Expr, bool), GqlErr
                 "COLLECT" => AggFunction::Collect,
                 "STDEV" => AggFunction::StDev,
                 "STDEVP" => AggFunction::StDevP,
+                "PERCENTILECONT" => AggFunction::PercentileCont,
+                "PERCENTILEDISC" => AggFunction::PercentileDisc,
                 other => {
                     return Err(GqlError::Execution(ExecutionError::unsupported(format!(
                         "aggregate function '{other}'"
@@ -1628,7 +1687,8 @@ fn extract_agg_function(expr: &Expr) -> Result<(AggFunction, Expr, bool), GqlErr
                 }
             };
             let arg = args.first().cloned().unwrap_or(Expr::Null);
-            Ok((func, arg, *distinct))
+            let second_arg = args.get(1).cloned();
+            Ok((func, arg, second_arg, *distinct))
         }
         _ => Err(GqlError::Execution(ExecutionError::unsupported(
             "non-function aggregate expression",
@@ -1637,33 +1697,45 @@ fn extract_agg_function(expr: &Expr) -> Result<(AggFunction, Expr, bool), GqlErr
 }
 
 /// Find the innermost aggregate function call in a compound expression.
-/// Returns (AggFunction, arg_expr, distinct) if found.
-fn find_inner_aggregate(expr: &Expr) -> Option<(AggFunction, Expr, bool)> {
+/// Returns (AggFunction, arg_expr, second_arg_expr, distinct) if found.
+fn find_inner_aggregate(expr: &Expr) -> Option<(AggFunction, Expr, Option<Expr>, bool)> {
     match expr {
         Expr::FunctionCall {
             name,
             args,
             distinct,
         } => {
-            let func = match name.to_uppercase().as_str() {
-                "COUNT" => AggFunction::Count,
-                "SUM" => AggFunction::Sum,
-                "AVG" => AggFunction::Avg,
-                "MIN" => AggFunction::Min,
-                "MAX" => AggFunction::Max,
-                "COLLECT" => AggFunction::Collect,
-                "STDEV" => AggFunction::StDev,
-                "STDEVP" => AggFunction::StDevP,
-                _ => return None,
+            let func_opt = match name.to_uppercase().as_str() {
+                "COUNT" => Some(AggFunction::Count),
+                "SUM" => Some(AggFunction::Sum),
+                "AVG" => Some(AggFunction::Avg),
+                "MIN" => Some(AggFunction::Min),
+                "MAX" => Some(AggFunction::Max),
+                "COLLECT" => Some(AggFunction::Collect),
+                "STDEV" => Some(AggFunction::StDev),
+                "STDEVP" => Some(AggFunction::StDevP),
+                "PERCENTILECONT" => Some(AggFunction::PercentileCont),
+                "PERCENTILEDISC" => Some(AggFunction::PercentileDisc),
+                _ => None,
             };
-            let arg = args.first().cloned().unwrap_or(Expr::Null);
-            Some((func, arg, *distinct))
+            if let Some(func) = func_opt {
+                let arg = args.first().cloned().unwrap_or(Expr::Null);
+                let second_arg = args.get(1).cloned();
+                Some((func, arg, second_arg, *distinct))
+            } else {
+                // Non-aggregate function: search inside args for nested aggregate
+                args.iter().find_map(find_inner_aggregate)
+            }
         }
         Expr::BinaryOp { left, right, .. } => {
             find_inner_aggregate(left).or_else(|| find_inner_aggregate(right))
         }
         Expr::UnaryOp { expr: inner, .. } => find_inner_aggregate(inner),
         Expr::Property(inner, _) => find_inner_aggregate(inner),
+        Expr::MapLiteral(pairs) => pairs.iter().find_map(|(_, v)| find_inner_aggregate(v)),
+        Expr::ListComp { list, map, .. } => {
+            find_inner_aggregate(list).or_else(|| find_inner_aggregate(map))
+        }
         _ => None,
     }
 }
@@ -1672,7 +1744,32 @@ fn find_inner_aggregate(expr: &Expr) -> Option<(AggFunction, Expr, bool)> {
 /// a variable reference to `alias`.
 fn rewrite_agg_to_var(expr: &Expr, alias: &Identifier) -> Expr {
     match expr {
-        Expr::FunctionCall { name, .. } if is_agg_name(name) => Expr::Variable(alias.clone()),
+        Expr::FunctionCall { name, .. } if is_agg_name(name) => {
+            // This IS the aggregate: replace the whole call with a variable.
+            Expr::Variable(alias.clone())
+        }
+        Expr::FunctionCall { name, args, distinct } => {
+            // Non-aggregate function: rewrite inside args if any contain an aggregate.
+            if args.iter().any(has_agg_function) {
+                let new_args = args
+                    .iter()
+                    .map(|a| {
+                        if has_agg_function(a) {
+                            rewrite_agg_to_var(a, alias)
+                        } else {
+                            a.clone()
+                        }
+                    })
+                    .collect();
+                Expr::FunctionCall {
+                    name: name.clone(),
+                    args: new_args,
+                    distinct: *distinct,
+                }
+            } else {
+                expr.clone()
+            }
+        }
         Expr::BinaryOp { op, left, right } => {
             if has_agg_function(left) {
                 Expr::BinaryOp {
@@ -1694,6 +1791,42 @@ fn rewrite_agg_to_var(expr: &Expr, alias: &Identifier) -> Expr {
             op: *op,
             expr: Box::new(rewrite_agg_to_var(inner, alias)),
         },
+        Expr::MapLiteral(pairs) => {
+            // Rewrite inside map values
+            let new_pairs = pairs
+                .iter()
+                .map(|(k, v)| {
+                    if has_agg_function(v) {
+                        (k.clone(), rewrite_agg_to_var(v, alias))
+                    } else {
+                        (k.clone(), v.clone())
+                    }
+                })
+                .collect();
+            Expr::MapLiteral(new_pairs)
+        }
+        Expr::ListComp {
+            variable,
+            list,
+            filter,
+            map,
+        } => {
+            // Rewrite inside list if it contains an aggregate
+            Expr::ListComp {
+                variable: variable.clone(),
+                list: if has_agg_function(list) {
+                    Box::new(rewrite_agg_to_var(list, alias))
+                } else {
+                    list.clone()
+                },
+                filter: filter.clone(),
+                map: if has_agg_function(map) {
+                    Box::new(rewrite_agg_to_var(map, alias))
+                } else {
+                    map.clone()
+                },
+            }
+        }
         _ => expr.clone(),
     }
 }
