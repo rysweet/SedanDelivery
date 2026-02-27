@@ -11,7 +11,8 @@ WORKDIR /app
 RUN apt-get update -q && apt-get install -y -q libclang-dev && rm -rf /var/lib/apt/lists/*
 
 # Copy workspace manifests first for layer caching
-COPY Cargo.toml Cargo.lock ./
+# Note: Cargo.lock is in .gitignore so we only copy Cargo.toml
+COPY Cargo.toml ./
 COPY gql-core/Cargo.toml ./gql-core/
 COPY gql-redis-store/Cargo.toml ./gql-redis-store/
 COPY gql-module/Cargo.toml ./gql-module/
@@ -43,7 +44,8 @@ FROM valkey/valkey:8.1-bookworm AS runtime
 COPY --from=builder /app/target/release/libgql_module.so /usr/local/lib/libgql_module.so
 
 # Write a minimal valkey.conf that loads the GQL module
-RUN echo "loadmodule /usr/local/lib/libgql_module.so" > /etc/valkey/valkey-gql.conf && \
+RUN mkdir -p /etc/valkey && \
+    echo "loadmodule /usr/local/lib/libgql_module.so" > /etc/valkey/valkey-gql.conf && \
     echo "bind 0.0.0.0" >> /etc/valkey/valkey-gql.conf && \
     echo "protected-mode no" >> /etc/valkey/valkey-gql.conf && \
     echo "loglevel notice" >> /etc/valkey/valkey-gql.conf
