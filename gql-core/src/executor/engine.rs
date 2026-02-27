@@ -13,12 +13,12 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
-use crate::ast::{Direction, Expr, Identifier};
+use crate::ast::{Direction, Expr};
 use crate::error::{ExecutionError, GqlError};
 use crate::executor::budget::ExecutionBudget;
 use crate::executor::filter::{eval_expr, eval_function_with_vals};
 use crate::executor::filter::Row as FilterRow;
-use crate::planner::{AggFunction, Operator, RemoveItem, SetItem};
+use crate::planner::{AggFunction, Operator, QueryPlanner, RemoveItem, SetItem};
 use crate::procedure::ProcedureRegistry;
 use crate::storage::{EdgeId, GraphStore, NodeId, RangeQuery};
 use crate::types::Value;
@@ -108,7 +108,7 @@ impl<'a> QueryExecutor<'a> {
             Operator::Distinct { child } => child.as_ref(),
             other => other,
         };
-        let has_produce_results = has_produce_results(effective_root);
+        let _has_produce_results = has_produce_results(effective_root);
         let columns = if let Operator::ProduceResults { columns, .. } = effective_root {
             columns.iter().map(|(name, _)| name.clone()).collect()
         } else {
@@ -416,7 +416,7 @@ impl<'a> QueryExecutor<'a> {
                     };
 
                     // Accumulate into each aggregation state.
-                    for (agg_idx, (func, arg_expr, distinct, _alias)) in
+                    for (agg_idx, (func, arg_expr, second_arg_expr, distinct, _alias)) in
                         aggregations.iter().enumerate()
                     {
                         // count(*) — the `*` argument is a sentinel meaning "count rows".
@@ -427,7 +427,11 @@ impl<'a> QueryExecutor<'a> {
                             } else {
                                 self.eval_with_storage(graph, arg_expr, row, &ctx)?
                             };
-                        groups[idx].1[agg_idx].accumulate(func, arg_val, *distinct);
+                        let second_val = second_arg_expr
+                            .as_ref()
+                            .map(|e| self.eval_with_storage(graph, e, row, &ctx))
+                            .transpose()?;
+                        groups[idx].1[agg_idx].accumulate(func, arg_val, second_val, *distinct);
                     }
                 }
 
@@ -450,8 +454,8 @@ impl<'a> QueryExecutor<'a> {
                     }
 
                     // Add aggregation result columns.
-                    for ((func, _, _, alias), state) in aggregations.iter().zip(&agg_states) {
-                        row.insert(alias.0.clone(), state.finalize(func));
+                    for ((func, _, _, _, alias), state) in aggregations.iter().zip(&agg_states) {
+                        row.insert(alias.0.clone(), state.finalize(func)?);
                     }
                     budget.record_row();
                     out.push(row);
@@ -567,23 +571,58 @@ impl<'a> QueryExecutor<'a> {
                 edge_aliases,
                 child,
             } => {
-                use crate::storage::{NodeId, EdgeId};
+                use crate::storage::{EdgeId, NodeId};
                 let input = self.exec_operator(graph, child, budget, outer_rows, stats)?;
                 let mut out = Vec::with_capacity(input.len());
                 for mut row in input {
                     budget.check_or_err()?;
+
+                    // Check if any edge alias holds a VarLenExpand path.
+                    // If so, use its nodes and edges directly (it already has all
+                    // intermediate nodes), combining with fixed-hop edges/nodes.
                     let mut nodes: Vec<NodeId> = Vec::new();
                     let mut edges: Vec<EdgeId> = Vec::new();
-                    for na in node_aliases {
-                        if let Some(Value::Node(nid)) = row.get(&na.0) {
-                            nodes.push(*nid);
-                        }
-                    }
+
+                    // Collect edges, checking for VarLenExpand paths
+                    let mut varlen_path_found = false;
                     for ea in edge_aliases {
-                        if let Some(Value::Edge(eid)) = row.get(&ea.0) {
-                            edges.push(*eid);
+                        match row.get(&ea.0) {
+                            Some(Value::Edge(eid)) => edges.push(*eid),
+                            Some(Value::Path { nodes: pnodes, edges: pedges }) => {
+                                // VarLenExpand path: use its nodes and edges.
+                                // The path already has start+intermediate+end nodes.
+                                if !varlen_path_found {
+                                    // First varlen path: use its nodes
+                                    nodes.extend_from_slice(pnodes);
+                                    varlen_path_found = true;
+                                } else {
+                                    // Additional varlen paths: append intermediate+end nodes
+                                    nodes.extend_from_slice(&pnodes[1..]);
+                                }
+                                edges.extend_from_slice(pedges);
+                            }
+                            Some(Value::List(items)) => {
+                                // List of edges (alternative VarLenExpand storage)
+                                for item in items {
+                                    if let Value::Edge(eid) = item {
+                                        edges.push(*eid);
+                                    }
+                                }
+                            }
+                            _ => {}
                         }
                     }
+
+                    // If no varlen path was found, collect nodes from node_aliases normally.
+                    // If varlen path was found, skip node_aliases (nodes already assembled).
+                    if !varlen_path_found {
+                        for na in node_aliases {
+                            if let Some(Value::Node(nid)) = row.get(&na.0) {
+                                nodes.push(*nid);
+                            }
+                        }
+                    }
+
                     let path_val = Value::Path { nodes, edges };
                     row.insert(path_alias.0.clone(), path_val);
                     out.push(row);
@@ -729,6 +768,7 @@ impl<'a> QueryExecutor<'a> {
                 max,
                 src_alias,
                 path_alias,
+                path_mode,
                 dst_alias,
                 child,
             } => {
@@ -760,13 +800,24 @@ impl<'a> QueryExecutor<'a> {
                             let end_node = *path_nodes.last().unwrap();
                             new_row.insert(dst_alias.0.clone(), Value::Node(end_node));
                             if let Some(pa) = path_alias {
-                                new_row.insert(
-                                    pa.0.clone(),
-                                    Value::Path {
-                                        nodes: path_nodes.clone(),
-                                        edges: path_edges.clone(),
-                                    },
-                                );
+                                if *path_mode {
+                                    // Named path mode: store full path for AssemblePath
+                                    new_row.insert(
+                                        pa.0.clone(),
+                                        Value::Path {
+                                            nodes: path_nodes.clone(),
+                                            edges: path_edges.clone(),
+                                        },
+                                    );
+                                } else {
+                                    // Relationship variable mode: store list of edges
+                                    new_row.insert(
+                                        pa.0.clone(),
+                                        Value::List(
+                                            path_edges.iter().map(|e| Value::Edge(*e)).collect(),
+                                        ),
+                                    );
+                                }
                             }
                             budget.record_row();
                             out.push(new_row);
@@ -1586,19 +1637,36 @@ impl<'a> QueryExecutor<'a> {
                 let v = self.eval_with_storage(graph, inner, row, ctx)?;
                 Ok(Value::Bool(!v.is_null()))
             }
-            // Label check: n:Label — check if node has the specified label
+            // Label check: n:Label — check if node has label or edge has rel type
             Expr::HasLabel(inner, label) => {
-                let v = self.eval_with_storage(graph, inner, row, ctx)?;
-                match v {
+                // Walk the HasLabel chain (e.g. `a:A:B:C` → chain of HasLabels)
+                // to collect all labels and find the base expression.
+                let mut base_expr: &Expr = inner.as_ref();
+                let mut labels_to_check: Vec<&crate::ast::Label> = vec![label];
+                while let Expr::HasLabel(inner_inner, inner_label) = base_expr {
+                    labels_to_check.push(inner_label);
+                    base_expr = inner_inner.as_ref();
+                }
+
+                let base_val = self.eval_with_storage(graph, base_expr, row, ctx)?;
+                match base_val {
                     Value::Null => Ok(Value::Null),
                     Value::Node(node_id) => {
                         match self.store.get_node(graph, node_id)? {
                             Some(node_data) => {
-                                let has = node_data
-                                    .labels
-                                    .iter()
-                                    .any(|l| l == label.as_str());
+                                let has = labels_to_check.iter().all(|l| {
+                                    node_data.labels.iter().any(|nl| nl == l.as_str())
+                                });
                                 Ok(Value::Bool(has))
+                            }
+                            None => Ok(Value::Bool(false)),
+                        }
+                    }
+                    Value::Edge(edge_id) => {
+                        // For relationships, check if the rel type matches
+                        match self.store.get_edge(graph, edge_id)? {
+                            Some(edge_data) => {
+                                Ok(Value::Bool(edge_data.rel_type.as_str() == label.as_str()))
                             }
                             None => Ok(Value::Bool(false)),
                         }
@@ -2069,9 +2137,48 @@ impl<'a> QueryExecutor<'a> {
                     })),
                 }
             }
+            // ── EXISTS { subquery } and bare pattern predicates ──────────────
+            Expr::ExistsSubquery {
+                patterns,
+                where_clause,
+            } => self.eval_exists_patterns(graph, patterns, where_clause.as_deref(), row),
+
+            // `(n)-[:REL]->(m)` used directly as a boolean predicate in WHERE.
+            Expr::PatternExpr(patterns) => {
+                self.eval_exists_patterns(graph, patterns, None, row)
+            }
+
             // For all other expressions, delegate to eval_expr.
             _ => eval_expr(expr, ctx),
         }
+    }
+
+    /// Evaluate an existential pattern check: return `true` if `patterns`
+    /// (with optional `where_clause`) produce at least one row compatible with
+    /// the current `outer_row` context.
+    fn eval_exists_patterns(
+        &self,
+        graph: &str,
+        patterns: &[crate::ast::PathPattern],
+        where_clause: Option<&Expr>,
+        outer_row: &Row,
+    ) -> Result<Value, GqlError> {
+        let planner = QueryPlanner::new(self.store, graph);
+        let sub_op = planner.plan_exists_subquery(patterns, where_clause)?;
+
+        let outer = vec![outer_row.clone()];
+        let mut budget = ExecutionBudget::default_budget();
+        let mut stats = MutationStats::default();
+        let sub_rows = self.exec_operator(graph, &sub_op, &mut budget, &outer, &mut stats)?;
+
+        // A sub-row is compatible when every variable present in the outer row
+        // either is absent from the sub-row or has the same value.
+        let has_match = sub_rows.iter().any(|sub_row| {
+            outer_row
+                .iter()
+                .all(|(k, v)| sub_row.get(k).is_none_or(|sv| sv == v))
+        });
+        Ok(Value::Bool(has_match))
     }
 
     /// Apply a single `SetItem` (SET n.prop = val, SET n = {map}, SET n += {map}, SET n:Label).
@@ -2088,6 +2195,10 @@ impl<'a> QueryExecutor<'a> {
                 let val = row
                     .get(alias.0.as_str())
                     .ok_or_else(|| undefined_var(&alias.0))?;
+                // SET on a null variable (from OPTIONAL MATCH) is silently ignored.
+                if val.is_null() {
+                    return Ok(());
+                }
                 let ctx = self.build_filter_ctx(graph, row)?;
                 let prop_val = self.eval_with_storage(graph, value, row, &ctx)?;
                 let mut props = HashMap::new();
@@ -2112,6 +2223,10 @@ impl<'a> QueryExecutor<'a> {
                 let val = row
                     .get(alias.0.as_str())
                     .ok_or_else(|| undefined_var(&alias.0))?;
+                // SET on a null variable (from OPTIONAL MATCH) is silently ignored.
+                if val.is_null() {
+                    return Ok(());
+                }
                 let ctx = self.build_filter_ctx(graph, row)?;
                 let map_val = self.eval_with_storage(graph, map, row, &ctx)?;
                 let props = match map_val {
@@ -2178,10 +2293,18 @@ struct AggState {
     max: Option<Value>,
     collected: Vec<Value>,
     seen_distinct: HashSet<String>,
+    /// Percentile parameter for percentileDisc/percentileCont (0.0..=1.0).
+    percentile: Option<f64>,
 }
 
 impl AggState {
-    fn accumulate(&mut self, func: &AggFunction, val: Value, distinct: bool) {
+    fn accumulate(
+        &mut self,
+        func: &AggFunction,
+        val: Value,
+        second_val: Option<Value>,
+        distinct: bool,
+    ) {
         // For distinct aggregations, skip duplicates.
         if distinct {
             let key = format!("{:?}", val);
@@ -2240,28 +2363,128 @@ impl AggState {
                     self.collected.push(val);
                 }
             }
-            // Unsupported aggregation functions: treat as count.
-            _ => {
-                self.count += 1;
+            AggFunction::StDev | AggFunction::StDevP => {
+                if !val.is_null() {
+                    if let Some(f) = val.as_float() {
+                        self.collected.push(Value::Float(f));
+                    }
+                }
+            }
+            AggFunction::PercentileDisc | AggFunction::PercentileCont => {
+                if !val.is_null() {
+                    if let Some(f) = val.as_float() {
+                        self.collected.push(Value::Float(f));
+                    }
+                }
+                // Store the percentile parameter (constant across rows, first one wins).
+                if self.percentile.is_none() {
+                    if let Some(pval) = &second_val {
+                        if let Some(f) = pval.as_float() {
+                            self.percentile = Some(f);
+                        }
+                    }
+                }
             }
         }
     }
 
-    fn finalize(&self, func: &AggFunction) -> Value {
+    fn finalize(&self, func: &AggFunction) -> Result<Value, GqlError> {
         match func {
-            AggFunction::Count => Value::Int(self.count),
-            AggFunction::Sum => self.sum.map(Value::Float).unwrap_or(Value::Int(0)),
+            AggFunction::Count => Ok(Value::Int(self.count)),
+            AggFunction::Sum => Ok(self.sum.map(Value::Float).unwrap_or(Value::Int(0))),
             AggFunction::Avg => {
                 if self.count == 0 {
-                    Value::Null
+                    Ok(Value::Null)
                 } else {
-                    Value::Float(self.sum.unwrap_or(0.0) / self.count as f64)
+                    Ok(Value::Float(self.sum.unwrap_or(0.0) / self.count as f64))
                 }
             }
-            AggFunction::Min => self.min.clone().unwrap_or(Value::Null),
-            AggFunction::Max => self.max.clone().unwrap_or(Value::Null),
-            AggFunction::Collect => Value::List(self.collected.clone()),
-            _ => Value::Int(self.count),
+            AggFunction::Min => Ok(self.min.clone().unwrap_or(Value::Null)),
+            AggFunction::Max => Ok(self.max.clone().unwrap_or(Value::Null)),
+            AggFunction::Collect => Ok(Value::List(self.collected.clone())),
+            AggFunction::StDev => {
+                let nums: Vec<f64> = self
+                    .collected
+                    .iter()
+                    .filter_map(|v| v.as_float())
+                    .collect();
+                if nums.len() <= 1 {
+                    return Ok(Value::Float(0.0));
+                }
+                let mean = nums.iter().sum::<f64>() / nums.len() as f64;
+                let variance = nums.iter().map(|x| (x - mean).powi(2)).sum::<f64>()
+                    / (nums.len() - 1) as f64;
+                Ok(Value::Float(variance.sqrt()))
+            }
+            AggFunction::StDevP => {
+                let nums: Vec<f64> = self
+                    .collected
+                    .iter()
+                    .filter_map(|v| v.as_float())
+                    .collect();
+                if nums.is_empty() {
+                    return Ok(Value::Float(0.0));
+                }
+                let mean = nums.iter().sum::<f64>() / nums.len() as f64;
+                let variance = nums.iter().map(|x| (x - mean).powi(2)).sum::<f64>()
+                    / nums.len() as f64;
+                Ok(Value::Float(variance.sqrt()))
+            }
+            AggFunction::PercentileDisc => {
+                let p = self.percentile.unwrap_or(0.5);
+                if !(0.0..=1.0).contains(&p) {
+                    return Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                        expected: "percentile in range [0.0, 1.0]".to_string(),
+                        actual: format!("NumberOutOfRange: {p}"),
+                    }));
+                }
+                let mut nums: Vec<f64> = self
+                    .collected
+                    .iter()
+                    .filter_map(|v| v.as_float())
+                    .collect();
+                if nums.is_empty() {
+                    return Ok(Value::Null);
+                }
+                nums.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+                // Nearest rank method: index = ceil(p * n) - 1 (clamped)
+                let n = nums.len();
+                let idx = ((p * n as f64).ceil() as usize).saturating_sub(1).min(n - 1);
+                // Return as integer if all values are whole numbers
+                let v = nums[idx];
+                if v.fract() == 0.0 && v >= i64::MIN as f64 && v <= i64::MAX as f64 {
+                    Ok(Value::Int(v as i64))
+                } else {
+                    Ok(Value::Float(v))
+                }
+            }
+            AggFunction::PercentileCont => {
+                let p = self.percentile.unwrap_or(0.5);
+                if !(0.0..=1.0).contains(&p) {
+                    return Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                        expected: "percentile in range [0.0, 1.0]".to_string(),
+                        actual: format!("NumberOutOfRange: {p}"),
+                    }));
+                }
+                let mut nums: Vec<f64> = self
+                    .collected
+                    .iter()
+                    .filter_map(|v| v.as_float())
+                    .collect();
+                if nums.is_empty() {
+                    return Ok(Value::Null);
+                }
+                nums.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+                let idx = p * (nums.len() - 1) as f64;
+                let lo = idx.floor() as usize;
+                let hi = (idx.ceil() as usize).min(nums.len() - 1);
+                if lo == hi {
+                    Ok(Value::Float(nums[lo]))
+                } else {
+                    let frac = idx - lo as f64;
+                    Ok(Value::Float(nums[lo] * (1.0 - frac) + nums[hi] * frac))
+                }
+            }
         }
     }
 }
@@ -2292,6 +2515,7 @@ fn undefined_var(name: &str) -> GqlError {
 /// Check if the plan's top-level operator (or outermost chain) is a write-only operation.
 /// This is used to suppress result rows for queries without RETURN (e.g., `CREATE ()`, `DELETE n`).
 /// Note: MERGE is excluded because it can return rows when used with RETURN.
+#[allow(dead_code)]
 fn is_toplevel_write(op: &Operator) -> bool {
     match op {
         Operator::Create { .. } | Operator::Delete { .. }
@@ -2306,12 +2530,13 @@ fn is_toplevel_write(op: &Operator) -> bool {
 }
 
 /// Check if the operator tree contains write operations (CREATE, DELETE, SET, etc.).
+#[allow(dead_code)]
 fn has_write_operations(op: &Operator) -> bool {
     match op {
         Operator::Create { .. } | Operator::Delete { .. } | Operator::Merge { .. }
         | Operator::MergeRelationship { .. } => true,
-        Operator::Set { child, .. }
-        | Operator::Remove { child, .. } => true,
+        Operator::Set { child: _, .. }
+        | Operator::Remove { child: _, .. } => true,
         Operator::Distinct { child }
         | Operator::Sort { child, .. }
         | Operator::Limit { child, .. }
@@ -3049,6 +3274,7 @@ mod tests {
                 aggregations: vec![(
                     AggFunction::Count,
                     Expr::Variable(Identifier::new("n")),
+                    None,
                     false,
                     Identifier::new("count"),
                 )],
@@ -3094,6 +3320,7 @@ mod tests {
             max: 2,
             src_alias: Identifier::new("a"),
             path_alias: Some(Identifier::new("p")),
+            path_mode: true,
             dst_alias: Identifier::new("b"),
             child: Box::new(Operator::NodeScan {
                 label: Some(Label::new("N")),
@@ -3141,6 +3368,7 @@ mod tests {
             max: 1,
             src_alias: Identifier::new("src"),
             path_alias: None,
+            path_mode: false,
             dst_alias: Identifier::new("dst"),
             child: Box::new(Operator::NodeScan {
                 label: Some(Label::new("N")),
@@ -3182,6 +3410,7 @@ mod tests {
             max: 5,
             src_alias: Identifier::new("src"),
             path_alias: None,
+            path_mode: false,
             dst_alias: Identifier::new("dst"),
             child: Box::new(Operator::NodeScan {
                 label: Some(Label::new("N")),

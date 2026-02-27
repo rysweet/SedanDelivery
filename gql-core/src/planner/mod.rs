@@ -46,6 +46,9 @@ pub enum Operator {
         max: u32,
         src_alias: Identifier,
         path_alias: Option<Identifier>,
+        /// When true, `path_alias` stores `Value::Path` (for AssemblePath named paths).
+        /// When false, `path_alias` stores `Value::List` of edges (for user rel variables).
+        path_mode: bool,
         dst_alias: Identifier,
         child: Box<Operator>,
     },
@@ -60,8 +63,8 @@ pub enum Operator {
     },
     Aggregate {
         keys: Vec<Expr>,
-        // (function, argument_expr, distinct, output_alias)
-        aggregations: Vec<(AggFunction, Expr, bool, Identifier)>,
+        // (function, argument_expr, second_argument_expr, distinct, output_alias)
+        aggregations: Vec<(AggFunction, Expr, Option<Expr>, bool, Identifier)>,
         child: Box<Operator>,
     },
     Distinct {
@@ -398,7 +401,7 @@ fn collect_all_aliases(op: &Operator) -> Vec<String> {
                     aliases.push(id.0.clone());
                 }
             }
-            for (_, _, _, alias) in aggregations {
+            for (_, _, _, _, alias) in aggregations {
                 aliases.push(alias.0.clone());
             }
         }

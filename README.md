@@ -86,13 +86,16 @@ docs/              Architecture docs, ADRs, TUTORIAL.md, research notes
 ## Test Results
 
 ```
-cargo test         237 tests pass (0 failures)
-cargo test --test tck  6 TCK scenarios, 25 steps (0 failures)
-cargo clippy -- -D warnings   0 errors, 0 warnings
-cargo fmt --check  clean
+cargo test -p gql-core --lib        308 tests pass (0 failures)
+cargo test -p gql-core --test end_to_end   10 tests pass (0 failures)
+cargo test --test tck               3225/3806 TCK scenarios pass (84.5%)
+cargo clippy -p gql-core -- -D warnings    0 errors, 0 warnings
 ```
 
-**Current TCK pass rate**: 6/6 scenarios implemented (growing toward the 80% target).
+**Current TCK pass rate**: 3225/3806 (84.5%) — up from 82.7% baseline.
+
+Supported aggregate functions: `count()`, `sum()`, `avg()`, `min()`, `max()`,
+`collect()`, `stdev()`, `stdevp()`, `percentileDisc()`, `percentileCont()`.
 
 ## Security Properties
 
