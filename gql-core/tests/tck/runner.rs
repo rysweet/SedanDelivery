@@ -1121,6 +1121,42 @@ fn parse_expected_rows<'a>(_headers: &[&'a str], data_rows: &[Vec<String>]) -> V
 
 /// Check whether an actual Row matches an expected TCK row.
 ///
+/// Normalize a column name for comparison: lowercase + remove spaces
+/// adjacent to parentheses + collapse consecutive spaces.
+/// This handles cases where the query uses mixed-case like `cOuNt( * )`
+/// while the engine produces `count(*)`.
+fn normalize_col_name(s: &str) -> String {
+    let lower = s.to_lowercase();
+    let mut result = String::with_capacity(lower.len());
+    let mut skip_space = false;
+    for c in lower.chars() {
+        match c {
+            '(' => {
+                result.push('(');
+                skip_space = true; // skip spaces after '('
+            }
+            ')' => {
+                // trim trailing space before ')'
+                if result.ends_with(' ') {
+                    result.pop();
+                }
+                result.push(')');
+                skip_space = false;
+            }
+            ' ' => {
+                if !skip_space && !result.ends_with(' ') {
+                    result.push(' ');
+                }
+            }
+            _ => {
+                result.push(c);
+                skip_space = false;
+            }
+        }
+    }
+    result.trim().to_string()
+}
+
 /// `headers` are the column names from the Gherkin table.
 /// `expected_cells` are the raw TCK cell strings for one row.
 /// `ignore_list_order` sorts list elements before comparison.
@@ -1137,12 +1173,22 @@ fn row_matches_tck(
     headers
         .iter()
         .zip(expected_cells.iter())
-        .all(|(col, cell)| match actual_row.get(*col) {
-            Some(actual_val) => {
-                let expected_val = parse_tck_value(cell);
-                value_matches(actual_val, &expected_val, world, ignore_list_order)
+        .all(|(col, cell)| {
+            // Try exact match first, then normalized match.
+            let actual_val = actual_row.get(*col).or_else(|| {
+                let norm_col = normalize_col_name(col);
+                actual_row
+                    .iter()
+                    .find(|(k, _)| normalize_col_name(k) == norm_col)
+                    .map(|(_, v)| v)
+            });
+            match actual_val {
+                Some(actual_val) => {
+                    let expected_val = parse_tck_value(cell);
+                    value_matches(actual_val, &expected_val, world, ignore_list_order)
+                }
+                None => false,
             }
-            None => false,
         })
 }
 
@@ -1159,9 +1205,16 @@ fn value_matches(
         (Value::Null, Value::Null) => true,
         (Value::Bool(a), Value::Bool(b)) => a == b,
         (Value::Int(a), Value::Int(b)) => a == b,
-        (Value::Float(a), Value::Float(b)) => (a - b).abs() < 1e-10 || a == b,
-        (Value::Int(a), Value::Float(b)) => (*a as f64 - b).abs() < 1e-10,
-        (Value::Float(a), Value::Int(b)) => (a - *b as f64).abs() < 1e-10,
+        (Value::Float(a), Value::Float(b)) => {
+            // NaN == NaN in TCK context.
+            (a.is_nan() && b.is_nan()) || (a - b).abs() < 1e-10 || a == b
+        }
+        (Value::Int(a), Value::Float(b)) => {
+            if b.is_nan() { false } else { (*a as f64 - b).abs() < 1e-10 }
+        }
+        (Value::Float(a), Value::Int(b)) => {
+            if a.is_nan() { false } else { (a - *b as f64).abs() < 1e-10 }
+        }
         (Value::Str(a), Value::Str(b)) => a == b,
         (Value::List(a), Value::List(b)) => {
             if a.len() != b.len() {

@@ -1274,19 +1274,34 @@ impl<'src> Parser<'src> {
     }
 
     fn parse_mul(&mut self) -> Result<Expr, ParseError> {
-        let mut left = self.parse_unary()?;
+        let mut left = self.parse_pow()?;
         loop {
             let op = match self.peek().clone() {
                 TokenKind::Star => BinaryOp::Mul,
                 TokenKind::Slash => BinaryOp::Div,
                 TokenKind::Percent => BinaryOp::Mod,
-                TokenKind::Caret => BinaryOp::Pow,
                 _ => break,
             };
             self.advance();
-            let right = self.parse_unary()?;
+            let right = self.parse_pow()?;
             left = Expr::BinaryOp {
                 op,
+                left: Box::new(left),
+                right: Box::new(right),
+            };
+        }
+        Ok(left)
+    }
+
+    /// Parse exponentiation — higher precedence than `*`, `/`, `%`.
+    /// Left-associative per Cypher spec: `a ^ b ^ c` = `(a ^ b) ^ c`.
+    fn parse_pow(&mut self) -> Result<Expr, ParseError> {
+        let mut left = self.parse_unary()?;
+        while self.at(&TokenKind::Caret) {
+            self.advance();
+            let right = self.parse_unary()?;
+            left = Expr::BinaryOp {
+                op: BinaryOp::Pow,
                 left: Box::new(left),
                 right: Box::new(right),
             };
@@ -1722,12 +1737,37 @@ impl<'src> Parser<'src> {
     /// start (identifier, label colon, property map, or empty `()`) — not an
     /// arithmetic expression like `(4 ^ 3) - ...` or `(-3) - ...`.
     fn looks_like_pattern_expr(&self) -> bool {
-        // The token right after `(` determines if this is a pattern or arithmetic:
-        // - Pattern starters: Identifier, keyword-as-ident, `:`, `{`, `)`
-        // - Arithmetic starters: IntLiteral, FloatLiteral, StringLiteral, Dash, Plus, etc.
-        let first_inner_idx = self.pos + 1;
-        if first_inner_idx < self.tokens.len() {
-            let first_inner = &self.tokens[first_inner_idx].kind;
+        // The first token inside `(` must look like a node pattern start:
+        // an identifier, `:Label`, `{` property map, or `)` (empty node).
+        // If it's a literal (integer, float, string) or an operator, it's a
+        // parenthesised arithmetic expression, not a pattern.
+        let first_inside = self.pos + 1;
+        if first_inside >= self.tokens.len() {
+            return false;
+        }
+        match &self.tokens[first_inside].kind {
+            // Literals and pure operators are never pattern starters.
+            TokenKind::IntLiteral(_)
+            | TokenKind::FloatLiteral(_)
+            | TokenKind::StringLiteral(_)
+            | TokenKind::True
+            | TokenKind::False
+            | TokenKind::Null
+            | TokenKind::Plus
+            | TokenKind::Dash
+            | TokenKind::Star
+            | TokenKind::Slash
+            | TokenKind::Percent
+            | TokenKind::Caret
+            | TokenKind::LBracket => return false,
+            // `{` can start a node-pattern property map: ({ name: 'x' })
+            // but only when followed by a relationship indicator after closing `)`.
+            // Fall through to the depth-scan check below.
+            _ => {}
+        }
+        // Also reject if the token is not a recognized pattern start.
+        {
+            let first_inner = &self.tokens[first_inside].kind;
             let is_pattern_start = matches!(
                 first_inner,
                 TokenKind::Identifier
@@ -1740,7 +1780,8 @@ impl<'src> Parser<'src> {
             }
         }
 
-        // Find the matching `)` and check if it's followed by `-` or `<-`.
+        // We need to find the matching `)` for the current `(` and check
+        // if it's followed by a relationship indicator.
         let mut depth = 0;
         let mut i = self.pos;
         while i < self.tokens.len() {
