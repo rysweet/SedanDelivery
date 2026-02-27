@@ -16,8 +16,8 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use crate::ast::{Direction, Expr};
 use crate::error::{ExecutionError, GqlError, StorageError};
 use crate::executor::budget::ExecutionBudget;
-use crate::executor::filter::Row as FilterRow;
 use crate::executor::filter::{eval_expr, eval_function_with_vals, quantifier_result};
+use crate::executor::filter::Row as FilterRow;
 use crate::planner::{AggFunction, Operator, QueryPlanner, RemoveItem, SetItem};
 use crate::procedure::ProcedureRegistry;
 use crate::storage::{EdgeId, GraphStore, NodeId, RangeQuery};
@@ -192,1741 +192,1741 @@ impl<'a> QueryExecutor<'a> {
         budget.check_or_err()?;
 
         match op {
-            // ── SingleRow ─────────────────────────────────────────────────────
-            Operator::SingleRow => {
-                budget.record_row();
+            Operator::SingleRow => self.exec_single_row(graph, op, budget, outer_rows, stats),
+            Operator::NodeScan { .. } => self.exec_node_scan(graph, op, budget, outer_rows, stats),
+            Operator::Filter { .. } => self.exec_filter(graph, op, budget, outer_rows, stats),
+            Operator::Expand { .. } => self.exec_expand(graph, op, budget, outer_rows, stats),
+            Operator::Project { .. } => self.exec_project(graph, op, budget, outer_rows, stats),
+            Operator::Distinct { .. } => self.exec_distinct(graph, op, budget, outer_rows, stats),
+            Operator::Sort { .. } => self.exec_sort(graph, op, budget, outer_rows, stats),
+            Operator::Limit { .. } => self.exec_limit(graph, op, budget, outer_rows, stats),
+            Operator::Skip { .. } => self.exec_skip(graph, op, budget, outer_rows, stats),
+            Operator::Aggregate { .. } => self.exec_aggregate(graph, op, budget, outer_rows, stats),
+            Operator::Create { .. } => self.exec_create(graph, op, budget, outer_rows, stats),
+            Operator::AssemblePath { .. } => self.exec_assemble_path(graph, op, budget, outer_rows, stats),
+            Operator::Call { .. } => self.exec_call(graph, op, budget, outer_rows, stats),
+            Operator::ProduceResults { .. } => self.exec_produce_results(graph, op, budget, outer_rows, stats),
+            Operator::VarLenExpand { .. } => self.exec_var_len_expand(graph, op, budget, outer_rows, stats),
+            Operator::Set { .. } => self.exec_set(graph, op, budget, outer_rows, stats),
+            Operator::Remove { .. } => self.exec_remove(graph, op, budget, outer_rows, stats),
+            Operator::Delete { .. } => self.exec_delete(graph, op, budget, outer_rows, stats),
+            Operator::Merge { .. } => self.exec_merge(graph, op, budget, outer_rows, stats),
+            Operator::MergeRelationship { .. } => self.exec_merge_rel(graph, op, budget, outer_rows, stats),
+            Operator::Unwind { .. } => self.exec_unwind(graph, op, budget, outer_rows, stats),
+            Operator::Union { .. } => self.exec_union(graph, op, budget, outer_rows, stats),
+            Operator::LeftOuterApply { .. } => self.exec_left_outer_apply(graph, op, budget, outer_rows, stats),
+            Operator::Apply { .. } => self.exec_apply(graph, op, budget, outer_rows, stats),
+            Operator::IndexScan { .. } => self.exec_index_scan(graph, op, budget, outer_rows, stats),
+            Operator::NodeByIdSeek { .. } => self.exec_node_by_id_seek(graph, op, budget, outer_rows, stats),
+            Operator::ShortestPath { .. } => self.exec_shortest_path(graph, op, budget, outer_rows, stats),
+        }
+    }
+
+    // ── Extracted operator methods ─────────────────────────────────────────
+
+    fn exec_single_row(&self, _graph: &str, _op: &Operator, budget: &mut ExecutionBudget, _outer_rows: &[Row], _stats: &mut MutationStats) -> Result<Vec<Row>, GqlError> {
+        budget.record_row();
+        let mut row = Row::new();
+        inject_parameters(&mut row, &self.parameters);
+        Ok(vec![row])
+    }
+
+    fn exec_node_scan(&self, graph: &str, op: &Operator, budget: &mut ExecutionBudget, outer_rows: &[Row], _stats: &mut MutationStats) -> Result<Vec<Row>, GqlError> {
+        let Operator::NodeScan { label, alias } = op else { unreachable!() };
+        let node_ids = if let Some(lbl) = label {
+            self.store.find_nodes_by_label(graph, lbl.as_str())?
+        } else {
+            self.store.all_node_ids(graph)?
+        };
+
+        // When used as the inner side of Apply/LeftOuterApply,
+        // outer_rows carries context variables that inner operators
+        // (e.g., Filter) may reference. Merge them into each produced row.
+        // Exclude internal anonymous edge aliases (__anon_rel_*) — these are
+        // per-pattern tracking variables and must not leak into inner patterns.
+        let base_rows: &[Row] = if outer_rows.is_empty() {
+            &[]
+        } else {
+            outer_rows
+        };
+
+        let mut rows = Vec::with_capacity(node_ids.len());
+        for id in &node_ids {
+            budget.check_or_err()?;
+            if base_rows.is_empty() {
                 let mut row = Row::new();
+                row.insert(alias.0.clone(), Value::Node(*id));
                 inject_parameters(&mut row, &self.parameters);
-                Ok(vec![row])
-            }
-
-            // ── NodeScan ──────────────────────────────────────────────────────
-            Operator::NodeScan { label, alias } => {
-                let node_ids = if let Some(lbl) = label {
-                    self.store.find_nodes_by_label(graph, lbl.as_str())?
-                } else {
-                    self.store.all_node_ids(graph)?
-                };
-
-                // When used as the inner side of Apply/LeftOuterApply,
-                // outer_rows carries context variables that inner operators
-                // (e.g., Filter) may reference. Merge them into each produced row.
-                // Exclude internal anonymous edge aliases (__anon_rel_*) — these are
-                // per-pattern tracking variables and must not leak into inner patterns.
-                let base_rows: &[Row] = if outer_rows.is_empty() {
-                    &[]
-                } else {
-                    outer_rows
-                };
-
-                let mut rows = Vec::with_capacity(node_ids.len());
-                for id in &node_ids {
-                    budget.check_or_err()?;
-                    if base_rows.is_empty() {
-                        let mut row = Row::new();
-                        row.insert(alias.0.clone(), Value::Node(*id));
-                        inject_parameters(&mut row, &self.parameters);
-                        budget.record_row();
-                        rows.push(row);
-                    } else {
-                        for outer_row in base_rows {
-                            // If the alias is already pre-bound in outer_row to a specific node,
-                            // only produce a row when the scanned node matches that bound node.
-                            // This correctly handles correlated subqueries and repeated MATCH clauses.
-                            // Only apply for non-anonymous variables (anonymous vars like __anon*
-                            // should always scan all nodes independently).
-                            if !alias.0.starts_with("__anon") {
-                                if let Some(Value::Node(pre_bound_id)) =
-                                    outer_row.get(alias.0.as_str())
-                                {
-                                    if *pre_bound_id != *id {
-                                        continue; // Skip: doesn't match the pre-bound value
-                                    }
-                                }
+                budget.record_row();
+                rows.push(row);
+            } else {
+                for outer_row in base_rows {
+                    // If the alias is already pre-bound in outer_row to a specific node,
+                    // only produce a row when the scanned node matches that bound node.
+                    // This correctly handles correlated subqueries and repeated MATCH clauses.
+                    // Only apply for non-anonymous variables (anonymous vars like __anon*
+                    // should always scan all nodes independently).
+                    if !alias.0.starts_with("__anon") {
+                        if let Some(Value::Node(pre_bound_id)) = outer_row.get(alias.0.as_str()) {
+                            if *pre_bound_id != *id {
+                                continue; // Skip: doesn't match the pre-bound value
                             }
-                            let mut row: Row = outer_row
-                                .iter()
-                                .filter(|(k, _)| !k.starts_with("__anon_rel_"))
-                                .map(|(k, v)| (k.clone(), v.clone()))
-                                .collect();
-                            row.insert(alias.0.clone(), Value::Node(*id));
-                            // Track outer-scope edge variable names so Expand's isomorphism
-                            // check doesn't block edges from previous MATCH clauses.
-                            let outer_edge_keys: Vec<Value> = outer_row
-                                .iter()
-                                .filter(|(k, v)| {
-                                    !k.starts_with("__anon_rel_")
-                                        && !k.starts_with("__outer_edge_vars__")
-                                        && matches!(v, Value::Edge(_))
-                                })
-                                .map(|(k, _)| Value::Str(k.clone().into_boxed_str()))
-                                .collect();
-                            if !outer_edge_keys.is_empty() {
-                                let mut existing: Vec<Value> = match row.get("__outer_edge_vars__")
-                                {
-                                    Some(Value::List(vs)) => vs.clone(),
-                                    _ => vec![],
-                                };
-                                existing.extend(outer_edge_keys);
-                                row.insert(
-                                    "__outer_edge_vars__".to_string(),
-                                    Value::List(existing),
-                                );
-                            }
-                            budget.record_row();
-                            rows.push(row);
                         }
                     }
-                }
-                Ok(rows)
-            }
-
-            // ── Filter ────────────────────────────────────────────────────────
-            Operator::Filter { predicate, child } => {
-                let input = self.exec_operator(graph, child, budget, outer_rows, stats)?;
-                let mut out = Vec::new();
-                for row in input {
-                    budget.check_or_err()?;
-                    let ctx = self.build_filter_ctx(graph, &row)?;
-                    // Use eval_with_storage so that property access on Node/Edge IDs
-                    // is resolved against the store rather than returning Null.
-                    let result = self.eval_with_storage(graph, predicate, &row, &ctx)?;
-                    if result == Value::Bool(true) {
-                        out.push(row);
+                    let mut row: Row = outer_row
+                        .iter()
+                        .filter(|(k, _)| !k.starts_with("__anon_rel_"))
+                        .map(|(k, v)| (k.clone(), v.clone()))
+                        .collect();
+                    row.insert(alias.0.clone(), Value::Node(*id));
+                    // Track outer-scope edge variable names so Expand's isomorphism
+                    // check doesn't block edges from previous MATCH clauses.
+                    let outer_edge_keys: Vec<Value> = outer_row
+                        .iter()
+                        .filter(|(k, v)| {
+                            !k.starts_with("__anon_rel_")
+                                && !k.starts_with("__outer_edge_vars__")
+                                && matches!(v, Value::Edge(_))
+                        })
+                        .map(|(k, _)| Value::Str(k.clone().into_boxed_str()))
+                        .collect();
+                    if !outer_edge_keys.is_empty() {
+                        let mut existing: Vec<Value> = match row.get("__outer_edge_vars__") {
+                            Some(Value::List(vs)) => vs.clone(),
+                            _ => vec![],
+                        };
+                        existing.extend(outer_edge_keys);
+                        row.insert("__outer_edge_vars__".to_string(), Value::List(existing));
                     }
+                    budget.record_row();
+                    rows.push(row);
                 }
-                Ok(out)
             }
+        }
+        Ok(rows)
+    }
 
-            // ── Expand ────────────────────────────────────────────────────────
-            Operator::Expand {
-                direction,
-                rel_types,
-                src_alias,
-                rel_alias,
-                dst_alias,
-                child,
-            } => {
-                let input = self.exec_operator(graph, child, budget, outer_rows, stats)?;
-                let type_strs: Vec<&str> = rel_types.iter().map(|r| r.as_str()).collect();
-                let mut out = Vec::new();
+    fn exec_filter(&self, graph: &str, op: &Operator, budget: &mut ExecutionBudget, outer_rows: &[Row], stats: &mut MutationStats) -> Result<Vec<Row>, GqlError> {
+        let Operator::Filter { predicate, child } = op else { unreachable!() };
+        let input = self.exec_operator(graph, child, budget, outer_rows, stats)?;
+        let mut out = Vec::new();
+        for row in input {
+            budget.check_or_err()?;
+            let ctx = self.build_filter_ctx(graph, &row)?;
+            // Use eval_with_storage so that property access on Node/Edge IDs
+            // is resolved against the store rather than returning Null.
+            let result = self.eval_with_storage(graph, predicate, &row, &ctx)?;
+            if result == Value::Bool(true) {
+                out.push(row);
+            }
+        }
+        Ok(out)
+    }
 
-                for row in input {
-                    budget.check_or_err()?;
-                    let src_val = row
-                        .get(src_alias.0.as_str())
-                        .ok_or_else(|| undefined_var(&src_alias.0))?;
-                    let src_id = extract_node_id(src_val, &src_alias.0)?;
+    fn exec_expand(&self, graph: &str, op: &Operator, budget: &mut ExecutionBudget, outer_rows: &[Row], stats: &mut MutationStats) -> Result<Vec<Row>, GqlError> {
+        let Operator::Expand {
+            direction,
+            rel_types,
+            src_alias,
+            rel_alias,
+            dst_alias,
+            child,
+        } = op else { unreachable!() };
+        let input = self.exec_operator(graph, child, budget, outer_rows, stats)?;
+        let type_strs: Vec<&str> = rel_types.iter().map(|r| r.as_str()).collect();
+        let mut out = Vec::new();
 
-                    let adj_entries = match direction {
-                        Direction::Outgoing => {
-                            self.store.out_edges_by_type(graph, src_id, &type_strs)?
-                        }
-                        Direction::Incoming => {
-                            self.store.in_edges_by_type(graph, src_id, &type_strs)?
-                        }
-                        Direction::Undirected => {
-                            let mut out_entries =
-                                self.store.out_edges_by_type(graph, src_id, &type_strs)?;
-                            let in_entries =
-                                self.store.in_edges_by_type(graph, src_id, &type_strs)?;
-                            // Deduplicate: for self-loops (src==dst), the same edge
-                            // appears in both out_edges and in_edges. Keep only unique
-                            // (edge_id, neighbor_id) pairs.
-                            let mut seen_edges: HashSet<(u64, u64)> = HashSet::new();
-                            for e in &out_entries {
-                                seen_edges.insert((e.edge_id.0, e.neighbor_id.0));
-                            }
-                            for e in in_entries {
-                                if seen_edges.insert((e.edge_id.0, e.neighbor_id.0)) {
-                                    out_entries.push(e);
-                                }
-                            }
-                            out_entries
-                        }
-                    };
+        for row in input {
+            budget.check_or_err()?;
+            let src_val = row
+                .get(src_alias.0.as_str())
+                .ok_or_else(|| undefined_var(&src_alias.0))?;
+            let src_id = extract_node_id(src_val, &src_alias.0)?;
 
-                    for adj in adj_entries {
-                        budget.check_or_err()?;
-                        // If dst_alias is already bound in the row (cyclic patterns
-                        // like (a)-->()-->(a)), only keep the result if the bound
-                        // value matches the expansion result.
-                        // Skip this check for anonymous variables: they may be
-                        // inherited from an outer scope (e.g. pattern comprehension)
-                        // and should not constrain the inner expansion.
-                        let dst_val = Value::Node(adj.neighbor_id);
-                        if !dst_alias.0.starts_with("__anon") {
-                            if let Some(existing) = row.get(dst_alias.0.as_str()) {
-                                if *existing != dst_val {
-                                    continue;
-                                }
-                            }
+            let adj_entries = match direction {
+                Direction::Outgoing => {
+                    self.store.out_edges_by_type(graph, src_id, &type_strs)?
+                }
+                Direction::Incoming => {
+                    self.store.in_edges_by_type(graph, src_id, &type_strs)?
+                }
+                Direction::Undirected => {
+                    let mut out_entries =
+                        self.store.out_edges_by_type(graph, src_id, &type_strs)?;
+                    let in_entries =
+                        self.store.in_edges_by_type(graph, src_id, &type_strs)?;
+                    // Deduplicate: for self-loops (src==dst), the same edge
+                    // appears in both out_edges and in_edges. Keep only unique
+                    // (edge_id, neighbor_id) pairs.
+                    let mut seen_edges: HashSet<(u64, u64)> = HashSet::new();
+                    for e in &out_entries {
+                        seen_edges.insert((e.edge_id.0, e.neighbor_id.0));
+                    }
+                    for e in in_entries {
+                        if seen_edges.insert((e.edge_id.0, e.neighbor_id.0)) {
+                            out_entries.push(e);
                         }
-                        // Same for rel_alias: if already bound, values must match.
-                        if let Some(ra) = rel_alias {
-                            let rel_val = Value::Edge(adj.edge_id);
-                            if let Some(existing) = row.get(ra.0.as_str()) {
-                                if *existing != rel_val {
-                                    continue;
-                                }
-                            }
-                        }
-                        // Edge isomorphism: per openCypher spec, each relationship in a
-                        // pattern can only be bound once in any single path traversal.
-                        // Skip this edge if it is already used by a DIFFERENT rel in the row
-                        // (exclude the current rel_alias, which may legitimately re-bind it).
-                        // Note: named path variables (Value::Path) are NOT checked here because
-                        // edges from paths in previous MATCH clauses can be reused independently.
-                        // Also exclude outer-scope edge variables (from previous WITH/MATCH scopes).
-                        let eid = adj.edge_id;
-                        let current_alias = rel_alias.as_ref().map(|ra| ra.0.as_str());
-                        let outer_edge_vars: std::collections::HashSet<&str> =
-                            match row.get("__outer_edge_vars__") {
-                                Some(Value::List(vs)) => vs
-                                    .iter()
-                                    .filter_map(|v| {
-                                        if let Value::Str(s) = v {
-                                            Some(s.as_ref())
-                                        } else {
-                                            None
-                                        }
-                                    })
-                                    .collect(),
-                                _ => std::collections::HashSet::new(),
-                            };
-                        let edge_already_used = row.iter().any(|(key, v)| {
-                            // Don't count the current alias as "already used"
-                            if Some(key.as_str()) == current_alias {
-                                return false;
-                            }
-                            // Don't count outer-scope edges (from previous MATCH clauses)
-                            if outer_edge_vars.contains(key.as_str()) {
-                                return false;
-                            }
-                            match v {
-                                Value::Edge(e) => *e == eid,
-                                Value::List(items) => items
-                                    .iter()
-                                    .any(|item| matches!(item, Value::Edge(e) if *e == eid)),
-                                // Named path variables are NOT subject to edge isomorphism
-                                // across MATCH clauses — only relationship variables are.
-                                Value::Path { .. } => false,
-                                _ => false,
-                            }
-                        });
-                        if edge_already_used {
+                    }
+                    out_entries
+                }
+            };
+
+            for adj in adj_entries {
+                budget.check_or_err()?;
+                // If dst_alias is already bound in the row (cyclic patterns
+                // like (a)-->()-->(a)), only keep the result if the bound
+                // value matches the expansion result.
+                // Skip this check for anonymous variables: they may be
+                // inherited from an outer scope (e.g. pattern comprehension)
+                // and should not constrain the inner expansion.
+                let dst_val = Value::Node(adj.neighbor_id);
+                if !dst_alias.0.starts_with("__anon") {
+                    if let Some(existing) = row.get(dst_alias.0.as_str()) {
+                        if *existing != dst_val {
                             continue;
                         }
-                        let mut new_row = row.clone();
-                        if let Some(ra) = rel_alias {
-                            new_row.insert(ra.0.clone(), Value::Edge(adj.edge_id));
+                    }
+                }
+                // Same for rel_alias: if already bound, values must match.
+                if let Some(ra) = rel_alias {
+                    let rel_val = Value::Edge(adj.edge_id);
+                    if let Some(existing) = row.get(ra.0.as_str()) {
+                        if *existing != rel_val {
+                            continue;
                         }
-                        new_row.insert(dst_alias.0.clone(), dst_val);
-                        budget.record_row();
-                        out.push(new_row);
                     }
                 }
-                Ok(out)
-            }
-
-            // ── Project ───────────────────────────────────────────────────────
-            Operator::Project { items, child } => {
-                let input = self.exec_operator(graph, child, budget, outer_rows, stats)?;
-                let mut out = Vec::with_capacity(input.len());
-
-                for row in &input {
-                    budget.check_or_err()?;
-                    let ctx = self.build_filter_ctx(graph, row)?;
-                    let mut new_row = Row::new();
-                    for (expr, alias) in items {
-                        let val = self.eval_with_storage(graph, expr, row, &ctx)?;
-                        let col_name = match alias {
-                            Some(id) => id.0.clone(),
-                            None => expr_to_column_name(expr),
-                        };
-                        new_row.insert(col_name, val);
+                // Edge isomorphism: per openCypher spec, each relationship in a
+                // pattern can only be bound once in any single path traversal.
+                // Skip this edge if it is already used by a DIFFERENT rel in the row
+                // (exclude the current rel_alias, which may legitimately re-bind it).
+                // Note: named path variables (Value::Path) are NOT checked here because
+                // edges from paths in previous MATCH clauses can be reused independently.
+                // Also exclude outer-scope edge variables (from previous WITH/MATCH scopes).
+                let eid = adj.edge_id;
+                let current_alias = rel_alias.as_ref().map(|ra| ra.0.as_str());
+                let outer_edge_vars: std::collections::HashSet<&str> =
+                    match row.get("__outer_edge_vars__") {
+                        Some(Value::List(vs)) => vs.iter().filter_map(|v| {
+                            if let Value::Str(s) = v { Some(s.as_ref()) } else { None }
+                        }).collect(),
+                        _ => std::collections::HashSet::new(),
+                    };
+                let edge_already_used = row.iter().any(|(key, v)| {
+                    // Don't count the current alias as "already used"
+                    if Some(key.as_str()) == current_alias {
+                        return false;
                     }
-                    // Preserve query parameters through scope changes.
-                    inject_parameters(&mut new_row, &self.parameters);
-                    budget.record_row();
-                    out.push(new_row);
-                }
-                Ok(out)
-            }
-
-            // ── Distinct ──────────────────────────────────────────────────────
-            Operator::Distinct { child } => {
-                let input = self.exec_operator(graph, child, budget, outer_rows, stats)?;
-                let mut seen: HashSet<String> = HashSet::new();
-                let mut out = Vec::new();
-                for row in input {
-                    budget.check_or_err()?;
-                    let key = row_key(&row);
-                    if seen.insert(key) {
-                        out.push(row);
+                    // Don't count outer-scope edges (from previous MATCH clauses)
+                    if outer_edge_vars.contains(key.as_str()) {
+                        return false;
                     }
-                }
-                Ok(out)
-            }
-
-            // ── Sort ──────────────────────────────────────────────────────────
-            Operator::Sort { items, child } => {
-                let input = self.exec_operator(graph, child, budget, outer_rows, stats)?;
-                budget.check_or_err()?;
-
-                // Evaluate all sort keys up front to avoid repeated store lookups.
-                let mut keyed: Vec<(Vec<Value>, Row)> = input
-                    .into_iter()
-                    .map(|row| {
-                        let ctx = self.build_filter_ctx(graph, &row)?;
-                        let keys: Result<Vec<Value>, GqlError> = items
+                    match v {
+                        Value::Edge(e) => *e == eid,
+                        Value::List(items) => items
                             .iter()
-                            .map(|(expr, _)| self.eval_with_storage(graph, expr, &row, &ctx))
-                            .collect();
-                        Ok((keys?, row))
-                    })
-                    .collect::<Result<Vec<_>, GqlError>>()?;
-
-                keyed.sort_by(|(ka, _), (kb, _)| {
-                    for i in 0..items.len() {
-                        let va = &ka[i];
-                        let vb = &kb[i];
-                        let asc = items[i].1;
-                        let ord = cmp_values(va, vb);
-                        if ord != std::cmp::Ordering::Equal {
-                            return if asc { ord } else { ord.reverse() };
-                        }
+                            .any(|item| matches!(item, Value::Edge(e) if *e == eid)),
+                        // Named path variables are NOT subject to edge isomorphism
+                        // across MATCH clauses — only relationship variables are.
+                        Value::Path { .. } => false,
+                        _ => false,
                     }
-                    std::cmp::Ordering::Equal
                 });
-
-                Ok(keyed.into_iter().map(|(_, row)| row).collect())
+                if edge_already_used {
+                    continue;
+                }
+                let mut new_row = row.clone();
+                if let Some(ra) = rel_alias {
+                    new_row.insert(ra.0.clone(), Value::Edge(adj.edge_id));
+                }
+                new_row.insert(dst_alias.0.clone(), dst_val);
+                budget.record_row();
+                out.push(new_row);
             }
+        }
+        Ok(out)
+    }
 
-            // ── Limit ─────────────────────────────────────────────────────────
-            Operator::Limit { count, child } => {
-                let input = self.exec_operator(graph, child, budget, outer_rows, stats)?;
-                budget.check_or_err()?;
-                let n = eval_count_expr(count, &self.parameters)?;
-                Ok(input.into_iter().take(n).collect())
+    fn exec_project(&self, graph: &str, op: &Operator, budget: &mut ExecutionBudget, outer_rows: &[Row], stats: &mut MutationStats) -> Result<Vec<Row>, GqlError> {
+        let Operator::Project { items, child } = op else { unreachable!() };
+        let input = self.exec_operator(graph, child, budget, outer_rows, stats)?;
+        let mut out = Vec::with_capacity(input.len());
+
+        for row in &input {
+            budget.check_or_err()?;
+            let ctx = self.build_filter_ctx(graph, row)?;
+            let mut new_row = Row::new();
+            for (expr, alias) in items {
+                let val = self.eval_with_storage(graph, expr, row, &ctx)?;
+                let col_name = match alias {
+                    Some(id) => id.0.clone(),
+                    None => expr_to_column_name(expr),
+                };
+                new_row.insert(col_name, val);
             }
+            // Preserve query parameters through scope changes.
+            inject_parameters(&mut new_row, &self.parameters);
+            budget.record_row();
+            out.push(new_row);
+        }
+        Ok(out)
+    }
 
-            // ── Skip ──────────────────────────────────────────────────────────
-            Operator::Skip { count, child } => {
-                let input = self.exec_operator(graph, child, budget, outer_rows, stats)?;
-                budget.check_or_err()?;
-                let n = eval_count_expr(count, &self.parameters)?;
-                Ok(input.into_iter().skip(n).collect())
+    fn exec_distinct(&self, graph: &str, op: &Operator, budget: &mut ExecutionBudget, outer_rows: &[Row], stats: &mut MutationStats) -> Result<Vec<Row>, GqlError> {
+        let Operator::Distinct { child } = op else { unreachable!() };
+        let input = self.exec_operator(graph, child, budget, outer_rows, stats)?;
+        let mut seen: HashSet<String> = HashSet::new();
+        let mut out = Vec::new();
+        for row in input {
+            budget.check_or_err()?;
+            let key = row_key(&row);
+            if seen.insert(key) {
+                out.push(row);
             }
+        }
+        Ok(out)
+    }
 
-            // ── Aggregate ─────────────────────────────────────────────────────
-            Operator::Aggregate {
-                keys,
-                aggregations,
-                child,
-            } => {
-                let input = self.exec_operator(graph, child, budget, outer_rows, stats)?;
-                budget.check_or_err()?;
+    fn exec_sort(&self, graph: &str, op: &Operator, budget: &mut ExecutionBudget, outer_rows: &[Row], stats: &mut MutationStats) -> Result<Vec<Row>, GqlError> {
+        let Operator::Sort { items, child } = op else { unreachable!() };
+        let input = self.exec_operator(graph, child, budget, outer_rows, stats)?;
+        budget.check_or_err()?;
 
-                // Group rows by the key expression values.
-                // We use a Vec-of-(key_row, agg_state) for ordered output and a
-                // HashMap<String, usize> index for O(1) group lookup (Value doesn't impl Hash,
-                // so we serialize the key via Debug for the index key).
-                let mut groups: Vec<(Vec<Value>, Vec<AggState>)> = Vec::new();
-                let mut group_index: HashMap<String, usize> = HashMap::new();
+        // Evaluate all sort keys up front to avoid repeated store lookups.
+        let mut keyed: Vec<(Vec<Value>, Row)> = input
+            .into_iter()
+            .map(|row| {
+                let ctx = self.build_filter_ctx(graph, &row)?;
+                let keys: Result<Vec<Value>, GqlError> = items
+                    .iter()
+                    .map(|(expr, _)| self.eval_with_storage(graph, expr, &row, &ctx))
+                    .collect();
+                Ok((keys?, row))
+            })
+            .collect::<Result<Vec<_>, GqlError>>()?;
 
-                for row in &input {
-                    let ctx = self.build_filter_ctx(graph, row)?;
-                    let group_key: Vec<Value> = keys
-                        .iter()
-                        .map(|expr| self.eval_with_storage(graph, expr, row, &ctx))
-                        .collect::<Result<Vec<_>, GqlError>>()?;
+        keyed.sort_by(|(ka, _), (kb, _)| {
+            for i in 0..items.len() {
+                let va = &ka[i];
+                let vb = &kb[i];
+                let asc = items[i].1;
+                let ord = cmp_values(va, vb);
+                if ord != std::cmp::Ordering::Equal {
+                    return if asc { ord } else { ord.reverse() };
+                }
+            }
+            std::cmp::Ordering::Equal
+        });
 
-                    // Find existing group or create new — O(1) via the index.
-                    let key_str = format!("{:?}", group_key);
-                    let idx = if let Some(&i) = group_index.get(&key_str) {
-                        i
+        Ok(keyed.into_iter().map(|(_, row)| row).collect())
+    }
+
+    fn exec_limit(&self, graph: &str, op: &Operator, budget: &mut ExecutionBudget, outer_rows: &[Row], stats: &mut MutationStats) -> Result<Vec<Row>, GqlError> {
+        let Operator::Limit { count, child } = op else { unreachable!() };
+        let input = self.exec_operator(graph, child, budget, outer_rows, stats)?;
+        budget.check_or_err()?;
+        let n = eval_count_expr(count, &self.parameters)?;
+        Ok(input.into_iter().take(n).collect())
+    }
+
+    fn exec_skip(&self, graph: &str, op: &Operator, budget: &mut ExecutionBudget, outer_rows: &[Row], stats: &mut MutationStats) -> Result<Vec<Row>, GqlError> {
+        let Operator::Skip { count, child } = op else { unreachable!() };
+        let input = self.exec_operator(graph, child, budget, outer_rows, stats)?;
+        budget.check_or_err()?;
+        let n = eval_count_expr(count, &self.parameters)?;
+        Ok(input.into_iter().skip(n).collect())
+    }
+
+    fn exec_aggregate(&self, graph: &str, op: &Operator, budget: &mut ExecutionBudget, outer_rows: &[Row], stats: &mut MutationStats) -> Result<Vec<Row>, GqlError> {
+        let Operator::Aggregate {
+            keys,
+            aggregations,
+            child,
+        } = op else { unreachable!() };
+        let input = self.exec_operator(graph, child, budget, outer_rows, stats)?;
+        budget.check_or_err()?;
+
+        // Group rows by the key expression values.
+        // We use a Vec-of-(key_row, agg_state) for ordered output and a
+        // HashMap<String, usize> index for O(1) group lookup (Value doesn't impl Hash,
+        // so we serialize the key via Debug for the index key).
+        let mut groups: Vec<(Vec<Value>, Vec<AggState>)> = Vec::new();
+        let mut group_index: HashMap<String, usize> = HashMap::new();
+
+        for row in &input {
+            let ctx = self.build_filter_ctx(graph, row)?;
+            let group_key: Vec<Value> = keys
+                .iter()
+                .map(|expr| self.eval_with_storage(graph, expr, row, &ctx))
+                .collect::<Result<Vec<_>, GqlError>>()?;
+
+            // Find existing group or create new — O(1) via the index.
+            let key_str = format!("{:?}", group_key);
+            let idx = if let Some(&i) = group_index.get(&key_str) {
+                i
+            } else {
+                let i = groups.len();
+                let new_states = aggregations.iter().map(|_| AggState::default()).collect();
+                groups.push((group_key, new_states));
+                group_index.insert(key_str, i);
+                i
+            };
+
+            // Accumulate into each aggregation state.
+            for (agg_idx, (func, arg_expr, second_arg_expr, distinct, _alias)) in
+                aggregations.iter().enumerate()
+            {
+                // count(*) — the `*` argument is a sentinel meaning "count rows".
+                // Use a non-null placeholder so the accumulator counts every row.
+                let arg_val =
+                    if matches!(arg_expr, Expr::Variable(ref id) if id.0 == "*") {
+                        Value::Bool(true)
                     } else {
-                        let i = groups.len();
-                        let new_states = aggregations.iter().map(|_| AggState::default()).collect();
-                        groups.push((group_key, new_states));
-                        group_index.insert(key_str, i);
-                        i
+                        self.eval_with_storage(graph, arg_expr, row, &ctx)?
                     };
+                let second_val = second_arg_expr
+                    .as_ref()
+                    .map(|e| self.eval_with_storage(graph, e, row, &ctx))
+                    .transpose()?;
+                groups[idx].1[agg_idx].accumulate(func, arg_val, second_val, *distinct);
+            }
+        }
 
-                    // Accumulate into each aggregation state.
-                    for (agg_idx, (func, arg_expr, second_arg_expr, distinct, _alias)) in
-                        aggregations.iter().enumerate()
-                    {
-                        // count(*) — the `*` argument is a sentinel meaning "count rows".
-                        // Use a non-null placeholder so the accumulator counts every row.
-                        let arg_val = if matches!(arg_expr, Expr::Variable(ref id) if id.0 == "*") {
-                            Value::Bool(true)
-                        } else {
-                            self.eval_with_storage(graph, arg_expr, row, &ctx)?
-                        };
-                        let second_val = second_arg_expr
-                            .as_ref()
-                            .map(|e| self.eval_with_storage(graph, e, row, &ctx))
-                            .transpose()?;
-                        groups[idx].1[agg_idx].accumulate(func, arg_val, second_val, *distinct);
-                    }
-                }
+        // Handle empty input with no-key aggregation (e.g. COUNT(*) on empty).
+        if groups.is_empty() && keys.is_empty() {
+            let new_states: Vec<AggState> =
+                aggregations.iter().map(|_| AggState::default()).collect();
+            groups.push((vec![], new_states));
+        }
 
-                // Handle empty input with no-key aggregation (e.g. COUNT(*) on empty).
-                if groups.is_empty() && keys.is_empty() {
-                    let new_states: Vec<AggState> =
-                        aggregations.iter().map(|_| AggState::default()).collect();
-                    groups.push((vec![], new_states));
-                }
+        // Build output rows.
+        let mut out = Vec::with_capacity(groups.len());
+        for (key_vals, agg_states) in groups {
+            budget.check_or_err()?;
+            let mut row = Row::new();
 
-                // Build output rows.
-                let mut out = Vec::with_capacity(groups.len());
-                for (key_vals, agg_states) in groups {
-                    budget.check_or_err()?;
-                    let mut row = Row::new();
-
-                    // Add group key columns — derive names from key expressions.
-                    for (expr, val) in keys.iter().zip(key_vals) {
-                        row.insert(expr_to_column_name(expr), val);
-                    }
-
-                    // Add aggregation result columns.
-                    for ((func, _, _, _, alias), state) in aggregations.iter().zip(&agg_states) {
-                        row.insert(alias.0.clone(), state.finalize(func)?);
-                    }
-                    // Preserve query parameters so downstream operators (e.g. Delete,
-                    // Filter) can still access $param bindings after aggregation.
-                    inject_parameters(&mut row, &self.parameters);
-                    budget.record_row();
-                    out.push(row);
-                }
-                Ok(out)
+            // Add group key columns — derive names from key expressions.
+            for (expr, val) in keys.iter().zip(key_vals) {
+                row.insert(expr_to_column_name(expr), val);
             }
 
-            // ── Create ────────────────────────────────────────────────────────
-            Operator::Create { patterns, child } => {
-                // Execute child first (for MATCH ... CREATE patterns).
-                let input = if let Some(ch) = child {
-                    self.exec_operator(graph, ch, budget, outer_rows, stats)?
-                } else {
-                    // No child means standalone CREATE: one row with parameters.
-                    let mut row = Row::new();
-                    inject_parameters(&mut row, &self.parameters);
-                    vec![row]
-                };
-
-                let mut out = Vec::new();
-                for mut row in input {
-                    budget.check_or_err()?;
-                    for pattern in patterns {
-                        // Create nodes first, mapping alias -> NodeId.
-                        let mut alias_to_id: HashMap<String, NodeId> = HashMap::new();
-
-                        for (alias, labels, prop_exprs) in &pattern.nodes {
-                            // If the alias is a user-defined variable (not anonymous)
-                            // and is already bound to a Node in the row, reuse it
-                            // instead of creating a new node.
-                            if let Some(a) = alias {
-                                if !a.0.starts_with("__anon") {
-                                    if let Some(Value::Node(existing_id)) = row.get(a.0.as_str()) {
-                                        alias_to_id.insert(a.0.clone(), *existing_id);
-                                        continue;
-                                    }
-                                }
-                            }
-                            let ctx = self.build_filter_ctx(graph, &row)?;
-                            let props_raw = eval_prop_map(graph, self, prop_exprs, &row, &ctx)?;
-                            // In Cypher, setting a property to null on CREATE
-                            // does not store it — filter out null values.
-                            let props: HashMap<String, Value> = props_raw
-                                .into_iter()
-                                .filter(|(_, v)| !v.is_null())
-                                .collect();
-                            let label_strings: Vec<String> =
-                                labels.iter().map(|l| l.as_str().to_string()).collect();
-                            let non_null_prop_keys: Vec<String> = props.keys().cloned().collect();
-                            let node_id =
-                                self.store
-                                    .create_node(graph, label_strings.clone(), props)?;
-                            stats.nodes_created += 1;
-                            stats.nodes_created_ids.insert(node_id.0);
-                            stats.labels_seen.extend(label_strings);
-                            for k in non_null_prop_keys {
-                                stats.props_seen.insert((false, node_id.0, k));
-                            }
-                            if let Some(a) = alias {
-                                alias_to_id.insert(a.0.clone(), node_id);
-                                row.insert(a.0.clone(), Value::Node(node_id));
-                            }
-                        }
-
-                        // Create edges using the alias map for src/dst lookup.
-                        for (alias, src_alias, dst_alias, rel_type, direction, prop_exprs) in
-                            &pattern.edges
-                        {
-                            let ctx = self.build_filter_ctx(graph, &row)?;
-                            // Filter out null-valued properties (same as for nodes).
-                            let props: HashMap<String, Value> =
-                                eval_prop_map(graph, self, prop_exprs, &row, &ctx)?
-                                    .into_iter()
-                                    .filter(|(_, v)| !v.is_null())
-                                    .collect();
-
-                            let src_id = alias_to_id
-                                .get(&src_alias.0)
-                                .copied()
-                                .or_else(|| {
-                                    row.get(&src_alias.0).and_then(|v| {
-                                        if let Value::Node(id) = v {
-                                            Some(*id)
-                                        } else {
-                                            None
-                                        }
-                                    })
-                                })
-                                .ok_or_else(|| undefined_var(&src_alias.0))?;
-
-                            let dst_id = alias_to_id
-                                .get(&dst_alias.0)
-                                .copied()
-                                .or_else(|| {
-                                    row.get(&dst_alias.0).and_then(|v| {
-                                        if let Value::Node(id) = v {
-                                            Some(*id)
-                                        } else {
-                                            None
-                                        }
-                                    })
-                                })
-                                .ok_or_else(|| undefined_var(&dst_alias.0))?;
-
-                            // Determine actual src/dst based on direction.
-                            // In the plan, src_alias is always the "left" node in the
-                            // pattern text. For an Incoming arc (a)<-[:R]-(b), we need
-                            // to flip so the edge is stored as b -> a.
-                            let (actual_src, actual_dst) = match direction {
-                                Direction::Incoming => (dst_id, src_id),
-                                _ => (src_id, dst_id),
-                            };
-
-                            let non_null_edge_keys: Vec<String> = props
-                                .iter()
-                                .filter(|(_, v)| !v.is_null())
-                                .map(|(k, _)| k.clone())
-                                .collect();
-                            let edge_id = self.store.create_edge(
-                                graph,
-                                actual_src,
-                                actual_dst,
-                                rel_type.as_str().to_string(),
-                                props,
-                            )?;
-                            stats.edges_created += 1;
-                            stats.edges_created_ids.insert(edge_id.0);
-                            for k in non_null_edge_keys {
-                                stats.props_seen.insert((true, edge_id.0, k));
-                            }
-                            if let Some(a) = alias {
-                                row.insert(a.0.clone(), Value::Edge(edge_id));
-                            }
-                        }
-                    }
-                    budget.record_row();
-                    out.push(row);
-                }
-                Ok(out)
+            // Add aggregation result columns.
+            for ((func, _, _, _, alias), state) in aggregations.iter().zip(&agg_states) {
+                row.insert(alias.0.clone(), state.finalize(func)?);
             }
+            // Preserve query parameters so downstream operators (e.g. Delete,
+            // Filter) can still access $param bindings after aggregation.
+            inject_parameters(&mut row, &self.parameters);
+            budget.record_row();
+            out.push(row);
+        }
+        Ok(out)
+    }
 
-            // ── AssemblePath ──────────────────────────────────────────────────
-            Operator::AssemblePath {
-                path_alias,
-                node_aliases,
-                edge_aliases,
-                child,
-            } => {
-                use crate::storage::{EdgeId, NodeId};
-                let input = self.exec_operator(graph, child, budget, outer_rows, stats)?;
-                let mut out = Vec::with_capacity(input.len());
-                for mut row in input {
-                    budget.check_or_err()?;
+    fn exec_create(&self, graph: &str, op: &Operator, budget: &mut ExecutionBudget, outer_rows: &[Row], stats: &mut MutationStats) -> Result<Vec<Row>, GqlError> {
+        let Operator::Create { patterns, child } = op else { unreachable!() };
+        // Execute child first (for MATCH ... CREATE patterns).
+        let input = if let Some(ch) = child {
+            self.exec_operator(graph, ch, budget, outer_rows, stats)?
+        } else {
+            // No child means standalone CREATE: one row with parameters.
+            let mut row = Row::new();
+            inject_parameters(&mut row, &self.parameters);
+            vec![row]
+        };
 
-                    // Assemble nodes and edges for the named path.
-                    // edge_aliases and node_aliases are ordered along the path:
-                    //   node_aliases[0] is the start node,
-                    //   node_aliases[i+1] is the destination of edge_aliases[i].
-                    // VarLenExpand stores a Value::Path with all intermediate nodes.
-                    let mut nodes: Vec<NodeId> = Vec::new();
-                    let mut edges: Vec<EdgeId> = Vec::new();
+        let mut out = Vec::new();
+        for mut row in input {
+            budget.check_or_err()?;
+            for pattern in patterns {
+                // Create nodes first, mapping alias -> NodeId.
+                let mut alias_to_id: HashMap<String, NodeId> = HashMap::new();
 
-                    let mut fixed_edges_before_varlen: usize = 0;
-                    let mut varlen_path_found = false;
-                    let mut varlen_edge_aliases: Vec<String> = Vec::new();
-                    for ea in edge_aliases {
-                        match row.get(&ea.0) {
-                            Some(Value::Edge(eid)) => {
-                                edges.push(*eid);
-                                if !varlen_path_found {
-                                    fixed_edges_before_varlen += 1;
-                                }
-                            }
-                            Some(Value::Path {
-                                nodes: pnodes,
-                                edges: pedges,
-                            }) => {
-                                // VarLenExpand path: it already has start+intermediate+end nodes.
-                                if !varlen_path_found {
-                                    // First varlen path. Prepend the fixed-edge nodes that
-                                    // came before this varlen (node_aliases[0..k] where k is
-                                    // the number of fixed hops before varlen). These k+1
-                                    // nodes are node_aliases[0..=fixed_edges_before_varlen-1].
-                                    // The varlen path's first node (pnodes[0]) equals
-                                    // node_aliases[fixed_edges_before_varlen].
-                                    for na in node_aliases.iter().take(fixed_edges_before_varlen) {
-                                        if let Some(Value::Node(nid)) = row.get(&na.0) {
-                                            nodes.push(*nid);
-                                        }
-                                    }
-                                    nodes.extend_from_slice(pnodes);
-                                    varlen_path_found = true;
-                                } else {
-                                    // Additional varlen paths: append intermediate+end nodes
-                                    nodes.extend_from_slice(&pnodes[1..]);
-                                }
-                                edges.extend_from_slice(pedges);
-                                // Track this alias so we can convert it back to a list of edges
-                                varlen_edge_aliases.push(ea.0.clone());
-                            }
-                            Some(Value::List(items)) => {
-                                // List of edges (alternative VarLenExpand storage)
-                                for item in items {
-                                    if let Value::Edge(eid) = item {
-                                        edges.push(*eid);
-                                    }
-                                }
-                            }
-                            _ => {}
-                        }
-                    }
-
-                    // If no varlen path was found, collect nodes from node_aliases normally.
-                    // If varlen path was found, nodes are already assembled above.
-                    if !varlen_path_found {
-                        for na in node_aliases {
-                            if let Some(Value::Node(nid)) = row.get(&na.0) {
-                                nodes.push(*nid);
+                for (alias, labels, prop_exprs) in &pattern.nodes {
+                    // If the alias is a user-defined variable (not anonymous)
+                    // and is already bound to a Node in the row, reuse it
+                    // instead of creating a new node.
+                    if let Some(a) = alias {
+                        if !a.0.starts_with("__anon") {
+                            if let Some(Value::Node(existing_id)) = row.get(a.0.as_str()) {
+                                alias_to_id.insert(a.0.clone(), *existing_id);
+                                continue;
                             }
                         }
                     }
-
-                    let path_val = Value::Path { nodes, edges };
-                    row.insert(path_alias.0.clone(), path_val);
-
-                    // Convert VarLenExpand path aliases back to list-of-edges so that
-                    // user-defined relationship variables (e.g. `r` in `[r*]`) hold the
-                    // correct Value::List([Edge, ...]) rather than a Value::Path.
-                    for ea_name in &varlen_edge_aliases {
-                        if let Some(Value::Path { edges: pedges, .. }) = row.get(ea_name).cloned() {
-                            let edge_list: Vec<Value> =
-                                pedges.iter().map(|e| Value::Edge(*e)).collect();
-                            row.insert(ea_name.clone(), Value::List(edge_list));
-                        }
-                    }
-
-                    out.push(row);
-                }
-                Ok(out)
-            }
-
-            // ── Call ──────────────────────────────────────────────────────────
-            Operator::Call {
-                procedure,
-                args,
-                yield_items,
-                yield_star,
-                standalone,
-                child,
-            } => {
-                let proc_def = self.registry.get(procedure).ok_or_else(|| {
-                    GqlError::Execution(ExecutionError::unsupported(format!(
-                        "ProcedureNotFound: {procedure}"
-                    )))
-                })?;
-
-                // Execute child pipeline (if present, e.g. for MATCH ... CALL).
-                let input_rows = if let Some(ch) = child {
-                    self.exec_operator(graph, ch, budget, outer_rows, stats)?
-                } else {
-                    let mut row = Row::new();
-                    inject_parameters(&mut row, &self.parameters);
-                    vec![row]
-                };
-
-                let mut out = Vec::new();
-                for input_row in &input_rows {
-                    budget.check_or_err()?;
-
-                    // Evaluate call arguments.
-                    let ctx = self.build_filter_ctx(graph, input_row)?;
-                    let mut arg_vals = Vec::with_capacity(args.len());
-                    for arg_expr in args {
-                        let val = self.eval_with_storage(graph, arg_expr, input_row, &ctx)?;
-                        arg_vals.push(val);
-                    }
-
-                    // Execute the procedure.
-                    let proc_rows = proc_def.execute(&arg_vals);
-
-                    if proc_def.output_columns.is_empty() && child.is_none() {
-                        // Standalone void procedure: produce no output rows.
-                    } else if proc_def.output_columns.is_empty() {
-                        // In-query void procedure: pass through input rows unchanged.
-                        budget.record_row();
-                        out.push(input_row.clone());
-                    } else if proc_rows.is_empty() {
-                        // Procedure returned no rows: drop this input row.
-                    } else {
-                        // Produce output rows.
-                        for proc_row in proc_rows {
-                            budget.check_or_err()?;
-                            let mut new_row = input_row.clone();
-                            if !yield_items.is_empty() {
-                                // YIELD specific columns.
-                                for (name, alias) in yield_items {
-                                    let col_name = alias.as_ref().unwrap_or(name).0.clone();
-                                    let val = proc_row.get(&name.0).cloned().unwrap_or(Value::Null);
-                                    new_row.insert(col_name, val);
-                                }
-                            } else if *standalone || *yield_star {
-                                // Standalone CALL or YIELD *: include all output columns.
-                                for (k, v) in &proc_row {
-                                    new_row.insert(k.clone(), v.clone());
-                                }
-                            }
-                            budget.record_row();
-                            out.push(new_row);
-                        }
-                    }
-                }
-                Ok(out)
-            }
-
-            // ── ProduceResults ────────────────────────────────────────────────
-            Operator::ProduceResults { columns, child } => {
-                let input = self.exec_operator(graph, child, budget, outer_rows, stats)?;
-
-                // If columns is empty (write-only query with no RETURN),
-                // return no rows — the mutation was already applied.
-                if columns.is_empty() {
-                    return Ok(vec![]);
-                }
-
-                let mut out = Vec::with_capacity(input.len());
-
-                // Check if any column is the '*' wildcard that needs
-                // runtime expansion (fallback for planner edge-cases).
-                let has_star = columns.iter().any(|(name, _)| name == "*");
-
-                for row in &input {
-                    budget.check_or_err()?;
-                    let ctx = self.build_filter_ctx(graph, row)?;
-                    let mut new_row = Row::new();
-
-                    if has_star {
-                        // Expand '*' to all variables in the row.
-                        for (col_name, expr) in columns {
-                            if col_name == "*" {
-                                // Insert all non-internal variables from the
-                                // input row, resolving through storage.
-                                for (var_name, val) in row {
-                                    if !var_name.starts_with("__") {
-                                        new_row.insert(var_name.clone(), val.clone());
-                                    }
-                                }
-                            } else {
-                                let val = self.eval_with_storage(graph, expr, row, &ctx)?;
-                                new_row.insert(col_name.clone(), val);
-                            }
-                        }
-                    } else {
-                        for (col_name, expr) in columns {
-                            let val = self.eval_with_storage(graph, expr, row, &ctx)?;
-                            new_row.insert(col_name.clone(), val);
-                        }
-                    }
-                    budget.record_row();
-                    out.push(new_row);
-                }
-                Ok(out)
-            }
-
-            // ── VarLenExpand ──────────────────────────────────────────────────
-            Operator::VarLenExpand {
-                direction,
-                rel_types,
-                min,
-                max,
-                src_alias,
-                path_alias,
-                path_mode,
-                dst_alias,
-                child,
-                rel_props,
-            } => {
-                let input = self.exec_operator(graph, child, budget, outer_rows, stats)?;
-                let type_strs: Vec<&str> = rel_types.iter().map(|r| r.as_str()).collect();
-                let mut out = Vec::new();
-
-                for row in input {
-                    budget.check_or_err()?;
-                    let src_val = row
-                        .get(src_alias.0.as_str())
-                        .ok_or_else(|| undefined_var(&src_alias.0))?;
-                    let src_id = extract_node_id(src_val, &src_alias.0)?;
-
-                    // BFS tracking full paths: queue entries are
-                    // (node_id, path_nodes, path_edges, path_edge_set) where path_edge_set
-                    // mirrors path_edges as a HashSet for O(1) duplicate-edge checks.
-                    let mut queue: VecDeque<VarLenBfsEntry> = VecDeque::new();
-                    // Collect edges already used in earlier steps of this named path.
-                    // This enforces cross-operator relationship isomorphism:
-                    // - Direct Value::Edge in the row (from regular Expand steps, incl. pre-bound r)
-                    //   should not be re-traversed.
-                    // - Value::Path and Value::List([Edge]) from __path_rel_* (VarLen internal storage)
-                    //   also shouldn't be re-traversed.
-                    // We intentionally exclude user-defined list variables (like `rs` from WITH)
-                    // that contain edges intended to be FOLLOWED by this VarLen, not avoided.
-                    // Heuristic: collect Value::Edge (direct edge vars) and __path_rel_* (VarLen storage).
-                    let prior_path_edges: std::collections::HashSet<EdgeId> = row
-                        .iter()
-                        .flat_map(|(k, v)| match v {
-                            Value::Edge(e) => vec![*e],
-                            Value::List(items) if k.starts_with("__path_rel_") => items
-                                .iter()
-                                .filter_map(|i| {
-                                    if let Value::Edge(e) = i {
-                                        Some(*e)
-                                    } else {
-                                        None
-                                    }
-                                })
-                                .collect(),
-                            Value::Path { edges, .. } if k.starts_with("__path_rel_") => {
-                                edges.clone()
-                            }
-                            _ => vec![],
-                        })
-                        .collect();
-                    queue.push_back((src_id, vec![src_id], vec![], HashSet::new()));
-
-                    while let Some((current, path_nodes, path_edges, path_edge_set)) =
-                        queue.pop_front()
-                    {
-                        budget.check_or_err()?;
-                        let depth = path_edges.len() as u32;
-
-                        // Yield this path if depth is within [min, max]
-                        if depth >= *min && depth <= *max {
-                            let mut new_row = row.clone();
-                            let end_node = *path_nodes.last().ok_or_else(|| {
-                                GqlError::Execution(ExecutionError::TypeMismatch {
-                                    expected: "non-empty path".to_string(),
-                                    actual: "empty path_nodes".to_string(),
-                                })
-                            })?;
-                            new_row.insert(dst_alias.0.clone(), Value::Node(end_node));
-                            if let Some(pa) = path_alias {
-                                if *path_mode {
-                                    // Named path mode: store full path for AssemblePath
-                                    new_row.insert(
-                                        pa.0.clone(),
-                                        Value::Path {
-                                            nodes: path_nodes.clone(),
-                                            edges: path_edges.clone(),
-                                        },
-                                    );
-                                } else {
-                                    // Relationship variable mode: store list of edges
-                                    new_row.insert(
-                                        pa.0.clone(),
-                                        Value::List(
-                                            path_edges.iter().map(|e| Value::Edge(*e)).collect(),
-                                        ),
-                                    );
-                                }
-                            }
-                            budget.record_row();
-                            out.push(new_row);
-                        }
-
-                        // Expand further if depth < max
-                        if depth < *max {
-                            let adj_entries =
-                                get_adj_entries(self.store, graph, current, direction, &type_strs)?;
-                            for adj in adj_entries {
-                                budget.check_or_err()?;
-                                // Per openCypher spec: edge isomorphism is enforced (same
-                                // relationship cannot appear twice in one path), but node
-                                // repetition is allowed. This prevents infinite loops.
-                                // Also check edges from prior steps in this named path.
-                                if path_edge_set.contains(&adj.edge_id)
-                                    || prior_path_edges.contains(&adj.edge_id)
-                                {
-                                    continue;
-                                }
-                                // Check inline property constraints on the traversed edge.
-                                if let Some(pred) = rel_props {
-                                    let mut edge_row = row.clone();
-                                    edge_row.insert(
-                                        "__varlen_edge__".to_string(),
-                                        Value::Edge(adj.edge_id),
-                                    );
-                                    let ctx = self.build_filter_ctx(graph, &edge_row)?;
-                                    match self.eval_with_storage(graph, pred, &edge_row, &ctx) {
-                                        Ok(Value::Bool(true)) => {}
-                                        _ => continue, // edge doesn't satisfy constraints
-                                    }
-                                }
-                                let mut new_path_nodes = path_nodes.clone();
-                                new_path_nodes.push(adj.neighbor_id);
-                                let mut new_path_edges = path_edges.clone();
-                                new_path_edges.push(adj.edge_id);
-                                let mut new_path_edge_set = path_edge_set.clone();
-                                new_path_edge_set.insert(adj.edge_id);
-                                queue.push_back((
-                                    adj.neighbor_id,
-                                    new_path_nodes,
-                                    new_path_edges,
-                                    new_path_edge_set,
-                                ));
-                            }
-                        }
-                    }
-                }
-                Ok(out)
-            }
-
-            // ── Set ──────────────────────────────────────────────────────────────
-            Operator::Set { items, child } => {
-                let input = self.exec_operator(graph, child, budget, outer_rows, stats)?;
-                let mut out = Vec::with_capacity(input.len());
-
-                for row in input {
-                    budget.check_or_err()?;
-                    let current_row = row;
-                    for item in items {
-                        self.apply_set_item(graph, &current_row, item, stats)?;
-                    }
-                    budget.record_row();
-                    out.push(current_row);
-                }
-                Ok(out)
-            }
-
-            // ── Remove ───────────────────────────────────────────────────────────
-            Operator::Remove { items, child } => {
-                let input = self.exec_operator(graph, child, budget, outer_rows, stats)?;
-                let mut out = Vec::with_capacity(input.len());
-
-                for row in input {
-                    budget.check_or_err()?;
-                    for item in items {
-                        match item {
-                            RemoveItem::Property { alias, key } => {
-                                let val = row
-                                    .get(alias.0.as_str())
-                                    .ok_or_else(|| undefined_var(&alias.0))?;
-                                match val {
-                                    Value::Null => {
-                                        // REMOVE on null (from OPTIONAL MATCH) is a no-op
-                                    }
-                                    Value::Node(node_id) => {
-                                        self.store.remove_node_property(graph, *node_id, key)?;
-                                        stats.properties_set += 1;
-                                    }
-                                    Value::Edge(edge_id) => {
-                                        self.store.remove_edge_property(graph, *edge_id, key)?;
-                                        stats.properties_set += 1;
-                                    }
-                                    other => {
-                                        return Err(GqlError::Execution(
-                                            ExecutionError::TypeMismatch {
-                                                expected: "Node or Relationship".to_string(),
-                                                actual: other.type_name().to_string(),
-                                            },
-                                        ));
-                                    }
-                                }
-                                // REMOVE property does not count as properties_set.
-                            }
-                            RemoveItem::Labels { alias, labels } => {
-                                let val = row
-                                    .get(alias.0.as_str())
-                                    .ok_or_else(|| undefined_var(&alias.0))?;
-                                // REMOVE labels on null (from OPTIONAL MATCH) is a no-op
-                                if val.is_null() {
-                                    continue;
-                                }
-                                let node_id = extract_node_id(val, &alias.0)?;
-                                let label_strings: Vec<String> =
-                                    labels.iter().map(|l| l.as_str().to_string()).collect();
-                                self.store
-                                    .remove_node_labels(graph, node_id, &label_strings)?;
-                                // REMOVE labels does not count as labels_added.
-                            }
-                        }
-                    }
-                    budget.record_row();
-                    out.push(row);
-                }
-                Ok(out)
-            }
-
-            // ── Delete ───────────────────────────────────────────────────────────
-            Operator::Delete {
-                exprs,
-                detach,
-                child,
-            } => {
-                let input = self.exec_operator(graph, child, budget, outer_rows, stats)?;
-                let mut out = Vec::new();
-
-                for row in input {
-                    budget.check_or_err()?;
                     let ctx = self.build_filter_ctx(graph, &row)?;
-
-                    // Two-pass delete: collect all edges and nodes first so that
-                    // paths sharing nodes don't fail with "node has relationships"
-                    // when one path's edges are deleted but another path's edges
-                    // are not yet deleted.
-                    let mut edges_to_delete: Vec<EdgeId> = Vec::new();
-                    let mut nodes_to_delete: Vec<NodeId> = Vec::new();
-
-                    for expr in exprs {
-                        let val = self.eval_with_storage(graph, expr, &row, &ctx)?;
-                        match val {
-                            Value::Node(node_id) => {
-                                nodes_to_delete.push(node_id);
-                            }
-                            Value::Edge(edge_id) => {
-                                // Cache rel_type before deleting so type(r) still works.
-                                if let Ok(Some(data)) = self.store.get_edge(graph, edge_id) {
-                                    self.deleted_edge_types
-                                        .borrow_mut()
-                                        .insert(edge_id.0, data.rel_type);
-                                }
-                                edges_to_delete.push(edge_id);
-                            }
-                            Value::Null => {
-                                // Deleting NULL is a no-op in Cypher
-                            }
-                            Value::Path { nodes, edges } => {
-                                edges_to_delete.extend(edges.iter().copied());
-                                nodes_to_delete.extend(nodes.iter().copied());
-                            }
-                            other => {
-                                return Err(GqlError::Execution(ExecutionError::TypeMismatch {
-                                    expected: "Node or Relationship for DELETE".to_string(),
-                                    actual: other.type_name().to_string(),
-                                }));
-                            }
-                        }
+                    let props_raw = eval_prop_map(graph, self, prop_exprs, &row, &ctx)?;
+                    // In Cypher, setting a property to null on CREATE
+                    // does not store it — filter out null values.
+                    let props: HashMap<String, Value> = props_raw
+                        .into_iter()
+                        .filter(|(_, v)| !v.is_null())
+                        .collect();
+                    let label_strings: Vec<String> =
+                        labels.iter().map(|l| l.as_str().to_string()).collect();
+                    let non_null_prop_keys: Vec<String> =
+                        props.keys().cloned().collect();
+                    let node_id =
+                        self.store.create_node(graph, label_strings.clone(), props)?;
+                    stats.nodes_created += 1;
+                    stats.nodes_created_ids.insert(node_id.0);
+                    stats.labels_seen.extend(label_strings);
+                    for k in non_null_prop_keys {
+                        stats.props_seen.insert((false, node_id.0, k));
                     }
-
-                    // Delete all collected edges first.
-                    for edge_id in edges_to_delete {
-                        match self.store.delete_edge(graph, edge_id) {
-                            Ok(()) => {
-                                stats.edges_deleted += 1;
-                            }
-                            Err(StorageError::EdgeNotFound { .. }) => {} // already deleted
-                            Err(e) => return Err(GqlError::Storage(e)),
-                        }
+                    if let Some(a) = alias {
+                        alias_to_id.insert(a.0.clone(), node_id);
+                        row.insert(a.0.clone(), Value::Node(node_id));
                     }
-
-                    // Then delete all collected nodes.
-                    for node_id in nodes_to_delete {
-                        if *detach {
-                            // Count and delete remaining edges before deleting node.
-                            let out_ids =
-                                self.store.out_edge_ids(graph, node_id).unwrap_or_default();
-                            let in_ids = self.store.in_edge_ids(graph, node_id).unwrap_or_default();
-                            let mut edge_set: std::collections::HashSet<u64> =
-                                out_ids.iter().map(|e| e.0).collect();
-                            edge_set.extend(in_ids.iter().map(|e| e.0));
-                            // Net out edges that were created in this same query.
-                            let mut net_deleted_edges: u64 = 0;
-                            for eid in &edge_set {
-                                if stats.edges_created_ids.remove(eid) {
-                                    stats.edges_created = stats.edges_created.saturating_sub(1);
-                                } else {
-                                    net_deleted_edges += 1;
-                                }
-                            }
-                            match self.store.delete_node(graph, node_id, true) {
-                                Ok(()) => {
-                                    // Net out: if node was created in this query, cancel the create.
-                                    if stats.nodes_created_ids.remove(&node_id.0) {
-                                        stats.nodes_created = stats.nodes_created.saturating_sub(1);
-                                    } else {
-                                        stats.nodes_deleted += 1;
-                                    }
-                                    stats.edges_deleted += net_deleted_edges;
-                                }
-                                Err(StorageError::NodeNotFound { .. }) => {}
-                                Err(e) => return Err(GqlError::Storage(e)),
-                            }
-                        } else {
-                            match self.store.delete_node(graph, node_id, false) {
-                                Ok(()) => {
-                                    // Net out: if node was created in this query, cancel the create.
-                                    if stats.nodes_created_ids.remove(&node_id.0) {
-                                        stats.nodes_created = stats.nodes_created.saturating_sub(1);
-                                    } else {
-                                        stats.nodes_deleted += 1;
-                                    }
-                                }
-                                Err(StorageError::NodeNotFound { .. }) => {} // already deleted
-                                Err(e) => return Err(GqlError::Storage(e)),
-                            }
-                        }
-                    }
-                    budget.record_row();
-                    out.push(row);
                 }
-                Ok(out)
-            }
 
-            // ── Merge ────────────────────────────────────────────────────────────
-            Operator::Merge {
-                node_alias,
-                labels,
-                properties,
-                on_create,
-                on_match,
-                child,
-            } => {
-                let input = if let Some(ch) = child {
-                    self.exec_operator(graph, ch, budget, outer_rows, stats)?
-                } else {
-                    vec![Row::new()]
-                };
-
-                let mut out = Vec::new();
-                for mut row in input {
-                    budget.check_or_err()?;
-
-                    // Evaluate inline property values from the MERGE pattern.
-                    let mut prop_vals: Vec<(String, Value)> = Vec::new();
-                    if !properties.is_empty() {
-                        let ctx = self.build_filter_ctx(graph, &row)?;
-                        for (k, expr) in properties {
-                            let val = self.eval_with_storage(graph, expr, &row, &ctx)?;
-                            // MERGE with null property is a SemanticError (MergeReadOwnWrites)
-                            if val.is_null() {
-                                return Err(GqlError::Execution(ExecutionError::TypeMismatch {
-                                    expected: "non-null property value in MERGE".to_string(),
-                                    actual: "Null".to_string(),
-                                }));
-                            }
-                            prop_vals.push((k.clone(), val));
-                        }
-                    }
-
-                    // Try to find existing nodes matching ALL labels.
-                    // When labels is empty, scan all nodes (MERGE (n) with no labels).
-                    let candidates: HashSet<u64> = if labels.is_empty() {
-                        self.store
-                            .all_node_ids(graph)?
+                // Create edges using the alias map for src/dst lookup.
+                for (alias, src_alias, dst_alias, rel_type, direction, prop_exprs) in
+                    &pattern.edges
+                {
+                    let ctx = self.build_filter_ctx(graph, &row)?;
+                    // Filter out null-valued properties (same as for nodes).
+                    let props: HashMap<String, Value> =
+                        eval_prop_map(graph, self, prop_exprs, &row, &ctx)?
                             .into_iter()
-                            .map(|n| n.0)
-                            .collect()
-                    } else {
-                        let mut cands: Option<HashSet<u64>> = None;
-                        for label in labels {
-                            let ids = self.store.find_nodes_by_label(graph, label.as_str())?;
-                            let id_set: HashSet<u64> = ids.iter().map(|n| n.0).collect();
-                            cands = Some(match cands {
-                                None => id_set,
-                                Some(existing) => existing.intersection(&id_set).copied().collect(),
-                            });
-                        }
-                        cands.unwrap_or_default()
-                    };
-
-                    // Collect ALL matching nodes (MERGE returns one row per match).
-                    let mut matched_ids: Vec<NodeId> = Vec::new();
-                    for cand_id in &candidates {
-                        let node_id = NodeId(*cand_id);
-                        if prop_vals.is_empty() {
-                            matched_ids.push(node_id);
-                        } else if let Ok(Some(node_data)) = self.store.get_node(graph, node_id) {
-                            let all_match = prop_vals.iter().all(|(key, expected)| {
-                                node_data
-                                    .properties
-                                    .get(key.as_str())
-                                    .map(|v| v == expected)
-                                    .unwrap_or(false)
-                            });
-                            if all_match {
-                                matched_ids.push(node_id);
-                            }
-                        }
-                    }
-
-                    if !matched_ids.is_empty() {
-                        // ON MATCH: one output row per matched node
-                        for node_id in matched_ids {
-                            budget.check_or_err()?;
-                            let mut new_row = row.clone();
-                            if let Some(alias) = node_alias {
-                                new_row.insert(alias.0.clone(), Value::Node(node_id));
-                            }
-                            for item in on_match {
-                                self.apply_set_item(graph, &new_row, item, stats)?;
-                            }
-                            budget.record_row();
-                            out.push(new_row);
-                        }
-                    } else {
-                        // Not found: CREATE the node with inline properties
-                        let label_strings: Vec<String> =
-                            labels.iter().map(|l| l.as_str().to_string()).collect();
-                        let create_props: HashMap<String, Value> =
-                            prop_vals.iter().cloned().collect();
-                        let non_null_prop_keys: Vec<String> = create_props
-                            .iter()
                             .filter(|(_, v)| !v.is_null())
-                            .map(|(k, _)| k.clone())
                             .collect();
-                        let node_id =
-                            self.store
-                                .create_node(graph, label_strings.clone(), create_props)?;
-                        stats.nodes_created += 1;
-                        stats.nodes_created_ids.insert(node_id.0);
-                        stats.labels_seen.extend(label_strings);
-                        for k in non_null_prop_keys {
-                            stats.props_seen.insert((false, node_id.0, k));
-                        }
-                        if let Some(alias) = node_alias {
-                            row.insert(alias.0.clone(), Value::Node(node_id));
-                        }
-                        for item in on_create {
-                            self.apply_set_item(graph, &row, item, stats)?;
-                        }
-                        budget.record_row();
-                        out.push(row);
-                    }
-                }
-                Ok(out)
-            }
 
-            // ── MergeRelationship ────────────────────────────────────────────────
-            Operator::MergeRelationship {
-                src_alias,
-                dst_alias,
-                rel_alias,
-                rel_type,
-                direction,
-                properties,
-                on_create,
-                on_match,
-                child,
-            } => {
-                let input = self.exec_operator(graph, child, budget, outer_rows, stats)?;
-                let type_str = rel_type.as_str();
-                let mut out = Vec::new();
-
-                for mut row in input {
-                    budget.check_or_err()?;
-                    let src_val = row
-                        .get(src_alias.0.as_str())
+                    let src_id = alias_to_id
+                        .get(&src_alias.0)
+                        .copied()
+                        .or_else(|| {
+                            row.get(&src_alias.0).and_then(|v| {
+                                if let Value::Node(id) = v {
+                                    Some(*id)
+                                } else {
+                                    None
+                                }
+                            })
+                        })
                         .ok_or_else(|| undefined_var(&src_alias.0))?;
-                    let src_id = extract_node_id(src_val, &src_alias.0)?;
 
-                    let dst_val = row
-                        .get(dst_alias.0.as_str())
+                    let dst_id = alias_to_id
+                        .get(&dst_alias.0)
+                        .copied()
+                        .or_else(|| {
+                            row.get(&dst_alias.0).and_then(|v| {
+                                if let Value::Node(id) = v {
+                                    Some(*id)
+                                } else {
+                                    None
+                                }
+                            })
+                        })
                         .ok_or_else(|| undefined_var(&dst_alias.0))?;
-                    let dst_id = extract_node_id(dst_val, &dst_alias.0)?;
 
                     // Determine actual src/dst based on direction.
-                    let (real_src, real_dst) = match direction {
+                    // In the plan, src_alias is always the "left" node in the
+                    // pattern text. For an Incoming arc (a)<-[:R]-(b), we need
+                    // to flip so the edge is stored as b -> a.
+                    let (actual_src, actual_dst) = match direction {
                         Direction::Incoming => (dst_id, src_id),
                         _ => (src_id, dst_id),
                     };
 
-                    // Find existing edges of this type between src and dst.
-                    // For undirected patterns, check BOTH directions (a→b and b→a).
-                    let existing_edges =
-                        self.store.out_edges_by_type(graph, real_src, &[type_str])?;
-                    let mut matching: Vec<_> = existing_edges
-                        .into_iter()
-                        .filter(|adj| adj.neighbor_id == real_dst)
-                        .collect();
-                    if matches!(direction, Direction::Undirected) && matching.is_empty() {
-                        // Also check the reverse direction (real_dst → real_src).
-                        let reverse_edges =
-                            self.store.out_edges_by_type(graph, real_dst, &[type_str])?;
-                        matching = reverse_edges
-                            .into_iter()
-                            .filter(|adj| adj.neighbor_id == real_src)
-                            .collect();
-                    }
-
-                    // Filter by property constraints if any.
-                    let ctx = self.build_filter_ctx(graph, &row)?;
-                    let prop_vals: Vec<(String, Value)> = properties
+                    let non_null_edge_keys: Vec<String> = props
                         .iter()
-                        .map(|(k, expr)| {
-                            let v = self.eval_with_storage(graph, expr, &row, &ctx)?;
-                            // MERGE with null property is a SemanticError (MergeReadOwnWrites)
-                            if v.is_null() {
-                                return Err(GqlError::Execution(ExecutionError::TypeMismatch {
-                                    expected: "non-null property value in MERGE".to_string(),
-                                    actual: "Null".to_string(),
-                                }));
-                            }
-                            Ok((k.clone(), v))
-                        })
-                        .collect::<Result<Vec<_>, GqlError>>()?;
-
-                    let matched_edges: Vec<EdgeId> = if prop_vals.is_empty() {
-                        matching.iter().map(|adj| adj.edge_id).collect::<Vec<_>>()
-                    } else {
-                        // Find ALL edges matching property constraints.
-                        let mut found_edges = Vec::new();
-                        for adj in &matching {
-                            if let Some(edge_data) = self.store.get_edge(graph, adj.edge_id)? {
-                                let all_match = prop_vals.iter().all(|(k, v)| {
-                                    edge_data
-                                        .properties
-                                        .get(k.as_str())
-                                        .map(|ev| ev == v)
-                                        .unwrap_or(false)
-                                });
-                                if all_match {
-                                    found_edges.push(adj.edge_id);
-                                }
-                            }
-                        }
-                        found_edges
-                    };
-
-                    if !matched_edges.is_empty() {
-                        // MATCHED: one output row per matched edge.
-                        for edge_id in matched_edges {
-                            budget.check_or_err()?;
-                            let mut new_row = row.clone();
-                            if let Some(ra) = rel_alias {
-                                new_row.insert(ra.0.clone(), Value::Edge(edge_id));
-                            }
-                            for item in on_match {
-                                self.apply_set_item(graph, &new_row, item, stats)?;
-                            }
-                            budget.record_row();
-                            out.push(new_row);
-                        }
-                    } else {
-                        // NOT FOUND: create the edge with properties.
-                        let prop_map: HashMap<String, Value> = prop_vals.into_iter().collect();
-                        let non_null_edge_keys: Vec<String> = prop_map
-                            .iter()
-                            .filter(|(_, v)| !v.is_null())
-                            .map(|(k, _)| k.clone())
-                            .collect();
-                        let edge_id = self.store.create_edge(
-                            graph,
-                            real_src,
-                            real_dst,
-                            type_str.to_string(),
-                            prop_map,
-                        )?;
-                        stats.edges_created += 1;
-                        for k in non_null_edge_keys {
-                            stats.props_seen.insert((true, edge_id.0, k));
-                        }
-                        if let Some(ra) = rel_alias {
-                            row.insert(ra.0.clone(), Value::Edge(edge_id));
-                        }
-                        for item in on_create {
-                            self.apply_set_item(graph, &row, item, stats)?;
-                        }
-                        budget.record_row();
-                        out.push(row);
-                    }
-                }
-                Ok(out)
-            }
-
-            // ── Unwind ───────────────────────────────────────────────────────────
-            Operator::Unwind {
-                list_expr,
-                alias,
-                child,
-            } => {
-                let input = self.exec_operator(graph, child, budget, outer_rows, stats)?;
-                let mut out = Vec::new();
-
-                for row in input {
-                    budget.check_or_err()?;
-                    let ctx = self.build_filter_ctx(graph, &row)?;
-                    let list_val = self.eval_with_storage(graph, list_expr, &row, &ctx)?;
-                    match list_val {
-                        Value::List(items) => {
-                            for item in items {
-                                budget.check_or_err()?;
-                                let mut new_row = row.clone();
-                                new_row.insert(alias.0.clone(), item);
-                                budget.record_row();
-                                out.push(new_row);
-                            }
-                        }
-                        Value::Null => {
-                            // UNWIND null produces zero rows (Cypher semantics)
-                        }
-                        other => {
-                            return Err(GqlError::Execution(ExecutionError::TypeMismatch {
-                                expected: "List for UNWIND".to_string(),
-                                actual: other.type_name().to_string(),
-                            }));
-                        }
-                    }
-                }
-                Ok(out)
-            }
-
-            // ── Union ────────────────────────────────────────────────────────────
-            Operator::Union { left, right, all } => {
-                let left_rows = self.exec_operator(graph, left, budget, outer_rows, stats)?;
-                let right_rows = self.exec_operator(graph, right, budget, outer_rows, stats)?;
-
-                let mut out = Vec::with_capacity(left_rows.len() + right_rows.len());
-                if *all {
-                    // UNION ALL: concatenate without deduplication
-                    out.extend(left_rows);
-                    out.extend(right_rows);
-                } else {
-                    // UNION: deduplicate
-                    let mut seen: HashSet<String> = HashSet::new();
-                    for row in left_rows.into_iter().chain(right_rows) {
-                        budget.check_or_err()?;
-                        let key = row_key(&row);
-                        if seen.insert(key) {
-                            out.push(row);
-                        }
-                    }
-                }
-                Ok(out)
-            }
-
-            // ── LeftOuterApply ───────────────────────────────────────────────────
-            Operator::LeftOuterApply {
-                preserved,
-                optional_pattern,
-            } => {
-                let left_rows = self.exec_operator(graph, preserved, budget, outer_rows, stats)?;
-                let mut out = Vec::new();
-
-                for left_row in left_rows {
-                    budget.check_or_err()?;
-                    // Execute right side with the left row as context
-                    let right_rows = self.exec_operator(
-                        graph,
-                        optional_pattern,
-                        budget,
-                        std::slice::from_ref(&left_row),
-                        stats,
-                    )?;
-
-                    // Filter right rows for variable sharing consistency
-                    // (same as Apply, but incompatible rows are dropped).
-                    // Skip anonymous variables (__anon*) to avoid false conflicts
-                    // when both OPTIONAL MATCHes use the same anonymous alias names.
-                    let compatible_rows: Vec<Row> = right_rows
-                        .into_iter()
-                        .filter(|right_row| {
-                            for (k, v) in right_row {
-                                if k.starts_with("__anon") {
-                                    continue;
-                                }
-                                if let Some(left_v) = left_row.get(k) {
-                                    if left_v != v {
-                                        return false;
-                                    }
-                                }
-                            }
-                            true
-                        })
+                        .filter(|(_, v)| !v.is_null())
+                        .map(|(k, _)| k.clone())
                         .collect();
-
-                    if compatible_rows.is_empty() {
-                        // No compatible matches: extend left row with NULLs
-                        let mut result_row = left_row;
-                        let null_cols = discover_operator_aliases(optional_pattern);
-                        for col in null_cols {
-                            result_row.entry(col).or_insert(Value::Null);
-                        }
-                        budget.record_row();
-                        out.push(result_row);
-                    } else {
-                        for right_row in compatible_rows {
-                            budget.check_or_err()?;
-                            let mut combined = left_row.clone();
-                            for (k, v) in right_row {
-                                combined.insert(k, v);
-                            }
-                            budget.record_row();
-                            out.push(combined);
-                        }
+                    let edge_id = self.store.create_edge(
+                        graph,
+                        actual_src,
+                        actual_dst,
+                        rel_type.as_str().to_string(),
+                        props,
+                    )?;
+                    stats.edges_created += 1;
+                    stats.edges_created_ids.insert(edge_id.0);
+                    for k in non_null_edge_keys {
+                        stats.props_seen.insert((true, edge_id.0, k));
+                    }
+                    if let Some(a) = alias {
+                        row.insert(a.0.clone(), Value::Edge(edge_id));
                     }
                 }
-                Ok(out)
             }
+            budget.record_row();
+            out.push(row);
+        }
+        Ok(out)
+    }
 
-            // ── Apply ────────────────────────────────────────────────────────────
-            // Cross-product (inner join) semantics: if the inner side produces
-            // no rows for a given outer row, that outer row is dropped entirely.
-            // This matches Cypher `MATCH (a) MATCH (b)` behaviour.
-            Operator::Apply { outer, inner } => {
-                let outer_rows = self.exec_operator(graph, outer, budget, outer_rows, stats)?;
-                let mut out = Vec::new();
+    fn exec_assemble_path(&self, graph: &str, op: &Operator, budget: &mut ExecutionBudget, outer_rows: &[Row], stats: &mut MutationStats) -> Result<Vec<Row>, GqlError> {
+        let Operator::AssemblePath {
+            path_alias,
+            node_aliases,
+            edge_aliases,
+            child,
+        } = op else { unreachable!() };
+        use crate::storage::{EdgeId, NodeId};
+        let input = self.exec_operator(graph, child, budget, outer_rows, stats)?;
+        let mut out = Vec::with_capacity(input.len());
+        for mut row in input {
+            budget.check_or_err()?;
 
-                for outer_row in &outer_rows {
-                    budget.check_or_err()?;
-                    let inner_rows = self.exec_operator(
-                        graph,
-                        inner,
-                        budget,
-                        std::slice::from_ref(outer_row),
-                        stats,
-                    )?;
+            // Assemble nodes and edges for the named path.
+            // edge_aliases and node_aliases are ordered along the path:
+            //   node_aliases[0] is the start node,
+            //   node_aliases[i+1] is the destination of edge_aliases[i].
+            // VarLenExpand stores a Value::Path with all intermediate nodes.
+            let mut nodes: Vec<NodeId> = Vec::new();
+            let mut edges: Vec<EdgeId> = Vec::new();
 
-                    for inner_row in inner_rows {
-                        budget.check_or_err()?;
-                        // Check shared variable consistency: if a variable appears
-                        // in both outer and inner rows, the values must match.
-                        // This handles patterns like MATCH (a)-->(b), (b)-->(c)
-                        // where 'b' must be the same node in both patterns.
-                        // Skip hidden internal edge aliases (used for edge isomorphism
-                        // tracking) — these are per-pattern and should not be compared
-                        // across patterns in Apply.
-                        let mut compatible = true;
-                        for (k, v) in &inner_row {
-                            // Skip all internal anonymous variables — they are scoping
-                            // artifacts and must not constrain cross-pattern joins.
-                            if k.starts_with("__anon") {
-                                continue;
-                            }
-                            if let Some(outer_v) = outer_row.get(k) {
-                                if outer_v != v {
-                                    compatible = false;
-                                    break;
+            let mut fixed_edges_before_varlen: usize = 0;
+            let mut varlen_path_found = false;
+            let mut varlen_edge_aliases: Vec<String> = Vec::new();
+            for ea in edge_aliases {
+                match row.get(&ea.0) {
+                    Some(Value::Edge(eid)) => {
+                        edges.push(*eid);
+                        if !varlen_path_found {
+                            fixed_edges_before_varlen += 1;
+                        }
+                    }
+                    Some(Value::Path { nodes: pnodes, edges: pedges }) => {
+                        // VarLenExpand path: it already has start+intermediate+end nodes.
+                        if !varlen_path_found {
+                            // First varlen path. Prepend the fixed-edge nodes that
+                            // came before this varlen (node_aliases[0..k] where k is
+                            // the number of fixed hops before varlen). These k+1
+                            // nodes are node_aliases[0..=fixed_edges_before_varlen-1].
+                            // The varlen path's first node (pnodes[0]) equals
+                            // node_aliases[fixed_edges_before_varlen].
+                            for na in node_aliases
+                                .iter()
+                                .take(fixed_edges_before_varlen)
+                            {
+                                if let Some(Value::Node(nid)) = row.get(&na.0) {
+                                    nodes.push(*nid);
                                 }
                             }
+                            nodes.extend_from_slice(pnodes);
+                            varlen_path_found = true;
+                        } else {
+                            // Additional varlen paths: append intermediate+end nodes
+                            nodes.extend_from_slice(&pnodes[1..]);
                         }
-                        if !compatible {
+                        edges.extend_from_slice(pedges);
+                        // Track this alias so we can convert it back to a list of edges
+                        varlen_edge_aliases.push(ea.0.clone());
+                    }
+                    Some(Value::List(items)) => {
+                        // List of edges (alternative VarLenExpand storage)
+                        for item in items {
+                            if let Value::Edge(eid) = item {
+                                edges.push(*eid);
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
+            // If no varlen path was found, collect nodes from node_aliases normally.
+            // If varlen path was found, nodes are already assembled above.
+            if !varlen_path_found {
+                for na in node_aliases {
+                    if let Some(Value::Node(nid)) = row.get(&na.0) {
+                        nodes.push(*nid);
+                    }
+                }
+            }
+
+            let path_val = Value::Path { nodes, edges };
+            row.insert(path_alias.0.clone(), path_val);
+
+            // Convert VarLenExpand path aliases back to list-of-edges so that
+            // user-defined relationship variables (e.g. `r` in `[r*]`) hold the
+            // correct Value::List([Edge, ...]) rather than a Value::Path.
+            for ea_name in &varlen_edge_aliases {
+                if let Some(Value::Path { edges: pedges, .. }) = row.get(ea_name).cloned() {
+                    let edge_list: Vec<Value> = pedges.iter().map(|e| Value::Edge(*e)).collect();
+                    row.insert(ea_name.clone(), Value::List(edge_list));
+                }
+            }
+
+            out.push(row);
+        }
+        Ok(out)
+    }
+
+    fn exec_call(&self, graph: &str, op: &Operator, budget: &mut ExecutionBudget, outer_rows: &[Row], stats: &mut MutationStats) -> Result<Vec<Row>, GqlError> {
+        let Operator::Call {
+            procedure,
+            args,
+            yield_items,
+            yield_star,
+            standalone,
+            child,
+        } = op else { unreachable!() };
+        let proc_def = self.registry.get(procedure).ok_or_else(|| {
+            GqlError::Execution(ExecutionError::unsupported(format!(
+                "ProcedureNotFound: {procedure}"
+            )))
+        })?;
+
+        // Execute child pipeline (if present, e.g. for MATCH ... CALL).
+        let input_rows = if let Some(ch) = child {
+            self.exec_operator(graph, ch, budget, outer_rows, stats)?
+        } else {
+            let mut row = Row::new();
+            inject_parameters(&mut row, &self.parameters);
+            vec![row]
+        };
+
+        let mut out = Vec::new();
+        for input_row in &input_rows {
+            budget.check_or_err()?;
+
+            // Evaluate call arguments.
+            let ctx = self.build_filter_ctx(graph, input_row)?;
+            let mut arg_vals = Vec::with_capacity(args.len());
+            for arg_expr in args {
+                let val = self.eval_with_storage(graph, arg_expr, input_row, &ctx)?;
+                arg_vals.push(val);
+            }
+
+            // Execute the procedure.
+            let proc_rows = proc_def.execute(&arg_vals);
+
+            if proc_def.output_columns.is_empty() && child.is_none() {
+                // Standalone void procedure: produce no output rows.
+            } else if proc_def.output_columns.is_empty() {
+                // In-query void procedure: pass through input rows unchanged.
+                budget.record_row();
+                out.push(input_row.clone());
+            } else if proc_rows.is_empty() {
+                // Procedure returned no rows: drop this input row.
+            } else {
+                // Produce output rows.
+                for proc_row in proc_rows {
+                    budget.check_or_err()?;
+                    let mut new_row = input_row.clone();
+                    if !yield_items.is_empty() {
+                        // YIELD specific columns.
+                        for (name, alias) in yield_items {
+                            let col_name =
+                                alias.as_ref().unwrap_or(name).0.clone();
+                            let val = proc_row
+                                .get(&name.0)
+                                .cloned()
+                                .unwrap_or(Value::Null);
+                            new_row.insert(col_name, val);
+                        }
+                    } else if *standalone || *yield_star {
+                        // Standalone CALL or YIELD *: include all output columns.
+                        for (k, v) in &proc_row {
+                            new_row.insert(k.clone(), v.clone());
+                        }
+                    }
+                    budget.record_row();
+                    out.push(new_row);
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    fn exec_produce_results(&self, graph: &str, op: &Operator, budget: &mut ExecutionBudget, outer_rows: &[Row], stats: &mut MutationStats) -> Result<Vec<Row>, GqlError> {
+        let Operator::ProduceResults { columns, child } = op else { unreachable!() };
+        let input = self.exec_operator(graph, child, budget, outer_rows, stats)?;
+
+        // If columns is empty (write-only query with no RETURN),
+        // return no rows — the mutation was already applied.
+        if columns.is_empty() {
+            return Ok(vec![]);
+        }
+
+        let mut out = Vec::with_capacity(input.len());
+
+        // Check if any column is the '*' wildcard that needs
+        // runtime expansion (fallback for planner edge-cases).
+        let has_star = columns
+            .iter()
+            .any(|(name, _)| name == "*");
+
+        for row in &input {
+            budget.check_or_err()?;
+            let ctx = self.build_filter_ctx(graph, row)?;
+            let mut new_row = Row::new();
+
+            if has_star {
+                // Expand '*' to all variables in the row.
+                for (col_name, expr) in columns {
+                    if col_name == "*" {
+                        // Insert all non-internal variables from the
+                        // input row, resolving through storage.
+                        for (var_name, val) in row {
+                            if !var_name.starts_with("__") {
+                                new_row.insert(var_name.clone(), val.clone());
+                            }
+                        }
+                    } else {
+                        let val = self.eval_with_storage(graph, expr, row, &ctx)?;
+                        new_row.insert(col_name.clone(), val);
+                    }
+                }
+            } else {
+                for (col_name, expr) in columns {
+                    let val = self.eval_with_storage(graph, expr, row, &ctx)?;
+                    new_row.insert(col_name.clone(), val);
+                }
+            }
+            budget.record_row();
+            out.push(new_row);
+        }
+        Ok(out)
+    }
+
+    fn exec_var_len_expand(&self, graph: &str, op: &Operator, budget: &mut ExecutionBudget, outer_rows: &[Row], stats: &mut MutationStats) -> Result<Vec<Row>, GqlError> {
+        let Operator::VarLenExpand {
+            direction,
+            rel_types,
+            min,
+            max,
+            src_alias,
+            path_alias,
+            path_mode,
+            dst_alias,
+            child,
+            rel_props,
+        } = op else { unreachable!() };
+        let input = self.exec_operator(graph, child, budget, outer_rows, stats)?;
+        let type_strs: Vec<&str> = rel_types.iter().map(|r| r.as_str()).collect();
+        let mut out = Vec::new();
+
+        for row in input {
+            budget.check_or_err()?;
+            let src_val = row
+                .get(src_alias.0.as_str())
+                .ok_or_else(|| undefined_var(&src_alias.0))?;
+            let src_id = extract_node_id(src_val, &src_alias.0)?;
+
+            // BFS tracking full paths: queue entries are
+            // (node_id, path_nodes, path_edges, path_edge_set) where path_edge_set
+            // mirrors path_edges as a HashSet for O(1) duplicate-edge checks.
+            let mut queue: VecDeque<VarLenBfsEntry> = VecDeque::new();
+            // Collect edges already used in earlier steps of this named path.
+            // This enforces cross-operator relationship isomorphism:
+            // - Direct Value::Edge in the row (from regular Expand steps, incl. pre-bound r)
+            //   should not be re-traversed.
+            // - Value::Path and Value::List([Edge]) from __path_rel_* (VarLen internal storage)
+            //   also shouldn't be re-traversed.
+            // We intentionally exclude user-defined list variables (like `rs` from WITH)
+            // that contain edges intended to be FOLLOWED by this VarLen, not avoided.
+            // Heuristic: collect Value::Edge (direct edge vars) and __path_rel_* (VarLen storage).
+            let prior_path_edges: std::collections::HashSet<EdgeId> = row.iter()
+                .flat_map(|(k, v)| match v {
+                    Value::Edge(e) => vec![*e],
+                    Value::List(items) if k.starts_with("__path_rel_") => {
+                        items.iter().filter_map(|i| {
+                            if let Value::Edge(e) = i { Some(*e) } else { None }
+                        }).collect()
+                    }
+                    Value::Path { edges, .. } if k.starts_with("__path_rel_") => {
+                        edges.clone()
+                    }
+                    _ => vec![],
+                })
+                .collect();
+            queue.push_back((src_id, vec![src_id], vec![], HashSet::new()));
+
+            while let Some((current, path_nodes, path_edges, path_edge_set)) = queue.pop_front() {
+                budget.check_or_err()?;
+                let depth = path_edges.len() as u32;
+
+                // Yield this path if depth is within [min, max]
+                if depth >= *min && depth <= *max {
+                    let mut new_row = row.clone();
+                    let end_node = *path_nodes.last().ok_or_else(|| {
+                        GqlError::Execution(ExecutionError::TypeMismatch {
+                            expected: "non-empty path".to_string(),
+                            actual: "empty path_nodes".to_string(),
+                        })
+                    })?;
+                    new_row.insert(dst_alias.0.clone(), Value::Node(end_node));
+                    if let Some(pa) = path_alias {
+                        if *path_mode {
+                            // Named path mode: store full path for AssemblePath
+                            new_row.insert(
+                                pa.0.clone(),
+                                Value::Path {
+                                    nodes: path_nodes.clone(),
+                                    edges: path_edges.clone(),
+                                },
+                            );
+                        } else {
+                            // Relationship variable mode: store list of edges
+                            new_row.insert(
+                                pa.0.clone(),
+                                Value::List(
+                                    path_edges.iter().map(|e| Value::Edge(*e)).collect(),
+                                ),
+                            );
+                        }
+                    }
+                    budget.record_row();
+                    out.push(new_row);
+                }
+
+                // Expand further if depth < max
+                if depth < *max {
+                    let adj_entries =
+                        get_adj_entries(self.store, graph, current, direction, &type_strs)?;
+                    for adj in adj_entries {
+                        budget.check_or_err()?;
+                        // Per openCypher spec: edge isomorphism is enforced (same
+                        // relationship cannot appear twice in one path), but node
+                        // repetition is allowed. This prevents infinite loops.
+                        // Also check edges from prior steps in this named path.
+                        if path_edge_set.contains(&adj.edge_id)
+                            || prior_path_edges.contains(&adj.edge_id) {
                             continue;
                         }
-                        let mut combined = outer_row.clone();
-                        for (k, v) in inner_row {
-                            combined.insert(k, v);
-                        }
-                        budget.record_row();
-                        out.push(combined);
-                    }
-                }
-                Ok(out)
-            }
-
-            // ── IndexScan ────────────────────────────────────────────────────────
-            Operator::IndexScan {
-                label,
-                property,
-                alias,
-            } => {
-                // Use the property index to find matching nodes.
-                // For a bare IndexScan (no specific value predicate), we scan all nodes
-                // with the label that have the property defined (using Gte on lowest value).
-                // In practice, the planner pairs this with a Filter for the predicate.
-                let node_ids = self.store.find_nodes_by_label_and_property(
-                    graph,
-                    label.as_str(),
-                    property,
-                    RangeQuery::Gte(&Value::Null),
-                )?;
-
-                // Fallback: if the range query returns empty (Null comparison issue),
-                // fall back to label scan with property existence check.
-                let effective_ids = if node_ids.is_empty() {
-                    let all_label = self.store.find_nodes_by_label(graph, label.as_str())?;
-                    let mut with_prop = Vec::new();
-                    for id in all_label {
-                        if let Some(node) = self.store.get_node(graph, id)? {
-                            if node.properties.contains_key(property.as_str()) {
-                                with_prop.push(id);
+                        // Check inline property constraints on the traversed edge.
+                        if let Some(pred) = rel_props {
+                            let mut edge_row = row.clone();
+                            edge_row.insert(
+                                "__varlen_edge__".to_string(),
+                                Value::Edge(adj.edge_id),
+                            );
+                            let ctx = self.build_filter_ctx(graph, &edge_row)?;
+                            match self.eval_with_storage(graph, pred, &edge_row, &ctx) {
+                                Ok(Value::Bool(true)) => {}
+                                _ => continue, // edge doesn't satisfy constraints
                             }
                         }
+                        let mut new_path_nodes = path_nodes.clone();
+                        new_path_nodes.push(adj.neighbor_id);
+                        let mut new_path_edges = path_edges.clone();
+                        new_path_edges.push(adj.edge_id);
+                        let mut new_path_edge_set = path_edge_set.clone();
+                        new_path_edge_set.insert(adj.edge_id);
+                        queue.push_back((adj.neighbor_id, new_path_nodes, new_path_edges, new_path_edge_set));
                     }
-                    with_prop
-                } else {
-                    node_ids
-                };
-
-                let mut rows = Vec::with_capacity(effective_ids.len());
-                for id in effective_ids {
-                    budget.check_or_err()?;
-                    let mut row = Row::new();
-                    row.insert(alias.0.clone(), Value::Node(id));
-                    budget.record_row();
-                    rows.push(row);
                 }
-                Ok(rows)
             }
+        }
+        Ok(out)
+    }
 
-            // ── NodeByIdSeek ─────────────────────────────────────────────────────
-            Operator::NodeByIdSeek { id_expr, alias } => {
-                let ctx: FilterRow<'_> = HashMap::new();
-                let id_val = eval_expr(id_expr, &ctx)?;
-                let raw_id = match id_val {
-                    Value::Int(n) if n >= 0 => n as u64,
-                    Value::Int(n) => {
-                        return Err(GqlError::Execution(ExecutionError::TypeMismatch {
-                            expected: "non-negative integer for node ID".to_string(),
-                            actual: n.to_string(),
-                        }));
+    fn exec_set(&self, graph: &str, op: &Operator, budget: &mut ExecutionBudget, outer_rows: &[Row], stats: &mut MutationStats) -> Result<Vec<Row>, GqlError> {
+        let Operator::Set { items, child } = op else { unreachable!() };
+        let input = self.exec_operator(graph, child, budget, outer_rows, stats)?;
+        let mut out = Vec::with_capacity(input.len());
+
+        for row in input {
+            budget.check_or_err()?;
+            let current_row = row;
+            for item in items {
+                self.apply_set_item(graph, &current_row, item, stats)?;
+            }
+            budget.record_row();
+            out.push(current_row);
+        }
+        Ok(out)
+    }
+
+    fn exec_remove(&self, graph: &str, op: &Operator, budget: &mut ExecutionBudget, outer_rows: &[Row], stats: &mut MutationStats) -> Result<Vec<Row>, GqlError> {
+        let Operator::Remove { items, child } = op else { unreachable!() };
+        let input = self.exec_operator(graph, child, budget, outer_rows, stats)?;
+        let mut out = Vec::with_capacity(input.len());
+
+        for row in input {
+            budget.check_or_err()?;
+            for item in items {
+                match item {
+                    RemoveItem::Property { alias, key } => {
+                        let val = row
+                            .get(alias.0.as_str())
+                            .ok_or_else(|| undefined_var(&alias.0))?;
+                        match val {
+                            Value::Null => {
+                                // REMOVE on null (from OPTIONAL MATCH) is a no-op
+                            }
+                            Value::Node(node_id) => {
+                                self.store.remove_node_property(graph, *node_id, key)?;
+                                stats.properties_set += 1;
+                            }
+                            Value::Edge(edge_id) => {
+                                self.store.remove_edge_property(graph, *edge_id, key)?;
+                                stats.properties_set += 1;
+                            }
+                            other => {
+                                return Err(GqlError::Execution(
+                                    ExecutionError::TypeMismatch {
+                                        expected: "Node or Relationship".to_string(),
+                                        actual: other.type_name().to_string(),
+                                    },
+                                ));
+                            }
+                        }
+                        // REMOVE property does not count as properties_set.
+                    }
+                    RemoveItem::Labels { alias, labels } => {
+                        let val = row
+                            .get(alias.0.as_str())
+                            .ok_or_else(|| undefined_var(&alias.0))?;
+                        // REMOVE labels on null (from OPTIONAL MATCH) is a no-op
+                        if val.is_null() {
+                            continue;
+                        }
+                        let node_id = extract_node_id(val, &alias.0)?;
+                        let label_strings: Vec<String> =
+                            labels.iter().map(|l| l.as_str().to_string()).collect();
+                        self.store
+                            .remove_node_labels(graph, node_id, &label_strings)?;
+                        // REMOVE labels does not count as labels_added.
+                    }
+                }
+            }
+            budget.record_row();
+            out.push(row);
+        }
+        Ok(out)
+    }
+
+    fn exec_delete(&self, graph: &str, op: &Operator, budget: &mut ExecutionBudget, outer_rows: &[Row], stats: &mut MutationStats) -> Result<Vec<Row>, GqlError> {
+        let Operator::Delete {
+            exprs,
+            detach,
+            child,
+        } = op else { unreachable!() };
+        let input = self.exec_operator(graph, child, budget, outer_rows, stats)?;
+        let mut out = Vec::new();
+
+        for row in input {
+            budget.check_or_err()?;
+            let ctx = self.build_filter_ctx(graph, &row)?;
+
+            // Two-pass delete: collect all edges and nodes first so that
+            // paths sharing nodes don't fail with "node has relationships"
+            // when one path's edges are deleted but another path's edges
+            // are not yet deleted.
+            let mut edges_to_delete: Vec<EdgeId> = Vec::new();
+            let mut nodes_to_delete: Vec<NodeId> = Vec::new();
+
+            for expr in exprs {
+                let val = self.eval_with_storage(graph, expr, &row, &ctx)?;
+                match val {
+                    Value::Node(node_id) => {
+                        nodes_to_delete.push(node_id);
+                    }
+                    Value::Edge(edge_id) => {
+                        // Cache rel_type before deleting so type(r) still works.
+                        if let Ok(Some(data)) = self.store.get_edge(graph, edge_id) {
+                            self.deleted_edge_types.borrow_mut().insert(edge_id.0, data.rel_type);
+                        }
+                        edges_to_delete.push(edge_id);
+                    }
+                    Value::Null => {
+                        // Deleting NULL is a no-op in Cypher
+                    }
+                    Value::Path { nodes, edges } => {
+                        edges_to_delete.extend(edges.iter().copied());
+                        nodes_to_delete.extend(nodes.iter().copied());
                     }
                     other => {
                         return Err(GqlError::Execution(ExecutionError::TypeMismatch {
-                            expected: "integer for node ID".to_string(),
+                            expected: "Node or Relationship for DELETE".to_string(),
                             actual: other.type_name().to_string(),
                         }));
                     }
-                };
-
-                let node_id = NodeId(raw_id);
-                let mut rows = Vec::new();
-                if let Some(_node_data) = self.store.get_node(graph, node_id)? {
-                    let mut row = Row::new();
-                    row.insert(alias.0.clone(), Value::Node(node_id));
-                    budget.record_row();
-                    rows.push(row);
                 }
-                Ok(rows)
             }
 
-            // ── ShortestPath ─────────────────────────────────────────────────────
-            Operator::ShortestPath {
-                src_alias,
-                dst_alias,
-                rel_types,
-                direction,
-                min: _min,
-                max,
-                path_alias,
-                all_paths,
-            } => {
-                // ShortestPath requires both src and dst to be bound in outer context.
-                // For now, work from outer_rows or require them to be bound.
-                let type_strs: Vec<&str> = rel_types.iter().map(|r| r.as_str()).collect();
-                let mut out = Vec::new();
+            // Delete all collected edges first.
+            for edge_id in edges_to_delete {
+                match self.store.delete_edge(graph, edge_id) {
+                    Ok(()) => { stats.edges_deleted += 1; }
+                    Err(StorageError::EdgeNotFound { .. }) => {} // already deleted
+                    Err(e) => return Err(GqlError::Storage(e)),
+                }
+            }
 
-                // If there are outer rows, use them. Otherwise create an empty row.
-                let context_rows = if outer_rows.is_empty() {
-                    vec![Row::new()]
-                } else {
-                    outer_rows.to_vec()
-                };
-
-                for row in &context_rows {
-                    budget.check_or_err()?;
-                    let src_val = row
-                        .get(src_alias.0.as_str())
-                        .ok_or_else(|| undefined_var(&src_alias.0))?;
-                    let src_id = extract_node_id(src_val, &src_alias.0)?;
-
-                    let dst_val = row
-                        .get(dst_alias.0.as_str())
-                        .ok_or_else(|| undefined_var(&dst_alias.0))?;
-                    let dst_id = extract_node_id(dst_val, &dst_alias.0)?;
-
-                    // BFS from src to dst, tracking full paths
-                    // Queue: (current_node, path_nodes, path_edges)
-                    let mut queue: VecDeque<(NodeId, Vec<NodeId>, Vec<EdgeId>)> = VecDeque::new();
-                    queue.push_back((src_id, vec![src_id], vec![]));
-                    let mut visited = HashSet::new();
-                    visited.insert(src_id);
-
-                    let mut found_paths: Vec<(Vec<NodeId>, Vec<EdgeId>)> = Vec::new();
-                    let mut shortest_len: Option<u32> = None;
-
-                    while let Some((current, path_nodes, path_edges)) = queue.pop_front() {
-                        budget.check_or_err()?;
-                        let depth = path_edges.len() as u32;
-
-                        // If we already found shortest paths and current depth exceeds
-                        // that length, stop (BFS guarantees depth ordering).
-                        if let Some(sl) = shortest_len {
-                            if depth > sl {
-                                break;
-                            }
-                        }
-
-                        // Check if we reached the destination
-                        if current == dst_id && depth > 0 {
-                            found_paths.push((path_nodes.clone(), path_edges.clone()));
-                            shortest_len = Some(depth);
-                            if !*all_paths {
-                                // shortestPath: just need the first one
-                                break;
-                            }
-                            // For allShortestPaths, continue at same depth level
-                            continue;
-                        }
-
-                        // Don't expand beyond max depth
-                        if depth >= *max {
-                            continue;
-                        }
-
-                        let adj_entries =
-                            get_adj_entries(self.store, graph, current, direction, &type_strs)?;
-                        for adj in adj_entries {
-                            budget.check_or_err()?;
-                            // For shortest path BFS, we track visited globally
-                            // but allow reaching dst through different paths at same depth.
-                            let is_dst = adj.neighbor_id == dst_id;
-                            if !is_dst && visited.contains(&adj.neighbor_id) {
-                                continue;
-                            }
-                            if !is_dst {
-                                visited.insert(adj.neighbor_id);
-                            }
-                            let mut new_nodes = path_nodes.clone();
-                            new_nodes.push(adj.neighbor_id);
-                            let mut new_edges = path_edges.clone();
-                            new_edges.push(adj.edge_id);
-                            queue.push_back((adj.neighbor_id, new_nodes, new_edges));
+            // Then delete all collected nodes.
+            for node_id in nodes_to_delete {
+                if *detach {
+                    // Count and delete remaining edges before deleting node.
+                    let out_ids = self.store.out_edge_ids(graph, node_id).unwrap_or_default();
+                    let in_ids = self.store.in_edge_ids(graph, node_id).unwrap_or_default();
+                    let mut edge_set: std::collections::HashSet<u64> = out_ids.iter().map(|e| e.0).collect();
+                    edge_set.extend(in_ids.iter().map(|e| e.0));
+                    // Net out edges that were created in this same query.
+                    let mut net_deleted_edges: u64 = 0;
+                    for eid in &edge_set {
+                        if stats.edges_created_ids.remove(eid) {
+                            stats.edges_created = stats.edges_created.saturating_sub(1);
+                        } else {
+                            net_deleted_edges += 1;
                         }
                     }
+                    match self.store.delete_node(graph, node_id, true) {
+                        Ok(()) => {
+                            // Net out: if node was created in this query, cancel the create.
+                            if stats.nodes_created_ids.remove(&node_id.0) {
+                                stats.nodes_created = stats.nodes_created.saturating_sub(1);
+                            } else {
+                                stats.nodes_deleted += 1;
+                            }
+                            stats.edges_deleted += net_deleted_edges;
+                        }
+                        Err(StorageError::NodeNotFound { .. }) => {}
+                        Err(e) => return Err(GqlError::Storage(e)),
+                    }
+                } else {
+                    match self.store.delete_node(graph, node_id, false) {
+                        Ok(()) => {
+                            // Net out: if node was created in this query, cancel the create.
+                            if stats.nodes_created_ids.remove(&node_id.0) {
+                                stats.nodes_created = stats.nodes_created.saturating_sub(1);
+                            } else {
+                                stats.nodes_deleted += 1;
+                            }
+                        }
+                        Err(StorageError::NodeNotFound { .. }) => {} // already deleted
+                        Err(e) => return Err(GqlError::Storage(e)),
+                    }
+                }
+            }
+            budget.record_row();
+            out.push(row);
+        }
+        Ok(out)
+    }
 
-                    // Produce output rows for each found path
-                    for (pn, pe) in found_paths {
+    fn exec_merge(&self, graph: &str, op: &Operator, budget: &mut ExecutionBudget, outer_rows: &[Row], stats: &mut MutationStats) -> Result<Vec<Row>, GqlError> {
+        let Operator::Merge {
+            node_alias,
+            labels,
+            properties,
+            on_create,
+            on_match,
+            child,
+        } = op else { unreachable!() };
+        let input = if let Some(ch) = child {
+            self.exec_operator(graph, ch, budget, outer_rows, stats)?
+        } else {
+            vec![Row::new()]
+        };
+
+        let mut out = Vec::new();
+        for mut row in input {
+            budget.check_or_err()?;
+
+            // Evaluate inline property values from the MERGE pattern.
+            let mut prop_vals: Vec<(String, Value)> = Vec::new();
+            if !properties.is_empty() {
+                let ctx = self.build_filter_ctx(graph, &row)?;
+                for (k, expr) in properties {
+                    let val = self.eval_with_storage(graph, expr, &row, &ctx)?;
+                    // MERGE with null property is a SemanticError (MergeReadOwnWrites)
+                    if val.is_null() {
+                        return Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                            expected: "non-null property value in MERGE".to_string(),
+                            actual: "Null".to_string(),
+                        }));
+                    }
+                    prop_vals.push((k.clone(), val));
+                }
+            }
+
+            // Try to find existing nodes matching ALL labels.
+            // When labels is empty, scan all nodes (MERGE (n) with no labels).
+            let candidates: HashSet<u64> = if labels.is_empty() {
+                self.store
+                    .all_node_ids(graph)?
+                    .into_iter()
+                    .map(|n| n.0)
+                    .collect()
+            } else {
+                let mut cands: Option<HashSet<u64>> = None;
+                for label in labels {
+                    let ids = self.store.find_nodes_by_label(graph, label.as_str())?;
+                    let id_set: HashSet<u64> = ids.iter().map(|n| n.0).collect();
+                    cands = Some(match cands {
+                        None => id_set,
+                        Some(existing) => existing.intersection(&id_set).copied().collect(),
+                    });
+                }
+                cands.unwrap_or_default()
+            };
+
+            // Collect ALL matching nodes (MERGE returns one row per match).
+            let mut matched_ids: Vec<NodeId> = Vec::new();
+            for cand_id in &candidates {
+                let node_id = NodeId(*cand_id);
+                if prop_vals.is_empty() {
+                    matched_ids.push(node_id);
+                } else if let Ok(Some(node_data)) = self.store.get_node(graph, node_id) {
+                    let all_match = prop_vals.iter().all(|(key, expected)| {
+                        node_data.properties.get(key.as_str())
+                            .map(|v| v == expected)
+                            .unwrap_or(false)
+                    });
+                    if all_match {
+                        matched_ids.push(node_id);
+                    }
+                }
+            }
+
+            if !matched_ids.is_empty() {
+                // ON MATCH: one output row per matched node
+                for node_id in matched_ids {
+                    budget.check_or_err()?;
+                    let mut new_row = row.clone();
+                    if let Some(alias) = node_alias {
+                        new_row.insert(alias.0.clone(), Value::Node(node_id));
+                    }
+                    for item in on_match {
+                        self.apply_set_item(graph, &new_row, item, stats)?;
+                    }
+                    budget.record_row();
+                    out.push(new_row);
+                }
+            } else {
+                // Not found: CREATE the node with inline properties
+                let label_strings: Vec<String> =
+                    labels.iter().map(|l| l.as_str().to_string()).collect();
+                let create_props: HashMap<String, Value> =
+                    prop_vals.iter().cloned().collect();
+                let non_null_prop_keys: Vec<String> = create_props
+                    .iter()
+                    .filter(|(_, v)| !v.is_null())
+                    .map(|(k, _)| k.clone())
+                    .collect();
+                let node_id =
+                    self.store
+                        .create_node(graph, label_strings.clone(), create_props)?;
+                stats.nodes_created += 1;
+                stats.nodes_created_ids.insert(node_id.0);
+                stats.labels_seen.extend(label_strings);
+                for k in non_null_prop_keys {
+                    stats.props_seen.insert((false, node_id.0, k));
+                }
+                if let Some(alias) = node_alias {
+                    row.insert(alias.0.clone(), Value::Node(node_id));
+                }
+                for item in on_create {
+                    self.apply_set_item(graph, &row, item, stats)?;
+                }
+                budget.record_row();
+                out.push(row);
+            }
+        }
+        Ok(out)
+    }
+
+    fn exec_merge_rel(&self, graph: &str, op: &Operator, budget: &mut ExecutionBudget, outer_rows: &[Row], stats: &mut MutationStats) -> Result<Vec<Row>, GqlError> {
+        let Operator::MergeRelationship {
+            src_alias,
+            dst_alias,
+            rel_alias,
+            rel_type,
+            direction,
+            properties,
+            on_create,
+            on_match,
+            child,
+        } = op else { unreachable!() };
+        let input = self.exec_operator(graph, child, budget, outer_rows, stats)?;
+        let type_str = rel_type.as_str();
+        let mut out = Vec::new();
+
+        for mut row in input {
+            budget.check_or_err()?;
+            let src_val = row
+                .get(src_alias.0.as_str())
+                .ok_or_else(|| undefined_var(&src_alias.0))?;
+            let src_id = extract_node_id(src_val, &src_alias.0)?;
+
+            let dst_val = row
+                .get(dst_alias.0.as_str())
+                .ok_or_else(|| undefined_var(&dst_alias.0))?;
+            let dst_id = extract_node_id(dst_val, &dst_alias.0)?;
+
+            // Determine actual src/dst based on direction.
+            let (real_src, real_dst) = match direction {
+                Direction::Incoming => (dst_id, src_id),
+                _ => (src_id, dst_id),
+            };
+
+            // Find existing edges of this type between src and dst.
+            // For undirected patterns, check BOTH directions (a→b and b→a).
+            let existing_edges =
+                self.store
+                    .out_edges_by_type(graph, real_src, &[type_str])?;
+            let mut matching: Vec<_> = existing_edges
+                .into_iter()
+                .filter(|adj| adj.neighbor_id == real_dst)
+                .collect();
+            if matches!(direction, Direction::Undirected) && matching.is_empty() {
+                // Also check the reverse direction (real_dst → real_src).
+                let reverse_edges =
+                    self.store.out_edges_by_type(graph, real_dst, &[type_str])?;
+                matching = reverse_edges
+                    .into_iter()
+                    .filter(|adj| adj.neighbor_id == real_src)
+                    .collect();
+            }
+
+            // Filter by property constraints if any.
+            let ctx = self.build_filter_ctx(graph, &row)?;
+            let prop_vals: Vec<(String, Value)> = properties
+                .iter()
+                .map(|(k, expr)| {
+                    let v = self.eval_with_storage(graph, expr, &row, &ctx)?;
+                    // MERGE with null property is a SemanticError (MergeReadOwnWrites)
+                    if v.is_null() {
+                        return Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                            expected: "non-null property value in MERGE".to_string(),
+                            actual: "Null".to_string(),
+                        }));
+                    }
+                    Ok((k.clone(), v))
+                })
+                .collect::<Result<Vec<_>, GqlError>>()?;
+
+            let matched_edges: Vec<EdgeId> = if prop_vals.is_empty() {
+                matching.iter().map(|adj| adj.edge_id).collect::<Vec<_>>()
+            } else {
+                // Find ALL edges matching property constraints.
+                let mut found_edges = Vec::new();
+                for adj in &matching {
+                    if let Some(edge_data) = self.store.get_edge(graph, adj.edge_id)? {
+                        let all_match = prop_vals.iter().all(|(k, v)| {
+                            edge_data
+                                .properties
+                                .get(k.as_str())
+                                .map(|ev| ev == v)
+                                .unwrap_or(false)
+                        });
+                        if all_match {
+                            found_edges.push(adj.edge_id);
+                        }
+                    }
+                }
+                found_edges
+            };
+
+            if !matched_edges.is_empty() {
+                // MATCHED: one output row per matched edge.
+                for edge_id in matched_edges {
+                    budget.check_or_err()?;
+                    let mut new_row = row.clone();
+                    if let Some(ra) = rel_alias {
+                        new_row.insert(ra.0.clone(), Value::Edge(edge_id));
+                    }
+                    for item in on_match {
+                        self.apply_set_item(graph, &new_row, item, stats)?;
+                    }
+                    budget.record_row();
+                    out.push(new_row);
+                }
+            } else {
+                // NOT FOUND: create the edge with properties.
+                let prop_map: HashMap<String, Value> =
+                    prop_vals.into_iter().collect();
+                let non_null_edge_keys: Vec<String> = prop_map
+                    .iter()
+                    .filter(|(_, v)| !v.is_null())
+                    .map(|(k, _)| k.clone())
+                    .collect();
+                let edge_id = self.store.create_edge(
+                    graph,
+                    real_src,
+                    real_dst,
+                    type_str.to_string(),
+                    prop_map,
+                )?;
+                stats.edges_created += 1;
+                for k in non_null_edge_keys {
+                    stats.props_seen.insert((true, edge_id.0, k));
+                }
+                if let Some(ra) = rel_alias {
+                    row.insert(ra.0.clone(), Value::Edge(edge_id));
+                }
+                for item in on_create {
+                    self.apply_set_item(graph, &row, item, stats)?;
+                }
+                budget.record_row();
+                out.push(row);
+            }
+        }
+        Ok(out)
+    }
+
+    fn exec_unwind(&self, graph: &str, op: &Operator, budget: &mut ExecutionBudget, outer_rows: &[Row], stats: &mut MutationStats) -> Result<Vec<Row>, GqlError> {
+        let Operator::Unwind {
+            list_expr,
+            alias,
+            child,
+        } = op else { unreachable!() };
+        let input = self.exec_operator(graph, child, budget, outer_rows, stats)?;
+        let mut out = Vec::new();
+
+        for row in input {
+            budget.check_or_err()?;
+            let ctx = self.build_filter_ctx(graph, &row)?;
+            let list_val = self.eval_with_storage(graph, list_expr, &row, &ctx)?;
+            match list_val {
+                Value::List(items) => {
+                    for item in items {
+                        budget.check_or_err()?;
                         let mut new_row = row.clone();
-                        new_row.insert(
-                            path_alias.0.clone(),
-                            Value::Path {
-                                nodes: pn,
-                                edges: pe,
-                            },
-                        );
+                        new_row.insert(alias.0.clone(), item);
                         budget.record_row();
                         out.push(new_row);
                     }
                 }
-                Ok(out)
+                Value::Null => {
+                    // UNWIND null produces zero rows (Cypher semantics)
+                }
+                other => {
+                    return Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                        expected: "List for UNWIND".to_string(),
+                        actual: other.type_name().to_string(),
+                    }));
+                }
             }
         }
+        Ok(out)
     }
+
+    fn exec_union(&self, graph: &str, op: &Operator, budget: &mut ExecutionBudget, outer_rows: &[Row], stats: &mut MutationStats) -> Result<Vec<Row>, GqlError> {
+        let Operator::Union { left, right, all } = op else { unreachable!() };
+        let left_rows = self.exec_operator(graph, left, budget, outer_rows, stats)?;
+        let right_rows = self.exec_operator(graph, right, budget, outer_rows, stats)?;
+
+        let mut out = Vec::with_capacity(left_rows.len() + right_rows.len());
+        if *all {
+            // UNION ALL: concatenate without deduplication
+            out.extend(left_rows);
+            out.extend(right_rows);
+        } else {
+            // UNION: deduplicate
+            let mut seen: HashSet<String> = HashSet::new();
+            for row in left_rows.into_iter().chain(right_rows) {
+                budget.check_or_err()?;
+                let key = row_key(&row);
+                if seen.insert(key) {
+                    out.push(row);
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    fn exec_left_outer_apply(&self, graph: &str, op: &Operator, budget: &mut ExecutionBudget, outer_rows: &[Row], stats: &mut MutationStats) -> Result<Vec<Row>, GqlError> {
+        let Operator::LeftOuterApply {
+            preserved,
+            optional_pattern,
+        } = op else { unreachable!() };
+        let left_rows = self.exec_operator(graph, preserved, budget, outer_rows, stats)?;
+        let mut out = Vec::new();
+
+        for left_row in left_rows {
+            budget.check_or_err()?;
+            // Execute right side with the left row as context
+            let right_rows = self.exec_operator(
+                graph,
+                optional_pattern,
+                budget,
+                std::slice::from_ref(&left_row),
+                stats,
+            )?;
+
+            // Filter right rows for variable sharing consistency
+            // (same as Apply, but incompatible rows are dropped).
+            // Skip anonymous variables (__anon*) to avoid false conflicts
+            // when both OPTIONAL MATCHes use the same anonymous alias names.
+            let compatible_rows: Vec<Row> = right_rows
+                .into_iter()
+                .filter(|right_row| {
+                    for (k, v) in right_row {
+                        if k.starts_with("__anon") {
+                            continue;
+                        }
+                        if let Some(left_v) = left_row.get(k) {
+                            if left_v != v {
+                                return false;
+                            }
+                        }
+                    }
+                    true
+                })
+                .collect();
+
+            if compatible_rows.is_empty() {
+                // No compatible matches: extend left row with NULLs
+                let mut result_row = left_row;
+                let null_cols = discover_operator_aliases(optional_pattern);
+                for col in null_cols {
+                    result_row.entry(col).or_insert(Value::Null);
+                }
+                budget.record_row();
+                out.push(result_row);
+            } else {
+                for right_row in compatible_rows {
+                    budget.check_or_err()?;
+                    let mut combined = left_row.clone();
+                    for (k, v) in right_row {
+                        combined.insert(k, v);
+                    }
+                    budget.record_row();
+                    out.push(combined);
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    fn exec_apply(&self, graph: &str, op: &Operator, budget: &mut ExecutionBudget, outer_rows: &[Row], stats: &mut MutationStats) -> Result<Vec<Row>, GqlError> {
+        let Operator::Apply { outer, inner } = op else { unreachable!() };
+        let outer_rows = self.exec_operator(graph, outer, budget, outer_rows, stats)?;
+        let mut out = Vec::new();
+
+        for outer_row in &outer_rows {
+            budget.check_or_err()?;
+            let inner_rows = self.exec_operator(
+                graph,
+                inner,
+                budget,
+                std::slice::from_ref(outer_row),
+                stats,
+            )?;
+
+            for inner_row in inner_rows {
+                budget.check_or_err()?;
+                // Check shared variable consistency: if a variable appears
+                // in both outer and inner rows, the values must match.
+                // This handles patterns like MATCH (a)-->(b), (b)-->(c)
+                // where 'b' must be the same node in both patterns.
+                // Skip hidden internal edge aliases (used for edge isomorphism
+                // tracking) — these are per-pattern and should not be compared
+                // across patterns in Apply.
+                let mut compatible = true;
+                for (k, v) in &inner_row {
+                    // Skip all internal anonymous variables — they are scoping
+                    // artifacts and must not constrain cross-pattern joins.
+                    if k.starts_with("__anon") {
+                        continue;
+                    }
+                    if let Some(outer_v) = outer_row.get(k) {
+                        if outer_v != v {
+                            compatible = false;
+                            break;
+                        }
+                    }
+                }
+                if !compatible {
+                    continue;
+                }
+                let mut combined = outer_row.clone();
+                for (k, v) in inner_row {
+                    combined.insert(k, v);
+                }
+                budget.record_row();
+                out.push(combined);
+            }
+        }
+        Ok(out)
+    }
+
+    fn exec_index_scan(&self, graph: &str, op: &Operator, budget: &mut ExecutionBudget, _outer_rows: &[Row], _stats: &mut MutationStats) -> Result<Vec<Row>, GqlError> {
+        let Operator::IndexScan {
+            label,
+            property,
+            alias,
+        } = op else { unreachable!() };
+        // Use the property index to find matching nodes.
+        // For a bare IndexScan (no specific value predicate), we scan all nodes
+        // with the label that have the property defined (using Gte on lowest value).
+        // In practice, the planner pairs this with a Filter for the predicate.
+        let node_ids = self.store.find_nodes_by_label_and_property(
+            graph,
+            label.as_str(),
+            property,
+            RangeQuery::Gte(&Value::Null),
+        )?;
+
+        // Fallback: if the range query returns empty (Null comparison issue),
+        // fall back to label scan with property existence check.
+        let effective_ids = if node_ids.is_empty() {
+            let all_label = self.store.find_nodes_by_label(graph, label.as_str())?;
+            let mut with_prop = Vec::new();
+            for id in all_label {
+                if let Some(node) = self.store.get_node(graph, id)? {
+                    if node.properties.contains_key(property.as_str()) {
+                        with_prop.push(id);
+                    }
+                }
+            }
+            with_prop
+        } else {
+            node_ids
+        };
+
+        let mut rows = Vec::with_capacity(effective_ids.len());
+        for id in effective_ids {
+            budget.check_or_err()?;
+            let mut row = Row::new();
+            row.insert(alias.0.clone(), Value::Node(id));
+            budget.record_row();
+            rows.push(row);
+        }
+        Ok(rows)
+    }
+
+    fn exec_node_by_id_seek(&self, graph: &str, op: &Operator, budget: &mut ExecutionBudget, _outer_rows: &[Row], _stats: &mut MutationStats) -> Result<Vec<Row>, GqlError> {
+        let Operator::NodeByIdSeek { id_expr, alias } = op else { unreachable!() };
+        let ctx: FilterRow<'_> = HashMap::new();
+        let id_val = eval_expr(id_expr, &ctx)?;
+        let raw_id = match id_val {
+            Value::Int(n) if n >= 0 => n as u64,
+            Value::Int(n) => {
+                return Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                    expected: "non-negative integer for node ID".to_string(),
+                    actual: n.to_string(),
+                }));
+            }
+            other => {
+                return Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                    expected: "integer for node ID".to_string(),
+                    actual: other.type_name().to_string(),
+                }));
+            }
+        };
+
+        let node_id = NodeId(raw_id);
+        let mut rows = Vec::new();
+        if let Some(_node_data) = self.store.get_node(graph, node_id)? {
+            let mut row = Row::new();
+            row.insert(alias.0.clone(), Value::Node(node_id));
+            budget.record_row();
+            rows.push(row);
+        }
+        Ok(rows)
+    }
+
+    fn exec_shortest_path(&self, graph: &str, op: &Operator, budget: &mut ExecutionBudget, outer_rows: &[Row], _stats: &mut MutationStats) -> Result<Vec<Row>, GqlError> {
+        let Operator::ShortestPath {
+            src_alias,
+            dst_alias,
+            rel_types,
+            direction,
+            min: _min,
+            max,
+            path_alias,
+            all_paths,
+        } = op else { unreachable!() };
+        // ShortestPath requires both src and dst to be bound in outer context.
+        // For now, work from outer_rows or require them to be bound.
+        let type_strs: Vec<&str> = rel_types.iter().map(|r| r.as_str()).collect();
+        let mut out = Vec::new();
+
+        // If there are outer rows, use them. Otherwise create an empty row.
+        let context_rows = if outer_rows.is_empty() {
+            vec![Row::new()]
+        } else {
+            outer_rows.to_vec()
+        };
+
+        for row in &context_rows {
+            budget.check_or_err()?;
+            let src_val = row
+                .get(src_alias.0.as_str())
+                .ok_or_else(|| undefined_var(&src_alias.0))?;
+            let src_id = extract_node_id(src_val, &src_alias.0)?;
+
+            let dst_val = row
+                .get(dst_alias.0.as_str())
+                .ok_or_else(|| undefined_var(&dst_alias.0))?;
+            let dst_id = extract_node_id(dst_val, &dst_alias.0)?;
+
+            // BFS from src to dst, tracking full paths
+            // Queue: (current_node, path_nodes, path_edges)
+            let mut queue: VecDeque<(NodeId, Vec<NodeId>, Vec<EdgeId>)> = VecDeque::new();
+            queue.push_back((src_id, vec![src_id], vec![]));
+            let mut visited = HashSet::new();
+            visited.insert(src_id);
+
+            let mut found_paths: Vec<(Vec<NodeId>, Vec<EdgeId>)> = Vec::new();
+            let mut shortest_len: Option<u32> = None;
+
+            while let Some((current, path_nodes, path_edges)) = queue.pop_front() {
+                budget.check_or_err()?;
+                let depth = path_edges.len() as u32;
+
+                // If we already found shortest paths and current depth exceeds
+                // that length, stop (BFS guarantees depth ordering).
+                if let Some(sl) = shortest_len {
+                    if depth > sl {
+                        break;
+                    }
+                }
+
+                // Check if we reached the destination
+                if current == dst_id && depth > 0 {
+                    found_paths.push((path_nodes.clone(), path_edges.clone()));
+                    shortest_len = Some(depth);
+                    if !*all_paths {
+                        // shortestPath: just need the first one
+                        break;
+                    }
+                    // For allShortestPaths, continue at same depth level
+                    continue;
+                }
+
+                // Don't expand beyond max depth
+                if depth >= *max {
+                    continue;
+                }
+
+                let adj_entries =
+                    get_adj_entries(self.store, graph, current, direction, &type_strs)?;
+                for adj in adj_entries {
+                    budget.check_or_err()?;
+                    // For shortest path BFS, we track visited globally
+                    // but allow reaching dst through different paths at same depth.
+                    let is_dst = adj.neighbor_id == dst_id;
+                    if !is_dst && visited.contains(&adj.neighbor_id) {
+                        continue;
+                    }
+                    if !is_dst {
+                        visited.insert(adj.neighbor_id);
+                    }
+                    let mut new_nodes = path_nodes.clone();
+                    new_nodes.push(adj.neighbor_id);
+                    let mut new_edges = path_edges.clone();
+                    new_edges.push(adj.edge_id);
+                    queue.push_back((adj.neighbor_id, new_nodes, new_edges));
+                }
+            }
+
+            // Produce output rows for each found path
+            for (pn, pe) in found_paths {
+                let mut new_row = row.clone();
+                new_row.insert(
+                    path_alias.0.clone(),
+                    Value::Path {
+                        nodes: pn,
+                        edges: pe,
+                    },
+                );
+                budget.record_row();
+                out.push(new_row);
+            }
+        }
+        Ok(out)
+    }
+
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
@@ -2049,15 +2049,17 @@ impl<'a> QueryExecutor<'a> {
                 let base_val = self.eval_with_storage(graph, base_expr, row, ctx)?;
                 match base_val {
                     Value::Null => Ok(Value::Null),
-                    Value::Node(node_id) => match self.store.get_node(graph, node_id)? {
-                        Some(node_data) => {
-                            let has = labels_to_check
-                                .iter()
-                                .all(|l| node_data.labels.iter().any(|nl| nl == l.as_str()));
-                            Ok(Value::Bool(has))
+                    Value::Node(node_id) => {
+                        match self.store.get_node(graph, node_id)? {
+                            Some(node_data) => {
+                                let has = labels_to_check.iter().all(|l| {
+                                    node_data.labels.iter().any(|nl| nl == l.as_str())
+                                });
+                                Ok(Value::Bool(has))
+                            }
+                            None => Ok(Value::Bool(false)),
                         }
-                        None => Ok(Value::Bool(false)),
-                    },
+                    }
                     Value::Edge(edge_id) => {
                         // For relationships, check if the rel type matches
                         match self.store.get_edge(graph, edge_id)? {
@@ -2090,7 +2092,8 @@ impl<'a> QueryExecutor<'a> {
                             } = &args[0]
                             {
                                 // Evaluate list with storage.
-                                let list_val = self.eval_with_storage(graph, list, row, ctx)?;
+                                let list_val =
+                                    self.eval_with_storage(graph, list, row, ctx)?;
                                 let items = match list_val {
                                     Value::Null => return Ok(Value::Null),
                                     Value::List(items) => items,
@@ -2110,9 +2113,12 @@ impl<'a> QueryExecutor<'a> {
                                 for item in &items {
                                     let mut ext_row = row.clone();
                                     ext_row.insert(variable.0.clone(), item.clone());
-                                    let ext_ctx = self.build_filter_ctx(graph, &ext_row)?;
+                                    let ext_ctx =
+                                        self.build_filter_ctx(graph, &ext_row)?;
                                     let pred_result = if let Some(pred) = filter {
-                                        self.eval_with_storage(graph, pred, &ext_row, &ext_ctx)?
+                                        self.eval_with_storage(
+                                            graph, pred, &ext_row, &ext_ctx,
+                                        )?
                                     } else {
                                         item.clone()
                                     };
@@ -2124,21 +2130,14 @@ impl<'a> QueryExecutor<'a> {
                                     }
                                     // Short-circuit for early exit
                                     match lc.as_str() {
-                                        "all" if false_count > 0 => return Ok(Value::Bool(false)),
-                                        "any" if true_count > 0 => return Ok(Value::Bool(true)),
-                                        "none" if true_count > 0 => return Ok(Value::Bool(false)),
-                                        "single" if true_count > 1 => {
-                                            return Ok(Value::Bool(false))
-                                        }
+                                        "all" if false_count > 0 => { return Ok(Value::Bool(false)) }
+                                        "any" if true_count > 0 => { return Ok(Value::Bool(true)) }
+                                        "none" if true_count > 0 => { return Ok(Value::Bool(false)) }
+                                        "single" if true_count > 1 => { return Ok(Value::Bool(false)) }
                                         _ => {}
                                     }
                                 }
-                                return Ok(quantifier_result(
-                                    lc.as_str(),
-                                    true_count,
-                                    false_count,
-                                    null_count,
-                                ));
+                                return Ok(quantifier_result(lc.as_str(), true_count, false_count, null_count));
                             }
                         }
                         // Fallback: delegate to eval_expr
@@ -2146,7 +2145,8 @@ impl<'a> QueryExecutor<'a> {
                     }
                     "exists" => {
                         if args.len() == 1 {
-                            let val = self.eval_with_storage(graph, &args[0], row, ctx)?;
+                            let val =
+                                self.eval_with_storage(graph, &args[0], row, ctx)?;
                             return Ok(Value::Bool(!val.is_null()));
                         }
                         return eval_expr(expr, ctx);
@@ -2237,11 +2237,8 @@ impl<'a> QueryExecutor<'a> {
                                 Some(data) => Ok(Value::Str(data.rel_type.into_boxed_str())),
                                 None => {
                                     // Edge may have been deleted in this query; check cache.
-                                    let cached = self
-                                        .deleted_edge_types
-                                        .borrow()
-                                        .get(&edge_id.0)
-                                        .map(|s| Value::Str(s.clone().into_boxed_str()));
+                                    let cached = self.deleted_edge_types.borrow()
+                                        .get(&edge_id.0).map(|s| Value::Str(s.clone().into_boxed_str()));
                                     Ok(cached.unwrap_or(Value::Null))
                                 }
                             },
@@ -2443,7 +2440,7 @@ impl<'a> QueryExecutor<'a> {
                         }
                     }
                     // All other functions: call directly with evaluated args.
-                    _ => eval_function_with_vals(name, evaled_args),
+                    _ => eval_function_with_vals(name, evaled_args)
                 }
             }
             // Case expression: evaluate with storage-awareness.
@@ -2548,7 +2545,9 @@ impl<'a> QueryExecutor<'a> {
             }
 
             // `(n)-[:REL]->(m)` used directly as a boolean predicate in WHERE.
-            Expr::PatternExpr(patterns) => self.eval_exists_patterns(graph, patterns, None, row),
+            Expr::PatternExpr(patterns) => {
+                self.eval_exists_patterns(graph, patterns, None, row)
+            }
 
             // Subscript: n['key'] on Node/Edge — look up property in storage.
             Expr::Subscript(obj_expr, idx_expr) => {
@@ -2647,8 +2646,7 @@ impl<'a> QueryExecutor<'a> {
         inner_query: &crate::ast::Query,
         outer_row: &Row,
     ) -> Result<Value, GqlError> {
-        let planner =
-            QueryPlanner::with_context(self.store, graph, self.registry, &self.parameters);
+        let planner = QueryPlanner::with_context(self.store, graph, self.registry, &self.parameters);
         // Use plan_unchecked to skip validation (inner query may reference outer-scope variables)
         let inner_op = planner.plan_unchecked(inner_query)?;
         let outer = vec![outer_row.clone()];
@@ -2678,8 +2676,7 @@ impl<'a> QueryExecutor<'a> {
         where_expr: Option<&Expr>,
         outer_row: &Row,
     ) -> Result<Value, GqlError> {
-        let planner =
-            QueryPlanner::with_context(self.store, graph, self.registry, &self.parameters);
+        let planner = QueryPlanner::with_context(self.store, graph, self.registry, &self.parameters);
         let sub_op = planner.plan_exists_subquery(patterns, None)?;
 
         let outer = vec![outer_row.clone()];
@@ -2996,23 +2993,31 @@ impl AggState {
             AggFunction::Max => Ok(self.max.clone().unwrap_or(Value::Null)),
             AggFunction::Collect => Ok(Value::List(self.collected.clone())),
             AggFunction::StDev => {
-                let nums: Vec<f64> = self.collected.iter().filter_map(|v| v.as_float()).collect();
+                let nums: Vec<f64> = self
+                    .collected
+                    .iter()
+                    .filter_map(|v| v.as_float())
+                    .collect();
                 if nums.len() <= 1 {
                     return Ok(Value::Float(0.0));
                 }
                 let mean = nums.iter().sum::<f64>() / nums.len() as f64;
-                let variance =
-                    nums.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / (nums.len() - 1) as f64;
+                let variance = nums.iter().map(|x| (x - mean).powi(2)).sum::<f64>()
+                    / (nums.len() - 1) as f64;
                 Ok(Value::Float(variance.sqrt()))
             }
             AggFunction::StDevP => {
-                let nums: Vec<f64> = self.collected.iter().filter_map(|v| v.as_float()).collect();
+                let nums: Vec<f64> = self
+                    .collected
+                    .iter()
+                    .filter_map(|v| v.as_float())
+                    .collect();
                 if nums.is_empty() {
                     return Ok(Value::Float(0.0));
                 }
                 let mean = nums.iter().sum::<f64>() / nums.len() as f64;
-                let variance =
-                    nums.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / nums.len() as f64;
+                let variance = nums.iter().map(|x| (x - mean).powi(2)).sum::<f64>()
+                    / nums.len() as f64;
                 Ok(Value::Float(variance.sqrt()))
             }
             AggFunction::PercentileDisc => {
@@ -3023,17 +3028,18 @@ impl AggState {
                         actual: format!("NumberOutOfRange: {p}"),
                     }));
                 }
-                let mut nums: Vec<f64> =
-                    self.collected.iter().filter_map(|v| v.as_float()).collect();
+                let mut nums: Vec<f64> = self
+                    .collected
+                    .iter()
+                    .filter_map(|v| v.as_float())
+                    .collect();
                 if nums.is_empty() {
                     return Ok(Value::Null);
                 }
                 nums.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
                 // Nearest rank method: index = ceil(p * n) - 1 (clamped)
                 let n = nums.len();
-                let idx = ((p * n as f64).ceil() as usize)
-                    .saturating_sub(1)
-                    .min(n - 1);
+                let idx = ((p * n as f64).ceil() as usize).saturating_sub(1).min(n - 1);
                 // Return as integer if all values are whole numbers
                 let v = nums[idx];
                 if v.fract() == 0.0 && v >= i64::MIN as f64 && v <= i64::MAX as f64 {
@@ -3050,8 +3056,11 @@ impl AggState {
                         actual: format!("NumberOutOfRange: {p}"),
                     }));
                 }
-                let mut nums: Vec<f64> =
-                    self.collected.iter().filter_map(|v| v.as_float()).collect();
+                let mut nums: Vec<f64> = self
+                    .collected
+                    .iter()
+                    .filter_map(|v| v.as_float())
+                    .collect();
                 if nums.is_empty() {
                     return Ok(Value::Null);
                 }
@@ -3384,11 +3393,7 @@ fn expr_to_column_name(expr: &Expr) -> String {
             format!("[{}]", items_str.join(", "))
         }
         Expr::Subscript(list, idx) => {
-            format!(
-                "{}[{}]",
-                expr_to_column_name(list),
-                expr_to_column_name(idx)
-            )
+            format!("{}[{}]", expr_to_column_name(list), expr_to_column_name(idx))
         }
         _ => format!("{:?}", expr),
     }
@@ -3489,23 +3494,15 @@ fn eval_binary_values(
         }
         // Temporal arithmetic: temporal +/- duration, duration +/- duration, duration * int, etc.
         BinaryOp::Add | BinaryOp::Concat => {
-            use crate::executor::filter::{duration_add, temporal_add_duration};
+            use crate::executor::filter::{temporal_add_duration, duration_add};
             match (&lv, &rv) {
                 (Value::Null, _) | (_, Value::Null) => Ok(Value::Null),
-                (
-                    temporal @ (Value::Date(_)
-                    | Value::LocalTime(_)
-                    | Value::LocalDateTime(_)
-                    | Value::DateTime(_)),
-                    Value::Duration(dur),
-                ) => temporal_add_duration(temporal, dur, false),
-                (
-                    Value::Duration(dur),
-                    temporal @ (Value::Date(_)
-                    | Value::LocalTime(_)
-                    | Value::LocalDateTime(_)
-                    | Value::DateTime(_)),
-                ) => temporal_add_duration(temporal, dur, false),
+                (temporal @ (Value::Date(_) | Value::LocalTime(_) | Value::LocalDateTime(_) | Value::DateTime(_)), Value::Duration(dur)) => {
+                    temporal_add_duration(temporal, dur, false)
+                }
+                (Value::Duration(dur), temporal @ (Value::Date(_) | Value::LocalTime(_) | Value::LocalDateTime(_) | Value::DateTime(_))) => {
+                    temporal_add_duration(temporal, dur, false)
+                }
                 (Value::Duration(a), Value::Duration(b)) => Ok(Value::Duration(duration_add(a, b))),
                 // List concatenation: handle directly to preserve Node/Edge/Path values
                 // that value_to_expr would otherwise convert to Null.
@@ -3517,35 +3514,23 @@ fn eval_binary_values(
                 _ => {
                     let left_lit = value_to_expr(&lv);
                     let right_lit = value_to_expr(&rv);
-                    let rebuilt = Expr::BinaryOp {
-                        op,
-                        left: Box::new(left_lit),
-                        right: Box::new(right_lit),
-                    };
+                    let rebuilt = Expr::BinaryOp { op, left: Box::new(left_lit), right: Box::new(right_lit) };
                     eval_expr(&rebuilt, ctx)
                 }
             }
         }
         BinaryOp::Sub => {
-            use crate::executor::filter::{duration_sub, temporal_add_duration};
+            use crate::executor::filter::{temporal_add_duration, duration_sub};
             match (&lv, &rv) {
                 (Value::Null, _) | (_, Value::Null) => Ok(Value::Null),
-                (
-                    temporal @ (Value::Date(_)
-                    | Value::LocalTime(_)
-                    | Value::LocalDateTime(_)
-                    | Value::DateTime(_)),
-                    Value::Duration(dur),
-                ) => temporal_add_duration(temporal, dur, true),
+                (temporal @ (Value::Date(_) | Value::LocalTime(_) | Value::LocalDateTime(_) | Value::DateTime(_)), Value::Duration(dur)) => {
+                    temporal_add_duration(temporal, dur, true)
+                }
                 (Value::Duration(a), Value::Duration(b)) => Ok(Value::Duration(duration_sub(a, b))),
                 _ => {
                     let left_lit = value_to_expr(&lv);
                     let right_lit = value_to_expr(&rv);
-                    let rebuilt = Expr::BinaryOp {
-                        op,
-                        left: Box::new(left_lit),
-                        right: Box::new(right_lit),
-                    };
+                    let rebuilt = Expr::BinaryOp { op, left: Box::new(left_lit), right: Box::new(right_lit) };
                     eval_expr(&rebuilt, ctx)
                 }
             }
@@ -3556,20 +3541,12 @@ fn eval_binary_values(
                 (Value::Null, _) | (_, Value::Null) => Ok(Value::Null),
                 (Value::Duration(d), Value::Int(n)) => Ok(Value::Duration(duration_mul(d, *n))),
                 (Value::Int(n), Value::Duration(d)) => Ok(Value::Duration(duration_mul(d, *n))),
-                (Value::Duration(d), Value::Float(f)) => {
-                    Ok(Value::Duration(duration_mul_f64(d, *f)))
-                }
-                (Value::Float(f), Value::Duration(d)) => {
-                    Ok(Value::Duration(duration_mul_f64(d, *f)))
-                }
+                (Value::Duration(d), Value::Float(f)) => Ok(Value::Duration(duration_mul_f64(d, *f))),
+                (Value::Float(f), Value::Duration(d)) => Ok(Value::Duration(duration_mul_f64(d, *f))),
                 _ => {
                     let left_lit = value_to_expr(&lv);
                     let right_lit = value_to_expr(&rv);
-                    let rebuilt = Expr::BinaryOp {
-                        op,
-                        left: Box::new(left_lit),
-                        right: Box::new(right_lit),
-                    };
+                    let rebuilt = Expr::BinaryOp { op, left: Box::new(left_lit), right: Box::new(right_lit) };
                     eval_expr(&rebuilt, ctx)
                 }
             }
@@ -3579,17 +3556,11 @@ fn eval_binary_values(
             match (&lv, &rv) {
                 (Value::Null, _) | (_, Value::Null) => Ok(Value::Null),
                 (Value::Duration(d), Value::Int(n)) => duration_div(d, *n).map(Value::Duration),
-                (Value::Duration(d), Value::Float(f)) => {
-                    Ok(Value::Duration(duration_mul_f64(d, 1.0 / f)))
-                }
+                (Value::Duration(d), Value::Float(f)) => Ok(Value::Duration(duration_mul_f64(d, 1.0 / f))),
                 _ => {
                     let left_lit = value_to_expr(&lv);
                     let right_lit = value_to_expr(&rv);
-                    let rebuilt = Expr::BinaryOp {
-                        op,
-                        left: Box::new(left_lit),
-                        right: Box::new(right_lit),
-                    };
+                    let rebuilt = Expr::BinaryOp { op, left: Box::new(left_lit), right: Box::new(right_lit) };
                     eval_expr(&rebuilt, ctx)
                 }
             }
@@ -3652,7 +3623,7 @@ pub fn cmp_values(a: &Value, b: &Value) -> std::cmp::Ordering {
             Value::Path { .. } => 4,
             Value::Str(_) => 5,
             Value::Bool(_) => 6,
-            Value::Float(f) if f.is_nan() => 8, // NaN sorts after regular numbers
+            Value::Float(f) if f.is_nan() => 8,  // NaN sorts after regular numbers
             Value::Int(_) | Value::Float(_) => 7,
             Value::Date(_) => 10,
             Value::LocalTime(_) => 11,
@@ -4111,7 +4082,7 @@ mod tests {
         let mut budget = ExecutionBudget::unlimited();
         let result = executor.execute("g", &plan, &mut budget).unwrap();
         // Should terminate and not loop infinitely
-        assert!(!result.rows.is_empty());
+        assert!(result.rows.len() > 0);
         assert!(result.rows.len() < 100); // bounded by cycle avoidance
     }
 
@@ -5015,9 +4986,7 @@ mod tests {
         let planner = QueryPlanner::new(&store, "g");
         let plan = planner.plan(&ast).unwrap();
         let mut budget = ExecutionBudget::unlimited();
-        QueryExecutor::new(&store)
-            .execute("g", &plan, &mut budget)
-            .unwrap();
+        QueryExecutor::new(&store).execute("g", &plan, &mut budget).unwrap();
 
         // Now test the VarLen query
         let query = "MATCH (a {name: 'A'})-[*]->(x) RETURN x";
@@ -5025,9 +4994,7 @@ mod tests {
         let plan2 = planner.plan(&ast2).unwrap();
         eprintln!("VarLen plan: {:#?}", plan2);
         let mut budget2 = ExecutionBudget::unlimited();
-        let result = QueryExecutor::new(&store)
-            .execute("g", &plan2, &mut budget2)
-            .unwrap();
+        let result = QueryExecutor::new(&store).execute("g", &plan2, &mut budget2).unwrap();
         eprintln!("VarLen result: {} rows", result.rows.len());
         for row in &result.rows {
             eprintln!("  {:?}", row);
