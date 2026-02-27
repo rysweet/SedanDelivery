@@ -39,6 +39,10 @@ harness = false
 name    = "executor"
 harness = false
 
+[[bench]]
+name    = "scale"
+harness = false
+
 [[test]]
 name    = "tck"
 path    = "tests/tck/runner.rs"

@@ -764,14 +764,18 @@ fn test_optional_match() {
         .unwrap();
 
     store
-        .create_edge("test", bob_id, alice_id, "KNOWS".to_string(), HashMap::new())
+        .create_edge(
+            "test",
+            bob_id,
+            alice_id,
+            "KNOWS".to_string(),
+            HashMap::new(),
+        )
         .unwrap();
 
     // MATCH (p:Person) OPTIONAL MATCH (p)-[:KNOWS]->(f) RETURN p.name, f.name
-    let q = parse_query(
-        "MATCH (p:Person) OPTIONAL MATCH (p)-[:KNOWS]->(f) RETURN p.name, f.name",
-    )
-    .unwrap();
+    let q = parse_query("MATCH (p:Person) OPTIONAL MATCH (p)-[:KNOWS]->(f) RETURN p.name, f.name")
+        .unwrap();
     let planner = QueryPlanner::new(&store, "test");
     let plan = planner.plan(&q).unwrap();
 
@@ -819,10 +823,8 @@ fn test_optional_match_no_match() {
         .create_node("test", vec!["Person".to_string()], props)
         .unwrap();
 
-    let q = parse_query(
-        "MATCH (p:Person) OPTIONAL MATCH (p)-[:KNOWS]->(f) RETURN p.name, f.name",
-    )
-    .unwrap();
+    let q = parse_query("MATCH (p:Person) OPTIONAL MATCH (p)-[:KNOWS]->(f) RETURN p.name, f.name")
+        .unwrap();
     let planner = QueryPlanner::new(&store, "test");
     let plan = planner.plan(&q).unwrap();
 
@@ -951,7 +953,10 @@ fn test_merge_relationship() {
     // Second MERGE: matches existing relationship — edge count should not grow.
     let mut budget2 = unlimited();
     let result2 = executor.execute("test", &plan, &mut budget2).unwrap();
-    assert_eq!(result2.stats.edges_created, 0, "second MERGE should match, not create");
+    assert_eq!(
+        result2.stats.edges_created, 0,
+        "second MERGE should match, not create"
+    );
 }
 
 // ── Test 16: SET — property assignment ────────────────────────────────────────
@@ -966,10 +971,8 @@ fn test_set_property() {
         .create_node("test", vec!["Person".to_string()], props)
         .unwrap();
 
-    let q = parse_query(
-        "MATCH (p:Person {name: 'Alice'}) SET p.age = 30 RETURN p.name, p.age",
-    )
-    .unwrap();
+    let q = parse_query("MATCH (p:Person {name: 'Alice'}) SET p.age = 30 RETURN p.name, p.age")
+        .unwrap();
     let planner = QueryPlanner::new(&store, "test");
     let plan = planner.plan(&q).unwrap();
 
@@ -1008,7 +1011,10 @@ fn test_set_map_merge() {
 
     assert_eq!(result.rows.len(), 1);
     // Original props should still be present.
-    assert_eq!(result.rows[0].get("p.name"), Some(&Value::Str("Bob".into())));
+    assert_eq!(
+        result.rows[0].get("p.name"),
+        Some(&Value::Str("Bob".into()))
+    );
     assert_eq!(result.rows[0].get("p.age"), Some(&Value::Int(25)));
     // New prop should be added.
     assert_eq!(
@@ -1027,14 +1033,16 @@ fn test_remove_property_and_label() {
     props.insert("name".to_string(), Value::Str("Dave".into()));
     props.insert("tmp".to_string(), Value::Int(99));
     store
-        .create_node("test", vec!["Person".to_string(), "Temp".to_string()], props)
+        .create_node(
+            "test",
+            vec!["Person".to_string(), "Temp".to_string()],
+            props,
+        )
         .unwrap();
 
     // Remove the tmp property.
-    let q = parse_query(
-        "MATCH (p:Person {name: 'Dave'}) REMOVE p.tmp RETURN p.name, p.tmp",
-    )
-    .unwrap();
+    let q =
+        parse_query("MATCH (p:Person {name: 'Dave'}) REMOVE p.tmp RETURN p.name, p.tmp").unwrap();
     let planner = QueryPlanner::new(&store, "test");
     let plan = planner.plan(&q).unwrap();
 
@@ -1050,16 +1058,17 @@ fn test_remove_property_and_label() {
     );
 
     // Remove the Temp label.
-    let q2 = parse_query(
-        "MATCH (p:Temp) REMOVE p:Temp RETURN p.name",
-    )
-    .unwrap();
+    let q2 = parse_query("MATCH (p:Temp) REMOVE p:Temp RETURN p.name").unwrap();
     let planner2 = QueryPlanner::new(&store, "test");
     let plan2 = planner2.plan(&q2).unwrap();
 
     let mut budget2 = unlimited();
     let result2 = executor.execute("test", &plan2, &mut budget2).unwrap();
-    assert_eq!(result2.rows.len(), 1, "should find Dave as :Temp before removal");
+    assert_eq!(
+        result2.rows.len(),
+        1,
+        "should find Dave as :Temp before removal"
+    );
 
     // After removal, MATCH (p:Temp) should find nothing.
     let q3 = parse_query("MATCH (p:Temp) RETURN p.name").unwrap();
@@ -1092,10 +1101,7 @@ fn test_delete_node_and_relationship() {
         .unwrap();
 
     // Delete the relationship first.
-    let q_del_rel = parse_query(
-        "MATCH (a:Person {name: 'Eve'})-[r:KNOWS]->(b) DELETE r",
-    )
-    .unwrap();
+    let q_del_rel = parse_query("MATCH (a:Person {name: 'Eve'})-[r:KNOWS]->(b) DELETE r").unwrap();
     let planner = QueryPlanner::new(&store, "test");
     let plan = planner.plan(&q_del_rel).unwrap();
     let executor = QueryExecutor::new(&store);
@@ -1105,9 +1111,7 @@ fn test_delete_node_and_relationship() {
 
     // Now delete a node (no edges remain, so plain DELETE works).
     let q_del_node = parse_query("MATCH (p:Person {name: 'Eve'}) DELETE p").unwrap();
-    let plan2 = QueryPlanner::new(&store, "test")
-        .plan(&q_del_node)
-        .unwrap();
+    let plan2 = QueryPlanner::new(&store, "test").plan(&q_del_node).unwrap();
     let mut budget2 = unlimited();
     let result2 = executor.execute("test", &plan2, &mut budget2).unwrap();
     assert_eq!(result2.stats.nodes_deleted, 1, "one node should be deleted");
@@ -1125,8 +1129,14 @@ fn test_delete_node_and_relationship() {
     let plan3 = QueryPlanner::new(&store, "test").plan(&q_detach).unwrap();
     let mut budget3 = unlimited();
     let result3 = executor.execute("test", &plan3, &mut budget3).unwrap();
-    assert_eq!(result3.stats.nodes_deleted, 1, "Frank should be detach-deleted");
-    assert!(result3.stats.edges_deleted >= 1, "Frank's edges should be deleted");
+    assert_eq!(
+        result3.stats.nodes_deleted, 1,
+        "Frank should be detach-deleted"
+    );
+    assert!(
+        result3.stats.edges_deleted >= 1,
+        "Frank's edges should be deleted"
+    );
 }
 
 // ── Test 20: UNWIND — list, empty list, null ──────────────────────────────────
@@ -1204,7 +1214,11 @@ fn test_union_deduplication() {
     let executor = QueryExecutor::new(&store);
     let mut budget = unlimited();
     let result = executor.execute("test", &plan, &mut budget).unwrap();
-    assert_eq!(result.rows.len(), 1, "UNION should deduplicate to one 'Alice' row");
+    assert_eq!(
+        result.rows.len(),
+        1,
+        "UNION should deduplicate to one 'Alice' row"
+    );
 }
 
 #[test]
@@ -1240,15 +1254,21 @@ fn test_varlen_paths() {
     // Chain: A -KNOWS-> B -KNOWS-> C
     let mut p = HashMap::new();
     p.insert("name".to_string(), Value::Str("A".into()));
-    let a = store.create_node("test", vec!["Person".to_string()], p).unwrap();
+    let a = store
+        .create_node("test", vec!["Person".to_string()], p)
+        .unwrap();
 
     let mut p = HashMap::new();
     p.insert("name".to_string(), Value::Str("B".into()));
-    let b = store.create_node("test", vec!["Person".to_string()], p).unwrap();
+    let b = store
+        .create_node("test", vec!["Person".to_string()], p)
+        .unwrap();
 
     let mut p = HashMap::new();
     p.insert("name".to_string(), Value::Str("C".into()));
-    let c = store.create_node("test", vec!["Person".to_string()], p).unwrap();
+    let c = store
+        .create_node("test", vec!["Person".to_string()], p)
+        .unwrap();
 
     store
         .create_edge("test", a, b, "KNOWS".to_string(), HashMap::new())
@@ -1258,17 +1278,19 @@ fn test_varlen_paths() {
         .unwrap();
 
     // Paths of length 1 to 2: A->B (len 1), B->C (len 1), A->C (len 2).
-    let q = parse_query(
-        "MATCH (a:Person)-[:KNOWS*1..2]->(b:Person) RETURN a.name, b.name",
-    )
-    .unwrap();
+    let q =
+        parse_query("MATCH (a:Person)-[:KNOWS*1..2]->(b:Person) RETURN a.name, b.name").unwrap();
     let planner = QueryPlanner::new(&store, "test");
     let plan = planner.plan(&q).unwrap();
     let executor = QueryExecutor::new(&store);
     let mut budget = unlimited();
     let result = executor.execute("test", &plan, &mut budget).unwrap();
 
-    assert!(result.rows.len() >= 3, "expected at least 3 paths (A->B, B->C, A->C), got {}", result.rows.len());
+    assert!(
+        result.rows.len() >= 3,
+        "expected at least 3 paths (A->B, B->C, A->C), got {}",
+        result.rows.len()
+    );
 
     let has_a_to_c = result.rows.iter().any(|r| {
         r.get("a.name") == Some(&Value::Str("A".into()))
@@ -1353,7 +1375,10 @@ fn test_shortest_path_operator() {
             false
         }
     });
-    assert!(has_shortest, "should find direct shortest path A->C with 1 edge");
+    assert!(
+        has_shortest,
+        "should find direct shortest path A->C with 1 edge"
+    );
 }
 
 // ── Test 24: CALL procedure ───────────────────────────────────────────────────
@@ -1436,7 +1461,11 @@ fn test_with_clause_chaining() {
         .iter()
         .map(|r| r["name"].as_str().unwrap())
         .collect();
-    assert_eq!(names, vec!["Alice", "Carol"], "should be alphabetically ordered");
+    assert_eq!(
+        names,
+        vec!["Alice", "Carol"],
+        "should be alphabetically ordered"
+    );
 }
 
 // ── Test 26: EXISTS subquery ──────────────────────────────────────────────────
@@ -1459,13 +1488,17 @@ fn test_exists_subquery() {
 
     // Alice knows Bob, but Bob knows nobody.
     store
-        .create_edge("test", alice_id, bob_id, "KNOWS".to_string(), HashMap::new())
+        .create_edge(
+            "test",
+            alice_id,
+            bob_id,
+            "KNOWS".to_string(),
+            HashMap::new(),
+        )
         .unwrap();
 
-    let q = parse_query(
-        "MATCH (p:Person) WHERE EXISTS { (p)-[:KNOWS]->() } RETURN p.name",
-    )
-    .unwrap();
+    let q =
+        parse_query("MATCH (p:Person) WHERE EXISTS { (p)-[:KNOWS]->() } RETURN p.name").unwrap();
     let planner = QueryPlanner::new(&store, "test");
     let plan = planner.plan(&q).unwrap();
 
@@ -1511,14 +1544,18 @@ fn test_case_simple_expression() {
     let result = executor.execute("test", &plan, &mut budget).unwrap();
 
     assert_eq!(result.rows.len(), 2);
-    let alice_grade = result.rows.iter().find(|r| {
-        r.get("s.name") == Some(&Value::Str("Alice".into()))
-    }).and_then(|r| r.get("grade"));
+    let alice_grade = result
+        .rows
+        .iter()
+        .find(|r| r.get("s.name") == Some(&Value::Str("Alice".into())))
+        .and_then(|r| r.get("grade"));
     assert_eq!(alice_grade, Some(&Value::Str("pass".into())));
 
-    let bob_grade = result.rows.iter().find(|r| {
-        r.get("s.name") == Some(&Value::Str("Bob".into()))
-    }).and_then(|r| r.get("grade"));
+    let bob_grade = result
+        .rows
+        .iter()
+        .find(|r| r.get("s.name") == Some(&Value::Str("Bob".into())))
+        .and_then(|r| r.get("grade"));
     assert_eq!(bob_grade, Some(&Value::Str("fail".into())));
 }
 
@@ -1546,7 +1583,10 @@ fn test_case_value_expression() {
     let result = executor.execute("test", &plan, &mut budget).unwrap();
 
     assert_eq!(result.rows.len(), 1);
-    assert_eq!(result.rows[0].get("label"), Some(&Value::Str("active".into())));
+    assert_eq!(
+        result.rows[0].get("label"),
+        Some(&Value::Str("active".into()))
+    );
 }
 
 // ── Test 28: List comprehension ───────────────────────────────────────────────
@@ -1556,10 +1596,7 @@ fn test_list_comprehension() {
     let store = make_store();
 
     // [x IN [1,2,3,4,5] WHERE x > 2 | x * 2]
-    let q = parse_query(
-        "RETURN [x IN [1, 2, 3, 4, 5] WHERE x > 2 | x * 2] AS result",
-    )
-    .unwrap();
+    let q = parse_query("RETURN [x IN [1, 2, 3, 4, 5] WHERE x > 2 | x * 2] AS result").unwrap();
     let planner = QueryPlanner::new(&store, "test");
     let plan = planner.plan(&q).unwrap();
 
@@ -1570,7 +1607,11 @@ fn test_list_comprehension() {
     assert_eq!(result.rows.len(), 1);
     match &result.rows[0]["result"] {
         Value::List(items) => {
-            assert_eq!(items.len(), 3, "elements > 2 are [3,4,5], doubled to [6,8,10]");
+            assert_eq!(
+                items.len(),
+                3,
+                "elements > 2 are [3,4,5], doubled to [6,8,10]"
+            );
             assert_eq!(items[0], Value::Int(6));
             assert_eq!(items[1], Value::Int(8));
             assert_eq!(items[2], Value::Int(10));
@@ -1596,10 +1637,7 @@ fn test_parameter_injection() {
     let mut params = HashMap::new();
     params.insert("targetName".to_string(), Value::Str("Bob".into()));
 
-    let q = parse_query(
-        "MATCH (p:Person) WHERE p.name = $targetName RETURN p.name",
-    )
-    .unwrap();
+    let q = parse_query("MATCH (p:Person) WHERE p.name = $targetName RETURN p.name").unwrap();
     let registry = ProcedureRegistry::new();
     let planner = QueryPlanner::with_context(&store, "test", &registry, &params);
     let plan = planner.plan(&q).unwrap();
@@ -1654,7 +1692,10 @@ fn test_path_variable() {
     // All hops values should be positive integers.
     for row in &result.rows {
         let hops = row.get("hops").expect("hops column should exist");
-        assert!(matches!(hops, Value::Int(n) if *n >= 1), "path length should be >= 1, got {hops:?}");
+        assert!(
+            matches!(hops, Value::Int(n) if *n >= 1),
+            "path length should be >= 1, got {hops:?}"
+        );
     }
 
     // There should be paths of both length 1 (A->B, B->C) and length 2 (A->C).
@@ -1688,10 +1729,8 @@ fn test_aggregation_group_by() {
             .unwrap();
     }
 
-    let q = parse_query(
-        "MATCH (p:Person) RETURN p.dept AS dept, count(p) AS cnt ORDER BY dept",
-    )
-    .unwrap();
+    let q = parse_query("MATCH (p:Person) RETURN p.dept AS dept, count(p) AS cnt ORDER BY dept")
+        .unwrap();
     let planner = QueryPlanner::new(&store, "test");
     let plan = planner.plan(&q).unwrap();
 

@@ -11,6 +11,7 @@ env:
   RUST_BACKTRACE: 1
 
 jobs:
+  # ── Tier 1 + 2: Run on every PR and push ────────────────────────────────────
   test:
     name: Test (stable)
     runs-on: ubuntu-latest
@@ -39,6 +40,7 @@ jobs:
       - name: Install libclang (required by redis-module bindgen)
         run: sudo apt-get update -q && sudo apt-get install -y -q libclang-dev
 
+      # ── Tier 1: Fast checks (< 2 min) ──────────────────────────────────────
       - name: Check formatting
         run: cargo fmt --check
 
@@ -48,21 +50,75 @@ jobs:
       - name: Run unit tests
         run: cargo test -p gql-core --lib
 
-      - name: Run integration tests
+      # ── Tier 2: Standard integration tests (< 10 min) ──────────────────────
+      - name: Run integration tests (end-to-end)
         run: cargo test -p gql-core --test end_to_end
+
+      - name: Run integration tests (exists/interactive)
+        run: cargo test -p gql-core --test exists_interactive
+
+      - name: Run data integrity tests
+        run: cargo test -p gql-core --test data_integrity
+
+      - name: Run adversarial query tests
+        run: cargo test -p gql-core --test adversarial
 
       - name: Check all crates compile
         run: cargo check --workspace
 
+  # ── Tier 3: Full suite — only on push to main (< 30 min) ──────────────────
+  full-suite:
+    name: Full Test Suite
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v4.1.5
+
+      - name: Install Rust stable
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+
+      - name: Cache cargo registry
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-full-${{ hashFiles('**/Cargo.toml') }}
+          restore-keys: ${{ runner.os }}-cargo-full-
+
+      - name: Install libclang
+        run: sudo apt-get update -q && sudo apt-get install -y -q libclang-dev
+
+      - name: Run TCK compliance suite (3806 scenarios)
+        run: cargo test -p gql-core --test tck
+
+      - name: Run stress tests
+        run: cargo test -p gql-core --test stress
+
+  # ── Code Coverage (Tier 4 element, runs on every push) ─────────────────────
   coverage:
     name: Code Coverage
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: taiki-e/install-action@cargo-tarpaulin
+      - uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v4.1.5
+
+      - name: Install Rust stable
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+
+      - name: Install libclang (required by gql-module bindgen)
+        run: sudo apt-get update -q && sudo apt-get install -y -q libclang-dev
+
+      - name: Install cargo-tarpaulin
+        run: cargo install cargo-tarpaulin --locked
+
       - name: Generate coverage
         run: cargo tarpaulin -p gql-core --lib --out xml --output-dir coverage/ -- --test-threads 1
+
       - name: Check coverage threshold
         run: |
           COVERAGE=$(cargo tarpaulin -p gql-core --lib --print-rust-flags 2>&1 | grep "coverage:" | awk '{print $2}' | sed 's/%//')
@@ -71,12 +127,55 @@ jobs:
             echo "FAIL: Coverage $COVERAGE% is below 70% threshold"
             exit 1
           fi
+
       - name: Upload coverage to GitHub
         uses: actions/upload-artifact@v4
         with:
           name: coverage-report
           path: coverage/
 
+  # ── Tier 4: Nightly benchmarks (scheduled) ──────────────────────────────────
+  benchmarks:
+    name: Performance Benchmarks
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v4.1.5
+
+      - name: Install Rust stable
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+
+      - name: Cache cargo registry
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-bench-${{ hashFiles('**/Cargo.toml') }}
+          restore-keys: ${{ runner.os }}-cargo-bench-
+
+      - name: Install libclang
+        run: sudo apt-get update -q && sudo apt-get install -y -q libclang-dev
+
+      - name: Run parser benchmarks
+        run: cargo bench -p gql-core --bench parser -- --output-format bencher | tee bench-parser.txt
+
+      - name: Run executor benchmarks
+        run: cargo bench -p gql-core --bench executor -- --output-format bencher | tee bench-executor.txt
+
+      - name: Run scale benchmarks
+        run: cargo bench -p gql-core --bench scale -- --output-format bencher | tee bench-scale.txt
+
+      - name: Upload benchmark results
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-results
+          path: "*.txt"
+
+  # ── MSRV check ───────────────────────────────────────────────────────────────
   msrv:
     # smol_str 0.3.5 requires rustc 1.89; jiff requires 1.70
     name: MSRV check (1.89.0)

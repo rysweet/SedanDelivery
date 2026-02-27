@@ -16,8 +16,8 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use crate::ast::{Direction, Expr};
 use crate::error::{ExecutionError, GqlError, StorageError};
 use crate::executor::budget::ExecutionBudget;
-use crate::executor::filter::{eval_expr, eval_function_with_vals, quantifier_result};
 use crate::executor::filter::Row as FilterRow;
+use crate::executor::filter::{eval_expr, eval_function_with_vals, quantifier_result};
 use crate::planner::{AggFunction, Operator, QueryPlanner, RemoveItem, SetItem};
 use crate::procedure::ProcedureRegistry;
 use crate::storage::{EdgeId, GraphStore, NodeId, RangeQuery};
@@ -203,36 +203,68 @@ impl<'a> QueryExecutor<'a> {
             Operator::Skip { .. } => self.exec_skip(graph, op, budget, outer_rows, stats),
             Operator::Aggregate { .. } => self.exec_aggregate(graph, op, budget, outer_rows, stats),
             Operator::Create { .. } => self.exec_create(graph, op, budget, outer_rows, stats),
-            Operator::AssemblePath { .. } => self.exec_assemble_path(graph, op, budget, outer_rows, stats),
+            Operator::AssemblePath { .. } => {
+                self.exec_assemble_path(graph, op, budget, outer_rows, stats)
+            }
             Operator::Call { .. } => self.exec_call(graph, op, budget, outer_rows, stats),
-            Operator::ProduceResults { .. } => self.exec_produce_results(graph, op, budget, outer_rows, stats),
-            Operator::VarLenExpand { .. } => self.exec_var_len_expand(graph, op, budget, outer_rows, stats),
+            Operator::ProduceResults { .. } => {
+                self.exec_produce_results(graph, op, budget, outer_rows, stats)
+            }
+            Operator::VarLenExpand { .. } => {
+                self.exec_var_len_expand(graph, op, budget, outer_rows, stats)
+            }
             Operator::Set { .. } => self.exec_set(graph, op, budget, outer_rows, stats),
             Operator::Remove { .. } => self.exec_remove(graph, op, budget, outer_rows, stats),
             Operator::Delete { .. } => self.exec_delete(graph, op, budget, outer_rows, stats),
             Operator::Merge { .. } => self.exec_merge(graph, op, budget, outer_rows, stats),
-            Operator::MergeRelationship { .. } => self.exec_merge_rel(graph, op, budget, outer_rows, stats),
+            Operator::MergeRelationship { .. } => {
+                self.exec_merge_rel(graph, op, budget, outer_rows, stats)
+            }
             Operator::Unwind { .. } => self.exec_unwind(graph, op, budget, outer_rows, stats),
             Operator::Union { .. } => self.exec_union(graph, op, budget, outer_rows, stats),
-            Operator::LeftOuterApply { .. } => self.exec_left_outer_apply(graph, op, budget, outer_rows, stats),
+            Operator::LeftOuterApply { .. } => {
+                self.exec_left_outer_apply(graph, op, budget, outer_rows, stats)
+            }
             Operator::Apply { .. } => self.exec_apply(graph, op, budget, outer_rows, stats),
-            Operator::IndexScan { .. } => self.exec_index_scan(graph, op, budget, outer_rows, stats),
-            Operator::NodeByIdSeek { .. } => self.exec_node_by_id_seek(graph, op, budget, outer_rows, stats),
-            Operator::ShortestPath { .. } => self.exec_shortest_path(graph, op, budget, outer_rows, stats),
+            Operator::IndexScan { .. } => {
+                self.exec_index_scan(graph, op, budget, outer_rows, stats)
+            }
+            Operator::NodeByIdSeek { .. } => {
+                self.exec_node_by_id_seek(graph, op, budget, outer_rows, stats)
+            }
+            Operator::ShortestPath { .. } => {
+                self.exec_shortest_path(graph, op, budget, outer_rows, stats)
+            }
         }
     }
 
     // ── Extracted operator methods ─────────────────────────────────────────
 
-    fn exec_single_row(&self, _graph: &str, _op: &Operator, budget: &mut ExecutionBudget, _outer_rows: &[Row], _stats: &mut MutationStats) -> Result<Vec<Row>, GqlError> {
+    fn exec_single_row(
+        &self,
+        _graph: &str,
+        _op: &Operator,
+        budget: &mut ExecutionBudget,
+        _outer_rows: &[Row],
+        _stats: &mut MutationStats,
+    ) -> Result<Vec<Row>, GqlError> {
         budget.record_row();
         let mut row = Row::new();
         inject_parameters(&mut row, &self.parameters);
         Ok(vec![row])
     }
 
-    fn exec_node_scan(&self, graph: &str, op: &Operator, budget: &mut ExecutionBudget, outer_rows: &[Row], _stats: &mut MutationStats) -> Result<Vec<Row>, GqlError> {
-        let Operator::NodeScan { label, alias } = op else { unreachable!() };
+    fn exec_node_scan(
+        &self,
+        graph: &str,
+        op: &Operator,
+        budget: &mut ExecutionBudget,
+        outer_rows: &[Row],
+        _stats: &mut MutationStats,
+    ) -> Result<Vec<Row>, GqlError> {
+        let Operator::NodeScan { label, alias } = op else {
+            unreachable!()
+        };
         let node_ids = if let Some(lbl) = label {
             self.store.find_nodes_by_label(graph, lbl.as_str())?
         } else {
@@ -306,8 +338,17 @@ impl<'a> QueryExecutor<'a> {
         Ok(rows)
     }
 
-    fn exec_filter(&self, graph: &str, op: &Operator, budget: &mut ExecutionBudget, outer_rows: &[Row], stats: &mut MutationStats) -> Result<Vec<Row>, GqlError> {
-        let Operator::Filter { predicate, child } = op else { unreachable!() };
+    fn exec_filter(
+        &self,
+        graph: &str,
+        op: &Operator,
+        budget: &mut ExecutionBudget,
+        outer_rows: &[Row],
+        stats: &mut MutationStats,
+    ) -> Result<Vec<Row>, GqlError> {
+        let Operator::Filter { predicate, child } = op else {
+            unreachable!()
+        };
         let input = self.exec_operator(graph, child, budget, outer_rows, stats)?;
         let mut out = Vec::new();
         for row in input {
@@ -323,7 +364,14 @@ impl<'a> QueryExecutor<'a> {
         Ok(out)
     }
 
-    fn exec_expand(&self, graph: &str, op: &Operator, budget: &mut ExecutionBudget, outer_rows: &[Row], stats: &mut MutationStats) -> Result<Vec<Row>, GqlError> {
+    fn exec_expand(
+        &self,
+        graph: &str,
+        op: &Operator,
+        budget: &mut ExecutionBudget,
+        outer_rows: &[Row],
+        stats: &mut MutationStats,
+    ) -> Result<Vec<Row>, GqlError> {
         let Operator::Expand {
             direction,
             rel_types,
@@ -331,7 +379,10 @@ impl<'a> QueryExecutor<'a> {
             rel_alias,
             dst_alias,
             child,
-        } = op else { unreachable!() };
+        } = op
+        else {
+            unreachable!()
+        };
         let input = self.exec_operator(graph, child, budget, outer_rows, stats)?;
         let type_strs: Vec<&str> = rel_types.iter().map(|r| r.as_str()).collect();
         let mut out = Vec::new();
@@ -344,17 +395,12 @@ impl<'a> QueryExecutor<'a> {
             let src_id = extract_node_id(src_val, &src_alias.0)?;
 
             let adj_entries = match direction {
-                Direction::Outgoing => {
-                    self.store.out_edges_by_type(graph, src_id, &type_strs)?
-                }
-                Direction::Incoming => {
-                    self.store.in_edges_by_type(graph, src_id, &type_strs)?
-                }
+                Direction::Outgoing => self.store.out_edges_by_type(graph, src_id, &type_strs)?,
+                Direction::Incoming => self.store.in_edges_by_type(graph, src_id, &type_strs)?,
                 Direction::Undirected => {
                     let mut out_entries =
                         self.store.out_edges_by_type(graph, src_id, &type_strs)?;
-                    let in_entries =
-                        self.store.in_edges_by_type(graph, src_id, &type_strs)?;
+                    let in_entries = self.store.in_edges_by_type(graph, src_id, &type_strs)?;
                     // Deduplicate: for self-loops (src==dst), the same edge
                     // appears in both out_edges and in_edges. Keep only unique
                     // (edge_id, neighbor_id) pairs.
@@ -407,9 +453,16 @@ impl<'a> QueryExecutor<'a> {
                 let current_alias = rel_alias.as_ref().map(|ra| ra.0.as_str());
                 let outer_edge_vars: std::collections::HashSet<&str> =
                     match row.get("__outer_edge_vars__") {
-                        Some(Value::List(vs)) => vs.iter().filter_map(|v| {
-                            if let Value::Str(s) = v { Some(s.as_ref()) } else { None }
-                        }).collect(),
+                        Some(Value::List(vs)) => vs
+                            .iter()
+                            .filter_map(|v| {
+                                if let Value::Str(s) = v {
+                                    Some(s.as_ref())
+                                } else {
+                                    None
+                                }
+                            })
+                            .collect(),
                         _ => std::collections::HashSet::new(),
                     };
                 let edge_already_used = row.iter().any(|(key, v)| {
@@ -447,8 +500,17 @@ impl<'a> QueryExecutor<'a> {
         Ok(out)
     }
 
-    fn exec_project(&self, graph: &str, op: &Operator, budget: &mut ExecutionBudget, outer_rows: &[Row], stats: &mut MutationStats) -> Result<Vec<Row>, GqlError> {
-        let Operator::Project { items, child } = op else { unreachable!() };
+    fn exec_project(
+        &self,
+        graph: &str,
+        op: &Operator,
+        budget: &mut ExecutionBudget,
+        outer_rows: &[Row],
+        stats: &mut MutationStats,
+    ) -> Result<Vec<Row>, GqlError> {
+        let Operator::Project { items, child } = op else {
+            unreachable!()
+        };
         let input = self.exec_operator(graph, child, budget, outer_rows, stats)?;
         let mut out = Vec::with_capacity(input.len());
 
@@ -472,8 +534,17 @@ impl<'a> QueryExecutor<'a> {
         Ok(out)
     }
 
-    fn exec_distinct(&self, graph: &str, op: &Operator, budget: &mut ExecutionBudget, outer_rows: &[Row], stats: &mut MutationStats) -> Result<Vec<Row>, GqlError> {
-        let Operator::Distinct { child } = op else { unreachable!() };
+    fn exec_distinct(
+        &self,
+        graph: &str,
+        op: &Operator,
+        budget: &mut ExecutionBudget,
+        outer_rows: &[Row],
+        stats: &mut MutationStats,
+    ) -> Result<Vec<Row>, GqlError> {
+        let Operator::Distinct { child } = op else {
+            unreachable!()
+        };
         let input = self.exec_operator(graph, child, budget, outer_rows, stats)?;
         let mut seen: HashSet<String> = HashSet::new();
         let mut out = Vec::new();
@@ -487,8 +558,17 @@ impl<'a> QueryExecutor<'a> {
         Ok(out)
     }
 
-    fn exec_sort(&self, graph: &str, op: &Operator, budget: &mut ExecutionBudget, outer_rows: &[Row], stats: &mut MutationStats) -> Result<Vec<Row>, GqlError> {
-        let Operator::Sort { items, child } = op else { unreachable!() };
+    fn exec_sort(
+        &self,
+        graph: &str,
+        op: &Operator,
+        budget: &mut ExecutionBudget,
+        outer_rows: &[Row],
+        stats: &mut MutationStats,
+    ) -> Result<Vec<Row>, GqlError> {
+        let Operator::Sort { items, child } = op else {
+            unreachable!()
+        };
         let input = self.exec_operator(graph, child, budget, outer_rows, stats)?;
         budget.check_or_err()?;
 
@@ -521,28 +601,56 @@ impl<'a> QueryExecutor<'a> {
         Ok(keyed.into_iter().map(|(_, row)| row).collect())
     }
 
-    fn exec_limit(&self, graph: &str, op: &Operator, budget: &mut ExecutionBudget, outer_rows: &[Row], stats: &mut MutationStats) -> Result<Vec<Row>, GqlError> {
-        let Operator::Limit { count, child } = op else { unreachable!() };
+    fn exec_limit(
+        &self,
+        graph: &str,
+        op: &Operator,
+        budget: &mut ExecutionBudget,
+        outer_rows: &[Row],
+        stats: &mut MutationStats,
+    ) -> Result<Vec<Row>, GqlError> {
+        let Operator::Limit { count, child } = op else {
+            unreachable!()
+        };
         let input = self.exec_operator(graph, child, budget, outer_rows, stats)?;
         budget.check_or_err()?;
         let n = eval_count_expr(count, &self.parameters)?;
         Ok(input.into_iter().take(n).collect())
     }
 
-    fn exec_skip(&self, graph: &str, op: &Operator, budget: &mut ExecutionBudget, outer_rows: &[Row], stats: &mut MutationStats) -> Result<Vec<Row>, GqlError> {
-        let Operator::Skip { count, child } = op else { unreachable!() };
+    fn exec_skip(
+        &self,
+        graph: &str,
+        op: &Operator,
+        budget: &mut ExecutionBudget,
+        outer_rows: &[Row],
+        stats: &mut MutationStats,
+    ) -> Result<Vec<Row>, GqlError> {
+        let Operator::Skip { count, child } = op else {
+            unreachable!()
+        };
         let input = self.exec_operator(graph, child, budget, outer_rows, stats)?;
         budget.check_or_err()?;
         let n = eval_count_expr(count, &self.parameters)?;
         Ok(input.into_iter().skip(n).collect())
     }
 
-    fn exec_aggregate(&self, graph: &str, op: &Operator, budget: &mut ExecutionBudget, outer_rows: &[Row], stats: &mut MutationStats) -> Result<Vec<Row>, GqlError> {
+    fn exec_aggregate(
+        &self,
+        graph: &str,
+        op: &Operator,
+        budget: &mut ExecutionBudget,
+        outer_rows: &[Row],
+        stats: &mut MutationStats,
+    ) -> Result<Vec<Row>, GqlError> {
         let Operator::Aggregate {
             keys,
             aggregations,
             child,
-        } = op else { unreachable!() };
+        } = op
+        else {
+            unreachable!()
+        };
         let input = self.exec_operator(graph, child, budget, outer_rows, stats)?;
         budget.check_or_err()?;
 
@@ -578,12 +686,11 @@ impl<'a> QueryExecutor<'a> {
             {
                 // count(*) — the `*` argument is a sentinel meaning "count rows".
                 // Use a non-null placeholder so the accumulator counts every row.
-                let arg_val =
-                    if matches!(arg_expr, Expr::Variable(ref id) if id.0 == "*") {
-                        Value::Bool(true)
-                    } else {
-                        self.eval_with_storage(graph, arg_expr, row, &ctx)?
-                    };
+                let arg_val = if matches!(arg_expr, Expr::Variable(ref id) if id.0 == "*") {
+                    Value::Bool(true)
+                } else {
+                    self.eval_with_storage(graph, arg_expr, row, &ctx)?
+                };
                 let second_val = second_arg_expr
                     .as_ref()
                     .map(|e| self.eval_with_storage(graph, e, row, &ctx))
@@ -623,8 +730,17 @@ impl<'a> QueryExecutor<'a> {
         Ok(out)
     }
 
-    fn exec_create(&self, graph: &str, op: &Operator, budget: &mut ExecutionBudget, outer_rows: &[Row], stats: &mut MutationStats) -> Result<Vec<Row>, GqlError> {
-        let Operator::Create { patterns, child } = op else { unreachable!() };
+    fn exec_create(
+        &self,
+        graph: &str,
+        op: &Operator,
+        budget: &mut ExecutionBudget,
+        outer_rows: &[Row],
+        stats: &mut MutationStats,
+    ) -> Result<Vec<Row>, GqlError> {
+        let Operator::Create { patterns, child } = op else {
+            unreachable!()
+        };
         // Execute child first (for MATCH ... CREATE patterns).
         let input = if let Some(ch) = child {
             self.exec_operator(graph, ch, budget, outer_rows, stats)?
@@ -664,10 +780,10 @@ impl<'a> QueryExecutor<'a> {
                         .collect();
                     let label_strings: Vec<String> =
                         labels.iter().map(|l| l.as_str().to_string()).collect();
-                    let non_null_prop_keys: Vec<String> =
-                        props.keys().cloned().collect();
-                    let node_id =
-                        self.store.create_node(graph, label_strings.clone(), props)?;
+                    let non_null_prop_keys: Vec<String> = props.keys().cloned().collect();
+                    let node_id = self
+                        .store
+                        .create_node(graph, label_strings.clone(), props)?;
                     stats.nodes_created += 1;
                     stats.nodes_created_ids.insert(node_id.0);
                     stats.labels_seen.extend(label_strings);
@@ -681,8 +797,7 @@ impl<'a> QueryExecutor<'a> {
                 }
 
                 // Create edges using the alias map for src/dst lookup.
-                for (alias, src_alias, dst_alias, rel_type, direction, prop_exprs) in
-                    &pattern.edges
+                for (alias, src_alias, dst_alias, rel_type, direction, prop_exprs) in &pattern.edges
                 {
                     let ctx = self.build_filter_ctx(graph, &row)?;
                     // Filter out null-valued properties (same as for nodes).
@@ -757,13 +872,23 @@ impl<'a> QueryExecutor<'a> {
         Ok(out)
     }
 
-    fn exec_assemble_path(&self, graph: &str, op: &Operator, budget: &mut ExecutionBudget, outer_rows: &[Row], stats: &mut MutationStats) -> Result<Vec<Row>, GqlError> {
+    fn exec_assemble_path(
+        &self,
+        graph: &str,
+        op: &Operator,
+        budget: &mut ExecutionBudget,
+        outer_rows: &[Row],
+        stats: &mut MutationStats,
+    ) -> Result<Vec<Row>, GqlError> {
         let Operator::AssemblePath {
             path_alias,
             node_aliases,
             edge_aliases,
             child,
-        } = op else { unreachable!() };
+        } = op
+        else {
+            unreachable!()
+        };
         use crate::storage::{EdgeId, NodeId};
         let input = self.exec_operator(graph, child, budget, outer_rows, stats)?;
         let mut out = Vec::with_capacity(input.len());
@@ -789,7 +914,10 @@ impl<'a> QueryExecutor<'a> {
                             fixed_edges_before_varlen += 1;
                         }
                     }
-                    Some(Value::Path { nodes: pnodes, edges: pedges }) => {
+                    Some(Value::Path {
+                        nodes: pnodes,
+                        edges: pedges,
+                    }) => {
                         // VarLenExpand path: it already has start+intermediate+end nodes.
                         if !varlen_path_found {
                             // First varlen path. Prepend the fixed-edge nodes that
@@ -798,10 +926,7 @@ impl<'a> QueryExecutor<'a> {
                             // nodes are node_aliases[0..=fixed_edges_before_varlen-1].
                             // The varlen path's first node (pnodes[0]) equals
                             // node_aliases[fixed_edges_before_varlen].
-                            for na in node_aliases
-                                .iter()
-                                .take(fixed_edges_before_varlen)
-                            {
+                            for na in node_aliases.iter().take(fixed_edges_before_varlen) {
                                 if let Some(Value::Node(nid)) = row.get(&na.0) {
                                     nodes.push(*nid);
                                 }
@@ -856,7 +981,14 @@ impl<'a> QueryExecutor<'a> {
         Ok(out)
     }
 
-    fn exec_call(&self, graph: &str, op: &Operator, budget: &mut ExecutionBudget, outer_rows: &[Row], stats: &mut MutationStats) -> Result<Vec<Row>, GqlError> {
+    fn exec_call(
+        &self,
+        graph: &str,
+        op: &Operator,
+        budget: &mut ExecutionBudget,
+        outer_rows: &[Row],
+        stats: &mut MutationStats,
+    ) -> Result<Vec<Row>, GqlError> {
         let Operator::Call {
             procedure,
             args,
@@ -864,7 +996,10 @@ impl<'a> QueryExecutor<'a> {
             yield_star,
             standalone,
             child,
-        } = op else { unreachable!() };
+        } = op
+        else {
+            unreachable!()
+        };
         let proc_def = self.registry.get(procedure).ok_or_else(|| {
             GqlError::Execution(ExecutionError::unsupported(format!(
                 "ProcedureNotFound: {procedure}"
@@ -911,12 +1046,8 @@ impl<'a> QueryExecutor<'a> {
                     if !yield_items.is_empty() {
                         // YIELD specific columns.
                         for (name, alias) in yield_items {
-                            let col_name =
-                                alias.as_ref().unwrap_or(name).0.clone();
-                            let val = proc_row
-                                .get(&name.0)
-                                .cloned()
-                                .unwrap_or(Value::Null);
+                            let col_name = alias.as_ref().unwrap_or(name).0.clone();
+                            let val = proc_row.get(&name.0).cloned().unwrap_or(Value::Null);
                             new_row.insert(col_name, val);
                         }
                     } else if *standalone || *yield_star {
@@ -933,8 +1064,17 @@ impl<'a> QueryExecutor<'a> {
         Ok(out)
     }
 
-    fn exec_produce_results(&self, graph: &str, op: &Operator, budget: &mut ExecutionBudget, outer_rows: &[Row], stats: &mut MutationStats) -> Result<Vec<Row>, GqlError> {
-        let Operator::ProduceResults { columns, child } = op else { unreachable!() };
+    fn exec_produce_results(
+        &self,
+        graph: &str,
+        op: &Operator,
+        budget: &mut ExecutionBudget,
+        outer_rows: &[Row],
+        stats: &mut MutationStats,
+    ) -> Result<Vec<Row>, GqlError> {
+        let Operator::ProduceResults { columns, child } = op else {
+            unreachable!()
+        };
         let input = self.exec_operator(graph, child, budget, outer_rows, stats)?;
 
         // If columns is empty (write-only query with no RETURN),
@@ -947,9 +1087,7 @@ impl<'a> QueryExecutor<'a> {
 
         // Check if any column is the '*' wildcard that needs
         // runtime expansion (fallback for planner edge-cases).
-        let has_star = columns
-            .iter()
-            .any(|(name, _)| name == "*");
+        let has_star = columns.iter().any(|(name, _)| name == "*");
 
         for row in &input {
             budget.check_or_err()?;
@@ -984,7 +1122,14 @@ impl<'a> QueryExecutor<'a> {
         Ok(out)
     }
 
-    fn exec_var_len_expand(&self, graph: &str, op: &Operator, budget: &mut ExecutionBudget, outer_rows: &[Row], stats: &mut MutationStats) -> Result<Vec<Row>, GqlError> {
+    fn exec_var_len_expand(
+        &self,
+        graph: &str,
+        op: &Operator,
+        budget: &mut ExecutionBudget,
+        outer_rows: &[Row],
+        stats: &mut MutationStats,
+    ) -> Result<Vec<Row>, GqlError> {
         let Operator::VarLenExpand {
             direction,
             rel_types,
@@ -996,7 +1141,10 @@ impl<'a> QueryExecutor<'a> {
             dst_alias,
             child,
             rel_props,
-        } = op else { unreachable!() };
+        } = op
+        else {
+            unreachable!()
+        };
         let input = self.exec_operator(graph, child, budget, outer_rows, stats)?;
         let type_strs: Vec<&str> = rel_types.iter().map(|r| r.as_str()).collect();
         let mut out = Vec::new();
@@ -1021,17 +1169,21 @@ impl<'a> QueryExecutor<'a> {
             // We intentionally exclude user-defined list variables (like `rs` from WITH)
             // that contain edges intended to be FOLLOWED by this VarLen, not avoided.
             // Heuristic: collect Value::Edge (direct edge vars) and __path_rel_* (VarLen storage).
-            let prior_path_edges: std::collections::HashSet<EdgeId> = row.iter()
+            let prior_path_edges: std::collections::HashSet<EdgeId> = row
+                .iter()
                 .flat_map(|(k, v)| match v {
                     Value::Edge(e) => vec![*e],
-                    Value::List(items) if k.starts_with("__path_rel_") => {
-                        items.iter().filter_map(|i| {
-                            if let Value::Edge(e) = i { Some(*e) } else { None }
-                        }).collect()
-                    }
-                    Value::Path { edges, .. } if k.starts_with("__path_rel_") => {
-                        edges.clone()
-                    }
+                    Value::List(items) if k.starts_with("__path_rel_") => items
+                        .iter()
+                        .filter_map(|i| {
+                            if let Value::Edge(e) = i {
+                                Some(*e)
+                            } else {
+                                None
+                            }
+                        })
+                        .collect(),
+                    Value::Path { edges, .. } if k.starts_with("__path_rel_") => edges.clone(),
                     _ => vec![],
                 })
                 .collect();
@@ -1065,9 +1217,7 @@ impl<'a> QueryExecutor<'a> {
                             // Relationship variable mode: store list of edges
                             new_row.insert(
                                 pa.0.clone(),
-                                Value::List(
-                                    path_edges.iter().map(|e| Value::Edge(*e)).collect(),
-                                ),
+                                Value::List(path_edges.iter().map(|e| Value::Edge(*e)).collect()),
                             );
                         }
                     }
@@ -1086,16 +1236,15 @@ impl<'a> QueryExecutor<'a> {
                         // repetition is allowed. This prevents infinite loops.
                         // Also check edges from prior steps in this named path.
                         if path_edge_set.contains(&adj.edge_id)
-                            || prior_path_edges.contains(&adj.edge_id) {
+                            || prior_path_edges.contains(&adj.edge_id)
+                        {
                             continue;
                         }
                         // Check inline property constraints on the traversed edge.
                         if let Some(pred) = rel_props {
                             let mut edge_row = row.clone();
-                            edge_row.insert(
-                                "__varlen_edge__".to_string(),
-                                Value::Edge(adj.edge_id),
-                            );
+                            edge_row
+                                .insert("__varlen_edge__".to_string(), Value::Edge(adj.edge_id));
                             let ctx = self.build_filter_ctx(graph, &edge_row)?;
                             match self.eval_with_storage(graph, pred, &edge_row, &ctx) {
                                 Ok(Value::Bool(true)) => {}
@@ -1108,7 +1257,12 @@ impl<'a> QueryExecutor<'a> {
                         new_path_edges.push(adj.edge_id);
                         let mut new_path_edge_set = path_edge_set.clone();
                         new_path_edge_set.insert(adj.edge_id);
-                        queue.push_back((adj.neighbor_id, new_path_nodes, new_path_edges, new_path_edge_set));
+                        queue.push_back((
+                            adj.neighbor_id,
+                            new_path_nodes,
+                            new_path_edges,
+                            new_path_edge_set,
+                        ));
                     }
                 }
             }
@@ -1116,8 +1270,17 @@ impl<'a> QueryExecutor<'a> {
         Ok(out)
     }
 
-    fn exec_set(&self, graph: &str, op: &Operator, budget: &mut ExecutionBudget, outer_rows: &[Row], stats: &mut MutationStats) -> Result<Vec<Row>, GqlError> {
-        let Operator::Set { items, child } = op else { unreachable!() };
+    fn exec_set(
+        &self,
+        graph: &str,
+        op: &Operator,
+        budget: &mut ExecutionBudget,
+        outer_rows: &[Row],
+        stats: &mut MutationStats,
+    ) -> Result<Vec<Row>, GqlError> {
+        let Operator::Set { items, child } = op else {
+            unreachable!()
+        };
         let input = self.exec_operator(graph, child, budget, outer_rows, stats)?;
         let mut out = Vec::with_capacity(input.len());
 
@@ -1133,8 +1296,17 @@ impl<'a> QueryExecutor<'a> {
         Ok(out)
     }
 
-    fn exec_remove(&self, graph: &str, op: &Operator, budget: &mut ExecutionBudget, outer_rows: &[Row], stats: &mut MutationStats) -> Result<Vec<Row>, GqlError> {
-        let Operator::Remove { items, child } = op else { unreachable!() };
+    fn exec_remove(
+        &self,
+        graph: &str,
+        op: &Operator,
+        budget: &mut ExecutionBudget,
+        outer_rows: &[Row],
+        stats: &mut MutationStats,
+    ) -> Result<Vec<Row>, GqlError> {
+        let Operator::Remove { items, child } = op else {
+            unreachable!()
+        };
         let input = self.exec_operator(graph, child, budget, outer_rows, stats)?;
         let mut out = Vec::with_capacity(input.len());
 
@@ -1159,12 +1331,10 @@ impl<'a> QueryExecutor<'a> {
                                 stats.properties_set += 1;
                             }
                             other => {
-                                return Err(GqlError::Execution(
-                                    ExecutionError::TypeMismatch {
-                                        expected: "Node or Relationship".to_string(),
-                                        actual: other.type_name().to_string(),
-                                    },
-                                ));
+                                return Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                                    expected: "Node or Relationship".to_string(),
+                                    actual: other.type_name().to_string(),
+                                }));
                             }
                         }
                         // REMOVE property does not count as properties_set.
@@ -1192,12 +1362,22 @@ impl<'a> QueryExecutor<'a> {
         Ok(out)
     }
 
-    fn exec_delete(&self, graph: &str, op: &Operator, budget: &mut ExecutionBudget, outer_rows: &[Row], stats: &mut MutationStats) -> Result<Vec<Row>, GqlError> {
+    fn exec_delete(
+        &self,
+        graph: &str,
+        op: &Operator,
+        budget: &mut ExecutionBudget,
+        outer_rows: &[Row],
+        stats: &mut MutationStats,
+    ) -> Result<Vec<Row>, GqlError> {
         let Operator::Delete {
             exprs,
             detach,
             child,
-        } = op else { unreachable!() };
+        } = op
+        else {
+            unreachable!()
+        };
         let input = self.exec_operator(graph, child, budget, outer_rows, stats)?;
         let mut out = Vec::new();
 
@@ -1221,7 +1401,9 @@ impl<'a> QueryExecutor<'a> {
                     Value::Edge(edge_id) => {
                         // Cache rel_type before deleting so type(r) still works.
                         if let Ok(Some(data)) = self.store.get_edge(graph, edge_id) {
-                            self.deleted_edge_types.borrow_mut().insert(edge_id.0, data.rel_type);
+                            self.deleted_edge_types
+                                .borrow_mut()
+                                .insert(edge_id.0, data.rel_type);
                         }
                         edges_to_delete.push(edge_id);
                     }
@@ -1244,7 +1426,9 @@ impl<'a> QueryExecutor<'a> {
             // Delete all collected edges first.
             for edge_id in edges_to_delete {
                 match self.store.delete_edge(graph, edge_id) {
-                    Ok(()) => { stats.edges_deleted += 1; }
+                    Ok(()) => {
+                        stats.edges_deleted += 1;
+                    }
                     Err(StorageError::EdgeNotFound { .. }) => {} // already deleted
                     Err(e) => return Err(GqlError::Storage(e)),
                 }
@@ -1256,7 +1440,8 @@ impl<'a> QueryExecutor<'a> {
                     // Count and delete remaining edges before deleting node.
                     let out_ids = self.store.out_edge_ids(graph, node_id).unwrap_or_default();
                     let in_ids = self.store.in_edge_ids(graph, node_id).unwrap_or_default();
-                    let mut edge_set: std::collections::HashSet<u64> = out_ids.iter().map(|e| e.0).collect();
+                    let mut edge_set: std::collections::HashSet<u64> =
+                        out_ids.iter().map(|e| e.0).collect();
                     edge_set.extend(in_ids.iter().map(|e| e.0));
                     // Net out edges that were created in this same query.
                     let mut net_deleted_edges: u64 = 0;
@@ -1301,7 +1486,14 @@ impl<'a> QueryExecutor<'a> {
         Ok(out)
     }
 
-    fn exec_merge(&self, graph: &str, op: &Operator, budget: &mut ExecutionBudget, outer_rows: &[Row], stats: &mut MutationStats) -> Result<Vec<Row>, GqlError> {
+    fn exec_merge(
+        &self,
+        graph: &str,
+        op: &Operator,
+        budget: &mut ExecutionBudget,
+        outer_rows: &[Row],
+        stats: &mut MutationStats,
+    ) -> Result<Vec<Row>, GqlError> {
         let Operator::Merge {
             node_alias,
             labels,
@@ -1309,7 +1501,10 @@ impl<'a> QueryExecutor<'a> {
             on_create,
             on_match,
             child,
-        } = op else { unreachable!() };
+        } = op
+        else {
+            unreachable!()
+        };
         let input = if let Some(ch) = child {
             self.exec_operator(graph, ch, budget, outer_rows, stats)?
         } else {
@@ -1366,7 +1561,9 @@ impl<'a> QueryExecutor<'a> {
                     matched_ids.push(node_id);
                 } else if let Ok(Some(node_data)) = self.store.get_node(graph, node_id) {
                     let all_match = prop_vals.iter().all(|(key, expected)| {
-                        node_data.properties.get(key.as_str())
+                        node_data
+                            .properties
+                            .get(key.as_str())
                             .map(|v| v == expected)
                             .unwrap_or(false)
                     });
@@ -1394,16 +1591,15 @@ impl<'a> QueryExecutor<'a> {
                 // Not found: CREATE the node with inline properties
                 let label_strings: Vec<String> =
                     labels.iter().map(|l| l.as_str().to_string()).collect();
-                let create_props: HashMap<String, Value> =
-                    prop_vals.iter().cloned().collect();
+                let create_props: HashMap<String, Value> = prop_vals.iter().cloned().collect();
                 let non_null_prop_keys: Vec<String> = create_props
                     .iter()
                     .filter(|(_, v)| !v.is_null())
                     .map(|(k, _)| k.clone())
                     .collect();
-                let node_id =
-                    self.store
-                        .create_node(graph, label_strings.clone(), create_props)?;
+                let node_id = self
+                    .store
+                    .create_node(graph, label_strings.clone(), create_props)?;
                 stats.nodes_created += 1;
                 stats.nodes_created_ids.insert(node_id.0);
                 stats.labels_seen.extend(label_strings);
@@ -1423,7 +1619,14 @@ impl<'a> QueryExecutor<'a> {
         Ok(out)
     }
 
-    fn exec_merge_rel(&self, graph: &str, op: &Operator, budget: &mut ExecutionBudget, outer_rows: &[Row], stats: &mut MutationStats) -> Result<Vec<Row>, GqlError> {
+    fn exec_merge_rel(
+        &self,
+        graph: &str,
+        op: &Operator,
+        budget: &mut ExecutionBudget,
+        outer_rows: &[Row],
+        stats: &mut MutationStats,
+    ) -> Result<Vec<Row>, GqlError> {
         let Operator::MergeRelationship {
             src_alias,
             dst_alias,
@@ -1434,7 +1637,10 @@ impl<'a> QueryExecutor<'a> {
             on_create,
             on_match,
             child,
-        } = op else { unreachable!() };
+        } = op
+        else {
+            unreachable!()
+        };
         let input = self.exec_operator(graph, child, budget, outer_rows, stats)?;
         let type_str = rel_type.as_str();
         let mut out = Vec::new();
@@ -1459,17 +1665,14 @@ impl<'a> QueryExecutor<'a> {
 
             // Find existing edges of this type between src and dst.
             // For undirected patterns, check BOTH directions (a→b and b→a).
-            let existing_edges =
-                self.store
-                    .out_edges_by_type(graph, real_src, &[type_str])?;
+            let existing_edges = self.store.out_edges_by_type(graph, real_src, &[type_str])?;
             let mut matching: Vec<_> = existing_edges
                 .into_iter()
                 .filter(|adj| adj.neighbor_id == real_dst)
                 .collect();
             if matches!(direction, Direction::Undirected) && matching.is_empty() {
                 // Also check the reverse direction (real_dst → real_src).
-                let reverse_edges =
-                    self.store.out_edges_by_type(graph, real_dst, &[type_str])?;
+                let reverse_edges = self.store.out_edges_by_type(graph, real_dst, &[type_str])?;
                 matching = reverse_edges
                     .into_iter()
                     .filter(|adj| adj.neighbor_id == real_src)
@@ -1531,8 +1734,7 @@ impl<'a> QueryExecutor<'a> {
                 }
             } else {
                 // NOT FOUND: create the edge with properties.
-                let prop_map: HashMap<String, Value> =
-                    prop_vals.into_iter().collect();
+                let prop_map: HashMap<String, Value> = prop_vals.into_iter().collect();
                 let non_null_edge_keys: Vec<String> = prop_map
                     .iter()
                     .filter(|(_, v)| !v.is_null())
@@ -1562,12 +1764,22 @@ impl<'a> QueryExecutor<'a> {
         Ok(out)
     }
 
-    fn exec_unwind(&self, graph: &str, op: &Operator, budget: &mut ExecutionBudget, outer_rows: &[Row], stats: &mut MutationStats) -> Result<Vec<Row>, GqlError> {
+    fn exec_unwind(
+        &self,
+        graph: &str,
+        op: &Operator,
+        budget: &mut ExecutionBudget,
+        outer_rows: &[Row],
+        stats: &mut MutationStats,
+    ) -> Result<Vec<Row>, GqlError> {
         let Operator::Unwind {
             list_expr,
             alias,
             child,
-        } = op else { unreachable!() };
+        } = op
+        else {
+            unreachable!()
+        };
         let input = self.exec_operator(graph, child, budget, outer_rows, stats)?;
         let mut out = Vec::new();
 
@@ -1599,8 +1811,17 @@ impl<'a> QueryExecutor<'a> {
         Ok(out)
     }
 
-    fn exec_union(&self, graph: &str, op: &Operator, budget: &mut ExecutionBudget, outer_rows: &[Row], stats: &mut MutationStats) -> Result<Vec<Row>, GqlError> {
-        let Operator::Union { left, right, all } = op else { unreachable!() };
+    fn exec_union(
+        &self,
+        graph: &str,
+        op: &Operator,
+        budget: &mut ExecutionBudget,
+        outer_rows: &[Row],
+        stats: &mut MutationStats,
+    ) -> Result<Vec<Row>, GqlError> {
+        let Operator::Union { left, right, all } = op else {
+            unreachable!()
+        };
         let left_rows = self.exec_operator(graph, left, budget, outer_rows, stats)?;
         let right_rows = self.exec_operator(graph, right, budget, outer_rows, stats)?;
 
@@ -1623,11 +1844,21 @@ impl<'a> QueryExecutor<'a> {
         Ok(out)
     }
 
-    fn exec_left_outer_apply(&self, graph: &str, op: &Operator, budget: &mut ExecutionBudget, outer_rows: &[Row], stats: &mut MutationStats) -> Result<Vec<Row>, GqlError> {
+    fn exec_left_outer_apply(
+        &self,
+        graph: &str,
+        op: &Operator,
+        budget: &mut ExecutionBudget,
+        outer_rows: &[Row],
+        stats: &mut MutationStats,
+    ) -> Result<Vec<Row>, GqlError> {
         let Operator::LeftOuterApply {
             preserved,
             optional_pattern,
-        } = op else { unreachable!() };
+        } = op
+        else {
+            unreachable!()
+        };
         let left_rows = self.exec_operator(graph, preserved, budget, outer_rows, stats)?;
         let mut out = Vec::new();
 
@@ -1687,20 +1918,24 @@ impl<'a> QueryExecutor<'a> {
         Ok(out)
     }
 
-    fn exec_apply(&self, graph: &str, op: &Operator, budget: &mut ExecutionBudget, outer_rows: &[Row], stats: &mut MutationStats) -> Result<Vec<Row>, GqlError> {
-        let Operator::Apply { outer, inner } = op else { unreachable!() };
+    fn exec_apply(
+        &self,
+        graph: &str,
+        op: &Operator,
+        budget: &mut ExecutionBudget,
+        outer_rows: &[Row],
+        stats: &mut MutationStats,
+    ) -> Result<Vec<Row>, GqlError> {
+        let Operator::Apply { outer, inner } = op else {
+            unreachable!()
+        };
         let outer_rows = self.exec_operator(graph, outer, budget, outer_rows, stats)?;
         let mut out = Vec::new();
 
         for outer_row in &outer_rows {
             budget.check_or_err()?;
-            let inner_rows = self.exec_operator(
-                graph,
-                inner,
-                budget,
-                std::slice::from_ref(outer_row),
-                stats,
-            )?;
+            let inner_rows =
+                self.exec_operator(graph, inner, budget, std::slice::from_ref(outer_row), stats)?;
 
             for inner_row in inner_rows {
                 budget.check_or_err()?;
@@ -1739,12 +1974,22 @@ impl<'a> QueryExecutor<'a> {
         Ok(out)
     }
 
-    fn exec_index_scan(&self, graph: &str, op: &Operator, budget: &mut ExecutionBudget, _outer_rows: &[Row], _stats: &mut MutationStats) -> Result<Vec<Row>, GqlError> {
+    fn exec_index_scan(
+        &self,
+        graph: &str,
+        op: &Operator,
+        budget: &mut ExecutionBudget,
+        _outer_rows: &[Row],
+        _stats: &mut MutationStats,
+    ) -> Result<Vec<Row>, GqlError> {
         let Operator::IndexScan {
             label,
             property,
             alias,
-        } = op else { unreachable!() };
+        } = op
+        else {
+            unreachable!()
+        };
         // Use the property index to find matching nodes.
         // For a bare IndexScan (no specific value predicate), we scan all nodes
         // with the label that have the property defined (using Gte on lowest value).
@@ -1784,8 +2029,17 @@ impl<'a> QueryExecutor<'a> {
         Ok(rows)
     }
 
-    fn exec_node_by_id_seek(&self, graph: &str, op: &Operator, budget: &mut ExecutionBudget, _outer_rows: &[Row], _stats: &mut MutationStats) -> Result<Vec<Row>, GqlError> {
-        let Operator::NodeByIdSeek { id_expr, alias } = op else { unreachable!() };
+    fn exec_node_by_id_seek(
+        &self,
+        graph: &str,
+        op: &Operator,
+        budget: &mut ExecutionBudget,
+        _outer_rows: &[Row],
+        _stats: &mut MutationStats,
+    ) -> Result<Vec<Row>, GqlError> {
+        let Operator::NodeByIdSeek { id_expr, alias } = op else {
+            unreachable!()
+        };
         let ctx: FilterRow<'_> = HashMap::new();
         let id_val = eval_expr(id_expr, &ctx)?;
         let raw_id = match id_val {
@@ -1815,7 +2069,14 @@ impl<'a> QueryExecutor<'a> {
         Ok(rows)
     }
 
-    fn exec_shortest_path(&self, graph: &str, op: &Operator, budget: &mut ExecutionBudget, outer_rows: &[Row], _stats: &mut MutationStats) -> Result<Vec<Row>, GqlError> {
+    fn exec_shortest_path(
+        &self,
+        graph: &str,
+        op: &Operator,
+        budget: &mut ExecutionBudget,
+        outer_rows: &[Row],
+        _stats: &mut MutationStats,
+    ) -> Result<Vec<Row>, GqlError> {
         let Operator::ShortestPath {
             src_alias,
             dst_alias,
@@ -1825,7 +2086,10 @@ impl<'a> QueryExecutor<'a> {
             max,
             path_alias,
             all_paths,
-        } = op else { unreachable!() };
+        } = op
+        else {
+            unreachable!()
+        };
         // ShortestPath requires both src and dst to be bound in outer context.
         // For now, work from outer_rows or require them to be bound.
         let type_strs: Vec<&str> = rel_types.iter().map(|r| r.as_str()).collect();
@@ -1926,7 +2190,6 @@ impl<'a> QueryExecutor<'a> {
         }
         Ok(out)
     }
-
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
@@ -2049,17 +2312,15 @@ impl<'a> QueryExecutor<'a> {
                 let base_val = self.eval_with_storage(graph, base_expr, row, ctx)?;
                 match base_val {
                     Value::Null => Ok(Value::Null),
-                    Value::Node(node_id) => {
-                        match self.store.get_node(graph, node_id)? {
-                            Some(node_data) => {
-                                let has = labels_to_check.iter().all(|l| {
-                                    node_data.labels.iter().any(|nl| nl == l.as_str())
-                                });
-                                Ok(Value::Bool(has))
-                            }
-                            None => Ok(Value::Bool(false)),
+                    Value::Node(node_id) => match self.store.get_node(graph, node_id)? {
+                        Some(node_data) => {
+                            let has = labels_to_check
+                                .iter()
+                                .all(|l| node_data.labels.iter().any(|nl| nl == l.as_str()));
+                            Ok(Value::Bool(has))
                         }
-                    }
+                        None => Ok(Value::Bool(false)),
+                    },
                     Value::Edge(edge_id) => {
                         // For relationships, check if the rel type matches
                         match self.store.get_edge(graph, edge_id)? {
@@ -2092,8 +2353,7 @@ impl<'a> QueryExecutor<'a> {
                             } = &args[0]
                             {
                                 // Evaluate list with storage.
-                                let list_val =
-                                    self.eval_with_storage(graph, list, row, ctx)?;
+                                let list_val = self.eval_with_storage(graph, list, row, ctx)?;
                                 let items = match list_val {
                                     Value::Null => return Ok(Value::Null),
                                     Value::List(items) => items,
@@ -2113,12 +2373,9 @@ impl<'a> QueryExecutor<'a> {
                                 for item in &items {
                                     let mut ext_row = row.clone();
                                     ext_row.insert(variable.0.clone(), item.clone());
-                                    let ext_ctx =
-                                        self.build_filter_ctx(graph, &ext_row)?;
+                                    let ext_ctx = self.build_filter_ctx(graph, &ext_row)?;
                                     let pred_result = if let Some(pred) = filter {
-                                        self.eval_with_storage(
-                                            graph, pred, &ext_row, &ext_ctx,
-                                        )?
+                                        self.eval_with_storage(graph, pred, &ext_row, &ext_ctx)?
                                     } else {
                                         item.clone()
                                     };
@@ -2130,14 +2387,21 @@ impl<'a> QueryExecutor<'a> {
                                     }
                                     // Short-circuit for early exit
                                     match lc.as_str() {
-                                        "all" if false_count > 0 => { return Ok(Value::Bool(false)) }
-                                        "any" if true_count > 0 => { return Ok(Value::Bool(true)) }
-                                        "none" if true_count > 0 => { return Ok(Value::Bool(false)) }
-                                        "single" if true_count > 1 => { return Ok(Value::Bool(false)) }
+                                        "all" if false_count > 0 => return Ok(Value::Bool(false)),
+                                        "any" if true_count > 0 => return Ok(Value::Bool(true)),
+                                        "none" if true_count > 0 => return Ok(Value::Bool(false)),
+                                        "single" if true_count > 1 => {
+                                            return Ok(Value::Bool(false))
+                                        }
                                         _ => {}
                                     }
                                 }
-                                return Ok(quantifier_result(lc.as_str(), true_count, false_count, null_count));
+                                return Ok(quantifier_result(
+                                    lc.as_str(),
+                                    true_count,
+                                    false_count,
+                                    null_count,
+                                ));
                             }
                         }
                         // Fallback: delegate to eval_expr
@@ -2145,8 +2409,7 @@ impl<'a> QueryExecutor<'a> {
                     }
                     "exists" => {
                         if args.len() == 1 {
-                            let val =
-                                self.eval_with_storage(graph, &args[0], row, ctx)?;
+                            let val = self.eval_with_storage(graph, &args[0], row, ctx)?;
                             return Ok(Value::Bool(!val.is_null()));
                         }
                         return eval_expr(expr, ctx);
@@ -2237,8 +2500,11 @@ impl<'a> QueryExecutor<'a> {
                                 Some(data) => Ok(Value::Str(data.rel_type.into_boxed_str())),
                                 None => {
                                     // Edge may have been deleted in this query; check cache.
-                                    let cached = self.deleted_edge_types.borrow()
-                                        .get(&edge_id.0).map(|s| Value::Str(s.clone().into_boxed_str()));
+                                    let cached = self
+                                        .deleted_edge_types
+                                        .borrow()
+                                        .get(&edge_id.0)
+                                        .map(|s| Value::Str(s.clone().into_boxed_str()));
                                     Ok(cached.unwrap_or(Value::Null))
                                 }
                             },
@@ -2440,7 +2706,7 @@ impl<'a> QueryExecutor<'a> {
                         }
                     }
                     // All other functions: call directly with evaluated args.
-                    _ => eval_function_with_vals(name, evaled_args)
+                    _ => eval_function_with_vals(name, evaled_args),
                 }
             }
             // Case expression: evaluate with storage-awareness.
@@ -2545,9 +2811,7 @@ impl<'a> QueryExecutor<'a> {
             }
 
             // `(n)-[:REL]->(m)` used directly as a boolean predicate in WHERE.
-            Expr::PatternExpr(patterns) => {
-                self.eval_exists_patterns(graph, patterns, None, row)
-            }
+            Expr::PatternExpr(patterns) => self.eval_exists_patterns(graph, patterns, None, row),
 
             // Subscript: n['key'] on Node/Edge — look up property in storage.
             Expr::Subscript(obj_expr, idx_expr) => {
@@ -2646,7 +2910,8 @@ impl<'a> QueryExecutor<'a> {
         inner_query: &crate::ast::Query,
         outer_row: &Row,
     ) -> Result<Value, GqlError> {
-        let planner = QueryPlanner::with_context(self.store, graph, self.registry, &self.parameters);
+        let planner =
+            QueryPlanner::with_context(self.store, graph, self.registry, &self.parameters);
         // Use plan_unchecked to skip validation (inner query may reference outer-scope variables)
         let inner_op = planner.plan_unchecked(inner_query)?;
         let outer = vec![outer_row.clone()];
@@ -2676,7 +2941,8 @@ impl<'a> QueryExecutor<'a> {
         where_expr: Option<&Expr>,
         outer_row: &Row,
     ) -> Result<Value, GqlError> {
-        let planner = QueryPlanner::with_context(self.store, graph, self.registry, &self.parameters);
+        let planner =
+            QueryPlanner::with_context(self.store, graph, self.registry, &self.parameters);
         let sub_op = planner.plan_exists_subquery(patterns, None)?;
 
         let outer = vec![outer_row.clone()];
@@ -2993,31 +3259,23 @@ impl AggState {
             AggFunction::Max => Ok(self.max.clone().unwrap_or(Value::Null)),
             AggFunction::Collect => Ok(Value::List(self.collected.clone())),
             AggFunction::StDev => {
-                let nums: Vec<f64> = self
-                    .collected
-                    .iter()
-                    .filter_map(|v| v.as_float())
-                    .collect();
+                let nums: Vec<f64> = self.collected.iter().filter_map(|v| v.as_float()).collect();
                 if nums.len() <= 1 {
                     return Ok(Value::Float(0.0));
                 }
                 let mean = nums.iter().sum::<f64>() / nums.len() as f64;
-                let variance = nums.iter().map(|x| (x - mean).powi(2)).sum::<f64>()
-                    / (nums.len() - 1) as f64;
+                let variance =
+                    nums.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / (nums.len() - 1) as f64;
                 Ok(Value::Float(variance.sqrt()))
             }
             AggFunction::StDevP => {
-                let nums: Vec<f64> = self
-                    .collected
-                    .iter()
-                    .filter_map(|v| v.as_float())
-                    .collect();
+                let nums: Vec<f64> = self.collected.iter().filter_map(|v| v.as_float()).collect();
                 if nums.is_empty() {
                     return Ok(Value::Float(0.0));
                 }
                 let mean = nums.iter().sum::<f64>() / nums.len() as f64;
-                let variance = nums.iter().map(|x| (x - mean).powi(2)).sum::<f64>()
-                    / nums.len() as f64;
+                let variance =
+                    nums.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / nums.len() as f64;
                 Ok(Value::Float(variance.sqrt()))
             }
             AggFunction::PercentileDisc => {
@@ -3028,18 +3286,17 @@ impl AggState {
                         actual: format!("NumberOutOfRange: {p}"),
                     }));
                 }
-                let mut nums: Vec<f64> = self
-                    .collected
-                    .iter()
-                    .filter_map(|v| v.as_float())
-                    .collect();
+                let mut nums: Vec<f64> =
+                    self.collected.iter().filter_map(|v| v.as_float()).collect();
                 if nums.is_empty() {
                     return Ok(Value::Null);
                 }
                 nums.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
                 // Nearest rank method: index = ceil(p * n) - 1 (clamped)
                 let n = nums.len();
-                let idx = ((p * n as f64).ceil() as usize).saturating_sub(1).min(n - 1);
+                let idx = ((p * n as f64).ceil() as usize)
+                    .saturating_sub(1)
+                    .min(n - 1);
                 // Return as integer if all values are whole numbers
                 let v = nums[idx];
                 if v.fract() == 0.0 && v >= i64::MIN as f64 && v <= i64::MAX as f64 {
@@ -3056,11 +3313,8 @@ impl AggState {
                         actual: format!("NumberOutOfRange: {p}"),
                     }));
                 }
-                let mut nums: Vec<f64> = self
-                    .collected
-                    .iter()
-                    .filter_map(|v| v.as_float())
-                    .collect();
+                let mut nums: Vec<f64> =
+                    self.collected.iter().filter_map(|v| v.as_float()).collect();
                 if nums.is_empty() {
                     return Ok(Value::Null);
                 }
@@ -3393,7 +3647,11 @@ fn expr_to_column_name(expr: &Expr) -> String {
             format!("[{}]", items_str.join(", "))
         }
         Expr::Subscript(list, idx) => {
-            format!("{}[{}]", expr_to_column_name(list), expr_to_column_name(idx))
+            format!(
+                "{}[{}]",
+                expr_to_column_name(list),
+                expr_to_column_name(idx)
+            )
         }
         _ => format!("{:?}", expr),
     }
@@ -3494,15 +3752,23 @@ fn eval_binary_values(
         }
         // Temporal arithmetic: temporal +/- duration, duration +/- duration, duration * int, etc.
         BinaryOp::Add | BinaryOp::Concat => {
-            use crate::executor::filter::{temporal_add_duration, duration_add};
+            use crate::executor::filter::{duration_add, temporal_add_duration};
             match (&lv, &rv) {
                 (Value::Null, _) | (_, Value::Null) => Ok(Value::Null),
-                (temporal @ (Value::Date(_) | Value::LocalTime(_) | Value::LocalDateTime(_) | Value::DateTime(_)), Value::Duration(dur)) => {
-                    temporal_add_duration(temporal, dur, false)
-                }
-                (Value::Duration(dur), temporal @ (Value::Date(_) | Value::LocalTime(_) | Value::LocalDateTime(_) | Value::DateTime(_))) => {
-                    temporal_add_duration(temporal, dur, false)
-                }
+                (
+                    temporal @ (Value::Date(_)
+                    | Value::LocalTime(_)
+                    | Value::LocalDateTime(_)
+                    | Value::DateTime(_)),
+                    Value::Duration(dur),
+                ) => temporal_add_duration(temporal, dur, false),
+                (
+                    Value::Duration(dur),
+                    temporal @ (Value::Date(_)
+                    | Value::LocalTime(_)
+                    | Value::LocalDateTime(_)
+                    | Value::DateTime(_)),
+                ) => temporal_add_duration(temporal, dur, false),
                 (Value::Duration(a), Value::Duration(b)) => Ok(Value::Duration(duration_add(a, b))),
                 // List concatenation: handle directly to preserve Node/Edge/Path values
                 // that value_to_expr would otherwise convert to Null.
@@ -3514,23 +3780,35 @@ fn eval_binary_values(
                 _ => {
                     let left_lit = value_to_expr(&lv);
                     let right_lit = value_to_expr(&rv);
-                    let rebuilt = Expr::BinaryOp { op, left: Box::new(left_lit), right: Box::new(right_lit) };
+                    let rebuilt = Expr::BinaryOp {
+                        op,
+                        left: Box::new(left_lit),
+                        right: Box::new(right_lit),
+                    };
                     eval_expr(&rebuilt, ctx)
                 }
             }
         }
         BinaryOp::Sub => {
-            use crate::executor::filter::{temporal_add_duration, duration_sub};
+            use crate::executor::filter::{duration_sub, temporal_add_duration};
             match (&lv, &rv) {
                 (Value::Null, _) | (_, Value::Null) => Ok(Value::Null),
-                (temporal @ (Value::Date(_) | Value::LocalTime(_) | Value::LocalDateTime(_) | Value::DateTime(_)), Value::Duration(dur)) => {
-                    temporal_add_duration(temporal, dur, true)
-                }
+                (
+                    temporal @ (Value::Date(_)
+                    | Value::LocalTime(_)
+                    | Value::LocalDateTime(_)
+                    | Value::DateTime(_)),
+                    Value::Duration(dur),
+                ) => temporal_add_duration(temporal, dur, true),
                 (Value::Duration(a), Value::Duration(b)) => Ok(Value::Duration(duration_sub(a, b))),
                 _ => {
                     let left_lit = value_to_expr(&lv);
                     let right_lit = value_to_expr(&rv);
-                    let rebuilt = Expr::BinaryOp { op, left: Box::new(left_lit), right: Box::new(right_lit) };
+                    let rebuilt = Expr::BinaryOp {
+                        op,
+                        left: Box::new(left_lit),
+                        right: Box::new(right_lit),
+                    };
                     eval_expr(&rebuilt, ctx)
                 }
             }
@@ -3541,12 +3819,20 @@ fn eval_binary_values(
                 (Value::Null, _) | (_, Value::Null) => Ok(Value::Null),
                 (Value::Duration(d), Value::Int(n)) => Ok(Value::Duration(duration_mul(d, *n))),
                 (Value::Int(n), Value::Duration(d)) => Ok(Value::Duration(duration_mul(d, *n))),
-                (Value::Duration(d), Value::Float(f)) => Ok(Value::Duration(duration_mul_f64(d, *f))),
-                (Value::Float(f), Value::Duration(d)) => Ok(Value::Duration(duration_mul_f64(d, *f))),
+                (Value::Duration(d), Value::Float(f)) => {
+                    Ok(Value::Duration(duration_mul_f64(d, *f)))
+                }
+                (Value::Float(f), Value::Duration(d)) => {
+                    Ok(Value::Duration(duration_mul_f64(d, *f)))
+                }
                 _ => {
                     let left_lit = value_to_expr(&lv);
                     let right_lit = value_to_expr(&rv);
-                    let rebuilt = Expr::BinaryOp { op, left: Box::new(left_lit), right: Box::new(right_lit) };
+                    let rebuilt = Expr::BinaryOp {
+                        op,
+                        left: Box::new(left_lit),
+                        right: Box::new(right_lit),
+                    };
                     eval_expr(&rebuilt, ctx)
                 }
             }
@@ -3556,11 +3842,17 @@ fn eval_binary_values(
             match (&lv, &rv) {
                 (Value::Null, _) | (_, Value::Null) => Ok(Value::Null),
                 (Value::Duration(d), Value::Int(n)) => duration_div(d, *n).map(Value::Duration),
-                (Value::Duration(d), Value::Float(f)) => Ok(Value::Duration(duration_mul_f64(d, 1.0 / f))),
+                (Value::Duration(d), Value::Float(f)) => {
+                    Ok(Value::Duration(duration_mul_f64(d, 1.0 / f)))
+                }
                 _ => {
                     let left_lit = value_to_expr(&lv);
                     let right_lit = value_to_expr(&rv);
-                    let rebuilt = Expr::BinaryOp { op, left: Box::new(left_lit), right: Box::new(right_lit) };
+                    let rebuilt = Expr::BinaryOp {
+                        op,
+                        left: Box::new(left_lit),
+                        right: Box::new(right_lit),
+                    };
                     eval_expr(&rebuilt, ctx)
                 }
             }
@@ -3623,7 +3915,7 @@ pub fn cmp_values(a: &Value, b: &Value) -> std::cmp::Ordering {
             Value::Path { .. } => 4,
             Value::Str(_) => 5,
             Value::Bool(_) => 6,
-            Value::Float(f) if f.is_nan() => 8,  // NaN sorts after regular numbers
+            Value::Float(f) if f.is_nan() => 8, // NaN sorts after regular numbers
             Value::Int(_) | Value::Float(_) => 7,
             Value::Date(_) => 10,
             Value::LocalTime(_) => 11,
@@ -4986,7 +5278,9 @@ mod tests {
         let planner = QueryPlanner::new(&store, "g");
         let plan = planner.plan(&ast).unwrap();
         let mut budget = ExecutionBudget::unlimited();
-        QueryExecutor::new(&store).execute("g", &plan, &mut budget).unwrap();
+        QueryExecutor::new(&store)
+            .execute("g", &plan, &mut budget)
+            .unwrap();
 
         // Now test the VarLen query
         let query = "MATCH (a {name: 'A'})-[*]->(x) RETURN x";
@@ -4994,7 +5288,9 @@ mod tests {
         let plan2 = planner.plan(&ast2).unwrap();
         eprintln!("VarLen plan: {:#?}", plan2);
         let mut budget2 = ExecutionBudget::unlimited();
-        let result = QueryExecutor::new(&store).execute("g", &plan2, &mut budget2).unwrap();
+        let result = QueryExecutor::new(&store)
+            .execute("g", &plan2, &mut budget2)
+            .unwrap();
         eprintln!("VarLen result: {} rows", result.rows.len());
         for row in &result.rows {
             eprintln!("  {:?}", row);

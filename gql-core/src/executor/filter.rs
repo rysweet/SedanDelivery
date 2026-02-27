@@ -272,9 +272,7 @@ fn eval_subscript<'r>(
             Ok(items[actual].clone())
         }
         // Map[String] — dynamic property access: map['key']
-        (Value::Map(m), Value::Str(key)) => {
-            Ok(m.get(key.as_ref()).cloned().unwrap_or(Value::Null))
-        }
+        (Value::Map(m), Value::Str(key)) => Ok(m.get(key.as_ref()).cloned().unwrap_or(Value::Null)),
         (list, idx) => Err(GqlError::Execution(ExecutionError::TypeMismatch {
             expected: "List[Integer] or Map[String]".to_string(),
             actual: format!("{}[{}]", list.type_name(), idx.type_name()),
@@ -1212,10 +1210,11 @@ fn builtin_tostring(vals: Vec<Value>) -> Result<Value, GqlError> {
         Value::Int(_) | Value::Float(_) | Value::Bool(_) => {
             Ok(Value::Str(vals[0].to_string().into_boxed_str()))
         }
-        Value::Date(_) | Value::LocalTime(_) | Value::LocalDateTime(_)
-        | Value::DateTime(_) | Value::Duration(_) => {
-            Ok(Value::Str(vals[0].to_string().into_boxed_str()))
-        }
+        Value::Date(_)
+        | Value::LocalTime(_)
+        | Value::LocalDateTime(_)
+        | Value::DateTime(_)
+        | Value::Duration(_) => Ok(Value::Str(vals[0].to_string().into_boxed_str())),
         other => type_error("toString", other),
     }
 }
