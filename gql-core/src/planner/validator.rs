@@ -980,6 +980,9 @@ impl ValidationContext {
                     Expr::Integer(_) | Expr::Float(_) | Expr::Str(_) | Expr::Bool(_) => {
                         VarKind::Value
                     }
+                    // List and map literals are also non-node values.
+                    // e.g. `WITH [] AS n MATCH (n)` or `WITH {x:1} AS n MATCH (n)` must fail.
+                    Expr::List(_) | Expr::MapLiteral(_) => VarKind::Value,
                     // Null and all other expressions (function calls, properties, etc.)
                     // are Untyped — their runtime type is not known at compile time.
                     // This allows e.g. `WITH null AS a OPTIONAL MATCH (a)-->()`.
@@ -1933,7 +1936,7 @@ fn has_ambiguous_aggregation(expr: &Expr) -> bool {
     }
 }
 
-/// Returns true if expr is a simple grouping key (variable, property, or literal).
+/// Returns true if expr is a simple grouping key (variable, property, literal, or list/map).
 fn is_simple_grouping_key(expr: &Expr) -> bool {
     matches!(
         expr,
@@ -1945,6 +1948,8 @@ fn is_simple_grouping_key(expr: &Expr) -> bool {
             | Expr::Bool(_)
             | Expr::Null
             | Expr::Parameter(_)
+            | Expr::List(_)
+            | Expr::MapLiteral(_)
     )
 }
 

@@ -114,6 +114,9 @@ pub enum TokenKind {
     StringLiteral(String),
     /// A bare identifier or backtick-quoted identifier.
     Identifier,
+    /// The value 9223372036854775808 (2^63), which is only valid as the operand
+    /// of unary minus: `-9223372036854775808 = i64::MIN`. Alone it overflows.
+    IntMinMagnitude,
 
     // ── Special ───────────────────────────────────────────────────────────────
     Eof,
@@ -429,8 +432,16 @@ impl<'src> Lexer<'src> {
                 .chars()
                 .filter(|c| *c != '_')
                 .collect();
+            // If the hex value is exactly 2^63, emit IntMinMagnitude (valid only after unary -)
             return i64::from_str_radix(&hex_digits, 16)
                 .map(TokenKind::IntLiteral)
+                .or_else(|_| {
+                    u64::from_str_radix(&hex_digits, 16)
+                        .ok()
+                        .filter(|&v| v == (i64::MAX as u64) + 1)
+                        .map(|_| TokenKind::IntMinMagnitude)
+                        .ok_or(())
+                })
                 .map_err(|_| ParseError::IntegerOverflow {
                     literal: self.src[start..self.pos].to_string(),
                     offset: start,
@@ -451,8 +462,16 @@ impl<'src> Lexer<'src> {
                 .chars()
                 .filter(|c| *c != '_')
                 .collect();
+            // If the octal value is exactly 2^63, emit IntMinMagnitude (valid only after unary -)
             return i64::from_str_radix(&oct_digits, 8)
                 .map(TokenKind::IntLiteral)
+                .or_else(|_| {
+                    u64::from_str_radix(&oct_digits, 8)
+                        .ok()
+                        .filter(|&v| v == (i64::MAX as u64) + 1)
+                        .map(|_| TokenKind::IntMinMagnitude)
+                        .ok_or(())
+                })
                 .map_err(|_| ParseError::IntegerOverflow {
                     literal: self.src[start..self.pos].to_string(),
                     offset: start,
@@ -499,8 +518,18 @@ impl<'src> Lexer<'src> {
             .chars()
             .filter(|c| *c != '_')
             .collect();
+        // Try parsing as i64 first. If it overflows but the value is exactly 2^63
+        // (9223372036854775808 = i64::MAX + 1), emit IntMinMagnitude — this token is
+        // only valid after unary minus: -9223372036854775808 = i64::MIN.
         text.parse::<i64>()
             .map(TokenKind::IntLiteral)
+            .or_else(|_| {
+                text.parse::<u64>()
+                    .ok()
+                    .filter(|&v| v == (i64::MAX as u64) + 1)
+                    .map(|_| TokenKind::IntMinMagnitude)
+                    .ok_or(())
+            })
             .map_err(|_| ParseError::IntegerOverflow {
                 literal: self.src[start..self.pos].to_string(),
                 offset: start,

@@ -1567,14 +1567,26 @@ fn parse_timezone(tz_str: &str) -> Result<jiff::tz::TimeZone, String> {
     {
         let negative = tz_str.starts_with('-');
         let parts: Vec<&str> = offset_str.split(':').collect();
-        let (hours, minutes) = if parts.len() == 2 {
+        let (hours, minutes, extra_seconds) = if parts.len() == 3 {
+            // HH:MM:SS format (seconds in timezone offset)
             let h: i32 = parts[0]
                 .parse()
                 .map_err(|e: std::num::ParseIntError| e.to_string())?;
             let m: i32 = parts[1]
                 .parse()
                 .map_err(|e: std::num::ParseIntError| e.to_string())?;
-            (h, m)
+            let s: i32 = parts[2]
+                .parse()
+                .map_err(|e: std::num::ParseIntError| e.to_string())?;
+            (h, m, s)
+        } else if parts.len() == 2 {
+            let h: i32 = parts[0]
+                .parse()
+                .map_err(|e: std::num::ParseIntError| e.to_string())?;
+            let m: i32 = parts[1]
+                .parse()
+                .map_err(|e: std::num::ParseIntError| e.to_string())?;
+            (h, m, 0)
         } else if offset_str.len() == 4 {
             let h: i32 = offset_str[..2]
                 .parse()
@@ -1582,16 +1594,16 @@ fn parse_timezone(tz_str: &str) -> Result<jiff::tz::TimeZone, String> {
             let m: i32 = offset_str[2..]
                 .parse()
                 .map_err(|e: std::num::ParseIntError| e.to_string())?;
-            (h, m)
+            (h, m, 0)
         } else if offset_str.len() == 2 {
             let h: i32 = offset_str
                 .parse()
                 .map_err(|e: std::num::ParseIntError| e.to_string())?;
-            (h, 0)
+            (h, 0, 0)
         } else {
             return Err(format!("invalid timezone offset: {tz_str}"));
         };
-        let total_seconds = (hours * 3600 + minutes * 60) * if negative { -1 } else { 1 };
+        let total_seconds = (hours * 3600 + minutes * 60 + extra_seconds) * if negative { -1 } else { 1 };
         let offset = jiff::tz::Offset::from_seconds(total_seconds).map_err(|e| e.to_string())?;
         return Ok(jiff::tz::TimeZone::fixed(offset));
     }
