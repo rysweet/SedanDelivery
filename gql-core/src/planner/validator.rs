@@ -20,7 +20,8 @@ enum VarKind {
     Node,
     Relationship,
     Path,
-    Value, // scalar from WITH / UNWIND / RETURN literal
+    Value,   // unknown type from UNWIND or WITH pass-through — may be a node/rel at runtime
+    Scalar,  // definitely a scalar literal from WITH (e.g. WITH true AS n) — not a node/rel
 }
 
 /// Validate `query` for semantic correctness.
@@ -175,9 +176,9 @@ impl ValidationContext {
                         kind_name(existing)
                     )));
                 }
-                // Value -> Node: e.g. `WITH true AS n MATCH (n)` is a type conflict
-                // because a literal value cannot be used as a node pattern.
-                if existing == VarKind::Value {
+                // Scalar: a definitely-scalar value (e.g. `WITH true AS n`) cannot be used as a Node.
+                // Value: unknown type (from UNWIND, etc.) — may be a node at runtime, so allow it.
+                if existing == VarKind::Scalar {
                     return Err(plan_error_syntax(&format!(
                         "variable '{name}' already defined as Value, cannot be used as Node",
                     )));
@@ -203,8 +204,9 @@ impl ValidationContext {
                         kind_name(existing)
                     )));
                 }
-                // Value -> Relationship: e.g. `WITH true AS r MATCH ()-[r]-()` is a type conflict
-                if existing == VarKind::Value {
+                // Scalar: a definitely-scalar value cannot be used as a Relationship.
+                // Value: unknown type (from UNWIND, etc.) — may be a rel at runtime, so allow it.
+                if existing == VarKind::Scalar {
                     return Err(plan_error_syntax(&format!(
                         "variable '{name}' already defined as Value, cannot be used as Relationship",
                     )));
@@ -223,7 +225,54 @@ impl ValidationContext {
     // ── WHERE expression validation ─────────────────────────────────────────
 
     fn validate_where_expr(&self, expr: &Expr) -> Result<(), GqlError> {
+        // Aggregation functions (count, sum, avg, etc.) are not allowed in WHERE
+        if contains_aggregation(expr) {
+            return Err(plan_error_syntax(
+                "aggregation is not allowed in WHERE clause",
+            ));
+        }
+        // Check for undefined variables in the WHERE expression
+        self.check_expr_undefined_vars(expr)?;
         self.validate_expr_general(expr)
+    }
+
+    /// Recursively check that all variable references in an expression are in scope.
+    fn check_expr_undefined_vars(&self, expr: &Expr) -> Result<(), GqlError> {
+        match expr {
+            Expr::Variable(ref id) if id.0 != "*" => {
+                if !self.vars.contains_key(&id.0) {
+                    return Err(plan_error_syntax(&format!(
+                        "variable '{}' not defined",
+                        id.0
+                    )));
+                }
+            }
+            Expr::BinaryOp { left, right, .. } => {
+                self.check_expr_undefined_vars(left)?;
+                self.check_expr_undefined_vars(right)?;
+            }
+            Expr::UnaryOp { expr: inner, .. } => {
+                self.check_expr_undefined_vars(inner)?;
+            }
+            Expr::Property(inner, _) => {
+                self.check_expr_undefined_vars(inner)?;
+            }
+            Expr::FunctionCall { args, .. } => {
+                for arg in args {
+                    self.check_expr_undefined_vars(arg)?;
+                }
+            }
+            Expr::IsNull(inner) | Expr::IsNotNull(inner) => {
+                self.check_expr_undefined_vars(inner)?;
+            }
+            Expr::List(items) => {
+                for item in items {
+                    self.check_expr_undefined_vars(item)?;
+                }
+            }
+            _ => {}
+        }
+        Ok(())
     }
 
     // ── CREATE validation ───────────────────────────────────────────────────
@@ -260,7 +309,8 @@ impl ValidationContext {
             let name = var.0.clone();
             if self.vars.contains_key(&name) {
                 let has_labels = !node.labels.is_empty();
-                let has_props = node.properties.as_ref().is_some_and(|p| !p.is_empty());
+                // Any properties map (even empty {}) triggers VariableAlreadyBound
+                let has_props = node.properties.is_some();
                 // VariableAlreadyBound: re-use with labels or properties
                 if has_labels || has_props {
                     return Err(plan_error_syntax(&format!(
@@ -381,6 +431,12 @@ impl ValidationContext {
             Expr::Property(inner, _) => self.validate_delete_expr(inner),
             // DELETE list[idx]
             Expr::Subscript(inner, _) => self.validate_delete_expr(inner),
+            // DELETE n:Label is invalid — label predicates are not valid in DELETE
+            Expr::HasLabel(_, _) => {
+                Err(plan_error_syntax(
+                    "invalid use of a label predicate in DELETE; use REMOVE to remove labels",
+                ))
+            }
             // Literal values in DELETE are invalid: DELETE 1+1
             Expr::Integer(_) | Expr::Float(_) | Expr::Str(_) | Expr::Bool(_) | Expr::Null => {
                 Err(plan_error_syntax(
@@ -405,10 +461,25 @@ impl ValidationContext {
 
     fn validate_return(&self, rc: &ReturnClause) -> Result<(), GqlError> {
         // Check RETURN * with empty scope
-        if rc.items.is_empty() && self.vars.is_empty() {
+        let is_return_star = rc.items.len() == 1
+            && matches!(&rc.items[0].expr, Expr::Variable(ref id) if id.0 == "*");
+        if (rc.items.is_empty() || is_return_star) && self.vars.is_empty() {
             return Err(plan_error_syntax(
                 "RETURN * requires at least one variable in scope",
             ));
+        }
+        // Check for undefined variables in RETURN (only top-level variables, not inside expressions)
+        if !is_return_star && self.has_read {
+            for item in &rc.items {
+                if let Expr::Variable(ref id) = item.expr {
+                    if id.0 != "*" && !self.vars.contains_key(&id.0) {
+                        return Err(plan_error_syntax(&format!(
+                            "variable '{}' not defined",
+                            id.0
+                        )));
+                    }
+                }
+            }
         }
         self.check_column_name_conflicts(&rc.items)?;
         self.validate_aggregation_consistency(&rc.items)?;
@@ -498,7 +569,21 @@ impl ValidationContext {
         let mut new_vars = HashMap::new();
         for item in &wc.items {
             if let Some(ref alias) = item.alias {
-                new_vars.insert(alias.0.clone(), VarKind::Value);
+                // Preserve the source variable kind if the expression is a variable reference.
+                // This ensures that e.g. `WITH r1 AS r2` keeps r2 as Relationship, not Value.
+                let kind = if let Expr::Variable(ref src_id) = item.expr {
+                    self.vars.get(&src_id.0).copied().unwrap_or(VarKind::Value)
+                } else {
+                    // Non-variable expression: determine if it is a definite scalar literal.
+                    // Literals like `true`, `123`, strings, etc. are Scalar (not nodes).
+                    // Other expressions (function calls, operators) produce unknown type (Value).
+                    if is_definitely_scalar_expr(&item.expr) {
+                        VarKind::Scalar
+                    } else {
+                        VarKind::Value
+                    }
+                };
+                new_vars.insert(alias.0.clone(), kind);
             } else if let Expr::Variable(ref id) = item.expr {
                 let kind = self.vars.get(&id.0).copied().unwrap_or(VarKind::Value);
                 new_vars.insert(id.0.clone(), kind);
@@ -580,7 +665,37 @@ impl ValidationContext {
 
     // ── SET / REMOVE validation ─────────────────────────────────────────────
 
-    fn validate_set(&self, _sc: &SetClause) -> Result<(), GqlError> {
+    fn validate_set(&self, sc: &SetClause) -> Result<(), GqlError> {
+        for item in &sc.items {
+            match item {
+                crate::ast::SetClauseItem::SetProperty { alias, value, .. } => {
+                    if !self.vars.contains_key(&alias.0) {
+                        return Err(plan_error_syntax(&format!(
+                            "variable '{}' not defined",
+                            alias.0
+                        )));
+                    }
+                    self.validate_expr_in_create(value)?;
+                }
+                crate::ast::SetClauseItem::SetMap { alias, map, .. } => {
+                    if !self.vars.contains_key(&alias.0) {
+                        return Err(plan_error_syntax(&format!(
+                            "variable '{}' not defined",
+                            alias.0
+                        )));
+                    }
+                    self.validate_expr_in_create(map)?;
+                }
+                crate::ast::SetClauseItem::SetLabels { alias, .. } => {
+                    if !self.vars.contains_key(&alias.0) {
+                        return Err(plan_error_syntax(&format!(
+                            "variable '{}' not defined",
+                            alias.0
+                        )));
+                    }
+                }
+            }
+        }
         Ok(())
     }
 
@@ -637,7 +752,7 @@ impl ValidationContext {
                 ));
             }
         }
-        // Register variables
+        // Register variables (checking for VariableAlreadyBound on step nodes)
         if let Some(ref var) = mc.pattern.start.variable {
             self.vars.insert(var.0.clone(), VarKind::Node);
         }
@@ -645,8 +760,20 @@ impl ValidationContext {
             if let Some(ref var) = step.rel.variable {
                 self.vars.insert(var.0.clone(), VarKind::Relationship);
             }
-            if let Some(ref var) = step.node.variable {
-                self.vars.insert(var.0.clone(), VarKind::Node);
+            if let Some(ref node_var) = step.node.variable {
+                let name = node_var.0.clone();
+                // If already bound and has new labels/properties, VariableAlreadyBound
+                if self.vars.contains_key(&name) {
+                    let has_labels = !step.node.labels.is_empty();
+                    let has_props = step.node.properties.is_some();
+                    if has_labels || has_props {
+                        return Err(plan_error_syntax(&format!(
+                            "variable '{}' already bound, cannot be rebound in MERGE with labels/properties",
+                            name
+                        )));
+                    }
+                }
+                self.vars.insert(name, VarKind::Node);
             }
         }
 
@@ -1351,7 +1478,17 @@ fn kind_name(k: VarKind) -> &'static str {
         VarKind::Relationship => "Relationship",
         VarKind::Path => "Path",
         VarKind::Value => "Value",
+        VarKind::Scalar => "Scalar",
     }
+}
+
+/// Returns true if an expression is definitely a scalar literal (not a node/relationship).
+fn is_definitely_scalar_expr(expr: &Expr) -> bool {
+    matches!(
+        expr,
+        Expr::Bool(_) | Expr::Integer(_) | Expr::Float(_) | Expr::Str(_) | Expr::Null
+        | Expr::List(_) | Expr::MapLiteral(_)
+    )
 }
 
 fn op_name(op: BinaryOp) -> &'static str {

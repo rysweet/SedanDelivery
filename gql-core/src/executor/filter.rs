@@ -973,12 +973,10 @@ pub fn eval_function_with_vals(name: &str, vals: Vec<Value>) -> Result<Value, Gq
                 Value::Null => Ok(Value::Null),
                 Value::Int(n) => Ok(Value::Int(*n)),
                 Value::Float(f) => Ok(Value::Int(*f as i64)),
-                Value::Str(s) => s.parse::<i64>().map(Value::Int).map_err(|_| {
-                    GqlError::Execution(ExecutionError::TypeMismatch {
-                        expected: "integer string".to_string(),
-                        actual: s.to_string(),
-                    })
-                }),
+                Value::Str(s) => {
+                    // TCK expects NULL for non-numeric strings, not an error.
+                    Ok(s.parse::<i64>().map(Value::Int).unwrap_or(Value::Null))
+                }
                 other => type_error("toInteger", other),
             }
         }
@@ -988,12 +986,10 @@ pub fn eval_function_with_vals(name: &str, vals: Vec<Value>) -> Result<Value, Gq
                 Value::Null => Ok(Value::Null),
                 Value::Float(f) => Ok(Value::Float(*f)),
                 Value::Int(n) => Ok(Value::Float(*n as f64)),
-                Value::Str(s) => s.parse::<f64>().map(Value::Float).map_err(|_| {
-                    GqlError::Execution(ExecutionError::TypeMismatch {
-                        expected: "float string".to_string(),
-                        actual: s.to_string(),
-                    })
-                }),
+                Value::Str(s) => {
+                    // TCK expects NULL for non-numeric strings, not an error.
+                    Ok(s.parse::<f64>().map(Value::Float).unwrap_or(Value::Null))
+                }
                 other => type_error("toFloat", other),
             }
         }
@@ -1647,6 +1643,10 @@ fn eval_date_constructor(vals: &[Value]) -> Result<Value, GqlError> {
     match &vals[0] {
         Value::Null => Ok(Value::Null),
         Value::Str(s) => {
+            // Handle ISO 8601 week date format: YYYY-Www or YYYY-Www-D
+            if let Some(d) = parse_iso_week_date_str(s) {
+                return d.map(Value::Date);
+            }
             let d: jiff::civil::Date = s.parse().map_err(|e| temporal_parse_error("date", e))?;
             Ok(Value::Date(d))
         }
@@ -1668,6 +1668,34 @@ fn eval_date_constructor(vals: &[Value]) -> Result<Value, GqlError> {
         }
         other => type_error("date", other),
     }
+}
+
+/// Parse an ISO 8601 week date string: YYYY-Www or YYYY-Www-D.
+/// Returns None if the string doesn't match the week date format.
+/// Returns Some(Ok(date)) on success, Some(Err(e)) on parse failure.
+fn parse_iso_week_date_str(s: &str) -> Option<Result<jiff::civil::Date, GqlError>> {
+    // Match YYYY-Www or YYYY-Www-D
+    let s = s.trim();
+    // Find the W marker
+    let w_pos = s.find('W')?;
+    if w_pos < 4 {
+        return None;
+    }
+    // Check separator before W
+    let before_w = &s[..w_pos];
+    let year_str = before_w.strip_suffix('-').unwrap_or(before_w);
+    let year: i64 = year_str.parse().ok()?;
+    let after_w = &s[w_pos + 1..];
+    // Parse week and optional day
+    let (week, day) = if let Some(dash) = after_w.find('-') {
+        let week: i64 = after_w[..dash].parse().ok()?;
+        let day: i64 = after_w[dash + 1..].parse().ok()?;
+        (week, day)
+    } else {
+        let week: i64 = after_w.parse().ok()?;
+        (week, 1) // Monday by default
+    };
+    Some(compute_week_date(year, week, day))
 }
 
 /// Compute an ISO week date from year, week, and day-of-week.
