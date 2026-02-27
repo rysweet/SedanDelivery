@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 import { subscribeWithSelector } from 'zustand/middleware'
-import type { QueryResult, LayoutAlgorithm, EditMode, Action } from '../types/graph'
+import type { QueryResult, LayoutAlgorithm, EditMode } from '../types/graph'
 
 interface GraphState {
   // Connection
@@ -29,10 +29,6 @@ interface GraphState {
   schemaPanelOpen: boolean
   lastQueryResult: QueryResult | null
 
-  // History for undo/redo
-  history: Action[]
-  historyIndex: number
-
   // Zoom
   zoomLevel: number
 
@@ -52,9 +48,6 @@ interface GraphState {
   toggleQueryPanel: () => void
   toggleSchemaPanel: () => void
   setLastQueryResult: (result: QueryResult | null) => void
-  pushAction: (action: Action) => void
-  undo: () => Action | null
-  redo: () => Action | null
   setZoomLevel: (level: number) => void
   clearSelection: () => void
 }
@@ -76,8 +69,6 @@ export const useGraphStore = create<GraphState>()(
     queryPanelOpen: false,
     schemaPanelOpen: false,
     lastQueryResult: null,
-    history: [],
-    historyIndex: -1,
     zoomLevel: 1,
 
     // Actions
@@ -89,8 +80,6 @@ export const useGraphStore = create<GraphState>()(
         hoveredNodeId: null,
         visibleLabels: new Set<string>(),
         lastQueryResult: null,
-        history: [],
-        historyIndex: -1,
       }),
 
     setAvailableGraphs: (graphs) => set({ availableGraphs: graphs }),
@@ -145,40 +134,6 @@ export const useGraphStore = create<GraphState>()(
       })),
 
     setLastQueryResult: (result) => set({ lastQueryResult: result }),
-
-    pushAction: (action) =>
-      set((s) => {
-        const newHistory = s.history.slice(0, s.historyIndex + 1)
-        newHistory.push(action)
-        return {
-          history: newHistory,
-          historyIndex: newHistory.length - 1,
-        }
-      }),
-
-    undo: () => {
-      const { history, historyIndex } = get()
-      if (historyIndex < 0) {
-        console.warn('[Undo] Nothing to undo')
-        return null
-      }
-      const action = history[historyIndex]
-      set({ historyIndex: historyIndex - 1 })
-      console.warn('[Undo] Would undo:', action, '— inverse API execution not yet implemented')
-      return action
-    },
-
-    redo: () => {
-      const { history, historyIndex } = get()
-      if (historyIndex >= history.length - 1) {
-        console.warn('[Redo] Nothing to redo')
-        return null
-      }
-      const action = history[historyIndex + 1]
-      set({ historyIndex: historyIndex + 1 })
-      console.warn('[Redo] Would redo:', action, '— inverse API execution not yet implemented')
-      return action
-    },
 
     setZoomLevel: (level) => set({ zoomLevel: level }),
 

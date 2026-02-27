@@ -86,13 +86,7 @@ export function Toolbar({
   const schemaPanelOpen = useGraphStore((s) => s.schemaPanelOpen)
   const selectedNodeId = useGraphStore((s) => s.selectedNodeId)
   const selectedEdgeId = useGraphStore((s) => s.selectedEdgeId)
-  const undo = useGraphStore((s) => s.undo)
-  const redo = useGraphStore((s) => s.redo)
-  const history = useGraphStore((s) => s.history)
-  const historyIndex = useGraphStore((s) => s.historyIndex)
 
-  const canUndo = historyIndex >= 0
-  const canRedo = historyIndex < history.length - 1
   const hasSelection = selectedNodeId !== null || selectedEdgeId !== null
 
   const handleModeChange = useCallback(
@@ -109,6 +103,7 @@ export function Toolbar({
     [setLayout],
   )
 
+  // Fix #94 — setting layoutRunning=false is observed by useLayout which stops the FA2 worker
   const handleStopLayout = useCallback(() => {
     setLayoutRunning(false)
   }, [setLayoutRunning])
@@ -150,18 +145,18 @@ export function Toolbar({
 
       <Separator />
 
-      {/* History */}
+      {/* History — undo/redo coming in v2, always disabled (Fix #78) */}
       <ToolbarButton
-        tooltip="Undo (Ctrl+Z)"
-        onClick={() => undo()}
-        disabled={!canUndo}
+        tooltip="Undo coming in v2"
+        onClick={() => { /* undo coming in v2 */ }}
+        disabled={true}
       >
         <Undo2 size={16} />
       </ToolbarButton>
       <ToolbarButton
-        tooltip="Redo (Ctrl+Shift+Z)"
-        onClick={() => redo()}
-        disabled={!canRedo}
+        tooltip="Redo coming in v2"
+        onClick={() => { /* redo coming in v2 */ }}
+        disabled={true}
       >
         <Redo2 size={16} />
       </ToolbarButton>
