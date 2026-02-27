@@ -5,6 +5,28 @@ use jiff::{civil, Zoned};
 
 use crate::storage::{EdgeId, NodeId};
 
+/// A Cypher duration with three independent signed components.
+/// Unlike jiff::Span (which requires uniform sign), each part can have
+/// a different sign, as per the openCypher specification.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CypherDuration {
+    /// Total months (years * 12 + months). May be negative.
+    pub months: i64,
+    /// Total days (weeks * 7 + days). Independent sign from months.
+    pub days: i64,
+    /// Total time in nanoseconds. Independent sign from months and days.
+    /// = hours*3_600_000_000_000 + minutes*60_000_000_000 + seconds*1_000_000_000 + sub_nanos
+    pub nanos: i64,
+}
+
+impl std::hash::Hash for CypherDuration {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.months.hash(state);
+        self.days.hash(state);
+        self.nanos.hash(state);
+    }
+}
+
 /// The universal value type for GQL/Cypher properties and expression results.
 ///
 /// Design constraints:
@@ -41,7 +63,7 @@ pub enum Value {
     DateTime(Box<Zoned>),
 
     /// ISO 8601 duration (years, months, weeks, days, hours, minutes, seconds, nanoseconds).
-    Duration(jiff::Span),
+    Duration(CypherDuration),
 
     // ── Spatial ───────────────────────────────────────────────────────────────
     /// WGS-84 geographic point: (longitude, latitude).
@@ -90,7 +112,6 @@ pub enum Crs {
 
 impl PartialEq for Value {
     fn eq(&self, other: &Self) -> bool {
-        use jiff::SpanFieldwise;
         match (self, other) {
             (Self::Null, Self::Null) => true,
             (Self::Bool(a), Self::Bool(b)) => a == b,
@@ -104,8 +125,8 @@ impl PartialEq for Value {
             (Self::LocalTime(a), Self::LocalTime(b)) => a == b,
             (Self::LocalDateTime(a), Self::LocalDateTime(b)) => a == b,
             (Self::DateTime(a), Self::DateTime(b)) => a == b,
-            // jiff::Span: use SpanFieldwise for structural equality
-            (Self::Duration(a), Self::Duration(b)) => SpanFieldwise(*a) == SpanFieldwise(*b),
+            // CypherDuration: structural field equality
+            (Self::Duration(a), Self::Duration(b)) => a == b,
             (Self::Point(a), Self::Point(b)) => a == b,
             (Self::List(a), Self::List(b)) => a == b,
             (Self::Map(a), Self::Map(b)) => a == b,
@@ -256,6 +277,9 @@ impl Value {
                 if has_null { None } else { Some(true) }
             }
 
+            // Duration: direct field comparison
+            (Self::Duration(a), Self::Duration(b)) => Some(*a == *b),
+
             // All other types: delegate to PartialEq
             _ => Some(self == other),
         }
@@ -273,8 +297,56 @@ impl fmt::Display for Value {
             Self::Date(d) => write!(f, "{d}"),
             Self::LocalTime(t) => write!(f, "{t}"),
             Self::LocalDateTime(dt) => write!(f, "{dt}"),
-            Self::DateTime(dt) => write!(f, "{dt}"),
-            Self::Duration(sp) => write!(f, "{}", format_cypher_duration(sp)),
+            Self::DateTime(dt) => {
+                let civil_dt = jiff::civil::DateTime::from(dt.as_ref());
+                let is_epoch_date = civil_dt.date() == jiff::civil::Date::new(1970, 1, 1).unwrap();
+                let tz = dt.time_zone();
+                let has_named_tz = tz.iana_name().is_some();
+                if is_epoch_date {
+                    // Time-only value: display as HH:MM:SS[.nanos]+offset
+                    let t = civil_dt.time();
+                    let off = dt.offset();
+                    let total_secs_off = off.seconds();
+                    let h_off = total_secs_off / 3600;
+                    let m_off = (total_secs_off.abs() % 3600) / 60;
+                    let offset_str = format!("{:+03}:{:02}", h_off, m_off);
+                    // Format nanoseconds
+                    let ns = t.subsec_nanosecond();
+                    if ns != 0 {
+                        let ns_str = format!("{:09}", ns);
+                        let ns_trimmed = ns_str.trim_end_matches('0');
+                        write!(f, "{:02}:{:02}:{:02}.{}{}", t.hour(), t.minute(), t.second(), ns_trimmed, offset_str)
+                    } else {
+                        write!(f, "{:02}:{:02}:{:02}{}", t.hour(), t.minute(), t.second(), offset_str)
+                    }
+                } else if has_named_tz {
+                    // Named timezone: display full datetime with tz name
+                    write!(f, "{dt}")
+                } else {
+                    // Fixed offset: display datetime without [tz] bracket
+                    let civil = jiff::civil::DateTime::from(dt.as_ref());
+                    let off = dt.offset();
+                    let total_secs_off = off.seconds();
+                    let h_off = total_secs_off / 3600;
+                    let m_off = (total_secs_off.abs() % 3600) / 60;
+                    let offset_str = format!("{:+03}:{:02}", h_off, m_off);
+                    let ns = civil.subsec_nanosecond();
+                    if ns != 0 {
+                        let ns_str = format!("{:09}", ns);
+                        let ns_trimmed = ns_str.trim_end_matches('0');
+                        write!(f, "{}-{:02}-{:02}T{:02}:{:02}:{:02}.{}{}",
+                            civil.year(), civil.month(), civil.day(),
+                            civil.hour(), civil.minute(), civil.second(),
+                            ns_trimmed, offset_str)
+                    } else {
+                        write!(f, "{}-{:02}-{:02}T{:02}:{:02}:{:02}{}",
+                            civil.year(), civil.month(), civil.day(),
+                            civil.hour(), civil.minute(), civil.second(),
+                            offset_str)
+                    }
+                }
+            },
+            Self::Duration(d) => write!(f, "{}", format_cypher_duration(d)),
             Self::Point(p) => write!(f, "point({{x: {}, y: {}}})", p.x, p.y),
             Self::List(items) => {
                 write!(f, "[")?;
@@ -305,38 +377,26 @@ impl fmt::Display for Value {
     }
 }
 
-/// Format a `jiff::Span` as a Cypher-compatible ISO 8601 duration string.
-///
-/// Cypher uses per-component signs: `PT-22H` instead of jiff's `-PT22H`.
-/// Each non-zero component is written with its own sign.
-pub fn format_cypher_duration(sp: &jiff::Span) -> String {
-    let years = sp.get_years() as i64;
-    let months = sp.get_months() as i64;
-    let days = sp.get_days() as i64;
-    let hours = sp.get_hours() as i64;
-    let minutes = sp.get_minutes();
-    let seconds = sp.get_seconds();
-    let nanos = sp.get_nanoseconds();
+/// Format a CypherDuration as an ISO 8601-compatible duration string.
+/// Cypher allows different signs for months, days, and time parts.
+pub fn format_cypher_duration(d: &CypherDuration) -> String {
+    let years = d.months / 12;
+    let months = d.months % 12;
+    let days = d.days;
 
-    // Normalize the time part to avoid mixed-sign components (e.g. PT12M-60S → PT11M)
-    // Use i128 to prevent overflow for spans with very large hour values.
-    let total_ns = hours as i128 * 3_600_000_000_000i128
-        + minutes as i128 * 60_000_000_000i128
-        + seconds as i128 * 1_000_000_000i128
-        + nanos as i128;
+    // Decompose nanos into hours, minutes, seconds, sub-nanos (all with same sign as nanos)
+    let (time_sign, abs_nanos) = if d.nanos < 0 { (-1i64, -d.nanos) } else { (1i64, d.nanos) };
+    let h_abs = abs_nanos / 3_600_000_000_000i64;
+    let rem = abs_nanos % 3_600_000_000_000i64;
+    let m_abs = rem / 60_000_000_000i64;
+    let rem = rem % 60_000_000_000i64;
+    let s_abs = rem / 1_000_000_000i64;
+    let ns_abs = rem % 1_000_000_000i64;
 
-    let (sign, total_ns_abs) = if total_ns < 0 { (-1i128, -total_ns) } else { (1i128, total_ns) };
-    let h_abs = total_ns_abs / 3_600_000_000_000i128;
-    let rem = total_ns_abs % 3_600_000_000_000i128;
-    let m_abs = rem / 60_000_000_000i128;
-    let rem = rem % 60_000_000_000i128;
-    let s_abs = rem / 1_000_000_000i128;
-    let ns_abs = rem % 1_000_000_000i128;
-
-    let norm_h = (sign * h_abs) as i64;
-    let norm_m = (sign * m_abs) as i64;
-    let norm_s = (sign * s_abs) as i64;
-    let norm_ns = (sign * ns_abs) as i64;
+    let norm_h = time_sign * h_abs;
+    let norm_m = time_sign * m_abs;
+    let norm_s = time_sign * s_abs;
+    let norm_ns = time_sign * ns_abs;
 
     let has_date = years != 0 || months != 0 || days != 0;
     let has_time = norm_h != 0 || norm_m != 0 || norm_s != 0 || norm_ns != 0;
@@ -363,7 +423,12 @@ pub fn format_cypher_duration(sp: &jiff::Span) -> String {
             let ns_u = norm_ns.unsigned_abs();
             let ns_str = format!("{ns_u:09}");
             let ns_trimmed = ns_str.trim_end_matches('0');
-            s.push_str(&format!("{norm_s}.{ns_trimmed}S"));
+            // Handle -0.NNNs case: norm_s=0 but time is negative
+            if norm_s == 0 && time_sign < 0 {
+                s.push_str(&format!("-0.{ns_trimmed}S"));
+            } else {
+                s.push_str(&format!("{norm_s}.{ns_trimmed}S"));
+            }
         } else if norm_s != 0 {
             s.push_str(&format!("{norm_s}S"));
         }

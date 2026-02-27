@@ -3442,11 +3442,13 @@ fn eval_binary_values(
             }
         }
         BinaryOp::Mul => {
-            use crate::executor::filter::duration_mul;
+            use crate::executor::filter::{duration_mul, duration_mul_f64};
             match (&lv, &rv) {
                 (Value::Null, _) | (_, Value::Null) => Ok(Value::Null),
                 (Value::Duration(d), Value::Int(n)) => Ok(Value::Duration(duration_mul(d, *n))),
                 (Value::Int(n), Value::Duration(d)) => Ok(Value::Duration(duration_mul(d, *n))),
+                (Value::Duration(d), Value::Float(f)) => Ok(Value::Duration(duration_mul_f64(d, *f))),
+                (Value::Float(f), Value::Duration(d)) => Ok(Value::Duration(duration_mul_f64(d, *f))),
                 _ => {
                     let left_lit = value_to_expr(&lv);
                     let right_lit = value_to_expr(&rv);
@@ -3456,10 +3458,11 @@ fn eval_binary_values(
             }
         }
         BinaryOp::Div => {
-            use crate::executor::filter::duration_div;
+            use crate::executor::filter::{duration_div, duration_mul_f64};
             match (&lv, &rv) {
                 (Value::Null, _) | (_, Value::Null) => Ok(Value::Null),
                 (Value::Duration(d), Value::Int(n)) => duration_div(d, *n).map(Value::Duration),
+                (Value::Duration(d), Value::Float(f)) => Ok(Value::Duration(duration_mul_f64(d, 1.0 / f))),
                 _ => {
                     let left_lit = value_to_expr(&lv);
                     let right_lit = value_to_expr(&rv);

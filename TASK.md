@@ -1,58 +1,53 @@
-# Issue #134
+# Issue #133
 
-You are working on SedanDelivery, a Rust GQL/Cypher query engine. Current TCK: 3719/3806 (97.7%). Fix non-temporal remaining failures.
+You are working on SedanDelivery, a Rust GQL/Cypher query engine. Current TCK: 3719/3806 (97.7%). Fix all remaining temporal failures — 56 'Expected row not found' (mostly Temporal5/6/7/8/10) + 9 datetime parse errors.
 
-Branch from main: feat/tck-r9-engine-fixes. Create PR when done.
+Branch from main: feat/tck-r9-temporal-deep. Create PR when done.
 
-REMAINING FAILURES:
-
-1. Integer multiply overflow (~4 failures)
-'attempt to multiply with overflow' — Rust panic in arithmetic ops.
-Fix in filter.rs/engine.rs: Replace `*` with `i64::checked_mul()` or `i64::saturating_mul()` for all integer arithmetic. Also handle `+`, `-`, `/` with checked variants.
+DIAGNOSTICS - run these first:
 ```bash
-cargo test --test tck 2>&1 | grep -B20 'multiply with overflow' | grep 'query\|Defined:\|Scenario' | head -10
+cargo test --test tck 2>&1 | grep -B10 'Expected row #0 not found' | grep -B1 'Expected:\|Got:' | grep -v 'Step\|Defined\|Matched' | head -60
+cargo test --test tck 2>&1 | grep 'cannot parse datetime\|cannot parse date\|cannot parse civil' | head -10
 ```
 
-2. Row count 15→16 (~4 failures, same scenario running 4 times)
-```bash
-cargo test --test tck 2>&1 | grep -B20 'expected 15 rows, got 16' | grep 'Defined:\|Scenario' | head -5
-```
-Probably a Match6 (named paths) issue. Look at the failing query and fix.
+ROMAINING TEMPORAL FAILURES BY FEATURE:
+- Temporal5 (~6): Duration accessors (.years, .months, .days, .hours, .minutes, .seconds, .monthsOfYear, .daysOfMonth)
+- Temporal6 (~8): Duration between two temporal values (duration.between)
+- Temporal7 (~1): Temporal truncation (date.truncate('week'), datetime.truncate('hour'))
+- Temporal8 (~14): Temporal component access (.year, .month, .day, .hour, .epochMillis, .epochSeconds)
+- Temporal10 (~10): Arithmetic with temporals and durations
+- Temporal2 (~1): Other
 
-3. Row count 1→0 (~2 failures)
-Query returns 0 rows when it should return 1.
-```bash
-cargo test --test tck 2>&1 | grep -B20 'expected 1 rows, got 0' | grep 'Defined:\|query' | head -10
-```
+COMPACT DATETIME FORMATS TO FIX (~9 parse errors):
+1. '2015T214032-0100' — year + T + compact time (HHMMSS) + compact offset (-HHMM)
+2. '2015202T21+18:00' — year + ordinal day + T + time + offset
+3. '2015-W30T2140-02' — week date + compact time + compact offset (-HH)
+4. '2015-W30T2140-00:00' — week date + compact time + offset
+5. '2015-W30-2T214032.142Z' — week-day + compact time with fractional seconds
+6. '2015-202T21:40:32+01:00' — ordinal date + time
+7. '-999999999-01-01' — extreme negative year (return error, not panic)
+8. 'duration from date string' — return error for duration('2012-02-02')
+9. Zulu offset in civil time — strip Z for localdatetime parsing
 
-4. Row count 1→2 (~1 failure)
-```bash
-cargo test --test tck 2>&1 | grep -B20 'expected 1 rows, got 2' | grep 'Defined:\|query' | head -10
-```
-
-5. +nodes expected 10 got 4 (~1 failure)
-CREATE not creating all expected nodes.
-
-6. Row #0/#1 does not match (~4 failures)
-Values returned but in wrong order or with wrong content.
-```bash
-cargo test --test tck 2>&1 | grep -B20 'Row #0 does not match\|Row #1 does not match' | grep 'Defined:' | head -10
-```
-
-7. Expected row #2 not found (~2 failures)
-Specific rows missing from result set.
-
-8. TypeError expected but succeeded (~1 failure)
-```bash
-cargo test --test tck 2>&1 | grep -B20 'TypeError' | head -30
+IMPLEMENTATION APPROACH:
+For compact datetime formats, add a preprocessing step in filter.rs before calling jiff::parse:
+```rust
+fn normalize_datetime_input(s: &str) -> String {
+    // 1. Expand compact time HHMMSS to HH:MM:SS
+    // 2. Expand compact offset -HHMM to -HH:MM and -HH to -HH:00
+    // 3. Expand ordinal date YYYYDDD to proper date
+    // 4. Handle Zulu in localdatetime
+}
 ```
 
-For each failure:
-1. Find the exact failing scenario in the .feature file
-2. Read the query and expected results
-3. Trace through engine.rs to find why the result is wrong
-4. Fix the root cause
-5. Verify with cargo test -p gql-core --lib
+For wrong temporal values, the likely issues are:
+- Duration accessor (.years etc) not extracting correct component
+- Duration.between not using correct algorithm
+- Temporal truncation rounding incorrectly
+- epochMillis/epochSeconds computation wrong
+- Temporal arithmetic with duration applying months incorrectly
+
+KEY: Read the failing test cases in the .feature files to understand exact expected behavior.
 
 AFTER FIXING:
 1. cargo test -p gql-core --lib (308 pass)
@@ -60,6 +55,6 @@ AFTER FIXING:
 3. cargo test --test tck 2>&1 | tail -5 (improvement)
 4. Create PR
 
-Key files: gql-core/src/executor/engine.rs, gql-core/src/executor/filter.rs, gql-core/src/parser/parser.rs
+Key files: gql-core/src/executor/filter.rs, gql-core/src/types/value.rs
 
 Follow DEFAULT_WORKFLOW.md autonomously. NO QUESTIONS. Work through Steps 0-22. Create PR when complete.
