@@ -590,7 +590,7 @@ impl<'a> QueryExecutor<'a> {
                             // In the plan, src_alias is always the "left" node in the
                             // pattern text. For an Incoming arc (a)<-[:R]-(b), we need
                             // to flip so the edge is stored as b -> a.
-                            let (real_src, real_dst) = match direction {
+                            let (actual_src, actual_dst) = match direction {
                                 Direction::Incoming => (dst_id, src_id),
                                 _ => (src_id, dst_id),
                             };
@@ -602,8 +602,8 @@ impl<'a> QueryExecutor<'a> {
                                 .collect();
                             let edge_id = self.store.create_edge(
                                 graph,
-                                real_src,
-                                real_dst,
+                                actual_src,
+                                actual_dst,
                                 rel_type.as_str().to_string(),
                                 props,
                             )?;
@@ -1873,9 +1873,9 @@ impl<'a> QueryExecutor<'a> {
                                     }
                                 };
                                 let lc = name.to_lowercase();
-                                let mut match_count: usize = 0;
+                                let mut true_count: usize = 0;
+                                let mut false_count: usize = 0;
                                 let mut null_count: usize = 0;
-                                let total = items.len();
                                 for item in &items {
                                     let mut ext_row = row.clone();
                                     ext_row.insert(variable.0.clone(), item.clone());
@@ -1888,50 +1888,41 @@ impl<'a> QueryExecutor<'a> {
                                     } else {
                                         item.clone()
                                     };
-                                    if pred_result == Value::Bool(true) {
-                                        match_count += 1;
-                                    } else if pred_result.is_null() {
-                                        null_count += 1;
+                                    match pred_result {
+                                        Value::Bool(true) => true_count += 1,
+                                        Value::Bool(false) => false_count += 1,
+                                        v if v.is_null() => null_count += 1,
+                                        _ => false_count += 1,
                                     }
-                                    // Short-circuit
+                                    // Short-circuit for early exit
                                     match lc.as_str() {
-                                        "any" if match_count > 0 => {
-                                            return Ok(Value::Bool(true))
-                                        }
-                                        "none" if match_count > 0 => {
-                                            return Ok(Value::Bool(false))
-                                        }
-                                        "single" if match_count > 1 => {
-                                            return Ok(Value::Bool(false))
-                                        }
+                                        "all" if false_count > 0 => { return Ok(Value::Bool(false)) }
+                                        "any" if true_count > 0 => { return Ok(Value::Bool(true)) }
+                                        "none" if true_count > 0 => { return Ok(Value::Bool(false)) }
+                                        "single" if true_count > 1 => { return Ok(Value::Bool(false)) }
                                         _ => {}
                                     }
                                 }
-                                // Three-valued logic for quantifiers:
-                                // - false_count = total - match_count - null_count
-                                // For ALL: if any false → false; if all true → true;
-                                //          else (only nulls remaining) → null.
-                                let false_count = total - match_count - null_count;
                                 return match lc.as_str() {
                                     "all" => {
-                                        if false_count > 0 { Ok(Value::Bool(false)) }
-                                        else if null_count > 0 { Ok(Value::Null) }
+                                        // false_count already short-circuited above
+                                        if null_count > 0 { Ok(Value::Null) }
                                         else { Ok(Value::Bool(true)) }
                                     }
                                     "any" => {
-                                        if match_count > 0 { Ok(Value::Bool(true)) }
-                                        else if null_count > 0 { Ok(Value::Null) }
+                                        // true_count already short-circuited above
+                                        if null_count > 0 { Ok(Value::Null) }
                                         else { Ok(Value::Bool(false)) }
                                     }
                                     "none" => {
-                                        if match_count > 0 { Ok(Value::Bool(false)) }
-                                        else if null_count > 0 { Ok(Value::Null) }
+                                        // true_count already short-circuited above
+                                        if null_count > 0 { Ok(Value::Null) }
                                         else { Ok(Value::Bool(true)) }
                                     }
                                     "single" => {
-                                        if match_count > 1 { Ok(Value::Bool(false)) }
-                                        else if null_count > 0 && match_count == 0 { Ok(Value::Null) }
-                                        else { Ok(Value::Bool(match_count == 1)) }
+                                        if true_count > 1 { Ok(Value::Bool(false)) }
+                                        else if null_count > 0 { Ok(Value::Null) }
+                                        else { Ok(Value::Bool(true_count == 1)) }
                                     }
                                     _ => Ok(Value::Bool(false)),
                                 };
@@ -2493,27 +2484,40 @@ impl<'a> QueryExecutor<'a> {
                 }
                 let ctx = self.build_filter_ctx(graph, row)?;
                 let prop_val = self.eval_with_storage(graph, value, row, &ctx)?;
-                let is_non_null = !prop_val.is_null();
-                let mut props = HashMap::new();
-                props.insert(key.clone(), prop_val);
-                match val {
-                    Value::Node(node_id) => {
-                        self.store.set_node_properties(graph, *node_id, props)?;
-                        if is_non_null {
+                // SET n.prop = null means REMOVE the property (Cypher semantics)
+                if prop_val.is_null() {
+                    match val {
+                        Value::Node(node_id) => {
+                            self.store.remove_node_property(graph, *node_id, key)?;
+                        }
+                        Value::Edge(edge_id) => {
+                            self.store.remove_edge_property(graph, *edge_id, key)?;
+                        }
+                        other => {
+                            return Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                                expected: format!("Node or Relationship for variable '{}'", alias.0),
+                                actual: other.type_name().to_string(),
+                            }));
+                        }
+                    }
+                } else {
+                    let mut props = HashMap::new();
+                    props.insert(key.clone(), prop_val);
+                    match val {
+                        Value::Node(node_id) => {
+                            self.store.set_node_properties(graph, *node_id, props)?;
                             stats.props_seen.insert((false, node_id.0, key.clone()));
                         }
-                    }
-                    Value::Edge(edge_id) => {
-                        self.store.set_edge_properties(graph, *edge_id, props)?;
-                        if is_non_null {
+                        Value::Edge(edge_id) => {
+                            self.store.set_edge_properties(graph, *edge_id, props)?;
                             stats.props_seen.insert((true, edge_id.0, key.clone()));
                         }
-                    }
-                    other => {
-                        return Err(GqlError::Execution(ExecutionError::TypeMismatch {
-                            expected: format!("Node or Relationship for variable '{}'", alias.0),
-                            actual: other.type_name().to_string(),
-                        }));
+                        other => {
+                            return Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                                expected: format!("Node or Relationship for variable '{}'", alias.0),
+                                actual: other.type_name().to_string(),
+                            }));
+                        }
                     }
                 }
             }
@@ -3036,7 +3040,7 @@ fn expr_to_column_name(expr: &Expr) -> String {
         }
         Expr::Integer(n) => n.to_string(),
         Expr::Float(f) => f.to_string(),
-        Expr::Str(s) => s.to_string(),
+        Expr::Str(s) => format!("'{}'", s),
         Expr::Bool(b) => b.to_string(),
         Expr::Null => "null".to_string(),
         Expr::FunctionCall {
@@ -3118,7 +3122,7 @@ fn expr_to_column_name(expr: &Expr) -> String {
         // These must match expr_to_col_name in planner.rs exactly.
         Expr::IsNull(e) => format!("{} IS NULL", expr_to_column_name(e)),
         Expr::IsNotNull(e) => format!("{} IS NOT NULL", expr_to_column_name(e)),
-        Expr::HasLabel(e, label) => format!("({}:{})", expr_to_column_name(e), label.0),
+        Expr::HasLabel(e, label) => format!("{}:{}", expr_to_column_name(e), label.0),
         Expr::Parameter(name) => format!("${name}"),
         Expr::List(items) => {
             let items_str: Vec<String> = items.iter().map(expr_to_column_name).collect();
@@ -3142,7 +3146,10 @@ fn eval_prop_map(
     let mut map = HashMap::new();
     for (key, expr) in pairs {
         let val = executor.eval_with_storage(graph, expr, row, ctx)?;
-        map.insert(key.clone(), val);
+        // Cypher: setting a property to null = removing it (don't store nulls)
+        if !val.is_null() {
+            map.insert(key.clone(), val);
+        }
     }
     Ok(map)
 }
@@ -3314,7 +3321,10 @@ fn value_to_expr(val: &Value) -> Expr {
 
 /// Compare two `Value`s for ordering purposes.
 ///
-/// Ordering: Null < Bool < Int ≈ Float < String < List < others (opaque).
+/// Ordering follows openCypher/Neo4j semantics for ORDER BY / min / max.
+/// Ascending order (from smallest to largest):
+///   Node/Edge/Path < Map < List < Bool < Str < Number < Temporal < Null
+/// Null sorts LAST in ascending order (treated as the "greatest" value).
 pub fn cmp_values(a: &Value, b: &Value) -> std::cmp::Ordering {
     use std::cmp::Ordering::*;
 
@@ -3323,23 +3333,19 @@ pub fn cmp_values(a: &Value, b: &Value) -> std::cmp::Ordering {
     // Temporal types (Date, Time, DateTime, Duration) sit between Bool and Null.
     fn type_rank(v: &Value) -> u8 {
         match v {
-            Value::Map(_) => 0,
-            Value::Node(_) => 1,
-            Value::Edge(_) => 2,
-            Value::List(_) => 3,
-            Value::Path { .. } => 4,
-            Value::Str(_) => 5,
-            Value::Bool(_) => 6,
-            Value::Int(_) => 7,
-            Value::Float(f) if !f.is_nan() => 7,
-            Value::Float(_) => 8, // NaN sorts after regular numbers
-            Value::Date(_)
-            | Value::LocalTime(_)
-            | Value::LocalDateTime(_)
-            | Value::DateTime(_)
-            | Value::Duration(_)
-            | Value::Point(_) => 9,
-            Value::Null => 10,
+            Value::Node(_) | Value::Edge(_) | Value::Path { .. } => 0,
+            Value::Map(_) => 1,
+            Value::List(_) => 2,
+            Value::Bool(_) => 3,
+            Value::Str(_) => 4,
+            Value::Int(_) | Value::Float(_) => 5,
+            Value::Date(_) => 6,
+            Value::LocalTime(_) => 7,
+            Value::LocalDateTime(_) => 8,
+            Value::DateTime(_) => 9,
+            Value::Duration(_) => 10,
+            Value::Point(_) => 11,
+            Value::Null => 255, // Null sorts LAST (largest) in ascending order
         }
     }
 

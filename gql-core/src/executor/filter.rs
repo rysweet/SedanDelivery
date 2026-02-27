@@ -587,11 +587,11 @@ fn eval_binary<'r>(
             Value::Null => Ok(Value::Null),
             Value::List(items) => {
                 if lv.is_null() {
-                    // null IN [1,2,null] → null; null IN [1,2] → false
-                    if items.iter().any(|i| i.is_null()) {
-                        Ok(Value::Null)
-                    } else {
+                    // null IN [] → false; null IN [non-empty] → null
+                    if items.is_empty() {
                         Ok(Value::Bool(false))
+                    } else {
+                        Ok(Value::Null)
                     }
                 } else {
                     // x IN list: true if any element equals x; null if null present and not found.
@@ -777,7 +777,15 @@ fn eval_quantifier<'r>(name: &str, args: &[Expr], row: &Row<'r>) -> Result<Value
                                 Ok(Value::Bool(true))
                             }
                         }
-                        "single" => Ok(Value::Bool(true_count == 1)),
+                        "single" => {
+                            if true_count > 1 {
+                                Ok(Value::Bool(false))
+                            } else if null_count > 0 {
+                                Ok(Value::Null)
+                            } else {
+                                Ok(Value::Bool(true_count == 1))
+                            }
+                        }
                         _ => unreachable!(),
                     }
                 }
@@ -835,7 +843,15 @@ fn eval_quantifier<'r>(name: &str, args: &[Expr], row: &Row<'r>) -> Result<Value
                                 Ok(Value::Bool(true))
                             }
                         }
-                        "single" => Ok(Value::Bool(true_count == 1)),
+                        "single" => {
+                            if true_count > 1 {
+                                Ok(Value::Bool(false))
+                            } else if null_count > 0 {
+                                Ok(Value::Null)
+                            } else {
+                                Ok(Value::Bool(true_count == 1))
+                            }
+                        }
                         _ => unreachable!(),
                     }
                 }
@@ -1310,22 +1326,33 @@ pub fn eval_function_with_vals(name: &str, vals: Vec<Value>) -> Result<Value, Gq
         "time.truncate" => eval_time_truncate(&vals),
 
         "date.realtime" | "date.statement" | "date.transaction" => {
+            if vals.first().map(|v| v.is_null()).unwrap_or(false) {
+                return Ok(Value::Null);
+            }
+            if !vals.is_empty() { return eval_date_constructor(&vals); }
             let today = jiff::civil::Date::from(jiff::Zoned::now());
             Ok(Value::Date(today))
         }
         "datetime.realtime" | "datetime.statement" | "datetime.transaction" => {
+            if vals.first().map(|v| v.is_null()).unwrap_or(false) { return Ok(Value::Null); }
+            if !vals.is_empty() { return eval_datetime_constructor(&vals); }
             Ok(Value::DateTime(Box::new(jiff::Zoned::now())))
         }
         "localdatetime.realtime" | "localdatetime.statement" | "localdatetime.transaction" => {
+            if vals.first().map(|v| v.is_null()).unwrap_or(false) { return Ok(Value::Null); }
+            if !vals.is_empty() { return eval_localdatetime_constructor(&vals); }
             let now = jiff::Zoned::now();
             Ok(Value::LocalDateTime(jiff::civil::DateTime::from(now)))
         }
         "localtime.realtime" | "localtime.statement" | "localtime.transaction" => {
+            if vals.first().map(|v| v.is_null()).unwrap_or(false) { return Ok(Value::Null); }
+            if !vals.is_empty() { return eval_localtime_constructor(&vals); }
             let now = jiff::Zoned::now();
             Ok(Value::LocalTime(jiff::civil::Time::from(now)))
         }
         "time.realtime" | "time.statement" | "time.transaction" => {
-            // time() in Neo4j is a zoned time - return as DateTime
+            if vals.first().map(|v| v.is_null()).unwrap_or(false) { return Ok(Value::Null); }
+            if !vals.is_empty() { return eval_time_constructor(&vals); }
             Ok(Value::DateTime(Box::new(jiff::Zoned::now())))
         }
         "datetime.fromepoch" => {
@@ -1843,7 +1870,8 @@ fn resolve_date_from_map(
         let year = if m.contains_key("year") {
             map_get_int(m, "year", 0)?
         } else if let Some(bd) = base_date {
-            bd.year() as i64
+            // Use ISO week year (not Gregorian year) since week dates cross year boundaries.
+            bd.iso_week_date().year() as i64
         } else {
             0
         };
@@ -2343,6 +2371,58 @@ fn eval_datetime_constructor(vals: &[Value]) -> Result<Value, GqlError> {
     }
 }
 
+/// Parse an ISO 8601 datetime string, handling week-date, ordinal-date, and compact formats.
+fn parse_localdatetime_str(s: &str) -> Result<jiff::civil::DateTime, String> {
+    if let Ok(dt) = s.parse::<jiff::civil::DateTime>() {
+        return Ok(dt);
+    }
+    if let Ok(zdt) = s.parse::<jiff::Zoned>() {
+        return Ok(jiff::civil::DateTime::from(&zdt));
+    }
+    let s = s.trim();
+    let t_pos = s.find(['T', 't']);
+    if let Some(t_idx) = t_pos {
+        let date_str = &s[..t_idx];
+        let rest = &s[t_idx + 1..];
+        let date = parse_date_str(date_str)?;
+        let time_str = rest.trim_end_matches('Z');
+        let time_str = if let Some(plus_pos) = time_str.rfind('+') {
+            if plus_pos > 0 { &time_str[..plus_pos] } else { time_str }
+        } else if let Some(minus_pos) = time_str[1..].rfind('-') {
+            &time_str[..minus_pos + 1]
+        } else {
+            time_str
+        };
+        let time_str = expand_compact_time(time_str);
+        let time = time_str.parse::<jiff::civil::Time>()
+            .map_err(|e| format!("cannot parse time '{time_str}': {e}"))?;
+        Ok(jiff::civil::DateTime::from_parts(date, time))
+    } else {
+        Err(format!("cannot parse datetime from '{s}'"))
+    }
+}
+
+/// Expand compact time notation `HHMMSS` to `HH:MM:SS`
+fn expand_compact_time(s: &str) -> String {
+    if s.len() >= 6 && !s.contains(':') {
+        let hh = &s[0..2];
+        let mm = &s[2..4];
+        let ss = &s[4..];
+        if let Some(dot_pos) = ss.find('.') {
+            let (secs, frac) = ss.split_at(dot_pos);
+            format!("{hh}:{mm}:{secs}{frac}")
+        } else {
+            format!("{hh}:{mm}:{ss}")
+        }
+    } else if s.len() == 4 && !s.contains(':') {
+        let hh = &s[0..2];
+        let mm = &s[2..4];
+        format!("{hh}:{mm}:00")
+    } else {
+        s.to_string()
+    }
+}
+
 fn eval_localdatetime_constructor(vals: &[Value]) -> Result<Value, GqlError> {
     if vals.is_empty() {
         let now = jiff::Zoned::now();
@@ -2357,13 +2437,7 @@ fn eval_localdatetime_constructor(vals: &[Value]) -> Result<Value, GqlError> {
     match &vals[0] {
         Value::Null => Ok(Value::Null),
         Value::Str(s) => {
-            // Handle ISO week date format: 2015-W30-2T19:32:24
-            // jiff cannot parse YYYY-Www-DThh:mm:ss directly.
-            if s.contains('W') {
-                return parse_localdatetime_week_str(s);
-            }
-            let dt: jiff::civil::DateTime = s
-                .parse()
+            let dt = parse_localdatetime_str(s)
                 .map_err(|e| temporal_parse_error("localdatetime", e))?;
             Ok(Value::LocalDateTime(dt))
         }
@@ -2435,6 +2509,122 @@ fn eval_localdatetime_constructor(vals: &[Value]) -> Result<Value, GqlError> {
     }
 }
 
+/// Parse a Cypher ISO 8601 duration string, handling fractional date components.
+/// Examples: 'P5M1.5D' → 5 months + 1 day + 12 hours, 'P2.5W' → 17 days + 12 hours
+fn parse_cypher_duration(s: &str) -> Result<jiff::Span, String> {
+    // Try standard jiff parser first
+    if let Ok(sp) = s.parse::<jiff::Span>() {
+        return Ok(sp);
+    }
+
+    // Try P<date>T<time> datetime-style duration (e.g. "P2012-02-02T14:37:21.545")
+    let s_inner = s.strip_prefix('P').unwrap_or(s);
+    if let Some(t_pos) = s_inner.find(['T', 't']) {
+        let date_part = &s_inner[..t_pos];
+        let time_part = &s_inner[t_pos + 1..];
+        if date_part.contains('-') && !date_part.is_empty() {
+            let parts: Vec<&str> = date_part.splitn(3, '-').collect();
+            if parts.len() == 3 {
+                let y: i32 = parts[0].parse().unwrap_or(0);
+                let m: i32 = parts[1].parse().unwrap_or(0);
+                let d: i32 = parts[2].parse().unwrap_or(0);
+                let t_parts: Vec<&str> = time_part.splitn(3, ':').collect();
+                let h: i32 = t_parts.first().and_then(|s| s.parse().ok()).unwrap_or(0);
+                let mi: i32 = t_parts.get(1).and_then(|s| s.parse().ok()).unwrap_or(0);
+                let sv: f64 = t_parts.get(2).and_then(|s| s.parse().ok()).unwrap_or(0.0);
+                let s_i = sv.trunc() as i32;
+                let ns = ((sv - sv.trunc()) * 1e9) as i32;
+                let sp = jiff::Span::new()
+                    .years(y).months(m).days(d).hours(h).minutes(mi).seconds(s_i).nanoseconds(ns);
+                return Ok(sp);
+            }
+        }
+    }
+
+    // Handle fractional date components by parsing manually
+    let mut remaining = s_inner;
+    let mut total_ns: i64 = 0;
+    let mut years: i32 = 0;
+    let mut months: i32 = 0;
+    let mut days: i32 = 0;
+    let mut in_time = false;
+
+    const SECS_PER_MONTH: f64 = 365.25 * 86400.0 / 12.0;
+
+    while !remaining.is_empty() {
+        if remaining.starts_with('T') || remaining.starts_with('t') {
+            in_time = true;
+            remaining = &remaining[1..];
+            continue;
+        }
+        let num_end = remaining.find(|c: char| c.is_alphabetic())
+            .unwrap_or(remaining.len());
+        if num_end == 0 { break; }
+        let num_str = &remaining[..num_end];
+        let num: f64 = num_str.parse().map_err(|_| format!("invalid duration number: {num_str}"))?;
+        remaining = &remaining[num_end..];
+        if remaining.is_empty() { break; }
+        let unit = remaining.chars().next().unwrap();
+        remaining = &remaining[unit.len_utf8()..];
+
+        if in_time {
+            let ns_val = match unit {
+                'H' => (num * 3_600_000_000_000.0) as i64,
+                'M' => (num * 60_000_000_000.0) as i64,
+                'S' => (num * 1_000_000_000.0) as i64,
+                _ => return Err(format!("unknown time unit: {unit}")),
+            };
+            total_ns += ns_val;
+        } else {
+            match unit {
+                'Y' => {
+                    years += num.trunc() as i32;
+                    let frac = num - num.trunc();
+                    if frac != 0.0 {
+                        let frac_months = frac * 12.0;
+                        months += frac_months.trunc() as i32;
+                        let rem_months = frac_months - frac_months.trunc();
+                        total_ns += (rem_months * SECS_PER_MONTH * 1e9) as i64;
+                    }
+                }
+                'M' => {
+                    months += num.trunc() as i32;
+                    let frac = num - num.trunc();
+                    if frac != 0.0 {
+                        total_ns += (frac * SECS_PER_MONTH * 1e9) as i64;
+                    }
+                }
+                'W' => {
+                    let total_days = num * 7.0;
+                    days += total_days.trunc() as i32;
+                    let frac = total_days - total_days.trunc();
+                    total_ns += (frac * 86_400_000_000_000.0) as i64;
+                }
+                'D' => {
+                    days += num.trunc() as i32;
+                    let frac = num - num.trunc();
+                    total_ns += (frac * 86_400_000_000_000.0) as i64;
+                }
+                _ => return Err(format!("unknown date unit: {unit}")),
+            }
+        }
+    }
+
+    let extra_days = total_ns / 86_400_000_000_000i64;
+    let rem_ns = total_ns % 86_400_000_000_000i64;
+    days += extra_days as i32;
+    let h = (rem_ns / 3_600_000_000_000i64) as i32;
+    let rem_ns = rem_ns % 3_600_000_000_000i64;
+    let m = (rem_ns / 60_000_000_000i64) as i32;
+    let rem_ns = rem_ns % 60_000_000_000i64;
+    let sec = (rem_ns / 1_000_000_000i64) as i32;
+    let ns = (rem_ns % 1_000_000_000i64) as i32;
+
+    Ok(jiff::Span::new()
+        .years(years).months(months).days(days)
+        .hours(h).minutes(m).seconds(sec).nanoseconds(ns))
+}
+
 fn eval_duration_constructor(vals: &[Value]) -> Result<Value, GqlError> {
     if vals.is_empty() {
         return Ok(Value::Duration(jiff::Span::new()));
@@ -2448,7 +2638,8 @@ fn eval_duration_constructor(vals: &[Value]) -> Result<Value, GqlError> {
     match &vals[0] {
         Value::Null => Ok(Value::Null),
         Value::Str(s) => {
-            let sp = parse_duration_str(s)?;
+            let sp = parse_cypher_duration(s)
+                .map_err(|e| temporal_parse_error("duration", e))?;
             Ok(Value::Duration(sp))
         }
         Value::Map(m) => {
@@ -2508,6 +2699,7 @@ fn eval_duration_constructor(vals: &[Value]) -> Result<Value, GqlError> {
 }
 
 /// Parse a localdatetime string containing an ISO week date portion (e.g. `2015-W30-2T19:32:24`).
+#[allow(dead_code)]
 fn parse_localdatetime_week_str(s: &str) -> Result<Value, GqlError> {
     // Split at 'T' to separate date and time.
     let (date_str, time_str) = if let Some(t_pos) = s.find('T') {
@@ -2531,6 +2723,7 @@ fn parse_localdatetime_week_str(s: &str) -> Result<Value, GqlError> {
 }
 
 /// Parse a duration string, supporting decimal ISO 8601 durations (e.g. P1.5Y, PT1.5H).
+#[allow(dead_code)]
 fn parse_duration_str(s: &str) -> Result<jiff::Span, GqlError> {
     // Try standard jiff parsing first (handles integer-only durations).
     if let Ok(sp) = s.parse::<jiff::Span>() {
@@ -2548,6 +2741,7 @@ fn parse_duration_str(s: &str) -> Result<jiff::Span, GqlError> {
 ///
 /// Examples: `P1.5Y`, `PT1.5H`, `P1Y2M3.5D`.
 /// Cascades fractional parts to the next smaller unit.
+#[allow(dead_code)]
 fn parse_decimal_iso_duration(s: &str) -> Result<jiff::Span, GqlError> {
     let s = s.trim();
     let s = s.strip_prefix('P').ok_or_else(|| {
@@ -2820,15 +3014,32 @@ fn apply_time_overrides(
     } else {
         t.second()
     };
-    let nanosecond = if let Some(Value::Int(v)) = overrides.get("nanosecond") {
+    // Sub-second components are hierarchical: millisecond > microsecond > nanosecond
+    let base_ns = t.subsec_nanosecond();
+    let base_ms = base_ns / 1_000_000;
+    let base_us = (base_ns % 1_000_000) / 1_000;
+    let base_ns_only = base_ns % 1_000;
+
+    let ms = if let Some(Value::Int(v)) = overrides.get("millisecond") {
         *v as i32
-    } else if let Some(Value::Int(v)) = overrides.get("microsecond") {
-        *v as i32 * 1_000
-    } else if let Some(Value::Int(v)) = overrides.get("millisecond") {
-        *v as i32 * 1_000_000
     } else {
-        t.subsec_nanosecond()
+        base_ms
     };
+    let us = if let Some(Value::Int(v)) = overrides.get("microsecond") {
+        *v as i32
+    } else if overrides.contains_key("millisecond") {
+        0
+    } else {
+        base_us
+    };
+    let ns_only = if let Some(Value::Int(v)) = overrides.get("nanosecond") {
+        *v as i32
+    } else if overrides.contains_key("microsecond") || overrides.contains_key("millisecond") {
+        0
+    } else {
+        base_ns_only
+    };
+    let nanosecond = ms * 1_000_000 + us * 1_000 + ns_only;
     jiff::civil::Time::new(hour, minute, second, nanosecond)
         .map_err(|e| temporal_parse_error("truncate", e))
 }

@@ -523,15 +523,18 @@ impl<'src> Parser<'src> {
     }
 
     fn parse_set_item(&mut self) -> Result<SetClauseItem, ParseError> {
-        // Handle `(n).prop = expr` — parenthesized variable access (equivalent to `n.prop = expr`)
-        let alias = if self.at(&TokenKind::LParen) {
-            self.advance(); // consume (
-            let id = Identifier::new(self.expect_identifier()?);
-            self.expect(&TokenKind::RParen)?; // consume )
-            id
-        } else {
-            Identifier::new(self.expect_identifier()?)
-        };
+        // Handle `SET (n).prop = value` — parenthesized node/rel reference
+        if self.at(&TokenKind::LParen) {
+            self.advance(); // consume '('
+            let alias = Identifier::new(self.expect_identifier()?);
+            self.expect(&TokenKind::RParen)?;
+            self.expect(&TokenKind::Dot)?;
+            let prop = SmolStr::new(self.expect_identifier()?);
+            self.expect(&TokenKind::Eq)?;
+            let value = self.parse_expr()?;
+            return Ok(SetClauseItem::SetProperty { alias, prop, value });
+        }
+        let alias = Identifier::new(self.expect_identifier()?);
 
         match self.peek().clone() {
             // n.prop = expr
