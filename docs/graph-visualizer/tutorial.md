@@ -2,7 +2,6 @@
 
 This tutorial walks you through every feature of the Graph Visualizer using a pre-built supply chain demo graph with 23 nodes and 28 edges.
 
-[screenshots]: https://github.com/cloud-ecosystem-security/SedanDelivery/releases/download/screenshots-v1
 
 ## Quick Start
 
@@ -19,7 +18,7 @@ cd sedan-graph-ui/src/sedan-web && VITE_PROXY_TARGET=http://localhost:3001 VITE_
 
 When you first open the app, you'll see the dark-mode interface with the toolbar across the top, the legend panel on the left, the graph canvas in the center, and the inspector panel on the right.
 
-![App loaded — dark mode UI with toolbar, legend, canvas, and inspector][screenshots]/01-app-loaded.png)
+![App loaded — dark mode UI with toolbar, legend, canvas, and inspector](/graph-visualizer/images/01-app-loaded.png)
 
 The status bar at the bottom shows **0 nodes · 0 edges** because no graph is selected yet.
 
@@ -27,7 +26,7 @@ The status bar at the bottom shows **0 nodes · 0 edges** because no graph is se
 
 Click the **graph selector** in the top-right corner of the toolbar. A dropdown appears showing all available graphs.
 
-![Graph selector dropdown showing available graphs][screenshots]/02-graph-selector.png)
+![Graph selector dropdown showing available graphs](/graph-visualizer/images/02-graph-selector.png)
 
 Select **supply-chain** from the list. The graph data loads and the canvas populates with nodes and edges.
 
@@ -42,7 +41,7 @@ The canvas now shows the supply chain network rendered with WebGL (Sigma.js). No
 
 Edges connect warehouses to stores (DELIVERS_TO), drivers to vehicles (DRIVES), and vehicles to warehouses (ASSIGNED_TO). The **minimap** in the bottom-right corner shows an overview of the entire graph.
 
-![Supply chain graph visualization with nodes, edges, legend, and minimap][screenshots]/03-supply-chain-loaded.png)
+![Supply chain graph visualization with nodes, edges, legend, and minimap](/graph-visualizer/images/03-supply-chain-loaded.png)
 
 **Try these interactions:**
 - **Click a node** to select it — the Inspector Panel on the right shows its labels, properties, and connection count
@@ -54,7 +53,7 @@ Edges connect warehouses to stores (DELIVERS_TO), drivers to vehicles (DRIVES), 
 
 The **legend panel** on the left lists all node labels with colored dots and counts.
 
-![Legend panel showing Driver, Store, Vehicle, Warehouse labels with colors][screenshots]/04-legend-labels.png)
+![Legend panel showing Driver, Store, Vehicle, Warehouse labels with colors](/graph-visualizer/images/04-legend-labels.png)
 
 - Click the **eye icon** next to a label to hide those nodes
 - Click it again to show them
@@ -66,15 +65,15 @@ This is useful for focusing on specific parts of the supply chain — for exampl
 
 Click the **query editor** button in the toolbar (the `>_` terminal icon) to open the Monaco Cypher editor at the bottom of the screen.
 
-![Cypher editor opened with Monaco syntax highlighting][screenshots]/05-editor-opened.png)
+![Cypher editor opened with Monaco syntax highlighting](/graph-visualizer/images/05-editor-opened.png)
 
 Type a Cypher query. The editor provides syntax highlighting for keywords like `MATCH`, `RETURN`, `WHERE`, and `ORDER BY`.
 
-![Cypher query typed with syntax highlighting][screenshots]/05-query-typed.png)
+![Cypher query typed with syntax highlighting](/graph-visualizer/images/05-query-typed.png)
 
 Click **Execute** (or press **Ctrl+Enter**) to run the query. Results appear below the editor.
 
-![Query results displayed in a table][screenshots]/05-query-results.png)
+![Query results displayed in a table](/graph-visualizer/images/05-query-results.png)
 
 ### Try these queries:
 
@@ -110,7 +109,7 @@ ORDER BY s.revenue
 
 Click the **Schema** button in the toolbar (table icon) to see an overview of the graph structure.
 
-![Schema panel showing labels and relationship types][screenshots]/06-schema-panel.png)
+![Schema panel showing labels and relationship types](/graph-visualizer/images/06-schema-panel.png)
 
 The schema panel shows:
 - **Labels**: Warehouse (3), Store (6), Driver (5), Vehicle (4), Product (5)
@@ -123,13 +122,13 @@ Use the **search bar** at the top of the canvas area. The search detects whether
 - Type `Warehouse` (capitalized) → label search: finds all Warehouse nodes
 - Type `seattle` (lowercase) → property search: finds nodes with "seattle" in any property
 
-![Search results for Warehouse label][screenshots]/07-search-results.png)
+![Search results for Warehouse label](/graph-visualizer/images/07-search-results.png)
 
 ## Step 8: Create a New Node
 
 Click the **Add Node** button in the toolbar (+ icon) to open the create node dialog.
 
-![Add Node dialog with label and property fields][screenshots]/09-add-node-dialog.png)
+![Add Node dialog with label and property fields](/graph-visualizer/images/09-add-node-dialog.png)
 
 Fill in:
 - **Labels**: `Store`
@@ -141,7 +140,7 @@ Click **Create**. The new node appears in the canvas.
 
 Click the **layout dropdown** in the toolbar to switch between layout algorithms.
 
-![Layout algorithm dropdown — ForceAtlas2, Circular, Random][screenshots]/10-layout-dropdown.png)
+![Layout algorithm dropdown — ForceAtlas2, Circular, Random](/graph-visualizer/images/10-layout-dropdown.png)
 
 Available layouts:
 - **ForceAtlas2** (default) — force-directed layout that clusters connected nodes together
@@ -152,7 +151,7 @@ Available layouts:
 
 Click the **Export** button in the toolbar (download icon) to open the export dialog.
 
-![Export dialog with JSON format option][screenshots]/08-export-dialog.png)
+![Export dialog with JSON format option](/graph-visualizer/images/08-export-dialog.png)
 
 Select **JSON** format and click **Export** to download the full graph as a JSON file containing all nodes and edges with their properties.
 
@@ -171,7 +170,7 @@ Click **Execute**. The editor detects this as a mutation (starts with `MATCH ...
 
 Here's the complete interface with all panels visible:
 
-![Full UI overview — toolbar, legend, canvas with graph, inspector, status bar][screenshots]/10-full-ui-overview.png)
+![Full UI overview — toolbar, legend, canvas with graph, inspector, status bar](/graph-visualizer/images/10-full-ui-overview.png)
 
 ## Demo Data Model
 
