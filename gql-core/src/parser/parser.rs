@@ -12,10 +12,10 @@
 use smol_str::SmolStr;
 
 use crate::ast::{
-    BinaryOp, CallClause, Clause, CreateClause, DeleteClause, Direction, Expr, Identifier, Label,
-    MapLiteral, MatchClause, MergeClause, NodePattern, PathPattern, PathStep, Query,
-    RangeQuantifier, RelPattern, RelType, RemoveClause, RemoveClauseItem, ReturnClause, ReturnItem,
-    SetClause, SetClauseItem, SortItem, UnaryOp, UnwindClause, WithClause,
+    BinaryOp, CallClause, Clause, CreateClause, DeleteClause, Direction, Expr, ForeachClause,
+    Identifier, Label, MapLiteral, MatchClause, MergeClause, NodePattern, PathPattern, PathStep,
+    Query, RangeQuantifier, RelPattern, RelType, RemoveClause, RemoveClauseItem, ReturnClause,
+    ReturnItem, SetClause, SetClauseItem, SortItem, UnaryOp, UnwindClause, WithClause,
 };
 use crate::error::ParseError;
 use crate::parser::lexer::{Token, TokenKind};
@@ -155,14 +155,51 @@ fn is_keyword_usable_as_ident(kind: &TokenKind) -> bool {
             | TokenKind::As
             | TokenKind::Call
             | TokenKind::Yield
+            | TokenKind::Null
+            | TokenKind::True
+            | TokenKind::False
     )
 }
 
 /// Returns `true` for keyword tokens that can be used as map keys or property names.
-/// This is a superset of `is_keyword_usable_as_ident` that includes literal keywords.
+/// This is a superset of `is_keyword_usable_as_ident` that includes literal keywords
+/// and other context-sensitive keywords that are valid as property names.
 fn is_keyword_usable_as_property(kind: &TokenKind) -> bool {
     is_keyword_usable_as_ident(kind)
-        || matches!(kind, TokenKind::Null | TokenKind::True | TokenKind::False)
+        || matches!(
+            kind,
+            TokenKind::Null
+                | TokenKind::True
+                | TokenKind::False
+                | TokenKind::Case
+                | TokenKind::When
+                | TokenKind::Then
+                | TokenKind::Else
+                | TokenKind::End
+                | TokenKind::In
+                | TokenKind::Is
+                | TokenKind::Not
+                | TokenKind::And
+                | TokenKind::Or
+                | TokenKind::Xor
+                | TokenKind::Match
+                | TokenKind::Where
+                | TokenKind::Return
+                | TokenKind::Create
+                | TokenKind::Delete
+                | TokenKind::Set
+                | TokenKind::Remove
+                | TokenKind::Merge
+                | TokenKind::With
+                | TokenKind::Unwind
+                | TokenKind::Optional
+                | TokenKind::Detach
+                | TokenKind::Foreach
+                | TokenKind::Union
+                | TokenKind::Starts
+                | TokenKind::Ends
+                | TokenKind::Contains
+        )
 }
 
 // ── Top-level entry point ─────────────────────────────────────────────────────
@@ -182,12 +219,36 @@ pub fn parse_query(src: &str) -> Result<Query, ParseError> {
 
 impl<'src> Parser<'src> {
     fn parse_query_inner(&mut self) -> Result<Query, ParseError> {
+        let clauses = self.parse_clause_sequence()?;
+
+        if clauses.is_empty() {
+            return Err(ParseError::EmptyQuery);
+        }
+
+        // Parse optional UNION / UNION ALL parts.
+        let mut unions = Vec::new();
+        while self.at(&TokenKind::Union) {
+            self.advance(); // consume UNION
+            let all = self.eat(&TokenKind::All);
+            let part = self.parse_clause_sequence()?;
+            if part.is_empty() {
+                return Err(self.syntax_err("clause after UNION"));
+            }
+            unions.push((all, part));
+        }
+
+        Ok(Query { clauses, unions })
+    }
+
+    /// Parse a sequence of clauses (separated by optional semicolons),
+    /// stopping at UNION, EOF, or when no more clauses can be parsed.
+    fn parse_clause_sequence(&mut self) -> Result<Vec<Clause>, ParseError> {
         let mut clauses = Vec::new();
         // Skip leading semicolons.
         while self.eat(&TokenKind::Semicolon) {}
 
         loop {
-            if self.at(&TokenKind::Eof) {
+            if self.at(&TokenKind::Eof) || self.at(&TokenKind::Union) {
                 break;
             }
             match self.parse_clause()? {
@@ -198,10 +259,7 @@ impl<'src> Parser<'src> {
             while self.eat(&TokenKind::Semicolon) {}
         }
 
-        if clauses.is_empty() {
-            return Err(ParseError::EmptyQuery);
-        }
-        Ok(Query { clauses })
+        Ok(clauses)
     }
 
     // ── Clause dispatcher ─────────────────────────────────────────────────────
@@ -274,6 +332,11 @@ impl<'src> Parser<'src> {
                 self.advance();
                 let cc = self.parse_call()?;
                 Ok(Some(Clause::Call(cc)))
+            }
+            TokenKind::Foreach => {
+                self.advance();
+                let fc = self.parse_foreach()?;
+                Ok(Some(Clause::Foreach(fc)))
             }
             TokenKind::Eof | TokenKind::Semicolon => Ok(None),
             _ => Err(self.syntax_err("clause keyword (MATCH, RETURN, CREATE, ...)")),
@@ -373,16 +436,19 @@ impl<'src> Parser<'src> {
 
     fn parse_sort_item(&mut self) -> Result<SortItem, ParseError> {
         let expr = self.parse_expr()?;
-        let ascending = if self.at(&TokenKind::Identifier)
-            && self.tokens[self.pos].text.eq_ignore_ascii_case("asc")
-        {
-            self.advance();
-            true
-        } else if self.at(&TokenKind::Identifier)
-            && self.tokens[self.pos].text.eq_ignore_ascii_case("desc")
-        {
-            self.advance();
-            false
+        let ascending = if self.at(&TokenKind::Identifier) {
+            let text = self.tokens[self.pos].text.to_ascii_lowercase();
+            match text.as_str() {
+                "asc" | "ascending" => {
+                    self.advance();
+                    true
+                }
+                "desc" | "descending" => {
+                    self.advance();
+                    false
+                }
+                _ => true, // Default ascending
+            }
         } else {
             // Default ascending
             true
@@ -619,6 +685,33 @@ impl<'src> Parser<'src> {
             procedure,
             args,
             yield_items,
+        })
+    }
+
+    // ── FOREACH ────────────────────────────────────────────────────────────────
+
+    fn parse_foreach(&mut self) -> Result<ForeachClause, ParseError> {
+        self.expect(&TokenKind::LParen)?;
+        let variable = Identifier::new(self.expect_identifier()?);
+        self.expect(&TokenKind::In)?;
+        let list = self.parse_expr()?;
+        self.expect(&TokenKind::Pipe)?;
+        // Parse inner clauses (mutating operations: SET, CREATE, DELETE, etc.)
+        let mut clauses = Vec::new();
+        loop {
+            if self.at(&TokenKind::RParen) {
+                break;
+            }
+            match self.parse_clause()? {
+                Some(clause) => clauses.push(clause),
+                None => break,
+            }
+        }
+        self.expect(&TokenKind::RParen)?;
+        Ok(ForeachClause {
+            variable,
+            list,
+            clauses,
         })
     }
 
@@ -1279,8 +1372,14 @@ impl<'src> Parser<'src> {
                 let map = self.parse_map_literal()?;
                 Ok(Expr::MapLiteral(map))
             }
-            // Parenthesised expression
+            // Parenthesised expression or pattern expression
             TokenKind::LParen => {
+                // Try to detect pattern expression: `(n)-[...]->()` etc.
+                // A pattern expression starts with `(` followed by identifier/label
+                // and continues with a relationship indicator `-` or has no `)` before `-`.
+                if self.looks_like_pattern_expr() {
+                    return self.parse_pattern_expr();
+                }
                 self.advance();
                 let expr = self.parse_expr()?;
                 self.expect(&TokenKind::RParen)?;
@@ -1313,6 +1412,15 @@ impl<'src> Parser<'src> {
             // Identifier or function call
             TokenKind::Identifier => {
                 let name_text = self.tokens[self.pos].text.to_string();
+
+                // Handle `exists { pattern }` — existential subquery
+                if name_text.eq_ignore_ascii_case("exists")
+                    && matches!(self.peek2(), TokenKind::LBrace)
+                {
+                    self.advance(); // consume `exists`
+                    return self.parse_exists_subquery();
+                }
+
                 self.advance();
 
                 if self.at(&TokenKind::LParen) {
@@ -1436,6 +1544,132 @@ impl<'src> Parser<'src> {
         })
     }
 
+    // ── Existential subquery ───────────────────────────────────────────────────
+
+    /// Parse `exists { pattern [WHERE predicate] }` or `exists { MATCH pattern ... RETURN ... }`
+    /// after `exists` has been consumed.
+    fn parse_exists_subquery(&mut self) -> Result<Expr, ParseError> {
+        self.expect(&TokenKind::LBrace)?;
+        let mut patterns = Vec::new();
+        // Parse MATCH patterns inside the subquery (without the MATCH keyword).
+        // The first pattern starts with `(`, or there's an explicit MATCH keyword.
+        if self.at(&TokenKind::Match) {
+            // Full subquery with MATCH ... WHERE ... [RETURN ...]
+            self.advance();
+            patterns.push(self.parse_path_pattern()?);
+            while self.eat(&TokenKind::Comma) {
+                patterns.push(self.parse_path_pattern()?);
+            }
+            let where_clause = if self.eat(&TokenKind::Where) {
+                Some(Box::new(self.parse_expr()?))
+            } else {
+                None
+            };
+            // Skip any RETURN/WITH clauses inside the subquery
+            while !self.at(&TokenKind::RBrace) && !self.at(&TokenKind::Eof) {
+                self.advance();
+            }
+            self.expect(&TokenKind::RBrace)?;
+            return Ok(Expr::ExistsSubquery {
+                patterns,
+                where_clause,
+            });
+        }
+        // Simple pattern form: `exists { (n)-->() }`
+        patterns.push(self.parse_path_pattern()?);
+        while self.eat(&TokenKind::Comma) {
+            patterns.push(self.parse_path_pattern()?);
+        }
+        let where_clause = if self.eat(&TokenKind::Where) {
+            Some(Box::new(self.parse_expr()?))
+        } else {
+            None
+        };
+        self.expect(&TokenKind::RBrace)?;
+        Ok(Expr::ExistsSubquery {
+            patterns,
+            where_clause,
+        })
+    }
+
+    // ── Pattern expression ───────────────────────────────────────────────────
+
+    /// Check if the current position looks like a pattern expression.
+    /// Scans ahead from `(` to find the matching `)` and checks if it's
+    /// followed by `-` or `<-` (relationship indicator).
+    fn looks_like_pattern_expr(&self) -> bool {
+        // We need to find the matching `)` for the current `(` and check
+        // if it's followed by a relationship indicator.
+        let mut depth = 0;
+        let mut i = self.pos;
+        while i < self.tokens.len() {
+            match &self.tokens[i].kind {
+                TokenKind::LParen => depth += 1,
+                TokenKind::RParen => {
+                    depth -= 1;
+                    if depth == 0 {
+                        // Check what follows the closing paren.
+                        let next_idx = (i + 1).min(self.tokens.len() - 1);
+                        return matches!(
+                            self.tokens[next_idx].kind,
+                            TokenKind::Dash | TokenKind::LeftArrow
+                        );
+                    }
+                }
+                TokenKind::Eof => return false,
+                _ => {}
+            }
+            i += 1;
+        }
+        false
+    }
+
+    /// Parse a pattern expression: `(n)-[:REL]->(m)` used as a boolean predicate.
+    fn parse_pattern_expr(&mut self) -> Result<Expr, ParseError> {
+        let mut patterns = Vec::new();
+        patterns.push(self.parse_path_pattern()?);
+        while self.eat(&TokenKind::Comma) {
+            patterns.push(self.parse_path_pattern()?);
+        }
+        Ok(Expr::PatternExpr(patterns))
+    }
+
+    /// Check if we're at the start of a pattern comprehension inside `[...]`.
+    /// Scans ahead to find `|` at the same bracket depth (inside `[`).
+    fn looks_like_pattern_comprehension(&self) -> bool {
+        let mut depth_paren = 0;
+        let mut depth_bracket = 0; // we're already inside one `[`
+        let mut i = self.pos;
+        while i < self.tokens.len() {
+            match &self.tokens[i].kind {
+                TokenKind::LParen => depth_paren += 1,
+                TokenKind::RParen => depth_paren -= 1,
+                TokenKind::LBracket => depth_bracket += 1,
+                TokenKind::RBracket => {
+                    if depth_bracket == 0 {
+                        return false; // hit the outer `]` without finding `|`
+                    }
+                    depth_bracket -= 1;
+                }
+                TokenKind::Pipe => {
+                    if depth_paren == 0 && depth_bracket == 0 {
+                        return true; // found `|` at the right level
+                    }
+                }
+                TokenKind::In => {
+                    // If we find `IN` at the top level, it's a regular list comprehension
+                    if depth_paren == 0 && depth_bracket == 0 {
+                        return false;
+                    }
+                }
+                TokenKind::Eof => return false,
+                _ => {}
+            }
+            i += 1;
+        }
+        false
+    }
+
     // ── List literal / list comprehension ─────────────────────────────────────
 
     /// Parse after `[` has been consumed.
@@ -1449,6 +1683,35 @@ impl<'src> Parser<'src> {
         if self.at(&TokenKind::RBracket) {
             self.advance();
             return Ok(Expr::List(Vec::new()));
+        }
+
+        // Check for pattern comprehension: `[(pattern) | mapExpr]`
+        // A pattern starts with `(` and the pattern is followed by `|` before `]`.
+        if self.at(&TokenKind::LParen) && self.looks_like_pattern_comprehension() {
+            let pattern = self.parse_path_pattern()?;
+            let where_clause = if self.eat(&TokenKind::Where) {
+                Some(Box::new(self.parse_expr()?))
+            } else {
+                None
+            };
+            self.expect(&TokenKind::Pipe)?;
+            let map_expr = self.parse_expr()?;
+            self.expect(&TokenKind::RBracket)?;
+            // Model as a PatternExpr wrapped in a list context
+            // We reuse ExistsSubquery temporarily but should use a proper PatternComp
+            // For now, return as a FunctionCall to __patternComp which the executor can handle
+            return Ok(Expr::FunctionCall {
+                name: SmolStr::new("__patternComp"),
+                args: vec![
+                    Expr::PatternExpr(vec![pattern]),
+                    map_expr,
+                    match where_clause {
+                        Some(w) => *w,
+                        None => Expr::Bool(true),
+                    },
+                ],
+                distinct: false,
+            });
         }
 
         // Peek for list comprehension pattern: `ident IN ...`

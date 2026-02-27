@@ -33,7 +33,7 @@ fn unlimited() -> ExecutionBudget {
 ///   MATCH (alias:label)
 ///   RETURN alias
 fn simple_match_return(label: &str, alias: &str) -> Query {
-    Query {
+    Query { unions: Vec::new(),
         clauses: vec![
             Clause::Match(MatchClause {
                 patterns: vec![PathPattern {
@@ -82,7 +82,7 @@ fn test_create_and_match() {
         .unwrap();
 
     // Query: MATCH (p:Person) RETURN p.name ORDER BY p.name
-    let query = Query {
+    let query = Query { unions: Vec::new(),
         clauses: vec![
             Clause::Match(MatchClause {
                 patterns: vec![PathPattern {
@@ -168,7 +168,7 @@ fn test_match_relationship() {
         .unwrap();
 
     // Query: MATCH (a:Person)-[:KNOWS]->(b:Person) RETURN a.name, b.name
-    let query = Query {
+    let query = Query { unions: Vec::new(),
         clauses: vec![
             Clause::Match(MatchClause {
                 patterns: vec![PathPattern {
@@ -304,7 +304,7 @@ fn test_where_filter() {
     }
 
     // Query: MATCH (p:Person) WHERE p.age >= 18 RETURN p.name
-    let query = Query {
+    let query = Query { unions: Vec::new(),
         clauses: vec![
             Clause::Match(MatchClause {
                 patterns: vec![PathPattern {
@@ -393,7 +393,7 @@ fn test_limit_skip() {
     }
 
     // Query: MATCH (x:Item) RETURN x.i ORDER BY x.i SKIP 3 LIMIT 4
-    let query = Query {
+    let query = Query { unions: Vec::new(),
         clauses: vec![
             Clause::Match(MatchClause {
                 patterns: vec![PathPattern {
@@ -462,7 +462,7 @@ fn test_aggregate_count() {
     }
 
     // Query: MATCH (p:Person) RETURN count(p) AS total
-    let query = Query {
+    let query = Query { unions: Vec::new(),
         clauses: vec![
             Clause::Match(MatchClause {
                 patterns: vec![PathPattern {
@@ -526,7 +526,7 @@ fn test_distinct() {
         .unwrap();
 
     // Query: MATCH (e:Employee) RETURN DISTINCT e.dept
-    let query = Query {
+    let query = Query { unions: Vec::new(),
         clauses: vec![
             Clause::Match(MatchClause {
                 patterns: vec![PathPattern {
@@ -611,7 +611,7 @@ fn test_create_and_traverse() {
     assert_eq!(create_result.stats.edges_created, 1);
 
     // Now traverse: MATCH (a:Person)-[:KNOWS]->(b:Person) RETURN a.name, b.name
-    let query = Query {
+    let query = Query { unions: Vec::new(),
         clauses: vec![
             Clause::Match(MatchClause {
                 patterns: vec![PathPattern {

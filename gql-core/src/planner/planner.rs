@@ -140,6 +140,12 @@ impl<'s> QueryPlanner<'s> {
                         cc.procedure
                     ))));
                 }
+
+                Clause::Foreach(_) => {
+                    return Err(GqlError::Execution(ExecutionError::unsupported(
+                        "FOREACH clause",
+                    )));
+                }
             }
         }
 
@@ -1292,7 +1298,7 @@ mod tests {
     }
 
     fn make_simple_match_query(label: &str, alias: &str) -> Query {
-        Query {
+        Query { unions: Vec::new(),
             clauses: vec![
                 Clause::Match(MatchClause {
                     patterns: vec![PathPattern {
@@ -1352,7 +1358,7 @@ mod tests {
     fn plan_match_with_where() {
         let store = make_store();
         let planner = QueryPlanner::new(&store, "g");
-        let query = Query {
+        let query = Query { unions: Vec::new(),
             clauses: vec![
                 Clause::Match(MatchClause {
                     patterns: vec![PathPattern {
@@ -1395,7 +1401,7 @@ mod tests {
     fn plan_return_with_limit_skip() {
         let store = make_store();
         let planner = QueryPlanner::new(&store, "g");
-        let query = Query {
+        let query = Query { unions: Vec::new(),
             clauses: vec![
                 Clause::Match(MatchClause {
                     patterns: vec![PathPattern {
@@ -1431,7 +1437,7 @@ mod tests {
     fn plan_return_with_order_by() {
         let store = make_store();
         let planner = QueryPlanner::new(&store, "g");
-        let query = Query {
+        let query = Query { unions: Vec::new(),
             clauses: vec![
                 Clause::Match(MatchClause {
                     patterns: vec![PathPattern {
@@ -1475,7 +1481,7 @@ mod tests {
         // MATCH (n:Person) DELETE n
         let store = make_store();
         let planner = QueryPlanner::new(&store, "g");
-        let query = Query {
+        let query = Query { unions: Vec::new(),
             clauses: vec![
                 make_match_clause("Person", "n"),
                 Clause::Delete(DeleteClause {
@@ -1493,7 +1499,7 @@ mod tests {
         // MATCH (n:Person) DETACH DELETE n
         let store = make_store();
         let planner = QueryPlanner::new(&store, "g");
-        let query = Query {
+        let query = Query { unions: Vec::new(),
             clauses: vec![
                 make_match_clause("Person", "n"),
                 Clause::Delete(DeleteClause {
@@ -1512,7 +1518,7 @@ mod tests {
     fn plan_delete_without_match_is_error() {
         let store = make_store();
         let planner = QueryPlanner::new(&store, "g");
-        let query = Query {
+        let query = Query { unions: Vec::new(),
             clauses: vec![Clause::Delete(DeleteClause {
                 exprs: vec![Expr::Variable(Identifier::new("n"))],
                 detach: false,
@@ -1528,7 +1534,7 @@ mod tests {
         // MATCH (n:Person) WITH n RETURN n
         let store = make_store();
         let planner = QueryPlanner::new(&store, "g");
-        let query = Query {
+        let query = Query { unions: Vec::new(),
             clauses: vec![
                 make_match_clause("Person", "n"),
                 Clause::With(WithClause {
@@ -1564,7 +1570,7 @@ mod tests {
         // MATCH (n:Person) WITH n WHERE n.age > 25 RETURN n
         let store = make_store();
         let planner = QueryPlanner::new(&store, "g");
-        let query = Query {
+        let query = Query { unions: Vec::new(),
             clauses: vec![
                 make_match_clause("Person", "n"),
                 Clause::With(WithClause {
@@ -1607,7 +1613,7 @@ mod tests {
         // MATCH (n:Person) WITH n.city AS city, count(n) AS cnt RETURN city, cnt
         let store = make_store();
         let planner = QueryPlanner::new(&store, "g");
-        let query = Query {
+        let query = Query { unions: Vec::new(),
             clauses: vec![
                 make_match_clause("Person", "n"),
                 Clause::With(WithClause {
@@ -1661,7 +1667,7 @@ mod tests {
         // MATCH (n:Person) WITH n ORDER BY n.name SKIP 1 LIMIT 5 RETURN n
         let store = make_store();
         let planner = QueryPlanner::new(&store, "g");
-        let query = Query {
+        let query = Query { unions: Vec::new(),
             clauses: vec![
                 make_match_clause("Person", "n"),
                 Clause::With(WithClause {
@@ -1704,7 +1710,7 @@ mod tests {
         // MATCH (n:Person) WITH DISTINCT n.city AS city RETURN city
         let store = make_store();
         let planner = QueryPlanner::new(&store, "g");
-        let query = Query {
+        let query = Query { unions: Vec::new(),
             clauses: vec![
                 make_match_clause("Person", "n"),
                 Clause::With(WithClause {
@@ -1744,7 +1750,7 @@ mod tests {
         // UNWIND [1, 2, 3] AS x RETURN x
         let store = make_store();
         let planner = QueryPlanner::new(&store, "g");
-        let query = Query {
+        let query = Query { unions: Vec::new(),
             clauses: vec![
                 Clause::Unwind(UnwindClause {
                     expr: Expr::List(vec![Expr::Integer(1), Expr::Integer(2), Expr::Integer(3)]),
@@ -1771,7 +1777,7 @@ mod tests {
         // MATCH (n:Person) UNWIND n.hobbies AS h RETURN n, h
         let store = make_store();
         let planner = QueryPlanner::new(&store, "g");
-        let query = Query {
+        let query = Query { unions: Vec::new(),
             clauses: vec![
                 make_match_clause("Person", "n"),
                 Clause::Unwind(UnwindClause {
@@ -1811,7 +1817,7 @@ mod tests {
         // MATCH (n:Person) SET n.age = 30
         let store = make_store();
         let planner = QueryPlanner::new(&store, "g");
-        let query = Query {
+        let query = Query { unions: Vec::new(),
             clauses: vec![
                 make_match_clause("Person", "n"),
                 Clause::Set(SetClause {
@@ -1832,7 +1838,7 @@ mod tests {
         // MATCH (n:Person) SET n:Admin:Active
         let store = make_store();
         let planner = QueryPlanner::new(&store, "g");
-        let query = Query {
+        let query = Query { unions: Vec::new(),
             clauses: vec![
                 make_match_clause("Person", "n"),
                 Clause::Set(SetClause {
@@ -1852,7 +1858,7 @@ mod tests {
         // MATCH (n:Person) SET n += {age: 30, city: 'NY'}
         let store = make_store();
         let planner = QueryPlanner::new(&store, "g");
-        let query = Query {
+        let query = Query { unions: Vec::new(),
             clauses: vec![
                 make_match_clause("Person", "n"),
                 Clause::Set(SetClause {
@@ -1875,7 +1881,7 @@ mod tests {
     fn plan_set_without_match_is_error() {
         let store = make_store();
         let planner = QueryPlanner::new(&store, "g");
-        let query = Query {
+        let query = Query { unions: Vec::new(),
             clauses: vec![Clause::Set(SetClause {
                 items: vec![SetClauseItem::SetProperty {
                     alias: Identifier::new("n"),
@@ -1894,7 +1900,7 @@ mod tests {
         // MATCH (n:Person) REMOVE n.age
         let store = make_store();
         let planner = QueryPlanner::new(&store, "g");
-        let query = Query {
+        let query = Query { unions: Vec::new(),
             clauses: vec![
                 make_match_clause("Person", "n"),
                 Clause::Remove(RemoveClause {
@@ -1914,7 +1920,7 @@ mod tests {
         // MATCH (n:Person) REMOVE n:Admin
         let store = make_store();
         let planner = QueryPlanner::new(&store, "g");
-        let query = Query {
+        let query = Query { unions: Vec::new(),
             clauses: vec![
                 make_match_clause("Person", "n"),
                 Clause::Remove(RemoveClause {
@@ -1933,7 +1939,7 @@ mod tests {
     fn plan_remove_without_match_is_error() {
         let store = make_store();
         let planner = QueryPlanner::new(&store, "g");
-        let query = Query {
+        let query = Query { unions: Vec::new(),
             clauses: vec![Clause::Remove(RemoveClause {
                 items: vec![RemoveClauseItem::RemoveProperty {
                     alias: Identifier::new("n"),
@@ -1951,7 +1957,7 @@ mod tests {
         // MERGE (n:Person)
         let store = make_store();
         let planner = QueryPlanner::new(&store, "g");
-        let query = Query {
+        let query = Query { unions: Vec::new(),
             clauses: vec![Clause::Merge(MergeClause {
                 pattern: PathPattern {
                     variable: None,
@@ -1978,7 +1984,7 @@ mod tests {
         //   ON MATCH SET n.accessed = true
         let store = make_store();
         let planner = QueryPlanner::new(&store, "g");
-        let query = Query {
+        let query = Query { unions: Vec::new(),
             clauses: vec![Clause::Merge(MergeClause {
                 pattern: PathPattern {
                     variable: None,
@@ -2013,7 +2019,7 @@ mod tests {
         // MATCH (a:Person) MERGE (n:City)
         let store = make_store();
         let planner = QueryPlanner::new(&store, "g");
-        let query = Query {
+        let query = Query { unions: Vec::new(),
             clauses: vec![
                 make_match_clause("Person", "a"),
                 Clause::Merge(MergeClause {
@@ -2043,7 +2049,7 @@ mod tests {
         // MATCH (n:Person) OPTIONAL MATCH (n)-[:KNOWS]->(m) RETURN n, m
         let store = make_store();
         let planner = QueryPlanner::new(&store, "g");
-        let query = Query {
+        let query = Query { unions: Vec::new(),
             clauses: vec![
                 make_match_clause("Person", "n"),
                 Clause::OptionalMatch(MatchClause {
@@ -2101,7 +2107,7 @@ mod tests {
         // OPTIONAL MATCH (n:Person) RETURN n
         let store = make_store();
         let planner = QueryPlanner::new(&store, "g");
-        let query = Query {
+        let query = Query { unions: Vec::new(),
             clauses: vec![
                 Clause::OptionalMatch(MatchClause {
                     patterns: vec![PathPattern {
@@ -2140,7 +2146,7 @@ mod tests {
         // MATCH (a:Person), (b:Movie) RETURN a, b
         let store = make_store();
         let planner = QueryPlanner::new(&store, "g");
-        let query = Query {
+        let query = Query { unions: Vec::new(),
             clauses: vec![
                 Clause::Match(MatchClause {
                     patterns: vec![
@@ -2195,7 +2201,7 @@ mod tests {
         // MATCH (a:Person), (b:Movie) WHERE a.name = 'Alice' RETURN a, b
         let store = make_store();
         let planner = QueryPlanner::new(&store, "g");
-        let query = Query {
+        let query = Query { unions: Vec::new(),
             clauses: vec![
                 Clause::Match(MatchClause {
                     patterns: vec![
@@ -2263,7 +2269,7 @@ mod tests {
 
         let planner = QueryPlanner::new(&store, "g");
         // MATCH (n:Person {name: 'Alice'}) RETURN n
-        let query = Query {
+        let query = Query { unions: Vec::new(),
             clauses: vec![
                 Clause::Match(MatchClause {
                     patterns: vec![PathPattern {
@@ -2305,7 +2311,7 @@ mod tests {
         // No index created -- must fall back to NodeScan + Filter.
         let store = make_store(); // no indexes
         let planner = QueryPlanner::new(&store, "g");
-        let query = Query {
+        let query = Query { unions: Vec::new(),
             clauses: vec![
                 Clause::Match(MatchClause {
                     patterns: vec![PathPattern {

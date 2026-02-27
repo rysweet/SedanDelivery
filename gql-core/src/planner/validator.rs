@@ -54,6 +54,11 @@ impl ValidationContext {
     }
 
     fn validate(&mut self, query: &Query) -> Result<(), GqlError> {
+        // Validate UNION consistency
+        if !query.unions.is_empty() {
+            self.validate_unions(query)?;
+        }
+
         for clause in &query.clauses {
             match clause {
                 Clause::Match(mc) => {
@@ -103,6 +108,9 @@ impl ValidationContext {
                 }
                 Clause::Call(_) => {
                     // CALL clauses are validated at the planner level.
+                }
+                Clause::Foreach(_) => {
+                    // FOREACH clauses — validated at the planner level.
                 }
             }
         }
@@ -167,8 +175,13 @@ impl ValidationContext {
                         kind_name(existing)
                     )));
                 }
-                // Note: Value -> Node (e.g. WITH n AS a MATCH (a)) is allowed when
-                // the value could be a node reference. We check at runtime.
+                // Value -> Node: e.g. `WITH true AS n MATCH (n)` is a type conflict
+                // because a literal value cannot be used as a node pattern.
+                if existing == VarKind::Value {
+                    return Err(plan_error_syntax(&format!(
+                        "variable '{name}' already defined as Value, cannot be used as Node",
+                    )));
+                }
             }
             self.vars.insert(name, VarKind::Node);
         }
@@ -188,6 +201,12 @@ impl ValidationContext {
                     return Err(plan_error_syntax(&format!(
                         "variable '{name}' already defined as {}, cannot be used as Relationship",
                         kind_name(existing)
+                    )));
+                }
+                // Value -> Relationship: e.g. `WITH true AS r MATCH ()-[r]-()` is a type conflict
+                if existing == VarKind::Value {
+                    return Err(plan_error_syntax(&format!(
+                        "variable '{name}' already defined as Value, cannot be used as Relationship",
                     )));
                 }
             }
@@ -217,6 +236,17 @@ impl ValidationContext {
     }
 
     fn validate_create_pattern(&mut self, pattern: &PathPattern) -> Result<(), GqlError> {
+        // Standalone `CREATE (a)` where `a` is already bound is VariableAlreadyBound
+        if pattern.steps.is_empty() {
+            if let Some(ref var) = pattern.start.variable {
+                if self.vars.contains_key(&var.0) {
+                    return Err(plan_error_syntax(&format!(
+                        "variable '{}' already bound, cannot create standalone node",
+                        var.0
+                    )));
+                }
+            }
+        }
         self.validate_node_in_create(&pattern.start)?;
         for step in &pattern.steps {
             self.validate_rel_in_create(&step.rel)?;
@@ -408,6 +438,18 @@ impl ValidationContext {
     // ── WITH validation ─────────────────────────────────────────────────────
 
     fn validate_with(&self, wc: &WithClause) -> Result<(), GqlError> {
+        // WITH requires all non-variable expressions to have aliases
+        for item in &wc.items {
+            if item.alias.is_none() && !matches!(item.expr, Expr::Variable(_)) {
+                // Expression without alias in WITH — unless it's `*`
+                if matches!(&item.expr, Expr::Variable(ref id) if id.0 == "*") {
+                    continue;
+                }
+                return Err(plan_error_syntax(
+                    "expression in WITH must be aliased (use AS)",
+                ));
+            }
+        }
         self.check_with_column_conflicts(&wc.items)?;
         self.validate_aggregation_consistency(&wc.items)?;
         for item in &wc.items {
@@ -465,6 +507,67 @@ impl ValidationContext {
         self.vars = new_vars;
         self.has_read = false;
         self.has_write = false;
+    }
+
+    // ── UNION validation ───────────────────────────────────────────────────
+
+    fn validate_unions(&self, query: &Query) -> Result<(), GqlError> {
+        // Check that all UNION parts are either all UNION or all UNION ALL (no mixing)
+        if query.unions.len() >= 2 {
+            let first_is_all = query.unions[0].0;
+            for (i, (is_all, _)) in query.unions.iter().enumerate().skip(1) {
+                if *is_all != first_is_all {
+                    return Err(plan_error_syntax(
+                        "invalid clause composition: cannot mix UNION and UNION ALL",
+                    ));
+                }
+                let _ = i;
+            }
+        }
+
+        // Check that all UNION parts have the same number and names of RETURN columns
+        let first_return = Self::find_return_columns(&query.clauses);
+        for (_, part_clauses) in &query.unions {
+            let part_return = Self::find_return_columns(part_clauses);
+            if let (Some(ref first), Some(ref part)) = (&first_return, &part_return) {
+                if first.len() != part.len() {
+                    return Err(plan_error_syntax(
+                        "all sub queries in a UNION must have the same column names",
+                    ));
+                }
+                for (f, p) in first.iter().zip(part.iter()) {
+                    if f != p {
+                        return Err(plan_error_syntax(
+                            "all sub queries in a UNION must have the same column names",
+                        ));
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn find_return_columns(clauses: &[Clause]) -> Option<Vec<String>> {
+        for clause in clauses {
+            if let Clause::Return(rc) = clause {
+                let names: Vec<String> = rc
+                    .items
+                    .iter()
+                    .map(|item| {
+                        if let Some(ref alias) = item.alias {
+                            alias.0.clone()
+                        } else if let Expr::Variable(ref id) = item.expr {
+                            id.0.clone()
+                        } else {
+                            // Expression without alias
+                            String::new()
+                        }
+                    })
+                    .collect();
+                return Some(names);
+            }
+        }
+        None
     }
 
     // ── UNWIND validation ───────────────────────────────────────────────────
@@ -828,6 +931,15 @@ impl ValidationContext {
             if has_nested_aggregation(&item.expr, false) {
                 return Err(plan_error_syntax("nested aggregation is not allowed"));
             }
+            // Check for ambiguous aggregation: expression that contains both
+            // aggregation functions AND non-simple references at the same level.
+            // e.g. `me.age + you.age + count(*)` where the addition mixes
+            // aggregated and non-aggregated parts.
+            if has_ambiguous_aggregation(&item.expr) {
+                return Err(plan_error_syntax(
+                    "ambiguous aggregation expression: contains both aggregation and non-aggregation",
+                ));
+            }
         }
         Ok(())
     }
@@ -951,6 +1063,55 @@ fn contains_aggregation(expr: &Expr) -> bool {
         }
         _ => false,
     }
+}
+
+/// Returns true if an expression has ambiguous aggregation — e.g. `a.x + count(*)`
+/// where an arithmetic operator at the top level mixes aggregated and non-aggregated children,
+/// AND those non-aggregated children are themselves complex expressions (not simple variables
+/// or property accesses, which would be valid grouping keys).
+fn has_ambiguous_aggregation(expr: &Expr) -> bool {
+    match expr {
+        Expr::BinaryOp { left, right, op } => {
+            // Only check arithmetic operators
+            if !matches!(
+                op,
+                BinaryOp::Add
+                    | BinaryOp::Sub
+                    | BinaryOp::Mul
+                    | BinaryOp::Div
+                    | BinaryOp::Mod
+                    | BinaryOp::Pow
+                    | BinaryOp::Concat
+            ) {
+                return false;
+            }
+            let left_has = contains_aggregation(left);
+            let right_has = contains_aggregation(right);
+            if left_has && !right_has && !is_simple_grouping_key(right) {
+                return true;
+            }
+            if right_has && !left_has && !is_simple_grouping_key(left) {
+                return true;
+            }
+            false
+        }
+        _ => false,
+    }
+}
+
+/// Returns true if expr is a simple grouping key (variable, property, or literal).
+fn is_simple_grouping_key(expr: &Expr) -> bool {
+    matches!(
+        expr,
+        Expr::Variable(_)
+            | Expr::Property(_, _)
+            | Expr::Integer(_)
+            | Expr::Float(_)
+            | Expr::Str(_)
+            | Expr::Bool(_)
+            | Expr::Null
+            | Expr::Parameter(_)
+    )
 }
 
 fn has_nested_aggregation(expr: &Expr, inside_agg: bool) -> bool {
@@ -1117,6 +1278,8 @@ fn validate_known_function(name: &str) -> Result<(), GqlError> {
             // Spatial functions
             | "point"
             | "distance"
+            // Internal pattern comprehension
+            | "__patterncomp"
     );
     if !known {
         return Err(plan_error_syntax(&format!("unknown function '{name}'")));
