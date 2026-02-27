@@ -37,6 +37,16 @@ async fn main() {
         )
         .init();
 
+    // In production mode, require explicit values for security-sensitive variables.
+    if std::env::var("ENVIRONMENT").as_deref() == Ok("production") {
+        if std::env::var("GQL_REDIS_URL").is_err() {
+            panic!("GQL_REDIS_URL is required when ENVIRONMENT=production");
+        }
+        if std::env::var("GQL_API_ALLOWED_ORIGINS").is_err() {
+            panic!("GQL_API_ALLOWED_ORIGINS is required when ENVIRONMENT=production");
+        }
+    }
+
     let state = AppState::new();
 
     // Build the allowed-origins list from the environment, defaulting to
@@ -77,7 +87,11 @@ async fn main() {
         .layer(TraceLayer::new_for_http())
         .with_state(state);
 
-    let addr = SocketAddr::from(([0, 0, 0, 0], 3001));
+    // Bind address: read from GQL_API_BIND_ADDR, default 0.0.0.0:3001.
+    let addr: SocketAddr = std::env::var("GQL_API_BIND_ADDR")
+        .unwrap_or_else(|_| "0.0.0.0:3001".to_string())
+        .parse()
+        .expect("GQL_API_BIND_ADDR must be a valid socket address (e.g. 0.0.0.0:3001)");
     info!("gql-api listening on {addr}");
 
     let listener = tokio::net::TcpListener::bind(addr)

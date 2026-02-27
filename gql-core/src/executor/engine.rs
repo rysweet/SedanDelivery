@@ -2943,8 +2943,8 @@ impl AggState {
                 }
             }
             AggFunction::Collect => {
-                const MAX_COLLECT: usize = 10_000_000;
-                if !val.is_null() && self.collected.len() < MAX_COLLECT {
+                let max_collect = crate::config::global().max_collect_size;
+                if !val.is_null() && self.collected.len() < max_collect {
                     self.collected.push(val);
                 }
             }

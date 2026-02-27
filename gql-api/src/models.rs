@@ -103,19 +103,40 @@ pub struct MutateResponse {
 
 // ── Pagination query params ───────────────────────────────────────────────────
 
-pub const MAX_PAGE_LIMIT: usize = 10_000;
-pub const DEFAULT_PAGE_LIMIT: usize = 100;
+/// Return the maximum number of items that may be requested in a single page.
+///
+/// Reads `GQL_API_MAX_PAGE_LIMIT` from the environment on first call (default `10_000`).
+pub fn max_page_limit() -> usize {
+    use std::sync::OnceLock;
+    static VAL: OnceLock<usize> = OnceLock::new();
+    *VAL.get_or_init(|| {
+        std::env::var("GQL_API_MAX_PAGE_LIMIT")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(10_000)
+    })
+}
+
+/// Return the default page size when the caller does not supply a `limit` parameter.
+///
+/// Reads `GQL_API_DEFAULT_PAGE_LIMIT` from the environment on first call (default `100`).
+pub fn default_page_limit() -> usize {
+    use std::sync::OnceLock;
+    static VAL: OnceLock<usize> = OnceLock::new();
+    *VAL.get_or_init(|| {
+        std::env::var("GQL_API_DEFAULT_PAGE_LIMIT")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(100)
+    })
+}
 
 #[derive(Deserialize)]
 pub struct PaginationParams {
-    #[serde(default = "default_limit")]
+    #[serde(default = "default_page_limit")]
     pub limit: usize,
     #[serde(default)]
     pub offset: usize,
-}
-
-fn default_limit() -> usize {
-    DEFAULT_PAGE_LIMIT
 }
 
 // ── Schema ────────────────────────────────────────────────────────────────────

@@ -31,6 +31,8 @@ pub struct Parser<'src> {
     pos: usize,
     /// Current expression nesting depth; guards against deeply nested DoS inputs.
     depth: u32,
+    /// Maximum allowed expression nesting depth (injected from deployment config).
+    max_depth: u32,
 }
 
 impl<'src> Parser<'src> {
@@ -38,7 +40,8 @@ impl<'src> Parser<'src> {
     ///
     /// The token stream must end with a [`TokenKind::Eof`] sentinel.
     pub fn new(tokens: Vec<Token<'src>>) -> Self {
-        Self { tokens, pos: 0, depth: 0 }
+        let max_depth = crate::config::global().parser_max_depth;
+        Self { tokens, pos: 0, depth: 0, max_depth }
     }
 
     // ── Cursor helpers ────────────────────────────────────────────────────────
@@ -214,9 +217,9 @@ fn is_keyword_usable_as_property(kind: &TokenKind) -> bool {
 /// Returns [`ParseError::EmptyQuery`] for blank/empty input.
 /// Returns [`ParseError::Syntax`] for any structural grammar error.
 pub fn parse_query(src: &str) -> Result<Query, ParseError> {
-    const MAX_QUERY_SIZE: usize = 1_048_576;
-    if src.len() > MAX_QUERY_SIZE {
-        return Err(ParseError::QueryTooLarge { size: src.len(), limit: MAX_QUERY_SIZE });
+    let max_query_size = crate::config::global().max_query_size;
+    if src.len() > max_query_size {
+        return Err(ParseError::QueryTooLarge { size: src.len(), limit: max_query_size });
     }
     if src.trim().is_empty() {
         return Err(ParseError::EmptyQuery);
@@ -1040,11 +1043,10 @@ impl<'src> Parser<'src> {
     // ── Expression parsing (Pratt / recursive descent) ────────────────────────
 
     pub(crate) fn parse_expr(&mut self) -> Result<Expr, ParseError> {
-        const MAX_DEPTH: u32 = 256;
         self.depth += 1;
-        if self.depth > MAX_DEPTH {
+        if self.depth > self.max_depth {
             self.depth -= 1;
-            return Err(ParseError::RecursionLimitExceeded { limit: MAX_DEPTH });
+            return Err(ParseError::RecursionLimitExceeded { limit: self.max_depth });
         }
         let result = self.parse_or();
         self.depth -= 1;
@@ -1094,11 +1096,10 @@ impl<'src> Parser<'src> {
     }
 
     fn parse_not(&mut self) -> Result<Expr, ParseError> {
-        const MAX_DEPTH: u32 = 256;
         self.depth += 1;
-        if self.depth > MAX_DEPTH {
+        if self.depth > self.max_depth {
             self.depth -= 1;
-            return Err(ParseError::RecursionLimitExceeded { limit: MAX_DEPTH });
+            return Err(ParseError::RecursionLimitExceeded { limit: self.max_depth });
         }
         let result = if self.eat(&TokenKind::Not) {
             let expr = self.parse_not()?;
@@ -1334,11 +1335,10 @@ impl<'src> Parser<'src> {
     }
 
     fn parse_unary(&mut self) -> Result<Expr, ParseError> {
-        const MAX_DEPTH: u32 = 256;
         self.depth += 1;
-        if self.depth > MAX_DEPTH {
+        if self.depth > self.max_depth {
             self.depth -= 1;
-            return Err(ParseError::RecursionLimitExceeded { limit: MAX_DEPTH });
+            return Err(ParseError::RecursionLimitExceeded { limit: self.max_depth });
         }
         let result = if self.eat(&TokenKind::Dash) {
             // Special case: -9223372036854775808 = i64::MIN (the only valid use of

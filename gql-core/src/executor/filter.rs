@@ -18,7 +18,11 @@ use crate::error::{ExecutionError, GqlError};
 use crate::types::{CypherDuration, Value};
 
 /// Hard cap on list sizes produced by range() and split() to prevent memory exhaustion DoS.
-const MAX_LIST_SIZE: usize = 10_000_000;
+/// Reads from the deployment-time config (env `GQL_MAX_LIST_SIZE`, default 10 million).
+#[inline]
+fn max_list_size() -> usize {
+    crate::config::global().max_list_size
+}
 
 // ── Query-level "now" for stable temporal function results ──────────────────────
 
@@ -640,10 +644,10 @@ fn eval_binary<'r>(
         BinaryOp::RegexMatch => match (lv, rv) {
             (Value::Null, _) | (_, Value::Null) => Ok(Value::Null),
             (Value::Str(s), Value::Str(pattern)) => {
-                const MAX_PATTERN_LEN: usize = 1024;
-                if pattern.len() > MAX_PATTERN_LEN {
+                let max_pattern_len = crate::config::global().max_regex_pattern_len;
+                if pattern.len() > max_pattern_len {
                     return Err(GqlError::Execution(ExecutionError::TypeMismatch {
-                        expected: format!("regex pattern <= {MAX_PATTERN_LEN} bytes"),
+                        expected: format!("regex pattern <= {max_pattern_len} bytes"),
                         actual: format!("{} bytes", pattern.len()),
                     }));
                 }
@@ -1273,7 +1277,7 @@ pub fn eval_function_with_vals(name: &str, vals: Vec<Value>) -> Result<Value, Gq
                 (Value::Str(s), Value::Str(delim)) => {
                     let parts: Vec<Value> = s
                         .split(delim.as_ref())
-                        .take(MAX_LIST_SIZE)
+                        .take(max_list_size())
                         .map(|p| Value::Str(p.to_string().into_boxed_str()))
                         .collect();
                     Ok(Value::List(parts))
@@ -1385,14 +1389,15 @@ pub fn eval_function_with_vals(name: &str, vals: Vec<Value>) -> Result<Value, Gq
                             actual: "0".to_string(),
                         }));
                     }
+                    let list_limit = max_list_size();
                     let mut result = Vec::new();
                     let mut i = *start;
                     if step > 0 {
                         while i <= *end {
-                            if result.len() >= MAX_LIST_SIZE {
+                            if result.len() >= list_limit {
                                 return Err(GqlError::Execution(ExecutionError::TypeMismatch {
-                                    expected: format!("range() result <= {MAX_LIST_SIZE} elements"),
-                                    actual: format!("would exceed {MAX_LIST_SIZE} elements"),
+                                    expected: format!("range() result <= {list_limit} elements"),
+                                    actual: format!("would exceed {list_limit} elements"),
                                 }));
                             }
                             result.push(Value::Int(i));
@@ -1400,10 +1405,10 @@ pub fn eval_function_with_vals(name: &str, vals: Vec<Value>) -> Result<Value, Gq
                         }
                     } else {
                         while i >= *end {
-                            if result.len() >= MAX_LIST_SIZE {
+                            if result.len() >= list_limit {
                                 return Err(GqlError::Execution(ExecutionError::TypeMismatch {
-                                    expected: format!("range() result <= {MAX_LIST_SIZE} elements"),
-                                    actual: format!("would exceed {MAX_LIST_SIZE} elements"),
+                                    expected: format!("range() result <= {list_limit} elements"),
+                                    actual: format!("would exceed {list_limit} elements"),
                                 }));
                             }
                             result.push(Value::Int(i));
