@@ -1,0 +1,361 @@
+name: Deploy SedanDelivery
+
+# Deploys SedanDelivery (Valkey + GQL Redis module) to Azure Container Apps.
+#
+# Triggers:
+#   - PR labeled 'deploy' → isolated branch environment
+#   - Push to main → production environment
+#   - Manual dispatch → any environment
+#
+# Mirrors the cybergym deployment pattern.
+
+on:
+  pull_request:
+    types: [labeled, synchronize]
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Target environment'
+        required: true
+        type: choice
+        options:
+          - production
+          - branch
+        default: 'branch'
+      branch_name:
+        description: 'Branch name for branch deployments (leave empty for current branch)'
+        required: false
+        type: string
+
+concurrency:
+  group: deploy-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.ref }}
+  cancel-in-progress: true
+
+env:
+  AZURE_LOCATION: eastus2
+  AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+  AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+  AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+
+jobs:
+  determine-environment:
+    name: Determine Deployment Environment
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    outputs:
+      should-deploy: ${{ steps.check.outputs.should_deploy }}
+      env-name: ${{ steps.check.outputs.env_name }}
+      env-type: ${{ steps.check.outputs.env_type }}
+      resource-group: ${{ steps.check.outputs.resource_group }}
+    steps:
+      - name: Determine environment and deployment eligibility
+        id: check
+        run: |
+          SHOULD_DEPLOY="false"
+          ENV_NAME=""
+          ENV_TYPE="branch"
+          RESOURCE_GROUP=""
+
+          if [[ "${{ github.event_name }}" == "push" && "${{ github.ref }}" == "refs/heads/main" ]]; then
+            SHOULD_DEPLOY="true"
+            ENV_NAME="main"
+            ENV_TYPE="production"
+            RESOURCE_GROUP="rg-sd2-main"
+            echo "🚀 Production deployment from main branch"
+
+          elif [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            SHOULD_DEPLOY="true"
+            if [[ "${{ inputs.environment }}" == "production" ]]; then
+              ENV_NAME="main"
+              ENV_TYPE="production"
+              RESOURCE_GROUP="rg-sd2-main"
+            else
+              BRANCH_NAME="${{ inputs.branch_name }}"
+              if [[ -z "$BRANCH_NAME" ]]; then
+                BRANCH_NAME="${{ github.ref_name }}"
+              fi
+              SANITIZED=$(echo "$BRANCH_NAME" | sed 's/[^a-zA-Z0-9-]/-/g' | tr '[:upper:]' '[:lower:]' | cut -c1-20 | sed 's/^-*//;s/-*$//')
+              if [ -z "$SANITIZED" ]; then
+                SANITIZED="manual-deploy"
+              fi
+              ENV_NAME="${SANITIZED}"
+              ENV_TYPE="branch"
+              RESOURCE_GROUP="rg-sd2-${SANITIZED}"
+            fi
+            echo "🎯 Manual deployment to ${ENV_NAME}"
+
+          elif [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            if [[ "${{ contains(github.event.pull_request.labels.*.name, 'deploy') }}" == "true" ]]; then
+              SHOULD_DEPLOY="true"
+              BRANCH_NAME="${{ github.head_ref }}"
+              SANITIZED=$(echo "$BRANCH_NAME" | sed 's/[^a-zA-Z0-9-]/-/g' | tr '[:upper:]' '[:lower:]' | cut -c1-20 | sed 's/^-*//;s/-*$//')
+              if [ -z "$SANITIZED" ]; then
+                SANITIZED="pr-${{ github.event.pull_request.number }}"
+              fi
+              ENV_NAME="${SANITIZED}"
+              ENV_TYPE="branch"
+              RESOURCE_GROUP="rg-sd2-${SANITIZED}"
+              echo "🌿 PR deployment to branch environment: ${ENV_NAME}"
+            else
+              echo "⏭️ Skipping deployment — no 'deploy' label found"
+            fi
+          fi
+
+          echo "should_deploy=${SHOULD_DEPLOY}" >> "$GITHUB_OUTPUT"
+          echo "env_name=${ENV_NAME}" >> "$GITHUB_OUTPUT"
+          echo "env_type=${ENV_TYPE}" >> "$GITHUB_OUTPUT"
+          echo "resource_group=${RESOURCE_GROUP}" >> "$GITHUB_OUTPUT"
+
+          echo ""
+          echo "📦 Deployment Configuration:"
+          echo "  Should Deploy: ${SHOULD_DEPLOY}"
+          echo "  Environment: ${ENV_NAME}"
+          echo "  Resource Group: ${RESOURCE_GROUP}"
+
+      - name: Comment on PR when deployment skipped
+        if: github.event_name == 'pull_request' && steps.check.outputs.should_deploy == 'false'
+        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7.0.1
+        with:
+          script: |
+            const body = `## ⏭️ Deployment Skipped
+
+            This PR does not have a \`deploy\` label. No deployment was triggered.
+
+            **To deploy this PR to Azure**, add the \`deploy\` label:
+            \`\`\`bash
+            gh pr edit ${{ github.event.pull_request.number }} --add-label "deploy"
+            \`\`\`
+
+            Once labeled, the workflow will run automatically on the next push.`;
+
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+            const existing = comments.find(c =>
+              c.user.type === 'Bot' && c.body.includes('Deployment Skipped')
+            );
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body,
+              });
+            }
+
+  deploy:
+    name: Deploy to ${{ needs.determine-environment.outputs.env-name }}
+    needs: determine-environment
+    if: needs.determine-environment.outputs.should-deploy == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+      pull-requests: write
+
+    outputs:
+      redis-fqdn: ${{ steps.outputs.outputs.redis_fqdn }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v4.1.5
+
+      - name: Azure login
+        run: |
+          az login \
+            --service-principal \
+            --username "${{ env.AZURE_CLIENT_ID }}" \
+            --password "${{ secrets.AZURE_CLIENT_SECRET }}" \
+            --tenant "${{ env.AZURE_TENANT_ID }}" \
+            --output none
+          az account set --subscription "${{ env.AZURE_SUBSCRIPTION_ID }}"
+          echo "✅ Authenticated to Azure"
+
+      - name: Create or update resource group
+        id: rg
+        run: |
+          RG="${{ needs.determine-environment.outputs.resource-group }}"
+          ENV_NAME="${{ needs.determine-environment.outputs.env-name }}"
+
+          echo "📦 Ensuring resource group: ${RG}"
+          az group create \
+            --name "${RG}" \
+            --location "${{ env.AZURE_LOCATION }}" \
+            --tags "environment=${ENV_NAME}" "managed-by=github-actions" "repo=SedanDelivery" \
+            --output none
+          echo "✅ Resource group ready: ${RG}"
+          echo "resource_group=${RG}" >> "$GITHUB_OUTPUT"
+
+      - name: Provision infrastructure
+        id: provision
+        run: |
+          RG="${{ needs.determine-environment.outputs.resource-group }}"
+          ENV_NAME="${{ needs.determine-environment.outputs.env-name }}"
+
+          echo "🔧 Provisioning infrastructure in ${RG}..."
+          DEPLOYMENT_OUTPUT=$(az deployment group create \
+            --resource-group "${RG}" \
+            --template-file infra/main.bicep \
+            --parameters environmentName="${ENV_NAME}" \
+            --name "sd2-deploy-$(date +%s)" \
+            --output json)
+
+          ACR_SERVER=$(echo "$DEPLOYMENT_OUTPUT" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d['properties']['outputs']['acrLoginServer']['value'])")
+          ACR_NAME=$(echo "$DEPLOYMENT_OUTPUT" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d['properties']['outputs']['acrName']['value'])")
+          CA_NAME=$(echo "$DEPLOYMENT_OUTPUT" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d['properties']['outputs']['containerAppName']['value'])")
+
+          echo "acr_server=${ACR_SERVER}" >> "$GITHUB_OUTPUT"
+          echo "acr_name=${ACR_NAME}" >> "$GITHUB_OUTPUT"
+          echo "ca_name=${CA_NAME}" >> "$GITHUB_OUTPUT"
+
+          echo "✅ Infrastructure provisioned:"
+          echo "   ACR: ${ACR_SERVER}"
+          echo "   Container App: ${CA_NAME}"
+
+      - name: Build and push Docker image
+        id: build
+        run: |
+          ACR_SERVER="${{ steps.provision.outputs.acr_server }}"
+          ACR_NAME="${{ steps.provision.outputs.acr_name }}"
+          IMAGE_TAG="${{ github.sha }}"
+          IMAGE="${ACR_SERVER}/sedan-delivery:${IMAGE_TAG}"
+          LATEST="${ACR_SERVER}/sedan-delivery:latest"
+
+          echo "🐳 Building Docker image..."
+          echo "   Image: ${IMAGE}"
+
+          # Login to ACR
+          az acr login --name "${ACR_NAME}"
+
+          # Build using ACR build tasks (no local Docker daemon needed)
+          az acr build \
+            --registry "${ACR_NAME}" \
+            --image "sedan-delivery:${IMAGE_TAG}" \
+            --image "sedan-delivery:latest" \
+            --file Dockerfile \
+            --platform linux/amd64 \
+            .
+
+          echo "✅ Image built and pushed: ${IMAGE}"
+          echo "image_tag=${IMAGE_TAG}" >> "$GITHUB_OUTPUT"
+          echo "image=${IMAGE}" >> "$GITHUB_OUTPUT"
+
+      - name: Update container app image
+        id: update-ca
+        run: |
+          RG="${{ needs.determine-environment.outputs.resource-group }}"
+          CA_NAME="${{ steps.provision.outputs.ca_name }}"
+          ACR_SERVER="${{ steps.provision.outputs.acr_server }}"
+          IMAGE_TAG="${{ steps.build.outputs.image_tag }}"
+          IMAGE="${ACR_SERVER}/sedan-delivery:${IMAGE_TAG}"
+
+          echo "🚀 Updating container app image to ${IMAGE_TAG}..."
+          az containerapp update \
+            --name "${CA_NAME}" \
+            --resource-group "${RG}" \
+            --image "${IMAGE}" \
+            --output none
+
+          # Wait for the revision to become active
+          echo "⏳ Waiting for deployment to stabilize..."
+          for i in $(seq 1 18); do
+            STATUS=$(az containerapp revision list \
+              --name "${CA_NAME}" \
+              --resource-group "${RG}" \
+              --query "[0].properties.healthState" \
+              --output tsv 2>/dev/null || echo "Unknown")
+            RUNNING=$(az containerapp revision list \
+              --name "${CA_NAME}" \
+              --resource-group "${RG}" \
+              --query "[0].properties.runningState" \
+              --output tsv 2>/dev/null || echo "Unknown")
+            echo "   Attempt ${i}: healthState=${STATUS}, runningState=${RUNNING}"
+            if [[ "$RUNNING" == "Running" ]]; then
+              echo "✅ Container app is running"
+              break
+            fi
+            if [[ $i -eq 18 ]]; then
+              echo "⚠️  Timeout waiting for container app — check logs in Azure portal"
+            fi
+            sleep 10
+          done
+
+      - name: Get deployment outputs
+        id: outputs
+        run: |
+          RG="${{ needs.determine-environment.outputs.resource-group }}"
+          CA_NAME="${{ steps.provision.outputs.ca_name }}"
+
+          FQDN=$(az containerapp show \
+            --name "${CA_NAME}" \
+            --resource-group "${RG}" \
+            --query "properties.configuration.ingress.fqdn" \
+            --output tsv 2>/dev/null || echo "")
+
+          echo "redis_fqdn=${FQDN}" >> "$GITHUB_OUTPUT"
+          echo "✅ SedanDelivery Redis endpoint: ${FQDN}:6379"
+
+      - name: Post deployment comment to PR
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7.0.1
+        with:
+          script: |
+            const fqdn = '${{ steps.outputs.outputs.redis_fqdn }}';
+            const envName = '${{ needs.determine-environment.outputs.env-name }}';
+            const imageTag = '${{ steps.build.outputs.image_tag }}'.substring(0, 7);
+            const rg = '${{ needs.determine-environment.outputs.resource-group }}';
+
+            const body = `## ✅ SedanDelivery Deployed
+
+            | Field | Value |
+            |-------|-------|
+            | Environment | \`${envName}\` |
+            | Resource Group | \`${rg}\` |
+            | Redis Endpoint | \`${fqdn}:6379\` |
+            | Image Tag | \`${imageTag}\` |
+
+            **Test the deployment:**
+            \`\`\`bash
+            redis-cli -h ${fqdn} -p 6379 PING
+            redis-cli -h ${fqdn} -p 6379 MODULE LIST
+            \`\`\`
+
+            To clean up, remove the \`deploy\` label or run the **Undeploy** workflow with resource group \`${rg}\`.`;
+
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+            const existing = comments.find(c =>
+              c.user.type === 'Bot' && c.body.includes('SedanDelivery Deployed')
+            );
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body,
+              });
+            }
