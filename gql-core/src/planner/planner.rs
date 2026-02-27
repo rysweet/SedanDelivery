@@ -340,7 +340,7 @@ impl<'s> QueryPlanner<'s> {
             Operator::Call {
                 procedure,
                 yield_items,
-                yield_star,
+                yield_star: _,
                 ..
             } => {
                 if !yield_items.is_empty() {
@@ -543,7 +543,7 @@ impl<'s> QueryPlanner<'s> {
                 // Single-hop expand.
                 // When tracking a named path, ensure we always have a rel_alias
                 // so the edge ID is available for path assembly.
-                let has_rel_props = rel.properties.as_ref().map_or(false, |p| !p.is_empty());
+                let has_rel_props = rel.properties.as_ref().is_some_and(|p| !p.is_empty());
                 let rel_alias =
                     if has_path_var || has_rel_props {
                         // Ensure rel_alias exists when tracking a named path
@@ -1433,7 +1433,7 @@ fn rewrite_with_order_expr(expr: &Expr, with_items: &[ReturnItem]) -> Expr {
                 right: Box::new(new_right),
             }
         }
-        Expr::FunctionCall { name, args, distinct } => {
+        Expr::FunctionCall { name, args: _, distinct: _ } => {
             if is_agg_name(name.as_str()) {
                 // Map aggregate functions to their output aliases.
                 for ri in with_items {
@@ -1719,7 +1719,7 @@ fn expr_to_col_name(expr: &Expr) -> String {
         Expr::Variable(id) => id.0.clone(),
         Expr::Property(obj, key) => format!("{}.{}", expr_to_col_name(obj), key),
         Expr::FunctionCall { name, args, .. } => {
-            let arg_strs: Vec<String> = args.iter().map(|a| expr_to_col_name(a)).collect();
+            let arg_strs: Vec<String> = args.iter().map(expr_to_col_name).collect();
             format!("{}({})", name, arg_strs.join(", "))
         }
         Expr::Integer(n) => n.to_string(),

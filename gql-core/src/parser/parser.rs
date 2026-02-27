@@ -158,6 +158,8 @@ fn is_keyword_usable_as_ident(kind: &TokenKind) -> bool {
             | TokenKind::Null
             | TokenKind::True
             | TokenKind::False
+            | TokenKind::End
+            | TokenKind::Foreach
     )
 }
 
@@ -1744,6 +1746,39 @@ impl<'src> Parser<'src> {
             // Model as a PatternExpr wrapped in a list context
             // We reuse ExistsSubquery temporarily but should use a proper PatternComp
             // For now, return as a FunctionCall to __patternComp which the executor can handle
+            return Ok(Expr::FunctionCall {
+                name: SmolStr::new("__patternComp"),
+                args: vec![
+                    Expr::PatternExpr(vec![pattern]),
+                    map_expr,
+                    match where_clause {
+                        Some(w) => *w,
+                        None => Expr::Bool(true),
+                    },
+                ],
+                distinct: false,
+            });
+        }
+
+        // Check for named-path pattern comprehension: `[p = (pattern) | mapExpr]`
+        // Detect: identifier followed by `=` followed by `(`
+        let is_named_pattern_comp = matches!(self.peek(), TokenKind::Identifier)
+            && self.pos + 1 < self.tokens.len()
+            && matches!(self.tokens[self.pos + 1].kind, TokenKind::Eq)
+            && self.pos + 2 < self.tokens.len()
+            && matches!(self.tokens[self.pos + 2].kind, TokenKind::LParen);
+        if is_named_pattern_comp {
+            let _path_var = self.expect_identifier()?; // consume path variable name
+            self.expect(&TokenKind::Eq)?; // consume 
+            let pattern = self.parse_path_pattern()?;
+            let where_clause = if self.eat(&TokenKind::Where) {
+                Some(Box::new(self.parse_expr()?))
+            } else {
+                None
+            };
+            self.expect(&TokenKind::Pipe)?;
+            let map_expr = self.parse_expr()?;
+            self.expect(&TokenKind::RBracket)?;
             return Ok(Expr::FunctionCall {
                 name: SmolStr::new("__patternComp"),
                 args: vec![

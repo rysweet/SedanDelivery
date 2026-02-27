@@ -13,7 +13,7 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
-use crate::ast::{Direction, Expr, Identifier};
+use crate::ast::{Direction, Expr};
 use crate::error::{ExecutionError, GqlError};
 use crate::executor::budget::ExecutionBudget;
 use crate::executor::filter::{eval_expr, eval_function_with_vals};
@@ -108,7 +108,7 @@ impl<'a> QueryExecutor<'a> {
             Operator::Distinct { child } => child.as_ref(),
             other => other,
         };
-        let has_produce_results = has_produce_results(effective_root);
+        let _has_produce_results = has_produce_results(effective_root);
         let columns = if let Operator::ProduceResults { columns, .. } = effective_root {
             columns.iter().map(|(name, _)| name.clone()).collect()
         } else {
@@ -2292,6 +2292,7 @@ fn undefined_var(name: &str) -> GqlError {
 /// Check if the plan's top-level operator (or outermost chain) is a write-only operation.
 /// This is used to suppress result rows for queries without RETURN (e.g., `CREATE ()`, `DELETE n`).
 /// Note: MERGE is excluded because it can return rows when used with RETURN.
+#[allow(dead_code)]
 fn is_toplevel_write(op: &Operator) -> bool {
     match op {
         Operator::Create { .. } | Operator::Delete { .. }
@@ -2306,12 +2307,13 @@ fn is_toplevel_write(op: &Operator) -> bool {
 }
 
 /// Check if the operator tree contains write operations (CREATE, DELETE, SET, etc.).
+#[allow(dead_code)]
 fn has_write_operations(op: &Operator) -> bool {
     match op {
         Operator::Create { .. } | Operator::Delete { .. } | Operator::Merge { .. }
         | Operator::MergeRelationship { .. } => true,
-        Operator::Set { child, .. }
-        | Operator::Remove { child, .. } => true,
+        Operator::Set { child: _, .. }
+        | Operator::Remove { child: _, .. } => true,
         Operator::Distinct { child }
         | Operator::Sort { child, .. }
         | Operator::Limit { child, .. }
