@@ -22,6 +22,10 @@ use crate::parser::lexer::{Token, TokenKind};
 
 // ── Parser struct ─────────────────────────────────────────────────────────────
 
+/// Maximum expression nesting depth.  Shared by `parse_expr`, `parse_not`, and
+/// `parse_unary` to protect against stack-overflow DoS inputs.
+const MAX_DEPTH: u32 = 256;
+
 /// Cursor-based recursive descent parser.
 ///
 /// Tokens are pre-collected from the lexer before parsing begins, so every

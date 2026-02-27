@@ -789,6 +789,37 @@ fn cypher_compare(a: &Value, b: &Value) -> Result<std::cmp::Ordering, GqlError> 
     }
 }
 
+// ── Quantifier result helper ───────────────────────────────────────────────────
+
+/// Convert quantifier counts into the result value.
+/// Shared by `eval_quantifier` (filter.rs) and the storage-aware path in engine.rs.
+/// `name` must be one of `"all"`, `"any"`, `"none"`, or `"single"` (already lower-cased).
+pub(crate) fn quantifier_result(name: &str, true_count: usize, false_count: usize, null_count: usize) -> Value {
+    match name {
+        "all" => {
+            if false_count > 0 { Value::Bool(false) }
+            else if null_count > 0 { Value::Null }
+            else { Value::Bool(true) }
+        }
+        "any" => {
+            if true_count > 0 { Value::Bool(true) }
+            else if null_count > 0 { Value::Null }
+            else { Value::Bool(false) }
+        }
+        "none" => {
+            if true_count > 0 { Value::Bool(false) }
+            else if null_count > 0 { Value::Null }
+            else { Value::Bool(true) }
+        }
+        "single" => {
+            if true_count > 1 { Value::Bool(false) }
+            else if null_count > 0 { Value::Null }
+            else { Value::Bool(true_count == 1) }
+        }
+        _ => unreachable!(),
+    }
+}
+
 // ── Built-in function evaluation ──────────────────────────────────────────────
 
 /// Evaluate a quantifier predicate: `all`, `any`, `none`, or `single`.
@@ -842,45 +873,8 @@ fn eval_quantifier<'r>(name: &str, args: &[Expr], row: &Row<'r>) -> Result<Value
                         }
                     }
 
-                    match name.to_ascii_lowercase().as_str() {
-                        "all" => {
-                            if false_count > 0 {
-                                Ok(Value::Bool(false))
-                            } else if null_count > 0 {
-                                Ok(Value::Null)
-                            } else {
-                                Ok(Value::Bool(true))
-                            }
-                        }
-                        "any" => {
-                            if true_count > 0 {
-                                Ok(Value::Bool(true))
-                            } else if null_count > 0 {
-                                Ok(Value::Null)
-                            } else {
-                                Ok(Value::Bool(false))
-                            }
-                        }
-                        "none" => {
-                            if true_count > 0 {
-                                Ok(Value::Bool(false))
-                            } else if null_count > 0 {
-                                Ok(Value::Null)
-                            } else {
-                                Ok(Value::Bool(true))
-                            }
-                        }
-                        "single" => {
-                            if true_count > 1 {
-                                Ok(Value::Bool(false))
-                            } else if null_count > 0 {
-                                Ok(Value::Null)
-                            } else {
-                                Ok(Value::Bool(true_count == 1))
-                            }
-                        }
-                        _ => unreachable!(),
-                    }
+                    let lc = name.to_ascii_lowercase();
+                    Ok(quantifier_result(lc.as_str(), true_count, false_count, null_count))
                 }
                 other => Err(GqlError::Execution(ExecutionError::TypeMismatch {
                     expected: "List".to_string(),
@@ -908,45 +902,8 @@ fn eval_quantifier<'r>(name: &str, args: &[Expr], row: &Row<'r>) -> Result<Value
                         }
                     }
 
-                    match name.to_ascii_lowercase().as_str() {
-                        "all" => {
-                            if false_count > 0 {
-                                Ok(Value::Bool(false))
-                            } else if null_count > 0 {
-                                Ok(Value::Null)
-                            } else {
-                                Ok(Value::Bool(true))
-                            }
-                        }
-                        "any" => {
-                            if true_count > 0 {
-                                Ok(Value::Bool(true))
-                            } else if null_count > 0 {
-                                Ok(Value::Null)
-                            } else {
-                                Ok(Value::Bool(false))
-                            }
-                        }
-                        "none" => {
-                            if true_count > 0 {
-                                Ok(Value::Bool(false))
-                            } else if null_count > 0 {
-                                Ok(Value::Null)
-                            } else {
-                                Ok(Value::Bool(true))
-                            }
-                        }
-                        "single" => {
-                            if true_count > 1 {
-                                Ok(Value::Bool(false))
-                            } else if null_count > 0 {
-                                Ok(Value::Null)
-                            } else {
-                                Ok(Value::Bool(true_count == 1))
-                            }
-                        }
-                        _ => unreachable!(),
-                    }
+                    let lc = name.to_ascii_lowercase();
+                    Ok(quantifier_result(lc.as_str(), true_count, false_count, null_count))
                 }
                 _ => Err(GqlError::Execution(ExecutionError::TypeMismatch {
                     expected: "List".to_string(),
@@ -2927,123 +2884,6 @@ fn eval_localdatetime_constructor(vals: &[Value]) -> Result<Value, GqlError> {
     }
 }
 
-/// Parse a Cypher ISO 8601 duration string, handling fractional date components.
-/// Examples: 'P5M1.5D' → 5 months + 1 day + 12 hours, 'P2.5W' → 17 days + 12 hours
-#[allow(dead_code)]
-fn parse_cypher_duration(s: &str) -> Result<jiff::Span, String> {
-    // Try standard jiff parser first
-    if let Ok(sp) = s.parse::<jiff::Span>() {
-        return Ok(sp);
-    }
-
-    // Try P<date>T<time> datetime-style duration (e.g. "P2012-02-02T14:37:21.545")
-    let s_inner = s.strip_prefix('P').unwrap_or(s);
-    if let Some(t_pos) = s_inner.find(['T', 't']) {
-        let date_part = &s_inner[..t_pos];
-        let time_part = &s_inner[t_pos + 1..];
-        if date_part.contains('-') && !date_part.is_empty() {
-            let parts: Vec<&str> = date_part.splitn(3, '-').collect();
-            if parts.len() == 3 {
-                let y: i32 = parts[0].parse().unwrap_or(0);
-                let m: i32 = parts[1].parse().unwrap_or(0);
-                let d: i32 = parts[2].parse().unwrap_or(0);
-                let t_parts: Vec<&str> = time_part.splitn(3, ':').collect();
-                let h: i32 = t_parts.first().and_then(|s| s.parse().ok()).unwrap_or(0);
-                let mi: i32 = t_parts.get(1).and_then(|s| s.parse().ok()).unwrap_or(0);
-                let sv: f64 = t_parts.get(2).and_then(|s| s.parse().ok()).unwrap_or(0.0);
-                let s_i = sv.trunc() as i32;
-                let ns = ((sv - sv.trunc()) * 1e9) as i32;
-                let sp = jiff::Span::new()
-                    .years(y).months(m).days(d).hours(h).minutes(mi).seconds(s_i).nanoseconds(ns);
-                return Ok(sp);
-            }
-        }
-    }
-
-    // Handle fractional date components by parsing manually
-    let mut remaining = s_inner;
-    let mut total_ns: i64 = 0;
-    let mut years: i32 = 0;
-    let mut months: i32 = 0;
-    let mut days: i32 = 0;
-    let mut in_time = false;
-
-    const SECS_PER_MONTH: f64 = 365.25 * 86400.0 / 12.0;
-
-    while !remaining.is_empty() {
-        if remaining.starts_with('T') || remaining.starts_with('t') {
-            in_time = true;
-            remaining = &remaining[1..];
-            continue;
-        }
-        let num_end = remaining.find(|c: char| c.is_alphabetic())
-            .unwrap_or(remaining.len());
-        if num_end == 0 { break; }
-        let num_str = &remaining[..num_end];
-        let num: f64 = num_str.parse().map_err(|_| format!("invalid duration number: {num_str}"))?;
-        remaining = &remaining[num_end..];
-        if remaining.is_empty() { break; }
-        let unit = remaining.chars().next().unwrap();
-        remaining = &remaining[unit.len_utf8()..];
-
-        if in_time {
-            let ns_val = match unit {
-                'H' => (num * 3_600_000_000_000.0) as i64,
-                'M' => (num * 60_000_000_000.0) as i64,
-                'S' => (num * 1_000_000_000.0) as i64,
-                _ => return Err(format!("unknown time unit: {unit}")),
-            };
-            total_ns += ns_val;
-        } else {
-            match unit {
-                'Y' => {
-                    years += num.trunc() as i32;
-                    let frac = num - num.trunc();
-                    if frac != 0.0 {
-                        let frac_months = frac * 12.0;
-                        months += frac_months.trunc() as i32;
-                        let rem_months = frac_months - frac_months.trunc();
-                        total_ns += (rem_months * SECS_PER_MONTH * 1e9) as i64;
-                    }
-                }
-                'M' => {
-                    months += num.trunc() as i32;
-                    let frac = num - num.trunc();
-                    if frac != 0.0 {
-                        total_ns += (frac * SECS_PER_MONTH * 1e9) as i64;
-                    }
-                }
-                'W' => {
-                    let total_days = num * 7.0;
-                    days += total_days.trunc() as i32;
-                    let frac = total_days - total_days.trunc();
-                    total_ns += (frac * 86_400_000_000_000.0) as i64;
-                }
-                'D' => {
-                    days += num.trunc() as i32;
-                    let frac = num - num.trunc();
-                    total_ns += (frac * 86_400_000_000_000.0) as i64;
-                }
-                _ => return Err(format!("unknown date unit: {unit}")),
-            }
-        }
-    }
-
-    let extra_days = total_ns / 86_400_000_000_000i64;
-    let rem_ns = total_ns % 86_400_000_000_000i64;
-    days += extra_days as i32;
-    let h = (rem_ns / 3_600_000_000_000i64) as i32;
-    let rem_ns = rem_ns % 3_600_000_000_000i64;
-    let m = (rem_ns / 60_000_000_000i64) as i32;
-    let rem_ns = rem_ns % 60_000_000_000i64;
-    let sec = (rem_ns / 1_000_000_000i64) as i32;
-    let ns = (rem_ns % 1_000_000_000i64) as i32;
-
-    Ok(jiff::Span::new()
-        .years(years).months(months).days(days)
-        .hours(h).minutes(m).seconds(sec).nanoseconds(ns))
-}
-
 fn eval_duration_constructor(vals: &[Value]) -> Result<Value, GqlError> {
     if vals.is_empty() {
         return Ok(Value::Duration(CypherDuration { months: 0, days: 0, nanos: 0 }));
@@ -3111,30 +2951,6 @@ fn eval_duration_constructor(vals: &[Value]) -> Result<Value, GqlError> {
     }
 }
 
-/// Parse a localdatetime string containing an ISO week date portion (e.g. `2015-W30-2T19:32:24`).
-#[allow(dead_code)]
-fn parse_localdatetime_week_str(s: &str) -> Result<Value, GqlError> {
-    // Split at 'T' to separate date and time.
-    let (date_str, time_str) = if let Some(t_pos) = s.find('T') {
-        (&s[..t_pos], Some(&s[t_pos + 1..]))
-    } else {
-        (s, None)
-    };
-
-    let date = parse_date_str(date_str).map_err(|e| temporal_parse_error("localdatetime", e))?;
-
-    let dt = if let Some(ts) = time_str {
-        let time: jiff::civil::Time = ts
-            .parse()
-            .map_err(|e| temporal_parse_error("localdatetime", e))?;
-        date.to_datetime(time)
-    } else {
-        date.to_datetime(jiff::civil::Time::midnight())
-    };
-
-    Ok(Value::LocalDateTime(dt))
-}
-
 /// Parse a duration string, supporting decimal ISO 8601 durations (e.g. P1.5Y, PT1.5H)
 /// and cascading overflow (e.g. P12Y5M14DT16H12M70S → 70s cascades to 1m10s).
 fn parse_duration_str(s: &str) -> Result<CypherDuration, GqlError> {
@@ -3169,7 +2985,6 @@ fn parse_duration_str(s: &str) -> Result<CypherDuration, GqlError> {
 ///
 /// Examples: `P1.5Y`, `PT1.5H`, `P1Y2M3.5D`.
 /// Cascades fractional parts to the next smaller unit.
-#[allow(dead_code)]
 fn parse_decimal_iso_duration(s: &str) -> Result<CypherDuration, GqlError> {
     let s = s.trim();
     let s = s.strip_prefix('P').ok_or_else(|| {

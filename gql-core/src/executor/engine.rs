@@ -16,7 +16,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use crate::ast::{Direction, Expr};
 use crate::error::{ExecutionError, GqlError, StorageError};
 use crate::executor::budget::ExecutionBudget;
-use crate::executor::filter::{eval_expr, eval_function_with_vals};
+use crate::executor::filter::{eval_expr, eval_function_with_vals, quantifier_result};
 use crate::executor::filter::Row as FilterRow;
 use crate::planner::{AggFunction, Operator, QueryPlanner, RemoveItem, SetItem};
 use crate::procedure::ProcedureRegistry;
@@ -2110,29 +2110,7 @@ impl<'a> QueryExecutor<'a> {
                                         _ => {}
                                     }
                                 }
-                                return match lc.as_str() {
-                                    "all" => {
-                                        // false_count already short-circuited above
-                                        if null_count > 0 { Ok(Value::Null) }
-                                        else { Ok(Value::Bool(true)) }
-                                    }
-                                    "any" => {
-                                        // true_count already short-circuited above
-                                        if null_count > 0 { Ok(Value::Null) }
-                                        else { Ok(Value::Bool(false)) }
-                                    }
-                                    "none" => {
-                                        // true_count already short-circuited above
-                                        if null_count > 0 { Ok(Value::Null) }
-                                        else { Ok(Value::Bool(true)) }
-                                    }
-                                    "single" => {
-                                        if true_count > 1 { Ok(Value::Bool(false)) }
-                                        else if null_count > 0 { Ok(Value::Null) }
-                                        else { Ok(Value::Bool(true_count == 1)) }
-                                    }
-                                    _ => Ok(Value::Bool(false)),
-                                };
+                                return Ok(quantifier_result(lc.as_str(), true_count, false_count, null_count));
                             }
                         }
                         // Fallback: delegate to eval_expr
@@ -3094,46 +3072,6 @@ fn undefined_var(name: &str) -> GqlError {
         expected: format!("variable '{name}' in scope"),
         actual: "undefined".to_string(),
     })
-}
-
-/// Get adjacency entries for a node in the given direction and with the given type filter.
-/// Check if the plan's top-level operator (or outermost chain) is a write-only operation.
-/// This is used to suppress result rows for queries without RETURN (e.g., `CREATE ()`, `DELETE n`).
-/// Note: MERGE is excluded because it can return rows when used with RETURN.
-#[allow(dead_code)]
-fn is_toplevel_write(op: &Operator) -> bool {
-    match op {
-        Operator::Create { .. } | Operator::Delete { .. }
-        | Operator::Set { .. } | Operator::Remove { .. } => true,
-        // Transparent wrappers that don't change write/read semantics
-        Operator::Distinct { child }
-        | Operator::Sort { child, .. }
-        | Operator::Limit { child, .. }
-        | Operator::Skip { child, .. } => is_toplevel_write(child),
-        _ => false,
-    }
-}
-
-/// Check if the operator tree contains write operations (CREATE, DELETE, SET, etc.).
-#[allow(dead_code)]
-fn has_write_operations(op: &Operator) -> bool {
-    match op {
-        Operator::Create { .. } | Operator::Delete { .. } | Operator::Merge { .. }
-        | Operator::MergeRelationship { .. } => true,
-        Operator::Set { child: _, .. }
-        | Operator::Remove { child: _, .. } => true,
-        Operator::Distinct { child }
-        | Operator::Sort { child, .. }
-        | Operator::Limit { child, .. }
-        | Operator::Skip { child, .. }
-        | Operator::Filter { child, .. }
-        | Operator::Project { child, .. }
-        | Operator::Unwind { child, .. } => has_write_operations(child),
-        Operator::Aggregate { child, .. } => has_write_operations(child),
-        Operator::AssemblePath { child, .. } => has_write_operations(child),
-        Operator::ProduceResults { child, .. } => has_write_operations(child),
-        _ => false,
-    }
 }
 
 /// Check if the operator tree contains a ProduceResults node (i.e., has a RETURN clause).

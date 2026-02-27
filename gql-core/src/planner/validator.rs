@@ -171,7 +171,7 @@ impl ValidationContext {
             let name = path_var.0.clone();
             if let Some(&existing_kind) = self.vars.get(&name) {
                 if existing_kind != VarKind::Path {
-                    return Err(plan_error_syntax(&format!(
+                    return Err(plan_error_semantic(&format!(
                         "variable '{name}' already defined as {}, cannot rebind as Path",
                         kind_name(existing_kind)
                     )));
@@ -189,7 +189,7 @@ impl ValidationContext {
             // Check relationship uniqueness within the same pattern
             if let Some(ref var) = step.rel.variable {
                 if !pattern_rel_vars.insert(var.0.clone()) {
-                    return Err(plan_error_syntax(&format!(
+                    return Err(plan_error_semantic(&format!(
                         "relationship variable '{}' used multiple times in the same MATCH pattern",
                         var.0
                     )));
@@ -206,7 +206,7 @@ impl ValidationContext {
             let name = var.0.clone();
             if let Some(&existing) = self.vars.get(&name) {
                 if existing == VarKind::Relationship || existing == VarKind::Path {
-                    return Err(plan_error_syntax(&format!(
+                    return Err(plan_error_semantic(&format!(
                         "variable '{name}' already defined as {}, cannot be used as Node",
                         kind_name(existing)
                     )));
@@ -215,7 +215,7 @@ impl ValidationContext {
                 // because a literal value cannot be used as a node pattern.
                 // Untyped (from CALL YIELD or UNWIND) can become a Node — no conflict.
                 if existing == VarKind::Value {
-                    return Err(plan_error_syntax(&format!(
+                    return Err(plan_error_semantic(&format!(
                         "variable '{name}' already defined as Value, cannot be used as Node",
                     )));
                 }
@@ -235,7 +235,7 @@ impl ValidationContext {
             let name = var.0.clone();
             if let Some(&existing) = self.vars.get(&name) {
                 if existing == VarKind::Node || existing == VarKind::Path {
-                    return Err(plan_error_syntax(&format!(
+                    return Err(plan_error_semantic(&format!(
                         "variable '{name}' already defined as {}, cannot be used as Relationship",
                         kind_name(existing)
                     )));
@@ -244,7 +244,7 @@ impl ValidationContext {
                 // Exception: variable-length rel patterns like `-[rs*]->` can use a list variable
                 // Untyped (from CALL YIELD) can become a Relationship — no conflict.
                 if existing == VarKind::Value && rel.range.is_none() {
-                    return Err(plan_error_syntax(&format!(
+                    return Err(plan_error_semantic(&format!(
                         "variable '{name}' already defined as Value, cannot be used as Relationship",
                     )));
                 }
@@ -264,7 +264,7 @@ impl ValidationContext {
     fn validate_where_expr(&self, expr: &Expr) -> Result<(), GqlError> {
         // Aggregation functions are not allowed in WHERE clauses (InvalidAggregation)
         if contains_aggregation(expr) {
-            return Err(plan_error_syntax(
+            return Err(plan_error_semantic(
                 "aggregation functions are not allowed in WHERE clauses",
             ));
         }
@@ -273,7 +273,7 @@ impl ValidationContext {
         if let Expr::Variable(ref id) = expr {
             if let Some(&kind) = self.vars.get(&id.0) {
                 if kind == VarKind::Node || kind == VarKind::Relationship {
-                    return Err(plan_error_syntax(&format!(
+                    return Err(plan_error_semantic(&format!(
                         "variable '{}' is a {} and cannot be used as a boolean predicate",
                         id.0,
                         kind_name(kind)
@@ -296,7 +296,7 @@ impl ValidationContext {
             Expr::PatternExpr(_) | Expr::ExistsSubquery { .. } => Ok(()),
             Expr::Variable(ref id) => {
                 if id.0 != "*" && !self.vars.contains_key(&id.0) {
-                    return Err(plan_error_syntax(&format!(
+                    return Err(plan_error_semantic(&format!(
                         "variable '{}' not defined",
                         id.0
                     )));
@@ -308,7 +308,7 @@ impl ValidationContext {
                 if let Expr::Variable(ref id) = inner.as_ref() {
                     if let Some(&kind) = self.vars.get(&id.0) {
                         if kind == VarKind::Path {
-                            return Err(plan_error_syntax(&format!(
+                            return Err(plan_error_semantic(&format!(
                                 "property access on path variable '{}' is not allowed",
                                 id.0
                             )));
@@ -415,7 +415,7 @@ impl ValidationContext {
                         if let Some(ref var) = pattern.start.variable {
                             // (n) with no relationships — checks if node exists but doesn't test a predicate
                             if self.vars.contains_key(&var.0) {
-                                return Err(plan_error_syntax(
+                                return Err(plan_error_semantic(
                                     "standalone node pattern in WHERE is not a valid predicate",
                                 ));
                             }
@@ -442,7 +442,7 @@ impl ValidationContext {
     fn check_pattern_vars_in_scope(&self, pattern: &PathPattern) -> Result<(), GqlError> {
         if let Some(ref var) = pattern.start.variable {
             if !var.0.is_empty() && !self.vars.contains_key(&var.0) {
-                return Err(plan_error_syntax(&format!(
+                return Err(plan_error_semantic(&format!(
                     "variable '{}' not defined",
                     var.0
                 )));
@@ -451,7 +451,7 @@ impl ValidationContext {
         for step in &pattern.steps {
             if let Some(ref var) = step.rel.variable {
                 if !var.0.is_empty() && !self.vars.contains_key(&var.0) {
-                    return Err(plan_error_syntax(&format!(
+                    return Err(plan_error_semantic(&format!(
                         "variable '{}' not defined",
                         var.0
                     )));
@@ -459,7 +459,7 @@ impl ValidationContext {
             }
             if let Some(ref var) = step.node.variable {
                 if !var.0.is_empty() && !self.vars.contains_key(&var.0) {
-                    return Err(plan_error_syntax(&format!(
+                    return Err(plan_error_semantic(&format!(
                         "variable '{}' not defined",
                         var.0
                     )));
@@ -483,7 +483,7 @@ impl ValidationContext {
         if pattern.steps.is_empty() {
             if let Some(ref var) = pattern.start.variable {
                 if self.vars.contains_key(&var.0) {
-                    return Err(plan_error_syntax(&format!(
+                    return Err(plan_error_semantic(&format!(
                         "variable '{}' already bound, cannot create standalone node",
                         var.0
                     )));
@@ -507,7 +507,7 @@ impl ValidationContext {
                 let has_props = node.properties.is_some();
                 // VariableAlreadyBound: re-use with labels or any property map
                 if has_labels || has_props {
-                    return Err(plan_error_syntax(&format!(
+                    return Err(plan_error_semantic(&format!(
                         "variable '{name}' already bound, cannot be rebound in CREATE with labels/properties"
                     )));
                 }
@@ -526,29 +526,29 @@ impl ValidationContext {
 
     fn validate_rel_in_create(&mut self, rel: &RelPattern) -> Result<(), GqlError> {
         if rel.rel_types.is_empty() {
-            return Err(plan_error_syntax(
+            return Err(plan_error_semantic(
                 "CREATE requires exactly one relationship type",
             ));
         }
         if rel.rel_types.len() > 1 {
-            return Err(plan_error_syntax(
+            return Err(plan_error_semantic(
                 "CREATE requires exactly one relationship type, got multiple",
             ));
         }
         if rel.direction == Direction::Undirected {
-            return Err(plan_error_syntax(
+            return Err(plan_error_semantic(
                 "CREATE requires a directed relationship pattern",
             ));
         }
         if rel.range.is_some() {
-            return Err(plan_error_syntax(
+            return Err(plan_error_semantic(
                 "variable-length relationship patterns are not allowed in CREATE",
             ));
         }
         if let Some(ref var) = rel.variable {
             let name = var.0.clone();
             if self.vars.contains_key(&name) {
-                return Err(plan_error_syntax(&format!(
+                return Err(plan_error_semantic(&format!(
                     "variable '{name}' already bound, cannot be rebound in CREATE"
                 )));
             }
@@ -566,7 +566,7 @@ impl ValidationContext {
         match expr {
             Expr::Variable(ref id) => {
                 if !self.vars.contains_key(&id.0) {
-                    return Err(plan_error_syntax(&format!(
+                    return Err(plan_error_semantic(&format!(
                         "variable '{}' not defined",
                         id.0
                     )));
@@ -614,7 +614,7 @@ impl ValidationContext {
         match expr {
             Expr::Variable(ref id) => {
                 if !self.vars.contains_key(&id.0) {
-                    return Err(plan_error_syntax(&format!(
+                    return Err(plan_error_semantic(&format!(
                         "variable '{}' not defined",
                         id.0
                     )));
@@ -627,20 +627,20 @@ impl ValidationContext {
             Expr::Subscript(inner, _) => self.validate_delete_expr(inner),
             // DELETE n:Label is invalid — label predicates are not valid in DELETE
             Expr::HasLabel(_, _) => {
-                Err(plan_error_syntax(
+                Err(plan_error_semantic(
                     "invalid use of a label predicate in DELETE; use REMOVE to remove labels",
                 ))
             }
             // Literal values in DELETE are invalid: DELETE 1+1
             Expr::Integer(_) | Expr::Float(_) | Expr::Str(_) | Expr::Bool(_) | Expr::Null => {
-                Err(plan_error_syntax(
+                Err(plan_error_semantic(
                     "DELETE requires a variable reference, got a literal",
                 ))
             }
             // Arithmetic expressions on literals: DELETE 1+1
             Expr::BinaryOp { left, right, .. } => {
                 if is_non_variable_expr(left) && is_non_variable_expr(right) {
-                    return Err(plan_error_syntax(
+                    return Err(plan_error_semantic(
                         "DELETE requires a variable reference, got an expression",
                     ));
                 }
@@ -658,7 +658,7 @@ impl ValidationContext {
         let is_return_star = rc.items.len() == 1
             && matches!(&rc.items[0].expr, Expr::Variable(ref id) if id.0 == "*");
         if is_return_star && self.vars.is_empty() {
-            return Err(plan_error_syntax(
+            return Err(plan_error_semantic(
                 "RETURN * requires at least one variable in scope",
             ));
         }
@@ -667,7 +667,7 @@ impl ValidationContext {
             for item in &rc.items {
                 if let Expr::Variable(ref id) = item.expr {
                     if id.0 != "*" && !self.vars.contains_key(&id.0) {
-                        return Err(plan_error_syntax(&format!(
+                        return Err(plan_error_semantic(&format!(
                             "variable '{}' not defined",
                             id.0
                         )));
@@ -707,7 +707,7 @@ impl ValidationContext {
 
         for sort_item in &rc.order_by {
             if !has_agg_in_return && contains_aggregation(&sort_item.expr) {
-                return Err(plan_error_syntax(
+                return Err(plan_error_semantic(
                     "aggregation in ORDER BY requires aggregation in RETURN",
                 ));
             }
@@ -722,7 +722,7 @@ impl ValidationContext {
             }
             // Check for ambiguous aggregation in ORDER BY when RETURN has aggregation
             if has_agg_in_return && has_ambiguous_aggregation(&sort_item.expr) {
-                return Err(plan_error_syntax(
+                return Err(plan_error_semantic(
                     "ambiguous aggregation in ORDER BY: expression mixes aggregation and non-aggregation",
                 ));
             }
@@ -746,7 +746,7 @@ impl ValidationContext {
         match expr {
             Expr::Variable(ref id) => {
                 if id.0 != "*" && !projected_names.contains(&id.0) && !self.vars.contains_key(&id.0) {
-                    return Err(plan_error_syntax(&format!(
+                    return Err(plan_error_semantic(&format!(
                         "variable '{}' not in scope after RETURN/WITH DISTINCT",
                         id.0
                     )));
@@ -758,7 +758,7 @@ impl ValidationContext {
                 if let Expr::Variable(ref id) = inner.as_ref() {
                     // Check if the variable `a` is directly projected OR if any property of `a` is projected
                     if !projected_names.contains(&id.0) && !self.vars.contains_key(&id.0) {
-                        return Err(plan_error_syntax(&format!(
+                        return Err(plan_error_semantic(&format!(
                             "variable '{}' not in scope after RETURN/WITH DISTINCT",
                             id.0
                         )));
@@ -768,7 +768,7 @@ impl ValidationContext {
                     if !projected_names.contains(&id.0) {
                         // Only the property `a.name` was projected, not `a` itself
                         // `a.age` would reference the original variable which is no longer in scope
-                        return Err(plan_error_syntax(&format!(
+                        return Err(plan_error_semantic(&format!(
                             "variable '{}' not projected by DISTINCT",
                             id.0
                         )));
@@ -802,7 +802,7 @@ impl ValidationContext {
                 if matches!(&item.expr, Expr::Variable(ref id) if id.0 == "*") {
                     continue;
                 }
-                return Err(plan_error_syntax(
+                return Err(plan_error_semantic(
                     "expression in WITH must be aliased (use AS)",
                 ));
             }
@@ -844,13 +844,13 @@ impl ValidationContext {
 
         for sort_item in &wc.order_by {
             if !has_agg_in_projection && contains_aggregation(&sort_item.expr) {
-                return Err(plan_error_syntax(
+                return Err(plan_error_semantic(
                     "aggregation in ORDER BY requires aggregation in WITH projection",
                 ));
             }
             // Check for ambiguous aggregation in ORDER BY when WITH has aggregation
             if has_agg_in_projection && has_ambiguous_aggregation(&sort_item.expr) {
-                return Err(plan_error_syntax(
+                return Err(plan_error_semantic(
                     "ambiguous aggregation in ORDER BY: expression mixes aggregation and non-aggregation",
                 ));
             }
@@ -910,7 +910,7 @@ impl ValidationContext {
                     && !with_names.contains(&id.0)
                     && !grouping_key_vars.contains(&id.0)
                 {
-                    return Err(plan_error_syntax(&format!(
+                    return Err(plan_error_semantic(&format!(
                         "variable '{}' not in scope after WITH projection",
                         id.0
                     )));
@@ -1007,7 +1007,7 @@ impl ValidationContext {
             let first_is_all = query.unions[0].0;
             for (i, (is_all, _)) in query.unions.iter().enumerate().skip(1) {
                 if *is_all != first_is_all {
-                    return Err(plan_error_syntax(
+                    return Err(plan_error_semantic(
                         "invalid clause composition: cannot mix UNION and UNION ALL",
                     ));
                 }
@@ -1021,13 +1021,13 @@ impl ValidationContext {
             let part_return = Self::find_return_columns(part_clauses);
             if let (Some(ref first), Some(ref part)) = (&first_return, &part_return) {
                 if first.len() != part.len() {
-                    return Err(plan_error_syntax(
+                    return Err(plan_error_semantic(
                         "all sub queries in a UNION must have the same column names",
                     ));
                 }
                 for (f, p) in first.iter().zip(part.iter()) {
                     if f != p {
-                        return Err(plan_error_syntax(
+                        return Err(plan_error_semantic(
                             "all sub queries in a UNION must have the same column names",
                         ));
                     }
@@ -1078,7 +1078,7 @@ impl ValidationContext {
             match item {
                 crate::ast::SetClauseItem::SetProperty { alias, value, .. } => {
                     if !self.vars.contains_key(&alias.0) {
-                        return Err(plan_error_syntax(&format!(
+                        return Err(plan_error_semantic(&format!(
                             "variable '{}' not defined",
                             alias.0
                         )));
@@ -1089,7 +1089,7 @@ impl ValidationContext {
                 }
                 crate::ast::SetClauseItem::SetMap { alias, map, .. } => {
                     if !self.vars.contains_key(&alias.0) {
-                        return Err(plan_error_syntax(&format!(
+                        return Err(plan_error_semantic(&format!(
                             "variable '{}' not defined",
                             alias.0
                         )));
@@ -1099,7 +1099,7 @@ impl ValidationContext {
                 }
                 crate::ast::SetClauseItem::SetLabels { alias, .. } => {
                     if !self.vars.contains_key(&alias.0) {
-                        return Err(plan_error_syntax(&format!(
+                        return Err(plan_error_semantic(&format!(
                             "variable '{}' not defined",
                             alias.0
                         )));
@@ -1128,7 +1128,7 @@ impl ValidationContext {
                     .as_ref()
                     .is_some_and(|p| !p.is_empty());
                 if has_labels || has_props {
-                    return Err(plan_error_syntax(&format!(
+                    return Err(plan_error_semantic(&format!(
                         "variable '{}' already bound, cannot be rebound in MERGE with labels/properties",
                         var.0
                     )));
@@ -1136,7 +1136,7 @@ impl ValidationContext {
                 // Bare MERGE (a) after MATCH (a) is also VariableAlreadyBound
                 // (when there are no steps — it's just re-creating)
                 if mc.pattern.steps.is_empty() {
-                    return Err(plan_error_syntax(&format!(
+                    return Err(plan_error_semantic(&format!(
                         "variable '{}' already bound, cannot be used in MERGE",
                         var.0
                     )));
@@ -1147,18 +1147,18 @@ impl ValidationContext {
         for step in &mc.pattern.steps {
             let rel = &step.rel;
             if rel.rel_types.is_empty() {
-                return Err(plan_error_syntax(
+                return Err(plan_error_semantic(
                     "MERGE requires exactly one relationship type",
                 ));
             }
             if rel.rel_types.len() > 1 {
-                return Err(plan_error_syntax(
+                return Err(plan_error_semantic(
                     "MERGE requires exactly one relationship type, got multiple",
                 ));
             }
             // Note: MERGE with undirected relationships is valid in some contexts
             if rel.range.is_some() {
-                return Err(plan_error_syntax(
+                return Err(plan_error_semantic(
                     "variable-length relationship patterns are not allowed in MERGE",
                 ));
             }
@@ -1168,7 +1168,7 @@ impl ValidationContext {
                     let has_labels = !step.node.labels.is_empty();
                     let has_props = step.node.properties.is_some();
                     if has_labels || has_props {
-                        return Err(plan_error_syntax(&format!(
+                        return Err(plan_error_semantic(&format!(
                             "variable '{}' already bound, cannot be rebound in MERGE with labels/properties",
                             var.0
                         )));
@@ -1194,7 +1194,7 @@ impl ValidationContext {
                     let has_labels = !step.node.labels.is_empty();
                     let has_props = step.node.properties.is_some();
                     if has_labels || has_props {
-                        return Err(plan_error_syntax(&format!(
+                        return Err(plan_error_semantic(&format!(
                             "variable '{}' already bound, cannot be rebound in MERGE with labels/properties",
                             name
                         )));
@@ -1218,7 +1218,7 @@ impl ValidationContext {
         match item {
             crate::ast::SetClauseItem::SetProperty { alias, .. } => {
                 if !self.vars.contains_key(&alias.0) {
-                    return Err(plan_error_syntax(&format!(
+                    return Err(plan_error_semantic(&format!(
                         "variable '{}' not defined",
                         alias.0
                     )));
@@ -1226,7 +1226,7 @@ impl ValidationContext {
             }
             crate::ast::SetClauseItem::SetMap { alias, .. } => {
                 if !self.vars.contains_key(&alias.0) {
-                    return Err(plan_error_syntax(&format!(
+                    return Err(plan_error_semantic(&format!(
                         "variable '{}' not defined",
                         alias.0
                     )));
@@ -1234,7 +1234,7 @@ impl ValidationContext {
             }
             crate::ast::SetClauseItem::SetLabels { alias, .. } => {
                 if !self.vars.contains_key(&alias.0) {
-                    return Err(plan_error_syntax(&format!(
+                    return Err(plan_error_semantic(&format!(
                         "variable '{}' not defined",
                         alias.0
                     )));
@@ -1253,7 +1253,7 @@ impl ValidationContext {
             // Check for floating-point overflow (e.g. 1.34E999 → Infinity)
             Expr::Float(f) => {
                 if f.is_infinite() {
-                    return Err(plan_error_syntax(
+                    return Err(plan_error_semantic(
                         "floating-point literal is too large (overflow to infinity)",
                     ));
                 }
@@ -1266,7 +1266,7 @@ impl ValidationContext {
                 self.validate_expr_general(inner)?;
                 // NOT on a non-boolean literal is a compile-time error
                 if is_non_boolean_literal(inner) {
-                    return Err(plan_error_syntax(
+                    return Err(plan_error_semantic(
                         "NOT requires a boolean argument, got a non-boolean literal",
                     ));
                 }
@@ -1278,7 +1278,7 @@ impl ValidationContext {
                 self.validate_expr_general(inner)?;
                 // -<non-numeric literal> is a type error
                 if is_non_numeric_literal(inner) {
-                    return Err(plan_error_syntax("unary minus requires a numeric argument"));
+                    return Err(plan_error_semantic("unary minus requires a numeric argument"));
                 }
             }
             Expr::BinaryOp { op, left, right } => {
@@ -1289,7 +1289,7 @@ impl ValidationContext {
                     BinaryOp::And | BinaryOp::Or | BinaryOp::Xor => {
                         // Boolean operators on non-boolean literals
                         if is_non_boolean_literal(left) || is_non_boolean_literal(right) {
-                            return Err(plan_error_syntax(&format!(
+                            return Err(plan_error_semantic(&format!(
                                 "{} requires boolean arguments, got a non-boolean literal",
                                 op_name(*op)
                             )));
@@ -1311,7 +1311,7 @@ impl ValidationContext {
                         if is_non_string_non_null_literal(left)
                             || is_non_string_non_null_literal(right)
                         {
-                            return Err(plan_error_syntax(&format!(
+                            return Err(plan_error_semantic(&format!(
                                 "{} requires string arguments",
                                 op_name(*op)
                             )));
@@ -1321,6 +1321,24 @@ impl ValidationContext {
                 }
             }
             Expr::FunctionCall { name, args, .. } => {
+                // Reject direct user calls to __patternComp.
+                // This is an internal function emitted only by the parser for pattern
+                // comprehensions like `[(n:Person) | n.name]`. Parser-generated calls
+                // always have an Expr::PatternExpr as their first argument; user-typed
+                // calls do not, so we can detect and reject them here.
+                if name.to_ascii_lowercase().as_str() == "__patterncomp" {
+                    if !args.first().is_some_and(|a| matches!(a, Expr::PatternExpr(_))) {
+                        return Err(plan_error_semantic(
+                            "function '__patternComp' is an internal function and cannot be called directly",
+                        ));
+                    }
+                    // Parser-generated — skip args[0] (PatternExpr introduces its own scope)
+                    // but validate the map expression (args[1]) and optional WHERE (args[2]).
+                    for arg in args.iter().skip(1) {
+                        self.validate_expr_general(arg)?;
+                    }
+                    return Ok(());
+                }
                 for arg in args {
                     self.validate_expr_general(arg)?;
                 }
@@ -1389,13 +1407,13 @@ impl ValidationContext {
                 }
                 // Aggregation functions are not allowed inside list comprehension body
                 if contains_aggregation(map) {
-                    return Err(plan_error_syntax(
+                    return Err(plan_error_semantic(
                         "aggregation functions are not allowed inside list comprehension",
                     ));
                 }
                 if let Some(f) = filter {
                     if contains_aggregation(f) {
-                        return Err(plan_error_syntax(
+                        return Err(plan_error_semantic(
                             "aggregation functions are not allowed inside list comprehension filter",
                         ));
                     }
@@ -1435,7 +1453,7 @@ impl ValidationContext {
         match expr {
             Expr::Variable(ref id) => {
                 if !with_names.contains(&id.0) && !self.vars.contains_key(&id.0) {
-                    return Err(plan_error_syntax(&format!(
+                    return Err(plan_error_semantic(&format!(
                         "variable '{}' not defined",
                         id.0
                     )));
@@ -1475,7 +1493,7 @@ impl ValidationContext {
                 continue;
             };
             if !names.insert(name.clone()) {
-                return Err(plan_error_syntax(&format!(
+                return Err(plan_error_semantic(&format!(
                     "column name '{name}' appears multiple times in RETURN"
                 )));
             }
@@ -1494,7 +1512,7 @@ impl ValidationContext {
                 continue;
             };
             if !names.insert(name.clone()) {
-                return Err(plan_error_syntax(&format!(
+                return Err(plan_error_semantic(&format!(
                     "column name '{name}' appears multiple times in WITH"
                 )));
             }
@@ -1511,14 +1529,14 @@ impl ValidationContext {
         }
         for item in items {
             if has_nested_aggregation(&item.expr, false) {
-                return Err(plan_error_syntax("nested aggregation is not allowed"));
+                return Err(plan_error_semantic("nested aggregation is not allowed"));
             }
             // Check for ambiguous aggregation: expression that contains both
             // aggregation functions AND non-simple references at the same level.
             // e.g. `me.age + you.age + count(*)` where the addition mixes
             // aggregated and non-aggregated parts.
             if has_ambiguous_aggregation(&item.expr) {
-                return Err(plan_error_syntax(
+                return Err(plan_error_semantic(
                     "ambiguous aggregation expression: contains both aggregation and non-aggregation",
                 ));
             }
@@ -1541,7 +1559,7 @@ impl ValidationContext {
                 if let Some(Expr::Variable(ref id)) = args.first() {
                     if let Some(&kind) = self.vars.get(&id.0) {
                         if kind == VarKind::Node {
-                            return Err(plan_error_syntax(
+                            return Err(plan_error_semantic(
                                 "type() requires a relationship argument, got a node",
                             ));
                         }
@@ -1553,7 +1571,7 @@ impl ValidationContext {
                 if let Some(Expr::Variable(ref id)) = args.first() {
                     if let Some(&kind) = self.vars.get(&id.0) {
                         if kind == VarKind::Node || kind == VarKind::Relationship {
-                            return Err(plan_error_syntax(
+                            return Err(plan_error_semantic(
                                 "length() requires a path argument, not a node or relationship",
                             ));
                         }
@@ -1565,7 +1583,7 @@ impl ValidationContext {
                 if let Some(Expr::Variable(ref id)) = args.first() {
                     if let Some(&kind) = self.vars.get(&id.0) {
                         if kind == VarKind::Path {
-                            return Err(plan_error_syntax(
+                            return Err(plan_error_semantic(
                                 "size() requires a list or string argument, not a path",
                             ));
                         }
@@ -1574,7 +1592,7 @@ impl ValidationContext {
                 // size(pattern) where argument is a PatternExpr is UnexpectedSyntax
                 if let Some(arg) = args.first() {
                     if matches!(arg, Expr::PatternExpr(_)) {
-                        return Err(plan_error_syntax(
+                        return Err(plan_error_semantic(
                             "size() does not accept a pattern expression",
                         ));
                     }
@@ -1593,7 +1611,7 @@ impl ValidationContext {
     ) -> Result<(), GqlError> {
         for arg in args {
             if self.contains_nondeterministic(arg) {
-                return Err(plan_error_syntax(
+                return Err(plan_error_semantic(
                     "non-deterministic functions (like rand()) are not allowed inside aggregation",
                 ));
             }
@@ -1634,7 +1652,7 @@ impl ValidationContext {
                     && !self.vars.contains_key(&id.0)
                     && !extra_vars.contains(&id.0)
                 {
-                    return Err(plan_error_syntax(&format!(
+                    return Err(plan_error_semantic(&format!(
                         "variable '{}' not defined",
                         id.0
                     )));
@@ -1731,7 +1749,7 @@ impl ValidationContext {
     /// PatternExpr is allowed as the source of a `__patterncomp` (pattern comprehension).
     fn check_no_pattern_expr(&self, expr: &Expr) -> Result<(), GqlError> {
         match expr {
-            Expr::PatternExpr(_) => Err(plan_error_syntax(
+            Expr::PatternExpr(_) => Err(plan_error_semantic(
                 "pattern expressions are not allowed in RETURN or WITH projections",
             )),
             Expr::Property(inner, _) => self.check_no_pattern_expr(inner),
@@ -1787,13 +1805,13 @@ impl ValidationContext {
         match expr {
             Expr::Integer(n) => {
                 if *n < 0 {
-                    return Err(plan_error_syntax(&format!(
+                    return Err(plan_error_semantic(&format!(
                         "{clause_name} requires a non-negative integer, got {n}"
                     )));
                 }
             }
             Expr::Float(_) => {
-                return Err(plan_error_syntax(&format!(
+                return Err(plan_error_semantic(&format!(
                     "{clause_name} requires an integer, got a floating point value"
                 )));
             }
@@ -1802,19 +1820,19 @@ impl ValidationContext {
                 expr: inner,
             } => match inner.as_ref() {
                 Expr::Integer(_) => {
-                    return Err(plan_error_syntax(&format!(
+                    return Err(plan_error_semantic(&format!(
                         "{clause_name} requires a non-negative integer"
                     )));
                 }
                 Expr::Float(_) => {
-                    return Err(plan_error_syntax(&format!(
+                    return Err(plan_error_semantic(&format!(
                         "{clause_name} requires an integer, got a floating point value"
                     )));
                 }
                 _ => {}
             },
             Expr::Str(_) | Expr::Bool(_) | Expr::Null | Expr::List(_) | Expr::MapLiteral(_) => {
-                return Err(plan_error_syntax(&format!(
+                return Err(plan_error_semantic(&format!(
                     "{clause_name} requires an integer expression"
                 )));
             }
@@ -2019,19 +2037,7 @@ fn is_nondeterministic_function(name: &str) -> bool {
 }
 
 fn is_aggregation_function(name: &str) -> bool {
-    matches!(
-        name.to_ascii_lowercase().as_str(),
-        "count"
-            | "sum"
-            | "avg"
-            | "min"
-            | "max"
-            | "collect"
-            | "stdev"
-            | "stdevp"
-            | "percentilecont"
-            | "percentiledisc"
-    )
+    super::is_aggregate_function(name)
 }
 
 // ── Function name validation ────────────────────────────────────────────────
@@ -2161,11 +2167,9 @@ fn validate_known_function(name: &str) -> Result<(), GqlError> {
             // Spatial functions
             | "point"
             | "distance"
-            // Internal pattern comprehension
-            | "__patterncomp"
     );
     if !known {
-        return Err(plan_error_syntax(&format!("unknown function '{name}'")));
+        return Err(plan_error_semantic(&format!("unknown function '{name}'")));
     }
     Ok(())
 }
@@ -2195,7 +2199,7 @@ fn validate_function_arity(name: &str, args: &[Expr]) -> Result<(), GqlError> {
         "range" => Some((2, 3)),
         "coalesce" => {
             if n == 0 {
-                return Err(plan_error_syntax("coalesce() requires at least 1 argument"));
+                return Err(plan_error_semantic("coalesce() requires at least 1 argument"));
             }
             None
         }
@@ -2212,7 +2216,7 @@ fn validate_function_arity(name: &str, args: &[Expr]) -> Result<(), GqlError> {
     };
     if let Some((min, max)) = expected {
         if n < min || n > max {
-            return Err(plan_error_syntax(&format!(
+            return Err(plan_error_semantic(&format!(
                 "function {name}() expects {}{} argument(s), got {n}",
                 min,
                 if min != max {
@@ -2260,10 +2264,9 @@ fn op_name(op: BinaryOp) -> &'static str {
 
 // ── Error constructors ──────────────────────────────────────────────────────
 
-fn plan_error_syntax(msg: &str) -> GqlError {
-    GqlError::Plan(PlanError::UndefinedVariable {
-        name: msg.to_string(),
-        offset: 0,
+fn plan_error_semantic(msg: &str) -> GqlError {
+    GqlError::Plan(PlanError::SemanticError {
+        message: msg.to_string(),
     })
 }
 

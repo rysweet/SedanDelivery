@@ -78,6 +78,12 @@ pub enum PlanError {
 
     #[error("write clause '{clause}' cannot follow read-only clause in the same query")]
     WriteAfterRead { clause: String },
+
+    /// General semantic error: a query violates a semantic rule (type conflict, invalid
+    /// aggregation placement, constraint violation, etc.).  Replaces the previous abuse
+    /// of `UndefinedVariable` as a catch-all for non-undefined-variable errors.
+    #[error("{message}")]
+    SemanticError { message: String },
 }
 
 // ── Execution errors ──────────────────────────────────────────────────────────

@@ -1836,19 +1836,7 @@ fn has_agg_function(expr: &Expr) -> bool {
 }
 
 fn is_agg_name(name: &str) -> bool {
-    matches!(
-        name.to_uppercase().as_str(),
-        "COUNT"
-            | "SUM"
-            | "AVG"
-            | "MIN"
-            | "MAX"
-            | "COLLECT"
-            | "STDEV"
-            | "STDEVP"
-            | "PERCENTILECONT"
-            | "PERCENTILEDISC"
-    )
+    super::is_aggregate_function(name)
 }
 
 /// Extract the aggregate function, first argument, optional second argument, and distinct flag
@@ -3498,11 +3486,7 @@ fn expr_to_literal_value(expr: &Expr) -> Option<Value> {
 fn contains_aggregation(expr: &Expr) -> bool {
     match expr {
         Expr::FunctionCall { name, args, .. } => {
-            let agg_names = [
-                "count", "sum", "avg", "min", "max", "collect", "stdev", "stdevp",
-                "percentilecont", "percentiledisc",
-            ];
-            if agg_names.contains(&name.to_lowercase().as_str()) {
+            if super::is_aggregate_function(name.as_str()) {
                 return true;
             }
             args.iter().any(contains_aggregation)
