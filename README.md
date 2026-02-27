@@ -85,6 +85,25 @@ The tutorial covers:
 - Property indexes
 - DETACH DELETE
 
+## Graph Visualizer
+
+An interactive web UI for exploring, editing, and querying SedanDelivery graphs.
+
+```bash
+# Local demo (one command):
+cargo run --release -p gql-api &
+./scripts/seed-demo-graph.sh
+cd sedan-graph-ui/src/sedan-web && VITE_PROXY_TARGET=http://localhost:3001 VITE_PROXY_REWRITE=true npm run dev
+# Open http://localhost:5173, select "supply-chain" graph
+
+# Azure deployment:
+gh workflow run "Deploy SedanDelivery" --field environment=production
+```
+
+Features: WebGL graph canvas (Sigma.js), Cypher query editor (Monaco), search, schema view, node/edge CRUD, export/import, dark mode UI.
+
+See [docs/graph-visualizer/](docs/graph-visualizer/) for full documentation and [tutorial](docs/graph-visualizer/tutorial.md).
+
 ## Workspace Layout
 
 ```
@@ -96,10 +115,13 @@ gql-core/          Pure library — AST, parser, planner, executor, GraphStore t
                    ├── tests/        — integration tests + openCypher TCK runner
                    └── benches/      — criterion benchmarks
 
+gql-api/           HTTP REST API (Axum) wrapping gql-core for the Graph Visualizer
 gql-redis-store/   Valkey/Redis-backed GraphStore (Phase 3)
 gql-module/        Valkey module entry point (compiles to .so) (Phase 3)
 gql-cli/           Interactive demo: cargo run -p gql-cli
-docs/              Architecture docs, ADRs, TUTORIAL.md, research notes
+sedan-graph-ui/    .NET Aspire + React SPA — Graph Visualizer web application
+scripts/           Deployment and demo scripts (seed-demo-graph.sh)
+docs/              Architecture docs, ADRs, tutorials, API reference
 ```
 
 ## Test Results
