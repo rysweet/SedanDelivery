@@ -523,15 +523,18 @@ impl<'src> Parser<'src> {
     }
 
     fn parse_set_item(&mut self) -> Result<SetClauseItem, ParseError> {
-        // Handle `(n).prop = expr` — parenthesized variable access (equivalent to `n.prop = expr`)
-        let alias = if self.at(&TokenKind::LParen) {
-            self.advance(); // consume (
-            let id = Identifier::new(self.expect_identifier()?);
-            self.expect(&TokenKind::RParen)?; // consume )
-            id
-        } else {
-            Identifier::new(self.expect_identifier()?)
-        };
+        // Handle `SET (n).prop = value` — parenthesized node/rel reference
+        if self.at(&TokenKind::LParen) {
+            self.advance(); // consume '('
+            let alias = Identifier::new(self.expect_identifier()?);
+            self.expect(&TokenKind::RParen)?;
+            self.expect(&TokenKind::Dot)?;
+            let prop = SmolStr::new(self.expect_identifier()?);
+            self.expect(&TokenKind::Eq)?;
+            let value = self.parse_expr()?;
+            return Ok(SetClauseItem::SetProperty { alias, prop, value });
+        }
+        let alias = Identifier::new(self.expect_identifier()?);
 
         match self.peek().clone() {
             // n.prop = expr
@@ -1296,17 +1299,16 @@ impl<'src> Parser<'src> {
     /// Parse exponentiation — higher precedence than `*`, `/`, `%`.
     /// Left-associative per Cypher spec: `a ^ b ^ c` = `(a ^ b) ^ c`.
     fn parse_pow(&mut self) -> Result<Expr, ParseError> {
-        let mut left = self.parse_unary()?;
-        while self.at(&TokenKind::Caret) {
-            self.advance();
-            let right = self.parse_unary()?;
-            left = Expr::BinaryOp {
+        let mut base = self.parse_unary()?;
+        while self.eat(&TokenKind::Caret) {
+            let exp = self.parse_unary()?; // left-associative: rhs is just unary
+            base = Expr::BinaryOp {
                 op: BinaryOp::Pow,
-                left: Box::new(left),
-                right: Box::new(right),
+                left: Box::new(base),
+                right: Box::new(exp),
             };
         }
-        Ok(left)
+        Ok(base)
     }
 
     fn parse_unary(&mut self) -> Result<Expr, ParseError> {

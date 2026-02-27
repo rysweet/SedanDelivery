@@ -524,7 +524,7 @@ fn eval_binary<'r>(
             (Value::Int(a), Value::Int(b)) => Ok(Value::Float((a as f64).powf(b as f64))),
             (Value::Float(a), Value::Float(b)) => Ok(Value::Float(a.powf(b))),
             (Value::Int(a), Value::Float(b)) => Ok(Value::Float((a as f64).powf(b))),
-            (Value::Float(a), Value::Int(b)) => Ok(Value::Float(a.powi(b as i32))),
+            (Value::Float(a), Value::Int(b)) => Ok(Value::Float(a.powf(b as f64))),
             (l, r) => Err(GqlError::Execution(ExecutionError::InvalidOperator {
                 op: "^".to_string(),
                 left: l.type_name().to_string(),
@@ -587,11 +587,11 @@ fn eval_binary<'r>(
             Value::Null => Ok(Value::Null),
             Value::List(items) => {
                 if lv.is_null() {
-                    // null IN [1,2,null] → null; null IN [1,2] → false
-                    if items.iter().any(|i| i.is_null()) {
-                        Ok(Value::Null)
-                    } else {
+                    // null IN [] → false; null IN [non-empty] → null
+                    if items.is_empty() {
                         Ok(Value::Bool(false))
+                    } else {
+                        Ok(Value::Null)
                     }
                 } else {
                     // x IN list: true if any element equals x; null if null present and not found.
@@ -777,7 +777,15 @@ fn eval_quantifier<'r>(name: &str, args: &[Expr], row: &Row<'r>) -> Result<Value
                                 Ok(Value::Bool(true))
                             }
                         }
-                        "single" => Ok(Value::Bool(true_count == 1)),
+                        "single" => {
+                            if true_count > 1 {
+                                Ok(Value::Bool(false))
+                            } else if null_count > 0 {
+                                Ok(Value::Null)
+                            } else {
+                                Ok(Value::Bool(true_count == 1))
+                            }
+                        }
                         _ => unreachable!(),
                     }
                 }
@@ -835,7 +843,15 @@ fn eval_quantifier<'r>(name: &str, args: &[Expr], row: &Row<'r>) -> Result<Value
                                 Ok(Value::Bool(true))
                             }
                         }
-                        "single" => Ok(Value::Bool(true_count == 1)),
+                        "single" => {
+                            if true_count > 1 {
+                                Ok(Value::Bool(false))
+                            } else if null_count > 0 {
+                                Ok(Value::Null)
+                            } else {
+                                Ok(Value::Bool(true_count == 1))
+                            }
+                        }
                         _ => unreachable!(),
                     }
                 }
@@ -1310,22 +1326,33 @@ pub fn eval_function_with_vals(name: &str, vals: Vec<Value>) -> Result<Value, Gq
         "time.truncate" => eval_time_truncate(&vals),
 
         "date.realtime" | "date.statement" | "date.transaction" => {
+            if vals.first().map(|v| v.is_null()).unwrap_or(false) {
+                return Ok(Value::Null);
+            }
+            if !vals.is_empty() { return eval_date_constructor(&vals); }
             let today = jiff::civil::Date::from(jiff::Zoned::now());
             Ok(Value::Date(today))
         }
         "datetime.realtime" | "datetime.statement" | "datetime.transaction" => {
+            if vals.first().map(|v| v.is_null()).unwrap_or(false) { return Ok(Value::Null); }
+            if !vals.is_empty() { return eval_datetime_constructor(&vals); }
             Ok(Value::DateTime(Box::new(jiff::Zoned::now())))
         }
         "localdatetime.realtime" | "localdatetime.statement" | "localdatetime.transaction" => {
+            if vals.first().map(|v| v.is_null()).unwrap_or(false) { return Ok(Value::Null); }
+            if !vals.is_empty() { return eval_localdatetime_constructor(&vals); }
             let now = jiff::Zoned::now();
             Ok(Value::LocalDateTime(jiff::civil::DateTime::from(now)))
         }
         "localtime.realtime" | "localtime.statement" | "localtime.transaction" => {
+            if vals.first().map(|v| v.is_null()).unwrap_or(false) { return Ok(Value::Null); }
+            if !vals.is_empty() { return eval_localtime_constructor(&vals); }
             let now = jiff::Zoned::now();
             Ok(Value::LocalTime(jiff::civil::Time::from(now)))
         }
         "time.realtime" | "time.statement" | "time.transaction" => {
-            // time() in Neo4j is a zoned time - return as DateTime
+            if vals.first().map(|v| v.is_null()).unwrap_or(false) { return Ok(Value::Null); }
+            if !vals.is_empty() { return eval_time_constructor(&vals); }
             Ok(Value::DateTime(Box::new(jiff::Zoned::now())))
         }
         "datetime.fromepoch" => {
@@ -1571,43 +1598,26 @@ fn parse_timezone(tz_str: &str) -> Result<jiff::tz::TimeZone, String> {
     {
         let negative = tz_str.starts_with('-');
         let parts: Vec<&str> = offset_str.split(':').collect();
-        let (hours, minutes, extra_seconds) = if parts.len() == 3 {
-            // HH:MM:SS format (seconds in timezone offset)
-            let h: i32 = parts[0]
-                .parse()
-                .map_err(|e: std::num::ParseIntError| e.to_string())?;
-            let m: i32 = parts[1]
-                .parse()
-                .map_err(|e: std::num::ParseIntError| e.to_string())?;
-            let s: i32 = parts[2]
-                .parse()
-                .map_err(|e: std::num::ParseIntError| e.to_string())?;
-            (h, m, s)
+        let total_seconds = if parts.len() == 3 {
+            // HH:MM:SS format (e.g. "+02:05:59")
+            let h: i32 = parts[0].parse().map_err(|e: std::num::ParseIntError| e.to_string())?;
+            let m: i32 = parts[1].parse().map_err(|e: std::num::ParseIntError| e.to_string())?;
+            let s: i32 = parts[2].parse().map_err(|e: std::num::ParseIntError| e.to_string())?;
+            (h * 3600 + m * 60 + s) * if negative { -1 } else { 1 }
         } else if parts.len() == 2 {
-            let h: i32 = parts[0]
-                .parse()
-                .map_err(|e: std::num::ParseIntError| e.to_string())?;
-            let m: i32 = parts[1]
-                .parse()
-                .map_err(|e: std::num::ParseIntError| e.to_string())?;
-            (h, m, 0)
+            let h: i32 = parts[0].parse().map_err(|e: std::num::ParseIntError| e.to_string())?;
+            let m: i32 = parts[1].parse().map_err(|e: std::num::ParseIntError| e.to_string())?;
+            (h * 3600 + m * 60) * if negative { -1 } else { 1 }
         } else if offset_str.len() == 4 {
-            let h: i32 = offset_str[..2]
-                .parse()
-                .map_err(|e: std::num::ParseIntError| e.to_string())?;
-            let m: i32 = offset_str[2..]
-                .parse()
-                .map_err(|e: std::num::ParseIntError| e.to_string())?;
-            (h, m, 0)
+            let h: i32 = offset_str[..2].parse().map_err(|e: std::num::ParseIntError| e.to_string())?;
+            let m: i32 = offset_str[2..].parse().map_err(|e: std::num::ParseIntError| e.to_string())?;
+            (h * 3600 + m * 60) * if negative { -1 } else { 1 }
         } else if offset_str.len() == 2 {
-            let h: i32 = offset_str
-                .parse()
-                .map_err(|e: std::num::ParseIntError| e.to_string())?;
-            (h, 0, 0)
+            let h: i32 = offset_str.parse().map_err(|e: std::num::ParseIntError| e.to_string())?;
+            h * 3600 * if negative { -1 } else { 1 }
         } else {
             return Err(format!("invalid timezone offset: {tz_str}"));
         };
-        let total_seconds = (hours * 3600 + minutes * 60 + extra_seconds) * if negative { -1 } else { 1 };
         let offset = jiff::tz::Offset::from_seconds(total_seconds).map_err(|e| e.to_string())?;
         return Ok(jiff::tz::TimeZone::fixed(offset));
     }
@@ -1843,7 +1853,8 @@ fn resolve_date_from_map(
         let year = if m.contains_key("year") {
             map_get_int(m, "year", 0)?
         } else if let Some(bd) = base_date {
-            bd.year() as i64
+            // Use ISO week year (not Gregorian year) since week dates cross year boundaries.
+            bd.iso_week_date().year() as i64
         } else {
             0
         };
@@ -2233,11 +2244,20 @@ fn eval_datetime_constructor(vals: &[Value]) -> Result<Value, GqlError> {
         Value::Map(m) => {
             let base_date = extract_base_date(m)?;
             let base_time = extract_base_time(m)?;
+            // Track whether the "datetime" base is a LocalDateTime (has no real timezone).
+            let base_is_local_dt = matches!(m.get("datetime"), Some(Value::LocalDateTime(_)));
             let base_zdt: Option<(jiff::civil::DateTime, jiff::tz::TimeZone)> = match m.get("datetime") {
                 Some(Value::DateTime(zdt)) => {
                     Some((jiff::civil::DateTime::from(zdt.as_ref()), zdt.time_zone().clone()))
                 }
                 Some(Value::LocalDateTime(dt)) => Some((*dt, jiff::tz::TimeZone::UTC)),
+                _ => None,
+            };
+
+            // Extract timezone from "time" key when it is a ZonedTime (stored as DateTime).
+            // This preserves e.g. +01:00 from time({..., timezone: '+01:00'}).
+            let base_time_tz: Option<jiff::tz::TimeZone> = match m.get("time") {
+                Some(Value::DateTime(zdt)) => Some(zdt.time_zone().clone()),
                 _ => None,
             };
 
@@ -2275,12 +2295,15 @@ fn eval_datetime_constructor(vals: &[Value]) -> Result<Value, GqlError> {
             let hour = if m.contains_key("hour") { map_get_int(m, "hour", 0)? as i8 } else { base_h };
             let minute = if m.contains_key("minute") { map_get_int(m, "minute", 0)? as i8 } else { base_mi };
             let second = if m.contains_key("second") { map_get_int(m, "second", 0)? as i8 } else { base_s };
-            let nanosecond = if m.contains_key("nanosecond") {
-                map_get_int(m, "nanosecond", 0)? as i32
-            } else if m.contains_key("microsecond") {
-                (map_get_int(m, "microsecond", 0)? * 1000) as i32
-            } else if m.contains_key("millisecond") {
-                (map_get_int(m, "millisecond", 0)? * 1_000_000) as i32
+            // Combine millisecond + microsecond + nanosecond (Cypher spec: all additive)
+            let nanosecond = if m.contains_key("nanosecond")
+                || m.contains_key("microsecond")
+                || m.contains_key("millisecond")
+            {
+                let millis = map_get_int(m, "millisecond", 0)? * 1_000_000;
+                let micros = map_get_int(m, "microsecond", 0)? * 1_000;
+                let nanos = map_get_int(m, "nanosecond", 0)?;
+                (millis + micros + nanos) as i32
             } else {
                 base_ns
             };
@@ -2303,22 +2326,41 @@ fn eval_datetime_constructor(vals: &[Value]) -> Result<Value, GqlError> {
                     .map_err(|e| temporal_parse_error("datetime", e))?;
 
                 if !has_field_overrides {
-                    // Pure timezone conversion: convert base datetime instant to new timezone
+                    // Pure timezone conversion for real ZonedDatetime: same instant, new TZ.
                     if let Some(Value::DateTime(base_zdt_val)) = m.get("datetime") {
                         let converted = base_zdt_val.with_time_zone(new_tz);
                         return Ok(Value::DateTime(Box::new(converted)));
                     }
+                    // LocalDateTime has no timezone: just apply new TZ as wall-clock timezone.
+                    if let Some(Value::LocalDateTime(ldt)) = m.get("datetime") {
+                        let zoned = ldt.to_zoned(new_tz)
+                            .map_err(|e| temporal_parse_error("datetime", e))?;
+                        return Ok(Value::DateTime(Box::new(zoned)));
+                    }
                 }
 
-                // Field overrides + timezone: apply overrides, then use new timezone
+                // Field overrides + timezone: apply overrides in base TZ, then convert to new TZ.
                 let t = jiff::civil::Time::new(hour, minute, second, nanosecond)
                     .map_err(|e| temporal_parse_error("datetime", e))?;
                 let dt = date_part.to_datetime(t);
-                // If base had a timezone, apply overrides in base TZ first, then convert
                 if let Some((_, ref base_tz)) = base_zdt {
-                    let with_base_tz = dt.to_zoned(base_tz.clone())
+                    if base_is_local_dt {
+                        // LocalDateTime: wall-clock time is already resolved; just set new TZ.
+                        let zoned = dt.to_zoned(new_tz)
+                            .map_err(|e| temporal_parse_error("datetime", e))?;
+                        Ok(Value::DateTime(Box::new(zoned)))
+                    } else {
+                        // Real ZonedDateTime: apply overrides in base TZ, then convert.
+                        let with_base_tz = dt.to_zoned(base_tz.clone())
+                            .map_err(|e| temporal_parse_error("datetime", e))?;
+                        let zoned = with_base_tz.with_time_zone(new_tz);
+                        Ok(Value::DateTime(Box::new(zoned)))
+                    }
+                } else if let Some(ref time_tz) = base_time_tz {
+                    // "time" key provided a timezone: create in that TZ, then convert.
+                    let with_time_tz = dt.to_zoned(time_tz.clone())
                         .map_err(|e| temporal_parse_error("datetime", e))?;
-                    let zoned = with_base_tz.with_time_zone(new_tz);
+                    let zoned = with_time_tz.with_time_zone(new_tz);
                     Ok(Value::DateTime(Box::new(zoned)))
                 } else {
                     let zoned = dt.to_zoned(new_tz)
@@ -2329,8 +2371,16 @@ fn eval_datetime_constructor(vals: &[Value]) -> Result<Value, GqlError> {
                 let t = jiff::civil::Time::new(hour, minute, second, nanosecond)
                     .map_err(|e| temporal_parse_error("datetime", e))?;
                 let dt = date_part.to_datetime(t);
+                // Use timezone from "datetime" key (if it's a real ZonedDateTime),
+                // "time" key, or default to UTC. LocalDateTime base has no TZ.
                 let tz = if let Some((_, ref base_tz)) = base_zdt {
-                    base_tz.clone()
+                    if base_is_local_dt {
+                        jiff::tz::TimeZone::UTC
+                    } else {
+                        base_tz.clone()
+                    }
+                } else if let Some(ref time_tz) = base_time_tz {
+                    time_tz.clone()
                 } else {
                     jiff::tz::TimeZone::UTC
                 };
@@ -2340,6 +2390,58 @@ fn eval_datetime_constructor(vals: &[Value]) -> Result<Value, GqlError> {
             }
         }
         other => type_error("datetime", other),
+    }
+}
+
+/// Parse an ISO 8601 datetime string, handling week-date, ordinal-date, and compact formats.
+fn parse_localdatetime_str(s: &str) -> Result<jiff::civil::DateTime, String> {
+    if let Ok(dt) = s.parse::<jiff::civil::DateTime>() {
+        return Ok(dt);
+    }
+    if let Ok(zdt) = s.parse::<jiff::Zoned>() {
+        return Ok(jiff::civil::DateTime::from(&zdt));
+    }
+    let s = s.trim();
+    let t_pos = s.find(['T', 't']);
+    if let Some(t_idx) = t_pos {
+        let date_str = &s[..t_idx];
+        let rest = &s[t_idx + 1..];
+        let date = parse_date_str(date_str)?;
+        let time_str = rest.trim_end_matches('Z');
+        let time_str = if let Some(plus_pos) = time_str.rfind('+') {
+            if plus_pos > 0 { &time_str[..plus_pos] } else { time_str }
+        } else if let Some(minus_pos) = time_str[1..].rfind('-') {
+            &time_str[..minus_pos + 1]
+        } else {
+            time_str
+        };
+        let time_str = expand_compact_time(time_str);
+        let time = time_str.parse::<jiff::civil::Time>()
+            .map_err(|e| format!("cannot parse time '{time_str}': {e}"))?;
+        Ok(jiff::civil::DateTime::from_parts(date, time))
+    } else {
+        Err(format!("cannot parse datetime from '{s}'"))
+    }
+}
+
+/// Expand compact time notation `HHMMSS` to `HH:MM:SS`
+fn expand_compact_time(s: &str) -> String {
+    if s.len() >= 6 && !s.contains(':') {
+        let hh = &s[0..2];
+        let mm = &s[2..4];
+        let ss = &s[4..];
+        if let Some(dot_pos) = ss.find('.') {
+            let (secs, frac) = ss.split_at(dot_pos);
+            format!("{hh}:{mm}:{secs}{frac}")
+        } else {
+            format!("{hh}:{mm}:{ss}")
+        }
+    } else if s.len() == 4 && !s.contains(':') {
+        let hh = &s[0..2];
+        let mm = &s[2..4];
+        format!("{hh}:{mm}:00")
+    } else {
+        s.to_string()
     }
 }
 
@@ -2357,13 +2459,7 @@ fn eval_localdatetime_constructor(vals: &[Value]) -> Result<Value, GqlError> {
     match &vals[0] {
         Value::Null => Ok(Value::Null),
         Value::Str(s) => {
-            // Handle ISO week date format: 2015-W30-2T19:32:24
-            // jiff cannot parse YYYY-Www-DThh:mm:ss directly.
-            if s.contains('W') {
-                return parse_localdatetime_week_str(s);
-            }
-            let dt: jiff::civil::DateTime = s
-                .parse()
+            let dt = parse_localdatetime_str(s)
                 .map_err(|e| temporal_parse_error("localdatetime", e))?;
             Ok(Value::LocalDateTime(dt))
         }
@@ -2435,6 +2531,123 @@ fn eval_localdatetime_constructor(vals: &[Value]) -> Result<Value, GqlError> {
     }
 }
 
+/// Parse a Cypher ISO 8601 duration string, handling fractional date components.
+/// Examples: 'P5M1.5D' → 5 months + 1 day + 12 hours, 'P2.5W' → 17 days + 12 hours
+#[allow(dead_code)]
+fn parse_cypher_duration(s: &str) -> Result<jiff::Span, String> {
+    // Try standard jiff parser first
+    if let Ok(sp) = s.parse::<jiff::Span>() {
+        return Ok(sp);
+    }
+
+    // Try P<date>T<time> datetime-style duration (e.g. "P2012-02-02T14:37:21.545")
+    let s_inner = s.strip_prefix('P').unwrap_or(s);
+    if let Some(t_pos) = s_inner.find(['T', 't']) {
+        let date_part = &s_inner[..t_pos];
+        let time_part = &s_inner[t_pos + 1..];
+        if date_part.contains('-') && !date_part.is_empty() {
+            let parts: Vec<&str> = date_part.splitn(3, '-').collect();
+            if parts.len() == 3 {
+                let y: i32 = parts[0].parse().unwrap_or(0);
+                let m: i32 = parts[1].parse().unwrap_or(0);
+                let d: i32 = parts[2].parse().unwrap_or(0);
+                let t_parts: Vec<&str> = time_part.splitn(3, ':').collect();
+                let h: i32 = t_parts.first().and_then(|s| s.parse().ok()).unwrap_or(0);
+                let mi: i32 = t_parts.get(1).and_then(|s| s.parse().ok()).unwrap_or(0);
+                let sv: f64 = t_parts.get(2).and_then(|s| s.parse().ok()).unwrap_or(0.0);
+                let s_i = sv.trunc() as i32;
+                let ns = ((sv - sv.trunc()) * 1e9) as i32;
+                let sp = jiff::Span::new()
+                    .years(y).months(m).days(d).hours(h).minutes(mi).seconds(s_i).nanoseconds(ns);
+                return Ok(sp);
+            }
+        }
+    }
+
+    // Handle fractional date components by parsing manually
+    let mut remaining = s_inner;
+    let mut total_ns: i64 = 0;
+    let mut years: i32 = 0;
+    let mut months: i32 = 0;
+    let mut days: i32 = 0;
+    let mut in_time = false;
+
+    const SECS_PER_MONTH: f64 = 365.25 * 86400.0 / 12.0;
+
+    while !remaining.is_empty() {
+        if remaining.starts_with('T') || remaining.starts_with('t') {
+            in_time = true;
+            remaining = &remaining[1..];
+            continue;
+        }
+        let num_end = remaining.find(|c: char| c.is_alphabetic())
+            .unwrap_or(remaining.len());
+        if num_end == 0 { break; }
+        let num_str = &remaining[..num_end];
+        let num: f64 = num_str.parse().map_err(|_| format!("invalid duration number: {num_str}"))?;
+        remaining = &remaining[num_end..];
+        if remaining.is_empty() { break; }
+        let unit = remaining.chars().next().unwrap();
+        remaining = &remaining[unit.len_utf8()..];
+
+        if in_time {
+            let ns_val = match unit {
+                'H' => (num * 3_600_000_000_000.0) as i64,
+                'M' => (num * 60_000_000_000.0) as i64,
+                'S' => (num * 1_000_000_000.0) as i64,
+                _ => return Err(format!("unknown time unit: {unit}")),
+            };
+            total_ns += ns_val;
+        } else {
+            match unit {
+                'Y' => {
+                    years += num.trunc() as i32;
+                    let frac = num - num.trunc();
+                    if frac != 0.0 {
+                        let frac_months = frac * 12.0;
+                        months += frac_months.trunc() as i32;
+                        let rem_months = frac_months - frac_months.trunc();
+                        total_ns += (rem_months * SECS_PER_MONTH * 1e9) as i64;
+                    }
+                }
+                'M' => {
+                    months += num.trunc() as i32;
+                    let frac = num - num.trunc();
+                    if frac != 0.0 {
+                        total_ns += (frac * SECS_PER_MONTH * 1e9) as i64;
+                    }
+                }
+                'W' => {
+                    let total_days = num * 7.0;
+                    days += total_days.trunc() as i32;
+                    let frac = total_days - total_days.trunc();
+                    total_ns += (frac * 86_400_000_000_000.0) as i64;
+                }
+                'D' => {
+                    days += num.trunc() as i32;
+                    let frac = num - num.trunc();
+                    total_ns += (frac * 86_400_000_000_000.0) as i64;
+                }
+                _ => return Err(format!("unknown date unit: {unit}")),
+            }
+        }
+    }
+
+    let extra_days = total_ns / 86_400_000_000_000i64;
+    let rem_ns = total_ns % 86_400_000_000_000i64;
+    days += extra_days as i32;
+    let h = (rem_ns / 3_600_000_000_000i64) as i32;
+    let rem_ns = rem_ns % 3_600_000_000_000i64;
+    let m = (rem_ns / 60_000_000_000i64) as i32;
+    let rem_ns = rem_ns % 60_000_000_000i64;
+    let sec = (rem_ns / 1_000_000_000i64) as i32;
+    let ns = (rem_ns % 1_000_000_000i64) as i32;
+
+    Ok(jiff::Span::new()
+        .years(years).months(months).days(days)
+        .hours(h).minutes(m).seconds(sec).nanoseconds(ns))
+}
+
 fn eval_duration_constructor(vals: &[Value]) -> Result<Value, GqlError> {
     if vals.is_empty() {
         return Ok(Value::Duration(jiff::Span::new()));
@@ -2460,7 +2673,7 @@ fn eval_duration_constructor(vals: &[Value]) -> Result<Value, GqlError> {
                     _ => 0.0,
                 }
             }
-            // Accumulate with cascade: fractional years → months, etc.
+            // Accumulate raw values; milliseconds/microseconds convert to nanoseconds.
             let raw_years = dur_get(m, "years") + dur_get(m, "year");
             let raw_months = dur_get(m, "months") + dur_get(m, "month");
             let raw_weeks = dur_get(m, "weeks") + dur_get(m, "week");
@@ -2468,39 +2681,29 @@ fn eval_duration_constructor(vals: &[Value]) -> Result<Value, GqlError> {
             let raw_hours = dur_get(m, "hours") + dur_get(m, "hour");
             let raw_minutes = dur_get(m, "minutes") + dur_get(m, "minute");
             let raw_seconds = dur_get(m, "seconds") + dur_get(m, "second");
+            let raw_millis = dur_get(m, "milliseconds") + dur_get(m, "millisecond");
+            let raw_micros = dur_get(m, "microseconds") + dur_get(m, "microsecond");
             let raw_nanos = dur_get(m, "nanoseconds") + dur_get(m, "nanosecond");
+            let sub_sec_nanos = raw_millis * 1_000_000.0 + raw_micros * 1_000.0 + raw_nanos;
 
-            // Cascade: fractional part of larger unit flows into smaller unit
-            let total_months = raw_years * 12.0 + raw_months;
-            let int_months = total_months as i64;
-            let frac_months = total_months - int_months as f64;
+            // Phase 1: integer years are kept; fractional years cascade to months.
+            let int_years = raw_years as i64;
+            let frac_years = raw_years - int_years as f64;
+            let total_month_float = frac_years * 12.0 + raw_months;
+            let int_months = total_month_float as i64;
+            let frac_months = total_month_float - int_months as f64;
 
-            let total_days = frac_months * (365.2425 / 12.0) + raw_weeks * 7.0 + raw_days;
-            let int_days = total_days as i64;
-            let frac_days = total_days - int_days as f64;
+            // Phase 2: sub-month components expressed in seconds, then distributed.
+            // 1 month = 2629746 s (average Gregorian month = 365.2425*86400/12).
+            let total_raw_secs = frac_months * 2_629_746.0
+                + raw_weeks * 7.0 * 86_400.0
+                + raw_days * 86_400.0
+                + raw_hours * 3_600.0
+                + raw_minutes * 60.0
+                + raw_seconds
+                + sub_sec_nanos / 1_000_000_000.0;
 
-            let total_hours = frac_days * 24.0 + raw_hours;
-            let int_hours = total_hours as i64;
-            let frac_hours = total_hours - int_hours as f64;
-
-            let total_minutes = frac_hours * 60.0 + raw_minutes;
-            let int_minutes = total_minutes as i64;
-            let frac_minutes = total_minutes - int_minutes as f64;
-
-            let total_seconds = frac_minutes * 60.0 + raw_seconds;
-            let int_seconds = total_seconds as i64;
-            let frac_seconds = total_seconds - int_seconds as f64;
-
-            let total_nanos = frac_seconds * 1_000_000_000.0 + raw_nanos;
-            let int_nanos = total_nanos as i64;
-
-            let sp = jiff::Span::new()
-                .months(int_months)
-                .days(int_days)
-                .hours(int_hours)
-                .minutes(int_minutes)
-                .seconds(int_seconds)
-                .nanoseconds(int_nanos);
+            let sp = cascade_span_overflow(int_years, int_months, 0.0, 0.0, 0.0, total_raw_secs)?;
             Ok(Value::Duration(sp))
         }
         other => type_error("duration", other),
@@ -2508,6 +2711,7 @@ fn eval_duration_constructor(vals: &[Value]) -> Result<Value, GqlError> {
 }
 
 /// Parse a localdatetime string containing an ISO week date portion (e.g. `2015-W30-2T19:32:24`).
+#[allow(dead_code)]
 fn parse_localdatetime_week_str(s: &str) -> Result<Value, GqlError> {
     // Split at 'T' to separate date and time.
     let (date_str, time_str) = if let Some(t_pos) = s.find('T') {
@@ -2530,24 +2734,53 @@ fn parse_localdatetime_week_str(s: &str) -> Result<Value, GqlError> {
     Ok(Value::LocalDateTime(dt))
 }
 
-/// Parse a duration string, supporting decimal ISO 8601 durations (e.g. P1.5Y, PT1.5H).
+/// Parse a duration string, supporting decimal ISO 8601 durations (e.g. P1.5Y, PT1.5H)
+/// and cascading overflow (e.g. P12Y5M14DT16H12M70S → 70s cascades to 1m10s).
 fn parse_duration_str(s: &str) -> Result<jiff::Span, GqlError> {
-    // Try standard jiff parsing first (handles integer-only durations).
+    // Try jiff first: handles calendar format (P2012-02-02T14:37:21.545) and basic forms.
     if let Ok(sp) = s.parse::<jiff::Span>() {
-        return Ok(sp);
+        // Cascade any overflowing time units (e.g. 70S → 1M10S).
+        return cascade_span_overflow(sp.get_years() as i64, sp.get_months() as i64,
+            sp.get_days() as f64, sp.get_hours() as f64, sp.get_minutes() as f64,
+            sp.get_seconds() as f64 + sp.get_nanoseconds() as f64 / 1_000_000_000.0);
     }
-    // If the string contains a decimal point, use our custom decimal parser.
-    if s.contains('.') {
-        return parse_decimal_iso_duration(s);
-    }
-    // Re-parse to surface the original jiff error.
-    s.parse::<jiff::Span>().map_err(|e| temporal_parse_error("duration", e))
+    // Fall back to custom parser for decimal values and edge cases like 'PT'.
+    parse_decimal_iso_duration(s)
+}
+
+/// Cascade overflowing time components into a valid duration Span.
+fn cascade_span_overflow(
+    int_years: i64, int_months: i64,
+    raw_days: f64, raw_hours: f64, raw_minutes: f64, raw_seconds: f64,
+) -> Result<jiff::Span, GqlError> {
+    let total_raw_secs = raw_days * 86_400.0
+        + raw_hours * 3_600.0
+        + raw_minutes * 60.0
+        + raw_seconds;
+    let int_days = (total_raw_secs / 86_400.0) as i64;
+    let rem = total_raw_secs - int_days as f64 * 86_400.0;
+    let int_hours = (rem / 3_600.0) as i64;
+    let rem = rem - int_hours as f64 * 3_600.0;
+    let int_minutes = (rem / 60.0) as i64;
+    let rem = rem - int_minutes as f64 * 60.0;
+    let int_seconds = rem as i64;
+    let frac_secs = rem - int_seconds as f64;
+    let int_nanos = (frac_secs * 1_000_000_000.0).round() as i64;
+    Ok(jiff::Span::new()
+        .years(int_years)
+        .months(int_months)
+        .days(int_days)
+        .hours(int_hours)
+        .minutes(int_minutes)
+        .seconds(int_seconds)
+        .nanoseconds(int_nanos))
 }
 
 /// Parse an ISO 8601 duration string that may contain decimal values.
 ///
 /// Examples: `P1.5Y`, `PT1.5H`, `P1Y2M3.5D`.
 /// Cascades fractional parts to the next smaller unit.
+#[allow(dead_code)]
 fn parse_decimal_iso_duration(s: &str) -> Result<jiff::Span, GqlError> {
     let s = s.trim();
     let s = s.strip_prefix('P').ok_or_else(|| {
@@ -2634,37 +2867,23 @@ fn parse_decimal_iso_duration(s: &str) -> Result<jiff::Span, GqlError> {
         }
     }
 
-    // Cascade fractional parts to the next smaller unit.
-    let total_months = years * 12.0 + months;
-    let int_months = total_months as i64;
-    let frac_months = total_months - int_months as f64;
+    // Phase 1: integer years are kept; fractional years cascade to months.
+    let int_years = years as i64;
+    let frac_years = years - int_years as f64;
+    let total_month_float = frac_years * 12.0 + months;
+    let int_months = total_month_float as i64;
+    let frac_months = total_month_float - int_months as f64;
 
-    let total_days = frac_months * (365.2425 / 12.0) + weeks * 7.0 + days;
-    let int_days = total_days as i64;
-    let frac_days = total_days - int_days as f64;
+    // Phase 2: sub-month components expressed in seconds, then distributed.
+    // 1 month = 2629746 s (average Gregorian: 365.2425*86400/12).
+    let total_raw_secs = frac_months * 2_629_746.0
+        + weeks * 7.0 * 86_400.0
+        + days * 86_400.0
+        + hours * 3_600.0
+        + minutes * 60.0
+        + seconds;
 
-    let total_hours = frac_days * 24.0 + hours;
-    let int_hours = total_hours as i64;
-    let frac_hours = total_hours - int_hours as f64;
-
-    let total_minutes = frac_hours * 60.0 + minutes;
-    let int_minutes = total_minutes as i64;
-    let frac_minutes = total_minutes - int_minutes as f64;
-
-    let total_seconds = frac_minutes * 60.0 + seconds;
-    let int_seconds = total_seconds as i64;
-    let frac_seconds = total_seconds - int_seconds as f64;
-
-    let int_nanos = (frac_seconds * 1_000_000_000.0) as i64;
-
-    let sp = jiff::Span::new()
-        .months(int_months)
-        .days(int_days)
-        .hours(int_hours)
-        .minutes(int_minutes)
-        .seconds(int_seconds)
-        .nanoseconds(int_nanos);
-    Ok(sp)
+    cascade_span_overflow(int_years, int_months, 0.0, 0.0, 0.0, total_raw_secs)
 }
 
 // ── Temporal truncate helpers ────────────────────────────────────────────────
@@ -2820,15 +3039,32 @@ fn apply_time_overrides(
     } else {
         t.second()
     };
-    let nanosecond = if let Some(Value::Int(v)) = overrides.get("nanosecond") {
+    // Sub-second components are hierarchical: millisecond > microsecond > nanosecond
+    let base_ns = t.subsec_nanosecond();
+    let base_ms = base_ns / 1_000_000;
+    let base_us = (base_ns % 1_000_000) / 1_000;
+    let base_ns_only = base_ns % 1_000;
+
+    let ms = if let Some(Value::Int(v)) = overrides.get("millisecond") {
         *v as i32
-    } else if let Some(Value::Int(v)) = overrides.get("microsecond") {
-        *v as i32 * 1_000
-    } else if let Some(Value::Int(v)) = overrides.get("millisecond") {
-        *v as i32 * 1_000_000
     } else {
-        t.subsec_nanosecond()
+        base_ms
     };
+    let us = if let Some(Value::Int(v)) = overrides.get("microsecond") {
+        *v as i32
+    } else if overrides.contains_key("millisecond") {
+        0
+    } else {
+        base_us
+    };
+    let ns_only = if let Some(Value::Int(v)) = overrides.get("nanosecond") {
+        *v as i32
+    } else if overrides.contains_key("microsecond") || overrides.contains_key("millisecond") {
+        0
+    } else {
+        base_ns_only
+    };
+    let nanosecond = ms * 1_000_000 + us * 1_000 + ns_only;
     jiff::civil::Time::new(hour, minute, second, nanosecond)
         .map_err(|e| temporal_parse_error("truncate", e))
 }
@@ -3064,6 +3300,9 @@ fn eval_duration_between(vals: &[Value]) -> Result<Value, GqlError> {
             actual: format!("{} arguments", vals.len()),
         }));
     }
+    if matches!(&vals[0], Value::Null) || matches!(&vals[1], Value::Null) {
+        return Ok(Value::Null);
+    }
 
     let both_have_dates = has_date_component(&vals[0]) && has_date_component(&vals[1]);
     let either_time_only = is_time_only(&vals[0]) || is_time_only(&vals[1]);
@@ -3244,6 +3483,9 @@ fn eval_duration_in_months(vals: &[Value]) -> Result<Value, GqlError> {
             actual: format!("{} arguments", vals.len()),
         }));
     }
+    if matches!(&vals[0], Value::Null) || matches!(&vals[1], Value::Null) {
+        return Ok(Value::Null);
+    }
     // If either is time-only, return zero duration
     if is_time_only(&vals[0]) || is_time_only(&vals[1])
         || !has_date_component(&vals[0]) || !has_date_component(&vals[1])
@@ -3260,7 +3502,23 @@ fn eval_duration_in_months(vals: &[Value]) -> Result<Value, GqlError> {
     let months_span = d1.until(
         jiff::civil::DateDifference::new(d2).largest(jiff::Unit::Year),
     ).map_err(|e| temporal_parse_error("duration.inMonths", e))?;
-    let total_months = months_span.get_years() as i64 * 12 + months_span.get_months() as i64;
+    let mut total_months = months_span.get_years() as i64 * 12 + months_span.get_months() as i64;
+
+    // For zoned datetime pairs, adjust total_months by 1 if the time-of-day
+    // comparison shows we haven't fully completed the last month.
+    if let (Value::DateTime(z1), Value::DateTime(z2)) = (&vals[0], &vals[1]) {
+        let ts2_ns = z2.timestamp().as_nanosecond();
+        if let Ok(advanced) = z1.as_ref().clone().checked_add(jiff::Span::new().months(total_months)) {
+            let adv_ns = advanced.timestamp().as_nanosecond();
+            // If we overshot in the direction of travel, retract by 1 month.
+            if total_months >= 0 && adv_ns > ts2_ns {
+                total_months -= 1;
+            } else if total_months < 0 && adv_ns < ts2_ns {
+                total_months += 1;
+            }
+        }
+    }
+
     let years = total_months / 12;
     let months = total_months % 12;
     Ok(Value::Duration(jiff::Span::new().years(years).months(months)))
@@ -3272,6 +3530,9 @@ fn eval_duration_in_days(vals: &[Value]) -> Result<Value, GqlError> {
             expected: "duration.inDays(temporal1, temporal2)".to_string(),
             actual: format!("{} arguments", vals.len()),
         }));
+    }
+    if matches!(&vals[0], Value::Null) || matches!(&vals[1], Value::Null) {
+        return Ok(Value::Null);
     }
     if is_time_only(&vals[0]) || is_time_only(&vals[1])
         || !has_date_component(&vals[0]) || !has_date_component(&vals[1])
@@ -3299,24 +3560,90 @@ fn eval_duration_in_seconds(vals: &[Value]) -> Result<Value, GqlError> {
             actual: format!("{} arguments", vals.len()),
         }));
     }
+    if matches!(&vals[0], Value::Null) || matches!(&vals[1], Value::Null) {
+        return Ok(Value::Null);
+    }
 
-    // For zoned datetimes, use timestamp-based calculation
+    // For zoned datetime pairs, use timestamp-based or time-of-day calculation.
     if let (Value::DateTime(z1), Value::DateTime(z2)) = (&vals[0], &vals[1]) {
-        let ts1 = z1.timestamp();
-        let ts2 = z2.timestamp();
-        let total_nanos = ts2.as_nanosecond() - ts1.as_nanosecond();
-        let total_secs = total_nanos / 1_000_000_000;
-        let subsec_nanos = (total_nanos % 1_000_000_000) as i32;
-        let hours = total_secs / 3600;
-        let remaining = total_secs % 3600;
-        let minutes = remaining / 60;
-        let seconds = remaining % 60;
-        let sp = jiff::Span::new()
-            .hours(hours as i64)
-            .minutes(minutes as i64)
-            .seconds(seconds as i64)
-            .nanoseconds(subsec_nanos as i64);
-        return Ok(Value::Duration(sp));
+        let v1_has_date = has_date_component(&vals[0]);
+        let v2_has_date = has_date_component(&vals[1]);
+        if v1_has_date && v2_has_date {
+            // Both are real datetimes: use exact timestamp diff.
+            let ts1 = z1.timestamp();
+            let ts2 = z2.timestamp();
+            let total_nanos = ts2.as_nanosecond() - ts1.as_nanosecond();
+            let total_secs = total_nanos / 1_000_000_000;
+            let subsec_nanos = (total_nanos % 1_000_000_000) as i32;
+            let hours = total_secs / 3600;
+            let remaining = total_secs % 3600;
+            let minutes = remaining / 60;
+            let seconds = remaining % 60;
+            let sp = jiff::Span::new()
+                .hours(hours as i64)
+                .minutes(minutes as i64)
+                .seconds(seconds as i64)
+                .nanoseconds(subsec_nanos as i64);
+            return Ok(Value::Duration(sp));
+        } else {
+            // Mixed: one is time-only (epoch date). Compare UTC time-of-day only.
+            let utc_tod_nanos = |zdt: &jiff::Zoned| -> i64 {
+                let utc = zdt.with_time_zone(jiff::tz::TimeZone::UTC);
+                let t = jiff::civil::Time::from(&utc);
+                t.hour() as i64 * 3_600_000_000_000
+                    + t.minute() as i64 * 60_000_000_000
+                    + t.second() as i64 * 1_000_000_000
+                    + t.subsec_nanosecond() as i64
+            };
+            let nanos_diff = utc_tod_nanos(z2) - utc_tod_nanos(z1);
+            let secs = nanos_diff / 1_000_000_000;
+            let subsec = (nanos_diff % 1_000_000_000) as i32;
+            let hours = secs / 3600;
+            let remaining = secs % 3600;
+            let minutes = remaining / 60;
+            let seconds = remaining % 60;
+            let sp = jiff::Span::new()
+                .hours(hours)
+                .minutes(minutes)
+                .seconds(seconds)
+                .nanoseconds(subsec as i64);
+            return Ok(Value::Duration(sp));
+        }
+    }
+
+    // Mixed DateTime + LocalDateTime: use DST-aware calculation if possible.
+    let zoned_val = match (&vals[0], &vals[1]) {
+        (Value::DateTime(z), _) if has_date_component(&vals[0]) => Some((z.as_ref(), true)),
+        (_, Value::DateTime(z)) if has_date_component(&vals[1]) => Some((z.as_ref(), false)),
+        _ => None,
+    };
+    if let Some((zdt, zdt_is_first)) = zoned_val {
+        let tz = zdt.time_zone().clone();
+        // Convert the non-zoned temporal into the same timezone for DST-aware diff.
+        let other_val = if zdt_is_first { &vals[1] } else { &vals[0] };
+        let other_dt = temporal_to_civil_datetime(other_val);
+        if let Some(other_civil) = other_dt {
+            if let Ok(other_zoned) = other_civil.to_zoned(tz) {
+                let (ts1, ts2) = if zdt_is_first {
+                    (zdt.timestamp(), other_zoned.timestamp())
+                } else {
+                    (other_zoned.timestamp(), zdt.timestamp())
+                };
+                let total_nanos = ts2.as_nanosecond() - ts1.as_nanosecond();
+                let total_secs = total_nanos / 1_000_000_000;
+                let subsec_nanos = (total_nanos % 1_000_000_000) as i32;
+                let hours = total_secs / 3600;
+                let remaining = total_secs % 3600;
+                let minutes = remaining / 60;
+                let seconds = remaining % 60;
+                let sp = jiff::Span::new()
+                    .hours(hours as i64)
+                    .minutes(minutes as i64)
+                    .seconds(seconds as i64)
+                    .nanoseconds(subsec_nanos as i64);
+                return Ok(Value::Duration(sp));
+            }
+        }
     }
 
     // For mixed datetime + time or two localdatetimes, use civil calculation

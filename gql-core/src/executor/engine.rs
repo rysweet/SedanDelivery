@@ -73,6 +73,9 @@ pub struct QueryExecutor<'a> {
     registry: &'a ProcedureRegistry,
     /// Query parameters stored as `$name` → value.
     parameters: HashMap<String, Value>,
+    /// Cache of deleted edge ID → rel_type string.
+    /// Allows `type(r)` to work on a relationship deleted in the same query.
+    deleted_edge_types: std::cell::RefCell<HashMap<u64, String>>,
 }
 
 impl<'a> QueryExecutor<'a> {
@@ -83,6 +86,7 @@ impl<'a> QueryExecutor<'a> {
             store,
             registry: EMPTY_REG.get_or_init(ProcedureRegistry::new),
             parameters: HashMap::new(),
+            deleted_edge_types: std::cell::RefCell::new(HashMap::new()),
         }
     }
 
@@ -108,6 +112,7 @@ impl<'a> QueryExecutor<'a> {
             store,
             registry,
             parameters: params,
+            deleted_edge_types: std::cell::RefCell::new(HashMap::new()),
         }
     }
 
@@ -530,14 +535,17 @@ impl<'a> QueryExecutor<'a> {
                                 }
                             }
                             let ctx = self.build_filter_ctx(graph, &row)?;
-                            let props = eval_prop_map(graph, self, prop_exprs, &row, &ctx)?;
+                            let props_raw = eval_prop_map(graph, self, prop_exprs, &row, &ctx)?;
+                            // In Cypher, setting a property to null on CREATE
+                            // does not store it — filter out null values.
+                            let props: HashMap<String, Value> = props_raw
+                                .into_iter()
+                                .filter(|(_, v)| !v.is_null())
+                                .collect();
                             let label_strings: Vec<String> =
                                 labels.iter().map(|l| l.as_str().to_string()).collect();
-                            let non_null_prop_keys: Vec<String> = props
-                                .iter()
-                                .filter(|(_, v)| !v.is_null())
-                                .map(|(k, _)| k.clone())
-                                .collect();
+                            let non_null_prop_keys: Vec<String> =
+                                props.keys().cloned().collect();
                             let node_id =
                                 self.store.create_node(graph, label_strings.clone(), props)?;
                             stats.nodes_created += 1;
@@ -556,7 +564,12 @@ impl<'a> QueryExecutor<'a> {
                             &pattern.edges
                         {
                             let ctx = self.build_filter_ctx(graph, &row)?;
-                            let props = eval_prop_map(graph, self, prop_exprs, &row, &ctx)?;
+                            // Filter out null-valued properties (same as for nodes).
+                            let props: HashMap<String, Value> =
+                                eval_prop_map(graph, self, prop_exprs, &row, &ctx)?
+                                    .into_iter()
+                                    .filter(|(_, v)| !v.is_null())
+                                    .collect();
 
                             let src_id = alias_to_id
                                 .get(&src_alias.0)
@@ -590,7 +603,7 @@ impl<'a> QueryExecutor<'a> {
                             // In the plan, src_alias is always the "left" node in the
                             // pattern text. For an Incoming arc (a)<-[:R]-(b), we need
                             // to flip so the edge is stored as b -> a.
-                            let (real_src, real_dst) = match direction {
+                            let (actual_src, actual_dst) = match direction {
                                 Direction::Incoming => (dst_id, src_id),
                                 _ => (src_id, dst_id),
                             };
@@ -602,8 +615,8 @@ impl<'a> QueryExecutor<'a> {
                                 .collect();
                             let edge_id = self.store.create_edge(
                                 graph,
-                                real_src,
-                                real_dst,
+                                actual_src,
+                                actual_dst,
                                 rel_type.as_str().to_string(),
                                 props,
                             )?;
@@ -1023,6 +1036,10 @@ impl<'a> QueryExecutor<'a> {
                                 nodes_to_delete.push(node_id);
                             }
                             Value::Edge(edge_id) => {
+                                // Cache rel_type before deleting so type(r) still works.
+                                if let Ok(Some(data)) = self.store.get_edge(graph, edge_id) {
+                                    self.deleted_edge_types.borrow_mut().insert(edge_id.0, data.rel_type);
+                                }
                                 edges_to_delete.push(edge_id);
                             }
                             Value::Null => {
@@ -1873,9 +1890,9 @@ impl<'a> QueryExecutor<'a> {
                                     }
                                 };
                                 let lc = name.to_lowercase();
-                                let mut match_count: usize = 0;
+                                let mut true_count: usize = 0;
+                                let mut false_count: usize = 0;
                                 let mut null_count: usize = 0;
-                                let total = items.len();
                                 for item in &items {
                                     let mut ext_row = row.clone();
                                     ext_row.insert(variable.0.clone(), item.clone());
@@ -1888,50 +1905,41 @@ impl<'a> QueryExecutor<'a> {
                                     } else {
                                         item.clone()
                                     };
-                                    if pred_result == Value::Bool(true) {
-                                        match_count += 1;
-                                    } else if pred_result.is_null() {
-                                        null_count += 1;
+                                    match pred_result {
+                                        Value::Bool(true) => true_count += 1,
+                                        Value::Bool(false) => false_count += 1,
+                                        v if v.is_null() => null_count += 1,
+                                        _ => false_count += 1,
                                     }
-                                    // Short-circuit
+                                    // Short-circuit for early exit
                                     match lc.as_str() {
-                                        "any" if match_count > 0 => {
-                                            return Ok(Value::Bool(true))
-                                        }
-                                        "none" if match_count > 0 => {
-                                            return Ok(Value::Bool(false))
-                                        }
-                                        "single" if match_count > 1 => {
-                                            return Ok(Value::Bool(false))
-                                        }
+                                        "all" if false_count > 0 => { return Ok(Value::Bool(false)) }
+                                        "any" if true_count > 0 => { return Ok(Value::Bool(true)) }
+                                        "none" if true_count > 0 => { return Ok(Value::Bool(false)) }
+                                        "single" if true_count > 1 => { return Ok(Value::Bool(false)) }
                                         _ => {}
                                     }
                                 }
-                                // Three-valued logic for quantifiers:
-                                // - false_count = total - match_count - null_count
-                                // For ALL: if any false → false; if all true → true;
-                                //          else (only nulls remaining) → null.
-                                let false_count = total - match_count - null_count;
                                 return match lc.as_str() {
                                     "all" => {
-                                        if false_count > 0 { Ok(Value::Bool(false)) }
-                                        else if null_count > 0 { Ok(Value::Null) }
+                                        // false_count already short-circuited above
+                                        if null_count > 0 { Ok(Value::Null) }
                                         else { Ok(Value::Bool(true)) }
                                     }
                                     "any" => {
-                                        if match_count > 0 { Ok(Value::Bool(true)) }
-                                        else if null_count > 0 { Ok(Value::Null) }
+                                        // true_count already short-circuited above
+                                        if null_count > 0 { Ok(Value::Null) }
                                         else { Ok(Value::Bool(false)) }
                                     }
                                     "none" => {
-                                        if match_count > 0 { Ok(Value::Bool(false)) }
-                                        else if null_count > 0 { Ok(Value::Null) }
+                                        // true_count already short-circuited above
+                                        if null_count > 0 { Ok(Value::Null) }
                                         else { Ok(Value::Bool(true)) }
                                     }
                                     "single" => {
-                                        if match_count > 1 { Ok(Value::Bool(false)) }
-                                        else if null_count > 0 && match_count == 0 { Ok(Value::Null) }
-                                        else { Ok(Value::Bool(match_count == 1)) }
+                                        if true_count > 1 { Ok(Value::Bool(false)) }
+                                        else if null_count > 0 { Ok(Value::Null) }
+                                        else { Ok(Value::Bool(true_count == 1)) }
                                     }
                                     _ => Ok(Value::Bool(false)),
                                 };
@@ -2032,7 +2040,12 @@ impl<'a> QueryExecutor<'a> {
                             Value::Null => Ok(Value::Null),
                             Value::Edge(edge_id) => match self.store.get_edge(graph, *edge_id)? {
                                 Some(data) => Ok(Value::Str(data.rel_type.into_boxed_str())),
-                                None => Ok(Value::Null),
+                                None => {
+                                    // Edge may have been deleted in this query; check cache.
+                                    let cached = self.deleted_edge_types.borrow()
+                                        .get(&edge_id.0).map(|s| Value::Str(s.clone().into_boxed_str()));
+                                    Ok(cached.unwrap_or(Value::Null))
+                                }
                             },
                             other => Err(GqlError::Execution(ExecutionError::TypeMismatch {
                                 expected: "Relationship".to_string(),
@@ -2358,25 +2371,18 @@ impl<'a> QueryExecutor<'a> {
                             None => Ok(Value::Null),
                         }
                     }
-                    // List[Int]: handle directly to preserve Node/Edge values
-                    // that value_to_expr cannot round-trip.
-                    (Value::List(items), Value::Int(i)) => {
-                        let len = items.len();
-                        let actual = if i < 0 {
-                            let offset = (-i) as usize;
-                            if offset > len {
-                                return Ok(Value::Null);
-                            }
-                            len - offset
+                    (Value::List(list), Value::Int(i)) => {
+                        // Handle List[Int] directly to preserve Node/Edge values that
+                        // `value_to_expr` would otherwise convert to Null.
+                        let len = list.len() as i64;
+                        let real_idx = if i < 0 { len + i } else { i };
+                        if real_idx < 0 || real_idx as usize >= list.len() {
+                            Ok(Value::Null)
                         } else {
-                            i as usize
-                        };
-                        if actual >= len {
-                            return Ok(Value::Null);
+                            Ok(list[real_idx as usize].clone())
                         }
-                        Ok(items[actual].clone())
                     }
-                    // Map[Str]: delegate to eval_expr (maps don't contain Node/Edge).
+                    // Map[Str]: handle directly (maps don't contain Node/Edge).
                     (Value::Map(m), Value::Str(key)) => {
                         Ok(m.get(key.as_ref()).cloned().unwrap_or(Value::Null))
                     }
@@ -2493,21 +2499,29 @@ impl<'a> QueryExecutor<'a> {
                 }
                 let ctx = self.build_filter_ctx(graph, row)?;
                 let prop_val = self.eval_with_storage(graph, value, row, &ctx)?;
-                let is_non_null = !prop_val.is_null();
+                // SET n.prop = null means REMOVE the property (Cypher semantics)
+                if prop_val.is_null() {
+                    match val {
+                        Value::Node(node_id) => {
+                            let _ = self.store.remove_node_property(graph, *node_id, key);
+                        }
+                        Value::Edge(edge_id) => {
+                            let _ = self.store.remove_edge_property(graph, *edge_id, key);
+                        }
+                        _ => {}
+                    }
+                    return Ok(());
+                }
                 let mut props = HashMap::new();
                 props.insert(key.clone(), prop_val);
                 match val {
                     Value::Node(node_id) => {
                         self.store.set_node_properties(graph, *node_id, props)?;
-                        if is_non_null {
-                            stats.props_seen.insert((false, node_id.0, key.clone()));
-                        }
+                        stats.props_seen.insert((false, node_id.0, key.clone()));
                     }
                     Value::Edge(edge_id) => {
                         self.store.set_edge_properties(graph, *edge_id, props)?;
-                        if is_non_null {
-                            stats.props_seen.insert((true, edge_id.0, key.clone()));
-                        }
+                        stats.props_seen.insert((true, edge_id.0, key.clone()));
                     }
                     other => {
                         return Err(GqlError::Execution(ExecutionError::TypeMismatch {
@@ -3036,7 +3050,7 @@ fn expr_to_column_name(expr: &Expr) -> String {
         }
         Expr::Integer(n) => n.to_string(),
         Expr::Float(f) => f.to_string(),
-        Expr::Str(s) => s.to_string(),
+        Expr::Str(s) => format!("'{}'", s),
         Expr::Bool(b) => b.to_string(),
         Expr::Null => "null".to_string(),
         Expr::FunctionCall {
@@ -3118,7 +3132,7 @@ fn expr_to_column_name(expr: &Expr) -> String {
         // These must match expr_to_col_name in planner.rs exactly.
         Expr::IsNull(e) => format!("{} IS NULL", expr_to_column_name(e)),
         Expr::IsNotNull(e) => format!("{} IS NOT NULL", expr_to_column_name(e)),
-        Expr::HasLabel(e, label) => format!("({}:{})", expr_to_column_name(e), label.0),
+        Expr::HasLabel(e, label) => format!("{}:{}", expr_to_column_name(e), label.0),
         Expr::Parameter(name) => format!("${name}"),
         Expr::List(items) => {
             let items_str: Vec<String> = items.iter().map(expr_to_column_name).collect();
@@ -3142,7 +3156,10 @@ fn eval_prop_map(
     let mut map = HashMap::new();
     for (key, expr) in pairs {
         let val = executor.eval_with_storage(graph, expr, row, ctx)?;
-        map.insert(key.clone(), val);
+        // Cypher: setting a property to null = removing it (don't store nulls)
+        if !val.is_null() {
+            map.insert(key.clone(), val);
+        }
     }
     Ok(map)
 }
@@ -3314,7 +3331,10 @@ fn value_to_expr(val: &Value) -> Expr {
 
 /// Compare two `Value`s for ordering purposes.
 ///
-/// Ordering: Null < Bool < Int ≈ Float < String < List < others (opaque).
+/// Ordering follows openCypher/Neo4j semantics for ORDER BY / min / max.
+/// Ascending order (from smallest to largest):
+///   Node/Edge/Path < Map < List < Bool < Str < Number < Temporal < Null
+/// Null sorts LAST in ascending order (treated as the "greatest" value).
 pub fn cmp_values(a: &Value, b: &Value) -> std::cmp::Ordering {
     use std::cmp::Ordering::*;
 
@@ -3323,23 +3343,19 @@ pub fn cmp_values(a: &Value, b: &Value) -> std::cmp::Ordering {
     // Temporal types (Date, Time, DateTime, Duration) sit between Bool and Null.
     fn type_rank(v: &Value) -> u8 {
         match v {
-            Value::Map(_) => 0,
-            Value::Node(_) => 1,
-            Value::Edge(_) => 2,
-            Value::List(_) => 3,
-            Value::Path { .. } => 4,
-            Value::Str(_) => 5,
-            Value::Bool(_) => 6,
-            Value::Int(_) => 7,
-            Value::Float(f) if !f.is_nan() => 7,
-            Value::Float(_) => 8, // NaN sorts after regular numbers
-            Value::Date(_)
-            | Value::LocalTime(_)
-            | Value::LocalDateTime(_)
-            | Value::DateTime(_)
-            | Value::Duration(_)
-            | Value::Point(_) => 9,
-            Value::Null => 10,
+            Value::Node(_) | Value::Edge(_) | Value::Path { .. } => 0,
+            Value::Map(_) => 1,
+            Value::List(_) => 2,
+            Value::Bool(_) => 3,
+            Value::Str(_) => 4,
+            Value::Int(_) | Value::Float(_) => 5,
+            Value::Date(_) => 6,
+            Value::LocalTime(_) => 7,
+            Value::LocalDateTime(_) => 8,
+            Value::DateTime(_) => 9,
+            Value::Duration(_) => 10,
+            Value::Point(_) => 11,
+            Value::Null => 255, // Null sorts LAST (largest) in ascending order
         }
     }
 
