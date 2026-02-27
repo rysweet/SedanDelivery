@@ -25,6 +25,43 @@ export interface SigmaEdgeAttributes {
 const DEFAULT_NODE_SIZE = 10
 const DEFAULT_EDGE_SIZE = 2
 
+/** Build Sigma node attributes from a GraphNode. */
+function buildNodeAttrs(node: GraphNode): SigmaNodeAttributes {
+  const color = getNodeColor(node.labels)
+  return {
+    x: Math.random() * 100 - 50,
+    y: Math.random() * 100 - 50,
+    size: DEFAULT_NODE_SIZE,
+    color,
+    label: getNodeLabel(node),
+    hidden: false,
+    originalColor: color,
+    nodeData: node,
+  }
+}
+
+/** Build Sigma edge attributes from a GraphEdge. */
+function buildEdgeAttrs(edge: GraphEdge): SigmaEdgeAttributes {
+  return {
+    color: '#4a5568',
+    size: DEFAULT_EDGE_SIZE,
+    hidden: false,
+    label: edge.type,
+    edgeData: edge,
+  }
+}
+
+/** Safely add an edge to the graph (skips if already exists or endpoints missing). */
+function addEdgeSafe(graph: Graph, edge: GraphEdge): void {
+  if (graph.hasEdge(edge.id)) return
+  if (!graph.hasNode(edge.source) || !graph.hasNode(edge.target)) return
+  try {
+    graph.addEdgeWithKey(edge.id, edge.source, edge.target, buildEdgeAttrs(edge))
+  } catch {
+    // Guard against race where edge was added between hasEdge check and addEdgeWithKey
+  }
+}
+
 /**
  * Builds a graphology Graph instance from raw API data.
  * Assigns positions using circular layout as initial state.
@@ -37,18 +74,7 @@ export function buildGraphFromApiData(
 
   for (const node of nodes) {
     if (!graph.hasNode(node.id)) {
-      const color = getNodeColor(node.labels)
-      const label = getNodeLabel(node)
-      graph.addNode(node.id, {
-        x: Math.random() * 100,
-        y: Math.random() * 100,
-        size: DEFAULT_NODE_SIZE,
-        color,
-        label,
-        hidden: false,
-        originalColor: color,
-        nodeData: node,
-      } satisfies Omit<SigmaNodeAttributes, 'x' | 'y'> & { x: number; y: number })
+      graph.addNode(node.id, buildNodeAttrs(node))
     }
   }
 
@@ -58,23 +84,7 @@ export function buildGraphFromApiData(
   }
 
   for (const edge of edges) {
-    if (
-      !graph.hasEdge(edge.id) &&
-      graph.hasNode(edge.source) &&
-      graph.hasNode(edge.target)
-    ) {
-      try {
-        graph.addEdgeWithKey(edge.id, edge.source, edge.target, {
-          color: '#4a5568',
-          size: DEFAULT_EDGE_SIZE,
-          hidden: false,
-          label: edge.type,
-          edgeData: edge,
-        } satisfies SigmaEdgeAttributes)
-      } catch {
-        // Skip duplicate edges
-      }
-    }
+    addEdgeSafe(graph, edge)
   }
 
   return graph
@@ -88,44 +98,14 @@ export function mergeGraphData(
   nodes: GraphNode[],
   edges: GraphEdge[],
 ): void {
-  const newNodes: string[] = []
-
   for (const node of nodes) {
     if (!graph.hasNode(node.id)) {
-      const color = getNodeColor(node.labels)
-      const label = getNodeLabel(node)
-      graph.addNode(node.id, {
-        x: Math.random() * 100 - 50,
-        y: Math.random() * 100 - 50,
-        size: DEFAULT_NODE_SIZE,
-        color,
-        label,
-        hidden: false,
-        originalColor: color,
-        nodeData: node,
-      })
-      newNodes.push(node.id)
+      graph.addNode(node.id, buildNodeAttrs(node))
     }
   }
 
   for (const edge of edges) {
-    if (
-      !graph.hasEdge(edge.id) &&
-      graph.hasNode(edge.source) &&
-      graph.hasNode(edge.target)
-    ) {
-      try {
-        graph.addEdgeWithKey(edge.id, edge.source, edge.target, {
-          color: '#4a5568',
-          size: DEFAULT_EDGE_SIZE,
-          hidden: false,
-          label: edge.type,
-          edgeData: edge,
-        })
-      } catch {
-        // Skip duplicate edges
-      }
-    }
+    addEdgeSafe(graph, edge)
   }
 }
 

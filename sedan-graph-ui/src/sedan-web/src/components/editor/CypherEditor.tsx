@@ -3,7 +3,7 @@ import Editor, { type OnMount } from '@monaco-editor/react'
 import type { editor } from 'monaco-editor'
 import { Play, X, AlignLeft, CheckCircle2, AlertCircle } from 'lucide-react'
 import { useGraphStore } from '../../store/graph'
-import { useQuery_, useMutate } from '../../hooks/useGraphData'
+import { useCypherQuery, useMutate } from '../../hooks/useGraphData'
 import { Button } from '../ui/Button'
 import type { QueryResult } from '../../types/graph'
 import type { MutateResponse } from '../../types/api'
@@ -113,7 +113,7 @@ export function CypherEditor() {
   const [execError, setExecError] = useState<string | null>(null)
   const editorRef = useRef<editor.IStandaloneCodeEditor | null>(null)
   const handleExecuteRef = useRef<() => Promise<void>>(() => Promise.resolve())
-  const queryMutation = useQuery_(currentGraph)
+  const queryMutation = useCypherQuery(currentGraph)
   const mutateMutation = useMutate(currentGraph)
 
   const isRunning = queryMutation.isPending || mutateMutation.isPending

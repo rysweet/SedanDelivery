@@ -1,0 +1,77 @@
+scenario:
+  name: "Schema View — Labels, Relationship Types, Counts"
+  description: "Verifies the schema panel displays correct label and relationship type information"
+  type: web
+  tags: [e2e, schema]
+  timeout: 60s
+
+  variables:
+    graph_name: "e2e-schema"
+    api_base: "http://localhost:5000/api"
+
+  steps:
+    - action: api_call
+      method: POST
+      url: "${api_base}/graphs"
+      body: '{"name": "${graph_name}"}'
+
+    - action: api_call
+      method: POST
+      url: "${api_base}/graphs/${graph_name}/mutate"
+      body: '{"cypher": "CREATE (a:Person {name: \"Alice\"})-[:KNOWS]->(b:Person {name: \"Bob\"})-[:WORKS_AT]->(:Company {name: \"Acme\"})"}'
+
+    - action: navigate
+      url: "http://localhost:5173"
+
+    - action: wait_for_element
+      selector: "[aria-label='Select graph']"
+      timeout: 10s
+
+    - action: click
+      selector: "[aria-label='Select graph']"
+
+    - action: click
+      text: "${graph_name}"
+
+    - action: wait_for_element
+      selector: ":has-text('3 nodes')"
+      timeout: 8s
+
+    # Open schema panel
+    - action: click
+      selector: "[aria-label='Schema']"
+      description: "Toggle schema panel"
+
+    - action: wait_for_element
+      selector: ":has-text('Labels')"
+      timeout: 5s
+      description: "Schema panel should show Labels section"
+
+    - action: verify_element
+      selector: ".schema-panel"
+      contains: "Person"
+      description: "Should show Person label"
+
+    - action: verify_element
+      selector: ".schema-panel"
+      contains: "Company"
+      description: "Should show Company label"
+
+    - action: verify_element
+      selector: ".schema-panel"
+      contains: "KNOWS"
+      description: "Should show KNOWS relationship type"
+
+    - action: verify_element
+      selector: ".schema-panel"
+      contains: "WORKS_AT"
+      description: "Should show WORKS_AT relationship type"
+
+    - action: screenshot
+      save_as: "06-schema-view.png"
+
+  cleanup:
+    - action: api_call
+      method: DELETE
+      url: "${api_base}/graphs/${graph_name}"
+      continue_on_failure: true

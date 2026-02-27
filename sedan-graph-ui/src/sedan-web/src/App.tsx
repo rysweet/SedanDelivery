@@ -1,5 +1,4 @@
-import { Component, useCallback, useRef, useState } from 'react'
-import type { ErrorInfo, ReactNode } from 'react'
+import { useCallback, useMemo, useRef, useState } from 'react'
 import Graph from 'graphology'
 import { useGraphStore } from './store/graph'
 import { useDeleteNode, useDeleteEdge } from './hooks/useGraphData'
@@ -10,6 +9,7 @@ import { LegendPanel } from './components/panels/LegendPanel'
 import { InspectorPanel } from './components/panels/InspectorPanel'
 import { SchemaPanel } from './components/panels/SchemaPanel'
 import { GraphContainer } from './components/graph/GraphContainer'
+import { GraphErrorBoundary } from './components/graph/GraphErrorBoundary'
 import { SearchBar } from './components/search/SearchBar'
 import { CypherEditor } from './components/editor/CypherEditor'
 import { CreateNodeDialog } from './components/dialogs/CreateNodeDialog'
@@ -19,53 +19,6 @@ import { ImportDialog } from './components/dialogs/ImportDialog'
 import { Toast } from './components/ui/Toast'
 import type { GraphNode, GraphEdge } from './types/graph'
 import { mergeGraphData, computeLabelCounts } from './utils/graphology'
-
-// Error boundary for graph canvas
-interface ErrorBoundaryState {
-  hasError: boolean
-  error: string | null
-}
-
-class GraphErrorBoundary extends Component<
-  { children: ReactNode },
-  ErrorBoundaryState
-> {
-  constructor(props: { children: ReactNode }) {
-    super(props)
-    this.state = { hasError: false, error: null }
-  }
-
-  static getDerivedStateFromError(error: Error): ErrorBoundaryState {
-    return { hasError: true, error: error.message }
-  }
-
-  componentDidCatch(error: Error, info: ErrorInfo) {
-    // In production, this would go to an error tracking service
-    if (import.meta.env.DEV) {
-      console.error('Graph canvas error:', error, info)
-    }
-  }
-
-  render() {
-    if (this.state.hasError) {
-      return (
-        <div className="flex items-center justify-center h-full text-gray-500">
-          <div className="text-center">
-            <p className="text-base font-medium text-red-400">Graph rendering error</p>
-            <p className="text-sm mt-1">{this.state.error}</p>
-            <button
-              className="mt-3 text-xs text-accent-400 hover:underline"
-              onClick={() => this.setState({ hasError: false, error: null })}
-            >
-              Retry
-            </button>
-          </div>
-        </div>
-      )
-    }
-    return this.props.children
-  }
-}
 
 interface DialogState {
   createNode: boolean
@@ -169,28 +122,28 @@ export default function App() {
       : 0
     : 0
 
-  // Get all nodes/edges for export
-  const getAllNodes = (): GraphNode[] => {
+  // Export data — computed lazily and memoized on graph stats change
+  const exportNodes = useMemo((): GraphNode[] => {
+    if (!dialogs.export) return []
     const nodes: GraphNode[] = []
     graphRef.current.forEachNode((_id, attrs) => {
       nodes.push(attrs.nodeData as GraphNode)
     })
     return nodes
-  }
+  }, [dialogs.export, stats])
 
-  const getAllEdges = (): GraphEdge[] => {
+  const exportEdges = useMemo((): GraphEdge[] => {
+    if (!dialogs.export) return []
     const edges: GraphEdge[] = []
     graphRef.current.forEachEdge((_id, attrs) => {
       edges.push(attrs.edgeData as GraphEdge)
     })
     return edges
-  }
+  }, [dialogs.export, stats])
 
   useKeyboardShortcuts({
     onFitView: handleFitView,
     onDeleteSelected: handleDeleteSelected,
-    onUndo: () => { /* undo coming in v2 */ },
-    onRedo: () => { /* redo coming in v2 */ },
     onEscape: clearSelection,
   })
 
@@ -292,8 +245,8 @@ export default function App() {
       <ExportDialog
         open={dialogs.export}
         onClose={() => closeDialog('export')}
-        nodes={getAllNodes()}
-        edges={getAllEdges()}
+        nodes={exportNodes}
+        edges={exportEdges}
         graphName={currentGraph ?? 'graph'}
       />
 

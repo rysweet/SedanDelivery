@@ -74,11 +74,9 @@ export function AppLayout({
 export function useKeyboardShortcuts(callbacks: {
   onFitView: () => void
   onDeleteSelected: () => void
-  onUndo: () => void
-  onRedo: () => void
   onEscape: () => void
 }) {
-  const { onFitView, onDeleteSelected, onUndo, onRedo, onEscape } = callbacks
+  const { onFitView, onDeleteSelected, onEscape } = callbacks
 
   const handleKeyDown = useCallback(
     (e: KeyboardEvent) => {
@@ -110,19 +108,9 @@ export function useKeyboardShortcuts(callbacks: {
           e.preventDefault()
           onEscape()
           break
-        case 'z':
-          if (e.ctrlKey || e.metaKey) {
-            e.preventDefault()
-            if (e.shiftKey) {
-              onRedo()
-            } else {
-              onUndo()
-            }
-          }
-          break
       }
     },
-    [onFitView, onDeleteSelected, onUndo, onRedo, onEscape],
+    [onFitView, onDeleteSelected, onEscape],
   )
 
   useEffect(() => {

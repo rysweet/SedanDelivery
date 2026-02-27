@@ -1,7 +1,7 @@
 import { useState, useRef, useCallback } from 'react'
 import { Search, X, Loader2 } from 'lucide-react'
 import { useGraphStore } from '../../store/graph'
-import { useQuery_ } from '../../hooks/useGraphData'
+import { useCypherQuery } from '../../hooks/useGraphData'
 import type { GraphNode, GraphEdge, JsonValue } from '../../types/graph'
 
 interface SearchBarProps {
@@ -30,7 +30,7 @@ export function SearchBar({ onResultsFound }: SearchBarProps) {
   const [resultCount, setResultCount] = useState<number | null>(null)
   const inputRef = useRef<HTMLInputElement>(null)
   const currentGraph = useGraphStore((s) => s.currentGraph)
-  const queryMutation = useQuery_(currentGraph)
+  const queryMutation = useCypherQuery(currentGraph)
 
   const handleSearch = useCallback(async () => {
     const term = value.trim()

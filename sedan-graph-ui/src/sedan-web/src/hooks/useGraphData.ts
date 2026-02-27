@@ -178,7 +178,7 @@ export function useDeleteEdge(graphName: string | null) {
   })
 }
 
-export function useQuery_(graphName: string | null) {
+export function useCypherQuery(graphName: string | null) {
   return useMutation({
     mutationFn: (req: QueryRequest) => queryApi.query(graphName!, req),
   })

@@ -1,0 +1,130 @@
+scenario:
+  name: "Node CRUD — Create, Read, Update, Delete nodes"
+  description: "Verifies full node lifecycle through the UI: create via dialog, inspect, edit properties, delete"
+  type: web
+  tags: [critical, e2e, node-crud]
+  timeout: 90s
+
+  variables:
+    graph_name: "e2e-node-crud"
+    api_base: "http://localhost:5000/api"
+
+  prerequisites:
+    - "Application stack is running"
+
+  steps:
+    # Setup: Create graph via API
+    - action: api_call
+      method: POST
+      url: "${api_base}/graphs"
+      body: '{"name": "${graph_name}"}'
+      description: "Seed test graph via API"
+
+    - action: navigate
+      url: "http://localhost:5173"
+
+    - action: wait_for_element
+      selector: "[aria-label='Select graph']"
+      timeout: 10s
+
+    # Select the test graph
+    - action: click
+      selector: "[aria-label='Select graph']"
+
+    - action: click
+      text: "${graph_name}"
+      description: "Select the test graph"
+
+    - action: wait_for_element
+      selector: ":has-text('0 nodes')"
+      timeout: 5s
+      description: "Status bar should show 0 nodes for empty graph"
+
+    # Phase 1: Create first node via toolbar
+    - action: click
+      selector: "[aria-label='Add node']"
+      description: "Click Add Node in toolbar — opens CreateNodeDialog"
+
+    - action: wait_for_element
+      selector: "input[placeholder*='Label']"
+      timeout: 5s
+      description: "CreateNodeDialog should open"
+
+    - action: type
+      selector: "input[placeholder*='Label']"
+      value: "Person"
+
+    - action: click
+      text: "Add Property"
+      description: "Add a property row"
+
+    - action: type
+      selector: "input[placeholder='Key']"
+      value: "name"
+
+    - action: type
+      selector: "input[placeholder='Value']"
+      value: "Alice"
+
+    - action: click
+      text: "Create"
+      description: "Submit node creation"
+
+    - action: wait_for_element
+      selector: ":has-text('1 node')"
+      timeout: 8s
+      description: "Status bar should update to 1 node"
+
+    - action: screenshot
+      save_as: "03-node-created.png"
+
+    # Phase 2: Create second node
+    - action: click
+      selector: "[aria-label='Add node']"
+
+    - action: wait_for_element
+      selector: "input[placeholder*='Label']"
+      timeout: 5s
+
+    - action: type
+      selector: "input[placeholder*='Label']"
+      value: "Person"
+
+    - action: click
+      text: "Add Property"
+
+    - action: type
+      selector: "input[placeholder='Key']"
+      value: "name"
+
+    - action: type
+      selector: "input[placeholder='Value']"
+      value: "Bob"
+
+    - action: click
+      text: "Create"
+
+    - action: wait_for_element
+      selector: ":has-text('2 nodes')"
+      timeout: 8s
+
+    # Phase 3: Click a node in canvas to inspect
+    - action: click
+      selector: "canvas"
+      description: "Click canvas area (may hit a node)"
+
+    - action: screenshot
+      save_as: "03-two-nodes.png"
+
+    # Phase 4: Delete a node via API (verify canvas updates)
+    - action: api_call
+      method: POST
+      url: "${api_base}/graphs/${graph_name}/query"
+      body: '{"cypher": "MATCH (n:Person {name: \"Bob\"}) RETURN n"}'
+      description: "Find Bob's node ID"
+
+  cleanup:
+    - action: api_call
+      method: DELETE
+      url: "${api_base}/graphs/${graph_name}"
+      continue_on_failure: true

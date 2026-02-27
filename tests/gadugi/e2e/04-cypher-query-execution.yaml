@@ -1,0 +1,124 @@
+scenario:
+  name: "Cypher Query Execution — Editor, Results, Mutations"
+  description: "Verifies the Monaco Cypher editor opens, executes queries, displays results, and handles mutations"
+  type: web
+  tags: [critical, e2e, cypher]
+  timeout: 90s
+
+  variables:
+    graph_name: "e2e-cypher"
+    api_base: "http://localhost:5000/api"
+
+  prerequisites:
+    - "Application stack is running"
+
+  steps:
+    # Setup: Create graph and seed data via API
+    - action: api_call
+      method: POST
+      url: "${api_base}/graphs"
+      body: '{"name": "${graph_name}"}'
+
+    - action: api_call
+      method: POST
+      url: "${api_base}/graphs/${graph_name}/mutate"
+      body: '{"cypher": "CREATE (a:Person {name: \"Alice\", age: 30}), (b:Person {name: \"Bob\", age: 25}), (a)-[:KNOWS {since: 2020}]->(b)"}'
+
+    - action: navigate
+      url: "http://localhost:5173"
+
+    - action: wait_for_element
+      selector: "[aria-label='Select graph']"
+      timeout: 10s
+
+    - action: click
+      selector: "[aria-label='Select graph']"
+
+    - action: click
+      text: "${graph_name}"
+
+    - action: wait_for_element
+      selector: ":has-text('2 nodes')"
+      timeout: 8s
+
+    # Phase 1: Open Cypher Editor
+    - action: click
+      selector: "[aria-label='Query editor']"
+      description: "Toggle Cypher editor panel"
+
+    - action: wait_for_element
+      selector: ".monaco-editor"
+      timeout: 5s
+      description: "Monaco editor should appear"
+
+    - action: screenshot
+      save_as: "04-editor-open.png"
+
+    # Phase 2: Execute a MATCH query
+    - action: click
+      selector: ".monaco-editor textarea"
+      description: "Focus the editor"
+
+    - action: type
+      selector: ".monaco-editor textarea"
+      value: "MATCH (n:Person) RETURN n.name, n.age ORDER BY n.name"
+      delay: 50
+      description: "Type a Cypher query"
+
+    - action: click
+      text: "Execute"
+      description: "Click Execute button"
+
+    - action: wait_for_element
+      selector: "table"
+      timeout: 10s
+      description: "Results table should appear"
+
+    - action: verify_element
+      selector: "table"
+      contains: "Alice"
+      description: "Results should contain Alice"
+
+    - action: verify_element
+      selector: "table"
+      contains: "Bob"
+      description: "Results should contain Bob"
+
+    - action: screenshot
+      save_as: "04-query-results.png"
+
+    # Phase 3: Execute a CREATE mutation
+    - action: click
+      selector: ".monaco-editor textarea"
+
+    # Clear editor (select all + type over)
+    - action: send_keypress
+      value: "ctrl+a"
+
+    - action: type
+      selector: ".monaco-editor textarea"
+      value: "CREATE (c:Company {name: \"Acme Corp\"})"
+      delay: 50
+
+    - action: click
+      text: "Execute"
+
+    - action: wait_for_element
+      selector: ":has-text('nodesCreated')"
+      timeout: 10s
+      description: "Mutation stats should show nodesCreated"
+
+    - action: screenshot
+      save_as: "04-mutation-result.png"
+
+    # Phase 4: Verify status bar updated
+    - action: wait_for_element
+      selector: ":has-text('3 nodes')"
+      timeout: 8s
+      description: "Status bar should update to 3 nodes after mutation"
+
+  cleanup:
+    - action: api_call
+      method: DELETE
+      url: "${api_base}/graphs/${graph_name}"
+      continue_on_failure: true
