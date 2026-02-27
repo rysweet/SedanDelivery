@@ -37,7 +37,9 @@ pub fn json_to_value(v: serde_json::Value) -> Result<Value, ApiError> {
             } else if let Some(f) = n.as_f64() {
                 Ok(Value::Float(f))
             } else {
-                Err(ApiError::bad_request(format!("numeric value '{n}' out of range")))
+                Err(ApiError::bad_request(format!(
+                    "numeric value '{n}' out of range"
+                )))
             }
         }
         serde_json::Value::String(s) => Ok(Value::Str(s.into_boxed_str())),

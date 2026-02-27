@@ -41,7 +41,12 @@ impl<'src> Parser<'src> {
     /// The token stream must end with a [`TokenKind::Eof`] sentinel.
     pub fn new(tokens: Vec<Token<'src>>) -> Self {
         let max_depth = crate::config::global().parser_max_depth;
-        Self { tokens, pos: 0, depth: 0, max_depth }
+        Self {
+            tokens,
+            pos: 0,
+            depth: 0,
+            max_depth,
+        }
     }
 
     // ── Cursor helpers ────────────────────────────────────────────────────────
@@ -219,7 +224,10 @@ fn is_keyword_usable_as_property(kind: &TokenKind) -> bool {
 pub fn parse_query(src: &str) -> Result<Query, ParseError> {
     let max_query_size = crate::config::global().max_query_size;
     if src.len() > max_query_size {
-        return Err(ParseError::QueryTooLarge { size: src.len(), limit: max_query_size });
+        return Err(ParseError::QueryTooLarge {
+            size: src.len(),
+            limit: max_query_size,
+        });
     }
     if src.trim().is_empty() {
         return Err(ParseError::EmptyQuery);
@@ -970,24 +978,30 @@ impl<'src> Parser<'src> {
 
         let min = if let TokenKind::IntLiteral(n) = self.peek().clone() {
             self.advance();
-            Some(u32::try_from(n).map_err(|_| self.syntax_err("non-negative integer for range quantifier"))?)
+            Some(
+                u32::try_from(n)
+                    .map_err(|_| self.syntax_err("non-negative integer for range quantifier"))?,
+            )
         } else {
             None
         };
 
-        let max = if self.eat(&TokenKind::DoubleDot) {
-            if let TokenKind::IntLiteral(n) = self.peek().clone() {
-                self.advance();
-                Some(u32::try_from(n).map_err(|_| self.syntax_err("non-negative integer for range quantifier"))?)
+        let max =
+            if self.eat(&TokenKind::DoubleDot) {
+                if let TokenKind::IntLiteral(n) = self.peek().clone() {
+                    self.advance();
+                    Some(u32::try_from(n).map_err(|_| {
+                        self.syntax_err("non-negative integer for range quantifier")
+                    })?)
+                } else {
+                    None
+                }
+            } else if min.is_some() {
+                // `*3` without `..` means exactly 3 hops.
+                min
             } else {
                 None
-            }
-        } else if min.is_some() {
-            // `*3` without `..` means exactly 3 hops.
-            min
-        } else {
-            None
-        };
+            };
 
         // If we had `*3` (no DoubleDot), min==max==Some(3).
         // If we had `*3..` with DoubleDot consumed, min=Some(3), max=None already.
@@ -1046,7 +1060,9 @@ impl<'src> Parser<'src> {
         self.depth += 1;
         if self.depth > self.max_depth {
             self.depth -= 1;
-            return Err(ParseError::RecursionLimitExceeded { limit: self.max_depth });
+            return Err(ParseError::RecursionLimitExceeded {
+                limit: self.max_depth,
+            });
         }
         let result = self.parse_or();
         self.depth -= 1;
@@ -1099,7 +1115,9 @@ impl<'src> Parser<'src> {
         self.depth += 1;
         if self.depth > self.max_depth {
             self.depth -= 1;
-            return Err(ParseError::RecursionLimitExceeded { limit: self.max_depth });
+            return Err(ParseError::RecursionLimitExceeded {
+                limit: self.max_depth,
+            });
         }
         let result = if self.eat(&TokenKind::Not) {
             let expr = self.parse_not()?;
@@ -1338,7 +1356,9 @@ impl<'src> Parser<'src> {
         self.depth += 1;
         if self.depth > self.max_depth {
             self.depth -= 1;
-            return Err(ParseError::RecursionLimitExceeded { limit: self.max_depth });
+            return Err(ParseError::RecursionLimitExceeded {
+                limit: self.max_depth,
+            });
         }
         let result = if self.eat(&TokenKind::Dash) {
             // Special case: -9223372036854775808 = i64::MIN (the only valid use of
@@ -1730,8 +1750,8 @@ impl<'src> Parser<'src> {
                 ) {
                     return Err(ParseError::Syntax {
                         offset: self.tokens[self.pos].offset,
-                        expected:
-                            "write clause not allowed inside existential subquery".to_string(),
+                        expected: "write clause not allowed inside existential subquery"
+                            .to_string(),
                         found: String::new(),
                     });
                 }
@@ -1750,7 +1770,10 @@ impl<'src> Parser<'src> {
                 };
                 let mut inner_clauses = vec![Clause::Match(mc)];
                 inner_clauses.extend(additional_clauses);
-                Some(Box::new(Query { clauses: inner_clauses, unions: Vec::new() }))
+                Some(Box::new(Query {
+                    clauses: inner_clauses,
+                    unions: Vec::new(),
+                }))
             };
             return Ok(Expr::ExistsSubquery {
                 patterns,
@@ -1819,10 +1842,7 @@ impl<'src> Parser<'src> {
             let first_inner = &self.tokens[first_inside].kind;
             let is_pattern_start = matches!(
                 first_inner,
-                TokenKind::Identifier
-                    | TokenKind::Colon
-                    | TokenKind::LBrace
-                    | TokenKind::RParen
+                TokenKind::Identifier | TokenKind::Colon | TokenKind::LBrace | TokenKind::RParen
             ) || is_keyword_usable_as_ident(first_inner);
             if !is_pattern_start {
                 return false;

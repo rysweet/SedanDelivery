@@ -586,12 +586,11 @@ impl<'s> QueryPlanner<'s> {
                 // Inline property constraints on a variable-length relationship
                 // must be checked for every edge in the path during BFS traversal.
                 // We pass them as `rel_props` using the sentinel alias `__varlen_edge__`.
-                let rel_props_expr = rel.properties.as_ref().filter(|p| !p.is_empty()).map(|props| {
-                    props_to_filter_expr(
-                        &Identifier::new("__varlen_edge__"),
-                        props,
-                    )
-                });
+                let rel_props_expr = rel
+                    .properties
+                    .as_ref()
+                    .filter(|p| !p.is_empty())
+                    .map(|props| props_to_filter_expr(&Identifier::new("__varlen_edge__"), props));
                 op = Operator::VarLenExpand {
                     direction: rel.direction,
                     rel_types: rel.rel_types.clone(),
@@ -611,9 +610,11 @@ impl<'s> QueryPlanner<'s> {
                 // patterns (openCypher spec: each relationship can only be bound
                 // once per path traversal). For named paths and inline properties
                 // we also need the alias for path assembly / filtering.
-                let rel_alias = Some(rel.variable.clone().unwrap_or_else(|| {
-                    Identifier::new(format!("__anon_rel_{}__", step_idx))
-                }));
+                let rel_alias = Some(
+                    rel.variable
+                        .clone()
+                        .unwrap_or_else(|| Identifier::new(format!("__anon_rel_{}__", step_idx))),
+                );
                 if has_path_var {
                     if let Some(ref ra) = rel_alias {
                         path_edge_aliases.push(ra.clone());
@@ -636,9 +637,10 @@ impl<'s> QueryPlanner<'s> {
             if let Some(props) = &rel.properties {
                 if !props.is_empty() && rel.range.is_none() {
                     // rel_alias is guaranteed to exist because we always assign one above.
-                    let filter_alias = rel.variable.clone().unwrap_or_else(|| {
-                        Identifier::new(format!("__anon_rel_{}__", step_idx))
-                    });
+                    let filter_alias = rel
+                        .variable
+                        .clone()
+                        .unwrap_or_else(|| Identifier::new(format!("__anon_rel_{}__", step_idx)));
                     let pred = props_to_filter_expr(&filter_alias, props);
                     op = Operator::Filter {
                         predicate: pred,
@@ -891,7 +893,9 @@ impl<'s> QueryPlanner<'s> {
             }
             let needs_augment_for_sort = projected_items.iter().any(|(_, alias)| {
                 if let Some(a) = alias {
-                    wc.order_by.iter().any(|s| with_expr_refs_alias(&s.expr, a.0.as_str()))
+                    wc.order_by
+                        .iter()
+                        .any(|s| with_expr_refs_alias(&s.expr, a.0.as_str()))
                 } else {
                     false
                 }
@@ -1121,10 +1125,7 @@ impl<'s> QueryPlanner<'s> {
                             .alias
                             .clone()
                             .unwrap_or_else(|| Identifier::new(name.clone()));
-                        items_out.push((
-                            Expr::Variable(agg_alias.clone()),
-                            item.alias.clone(),
-                        ));
+                        items_out.push((Expr::Variable(agg_alias.clone()), item.alias.clone()));
                     } else {
                         let gen_name = expr_to_col_name(&item.expr);
                         items_out.push((
@@ -1215,11 +1216,7 @@ impl<'s> QueryPlanner<'s> {
             .start
             .properties
             .as_ref()
-            .map(|p| {
-                p.iter()
-                    .map(|(k, v)| (k.to_string(), v.clone()))
-                    .collect()
-            })
+            .map(|p| p.iter().map(|(k, v)| (k.to_string(), v.clone())).collect())
             .unwrap_or_default();
 
         let on_create: Vec<SetItem> = mc.on_create.iter().map(map_set_clause_item).collect();
@@ -1276,9 +1273,12 @@ impl<'s> QueryPlanner<'s> {
         // When a path variable exists on the MERGE pattern, ensure we capture the
         // edge ID by assigning a synthetic alias if none was specified by the user.
         let rel_alias = if mc.pattern.variable.is_some() {
-            Some(step.rel.variable.clone().unwrap_or_else(|| {
-                Identifier::new("__merge_rel__")
-            }))
+            Some(
+                step.rel
+                    .variable
+                    .clone()
+                    .unwrap_or_else(|| Identifier::new("__merge_rel__")),
+            )
         } else {
             step.rel.variable.clone()
         };
@@ -1369,7 +1369,8 @@ impl<'s> QueryPlanner<'s> {
                         Expr::Variable(v) => v.0.as_str() == alias,
                         Expr::Property(obj, _) => expr_references_alias(obj, alias),
                         Expr::BinaryOp { left, right, .. } => {
-                            expr_references_alias(left, alias) || expr_references_alias(right, alias)
+                            expr_references_alias(left, alias)
+                                || expr_references_alias(right, alias)
                         }
                         Expr::UnaryOp { expr: inner, .. } => expr_references_alias(inner, alias),
                         Expr::FunctionCall { args, .. } => {
@@ -1401,26 +1402,32 @@ impl<'s> QueryPlanner<'s> {
                         .map(|a| (Expr::Variable(Identifier::new(a.clone())), None))
                         .collect();
                     // Map from alias name → temp name (when shadowing occurs).
-                    let mut alias_remap: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+                    let mut alias_remap: std::collections::HashMap<String, String> =
+                        std::collections::HashMap::new();
                     for item in &items {
                         if let Some(alias) = &item.alias {
                             if alias.0 != expr_to_col_name(&item.expr) {
-                                let use_alias = if child_aliases.iter().any(|a| a.as_str() == alias.0.as_str()) {
-                                    // Alias shadows an existing variable: use a temp name.
-                                    let temp = format!("__presort_{}__", alias.0);
-                                    alias_remap.insert(alias.0.to_string(), temp.clone());
-                                    Identifier::new(temp)
-                                } else {
-                                    alias.clone()
-                                };
+                                let use_alias =
+                                    if child_aliases.iter().any(|a| a.as_str() == alias.0.as_str())
+                                    {
+                                        // Alias shadows an existing variable: use a temp name.
+                                        let temp = format!("__presort_{}__", alias.0);
+                                        alias_remap.insert(alias.0.to_string(), temp.clone());
+                                        Identifier::new(temp)
+                                    } else {
+                                        alias.clone()
+                                    };
                                 aug_items.push((item.expr.clone(), Some(use_alias)));
                             }
                         }
                     }
-                    (Operator::Project {
-                        items: aug_items,
-                        child: Box::new(pipeline),
-                    }, alias_remap)
+                    (
+                        Operator::Project {
+                            items: aug_items,
+                            child: Box::new(pipeline),
+                        },
+                        alias_remap,
+                    )
                 } else {
                     (pipeline, std::collections::HashMap::new())
                 }
@@ -1428,8 +1435,13 @@ impl<'s> QueryPlanner<'s> {
                 (pipeline, std::collections::HashMap::new())
             };
             // Rewrite ORDER BY expressions to use temp names when aliases were remapped.
-            fn rewrite_alias_refs(expr: Expr, remap: &std::collections::HashMap<String, String>) -> Expr {
-                if remap.is_empty() { return expr; }
+            fn rewrite_alias_refs(
+                expr: Expr,
+                remap: &std::collections::HashMap<String, String>,
+            ) -> Expr {
+                if remap.is_empty() {
+                    return expr;
+                }
                 match expr {
                     Expr::Variable(v) => {
                         if let Some(temp) = remap.get(v.0.as_str()) {
@@ -1447,9 +1459,16 @@ impl<'s> QueryPlanner<'s> {
                         op,
                         expr: Box::new(rewrite_alias_refs(*inner, remap)),
                     },
-                    Expr::FunctionCall { name, args, distinct } => Expr::FunctionCall {
+                    Expr::FunctionCall {
                         name,
-                        args: args.into_iter().map(|a| rewrite_alias_refs(a, remap)).collect(),
+                        args,
+                        distinct,
+                    } => Expr::FunctionCall {
+                        name,
+                        args: args
+                            .into_iter()
+                            .map(|a| rewrite_alias_refs(a, remap))
+                            .collect(),
                         distinct,
                     },
                     other => other,
@@ -1463,7 +1482,10 @@ impl<'s> QueryPlanner<'s> {
                     if has_aggregation {
                         (rewrite_agg_order_expr(&s.expr, &items), s.ascending)
                     } else {
-                        (rewrite_alias_refs(s.expr.clone(), &alias_remap_final), s.ascending)
+                        (
+                            rewrite_alias_refs(s.expr.clone(), &alias_remap_final),
+                            s.ascending,
+                        )
                     }
                 })
                 .collect();
@@ -1565,7 +1587,13 @@ impl<'s> QueryPlanner<'s> {
                         if let Some((func, arg, second_arg, distinct)) =
                             find_inner_aggregate(&rewritten)
                         {
-                            aggregations.push((func, arg, second_arg, distinct, temp_alias.clone()));
+                            aggregations.push((
+                                func,
+                                arg,
+                                second_arg,
+                                distinct,
+                                temp_alias.clone(),
+                            ));
                             rewritten = rewrite_agg_to_var(&rewritten, &temp_alias);
                         } else {
                             break;
@@ -1589,8 +1617,7 @@ impl<'s> QueryPlanner<'s> {
                 keys.push(item.expr.clone());
                 if gen_name != alias.0 {
                     needs_post_project = true;
-                    post_projections
-                        .push((Expr::Variable(Identifier::new(gen_name)), Some(alias)));
+                    post_projections.push((Expr::Variable(Identifier::new(gen_name)), Some(alias)));
                 } else {
                     post_projections.push((Expr::Variable(alias), None));
                 }
@@ -1623,9 +1650,9 @@ impl<'s> QueryPlanner<'s> {
 /// Non-star items are returned unchanged.  Handles both pure `RETURN *`
 /// and mixed forms like `RETURN *, n.name AS extra`.
 fn expand_star_items(items: &[ReturnItem], child: &Operator) -> Vec<ReturnItem> {
-    let has_star = items
-        .iter()
-        .any(|item| matches!(&item.expr, Expr::Variable(id) if id.0 == "*") && item.alias.is_none());
+    let has_star = items.iter().any(|item| {
+        matches!(&item.expr, Expr::Variable(id) if id.0 == "*") && item.alias.is_none()
+    });
 
     if !has_star {
         return items.to_vec();
@@ -1682,7 +1709,11 @@ fn rewrite_with_order_expr(expr: &Expr, with_items: &[ReturnItem]) -> Expr {
                 right: Box::new(new_right),
             }
         }
-        Expr::FunctionCall { name, args: _, distinct: _ } => {
+        Expr::FunctionCall {
+            name,
+            args: _,
+            distinct: _,
+        } => {
             if is_agg_name(name.as_str()) {
                 // Map aggregate functions to their output aliases.
                 for ri in with_items {
@@ -1927,7 +1958,11 @@ fn rewrite_agg_to_var(expr: &Expr, alias: &Identifier) -> Expr {
             // This IS the aggregate: replace the whole call with a variable.
             Expr::Variable(alias.clone())
         }
-        Expr::FunctionCall { name, args, distinct } => {
+        Expr::FunctionCall {
+            name,
+            args,
+            distinct,
+        } => {
             // Non-aggregate function: rewrite inside args if any contain an aggregate.
             if args.iter().any(has_agg_function) {
                 let new_args = args
@@ -2202,6 +2237,50 @@ fn expr_to_col_name_quoted(expr: &Expr) -> String {
     }
 }
 
+// ── Static defaults for backward compatibility ──────────────────────────────
+
+static EMPTY_REGISTRY: std::sync::OnceLock<ProcedureRegistry> = std::sync::OnceLock::new();
+static EMPTY_PARAMS: std::sync::OnceLock<HashMap<String, Value>> = std::sync::OnceLock::new();
+
+fn empty_registry() -> &'static ProcedureRegistry {
+    EMPTY_REGISTRY.get_or_init(ProcedureRegistry::new)
+}
+
+fn empty_params() -> &'static HashMap<String, Value> {
+    EMPTY_PARAMS.get_or_init(HashMap::new)
+}
+
+// ── Helper functions ─────────────────────────────────────────────────────────
+
+/// Convert a literal expression to a Value for type checking.
+fn expr_to_literal_value(expr: &Expr) -> Option<Value> {
+    match expr {
+        Expr::Integer(n) => Some(Value::Int(*n)),
+        Expr::Float(f) => Some(Value::Float(*f)),
+        Expr::Str(s) => Some(Value::Str(s.clone())),
+        Expr::Bool(b) => Some(Value::Bool(*b)),
+        Expr::Null => Some(Value::Null),
+        _ => None, // Non-literal expressions can't be type-checked at plan time
+    }
+}
+
+/// Check if an expression contains an aggregation function.
+fn contains_aggregation(expr: &Expr) -> bool {
+    match expr {
+        Expr::FunctionCall { name, args, .. } => {
+            if super::is_aggregate_function(name.as_str()) {
+                return true;
+            }
+            args.iter().any(contains_aggregation)
+        }
+        Expr::BinaryOp { left, right, .. } => {
+            contains_aggregation(left) || contains_aggregation(right)
+        }
+        Expr::UnaryOp { expr: inner, .. } => contains_aggregation(inner),
+        _ => false,
+    }
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -2221,7 +2300,8 @@ mod tests {
     }
 
     fn make_simple_match_query(label: &str, alias: &str) -> Query {
-        Query { unions: Vec::new(),
+        Query {
+            unions: Vec::new(),
             clauses: vec![
                 Clause::Match(MatchClause {
                     patterns: vec![PathPattern {
@@ -2281,7 +2361,8 @@ mod tests {
     fn plan_match_with_where() {
         let store = make_store();
         let planner = QueryPlanner::new(&store, "g");
-        let query = Query { unions: Vec::new(),
+        let query = Query {
+            unions: Vec::new(),
             clauses: vec![
                 Clause::Match(MatchClause {
                     patterns: vec![PathPattern {
@@ -2324,7 +2405,8 @@ mod tests {
     fn plan_return_with_limit_skip() {
         let store = make_store();
         let planner = QueryPlanner::new(&store, "g");
-        let query = Query { unions: Vec::new(),
+        let query = Query {
+            unions: Vec::new(),
             clauses: vec![
                 Clause::Match(MatchClause {
                     patterns: vec![PathPattern {
@@ -2360,7 +2442,8 @@ mod tests {
     fn plan_return_with_order_by() {
         let store = make_store();
         let planner = QueryPlanner::new(&store, "g");
-        let query = Query { unions: Vec::new(),
+        let query = Query {
+            unions: Vec::new(),
             clauses: vec![
                 Clause::Match(MatchClause {
                     patterns: vec![PathPattern {
@@ -2404,7 +2487,8 @@ mod tests {
         // MATCH (n:Person) DELETE n
         let store = make_store();
         let planner = QueryPlanner::new(&store, "g");
-        let query = Query { unions: Vec::new(),
+        let query = Query {
+            unions: Vec::new(),
             clauses: vec![
                 make_match_clause("Person", "n"),
                 Clause::Delete(DeleteClause {
@@ -2422,7 +2506,8 @@ mod tests {
         // MATCH (n:Person) DETACH DELETE n
         let store = make_store();
         let planner = QueryPlanner::new(&store, "g");
-        let query = Query { unions: Vec::new(),
+        let query = Query {
+            unions: Vec::new(),
             clauses: vec![
                 make_match_clause("Person", "n"),
                 Clause::Delete(DeleteClause {
@@ -2441,7 +2526,8 @@ mod tests {
     fn plan_delete_without_match_is_error() {
         let store = make_store();
         let planner = QueryPlanner::new(&store, "g");
-        let query = Query { unions: Vec::new(),
+        let query = Query {
+            unions: Vec::new(),
             clauses: vec![Clause::Delete(DeleteClause {
                 exprs: vec![Expr::Variable(Identifier::new("n"))],
                 detach: false,
@@ -2457,7 +2543,8 @@ mod tests {
         // MATCH (n:Person) WITH n RETURN n
         let store = make_store();
         let planner = QueryPlanner::new(&store, "g");
-        let query = Query { unions: Vec::new(),
+        let query = Query {
+            unions: Vec::new(),
             clauses: vec![
                 make_match_clause("Person", "n"),
                 Clause::With(WithClause {
@@ -2493,7 +2580,8 @@ mod tests {
         // MATCH (n:Person) WITH n WHERE n.age > 25 RETURN n
         let store = make_store();
         let planner = QueryPlanner::new(&store, "g");
-        let query = Query { unions: Vec::new(),
+        let query = Query {
+            unions: Vec::new(),
             clauses: vec![
                 make_match_clause("Person", "n"),
                 Clause::With(WithClause {
@@ -2536,7 +2624,8 @@ mod tests {
         // MATCH (n:Person) WITH n.city AS city, count(n) AS cnt RETURN city, cnt
         let store = make_store();
         let planner = QueryPlanner::new(&store, "g");
-        let query = Query { unions: Vec::new(),
+        let query = Query {
+            unions: Vec::new(),
             clauses: vec![
                 make_match_clause("Person", "n"),
                 Clause::With(WithClause {
@@ -2590,7 +2679,8 @@ mod tests {
         // MATCH (n:Person) WITH n ORDER BY n.name SKIP 1 LIMIT 5 RETURN n
         let store = make_store();
         let planner = QueryPlanner::new(&store, "g");
-        let query = Query { unions: Vec::new(),
+        let query = Query {
+            unions: Vec::new(),
             clauses: vec![
                 make_match_clause("Person", "n"),
                 Clause::With(WithClause {
@@ -2633,7 +2723,8 @@ mod tests {
         // MATCH (n:Person) WITH DISTINCT n.city AS city RETURN city
         let store = make_store();
         let planner = QueryPlanner::new(&store, "g");
-        let query = Query { unions: Vec::new(),
+        let query = Query {
+            unions: Vec::new(),
             clauses: vec![
                 make_match_clause("Person", "n"),
                 Clause::With(WithClause {
@@ -2673,7 +2764,8 @@ mod tests {
         // UNWIND [1, 2, 3] AS x RETURN x
         let store = make_store();
         let planner = QueryPlanner::new(&store, "g");
-        let query = Query { unions: Vec::new(),
+        let query = Query {
+            unions: Vec::new(),
             clauses: vec![
                 Clause::Unwind(UnwindClause {
                     expr: Expr::List(vec![Expr::Integer(1), Expr::Integer(2), Expr::Integer(3)]),
@@ -2700,7 +2792,8 @@ mod tests {
         // MATCH (n:Person) UNWIND n.hobbies AS h RETURN n, h
         let store = make_store();
         let planner = QueryPlanner::new(&store, "g");
-        let query = Query { unions: Vec::new(),
+        let query = Query {
+            unions: Vec::new(),
             clauses: vec![
                 make_match_clause("Person", "n"),
                 Clause::Unwind(UnwindClause {
@@ -2740,7 +2833,8 @@ mod tests {
         // MATCH (n:Person) SET n.age = 30
         let store = make_store();
         let planner = QueryPlanner::new(&store, "g");
-        let query = Query { unions: Vec::new(),
+        let query = Query {
+            unions: Vec::new(),
             clauses: vec![
                 make_match_clause("Person", "n"),
                 Clause::Set(SetClause {
@@ -2761,7 +2855,8 @@ mod tests {
         // MATCH (n:Person) SET n:Admin:Active
         let store = make_store();
         let planner = QueryPlanner::new(&store, "g");
-        let query = Query { unions: Vec::new(),
+        let query = Query {
+            unions: Vec::new(),
             clauses: vec![
                 make_match_clause("Person", "n"),
                 Clause::Set(SetClause {
@@ -2781,7 +2876,8 @@ mod tests {
         // MATCH (n:Person) SET n += {age: 30, city: 'NY'}
         let store = make_store();
         let planner = QueryPlanner::new(&store, "g");
-        let query = Query { unions: Vec::new(),
+        let query = Query {
+            unions: Vec::new(),
             clauses: vec![
                 make_match_clause("Person", "n"),
                 Clause::Set(SetClause {
@@ -2804,7 +2900,8 @@ mod tests {
     fn plan_set_without_match_is_error() {
         let store = make_store();
         let planner = QueryPlanner::new(&store, "g");
-        let query = Query { unions: Vec::new(),
+        let query = Query {
+            unions: Vec::new(),
             clauses: vec![Clause::Set(SetClause {
                 items: vec![SetClauseItem::SetProperty {
                     alias: Identifier::new("n"),
@@ -2823,7 +2920,8 @@ mod tests {
         // MATCH (n:Person) REMOVE n.age
         let store = make_store();
         let planner = QueryPlanner::new(&store, "g");
-        let query = Query { unions: Vec::new(),
+        let query = Query {
+            unions: Vec::new(),
             clauses: vec![
                 make_match_clause("Person", "n"),
                 Clause::Remove(RemoveClause {
@@ -2843,7 +2941,8 @@ mod tests {
         // MATCH (n:Person) REMOVE n:Admin
         let store = make_store();
         let planner = QueryPlanner::new(&store, "g");
-        let query = Query { unions: Vec::new(),
+        let query = Query {
+            unions: Vec::new(),
             clauses: vec![
                 make_match_clause("Person", "n"),
                 Clause::Remove(RemoveClause {
@@ -2862,7 +2961,8 @@ mod tests {
     fn plan_remove_without_match_is_error() {
         let store = make_store();
         let planner = QueryPlanner::new(&store, "g");
-        let query = Query { unions: Vec::new(),
+        let query = Query {
+            unions: Vec::new(),
             clauses: vec![Clause::Remove(RemoveClause {
                 items: vec![RemoveClauseItem::RemoveProperty {
                     alias: Identifier::new("n"),
@@ -2880,7 +2980,8 @@ mod tests {
         // MERGE (n:Person)
         let store = make_store();
         let planner = QueryPlanner::new(&store, "g");
-        let query = Query { unions: Vec::new(),
+        let query = Query {
+            unions: Vec::new(),
             clauses: vec![Clause::Merge(MergeClause {
                 pattern: PathPattern {
                     variable: None,
@@ -2907,7 +3008,8 @@ mod tests {
         //   ON MATCH SET n.accessed = true
         let store = make_store();
         let planner = QueryPlanner::new(&store, "g");
-        let query = Query { unions: Vec::new(),
+        let query = Query {
+            unions: Vec::new(),
             clauses: vec![Clause::Merge(MergeClause {
                 pattern: PathPattern {
                     variable: None,
@@ -2942,7 +3044,8 @@ mod tests {
         // MATCH (a:Person) MERGE (n:City)
         let store = make_store();
         let planner = QueryPlanner::new(&store, "g");
-        let query = Query { unions: Vec::new(),
+        let query = Query {
+            unions: Vec::new(),
             clauses: vec![
                 make_match_clause("Person", "a"),
                 Clause::Merge(MergeClause {
@@ -2972,7 +3075,8 @@ mod tests {
         // MATCH (n:Person) OPTIONAL MATCH (n)-[:KNOWS]->(m) RETURN n, m
         let store = make_store();
         let planner = QueryPlanner::new(&store, "g");
-        let query = Query { unions: Vec::new(),
+        let query = Query {
+            unions: Vec::new(),
             clauses: vec![
                 make_match_clause("Person", "n"),
                 Clause::OptionalMatch(MatchClause {
@@ -3030,7 +3134,8 @@ mod tests {
         // OPTIONAL MATCH (n:Person) RETURN n
         let store = make_store();
         let planner = QueryPlanner::new(&store, "g");
-        let query = Query { unions: Vec::new(),
+        let query = Query {
+            unions: Vec::new(),
             clauses: vec![
                 Clause::OptionalMatch(MatchClause {
                     patterns: vec![PathPattern {
@@ -3069,7 +3174,8 @@ mod tests {
         // MATCH (a:Person), (b:Movie) RETURN a, b
         let store = make_store();
         let planner = QueryPlanner::new(&store, "g");
-        let query = Query { unions: Vec::new(),
+        let query = Query {
+            unions: Vec::new(),
             clauses: vec![
                 Clause::Match(MatchClause {
                     patterns: vec![
@@ -3124,7 +3230,8 @@ mod tests {
         // MATCH (a:Person), (b:Movie) WHERE a.name = 'Alice' RETURN a, b
         let store = make_store();
         let planner = QueryPlanner::new(&store, "g");
-        let query = Query { unions: Vec::new(),
+        let query = Query {
+            unions: Vec::new(),
             clauses: vec![
                 Clause::Match(MatchClause {
                     patterns: vec![
@@ -3192,7 +3299,8 @@ mod tests {
 
         let planner = QueryPlanner::new(&store, "g");
         // MATCH (n:Person {name: 'Alice'}) RETURN n
-        let query = Query { unions: Vec::new(),
+        let query = Query {
+            unions: Vec::new(),
             clauses: vec![
                 Clause::Match(MatchClause {
                     patterns: vec![PathPattern {
@@ -3234,7 +3342,8 @@ mod tests {
         // No index created -- must fall back to NodeScan + Filter.
         let store = make_store(); // no indexes
         let planner = QueryPlanner::new(&store, "g");
-        let query = Query { unions: Vec::new(),
+        let query = Query {
+            unions: Vec::new(),
             clauses: vec![
                 Clause::Match(MatchClause {
                     patterns: vec![PathPattern {
@@ -3452,49 +3561,5 @@ mod tests {
             },
             Operator::MergeRelationship { child, .. } => vec![child],
         }
-    }
-}
-
-// ── Static defaults for backward compatibility ──────────────────────────────
-
-static EMPTY_REGISTRY: std::sync::OnceLock<ProcedureRegistry> = std::sync::OnceLock::new();
-static EMPTY_PARAMS: std::sync::OnceLock<HashMap<String, Value>> = std::sync::OnceLock::new();
-
-fn empty_registry() -> &'static ProcedureRegistry {
-    EMPTY_REGISTRY.get_or_init(ProcedureRegistry::new)
-}
-
-fn empty_params() -> &'static HashMap<String, Value> {
-    EMPTY_PARAMS.get_or_init(HashMap::new)
-}
-
-// ── Helper functions ─────────────────────────────────────────────────────────
-
-/// Convert a literal expression to a Value for type checking.
-fn expr_to_literal_value(expr: &Expr) -> Option<Value> {
-    match expr {
-        Expr::Integer(n) => Some(Value::Int(*n)),
-        Expr::Float(f) => Some(Value::Float(*f)),
-        Expr::Str(s) => Some(Value::Str(s.clone())),
-        Expr::Bool(b) => Some(Value::Bool(*b)),
-        Expr::Null => Some(Value::Null),
-        _ => None, // Non-literal expressions can't be type-checked at plan time
-    }
-}
-
-/// Check if an expression contains an aggregation function.
-fn contains_aggregation(expr: &Expr) -> bool {
-    match expr {
-        Expr::FunctionCall { name, args, .. } => {
-            if super::is_aggregate_function(name.as_str()) {
-                return true;
-            }
-            args.iter().any(contains_aggregation)
-        }
-        Expr::BinaryOp { left, right, .. } => {
-            contains_aggregation(left) || contains_aggregation(right)
-        }
-        Expr::UnaryOp { expr: inner, .. } => contains_aggregation(inner),
-        _ => false,
     }
 }

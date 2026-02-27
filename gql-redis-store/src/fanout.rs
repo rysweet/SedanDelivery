@@ -26,7 +26,10 @@ impl FanoutStore {
     /// # Panics
     /// Panics if `stores` is empty — a fanout over zero backends makes no sense.
     pub fn new(stores: Vec<Box<dyn GraphStore>>) -> Self {
-        assert!(!stores.is_empty(), "FanoutStore requires at least one backend");
+        assert!(
+            !stores.is_empty(),
+            "FanoutStore requires at least one backend"
+        );
         Self { stores }
     }
 
@@ -152,6 +155,10 @@ impl GraphStore for FanoutStore {
         self.read(|s| s.all_edge_ids(graph))
     }
 
+    fn all_label_names(&self, graph: &str) -> Result<Vec<String>, StorageError> {
+        self.read(|s| s.all_label_names(graph))
+    }
+
     fn create_node(
         &self,
         graph: &str,
@@ -178,7 +185,8 @@ impl GraphStore for FanoutStore {
         rel_type: String,
         properties: HashMap<String, Value>,
     ) -> Result<EdgeId, StorageError> {
-        let id = self.stores[0].create_edge(graph, src, dst, rel_type.clone(), properties.clone())?;
+        let id =
+            self.stores[0].create_edge(graph, src, dst, rel_type.clone(), properties.clone())?;
         let mut props_with_id = properties.clone();
         props_with_id.insert("_sd2_eid".to_string(), Value::Int(id.0 as i64));
         for store in &self.stores[1..] {

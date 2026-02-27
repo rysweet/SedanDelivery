@@ -14,7 +14,9 @@ use axum::{Json, Router};
 use gql_core::storage::{validate_graph_name, GraphStore, NodeId};
 
 use crate::error::ApiError;
-use crate::models::{max_page_limit, CreateNodeBody, NodeListResponse, PaginationParams, UpdateNodeBody};
+use crate::models::{
+    max_page_limit, CreateNodeBody, NodeListResponse, PaginationParams, UpdateNodeBody,
+};
 use crate::routes::helpers::{json_map_to_props, parse_node_id};
 use crate::serialize::node_to_json;
 use crate::state::AppState;
@@ -61,11 +63,7 @@ async fn list_nodes(
         .get_nodes_batch(&name, &page_ids)
         .map_err(ApiError::from)?;
 
-    let nodes: Vec<serde_json::Value> = batch
-        .iter()
-        .flatten()
-        .map(node_to_json)
-        .collect();
+    let nodes: Vec<serde_json::Value> = batch.iter().flatten().map(node_to_json).collect();
 
     Ok(Json(NodeListResponse { nodes, total }))
 }
@@ -163,18 +161,15 @@ async fn delete_node(
         .get_store(&name)
         .ok_or_else(|| ApiError::not_found(format!("graph '{name}' not found")))?;
 
-    store
-        .delete_node(&name, id, true)
-        .map_err(|e| {
-            use gql_core::error::StorageError;
-            match &e {
-                StorageError::NodeNotFound { .. } => {
-                    ApiError::not_found(format!("node {id_str} not found"))
-                }
-                _ => ApiError::from(e),
+    store.delete_node(&name, id, true).map_err(|e| {
+        use gql_core::error::StorageError;
+        match &e {
+            StorageError::NodeNotFound { .. } => {
+                ApiError::not_found(format!("node {id_str} not found"))
             }
-        })?;
+            _ => ApiError::from(e),
+        }
+    })?;
 
     Ok(StatusCode::NO_CONTENT)
 }
-

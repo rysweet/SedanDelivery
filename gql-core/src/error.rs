@@ -219,7 +219,10 @@ mod tests {
             limit: 1_000_000,
         };
         let msg = e.to_string();
-        assert!(msg.contains("2000000"), "message should include actual size");
+        assert!(
+            msg.contains("2000000"),
+            "message should include actual size"
+        );
         assert!(msg.contains("1000000"), "message should include limit");
     }
 
@@ -244,10 +247,16 @@ mod tests {
             name: "n".to_string(),
         };
         let msg = e.to_string();
-        assert!(msg.contains("'n'"), "message should include the variable name");
+        assert!(
+            msg.contains("'n'"),
+            "message should include the variable name"
+        );
         // Wrap in GqlError to verify the From conversion works.
         let gql: GqlError = e.into();
-        assert!(matches!(gql, GqlError::Plan(PlanError::AmbiguousVariable { .. })));
+        assert!(matches!(
+            gql,
+            GqlError::Plan(PlanError::AmbiguousVariable { .. })
+        ));
     }
 
     #[test]
@@ -257,6 +266,9 @@ mod tests {
         assert!(msg.contains("42"), "message should include the edge id");
         // Wrap in GqlError to verify the From conversion works.
         let gql: GqlError = e.into();
-        assert!(matches!(gql, GqlError::Storage(StorageError::EdgeNotFound { id: 42 })));
+        assert!(matches!(
+            gql,
+            GqlError::Storage(StorageError::EdgeNotFound { id: 42 })
+        ));
     }
 }

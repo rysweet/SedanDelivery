@@ -255,7 +255,11 @@ impl Value {
                         Some(true) => {}
                     }
                 }
-                if has_null { None } else { Some(true) }
+                if has_null {
+                    None
+                } else {
+                    Some(true)
+                }
             }
 
             // Map equality with null propagation
@@ -275,7 +279,11 @@ impl Value {
                         },
                     }
                 }
-                if has_null { None } else { Some(true) }
+                if has_null {
+                    None
+                } else {
+                    Some(true)
+                }
             }
 
             // Duration: direct field comparison
@@ -316,9 +324,24 @@ impl fmt::Display for Value {
                     if ns != 0 {
                         let ns_str = format!("{:09}", ns);
                         let ns_trimmed = ns_str.trim_end_matches('0');
-                        write!(f, "{:02}:{:02}:{:02}.{}{}", t.hour(), t.minute(), t.second(), ns_trimmed, offset_str)
+                        write!(
+                            f,
+                            "{:02}:{:02}:{:02}.{}{}",
+                            t.hour(),
+                            t.minute(),
+                            t.second(),
+                            ns_trimmed,
+                            offset_str
+                        )
                     } else {
-                        write!(f, "{:02}:{:02}:{:02}{}", t.hour(), t.minute(), t.second(), offset_str)
+                        write!(
+                            f,
+                            "{:02}:{:02}:{:02}{}",
+                            t.hour(),
+                            t.minute(),
+                            t.second(),
+                            offset_str
+                        )
                     }
                 } else if has_named_tz {
                     // Named timezone: display full datetime with tz name
@@ -335,18 +358,33 @@ impl fmt::Display for Value {
                     if ns != 0 {
                         let ns_str = format!("{:09}", ns);
                         let ns_trimmed = ns_str.trim_end_matches('0');
-                        write!(f, "{}-{:02}-{:02}T{:02}:{:02}:{:02}.{}{}",
-                            civil.year(), civil.month(), civil.day(),
-                            civil.hour(), civil.minute(), civil.second(),
-                            ns_trimmed, offset_str)
+                        write!(
+                            f,
+                            "{}-{:02}-{:02}T{:02}:{:02}:{:02}.{}{}",
+                            civil.year(),
+                            civil.month(),
+                            civil.day(),
+                            civil.hour(),
+                            civil.minute(),
+                            civil.second(),
+                            ns_trimmed,
+                            offset_str
+                        )
                     } else {
-                        write!(f, "{}-{:02}-{:02}T{:02}:{:02}:{:02}{}",
-                            civil.year(), civil.month(), civil.day(),
-                            civil.hour(), civil.minute(), civil.second(),
-                            offset_str)
+                        write!(
+                            f,
+                            "{}-{:02}-{:02}T{:02}:{:02}:{:02}{}",
+                            civil.year(),
+                            civil.month(),
+                            civil.day(),
+                            civil.hour(),
+                            civil.minute(),
+                            civil.second(),
+                            offset_str
+                        )
                     }
                 }
-            },
+            }
             Self::Duration(d) => write!(f, "{}", format_cypher_duration(d)),
             Self::Point(p) => write!(f, "point({{x: {}, y: {}}})", p.x, p.y),
             Self::List(items) => {
@@ -386,7 +424,11 @@ pub fn format_cypher_duration(d: &CypherDuration) -> String {
     let days = d.days;
 
     // Decompose nanos into hours, minutes, seconds, sub-nanos (all with same sign as nanos)
-    let (time_sign, abs_nanos) = if d.nanos < 0 { (-1i128, -d.nanos) } else { (1i128, d.nanos) };
+    let (time_sign, abs_nanos) = if d.nanos < 0 {
+        (-1i128, -d.nanos)
+    } else {
+        (1i128, d.nanos)
+    };
     let h_abs = abs_nanos / 3_600_000_000_000i128;
     let rem = abs_nanos % 3_600_000_000_000i128;
     let m_abs = rem / 60_000_000_000i128;

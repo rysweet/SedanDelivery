@@ -14,7 +14,9 @@ use axum::{Json, Router};
 use gql_core::storage::{validate_graph_name, EdgeId, GraphStore};
 
 use crate::error::ApiError;
-use crate::models::{max_page_limit, CreateEdgeBody, EdgeListResponse, PaginationParams, UpdateEdgeBody};
+use crate::models::{
+    max_page_limit, CreateEdgeBody, EdgeListResponse, PaginationParams, UpdateEdgeBody,
+};
 use crate::routes::helpers::{json_map_to_props, parse_edge_id, parse_node_id};
 use crate::serialize::edge_to_json;
 use crate::state::AppState;
@@ -61,11 +63,7 @@ async fn list_edges(
         .get_edges_batch(&name, &page_ids)
         .map_err(ApiError::from)?;
 
-    let edges: Vec<serde_json::Value> = batch
-        .iter()
-        .flatten()
-        .map(edge_to_json)
-        .collect();
+    let edges: Vec<serde_json::Value> = batch.iter().flatten().map(edge_to_json).collect();
 
     Ok(Json(EdgeListResponse { edges, total }))
 }
@@ -182,5 +180,3 @@ async fn delete_edge(
 
     Ok(StatusCode::NO_CONTENT)
 }
-
-

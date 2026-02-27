@@ -32,10 +32,6 @@ impl AppState {
     /// does not exist.  The map lock is held only for the duration of the
     /// lookup — callers may execute queries without holding the mutex.
     pub fn get_store(&self, name: &str) -> Option<Arc<InMemoryGraphStore>> {
-        self.stores
-            .lock()
-            .ok()?
-            .get(name)
-            .cloned()
+        self.stores.lock().ok()?.get(name).cloned()
     }
 }

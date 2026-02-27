@@ -619,7 +619,7 @@ impl<'src> Lexer<'src> {
         // ── Float literal starting with '.' (e.g. .1, .5e3) ─────────────────
         if b0 == b'.' && matches!(b1, Some(b'0'..=b'9')) {
             self.pos += 1; // consume the '.'
-            // Read remaining digits
+                           // Read remaining digits
             while matches!(self.peek_byte(0), Some(b'0'..=b'9')) {
                 self.pos += 1;
             }

@@ -45,7 +45,12 @@ async fn neighbors_handler(
     let type_filter: Vec<&str> = params
         .types
         .as_deref()
-        .map(|s| s.split(',').map(str::trim).filter(|t| !t.is_empty()).collect())
+        .map(|s| {
+            s.split(',')
+                .map(str::trim)
+                .filter(|t| !t.is_empty())
+                .collect()
+        })
         .unwrap_or_default();
 
     // Determine direction.
@@ -118,17 +123,9 @@ async fn neighbors_handler(
         .get_edges_batch(&name, &edge_ids)
         .map_err(ApiError::from)?;
 
-    let nodes: Vec<serde_json::Value> = node_batch
-        .iter()
-        .flatten()
-        .map(node_to_json)
-        .collect();
+    let nodes: Vec<serde_json::Value> = node_batch.iter().flatten().map(node_to_json).collect();
 
-    let edges: Vec<serde_json::Value> = edge_batch
-        .iter()
-        .flatten()
-        .map(edge_to_json)
-        .collect();
+    let edges: Vec<serde_json::Value> = edge_batch.iter().flatten().map(edge_to_json).collect();
 
     Ok(Json(crate::models::NeighborResponse { nodes, edges }))
 }
