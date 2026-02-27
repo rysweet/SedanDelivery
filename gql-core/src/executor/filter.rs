@@ -524,7 +524,7 @@ fn eval_binary<'r>(
             (Value::Int(a), Value::Int(b)) => Ok(Value::Float((a as f64).powf(b as f64))),
             (Value::Float(a), Value::Float(b)) => Ok(Value::Float(a.powf(b))),
             (Value::Int(a), Value::Float(b)) => Ok(Value::Float((a as f64).powf(b))),
-            (Value::Float(a), Value::Int(b)) => Ok(Value::Float(a.powi(b as i32))),
+            (Value::Float(a), Value::Int(b)) => Ok(Value::Float(a.powf(b as f64))),
             (l, r) => Err(GqlError::Execution(ExecutionError::InvalidOperator {
                 op: "^".to_string(),
                 left: l.type_name().to_string(),

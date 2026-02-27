@@ -1299,17 +1299,16 @@ impl<'src> Parser<'src> {
     /// Parse exponentiation — higher precedence than `*`, `/`, `%`.
     /// Left-associative per Cypher spec: `a ^ b ^ c` = `(a ^ b) ^ c`.
     fn parse_pow(&mut self) -> Result<Expr, ParseError> {
-        let mut left = self.parse_unary()?;
-        while self.at(&TokenKind::Caret) {
-            self.advance();
-            let right = self.parse_unary()?;
-            left = Expr::BinaryOp {
+        let mut base = self.parse_unary()?;
+        while self.eat(&TokenKind::Caret) {
+            let exp = self.parse_unary()?; // left-associative: rhs is just unary
+            base = Expr::BinaryOp {
                 op: BinaryOp::Pow,
-                left: Box::new(left),
-                right: Box::new(right),
+                left: Box::new(base),
+                right: Box::new(exp),
             };
         }
-        Ok(left)
+        Ok(base)
     }
 
     fn parse_unary(&mut self) -> Result<Expr, ParseError> {

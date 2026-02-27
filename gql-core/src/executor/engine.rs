@@ -73,6 +73,9 @@ pub struct QueryExecutor<'a> {
     registry: &'a ProcedureRegistry,
     /// Query parameters stored as `$name` → value.
     parameters: HashMap<String, Value>,
+    /// Cache of deleted edge ID → rel_type string.
+    /// Allows `type(r)` to work on a relationship deleted in the same query.
+    deleted_edge_types: std::cell::RefCell<HashMap<u64, String>>,
 }
 
 impl<'a> QueryExecutor<'a> {
@@ -83,6 +86,7 @@ impl<'a> QueryExecutor<'a> {
             store,
             registry: EMPTY_REG.get_or_init(ProcedureRegistry::new),
             parameters: HashMap::new(),
+            deleted_edge_types: std::cell::RefCell::new(HashMap::new()),
         }
     }
 
@@ -108,6 +112,7 @@ impl<'a> QueryExecutor<'a> {
             store,
             registry,
             parameters: params,
+            deleted_edge_types: std::cell::RefCell::new(HashMap::new()),
         }
     }
 
@@ -530,14 +535,17 @@ impl<'a> QueryExecutor<'a> {
                                 }
                             }
                             let ctx = self.build_filter_ctx(graph, &row)?;
-                            let props = eval_prop_map(graph, self, prop_exprs, &row, &ctx)?;
+                            let props_raw = eval_prop_map(graph, self, prop_exprs, &row, &ctx)?;
+                            // In Cypher, setting a property to null on CREATE
+                            // does not store it — filter out null values.
+                            let props: HashMap<String, Value> = props_raw
+                                .into_iter()
+                                .filter(|(_, v)| !v.is_null())
+                                .collect();
                             let label_strings: Vec<String> =
                                 labels.iter().map(|l| l.as_str().to_string()).collect();
-                            let non_null_prop_keys: Vec<String> = props
-                                .iter()
-                                .filter(|(_, v)| !v.is_null())
-                                .map(|(k, _)| k.clone())
-                                .collect();
+                            let non_null_prop_keys: Vec<String> =
+                                props.keys().cloned().collect();
                             let node_id =
                                 self.store.create_node(graph, label_strings.clone(), props)?;
                             stats.nodes_created += 1;
@@ -556,7 +564,12 @@ impl<'a> QueryExecutor<'a> {
                             &pattern.edges
                         {
                             let ctx = self.build_filter_ctx(graph, &row)?;
-                            let props = eval_prop_map(graph, self, prop_exprs, &row, &ctx)?;
+                            // Filter out null-valued properties (same as for nodes).
+                            let props: HashMap<String, Value> =
+                                eval_prop_map(graph, self, prop_exprs, &row, &ctx)?
+                                    .into_iter()
+                                    .filter(|(_, v)| !v.is_null())
+                                    .collect();
 
                             let src_id = alias_to_id
                                 .get(&src_alias.0)
@@ -1023,6 +1036,10 @@ impl<'a> QueryExecutor<'a> {
                                 nodes_to_delete.push(node_id);
                             }
                             Value::Edge(edge_id) => {
+                                // Cache rel_type before deleting so type(r) still works.
+                                if let Ok(Some(data)) = self.store.get_edge(graph, edge_id) {
+                                    self.deleted_edge_types.borrow_mut().insert(edge_id.0, data.rel_type);
+                                }
                                 edges_to_delete.push(edge_id);
                             }
                             Value::Null => {
@@ -2023,7 +2040,12 @@ impl<'a> QueryExecutor<'a> {
                             Value::Null => Ok(Value::Null),
                             Value::Edge(edge_id) => match self.store.get_edge(graph, *edge_id)? {
                                 Some(data) => Ok(Value::Str(data.rel_type.into_boxed_str())),
-                                None => Ok(Value::Null),
+                                None => {
+                                    // Edge may have been deleted in this query; check cache.
+                                    let cached = self.deleted_edge_types.borrow()
+                                        .get(&edge_id.0).map(|s| Value::Str(s.clone().into_boxed_str()));
+                                    Ok(cached.unwrap_or(Value::Null))
+                                }
                             },
                             other => Err(GqlError::Execution(ExecutionError::TypeMismatch {
                                 expected: "Relationship".to_string(),
@@ -2349,25 +2371,18 @@ impl<'a> QueryExecutor<'a> {
                             None => Ok(Value::Null),
                         }
                     }
-                    // List[Int]: handle directly to preserve Node/Edge values
-                    // that value_to_expr cannot round-trip.
-                    (Value::List(items), Value::Int(i)) => {
-                        let len = items.len();
-                        let actual = if i < 0 {
-                            let offset = (-i) as usize;
-                            if offset > len {
-                                return Ok(Value::Null);
-                            }
-                            len - offset
+                    (Value::List(list), Value::Int(i)) => {
+                        // Handle List[Int] directly to preserve Node/Edge values that
+                        // `value_to_expr` would otherwise convert to Null.
+                        let len = list.len() as i64;
+                        let real_idx = if i < 0 { len + i } else { i };
+                        if real_idx < 0 || real_idx as usize >= list.len() {
+                            Ok(Value::Null)
                         } else {
-                            i as usize
-                        };
-                        if actual >= len {
-                            return Ok(Value::Null);
+                            Ok(list[real_idx as usize].clone())
                         }
-                        Ok(items[actual].clone())
                     }
-                    // Map[Str]: delegate to eval_expr (maps don't contain Node/Edge).
+                    // Map[Str]: handle directly (maps don't contain Node/Edge).
                     (Value::Map(m), Value::Str(key)) => {
                         Ok(m.get(key.as_ref()).cloned().unwrap_or(Value::Null))
                     }
@@ -2488,36 +2503,31 @@ impl<'a> QueryExecutor<'a> {
                 if prop_val.is_null() {
                     match val {
                         Value::Node(node_id) => {
-                            self.store.remove_node_property(graph, *node_id, key)?;
+                            let _ = self.store.remove_node_property(graph, *node_id, key);
                         }
                         Value::Edge(edge_id) => {
-                            self.store.remove_edge_property(graph, *edge_id, key)?;
+                            let _ = self.store.remove_edge_property(graph, *edge_id, key);
                         }
-                        other => {
-                            return Err(GqlError::Execution(ExecutionError::TypeMismatch {
-                                expected: format!("Node or Relationship for variable '{}'", alias.0),
-                                actual: other.type_name().to_string(),
-                            }));
-                        }
+                        _ => {}
                     }
-                } else {
-                    let mut props = HashMap::new();
-                    props.insert(key.clone(), prop_val);
-                    match val {
-                        Value::Node(node_id) => {
-                            self.store.set_node_properties(graph, *node_id, props)?;
-                            stats.props_seen.insert((false, node_id.0, key.clone()));
-                        }
-                        Value::Edge(edge_id) => {
-                            self.store.set_edge_properties(graph, *edge_id, props)?;
-                            stats.props_seen.insert((true, edge_id.0, key.clone()));
-                        }
-                        other => {
-                            return Err(GqlError::Execution(ExecutionError::TypeMismatch {
-                                expected: format!("Node or Relationship for variable '{}'", alias.0),
-                                actual: other.type_name().to_string(),
-                            }));
-                        }
+                    return Ok(());
+                }
+                let mut props = HashMap::new();
+                props.insert(key.clone(), prop_val);
+                match val {
+                    Value::Node(node_id) => {
+                        self.store.set_node_properties(graph, *node_id, props)?;
+                        stats.props_seen.insert((false, node_id.0, key.clone()));
+                    }
+                    Value::Edge(edge_id) => {
+                        self.store.set_edge_properties(graph, *edge_id, props)?;
+                        stats.props_seen.insert((true, edge_id.0, key.clone()));
+                    }
+                    other => {
+                        return Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                            expected: format!("Node or Relationship for variable '{}'", alias.0),
+                            actual: other.type_name().to_string(),
+                        }));
                     }
                 }
             }

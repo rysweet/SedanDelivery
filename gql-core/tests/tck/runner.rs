@@ -1104,6 +1104,155 @@ fn parse_tck_path_pattern(s: &str) -> Value {
     Value::Map(map)
 }
 
+// ── Column header normalization ───────────────────────────────────────────────
+
+/// Normalize a TCK table header string to match the engine's column-name format.
+///
+/// The TCK allows extra whitespace inside expressions (e.g. `aVg(    n.aGe     )`)
+/// and includes the `DISTINCT` keyword in column names (e.g. `coUnt( dIstInct p )`).
+/// The engine strips internal whitespace (because it derives names from the AST)
+/// and omits `DISTINCT` from the column name.
+///
+/// This function applies the same normalisations so that header look-ups succeed.
+fn normalize_tck_header(s: &str) -> String {
+    let s = s.trim();
+
+    // Pass 1: collapse runs of whitespace to a single space.
+    let mut collapsed = String::with_capacity(s.len());
+    let mut prev_ws = false;
+    for c in s.chars() {
+        if c == ' ' || c == '\t' {
+            if !prev_ws {
+                collapsed.push(' ');
+            }
+            prev_ws = true;
+        } else {
+            collapsed.push(c);
+            prev_ws = false;
+        }
+    }
+
+    // Pass 2: remove single spaces that are adjacent to punctuation.
+    let chars: Vec<char> = collapsed.chars().collect();
+    let n = chars.len();
+    let mut result = String::with_capacity(n);
+    let is_punct = |c: char| matches!(c, '(' | ')' | '.' | ',' | '[' | ']');
+    for i in 0..n {
+        let c = chars[i];
+        if c == ' ' {
+            let prev = if i > 0 { chars[i - 1] } else { '\0' };
+            let next = if i + 1 < n { chars[i + 1] } else { '\0' };
+            if is_punct(prev) || is_punct(next) {
+                // Drop this space.
+                continue;
+            }
+        }
+        result.push(c);
+    }
+
+    // Pass 3: remove DISTINCT keyword (case-insensitive) at the start of a
+    // function argument.  E.g. `coUnt(dIstInct p)` → `coUnt(p)`.
+    let mut out = String::with_capacity(result.len());
+    let chars2: Vec<char> = result.chars().collect();
+    let m = chars2.len();
+    let mut j = 0;
+    while j < m {
+        let c = chars2[j];
+        if c == '(' {
+            out.push(c);
+            j += 1;
+            // Peek ahead for "DISTINCT " (case-insensitive).
+            let remaining: String = chars2[j..].iter().collect();
+            let lower = remaining.to_ascii_lowercase();
+            if lower.starts_with("distinct ") {
+                j += "distinct ".len();
+            }
+        } else {
+            out.push(c);
+            j += 1;
+        }
+    }
+
+    // Pass 4: lowercase the `count` function name.
+    // `count` is a reserved keyword in the lexer and is always emitted as lowercase
+    // by the parser regardless of the source case.  All other aggregate names are
+    // plain identifiers whose case is preserved, so we only special-case `count`.
+    let out = replace_count_case_insensitive(&out);
+
+    // Pass 5: strip grouping parens around sub-expressions when followed by `.`
+    // (property access).  E.g. `(list[1]).missing` → `list[1].missing`.
+    // The engine's expr_to_column_name does not add these grouping parens.
+    strip_grouping_parens_before_dot(&out)
+}
+
+/// Remove `(...)` grouping parens that are immediately followed by `.` when the
+/// opening `(` is NOT preceded by a word character (which would make it a function
+/// call like `func(...).prop`).
+fn strip_grouping_parens_before_dot(s: &str) -> String {
+    let chars: Vec<char> = s.chars().collect();
+    let n = chars.len();
+    let mut result = String::with_capacity(n);
+    let mut i = 0;
+    while i < n {
+        let c = chars[i];
+        if c == '(' {
+            let prev = if i > 0 { chars[i - 1] } else { '\0' };
+            let is_func_call = prev.is_alphanumeric() || prev == '_';
+            if !is_func_call {
+                // Find the matching ')'.
+                let mut depth = 1usize;
+                let mut j = i + 1;
+                while j < n && depth > 0 {
+                    match chars[j] {
+                        '(' => depth += 1,
+                        ')' => depth -= 1,
+                        _ => {}
+                    }
+                    j += 1;
+                }
+                // j is now the index AFTER the closing ')'.
+                if depth == 0 && j <= n && j < n && chars[j] == '.' {
+                    // Emit inner content without the outer parens.
+                    let inner: String = chars[i + 1..j - 1].iter().collect();
+                    result.push_str(&inner);
+                    i = j;
+                    continue;
+                }
+            }
+        }
+        result.push(c);
+        i += 1;
+    }
+    result
+}
+
+/// Replace every occurrence of `count(` (case-insensitive) with `count(`.
+fn replace_count_case_insensitive(s: &str) -> String {
+    let lower = s.to_ascii_lowercase();
+    if !lower.contains("count(") {
+        return s.to_string();
+    }
+    let mut result = String::with_capacity(s.len());
+    let bytes = s.as_bytes();
+    let n = bytes.len();
+    let mut i = 0;
+    while i < n {
+        // Check for case-insensitive "count(" at position i.
+        if i + 6 <= n {
+            let slice = &bytes[i..i + 6];
+            let lc: Vec<u8> = slice.iter().map(|b| b.to_ascii_lowercase()).collect();
+            if lc == b"count(" {
+                result.push_str("count(");
+                i += 6;
+                continue;
+            }
+        }
+        result.push(bytes[i] as char);
+        i += 1;
+    }
+    result
+}
+
 // ── Row comparison helpers ───────────────────────────────────────────────────
 
 /// Parse the expected rows from a Gherkin table (skipping header).
@@ -1182,12 +1331,27 @@ fn row_matches_tck(
     headers
         .iter()
         .zip(expected_cells.iter())
-        .all(|(col, cell)| match get_col_value(actual_row, col) {
-            Some(actual_val) => {
-                let expected_val = parse_tck_value(cell);
-                value_matches(actual_val, &expected_val, world, ignore_list_order)
+        .all(|(col, cell)| {
+            // Try the raw header first; fall back to the normalised form so that
+            // headers with extra whitespace or the DISTINCT keyword still match.
+            let actual_val = actual_row
+                .get(*col)
+                .or_else(|| {
+                    let norm = normalize_tck_header(col);
+                    if norm != *col {
+                        actual_row.get(norm.as_str())
+                    } else {
+                        None
+                    }
+                })
+                .or_else(|| get_col_value(actual_row, col));
+            match actual_val {
+                Some(actual_val) => {
+                    let expected_val = parse_tck_value(cell);
+                    value_matches(actual_val, &expected_val, world, ignore_list_order)
+                }
+                None => false,
             }
-            None => false,
         })
 }
 
@@ -1220,18 +1384,17 @@ fn value_matches(
                 return false;
             }
             if ignore_list_order {
-                // Use bipartite matching to handle Edge vs Map-pattern comparisons
-                let mut matched = vec![false; a.len()];
-                for bv in b.iter() {
-                    let found = a.iter().enumerate().any(|(i, av)| {
-                        !matched[i] && value_matches(av, bv, world, false)
+                // Use bipartite matching: each expected element must match some
+                // unmatched actual element.  This correctly handles Node/Edge values
+                // compared against node/relationship patterns.
+                let mut available = vec![true; a.len()];
+                for expected_elem in b.iter() {
+                    let found = a.iter().enumerate().find(|(i, actual_elem)| {
+                        available[*i] && value_matches(actual_elem, expected_elem, world, false)
                     });
-                    if !found { return false; }
-                    for (i, av) in a.iter().enumerate() {
-                        if !matched[i] && value_matches(av, bv, world, false) {
-                            matched[i] = true;
-                            break;
-                        }
+                    match found {
+                        Some((i, _)) => available[i] = false,
+                        None => return false,
                     }
                 }
                 true
