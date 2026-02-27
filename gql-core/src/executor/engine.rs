@@ -14,7 +14,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use crate::ast::{Direction, Expr};
-use crate::error::{ExecutionError, GqlError};
+use crate::error::{ExecutionError, GqlError, StorageError};
 use crate::executor::budget::ExecutionBudget;
 use crate::executor::filter::{eval_expr, eval_function_with_vals};
 use crate::executor::filter::Row as FilterRow;
@@ -879,11 +879,16 @@ impl<'a> QueryExecutor<'a> {
                                     .get(alias.0.as_str())
                                     .ok_or_else(|| undefined_var(&alias.0))?;
                                 match val {
+                                    Value::Null => {
+                                        // REMOVE on null (from OPTIONAL MATCH) is a no-op
+                                    }
                                     Value::Node(node_id) => {
                                         self.store.remove_node_property(graph, *node_id, key)?;
+                                        stats.properties_set += 1;
                                     }
                                     Value::Edge(edge_id) => {
                                         self.store.remove_edge_property(graph, *edge_id, key)?;
+                                        stats.properties_set += 1;
                                     }
                                     other => {
                                         return Err(GqlError::Execution(
@@ -894,12 +899,15 @@ impl<'a> QueryExecutor<'a> {
                                         ));
                                     }
                                 }
-                                stats.properties_set += 1;
                             }
                             RemoveItem::Labels { alias, labels } => {
                                 let val = row
                                     .get(alias.0.as_str())
                                     .ok_or_else(|| undefined_var(&alias.0))?;
+                                // REMOVE labels on null (from OPTIONAL MATCH) is a no-op
+                                if val.is_null() {
+                                    continue;
+                                }
                                 let node_id = extract_node_id(val, &alias.0)?;
                                 let label_strings: Vec<String> =
                                     labels.iter().map(|l| l.as_str().to_string()).collect();
@@ -931,15 +939,38 @@ impl<'a> QueryExecutor<'a> {
                         let val = self.eval_with_storage(graph, expr, &row, &ctx)?;
                         match val {
                             Value::Node(node_id) => {
-                                self.store.delete_node(graph, node_id, *detach)?;
-                                stats.nodes_deleted += 1;
+                                match self.store.delete_node(graph, node_id, *detach) {
+                                    Ok(()) => { stats.nodes_deleted += 1; }
+                                    Err(StorageError::NodeNotFound { .. }) => {} // already deleted
+                                    Err(e) => return Err(GqlError::Storage(e)),
+                                }
                             }
                             Value::Edge(edge_id) => {
-                                self.store.delete_edge(graph, edge_id)?;
-                                stats.edges_deleted += 1;
+                                match self.store.delete_edge(graph, edge_id) {
+                                    Ok(()) => { stats.edges_deleted += 1; }
+                                    Err(StorageError::EdgeNotFound { .. }) => {} // already deleted
+                                    Err(e) => return Err(GqlError::Storage(e)),
+                                }
                             }
                             Value::Null => {
                                 // Deleting NULL is a no-op in Cypher
+                            }
+                            Value::Path { nodes, edges } => {
+                                // DELETE on a path: delete all edges first, then nodes
+                                for edge_id in &edges {
+                                    match self.store.delete_edge(graph, *edge_id) {
+                                        Ok(()) => { stats.edges_deleted += 1; }
+                                        Err(StorageError::EdgeNotFound { .. }) => {}
+                                        Err(e) => return Err(GqlError::Storage(e)),
+                                    }
+                                }
+                                for node_id in &nodes {
+                                    match self.store.delete_node(graph, *node_id, *detach) {
+                                        Ok(()) => { stats.nodes_deleted += 1; }
+                                        Err(StorageError::NodeNotFound { .. }) => {}
+                                        Err(e) => return Err(GqlError::Storage(e)),
+                                    }
+                                }
                             }
                             other => {
                                 return Err(GqlError::Execution(ExecutionError::TypeMismatch {
@@ -980,6 +1011,13 @@ impl<'a> QueryExecutor<'a> {
                         let ctx = self.build_filter_ctx(graph, &row)?;
                         for (k, expr) in properties {
                             let val = self.eval_with_storage(graph, expr, &row, &ctx)?;
+                            // MERGE with null property is a SemanticError (MergeReadOwnWrites)
+                            if val.is_null() {
+                                return Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                                    expected: "non-null property value in MERGE".to_string(),
+                                    actual: "Null".to_string(),
+                                }));
+                            }
                             prop_vals.push((k.clone(), val));
                         }
                     }
@@ -1116,6 +1154,13 @@ impl<'a> QueryExecutor<'a> {
                         .iter()
                         .map(|(k, expr)| {
                             let v = self.eval_with_storage(graph, expr, &row, &ctx)?;
+                            // MERGE with null property is a SemanticError (MergeReadOwnWrites)
+                            if v.is_null() {
+                                return Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                                    expected: "non-null property value in MERGE".to_string(),
+                                    actual: "Null".to_string(),
+                                }));
+                            }
                             Ok((k.clone(), v))
                         })
                         .collect::<Result<Vec<_>, GqlError>>()?;
@@ -1576,7 +1621,10 @@ impl<'a> QueryExecutor<'a> {
                             .get(key.as_str())
                             .cloned()
                             .unwrap_or(Value::Null)),
-                        None => Ok(Value::Null),
+                        None => Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                            expected: "accessible Node".to_string(),
+                            actual: "deleted or missing Node".to_string(),
+                        })),
                     },
                     Value::Edge(edge_id) => match self.store.get_edge(graph, edge_id)? {
                         Some(edge_data) => Ok(edge_data
@@ -1584,7 +1632,10 @@ impl<'a> QueryExecutor<'a> {
                             .get(key.as_str())
                             .cloned()
                             .unwrap_or(Value::Null)),
-                        None => Ok(Value::Null),
+                        None => Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                            expected: "accessible Relationship".to_string(),
+                            actual: "deleted or missing Relationship".to_string(),
+                        })),
                     },
                     Value::Map(m) => Ok(m.get(key.as_str()).cloned().unwrap_or(Value::Null)),
                     Value::Null => Ok(Value::Null),
@@ -1849,7 +1900,10 @@ impl<'a> QueryExecutor<'a> {
                                         .map(|l| Value::Str(l.clone().into_boxed_str()))
                                         .collect(),
                                 )),
-                                None => Ok(Value::List(vec![])),
+                                None => Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                                    expected: "accessible Node".to_string(),
+                                    actual: "deleted or missing Node".to_string(),
+                                })),
                             },
                             other => Err(GqlError::Execution(ExecutionError::TypeMismatch {
                                 expected: "Node".to_string(),
@@ -2169,6 +2223,43 @@ impl<'a> QueryExecutor<'a> {
                 self.eval_exists_patterns(graph, patterns, None, row)
             }
 
+            // Subscript: n['key'] on Node/Edge — look up property in storage.
+            Expr::Subscript(obj_expr, idx_expr) => {
+                let obj_val = self.eval_with_storage(graph, obj_expr, row, ctx)?;
+                let idx_val = self.eval_with_storage(graph, idx_expr, row, ctx)?;
+                match (obj_val, idx_val) {
+                    (Value::Null, _) | (_, Value::Null) => Ok(Value::Null),
+                    (Value::Node(node_id), Value::Str(key)) => {
+                        match self.store.get_node(graph, node_id)? {
+                            Some(node_data) => Ok(node_data
+                                .properties
+                                .get(key.as_ref())
+                                .cloned()
+                                .unwrap_or(Value::Null)),
+                            None => Ok(Value::Null),
+                        }
+                    }
+                    (Value::Edge(edge_id), Value::Str(key)) => {
+                        match self.store.get_edge(graph, edge_id)? {
+                            Some(edge_data) => Ok(edge_data
+                                .properties
+                                .get(key.as_ref())
+                                .cloned()
+                                .unwrap_or(Value::Null)),
+                            None => Ok(Value::Null),
+                        }
+                    }
+                    (obj, idx) => {
+                        // Delegate to eval_expr for List[Int] and Map[Str] cases.
+                        let rebuilt = Expr::Subscript(
+                            Box::new(value_to_expr(&obj)),
+                            Box::new(value_to_expr(&idx)),
+                        );
+                        eval_expr(&rebuilt, ctx)
+                    }
+                }
+            }
+
             // For all other expressions, delegate to eval_expr.
             _ => eval_expr(expr, ctx),
         }
@@ -2296,6 +2387,20 @@ impl<'a> QueryExecutor<'a> {
                         .map(|(k, v)| (k.to_string(), v))
                         .collect::<HashMap<String, Value>>(),
                     Value::Null => HashMap::new(),
+                    Value::Node(src_node_id) => {
+                        // SET a = b where b is a Node: copy all properties from b
+                        match self.store.get_node(graph, src_node_id)? {
+                            Some(node_data) => node_data.properties,
+                            None => HashMap::new(),
+                        }
+                    }
+                    Value::Edge(src_edge_id) => {
+                        // SET r = r2 where r2 is a Relationship: copy all properties from r2
+                        match self.store.get_edge(graph, src_edge_id)? {
+                            Some(edge_data) => edge_data.properties,
+                            None => HashMap::new(),
+                        }
+                    }
                     other => {
                         return Err(GqlError::Execution(ExecutionError::TypeMismatch {
                             expected: "Map for SET assignment".to_string(),
@@ -2332,6 +2437,10 @@ impl<'a> QueryExecutor<'a> {
                 let val = row
                     .get(alias.0.as_str())
                     .ok_or_else(|| undefined_var(&alias.0))?;
+                // SET labels on null (from OPTIONAL MATCH) is a no-op
+                if val.is_null() {
+                    return Ok(());
+                }
                 let node_id = extract_node_id(val, &alias.0)?;
                 let label_strings: Vec<String> =
                     labels.iter().map(|l| l.as_str().to_string()).collect();
