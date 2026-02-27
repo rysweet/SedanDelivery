@@ -318,8 +318,27 @@ pub fn format_cypher_duration(sp: &jiff::Span) -> String {
     let seconds = sp.get_seconds();
     let nanos = sp.get_nanoseconds();
 
+    // Normalize the time part to avoid mixed-sign components (e.g. PT12M-60S → PT11M)
+    let total_ns = hours * 3_600_000_000_000i64
+        + minutes * 60_000_000_000i64
+        + seconds * 1_000_000_000i64
+        + nanos;
+
+    let (sign, total_ns_abs) = if total_ns < 0 { (-1i64, -total_ns) } else { (1i64, total_ns) };
+    let h_abs = total_ns_abs / 3_600_000_000_000i64;
+    let rem = total_ns_abs % 3_600_000_000_000i64;
+    let m_abs = rem / 60_000_000_000i64;
+    let rem = rem % 60_000_000_000i64;
+    let s_abs = rem / 1_000_000_000i64;
+    let ns_abs = rem % 1_000_000_000i64;
+
+    let norm_h = sign * h_abs;
+    let norm_m = sign * m_abs;
+    let norm_s = sign * s_abs;
+    let norm_ns = sign * ns_abs;
+
     let has_date = years != 0 || months != 0 || days != 0;
-    let has_time = hours != 0 || minutes != 0 || seconds != 0 || nanos != 0;
+    let has_time = norm_h != 0 || norm_m != 0 || norm_s != 0 || norm_ns != 0;
 
     let mut s = String::from("P");
     if years != 0 {
@@ -333,20 +352,19 @@ pub fn format_cypher_duration(sp: &jiff::Span) -> String {
     }
     if has_time {
         s.push('T');
-        if hours != 0 {
-            s.push_str(&format!("{hours}H"));
+        if norm_h != 0 {
+            s.push_str(&format!("{norm_h}H"));
         }
-        if minutes != 0 {
-            s.push_str(&format!("{minutes}M"));
+        if norm_m != 0 {
+            s.push_str(&format!("{norm_m}M"));
         }
-        if nanos != 0 {
-            // Format seconds with fractional nanoseconds
-            let ns_abs = nanos.unsigned_abs();
-            let ns_str = format!("{ns_abs:09}");
+        if norm_ns != 0 {
+            let ns_u = norm_ns.unsigned_abs();
+            let ns_str = format!("{ns_u:09}");
             let ns_trimmed = ns_str.trim_end_matches('0');
-            s.push_str(&format!("{seconds}.{ns_trimmed}S"));
-        } else if seconds != 0 {
-            s.push_str(&format!("{seconds}S"));
+            s.push_str(&format!("{norm_s}.{ns_trimmed}S"));
+        } else if norm_s != 0 {
+            s.push_str(&format!("{norm_s}S"));
         }
     }
     if !has_date && !has_time {

@@ -522,6 +522,17 @@ impl<'src> Parser<'src> {
     }
 
     fn parse_set_item(&mut self) -> Result<SetClauseItem, ParseError> {
+        // Handle `SET (n).prop = value` — parenthesized node/rel reference
+        if self.at(&TokenKind::LParen) {
+            self.advance(); // consume '('
+            let alias = Identifier::new(self.expect_identifier()?);
+            self.expect(&TokenKind::RParen)?;
+            self.expect(&TokenKind::Dot)?;
+            let prop = SmolStr::new(self.expect_identifier()?);
+            self.expect(&TokenKind::Eq)?;
+            let value = self.parse_expr()?;
+            return Ok(SetClauseItem::SetProperty { alias, prop, value });
+        }
         let alias = Identifier::new(self.expect_identifier()?);
 
         match self.peek().clone() {
@@ -1263,19 +1274,34 @@ impl<'src> Parser<'src> {
     }
 
     fn parse_mul(&mut self) -> Result<Expr, ParseError> {
-        let mut left = self.parse_unary()?;
+        let mut left = self.parse_pow()?;
         loop {
             let op = match self.peek().clone() {
                 TokenKind::Star => BinaryOp::Mul,
                 TokenKind::Slash => BinaryOp::Div,
                 TokenKind::Percent => BinaryOp::Mod,
-                TokenKind::Caret => BinaryOp::Pow,
                 _ => break,
             };
             self.advance();
-            let right = self.parse_unary()?;
+            let right = self.parse_pow()?;
             left = Expr::BinaryOp {
                 op,
+                left: Box::new(left),
+                right: Box::new(right),
+            };
+        }
+        Ok(left)
+    }
+
+    /// Parse exponentiation (`^`), which has higher precedence than `*`/`/`/`%`.
+    /// Left-associative (Cypher convention): `a ^ b ^ c = (a ^ b) ^ c`.
+    fn parse_pow(&mut self) -> Result<Expr, ParseError> {
+        let mut left = self.parse_unary()?;
+        while self.at(&TokenKind::Caret) {
+            self.advance();
+            let right = self.parse_unary()?;
+            left = Expr::BinaryOp {
+                op: BinaryOp::Pow,
                 left: Box::new(left),
                 right: Box::new(right),
             };

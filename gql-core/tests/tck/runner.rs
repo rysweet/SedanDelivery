@@ -1124,6 +1124,26 @@ fn parse_expected_rows<'a>(_headers: &[&'a str], data_rows: &[Vec<String>]) -> V
 /// `headers` are the column names from the Gherkin table.
 /// `expected_cells` are the raw TCK cell strings for one row.
 /// `ignore_list_order` sorts list elements before comparison.
+/// Normalize a column name for case-insensitive, whitespace-insensitive lookup.
+fn normalize_col_name(s: &str) -> String {
+    s.chars()
+        .filter(|c| !c.is_whitespace() && *c != '(' && *c != ')')
+        .collect::<String>()
+        .to_lowercase()
+}
+
+/// Look up a column value in a row, using normalized column name matching as fallback.
+fn get_col_value<'a>(actual_row: &'a Row, col: &str) -> Option<&'a Value> {
+    if let Some(v) = actual_row.get(col) {
+        return Some(v);
+    }
+    let norm_col = normalize_col_name(col);
+    actual_row
+        .iter()
+        .find(|(k, _)| normalize_col_name(k) == norm_col)
+        .map(|(_, v)| v)
+}
+
 fn row_matches_tck(
     actual_row: &Row,
     headers: &[&str],
@@ -1137,7 +1157,7 @@ fn row_matches_tck(
     headers
         .iter()
         .zip(expected_cells.iter())
-        .all(|(col, cell)| match actual_row.get(*col) {
+        .all(|(col, cell)| match get_col_value(actual_row, col) {
             Some(actual_val) => {
                 let expected_val = parse_tck_value(cell);
                 value_matches(actual_val, &expected_val, world, ignore_list_order)
@@ -1168,18 +1188,21 @@ fn value_matches(
                 return false;
             }
             if ignore_list_order {
-                // Sort both lists by their display representation and compare
-                let mut a_sorted: Vec<String> = a
-                    .iter()
-                    .map(|v| format_value_for_compare(v, world))
-                    .collect();
-                let mut b_sorted: Vec<String> = b
-                    .iter()
-                    .map(|v| format_value_for_compare(v, world))
-                    .collect();
-                a_sorted.sort();
-                b_sorted.sort();
-                a_sorted == b_sorted
+                // Use bipartite matching to handle Edge vs Map-pattern comparisons
+                let mut matched = vec![false; a.len()];
+                for bv in b.iter() {
+                    let found = a.iter().enumerate().any(|(i, av)| {
+                        !matched[i] && value_matches(av, bv, world, false)
+                    });
+                    if !found { return false; }
+                    for (i, av) in a.iter().enumerate() {
+                        if !matched[i] && value_matches(av, bv, world, false) {
+                            matched[i] = true;
+                            break;
+                        }
+                    }
+                }
+                true
             } else {
                 a.iter()
                     .zip(b.iter())

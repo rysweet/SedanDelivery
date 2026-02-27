@@ -2018,13 +2018,17 @@ fn expr_to_col_name(expr: &Expr) -> String {
     match expr {
         Expr::Variable(id) => id.0.clone(),
         Expr::Property(obj, key) => format!("{}.{}", expr_to_col_name(obj), key),
-        Expr::FunctionCall { name, args, .. } => {
+        Expr::FunctionCall { name, args, distinct } => {
             let arg_strs: Vec<String> = args.iter().map(expr_to_col_name).collect();
-            format!("{}({})", name, arg_strs.join(", "))
+            if *distinct {
+                format!("{}(distinct {})", name, arg_strs.join(", "))
+            } else {
+                format!("{}({})", name, arg_strs.join(", "))
+            }
         }
         Expr::Integer(n) => n.to_string(),
         Expr::Float(f) => f.to_string(),
-        Expr::Str(s) => s.to_string(),
+        Expr::Str(s) => format!("'{}'", s),
         Expr::BinaryOp { op, left, right } => {
             let op_str = match op {
                 crate::ast::BinaryOp::Add => "+",
@@ -2058,7 +2062,7 @@ fn expr_to_col_name(expr: &Expr) -> String {
         }
         Expr::Bool(b) => b.to_string(),
         Expr::Null => "null".to_string(),
-        Expr::HasLabel(e, label) => format!("({}:{})", expr_to_col_name(e), label.0),
+        Expr::HasLabel(e, label) => format!("{}:{}", expr_to_col_name(e), label.0),
         Expr::UnaryOp { op, expr: e } => match op {
             crate::ast::UnaryOp::Not => format!("NOT {}", expr_to_col_name(e)),
             crate::ast::UnaryOp::Neg => format!("-{}", expr_to_col_name(e)),
