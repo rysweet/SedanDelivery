@@ -13,7 +13,7 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
-use crate::ast::{Direction, Expr, Identifier};
+use crate::ast::{Direction, Expr};
 use crate::error::{ExecutionError, GqlError};
 use crate::executor::budget::ExecutionBudget;
 use crate::executor::filter::{eval_expr, eval_function_with_vals};
@@ -108,7 +108,7 @@ impl<'a> QueryExecutor<'a> {
             Operator::Distinct { child } => child.as_ref(),
             other => other,
         };
-        let has_produce_results = has_produce_results(effective_root);
+        let _has_produce_results = has_produce_results(effective_root);
         let columns = if let Operator::ProduceResults { columns, .. } = effective_root {
             columns.iter().map(|(name, _)| name.clone()).collect()
         } else {
@@ -416,7 +416,7 @@ impl<'a> QueryExecutor<'a> {
                     };
 
                     // Accumulate into each aggregation state.
-                    for (agg_idx, (func, arg_expr, distinct, _alias)) in
+                    for (agg_idx, (func, arg_expr, second_arg_expr, distinct, _alias)) in
                         aggregations.iter().enumerate()
                     {
                         // count(*) — the `*` argument is a sentinel meaning "count rows".
@@ -427,7 +427,11 @@ impl<'a> QueryExecutor<'a> {
                             } else {
                                 self.eval_with_storage(graph, arg_expr, row, &ctx)?
                             };
-                        groups[idx].1[agg_idx].accumulate(func, arg_val, *distinct);
+                        let second_val = second_arg_expr
+                            .as_ref()
+                            .map(|e| self.eval_with_storage(graph, e, row, &ctx))
+                            .transpose()?;
+                        groups[idx].1[agg_idx].accumulate(func, arg_val, second_val, *distinct);
                     }
                 }
 
@@ -450,7 +454,7 @@ impl<'a> QueryExecutor<'a> {
                     }
 
                     // Add aggregation result columns.
-                    for ((func, _, _, alias), state) in aggregations.iter().zip(&agg_states) {
+                    for ((func, _, _, _, alias), state) in aggregations.iter().zip(&agg_states) {
                         row.insert(alias.0.clone(), state.finalize(func));
                     }
                     budget.record_row();
@@ -574,16 +578,38 @@ impl<'a> QueryExecutor<'a> {
                     budget.check_or_err()?;
                     let mut nodes: Vec<NodeId> = Vec::new();
                     let mut edges: Vec<EdgeId> = Vec::new();
-                    for na in node_aliases {
-                        if let Some(Value::Node(nid)) = row.get(&na.0) {
-                            nodes.push(*nid);
+
+                    // Check if any edge alias holds a complete Path (from VarLenExpand).
+                    // When it does, use that path's nodes/edges as the base assembly.
+                    let mut has_varlen_path = false;
+                    for ea in edge_aliases.iter() {
+                        if let Some(Value::Path {
+                            nodes: pn,
+                            edges: pe,
+                        }) = row.get(&ea.0)
+                        {
+                            // VarLenExpand stored the complete path here; use it directly.
+                            nodes = pn.clone();
+                            edges = pe.clone();
+                            has_varlen_path = true;
+                            break;
                         }
                     }
-                    for ea in edge_aliases {
-                        if let Some(Value::Edge(eid)) = row.get(&ea.0) {
-                            edges.push(*eid);
+
+                    if !has_varlen_path {
+                        // Standard fixed-hop path: assemble from individual node/edge aliases.
+                        for na in node_aliases {
+                            if let Some(Value::Node(nid)) = row.get(&na.0) {
+                                nodes.push(*nid);
+                            }
+                        }
+                        for ea in edge_aliases {
+                            if let Some(Value::Edge(eid)) = row.get(&ea.0) {
+                                edges.push(*eid);
+                            }
                         }
                     }
+
                     let path_val = Value::Path { nodes, edges };
                     row.insert(path_alias.0.clone(), path_val);
                     out.push(row);
@@ -1588,16 +1614,24 @@ impl<'a> QueryExecutor<'a> {
             }
             // Label check: n:Label — check if node has the specified label
             Expr::HasLabel(inner, label) => {
-                let v = self.eval_with_storage(graph, inner, row, ctx)?;
-                match v {
+                // Walk the HasLabel chain (e.g. `a:A:B:C` → chain of HasLabels)
+                // to collect all labels and find the base expression.
+                let mut base_expr: &Expr = inner.as_ref();
+                let mut labels_to_check: Vec<&crate::ast::Label> = vec![label];
+                while let Expr::HasLabel(inner_inner, inner_label) = base_expr {
+                    labels_to_check.push(inner_label);
+                    base_expr = inner_inner.as_ref();
+                }
+
+                let base_val = self.eval_with_storage(graph, base_expr, row, ctx)?;
+                match base_val {
                     Value::Null => Ok(Value::Null),
                     Value::Node(node_id) => {
                         match self.store.get_node(graph, node_id)? {
                             Some(node_data) => {
-                                let has = node_data
-                                    .labels
-                                    .iter()
-                                    .any(|l| l == label.as_str());
+                                let has = labels_to_check.iter().all(|l| {
+                                    node_data.labels.iter().any(|nl| nl == l.as_str())
+                                });
                                 Ok(Value::Bool(has))
                             }
                             None => Ok(Value::Bool(false)),
@@ -2088,6 +2122,10 @@ impl<'a> QueryExecutor<'a> {
                 let val = row
                     .get(alias.0.as_str())
                     .ok_or_else(|| undefined_var(&alias.0))?;
+                // SET on a null variable (from OPTIONAL MATCH) is silently ignored.
+                if val.is_null() {
+                    return Ok(());
+                }
                 let ctx = self.build_filter_ctx(graph, row)?;
                 let prop_val = self.eval_with_storage(graph, value, row, &ctx)?;
                 let mut props = HashMap::new();
@@ -2112,6 +2150,10 @@ impl<'a> QueryExecutor<'a> {
                 let val = row
                     .get(alias.0.as_str())
                     .ok_or_else(|| undefined_var(&alias.0))?;
+                // SET on a null variable (from OPTIONAL MATCH) is silently ignored.
+                if val.is_null() {
+                    return Ok(());
+                }
                 let ctx = self.build_filter_ctx(graph, row)?;
                 let map_val = self.eval_with_storage(graph, map, row, &ctx)?;
                 let props = match map_val {
@@ -2178,10 +2220,18 @@ struct AggState {
     max: Option<Value>,
     collected: Vec<Value>,
     seen_distinct: HashSet<String>,
+    /// Percentile parameter for percentileDisc/percentileCont (0.0..=1.0).
+    percentile: Option<f64>,
 }
 
 impl AggState {
-    fn accumulate(&mut self, func: &AggFunction, val: Value, distinct: bool) {
+    fn accumulate(
+        &mut self,
+        func: &AggFunction,
+        val: Value,
+        second_val: Option<Value>,
+        distinct: bool,
+    ) {
         // For distinct aggregations, skip duplicates.
         if distinct {
             let key = format!("{:?}", val);
@@ -2240,9 +2290,27 @@ impl AggState {
                     self.collected.push(val);
                 }
             }
-            // Unsupported aggregation functions: treat as count.
-            _ => {
-                self.count += 1;
+            AggFunction::StDev | AggFunction::StDevP => {
+                if !val.is_null() {
+                    if let Some(f) = val.as_float() {
+                        self.collected.push(Value::Float(f));
+                    }
+                }
+            }
+            AggFunction::PercentileDisc | AggFunction::PercentileCont => {
+                if !val.is_null() {
+                    if let Some(f) = val.as_float() {
+                        self.collected.push(Value::Float(f));
+                    }
+                }
+                // Store the percentile parameter (constant across rows, first one wins).
+                if self.percentile.is_none() {
+                    if let Some(pval) = &second_val {
+                        if let Some(f) = pval.as_float() {
+                            self.percentile = Some(f);
+                        }
+                    }
+                }
             }
         }
     }
@@ -2261,7 +2329,77 @@ impl AggState {
             AggFunction::Min => self.min.clone().unwrap_or(Value::Null),
             AggFunction::Max => self.max.clone().unwrap_or(Value::Null),
             AggFunction::Collect => Value::List(self.collected.clone()),
-            _ => Value::Int(self.count),
+            AggFunction::StDev => {
+                let nums: Vec<f64> = self
+                    .collected
+                    .iter()
+                    .filter_map(|v| v.as_float())
+                    .collect();
+                if nums.len() <= 1 {
+                    return Value::Float(0.0);
+                }
+                let mean = nums.iter().sum::<f64>() / nums.len() as f64;
+                let variance = nums.iter().map(|x| (x - mean).powi(2)).sum::<f64>()
+                    / (nums.len() - 1) as f64;
+                Value::Float(variance.sqrt())
+            }
+            AggFunction::StDevP => {
+                let nums: Vec<f64> = self
+                    .collected
+                    .iter()
+                    .filter_map(|v| v.as_float())
+                    .collect();
+                if nums.is_empty() {
+                    return Value::Float(0.0);
+                }
+                let mean = nums.iter().sum::<f64>() / nums.len() as f64;
+                let variance = nums.iter().map(|x| (x - mean).powi(2)).sum::<f64>()
+                    / nums.len() as f64;
+                Value::Float(variance.sqrt())
+            }
+            AggFunction::PercentileDisc => {
+                let mut nums: Vec<f64> = self
+                    .collected
+                    .iter()
+                    .filter_map(|v| v.as_float())
+                    .collect();
+                if nums.is_empty() {
+                    return Value::Null;
+                }
+                nums.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+                let p = self.percentile.unwrap_or(0.5).clamp(0.0, 1.0);
+                // Nearest rank method: index = ceil(p * n) - 1 (clamped)
+                let n = nums.len();
+                let idx = ((p * n as f64).ceil() as usize).saturating_sub(1).min(n - 1);
+                // Return as integer if all values are whole numbers
+                let v = nums[idx];
+                if v.fract() == 0.0 && v >= i64::MIN as f64 && v <= i64::MAX as f64 {
+                    Value::Int(v as i64)
+                } else {
+                    Value::Float(v)
+                }
+            }
+            AggFunction::PercentileCont => {
+                let mut nums: Vec<f64> = self
+                    .collected
+                    .iter()
+                    .filter_map(|v| v.as_float())
+                    .collect();
+                if nums.is_empty() {
+                    return Value::Null;
+                }
+                nums.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+                let p = self.percentile.unwrap_or(0.5).clamp(0.0, 1.0);
+                let idx = p * (nums.len() - 1) as f64;
+                let lo = idx.floor() as usize;
+                let hi = (idx.ceil() as usize).min(nums.len() - 1);
+                if lo == hi {
+                    Value::Float(nums[lo])
+                } else {
+                    let frac = idx - lo as f64;
+                    Value::Float(nums[lo] * (1.0 - frac) + nums[hi] * frac)
+                }
+            }
         }
     }
 }
@@ -2292,6 +2430,7 @@ fn undefined_var(name: &str) -> GqlError {
 /// Check if the plan's top-level operator (or outermost chain) is a write-only operation.
 /// This is used to suppress result rows for queries without RETURN (e.g., `CREATE ()`, `DELETE n`).
 /// Note: MERGE is excluded because it can return rows when used with RETURN.
+#[allow(dead_code)]
 fn is_toplevel_write(op: &Operator) -> bool {
     match op {
         Operator::Create { .. } | Operator::Delete { .. }
@@ -2306,12 +2445,13 @@ fn is_toplevel_write(op: &Operator) -> bool {
 }
 
 /// Check if the operator tree contains write operations (CREATE, DELETE, SET, etc.).
+#[allow(dead_code)]
 fn has_write_operations(op: &Operator) -> bool {
     match op {
         Operator::Create { .. } | Operator::Delete { .. } | Operator::Merge { .. }
         | Operator::MergeRelationship { .. } => true,
-        Operator::Set { child, .. }
-        | Operator::Remove { child, .. } => true,
+        Operator::Set { .. }
+        | Operator::Remove { .. } => true,
         Operator::Distinct { child }
         | Operator::Sort { child, .. }
         | Operator::Limit { child, .. }
@@ -3049,6 +3189,7 @@ mod tests {
                 aggregations: vec![(
                     AggFunction::Count,
                     Expr::Variable(Identifier::new("n")),
+                    None,
                     false,
                     Identifier::new("count"),
                 )],

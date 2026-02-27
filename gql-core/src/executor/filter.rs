@@ -1330,7 +1330,7 @@ pub fn eval_function_with_vals(name: &str, vals: Vec<Value>) -> Result<Value, Gq
         }
         "datetime.fromepoch" => {
             // datetime.fromepoch(seconds, nanoseconds)
-            if vals.len() < 1 || vals.len() > 2 {
+            if vals.is_empty() || vals.len() > 2 {
                 return Err(GqlError::Execution(ExecutionError::TypeMismatch {
                     expected: "datetime.fromEpoch(seconds[, nanoseconds])".to_string(),
                     actual: format!("{} arguments", vals.len()),
@@ -2375,12 +2375,12 @@ fn truncate_time_fields(t: jiff::civil::Time, unit: &str) -> Result<jiff::civil:
             .map_err(|e| temporal_parse_error("truncate", e)),
         "millisecond" => {
             let ns = (t.subsec_nanosecond() / 1_000_000) * 1_000_000;
-            jiff::civil::Time::new(t.hour(), t.minute(), t.second(), ns as i32)
+            jiff::civil::Time::new(t.hour(), t.minute(), t.second(), ns)
                 .map_err(|e| temporal_parse_error("truncate", e))
         }
         "microsecond" => {
             let ns = (t.subsec_nanosecond() / 1_000) * 1_000;
-            jiff::civil::Time::new(t.hour(), t.minute(), t.second(), ns as i32)
+            jiff::civil::Time::new(t.hour(), t.minute(), t.second(), ns)
                 .map_err(|e| temporal_parse_error("truncate", e))
         }
         other => Err(temporal_parse_error("truncate", format!("unknown unit '{other}'"))),
@@ -2435,7 +2435,7 @@ fn apply_time_overrides(
     } else if let Some(Value::Int(v)) = overrides.get("millisecond") {
         *v as i32 * 1_000_000
     } else {
-        t.subsec_nanosecond() as i32
+        t.subsec_nanosecond()
     };
     jiff::civil::Time::new(hour, minute, second, nanosecond)
         .map_err(|e| temporal_parse_error("truncate", e))
