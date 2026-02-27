@@ -28,6 +28,12 @@ use crate::types::Value;
 /// A single result row: owned map from column name to value.
 pub type Row = HashMap<String, Value>;
 
+// ── Private types ─────────────────────────────────────────────────────────────
+
+/// BFS queue entry for `VarLenExpand`: (current_node, path_nodes, path_edges, path_edge_set).
+/// `path_edge_set` mirrors `path_edges` as a `HashSet` for O(1) duplicate-edge checks.
+type VarLenBfsEntry = (NodeId, Vec<NodeId>, Vec<EdgeId>, HashSet<EdgeId>);
+
 /// The final result of executing a query.
 #[derive(Debug)]
 pub struct QueryResult {
@@ -191,9 +197,7 @@ impl<'a> QueryExecutor<'a> {
             Operator::SingleRow => {
                 budget.record_row();
                 let mut row = Row::new();
-                for (k, v) in &self.parameters {
-                    row.insert(k.clone(), v.clone());
-                }
+                inject_parameters(&mut row, &self.parameters);
                 Ok(vec![row])
             }
 
@@ -222,9 +226,7 @@ impl<'a> QueryExecutor<'a> {
                     if base_rows.is_empty() {
                         let mut row = Row::new();
                         row.insert(alias.0.clone(), Value::Node(*id));
-                        for (k, v) in &self.parameters {
-                            row.insert(k.clone(), v.clone());
-                        }
+                        inject_parameters(&mut row, &self.parameters);
                         budget.record_row();
                         rows.push(row);
                     } else {
@@ -433,9 +435,7 @@ impl<'a> QueryExecutor<'a> {
                         new_row.insert(col_name, val);
                     }
                     // Preserve query parameters through scope changes.
-                    for (k, v) in &self.parameters {
-                        new_row.entry(k.clone()).or_insert_with(|| v.clone());
-                    }
+                    inject_parameters(&mut new_row, &self.parameters);
                     budget.record_row();
                     out.push(new_row);
                 }
@@ -517,8 +517,11 @@ impl<'a> QueryExecutor<'a> {
                 budget.check_or_err()?;
 
                 // Group rows by the key expression values.
-                // We use a Vec-of-(key_row, agg_state) because Value doesn't impl Hash.
+                // We use a Vec-of-(key_row, agg_state) for ordered output and a
+                // HashMap<String, usize> index for O(1) group lookup (Value doesn't impl Hash,
+                // so we serialize the key via Debug for the index key).
                 let mut groups: Vec<(Vec<Value>, Vec<AggState>)> = Vec::new();
+                let mut group_index: HashMap<String, usize> = HashMap::new();
 
                 for row in &input {
                     let ctx = self.build_filter_ctx(graph, row)?;
@@ -527,14 +530,16 @@ impl<'a> QueryExecutor<'a> {
                         .map(|expr| self.eval_with_storage(graph, expr, row, &ctx))
                         .collect::<Result<Vec<_>, GqlError>>()?;
 
-                    // Find existing group or create new.
-                    let group_idx = groups.iter().position(|(k, _)| k == &group_key);
-                    let idx = if let Some(i) = group_idx {
+                    // Find existing group or create new — O(1) via the index.
+                    let key_str = format!("{:?}", group_key);
+                    let idx = if let Some(&i) = group_index.get(&key_str) {
                         i
                     } else {
+                        let i = groups.len();
                         let new_states = aggregations.iter().map(|_| AggState::default()).collect();
                         groups.push((group_key, new_states));
-                        groups.len() - 1
+                        group_index.insert(key_str, i);
+                        i
                     };
 
                     // Accumulate into each aggregation state.
@@ -581,9 +586,7 @@ impl<'a> QueryExecutor<'a> {
                     }
                     // Preserve query parameters so downstream operators (e.g. Delete,
                     // Filter) can still access $param bindings after aggregation.
-                    for (k, v) in &self.parameters {
-                        row.entry(k.clone()).or_insert_with(|| v.clone());
-                    }
+                    inject_parameters(&mut row, &self.parameters);
                     budget.record_row();
                     out.push(row);
                 }
@@ -598,9 +601,7 @@ impl<'a> QueryExecutor<'a> {
                 } else {
                     // No child means standalone CREATE: one row with parameters.
                     let mut row = Row::new();
-                    for (k, v) in &self.parameters {
-                        row.insert(k.clone(), v.clone());
-                    }
+                    inject_parameters(&mut row, &self.parameters);
                     vec![row]
                 };
 
@@ -845,9 +846,7 @@ impl<'a> QueryExecutor<'a> {
                     self.exec_operator(graph, ch, budget, outer_rows, stats)?
                 } else {
                     let mut row = Row::new();
-                    for (k, v) in &self.parameters {
-                        row.insert(k.clone(), v.clone());
-                    }
+                    inject_parameters(&mut row, &self.parameters);
                     vec![row]
                 };
 
@@ -979,8 +978,10 @@ impl<'a> QueryExecutor<'a> {
                         .ok_or_else(|| undefined_var(&src_alias.0))?;
                     let src_id = extract_node_id(src_val, &src_alias.0)?;
 
-                    // BFS tracking full paths: queue entries are (node_id, path_nodes, path_edges)
-                    let mut queue: VecDeque<(NodeId, Vec<NodeId>, Vec<EdgeId>)> = VecDeque::new();
+                    // BFS tracking full paths: queue entries are
+                    // (node_id, path_nodes, path_edges, path_edge_set) where path_edge_set
+                    // mirrors path_edges as a HashSet for O(1) duplicate-edge checks.
+                    let mut queue: VecDeque<VarLenBfsEntry> = VecDeque::new();
                     // Collect edges already used in earlier steps of this named path.
                     // This enforces cross-operator relationship isomorphism:
                     // - Direct Value::Edge in the row (from regular Expand steps, incl. pre-bound r)
@@ -1004,9 +1005,9 @@ impl<'a> QueryExecutor<'a> {
                             _ => vec![],
                         })
                         .collect();
-                    queue.push_back((src_id, vec![src_id], vec![]));
+                    queue.push_back((src_id, vec![src_id], vec![], HashSet::new()));
 
-                    while let Some((current, path_nodes, path_edges)) = queue.pop_front() {
+                    while let Some((current, path_nodes, path_edges, path_edge_set)) = queue.pop_front() {
                         budget.check_or_err()?;
                         let depth = path_edges.len() as u32;
 
@@ -1049,7 +1050,7 @@ impl<'a> QueryExecutor<'a> {
                                 // relationship cannot appear twice in one path), but node
                                 // repetition is allowed. This prevents infinite loops.
                                 // Also check edges from prior steps in this named path.
-                                if path_edges.contains(&adj.edge_id)
+                                if path_edge_set.contains(&adj.edge_id)
                                     || prior_path_edges.contains(&adj.edge_id) {
                                     continue;
                                 }
@@ -1070,7 +1071,9 @@ impl<'a> QueryExecutor<'a> {
                                 new_path_nodes.push(adj.neighbor_id);
                                 let mut new_path_edges = path_edges.clone();
                                 new_path_edges.push(adj.edge_id);
-                                queue.push_back((adj.neighbor_id, new_path_nodes, new_path_edges));
+                                let mut new_path_edge_set = path_edge_set.clone();
+                                new_path_edge_set.insert(adj.edge_id);
+                                queue.push_back((adj.neighbor_id, new_path_nodes, new_path_edges, new_path_edge_set));
                             }
                         }
                     }
@@ -1081,7 +1084,7 @@ impl<'a> QueryExecutor<'a> {
             // ── Set ──────────────────────────────────────────────────────────────
             Operator::Set { items, child } => {
                 let input = self.exec_operator(graph, child, budget, outer_rows, stats)?;
-                let mut out = Vec::new();
+                let mut out = Vec::with_capacity(input.len());
 
                 for row in input {
                     budget.check_or_err()?;
@@ -1098,7 +1101,7 @@ impl<'a> QueryExecutor<'a> {
             // ── Remove ───────────────────────────────────────────────────────────
             Operator::Remove { items, child } => {
                 let input = self.exec_operator(graph, child, budget, outer_rows, stats)?;
-                let mut out = Vec::new();
+                let mut out = Vec::with_capacity(input.len());
 
                 for row in input {
                     budget.check_or_err()?;
@@ -3240,6 +3243,17 @@ fn discover_operator_aliases(op: &Operator) -> Vec<String> {
         _ => {}
     }
     aliases
+}
+
+/// Inject query parameters into a row.
+///
+/// Uses `entry().or_insert_with()` so that values already present in the row
+/// (computed by earlier operators) are never overwritten by a parameter of the
+/// same name.  On an empty row the behaviour is identical to plain `insert`.
+fn inject_parameters(row: &mut Row, params: &HashMap<String, Value>) {
+    for (k, v) in params {
+        row.entry(k.clone()).or_insert_with(|| v.clone());
+    }
 }
 
 /// Generate a deterministic string key for a row, used by `Distinct`.
