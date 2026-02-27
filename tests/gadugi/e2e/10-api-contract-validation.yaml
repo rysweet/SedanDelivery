@@ -66,7 +66,7 @@ scenario:
     - action: api_call
       method: POST
       url: "${api_base}/graphs/${graph_name}/edges"
-      body: '{"source": "0", "target": "1", "type": "KNOWS", "properties": {"since": 2020}}'
+      body: '{"source": "1", "target": "2", "type": "KNOWS", "properties": {"since": 2020}}'
       expected_status: 201
       verify_body:
         contains: '"type":"KNOWS"'
@@ -94,7 +94,7 @@ scenario:
     # Neighbors
     - action: api_call
       method: GET
-      url: "${api_base}/graphs/${graph_name}/neighbors/0"
+      url: "${api_base}/graphs/${graph_name}/neighbors/1"
       expected_status: 200
       description: "Neighbors endpoint returns OK"
 
