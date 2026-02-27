@@ -578,6 +578,15 @@ impl<'s> QueryPlanner<'s> {
                     }
                     path_node_aliases.push(dst_alias.clone());
                 }
+                // Inline property constraints on a variable-length relationship
+                // must be checked for every edge in the path during BFS traversal.
+                // We pass them as `rel_props` using the sentinel alias `__varlen_edge__`.
+                let rel_props_expr = rel.properties.as_ref().filter(|p| !p.is_empty()).map(|props| {
+                    props_to_filter_expr(
+                        &Identifier::new("__varlen_edge__"),
+                        props,
+                    )
+                });
                 op = Operator::VarLenExpand {
                     direction: rel.direction,
                     rel_types: rel.rel_types.clone(),
@@ -588,6 +597,7 @@ impl<'s> QueryPlanner<'s> {
                     path_mode: has_path_var,
                     dst_alias: dst_alias.clone(),
                     child: Box::new(op),
+                    rel_props: rel_props_expr,
                 };
             } else {
                 // Single-hop expand.
@@ -621,8 +631,10 @@ impl<'s> QueryPlanner<'s> {
             }
 
             // If the relationship has inline property constraints, add a property filter.
+            // For variable-length patterns, this is handled inside VarLenExpand via
+            // rel_props (each traversed edge is checked during BFS), so skip the Filter.
             if let Some(props) = &rel.properties {
-                if !props.is_empty() {
+                if !props.is_empty() && rel.range.is_none() {
                     // rel_alias is guaranteed to exist because we forced it above.
                     let filter_alias = rel.variable.clone().unwrap_or_else(|| {
                         Identifier::new(format!("__path_rel_{}__", step_idx))
@@ -1203,14 +1215,28 @@ impl<'s> QueryPlanner<'s> {
         let on_create: Vec<SetItem> = mc.on_create.iter().map(map_set_clause_item).collect();
         let on_match: Vec<SetItem> = mc.on_match.iter().map(map_set_clause_item).collect();
 
-        Ok(Operator::Merge {
-            node_alias,
+        let merge_op = Operator::Merge {
+            node_alias: node_alias.clone(),
             labels,
             properties,
             on_create,
             on_match,
             child: child.map(Box::new),
-        })
+        };
+
+        // If the MERGE clause has a path variable (e.g. `MERGE p = (a {...})`),
+        // wrap with AssemblePath so `p` is available in subsequent RETURN.
+        if let Some(ref path_var) = mc.pattern.variable {
+            let node_aliases = node_alias.into_iter().collect();
+            Ok(Operator::AssemblePath {
+                path_alias: path_var.clone(),
+                node_aliases,
+                edge_aliases: vec![],
+                child: Box::new(merge_op),
+            })
+        } else {
+            Ok(merge_op)
+        }
     }
 
     fn plan_merge_relationship(
@@ -1237,7 +1263,15 @@ impl<'s> QueryPlanner<'s> {
             .variable
             .clone()
             .unwrap_or_else(|| Identifier::new("__merge_dst__"));
-        let rel_alias = step.rel.variable.clone();
+        // When a path variable exists on the MERGE pattern, ensure we capture the
+        // edge ID by assigning a synthetic alias if none was specified by the user.
+        let rel_alias = if mc.pattern.variable.is_some() {
+            Some(step.rel.variable.clone().unwrap_or_else(|| {
+                Identifier::new("__merge_rel__")
+            }))
+        } else {
+            step.rel.variable.clone()
+        };
         let rel_type = step
             .rel
             .rel_types
@@ -1260,17 +1294,33 @@ impl<'s> QueryPlanner<'s> {
         let on_create: Vec<SetItem> = mc.on_create.iter().map(map_set_clause_item).collect();
         let on_match: Vec<SetItem> = mc.on_match.iter().map(map_set_clause_item).collect();
 
-        Ok(Operator::MergeRelationship {
-            src_alias,
-            dst_alias,
-            rel_alias,
+        let merge_op = Operator::MergeRelationship {
+            src_alias: src_alias.clone(),
+            dst_alias: dst_alias.clone(),
+            rel_alias: rel_alias.clone(),
             rel_type,
             direction,
             properties,
             on_create,
             on_match,
             child: Box::new(child),
-        })
+        };
+
+        // If the MERGE clause has a path variable (e.g. `MERGE p = (a)-[:R]->(b)`),
+        // wrap with AssemblePath so `p` is available in subsequent RETURN.
+        if let Some(ref path_var) = mc.pattern.variable {
+            let node_aliases = vec![src_alias, dst_alias];
+            // rel_alias is guaranteed Some here (forced above when path_var is Some).
+            let edge_aliases = rel_alias.into_iter().collect();
+            Ok(Operator::AssemblePath {
+                path_alias: path_var.clone(),
+                node_aliases,
+                edge_aliases,
+                child: Box::new(merge_op),
+            })
+        } else {
+            Ok(merge_op)
+        }
     }
 
     // ── RETURN planning ───────────────────────────────────────────────────────
@@ -1296,7 +1346,60 @@ impl<'s> QueryPlanner<'s> {
         // When aggregation is active, rewrite aggregate function calls in ORDER BY
         // to reference their output aliases (the Aggregate operator stores results
         // under alias names, not as live function calls).
+        // For non-aggregation, ORDER BY may reference RETURN aliases that don't
+        // exist in the raw rows yet; we add a pre-projection to expose them.
         let pipeline = if !rc.order_by.is_empty() {
+            // For non-aggregation: if ORDER BY references any RETURN alias,
+            // pre-project those aliases onto the raw rows before sorting.
+            let pipeline = if !has_aggregation {
+                // Collect all RETURN aliases referenced in ORDER BY (as Variable or Property root).
+                let needs_pre_project = rc.order_by.iter().any(|s| {
+                    // Extract the root variable name from the ORDER BY expression.
+                    let root_var = match &s.expr {
+                        Expr::Variable(v) => Some(v.0.as_str()),
+                        Expr::Property(obj, _) => {
+                            if let Expr::Variable(v) = obj.as_ref() {
+                                Some(v.0.as_str())
+                            } else {
+                                None
+                            }
+                        }
+                        _ => None,
+                    };
+                    if let Some(root) = root_var {
+                        items.iter().any(|item| {
+                            let alias = item.alias.as_ref().map(|a| a.0.as_str())
+                                .unwrap_or_else(|| "");
+                            root == alias && alias != expr_to_col_name(&item.expr).as_str()
+                        })
+                    } else {
+                        false
+                    }
+                });
+                if needs_pre_project {
+                    // Add a Project that exposes RETURN aliases alongside raw vars.
+                    let child_aliases = crate::planner::collect_visible_aliases(&pipeline);
+                    let mut aug_items: Vec<(Expr, Option<Identifier>)> = child_aliases
+                        .iter()
+                        .map(|a| (Expr::Variable(Identifier::new(a.clone())), None))
+                        .collect();
+                    for item in &items {
+                        if let Some(alias) = &item.alias {
+                            if alias.0 != expr_to_col_name(&item.expr) {
+                                aug_items.push((item.expr.clone(), Some(alias.clone())));
+                            }
+                        }
+                    }
+                    Operator::Project {
+                        items: aug_items,
+                        child: Box::new(pipeline),
+                    }
+                } else {
+                    pipeline
+                }
+            } else {
+                pipeline
+            };
             let sort_items: Vec<(Expr, bool)> = rc
                 .order_by
                 .iter()
@@ -1395,33 +1498,28 @@ impl<'s> QueryPlanner<'s> {
                     aggregations.push((func, arg, second_arg, distinct, alias.clone()));
                     post_projections.push((Expr::Variable(alias), None));
                 } else {
-                    // Complex case: aggregate is wrapped (e.g., count(a) + 3)
-                    // Extract inner aggregate(s) and create temp aliases
+                    // Complex case: aggregate is wrapped (e.g., count(a) + 3, count(a) * 10 + count(b) * 5)
+                    // Iteratively extract ALL aggregate calls and replace with temp aliases.
                     needs_post_project = true;
-                    let temp_alias = Identifier::new(format!("__agg_{agg_counter}"));
-                    agg_counter += 1;
-
-                    // Find the innermost aggregate function call
-                    if let Some((func, arg, second_arg, distinct)) =
-                        find_inner_aggregate(&item.expr)
-                    {
-                        aggregations.push((func, arg, second_arg, distinct, temp_alias.clone()));
-                        // Rewrite the original expression to reference the temp alias
-                        let rewritten = rewrite_agg_to_var(&item.expr, &temp_alias);
-                        let final_alias = item
-                            .alias
-                            .clone()
-                            .unwrap_or_else(|| Identifier::new(return_item_name(item)));
-                        post_projections.push((rewritten, Some(final_alias)));
-                    } else {
-                        // Fallback: treat as key
-                        keys.push(item.expr.clone());
-                        let alias = item
-                            .alias
-                            .clone()
-                            .unwrap_or_else(|| Identifier::new(return_item_name(item)));
-                        post_projections.push((Expr::Variable(alias), None));
+                    let mut rewritten = item.expr.clone();
+                    // Keep extracting aggregates until no more remain in the expression.
+                    while has_agg_function(&rewritten) {
+                        let temp_alias = Identifier::new(format!("__agg_{agg_counter}"));
+                        agg_counter += 1;
+                        if let Some((func, arg, second_arg, distinct)) =
+                            find_inner_aggregate(&rewritten)
+                        {
+                            aggregations.push((func, arg, second_arg, distinct, temp_alias.clone()));
+                            rewritten = rewrite_agg_to_var(&rewritten, &temp_alias);
+                        } else {
+                            break;
+                        }
                     }
+                    let final_alias = item
+                        .alias
+                        .clone()
+                        .unwrap_or_else(|| Identifier::new(return_item_name(item)));
+                    post_projections.push((rewritten, Some(final_alias)));
                 }
             } else {
                 // Non-aggregate: use as group key.
@@ -1563,7 +1661,20 @@ fn rewrite_agg_order_expr(expr: &Expr, return_items: &[ReturnItem]) -> Expr {
             return Expr::Variable(Identifier::new(ri_alias));
         }
     }
-    expr.clone()
+    // For compound expressions (e.g. `$age + avg(person.age) - 1000`), recursively
+    // rewrite sub-expressions that match return items, replacing agg calls with aliases.
+    match expr {
+        Expr::BinaryOp { op, left, right } => Expr::BinaryOp {
+            op: *op,
+            left: Box::new(rewrite_agg_order_expr(left, return_items)),
+            right: Box::new(rewrite_agg_order_expr(right, return_items)),
+        },
+        Expr::UnaryOp { op, expr: inner } => Expr::UnaryOp {
+            op: *op,
+            expr: Box::new(rewrite_agg_order_expr(inner, return_items)),
+        },
+        _ => expr.clone(),
+    }
 }
 
 /// Map an AST `SetClauseItem` to a planner `SetItem`.
