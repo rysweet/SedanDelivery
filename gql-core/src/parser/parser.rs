@@ -1098,6 +1098,9 @@ impl<'src> Parser<'src> {
             }
         }
 
+        // Track the previous right-hand side and operator for chained comparisons.
+        // `a < b < c` → `(a < b) AND (b < c)` per openCypher semantics.
+        let mut prev_right: Option<Expr> = None;
         loop {
             let op = match self.peek().clone() {
                 TokenKind::Eq => BinaryOp::Eq,
@@ -1112,11 +1115,28 @@ impl<'src> Parser<'src> {
             self.advance();
             let right = self.parse_in_pred()?;
             let right = self.parse_null_check(right)?;
-            left = Expr::BinaryOp {
-                op,
-                left: Box::new(left),
-                right: Box::new(right),
-            };
+
+            if let Some(prev) = prev_right.take() {
+                // Chained comparison: left is already `(a < b)`, now we have `< c`.
+                // Build `(a < b) AND (b < c)` where `b` is the previous right operand.
+                let chain_cmp = Expr::BinaryOp {
+                    op,
+                    left: Box::new(prev.clone()),
+                    right: Box::new(right.clone()),
+                };
+                left = Expr::BinaryOp {
+                    op: BinaryOp::And,
+                    left: Box::new(left),
+                    right: Box::new(chain_cmp),
+                };
+            } else {
+                left = Expr::BinaryOp {
+                    op,
+                    left: Box::new(left),
+                    right: Box::new(right.clone()),
+                };
+            }
+            prev_right = Some(right);
         }
         Ok(left)
     }

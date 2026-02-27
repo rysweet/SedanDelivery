@@ -227,18 +227,47 @@ impl<'a> QueryExecutor<'a> {
                                 self.store.out_edges_by_type(graph, src_id, &type_strs)?;
                             let in_entries =
                                 self.store.in_edges_by_type(graph, src_id, &type_strs)?;
-                            out_entries.extend(in_entries);
+                            // Deduplicate: for self-loops (src==dst), the same edge
+                            // appears in both out_edges and in_edges. Keep only unique
+                            // (edge_id, neighbor_id) pairs.
+                            let mut seen_edges: HashSet<(u64, u64)> = HashSet::new();
+                            for e in &out_entries {
+                                seen_edges.insert((e.edge_id.0, e.neighbor_id.0));
+                            }
+                            for e in in_entries {
+                                if seen_edges.insert((e.edge_id.0, e.neighbor_id.0)) {
+                                    out_entries.push(e);
+                                }
+                            }
                             out_entries
                         }
                     };
 
                     for adj in adj_entries {
                         budget.check_or_err()?;
+                        // If dst_alias is already bound in the row (cyclic patterns
+                        // like (a)-->()-->(a)), only keep the result if the bound
+                        // value matches the expansion result.
+                        let dst_val = Value::Node(adj.neighbor_id);
+                        if let Some(existing) = row.get(dst_alias.0.as_str()) {
+                            if *existing != dst_val {
+                                continue;
+                            }
+                        }
+                        // Same for rel_alias: if already bound, values must match.
+                        if let Some(ra) = rel_alias {
+                            let rel_val = Value::Edge(adj.edge_id);
+                            if let Some(existing) = row.get(ra.0.as_str()) {
+                                if *existing != rel_val {
+                                    continue;
+                                }
+                            }
+                        }
                         let mut new_row = row.clone();
                         if let Some(ra) = rel_alias {
                             new_row.insert(ra.0.clone(), Value::Edge(adj.edge_id));
                         }
-                        new_row.insert(dst_alias.0.clone(), Value::Node(adj.neighbor_id));
+                        new_row.insert(dst_alias.0.clone(), dst_val);
                         budget.record_row();
                         out.push(new_row);
                     }
@@ -430,12 +459,15 @@ impl<'a> QueryExecutor<'a> {
                         let mut alias_to_id: HashMap<String, NodeId> = HashMap::new();
 
                         for (alias, labels, prop_exprs) in &pattern.nodes {
-                            // If this alias is already bound to a Node in the row,
-                            // reuse the existing node rather than creating a new one.
+                            // If the alias is a user-defined variable (not anonymous)
+                            // and is already bound to a Node in the row, reuse it
+                            // instead of creating a new node.
                             if let Some(a) = alias {
-                                if let Some(Value::Node(existing_id)) = row.get(&a.0) {
-                                    alias_to_id.insert(a.0.clone(), *existing_id);
-                                    continue;
+                                if !a.0.starts_with("__anon") {
+                                    if let Some(Value::Node(existing_id)) = row.get(a.0.as_str()) {
+                                        alias_to_id.insert(a.0.clone(), *existing_id);
+                                        continue;
+                                    }
                                 }
                             }
                             let ctx = self.build_filter_ctx(graph, &row)?;
@@ -858,6 +890,7 @@ impl<'a> QueryExecutor<'a> {
             Operator::Merge {
                 node_alias,
                 labels,
+                properties,
                 on_create,
                 on_match,
                 child,
@@ -872,6 +905,16 @@ impl<'a> QueryExecutor<'a> {
                 for mut row in input {
                     budget.check_or_err()?;
 
+                    // Evaluate inline property values from the MERGE pattern.
+                    let mut prop_vals: Vec<(String, Value)> = Vec::new();
+                    if !properties.is_empty() {
+                        let ctx = self.build_filter_ctx(graph, &row)?;
+                        for (k, expr) in properties {
+                            let val = self.eval_with_storage(graph, expr, &row, &ctx)?;
+                            prop_vals.push((k.clone(), val));
+                        }
+                    }
+
                     // Try to find existing nodes matching ALL labels
                     let mut candidates: Option<HashSet<u64>> = None;
                     for label in labels {
@@ -883,14 +926,42 @@ impl<'a> QueryExecutor<'a> {
                         });
                     }
 
-                    let matched_id = candidates.and_then(|cands| {
-                        // No label filtering means no candidates unless labels is empty
+                    // Further filter candidates by inline properties.
+                    let matched_id = if let Some(cands) = candidates {
                         if labels.is_empty() {
-                            return None;
+                            None
+                        } else {
+                            let mut found = None;
+                            for cand_id in &cands {
+                                let node_id = NodeId(*cand_id);
+                                if prop_vals.is_empty() {
+                                    found = Some(node_id);
+                                    break;
+                                }
+                                if let Ok(Some(node_data)) = self.store.get_node(graph, node_id) {
+                                    let mut matches = true;
+                                    for (key, expected) in &prop_vals {
+                                        let actual = node_data
+                                            .properties
+                                            .get(key)
+                                            .cloned()
+                                            .unwrap_or(Value::Null);
+                                        if actual != *expected {
+                                            matches = false;
+                                            break;
+                                        }
+                                    }
+                                    if matches {
+                                        found = Some(node_id);
+                                        break;
+                                    }
+                                }
+                            }
+                            found
                         }
-                        // Return first candidate (MERGE finds or creates exactly one)
-                        cands.into_iter().next().map(NodeId)
-                    });
+                    } else {
+                        None
+                    };
 
                     if let Some(node_id) = matched_id {
                         // ON MATCH: apply on_match set items
@@ -901,15 +972,19 @@ impl<'a> QueryExecutor<'a> {
                             self.apply_set_item(graph, &row, item, stats)?;
                         }
                     } else {
-                        // Not found: CREATE the node, then apply ON CREATE set items
+                        // Not found: CREATE the node with inline properties
                         let label_strings: Vec<String> =
                             labels.iter().map(|l| l.as_str().to_string()).collect();
                         let label_count = label_strings.len() as u64;
+                        let create_props: HashMap<String, Value> =
+                            prop_vals.iter().cloned().collect();
+                        let prop_count = create_props.len() as u64;
                         let node_id =
                             self.store
-                                .create_node(graph, label_strings, HashMap::new())?;
+                                .create_node(graph, label_strings, create_props)?;
                         stats.nodes_created += 1;
                         stats.labels_added += label_count;
+                        stats.properties_set += prop_count;
                         if let Some(alias) = node_alias {
                             row.insert(alias.0.clone(), Value::Node(node_id));
                         }
@@ -1003,11 +1078,25 @@ impl<'a> QueryExecutor<'a> {
                         stats,
                     )?;
 
-                    if right_rows.is_empty() {
-                        // No matches on right side: extend left row with NULLs
-                        // for any columns the right side would have produced.
+                    // Filter right rows for variable sharing consistency
+                    // (same as Apply, but incompatible rows are dropped).
+                    let compatible_rows: Vec<Row> = right_rows
+                        .into_iter()
+                        .filter(|right_row| {
+                            for (k, v) in right_row {
+                                if let Some(left_v) = left_row.get(k) {
+                                    if left_v != v {
+                                        return false;
+                                    }
+                                }
+                            }
+                            true
+                        })
+                        .collect();
+
+                    if compatible_rows.is_empty() {
+                        // No compatible matches: extend left row with NULLs
                         let mut result_row = left_row;
-                        // Discover right-side columns from the pattern structure
                         let null_cols = discover_operator_aliases(optional_pattern);
                         for col in null_cols {
                             result_row.entry(col).or_insert(Value::Null);
@@ -1015,8 +1104,7 @@ impl<'a> QueryExecutor<'a> {
                         budget.record_row();
                         out.push(result_row);
                     } else {
-                        // Combine left and right rows
-                        for right_row in right_rows {
+                        for right_row in compatible_rows {
                             budget.check_or_err()?;
                             let mut combined = left_row.clone();
                             for (k, v) in right_row {
@@ -1050,6 +1138,22 @@ impl<'a> QueryExecutor<'a> {
 
                     for inner_row in inner_rows {
                         budget.check_or_err()?;
+                        // Check shared variable consistency: if a variable appears
+                        // in both outer and inner rows, the values must match.
+                        // This handles patterns like MATCH (a)-->(b), (b)-->(c)
+                        // where 'b' must be the same node in both patterns.
+                        let mut compatible = true;
+                        for (k, v) in &inner_row {
+                            if let Some(outer_v) = outer_row.get(k) {
+                                if outer_v != v {
+                                    compatible = false;
+                                    break;
+                                }
+                            }
+                        }
+                        if !compatible {
+                            continue;
+                        }
                         let mut combined = outer_row.clone();
                         for (k, v) in inner_row {
                             combined.insert(k, v);
@@ -3156,6 +3260,7 @@ mod tests {
         let plan = Operator::Merge {
             node_alias: Some(Identifier::new("n")),
             labels: vec![Label::new("Person")],
+            properties: vec![],
             on_create: vec![SetItem::Property {
                 alias: Identifier::new("n"),
                 key: "name".to_string(),
@@ -3192,6 +3297,7 @@ mod tests {
         let plan = Operator::Merge {
             node_alias: Some(Identifier::new("n")),
             labels: vec![Label::new("Person")],
+            properties: vec![],
             on_create: vec![],
             on_match: vec![SetItem::Property {
                 alias: Identifier::new("n"),
@@ -3217,6 +3323,7 @@ mod tests {
         let plan = Operator::Merge {
             node_alias: Some(Identifier::new("n")),
             labels: vec![Label::new("City")],
+            properties: vec![],
             on_create: vec![],
             on_match: vec![],
             child: None,
@@ -3723,5 +3830,35 @@ mod tests {
             .exec_operator("g", &plan, &mut budget, &[start_row], &mut stats)
             .unwrap();
         assert_eq!(rows.len(), 0);
+    }
+
+    // ── E2E integration test: VarLen via parser+planner ─────────────────────
+
+    #[test]
+    fn e2e_varlen_expand_through_planner() {
+        use crate::parser::parse_query;
+        use crate::planner::QueryPlanner;
+
+        let store = make_store();
+        // Setup graph via CREATE
+        let setup = "CREATE (a {name: 'A'}), (b {name: 'B'}), (c {name: 'C'}), (d {name: 'D'}) CREATE (a)-[:CONTAINS]->(b), (b)-[:CONTAINS]->(c), (c)-[:CONTAINS]->(d)";
+        let ast = parse_query(setup).unwrap();
+        let planner = QueryPlanner::new(&store, "g");
+        let plan = planner.plan(&ast).unwrap();
+        let mut budget = ExecutionBudget::unlimited();
+        QueryExecutor::new(&store).execute("g", &plan, &mut budget).unwrap();
+
+        // Now test the VarLen query
+        let query = "MATCH (a {name: 'A'})-[*]->(x) RETURN x";
+        let ast2 = parse_query(query).unwrap();
+        let plan2 = planner.plan(&ast2).unwrap();
+        eprintln!("VarLen plan: {:#?}", plan2);
+        let mut budget2 = ExecutionBudget::unlimited();
+        let result = QueryExecutor::new(&store).execute("g", &plan2, &mut budget2).unwrap();
+        eprintln!("VarLen result: {} rows", result.rows.len());
+        for row in &result.rows {
+            eprintln!("  {:?}", row);
+        }
+        assert_eq!(result.rows.len(), 3, "Expected 3 rows: B, C, D");
     }
 }
