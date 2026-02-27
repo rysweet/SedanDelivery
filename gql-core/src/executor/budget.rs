@@ -65,6 +65,16 @@ impl ExecutionBudget {
         Self::new(Duration::from_millis(DEFAULT_TIMEOUT_MS), DEFAULT_MAX_ROWS)
     }
 
+    /// Create a budget from an [`EngineConfig`].
+    ///
+    /// Uses `config.query_timeout_ms` and `config.query_max_rows`.
+    pub fn from_config(config: &crate::config::EngineConfig) -> Self {
+        Self::new(
+            Duration::from_millis(config.query_timeout_ms),
+            config.query_max_rows,
+        )
+    }
+
     /// Create an unlimited budget for use in unit tests only.
     ///
     /// # Panics

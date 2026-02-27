@@ -2,6 +2,7 @@
 // Crates depending on this: gql-redis-store, gql-module, gql-cli.
 
 pub mod ast;
+pub mod config;
 pub mod error;
 pub mod executor;
 pub mod parser;

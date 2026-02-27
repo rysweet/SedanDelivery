@@ -277,12 +277,15 @@ pub trait GraphStore: Send + Sync {
     fn all_label_names(&self, graph: &str) -> Result<Vec<String>, StorageError>;
 }
 
-/// Maximum allowed length for a graph name.
+/// Default maximum allowed length for a graph name.
+///
+/// The effective limit at runtime is [`crate::config::global().graph_name_max_len`]
+/// which is injectable via the `GQL_GRAPH_NAME_MAX_LEN` environment variable.
 pub const GRAPH_NAME_MAX_LEN: usize = 64;
 
 /// Validate a graph name. Rules (security rationale in docs/RESEARCH.md):
 /// - Non-empty
-/// - At most 64 bytes
+/// - At most `GQL_GRAPH_NAME_MAX_LEN` bytes (default 64)
 /// - No `:` (Redis key separator — would break the `G:node:{id}` key namespace)
 /// - No `{` or `}` (Redis Cluster hash tags — would corrupt slot routing)
 /// - Characters: `[a-zA-Z0-9_.-]` only (whitelist)
@@ -293,10 +296,11 @@ pub fn validate_graph_name(name: &str) -> Result<(), StorageError> {
             reason: "graph name must not be empty",
         });
     }
-    if name.len() > GRAPH_NAME_MAX_LEN {
+    let max_len = crate::config::global().graph_name_max_len;
+    if name.len() > max_len {
         return Err(StorageError::InvalidGraphName {
             name: name.to_string(),
-            reason: "graph name must not exceed 64 bytes",
+            reason: "graph name exceeds the configured maximum length",
         });
     }
     if name.contains(':') {
