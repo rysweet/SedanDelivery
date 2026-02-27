@@ -1,6 +1,6 @@
 # SedanDelivery
 
-**A Rust GQL/Cypher query engine** — a clean-room, MIT/Apache-2.0-licensed replacement for RedisGraph/FalkorDB.
+**A Rust GQL/Cypher query engine** — MIT/Apache-2.0-licensed replacement for RedisGraph/FalkorDB.
 
 > **Status**: Working engine — parser, planner, executor, and TCK runner all functional.
 > **253 tests pass** (237 unit/integration + 6 openCypher TCK cucumber scenarios).
