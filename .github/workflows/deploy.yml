@@ -55,29 +55,39 @@ jobs:
     steps:
       - name: Determine environment and deployment eligibility
         id: check
+        env:
+          INPUT_BRANCH_NAME: ${{ inputs.branch_name }}
+          GH_HEAD_REF: ${{ github.head_ref }}
+          GH_REF_NAME: ${{ github.ref_name }}
+          GH_EVENT_NAME: ${{ github.event_name }}
+          GH_REF: ${{ github.ref }}
+          INPUT_ENVIRONMENT: ${{ inputs.environment }}
+          GH_HAS_DEPLOY_LABEL: ${{ contains(github.event.pull_request.labels.*.name, 'deploy') }}
+          GH_PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           SHOULD_DEPLOY="false"
           ENV_NAME=""
           ENV_TYPE="branch"
           RESOURCE_GROUP=""
 
-          if [[ "${{ github.event_name }}" == "push" && "${{ github.ref }}" == "refs/heads/main" ]]; then
+          if [[ "${GH_EVENT_NAME}" == "push" && "${GH_REF}" == "refs/heads/main" ]]; then
             SHOULD_DEPLOY="true"
             ENV_NAME="main"
             ENV_TYPE="production"
             RESOURCE_GROUP="rg-sd2-main"
             echo "🚀 Production deployment from main branch"
 
-          elif [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+          elif [[ "${GH_EVENT_NAME}" == "workflow_dispatch" ]]; then
             SHOULD_DEPLOY="true"
-            if [[ "${{ inputs.environment }}" == "production" ]]; then
+            if [[ "${INPUT_ENVIRONMENT}" == "production" ]]; then
               ENV_NAME="main"
               ENV_TYPE="production"
               RESOURCE_GROUP="rg-sd2-main"
             else
-              BRANCH_NAME="${{ inputs.branch_name }}"
+              # Use env var instead of direct expression interpolation (shell injection fix)
+              BRANCH_NAME="${INPUT_BRANCH_NAME}"
               if [[ -z "$BRANCH_NAME" ]]; then
-                BRANCH_NAME="${{ github.ref_name }}"
+                BRANCH_NAME="${GH_REF_NAME}"
               fi
               SANITIZED=$(echo "$BRANCH_NAME" | sed 's/[^a-zA-Z0-9-]/-/g' | tr '[:upper:]' '[:lower:]' | cut -c1-20 | sed 's/^-*//;s/-*$//')
               if [ -z "$SANITIZED" ]; then
@@ -89,13 +99,14 @@ jobs:
             fi
             echo "🎯 Manual deployment to ${ENV_NAME}"
 
-          elif [[ "${{ github.event_name }}" == "pull_request" ]]; then
-            if [[ "${{ contains(github.event.pull_request.labels.*.name, 'deploy') }}" == "true" ]]; then
+          elif [[ "${GH_EVENT_NAME}" == "pull_request" ]]; then
+            if [[ "${GH_HAS_DEPLOY_LABEL}" == "true" ]]; then
               SHOULD_DEPLOY="true"
-              BRANCH_NAME="${{ github.head_ref }}"
+              # Use env var instead of direct expression interpolation (shell injection fix)
+              BRANCH_NAME="${GH_HEAD_REF}"
               SANITIZED=$(echo "$BRANCH_NAME" | sed 's/[^a-zA-Z0-9-]/-/g' | tr '[:upper:]' '[:lower:]' | cut -c1-20 | sed 's/^-*//;s/-*$//')
               if [ -z "$SANITIZED" ]; then
-                SANITIZED="pr-${{ github.event.pull_request.number }}"
+                SANITIZED="pr-${GH_PR_NUMBER}"
               fi
               ENV_NAME="${SANITIZED}"
               ENV_TYPE="branch"
@@ -215,7 +226,23 @@ jobs:
           ACR_SERVER=$(echo "$DEPLOYMENT_OUTPUT" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d['properties']['outputs']['acrLoginServer']['value'])")
           ACR_NAME=$(echo "$DEPLOYMENT_OUTPUT" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d['properties']['outputs']['acrName']['value'])")
           CAE_NAME=$(echo "$DEPLOYMENT_OUTPUT" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d['properties']['outputs']['caeName']['value'])")
-          AZURE_CACHE_CONN=$(echo "$DEPLOYMENT_OUTPUT" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d['properties']['outputs']['azureCacheConnectionString']['value'])")
+
+          # Get Azure Cache details if azure-cache backend — key is NOT in ARM outputs (Issue #58)
+          AZURE_CACHE_HOST=$(echo "$DEPLOYMENT_OUTPUT" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d['properties']['outputs']['azureCacheHostName']['value'])")
+          AZURE_CACHE_PORT=$(echo "$DEPLOYMENT_OUTPUT" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d['properties']['outputs']['azureCacheSslPort']['value'])")
+
+          AZURE_CACHE_CONN=""
+          if [[ -n "$AZURE_CACHE_HOST" && "$AZURE_CACHE_HOST" != "" ]]; then
+            # Retrieve key separately — never stored in ARM deployment history
+            REDIS_KEY=$(az redis list-keys --name "sd2-${ENV_NAME}-cache" --resource-group "${RG}" --query primaryKey -o tsv)
+            if [[ -z "$REDIS_KEY" ]]; then
+              echo "::error::Failed to retrieve Redis primary key — aborting"
+              exit 1
+            fi
+            echo "::add-mask::${REDIS_KEY}"  # mask before any logging
+            AZURE_CACHE_CONN="${AZURE_CACHE_HOST}:${AZURE_CACHE_PORT},password=${REDIS_KEY},ssl=True,abortConnect=False"
+            echo "::add-mask::${AZURE_CACHE_CONN}"  # also mask the full connection string
+          fi
 
           echo "acr_server=${ACR_SERVER}" >> "$GITHUB_OUTPUT"
           echo "acr_name=${ACR_NAME}" >> "$GITHUB_OUTPUT"
@@ -228,10 +255,12 @@ jobs:
 
       - name: Build and push Docker image via ACR Tasks
         id: build
+        env:
+          GH_SHA: ${{ github.sha }}
         run: |
           ACR_NAME="${{ steps.provision.outputs.acr_name }}"
           ACR_SERVER="${{ steps.provision.outputs.acr_server }}"
-          IMAGE_TAG="${{ github.sha }}"
+          IMAGE_TAG="${GH_SHA}"
 
           echo "🐳 Building via ACR Tasks (no local Docker daemon needed)..."
           echo "   ACR: ${ACR_NAME}"
@@ -262,8 +291,10 @@ jobs:
           AZURE_CACHE_CONN="${{ steps.provision.outputs.azure_cache_conn }}"
 
           # Get ACR credentials
+          # TODO: migrate to managed identity to eliminate need for admin credentials (Issue #67)
           ACR_USERNAME=$(az acr credential show --name "${ACR_NAME}" --query username -o tsv)
           ACR_PASSWORD=$(az acr credential show --name "${ACR_NAME}" --query "passwords[0].value" -o tsv)
+          echo "::add-mask::${ACR_PASSWORD}"  # mask before any subsequent use
 
           echo "🚀 Deploying Container App: ${CA_NAME}"
           echo "   Image: ${IMAGE}"
@@ -271,19 +302,28 @@ jobs:
           # Build volume args — always mount Azure Files share so /data persists across restarts
           VOLUME_ARGS="--volume valkey-data:azureFile:valkey-data --volume-mount valkey-data=/data"
 
-          # Build env-var args
-          ENV_VAR_ARGS="GQL_DATA_DIR=/data"
+          # Generate Valkey password for authentication (Issue #59)
+          # Generated BEFORE both create and update paths so --secrets works for both
+          VALKEY_PASS=$(openssl rand -base64 32 | tr -d '/+=\n')
+          echo "::add-mask::${VALKEY_PASS}"  # mask before any subsequent use
+
+          # Build secrets and env-var args
+          SECRETS_ARGS="valkey-password=${VALKEY_PASS}"
+          ENV_VAR_ARGS="GQL_DATA_DIR=/data VALKEY_PASSWORD=secretref:valkey-password"
           if [[ -n "${AZURE_CACHE_CONN}" ]]; then
-            ENV_VAR_ARGS="${ENV_VAR_ARGS} GQL_REDIS_URL=${AZURE_CACHE_CONN}"
+            SECRETS_ARGS="${SECRETS_ARGS} redis-conn=${AZURE_CACHE_CONN}"
+            ENV_VAR_ARGS="${ENV_VAR_ARGS} GQL_REDIS_URL=secretref:redis-conn"
           fi
 
           # Check if container app already exists
           if az containerapp show --name "${CA_NAME}" --resource-group "${RG}" >/dev/null 2>&1; then
-            echo "🔄 Updating existing container app (image only — preserving volume mounts)..."
+            echo "🔄 Updating existing container app — re-applying env vars and image (Issue #68)..."
             az containerapp update \
               --name "${CA_NAME}" \
               --resource-group "${RG}" \
               --image "${IMAGE}" \
+              --secrets ${SECRETS_ARGS} \
+              --set-env-vars ${ENV_VAR_ARGS} \
               --output none
           else
             echo "🆕 Creating new container app..."
@@ -303,7 +343,8 @@ jobs:
               --target-port 6379 \
               --transport tcp \
               --exposed-port 6379 \
-              --env-vars "${ENV_VAR_ARGS}" \
+              --secrets ${SECRETS_ARGS} \
+              --env-vars ${ENV_VAR_ARGS} \
               ${VOLUME_ARGS} \
               --output none
           fi

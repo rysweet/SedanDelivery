@@ -16,13 +16,13 @@ param persistenceBackend string = 'valkey-volume'
 // ── Variables ─────────────────────────────────────────────────────────────────
 var prefix = 'sd2'
 // ACR names: 5-50 chars, alphanumeric only.
-// Pad to guarantee minimum 5 chars even for short env names.
-var acrBase = '${prefix}${replace(environmentName, '-', '')}acr'
-var acrName = take(length(acrBase) < 5 ? '${acrBase}xxxxx' : acrBase, 50)
+// uniqueString() ensures global uniqueness across subscriptions (Issue #69).
+var acrName = take('sd2${take(replace(environmentName, '-', ''), 5)}${uniqueString(environmentName)}acr', 50)
 var caeName = '${prefix}-${environmentName}-cae'
 var logAnalyticsName = '${prefix}-${environmentName}-logs'
 // Storage account names: 3-24 chars, lowercase alphanumeric only.
-var storageAccountName = take('sd2${replace(environmentName, '-', '')}st', 24)
+// uniqueString() ensures global uniqueness (Issue #69).
+var storageAccountName = take('sd2${take(replace(environmentName, '-', ''), 7)}${uniqueString(environmentName)}', 24)
 // Azure Cache for Redis name: max 63 chars
 var redisCacheName = take('sd2-${environmentName}-cache', 63)
 
@@ -101,10 +101,11 @@ resource caeStorage 'Microsoft.App/managedEnvironments/storages@2024-03-01' = {
     azureFile: {
       accountName: storageAccount.name
       accountKey: storageAccount.listKeys().keys[0].value
-      shareName: 'valkey-data'
+      shareName: valkeyFileShare.name   // use resource reference, not string literal (Issue #72)
       accessMode: 'ReadWrite'
     }
   }
+  dependsOn: [valkeyFileShare]
 }
 
 // ── Azure Cache for Redis (only when persistenceBackend == 'azure-cache') ──────
@@ -129,4 +130,5 @@ output caeName string = cae.name
 output caeId string = cae.id
 output storageAccountName string = storageAccount.name
 output fileShareName string = 'valkey-data'
-output azureCacheConnectionString string = persistenceBackend == 'azure-cache' ? '${redisCache.properties.hostName}:${redisCache.properties.sslPort},password=${redisCache.listKeys().primaryKey},ssl=True,abortConnect=False' : ''
+output azureCacheHostName string = persistenceBackend == 'azure-cache' ? redisCache.properties.hostName : ''
+output azureCacheSslPort int = persistenceBackend == 'azure-cache' ? redisCache.properties.sslPort : 0
