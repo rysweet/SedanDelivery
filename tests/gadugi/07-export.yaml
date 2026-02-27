@@ -1,0 +1,226 @@
+name: "Export Graph"
+description: >
+  Verifies the Export dialog workflow. The user opens the Export dialog via the
+  Download toolbar button. The dialog shows three format options: JSON (full graph),
+  CSV (nodes only), and CSV (edges only). The user selects each option and confirms
+  the selection highlight changes. Clicking "Export" with the JSON format selected
+  triggers a browser file download (downloadFile utility is called). The dialog closes
+  after export. Also verifies the dialog description shows the current node/edge counts.
+app_url: "http://localhost:5173"
+
+setup:
+  - action: api_call
+    method: POST
+    url: "http://localhost:5000/api/graphs"
+    body: '{"name": "test-graph"}'
+    headers:
+      Content-Type: "application/json"
+
+  - action: api_call
+    method: POST
+    url: "http://localhost:5000/api/graphs/test-graph/nodes"
+    body: '{"labels": ["Person"], "properties": {"name": "Alice", "age": 30}}'
+    headers:
+      Content-Type: "application/json"
+
+  - action: api_call
+    method: POST
+    url: "http://localhost:5000/api/graphs/test-graph/nodes"
+    body: '{"labels": ["Person"], "properties": {"name": "Bob", "age": 25}}'
+    headers:
+      Content-Type: "application/json"
+
+  - action: api_call
+    method: POST
+    url: "http://localhost:5000/api/graphs/test-graph/mutate"
+    body: '{"cypher": "MATCH (a:Person {name: \"Alice\"}), (b:Person {name: \"Bob\"}) CREATE (a)-[:KNOWS]->(b)"}'
+    headers:
+      Content-Type: "application/json"
+
+  - action: navigate
+    url: "/"
+
+steps:
+  - step: 1
+    description: "Select test-graph"
+    action: click
+    selector: "button:has(svg[data-lucide='database'])"
+    expected: "GraphSelector dropdown opens"
+    timeout_ms: 3000
+
+  - step: 2
+    description: "Click test-graph in the dropdown"
+    action: click
+    selector: "button:has-text('test-graph')"
+    expected: "test-graph is selected"
+    timeout_ms: 3000
+
+  - step: 3
+    description: "Wait for graph to load"
+    action: verify
+    selector: ".font-mono"
+    expected: "Status bar shows '2 nodes · 1 edges'"
+    timeout_ms: 8000
+
+  - step: 4
+    description: "Export dialog is not visible before clicking the Export button"
+    action: verify
+    selector: "text=Export Graph"
+    expected: "Export Graph dialog is NOT open yet"
+    negate: true
+    timeout_ms: 3000
+
+  - step: 5
+    description: "Click the 'Export Graph' (Download icon) toolbar button"
+    action: click
+    selector: "button[title='Export Graph'], button:has(svg[data-lucide='download'])"
+    expected: "Export dialog opens as a modal"
+    timeout_ms: 3000
+
+  - step: 6
+    description: "Export dialog title 'Export Graph' is visible"
+    action: verify
+    selector: "text=Export Graph"
+    expected: "Modal title 'Export Graph' is displayed"
+    timeout_ms: 3000
+
+  - step: 7
+    description: "Dialog description mentions the graph name 'test-graph'"
+    action: verify
+    selector: "text=test-graph"
+    expected: "Dialog description includes 'test-graph'"
+    timeout_ms: 3000
+
+  - step: 8
+    description: "Dialog description mentions the node count"
+    action: verify
+    selector: "text=2 nodes"
+    expected: "Dialog description shows '2 nodes'"
+    timeout_ms: 3000
+
+  - step: 9
+    description: "Dialog description mentions the edge count"
+    action: verify
+    selector: "text=1 edges"
+    expected: "Dialog description shows '1 edges'"
+    timeout_ms: 3000
+
+  - step: 10
+    description: "JSON format option is shown in the dialog"
+    action: verify
+    selector: "text=JSON (full graph)"
+    expected: "The 'JSON (full graph)' format option is visible"
+    timeout_ms: 3000
+
+  - step: 11
+    description: "JSON option description is shown"
+    action: verify
+    selector: "text=Exports nodes and edges as a single JSON file"
+    expected: "JSON format description text is visible"
+    timeout_ms: 3000
+
+  - step: 12
+    description: "CSV (nodes only) format option is shown"
+    action: verify
+    selector: "text=CSV (nodes only)"
+    expected: "The 'CSV (nodes only)' format option is visible"
+    timeout_ms: 3000
+
+  - step: 13
+    description: "CSV (edges only) format option is shown"
+    action: verify
+    selector: "text=CSV (edges only)"
+    expected: "The 'CSV (edges only)' format option is visible"
+    timeout_ms: 3000
+
+  - step: 14
+    description: "JSON is selected by default (border highlights the JSON option)"
+    action: verify
+    selector: "button.border-accent-400:has-text('JSON')"
+    expected: "The JSON option button has the accent border class indicating selection"
+    timeout_ms: 3000
+
+  - step: 15
+    description: "Click the 'CSV (nodes only)' format option to select it"
+    action: click
+    selector: "button:has-text('CSV (nodes only)')"
+    expected: "CSV nodes option becomes highlighted; JSON option highlight is removed"
+    timeout_ms: 3000
+
+  - step: 16
+    description: "CSV (nodes only) option is now highlighted with accent border"
+    action: verify
+    selector: "button.border-accent-400:has-text('CSV (nodes only)')"
+    expected: "The nodes CSV option has the accent border class"
+    timeout_ms: 3000
+
+  - step: 17
+    description: "Click the 'CSV (edges only)' format option"
+    action: click
+    selector: "button:has-text('CSV (edges only)')"
+    expected: "Edges CSV option is selected"
+    timeout_ms: 3000
+
+  - step: 18
+    description: "Click back on JSON to restore the default selection for export"
+    action: click
+    selector: "button:has-text('JSON (full graph)')"
+    expected: "JSON option is re-selected"
+    timeout_ms: 3000
+
+  - step: 19
+    description: "Dialog footer has a 'Cancel' button"
+    action: verify
+    selector: "button:has-text('Cancel')"
+    expected: "Cancel button is present in the dialog footer"
+    timeout_ms: 3000
+
+  - step: 20
+    description: "Dialog footer has an 'Export' button with download icon"
+    action: verify
+    selector: "button:has-text('Export')"
+    expected: "Export button is present in the dialog footer"
+    timeout_ms: 3000
+
+  - step: 21
+    description: "Click 'Export' to trigger the JSON file download"
+    action: click
+    selector: "button:has-text('Export')"
+    expected: "Export dialog closes; browser initiates a file download for the JSON export"
+    timeout_ms: 5000
+
+  - step: 22
+    description: "Export dialog is closed after the export"
+    action: verify
+    selector: "text=Export Graph"
+    expected: "The Export Graph modal is no longer visible"
+    negate: true
+    timeout_ms: 5000
+
+  - step: 23
+    description: "Open export dialog again to test Cancel dismisses without downloading"
+    action: click
+    selector: "button[title='Export Graph'], button:has(svg[data-lucide='download'])"
+    expected: "Export dialog opens again"
+    timeout_ms: 3000
+
+  - step: 24
+    description: "Click Cancel to dismiss the dialog without exporting"
+    action: click
+    selector: "button:has-text('Cancel')"
+    expected: "Dialog closes without triggering any download"
+    timeout_ms: 3000
+
+  - step: 25
+    description: "Export dialog is dismissed after Cancel"
+    action: verify
+    selector: "text=Export Graph"
+    expected: "The Export Graph modal is gone"
+    negate: true
+    timeout_ms: 3000
+
+teardown:
+  - action: api_call
+    method: DELETE
+    url: "http://localhost:5000/api/graphs/test-graph"
+    description: "Remove test-graph"

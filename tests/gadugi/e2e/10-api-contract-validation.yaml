@@ -1,0 +1,162 @@
+scenario:
+  name: "API Contract Validation — gql-api REST endpoints"
+  description: "Validates the Rust gql-api HTTP contract directly, verifying all endpoints return correct status codes and shapes"
+  type: web
+  tags: [e2e, api, contract]
+  timeout: 120s
+
+  variables:
+    api_base: "http://localhost:3001"
+    graph_name: "e2e-api-contract"
+
+  steps:
+    # Health check
+    - action: api_call
+      method: GET
+      url: "${api_base}/health"
+      expected_status: 200
+      verify_body:
+        contains: '"status":"ok"'
+      description: "Health endpoint returns 200 with status ok"
+
+    # Create graph
+    - action: api_call
+      method: POST
+      url: "${api_base}/graphs"
+      body: '{"name": "${graph_name}"}'
+      expected_status: 201
+      description: "Create graph returns 201"
+
+    # List graphs
+    - action: api_call
+      method: GET
+      url: "${api_base}/graphs"
+      expected_status: 200
+      verify_body:
+        contains: '"${graph_name}"'
+      description: "Created graph appears in list"
+
+    # Graph stats (empty)
+    - action: api_call
+      method: GET
+      url: "${api_base}/graphs/${graph_name}/stats"
+      expected_status: 200
+      verify_body:
+        contains: '"node_count":0'
+      description: "Empty graph has 0 nodes"
+
+    # Create node
+    - action: api_call
+      method: POST
+      url: "${api_base}/graphs/${graph_name}/nodes"
+      body: '{"labels": ["Person"], "properties": {"name": "Alice", "age": 30}}'
+      expected_status: 201
+      verify_body:
+        contains: '"labels":["Person"]'
+      description: "Create node returns 201 with labels"
+
+    # Create second node
+    - action: api_call
+      method: POST
+      url: "${api_base}/graphs/${graph_name}/nodes"
+      body: '{"labels": ["Person"], "properties": {"name": "Bob"}}'
+      expected_status: 201
+
+    # Create edge
+    - action: api_call
+      method: POST
+      url: "${api_base}/graphs/${graph_name}/edges"
+      body: '{"source": "1", "target": "2", "type": "KNOWS", "properties": {"since": 2020}}'
+      expected_status: 201
+      verify_body:
+        contains: '"type":"KNOWS"'
+      description: "Create edge returns 201 with type"
+
+    # Query
+    - action: api_call
+      method: POST
+      url: "${api_base}/graphs/${graph_name}/query"
+      body: '{"cypher": "MATCH (n:Person) RETURN n.name ORDER BY n.name"}'
+      expected_status: 200
+      verify_body:
+        contains: '"columns":["n.name"]'
+      description: "Query returns columns and rows"
+
+    # Schema
+    - action: api_call
+      method: GET
+      url: "${api_base}/graphs/${graph_name}/schema"
+      expected_status: 200
+      verify_body:
+        contains: '"Person"'
+      description: "Schema includes Person label"
+
+    # Neighbors
+    - action: api_call
+      method: GET
+      url: "${api_base}/graphs/${graph_name}/neighbors/1"
+      expected_status: 200
+      description: "Neighbors endpoint returns OK"
+
+    # Export
+    - action: api_call
+      method: GET
+      url: "${api_base}/graphs/${graph_name}/export"
+      expected_status: 200
+      verify_body:
+        contains: '"nodes":'
+      description: "Export returns nodes array"
+
+    # Pagination limit cap
+    - action: api_call
+      method: GET
+      url: "${api_base}/graphs/${graph_name}/nodes?limit=99999"
+      expected_status: 400
+      verify_body:
+        contains: "limit must be"
+      description: "Limit > 10000 returns 400"
+
+    # Invalid graph name
+    - action: api_call
+      method: POST
+      url: "${api_base}/graphs"
+      body: '{"name": "invalid!name"}'
+      expected_status: 400
+      description: "Invalid graph name rejected"
+
+    # Graph not found
+    - action: api_call
+      method: GET
+      url: "${api_base}/graphs/nonexistent/stats"
+      expected_status: 404
+      description: "Missing graph returns 404"
+
+    # Mutate
+    - action: api_call
+      method: POST
+      url: "${api_base}/graphs/${graph_name}/mutate"
+      body: '{"cypher": "CREATE (:Company {name: \"Acme\"})"}'
+      expected_status: 200
+      verify_body:
+        contains: '"nodes_created":1'
+      description: "Mutate returns stats"
+
+    # Delete graph
+    - action: api_call
+      method: DELETE
+      url: "${api_base}/graphs/${graph_name}"
+      expected_status: 204
+      description: "Delete graph returns 204"
+
+    # Verify graph is gone
+    - action: api_call
+      method: GET
+      url: "${api_base}/graphs/${graph_name}/stats"
+      expected_status: 404
+      description: "Deleted graph returns 404"
+
+  cleanup:
+    - action: api_call
+      method: DELETE
+      url: "${api_base}/graphs/${graph_name}"
+      continue_on_failure: true

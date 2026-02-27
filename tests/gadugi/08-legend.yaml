@@ -1,0 +1,211 @@
+name: "Legend Panel Interaction"
+description: >
+  Verifies the Legend Panel on the left side of the application. The panel shows each
+  distinct node label as a colored row with a count. Clicking a row toggles that
+  label's visibility in the canvas (the Zustand store visibleLabels set is updated and
+  applied to the Graphology graph). The panel header includes a "toggle all" Eye/EyeOff
+  button and a collapse (ChevronLeft) button. The footer shows the total label count.
+app_url: "http://localhost:5173"
+
+setup:
+  - action: api_call
+    method: POST
+    url: "http://localhost:5000/api/graphs"
+    body: '{"name": "test-graph"}'
+    headers:
+      Content-Type: "application/json"
+
+  - action: api_call
+    method: POST
+    url: "http://localhost:5000/api/graphs/test-graph/nodes"
+    body: '{"labels": ["Person"], "properties": {"name": "Alice"}}'
+    headers:
+      Content-Type: "application/json"
+
+  - action: api_call
+    method: POST
+    url: "http://localhost:5000/api/graphs/test-graph/nodes"
+    body: '{"labels": ["Person"], "properties": {"name": "Bob"}}'
+    headers:
+      Content-Type: "application/json"
+
+  - action: api_call
+    method: POST
+    url: "http://localhost:5000/api/graphs/test-graph/nodes"
+    body: '{"labels": ["Organization"], "properties": {"name": "Acme Corp"}}'
+    headers:
+      Content-Type: "application/json"
+
+  - action: navigate
+    url: "/"
+
+steps:
+  - step: 1
+    description: "Select test-graph"
+    action: click
+    selector: "button:has(svg[data-lucide='database'])"
+    expected: "GraphSelector dropdown opens"
+    timeout_ms: 3000
+
+  - step: 2
+    description: "Click test-graph in the dropdown"
+    action: click
+    selector: "button:has-text('test-graph')"
+    expected: "test-graph is selected"
+    timeout_ms: 3000
+
+  - step: 3
+    description: "Wait for graph to load with 3 nodes"
+    action: verify
+    selector: ".font-mono"
+    expected: "Status bar shows '3 nodes'"
+    timeout_ms: 8000
+
+  - step: 4
+    description: "Legend Panel header 'NODE LABELS' is visible on the left side"
+    action: verify
+    selector: "text=Node Labels"
+    expected: "'Node Labels' heading is shown in the Legend Panel"
+    timeout_ms: 3000
+
+  - step: 5
+    description: "Person label entry is shown in the Legend Panel"
+    action: verify
+    selector: "button:has-text('Person')"
+    expected: "A clickable button row for 'Person' exists in the Legend Panel"
+    timeout_ms: 5000
+
+  - step: 6
+    description: "Person row shows count 2"
+    action: verify
+    selector: ".tabular-nums:has-text('2')"
+    expected: "The Person row shows count '2'"
+    timeout_ms: 5000
+
+  - step: 7
+    description: "Organization label entry is shown in the Legend Panel"
+    action: verify
+    selector: "button:has-text('Organization')"
+    expected: "A clickable button row for 'Organization' exists in the Legend Panel"
+    timeout_ms: 5000
+
+  - step: 8
+    description: "Organization row shows count 1"
+    action: verify
+    selector: ".tabular-nums:has-text('1')"
+    expected: "The Organization row shows count '1'"
+    timeout_ms: 5000
+
+  - step: 9
+    description: "Person and Organization have different colored swatches"
+    action: verify
+    selector: ".rounded-full"
+    expected: "At least two colored circle swatches are visible in the Legend Panel rows"
+    timeout_ms: 3000
+
+  - step: 10
+    description: "Legend Panel footer shows '2 labels'"
+    action: verify
+    selector: "text=2 labels"
+    expected: "The footer text reads '2 labels'"
+    timeout_ms: 3000
+
+  - step: 11
+    description: "Toggle-all button (Eye icon) is in the panel header"
+    action: verify
+    selector: "button[title='Hide all'], button[title='Show all']"
+    expected: "The toggle-all visibility button is present in the Legend Panel header"
+    timeout_ms: 3000
+
+  - step: 12
+    description: "Click on the 'Person' row to hide Person nodes"
+    action: click
+    selector: "button[title='Hide Person']"
+    expected: "Person row becomes visually dimmed (opacity-40 class applied); Person nodes hidden in canvas"
+    timeout_ms: 3000
+
+  - step: 13
+    description: "Person row is now in dimmed/hidden visual state"
+    action: verify
+    selector: "button.opacity-40:has-text('Person')"
+    expected: "The Person button row has the opacity-40 class indicating hidden state"
+    timeout_ms: 3000
+
+  - step: 14
+    description: "Click on the 'Person' row again to restore Person node visibility"
+    action: click
+    selector: "button[title='Show Person']"
+    expected: "Person row returns to full opacity; Person nodes reappear in canvas"
+    timeout_ms: 3000
+
+  - step: 15
+    description: "Person row is no longer dimmed after re-enabling"
+    action: verify
+    selector: "button.opacity-40:has-text('Person')"
+    expected: "The Person button no longer has opacity-40 class"
+    negate: true
+    timeout_ms: 3000
+
+  - step: 16
+    description: "Click toggle-all (EyeOff) to hide all labels at once"
+    action: click
+    selector: "button[title='Hide all']"
+    expected: "All label rows become dimmed; all nodes hidden in canvas"
+    timeout_ms: 3000
+
+  - step: 17
+    description: "Both Person and Organization rows are dimmed after hide-all"
+    action: verify
+    selector: "button.opacity-40"
+    expected: "At least one label row has opacity-40 class after hide-all"
+    timeout_ms: 3000
+
+  - step: 18
+    description: "Toggle-all button now shows Eye icon (to show all)"
+    action: verify
+    selector: "button[title='Show all']"
+    expected: "The toggle-all button title changes to 'Show all'"
+    timeout_ms: 3000
+
+  - step: 19
+    description: "Click toggle-all again to show all labels"
+    action: click
+    selector: "button[title='Show all']"
+    expected: "All label rows restore full opacity; all nodes visible in canvas"
+    timeout_ms: 3000
+
+  - step: 20
+    description: "No rows are dimmed after show-all"
+    action: verify
+    selector: "button.opacity-40"
+    expected: "No legend row has opacity-40 class after show-all"
+    negate: true
+    timeout_ms: 3000
+
+  - step: 21
+    description: "Collapse button (ChevronLeft) is in the panel header"
+    action: verify
+    selector: "button[title='Collapse panel']"
+    expected: "The collapse button with ChevronLeft icon is present"
+    timeout_ms: 3000
+
+  - step: 22
+    description: "Click the collapse button to hide the left panel"
+    action: click
+    selector: "button[title='Collapse panel']"
+    expected: "Left panel collapses to width 0; Legend Panel content is hidden"
+    timeout_ms: 3000
+
+  - step: 23
+    description: "Left panel width transitions to 0 and its content is no longer visible"
+    action: verify
+    selector: "text=Node Labels"
+    expected: "'Node Labels' heading is no longer visible after collapsing"
+    negate: true
+    timeout_ms: 3000
+
+teardown:
+  - action: api_call
+    method: DELETE
+    url: "http://localhost:5000/api/graphs/test-graph"
+    description: "Remove test-graph"

@@ -1,0 +1,209 @@
+name: "Node Inspection and Editing"
+description: >
+  Verifies the Inspector Panel workflow: selecting a node on the canvas opens the
+  right-side Inspector Panel showing the node's ID, labels, connections count, and
+  editable property fields. Editing a property value and clicking "Save Changes"
+  persists the update to the API. The scenario also confirms the two-step delete
+  confirmation flow (clicking "Delete Node" once shows "Confirm Delete?", clicking
+  again actually removes the node).
+app_url: "http://localhost:5173"
+
+setup:
+  - action: api_call
+    method: POST
+    url: "http://localhost:5000/api/graphs"
+    body: '{"name": "test-graph"}'
+    headers:
+      Content-Type: "application/json"
+
+  - action: api_call
+    method: POST
+    url: "http://localhost:5000/api/graphs/test-graph/nodes"
+    body: '{"labels": ["Person"], "properties": {"name": "Alice", "age": 30}}'
+    headers:
+      Content-Type: "application/json"
+    store_response_as: "alice_node"
+
+  - action: navigate
+    url: "/"
+
+steps:
+  - step: 1
+    description: "Select test-graph from the GraphSelector"
+    action: click
+    selector: "button:has(svg[data-lucide='database'])"
+    expected: "GraphSelector dropdown opens"
+    timeout_ms: 3000
+
+  - step: 2
+    description: "Click test-graph in the dropdown"
+    action: click
+    selector: "button:has-text('test-graph')"
+    expected: "test-graph is selected, canvas loads Alice node"
+    timeout_ms: 3000
+
+  - step: 3
+    description: "Wait for canvas to finish loading Alice"
+    action: verify
+    selector: ".font-mono"
+    expected: "Status bar shows '1 nodes'"
+    timeout_ms: 8000
+
+  - step: 4
+    description: "Inspector Panel initially shows placeholder text with no node selected"
+    action: verify
+    selector: "text=Select a node or edge"
+    expected: "Inspector Panel shows 'Select a node or edge' placeholder"
+    timeout_ms: 3000
+
+  - step: 5
+    description: "Inspector Panel header shows generic 'Inspector' title"
+    action: verify
+    selector: "text=Inspector"
+    expected: "Inspector heading reads 'Inspector' when nothing is selected"
+    timeout_ms: 3000
+
+  - step: 6
+    description: "Click on the canvas to select Alice's node"
+    action: click
+    selector: "canvas"
+    expected: "Alice's node is selected; Inspector Panel updates to show node details"
+    timeout_ms: 5000
+
+  - step: 7
+    description: "Inspector Panel header changes to 'Node Inspector'"
+    action: verify
+    selector: "text=Node Inspector"
+    expected: "Inspector header reads 'Node Inspector'"
+    timeout_ms: 5000
+
+  - step: 8
+    description: "Node ID section is displayed in the Inspector"
+    action: verify
+    selector: "p:has-text('Node ID')"
+    expected: "'NODE ID' label is visible in the Inspector Panel"
+    timeout_ms: 3000
+
+  - step: 9
+    description: "Labels section shows the 'Person' badge"
+    action: verify
+    selector: "text=Person"
+    expected: "A 'Person' badge is shown in the Labels section of the Inspector"
+    timeout_ms: 3000
+
+  - step: 10
+    description: "Connections count shows '0 connections' since no edges exist"
+    action: verify
+    selector: "text=0 connections"
+    expected: "The connections count reads '0 connections'"
+    timeout_ms: 3000
+
+  - step: 11
+    description: "Properties section shows the 'name' property label"
+    action: verify
+    selector: "label:has-text('name')"
+    expected: "Property key label 'name' is visible in the Inspector"
+    timeout_ms: 3000
+
+  - step: 12
+    description: "The 'name' property input shows 'Alice'"
+    action: verify
+    selector: "input[value='Alice']"
+    expected: "Name property input field contains 'Alice'"
+    timeout_ms: 3000
+
+  - step: 13
+    description: "Properties section shows the 'age' property label"
+    action: verify
+    selector: "label:has-text('age')"
+    expected: "Property key label 'age' is visible in the Inspector"
+    timeout_ms: 3000
+
+  - step: 14
+    description: "The 'age' property input shows '30'"
+    action: verify
+    selector: "input[value='30']"
+    expected: "Age property input field contains '30'"
+    timeout_ms: 3000
+
+  - step: 15
+    description: "Clear the 'age' property input and type the new value '31'"
+    action: triple_click
+    selector: "input[value='30']"
+    expected: "Age input is selected/focused"
+    timeout_ms: 3000
+
+  - step: 16
+    description: "Type the updated age value"
+    action: type
+    selector: "input[value='30']"
+    value: "31"
+    expected: "Age input now shows '31'"
+    timeout_ms: 3000
+
+  - step: 17
+    description: "Click 'Save Changes' button to persist the property update"
+    action: click
+    selector: "button:has-text('Save Changes')"
+    expected: "API PUT request is sent; button shows loading state briefly"
+    timeout_ms: 8000
+
+  - step: 18
+    description: "Inspector Panel age field shows the updated value '31' after save"
+    action: verify
+    selector: "input[value='31']"
+    expected: "The age property input shows '31' after the save completes"
+    timeout_ms: 5000
+
+  - step: 19
+    description: "Verify via API that the node property was actually updated"
+    action: api_call
+    method: POST
+    url: "http://localhost:5000/api/graphs/test-graph/query"
+    body: '{"query": "MATCH (n:Person {name: \"Alice\"}) RETURN n.age AS age"}'
+    headers:
+      Content-Type: "application/json"
+    expected: "API response rows contain age value 31"
+    timeout_ms: 5000
+
+  - step: 20
+    description: "Inspector Panel shows 'Expand Neighborhood' button"
+    action: verify
+    selector: "button:has-text('Expand Neighborhood')"
+    expected: "'Expand Neighborhood' button is visible in the Inspector actions"
+    timeout_ms: 3000
+
+  - step: 21
+    description: "First click on 'Delete Node' shows confirmation prompt"
+    action: click
+    selector: "button:has-text('Delete Node')"
+    expected: "The delete button text changes to 'Confirm Delete?'"
+    timeout_ms: 3000
+
+  - step: 22
+    description: "Button now reads 'Confirm Delete?'"
+    action: verify
+    selector: "button:has-text('Confirm Delete?')"
+    expected: "The danger button shows 'Confirm Delete?' text"
+    timeout_ms: 3000
+
+  - step: 23
+    description: "Press Escape to dismiss the confirmation without deleting"
+    action: key
+    selector: "body"
+    value: "Escape"
+    expected: "Selection is cleared; delete confirmation resets"
+    timeout_ms: 3000
+
+  - step: 24
+    description: "Inspector returns to empty state after Escape clears selection"
+    action: verify
+    selector: "text=Select a node or edge"
+    expected: "Inspector placeholder is shown again after Escape"
+    timeout_ms: 3000
+
+teardown:
+  - action: api_call
+    method: DELETE
+    url: "http://localhost:5000/api/graphs/test-graph"
+    description: "Remove test-graph"

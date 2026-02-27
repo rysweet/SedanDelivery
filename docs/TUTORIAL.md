@@ -220,6 +220,53 @@ for idx in indexes {
 store.drop_index("social", "Person", "age").unwrap();
 ```
 
+## Supported Aggregate Functions
+
+The executor supports the full set of openCypher aggregate functions:
+
+| Function | Description | Example |
+|---|---|---|
+| `count(*)` | Count all rows | `RETURN count(*)` |
+| `count(expr)` | Count non-null values | `RETURN count(n.age)` |
+| `sum(expr)` | Sum numeric values | `RETURN sum(n.salary)` |
+| `avg(expr)` | Average numeric values | `RETURN avg(n.age)` |
+| `min(expr)` | Minimum value | `RETURN min(n.score)` |
+| `max(expr)` | Maximum value | `RETURN max(n.score)` |
+| `collect(expr)` | Gather into list (nulls skipped) | `RETURN collect(n.name)` |
+| `stdev(expr)` | Sample standard deviation | `RETURN stdev(n.age)` |
+| `stdevp(expr)` | Population standard deviation | `RETURN stdevp(n.age)` |
+| `percentileDisc(expr, p)` | Discrete percentile (nearest rank) | `RETURN percentileDisc(n.age, 0.5)` |
+| `percentileCont(expr, p)` | Continuous percentile (interpolated) | `RETURN percentileCont(n.age, 0.5)` |
+
+All aggregates work in `WITH` and `RETURN` clauses, including inside expressions:
+
+```cypher
+-- collect() inside size()
+MATCH (n) RETURN size(collect(n.name)) AS count
+
+-- percentile as median
+MATCH (n:Person) RETURN percentileDisc(n.age, 0.5) AS median
+
+-- grouped aggregation
+MATCH (n:Person) RETURN n.city, avg(n.age) AS avgAge, collect(n.name) AS names
+```
+
+## UNION / UNION ALL
+
+```cypher
+RETURN 1 AS x UNION RETURN 2 AS x      -- deduplicates
+RETURN 1 AS x UNION ALL RETURN 1 AS x  -- keeps duplicates
+```
+
+## OPTIONAL MATCH
+
+```cypher
+-- m is null when no match found for n
+MATCH (n:Person)
+OPTIONAL MATCH (n)-[:KNOWS]->(m:Person)
+RETURN n.name, m.name
+```
+
 ## Phase 1 Preview: Full Query Execution
 
 Phase 1 (in progress) will enable:
@@ -242,6 +289,43 @@ let result = QueryExecutor::new(&store)
 for row in result.rows {
     println!("{}", row["p.name"]);
 }
+```
+
+## 10. EXISTS { subquery } and Pattern Predicates
+
+`EXISTS { ... }` returns `true` if the inner pattern matches at least one row in the graph.
+Bare pattern expressions (`(n)-[:REL]->()`) used directly in `WHERE` behave identically.
+
+```cypher
+-- Filter: only nodes that have an outgoing KNOWS edge
+MATCH (n) WHERE EXISTS { (n)-[:KNOWS]->() } RETURN n
+
+-- Full MATCH form with WHERE inside the subquery
+MATCH (n) WHERE EXISTS { MATCH (n)-[:KNOWS]->(m) WHERE m.age < 30 } RETURN n
+
+-- Use EXISTS as a projection (returns Bool)
+MATCH (n:Person) RETURN n.name, EXISTS { (n)-[:KNOWS]->() } AS hasKnows
+
+-- Negation
+MATCH (n) WHERE NOT EXISTS { (n)-[:KNOWS]->() } RETURN n
+
+-- Bare pattern predicate (equivalent to EXISTS { ... })
+MATCH (n) WHERE (n)-[:KNOWS]->() RETURN n
+
+-- Pattern predicate with two conditions (conjunction)
+MATCH (n) WHERE (n)-[:KNOWS]-() AND (n)-[:LIKES]-() RETURN n
+```
+
+In Rust:
+```rust
+let result = executor.execute("social",
+    &planner.plan(&parse_query(
+        "MATCH (n) WHERE EXISTS { (n)-[:KNOWS]->() } RETURN n"
+    ).unwrap()).unwrap(),
+    &mut budget).unwrap();
+
+// rows contains only nodes with outgoing KNOWS edges
+println!("{} matches", result.rows.len());
 ```
 
 ## Running the Demo

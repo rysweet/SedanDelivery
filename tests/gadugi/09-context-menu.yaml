@@ -1,0 +1,209 @@
+name: "Right-Click Context Menu"
+description: >
+  Verifies the context menu system for nodes, edges, and the empty canvas. The context
+  menu is rendered as a fixed-position div with role="menu" and aria-label="Context
+  menu". Node menus show: Expand Neighborhood, Focus Node, Shortest Path From Here,
+  Edit Properties (separator before), Delete Node. Edge menus show: Highlight Path,
+  Edit Properties (separator before), Delete Edge. Canvas menus show: Add Node Here,
+  Fit View. The menu closes when clicking outside or pressing Escape.
+app_url: "http://localhost:5173"
+
+setup:
+  - action: api_call
+    method: POST
+    url: "http://localhost:5000/api/graphs"
+    body: '{"name": "test-graph"}'
+    headers:
+      Content-Type: "application/json"
+
+  - action: api_call
+    method: POST
+    url: "http://localhost:5000/api/graphs/test-graph/nodes"
+    body: '{"labels": ["Person"], "properties": {"name": "Alice"}}'
+    headers:
+      Content-Type: "application/json"
+    store_response_as: "alice_node"
+
+  - action: api_call
+    method: POST
+    url: "http://localhost:5000/api/graphs/test-graph/nodes"
+    body: '{"labels": ["Person"], "properties": {"name": "Bob"}}'
+    headers:
+      Content-Type: "application/json"
+    store_response_as: "bob_node"
+
+  - action: api_call
+    method: POST
+    url: "http://localhost:5000/api/graphs/test-graph/mutate"
+    body: '{"cypher": "MATCH (a:Person {name: \"Alice\"}), (b:Person {name: \"Bob\"}) CREATE (a)-[:KNOWS]->(b)"}'
+    headers:
+      Content-Type: "application/json"
+
+  - action: navigate
+    url: "/"
+
+steps:
+  - step: 1
+    description: "Select test-graph"
+    action: click
+    selector: "button:has(svg[data-lucide='database'])"
+    expected: "GraphSelector dropdown opens"
+    timeout_ms: 3000
+
+  - step: 2
+    description: "Click test-graph in the dropdown"
+    action: click
+    selector: "button:has-text('test-graph')"
+    expected: "test-graph selected with 2 nodes and 1 edge"
+    timeout_ms: 3000
+
+  - step: 3
+    description: "Wait for canvas to render nodes"
+    action: verify
+    selector: ".font-mono"
+    expected: "Status bar shows '2 nodes · 1 edges'"
+    timeout_ms: 8000
+
+  - step: 4
+    description: "No context menu is visible initially"
+    action: verify
+    selector: "[role='menu'][aria-label='Context menu']"
+    expected: "Context menu is not in the DOM before right-clicking"
+    negate: true
+    timeout_ms: 3000
+
+  - step: 5
+    description: "Right-click on the canvas (background area, not a node) to open canvas context menu"
+    action: right_click
+    selector: "canvas"
+    expected: "Context menu appears with canvas-level options"
+    timeout_ms: 3000
+
+  - step: 6
+    description: "Context menu element with role='menu' is visible"
+    action: verify
+    selector: "[role='menu'][aria-label='Context menu']"
+    expected: "Context menu div with role=menu is in the DOM and visible"
+    timeout_ms: 3000
+
+  - step: 7
+    description: "Canvas context menu shows 'Add Node Here' option"
+    action: verify
+    selector: "[role='menuitem']:has-text('Add Node Here')"
+    expected: "'Add Node Here' menu item is present"
+    timeout_ms: 3000
+
+  - step: 8
+    description: "Canvas context menu shows 'Fit View' option"
+    action: verify
+    selector: "[role='menuitem']:has-text('Fit View')"
+    expected: "'Fit View' menu item is present"
+    timeout_ms: 3000
+
+  - step: 9
+    description: "Press Escape to close the context menu"
+    action: key
+    selector: "body"
+    value: "Escape"
+    expected: "Context menu closes"
+    timeout_ms: 3000
+
+  - step: 10
+    description: "Context menu is gone after Escape"
+    action: verify
+    selector: "[role='menu'][aria-label='Context menu']"
+    expected: "Context menu is no longer in the DOM"
+    negate: true
+    timeout_ms: 3000
+
+  - step: 11
+    description: "Right-click on a node in the canvas to open node context menu"
+    action: right_click
+    selector: "canvas"
+    position: "center"
+    expected: "A context menu appears — may be node or canvas menu depending on render position"
+    timeout_ms: 3000
+
+  - step: 12
+    description: "If node context menu opens, it has 'Expand Neighborhood' option"
+    action: verify
+    selector: "[role='menuitem']:has-text('Expand Neighborhood')"
+    expected: "'Expand Neighborhood' is listed in the node context menu"
+    timeout_ms: 3000
+
+  - step: 13
+    description: "Node context menu has 'Focus Node' option"
+    action: verify
+    selector: "[role='menuitem']:has-text('Focus Node')"
+    expected: "'Focus Node' is listed in the node context menu"
+    timeout_ms: 3000
+
+  - step: 14
+    description: "Node context menu has 'Shortest Path From Here' option"
+    action: verify
+    selector: "[role='menuitem']:has-text('Shortest Path From Here')"
+    expected: "'Shortest Path From Here' is listed in the node context menu"
+    timeout_ms: 3000
+
+  - step: 15
+    description: "Node context menu has 'Edit Properties' option"
+    action: verify
+    selector: "[role='menuitem']:has-text('Edit Properties')"
+    expected: "'Edit Properties' is listed in the node context menu"
+    timeout_ms: 3000
+
+  - step: 16
+    description: "Node context menu has 'Delete Node' option in red (danger style)"
+    action: verify
+    selector: "[role='menuitem'].text-red-400:has-text('Delete Node')"
+    expected: "'Delete Node' is listed with red danger styling"
+    timeout_ms: 3000
+
+  - step: 17
+    description: "Click 'Expand Neighborhood' to close menu and trigger neighborhood fetch"
+    action: click
+    selector: "[role='menuitem']:has-text('Expand Neighborhood')"
+    expected: "Context menu closes; API call fetches neighbors; graph may update"
+    timeout_ms: 5000
+
+  - step: 18
+    description: "Context menu is closed after clicking a menu item"
+    action: verify
+    selector: "[role='menu'][aria-label='Context menu']"
+    expected: "Context menu is no longer visible"
+    negate: true
+    timeout_ms: 3000
+
+  - step: 19
+    description: "Click outside the canvas to deselect and reset state"
+    action: click
+    selector: "body"
+    expected: "Any open menus or selections are dismissed"
+    timeout_ms: 3000
+
+  - step: 20
+    description: "Right-click on canvas for a second node context menu test"
+    action: right_click
+    selector: "canvas"
+    expected: "A new context menu appears"
+    timeout_ms: 3000
+
+  - step: 21
+    description: "Click 'Edit Properties' to select the node and close the menu"
+    action: click
+    selector: "[role='menuitem']:has-text('Edit Properties')"
+    expected: "Context menu closes; the node becomes selected in the Inspector Panel"
+    timeout_ms: 5000
+
+  - step: 22
+    description: "Inspector Panel updates to show 'Node Inspector' after Edit Properties"
+    action: verify
+    selector: "text=Node Inspector"
+    expected: "Inspector Panel header reads 'Node Inspector'"
+    timeout_ms: 5000
+
+teardown:
+  - action: api_call
+    method: DELETE
+    url: "http://localhost:5000/api/graphs/test-graph"
+    description: "Remove test-graph"

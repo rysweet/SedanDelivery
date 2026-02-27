@@ -1,0 +1,95 @@
+scenario:
+  name: "Error Handling — Invalid Inputs, Network Errors, Toast Notifications"
+  description: "Verifies error feedback is displayed via toast for invalid operations and failed mutations"
+  type: web
+  tags: [e2e, errors, resilience]
+  timeout: 60s
+
+  variables:
+    graph_name: "e2e-errors"
+    api_base: "http://localhost:5000/api"
+
+  steps:
+    - action: api_call
+      method: POST
+      url: "${api_base}/graphs"
+      body: '{"name": "${graph_name}"}'
+
+    - action: navigate
+      url: "http://localhost:5173"
+
+    - action: wait_for_element
+      selector: "[aria-label='Select graph']"
+      timeout: 10s
+
+    - action: click
+      selector: "[aria-label='Select graph']"
+
+    - action: click
+      text: "${graph_name}"
+
+    - action: wait_for_element
+      selector: ":has-text('0 nodes')"
+      timeout: 8s
+
+    # Phase 1: Try to create a graph with invalid name
+    - action: click
+      selector: "[aria-label='Select graph']"
+
+    - action: click
+      text: "Create New Graph"
+
+    - action: type
+      selector: "input[placeholder='Graph name...']"
+      value: "invalid!name@#$"
+
+    - action: click
+      text: "Create"
+
+    # The API should reject with 400 — verify toast appears
+    - action: wait_for_element
+      selector: "[role='alert']"
+      timeout: 8s
+      description: "Error toast should appear for invalid graph name"
+
+    - action: screenshot
+      save_as: "09-invalid-graph-name.png"
+
+    # Phase 2: Execute invalid Cypher
+    - action: click
+      selector: "[aria-label='Query editor']"
+
+    - action: wait_for_element
+      selector: ".monaco-editor"
+      timeout: 5s
+
+    - action: click
+      selector: ".monaco-editor textarea"
+
+    - action: type
+      selector: ".monaco-editor textarea"
+      value: "THIS IS NOT VALID CYPHER"
+
+    - action: click
+      text: "Execute"
+
+    - action: wait_for_element
+      selector: ":has-text('error')"
+      timeout: 10s
+      description: "Query error should be displayed"
+
+    - action: screenshot
+      save_as: "09-invalid-cypher.png"
+
+    # Phase 3: Pagination limit exceeded (API returns 400)
+    - action: api_call
+      method: GET
+      url: "${api_base}/graphs/${graph_name}/nodes?limit=99999"
+      expected_status: 400
+      description: "Verify API rejects limit > 10000"
+
+  cleanup:
+    - action: api_call
+      method: DELETE
+      url: "${api_base}/graphs/${graph_name}"
+      continue_on_failure: true

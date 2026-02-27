@@ -5,6 +5,7 @@ members = [
     "gql-fabric-store",
     "gql-module",
     "gql-cli",
+    "gql-api",
 ]
 resolver = "2"
 

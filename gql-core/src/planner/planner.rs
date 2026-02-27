@@ -71,7 +71,12 @@ impl<'s> QueryPlanner<'s> {
     pub fn plan(&self, query: &Query) -> Result<Operator, GqlError> {
         // Run compile-time validation before planning.
         crate::planner::validator::validate_query(query)?;
+        self.plan_unchecked(query)
+    }
 
+    /// Plan a query without running compile-time validation.
+    /// Used for inner EXISTS subqueries that reference outer-scope variables.
+    pub fn plan_unchecked(&self, query: &Query) -> Result<Operator, GqlError> {
         let mut pipeline: Option<Operator> = None;
         let mut return_clause: Option<&ReturnClause> = None;
 
@@ -170,24 +175,41 @@ impl<'s> QueryPlanner<'s> {
             }
         }
 
-        // If we have a RETURN clause, build the return pipeline.
-        if let Some(rc) = return_clause {
+        // Build the main pipeline result.
+        let main_op: Operator = if let Some(rc) = return_clause {
             // RETURN without MATCH: produce exactly one row with no bindings.
             let child = pipeline.unwrap_or(Operator::SingleRow);
-            return self.plan_return(rc, child);
-        }
-
-        // If we only have a CREATE/DELETE/SET/etc. (no RETURN), wrap in ProduceResults.
-        if let Some(op) = pipeline {
+            self.plan_return(rc, child)?
+        } else if let Some(op) = pipeline {
             // For standalone CALL, derive output columns from the procedure.
             let columns = self.derive_standalone_call_columns(&op);
-            return Ok(Operator::ProduceResults {
+            Operator::ProduceResults {
                 columns,
                 child: Box::new(op),
-            });
+            }
+        } else {
+            return Err(GqlError::Plan(PlanError::ReturnStarNoVariables));
+        };
+
+        // Handle UNION / UNION ALL parts.
+        if query.unions.is_empty() {
+            return Ok(main_op);
         }
 
-        Err(GqlError::Plan(PlanError::ReturnStarNoVariables))
+        let mut result = main_op;
+        for (all, part_clauses) in &query.unions {
+            let part_query = Query {
+                clauses: part_clauses.clone(),
+                unions: Vec::new(),
+            };
+            let right = self.plan(&part_query)?;
+            result = Operator::Union {
+                left: Box::new(result),
+                right: Box::new(right),
+                all: *all,
+            };
+        }
+        Ok(result)
     }
 
     // ── CALL planning ─────────────────────────────────────────────────────────
@@ -340,7 +362,7 @@ impl<'s> QueryPlanner<'s> {
             Operator::Call {
                 procedure,
                 yield_items,
-                yield_star,
+                yield_star: _,
                 ..
             } => {
                 if !yield_items.is_empty() {
@@ -403,6 +425,38 @@ impl<'s> QueryPlanner<'s> {
             };
         }
 
+        Ok(op)
+    }
+
+    /// Plan an existential subquery: `EXISTS { patterns [WHERE predicate] }`.
+    ///
+    /// Called by the executor when evaluating `Expr::ExistsSubquery` at runtime.
+    /// Returns an operator that produces rows if the patterns match.
+    pub fn plan_exists_subquery(
+        &self,
+        patterns: &[PathPattern],
+        where_clause: Option<&Expr>,
+    ) -> Result<Operator, GqlError> {
+        if patterns.is_empty() {
+            return Ok(Operator::SingleRow);
+        }
+        let mut pattern_ops: Vec<Operator> = patterns
+            .iter()
+            .map(|p| self.plan_path_pattern(p))
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut op = pattern_ops.remove(0);
+        for other in pattern_ops {
+            op = Operator::Apply {
+                outer: Box::new(op),
+                inner: Box::new(other),
+            };
+        }
+        if let Some(pred) = where_clause {
+            op = Operator::Filter {
+                predicate: pred.clone(),
+                child: Box::new(op),
+            };
+        }
         Ok(op)
     }
 
@@ -529,6 +583,15 @@ impl<'s> QueryPlanner<'s> {
                     }
                     path_node_aliases.push(dst_alias.clone());
                 }
+                // Inline property constraints on a variable-length relationship
+                // must be checked for every edge in the path during BFS traversal.
+                // We pass them as `rel_props` using the sentinel alias `__varlen_edge__`.
+                let rel_props_expr = rel.properties.as_ref().filter(|p| !p.is_empty()).map(|props| {
+                    props_to_filter_expr(
+                        &Identifier::new("__varlen_edge__"),
+                        props,
+                    )
+                });
                 op = Operator::VarLenExpand {
                     direction: rel.direction,
                     rel_types: rel.rel_types.clone(),
@@ -536,24 +599,21 @@ impl<'s> QueryPlanner<'s> {
                     max,
                     src_alias: current_src.clone(),
                     path_alias,
+                    path_mode: has_path_var,
                     dst_alias: dst_alias.clone(),
                     child: Box::new(op),
+                    rel_props: rel_props_expr,
                 };
             } else {
                 // Single-hop expand.
-                // When tracking a named path, ensure we always have a rel_alias
-                // so the edge ID is available for path assembly.
-                let has_rel_props = rel.properties.as_ref().map_or(false, |p| !p.is_empty());
-                let rel_alias =
-                    if has_path_var || has_rel_props {
-                        // Ensure rel_alias exists when tracking a named path
-                        // or when inline properties need filtering.
-                        Some(rel.variable.clone().unwrap_or_else(|| {
-                            Identifier::new(format!("__path_rel_{}__", step_idx))
-                        }))
-                    } else {
-                        rel.variable.clone()
-                    };
+                // Always assign a rel_alias so that the edge ID is stored in the
+                // row, which enables edge isomorphism checking across multi-hop
+                // patterns (openCypher spec: each relationship can only be bound
+                // once per path traversal). For named paths and inline properties
+                // we also need the alias for path assembly / filtering.
+                let rel_alias = Some(rel.variable.clone().unwrap_or_else(|| {
+                    Identifier::new(format!("__anon_rel_{}__", step_idx))
+                }));
                 if has_path_var {
                     if let Some(ref ra) = rel_alias {
                         path_edge_aliases.push(ra.clone());
@@ -571,11 +631,13 @@ impl<'s> QueryPlanner<'s> {
             }
 
             // If the relationship has inline property constraints, add a property filter.
+            // For variable-length patterns, this is handled inside VarLenExpand via
+            // rel_props (each traversed edge is checked during BFS), so skip the Filter.
             if let Some(props) = &rel.properties {
-                if !props.is_empty() {
-                    // rel_alias is guaranteed to exist because we forced it above.
+                if !props.is_empty() && rel.range.is_none() {
+                    // rel_alias is guaranteed to exist because we always assign one above.
                     let filter_alias = rel.variable.clone().unwrap_or_else(|| {
-                        Identifier::new(format!("__path_rel_{}__", step_idx))
+                        Identifier::new(format!("__anon_rel_{}__", step_idx))
                     });
                     let pred = props_to_filter_expr(&filter_alias, props);
                     op = Operator::Filter {
@@ -808,9 +870,50 @@ impl<'s> QueryPlanner<'s> {
             self.plan_with_aggregation(&wc.items, child)?
         } else {
             // For plain projection, Sort/Skip/Limit run on raw rows first.
+            // However, if ORDER BY references projected aliases, we need to augment
+            // the rows with those aliases before sorting.
             let mut raw = child;
 
-            // ORDER BY (on raw rows, can reference pre-projection variables).
+            // Determine if ORDER BY references any projected aliases (at any expression depth).
+            fn with_expr_refs_alias(expr: &Expr, alias: &str) -> bool {
+                match expr {
+                    Expr::Variable(v) => v.0.as_str() == alias,
+                    Expr::Property(obj, _) => with_expr_refs_alias(obj, alias),
+                    Expr::BinaryOp { left, right, .. } => {
+                        with_expr_refs_alias(left, alias) || with_expr_refs_alias(right, alias)
+                    }
+                    Expr::UnaryOp { expr: inner, .. } => with_expr_refs_alias(inner, alias),
+                    Expr::FunctionCall { args, .. } => {
+                        args.iter().any(|a| with_expr_refs_alias(a, alias))
+                    }
+                    _ => false,
+                }
+            }
+            let needs_augment_for_sort = projected_items.iter().any(|(_, alias)| {
+                if let Some(a) = alias {
+                    wc.order_by.iter().any(|s| with_expr_refs_alias(&s.expr, a.0.as_str()))
+                } else {
+                    false
+                }
+            });
+
+            // If ORDER BY references projected aliases, pre-augment rows.
+            if needs_augment_for_sort && wc.where_clause.is_none() {
+                let child_aliases = crate::planner::collect_visible_aliases(&raw);
+                let mut augmented_items: Vec<(Expr, Option<Identifier>)> = child_aliases
+                    .iter()
+                    .map(|a| (Expr::Variable(Identifier::new(a.clone())), None))
+                    .collect();
+                for item in &projected_items {
+                    augmented_items.push(item.clone());
+                }
+                raw = Operator::Project {
+                    items: augmented_items,
+                    child: Box::new(raw),
+                };
+            }
+
+            // ORDER BY (can now reference both raw vars and projected aliases).
             if !wc.order_by.is_empty() {
                 raw = Operator::Sort {
                     items: wc
@@ -944,7 +1047,7 @@ impl<'s> QueryPlanner<'s> {
         child: Operator,
     ) -> Result<Operator, GqlError> {
         let mut keys: Vec<Expr> = Vec::new();
-        let mut aggregations: Vec<(AggFunction, Expr, bool, Identifier)> = Vec::new();
+        let mut aggregations: Vec<(AggFunction, Expr, Option<Expr>, bool, Identifier)> = Vec::new();
         // Track key aliases: (generated_column_name, user_alias) pairs.
         let mut key_renames: Vec<(String, String)> = Vec::new();
         let mut post_projections: Vec<(Expr, Option<Identifier>)> = Vec::new();
@@ -953,19 +1056,21 @@ impl<'s> QueryPlanner<'s> {
 
         for item in items {
             if has_agg_function(&item.expr) {
-                if let Ok((func, arg, distinct)) = extract_agg_function(&item.expr) {
+                if let Ok((func, arg, second_arg, distinct)) = extract_agg_function(&item.expr) {
                     let alias = item
                         .alias
                         .clone()
                         .unwrap_or_else(|| Identifier::new(return_item_name(item)));
-                    aggregations.push((func, arg, distinct, alias.clone()));
+                    aggregations.push((func, arg, second_arg, distinct, alias.clone()));
                     post_projections.push((Expr::Variable(alias), None));
                 } else {
                     needs_post_project = true;
                     let temp_alias = Identifier::new(format!("__agg_{agg_counter}"));
                     agg_counter += 1;
-                    if let Some((func, arg, distinct)) = find_inner_aggregate(&item.expr) {
-                        aggregations.push((func, arg, distinct, temp_alias.clone()));
+                    if let Some((func, arg, second_arg, distinct)) =
+                        find_inner_aggregate(&item.expr)
+                    {
+                        aggregations.push((func, arg, second_arg, distinct, temp_alias.clone()));
                         let rewritten = rewrite_agg_to_var(&item.expr, &temp_alias);
                         let final_alias = item
                             .alias
@@ -1120,14 +1225,28 @@ impl<'s> QueryPlanner<'s> {
         let on_create: Vec<SetItem> = mc.on_create.iter().map(map_set_clause_item).collect();
         let on_match: Vec<SetItem> = mc.on_match.iter().map(map_set_clause_item).collect();
 
-        Ok(Operator::Merge {
-            node_alias,
+        let merge_op = Operator::Merge {
+            node_alias: node_alias.clone(),
             labels,
             properties,
             on_create,
             on_match,
             child: child.map(Box::new),
-        })
+        };
+
+        // If the MERGE clause has a path variable (e.g. `MERGE p = (a {...})`),
+        // wrap with AssemblePath so `p` is available in subsequent RETURN.
+        if let Some(ref path_var) = mc.pattern.variable {
+            let node_aliases = node_alias.into_iter().collect();
+            Ok(Operator::AssemblePath {
+                path_alias: path_var.clone(),
+                node_aliases,
+                edge_aliases: vec![],
+                child: Box::new(merge_op),
+            })
+        } else {
+            Ok(merge_op)
+        }
     }
 
     fn plan_merge_relationship(
@@ -1154,7 +1273,15 @@ impl<'s> QueryPlanner<'s> {
             .variable
             .clone()
             .unwrap_or_else(|| Identifier::new("__merge_dst__"));
-        let rel_alias = step.rel.variable.clone();
+        // When a path variable exists on the MERGE pattern, ensure we capture the
+        // edge ID by assigning a synthetic alias if none was specified by the user.
+        let rel_alias = if mc.pattern.variable.is_some() {
+            Some(step.rel.variable.clone().unwrap_or_else(|| {
+                Identifier::new("__merge_rel__")
+            }))
+        } else {
+            step.rel.variable.clone()
+        };
         let rel_type = step
             .rel
             .rel_types
@@ -1177,17 +1304,33 @@ impl<'s> QueryPlanner<'s> {
         let on_create: Vec<SetItem> = mc.on_create.iter().map(map_set_clause_item).collect();
         let on_match: Vec<SetItem> = mc.on_match.iter().map(map_set_clause_item).collect();
 
-        Ok(Operator::MergeRelationship {
-            src_alias,
-            dst_alias,
-            rel_alias,
+        let merge_op = Operator::MergeRelationship {
+            src_alias: src_alias.clone(),
+            dst_alias: dst_alias.clone(),
+            rel_alias: rel_alias.clone(),
             rel_type,
             direction,
             properties,
             on_create,
             on_match,
             child: Box::new(child),
-        })
+        };
+
+        // If the MERGE clause has a path variable (e.g. `MERGE p = (a)-[:R]->(b)`),
+        // wrap with AssemblePath so `p` is available in subsequent RETURN.
+        if let Some(ref path_var) = mc.pattern.variable {
+            let node_aliases = vec![src_alias, dst_alias];
+            // rel_alias is guaranteed Some here (forced above when path_var is Some).
+            let edge_aliases = rel_alias.into_iter().collect();
+            Ok(Operator::AssemblePath {
+                path_alias: path_var.clone(),
+                node_aliases,
+                edge_aliases,
+                child: Box::new(merge_op),
+            })
+        } else {
+            Ok(merge_op)
+        }
     }
 
     // ── RETURN planning ───────────────────────────────────────────────────────
@@ -1213,7 +1356,106 @@ impl<'s> QueryPlanner<'s> {
         // When aggregation is active, rewrite aggregate function calls in ORDER BY
         // to reference their output aliases (the Aggregate operator stores results
         // under alias names, not as live function calls).
+        // For non-aggregation, ORDER BY may reference RETURN aliases that don't
+        // exist in the raw rows yet; we add a pre-projection to expose them.
         let pipeline = if !rc.order_by.is_empty() {
+            // For non-aggregation: if ORDER BY references any RETURN alias,
+            // pre-project those aliases onto the raw rows before sorting.
+            let pipeline = if !has_aggregation {
+                // Collect all RETURN aliases referenced in ORDER BY (at any depth in expression).
+                // This handles cases like `ORDER BY n + 2` where `n` is a RETURN alias.
+                fn expr_references_alias(expr: &Expr, alias: &str) -> bool {
+                    match expr {
+                        Expr::Variable(v) => v.0.as_str() == alias,
+                        Expr::Property(obj, _) => expr_references_alias(obj, alias),
+                        Expr::BinaryOp { left, right, .. } => {
+                            expr_references_alias(left, alias) || expr_references_alias(right, alias)
+                        }
+                        Expr::UnaryOp { expr: inner, .. } => expr_references_alias(inner, alias),
+                        Expr::FunctionCall { args, .. } => {
+                            args.iter().any(|a| expr_references_alias(a, alias))
+                        }
+                        _ => false,
+                    }
+                }
+                let needs_pre_project = rc.order_by.iter().any(|s| {
+                    items.iter().any(|item| {
+                        if let Some(alias) = &item.alias {
+                            let alias_str = alias.0.as_str();
+                            let orig_name = expr_to_col_name(&item.expr);
+                            alias_str != orig_name.as_str()
+                                && expr_references_alias(&s.expr, alias_str)
+                        } else {
+                            false
+                        }
+                    })
+                });
+                if needs_pre_project {
+                    // Add a Project that exposes RETURN aliases for ORDER BY use.
+                    // When an alias shadows an existing variable (e.g. `n.num AS n`),
+                    // use a temp name to avoid overwriting the raw variable, then
+                    // rewrite ORDER BY expressions to reference the temp name.
+                    let child_aliases = crate::planner::collect_visible_aliases(&pipeline);
+                    let mut aug_items: Vec<(Expr, Option<Identifier>)> = child_aliases
+                        .iter()
+                        .map(|a| (Expr::Variable(Identifier::new(a.clone())), None))
+                        .collect();
+                    // Map from alias name → temp name (when shadowing occurs).
+                    let mut alias_remap: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+                    for item in &items {
+                        if let Some(alias) = &item.alias {
+                            if alias.0 != expr_to_col_name(&item.expr) {
+                                let use_alias = if child_aliases.iter().any(|a| a.as_str() == alias.0.as_str()) {
+                                    // Alias shadows an existing variable: use a temp name.
+                                    let temp = format!("__presort_{}__", alias.0);
+                                    alias_remap.insert(alias.0.to_string(), temp.clone());
+                                    Identifier::new(temp)
+                                } else {
+                                    alias.clone()
+                                };
+                                aug_items.push((item.expr.clone(), Some(use_alias)));
+                            }
+                        }
+                    }
+                    (Operator::Project {
+                        items: aug_items,
+                        child: Box::new(pipeline),
+                    }, alias_remap)
+                } else {
+                    (pipeline, std::collections::HashMap::new())
+                }
+            } else {
+                (pipeline, std::collections::HashMap::new())
+            };
+            // Rewrite ORDER BY expressions to use temp names when aliases were remapped.
+            fn rewrite_alias_refs(expr: Expr, remap: &std::collections::HashMap<String, String>) -> Expr {
+                if remap.is_empty() { return expr; }
+                match expr {
+                    Expr::Variable(v) => {
+                        if let Some(temp) = remap.get(v.0.as_str()) {
+                            Expr::Variable(Identifier::new(temp.clone()))
+                        } else {
+                            Expr::Variable(v)
+                        }
+                    }
+                    Expr::BinaryOp { op, left, right } => Expr::BinaryOp {
+                        op,
+                        left: Box::new(rewrite_alias_refs(*left, remap)),
+                        right: Box::new(rewrite_alias_refs(*right, remap)),
+                    },
+                    Expr::UnaryOp { op, expr: inner } => Expr::UnaryOp {
+                        op,
+                        expr: Box::new(rewrite_alias_refs(*inner, remap)),
+                    },
+                    Expr::FunctionCall { name, args, distinct } => Expr::FunctionCall {
+                        name,
+                        args: args.into_iter().map(|a| rewrite_alias_refs(a, remap)).collect(),
+                        distinct,
+                    },
+                    other => other,
+                }
+            }
+            let (pipeline, alias_remap_final) = pipeline;
             let sort_items: Vec<(Expr, bool)> = rc
                 .order_by
                 .iter()
@@ -1221,7 +1463,7 @@ impl<'s> QueryPlanner<'s> {
                     if has_aggregation {
                         (rewrite_agg_order_expr(&s.expr, &items), s.ascending)
                     } else {
-                        (s.expr.clone(), s.ascending)
+                        (rewrite_alias_refs(s.expr.clone(), &alias_remap_final), s.ascending)
                     }
                 })
                 .collect();
@@ -1294,7 +1536,7 @@ impl<'s> QueryPlanner<'s> {
         child: Operator,
     ) -> Result<Operator, GqlError> {
         let mut keys: Vec<Expr> = Vec::new();
-        let mut aggregations: Vec<(AggFunction, Expr, bool, Identifier)> = Vec::new();
+        let mut aggregations: Vec<(AggFunction, Expr, Option<Expr>, bool, Identifier)> = Vec::new();
         // Track post-aggregation projections for expressions wrapping aggregates
         // (e.g., `count(a) + 3`, `count(a) > 0`).
         let mut post_projections: Vec<(Expr, Option<Identifier>)> = Vec::new();
@@ -1303,48 +1545,55 @@ impl<'s> QueryPlanner<'s> {
 
         for item in items {
             if has_agg_function(&item.expr) {
-                if let Ok((func, arg, distinct)) = extract_agg_function(&item.expr) {
+                if let Ok((func, arg, second_arg, distinct)) = extract_agg_function(&item.expr) {
                     // Simple case: expr is a bare aggregate function
                     let alias = item
                         .alias
                         .clone()
                         .unwrap_or_else(|| Identifier::new(return_item_name(item)));
-                    aggregations.push((func, arg, distinct, alias.clone()));
+                    aggregations.push((func, arg, second_arg, distinct, alias.clone()));
                     post_projections.push((Expr::Variable(alias), None));
                 } else {
-                    // Complex case: aggregate is wrapped (e.g., count(a) + 3)
-                    // Extract inner aggregate(s) and create temp aliases
+                    // Complex case: aggregate is wrapped (e.g., count(a) + 3, count(a) * 10 + count(b) * 5)
+                    // Iteratively extract ALL aggregate calls and replace with temp aliases.
                     needs_post_project = true;
-                    let temp_alias = Identifier::new(format!("__agg_{agg_counter}"));
-                    agg_counter += 1;
-
-                    // Find the innermost aggregate function call
-                    if let Some((func, arg, distinct)) = find_inner_aggregate(&item.expr) {
-                        aggregations.push((func, arg, distinct, temp_alias.clone()));
-                        // Rewrite the original expression to reference the temp alias
-                        let rewritten = rewrite_agg_to_var(&item.expr, &temp_alias);
-                        let final_alias = item
-                            .alias
-                            .clone()
-                            .unwrap_or_else(|| Identifier::new(return_item_name(item)));
-                        post_projections.push((rewritten, Some(final_alias)));
-                    } else {
-                        // Fallback: treat as key
-                        keys.push(item.expr.clone());
-                        let alias = item
-                            .alias
-                            .clone()
-                            .unwrap_or_else(|| Identifier::new(return_item_name(item)));
-                        post_projections.push((Expr::Variable(alias), None));
+                    let mut rewritten = item.expr.clone();
+                    // Keep extracting aggregates until no more remain in the expression.
+                    while has_agg_function(&rewritten) {
+                        let temp_alias = Identifier::new(format!("__agg_{agg_counter}"));
+                        agg_counter += 1;
+                        if let Some((func, arg, second_arg, distinct)) =
+                            find_inner_aggregate(&rewritten)
+                        {
+                            aggregations.push((func, arg, second_arg, distinct, temp_alias.clone()));
+                            rewritten = rewrite_agg_to_var(&rewritten, &temp_alias);
+                        } else {
+                            break;
+                        }
                     }
+                    let final_alias = item
+                        .alias
+                        .clone()
+                        .unwrap_or_else(|| Identifier::new(return_item_name(item)));
+                    post_projections.push((rewritten, Some(final_alias)));
                 }
             } else {
-                keys.push(item.expr.clone());
+                // Non-aggregate: use as group key.
+                // If the user gave an alias different from the generated column name,
+                // we must add a post-project step to rename the key column.
+                let gen_name = expr_to_col_name(&item.expr);
                 let alias = item
                     .alias
                     .clone()
                     .unwrap_or_else(|| Identifier::new(return_item_name(item)));
-                post_projections.push((Expr::Variable(alias), None));
+                keys.push(item.expr.clone());
+                if gen_name != alias.0 {
+                    needs_post_project = true;
+                    post_projections
+                        .push((Expr::Variable(Identifier::new(gen_name)), Some(alias)));
+                } else {
+                    post_projections.push((Expr::Variable(alias), None));
+                }
             }
         }
 
@@ -1433,7 +1682,7 @@ fn rewrite_with_order_expr(expr: &Expr, with_items: &[ReturnItem]) -> Expr {
                 right: Box::new(new_right),
             }
         }
-        Expr::FunctionCall { name, args, distinct } => {
+        Expr::FunctionCall { name, args: _, distinct: _ } => {
             if is_agg_name(name.as_str()) {
                 // Map aggregate functions to their output aliases.
                 for ri in with_items {
@@ -1456,24 +1705,32 @@ fn rewrite_with_order_expr(expr: &Expr, with_items: &[ReturnItem]) -> Expr {
 }
 
 fn rewrite_agg_order_expr(expr: &Expr, return_items: &[ReturnItem]) -> Expr {
-    if let Expr::FunctionCall { name, .. } = expr {
-        if is_agg_name(name.as_str()) {
-            // Find the matching RETURN item.
-            for ri in return_items {
-                if let Expr::FunctionCall { name: rn, .. } = &ri.expr {
-                    if name == rn {
-                        let alias = ri
-                            .alias
-                            .clone()
-                            .map(|a| a.0)
-                            .unwrap_or_else(|| return_item_name(ri));
-                        return Expr::Variable(Identifier::new(alias));
-                    }
-                }
-            }
+    // After aggregation, ORDER BY expressions must reference output column names.
+    // Try to find the matching RETURN item and rewrite to Variable(output_column_name).
+    let expr_col = expr_to_col_name(expr);
+    for ri in return_items {
+        let ri_col = expr_to_col_name(&ri.expr);
+        let ri_alias = return_item_name(ri);
+        // Match if the ORDER BY expression equals the return item expression,
+        // or if it matches the alias.
+        if expr_col == ri_col || expr_col == ri_alias {
+            return Expr::Variable(Identifier::new(ri_alias));
         }
     }
-    expr.clone()
+    // For compound expressions (e.g. `$age + avg(person.age) - 1000`), recursively
+    // rewrite sub-expressions that match return items, replacing agg calls with aliases.
+    match expr {
+        Expr::BinaryOp { op, left, right } => Expr::BinaryOp {
+            op: *op,
+            left: Box::new(rewrite_agg_order_expr(left, return_items)),
+            right: Box::new(rewrite_agg_order_expr(right, return_items)),
+        },
+        Expr::UnaryOp { op, expr: inner } => Expr::UnaryOp {
+            op: *op,
+            expr: Box::new(rewrite_agg_order_expr(inner, return_items)),
+        },
+        _ => expr.clone(),
+    }
 }
 
 /// Map an AST `SetClauseItem` to a planner `SetItem`.
@@ -1515,19 +1772,10 @@ fn return_item_name(item: &ReturnItem) -> String {
     if let Some(alias) = &item.alias {
         return alias.0.clone();
     }
-    match &item.expr {
-        Expr::Variable(id) => id.0.clone(),
-        Expr::Property(obj, key) => {
-            format!("{}.{}", expr_name(obj), key)
-        }
-        Expr::FunctionCall { name, args, .. } => {
-            let arg_strs: Vec<String> = args.iter().map(expr_name).collect();
-            format!("{}({})", name, arg_strs.join(", "))
-        }
-        other => format!("{:?}", other),
-    }
+    expr_to_col_name(&item.expr)
 }
 
+#[allow(dead_code)]
 fn expr_name(expr: &Expr) -> String {
     match expr {
         Expr::Variable(id) => id.0.clone(),
@@ -1548,17 +1796,40 @@ fn expr_name(expr: &Expr) -> String {
 /// Returns `true` if the expression is or contains an aggregate function call.
 fn has_agg_function(expr: &Expr) -> bool {
     match expr {
-        Expr::FunctionCall { name, .. } => is_agg_name(name.as_str()),
+        Expr::FunctionCall { name, args, .. } => {
+            // The function itself is an aggregate, OR one of its args contains an aggregate
+            // (e.g. size(collect(a)), all(x IN collect(...) WHERE x))
+            is_agg_name(name.as_str()) || args.iter().any(has_agg_function)
+        }
         Expr::BinaryOp { left, right, .. } => has_agg_function(left) || has_agg_function(right),
         Expr::UnaryOp { expr, .. } => has_agg_function(expr),
         Expr::Property(obj, _) => has_agg_function(obj),
         Expr::List(items) => items.iter().any(has_agg_function),
+        Expr::MapLiteral(pairs) => pairs.iter().any(|(_, v)| has_agg_function(v)),
         Expr::ListComp {
             list, filter, map, ..
         } => {
             has_agg_function(list)
                 || filter.as_deref().map(has_agg_function).unwrap_or(false)
                 || has_agg_function(map)
+        }
+        Expr::Case {
+            subject,
+            alternatives,
+            default,
+        } => {
+            subject.as_deref().map(has_agg_function).unwrap_or(false)
+                || alternatives
+                    .iter()
+                    .any(|(c, r)| has_agg_function(c) || has_agg_function(r))
+                || default.as_deref().map(has_agg_function).unwrap_or(false)
+        }
+        Expr::IsNull(e) | Expr::IsNotNull(e) => has_agg_function(e),
+        Expr::Subscript(a, b) => has_agg_function(a) || has_agg_function(b),
+        Expr::Slice(a, b, c) => {
+            has_agg_function(a)
+                || b.as_deref().map(has_agg_function).unwrap_or(false)
+                || c.as_deref().map(has_agg_function).unwrap_or(false)
         }
         _ => false,
     }
@@ -1567,13 +1838,22 @@ fn has_agg_function(expr: &Expr) -> bool {
 fn is_agg_name(name: &str) -> bool {
     matches!(
         name.to_uppercase().as_str(),
-        "COUNT" | "SUM" | "AVG" | "MIN" | "MAX" | "COLLECT" | "STDEV" | "STDEVP"
+        "COUNT"
+            | "SUM"
+            | "AVG"
+            | "MIN"
+            | "MAX"
+            | "COLLECT"
+            | "STDEV"
+            | "STDEVP"
+            | "PERCENTILECONT"
+            | "PERCENTILEDISC"
     )
 }
 
-/// Extract the aggregate function, argument, and distinct flag from a top-level
-/// `FunctionCall` expression.
-fn extract_agg_function(expr: &Expr) -> Result<(AggFunction, Expr, bool), GqlError> {
+/// Extract the aggregate function, first argument, optional second argument, and distinct flag
+/// from a top-level `FunctionCall` expression.
+fn extract_agg_function(expr: &Expr) -> Result<(AggFunction, Expr, Option<Expr>, bool), GqlError> {
     match expr {
         Expr::FunctionCall {
             name,
@@ -1589,6 +1869,8 @@ fn extract_agg_function(expr: &Expr) -> Result<(AggFunction, Expr, bool), GqlErr
                 "COLLECT" => AggFunction::Collect,
                 "STDEV" => AggFunction::StDev,
                 "STDEVP" => AggFunction::StDevP,
+                "PERCENTILECONT" => AggFunction::PercentileCont,
+                "PERCENTILEDISC" => AggFunction::PercentileDisc,
                 other => {
                     return Err(GqlError::Execution(ExecutionError::unsupported(format!(
                         "aggregate function '{other}'"
@@ -1596,7 +1878,8 @@ fn extract_agg_function(expr: &Expr) -> Result<(AggFunction, Expr, bool), GqlErr
                 }
             };
             let arg = args.first().cloned().unwrap_or(Expr::Null);
-            Ok((func, arg, *distinct))
+            let second_arg = args.get(1).cloned();
+            Ok((func, arg, second_arg, *distinct))
         }
         _ => Err(GqlError::Execution(ExecutionError::unsupported(
             "non-function aggregate expression",
@@ -1605,33 +1888,45 @@ fn extract_agg_function(expr: &Expr) -> Result<(AggFunction, Expr, bool), GqlErr
 }
 
 /// Find the innermost aggregate function call in a compound expression.
-/// Returns (AggFunction, arg_expr, distinct) if found.
-fn find_inner_aggregate(expr: &Expr) -> Option<(AggFunction, Expr, bool)> {
+/// Returns (AggFunction, arg_expr, second_arg_expr, distinct) if found.
+fn find_inner_aggregate(expr: &Expr) -> Option<(AggFunction, Expr, Option<Expr>, bool)> {
     match expr {
         Expr::FunctionCall {
             name,
             args,
             distinct,
         } => {
-            let func = match name.to_uppercase().as_str() {
-                "COUNT" => AggFunction::Count,
-                "SUM" => AggFunction::Sum,
-                "AVG" => AggFunction::Avg,
-                "MIN" => AggFunction::Min,
-                "MAX" => AggFunction::Max,
-                "COLLECT" => AggFunction::Collect,
-                "STDEV" => AggFunction::StDev,
-                "STDEVP" => AggFunction::StDevP,
-                _ => return None,
+            let func_opt = match name.to_uppercase().as_str() {
+                "COUNT" => Some(AggFunction::Count),
+                "SUM" => Some(AggFunction::Sum),
+                "AVG" => Some(AggFunction::Avg),
+                "MIN" => Some(AggFunction::Min),
+                "MAX" => Some(AggFunction::Max),
+                "COLLECT" => Some(AggFunction::Collect),
+                "STDEV" => Some(AggFunction::StDev),
+                "STDEVP" => Some(AggFunction::StDevP),
+                "PERCENTILECONT" => Some(AggFunction::PercentileCont),
+                "PERCENTILEDISC" => Some(AggFunction::PercentileDisc),
+                _ => None,
             };
-            let arg = args.first().cloned().unwrap_or(Expr::Null);
-            Some((func, arg, *distinct))
+            if let Some(func) = func_opt {
+                let arg = args.first().cloned().unwrap_or(Expr::Null);
+                let second_arg = args.get(1).cloned();
+                Some((func, arg, second_arg, *distinct))
+            } else {
+                // Non-aggregate function: search inside args for nested aggregate
+                args.iter().find_map(find_inner_aggregate)
+            }
         }
         Expr::BinaryOp { left, right, .. } => {
             find_inner_aggregate(left).or_else(|| find_inner_aggregate(right))
         }
         Expr::UnaryOp { expr: inner, .. } => find_inner_aggregate(inner),
         Expr::Property(inner, _) => find_inner_aggregate(inner),
+        Expr::MapLiteral(pairs) => pairs.iter().find_map(|(_, v)| find_inner_aggregate(v)),
+        Expr::ListComp { list, map, .. } => {
+            find_inner_aggregate(list).or_else(|| find_inner_aggregate(map))
+        }
         _ => None,
     }
 }
@@ -1640,7 +1935,32 @@ fn find_inner_aggregate(expr: &Expr) -> Option<(AggFunction, Expr, bool)> {
 /// a variable reference to `alias`.
 fn rewrite_agg_to_var(expr: &Expr, alias: &Identifier) -> Expr {
     match expr {
-        Expr::FunctionCall { name, .. } if is_agg_name(name) => Expr::Variable(alias.clone()),
+        Expr::FunctionCall { name, .. } if is_agg_name(name) => {
+            // This IS the aggregate: replace the whole call with a variable.
+            Expr::Variable(alias.clone())
+        }
+        Expr::FunctionCall { name, args, distinct } => {
+            // Non-aggregate function: rewrite inside args if any contain an aggregate.
+            if args.iter().any(has_agg_function) {
+                let new_args = args
+                    .iter()
+                    .map(|a| {
+                        if has_agg_function(a) {
+                            rewrite_agg_to_var(a, alias)
+                        } else {
+                            a.clone()
+                        }
+                    })
+                    .collect();
+                Expr::FunctionCall {
+                    name: name.clone(),
+                    args: new_args,
+                    distinct: *distinct,
+                }
+            } else {
+                expr.clone()
+            }
+        }
         Expr::BinaryOp { op, left, right } => {
             if has_agg_function(left) {
                 Expr::BinaryOp {
@@ -1662,6 +1982,42 @@ fn rewrite_agg_to_var(expr: &Expr, alias: &Identifier) -> Expr {
             op: *op,
             expr: Box::new(rewrite_agg_to_var(inner, alias)),
         },
+        Expr::MapLiteral(pairs) => {
+            // Rewrite inside map values
+            let new_pairs = pairs
+                .iter()
+                .map(|(k, v)| {
+                    if has_agg_function(v) {
+                        (k.clone(), rewrite_agg_to_var(v, alias))
+                    } else {
+                        (k.clone(), v.clone())
+                    }
+                })
+                .collect();
+            Expr::MapLiteral(new_pairs)
+        }
+        Expr::ListComp {
+            variable,
+            list,
+            filter,
+            map,
+        } => {
+            // Rewrite inside list if it contains an aggregate
+            Expr::ListComp {
+                variable: variable.clone(),
+                list: if has_agg_function(list) {
+                    Box::new(rewrite_agg_to_var(list, alias))
+                } else {
+                    list.clone()
+                },
+                filter: filter.clone(),
+                map: if has_agg_function(map) {
+                    Box::new(rewrite_agg_to_var(map, alias))
+                } else {
+                    map.clone()
+                },
+            }
+        }
         _ => expr.clone(),
     }
 }
@@ -1714,17 +2070,47 @@ fn label_filter_expr(alias: &Identifier, label: &Label) -> Expr {
 }
 
 /// Derive a column name from an expression (mirrors executor's `expr_to_column_name`).
+fn binop_col_prec(op: &crate::ast::BinaryOp) -> i32 {
+    use crate::ast::BinaryOp;
+    match op {
+        BinaryOp::Pow => 6,
+        BinaryOp::Mul | BinaryOp::Div | BinaryOp::Mod => 5,
+        BinaryOp::Add | BinaryOp::Sub | BinaryOp::Concat => 4,
+        _ => 3,
+    }
+}
+
+fn binop_col_nonassoc(op: &crate::ast::BinaryOp) -> bool {
+    use crate::ast::BinaryOp;
+    matches!(op, BinaryOp::Sub | BinaryOp::Div | BinaryOp::Mod)
+}
+
 fn expr_to_col_name(expr: &Expr) -> String {
     match expr {
         Expr::Variable(id) => id.0.clone(),
-        Expr::Property(obj, key) => format!("{}.{}", expr_to_col_name(obj), key),
-        Expr::FunctionCall { name, args, .. } => {
-            let arg_strs: Vec<String> = args.iter().map(|a| expr_to_col_name(a)).collect();
-            format!("{}({})", name, arg_strs.join(", "))
+        Expr::Property(obj, key) => {
+            let obj_str = match obj.as_ref() {
+                Expr::Subscript(_, _) => format!("({})", expr_to_col_name(obj)),
+                _ => expr_to_col_name(obj),
+            };
+            format!("{}.{}", obj_str, key)
+        }
+        Expr::FunctionCall {
+            name,
+            args,
+            distinct,
+            ..
+        } => {
+            let arg_strs: Vec<String> = args.iter().map(expr_to_col_name).collect();
+            if *distinct {
+                format!("{}(DISTINCT {})", name, arg_strs.join(", "))
+            } else {
+                format!("{}({})", name, arg_strs.join(", "))
+            }
         }
         Expr::Integer(n) => n.to_string(),
         Expr::Float(f) => f.to_string(),
-        Expr::Str(s) => s.to_string(),
+        Expr::Str(s) => format!("'{s}'"),
         Expr::BinaryOp { op, left, right } => {
             let op_str = match op {
                 crate::ast::BinaryOp::Add => "+",
@@ -1749,15 +2135,48 @@ fn expr_to_col_name(expr: &Expr) -> String {
                 crate::ast::BinaryOp::RegexMatch => "=~",
                 crate::ast::BinaryOp::Concat => "++",
             };
-            format!(
-                "{} {} {}",
-                expr_to_col_name(left),
-                op_str,
-                expr_to_col_name(right)
-            )
+            let parent_prec = binop_col_prec(op);
+            let left_str = match left.as_ref() {
+                Expr::BinaryOp { op: child_op, .. } if binop_col_prec(child_op) < parent_prec => {
+                    format!("({})", expr_to_col_name(left))
+                }
+                _ => expr_to_col_name(left),
+            };
+            let right_str = match right.as_ref() {
+                Expr::BinaryOp { op: child_op, .. }
+                    if binop_col_prec(child_op) < parent_prec
+                        || (binop_col_prec(child_op) == parent_prec && binop_col_nonassoc(op)) =>
+                {
+                    format!("({})", expr_to_col_name(right))
+                }
+                _ => expr_to_col_name(right),
+            };
+            format!("{} {} {}", left_str, op_str, right_str)
         }
         Expr::Bool(b) => b.to_string(),
         Expr::Null => "null".to_string(),
+        Expr::HasLabel(e, label) => format!("{}:{}", expr_to_col_name(e), label.0),
+        Expr::UnaryOp { op, expr: e } => match op {
+            crate::ast::UnaryOp::Not => format!("NOT {}", expr_to_col_name(e)),
+            crate::ast::UnaryOp::Neg => format!("-{}", expr_to_col_name(e)),
+        },
+        Expr::IsNull(e) => format!("{} IS NULL", expr_to_col_name(e)),
+        Expr::IsNotNull(e) => format!("{} IS NOT NULL", expr_to_col_name(e)),
+        Expr::MapLiteral(pairs) => {
+            let pairs_str: Vec<String> = pairs
+                .iter()
+                .map(|(k, v)| format!("{}: {}", k, expr_to_col_name_quoted(v)))
+                .collect();
+            format!("{{{}}}", pairs_str.join(", "))
+        }
+        Expr::List(items) => {
+            let items_str: Vec<String> = items.iter().map(expr_to_col_name).collect();
+            format!("[{}]", items_str.join(", "))
+        }
+        Expr::Subscript(list, idx) => {
+            format!("{}[{}]", expr_to_col_name(list), expr_to_col_name(idx))
+        }
+        Expr::Parameter(name) => format!("${name}"),
         Expr::ListComp {
             variable,
             list,
@@ -1784,6 +2203,14 @@ fn expr_to_col_name(expr: &Expr) -> String {
             }
         }
         _ => format!("{:?}", expr),
+    }
+}
+
+/// Like `expr_to_col_name` but quotes string literals (for map literal values).
+fn expr_to_col_name_quoted(expr: &Expr) -> String {
+    match expr {
+        Expr::Str(s) => format!("'{s}'"),
+        _ => expr_to_col_name(expr),
     }
 }
 

@@ -138,7 +138,7 @@ impl<'src> Parser<'src> {
 }
 
 /// Returns `true` for keyword tokens that are also valid Cypher identifiers
-/// (property keys, variable names, function names, etc.).
+/// (property keys, variable names, function names, relationship type names, etc.).
 fn is_keyword_usable_as_ident(kind: &TokenKind) -> bool {
     matches!(
         kind,
@@ -158,6 +158,9 @@ fn is_keyword_usable_as_ident(kind: &TokenKind) -> bool {
             | TokenKind::Null
             | TokenKind::True
             | TokenKind::False
+            | TokenKind::End
+            | TokenKind::Foreach
+            | TokenKind::In
     )
 }
 
@@ -520,6 +523,17 @@ impl<'src> Parser<'src> {
     }
 
     fn parse_set_item(&mut self) -> Result<SetClauseItem, ParseError> {
+        // Handle `SET (n).prop = value` — parenthesized node/rel reference
+        if self.at(&TokenKind::LParen) {
+            self.advance(); // consume '('
+            let alias = Identifier::new(self.expect_identifier()?);
+            self.expect(&TokenKind::RParen)?;
+            self.expect(&TokenKind::Dot)?;
+            let prop = SmolStr::new(self.expect_identifier()?);
+            self.expect(&TokenKind::Eq)?;
+            let value = self.parse_expr()?;
+            return Ok(SetClauseItem::SetProperty { alias, prop, value });
+        }
         let alias = Identifier::new(self.expect_identifier()?);
 
         match self.peek().clone() {
@@ -917,12 +931,14 @@ impl<'src> Parser<'src> {
         Ok(labels)
     }
 
-    /// Parse `:A|B|C` — used for relationship types inside `[...]`.
+    /// Parse `:A|B|C` or `:A|:B|:C` — used for relationship types inside `[...]`.
     fn parse_rel_type_list(&mut self) -> Result<Vec<RelType>, ParseError> {
         let mut types = Vec::new();
         self.expect(&TokenKind::Colon)?;
         types.push(RelType::new(SmolStr::new(self.expect_identifier()?)));
         while self.eat(&TokenKind::Pipe) {
+            // Accept optional colon before each subsequent type: `:A|:B` or `:A|B`
+            self.eat(&TokenKind::Colon);
             types.push(RelType::new(SmolStr::new(self.expect_identifier()?)));
         }
         Ok(types)
@@ -1082,19 +1098,40 @@ impl<'src> Parser<'src> {
         left = self.parse_null_check(left)?;
 
         // Check for label check: `a:Label` or `a:Label1:Label2`
-        while self.at(&TokenKind::Colon) {
-            if self.pos + 1 < self.tokens.len()
-                && matches!(self.tokens[self.pos + 1].kind, TokenKind::Identifier)
-            {
-                self.advance(); // consume ':'
-                let label_name = self.tokens[self.pos].text.to_string();
-                self.advance(); // consume label name
-                left = Expr::HasLabel(
-                    Box::new(left),
-                    Label::new(smol_str::SmolStr::new(&label_name)),
-                );
-            } else {
-                break;
+        // `a:A:B` is sugar for `a:A AND a:B` — rewrite to conjunctive AND.
+        if self.at(&TokenKind::Colon)
+            && self.pos + 1 < self.tokens.len()
+            && (matches!(self.tokens[self.pos + 1].kind, TokenKind::Identifier)
+                || is_keyword_usable_as_ident(&self.tokens[self.pos + 1].kind))
+        {
+            let label_inner = left.clone(); // the expression being label-checked
+            let mut label_result: Option<Expr> = None;
+            while self.at(&TokenKind::Colon) {
+                if self.pos + 1 < self.tokens.len()
+                    && (matches!(self.tokens[self.pos + 1].kind, TokenKind::Identifier)
+                        || is_keyword_usable_as_ident(&self.tokens[self.pos + 1].kind))
+                {
+                    self.advance(); // consume ':'
+                    let label_name = self.tokens[self.pos].text.to_string();
+                    self.advance(); // consume label name
+                    let check = Expr::HasLabel(
+                        Box::new(label_inner.clone()),
+                        Label::new(smol_str::SmolStr::new(&label_name)),
+                    );
+                    label_result = Some(match label_result {
+                        None => check,
+                        Some(prev) => Expr::BinaryOp {
+                            op: BinaryOp::And,
+                            left: Box::new(prev),
+                            right: Box::new(check),
+                        },
+                    });
+                } else {
+                    break;
+                }
+            }
+            if let Some(r) = label_result {
+                left = r;
             }
         }
 
@@ -1240,17 +1277,16 @@ impl<'src> Parser<'src> {
     }
 
     fn parse_mul(&mut self) -> Result<Expr, ParseError> {
-        let mut left = self.parse_unary()?;
+        let mut left = self.parse_pow()?;
         loop {
             let op = match self.peek().clone() {
                 TokenKind::Star => BinaryOp::Mul,
                 TokenKind::Slash => BinaryOp::Div,
                 TokenKind::Percent => BinaryOp::Mod,
-                TokenKind::Caret => BinaryOp::Pow,
                 _ => break,
             };
             self.advance();
-            let right = self.parse_unary()?;
+            let right = self.parse_pow()?;
             left = Expr::BinaryOp {
                 op,
                 left: Box::new(left),
@@ -1260,8 +1296,29 @@ impl<'src> Parser<'src> {
         Ok(left)
     }
 
+    /// Parse exponentiation — higher precedence than `*`, `/`, `%`.
+    /// Left-associative per Cypher spec: `a ^ b ^ c` = `(a ^ b) ^ c`.
+    fn parse_pow(&mut self) -> Result<Expr, ParseError> {
+        let mut base = self.parse_unary()?;
+        while self.eat(&TokenKind::Caret) {
+            let exp = self.parse_unary()?; // left-associative: rhs is just unary
+            base = Expr::BinaryOp {
+                op: BinaryOp::Pow,
+                left: Box::new(base),
+                right: Box::new(exp),
+            };
+        }
+        Ok(base)
+    }
+
     fn parse_unary(&mut self) -> Result<Expr, ParseError> {
         if self.eat(&TokenKind::Dash) {
+            // Special case: -9223372036854775808 = i64::MIN (the only valid use of
+            // the 2^63 magnitude literal is immediately after unary minus).
+            if self.at(&TokenKind::IntMinMagnitude) {
+                self.advance();
+                return Ok(Expr::Integer(i64::MIN));
+            }
             let expr = self.parse_unary()?;
             Ok(Expr::UnaryOp {
                 op: UnaryOp::Neg,
@@ -1370,6 +1427,14 @@ impl<'src> Parser<'src> {
                 self.advance();
                 Ok(Expr::Integer(n))
             }
+            // 9223372036854775808 (2^63) alone is too large — only valid after unary minus.
+            TokenKind::IntMinMagnitude => {
+                let tok = self.advance();
+                Err(ParseError::IntegerOverflow {
+                    literal: tok.text.to_string(),
+                    offset: tok.offset,
+                })
+            }
             // Float literal
             TokenKind::FloatLiteral(f) => {
                 self.advance();
@@ -1395,10 +1460,18 @@ impl<'src> Parser<'src> {
                 self.advance();
                 Ok(Expr::Null)
             }
-            // Parameter: $name or $0
+            // Parameter: $name or $1 (numeric parameter names are valid in Cypher)
             TokenKind::DollarSign => {
                 self.advance();
-                let name = self.expect_identifier()?;
+                let name = match self.peek().clone() {
+                    TokenKind::IntLiteral(n) => {
+                        let text = self.tokens[self.pos].text.to_string();
+                        self.advance();
+                        let _ = n;
+                        text
+                    }
+                    _ => self.expect_identifier()?,
+                };
                 Ok(Expr::Parameter(name))
             }
             // CASE expression
@@ -1429,10 +1502,14 @@ impl<'src> Parser<'src> {
                 self.expect(&TokenKind::RParen)?;
                 Ok(expr)
             }
-            // count(*) — special case
+            // count(*) — special case; also allow `count` as a plain identifier
             TokenKind::Count => {
                 self.advance();
-                self.expect(&TokenKind::LParen)?;
+                if !self.at(&TokenKind::LParen) {
+                    // Used as a plain variable reference (e.g. `RETURN count` where count is an alias)
+                    return Ok(Expr::Variable(Identifier::new("count")));
+                }
+                self.advance(); // consume (
                 let distinct = self.eat(&TokenKind::Distinct);
                 let args = if self.at(&TokenKind::Star) {
                     self.advance();
@@ -1598,7 +1675,7 @@ impl<'src> Parser<'src> {
         // Parse MATCH patterns inside the subquery (without the MATCH keyword).
         // The first pattern starts with `(`, or there's an explicit MATCH keyword.
         if self.at(&TokenKind::Match) {
-            // Full subquery with MATCH ... WHERE ... [RETURN ...]
+            // Full subquery with MATCH ... [WITH ... WHERE ... RETURN ...]
             self.advance();
             patterns.push(self.parse_path_pattern()?);
             while self.eat(&TokenKind::Comma) {
@@ -1609,14 +1686,45 @@ impl<'src> Parser<'src> {
             } else {
                 None
             };
-            // Skip any RETURN/WITH clauses inside the subquery
+            // Check for write clauses; parse additional clauses into a full inner Query.
+            let mut additional_clauses: Vec<Clause> = Vec::new();
             while !self.at(&TokenKind::RBrace) && !self.at(&TokenKind::Eof) {
-                self.advance();
+                if matches!(
+                    self.tokens[self.pos].kind,
+                    TokenKind::Set
+                        | TokenKind::Create
+                        | TokenKind::Delete
+                        | TokenKind::Merge
+                        | TokenKind::Remove
+                ) {
+                    return Err(ParseError::Syntax {
+                        offset: self.tokens[self.pos].offset,
+                        expected:
+                            "write clause not allowed inside existential subquery".to_string(),
+                        found: String::new(),
+                    });
+                }
+                if let Some(clause) = self.parse_clause()? {
+                    additional_clauses.push(clause);
+                }
             }
             self.expect(&TokenKind::RBrace)?;
+            let full_query = if additional_clauses.is_empty() {
+                None
+            } else {
+                // Build a full inner Query: MATCH(patterns+where) + additional clauses
+                let mc = MatchClause {
+                    patterns: patterns.clone(),
+                    where_clause: where_clause.as_deref().cloned(),
+                };
+                let mut inner_clauses = vec![Clause::Match(mc)];
+                inner_clauses.extend(additional_clauses);
+                Some(Box::new(Query { clauses: inner_clauses, unions: Vec::new() }))
+            };
             return Ok(Expr::ExistsSubquery {
                 patterns,
                 where_clause,
+                full_query,
             });
         }
         // Simple pattern form: `exists { (n)-->() }`
@@ -1633,6 +1741,7 @@ impl<'src> Parser<'src> {
         Ok(Expr::ExistsSubquery {
             patterns,
             where_clause,
+            full_query: None,
         })
     }
 
@@ -1641,7 +1750,54 @@ impl<'src> Parser<'src> {
     /// Check if the current position looks like a pattern expression.
     /// Scans ahead from `(` to find the matching `)` and checks if it's
     /// followed by `-` or `<-` (relationship indicator).
+    ///
+    /// Also checks that the token immediately after `(` looks like a node pattern
+    /// start (identifier, label colon, property map, or empty `()`) — not an
+    /// arithmetic expression like `(4 ^ 3) - ...` or `(-3) - ...`.
     fn looks_like_pattern_expr(&self) -> bool {
+        // The first token inside `(` must look like a node pattern start:
+        // an identifier, `:Label`, `{` property map, or `)` (empty node).
+        // If it's a literal (integer, float, string) or an operator, it's a
+        // parenthesised arithmetic expression, not a pattern.
+        let first_inside = self.pos + 1;
+        if first_inside >= self.tokens.len() {
+            return false;
+        }
+        match &self.tokens[first_inside].kind {
+            // Literals and pure operators are never pattern starters.
+            TokenKind::IntLiteral(_)
+            | TokenKind::FloatLiteral(_)
+            | TokenKind::StringLiteral(_)
+            | TokenKind::True
+            | TokenKind::False
+            | TokenKind::Null
+            | TokenKind::Plus
+            | TokenKind::Dash
+            | TokenKind::Star
+            | TokenKind::Slash
+            | TokenKind::Percent
+            | TokenKind::Caret
+            | TokenKind::LBracket => return false,
+            // `{` can start a node-pattern property map: ({ name: 'x' })
+            // but only when followed by a relationship indicator after closing `)`.
+            // Fall through to the depth-scan check below.
+            _ => {}
+        }
+        // Also reject if the token is not a recognized pattern start.
+        {
+            let first_inner = &self.tokens[first_inside].kind;
+            let is_pattern_start = matches!(
+                first_inner,
+                TokenKind::Identifier
+                    | TokenKind::Colon
+                    | TokenKind::LBrace
+                    | TokenKind::RParen
+            ) || is_keyword_usable_as_ident(first_inner);
+            if !is_pattern_start {
+                return false;
+            }
+        }
+
         // We need to find the matching `)` for the current `(` and check
         // if it's followed by a relationship indicator.
         let mut depth = 0;
@@ -1744,6 +1900,44 @@ impl<'src> Parser<'src> {
             // Model as a PatternExpr wrapped in a list context
             // We reuse ExistsSubquery temporarily but should use a proper PatternComp
             // For now, return as a FunctionCall to __patternComp which the executor can handle
+            return Ok(Expr::FunctionCall {
+                name: SmolStr::new("__patternComp"),
+                args: vec![
+                    Expr::PatternExpr(vec![pattern]),
+                    map_expr,
+                    match where_clause {
+                        Some(w) => *w,
+                        None => Expr::Bool(true),
+                    },
+                ],
+                distinct: false,
+            });
+        }
+
+        // Check for named-path pattern comprehension: `[p = (pattern) | mapExpr]`
+        // Detect: identifier followed by `=` followed by `(`
+        let is_named_pattern_comp = matches!(self.peek(), TokenKind::Identifier)
+            && self.pos + 1 < self.tokens.len()
+            && matches!(self.tokens[self.pos + 1].kind, TokenKind::Eq)
+            && self.pos + 2 < self.tokens.len()
+            && matches!(self.tokens[self.pos + 2].kind, TokenKind::LParen);
+        if is_named_pattern_comp {
+            let path_var = self.expect_identifier()?; // consume path variable name
+            self.expect(&TokenKind::Eq)?; // consume `=`
+            let mut pattern = self.parse_path_pattern()?;
+            // Bind the path variable in the PathPattern so the executor can
+            // store the assembled path under that name (e.g. `p`).
+            if pattern.variable.is_none() {
+                pattern.variable = Some(crate::ast::Identifier::new(path_var));
+            }
+            let where_clause = if self.eat(&TokenKind::Where) {
+                Some(Box::new(self.parse_expr()?))
+            } else {
+                None
+            };
+            self.expect(&TokenKind::Pipe)?;
+            let map_expr = self.parse_expr()?;
+            self.expect(&TokenKind::RBracket)?;
             return Ok(Expr::FunctionCall {
                 name: SmolStr::new("__patternComp"),
                 args: vec![

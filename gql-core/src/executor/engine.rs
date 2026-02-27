@@ -13,12 +13,12 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
-use crate::ast::{Direction, Expr, Identifier};
-use crate::error::{ExecutionError, GqlError};
+use crate::ast::{Direction, Expr};
+use crate::error::{ExecutionError, GqlError, StorageError};
 use crate::executor::budget::ExecutionBudget;
 use crate::executor::filter::{eval_expr, eval_function_with_vals};
 use crate::executor::filter::Row as FilterRow;
-use crate::planner::{AggFunction, Operator, RemoveItem, SetItem};
+use crate::planner::{AggFunction, Operator, QueryPlanner, RemoveItem, SetItem};
 use crate::procedure::ProcedureRegistry;
 use crate::storage::{EdgeId, GraphStore, NodeId, RangeQuery};
 use crate::types::Value;
@@ -45,6 +45,28 @@ pub struct MutationStats {
     pub edges_deleted: u64,
     pub properties_set: u64,
     pub labels_added: u64,
+    /// Internal: distinct label types seen during this execution.
+    labels_seen: HashSet<String>,
+    /// Internal: label types that existed in the graph before this query.
+    pre_existing_labels: HashSet<String>,
+    /// Internal: distinct (is_edge, entity_raw_id, prop_key) triples seen.
+    props_seen: HashSet<(bool, u64, String)>,
+    /// Internal: IDs of nodes created in this query (for net-effect tracking).
+    nodes_created_ids: HashSet<u64>,
+    /// Internal: IDs of edges created in this query (for net-effect tracking).
+    edges_created_ids: HashSet<u64>,
+}
+
+impl MutationStats {
+    /// Finalise derived counters from the tracking sets.
+    /// Must be called once at the end of `execute()`.
+    fn finalize(&mut self) {
+        self.labels_added = self
+            .labels_seen
+            .difference(&self.pre_existing_labels)
+            .count() as u64;
+        self.properties_set = self.props_seen.len() as u64;
+    }
 }
 
 // ── QueryExecutor ─────────────────────────────────────────────────────────────
@@ -55,6 +77,9 @@ pub struct QueryExecutor<'a> {
     registry: &'a ProcedureRegistry,
     /// Query parameters stored as `$name` → value.
     parameters: HashMap<String, Value>,
+    /// Cache of deleted edge ID → rel_type string.
+    /// Allows `type(r)` to work on a relationship deleted in the same query.
+    deleted_edge_types: std::cell::RefCell<HashMap<u64, String>>,
 }
 
 impl<'a> QueryExecutor<'a> {
@@ -65,6 +90,7 @@ impl<'a> QueryExecutor<'a> {
             store,
             registry: EMPTY_REG.get_or_init(ProcedureRegistry::new),
             parameters: HashMap::new(),
+            deleted_edge_types: std::cell::RefCell::new(HashMap::new()),
         }
     }
 
@@ -90,6 +116,7 @@ impl<'a> QueryExecutor<'a> {
             store,
             registry,
             parameters: params,
+            deleted_edge_types: std::cell::RefCell::new(HashMap::new()),
         }
     }
 
@@ -100,15 +127,29 @@ impl<'a> QueryExecutor<'a> {
         plan: &Operator,
         budget: &mut ExecutionBudget,
     ) -> Result<QueryResult, GqlError> {
-        let mut stats = MutationStats::default();
+        // Initialize the query-level "now" so that temporal no-arg functions (date(), time(), etc.)
+        // return the same value throughout this query execution.
+        crate::executor::filter::init_query_now();
+        let pre_existing_labels: HashSet<String> = self
+            .store
+            .all_label_names(graph)
+            .unwrap_or_default()
+            .into_iter()
+            .collect();
+        let mut stats = MutationStats {
+            pre_existing_labels,
+            ..Default::default()
+        };
         let rows = self.exec_operator(graph, plan, budget, &[], &mut stats)?;
+        crate::executor::filter::clear_query_now();
+        stats.finalize();
 
         // Derive column list.  Handle the case where the root is Distinct{ProduceResults}.
         let effective_root = match plan {
             Operator::Distinct { child } => child.as_ref(),
             other => other,
         };
-        let has_produce_results = has_produce_results(effective_root);
+        let _has_produce_results = has_produce_results(effective_root);
         let columns = if let Operator::ProduceResults { columns, .. } = effective_root {
             columns.iter().map(|(name, _)| name.clone()).collect()
         } else {
@@ -167,6 +208,8 @@ impl<'a> QueryExecutor<'a> {
                 // When used as the inner side of Apply/LeftOuterApply,
                 // outer_rows carries context variables that inner operators
                 // (e.g., Filter) may reference. Merge them into each produced row.
+                // Exclude internal anonymous edge aliases (__anon_rel_*) — these are
+                // per-pattern tracking variables and must not leak into inner patterns.
                 let base_rows: &[Row] = if outer_rows.is_empty() {
                     &[]
                 } else {
@@ -186,8 +229,43 @@ impl<'a> QueryExecutor<'a> {
                         rows.push(row);
                     } else {
                         for outer_row in base_rows {
-                            let mut row = outer_row.clone();
+                                                // If the alias is already pre-bound in outer_row to a specific node,
+                            // only produce a row when the scanned node matches that bound node.
+                            // This correctly handles correlated subqueries and repeated MATCH clauses.
+                            // Only apply for non-anonymous variables (anonymous vars like __anon*
+                            // should always scan all nodes independently).
+                            if !alias.0.starts_with("__anon") {
+                                if let Some(Value::Node(pre_bound_id)) = outer_row.get(alias.0.as_str()) {
+                                    if *pre_bound_id != *id {
+                                        continue; // Skip: doesn't match the pre-bound value
+                                    }
+                                }
+                            }
+                            let mut row: Row = outer_row
+                                .iter()
+                                .filter(|(k, _)| !k.starts_with("__anon_rel_"))
+                                .map(|(k, v)| (k.clone(), v.clone()))
+                                .collect();
                             row.insert(alias.0.clone(), Value::Node(*id));
+                            // Track outer-scope edge variable names so Expand's isomorphism
+                            // check doesn't block edges from previous MATCH clauses.
+                            let outer_edge_keys: Vec<Value> = outer_row
+                                .iter()
+                                .filter(|(k, v)| {
+                                    !k.starts_with("__anon_rel_")
+                                        && !k.starts_with("__outer_edge_vars__")
+                                        && matches!(v, Value::Edge(_))
+                                })
+                                .map(|(k, _)| Value::Str(k.clone().into_boxed_str()))
+                                .collect();
+                            if !outer_edge_keys.is_empty() {
+                                let mut existing: Vec<Value> = match row.get("__outer_edge_vars__") {
+                                    Some(Value::List(vs)) => vs.clone(),
+                                    _ => vec![],
+                                };
+                                existing.extend(outer_edge_keys);
+                                row.insert("__outer_edge_vars__".to_string(), Value::List(existing));
+                            }
                             budget.record_row();
                             rows.push(row);
                         }
@@ -266,10 +344,15 @@ impl<'a> QueryExecutor<'a> {
                         // If dst_alias is already bound in the row (cyclic patterns
                         // like (a)-->()-->(a)), only keep the result if the bound
                         // value matches the expansion result.
+                        // Skip this check for anonymous variables: they may be
+                        // inherited from an outer scope (e.g. pattern comprehension)
+                        // and should not constrain the inner expansion.
                         let dst_val = Value::Node(adj.neighbor_id);
-                        if let Some(existing) = row.get(dst_alias.0.as_str()) {
-                            if *existing != dst_val {
-                                continue;
+                        if !dst_alias.0.starts_with("__anon") {
+                            if let Some(existing) = row.get(dst_alias.0.as_str()) {
+                                if *existing != dst_val {
+                                    continue;
+                                }
                             }
                         }
                         // Same for rel_alias: if already bound, values must match.
@@ -280,6 +363,45 @@ impl<'a> QueryExecutor<'a> {
                                     continue;
                                 }
                             }
+                        }
+                        // Edge isomorphism: per openCypher spec, each relationship in a
+                        // pattern can only be bound once in any single path traversal.
+                        // Skip this edge if it is already used by a DIFFERENT rel in the row
+                        // (exclude the current rel_alias, which may legitimately re-bind it).
+                        // Note: named path variables (Value::Path) are NOT checked here because
+                        // edges from paths in previous MATCH clauses can be reused independently.
+                        // Also exclude outer-scope edge variables (from previous WITH/MATCH scopes).
+                        let eid = adj.edge_id;
+                        let current_alias = rel_alias.as_ref().map(|ra| ra.0.as_str());
+                        let outer_edge_vars: std::collections::HashSet<&str> =
+                            match row.get("__outer_edge_vars__") {
+                                Some(Value::List(vs)) => vs.iter().filter_map(|v| {
+                                    if let Value::Str(s) = v { Some(s.as_ref()) } else { None }
+                                }).collect(),
+                                _ => std::collections::HashSet::new(),
+                            };
+                        let edge_already_used = row.iter().any(|(key, v)| {
+                            // Don't count the current alias as "already used"
+                            if Some(key.as_str()) == current_alias {
+                                return false;
+                            }
+                            // Don't count outer-scope edges (from previous MATCH clauses)
+                            if outer_edge_vars.contains(key.as_str()) {
+                                return false;
+                            }
+                            match v {
+                                Value::Edge(e) => *e == eid,
+                                Value::List(items) => items
+                                    .iter()
+                                    .any(|item| matches!(item, Value::Edge(e) if *e == eid)),
+                                // Named path variables are NOT subject to edge isomorphism
+                                // across MATCH clauses — only relationship variables are.
+                                Value::Path { .. } => false,
+                                _ => false,
+                            }
+                        });
+                        if edge_already_used {
+                            continue;
                         }
                         let mut new_row = row.clone();
                         if let Some(ra) = rel_alias {
@@ -373,7 +495,7 @@ impl<'a> QueryExecutor<'a> {
             Operator::Limit { count, child } => {
                 let input = self.exec_operator(graph, child, budget, outer_rows, stats)?;
                 budget.check_or_err()?;
-                let n = eval_count_expr(count, &HashMap::new())?;
+                let n = eval_count_expr(count, &self.parameters)?;
                 Ok(input.into_iter().take(n).collect())
             }
 
@@ -381,7 +503,7 @@ impl<'a> QueryExecutor<'a> {
             Operator::Skip { count, child } => {
                 let input = self.exec_operator(graph, child, budget, outer_rows, stats)?;
                 budget.check_or_err()?;
-                let n = eval_count_expr(count, &HashMap::new())?;
+                let n = eval_count_expr(count, &self.parameters)?;
                 Ok(input.into_iter().skip(n).collect())
             }
 
@@ -416,7 +538,7 @@ impl<'a> QueryExecutor<'a> {
                     };
 
                     // Accumulate into each aggregation state.
-                    for (agg_idx, (func, arg_expr, distinct, _alias)) in
+                    for (agg_idx, (func, arg_expr, second_arg_expr, distinct, _alias)) in
                         aggregations.iter().enumerate()
                     {
                         // count(*) — the `*` argument is a sentinel meaning "count rows".
@@ -427,7 +549,11 @@ impl<'a> QueryExecutor<'a> {
                             } else {
                                 self.eval_with_storage(graph, arg_expr, row, &ctx)?
                             };
-                        groups[idx].1[agg_idx].accumulate(func, arg_val, *distinct);
+                        let second_val = second_arg_expr
+                            .as_ref()
+                            .map(|e| self.eval_with_storage(graph, e, row, &ctx))
+                            .transpose()?;
+                        groups[idx].1[agg_idx].accumulate(func, arg_val, second_val, *distinct);
                     }
                 }
 
@@ -450,8 +576,13 @@ impl<'a> QueryExecutor<'a> {
                     }
 
                     // Add aggregation result columns.
-                    for ((func, _, _, alias), state) in aggregations.iter().zip(&agg_states) {
-                        row.insert(alias.0.clone(), state.finalize(func));
+                    for ((func, _, _, _, alias), state) in aggregations.iter().zip(&agg_states) {
+                        row.insert(alias.0.clone(), state.finalize(func)?);
+                    }
+                    // Preserve query parameters so downstream operators (e.g. Delete,
+                    // Filter) can still access $param bindings after aggregation.
+                    for (k, v) in &self.parameters {
+                        row.entry(k.clone()).or_insert_with(|| v.clone());
                     }
                     budget.record_row();
                     out.push(row);
@@ -465,8 +596,12 @@ impl<'a> QueryExecutor<'a> {
                 let input = if let Some(ch) = child {
                     self.exec_operator(graph, ch, budget, outer_rows, stats)?
                 } else {
-                    // No child means standalone CREATE: one empty row to iterate over.
-                    vec![Row::new()]
+                    // No child means standalone CREATE: one row with parameters.
+                    let mut row = Row::new();
+                    for (k, v) in &self.parameters {
+                        row.insert(k.clone(), v.clone());
+                    }
+                    vec![row]
                 };
 
                 let mut out = Vec::new();
@@ -489,15 +624,25 @@ impl<'a> QueryExecutor<'a> {
                                 }
                             }
                             let ctx = self.build_filter_ctx(graph, &row)?;
-                            let props = eval_prop_map(graph, self, prop_exprs, &row, &ctx)?;
-                            let prop_count = props.len() as u64;
+                            let props_raw = eval_prop_map(graph, self, prop_exprs, &row, &ctx)?;
+                            // In Cypher, setting a property to null on CREATE
+                            // does not store it — filter out null values.
+                            let props: HashMap<String, Value> = props_raw
+                                .into_iter()
+                                .filter(|(_, v)| !v.is_null())
+                                .collect();
                             let label_strings: Vec<String> =
                                 labels.iter().map(|l| l.as_str().to_string()).collect();
-                            let label_count = label_strings.len() as u64;
-                            let node_id = self.store.create_node(graph, label_strings, props)?;
+                            let non_null_prop_keys: Vec<String> =
+                                props.keys().cloned().collect();
+                            let node_id =
+                                self.store.create_node(graph, label_strings.clone(), props)?;
                             stats.nodes_created += 1;
-                            stats.labels_added += label_count;
-                            stats.properties_set += prop_count;
+                            stats.nodes_created_ids.insert(node_id.0);
+                            stats.labels_seen.extend(label_strings);
+                            for k in non_null_prop_keys {
+                                stats.props_seen.insert((false, node_id.0, k));
+                            }
                             if let Some(a) = alias {
                                 alias_to_id.insert(a.0.clone(), node_id);
                                 row.insert(a.0.clone(), Value::Node(node_id));
@@ -505,11 +650,16 @@ impl<'a> QueryExecutor<'a> {
                         }
 
                         // Create edges using the alias map for src/dst lookup.
-                        for (alias, src_alias, dst_alias, rel_type, _direction, prop_exprs) in
+                        for (alias, src_alias, dst_alias, rel_type, direction, prop_exprs) in
                             &pattern.edges
                         {
                             let ctx = self.build_filter_ctx(graph, &row)?;
-                            let props = eval_prop_map(graph, self, prop_exprs, &row, &ctx)?;
+                            // Filter out null-valued properties (same as for nodes).
+                            let props: HashMap<String, Value> =
+                                eval_prop_map(graph, self, prop_exprs, &row, &ctx)?
+                                    .into_iter()
+                                    .filter(|(_, v)| !v.is_null())
+                                    .collect();
 
                             let src_id = alias_to_id
                                 .get(&src_alias.0)
@@ -539,16 +689,32 @@ impl<'a> QueryExecutor<'a> {
                                 })
                                 .ok_or_else(|| undefined_var(&dst_alias.0))?;
 
-                            let edge_prop_count = props.len() as u64;
+                            // Determine actual src/dst based on direction.
+                            // In the plan, src_alias is always the "left" node in the
+                            // pattern text. For an Incoming arc (a)<-[:R]-(b), we need
+                            // to flip so the edge is stored as b -> a.
+                            let (actual_src, actual_dst) = match direction {
+                                Direction::Incoming => (dst_id, src_id),
+                                _ => (src_id, dst_id),
+                            };
+
+                            let non_null_edge_keys: Vec<String> = props
+                                .iter()
+                                .filter(|(_, v)| !v.is_null())
+                                .map(|(k, _)| k.clone())
+                                .collect();
                             let edge_id = self.store.create_edge(
                                 graph,
-                                src_id,
-                                dst_id,
+                                actual_src,
+                                actual_dst,
                                 rel_type.as_str().to_string(),
                                 props,
                             )?;
                             stats.edges_created += 1;
-                            stats.properties_set += edge_prop_count;
+                            stats.edges_created_ids.insert(edge_id.0);
+                            for k in non_null_edge_keys {
+                                stats.props_seen.insert((true, edge_id.0, k));
+                            }
                             if let Some(a) = alias {
                                 row.insert(a.0.clone(), Value::Edge(edge_id));
                             }
@@ -567,25 +733,93 @@ impl<'a> QueryExecutor<'a> {
                 edge_aliases,
                 child,
             } => {
-                use crate::storage::{NodeId, EdgeId};
+                use crate::storage::{EdgeId, NodeId};
                 let input = self.exec_operator(graph, child, budget, outer_rows, stats)?;
                 let mut out = Vec::with_capacity(input.len());
                 for mut row in input {
                     budget.check_or_err()?;
+
+                    // Assemble nodes and edges for the named path.
+                    // edge_aliases and node_aliases are ordered along the path:
+                    //   node_aliases[0] is the start node,
+                    //   node_aliases[i+1] is the destination of edge_aliases[i].
+                    // VarLenExpand stores a Value::Path with all intermediate nodes.
                     let mut nodes: Vec<NodeId> = Vec::new();
                     let mut edges: Vec<EdgeId> = Vec::new();
-                    for na in node_aliases {
-                        if let Some(Value::Node(nid)) = row.get(&na.0) {
-                            nodes.push(*nid);
-                        }
-                    }
+
+                    let mut fixed_edges_before_varlen: usize = 0;
+                    let mut varlen_path_found = false;
+                    let mut varlen_edge_aliases: Vec<String> = Vec::new();
                     for ea in edge_aliases {
-                        if let Some(Value::Edge(eid)) = row.get(&ea.0) {
-                            edges.push(*eid);
+                        match row.get(&ea.0) {
+                            Some(Value::Edge(eid)) => {
+                                edges.push(*eid);
+                                if !varlen_path_found {
+                                    fixed_edges_before_varlen += 1;
+                                }
+                            }
+                            Some(Value::Path { nodes: pnodes, edges: pedges }) => {
+                                // VarLenExpand path: it already has start+intermediate+end nodes.
+                                if !varlen_path_found {
+                                    // First varlen path. Prepend the fixed-edge nodes that
+                                    // came before this varlen (node_aliases[0..k] where k is
+                                    // the number of fixed hops before varlen). These k+1
+                                    // nodes are node_aliases[0..=fixed_edges_before_varlen-1].
+                                    // The varlen path's first node (pnodes[0]) equals
+                                    // node_aliases[fixed_edges_before_varlen].
+                                    for na in node_aliases
+                                        .iter()
+                                        .take(fixed_edges_before_varlen)
+                                    {
+                                        if let Some(Value::Node(nid)) = row.get(&na.0) {
+                                            nodes.push(*nid);
+                                        }
+                                    }
+                                    nodes.extend_from_slice(pnodes);
+                                    varlen_path_found = true;
+                                } else {
+                                    // Additional varlen paths: append intermediate+end nodes
+                                    nodes.extend_from_slice(&pnodes[1..]);
+                                }
+                                edges.extend_from_slice(pedges);
+                                // Track this alias so we can convert it back to a list of edges
+                                varlen_edge_aliases.push(ea.0.clone());
+                            }
+                            Some(Value::List(items)) => {
+                                // List of edges (alternative VarLenExpand storage)
+                                for item in items {
+                                    if let Value::Edge(eid) = item {
+                                        edges.push(*eid);
+                                    }
+                                }
+                            }
+                            _ => {}
                         }
                     }
+
+                    // If no varlen path was found, collect nodes from node_aliases normally.
+                    // If varlen path was found, nodes are already assembled above.
+                    if !varlen_path_found {
+                        for na in node_aliases {
+                            if let Some(Value::Node(nid)) = row.get(&na.0) {
+                                nodes.push(*nid);
+                            }
+                        }
+                    }
+
                     let path_val = Value::Path { nodes, edges };
                     row.insert(path_alias.0.clone(), path_val);
+
+                    // Convert VarLenExpand path aliases back to list-of-edges so that
+                    // user-defined relationship variables (e.g. `r` in `[r*]`) hold the
+                    // correct Value::List([Edge, ...]) rather than a Value::Path.
+                    for ea_name in &varlen_edge_aliases {
+                        if let Some(Value::Path { edges: pedges, .. }) = row.get(ea_name).cloned() {
+                            let edge_list: Vec<Value> = pedges.iter().map(|e| Value::Edge(*e)).collect();
+                            row.insert(ea_name.clone(), Value::List(edge_list));
+                        }
+                    }
+
                     out.push(row);
                 }
                 Ok(out)
@@ -729,8 +963,10 @@ impl<'a> QueryExecutor<'a> {
                 max,
                 src_alias,
                 path_alias,
+                path_mode,
                 dst_alias,
                 child,
+                rel_props,
             } => {
                 let input = self.exec_operator(graph, child, budget, outer_rows, stats)?;
                 let type_strs: Vec<&str> = rel_types.iter().map(|r| r.as_str()).collect();
@@ -745,10 +981,30 @@ impl<'a> QueryExecutor<'a> {
 
                     // BFS tracking full paths: queue entries are (node_id, path_nodes, path_edges)
                     let mut queue: VecDeque<(NodeId, Vec<NodeId>, Vec<EdgeId>)> = VecDeque::new();
+                    // Collect edges already used in earlier steps of this named path.
+                    // This enforces cross-operator relationship isomorphism:
+                    // - Direct Value::Edge in the row (from regular Expand steps, incl. pre-bound r)
+                    //   should not be re-traversed.
+                    // - Value::Path and Value::List([Edge]) from __path_rel_* (VarLen internal storage)
+                    //   also shouldn't be re-traversed.
+                    // We intentionally exclude user-defined list variables (like `rs` from WITH)
+                    // that contain edges intended to be FOLLOWED by this VarLen, not avoided.
+                    // Heuristic: collect Value::Edge (direct edge vars) and __path_rel_* (VarLen storage).
+                    let prior_path_edges: std::collections::HashSet<EdgeId> = row.iter()
+                        .flat_map(|(k, v)| match v {
+                            Value::Edge(e) => vec![*e],
+                            Value::List(items) if k.starts_with("__path_rel_") => {
+                                items.iter().filter_map(|i| {
+                                    if let Value::Edge(e) = i { Some(*e) } else { None }
+                                }).collect()
+                            }
+                            Value::Path { edges, .. } if k.starts_with("__path_rel_") => {
+                                edges.clone()
+                            }
+                            _ => vec![],
+                        })
+                        .collect();
                     queue.push_back((src_id, vec![src_id], vec![]));
-                    // Track visited to avoid cycles
-                    let mut visited = HashSet::new();
-                    visited.insert(src_id);
 
                     while let Some((current, path_nodes, path_edges)) = queue.pop_front() {
                         budget.check_or_err()?;
@@ -760,13 +1016,24 @@ impl<'a> QueryExecutor<'a> {
                             let end_node = *path_nodes.last().unwrap();
                             new_row.insert(dst_alias.0.clone(), Value::Node(end_node));
                             if let Some(pa) = path_alias {
-                                new_row.insert(
-                                    pa.0.clone(),
-                                    Value::Path {
-                                        nodes: path_nodes.clone(),
-                                        edges: path_edges.clone(),
-                                    },
-                                );
+                                if *path_mode {
+                                    // Named path mode: store full path for AssemblePath
+                                    new_row.insert(
+                                        pa.0.clone(),
+                                        Value::Path {
+                                            nodes: path_nodes.clone(),
+                                            edges: path_edges.clone(),
+                                        },
+                                    );
+                                } else {
+                                    // Relationship variable mode: store list of edges
+                                    new_row.insert(
+                                        pa.0.clone(),
+                                        Value::List(
+                                            path_edges.iter().map(|e| Value::Edge(*e)).collect(),
+                                        ),
+                                    );
+                                }
                             }
                             budget.record_row();
                             out.push(new_row);
@@ -778,12 +1045,26 @@ impl<'a> QueryExecutor<'a> {
                                 get_adj_entries(self.store, graph, current, direction, &type_strs)?;
                             for adj in adj_entries {
                                 budget.check_or_err()?;
-                                // Allow revisiting nodes for different paths, but avoid
-                                // infinite cycles by not revisiting at the expansion level.
-                                // For VarLenExpand, we only skip nodes already in the
-                                // current path to allow different paths through the graph.
-                                if path_nodes.contains(&adj.neighbor_id) {
+                                // Per openCypher spec: edge isomorphism is enforced (same
+                                // relationship cannot appear twice in one path), but node
+                                // repetition is allowed. This prevents infinite loops.
+                                // Also check edges from prior steps in this named path.
+                                if path_edges.contains(&adj.edge_id)
+                                    || prior_path_edges.contains(&adj.edge_id) {
                                     continue;
+                                }
+                                // Check inline property constraints on the traversed edge.
+                                if let Some(pred) = rel_props {
+                                    let mut edge_row = row.clone();
+                                    edge_row.insert(
+                                        "__varlen_edge__".to_string(),
+                                        Value::Edge(adj.edge_id),
+                                    );
+                                    let ctx = self.build_filter_ctx(graph, &edge_row)?;
+                                    match self.eval_with_storage(graph, pred, &edge_row, &ctx) {
+                                        Ok(Value::Bool(true)) => {}
+                                        _ => continue, // edge doesn't satisfy constraints
+                                    }
                                 }
                                 let mut new_path_nodes = path_nodes.clone();
                                 new_path_nodes.push(adj.neighbor_id);
@@ -828,11 +1109,16 @@ impl<'a> QueryExecutor<'a> {
                                     .get(alias.0.as_str())
                                     .ok_or_else(|| undefined_var(&alias.0))?;
                                 match val {
+                                    Value::Null => {
+                                        // REMOVE on null (from OPTIONAL MATCH) is a no-op
+                                    }
                                     Value::Node(node_id) => {
                                         self.store.remove_node_property(graph, *node_id, key)?;
+                                        stats.properties_set += 1;
                                     }
                                     Value::Edge(edge_id) => {
                                         self.store.remove_edge_property(graph, *edge_id, key)?;
+                                        stats.properties_set += 1;
                                     }
                                     other => {
                                         return Err(GqlError::Execution(
@@ -843,18 +1129,22 @@ impl<'a> QueryExecutor<'a> {
                                         ));
                                     }
                                 }
-                                stats.properties_set += 1;
+                                // REMOVE property does not count as properties_set.
                             }
                             RemoveItem::Labels { alias, labels } => {
                                 let val = row
                                     .get(alias.0.as_str())
                                     .ok_or_else(|| undefined_var(&alias.0))?;
+                                // REMOVE labels on null (from OPTIONAL MATCH) is a no-op
+                                if val.is_null() {
+                                    continue;
+                                }
                                 let node_id = extract_node_id(val, &alias.0)?;
                                 let label_strings: Vec<String> =
                                     labels.iter().map(|l| l.as_str().to_string()).collect();
                                 self.store
                                     .remove_node_labels(graph, node_id, &label_strings)?;
-                                stats.labels_added += label_strings.len() as u64;
+                                // REMOVE labels does not count as labels_added.
                             }
                         }
                     }
@@ -876,25 +1166,94 @@ impl<'a> QueryExecutor<'a> {
                 for row in input {
                     budget.check_or_err()?;
                     let ctx = self.build_filter_ctx(graph, &row)?;
+
+                    // Two-pass delete: collect all edges and nodes first so that
+                    // paths sharing nodes don't fail with "node has relationships"
+                    // when one path's edges are deleted but another path's edges
+                    // are not yet deleted.
+                    let mut edges_to_delete: Vec<EdgeId> = Vec::new();
+                    let mut nodes_to_delete: Vec<NodeId> = Vec::new();
+
                     for expr in exprs {
                         let val = self.eval_with_storage(graph, expr, &row, &ctx)?;
                         match val {
                             Value::Node(node_id) => {
-                                self.store.delete_node(graph, node_id, *detach)?;
-                                stats.nodes_deleted += 1;
+                                nodes_to_delete.push(node_id);
                             }
                             Value::Edge(edge_id) => {
-                                self.store.delete_edge(graph, edge_id)?;
-                                stats.edges_deleted += 1;
+                                // Cache rel_type before deleting so type(r) still works.
+                                if let Ok(Some(data)) = self.store.get_edge(graph, edge_id) {
+                                    self.deleted_edge_types.borrow_mut().insert(edge_id.0, data.rel_type);
+                                }
+                                edges_to_delete.push(edge_id);
                             }
                             Value::Null => {
                                 // Deleting NULL is a no-op in Cypher
+                            }
+                            Value::Path { nodes, edges } => {
+                                edges_to_delete.extend(edges.iter().copied());
+                                nodes_to_delete.extend(nodes.iter().copied());
                             }
                             other => {
                                 return Err(GqlError::Execution(ExecutionError::TypeMismatch {
                                     expected: "Node or Relationship for DELETE".to_string(),
                                     actual: other.type_name().to_string(),
                                 }));
+                            }
+                        }
+                    }
+
+                    // Delete all collected edges first.
+                    for edge_id in edges_to_delete {
+                        match self.store.delete_edge(graph, edge_id) {
+                            Ok(()) => { stats.edges_deleted += 1; }
+                            Err(StorageError::EdgeNotFound { .. }) => {} // already deleted
+                            Err(e) => return Err(GqlError::Storage(e)),
+                        }
+                    }
+
+                    // Then delete all collected nodes.
+                    for node_id in nodes_to_delete {
+                        if *detach {
+                            // Count and delete remaining edges before deleting node.
+                            let out_ids = self.store.out_edge_ids(graph, node_id).unwrap_or_default();
+                            let in_ids = self.store.in_edge_ids(graph, node_id).unwrap_or_default();
+                            let mut edge_set: std::collections::HashSet<u64> = out_ids.iter().map(|e| e.0).collect();
+                            edge_set.extend(in_ids.iter().map(|e| e.0));
+                            // Net out edges that were created in this same query.
+                            let mut net_deleted_edges: u64 = 0;
+                            for eid in &edge_set {
+                                if stats.edges_created_ids.remove(eid) {
+                                    stats.edges_created = stats.edges_created.saturating_sub(1);
+                                } else {
+                                    net_deleted_edges += 1;
+                                }
+                            }
+                            match self.store.delete_node(graph, node_id, true) {
+                                Ok(()) => {
+                                    // Net out: if node was created in this query, cancel the create.
+                                    if stats.nodes_created_ids.remove(&node_id.0) {
+                                        stats.nodes_created = stats.nodes_created.saturating_sub(1);
+                                    } else {
+                                        stats.nodes_deleted += 1;
+                                    }
+                                    stats.edges_deleted += net_deleted_edges;
+                                }
+                                Err(StorageError::NodeNotFound { .. }) => {}
+                                Err(e) => return Err(GqlError::Storage(e)),
+                            }
+                        } else {
+                            match self.store.delete_node(graph, node_id, false) {
+                                Ok(()) => {
+                                    // Net out: if node was created in this query, cancel the create.
+                                    if stats.nodes_created_ids.remove(&node_id.0) {
+                                        stats.nodes_created = stats.nodes_created.saturating_sub(1);
+                                    } else {
+                                        stats.nodes_deleted += 1;
+                                    }
+                                }
+                                Err(StorageError::NodeNotFound { .. }) => {} // already deleted
+                                Err(e) => return Err(GqlError::Storage(e)),
                             }
                         }
                     }
@@ -929,89 +1288,99 @@ impl<'a> QueryExecutor<'a> {
                         let ctx = self.build_filter_ctx(graph, &row)?;
                         for (k, expr) in properties {
                             let val = self.eval_with_storage(graph, expr, &row, &ctx)?;
+                            // MERGE with null property is a SemanticError (MergeReadOwnWrites)
+                            if val.is_null() {
+                                return Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                                    expected: "non-null property value in MERGE".to_string(),
+                                    actual: "Null".to_string(),
+                                }));
+                            }
                             prop_vals.push((k.clone(), val));
                         }
                     }
 
-                    // Try to find existing nodes matching ALL labels
-                    let mut candidates: Option<HashSet<u64>> = None;
-                    for label in labels {
-                        let ids = self.store.find_nodes_by_label(graph, label.as_str())?;
-                        let id_set: HashSet<u64> = ids.iter().map(|n| n.0).collect();
-                        candidates = Some(match candidates {
-                            None => id_set,
-                            Some(existing) => existing.intersection(&id_set).copied().collect(),
-                        });
-                    }
-
-                    // Further filter candidates by inline properties.
-                    let matched_id = if let Some(cands) = candidates {
-                        if labels.is_empty() {
-                            None
-                        } else {
-                            let mut found = None;
-                            for cand_id in &cands {
-                                let node_id = NodeId(*cand_id);
-                                if prop_vals.is_empty() {
-                                    found = Some(node_id);
-                                    break;
-                                }
-                                if let Ok(Some(node_data)) = self.store.get_node(graph, node_id) {
-                                    let mut matches = true;
-                                    for (key, expected) in &prop_vals {
-                                        let actual = node_data
-                                            .properties
-                                            .get(key)
-                                            .cloned()
-                                            .unwrap_or(Value::Null);
-                                        if actual != *expected {
-                                            matches = false;
-                                            break;
-                                        }
-                                    }
-                                    if matches {
-                                        found = Some(node_id);
-                                        break;
-                                    }
-                                }
-                            }
-                            found
-                        }
+                    // Try to find existing nodes matching ALL labels.
+                    // When labels is empty, scan all nodes (MERGE (n) with no labels).
+                    let candidates: HashSet<u64> = if labels.is_empty() {
+                        self.store
+                            .all_node_ids(graph)?
+                            .into_iter()
+                            .map(|n| n.0)
+                            .collect()
                     } else {
-                        None
+                        let mut cands: Option<HashSet<u64>> = None;
+                        for label in labels {
+                            let ids = self.store.find_nodes_by_label(graph, label.as_str())?;
+                            let id_set: HashSet<u64> = ids.iter().map(|n| n.0).collect();
+                            cands = Some(match cands {
+                                None => id_set,
+                                Some(existing) => existing.intersection(&id_set).copied().collect(),
+                            });
+                        }
+                        cands.unwrap_or_default()
                     };
 
-                    if let Some(node_id) = matched_id {
-                        // ON MATCH: apply on_match set items
-                        if let Some(alias) = node_alias {
-                            row.insert(alias.0.clone(), Value::Node(node_id));
+                    // Collect ALL matching nodes (MERGE returns one row per match).
+                    let mut matched_ids: Vec<NodeId> = Vec::new();
+                    for cand_id in &candidates {
+                        let node_id = NodeId(*cand_id);
+                        if prop_vals.is_empty() {
+                            matched_ids.push(node_id);
+                        } else if let Ok(Some(node_data)) = self.store.get_node(graph, node_id) {
+                            let all_match = prop_vals.iter().all(|(key, expected)| {
+                                node_data.properties.get(key.as_str())
+                                    .map(|v| v == expected)
+                                    .unwrap_or(false)
+                            });
+                            if all_match {
+                                matched_ids.push(node_id);
+                            }
                         }
-                        for item in on_match {
-                            self.apply_set_item(graph, &row, item, stats)?;
+                    }
+
+                    if !matched_ids.is_empty() {
+                        // ON MATCH: one output row per matched node
+                        for node_id in matched_ids {
+                            budget.check_or_err()?;
+                            let mut new_row = row.clone();
+                            if let Some(alias) = node_alias {
+                                new_row.insert(alias.0.clone(), Value::Node(node_id));
+                            }
+                            for item in on_match {
+                                self.apply_set_item(graph, &new_row, item, stats)?;
+                            }
+                            budget.record_row();
+                            out.push(new_row);
                         }
                     } else {
                         // Not found: CREATE the node with inline properties
                         let label_strings: Vec<String> =
                             labels.iter().map(|l| l.as_str().to_string()).collect();
-                        let label_count = label_strings.len() as u64;
                         let create_props: HashMap<String, Value> =
                             prop_vals.iter().cloned().collect();
-                        let prop_count = create_props.len() as u64;
+                        let non_null_prop_keys: Vec<String> = create_props
+                            .iter()
+                            .filter(|(_, v)| !v.is_null())
+                            .map(|(k, _)| k.clone())
+                            .collect();
                         let node_id =
                             self.store
-                                .create_node(graph, label_strings, create_props)?;
+                                .create_node(graph, label_strings.clone(), create_props)?;
                         stats.nodes_created += 1;
-                        stats.labels_added += label_count;
-                        stats.properties_set += prop_count;
+                        stats.nodes_created_ids.insert(node_id.0);
+                        stats.labels_seen.extend(label_strings);
+                        for k in non_null_prop_keys {
+                            stats.props_seen.insert((false, node_id.0, k));
+                        }
                         if let Some(alias) = node_alias {
                             row.insert(alias.0.clone(), Value::Node(node_id));
                         }
                         for item in on_create {
                             self.apply_set_item(graph, &row, item, stats)?;
                         }
+                        budget.record_row();
+                        out.push(row);
                     }
-                    budget.record_row();
-                    out.push(row);
                 }
                 Ok(out)
             }
@@ -1051,13 +1420,23 @@ impl<'a> QueryExecutor<'a> {
                     };
 
                     // Find existing edges of this type between src and dst.
+                    // For undirected patterns, check BOTH directions (a→b and b→a).
                     let existing_edges =
                         self.store
                             .out_edges_by_type(graph, real_src, &[type_str])?;
-                    let matching: Vec<_> = existing_edges
+                    let mut matching: Vec<_> = existing_edges
                         .into_iter()
                         .filter(|adj| adj.neighbor_id == real_dst)
                         .collect();
+                    if matches!(direction, Direction::Undirected) && matching.is_empty() {
+                        // Also check the reverse direction (real_dst → real_src).
+                        let reverse_edges =
+                            self.store.out_edges_by_type(graph, real_dst, &[type_str])?;
+                        matching = reverse_edges
+                            .into_iter()
+                            .filter(|adj| adj.neighbor_id == real_src)
+                            .collect();
+                    }
 
                     // Filter by property constraints if any.
                     let ctx = self.build_filter_ctx(graph, &row)?;
@@ -1065,15 +1444,22 @@ impl<'a> QueryExecutor<'a> {
                         .iter()
                         .map(|(k, expr)| {
                             let v = self.eval_with_storage(graph, expr, &row, &ctx)?;
+                            // MERGE with null property is a SemanticError (MergeReadOwnWrites)
+                            if v.is_null() {
+                                return Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                                    expected: "non-null property value in MERGE".to_string(),
+                                    actual: "Null".to_string(),
+                                }));
+                            }
                             Ok((k.clone(), v))
                         })
                         .collect::<Result<Vec<_>, GqlError>>()?;
 
-                    let matched_edge = if prop_vals.is_empty() {
-                        matching.first().map(|adj| adj.edge_id)
+                    let matched_edges: Vec<EdgeId> = if prop_vals.is_empty() {
+                        matching.iter().map(|adj| adj.edge_id).collect::<Vec<_>>()
                     } else {
-                        // Find an edge matching all property constraints.
-                        let mut found = None;
+                        // Find ALL edges matching property constraints.
+                        let mut found_edges = Vec::new();
                         for adj in &matching {
                             if let Some(edge_data) = self.store.get_edge(graph, adj.edge_id)? {
                                 let all_match = prop_vals.iter().all(|(k, v)| {
@@ -1084,27 +1470,36 @@ impl<'a> QueryExecutor<'a> {
                                         .unwrap_or(false)
                                 });
                                 if all_match {
-                                    found = Some(adj.edge_id);
-                                    break;
+                                    found_edges.push(adj.edge_id);
                                 }
                             }
                         }
-                        found
+                        found_edges
                     };
 
-                    if let Some(edge_id) = matched_edge {
-                        // MATCHED: bind and apply ON MATCH actions.
-                        if let Some(ra) = rel_alias {
-                            row.insert(ra.0.clone(), Value::Edge(edge_id));
-                        }
-                        for item in on_match {
-                            self.apply_set_item(graph, &row, item, stats)?;
+                    if !matched_edges.is_empty() {
+                        // MATCHED: one output row per matched edge.
+                        for edge_id in matched_edges {
+                            budget.check_or_err()?;
+                            let mut new_row = row.clone();
+                            if let Some(ra) = rel_alias {
+                                new_row.insert(ra.0.clone(), Value::Edge(edge_id));
+                            }
+                            for item in on_match {
+                                self.apply_set_item(graph, &new_row, item, stats)?;
+                            }
+                            budget.record_row();
+                            out.push(new_row);
                         }
                     } else {
                         // NOT FOUND: create the edge with properties.
                         let prop_map: HashMap<String, Value> =
                             prop_vals.into_iter().collect();
-                        let prop_count = prop_map.len() as u64;
+                        let non_null_edge_keys: Vec<String> = prop_map
+                            .iter()
+                            .filter(|(_, v)| !v.is_null())
+                            .map(|(k, _)| k.clone())
+                            .collect();
                         let edge_id = self.store.create_edge(
                             graph,
                             real_src,
@@ -1113,17 +1508,18 @@ impl<'a> QueryExecutor<'a> {
                             prop_map,
                         )?;
                         stats.edges_created += 1;
-                        stats.properties_set += prop_count;
+                        for k in non_null_edge_keys {
+                            stats.props_seen.insert((true, edge_id.0, k));
+                        }
                         if let Some(ra) = rel_alias {
                             row.insert(ra.0.clone(), Value::Edge(edge_id));
                         }
                         for item in on_create {
                             self.apply_set_item(graph, &row, item, stats)?;
                         }
+                        budget.record_row();
+                        out.push(row);
                     }
-
-                    budget.record_row();
-                    out.push(row);
                 }
                 Ok(out)
             }
@@ -1210,10 +1606,15 @@ impl<'a> QueryExecutor<'a> {
 
                     // Filter right rows for variable sharing consistency
                     // (same as Apply, but incompatible rows are dropped).
+                    // Skip anonymous variables (__anon*) to avoid false conflicts
+                    // when both OPTIONAL MATCHes use the same anonymous alias names.
                     let compatible_rows: Vec<Row> = right_rows
                         .into_iter()
                         .filter(|right_row| {
                             for (k, v) in right_row {
+                                if k.starts_with("__anon") {
+                                    continue;
+                                }
                                 if let Some(left_v) = left_row.get(k) {
                                     if left_v != v {
                                         return false;
@@ -1272,8 +1673,16 @@ impl<'a> QueryExecutor<'a> {
                         // in both outer and inner rows, the values must match.
                         // This handles patterns like MATCH (a)-->(b), (b)-->(c)
                         // where 'b' must be the same node in both patterns.
+                        // Skip hidden internal edge aliases (used for edge isomorphism
+                        // tracking) — these are per-pattern and should not be compared
+                        // across patterns in Apply.
                         let mut compatible = true;
                         for (k, v) in &inner_row {
+                            // Skip all internal anonymous variables — they are scoping
+                            // artifacts and must not constrain cross-pattern joins.
+                            if k.starts_with("__anon") {
+                                continue;
+                            }
                             if let Some(outer_v) = outer_row.get(k) {
                                 if outer_v != v {
                                     compatible = false;
@@ -1525,7 +1934,10 @@ impl<'a> QueryExecutor<'a> {
                             .get(key.as_str())
                             .cloned()
                             .unwrap_or(Value::Null)),
-                        None => Ok(Value::Null),
+                        None => Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                            expected: "accessible Node".to_string(),
+                            actual: "deleted or missing Node".to_string(),
+                        })),
                     },
                     Value::Edge(edge_id) => match self.store.get_edge(graph, edge_id)? {
                         Some(edge_data) => Ok(edge_data
@@ -1533,7 +1945,10 @@ impl<'a> QueryExecutor<'a> {
                             .get(key.as_str())
                             .cloned()
                             .unwrap_or(Value::Null)),
-                        None => Ok(Value::Null),
+                        None => Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                            expected: "accessible Relationship".to_string(),
+                            actual: "deleted or missing Relationship".to_string(),
+                        })),
                     },
                     Value::Map(m) => Ok(m.get(key.as_str()).cloned().unwrap_or(Value::Null)),
                     Value::Null => Ok(Value::Null),
@@ -1586,19 +2001,36 @@ impl<'a> QueryExecutor<'a> {
                 let v = self.eval_with_storage(graph, inner, row, ctx)?;
                 Ok(Value::Bool(!v.is_null()))
             }
-            // Label check: n:Label — check if node has the specified label
+            // Label check: n:Label — check if node has label or edge has rel type
             Expr::HasLabel(inner, label) => {
-                let v = self.eval_with_storage(graph, inner, row, ctx)?;
-                match v {
+                // Walk the HasLabel chain (e.g. `a:A:B:C` → chain of HasLabels)
+                // to collect all labels and find the base expression.
+                let mut base_expr: &Expr = inner.as_ref();
+                let mut labels_to_check: Vec<&crate::ast::Label> = vec![label];
+                while let Expr::HasLabel(inner_inner, inner_label) = base_expr {
+                    labels_to_check.push(inner_label);
+                    base_expr = inner_inner.as_ref();
+                }
+
+                let base_val = self.eval_with_storage(graph, base_expr, row, ctx)?;
+                match base_val {
                     Value::Null => Ok(Value::Null),
                     Value::Node(node_id) => {
                         match self.store.get_node(graph, node_id)? {
                             Some(node_data) => {
-                                let has = node_data
-                                    .labels
-                                    .iter()
-                                    .any(|l| l == label.as_str());
+                                let has = labels_to_check.iter().all(|l| {
+                                    node_data.labels.iter().any(|nl| nl == l.as_str())
+                                });
                                 Ok(Value::Bool(has))
+                            }
+                            None => Ok(Value::Bool(false)),
+                        }
+                    }
+                    Value::Edge(edge_id) => {
+                        // For relationships, check if the rel type matches
+                        match self.store.get_edge(graph, edge_id)? {
+                            Some(edge_data) => {
+                                Ok(Value::Bool(edge_data.rel_type.as_str() == label.as_str()))
                             }
                             None => Ok(Value::Bool(false)),
                         }
@@ -1641,9 +2073,9 @@ impl<'a> QueryExecutor<'a> {
                                     }
                                 };
                                 let lc = name.to_lowercase();
-                                let mut match_count: usize = 0;
-                                let mut has_null = false;
-                                let total = items.len();
+                                let mut true_count: usize = 0;
+                                let mut false_count: usize = 0;
+                                let mut null_count: usize = 0;
                                 for item in &items {
                                     let mut ext_row = row.clone();
                                     ext_row.insert(variable.0.clone(), item.clone());
@@ -1656,47 +2088,41 @@ impl<'a> QueryExecutor<'a> {
                                     } else {
                                         item.clone()
                                     };
-                                    if pred_result == Value::Bool(true) {
-                                        match_count += 1;
-                                    } else if pred_result.is_null() {
-                                        has_null = true;
+                                    match pred_result {
+                                        Value::Bool(true) => true_count += 1,
+                                        Value::Bool(false) => false_count += 1,
+                                        v if v.is_null() => null_count += 1,
+                                        _ => false_count += 1,
                                     }
-                                    // Short-circuit
+                                    // Short-circuit for early exit
                                     match lc.as_str() {
-                                        "any" if match_count > 0 => {
-                                            return Ok(Value::Bool(true))
-                                        }
-                                        "none" if match_count > 0 => {
-                                            return Ok(Value::Bool(false))
-                                        }
-                                        "single" if match_count > 1 => {
-                                            return Ok(Value::Bool(false))
-                                        }
+                                        "all" if false_count > 0 => { return Ok(Value::Bool(false)) }
+                                        "any" if true_count > 0 => { return Ok(Value::Bool(true)) }
+                                        "none" if true_count > 0 => { return Ok(Value::Bool(false)) }
+                                        "single" if true_count > 1 => { return Ok(Value::Bool(false)) }
                                         _ => {}
                                     }
                                 }
-                                // Three-valued logic: if has_null and result
-                                // is indeterminate, return null.
                                 return match lc.as_str() {
                                     "all" => {
-                                        if match_count == total { Ok(Value::Bool(true)) }
-                                        else if has_null { Ok(Value::Null) }
-                                        else { Ok(Value::Bool(false)) }
+                                        // false_count already short-circuited above
+                                        if null_count > 0 { Ok(Value::Null) }
+                                        else { Ok(Value::Bool(true)) }
                                     }
                                     "any" => {
-                                        if match_count > 0 { Ok(Value::Bool(true)) }
-                                        else if has_null { Ok(Value::Null) }
+                                        // true_count already short-circuited above
+                                        if null_count > 0 { Ok(Value::Null) }
                                         else { Ok(Value::Bool(false)) }
                                     }
                                     "none" => {
-                                        if match_count > 0 { Ok(Value::Bool(false)) }
-                                        else if has_null { Ok(Value::Null) }
+                                        // true_count already short-circuited above
+                                        if null_count > 0 { Ok(Value::Null) }
                                         else { Ok(Value::Bool(true)) }
                                     }
                                     "single" => {
-                                        if match_count > 1 { Ok(Value::Bool(false)) }
-                                        else if has_null { Ok(Value::Null) }
-                                        else { Ok(Value::Bool(match_count == 1)) }
+                                        if true_count > 1 { Ok(Value::Bool(false)) }
+                                        else if null_count > 0 { Ok(Value::Null) }
+                                        else { Ok(Value::Bool(true_count == 1)) }
                                     }
                                     _ => Ok(Value::Bool(false)),
                                 };
@@ -1712,6 +2138,20 @@ impl<'a> QueryExecutor<'a> {
                             return Ok(Value::Bool(!val.is_null()));
                         }
                         return eval_expr(expr, ctx);
+                    }
+                    // Pattern comprehension: [p = (pattern) | mapExpr] or [(pattern) | mapExpr]
+                    // args: [PatternExpr(patterns), map_expr, where_expr]
+                    "__patterncomp" => {
+                        if args.len() >= 2 {
+                            if let Expr::PatternExpr(patterns) = &args[0] {
+                                let map_expr = &args[1];
+                                let where_expr = args.get(2);
+                                return self.eval_pattern_comprehension(
+                                    graph, patterns, map_expr, where_expr, row,
+                                );
+                            }
+                        }
+                        return Ok(Value::List(vec![]));
                     }
                     _ => {}
                 }
@@ -1760,7 +2200,10 @@ impl<'a> QueryExecutor<'a> {
                                         .map(|l| Value::Str(l.clone().into_boxed_str()))
                                         .collect(),
                                 )),
-                                None => Ok(Value::List(vec![])),
+                                None => Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                                    expected: "accessible Node".to_string(),
+                                    actual: "deleted or missing Node".to_string(),
+                                })),
                             },
                             other => Err(GqlError::Execution(ExecutionError::TypeMismatch {
                                 expected: "Node".to_string(),
@@ -1780,7 +2223,12 @@ impl<'a> QueryExecutor<'a> {
                             Value::Null => Ok(Value::Null),
                             Value::Edge(edge_id) => match self.store.get_edge(graph, *edge_id)? {
                                 Some(data) => Ok(Value::Str(data.rel_type.into_boxed_str())),
-                                None => Ok(Value::Null),
+                                None => {
+                                    // Edge may have been deleted in this query; check cache.
+                                    let cached = self.deleted_edge_types.borrow()
+                                        .get(&edge_id.0).map(|s| Value::Str(s.clone().into_boxed_str()));
+                                    Ok(cached.unwrap_or(Value::Null))
+                                }
                             },
                             other => Err(GqlError::Execution(ExecutionError::TypeMismatch {
                                 expected: "Relationship".to_string(),
@@ -1858,8 +2306,9 @@ impl<'a> QueryExecutor<'a> {
                             Value::Node(node_id) => match self.store.get_node(graph, *node_id)? {
                                 Some(data) => Ok(Value::List(
                                     data.properties
-                                        .keys()
-                                        .map(|k| Value::Str(k.clone().into_boxed_str()))
+                                        .iter()
+                                        .filter(|(_, v)| !v.is_null())
+                                        .map(|(k, _)| Value::Str(k.clone().into_boxed_str()))
                                         .collect(),
                                 )),
                                 None => Ok(Value::List(vec![])),
@@ -1867,8 +2316,9 @@ impl<'a> QueryExecutor<'a> {
                             Value::Edge(edge_id) => match self.store.get_edge(graph, *edge_id)? {
                                 Some(data) => Ok(Value::List(
                                     data.properties
-                                        .keys()
-                                        .map(|k| Value::Str(k.clone().into_boxed_str()))
+                                        .iter()
+                                        .filter(|(_, v)| !v.is_null())
+                                        .map(|(k, _)| Value::Str(k.clone().into_boxed_str()))
                                         .collect(),
                                 )),
                                 None => Ok(Value::List(vec![])),
@@ -2069,9 +2519,187 @@ impl<'a> QueryExecutor<'a> {
                     })),
                 }
             }
+            // ── EXISTS { subquery } and bare pattern predicates ──────────────
+            Expr::ExistsSubquery {
+                patterns,
+                where_clause,
+                full_query,
+            } => {
+                if let Some(inner_query) = full_query {
+                    self.eval_full_exists_subquery(graph, inner_query, row)
+                } else {
+                    self.eval_exists_patterns(graph, patterns, where_clause.as_deref(), row)
+                }
+            }
+
+            // `(n)-[:REL]->(m)` used directly as a boolean predicate in WHERE.
+            Expr::PatternExpr(patterns) => {
+                self.eval_exists_patterns(graph, patterns, None, row)
+            }
+
+            // Subscript: n['key'] on Node/Edge — look up property in storage.
+            Expr::Subscript(obj_expr, idx_expr) => {
+                let obj_val = self.eval_with_storage(graph, obj_expr, row, ctx)?;
+                let idx_val = self.eval_with_storage(graph, idx_expr, row, ctx)?;
+                match (obj_val, idx_val) {
+                    (Value::Null, _) | (_, Value::Null) => Ok(Value::Null),
+                    (Value::Node(node_id), Value::Str(key)) => {
+                        match self.store.get_node(graph, node_id)? {
+                            Some(node_data) => Ok(node_data
+                                .properties
+                                .get(key.as_ref())
+                                .cloned()
+                                .unwrap_or(Value::Null)),
+                            None => Ok(Value::Null),
+                        }
+                    }
+                    (Value::Edge(edge_id), Value::Str(key)) => {
+                        match self.store.get_edge(graph, edge_id)? {
+                            Some(edge_data) => Ok(edge_data
+                                .properties
+                                .get(key.as_ref())
+                                .cloned()
+                                .unwrap_or(Value::Null)),
+                            None => Ok(Value::Null),
+                        }
+                    }
+                    (Value::List(list), Value::Int(i)) => {
+                        // Handle List[Int] directly to preserve Node/Edge values that
+                        // `value_to_expr` would otherwise convert to Null.
+                        let len = list.len() as i64;
+                        let real_idx = if i < 0 { len + i } else { i };
+                        if real_idx < 0 || real_idx as usize >= list.len() {
+                            Ok(Value::Null)
+                        } else {
+                            Ok(list[real_idx as usize].clone())
+                        }
+                    }
+                    // Map[Str]: handle directly (maps don't contain Node/Edge).
+                    (Value::Map(m), Value::Str(key)) => {
+                        Ok(m.get(key.as_ref()).cloned().unwrap_or(Value::Null))
+                    }
+                    (obj, idx) => {
+                        // Delegate to eval_expr for remaining cases.
+                        let rebuilt = Expr::Subscript(
+                            Box::new(value_to_expr(&obj)),
+                            Box::new(value_to_expr(&idx)),
+                        );
+                        eval_expr(&rebuilt, ctx)
+                    }
+                }
+            }
+
             // For all other expressions, delegate to eval_expr.
             _ => eval_expr(expr, ctx),
         }
+    }
+
+    /// Evaluate an existential pattern check: return `true` if `patterns`
+    /// (with optional `where_clause`) produce at least one row compatible with
+    /// the current `outer_row` context.
+    fn eval_exists_patterns(
+        &self,
+        graph: &str,
+        patterns: &[crate::ast::PathPattern],
+        where_clause: Option<&Expr>,
+        outer_row: &Row,
+    ) -> Result<Value, GqlError> {
+        let planner = QueryPlanner::new(self.store, graph);
+        let sub_op = planner.plan_exists_subquery(patterns, where_clause)?;
+
+        let outer = vec![outer_row.clone()];
+        let mut budget = ExecutionBudget::default_budget();
+        let mut stats = MutationStats::default();
+        let sub_rows = self.exec_operator(graph, &sub_op, &mut budget, &outer, &mut stats)?;
+
+        // A sub-row is compatible when every named variable present in the outer row
+        // either is absent from the sub-row or has the same value.
+        // Skip anonymous variables (__anon*) to avoid false conflicts.
+        let has_match = sub_rows.iter().any(|sub_row| {
+            outer_row
+                .iter()
+                .filter(|(k, _)| !k.starts_with("__anon"))
+                .all(|(k, v)| sub_row.get(k).is_none_or(|sv| sv == v))
+        });
+        Ok(Value::Bool(has_match))
+    }
+
+    /// Evaluate a full existential subquery `exists { MATCH ... WITH ... WHERE ... RETURN ... }`.
+    ///
+    /// Plans and executes the inner query with the outer row as initial binding context.
+    /// Returns true if the inner query produces at least one row.
+    fn eval_full_exists_subquery(
+        &self,
+        graph: &str,
+        inner_query: &crate::ast::Query,
+        outer_row: &Row,
+    ) -> Result<Value, GqlError> {
+        let planner = QueryPlanner::with_context(self.store, graph, self.registry, &self.parameters);
+        // Use plan_unchecked to skip validation (inner query may reference outer-scope variables)
+        let inner_op = planner.plan_unchecked(inner_query)?;
+        let outer = vec![outer_row.clone()];
+        let mut budget = ExecutionBudget::default_budget();
+        let mut stats = MutationStats::default();
+        let sub_rows = self.exec_operator(graph, &inner_op, &mut budget, &outer, &mut stats)?;
+        // Return true if any rows are produced (compatible with outer binding).
+        // Skip anonymous variables to avoid false conflicts.
+        let has_match = sub_rows.iter().any(|sub_row| {
+            outer_row
+                .iter()
+                .filter(|(k, _)| !k.starts_with('$') && !k.starts_with("__anon"))
+                .all(|(k, v)| sub_row.get(k).is_none_or(|sv| sv == v))
+        });
+        Ok(Value::Bool(has_match))
+    }
+
+    /// Evaluate a pattern comprehension `[(pattern) | mapExpr WHERE whereExpr]`.
+    ///
+    /// Executes the pattern against the current outer row, then for each matched row
+    /// (filtered by whereExpr) evaluates mapExpr and returns a `Value::List`.
+    fn eval_pattern_comprehension(
+        &self,
+        graph: &str,
+        patterns: &[crate::ast::PathPattern],
+        map_expr: &Expr,
+        where_expr: Option<&Expr>,
+        outer_row: &Row,
+    ) -> Result<Value, GqlError> {
+        let planner = QueryPlanner::with_context(self.store, graph, self.registry, &self.parameters);
+        let sub_op = planner.plan_exists_subquery(patterns, None)?;
+
+        let outer = vec![outer_row.clone()];
+        let mut budget = ExecutionBudget::default_budget();
+        let mut stats = MutationStats::default();
+        let sub_rows = self.exec_operator(graph, &sub_op, &mut budget, &outer, &mut stats)?;
+
+        let mut result = Vec::new();
+        for sub_row in &sub_rows {
+            // Compatibility check: bound variables from outer_row must match sub_row.
+            // This handles correlated patterns like `[p = (a)-->(b) | p]` where `a`
+            // and `b` are already bound in the outer row.
+            // Skip anonymous variables (__anon*) since they can clash between outer/inner patterns.
+            let compatible = outer_row
+                .iter()
+                .filter(|(k, _)| !k.starts_with('$') && !k.starts_with("__anon"))
+                .all(|(k, v)| sub_row.get(k.as_str()).is_none_or(|sv| sv == v));
+            if !compatible {
+                continue;
+            }
+            // Apply WHERE filter if present.
+            if let Some(pred) = where_expr {
+                if !matches!(pred, Expr::Bool(true)) {
+                    let ctx = self.build_filter_ctx(graph, sub_row)?;
+                    match self.eval_with_storage(graph, pred, sub_row, &ctx)? {
+                        Value::Bool(true) => {}
+                        _ => continue,
+                    }
+                }
+            }
+            // Evaluate the map expression in the matched row context.
+            let ctx = self.build_filter_ctx(graph, sub_row)?;
+            result.push(self.eval_with_storage(graph, map_expr, sub_row, &ctx)?);
+        }
+        Ok(Value::List(result))
     }
 
     /// Apply a single `SetItem` (SET n.prop = val, SET n = {map}, SET n += {map}, SET n:Label).
@@ -2088,16 +2716,50 @@ impl<'a> QueryExecutor<'a> {
                 let val = row
                     .get(alias.0.as_str())
                     .ok_or_else(|| undefined_var(&alias.0))?;
+                // SET on a null variable (from OPTIONAL MATCH) is silently ignored.
+                if val.is_null() {
+                    return Ok(());
+                }
                 let ctx = self.build_filter_ctx(graph, row)?;
                 let prop_val = self.eval_with_storage(graph, value, row, &ctx)?;
+                // SET n.prop = null means REMOVE the property (Cypher semantics)
+                if prop_val.is_null() {
+                    match val {
+                        Value::Node(node_id) => {
+                            let _ = self.store.remove_node_property(graph, *node_id, key);
+                        }
+                        Value::Edge(edge_id) => {
+                            let _ = self.store.remove_edge_property(graph, *edge_id, key);
+                        }
+                        _ => {}
+                    }
+                    return Ok(());
+                }
+                // Validate that the property value is a valid Cypher property type.
+                // Maps and lists-of-maps are not allowed as property values.
+                fn is_invalid_prop_value(v: &Value) -> bool {
+                    match v {
+                        Value::Map(_) => true,
+                        Value::List(items) => items.iter().any(is_invalid_prop_value),
+                        _ => false,
+                    }
+                }
+                if is_invalid_prop_value(&prop_val) {
+                    return Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                        expected: "primitive property value (not Map or List of Maps)".to_string(),
+                        actual: prop_val.type_name().to_string(),
+                    }));
+                }
                 let mut props = HashMap::new();
                 props.insert(key.clone(), prop_val);
                 match val {
                     Value::Node(node_id) => {
                         self.store.set_node_properties(graph, *node_id, props)?;
+                        stats.props_seen.insert((false, node_id.0, key.clone()));
                     }
                     Value::Edge(edge_id) => {
                         self.store.set_edge_properties(graph, *edge_id, props)?;
+                        stats.props_seen.insert((true, edge_id.0, key.clone()));
                     }
                     other => {
                         return Err(GqlError::Execution(ExecutionError::TypeMismatch {
@@ -2106,12 +2768,15 @@ impl<'a> QueryExecutor<'a> {
                         }));
                     }
                 }
-                stats.properties_set += 1;
             }
             SetItem::Map { alias, map, merge } => {
                 let val = row
                     .get(alias.0.as_str())
                     .ok_or_else(|| undefined_var(&alias.0))?;
+                // SET on a null variable (from OPTIONAL MATCH) is silently ignored.
+                if val.is_null() {
+                    return Ok(());
+                }
                 let ctx = self.build_filter_ctx(graph, row)?;
                 let map_val = self.eval_with_storage(graph, map, row, &ctx)?;
                 let props = match map_val {
@@ -2120,6 +2785,20 @@ impl<'a> QueryExecutor<'a> {
                         .map(|(k, v)| (k.to_string(), v))
                         .collect::<HashMap<String, Value>>(),
                     Value::Null => HashMap::new(),
+                    Value::Node(src_node_id) => {
+                        // SET a = b where b is a Node: copy all properties from b
+                        match self.store.get_node(graph, src_node_id)? {
+                            Some(node_data) => node_data.properties,
+                            None => HashMap::new(),
+                        }
+                    }
+                    Value::Edge(src_edge_id) => {
+                        // SET r = r2 where r2 is a Relationship: copy all properties from r2
+                        match self.store.get_edge(graph, src_edge_id)? {
+                            Some(edge_data) => edge_data.properties,
+                            None => HashMap::new(),
+                        }
+                    }
                     other => {
                         return Err(GqlError::Execution(ExecutionError::TypeMismatch {
                             expected: "Map for SET assignment".to_string(),
@@ -2127,21 +2806,29 @@ impl<'a> QueryExecutor<'a> {
                         }));
                     }
                 };
-                let prop_count = props.len() as u64;
-                match val {
+                let non_null_keys: Vec<String> = props
+                    .iter()
+                    .filter(|(_, v)| !v.is_null())
+                    .map(|(k, _)| k.clone())
+                    .collect();
+                let (is_edge, raw_id) = match val {
                     Value::Node(node_id) => {
+                        let id = *node_id;
                         if *merge {
-                            self.store.set_node_properties(graph, *node_id, props)?;
+                            self.store.set_node_properties(graph, id, props)?;
                         } else {
-                            self.store.replace_node_properties(graph, *node_id, props)?;
+                            self.store.replace_node_properties(graph, id, props)?;
                         }
+                        (false, id.0)
                     }
                     Value::Edge(edge_id) => {
+                        let id = *edge_id;
                         if *merge {
-                            self.store.set_edge_properties(graph, *edge_id, props)?;
+                            self.store.set_edge_properties(graph, id, props)?;
                         } else {
-                            self.store.replace_edge_properties(graph, *edge_id, props)?;
+                            self.store.replace_edge_properties(graph, id, props)?;
                         }
+                        (true, id.0)
                     }
                     other => {
                         return Err(GqlError::Execution(ExecutionError::TypeMismatch {
@@ -2149,19 +2836,24 @@ impl<'a> QueryExecutor<'a> {
                             actual: other.type_name().to_string(),
                         }));
                     }
+                };
+                for k in non_null_keys {
+                    stats.props_seen.insert((is_edge, raw_id, k));
                 }
-                stats.properties_set += prop_count;
             }
             SetItem::Labels { alias, labels } => {
                 let val = row
                     .get(alias.0.as_str())
                     .ok_or_else(|| undefined_var(&alias.0))?;
+                // SET labels on null (from OPTIONAL MATCH) is a no-op
+                if val.is_null() {
+                    return Ok(());
+                }
                 let node_id = extract_node_id(val, &alias.0)?;
                 let label_strings: Vec<String> =
                     labels.iter().map(|l| l.as_str().to_string()).collect();
-                let label_count = label_strings.len() as u64;
                 self.store.add_node_labels(graph, node_id, &label_strings)?;
-                stats.labels_added += label_count;
+                stats.labels_seen.extend(label_strings);
             }
         }
         Ok(())
@@ -2178,10 +2870,18 @@ struct AggState {
     max: Option<Value>,
     collected: Vec<Value>,
     seen_distinct: HashSet<String>,
+    /// Percentile parameter for percentileDisc/percentileCont (0.0..=1.0).
+    percentile: Option<f64>,
 }
 
 impl AggState {
-    fn accumulate(&mut self, func: &AggFunction, val: Value, distinct: bool) {
+    fn accumulate(
+        &mut self,
+        func: &AggFunction,
+        val: Value,
+        second_val: Option<Value>,
+        distinct: bool,
+    ) {
         // For distinct aggregations, skip duplicates.
         if distinct {
             let key = format!("{:?}", val);
@@ -2240,28 +2940,128 @@ impl AggState {
                     self.collected.push(val);
                 }
             }
-            // Unsupported aggregation functions: treat as count.
-            _ => {
-                self.count += 1;
+            AggFunction::StDev | AggFunction::StDevP => {
+                if !val.is_null() {
+                    if let Some(f) = val.as_float() {
+                        self.collected.push(Value::Float(f));
+                    }
+                }
+            }
+            AggFunction::PercentileDisc | AggFunction::PercentileCont => {
+                if !val.is_null() {
+                    if let Some(f) = val.as_float() {
+                        self.collected.push(Value::Float(f));
+                    }
+                }
+                // Store the percentile parameter (constant across rows, first one wins).
+                if self.percentile.is_none() {
+                    if let Some(pval) = &second_val {
+                        if let Some(f) = pval.as_float() {
+                            self.percentile = Some(f);
+                        }
+                    }
+                }
             }
         }
     }
 
-    fn finalize(&self, func: &AggFunction) -> Value {
+    fn finalize(&self, func: &AggFunction) -> Result<Value, GqlError> {
         match func {
-            AggFunction::Count => Value::Int(self.count),
-            AggFunction::Sum => self.sum.map(Value::Float).unwrap_or(Value::Int(0)),
+            AggFunction::Count => Ok(Value::Int(self.count)),
+            AggFunction::Sum => Ok(self.sum.map(Value::Float).unwrap_or(Value::Int(0))),
             AggFunction::Avg => {
                 if self.count == 0 {
-                    Value::Null
+                    Ok(Value::Null)
                 } else {
-                    Value::Float(self.sum.unwrap_or(0.0) / self.count as f64)
+                    Ok(Value::Float(self.sum.unwrap_or(0.0) / self.count as f64))
                 }
             }
-            AggFunction::Min => self.min.clone().unwrap_or(Value::Null),
-            AggFunction::Max => self.max.clone().unwrap_or(Value::Null),
-            AggFunction::Collect => Value::List(self.collected.clone()),
-            _ => Value::Int(self.count),
+            AggFunction::Min => Ok(self.min.clone().unwrap_or(Value::Null)),
+            AggFunction::Max => Ok(self.max.clone().unwrap_or(Value::Null)),
+            AggFunction::Collect => Ok(Value::List(self.collected.clone())),
+            AggFunction::StDev => {
+                let nums: Vec<f64> = self
+                    .collected
+                    .iter()
+                    .filter_map(|v| v.as_float())
+                    .collect();
+                if nums.len() <= 1 {
+                    return Ok(Value::Float(0.0));
+                }
+                let mean = nums.iter().sum::<f64>() / nums.len() as f64;
+                let variance = nums.iter().map(|x| (x - mean).powi(2)).sum::<f64>()
+                    / (nums.len() - 1) as f64;
+                Ok(Value::Float(variance.sqrt()))
+            }
+            AggFunction::StDevP => {
+                let nums: Vec<f64> = self
+                    .collected
+                    .iter()
+                    .filter_map(|v| v.as_float())
+                    .collect();
+                if nums.is_empty() {
+                    return Ok(Value::Float(0.0));
+                }
+                let mean = nums.iter().sum::<f64>() / nums.len() as f64;
+                let variance = nums.iter().map(|x| (x - mean).powi(2)).sum::<f64>()
+                    / nums.len() as f64;
+                Ok(Value::Float(variance.sqrt()))
+            }
+            AggFunction::PercentileDisc => {
+                let p = self.percentile.unwrap_or(0.5);
+                if !(0.0..=1.0).contains(&p) {
+                    return Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                        expected: "percentile in range [0.0, 1.0]".to_string(),
+                        actual: format!("NumberOutOfRange: {p}"),
+                    }));
+                }
+                let mut nums: Vec<f64> = self
+                    .collected
+                    .iter()
+                    .filter_map(|v| v.as_float())
+                    .collect();
+                if nums.is_empty() {
+                    return Ok(Value::Null);
+                }
+                nums.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+                // Nearest rank method: index = ceil(p * n) - 1 (clamped)
+                let n = nums.len();
+                let idx = ((p * n as f64).ceil() as usize).saturating_sub(1).min(n - 1);
+                // Return as integer if all values are whole numbers
+                let v = nums[idx];
+                if v.fract() == 0.0 && v >= i64::MIN as f64 && v <= i64::MAX as f64 {
+                    Ok(Value::Int(v as i64))
+                } else {
+                    Ok(Value::Float(v))
+                }
+            }
+            AggFunction::PercentileCont => {
+                let p = self.percentile.unwrap_or(0.5);
+                if !(0.0..=1.0).contains(&p) {
+                    return Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                        expected: "percentile in range [0.0, 1.0]".to_string(),
+                        actual: format!("NumberOutOfRange: {p}"),
+                    }));
+                }
+                let mut nums: Vec<f64> = self
+                    .collected
+                    .iter()
+                    .filter_map(|v| v.as_float())
+                    .collect();
+                if nums.is_empty() {
+                    return Ok(Value::Null);
+                }
+                nums.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+                let idx = p * (nums.len() - 1) as f64;
+                let lo = idx.floor() as usize;
+                let hi = (idx.ceil() as usize).min(nums.len() - 1);
+                if lo == hi {
+                    Ok(Value::Float(nums[lo]))
+                } else {
+                    let frac = idx - lo as f64;
+                    Ok(Value::Float(nums[lo] * (1.0 - frac) + nums[hi] * frac))
+                }
+            }
         }
     }
 }
@@ -2292,6 +3092,7 @@ fn undefined_var(name: &str) -> GqlError {
 /// Check if the plan's top-level operator (or outermost chain) is a write-only operation.
 /// This is used to suppress result rows for queries without RETURN (e.g., `CREATE ()`, `DELETE n`).
 /// Note: MERGE is excluded because it can return rows when used with RETURN.
+#[allow(dead_code)]
 fn is_toplevel_write(op: &Operator) -> bool {
     match op {
         Operator::Create { .. } | Operator::Delete { .. }
@@ -2306,12 +3107,13 @@ fn is_toplevel_write(op: &Operator) -> bool {
 }
 
 /// Check if the operator tree contains write operations (CREATE, DELETE, SET, etc.).
+#[allow(dead_code)]
 fn has_write_operations(op: &Operator) -> bool {
     match op {
         Operator::Create { .. } | Operator::Delete { .. } | Operator::Merge { .. }
         | Operator::MergeRelationship { .. } => true,
-        Operator::Set { child, .. }
-        | Operator::Remove { child, .. } => true,
+        Operator::Set { child: _, .. }
+        | Operator::Remove { child: _, .. } => true,
         Operator::Distinct { child }
         | Operator::Sort { child, .. }
         | Operator::Limit { child, .. }
@@ -2455,9 +3257,9 @@ fn row_key(row: &Row) -> String {
 }
 
 /// Evaluate a `count` expression (LIMIT/SKIP argument) — must be a non-negative integer.
-fn eval_count_expr(expr: &Expr, _row: &Row) -> Result<usize, GqlError> {
-    let empty_ctx: FilterRow<'_> = HashMap::new();
-    match eval_expr(expr, &empty_ctx)? {
+fn eval_count_expr(expr: &Expr, params: &Row) -> Result<usize, GqlError> {
+    let ctx: FilterRow<'_> = params.iter().map(|(k, v)| (k.as_str(), v)).collect();
+    match eval_expr(expr, &ctx)? {
         Value::Int(n) if n >= 0 => Ok(n as usize),
         Value::Int(n) => Err(GqlError::Execution(ExecutionError::TypeMismatch {
             expected: "non-negative integer for LIMIT/SKIP".to_string(),
@@ -2472,18 +3274,53 @@ fn eval_count_expr(expr: &Expr, _row: &Row) -> Result<usize, GqlError> {
 
 /// Derive a column name string from an expression.
 /// `n.name` → `"n.name"`, `n` → `"n"`, literal → `"literal"`.
+/// Returns the precedence level of a binary operator for column-name parenthesization.
+/// Higher value = higher precedence (binds tighter).
+fn binop_col_prec(op: &crate::ast::BinaryOp) -> i32 {
+    use crate::ast::BinaryOp;
+    match op {
+        BinaryOp::Pow => 6,
+        BinaryOp::Mul | BinaryOp::Div | BinaryOp::Mod => 5,
+        BinaryOp::Add | BinaryOp::Sub | BinaryOp::Concat => 4,
+        _ => 3,
+    }
+}
+
+/// True for operators where `a op (b op c) ≠ (a op b) op c`,
+/// so the right child needs parentheses when it has the same precedence.
+fn binop_col_nonassoc(op: &crate::ast::BinaryOp) -> bool {
+    use crate::ast::BinaryOp;
+    matches!(op, BinaryOp::Sub | BinaryOp::Div | BinaryOp::Mod)
+}
+
 fn expr_to_column_name(expr: &Expr) -> String {
     match expr {
         Expr::Variable(id) => id.0.clone(),
-        Expr::Property(obj, key) => format!("{}.{}", expr_to_column_name(obj), key),
+        Expr::Property(obj, key) => {
+            // Subscript expressions as property objects are wrapped in parens
+            // to match the query text: `(list[1]).key` → column `(list[1]).key`.
+            let obj_str = match obj.as_ref() {
+                Expr::Subscript(_, _) => format!("({})", expr_to_column_name(obj)),
+                _ => expr_to_column_name(obj),
+            };
+            format!("{}.{}", obj_str, key)
+        }
         Expr::Integer(n) => n.to_string(),
         Expr::Float(f) => f.to_string(),
-        Expr::Str(s) => s.to_string(),
+        Expr::Str(s) => format!("'{s}'"),
         Expr::Bool(b) => b.to_string(),
         Expr::Null => "null".to_string(),
-        Expr::FunctionCall { name, args, .. } => {
+        Expr::FunctionCall {
+            name,
+            args,
+            distinct,
+        } => {
             let arg_strs: Vec<String> = args.iter().map(expr_to_column_name).collect();
-            format!("{}({})", name, arg_strs.join(", "))
+            if *distinct {
+                format!("{}(DISTINCT {})", name, arg_strs.join(", "))
+            } else {
+                format!("{}({})", name, arg_strs.join(", "))
+            }
         }
         Expr::UnaryOp {
             op: crate::ast::UnaryOp::Neg,
@@ -2517,12 +3354,25 @@ fn expr_to_column_name(expr: &Expr) -> String {
                 crate::ast::BinaryOp::RegexMatch => "=~",
                 crate::ast::BinaryOp::Concat => "++",
             };
-            format!(
-                "{} {} {}",
-                expr_to_column_name(left),
-                op_str,
-                expr_to_column_name(right)
-            )
+            let parent_prec = binop_col_prec(op);
+            // Left child: wrap if strictly lower precedence
+            let left_str = match left.as_ref() {
+                Expr::BinaryOp { op: child_op, .. } if binop_col_prec(child_op) < parent_prec => {
+                    format!("({})", expr_to_column_name(left))
+                }
+                _ => expr_to_column_name(left),
+            };
+            // Right child: wrap if lower precedence, or same prec for non-associative ops
+            let right_str = match right.as_ref() {
+                Expr::BinaryOp { op: child_op, .. }
+                    if binop_col_prec(child_op) < parent_prec
+                        || (binop_col_prec(child_op) == parent_prec && binop_col_nonassoc(op)) =>
+                {
+                    format!("({})", expr_to_column_name(right))
+                }
+                _ => expr_to_column_name(right),
+            };
+            format!("{} {} {}", left_str, op_str, right_str)
         }
         Expr::ListComp {
             variable,
@@ -2549,6 +3399,18 @@ fn expr_to_column_name(expr: &Expr) -> String {
                 format!("[{} IN {}]", var_str, list_str)
             }
         }
+        // These must match expr_to_col_name in planner.rs exactly.
+        Expr::IsNull(e) => format!("{} IS NULL", expr_to_column_name(e)),
+        Expr::IsNotNull(e) => format!("{} IS NOT NULL", expr_to_column_name(e)),
+        Expr::HasLabel(e, label) => format!("{}:{}", expr_to_column_name(e), label.0),
+        Expr::Parameter(name) => format!("${name}"),
+        Expr::List(items) => {
+            let items_str: Vec<String> = items.iter().map(expr_to_column_name).collect();
+            format!("[{}]", items_str.join(", "))
+        }
+        Expr::Subscript(list, idx) => {
+            format!("{}[{}]", expr_to_column_name(list), expr_to_column_name(idx))
+        }
         _ => format!("{:?}", expr),
     }
 }
@@ -2564,7 +3426,10 @@ fn eval_prop_map(
     let mut map = HashMap::new();
     for (key, expr) in pairs {
         let val = executor.eval_with_storage(graph, expr, row, ctx)?;
-        map.insert(key.clone(), val);
+        // Cypher: setting a property to null = removing it (don't store nulls)
+        if !val.is_null() {
+            map.insert(key.clone(), val);
+        }
     }
     Ok(map)
 }
@@ -2580,6 +3445,15 @@ fn eval_binary_values(
     ctx: &FilterRow<'_>,
 ) -> Result<Value, GqlError> {
     use crate::ast::BinaryOp;
+    // Handle list concatenation directly BEFORE the needs_direct check,
+    // because Value::List may contain Node/Edge values that value_to_expr
+    // would convert to Null.
+    if matches!(op, BinaryOp::Add | BinaryOp::Concat) {
+        if let (Value::List(mut l1), Value::List(l2)) = (lv.clone(), rv.clone()) {
+            l1.extend(l2);
+            return Ok(Value::List(l1));
+        }
+    }
     // For types that value_to_expr can represent losslessly, delegate to eval_expr.
     let needs_direct = matches!(
         (&lv, &rv),
@@ -2646,6 +3520,13 @@ fn eval_binary_values(
                     temporal_add_duration(temporal, dur, false)
                 }
                 (Value::Duration(a), Value::Duration(b)) => Ok(Value::Duration(duration_add(a, b))),
+                // List concatenation: handle directly to preserve Node/Edge/Path values
+                // that value_to_expr would otherwise convert to Null.
+                (Value::List(l1), Value::List(l2)) => {
+                    let mut result = l1.clone();
+                    result.extend_from_slice(l2);
+                    Ok(Value::List(result))
+                }
                 _ => {
                     let left_lit = value_to_expr(&lv);
                     let right_lit = value_to_expr(&rv);
@@ -2671,11 +3552,13 @@ fn eval_binary_values(
             }
         }
         BinaryOp::Mul => {
-            use crate::executor::filter::duration_mul;
+            use crate::executor::filter::{duration_mul, duration_mul_f64};
             match (&lv, &rv) {
                 (Value::Null, _) | (_, Value::Null) => Ok(Value::Null),
                 (Value::Duration(d), Value::Int(n)) => Ok(Value::Duration(duration_mul(d, *n))),
                 (Value::Int(n), Value::Duration(d)) => Ok(Value::Duration(duration_mul(d, *n))),
+                (Value::Duration(d), Value::Float(f)) => Ok(Value::Duration(duration_mul_f64(d, *f))),
+                (Value::Float(f), Value::Duration(d)) => Ok(Value::Duration(duration_mul_f64(d, *f))),
                 _ => {
                     let left_lit = value_to_expr(&lv);
                     let right_lit = value_to_expr(&rv);
@@ -2685,10 +3568,11 @@ fn eval_binary_values(
             }
         }
         BinaryOp::Div => {
-            use crate::executor::filter::duration_div;
+            use crate::executor::filter::{duration_div, duration_mul_f64};
             match (&lv, &rv) {
                 (Value::Null, _) | (_, Value::Null) => Ok(Value::Null),
                 (Value::Duration(d), Value::Int(n)) => duration_div(d, *n).map(Value::Duration),
+                (Value::Duration(d), Value::Float(f)) => Ok(Value::Duration(duration_mul_f64(d, 1.0 / f))),
                 _ => {
                     let left_lit = value_to_expr(&lv);
                     let right_lit = value_to_expr(&rv);
@@ -2736,22 +3620,34 @@ fn value_to_expr(val: &Value) -> Expr {
 
 /// Compare two `Value`s for ordering purposes.
 ///
-/// Ordering: Null < Bool < Int ≈ Float < String < List < others (opaque).
+/// Ordering follows openCypher/Neo4j semantics for ORDER BY / min / max.
+/// Ascending order (from smallest to largest):
+///   Node/Edge/Path < Map < List < Bool < Str < Number < Temporal < Null
+/// Null sorts LAST in ascending order (treated as the "greatest" value).
 pub fn cmp_values(a: &Value, b: &Value) -> std::cmp::Ordering {
     use std::cmp::Ordering::*;
 
+    // Type ordering (ascending, smallest to largest) per openCypher spec:
+    // Map < Node < Edge < List < Path < String < Bool < Number < NaN < Null
+    // Temporal types (Date, Time, DateTime, Duration) sit between Bool and Null.
     fn type_rank(v: &Value) -> u8 {
         match v {
-            Value::Null => 0,
-            Value::Bool(_) => 1,
-            Value::Int(_) | Value::Float(_) => 2,
-            Value::Str(_) => 3,
-            Value::Date(_) => 4,
-            Value::LocalTime(_) => 5,
-            Value::LocalDateTime(_) => 6,
-            Value::DateTime(_) => 7,
-            Value::List(_) => 8,
-            _ => 9,
+            Value::Map(_) => 0,
+            Value::Node(_) => 1,
+            Value::Edge(_) => 2,
+            Value::List(_) => 3,
+            Value::Path { .. } => 4,
+            Value::Str(_) => 5,
+            Value::Bool(_) => 6,
+            Value::Float(f) if f.is_nan() => 8,  // NaN sorts after regular numbers
+            Value::Int(_) | Value::Float(_) => 7,
+            Value::Date(_) => 10,
+            Value::LocalTime(_) => 11,
+            Value::LocalDateTime(_) => 12,
+            Value::DateTime(_) => 13,
+            Value::Duration(_) => 14,
+            Value::Point(_) => 15,
+            Value::Null => 255, // Null sorts LAST (largest) in ascending order
         }
     }
 
@@ -2765,7 +3661,11 @@ pub fn cmp_values(a: &Value, b: &Value) -> std::cmp::Ordering {
         (Value::Null, Value::Null) => Equal,
         (Value::Bool(x), Value::Bool(y)) => x.cmp(y),
         (Value::Int(x), Value::Int(y)) => x.cmp(y),
-        (Value::Float(x), Value::Float(y)) => x.partial_cmp(y).unwrap_or(Equal),
+        (Value::Float(x), Value::Float(y)) => {
+            // Both are either NaN (rank 8) or regular floats (rank 7).
+            // If same rank, they're the same category; NaN == NaN, regular == regular.
+            x.partial_cmp(y).unwrap_or(Equal)
+        }
         (Value::Int(x), Value::Float(y)) => (*x as f64).partial_cmp(y).unwrap_or(Equal),
         (Value::Float(x), Value::Int(y)) => x.partial_cmp(&(*y as f64)).unwrap_or(Equal),
         (Value::Str(x), Value::Str(y)) => x.cmp(y),
@@ -3049,6 +3949,7 @@ mod tests {
                 aggregations: vec![(
                     AggFunction::Count,
                     Expr::Variable(Identifier::new("n")),
+                    None,
                     false,
                     Identifier::new("count"),
                 )],
@@ -3094,11 +3995,13 @@ mod tests {
             max: 2,
             src_alias: Identifier::new("a"),
             path_alias: Some(Identifier::new("p")),
+            path_mode: true,
             dst_alias: Identifier::new("b"),
             child: Box::new(Operator::NodeScan {
                 label: Some(Label::new("N")),
                 alias: Identifier::new("a"),
             }),
+            rel_props: None,
         };
         let mut budget = ExecutionBudget::unlimited();
         let result = executor.execute("g", &plan, &mut budget).unwrap();
@@ -3141,11 +4044,13 @@ mod tests {
             max: 1,
             src_alias: Identifier::new("src"),
             path_alias: None,
+            path_mode: false,
             dst_alias: Identifier::new("dst"),
             child: Box::new(Operator::NodeScan {
                 label: Some(Label::new("N")),
                 alias: Identifier::new("src"),
             }),
+            rel_props: None,
         };
         let mut budget = ExecutionBudget::unlimited();
         let result = executor.execute("g", &plan, &mut budget).unwrap();
@@ -3182,11 +4087,13 @@ mod tests {
             max: 5,
             src_alias: Identifier::new("src"),
             path_alias: None,
+            path_mode: false,
             dst_alias: Identifier::new("dst"),
             child: Box::new(Operator::NodeScan {
                 label: Some(Label::new("N")),
                 alias: Identifier::new("src"),
             }),
+            rel_props: None,
         };
         let mut budget = ExecutionBudget::unlimited();
         let result = executor.execute("g", &plan, &mut budget).unwrap();
@@ -3317,7 +4224,8 @@ mod tests {
         };
         let mut budget = ExecutionBudget::unlimited();
         let result = executor.execute("g", &plan, &mut budget).unwrap();
-        assert_eq!(result.stats.properties_set, 1);
+        // REMOVE property does not count toward properties_set per TCK semantics.
+        assert_eq!(result.stats.properties_set, 0);
 
         let node = store.get_node("g", node_id).unwrap().unwrap();
         assert!(!node.properties.contains_key("age"));

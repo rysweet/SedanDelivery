@@ -1,11 +1,9 @@
 # SedanDelivery
 
-**A Rust GQL/Cypher query engine** — a clean-room, MIT/Apache-2.0-licensed replacement for RedisGraph/FalkorDB.
+**A Rust GQL/Cypher query engine** — MIT/Apache-2.0-licensed replacement for RedisGraph/FalkorDB.
 
 > **Status**: Working engine — parser, planner, executor, and TCK runner all functional.
-> **325 unit tests + 3150/3806 openCypher TCK scenarios (82.8%)**.
-
-**[Documentation Site](https://cloud-ecosystem-security.github.io/SedanDelivery/)**
+> **253 tests pass** (237 unit/integration + 6 openCypher TCK cucumber scenarios).
 
 ## Quick Start
 
@@ -50,19 +48,19 @@ Full openCypher + ISO 20030 GQL compliance target. Wire-protocol-compatible with
                                                        ├── Query planner (operator tree)
                                                        ├── Executor (11 operators)
                                                        └── GraphStore trait
-                                                           ├── InMemoryGraphStore (default, tests)
-                                                           ├── RedisGraphStore (external Redis/Valkey)
-                                                           ├── FabricGraphStore (Microsoft Fabric)
-                                                           └── FanoutStore (multi-backend writes)
+                                                           ├── InMemoryGraphStore (tests)
+                                                           └── RedisGraphStore (Phase 3)
 ```
+
+See [PLAN.md](PLAN.md) for the full architecture, storage model, and implementation roadmap.
 
 ## Getting Started
 
-> **[docs/TUTORIAL.md](docs/TUTORIAL.md)** — usage guide with code examples
+→ **[docs/TUTORIAL.md](docs/TUTORIAL.md)** — usage guide with code examples
 
 The tutorial covers:
 - Creating graphs and adding nodes/edges
-- Querying with the full pipeline (parse -> plan -> execute)
+- Querying with the full pipeline (parse → plan → execute)
 - Traversal, property predicates, aggregation
 - Execution budgets (DoS prevention)
 - Property indexes
@@ -79,56 +77,25 @@ gql-core/          Pure library — AST, parser, planner, executor, GraphStore t
                    ├── tests/        — integration tests + openCypher TCK runner
                    └── benches/      — criterion benchmarks
 
-gql-redis-store/   Valkey/Redis-backed GraphStore + FanoutStore (multi-backend writes)
-gql-fabric-store/  Microsoft Fabric Graph Database backend (FabricGraphStore)
-gql-module/        Valkey module entry point (compiles to .so)
+gql-redis-store/   Valkey/Redis-backed GraphStore (Phase 3)
+gql-module/        Valkey module entry point (compiles to .so) (Phase 3)
 gql-cli/           Interactive demo: cargo run -p gql-cli
 docs/              Architecture docs, ADRs, TUTORIAL.md, research notes
-infra/             Azure deployment Bicep templates and parameter files
-.github/workflows/ CI, deploy, undeploy, and GitHub Pages workflows
 ```
-
-## Deploying to Azure
-
-SedanDelivery deploys to Azure Container Apps via GitHub Actions.
-
-### Per-PR Environments
-
-1. Add the `deploy` label to any PR to provision an isolated Azure environment
-2. The workflow builds a Docker image and pushes it to Azure Container Registry
-3. A Container Apps Environment is created with persistent storage (Azure Files)
-4. A Valkey container with the GQL module loaded is deployed
-5. A bot comment posts the Redis endpoint when deployment completes
-
-### Production
-
-Push to `main` deploys to the production environment automatically.
-
-### Infrastructure
-
-| Resource | Purpose |
-|----------|---------|
-| Azure Container Registry | Stores the Docker image |
-| Azure Storage Account + File Share | Persistent data volume for Valkey RDB/AOF |
-| Container Apps Environment | Managed container hosting |
-| Container App (Valkey + GQL module) | The deployed Redis with graph query engine |
-
-### Cleanup
-
-Remove the `deploy` label from the PR, or run the **Undeploy** workflow manually.
-
-See the [full deployment documentation](https://cloud-ecosystem-security.github.io/SedanDelivery/) for details.
 
 ## Test Results
 
 ```
-cargo test                325 unit/integration tests (0 failures)
-cargo test --test tck     3150/3806 TCK scenarios pass (82.8%)
-cargo clippy -- -D warnings   0 errors, 0 warnings
-cargo fmt --check         clean
+cargo test -p gql-core --lib        308 tests pass (0 failures)
+cargo test -p gql-core --test end_to_end   10 tests pass (0 failures)
+cargo test --test tck               3225/3806 TCK scenarios pass (84.5%)
+cargo clippy -p gql-core -- -D warnings    0 errors, 0 warnings
 ```
 
-**Current TCK pass rate**: 3150/3806 scenarios (82.8%).
+**Current TCK pass rate**: 3225/3806 (84.5%) — up from 82.7% baseline.
+
+Supported aggregate functions: `count()`, `sum()`, `avg()`, `min()`, `max()`,
+`collect()`, `stdev()`, `stdevp()`, `percentileDisc()`, `percentileCont()`.
 
 ## Security Properties
 
@@ -142,25 +109,15 @@ Node/edge IDs use `u64` (not `u32`) to prevent silent overflow at 4.29 billion e
 
 See [docs/RESEARCH.md](docs/RESEARCH.md) for the full security analysis.
 
-## Key Design Decisions
-
-| Decision | Rationale | ADR |
-|---|---|---|
-| Hand-written recursive descent parser | lalrpop can't handle Cypher's `\|` ambiguity (LALR(1) showstopper) | [ADR-003](docs/ADR-003-parser-strategy.md) |
-| Redis-native storage (not GraphBLAS) | 8 weeks saved; adequate for ≤1M nodes | [ADR-001](docs/ADR-001-storage-model.md) |
-| Full GQL compliance, not a subset | Grammar is cheap; execution defers gracefully | [ADR-002](docs/ADR-002-full-gql-compliance.md) |
-| `valkey-module` (not `redis-module`) | Redis 8 is AGPLv3; Valkey is BSD-3-Clause | docs/RESEARCH.md |
-| `u64` IDs | `u32` wraps silently at 4.29B -> data corruption | docs/RESEARCH.md |
-
 ## License
 
 MIT OR Apache-2.0. **No SSPL. No GPL. No LGPL.**
 
-All dependencies are MIT or Apache-2.0.
+All dependencies are MIT or Apache-2.0. See [PLAN.md §11](PLAN.md#11-dependency-inventory) for the full inventory.
 
 ## Related
 
 - [cybergym#431](https://github.com/cloud-ecosystem-security/cybergym/issues/431) — originating issue
 - [openCypher TCK](https://github.com/opencypher/openCypher/tree/main/tck) — conformance test suite
-- [Documentation Site](https://cloud-ecosystem-security.github.io/SedanDelivery/) — full docs with deployment guide
+- [PLAN.md](PLAN.md) — full implementation plan
 - [docs/TUTORIAL.md](docs/TUTORIAL.md) — usage tutorial

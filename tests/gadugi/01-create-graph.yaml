@@ -1,0 +1,111 @@
+name: "First-Time Graph Creation"
+description: >
+  Verifies the complete first-time user flow: the app loads showing an empty state
+  in the status bar ("No graph selected"), the user opens the GraphSelector dropdown,
+  types a new graph name, submits, and the graph becomes active. After creation the
+  canvas shows the empty-graph state because no nodes exist yet.
+app_url: "http://localhost:5173"
+
+setup:
+  - action: navigate
+    url: "/"
+
+steps:
+  - step: 1
+    description: "App loads and status bar shows no graph selected"
+    action: verify
+    selector: ".font-mono"
+    expected: "Status bar center text reads 'No graph selected'"
+    timeout_ms: 5000
+
+  - step: 2
+    description: "Canvas shows the 'No graph selected' empty state"
+    action: verify
+    selector: "text=No graph selected"
+    expected: "The canvas placeholder message 'No graph selected' is visible"
+    timeout_ms: 3000
+
+  - step: 3
+    description: "Canvas also shows the helper text for next action"
+    action: verify
+    selector: "text=Select or create a graph to get started"
+    expected: "Helper text 'Select or create a graph to get started' is visible"
+    timeout_ms: 3000
+
+  - step: 4
+    description: "Open the GraphSelector dropdown by clicking the database icon button in the toolbar"
+    action: click
+    selector: "button:has(svg[data-lucide='database'])"
+    expected: "GraphSelector dropdown opens, showing graph list and 'Create New Graph' button at the bottom"
+    timeout_ms: 3000
+
+  - step: 5
+    description: "The dropdown shows 'No graphs available' since none exist yet"
+    action: verify
+    selector: "text=No graphs available"
+    expected: "'No graphs available' text is shown in the dropdown list section"
+    timeout_ms: 3000
+
+  - step: 6
+    description: "Click 'Create New Graph' option to reveal the inline name input"
+    action: click
+    selector: "button:has-text('Create New Graph')"
+    expected: "An inline text input appears with placeholder 'Graph name...' and a 'Create' button"
+    timeout_ms: 3000
+
+  - step: 7
+    description: "Type the new graph name into the inline input"
+    action: type
+    selector: "input[placeholder='Graph name...']"
+    value: "test-graph"
+    expected: "Input field shows 'test-graph'"
+    timeout_ms: 3000
+
+  - step: 8
+    description: "Press Enter to submit the new graph name"
+    action: key
+    selector: "input[placeholder='Graph name...']"
+    value: "Enter"
+    expected: "Dropdown closes, graph is created and selected"
+    timeout_ms: 5000
+
+  - step: 9
+    description: "Status bar center shows the new graph name"
+    action: verify
+    selector: "text=test-graph"
+    expected: "Status bar center displays 'test-graph' as the active graph"
+    timeout_ms: 5000
+
+  - step: 10
+    description: "GraphSelector button label updates to the selected graph name"
+    action: verify
+    selector: "button:has(svg[data-lucide='database']) span"
+    expected: "GraphSelector button shows 'test-graph' as its label"
+    timeout_ms: 3000
+
+  - step: 11
+    description: "Canvas shows empty graph state since no nodes exist"
+    action: verify
+    selector: "text=Graph is empty"
+    expected: "The canvas empty state 'Graph is empty' heading is visible"
+    timeout_ms: 5000
+
+  - step: 12
+    description: "Canvas empty state includes helper text for adding nodes"
+    action: verify
+    selector: "text=Add nodes to get started"
+    expected: "Canvas empty state sub-text 'Add nodes to get started' is visible"
+    timeout_ms: 3000
+
+  - step: 13
+    description: "Status bar node count is zero"
+    action: verify
+    selector: ".font-mono"
+    expected: "Status bar shows '0 nodes · 0 edges'"
+    timeout_ms: 3000
+
+teardown:
+  - action: api_call
+    method: DELETE
+    url: "http://localhost:5000/api/graphs/test-graph"
+    description: "Remove the test graph created during this scenario"

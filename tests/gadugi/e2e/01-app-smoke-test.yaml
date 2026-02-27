@@ -1,0 +1,40 @@
+scenario:
+  name: "App Smoke Test — SPA loads and connects to API"
+  description: "Verifies the SPA loads, displays the graph selector, and the API is reachable"
+  type: web
+  tags: [smoke, critical, e2e]
+  timeout: 30s
+
+  prerequisites:
+    - "gql-api running on http://localhost:3001"
+    - "SedanDelivery.Api running on http://localhost:5000"
+    - "sedan-web running on http://localhost:5173"
+
+  steps:
+    - action: navigate
+      url: "http://localhost:5173"
+      description: "Open the SPA"
+
+    - action: wait_for_element
+      selector: "[aria-label='Select graph']"
+      timeout: 10s
+      description: "Graph selector dropdown should render in toolbar"
+
+    - action: verify_element
+      selector: ".bg-surface-DEFAULT"
+      exists: true
+      description: "Dark mode canvas background should be present"
+
+    - action: verify_element
+      selector: "[aria-label='Select mode']"
+      exists: true
+      description: "Toolbar select mode button should exist"
+
+    - action: verify_element
+      selector: "[aria-label='Fit view']"
+      exists: true
+      description: "Toolbar fit-view button should exist"
+
+    - action: screenshot
+      save_as: "01-initial-load.png"
+      description: "Capture initial app state"
