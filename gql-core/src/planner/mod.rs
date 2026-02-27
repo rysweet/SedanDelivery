@@ -134,6 +134,18 @@ pub enum Operator {
         edge_aliases: Vec<Identifier>,
         child: Box<Operator>,
     },
+    /// CALL procedure.
+    Call {
+        procedure: String,
+        args: Vec<Expr>,
+        /// YIELD items: `(output_name, optional_alias)`.
+        yield_items: Vec<(Identifier, Option<Identifier>)>,
+        /// Whether `YIELD *` was used.
+        yield_star: bool,
+        /// Whether this is a standalone CALL (no subsequent RETURN).
+        standalone: bool,
+        child: Option<Box<Operator>>,
+    },
     /// Root of every plan tree. Explicit result boundary.
     ProduceResults {
         columns: Vec<(String, Expr)>,
@@ -366,6 +378,19 @@ fn collect_all_aliases(op: &Operator) -> Vec<String> {
             }
             for (_, _, _, alias) in aggregations {
                 aliases.push(alias.0.clone());
+            }
+        }
+        Operator::Call {
+            yield_items,
+            child,
+            ..
+        } => {
+            if let Some(ch) = child {
+                aliases.extend(collect_all_aliases(ch));
+            }
+            for (name, alias) in yield_items {
+                let col_name = alias.as_ref().unwrap_or(name);
+                aliases.push(col_name.0.clone());
             }
         }
         _ => {}

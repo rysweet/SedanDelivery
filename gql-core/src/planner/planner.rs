@@ -18,14 +18,18 @@
 //! 10. `MERGE` → `Merge` operator with `ON CREATE SET` / `ON MATCH SET` actions.
 //! 11. `OPTIONAL MATCH` → `LeftOuterApply` wrapping the match pipeline.
 
+use std::collections::HashMap;
+
 use crate::ast::{
-    Clause, CreateClause, DeleteClause, Expr, Identifier, Label, MatchClause, MergeClause,
-    PathPattern, PathStep, Query, RemoveClause, RemoveClauseItem, ReturnClause, ReturnItem,
-    SetClause, SetClauseItem, UnwindClause, WithClause,
+    CallClause, Clause, CreateClause, DeleteClause, Expr, Identifier, Label, MatchClause,
+    MergeClause, PathPattern, PathStep, Query, RemoveClause, RemoveClauseItem, ReturnClause,
+    ReturnItem, SetClause, SetClauseItem, UnwindClause, WithClause,
 };
 use crate::error::{ExecutionError, GqlError, PlanError};
 use crate::planner::{AggFunction, CreatePattern, Operator, RemoveItem, SetItem};
+use crate::procedure::ProcedureRegistry;
 use crate::storage::GraphStore;
+use crate::types::Value;
 
 // ── Planner ───────────────────────────────────────────────────────────────────
 
@@ -33,12 +37,34 @@ use crate::storage::GraphStore;
 pub struct QueryPlanner<'s> {
     store: &'s dyn GraphStore,
     graph: &'s str,
+    registry: &'s ProcedureRegistry,
+    parameters: &'s HashMap<String, Value>,
 }
 
 impl<'s> QueryPlanner<'s> {
     /// Create a new planner backed by `store` targeting `graph`.
     pub fn new(store: &'s dyn GraphStore, graph: &'s str) -> Self {
-        Self { store, graph }
+        Self {
+            store,
+            graph,
+            registry: empty_registry(),
+            parameters: empty_params(),
+        }
+    }
+
+    /// Create a planner with a procedure registry and query parameters.
+    pub fn with_context(
+        store: &'s dyn GraphStore,
+        graph: &'s str,
+        registry: &'s ProcedureRegistry,
+        parameters: &'s HashMap<String, Value>,
+    ) -> Self {
+        Self {
+            store,
+            graph,
+            registry,
+            parameters,
+        }
     }
 
     /// Plan a query: produce the root [`Operator`] for execution.
@@ -49,7 +75,7 @@ impl<'s> QueryPlanner<'s> {
         let mut pipeline: Option<Operator> = None;
         let mut return_clause: Option<&ReturnClause> = None;
 
-        for clause in &query.clauses {
+        for (idx, clause) in query.clauses.iter().enumerate() {
             match clause {
                 Clause::Match(mc) => {
                     let op = self.plan_match(mc)?;
@@ -132,13 +158,8 @@ impl<'s> QueryPlanner<'s> {
                 }
 
                 Clause::Call(cc) => {
-                    // CALL clause: return an unsupported-feature error for now.
-                    // This allows TCK tests to detect a runtime error rather than
-                    // a parse error, which is the correct behavior.
-                    return Err(GqlError::Execution(ExecutionError::unsupported(format!(
-                        "CALL procedure: {}",
-                        cc.procedure
-                    ))));
+                    let call_op = self.plan_call(cc, pipeline.take(), idx, query)?;
+                    pipeline = Some(call_op);
                 }
 
                 Clause::Foreach(_) => {
@@ -156,15 +177,199 @@ impl<'s> QueryPlanner<'s> {
             return self.plan_return(rc, child);
         }
 
-        // If we only have a CREATE/DELETE/SET/etc. (no RETURN), wrap in ProduceResults with no columns.
+        // If we only have a CREATE/DELETE/SET/etc. (no RETURN), wrap in ProduceResults.
         if let Some(op) = pipeline {
+            // For standalone CALL, derive output columns from the procedure.
+            let columns = self.derive_standalone_call_columns(&op);
             return Ok(Operator::ProduceResults {
-                columns: vec![],
+                columns,
                 child: Box::new(op),
             });
         }
 
         Err(GqlError::Plan(PlanError::ReturnStarNoVariables))
+    }
+
+    // ── CALL planning ─────────────────────────────────────────────────────────
+
+    fn plan_call(
+        &self,
+        cc: &CallClause,
+        child: Option<Operator>,
+        clause_idx: usize,
+        query: &Query,
+    ) -> Result<Operator, GqlError> {
+        let has_return = query
+            .clauses
+            .iter()
+            .skip(clause_idx + 1)
+            .any(|c| matches!(c, Clause::Return(_)));
+        let is_in_query = has_return || child.is_some();
+
+        // YIELD * in in-query mode is an error.
+        if cc.yield_star && is_in_query {
+            return Err(GqlError::Execution(ExecutionError::unsupported(
+                "YIELD * in in-query CALL".to_string(),
+            )));
+        }
+
+        // Look up the procedure.
+        let proc_def = match self.registry.get(&cc.procedure) {
+            Some(p) => p,
+            None => {
+                return Err(GqlError::Execution(ExecutionError::unsupported(format!(
+                    "ProcedureNotFound: {}",
+                    cc.procedure
+                ))));
+            }
+        };
+
+        // Implicit arguments (no parens) are not allowed in in-query CALL with YIELD.
+        if !cc.explicit_args && !cc.yield_items.is_empty() {
+            return Err(GqlError::Execution(ExecutionError::unsupported(
+                "InvalidArgumentPassingMode: implicit arguments not allowed in in-query CALL"
+                    .to_string(),
+            )));
+        }
+
+        // Resolve arguments.
+        let args = if cc.explicit_args {
+            // Explicit arguments: validate count.
+            if cc.args.len() != proc_def.input_params.len() {
+                return Err(GqlError::Execution(ExecutionError::unsupported(format!(
+                    "InvalidNumberOfArguments: expected {}, got {}",
+                    proc_def.input_params.len(),
+                    cc.args.len()
+                ))));
+            }
+            // Basic type checking for literal arguments.
+            for (i, arg) in cc.args.iter().enumerate() {
+                if let Some(val) = expr_to_literal_value(arg) {
+                    if !proc_def.check_arg_type(i, &val) {
+                        return Err(GqlError::Execution(ExecutionError::unsupported(
+                            "InvalidArgumentType".to_string(),
+                        )));
+                    }
+                }
+            }
+            cc.args.clone()
+        } else {
+            // Implicit arguments from query parameters.
+            let mut args = Vec::new();
+            for param in &proc_def.input_params {
+                if self.parameters.contains_key(&param.name) {
+                    args.push(Expr::Parameter(param.name.clone()));
+                } else {
+                    return Err(GqlError::Execution(ExecutionError::unsupported(format!(
+                        "MissingParameter: {}",
+                        param.name
+                    ))));
+                }
+            }
+            args
+        };
+
+        // In-query CALL without YIELD: output columns are not exposed.
+        // Check if subsequent RETURN references procedure output columns → UndefinedVariable.
+        if is_in_query && cc.yield_items.is_empty() && !cc.yield_star && cc.explicit_args {
+            let output_names: std::collections::HashSet<&str> = proc_def
+                .output_columns
+                .iter()
+                .map(|c| c.name.as_str())
+                .collect();
+            if !output_names.is_empty() {
+                for future_clause in query.clauses.iter().skip(clause_idx + 1) {
+                    if let Clause::Return(rc) = future_clause {
+                        for item in &rc.items {
+                            if let Expr::Variable(Identifier(name)) = &item.expr {
+                                if output_names.contains(name.as_str()) {
+                                    return Err(GqlError::Plan(PlanError::UndefinedVariable {
+                                        name: name.clone(),
+                                        offset: 0,
+                                    }));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Check YIELD variable shadowing.
+        if !cc.yield_items.is_empty() {
+            let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+            // Collect variables already in scope from the pipeline.
+            if let Some(ref ch) = child {
+                for alias in crate::planner::collect_visible_aliases(ch) {
+                    seen.insert(alias);
+                }
+            }
+            for (name, alias) in &cc.yield_items {
+                let effective_name = alias.as_ref().unwrap_or(name).0.clone();
+                if !seen.insert(effective_name.clone()) {
+                    return Err(GqlError::Execution(ExecutionError::unsupported(format!(
+                        "VariableAlreadyBound: {}",
+                        effective_name
+                    ))));
+                }
+            }
+        }
+
+        // Check for aggregation in arguments (not allowed).
+        for arg in &args {
+            if contains_aggregation(arg) {
+                return Err(GqlError::Execution(ExecutionError::unsupported(
+                    "InvalidAggregation: cannot use aggregation in CALL arguments".to_string(),
+                )));
+            }
+        }
+
+        Ok(Operator::Call {
+            procedure: cc.procedure.clone(),
+            args,
+            yield_items: cc.yield_items.clone(),
+            yield_star: cc.yield_star,
+            standalone: !has_return,
+            child: child.map(Box::new),
+        })
+    }
+
+    /// Derive ProduceResults columns for standalone CALL (no RETURN).
+    fn derive_standalone_call_columns(&self, op: &Operator) -> Vec<(String, Expr)> {
+        match op {
+            Operator::Call {
+                procedure,
+                yield_items,
+                yield_star,
+                ..
+            } => {
+                if !yield_items.is_empty() {
+                    // YIELD specific columns.
+                    yield_items
+                        .iter()
+                        .map(|(name, alias)| {
+                            let col = alias.as_ref().unwrap_or(name);
+                            (col.0.clone(), Expr::Variable(col.clone()))
+                        })
+                        .collect()
+                } else if let Some(proc_def) = self.registry.get(procedure) {
+                    // Standalone or YIELD * → output all columns.
+                    proc_def
+                        .output_columns
+                        .iter()
+                        .map(|col| {
+                            (
+                                col.name.clone(),
+                                Expr::Variable(Identifier::new(col.name.clone())),
+                            )
+                        })
+                        .collect()
+                } else {
+                    vec![]
+                }
+            }
+            _ => vec![], // Non-CALL: empty columns (same as before for CREATE/DELETE/etc.)
+        }
     }
 
     // ── MATCH planning ────────────────────────────────────────────────────────
@@ -2522,6 +2727,59 @@ mod tests {
                 Some(c) => vec![c],
                 None => vec![],
             },
+
+            Operator::Call { child, .. } => match child {
+                Some(c) => vec![c],
+                None => vec![],
+            },
         }
+    }
+}
+
+// ── Static defaults for backward compatibility ──────────────────────────────
+
+static EMPTY_REGISTRY: std::sync::OnceLock<ProcedureRegistry> = std::sync::OnceLock::new();
+static EMPTY_PARAMS: std::sync::OnceLock<HashMap<String, Value>> = std::sync::OnceLock::new();
+
+fn empty_registry() -> &'static ProcedureRegistry {
+    EMPTY_REGISTRY.get_or_init(ProcedureRegistry::new)
+}
+
+fn empty_params() -> &'static HashMap<String, Value> {
+    EMPTY_PARAMS.get_or_init(HashMap::new)
+}
+
+// ── Helper functions ─────────────────────────────────────────────────────────
+
+/// Convert a literal expression to a Value for type checking.
+fn expr_to_literal_value(expr: &Expr) -> Option<Value> {
+    match expr {
+        Expr::Integer(n) => Some(Value::Int(*n)),
+        Expr::Float(f) => Some(Value::Float(*f)),
+        Expr::Str(s) => Some(Value::Str(s.clone())),
+        Expr::Bool(b) => Some(Value::Bool(*b)),
+        Expr::Null => Some(Value::Null),
+        _ => None, // Non-literal expressions can't be type-checked at plan time
+    }
+}
+
+/// Check if an expression contains an aggregation function.
+fn contains_aggregation(expr: &Expr) -> bool {
+    match expr {
+        Expr::FunctionCall { name, args, .. } => {
+            let agg_names = [
+                "count", "sum", "avg", "min", "max", "collect", "stdev", "stdevp",
+                "percentilecont", "percentiledisc",
+            ];
+            if agg_names.contains(&name.to_lowercase().as_str()) {
+                return true;
+            }
+            args.iter().any(contains_aggregation)
+        }
+        Expr::BinaryOp { left, right, .. } => {
+            contains_aggregation(left) || contains_aggregation(right)
+        }
+        Expr::UnaryOp { expr: inner, .. } => contains_aggregation(inner),
+        _ => false,
     }
 }

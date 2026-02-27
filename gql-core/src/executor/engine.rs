@@ -13,12 +13,13 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
-use crate::ast::{Direction, Expr};
+use crate::ast::{Direction, Expr, Identifier};
 use crate::error::{ExecutionError, GqlError};
 use crate::executor::budget::ExecutionBudget;
 use crate::executor::filter::{eval_expr, eval_function_with_vals};
 use crate::executor::filter::Row as FilterRow;
 use crate::planner::{AggFunction, Operator, RemoveItem, SetItem};
+use crate::procedure::ProcedureRegistry;
 use crate::storage::{EdgeId, GraphStore, NodeId, RangeQuery};
 use crate::types::Value;
 
@@ -51,12 +52,45 @@ pub struct MutationStats {
 /// Executes a physical plan against a [`GraphStore`].
 pub struct QueryExecutor<'a> {
     store: &'a dyn GraphStore,
+    registry: &'a ProcedureRegistry,
+    /// Query parameters stored as `$name` → value.
+    parameters: HashMap<String, Value>,
 }
 
 impl<'a> QueryExecutor<'a> {
     /// Create a new executor backed by `store`.
     pub fn new(store: &'a dyn GraphStore) -> Self {
-        Self { store }
+        static EMPTY_REG: std::sync::OnceLock<ProcedureRegistry> = std::sync::OnceLock::new();
+        Self {
+            store,
+            registry: EMPTY_REG.get_or_init(ProcedureRegistry::new),
+            parameters: HashMap::new(),
+        }
+    }
+
+    /// Create an executor with a procedure registry and query parameters.
+    pub fn with_context(
+        store: &'a dyn GraphStore,
+        registry: &'a ProcedureRegistry,
+        parameters: HashMap<String, Value>,
+    ) -> Self {
+        // Convert parameter keys to $-prefixed format.
+        let params = parameters
+            .into_iter()
+            .map(|(k, v)| {
+                let key = if k.starts_with('$') {
+                    k
+                } else {
+                    format!("${k}")
+                };
+                (key, v)
+            })
+            .collect();
+        Self {
+            store,
+            registry,
+            parameters: params,
+        }
     }
 
     /// Execute `plan` against the named `graph`, enforcing `budget`.
@@ -115,7 +149,11 @@ impl<'a> QueryExecutor<'a> {
             // ── SingleRow ─────────────────────────────────────────────────────
             Operator::SingleRow => {
                 budget.record_row();
-                Ok(vec![Row::new()])
+                let mut row = Row::new();
+                for (k, v) in &self.parameters {
+                    row.insert(k.clone(), v.clone());
+                }
+                Ok(vec![row])
             }
 
             // ── NodeScan ──────────────────────────────────────────────────────
@@ -131,6 +169,9 @@ impl<'a> QueryExecutor<'a> {
                     budget.check_or_err()?;
                     let mut row = Row::new();
                     row.insert(alias.0.clone(), Value::Node(id));
+                    for (k, v) in &self.parameters {
+                        row.insert(k.clone(), v.clone());
+                    }
                     budget.record_row();
                     rows.push(row);
                 }
@@ -221,6 +262,10 @@ impl<'a> QueryExecutor<'a> {
                             None => expr_to_column_name(expr),
                         };
                         new_row.insert(col_name, val);
+                    }
+                    // Preserve query parameters through scope changes.
+                    for (k, v) in &self.parameters {
+                        new_row.entry(k.clone()).or_insert_with(|| v.clone());
                     }
                     budget.record_row();
                     out.push(new_row);
@@ -492,6 +537,85 @@ impl<'a> QueryExecutor<'a> {
                     let path_val = Value::Path { nodes, edges };
                     row.insert(path_alias.0.clone(), path_val);
                     out.push(row);
+                }
+                Ok(out)
+            }
+
+            // ── Call ──────────────────────────────────────────────────────────
+            Operator::Call {
+                procedure,
+                args,
+                yield_items,
+                yield_star,
+                standalone,
+                child,
+            } => {
+                let proc_def = self.registry.get(procedure).ok_or_else(|| {
+                    GqlError::Execution(ExecutionError::unsupported(format!(
+                        "ProcedureNotFound: {procedure}"
+                    )))
+                })?;
+
+                // Execute child pipeline (if present, e.g. for MATCH ... CALL).
+                let input_rows = if let Some(ch) = child {
+                    self.exec_operator(graph, ch, budget, outer_rows, stats)?
+                } else {
+                    let mut row = Row::new();
+                    for (k, v) in &self.parameters {
+                        row.insert(k.clone(), v.clone());
+                    }
+                    vec![row]
+                };
+
+                let mut out = Vec::new();
+                for input_row in &input_rows {
+                    budget.check_or_err()?;
+
+                    // Evaluate call arguments.
+                    let ctx = self.build_filter_ctx(graph, input_row)?;
+                    let mut arg_vals = Vec::with_capacity(args.len());
+                    for arg_expr in args {
+                        let val = self.eval_with_storage(graph, arg_expr, input_row, &ctx)?;
+                        arg_vals.push(val);
+                    }
+
+                    // Execute the procedure.
+                    let proc_rows = proc_def.execute(&arg_vals);
+
+                    if proc_def.output_columns.is_empty() && child.is_none() {
+                        // Standalone void procedure: produce no output rows.
+                    } else if proc_def.output_columns.is_empty() {
+                        // In-query void procedure: pass through input rows unchanged.
+                        budget.record_row();
+                        out.push(input_row.clone());
+                    } else if proc_rows.is_empty() {
+                        // Procedure returned no rows: drop this input row.
+                    } else {
+                        // Produce output rows.
+                        for proc_row in proc_rows {
+                            budget.check_or_err()?;
+                            let mut new_row = input_row.clone();
+                            if !yield_items.is_empty() {
+                                // YIELD specific columns.
+                                for (name, alias) in yield_items {
+                                    let col_name =
+                                        alias.as_ref().unwrap_or(name).0.clone();
+                                    let val = proc_row
+                                        .get(&name.0)
+                                        .cloned()
+                                        .unwrap_or(Value::Null);
+                                    new_row.insert(col_name, val);
+                                }
+                            } else if *standalone || *yield_star {
+                                // Standalone CALL or YIELD *: include all output columns.
+                                for (k, v) in &proc_row {
+                                    new_row.insert(k.clone(), v.clone());
+                                }
+                            }
+                            budget.record_row();
+                            out.push(new_row);
+                        }
+                    }
                 }
                 Ok(out)
             }

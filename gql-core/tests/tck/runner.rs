@@ -41,6 +41,7 @@ use gql_core::{
     executor::{ExecutionBudget, QueryExecutor, QueryResult, Row},
     parser::parse_query,
     planner::QueryPlanner,
+    procedure::{ProcedureDefinition, ProcedureParam, ProcedureRegistry},
     storage::{GraphStore, InMemoryGraphStore},
     types::Value,
 };
@@ -68,8 +69,9 @@ pub struct GqlWorld {
     /// Counter used to generate unique graph names.
     graph_counter: usize,
     /// Query parameters set by `And parameters are:`.
-    #[allow(dead_code)]
     parameters: HashMap<String, Value>,
+    /// Procedure registry set by `And there exists a procedure ...`.
+    registry: ProcedureRegistry,
 }
 
 impl GqlWorld {
@@ -85,12 +87,17 @@ impl GqlWorld {
         let store = self.get_store();
         let ast = parse_query(query)
             .unwrap_or_else(|e| panic!("parse error for query {:?}: {}", query, e));
-        let planner = QueryPlanner::new(store.as_ref(), &self.graph_name);
+        let planner = QueryPlanner::with_context(
+            store.as_ref(),
+            &self.graph_name,
+            &self.registry,
+            &self.parameters,
+        );
         let plan = planner
             .plan(&ast)
             .unwrap_or_else(|e| panic!("plan error for query {:?}: {}", query, e));
         let mut budget = ExecutionBudget::default_budget();
-        QueryExecutor::new(store.as_ref())
+        QueryExecutor::with_context(store.as_ref(), &self.registry, self.parameters.clone())
             .execute(&self.graph_name, &plan, &mut budget)
             .unwrap_or_else(|e| panic!("execution error for query {:?}: {}", query, e))
     }
@@ -106,7 +113,12 @@ impl GqlWorld {
             }
         };
 
-        let planner = QueryPlanner::new(store.as_ref(), &self.graph_name);
+        let planner = QueryPlanner::with_context(
+            store.as_ref(),
+            &self.graph_name,
+            &self.registry,
+            &self.parameters,
+        );
         let plan = match planner.plan(&ast) {
             Ok(p) => p,
             Err(e) => {
@@ -115,7 +127,9 @@ impl GqlWorld {
         };
 
         let mut budget = ExecutionBudget::default_budget();
-        match QueryExecutor::new(store.as_ref()).execute(&self.graph_name, &plan, &mut budget) {
+        match QueryExecutor::with_context(store.as_ref(), &self.registry, self.parameters.clone())
+            .execute(&self.graph_name, &plan, &mut budget)
+        {
             Ok(result) => QueryOutcome::Ok(result),
             Err(e) => QueryOutcome::Err(format!("ExecutionError: {e}")),
         }
@@ -133,6 +147,7 @@ impl GqlWorld {
         self.graph_name = graph_name;
         self.last_outcome = None;
         self.parameters.clear();
+        self.registry = ProcedureRegistry::new();
     }
 
     /// Get the last successful QueryResult, panicking if the last query errored
@@ -278,12 +293,12 @@ async fn given_parameters(world: &mut GqlWorld, step: &gherkin::Step) {
     }
 }
 
-/// Handle `And there exists a procedure ...` -- we do not support procedures,
-/// so we accept the step but scenarios using CALL will fail at execution time.
-#[given(regex = r"(?i)there exists a procedure")]
-async fn given_procedure(_world: &mut GqlWorld) {
-    // Intentionally empty: procedures not supported.
-    // The scenario will fail at the CALL execution step, not here.
+/// Handle `And there exists a procedure ...` -- parse the procedure definition
+/// and register it in the procedure registry.
+#[given(regex = r"(?i)there exists a procedure (.+):$")]
+async fn given_procedure(world: &mut GqlWorld, step: &gherkin::Step, signature: String) {
+    let proc_def = parse_procedure_definition(&signature, step);
+    world.registry.register(proc_def);
 }
 
 // ── When steps ──────────────────────────────────────────────────────────────
@@ -1584,6 +1599,89 @@ fn format_value_debug(v: &Value, world: &GqlWorld) -> String {
         }
         _ => format!("{v}"),
     }
+}
+
+// ── Procedure definition parser ────────────────────────────────────────────────
+
+/// Parse a procedure definition from the TCK step text and data table.
+///
+/// Signature format: `test.my.proc(name :: STRING?, id :: INTEGER?) :: (city :: STRING?, country_code :: INTEGER?)`
+fn parse_procedure_definition(signature: &str, step: &gherkin::Step) -> ProcedureDefinition {
+    let sig = signature.trim();
+
+    // Split into name+inputs and outputs at " :: "
+    let (name_and_inputs, outputs_str) = if let Some(pos) = sig.find(") :: (") {
+        let name_inputs = &sig[..pos + 1]; // up to and including first ')'
+        let outputs = &sig[pos + 6..]; // after ") :: (" (6 chars)
+        (name_inputs, outputs.trim_end_matches(')').trim())
+    } else if let Some(pos) = sig.find("() :: (") {
+        let name_inputs = &sig[..pos + 2]; // "name()"
+        let outputs = &sig[pos + 7..]; // after "() :: ("
+        (name_inputs, outputs.trim_end_matches(')').trim())
+    } else if sig.contains(":: ()") {
+        // Void procedure: no outputs
+        let name_inputs = sig.split(" :: ").next().unwrap_or(sig);
+        (name_inputs.trim(), "")
+    } else {
+        (sig, "")
+    };
+
+    // Parse procedure name and input params
+    let (proc_name, input_params) = if let Some(paren_pos) = name_and_inputs.find('(') {
+        let name = name_and_inputs[..paren_pos].trim();
+        let params_str = name_and_inputs[paren_pos + 1..]
+            .trim_end_matches(')')
+            .trim();
+        (name.to_string(), parse_param_list(params_str))
+    } else {
+        (name_and_inputs.trim().to_string(), vec![])
+    };
+
+    // Parse output columns
+    let output_columns = if outputs_str.is_empty() {
+        vec![]
+    } else {
+        parse_param_list(outputs_str)
+    };
+
+    // Parse data table rows
+    let mut data = Vec::new();
+    if let Some(table) = &step.table {
+        // Skip header row (first row is column names)
+        for row in table.rows.iter().skip(1) {
+            let values: Vec<Value> = row.iter().map(|cell| parse_tck_value(cell.trim())).collect();
+            data.push(values);
+        }
+    }
+
+    ProcedureDefinition {
+        name: proc_name,
+        input_params,
+        output_columns,
+        data,
+    }
+}
+
+/// Parse a comma-separated parameter list like `name :: STRING?, id :: INTEGER?`.
+fn parse_param_list(s: &str) -> Vec<ProcedureParam> {
+    if s.trim().is_empty() {
+        return vec![];
+    }
+    s.split(',')
+        .map(|param| {
+            let param = param.trim();
+            if let Some(pos) = param.find("::") {
+                let name = param[..pos].trim().to_string();
+                let type_name = param[pos + 2..].trim().to_string();
+                ProcedureParam { name, type_name }
+            } else {
+                ProcedureParam {
+                    name: param.to_string(),
+                    type_name: "ANY".to_string(),
+                }
+            }
+        })
+        .collect()
 }
 
 // ── Entry point ───────────────────────────────────────────────────────────────
