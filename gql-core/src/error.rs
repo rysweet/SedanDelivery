@@ -50,6 +50,9 @@ pub enum ParseError {
     #[error("query too large: {size} bytes, limit is {limit} bytes")]
     QueryTooLarge { size: usize, limit: usize },
 
+    #[error("expression nesting depth exceeded limit of {limit}")]
+    RecursionLimitExceeded { limit: u32 },
+
     #[error("empty query")]
     EmptyQuery,
 }
