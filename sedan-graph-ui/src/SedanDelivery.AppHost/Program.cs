@@ -13,16 +13,24 @@ var gqlApiPath = Path.Combine(worktreeRoot, "run.sh");
 
 // Register the Rust gql-api as an executable resource on port 3001.
 // ExecutableResource does not implement IResourceWithConnectionString so we
-// wire the URL via WithEnvironment on the downstream project.
+// wire the URL via WithEnvironment using the Aspire endpoint reference.
 var gqlApi = builder
     .AddExecutable("gql-api", gqlApiPath, workingDirectory: worktreeRoot)
     .WithHttpEndpoint(port: 3001, name: "http");
 
 // Register the BFF API project and inject GQL_API_URL so GqlApiClient
-// knows where to find the Rust service.
+// knows where to find the Rust service. Using a callback-based WithEnvironment
+// captures the Aspire-resolved endpoint URL rather than hardcoding localhost.
 var api = builder
     .AddProject<Projects.SedanDelivery_Api>("sedan-api")
-    .WithEnvironment("GQL_API_URL", "http://localhost:3001")
+    .WithEnvironment(ctx =>
+    {
+        // Resolve the gql-api endpoint URL through Aspire service discovery.
+        // In dev this produces http://localhost:3001; in cloud it uses the
+        // Aspire-assigned address for the container/process.
+        var gqlEndpoint = gqlApi.GetEndpoint("http");
+        ctx.EnvironmentVariables["GQL_API_URL"] = gqlEndpoint;
+    })
     .WaitFor(gqlApi);
 
 // In local dev the React SPA is served by the Vite dev server on port 5173.

@@ -104,13 +104,13 @@ public static class Extensions
     /// </summary>
     public static WebApplication MapDefaultEndpoints(this WebApplication app)
     {
-        // /health – used by Aspire dashboard and load balancers for readiness
+        // /health – readiness probe: includes gql-api checks (tagged "ready") and self
         app.MapHealthChecks("/health", new HealthCheckOptions
         {
-            Predicate = _ => true
+            Predicate = check => check.Tags.Contains("ready") || check.Tags.Contains("live")
         });
 
-        // /alive – liveness probe (only the "self" check)
+        // /alive – liveness probe: only the "self" check (process is running)
         app.MapHealthChecks("/alive", new HealthCheckOptions
         {
             Predicate = check => check.Tags.Contains("live")

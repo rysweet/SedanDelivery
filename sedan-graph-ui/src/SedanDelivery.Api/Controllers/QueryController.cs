@@ -11,14 +11,15 @@ namespace SedanDelivery.Api.Controllers;
 /// Both endpoints are rate-limited to 100 requests per minute per IP.
 /// </summary>
 [ApiController]
+[EnableRateLimiting("query")]
 [Route("api/graphs/{name}")]
 [Produces("application/json")]
-public sealed class QueryController : ControllerBase
+public sealed class QueryController : GraphControllerBase
 {
-    private readonly GqlApiClient _client;
+    private readonly IGqlApiClient _client;
     private readonly ILogger<QueryController> _logger;
 
-    public QueryController(GqlApiClient client, ILogger<QueryController> logger)
+    public QueryController(IGqlApiClient client, ILogger<QueryController> logger)
     {
         _client = client;
         _logger = logger;
@@ -28,7 +29,6 @@ public sealed class QueryController : ControllerBase
     /// Executes a read-only Cypher query and returns column names, rows, and elapsed time.
     /// </summary>
     [HttpPost("query")]
-    [EnableRateLimiting("query")]
     [ProducesResponseType(typeof(QueryResponse), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
@@ -73,7 +73,6 @@ public sealed class QueryController : ControllerBase
     /// Executes a write Cypher statement and returns mutation statistics.
     /// </summary>
     [HttpPost("mutate")]
-    [EnableRateLimiting("query")]
     [ProducesResponseType(typeof(MutationResponse), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
@@ -113,10 +112,4 @@ public sealed class QueryController : ControllerBase
                 statusCode: StatusCodes.Status400BadRequest);
         }
     }
-
-    private IActionResult InvalidName() =>
-        Problem(
-            title: "Invalid graph name",
-            detail: "Graph name must match ^[a-zA-Z0-9_.\\-]{1,64}$",
-            statusCode: StatusCodes.Status400BadRequest);
 }
