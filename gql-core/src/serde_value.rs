@@ -30,8 +30,8 @@ use serde_json::Value as JsonValue;
 
 use crate::error::StorageError;
 use crate::storage::{EdgeId, NodeId};
+use crate::types::value::{format_cypher_duration, Crs, CypherDuration, GeoPoint};
 use crate::types::Value;
-use crate::types::value::{Crs, CypherDuration, GeoPoint, format_cypher_duration};
 
 /// Serialize a `Value` to a `serde_json::Value` for storage.
 ///
@@ -42,9 +42,10 @@ pub fn value_to_json(v: &Value) -> Result<JsonValue, StorageError> {
         Value::Bool(b) => Ok(JsonValue::Bool(*b)),
         Value::Int(i) => Ok(JsonValue::Number((*i).into())),
         Value::Float(f) => {
-            let n = serde_json::Number::from_f64(*f).ok_or_else(|| StorageError::Serialization {
-                msg: format!("non-finite float: {f}"),
-            })?;
+            let n =
+                serde_json::Number::from_f64(*f).ok_or_else(|| StorageError::Serialization {
+                    msg: format!("non-finite float: {f}"),
+                })?;
             Ok(JsonValue::Number(n))
         }
         Value::Str(s) => {
@@ -60,9 +61,15 @@ pub fn value_to_json(v: &Value) -> Result<JsonValue, StorageError> {
         Value::LocalTime(t) => Ok(JsonValue::String(format!("__localtime:{t}"))),
         Value::LocalDateTime(dt) => Ok(JsonValue::String(format!("__localdatetime:{dt}"))),
         Value::DateTime(dt) => Ok(JsonValue::String(format!("__datetime:{dt}"))),
-        Value::Duration(d) => Ok(JsonValue::String(format!("__duration:{}", format_cypher_duration(d)))),
+        Value::Duration(d) => Ok(JsonValue::String(format!(
+            "__duration:{}",
+            format_cypher_duration(d)
+        ))),
         // Spatial: tagged string "x,y,CrsVariant"
-        Value::Point(p) => Ok(JsonValue::String(format!("__point:{},{},{:?}", p.x, p.y, p.crs))),
+        Value::Point(p) => Ok(JsonValue::String(format!(
+            "__point:{},{},{:?}",
+            p.x, p.y, p.crs
+        ))),
         // Collections
         Value::List(items) => {
             let arr: Result<Vec<_>, _> = items.iter().map(value_to_json).collect();
@@ -79,8 +86,14 @@ pub fn value_to_json(v: &Value) -> Result<JsonValue, StorageError> {
         Value::Node(id) => Ok(JsonValue::String(format!("__node:{}", id.0))),
         Value::Edge(id) => Ok(JsonValue::String(format!("__edge:{}", id.0))),
         Value::Path { nodes, edges } => {
-            let nodes_json: Vec<_> = nodes.iter().map(|n| JsonValue::Number(n.0.into())).collect();
-            let edges_json: Vec<_> = edges.iter().map(|e| JsonValue::Number(e.0.into())).collect();
+            let nodes_json: Vec<_> = nodes
+                .iter()
+                .map(|n| JsonValue::Number(n.0.into()))
+                .collect();
+            let edges_json: Vec<_> = edges
+                .iter()
+                .map(|e| JsonValue::Number(e.0.into()))
+                .collect();
             Ok(JsonValue::Object({
                 let mut m = serde_json::Map::new();
                 m.insert("__path_nodes".into(), JsonValue::Array(nodes_json));
@@ -135,14 +148,17 @@ pub fn json_to_value(j: &JsonValue) -> Option<Value> {
                 if let Ok(sp) = rest.parse::<jiff::Span>() {
                     let total_months = sp.get_years() as i64 * 12 + sp.get_months() as i64;
                     let total_days = sp.get_weeks() as i64 * 7 + sp.get_days() as i64;
-                    let time_secs = sp.get_hours() as i64 * 3600
-                        + sp.get_minutes() * 60
-                        + sp.get_seconds();
+                    let time_secs =
+                        sp.get_hours() as i64 * 3600 + sp.get_minutes() * 60 + sp.get_seconds();
                     let total_nanos = time_secs as i128 * 1_000_000_000
                         + sp.get_milliseconds() as i128 * 1_000_000
                         + sp.get_microseconds() as i128 * 1_000
                         + sp.get_nanoseconds() as i128;
-                    return Some(Value::Duration(CypherDuration { months: total_months, days: total_days, nanos: total_nanos }));
+                    return Some(Value::Duration(CypherDuration {
+                        months: total_months,
+                        days: total_days,
+                        nanos: total_nanos,
+                    }));
                 }
             } else if let Some(rest) = s.strip_prefix("__point:") {
                 // Format: "x,y,CrsVariant" e.g. "1.5,2.5,Wgs84"
@@ -209,9 +225,8 @@ pub fn props_to_json(props: &HashMap<String, Value>) -> Result<String, StorageEr
     for (k, v) in props {
         obj.insert(k.clone(), value_to_json(v)?);
     }
-    serde_json::to_string(&JsonValue::Object(obj)).map_err(|e| StorageError::Serialization {
-        msg: e.to_string(),
-    })
+    serde_json::to_string(&JsonValue::Object(obj))
+        .map_err(|e| StorageError::Serialization { msg: e.to_string() })
 }
 
 /// Deserialize a JSON string into a property map.
@@ -233,8 +248,8 @@ pub fn json_to_props(s: &str) -> Result<HashMap<String, Value>, StorageError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::Value;
     use crate::types::value::{Crs, GeoPoint};
+    use crate::types::Value;
 
     #[test]
     fn round_trip_scalars() {
@@ -244,7 +259,7 @@ mod tests {
             Value::Bool(false),
             Value::Int(42),
             Value::Int(-1),
-            Value::Float(3.14),
+            Value::Float(std::f64::consts::PI),
             Value::Str("hello".into()),
         ];
         for v in cases {
@@ -400,7 +415,11 @@ mod tests {
     fn round_trip_duration() {
         // 3 days + 4 hours + 5 minutes = 3 days + (4*3600+5*60) seconds in nanos
         let nanos = (4i128 * 3600 + 5 * 60) * 1_000_000_000;
-        let val = Value::Duration(CypherDuration { months: 0, days: 3, nanos });
+        let val = Value::Duration(CypherDuration {
+            months: 0,
+            days: 3,
+            nanos,
+        });
         let json = value_to_json(&val).unwrap();
         let back = json_to_value(&json).unwrap();
         // Compare via the fieldwise wrapper used by Value's PartialEq
@@ -430,14 +449,18 @@ mod tests {
 
     #[test]
     fn negative_sd2_eid_rejected() {
-        use crate::storage::{GraphStore, InMemoryGraphStore, NodeId};
+        use crate::storage::{GraphStore, InMemoryGraphStore};
 
         let store = InMemoryGraphStore::new();
         store.create_graph("test").unwrap();
 
         // Create two nodes first
-        let n1 = store.create_node("test", vec!["A".into()], HashMap::new()).unwrap();
-        let n2 = store.create_node("test", vec!["B".into()], HashMap::new()).unwrap();
+        let n1 = store
+            .create_node("test", vec!["A".into()], HashMap::new())
+            .unwrap();
+        let n2 = store
+            .create_node("test", vec!["B".into()], HashMap::new())
+            .unwrap();
 
         let mut props = HashMap::new();
         props.insert("_sd2_eid".to_string(), Value::Int(-5));

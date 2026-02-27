@@ -18,11 +18,9 @@ pub fn value_to_json(v: &Value) -> Json {
         Value::Null => Json::Null,
         Value::Bool(b) => Json::Bool(*b),
         Value::Int(i) => Json::Number((*i).into()),
-        Value::Float(f) => {
-            serde_json::Number::from_f64(*f)
-                .map(Json::Number)
-                .unwrap_or(Json::Null)
-        }
+        Value::Float(f) => serde_json::Number::from_f64(*f)
+            .map(Json::Number)
+            .unwrap_or(Json::Null),
         Value::Str(s) => Json::String(s.to_string()),
         Value::Date(d) => Json::String(d.to_string()),
         Value::LocalTime(t) => Json::String(t.to_string()),
@@ -111,9 +109,12 @@ fn resolve_value(v: &Value, store: &dyn GraphStore, graph: &str) -> Json {
     match v {
         Value::Node(id) => resolve_node(*id, store, graph),
         Value::Edge(id) => resolve_edge(*id, store, graph),
-        Value::List(items) => {
-            Json::Array(items.iter().map(|i| resolve_value(i, store, graph)).collect())
-        }
+        Value::List(items) => Json::Array(
+            items
+                .iter()
+                .map(|i| resolve_value(i, store, graph))
+                .collect(),
+        ),
         Value::Map(m) => {
             let obj: Map<String, Json> = m
                 .iter()

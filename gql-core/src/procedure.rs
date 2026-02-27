@@ -59,11 +59,13 @@ impl ProcedureDefinition {
         for data_row in &self.data {
             let mut matches = true;
             for i in 0..input_count {
-                if i < args.len() && i < data_row.len()
-                    && !values_match_for_lookup(&args[i], &data_row[i]) {
-                        matches = false;
-                        break;
-                    }
+                if i < args.len()
+                    && i < data_row.len()
+                    && !values_match_for_lookup(&args[i], &data_row[i])
+                {
+                    matches = false;
+                    break;
+                }
             }
 
             if matches {

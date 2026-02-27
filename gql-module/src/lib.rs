@@ -75,16 +75,22 @@ fn cmd_gql_query(_ctx: &Context, args: Vec<redis_module::RedisString>) -> RedisR
         args.done()?;
 
         with_store(|store| {
-            let ast = parse_query(&query).map_err(|e| {
-                RedisError::String(format!("parse error: {e}"))
-            })?;
+            let ast =
+                parse_query(&query).map_err(|e| RedisError::String(format!("parse error: {e}")))?;
 
             // GQL.QUERY is registered as "readonly": reject queries that contain
             // write clauses (Create/Set/Delete/Remove/Merge).  Use GQL.MUTATE instead.
-            let has_write = ast.clauses.iter().any(|c| matches!(c,
-                Clause::Create(_) | Clause::Set(_) | Clause::Delete(_) |
-                Clause::Remove(_) | Clause::Merge(_) | Clause::Foreach(_)
-            ));
+            let has_write = ast.clauses.iter().any(|c| {
+                matches!(
+                    c,
+                    Clause::Create(_)
+                        | Clause::Set(_)
+                        | Clause::Delete(_)
+                        | Clause::Remove(_)
+                        | Clause::Merge(_)
+                        | Clause::Foreach(_)
+                )
+            });
             if has_write {
                 return Err(RedisError::String(
                     "GQL.QUERY is read-only; use GQL.MUTATE for write operations".into(),
@@ -92,9 +98,9 @@ fn cmd_gql_query(_ctx: &Context, args: Vec<redis_module::RedisString>) -> RedisR
             }
 
             let planner = QueryPlanner::new(store, &graph);
-            let plan = planner.plan(&ast).map_err(|e| {
-                RedisError::String(format!("plan error: {e}"))
-            })?;
+            let plan = planner
+                .plan(&ast)
+                .map_err(|e| RedisError::String(format!("plan error: {e}")))?;
             let mut budget = ExecutionBudget::default_budget();
             let result = QueryExecutor::new(store)
                 .execute(&graph, &plan, &mut budget)
@@ -120,9 +126,8 @@ fn cmd_gql_query(_ctx: &Context, args: Vec<redis_module::RedisString>) -> RedisR
                         })
                         .collect();
                     RedisValue::BulkString(
-                        serde_json::to_string(&json_row).unwrap_or_else(|e| {
-                            format!("{{\"error\":\"{e}\"}}")
-                        }),
+                        serde_json::to_string(&json_row)
+                            .unwrap_or_else(|e| format!("{{\"error\":\"{e}\"}}")),
                     )
                 })
                 .collect();
@@ -248,10 +253,7 @@ fn cmd_gql_list_graphs(_ctx: &Context, args: Vec<redis_module::RedisString>) -> 
             let names = store
                 .list_graphs()
                 .map_err(|e| RedisError::String(format!("{e}")))?;
-            let values: Vec<RedisValue> = names
-                .into_iter()
-                .map(RedisValue::BulkString)
-                .collect();
+            let values: Vec<RedisValue> = names.into_iter().map(RedisValue::BulkString).collect();
             Ok(RedisValue::Array(values))
         })
     })
@@ -268,13 +270,12 @@ fn cmd_gql_explain(_ctx: &Context, args: Vec<redis_module::RedisString>) -> Redi
         args.done()?;
 
         with_store(|store| {
-            let ast = parse_query(&query).map_err(|e| {
-                RedisError::String(format!("parse error: {e}"))
-            })?;
+            let ast =
+                parse_query(&query).map_err(|e| RedisError::String(format!("parse error: {e}")))?;
             let planner = QueryPlanner::new(store, &graph);
-            let plan = planner.plan(&ast).map_err(|e| {
-                RedisError::String(format!("plan error: {e}"))
-            })?;
+            let plan = planner
+                .plan(&ast)
+                .map_err(|e| RedisError::String(format!("plan error: {e}")))?;
             // Use Debug formatting for the plan.
             Ok(RedisValue::BulkString(format!("{plan:#?}")))
         })

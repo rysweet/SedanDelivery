@@ -428,9 +428,7 @@ fn collect_all_aliases(op: &Operator) -> Vec<String> {
             }
         }
         Operator::Call {
-            yield_items,
-            child,
-            ..
+            yield_items, child, ..
         } => {
             if let Some(ch) = child {
                 aliases.extend(collect_all_aliases(ch));

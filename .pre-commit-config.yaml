@@ -1,0 +1,31 @@
+repos:
+  - repo: local
+    hooks:
+      - id: cargo-fmt
+        name: cargo fmt
+        entry: cargo fmt --all -- --check
+        language: system
+        types: [rust]
+        pass_filenames: false
+      - id: cargo-clippy
+        name: cargo clippy (zero warnings)
+        entry: cargo clippy --all-targets -- -D warnings
+        language: system
+        types: [rust]
+        pass_filenames: false
+      - id: cargo-test
+        name: cargo test (unit tests)
+        entry: cargo test -p gql-core --lib
+        language: system
+        types: [rust]
+        pass_filenames: false
+      - id: no-plan-md
+        name: no PLAN.md in root
+        entry: bash -c 'test ! -f PLAN.md'
+        language: system
+        pass_filenames: false
+      - id: no-todo-fixme
+        name: no TODO/FIXME in source
+        entry: bash -c '! grep -rn "TODO\|FIXME\|HACK" gql-core/src/ --include="*.rs"'
+        language: system
+        pass_filenames: false

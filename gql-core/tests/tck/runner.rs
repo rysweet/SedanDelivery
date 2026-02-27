@@ -50,6 +50,7 @@ use gql_core::{
 
 /// Outcome of executing a query: either success or a caught error.
 #[derive(Debug)]
+#[allow(clippy::large_enum_variant)]
 enum QueryOutcome {
     Ok(QueryResult),
     Err(String),
@@ -370,7 +371,10 @@ async fn result_any_order(world: &mut GqlWorld, step: &gherkin::Step) {
                     ),
                 }
             }
-            panic!("Row matching failed (bipartite).\n  Got: {:?}", format_rows_for_debug(&result.rows, world));
+            panic!(
+                "Row matching failed (bipartite).\n  Got: {:?}",
+                format_rows_for_debug(&result.rows, world)
+            );
         }
     }
 }
@@ -443,7 +447,10 @@ async fn result_ignoring_list_order(world: &mut GqlWorld, step: &gherkin::Step) 
                     ),
                 }
             }
-            panic!("Row matching failed (bipartite, ignoring list order).\n  Got: {:?}", format_rows_for_debug(&result.rows, world));
+            panic!(
+                "Row matching failed (bipartite, ignoring list order).\n  Got: {:?}",
+                format_rows_for_debug(&result.rows, world)
+            );
         }
     }
 }
@@ -906,9 +913,7 @@ fn parse_tck_node_pattern(s: &str) -> Value {
     // Parse labels: `:Label1:Label2`
     while rest.starts_with(':') {
         rest = &rest[1..]; // skip ':'
-        let end = rest
-            .find(|c: char| c == ':' || c == ' ' || c == '{')
-            .unwrap_or(rest.len());
+        let end = rest.find([':', ' ', '{']).unwrap_or(rest.len());
         labels.push(rest[..end].to_string());
         rest = rest[end..].trim();
     }
@@ -943,9 +948,7 @@ fn parse_tck_rel_pattern(s: &str) -> Value {
     let mut rest = inner;
     if rest.starts_with(':') {
         rest = &rest[1..];
-        let end = rest
-            .find(|c: char| c == ' ' || c == '{')
-            .unwrap_or(rest.len());
+        let end = rest.find([' ', '{']).unwrap_or(rest.len());
         rel_type = rest[..end].to_string();
         rest = rest[end..].trim();
     }
@@ -969,6 +972,7 @@ fn parse_tck_rel_pattern(s: &str) -> Value {
 /// Parsed representation of a TCK path pattern.
 /// Stores the expected node patterns and edge patterns in order.
 #[derive(Debug)]
+#[allow(dead_code)]
 struct TckPathPattern {
     /// Node patterns (labels + properties) in path order
     node_patterns: Vec<indexmap::IndexMap<Box<str>, Value>>,
@@ -1093,18 +1097,10 @@ fn parse_tck_path_pattern(s: &str) -> Value {
 
     // Store as a special map with __path__ sentinel
     let mut map = indexmap::IndexMap::new();
-    map.insert(
-        "__path__".into(),
-        Value::Bool(true),
-    );
+    map.insert("__path__".into(), Value::Bool(true));
     map.insert(
         "__path_nodes__".into(),
-        Value::List(
-            node_patterns
-                .into_iter()
-                .map(Value::Map)
-                .collect(),
-        ),
+        Value::List(node_patterns.into_iter().map(Value::Map).collect()),
     );
     map.insert(
         "__path_edges__".into(),
@@ -1283,15 +1279,10 @@ fn replace_count_case_insensitive(s: &str) -> String {
 // ── Row comparison helpers ───────────────────────────────────────────────────
 
 /// Parse the expected rows from a Gherkin table (skipping header).
-fn parse_expected_rows<'a>(_headers: &[&'a str], data_rows: &[Vec<String>]) -> Vec<Vec<String>> {
+fn parse_expected_rows(_headers: &[&str], data_rows: &[Vec<String>]) -> Vec<Vec<String>> {
     data_rows
         .iter()
-        .map(|row| {
-            row.iter()
-                .enumerate()
-                .map(|(_i, cell)| cell.trim().to_string())
-                .collect()
-        })
+        .map(|row| row.iter().map(|cell| cell.trim().to_string()).collect())
         .collect()
 }
 
@@ -1361,6 +1352,7 @@ fn find_row_assignment(
     let mut assignment = vec![0usize; n];
     let mut used = vec![false; actual_rows.len()];
 
+    #[allow(clippy::too_many_arguments)]
     fn backtrack(
         ei: usize,
         expected_rows: &[Vec<String>],
@@ -1376,11 +1368,26 @@ fn find_row_assignment(
         }
         for ai in 0..actual_rows.len() {
             if !used[ai]
-                && row_matches_tck(&actual_rows[ai], headers, &expected_rows[ei], world, ignore_list_order)
+                && row_matches_tck(
+                    &actual_rows[ai],
+                    headers,
+                    &expected_rows[ei],
+                    world,
+                    ignore_list_order,
+                )
             {
                 used[ai] = true;
                 assignment[ei] = ai;
-                if backtrack(ei + 1, expected_rows, actual_rows, headers, world, ignore_list_order, assignment, used) {
+                if backtrack(
+                    ei + 1,
+                    expected_rows,
+                    actual_rows,
+                    headers,
+                    world,
+                    ignore_list_order,
+                    assignment,
+                    used,
+                ) {
                     return true;
                 }
                 used[ai] = false;
@@ -1389,7 +1396,16 @@ fn find_row_assignment(
         false
     }
 
-    if backtrack(0, expected_rows, actual_rows, headers, world, ignore_list_order, &mut assignment, &mut used) {
+    if backtrack(
+        0,
+        expected_rows,
+        actual_rows,
+        headers,
+        world,
+        ignore_list_order,
+        &mut assignment,
+        &mut used,
+    ) {
         Some(assignment)
     } else {
         None
@@ -1454,10 +1470,18 @@ fn value_matches(
             (a.is_nan() && b.is_nan()) || (a - b).abs() < 1e-10 || a == b
         }
         (Value::Int(a), Value::Float(b)) => {
-            if b.is_nan() { false } else { (*a as f64 - b).abs() < 1e-10 }
+            if b.is_nan() {
+                false
+            } else {
+                (*a as f64 - b).abs() < 1e-10
+            }
         }
         (Value::Float(a), Value::Int(b)) => {
-            if a.is_nan() { false } else { (a - *b as f64).abs() < 1e-10 }
+            if a.is_nan() {
+                false
+            } else {
+                (a - *b as f64).abs() < 1e-10
+            }
         }
         (Value::Str(a), Value::Str(b)) => a == b,
         (Value::List(a), Value::List(b)) => {
@@ -1475,11 +1499,15 @@ fn value_matches(
                     world: &GqlWorld,
                     used: &mut Vec<bool>,
                 ) -> bool {
-                    if bi == b.len() { return true; }
+                    if bi == b.len() {
+                        return true;
+                    }
                     for ai in 0..a.len() {
                         if !used[ai] && value_matches(&a[ai], &b[bi], world, true) {
                             used[ai] = true;
-                            if list_backtrack(bi + 1, a, b, world, used) { return true; }
+                            if list_backtrack(bi + 1, a, b, world, used) {
+                                return true;
+                            }
                             used[ai] = false;
                         }
                     }
@@ -1515,9 +1543,16 @@ fn value_matches(
             path_matches_pattern(nodes, edges, expected_map, world, ignore_list_order)
         }
         // Path vs Path direct comparison
-        (Value::Path { nodes: n1, edges: e1 }, Value::Path { nodes: n2, edges: e2 }) => {
-            n1 == n2 && e1 == e2
-        }
+        (
+            Value::Path {
+                nodes: n1,
+                edges: e1,
+            },
+            Value::Path {
+                nodes: n2,
+                edges: e2,
+            },
+        ) => n1 == n2 && e1 == e2,
         // Temporal values: compare against string representation
         (Value::Date(d), Value::Str(s)) => format!("{d}") == s.as_ref(),
         (Value::LocalTime(t), Value::Str(s)) => {
@@ -1530,7 +1565,8 @@ fn value_matches(
         }
         (Value::DateTime(dt), Value::Str(s)) => {
             let actual = format_zoned_datetime(dt);
-            if actual == s.as_ref() || normalize_datetime_str(&actual) == normalize_datetime_str(s) {
+            if actual == s.as_ref() || normalize_datetime_str(&actual) == normalize_datetime_str(s)
+            {
                 return true;
             }
             // Also try matching as a zoned time (time+offset) - Neo4j's Time type
@@ -1785,7 +1821,7 @@ fn normalize_datetime_str(s: &str) -> String {
             let before_bracket = &s[..bracket_open];
             let iana_part = &s[bracket_open..=bracket_close];
             // Strip any numeric offset (e.g. +02:00, -04:00, +00:53:28) before the bracket
-            let dt_base = if let Some(off_start) = before_bracket.rfind(|c: char| c == '+' || c == '-') {
+            let dt_base = if let Some(off_start) = before_bracket.rfind(['+', '-']) {
                 // Only strip if the offset looks like a timezone offset (not just a negative year)
                 let potential_offset = &before_bracket[off_start..];
                 // Timezone offset: starts with + or - followed by at least 2 digits + colon
@@ -1808,7 +1844,8 @@ fn normalize_datetime_str(s: &str) -> String {
     };
     // Remove trailing :00 seconds when no subseconds
     let s = if s.contains('T') {
-        let mut result = s.replace(":00Z", "Z")
+        let mut result = s
+            .replace(":00Z", "Z")
             .replace(":00+", "+")
             .replace(":00-", "-");
         // Also handle trailing :00 at end of string (localdatetime without tz)
@@ -1848,6 +1885,8 @@ fn normalize_duration_str(s: &str) -> String {
 }
 
 /// Create a sortable string representation of a Value for list-order-ignoring comparisons.
+#[allow(dead_code)]
+#[allow(clippy::only_used_in_recursion)]
 fn format_value_for_compare(v: &Value, world: &GqlWorld) -> String {
     match v {
         Value::Null => "null".to_string(),
@@ -1990,7 +2029,10 @@ fn parse_procedure_definition(signature: &str, step: &gherkin::Step) -> Procedur
     if let Some(table) = &step.table {
         // Skip header row (first row is column names)
         for row in table.rows.iter().skip(1) {
-            let values: Vec<Value> = row.iter().map(|cell| parse_tck_value(cell.trim())).collect();
+            let values: Vec<Value> = row
+                .iter()
+                .map(|cell| parse_tck_value(cell.trim()))
+                .collect();
             data.push(values);
         }
     }

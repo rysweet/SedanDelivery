@@ -19,8 +19,8 @@ mod state;
 
 use std::net::SocketAddr;
 
-use axum::Router;
 use axum::http::HeaderValue;
+use axum::Router;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::trace::TraceLayer;
 use tracing::info;
@@ -98,7 +98,5 @@ async fn main() {
         .await
         .expect("failed to bind TCP listener");
 
-    axum::serve(listener, app)
-        .await
-        .expect("server error");
+    axum::serve(listener, app).await.expect("server error");
 }

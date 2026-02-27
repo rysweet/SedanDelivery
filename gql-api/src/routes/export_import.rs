@@ -41,22 +41,14 @@ async fn export_handler(
     let node_batch = store
         .get_nodes_batch(&name, &all_node_ids)
         .map_err(ApiError::from)?;
-    let nodes: Vec<serde_json::Value> = node_batch
-        .iter()
-        .flatten()
-        .map(node_to_json)
-        .collect();
+    let nodes: Vec<serde_json::Value> = node_batch.iter().flatten().map(node_to_json).collect();
 
     // Export all edges.
     let all_edge_ids = store.all_edge_ids(&name).map_err(ApiError::from)?;
     let edge_batch = store
         .get_edges_batch(&name, &all_edge_ids)
         .map_err(ApiError::from)?;
-    let edges: Vec<serde_json::Value> = edge_batch
-        .iter()
-        .flatten()
-        .map(edge_to_json)
-        .collect();
+    let edges: Vec<serde_json::Value> = edge_batch.iter().flatten().map(edge_to_json).collect();
 
     // Build schema summary.
     let mut label_counts: HashMap<String, usize> = HashMap::new();
@@ -229,4 +221,3 @@ fn resolve_import_node_id(
             ))
         })
 }
-

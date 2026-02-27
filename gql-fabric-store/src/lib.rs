@@ -133,17 +133,24 @@ impl FabricGraphStore {
             urlenc(&self.client_id),
             urlenc(&self.client_secret),
         );
-        let resp: JValue = self.http_agent()
+        let resp: JValue = self
+            .http_agent()
             .post(&url)
             .set("Content-Type", "application/x-www-form-urlencoded")
             .send_string(&body)
-            .map_err(|e| StorageError::Backend { msg: format!("token fetch: {e}") })?
+            .map_err(|e| StorageError::Backend {
+                msg: format!("token fetch: {e}"),
+            })?
             .into_json()
-            .map_err(|e| StorageError::Backend { msg: format!("token parse: {e}") })?;
+            .map_err(|e| StorageError::Backend {
+                msg: format!("token parse: {e}"),
+            })?;
 
         let token = resp["access_token"]
             .as_str()
-            .ok_or_else(|| StorageError::Backend { msg: "no access_token in response".into() })?
+            .ok_or_else(|| StorageError::Backend {
+                msg: "no access_token in response".into(),
+            })?
             .to_string();
         let expires_in = resp["expires_in"].as_u64().unwrap_or(3600);
         *cache = Some(TokenCache {
@@ -161,14 +168,19 @@ impl FabricGraphStore {
         debug!(cypher, "fabric query");
         let url = format!("{}/query", self.endpoint);
         let body = json!({ "query": cypher, "parameters": params });
-        let resp: JValue = self.http_agent()
+        let resp: JValue = self
+            .http_agent()
             .post(&url)
             .set("Authorization", &format!("Bearer {token}"))
             .set("Content-Type", "application/json")
             .send_json(body)
-            .map_err(|e| StorageError::Backend { msg: format!("fabric query: {e}") })?
+            .map_err(|e| StorageError::Backend {
+                msg: format!("fabric query: {e}"),
+            })?
             .into_json()
-            .map_err(|e| StorageError::Backend { msg: format!("fabric response parse: {e}") })?;
+            .map_err(|e| StorageError::Backend {
+                msg: format!("fabric response parse: {e}"),
+            })?;
         parse_rows(&resp)
     }
 
@@ -178,14 +190,19 @@ impl FabricGraphStore {
         debug!(cypher, "fabric statement");
         let url = format!("{}/statements", self.endpoint);
         let body = json!({ "query": cypher, "parameters": params });
-        let resp: JValue = self.http_agent()
+        let resp: JValue = self
+            .http_agent()
             .post(&url)
             .set("Authorization", &format!("Bearer {token}"))
             .set("Content-Type", "application/json")
             .send_json(body)
-            .map_err(|e| StorageError::Backend { msg: format!("fabric statement: {e}") })?
+            .map_err(|e| StorageError::Backend {
+                msg: format!("fabric statement: {e}"),
+            })?
             .into_json()
-            .map_err(|e| StorageError::Backend { msg: format!("fabric response parse: {e}") })?;
+            .map_err(|e| StorageError::Backend {
+                msg: format!("fabric response parse: {e}"),
+            })?;
         parse_rows(&resp)
     }
 
@@ -201,10 +218,13 @@ impl FabricGraphStore {
             ),
             json!({ "graph": graph }),
         )?;
-        let raw = rows.first()
+        let raw = rows
+            .first()
             .and_then(|r| r.first())
             .and_then(|v| v.as_u64())
-            .ok_or_else(|| StorageError::Backend { msg: "no node_seq returned".into() })?;
+            .ok_or_else(|| StorageError::Backend {
+                msg: "no node_seq returned".into(),
+            })?;
         Ok(NodeId(raw))
     }
 
@@ -218,10 +238,13 @@ impl FabricGraphStore {
             ),
             json!({ "graph": graph }),
         )?;
-        let raw = rows.first()
+        let raw = rows
+            .first()
             .and_then(|r| r.first())
             .and_then(|v| v.as_u64())
-            .ok_or_else(|| StorageError::Backend { msg: "no edge_seq returned".into() })?;
+            .ok_or_else(|| StorageError::Backend {
+                msg: "no edge_seq returned".into(),
+            })?;
         Ok(EdgeId(raw))
     }
 
@@ -232,9 +255,12 @@ impl FabricGraphStore {
             Some(v) if !v.is_null() => v,
             _ => return Ok(None),
         };
-        let id_raw = v["properties"][PROP_NODE_ID]
-            .as_u64()
-            .ok_or_else(|| StorageError::Serialization { msg: "node missing _sd2_id".into() })?;
+        let id_raw =
+            v["properties"][PROP_NODE_ID]
+                .as_u64()
+                .ok_or_else(|| StorageError::Serialization {
+                    msg: "node missing _sd2_id".into(),
+                })?;
         let labels: Vec<String> = v["properties"][PROP_LABELS]
             .as_str()
             .and_then(|s| serde_json::from_str(s).ok())
@@ -264,19 +290,25 @@ impl FabricGraphStore {
             Some(v) if !v.is_null() => v,
             _ => return Ok(None),
         };
-        let id_raw = v["properties"][PROP_EDGE_ID]
-            .as_u64()
-            .ok_or_else(|| StorageError::Serialization { msg: "edge missing _sd2_eid".into() })?;
-        let src = v["properties"][PROP_SRC]
-            .as_u64()
-            .ok_or_else(|| StorageError::Serialization { msg: "edge missing _sd2_src".into() })?;
-        let dst = v["properties"][PROP_DST]
-            .as_u64()
-            .ok_or_else(|| StorageError::Serialization { msg: "edge missing _sd2_dst".into() })?;
-        let rel_type = v["type"]
-            .as_str()
-            .unwrap_or("UNKNOWN")
-            .to_string();
+        let id_raw =
+            v["properties"][PROP_EDGE_ID]
+                .as_u64()
+                .ok_or_else(|| StorageError::Serialization {
+                    msg: "edge missing _sd2_eid".into(),
+                })?;
+        let src =
+            v["properties"][PROP_SRC]
+                .as_u64()
+                .ok_or_else(|| StorageError::Serialization {
+                    msg: "edge missing _sd2_src".into(),
+                })?;
+        let dst =
+            v["properties"][PROP_DST]
+                .as_u64()
+                .ok_or_else(|| StorageError::Serialization {
+                    msg: "edge missing _sd2_dst".into(),
+                })?;
+        let rel_type = v["type"].as_str().unwrap_or("UNKNOWN").to_string();
         let properties = extract_user_props(&v["properties"]);
         Ok(Some(EdgeData {
             id: EdgeId(id_raw),
@@ -295,10 +327,14 @@ impl GraphStore for FabricGraphStore {
 
     fn get_node(&self, graph: &str, id: NodeId) -> Result<Option<NodeData>, StorageError> {
         let rows = self.query(
-            &format!("MATCH (n {{`{PROP_GRAPH}`: $graph, `{PROP_NODE_ID}`: $id}}) RETURN n LIMIT 1"),
+            &format!(
+                "MATCH (n {{`{PROP_GRAPH}`: $graph, `{PROP_NODE_ID}`: $id}}) RETURN n LIMIT 1"
+            ),
             json!({ "graph": graph, "id": id.0 }),
         )?;
-        rows.first().map(|r| self.row_to_node_data(r)).unwrap_or(Ok(None))
+        rows.first()
+            .map(|r| self.row_to_node_data(r))
+            .unwrap_or(Ok(None))
     }
 
     fn get_edge(&self, graph: &str, id: EdgeId) -> Result<Option<EdgeData>, StorageError> {
@@ -306,12 +342,18 @@ impl GraphStore for FabricGraphStore {
             &format!("MATCH ()-[r {{`{PROP_GRAPH}`: $graph, `{PROP_EDGE_ID}`: $id}}]->() RETURN r LIMIT 1"),
             json!({ "graph": graph, "id": id.0 }),
         )?;
-        rows.first().map(|r| self.row_to_edge_data(r)).unwrap_or(Ok(None))
+        rows.first()
+            .map(|r| self.row_to_edge_data(r))
+            .unwrap_or(Ok(None))
     }
 
     // ── Reads: batch ──────────────────────────────────────────────────────────
 
-    fn get_nodes_batch(&self, graph: &str, ids: &[NodeId]) -> Result<Vec<Option<NodeData>>, StorageError> {
+    fn get_nodes_batch(
+        &self,
+        graph: &str,
+        ids: &[NodeId],
+    ) -> Result<Vec<Option<NodeData>>, StorageError> {
         if ids.is_empty() {
             return Ok(vec![]);
         }
@@ -327,7 +369,11 @@ impl GraphStore for FabricGraphStore {
         rows.iter().map(|r| self.row_to_node_data(r)).collect()
     }
 
-    fn get_edges_batch(&self, graph: &str, ids: &[EdgeId]) -> Result<Vec<Option<EdgeData>>, StorageError> {
+    fn get_edges_batch(
+        &self,
+        graph: &str,
+        ids: &[EdgeId],
+    ) -> Result<Vec<Option<EdgeData>>, StorageError> {
         if ids.is_empty() {
             return Ok(vec![]);
         }
@@ -353,7 +399,8 @@ impl GraphStore for FabricGraphStore {
             ),
             json!({ "graph": graph }),
         )?;
-        Ok(rows.iter()
+        Ok(rows
+            .iter()
             .filter_map(|r| r.first()?.as_u64().map(NodeId))
             .collect::<Vec<_>>())
     }
@@ -378,7 +425,8 @@ impl GraphStore for FabricGraphStore {
             ),
             p,
         )?;
-        Ok(rows.iter()
+        Ok(rows
+            .iter()
             .filter_map(|r| r.first()?.as_u64().map(NodeId))
             .collect::<Vec<_>>())
     }
@@ -391,7 +439,8 @@ impl GraphStore for FabricGraphStore {
             ),
             json!({ "graph": graph }),
         )?;
-        Ok(rows.iter()
+        Ok(rows
+            .iter()
             .filter_map(|r| r.first()?.as_u64().map(EdgeId))
             .collect::<Vec<_>>())
     }
@@ -420,8 +469,17 @@ impl GraphStore for FabricGraphStore {
         rows_to_adj(rows)
     }
 
-    fn out_edges_by_type(&self, graph: &str, node_id: NodeId, rel_types: &[&str]) -> Result<Vec<AdjEntry>, StorageError> {
-        let rt_list: JValue = rel_types.iter().map(|s| s.to_string()).collect::<Vec<_>>().into();
+    fn out_edges_by_type(
+        &self,
+        graph: &str,
+        node_id: NodeId,
+        rel_types: &[&str],
+    ) -> Result<Vec<AdjEntry>, StorageError> {
+        let rt_list: JValue = rel_types
+            .iter()
+            .map(|s| s.to_string())
+            .collect::<Vec<_>>()
+            .into();
         let rows = self.query(
             &format!(
                 "MATCH (n {{`{PROP_GRAPH}`: $graph, `{PROP_NODE_ID}`: $id}})-[r {{`{PROP_GRAPH}`: $graph}}]->(m) \
@@ -433,8 +491,17 @@ impl GraphStore for FabricGraphStore {
         rows_to_adj(rows)
     }
 
-    fn in_edges_by_type(&self, graph: &str, node_id: NodeId, rel_types: &[&str]) -> Result<Vec<AdjEntry>, StorageError> {
-        let rt_list: JValue = rel_types.iter().map(|s| s.to_string()).collect::<Vec<_>>().into();
+    fn in_edges_by_type(
+        &self,
+        graph: &str,
+        node_id: NodeId,
+        rel_types: &[&str],
+    ) -> Result<Vec<AdjEntry>, StorageError> {
+        let rt_list: JValue = rel_types
+            .iter()
+            .map(|s| s.to_string())
+            .collect::<Vec<_>>()
+            .into();
         let rows = self.query(
             &format!(
                 "MATCH (n {{`{PROP_GRAPH}`: $graph, `{PROP_NODE_ID}`: $id}})<-[r {{`{PROP_GRAPH}`: $graph}}]-(m) \
@@ -454,7 +521,8 @@ impl GraphStore for FabricGraphStore {
             ),
             json!({ "graph": graph, "id": node_id.0 }),
         )?;
-        Ok(rows.iter()
+        Ok(rows
+            .iter()
             .filter_map(|r| r.first()?.as_u64().map(EdgeId))
             .collect::<Vec<_>>())
     }
@@ -467,7 +535,8 @@ impl GraphStore for FabricGraphStore {
             ),
             json!({ "graph": graph, "id": node_id.0 }),
         )?;
-        Ok(rows.iter()
+        Ok(rows
+            .iter()
             .filter_map(|r| r.first()?.as_u64().map(EdgeId))
             .collect::<Vec<_>>())
     }
@@ -477,7 +546,8 @@ impl GraphStore for FabricGraphStore {
             &format!("MATCH (n {{`{PROP_GRAPH}`: $graph}}) WHERE NOT n:{SEQ_LABEL} RETURN n.`{PROP_NODE_ID}` AS id"),
             json!({ "graph": graph }),
         )?;
-        Ok(rows.iter()
+        Ok(rows
+            .iter()
             .filter_map(|r| r.first()?.as_u64().map(NodeId))
             .collect::<Vec<_>>())
     }
@@ -487,9 +557,31 @@ impl GraphStore for FabricGraphStore {
             &format!("MATCH ()-[r {{`{PROP_GRAPH}`: $graph}}]->() RETURN r.`{PROP_EDGE_ID}` AS id"),
             json!({ "graph": graph }),
         )?;
-        Ok(rows.iter()
+        Ok(rows
+            .iter()
             .filter_map(|r| r.first()?.as_u64().map(EdgeId))
             .collect::<Vec<_>>())
+    }
+
+    fn all_label_names(&self, graph: &str) -> Result<Vec<String>, StorageError> {
+        let rows = self.query(
+            &format!(
+                "MATCH (n {{`{PROP_GRAPH}`: $graph}}) WHERE NOT n:{SEQ_LABEL} \
+                 RETURN n.`{PROP_LABELS}` AS lbl"
+            ),
+            json!({ "graph": graph }),
+        )?;
+        let mut seen = std::collections::HashSet::new();
+        for row in &rows {
+            if let Some(s) = row.first().and_then(|v| v.as_str()) {
+                if let Ok(labels) = serde_json::from_str::<Vec<String>>(s) {
+                    for l in labels {
+                        seen.insert(l);
+                    }
+                }
+            }
+        }
+        Ok(seen.into_iter().collect())
     }
 
     // ── Writes: create ────────────────────────────────────────────────────────
@@ -515,10 +607,16 @@ impl GraphStore for FabricGraphStore {
         let label_str = if labels.is_empty() {
             String::new()
         } else {
-            format!(":`{}`", labels.iter().map(|l| sanitize_label(l)).collect::<Vec<_>>().join("`:`"))
+            format!(
+                ":`{}`",
+                labels
+                    .iter()
+                    .map(|l| sanitize_label(l))
+                    .collect::<Vec<_>>()
+                    .join("`:`")
+            )
         };
-        let labels_json = serde_json::to_string(&labels)
-            .unwrap_or_else(|_| "[]".into());
+        let labels_json = serde_json::to_string(&labels).unwrap_or_else(|_| "[]".into());
 
         // Build property map for the CREATE clause
         let mut all_props: HashMap<String, JValue> = user_props_to_json(&properties);
@@ -572,7 +670,9 @@ impl GraphStore for FabricGraphStore {
 
         if rows.is_empty() {
             return Err(StorageError::Backend {
-                msg: format!("create_edge: src {src:?} or dst {dst:?} not found in graph '{graph}'"),
+                msg: format!(
+                    "create_edge: src {src:?} or dst {dst:?} not found in graph '{graph}'"
+                ),
             });
         }
         Ok(id)
@@ -580,7 +680,12 @@ impl GraphStore for FabricGraphStore {
 
     // ── Writes: property updates ──────────────────────────────────────────────
 
-    fn set_node_properties(&self, graph: &str, id: NodeId, properties: HashMap<String, Value>) -> Result<(), StorageError> {
+    fn set_node_properties(
+        &self,
+        graph: &str,
+        id: NodeId,
+        properties: HashMap<String, Value>,
+    ) -> Result<(), StorageError> {
         let props = user_props_to_json(&properties);
         self.statement(
             &format!("MATCH (n {{`{PROP_GRAPH}`: $graph, `{PROP_NODE_ID}`: $id}}) SET n += $props"),
@@ -589,7 +694,12 @@ impl GraphStore for FabricGraphStore {
         Ok(())
     }
 
-    fn replace_node_properties(&self, graph: &str, id: NodeId, properties: HashMap<String, Value>) -> Result<(), StorageError> {
+    fn replace_node_properties(
+        &self,
+        graph: &str,
+        id: NodeId,
+        properties: HashMap<String, Value>,
+    ) -> Result<(), StorageError> {
         let mut props = user_props_to_json(&properties);
         // Preserve internal SD2 properties during replace
         props.insert(PROP_GRAPH.into(), json!(graph));
@@ -603,7 +713,12 @@ impl GraphStore for FabricGraphStore {
         Ok(())
     }
 
-    fn set_edge_properties(&self, graph: &str, id: EdgeId, properties: HashMap<String, Value>) -> Result<(), StorageError> {
+    fn set_edge_properties(
+        &self,
+        graph: &str,
+        id: EdgeId,
+        properties: HashMap<String, Value>,
+    ) -> Result<(), StorageError> {
         let props = user_props_to_json(&properties);
         self.statement(
             &format!("MATCH ()-[r {{`{PROP_GRAPH}`: $graph, `{PROP_EDGE_ID}`: $id}}]->() SET r += $props"),
@@ -612,9 +727,15 @@ impl GraphStore for FabricGraphStore {
         Ok(())
     }
 
-    fn replace_edge_properties(&self, graph: &str, id: EdgeId, properties: HashMap<String, Value>) -> Result<(), StorageError> {
+    fn replace_edge_properties(
+        &self,
+        graph: &str,
+        id: EdgeId,
+        properties: HashMap<String, Value>,
+    ) -> Result<(), StorageError> {
         // Read current edge to preserve internal src/dst properties
-        let edge = self.get_edge(graph, id)?
+        let edge = self
+            .get_edge(graph, id)?
             .ok_or(StorageError::EdgeNotFound { id: id.0 })?;
         let mut props = user_props_to_json(&properties);
         props.insert(PROP_GRAPH.into(), json!(graph));
@@ -622,7 +743,9 @@ impl GraphStore for FabricGraphStore {
         props.insert(PROP_SRC.into(), json!(edge.src.0));
         props.insert(PROP_DST.into(), json!(edge.dst.0));
         self.statement(
-            &format!("MATCH ()-[r {{`{PROP_GRAPH}`: $graph, `{PROP_EDGE_ID}`: $id}}]->() SET r = $props"),
+            &format!(
+                "MATCH ()-[r {{`{PROP_GRAPH}`: $graph, `{PROP_EDGE_ID}`: $id}}]->() SET r = $props"
+            ),
             json!({ "graph": graph, "id": id.0, "props": props }),
         )?;
         Ok(())
@@ -631,7 +754,9 @@ impl GraphStore for FabricGraphStore {
     fn remove_node_property(&self, graph: &str, id: NodeId, key: &str) -> Result<(), StorageError> {
         let key = sanitize_label(key);
         self.statement(
-            &format!("MATCH (n {{`{PROP_GRAPH}`: $graph, `{PROP_NODE_ID}`: $id}}) REMOVE n.`{key}`"),
+            &format!(
+                "MATCH (n {{`{PROP_GRAPH}`: $graph, `{PROP_NODE_ID}`: $id}}) REMOVE n.`{key}`"
+            ),
             json!({ "graph": graph, "id": id.0 }),
         )?;
         Ok(())
@@ -646,8 +771,14 @@ impl GraphStore for FabricGraphStore {
         Ok(())
     }
 
-    fn add_node_labels(&self, graph: &str, id: NodeId, labels: &[String]) -> Result<(), StorageError> {
-        let label_str = labels.iter()
+    fn add_node_labels(
+        &self,
+        graph: &str,
+        id: NodeId,
+        labels: &[String],
+    ) -> Result<(), StorageError> {
+        let label_str = labels
+            .iter()
             .map(|l| format!("`{}`", sanitize_label(l)))
             .collect::<Vec<_>>()
             .join(":");
@@ -655,7 +786,9 @@ impl GraphStore for FabricGraphStore {
             return Ok(());
         }
         self.statement(
-            &format!("MATCH (n {{`{PROP_GRAPH}`: $graph, `{PROP_NODE_ID}`: $id}}) SET n:{label_str}"),
+            &format!(
+                "MATCH (n {{`{PROP_GRAPH}`: $graph, `{PROP_NODE_ID}`: $id}}) SET n:{label_str}"
+            ),
             json!({ "graph": graph, "id": id.0 }),
         )?;
         // Also update the _sd2_labels property for round-trip fidelity
@@ -664,8 +797,14 @@ impl GraphStore for FabricGraphStore {
         Ok(())
     }
 
-    fn remove_node_labels(&self, graph: &str, id: NodeId, labels: &[String]) -> Result<(), StorageError> {
-        let label_str = labels.iter()
+    fn remove_node_labels(
+        &self,
+        graph: &str,
+        id: NodeId,
+        labels: &[String],
+    ) -> Result<(), StorageError> {
+        let label_str = labels
+            .iter()
             .map(|l| format!("`{}`", sanitize_label(l)))
             .collect::<Vec<_>>()
             .join(":");
@@ -673,7 +812,9 @@ impl GraphStore for FabricGraphStore {
             return Ok(());
         }
         self.statement(
-            &format!("MATCH (n {{`{PROP_GRAPH}`: $graph, `{PROP_NODE_ID}`: $id}}) REMOVE n:{label_str}"),
+            &format!(
+                "MATCH (n {{`{PROP_GRAPH}`: $graph, `{PROP_NODE_ID}`: $id}}) REMOVE n:{label_str}"
+            ),
             json!({ "graph": graph, "id": id.0 }),
         )?;
         self.refresh_labels_prop(graph, id)?;
@@ -693,7 +834,11 @@ impl GraphStore for FabricGraphStore {
                 ),
                 json!({ "graph": graph, "id": id.0 }),
             )?;
-            let cnt = rows.first().and_then(|r| r.first()).and_then(|v| v.as_u64()).unwrap_or(0);
+            let cnt = rows
+                .first()
+                .and_then(|r| r.first())
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
             if cnt > 0 {
                 return Err(StorageError::Backend {
                     msg: format!("node #{} has relationships; use DETACH DELETE", id.0),
@@ -726,11 +871,17 @@ impl GraphStore for FabricGraphStore {
             ),
             json!({ "graph": graph }),
         )?;
-        Ok(rows.iter().filter_map(|r| {
-            let lbl = r.first()?.as_str()?.to_string();
-            let prop = r.get(1)?.as_str()?.to_string();
-            Some(IndexDescriptor { label: lbl, property: prop })
-        }).collect())
+        Ok(rows
+            .iter()
+            .filter_map(|r| {
+                let lbl = r.first()?.as_str()?.to_string();
+                let prop = r.get(1)?.as_str()?.to_string();
+                Some(IndexDescriptor {
+                    label: lbl,
+                    property: prop,
+                })
+            })
+            .collect())
     }
 
     fn create_index(&self, graph: &str, label: &str, property: &str) -> Result<(), StorageError> {
@@ -757,7 +908,11 @@ impl GraphStore for FabricGraphStore {
         self.statement(
             &format!("DROP INDEX sd2_{label_s}_{prop_s} IF EXISTS"),
             json!({}),
-        ).unwrap_or_else(|e| { warn!("drop_index native: {e}"); vec![] });
+        )
+        .unwrap_or_else(|e| {
+            warn!("drop_index native: {e}");
+            vec![]
+        });
         self.statement(
             &format!(
                 "MATCH (__i:__SD2Index {{`{PROP_GRAPH}`: $graph, _label: $lbl, _property: $prop}}) DELETE __i"
@@ -799,10 +954,17 @@ impl GraphStore for FabricGraphStore {
     fn graph_exists(&self, name: &str) -> Result<bool, StorageError> {
         validate_graph_name(name)?;
         let rows = self.query(
-            &format!("MATCH (c:{SEQ_LABEL} {{_graph: $graph, _is_root: true}}) RETURN count(c) AS n"),
+            &format!(
+                "MATCH (c:{SEQ_LABEL} {{_graph: $graph, _is_root: true}}) RETURN count(c) AS n"
+            ),
             json!({ "graph": name }),
         )?;
-        Ok(rows.first().and_then(|r| r.first()).and_then(|v| v.as_u64()).unwrap_or(0) > 0)
+        Ok(rows
+            .first()
+            .and_then(|r| r.first())
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0)
+            > 0)
     }
 
     fn list_graphs(&self) -> Result<Vec<String>, StorageError> {
@@ -810,7 +972,8 @@ impl GraphStore for FabricGraphStore {
             &format!("MATCH (c:{SEQ_LABEL} {{_is_root: true}}) RETURN c._graph AS g"),
             json!({}),
         )?;
-        Ok(rows.iter()
+        Ok(rows
+            .iter()
             .filter_map(|r| r.first()?.as_str().map(|s| s.to_string()))
             .collect())
     }
@@ -835,10 +998,10 @@ impl GraphStore for FabricGraphStore {
         )?;
         let row = rows.first().cloned().unwrap_or_default();
         Ok(GraphStats {
-            node_count:      row.first().and_then(|v| v.as_u64()).unwrap_or(0),
-            edge_count:      row.get(1).and_then(|v| v.as_u64()).unwrap_or(0),
-            label_count:     row.get(2).and_then(|v| v.as_u64()).unwrap_or(0) as u32,
-            rel_type_count:  row.get(3).and_then(|v| v.as_u64()).unwrap_or(0) as u32,
+            node_count: row.first().and_then(|v| v.as_u64()).unwrap_or(0),
+            edge_count: row.get(1).and_then(|v| v.as_u64()).unwrap_or(0),
+            label_count: row.get(2).and_then(|v| v.as_u64()).unwrap_or(0) as u32,
+            rel_type_count: row.get(3).and_then(|v| v.as_u64()).unwrap_or(0) as u32,
         })
     }
 }
@@ -853,13 +1016,17 @@ impl FabricGraphStore {
             &format!("MATCH (n {{`{PROP_GRAPH}`: $graph, `{PROP_NODE_ID}`: $id}}) RETURN labels(n) AS lbls"),
             json!({ "graph": graph, "id": id.0 }),
         )?;
-        let labels: Vec<String> = rows.first()
+        let labels: Vec<String> = rows
+            .first()
             .and_then(|r| r.first())
             .and_then(|v| v.as_array())
-            .map(|a| a.iter().filter_map(|l| l.as_str())
-                      .filter(|l| !l.starts_with("__SD2"))
-                      .map(|l| l.to_string())
-                      .collect())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|l| l.as_str())
+                    .filter(|l| !l.starts_with("__SD2"))
+                    .map(|l| l.to_string())
+                    .collect()
+            })
             .unwrap_or_default();
         let labels_json = serde_json::to_string(&labels).unwrap_or_else(|_| "[]".into());
         self.statement(
@@ -877,23 +1044,28 @@ fn parse_rows(resp: &JValue) -> Result<Vec<Vec<JValue>>, StorageError> {
     // Fabric response format:
     // { "results": [ { "headers": [...], "data": [[col0, col1, ...], ...] } ] }
     if let Some(err) = resp.get("error").or_else(|| resp.get("message")) {
-        return Err(StorageError::Backend { msg: format!("Fabric API error: {err}") });
+        return Err(StorageError::Backend {
+            msg: format!("Fabric API error: {err}"),
+        });
     }
-    let results = resp.get("results")
+    let results = resp
+        .get("results")
         .and_then(|r| r.as_array())
-        .ok_or_else(|| StorageError::Serialization { msg: format!("unexpected Fabric response: {resp}") })?;
+        .ok_or_else(|| StorageError::Serialization {
+            msg: format!("unexpected Fabric response: {resp}"),
+        })?;
 
     let mut all_rows: Vec<Vec<JValue>> = Vec::new();
     for result in results {
         // Check for per-result embedded errors before reading data.
         if let Some(err) = result.get("error") {
-            return Err(StorageError::Backend { msg: format!("Fabric result error: {err}") });
+            return Err(StorageError::Backend {
+                msg: format!("Fabric result error: {err}"),
+            });
         }
         if let Some(data) = result.get("data").and_then(|d| d.as_array()) {
             for row in data {
-                let cells: Vec<JValue> = row.as_array()
-                    .cloned()
-                    .unwrap_or_default();
+                let cells: Vec<JValue> = row.as_array().cloned().unwrap_or_default();
                 all_rows.push(cells);
             }
         }
@@ -908,7 +1080,11 @@ fn rows_to_adj(rows: Vec<Vec<JValue>>) -> Result<Vec<AdjEntry>, StorageError> {
             let eid = r.first()?.as_u64().map(EdgeId)?;
             let nbr = r.get(1)?.as_u64().map(NodeId)?;
             let rt = r.get(2)?.as_str()?.to_string();
-            Some(Ok(AdjEntry { edge_id: eid, neighbor_id: nbr, rel_type: rt }))
+            Some(Ok(AdjEntry {
+                edge_id: eid,
+                neighbor_id: nbr,
+                rel_type: rt,
+            }))
         })
         .collect()
 }
@@ -928,16 +1104,28 @@ fn extract_user_props(props: &JValue) -> HashMap<String, Value> {
 /// Convert a user property map to JSON, skipping internal SD2 keys.
 /// Non-finite floats are silently converted to JSON null.
 fn user_props_to_json(props: &HashMap<String, Value>) -> HashMap<String, JValue> {
-    props.iter()
+    props
+        .iter()
         .filter(|(k, _)| !k.starts_with("_sd2") && !k.starts_with("__SD2"))
-        .map(|(k, v)| (k.clone(), serde_value::value_to_json(v).unwrap_or(JValue::Null)))
+        .map(|(k, v)| {
+            (
+                k.clone(),
+                serde_value::value_to_json(v).unwrap_or(JValue::Null),
+            )
+        })
         .collect()
 }
 
 /// Sanitise a label / property name: keep alphanumeric + underscore, truncate to 128 chars.
 fn sanitize_label(s: &str) -> String {
     s.chars()
-        .map(|c| if c.is_alphanumeric() || c == '_' { c } else { '_' })
+        .map(|c| {
+            if c.is_alphanumeric() || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
         .take(128)
         .collect()
 }
@@ -964,10 +1152,7 @@ fn urlenc(s: &str) -> String {
 fn range_to_cypher(prop: &str, range: RangeQuery<'_>) -> (String, JValue) {
     let to_json = |v: &Value| serde_value::value_to_json(v).unwrap_or(JValue::Null);
     match range {
-        RangeQuery::Eq(v) => (
-            format!("n.`{prop}` = $rv"),
-            json!({ "rv": to_json(v) }),
-        ),
+        RangeQuery::Eq(v) => (format!("n.`{prop}` = $rv"), json!({ "rv": to_json(v) })),
         RangeQuery::Lt(v) => (format!("n.`{prop}` < $rv"), json!({ "rv": to_json(v) })),
         RangeQuery::Lte(v) => (format!("n.`{prop}` <= $rv"), json!({ "rv": to_json(v) })),
         RangeQuery::Gt(v) => (format!("n.`{prop}` > $rv"), json!({ "rv": to_json(v) })),
@@ -991,4 +1176,3 @@ fn range_to_cypher(prop: &str, range: RangeQuery<'_>) -> (String, JValue) {
         ),
     }
 }
-

@@ -1,0 +1,11 @@
+#!/bin/bash
+set -e
+echo '=== pre-commit: cargo fmt check ==='
+cargo fmt --all -- --check
+echo '=== pre-commit: cargo clippy (zero warnings) ==='
+cargo clippy --all-targets -- -D warnings
+echo '=== pre-commit: cargo test (unit) ==='
+cargo test -p gql-core --lib
+echo '=== pre-commit: no PLAN.md ==='
+test ! -f PLAN.md
+echo '=== all pre-commit checks passed ==='

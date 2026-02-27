@@ -29,7 +29,10 @@ pub fn router() -> Router<AppState> {
 // ── GET /graphs ───────────────────────────────────────────────────────────────
 
 async fn list_graphs(State(state): State<AppState>) -> Result<Json<GraphListResponse>, ApiError> {
-    let map = state.stores.lock().map_err(|_| ApiError::internal("lock poisoned"))?;
+    let map = state
+        .stores
+        .lock()
+        .map_err(|_| ApiError::internal("lock poisoned"))?;
     let mut graphs: Vec<String> = map.keys().cloned().collect();
     graphs.sort();
     Ok(Json(GraphListResponse { graphs }))
@@ -43,7 +46,10 @@ async fn create_graph(
 ) -> Result<(StatusCode, Json<serde_json::Value>), ApiError> {
     validate_graph_name(&body.name).map_err(ApiError::from)?;
 
-    let mut map = state.stores.lock().map_err(|_| ApiError::internal("lock poisoned"))?;
+    let mut map = state
+        .stores
+        .lock()
+        .map_err(|_| ApiError::internal("lock poisoned"))?;
 
     if map.contains_key(&body.name) {
         return Err(ApiError::conflict(format!(
@@ -53,9 +59,7 @@ async fn create_graph(
     }
 
     let store = Arc::new(InMemoryGraphStore::default());
-    store
-        .create_graph(&body.name)
-        .map_err(ApiError::from)?;
+    store.create_graph(&body.name).map_err(ApiError::from)?;
 
     map.insert(body.name.clone(), store);
 
@@ -73,7 +77,10 @@ async fn delete_graph(
 ) -> Result<StatusCode, ApiError> {
     validate_graph_name(&name).map_err(ApiError::from)?;
 
-    let mut map = state.stores.lock().map_err(|_| ApiError::internal("lock poisoned"))?;
+    let mut map = state
+        .stores
+        .lock()
+        .map_err(|_| ApiError::internal("lock poisoned"))?;
 
     if !map.contains_key(&name) {
         return Err(ApiError::not_found(format!("graph '{name}' not found")));

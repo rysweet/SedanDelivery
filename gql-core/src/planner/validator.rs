@@ -626,17 +626,13 @@ impl ValidationContext {
             // DELETE list[idx]
             Expr::Subscript(inner, _) => self.validate_delete_expr(inner),
             // DELETE n:Label is invalid — label predicates are not valid in DELETE
-            Expr::HasLabel(_, _) => {
-                Err(plan_error_semantic(
-                    "invalid use of a label predicate in DELETE; use REMOVE to remove labels",
-                ))
-            }
+            Expr::HasLabel(_, _) => Err(plan_error_semantic(
+                "invalid use of a label predicate in DELETE; use REMOVE to remove labels",
+            )),
             // Literal values in DELETE are invalid: DELETE 1+1
-            Expr::Integer(_) | Expr::Float(_) | Expr::Str(_) | Expr::Bool(_) | Expr::Null => {
-                Err(plan_error_semantic(
-                    "DELETE requires a variable reference, got a literal",
-                ))
-            }
+            Expr::Integer(_) | Expr::Float(_) | Expr::Str(_) | Expr::Bool(_) | Expr::Null => Err(
+                plan_error_semantic("DELETE requires a variable reference, got a literal"),
+            ),
             // Arithmetic expressions on literals: DELETE 1+1
             Expr::BinaryOp { left, right, .. } => {
                 if is_non_variable_expr(left) && is_non_variable_expr(right) {
@@ -745,7 +741,8 @@ impl ValidationContext {
     ) -> Result<(), GqlError> {
         match expr {
             Expr::Variable(ref id) => {
-                if id.0 != "*" && !projected_names.contains(&id.0) && !self.vars.contains_key(&id.0) {
+                if id.0 != "*" && !projected_names.contains(&id.0) && !self.vars.contains_key(&id.0)
+                {
                     return Err(plan_error_semantic(&format!(
                         "variable '{}' not in scope after RETURN/WITH DISTINCT",
                         id.0
@@ -917,8 +914,7 @@ impl ValidationContext {
                 }
             }
             Expr::FunctionCall { name, args, .. } => {
-                let next_inside_agg =
-                    inside_aggregation || is_aggregation_function(name.as_str());
+                let next_inside_agg = inside_aggregation || is_aggregation_function(name.as_str());
                 for arg in args {
                     self.validate_order_by_expr_strict_with_inner(
                         arg,
@@ -1278,7 +1274,9 @@ impl ValidationContext {
                 self.validate_expr_general(inner)?;
                 // -<non-numeric literal> is a type error
                 if is_non_numeric_literal(inner) {
-                    return Err(plan_error_semantic("unary minus requires a numeric argument"));
+                    return Err(plan_error_semantic(
+                        "unary minus requires a numeric argument",
+                    ));
                 }
             }
             Expr::BinaryOp { op, left, right } => {
@@ -1327,7 +1325,10 @@ impl ValidationContext {
                 // always have an Expr::PatternExpr as their first argument; user-typed
                 // calls do not, so we can detect and reject them here.
                 if name.to_ascii_lowercase().as_str() == "__patterncomp" {
-                    if !args.first().is_some_and(|a| matches!(a, Expr::PatternExpr(_))) {
+                    if !args
+                        .first()
+                        .is_some_and(|a| matches!(a, Expr::PatternExpr(_)))
+                    {
                         return Err(plan_error_semantic(
                             "function '__patternComp' is an internal function and cannot be called directly",
                         ));
@@ -1547,11 +1548,7 @@ impl ValidationContext {
     // ── Function argument type validation ──────────────────────────────────
 
     /// Validate that type-restricted functions receive the correct argument kinds.
-    fn validate_function_arg_kinds(
-        &self,
-        name: &str,
-        args: &[Expr],
-    ) -> Result<(), GqlError> {
+    fn validate_function_arg_kinds(&self, name: &str, args: &[Expr]) -> Result<(), GqlError> {
         let lower = name.to_ascii_lowercase();
         match lower.as_str() {
             "type" => {
@@ -1648,10 +1645,7 @@ impl ValidationContext {
     ) -> Result<(), GqlError> {
         match expr {
             Expr::Variable(ref id) => {
-                if id.0 != "*"
-                    && !self.vars.contains_key(&id.0)
-                    && !extra_vars.contains(&id.0)
-                {
+                if id.0 != "*" && !self.vars.contains_key(&id.0) && !extra_vars.contains(&id.0) {
                     return Err(plan_error_semantic(&format!(
                         "variable '{}' not defined",
                         id.0
@@ -1788,7 +1782,9 @@ impl ValidationContext {
                 }
                 Ok(())
             }
-            Expr::ListComp { list, filter, map, .. } => {
+            Expr::ListComp {
+                list, filter, map, ..
+            } => {
                 self.check_no_pattern_expr(list)?;
                 if let Some(f) = filter {
                     self.check_no_pattern_expr(f)?;
@@ -2199,7 +2195,9 @@ fn validate_function_arity(name: &str, args: &[Expr]) -> Result<(), GqlError> {
         "range" => Some((2, 3)),
         "coalesce" => {
             if n == 0 {
-                return Err(plan_error_semantic("coalesce() requires at least 1 argument"));
+                return Err(plan_error_semantic(
+                    "coalesce() requires at least 1 argument",
+                ));
             }
             None
         }
@@ -2241,7 +2239,6 @@ fn kind_name(k: VarKind) -> &'static str {
         VarKind::Untyped => "Untyped",
     }
 }
-
 
 fn op_name(op: BinaryOp) -> &'static str {
     match op {

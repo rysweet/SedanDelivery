@@ -197,7 +197,12 @@ impl RedisGraphStore {
     }
 
     /// Read a node hash from Redis; returns `None` if the key is absent.
-    fn read_node(&self, conn: &mut Connection, g: &str, id: u64) -> Result<Option<NodeData>, StorageError> {
+    fn read_node(
+        &self,
+        conn: &mut Connection,
+        g: &str,
+        id: u64,
+    ) -> Result<Option<NodeData>, StorageError> {
         let key = self.kp(key_node(g, id));
         let fields: Vec<Option<String>> = redis::cmd("HMGET")
             .arg(&key)
@@ -223,7 +228,12 @@ impl RedisGraphStore {
     }
 
     /// Read an edge hash from Redis; returns `None` if the key is absent.
-    fn read_edge(&self, conn: &mut Connection, g: &str, id: u64) -> Result<Option<EdgeData>, StorageError> {
+    fn read_edge(
+        &self,
+        conn: &mut Connection,
+        g: &str,
+        id: u64,
+    ) -> Result<Option<EdgeData>, StorageError> {
         let key = self.kp(key_edge(g, id));
         let fields: Vec<Option<String>> = redis::cmd("HMGET")
             .arg(&key)
@@ -235,20 +245,22 @@ impl RedisGraphStore {
             .map_err(|e| StorageError::Backend { msg: e.to_string() })?;
         match (&fields[0], &fields[1], &fields[2], &fields[3]) {
             (Some(src_s), Some(dst_s), Some(rel_type), Some(props_json)) => {
-                let src = NodeId(
-                    src_s
-                        .parse::<u64>()
-                        .map_err(|_| StorageError::Serialization {
-                            msg: "bad src id".into(),
-                        })?,
-                );
-                let dst = NodeId(
-                    dst_s
-                        .parse::<u64>()
-                        .map_err(|_| StorageError::Serialization {
-                            msg: "bad dst id".into(),
-                        })?,
-                );
+                let src =
+                    NodeId(
+                        src_s
+                            .parse::<u64>()
+                            .map_err(|_| StorageError::Serialization {
+                                msg: "bad src id".into(),
+                            })?,
+                    );
+                let dst =
+                    NodeId(
+                        dst_s
+                            .parse::<u64>()
+                            .map_err(|_| StorageError::Serialization {
+                                msg: "bad dst id".into(),
+                            })?,
+                    );
                 let properties = json_to_props(props_json)?;
                 Ok(Some(EdgeData {
                     id: EdgeId(id),
@@ -264,10 +276,7 @@ impl RedisGraphStore {
 
     /// Parse adjacency set members into `AdjEntry` list.
     fn parse_adj_members(members: Vec<String>) -> Vec<AdjEntry> {
-        members
-            .into_iter()
-            .filter_map(|m| decode_adj(&m))
-            .collect()
+        members.into_iter().filter_map(|m| decode_adj(&m)).collect()
     }
 
     /// Delete an edge using an already-locked connection. This avoids dropping
@@ -282,20 +291,28 @@ impl RedisGraphStore {
             .read_edge(conn, graph, id.0)?
             .ok_or(StorageError::EdgeNotFound { id: id.0 })?;
         // Remove from rel-type index.
-        let _: () = conn.srem(self.kp(key_reltype(graph, &edge.rel_type)), id.0.to_string())
+        let _: () = conn
+            .srem(
+                self.kp(key_reltype(graph, &edge.rel_type)),
+                id.0.to_string(),
+            )
             .map_err(|e| StorageError::Backend { msg: e.to_string() })?;
         // Remove from all-edges set.
-        let _: () = conn.srem(self.kp(key_edges_set(graph)), id.0.to_string())
+        let _: () = conn
+            .srem(self.kp(key_edges_set(graph)), id.0.to_string())
             .map_err(|e| StorageError::Backend { msg: e.to_string() })?;
         // Remove from adjacency sets.
         let out_member = encode_adj(id, edge.dst, &edge.rel_type);
         let in_member = encode_adj(id, edge.src, &edge.rel_type);
-        let _: () = conn.srem(self.kp(key_out(graph, edge.src.0)), out_member)
+        let _: () = conn
+            .srem(self.kp(key_out(graph, edge.src.0)), out_member)
             .map_err(|e| StorageError::Backend { msg: e.to_string() })?;
-        let _: () = conn.srem(self.kp(key_in(graph, edge.dst.0)), in_member)
+        let _: () = conn
+            .srem(self.kp(key_in(graph, edge.dst.0)), in_member)
             .map_err(|e| StorageError::Backend { msg: e.to_string() })?;
         // Delete edge hash.
-        let _: () = conn.del(self.kp(key_edge(graph, id.0)))
+        let _: () = conn
+            .del(self.kp(key_edge(graph, id.0)))
             .map_err(|e| StorageError::Backend { msg: e.to_string() })?;
         Ok(())
     }
@@ -341,12 +358,16 @@ impl GraphStore for RedisGraphStore {
             .map_err(|e| StorageError::Backend { msg: e.to_string() })?;
         for (idx, fields) in raw.into_iter().enumerate() {
             let id = ids[idx];
-            match (&fields.first().and_then(|f| f.as_ref()), &fields.get(1).and_then(|f| f.as_ref())) {
+            match (
+                &fields.first().and_then(|f| f.as_ref()),
+                &fields.get(1).and_then(|f| f.as_ref()),
+            ) {
                 (Some(labels_json), Some(props_json)) => {
-                    let labels: Vec<String> =
-                        serde_json::from_str(labels_json).map_err(|e| StorageError::Serialization {
+                    let labels: Vec<String> = serde_json::from_str(labels_json).map_err(|e| {
+                        StorageError::Serialization {
                             msg: format!("labels batch: {e}"),
-                        })?;
+                        }
+                    })?;
                     let properties = json_to_props(props_json)?;
                     results.push(Some(NodeData {
                         id,
@@ -385,25 +406,34 @@ impl GraphStore for RedisGraphStore {
         for (idx, fields) in raw.into_iter().enumerate() {
             let id = ids[idx];
             if fields.len() >= 4 {
-                match (&fields[0], &fields[1], &fields[2], &fields[3]) {
-                    (Some(src_s), Some(dst_s), Some(rel_type), Some(props_json)) => {
-                        let src = NodeId(src_s.parse::<u64>().map_err(|_| {
-                            StorageError::Serialization { msg: "bad src".into() }
-                        })?);
-                        let dst = NodeId(dst_s.parse::<u64>().map_err(|_| {
-                            StorageError::Serialization { msg: "bad dst".into() }
-                        })?);
-                        let properties = json_to_props(props_json)?;
-                        results.push(Some(EdgeData {
-                            id,
-                            rel_type: rel_type.clone(),
-                            src,
-                            dst,
-                            properties,
-                        }));
-                        continue;
-                    }
-                    _ => {}
+                if let (Some(src_s), Some(dst_s), Some(rel_type), Some(props_json)) =
+                    (&fields[0], &fields[1], &fields[2], &fields[3])
+                {
+                    let src =
+                        NodeId(
+                            src_s
+                                .parse::<u64>()
+                                .map_err(|_| StorageError::Serialization {
+                                    msg: "bad src".into(),
+                                })?,
+                        );
+                    let dst =
+                        NodeId(
+                            dst_s
+                                .parse::<u64>()
+                                .map_err(|_| StorageError::Serialization {
+                                    msg: "bad dst".into(),
+                                })?,
+                        );
+                    let properties = json_to_props(props_json)?;
+                    results.push(Some(EdgeData {
+                        id,
+                        rel_type: rel_type.clone(),
+                        src,
+                        dst,
+                        properties,
+                    }));
+                    continue;
                 }
             }
             results.push(None);
@@ -573,6 +603,34 @@ impl GraphStore for RedisGraphStore {
             .collect()
     }
 
+    fn all_label_names(&self, graph: &str) -> Result<Vec<String>, StorageError> {
+        let prefix = format!("{}G:{{{graph}}}:label:", self.key_prefix);
+        let pattern = format!("{prefix}*");
+        let mut conn = self.conn()?;
+        let mut cursor: u64 = 0;
+        let mut labels = Vec::new();
+        loop {
+            let (next, keys): (u64, Vec<String>) = redis::cmd("SCAN")
+                .arg(cursor)
+                .arg("MATCH")
+                .arg(&pattern)
+                .arg("COUNT")
+                .arg(100u64)
+                .query(&mut conn)
+                .map_err(|e| StorageError::Backend { msg: e.to_string() })?;
+            for key in keys {
+                if let Some(label) = key.strip_prefix(&prefix) {
+                    labels.push(label.to_string());
+                }
+            }
+            cursor = next;
+            if cursor == 0 {
+                break;
+            }
+        }
+        Ok(labels)
+    }
+
     // ── Write operations ──────────────────────────────────────────────────────
 
     fn create_node(
@@ -610,10 +668,8 @@ impl GraphStore for RedisGraphStore {
         clean_props.remove("_sd2_eid");
 
         let node_key = self.kp(key_node(graph, id));
-        let labels_json =
-            serde_json::to_string(&labels).map_err(|e| StorageError::Serialization {
-                msg: e.to_string(),
-            })?;
+        let labels_json = serde_json::to_string(&labels)
+            .map_err(|e| StorageError::Serialization { msg: e.to_string() })?;
         let props_json = props_to_json(&clean_props)?;
         // Store node hash.
         redis::cmd("HSET")
@@ -626,11 +682,13 @@ impl GraphStore for RedisGraphStore {
             .map_err(|e| StorageError::Backend { msg: e.to_string() })?;
         // Update label indexes.
         for label in &labels {
-            let _: () = conn.sadd(self.kp(key_label(graph, label)), id.to_string())
+            let _: () = conn
+                .sadd(self.kp(key_label(graph, label)), id.to_string())
                 .map_err(|e| StorageError::Backend { msg: e.to_string() })?;
         }
         // Update all-nodes set.
-        let _: () = conn.sadd(self.kp(key_nodes_set(graph)), id.to_string())
+        let _: () = conn
+            .sadd(self.kp(key_nodes_set(graph)), id.to_string())
             .map_err(|e| StorageError::Backend { msg: e.to_string() })?;
         Ok(NodeId(id))
     }
@@ -693,17 +751,21 @@ impl GraphStore for RedisGraphStore {
             .query::<()>(&mut *conn)
             .map_err(|e| StorageError::Backend { msg: e.to_string() })?;
         // Update rel-type index.
-        let _: () = conn.sadd(self.kp(key_reltype(graph, &rel_type)), id.to_string())
+        let _: () = conn
+            .sadd(self.kp(key_reltype(graph, &rel_type)), id.to_string())
             .map_err(|e| StorageError::Backend { msg: e.to_string() })?;
         // Update adjacency sets.
         let out_member = encode_adj(EdgeId(id), dst, &rel_type);
         let in_member = encode_adj(EdgeId(id), src, &rel_type);
-        let _: () = conn.sadd(self.kp(key_out(graph, src.0)), out_member)
+        let _: () = conn
+            .sadd(self.kp(key_out(graph, src.0)), out_member)
             .map_err(|e| StorageError::Backend { msg: e.to_string() })?;
-        let _: () = conn.sadd(self.kp(key_in(graph, dst.0)), in_member)
+        let _: () = conn
+            .sadd(self.kp(key_in(graph, dst.0)), in_member)
             .map_err(|e| StorageError::Backend { msg: e.to_string() })?;
         // Update all-edges set.
-        let _: () = conn.sadd(self.kp(key_edges_set(graph)), id.to_string())
+        let _: () = conn
+            .sadd(self.kp(key_edges_set(graph)), id.to_string())
             .map_err(|e| StorageError::Backend { msg: e.to_string() })?;
         Ok(EdgeId(id))
     }
@@ -831,20 +893,18 @@ impl GraphStore for RedisGraphStore {
         let node = self
             .read_node(&mut conn, graph, id.0)?
             .ok_or(StorageError::NodeNotFound { id: id.0 })?;
-        let mut existing: std::collections::HashSet<String> =
-            node.labels.into_iter().collect();
+        let mut existing: std::collections::HashSet<String> = node.labels.into_iter().collect();
         for label in labels {
             if existing.insert(label.clone()) {
                 // New label: update index.
-                let _: () = conn.sadd(self.kp(key_label(graph, label)), id.0.to_string())
+                let _: () = conn
+                    .sadd(self.kp(key_label(graph, label)), id.0.to_string())
                     .map_err(|e| StorageError::Backend { msg: e.to_string() })?;
             }
         }
         let new_labels: Vec<String> = existing.into_iter().collect();
-        let labels_json =
-            serde_json::to_string(&new_labels).map_err(|e| StorageError::Serialization {
-                msg: e.to_string(),
-            })?;
+        let labels_json = serde_json::to_string(&new_labels)
+            .map_err(|e| StorageError::Serialization { msg: e.to_string() })?;
         redis::cmd("HSET")
             .arg(self.kp(key_node(graph, id.0)))
             .arg("labels")
@@ -865,7 +925,8 @@ impl GraphStore for RedisGraphStore {
             .ok_or(StorageError::NodeNotFound { id: id.0 })?;
         let to_remove: std::collections::HashSet<&String> = labels.iter().collect();
         for label in &to_remove {
-            let _: () = conn.srem(self.kp(key_label(graph, label)), id.0.to_string())
+            let _: () = conn
+                .srem(self.kp(key_label(graph, label)), id.0.to_string())
                 .map_err(|e| StorageError::Backend { msg: e.to_string() })?;
         }
         let new_labels: Vec<String> = node
@@ -873,10 +934,8 @@ impl GraphStore for RedisGraphStore {
             .into_iter()
             .filter(|l| !to_remove.contains(l))
             .collect();
-        let labels_json =
-            serde_json::to_string(&new_labels).map_err(|e| StorageError::Serialization {
-                msg: e.to_string(),
-            })?;
+        let labels_json = serde_json::to_string(&new_labels)
+            .map_err(|e| StorageError::Serialization { msg: e.to_string() })?;
         redis::cmd("HSET")
             .arg(self.kp(key_node(graph, id.0)))
             .arg("labels")
@@ -900,10 +959,7 @@ impl GraphStore for RedisGraphStore {
                 .map_err(|e| StorageError::Backend { msg: e.to_string() })?;
             if !out.is_empty() || !in_.is_empty() {
                 return Err(StorageError::Backend {
-                    msg: format!(
-                        "node {} has relationships; use DETACH DELETE",
-                        id.0
-                    ),
+                    msg: format!("node {} has relationships; use DETACH DELETE", id.0),
                 });
             }
         }
@@ -931,19 +987,24 @@ impl GraphStore for RedisGraphStore {
         }
         // Remove label indexes.
         for label in &node.labels {
-            let _: () = conn.srem(self.kp(key_label(graph, label)), id.0.to_string())
+            let _: () = conn
+                .srem(self.kp(key_label(graph, label)), id.0.to_string())
                 .map_err(|e| StorageError::Backend { msg: e.to_string() })?;
         }
         // Remove from all-nodes set.
-        let _: () = conn.srem(self.kp(key_nodes_set(graph)), id.0.to_string())
+        let _: () = conn
+            .srem(self.kp(key_nodes_set(graph)), id.0.to_string())
             .map_err(|e| StorageError::Backend { msg: e.to_string() })?;
         // Delete adjacency keys.
-        let _: () = conn.del(self.kp(key_out(graph, id.0)))
+        let _: () = conn
+            .del(self.kp(key_out(graph, id.0)))
             .map_err(|e| StorageError::Backend { msg: e.to_string() })?;
-        let _: () = conn.del(self.kp(key_in(graph, id.0)))
+        let _: () = conn
+            .del(self.kp(key_in(graph, id.0)))
             .map_err(|e| StorageError::Backend { msg: e.to_string() })?;
         // Delete node hash.
-        let _: () = conn.del(self.kp(key_node(graph, id.0)))
+        let _: () = conn
+            .del(self.kp(key_node(graph, id.0)))
             .map_err(|e| StorageError::Backend { msg: e.to_string() })?;
         Ok(())
     }
@@ -975,14 +1036,16 @@ impl GraphStore for RedisGraphStore {
     fn create_index(&self, graph: &str, label: &str, property: &str) -> Result<(), StorageError> {
         self.require_graph(graph)?;
         let mut conn = self.conn()?;
-        let _: () = conn.sadd(self.kp(key_indexes(graph)), format!("{label}:{property}"))
+        let _: () = conn
+            .sadd(self.kp(key_indexes(graph)), format!("{label}:{property}"))
             .map_err(|e| StorageError::Backend { msg: e.to_string() })?;
         Ok(())
     }
 
     fn drop_index(&self, graph: &str, label: &str, property: &str) -> Result<(), StorageError> {
         let mut conn = self.conn()?;
-        let _: () = conn.srem(self.kp(key_indexes(graph)), format!("{label}:{property}"))
+        let _: () = conn
+            .srem(self.kp(key_indexes(graph)), format!("{label}:{property}"))
             .map_err(|e| StorageError::Backend { msg: e.to_string() })?;
         Ok(())
     }
@@ -1011,7 +1074,8 @@ impl GraphStore for RedisGraphStore {
         }
         let mut conn = self.conn()?;
         // Remove from registry.
-        let _: () = conn.srem(self.key_graphs(), name)
+        let _: () = conn
+            .srem(self.key_graphs(), name)
             .map_err(|e| StorageError::Backend { msg: e.to_string() })?;
         // Delete all keys with pattern G:{name}:* using SCAN.
         // We use SCAN with a match pattern to avoid blocking with KEYS.
@@ -1108,20 +1172,32 @@ fn range_matches(val: &Value, range: &RangeQuery<'_>) -> bool {
         RangeQuery::Eq(target) => val.cypher_eq(target) == Some(true),
         RangeQuery::Lt(target) => cmp_values(val, target) == Some(std::cmp::Ordering::Less),
         RangeQuery::Lte(target) => {
-            matches!(cmp_values(val, target), Some(std::cmp::Ordering::Less | std::cmp::Ordering::Equal))
+            matches!(
+                cmp_values(val, target),
+                Some(std::cmp::Ordering::Less | std::cmp::Ordering::Equal)
+            )
         }
         RangeQuery::Gt(target) => cmp_values(val, target) == Some(std::cmp::Ordering::Greater),
         RangeQuery::Gte(target) => {
-            matches!(cmp_values(val, target), Some(std::cmp::Ordering::Greater | std::cmp::Ordering::Equal))
+            matches!(
+                cmp_values(val, target),
+                Some(std::cmp::Ordering::Greater | std::cmp::Ordering::Equal)
+            )
         }
         RangeQuery::Between { lo, hi, inclusive } => {
             let lo_ok = if *inclusive {
-                matches!(cmp_values(val, lo), Some(std::cmp::Ordering::Greater | std::cmp::Ordering::Equal))
+                matches!(
+                    cmp_values(val, lo),
+                    Some(std::cmp::Ordering::Greater | std::cmp::Ordering::Equal)
+                )
             } else {
                 cmp_values(val, lo) == Some(std::cmp::Ordering::Greater)
             };
             let hi_ok = if *inclusive {
-                matches!(cmp_values(val, hi), Some(std::cmp::Ordering::Less | std::cmp::Ordering::Equal))
+                matches!(
+                    cmp_values(val, hi),
+                    Some(std::cmp::Ordering::Less | std::cmp::Ordering::Equal)
+                )
             } else {
                 cmp_values(val, hi) == Some(std::cmp::Ordering::Less)
             };

@@ -18,6 +18,25 @@ cargo test
 cargo test --test tck
 ```
 
+## Pre-commit Hooks
+
+This repo ships with pre-commit hooks that enforce zero-warning policy.
+
+**Using [pre-commit](https://pre-commit.com):**
+
+```bash
+pip install pre-commit
+pre-commit install
+```
+
+**Using the native git hook directly:**
+
+```bash
+git config core.hooksPath .githooks
+```
+
+The hooks run: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test -p gql-core --lib`, and a check that no `PLAN.md` exists in the repo root.
+
 ## Why
 
 - [FalkorDB](https://github.com/FalkorDB/FalkorDB) is SSPL v1 — a licensing risk for Microsoft products offered as services.

@@ -50,7 +50,9 @@ async fn query_handler(
 
     let ast = parse_query(&body.cypher).map_err(|e| ApiError::bad_request(e.to_string()))?;
     let planner = QueryPlanner::new(store.as_ref(), &name);
-    let plan = planner.plan(&ast).map_err(|e| ApiError::bad_request(e.to_string()))?;
+    let plan = planner
+        .plan(&ast)
+        .map_err(|e| ApiError::bad_request(e.to_string()))?;
 
     // Move the Arc and the plan into spawn_blocking so CPU-bound execution
     // does not block the Tokio async thread pool.
@@ -58,8 +60,7 @@ async fn query_handler(
     let name_for_exec = name.clone();
     let result = tokio::task::spawn_blocking(move || {
         let mut budget = ExecutionBudget::default_budget();
-        QueryExecutor::new(store_for_exec.as_ref())
-            .execute(&name_for_exec, &plan, &mut budget)
+        QueryExecutor::new(store_for_exec.as_ref()).execute(&name_for_exec, &plan, &mut budget)
     })
     .await
     .map_err(|_| ApiError::internal("query executor panicked"))??;
@@ -95,7 +96,9 @@ async fn mutate_handler(
 
     let ast = parse_query(&body.cypher).map_err(|e| ApiError::bad_request(e.to_string()))?;
     let planner = QueryPlanner::new(store.as_ref(), &name);
-    let plan = planner.plan(&ast).map_err(|e| ApiError::bad_request(e.to_string()))?;
+    let plan = planner
+        .plan(&ast)
+        .map_err(|e| ApiError::bad_request(e.to_string()))?;
 
     // Move the Arc and plan into spawn_blocking so CPU-bound execution
     // does not block the Tokio async thread pool.
@@ -103,8 +106,7 @@ async fn mutate_handler(
     let name_for_exec = name.clone();
     let result = tokio::task::spawn_blocking(move || {
         let mut budget = ExecutionBudget::default_budget();
-        QueryExecutor::new(store_for_exec.as_ref())
-            .execute(&name_for_exec, &plan, &mut budget)
+        QueryExecutor::new(store_for_exec.as_ref()).execute(&name_for_exec, &plan, &mut budget)
     })
     .await
     .map_err(|_| ApiError::internal("mutate executor panicked"))??;
