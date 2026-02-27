@@ -1,78 +1,60 @@
-# Issue #105
+# Issue #133
 
-You are working on SedanDelivery, a Rust GQL/Cypher query engine. Current TCK: 3526/3806 (92.7%). Fix miscellaneous remaining failures across TypeConversion, Precedence, Return, and OrderBy features.
+You are working on SedanDelivery, a Rust GQL/Cypher query engine. Current TCK: 3719/3806 (97.7%). Fix all remaining temporal failures — 56 'Expected row not found' (mostly Temporal5/6/7/8/10) + 9 datetime parse errors.
 
-Parent issue: #35. Branch from main: feat/tck-r7-misc. Implement fixes, verify, create PR.
+Branch from main: feat/tck-r9-temporal-deep. Create PR when done.
 
-FIRST, enumerate remaining non-temporal failures:
+DIAGNOSTICS - run these first:
 ```bash
-cargo test --test tck 2>&1 | grep -B2 'Expected row.*not found\|Row.*does not match' | grep 'Defined:' | grep -v 'Temporal\|temporal' | awk '{print $2}' | cut -d: -f1 | sort | uniq -c | sort -rn | head -20
+cargo test --test tck 2>&1 | grep -B10 'Expected row #0 not found' | grep -B1 'Expected:\|Got:' | grep -v 'Step\|Defined\|Matched' | head -60
+cargo test --test tck 2>&1 | grep 'cannot parse datetime\|cannot parse date\|cannot parse civil' | head -10
 ```
 
-FAILURE 1: TypeConversion4 (~3 failures), TypeConversion2 (~2 failures)
-Run: cargo test --test tck 2>&1 | grep -A30 'TypeConversion' | head -80
-Look at tests/tck/features/expressions/typeConversion/
-Common issues:
-- toString(date) should produce ISO 8601 string
-- toFloat(null) should return null (not error)
-- toInteger(3.0) = 3
-- toBooleanOrNull, toIntegerOrNull, toFloatOrNull functions
-Fix in filter.rs: Add missing type conversion functions or fix edge cases.
+ROMAINING TEMPORAL FAILURES BY FEATURE:
+- Temporal5 (~6): Duration accessors (.years, .months, .days, .hours, .minutes, .seconds, .monthsOfYear, .daysOfMonth)
+- Temporal6 (~8): Duration between two temporal values (duration.between)
+- Temporal7 (~1): Temporal truncation (date.truncate('week'), datetime.truncate('hour'))
+- Temporal8 (~14): Temporal component access (.year, .month, .day, .hour, .epochMillis, .epochSeconds)
+- Temporal10 (~10): Arithmetic with temporals and durations
+- Temporal2 (~1): Other
 
-FAILURE 2: Precedence2 (~2 failures)
-Run: cargo test --test tck 2>&1 | grep -A30 'Precedence2' | head -60
-Look at tests/tck/features/expressions/precedence/Precedence2.feature
-Issue likely: Operator precedence wrong in parser (AND vs OR vs NOT vs comparison)
-Fix in parser.rs: Verify precedence: NOT > AND > OR, comparison > logical
+COMPACT DATETIME FORMATS TO FIX (~9 parse errors):
+1. '2015T214032-0100' — year + T + compact time (HHMMSS) + compact offset (-HHMM)
+2. '2015202T21+18:00' — year + ordinal day + T + time + offset
+3. '2015-W30T2140-02' — week date + compact time + compact offset (-HH)
+4. '2015-W30T2140-00:00' — week date + compact time + offset
+5. '2015-W30-2T214032.142Z' — week-day + compact time with fractional seconds
+6. '2015-202T21:40:32+01:00' — ordinal date + time
+7. '-999999999-01-01' — extreme negative year (return error, not panic)
+8. 'duration from date string' — return error for duration('2012-02-02')
+9. Zulu offset in civil time — strip Z for localdatetime parsing
 
-FAILURE 3: Return4 (~3 failures)
-Run: cargo test --test tck 2>&1 | grep -A30 'Return4' | head -80
-Look at tests/tck/features/clauses/return/Return4.feature
-Common return clause issues:
-- RETURN * with ORDER BY
-- RETURN with SKIP and LIMIT combined
-- RETURN DISTINCT edge cases
-Fix in engine.rs/planner.rs: Check RETURN clause handling.
+IMPLEMENTATION APPROACH:
+For compact datetime formats, add a preprocessing step in filter.rs before calling jiff::parse:
+```rust
+fn normalize_datetime_input(s: &str) -> String {
+    // 1. Expand compact time HHMMSS to HH:MM:SS
+    // 2. Expand compact offset -HHMM to -HH:MM and -HH to -HH:00
+    // 3. Expand ordinal date YYYYDDD to proper date
+    // 4. Handle Zulu in localdatetime
+}
+```
 
-FAILURE 4: WithOrderBy1/2 (~2+2 failures)
-Run: cargo test --test tck 2>&1 | grep -A30 'WithOrderBy' | head -80
-Look at tests/tck/features/clauses/with-orderBy/
-Issues:
-- ORDER BY after WITH not matching
-- NULL ordering (nulls first or last?)
-- ORDER BY expression evaluation
-Fix in engine.rs: Check sort/order implementation.
+For wrong temporal values, the likely issues are:
+- Duration accessor (.years etc) not extracting correct component
+- Duration.between not using correct algorithm
+- Temporal truncation rounding incorrectly
+- epochMillis/epochSeconds computation wrong
+- Temporal arithmetic with duration applying months incorrectly
 
-FAILURE 5: Match8 (~2 failures)
-Run: cargo test --test tck 2>&1 | grep -A30 'Match8' | head -60
-Look at tests/tck/features/clauses/match/Match8.feature
-
-FAILURE 6: Graph6 (~2 failures)
-Run: cargo test --test tck 2>&1 | grep -A30 'Graph6' | head -60
-Check graph functions: labels(), keys(), properties(), nodes(), relationships(), id()
-
-FAILURE 7: Aggregation2/8 (~2+2 failures not already handled)
-Check count(DISTINCT expr), avg(expr), sum(expr) edge cases.
-
-FAILURE 8: count() function name issue
-Expected column name: `6` (just the value)
-Got column name: `count(*): 2` (function expression as name)
-This suggests the result comparison in runner.rs needs to handle anonymous columns differently.
-Check runner.rs: When expected value is just a number without column name, compare values only.
-
-For each failure:
-1. Get the specific failing query from the feature file
-2. Run it manually (using the test infrastructure)
-3. Trace through the code to find the bug
-4. Fix it
+KEY: Read the failing test cases in the .feature files to understand exact expected behavior.
 
 AFTER FIXING:
-1. cargo test -p gql-core --lib
-2. cargo test -p gql-core --test end_to_end
-3. cargo test --test tck 2>&1 | tail -5
-4. cargo clippy -p gql-core -- -D warnings
-5. Create PR with count of scenarios improved
+1. cargo test -p gql-core --lib (308 pass)
+2. cargo clippy -p gql-core -- -D warnings (clean)
+3. cargo test --test tck 2>&1 | tail -5 (improvement)
+4. Create PR
 
-Key files: gql-core/src/executor/engine.rs, gql-core/src/executor/filter.rs, gql-core/tests/tck/runner.rs, gql-core/src/parser/parser.rs, gql-core/src/planner/planner.rs
+Key files: gql-core/src/executor/filter.rs, gql-core/src/types/value.rs
 
 Follow DEFAULT_WORKFLOW.md autonomously. NO QUESTIONS. Work through Steps 0-22. Create PR when complete.
