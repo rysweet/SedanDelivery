@@ -48,6 +48,10 @@
         "net10.0": {
           "targetAlias": "net10.0",
           "dependencies": {
+            "AspNetCore.HealthChecks.Uris": {
+              "target": "Package",
+              "version": "[9.0.0, )"
+            },
             "AspNetCoreRateLimit": {
               "target": "Package",
               "version": "[5.0.0, )"

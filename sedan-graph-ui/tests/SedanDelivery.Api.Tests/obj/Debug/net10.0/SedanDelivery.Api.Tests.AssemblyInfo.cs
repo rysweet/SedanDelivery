@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("SedanDelivery.Api.Tests")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+4085cd466dc41425ffd12d834f2076027115bdce")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+466cd9d09ee9e9208a19c6de2c96f992f2078899")]
 [assembly: System.Reflection.AssemblyProductAttribute("SedanDelivery.Api.Tests")]
 [assembly: System.Reflection.AssemblyTitleAttribute("SedanDelivery.Api.Tests")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]

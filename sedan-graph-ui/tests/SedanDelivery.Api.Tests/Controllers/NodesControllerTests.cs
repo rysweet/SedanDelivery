@@ -25,10 +25,9 @@ public sealed class NodesControllerTests : IClassFixture<WebApplicationFactory<P
         _factory = factory;
     }
 
-    private WebApplicationFactory<Program> CreateFactory(Action<Mock<GqlApiClient>> setup)
+    private WebApplicationFactory<Program> CreateFactory(Action<Mock<IGqlApiClient>> setup)
     {
-        var mock = new Mock<GqlApiClient>(MockBehavior.Strict,
-            new HttpClient { BaseAddress = new Uri("http://localhost") });
+        var mock = new Mock<IGqlApiClient>(MockBehavior.Strict);
 
         setup(mock);
 
@@ -37,7 +36,7 @@ public sealed class NodesControllerTests : IClassFixture<WebApplicationFactory<P
             builder.ConfigureServices(services =>
             {
                 var descriptor = services.SingleOrDefault(
-                    d => d.ServiceType == typeof(GqlApiClient));
+                    d => d.ServiceType == typeof(IGqlApiClient));
                 if (descriptor is not null)
                 {
                     services.Remove(descriptor);

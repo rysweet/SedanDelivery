@@ -1,9 +1,10 @@
 {
   "version": 2,
-  "dgSpecHash": "FVfQbkzOMZ8=",
+  "dgSpecHash": "V2VLMr1IlkI=",
   "success": true,
   "projectFilePath": "/home/azureuser/src/sd3/worktrees/feat-graph-visualizer-spa/sedan-graph-ui/tests/SedanDelivery.Api.Tests/SedanDelivery.Api.Tests.csproj",
   "expectedPackageFiles": [
+    "/home/azureuser/.nuget/packages/aspnetcore.healthchecks.uris/9.0.0/aspnetcore.healthchecks.uris.9.0.0.nupkg.sha512",
     "/home/azureuser/.nuget/packages/aspnetcoreratelimit/5.0.0/aspnetcoreratelimit.5.0.0.nupkg.sha512",
     "/home/azureuser/.nuget/packages/castle.core/5.1.1/castle.core.5.1.1.nupkg.sha512",
     "/home/azureuser/.nuget/packages/microsoft.aspnetcore.mvc.testing/10.0.1/microsoft.aspnetcore.mvc.testing.10.0.1.nupkg.sha512",
@@ -28,6 +29,8 @@
     "/home/azureuser/.nuget/packages/microsoft.extensions.diagnostics/10.0.1/microsoft.extensions.diagnostics.10.0.1.nupkg.sha512",
     "/home/azureuser/.nuget/packages/microsoft.extensions.diagnostics.abstractions/10.0.1/microsoft.extensions.diagnostics.abstractions.10.0.1.nupkg.sha512",
     "/home/azureuser/.nuget/packages/microsoft.extensions.diagnostics.exceptionsummarization/9.6.0/microsoft.extensions.diagnostics.exceptionsummarization.9.6.0.nupkg.sha512",
+    "/home/azureuser/.nuget/packages/microsoft.extensions.diagnostics.healthchecks/8.0.11/microsoft.extensions.diagnostics.healthchecks.8.0.11.nupkg.sha512",
+    "/home/azureuser/.nuget/packages/microsoft.extensions.diagnostics.healthchecks.abstractions/8.0.11/microsoft.extensions.diagnostics.healthchecks.abstractions.8.0.11.nupkg.sha512",
     "/home/azureuser/.nuget/packages/microsoft.extensions.features/8.0.20/microsoft.extensions.features.8.0.20.nupkg.sha512",
     "/home/azureuser/.nuget/packages/microsoft.extensions.fileproviders.abstractions/10.0.1/microsoft.extensions.fileproviders.abstractions.10.0.1.nupkg.sha512",
     "/home/azureuser/.nuget/packages/microsoft.extensions.fileproviders.physical/10.0.1/microsoft.extensions.fileproviders.physical.10.0.1.nupkg.sha512",

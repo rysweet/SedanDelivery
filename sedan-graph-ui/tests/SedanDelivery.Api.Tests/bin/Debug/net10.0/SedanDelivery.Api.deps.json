@@ -8,6 +8,7 @@
     ".NETCoreApp,Version=v10.0": {
       "SedanDelivery.Api/1.0.0": {
         "dependencies": {
+          "AspNetCore.HealthChecks.Uris": "9.0.0",
           "AspNetCoreRateLimit": "5.0.0",
           "Microsoft.AspNetCore.OpenApi": "10.0.0",
           "Scalar.AspNetCore": "2.0.26",
@@ -15,6 +16,14 @@
         },
         "runtime": {
           "SedanDelivery.Api.dll": {}
+        }
+      },
+      "AspNetCore.HealthChecks.Uris/9.0.0": {
+        "runtime": {
+          "lib/net8.0/HealthChecks.Uris.dll": {
+            "assemblyVersion": "9.0.0.0",
+            "fileVersion": "9.0.0.0"
+          }
         }
       },
       "AspNetCoreRateLimit/5.0.0": {
@@ -315,6 +324,13 @@
       "type": "project",
       "serviceable": false,
       "sha512": ""
+    },
+    "AspNetCore.HealthChecks.Uris/9.0.0": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-XYdNlA437KeF8p9qOpZFyNqAN+c0FXt/JjTvzH/Qans0q0O3pPE8KPnn39ucQQjR/Roum1vLTP3kXiUs8VHyuA==",
+      "path": "aspnetcore.healthchecks.uris/9.0.0",
+      "hashPath": "aspnetcore.healthchecks.uris.9.0.0.nupkg.sha512"
     },
     "AspNetCoreRateLimit/5.0.0": {
       "type": "package",

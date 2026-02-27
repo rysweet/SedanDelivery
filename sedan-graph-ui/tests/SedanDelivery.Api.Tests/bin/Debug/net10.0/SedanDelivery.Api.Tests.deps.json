@@ -149,8 +149,8 @@
           "Microsoft.Extensions.DependencyInjection.Reference": "10.0.0.0",
           "Microsoft.Extensions.Diagnostics.Abstractions.Reference": "10.0.0.0",
           "Microsoft.Extensions.Diagnostics.Reference": "10.0.0.0",
-          "Microsoft.Extensions.Diagnostics.HealthChecks.Abstractions": "10.0.0.0",
-          "Microsoft.Extensions.Diagnostics.HealthChecks": "10.0.0.0",
+          "Microsoft.Extensions.Diagnostics.HealthChecks.Abstractions.Reference": "10.0.0.0",
+          "Microsoft.Extensions.Diagnostics.HealthChecks.Reference": "10.0.0.0",
           "Microsoft.Extensions.Features.Reference": "10.0.0.0",
           "Microsoft.Extensions.FileProviders.Abstractions.Reference": "10.0.0.0",
           "Microsoft.Extensions.FileProviders.Composite": "10.0.0.0",
@@ -357,6 +357,21 @@
         },
         "compile": {
           "SedanDelivery.Api.Tests.dll": {}
+        }
+      },
+      "AspNetCore.HealthChecks.Uris/9.0.0": {
+        "dependencies": {
+          "Microsoft.Extensions.Diagnostics.HealthChecks": "8.0.11",
+          "Microsoft.Extensions.Http": "9.0.6"
+        },
+        "runtime": {
+          "lib/net8.0/HealthChecks.Uris.dll": {
+            "assemblyVersion": "9.0.0.0",
+            "fileVersion": "9.0.0.0"
+          }
+        },
+        "compile": {
+          "lib/net8.0/HealthChecks.Uris.dll": {}
         }
       },
       "AspNetCoreRateLimit/5.0.0": {
@@ -1185,6 +1200,7 @@
       },
       "SedanDelivery.Api/1.0.0": {
         "dependencies": {
+          "AspNetCore.HealthChecks.Uris": "9.0.0",
           "AspNetCoreRateLimit": "5.0.0",
           "Microsoft.AspNetCore.OpenApi": "10.0.0",
           "Scalar.AspNetCore": "2.0.26",
@@ -1850,13 +1866,13 @@
         },
         "compileOnly": true
       },
-      "Microsoft.Extensions.Diagnostics.HealthChecks.Abstractions/10.0.0.0": {
+      "Microsoft.Extensions.Diagnostics.HealthChecks.Abstractions.Reference/10.0.0.0": {
         "compile": {
           "Microsoft.Extensions.Diagnostics.HealthChecks.Abstractions.dll": {}
         },
         "compileOnly": true
       },
-      "Microsoft.Extensions.Diagnostics.HealthChecks/10.0.0.0": {
+      "Microsoft.Extensions.Diagnostics.HealthChecks.Reference/10.0.0.0": {
         "compile": {
           "Microsoft.Extensions.Diagnostics.HealthChecks.dll": {}
         },
@@ -3154,6 +3170,18 @@
         },
         "compileOnly": true
       },
+      "Microsoft.Extensions.Diagnostics.HealthChecks/8.0.11": {
+        "dependencies": {
+          "Microsoft.Extensions.Diagnostics.HealthChecks.Abstractions": "8.0.11",
+          "Microsoft.Extensions.Hosting.Abstractions": "10.0.1",
+          "Microsoft.Extensions.Logging.Abstractions": "10.0.1",
+          "Microsoft.Extensions.Options": "10.0.1"
+        },
+        "compileOnly": true
+      },
+      "Microsoft.Extensions.Diagnostics.HealthChecks.Abstractions/8.0.11": {
+        "compileOnly": true
+      },
       "Microsoft.Extensions.Features/8.0.20": {
         "compileOnly": true
       },
@@ -3326,6 +3354,13 @@
       "type": "project",
       "serviceable": false,
       "sha512": ""
+    },
+    "AspNetCore.HealthChecks.Uris/9.0.0": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-XYdNlA437KeF8p9qOpZFyNqAN+c0FXt/JjTvzH/Qans0q0O3pPE8KPnn39ucQQjR/Roum1vLTP3kXiUs8VHyuA==",
+      "path": "aspnetcore.healthchecks.uris/9.0.0",
+      "hashPath": "aspnetcore.healthchecks.uris.9.0.0.nupkg.sha512"
     },
     "AspNetCoreRateLimit/5.0.0": {
       "type": "package",
@@ -4163,12 +4198,12 @@
       "serviceable": false,
       "sha512": ""
     },
-    "Microsoft.Extensions.Diagnostics.HealthChecks.Abstractions/10.0.0.0": {
+    "Microsoft.Extensions.Diagnostics.HealthChecks.Abstractions.Reference/10.0.0.0": {
       "type": "referenceassembly",
       "serviceable": false,
       "sha512": ""
     },
-    "Microsoft.Extensions.Diagnostics.HealthChecks/10.0.0.0": {
+    "Microsoft.Extensions.Diagnostics.HealthChecks.Reference/10.0.0.0": {
       "type": "referenceassembly",
       "serviceable": false,
       "sha512": ""
@@ -5263,6 +5298,20 @@
       "sha512": "sha512-QMoMrkNpnQym5mpfdxfxpRDuqLpsOuztguFvzH9p+Ex+do+uLFoi7UkAsBO4e9/tNR3eMFraFf2fOAi2cp3jjA==",
       "path": "microsoft.extensions.diagnostics.abstractions/10.0.1",
       "hashPath": "microsoft.extensions.diagnostics.abstractions.10.0.1.nupkg.sha512"
+    },
+    "Microsoft.Extensions.Diagnostics.HealthChecks/8.0.11": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-zLgN22Zp9pk8RHlwssRTexw4+a6wqOnKWN+VejdPn5Yhjql4XiBhkFo35Nu8mmqHIk/UEmmCnMGLWq75aFfkOw==",
+      "path": "microsoft.extensions.diagnostics.healthchecks/8.0.11",
+      "hashPath": "microsoft.extensions.diagnostics.healthchecks.8.0.11.nupkg.sha512"
+    },
+    "Microsoft.Extensions.Diagnostics.HealthChecks.Abstractions/8.0.11": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-So3JUdRxozRjvQ3cxU6F3nI/i4emDnjane6yMYcJhvTTTu29ltlIdoXjkFGRceIWz8yKvuEpzXItZ0x5GvN2nQ==",
+      "path": "microsoft.extensions.diagnostics.healthchecks.abstractions/8.0.11",
+      "hashPath": "microsoft.extensions.diagnostics.healthchecks.abstractions.8.0.11.nupkg.sha512"
     },
     "Microsoft.Extensions.Features/8.0.20": {
       "type": "package",

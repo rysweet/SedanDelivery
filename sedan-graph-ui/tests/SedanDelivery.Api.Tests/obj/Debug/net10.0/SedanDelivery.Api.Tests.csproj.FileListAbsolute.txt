@@ -437,7 +437,6 @@
 /home/azureuser/src/sd3/worktrees/feat-graph-visualizer-spa/sedan-graph-ui/tests/SedanDelivery.Api.Tests/obj/Debug/net10.0/SedanDelivery.Api.Tests.AssemblyInfoInputs.cache
 /home/azureuser/src/sd3/worktrees/feat-graph-visualizer-spa/sedan-graph-ui/tests/SedanDelivery.Api.Tests/obj/Debug/net10.0/SedanDelivery.Api.Tests.AssemblyInfo.cs
 /home/azureuser/src/sd3/worktrees/feat-graph-visualizer-spa/sedan-graph-ui/tests/SedanDelivery.Api.Tests/obj/Debug/net10.0/SedanDelivery.Api.Tests.csproj.CoreCompileInputs.cache
-/home/azureuser/src/sd3/worktrees/feat-graph-visualizer-spa/sedan-graph-ui/tests/SedanDelivery.Api.Tests/obj/Debug/net10.0/SedanDelivery.Api.Tests.sourcelink.json
 /home/azureuser/src/sd3/worktrees/feat-graph-visualizer-spa/sedan-graph-ui/tests/SedanDelivery.Api.Tests/obj/Debug/net10.0/SedanDel.84473119.Up2Date
 /home/azureuser/src/sd3/worktrees/feat-graph-visualizer-spa/sedan-graph-ui/tests/SedanDelivery.Api.Tests/obj/Debug/net10.0/SedanDelivery.Api.Tests.dll
 /home/azureuser/src/sd3/worktrees/feat-graph-visualizer-spa/sedan-graph-ui/tests/SedanDelivery.Api.Tests/obj/Debug/net10.0/refint/SedanDelivery.Api.Tests.dll
@@ -446,3 +445,5 @@
 /home/azureuser/src/sd3/worktrees/feat-graph-visualizer-spa/sedan-graph-ui/tests/SedanDelivery.Api.Tests/obj/Debug/net10.0/ref/SedanDelivery.Api.Tests.dll
 /home/azureuser/src/sd3/worktrees/feat-graph-visualizer-spa/sedan-graph-ui/tests/SedanDelivery.Api.Tests/bin/Debug/net10.0/Scalar.AspNetCore.dll
 /home/azureuser/src/sd3/worktrees/feat-graph-visualizer-spa/sedan-graph-ui/tests/SedanDelivery.Api.Tests/bin/Debug/net10.0/runtimes/win/lib/net10.0/System.Diagnostics.EventLog.Messages.dll
+/home/azureuser/src/sd3/worktrees/feat-graph-visualizer-spa/sedan-graph-ui/tests/SedanDelivery.Api.Tests/bin/Debug/net10.0/HealthChecks.Uris.dll
+/home/azureuser/src/sd3/worktrees/feat-graph-visualizer-spa/sedan-graph-ui/tests/SedanDelivery.Api.Tests/obj/Debug/net10.0/SedanDelivery.Api.Tests.sourcelink.json
