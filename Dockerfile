@@ -18,14 +18,16 @@ COPY gql-redis-store/Cargo.toml ./gql-redis-store/
 COPY gql-module/Cargo.toml ./gql-module/
 COPY gql-fabric-store/Cargo.toml ./gql-fabric-store/
 COPY gql-cli/Cargo.toml ./gql-cli/
+COPY gql-api/Cargo.toml ./gql-api/
 
 # Create stub source files so cargo can resolve the dependency graph
-RUN mkdir -p gql-core/src gql-redis-store/src gql-fabric-store/src gql-module/src gql-cli/src && \
+RUN mkdir -p gql-core/src gql-redis-store/src gql-fabric-store/src gql-module/src gql-cli/src gql-api/src && \
     echo "pub fn stub() {}" > gql-core/src/lib.rs && \
     echo "pub fn stub() {}" > gql-redis-store/src/lib.rs && \
     echo "pub fn stub() {}" > gql-fabric-store/src/lib.rs && \
     echo "pub fn stub() {}" > gql-module/src/lib.rs && \
     echo "fn main() {}" > gql-cli/src/main.rs && \
+    echo "fn main() {}" > gql-api/src/main.rs && \
     cargo build --release -p gql-module 2>/dev/null || true
 
 # Copy actual source code
@@ -34,11 +36,13 @@ COPY gql-redis-store/ ./gql-redis-store/
 COPY gql-fabric-store/ ./gql-fabric-store/
 COPY gql-module/ ./gql-module/
 COPY gql-cli/ ./gql-cli/
+COPY gql-api/ ./gql-api/
 
-# Build the Redis module .so
-RUN touch gql-core/src/lib.rs gql-redis-store/src/lib.rs gql-fabric-store/src/lib.rs gql-module/src/lib.rs && \
+# Build the Redis module .so and gql-api HTTP service
+RUN touch gql-core/src/lib.rs gql-redis-store/src/lib.rs gql-fabric-store/src/lib.rs gql-module/src/lib.rs gql-api/src/main.rs && \
     cargo build --release -p gql-module && \
-    ls -lh target/release/libgql_module.so
+    cargo build --release -p gql-api && \
+    ls -lh target/release/libgql_module.so target/release/gql-api
 
 # ── Runtime ───────────────────────────────────────────────────────────────────
 FROM valkey/valkey:8.1-bookworm AS runtime
