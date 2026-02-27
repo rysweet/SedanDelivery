@@ -1781,6 +1781,27 @@ impl<'a> QueryExecutor<'a> {
                         }
                         return eval_expr(expr, ctx);
                     }
+                    "__patterncomp" => {
+                        // Pattern comprehension: [(pattern) WHERE filter | mapExpr]
+                        // args[0] = PatternExpr, args[1] = map_expr, args[2] = where (Bool(true) if absent)
+                        if args.len() == 3 {
+                            if let Expr::PatternExpr(patterns) = &args[0] {
+                                let map_expr = &args[1];
+                                let where_clause: Option<Expr> = match &args[2] {
+                                    Expr::Bool(true) => None,
+                                    other => Some(other.clone()),
+                                };
+                                return self.eval_pattern_comprehension(
+                                    graph,
+                                    patterns,
+                                    map_expr,
+                                    where_clause.as_ref().map(|e| e as &Expr),
+                                    row,
+                                );
+                            }
+                        }
+                        return Ok(Value::List(vec![]));
+                    }
                     _ => {}
                 }
 
@@ -2179,6 +2200,46 @@ impl<'a> QueryExecutor<'a> {
                 .all(|(k, v)| sub_row.get(k).is_none_or(|sv| sv == v))
         });
         Ok(Value::Bool(has_match))
+    }
+
+    /// Evaluate a pattern comprehension: `[(pattern) WHERE filter | mapExpr]`.
+    ///
+    /// Returns a list of `mapExpr` values for each pattern match compatible with
+    /// the current outer row context.
+    fn eval_pattern_comprehension(
+        &self,
+        graph: &str,
+        patterns: &[crate::ast::PathPattern],
+        map_expr: &Expr,
+        where_clause: Option<&Expr>,
+        outer_row: &Row,
+    ) -> Result<Value, GqlError> {
+        let planner = QueryPlanner::new(self.store, graph);
+        let sub_op = planner.plan_exists_subquery(patterns, where_clause)?;
+
+        let outer = vec![outer_row.clone()];
+        let mut budget = ExecutionBudget::default_budget();
+        let mut stats = MutationStats::default();
+        let sub_rows = self.exec_operator(graph, &sub_op, &mut budget, &outer, &mut stats)?;
+
+        let mut result = Vec::new();
+        for sub_row in &sub_rows {
+            // Only include rows compatible with the outer row's bound variables.
+            let compatible = outer_row
+                .iter()
+                .all(|(k, v)| sub_row.get(k).is_none_or(|sv| sv == v));
+            if compatible {
+                // Merge outer row with sub row (sub row vars take precedence).
+                let mut merged = outer_row.clone();
+                for (k, v) in sub_row {
+                    merged.insert(k.clone(), v.clone());
+                }
+                let ctx = self.build_filter_ctx(graph, &merged)?;
+                let val = self.eval_with_storage(graph, map_expr, &merged, &ctx)?;
+                result.push(val);
+            }
+        }
+        Ok(Value::List(result))
     }
 
     /// Apply a single `SetItem` (SET n.prop = val, SET n = {map}, SET n += {map}, SET n:Label).

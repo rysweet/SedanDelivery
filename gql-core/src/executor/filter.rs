@@ -2341,6 +2341,11 @@ fn eval_localdatetime_constructor(vals: &[Value]) -> Result<Value, GqlError> {
     match &vals[0] {
         Value::Null => Ok(Value::Null),
         Value::Str(s) => {
+            // Handle ISO week date format: 2015-W30-2T19:32:24
+            // jiff cannot parse YYYY-Www-DThh:mm:ss directly.
+            if s.contains('W') {
+                return parse_localdatetime_week_str(s);
+            }
             let dt: jiff::civil::DateTime = s
                 .parse()
                 .map_err(|e| temporal_parse_error("localdatetime", e))?;
@@ -2427,7 +2432,7 @@ fn eval_duration_constructor(vals: &[Value]) -> Result<Value, GqlError> {
     match &vals[0] {
         Value::Null => Ok(Value::Null),
         Value::Str(s) => {
-            let sp: jiff::Span = s.parse().map_err(|e| temporal_parse_error("duration", e))?;
+            let sp = parse_duration_str(s)?;
             Ok(Value::Duration(sp))
         }
         Value::Map(m) => {
@@ -2454,7 +2459,7 @@ fn eval_duration_constructor(vals: &[Value]) -> Result<Value, GqlError> {
             let int_months = total_months as i64;
             let frac_months = total_months - int_months as f64;
 
-            let total_days = frac_months * 30.0 + raw_weeks * 7.0 + raw_days;
+            let total_days = frac_months * (365.2425 / 12.0) + raw_weeks * 7.0 + raw_days;
             let int_days = total_days as i64;
             let frac_days = total_days - int_days as f64;
 
@@ -2484,6 +2489,166 @@ fn eval_duration_constructor(vals: &[Value]) -> Result<Value, GqlError> {
         }
         other => type_error("duration", other),
     }
+}
+
+/// Parse a localdatetime string containing an ISO week date portion (e.g. `2015-W30-2T19:32:24`).
+fn parse_localdatetime_week_str(s: &str) -> Result<Value, GqlError> {
+    // Split at 'T' to separate date and time.
+    let (date_str, time_str) = if let Some(t_pos) = s.find('T') {
+        (&s[..t_pos], Some(&s[t_pos + 1..]))
+    } else {
+        (s, None)
+    };
+
+    let date = parse_date_str(date_str).map_err(|e| temporal_parse_error("localdatetime", e))?;
+
+    let dt = if let Some(ts) = time_str {
+        let time: jiff::civil::Time = ts
+            .parse()
+            .map_err(|e| temporal_parse_error("localdatetime", e))?;
+        date.to_datetime(time)
+    } else {
+        date.to_datetime(jiff::civil::Time::midnight())
+    };
+
+    Ok(Value::LocalDateTime(dt))
+}
+
+/// Parse a duration string, supporting decimal ISO 8601 durations (e.g. P1.5Y, PT1.5H).
+fn parse_duration_str(s: &str) -> Result<jiff::Span, GqlError> {
+    // Try standard jiff parsing first (handles integer-only durations).
+    if let Ok(sp) = s.parse::<jiff::Span>() {
+        return Ok(sp);
+    }
+    // If the string contains a decimal point, use our custom decimal parser.
+    if s.contains('.') {
+        return parse_decimal_iso_duration(s);
+    }
+    // Re-parse to surface the original jiff error.
+    s.parse::<jiff::Span>().map_err(|e| temporal_parse_error("duration", e))
+}
+
+/// Parse an ISO 8601 duration string that may contain decimal values.
+///
+/// Examples: `P1.5Y`, `PT1.5H`, `P1Y2M3.5D`.
+/// Cascades fractional parts to the next smaller unit.
+fn parse_decimal_iso_duration(s: &str) -> Result<jiff::Span, GqlError> {
+    let s = s.trim();
+    let s = s.strip_prefix('P').ok_or_else(|| {
+        GqlError::Execution(ExecutionError::TypeMismatch {
+            expected: "ISO 8601 duration starting with 'P'".to_string(),
+            actual: s.to_string(),
+        })
+    })?;
+
+    // Split at 'T' to separate date and time components.
+    let (date_str, time_str) = match s.find('T') {
+        Some(pos) => (&s[..pos], &s[pos + 1..]),
+        None => (s, ""),
+    };
+
+    // Parse components of the form: <number><designator> where number may be decimal.
+    fn parse_components(
+        s: &str,
+        designators: &[u8],
+    ) -> Result<Vec<(f64, char)>, GqlError> {
+        let mut result = Vec::new();
+        let mut remaining = s;
+        while !remaining.is_empty() {
+            let des_pos = remaining
+                .bytes()
+                .position(|b| designators.contains(&b))
+                .ok_or_else(|| {
+                    GqlError::Execution(ExecutionError::TypeMismatch {
+                        expected: format!(
+                            "duration unit designator (one of {})",
+                            designators.iter().map(|&b| b as char).collect::<String>()
+                        ),
+                        actual: remaining.to_string(),
+                    })
+                })?;
+            let num_str = &remaining[..des_pos];
+            let designator = remaining.as_bytes()[des_pos] as char;
+            let value: f64 = num_str.parse().map_err(|_| {
+                GqlError::Execution(ExecutionError::TypeMismatch {
+                    expected: "numeric duration value".to_string(),
+                    actual: num_str.to_string(),
+                })
+            })?;
+            result.push((value, designator));
+            remaining = &remaining[des_pos + 1..];
+        }
+        Ok(result)
+    }
+
+    let date_comps = if date_str.is_empty() {
+        vec![]
+    } else {
+        parse_components(date_str, b"YMWD")?
+    };
+    let time_comps = if time_str.is_empty() {
+        vec![]
+    } else {
+        parse_components(time_str, b"HMS")?
+    };
+
+    let mut years = 0.0f64;
+    let mut months = 0.0f64;
+    let mut weeks = 0.0f64;
+    let mut days = 0.0f64;
+    for (v, d) in date_comps {
+        match d {
+            'Y' => years += v,
+            'M' => months += v,
+            'W' => weeks += v,
+            'D' => days += v,
+            _ => {}
+        }
+    }
+
+    let mut hours = 0.0f64;
+    let mut minutes = 0.0f64;
+    let mut seconds = 0.0f64;
+    for (v, d) in time_comps {
+        match d {
+            'H' => hours += v,
+            'M' => minutes += v,
+            'S' => seconds += v,
+            _ => {}
+        }
+    }
+
+    // Cascade fractional parts to the next smaller unit.
+    let total_months = years * 12.0 + months;
+    let int_months = total_months as i64;
+    let frac_months = total_months - int_months as f64;
+
+    let total_days = frac_months * (365.2425 / 12.0) + weeks * 7.0 + days;
+    let int_days = total_days as i64;
+    let frac_days = total_days - int_days as f64;
+
+    let total_hours = frac_days * 24.0 + hours;
+    let int_hours = total_hours as i64;
+    let frac_hours = total_hours - int_hours as f64;
+
+    let total_minutes = frac_hours * 60.0 + minutes;
+    let int_minutes = total_minutes as i64;
+    let frac_minutes = total_minutes - int_minutes as f64;
+
+    let total_seconds = frac_minutes * 60.0 + seconds;
+    let int_seconds = total_seconds as i64;
+    let frac_seconds = total_seconds - int_seconds as f64;
+
+    let int_nanos = (frac_seconds * 1_000_000_000.0) as i64;
+
+    let sp = jiff::Span::new()
+        .months(int_months)
+        .days(int_days)
+        .hours(int_hours)
+        .minutes(int_minutes)
+        .seconds(int_seconds)
+        .nanoseconds(int_nanos);
+    Ok(sp)
 }
 
 // ── Temporal truncate helpers ────────────────────────────────────────────────
