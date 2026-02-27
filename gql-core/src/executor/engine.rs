@@ -2317,8 +2317,19 @@ impl<'a> QueryExecutor<'a> {
                             None => Ok(Value::Null),
                         }
                     }
+                    // List indexed by integer — handle directly to preserve
+                    // Node/Edge values that value_to_expr cannot represent.
+                    (Value::List(items), Value::Int(idx)) => {
+                        let len = items.len() as i64;
+                        let i = if idx < 0 { len + idx } else { idx };
+                        if i < 0 || i >= len {
+                            Ok(Value::Null)
+                        } else {
+                            Ok(items[i as usize].clone())
+                        }
+                    }
                     (obj, idx) => {
-                        // Delegate to eval_expr for List[Int] and Map[Str] cases.
+                        // Delegate to eval_expr for Map[Str] and other cases.
                         let rebuilt = Expr::Subscript(
                             Box::new(value_to_expr(&obj)),
                             Box::new(value_to_expr(&idx)),
@@ -2962,15 +2973,31 @@ fn eval_count_expr(expr: &Expr, params: &Row) -> Result<usize, GqlError> {
 fn expr_to_column_name(expr: &Expr) -> String {
     match expr {
         Expr::Variable(id) => id.0.clone(),
-        Expr::Property(obj, key) => format!("{}.{}", expr_to_column_name(obj), key),
+        Expr::Property(obj, key) => {
+            // Subscript expressions as property objects are wrapped in parens
+            // to match the query text: `(list[1]).key` → column `(list[1]).key`.
+            let obj_str = match obj.as_ref() {
+                Expr::Subscript(_, _) => format!("({})", expr_to_column_name(obj)),
+                _ => expr_to_column_name(obj),
+            };
+            format!("{}.{}", obj_str, key)
+        }
         Expr::Integer(n) => n.to_string(),
         Expr::Float(f) => f.to_string(),
         Expr::Str(s) => s.to_string(),
         Expr::Bool(b) => b.to_string(),
         Expr::Null => "null".to_string(),
-        Expr::FunctionCall { name, args, .. } => {
+        Expr::FunctionCall {
+            name,
+            args,
+            distinct,
+        } => {
             let arg_strs: Vec<String> = args.iter().map(expr_to_column_name).collect();
-            format!("{}({})", name, arg_strs.join(", "))
+            if *distinct {
+                format!("{}(DISTINCT {})", name, arg_strs.join(", "))
+            } else {
+                format!("{}({})", name, arg_strs.join(", "))
+            }
         }
         Expr::UnaryOp {
             op: crate::ast::UnaryOp::Neg,
@@ -3239,18 +3266,28 @@ fn value_to_expr(val: &Value) -> Expr {
 pub fn cmp_values(a: &Value, b: &Value) -> std::cmp::Ordering {
     use std::cmp::Ordering::*;
 
+    // Type ordering (ascending, smallest to largest) per openCypher spec:
+    // Map < Node < Edge < List < Path < String < Bool < Number < NaN < Null
+    // Temporal types (Date, Time, DateTime, Duration) sit between Bool and Null.
     fn type_rank(v: &Value) -> u8 {
         match v {
-            Value::Null => 0,
-            Value::Bool(_) => 1,
-            Value::Int(_) | Value::Float(_) => 2,
-            Value::Str(_) => 3,
-            Value::Date(_) => 4,
-            Value::LocalTime(_) => 5,
-            Value::LocalDateTime(_) => 6,
-            Value::DateTime(_) => 7,
-            Value::List(_) => 8,
-            _ => 9,
+            Value::Map(_) => 0,
+            Value::Node(_) => 1,
+            Value::Edge(_) => 2,
+            Value::List(_) => 3,
+            Value::Path { .. } => 4,
+            Value::Str(_) => 5,
+            Value::Bool(_) => 6,
+            Value::Int(_) => 7,
+            Value::Float(f) if !f.is_nan() => 7,
+            Value::Float(_) => 8, // NaN sorts after regular numbers
+            Value::Date(_)
+            | Value::LocalTime(_)
+            | Value::LocalDateTime(_)
+            | Value::DateTime(_)
+            | Value::Duration(_)
+            | Value::Point(_) => 9,
+            Value::Null => 10,
         }
     }
 
@@ -3264,7 +3301,11 @@ pub fn cmp_values(a: &Value, b: &Value) -> std::cmp::Ordering {
         (Value::Null, Value::Null) => Equal,
         (Value::Bool(x), Value::Bool(y)) => x.cmp(y),
         (Value::Int(x), Value::Int(y)) => x.cmp(y),
-        (Value::Float(x), Value::Float(y)) => x.partial_cmp(y).unwrap_or(Equal),
+        (Value::Float(x), Value::Float(y)) => {
+            // Both are either NaN (rank 8) or regular floats (rank 7).
+            // If same rank, they're the same category; NaN == NaN, regular == regular.
+            x.partial_cmp(y).unwrap_or(Equal)
+        }
         (Value::Int(x), Value::Float(y)) => (*x as f64).partial_cmp(y).unwrap_or(Equal),
         (Value::Float(x), Value::Int(y)) => x.partial_cmp(&(*y as f64)).unwrap_or(Equal),
         (Value::Str(x), Value::Str(y)) => x.cmp(y),

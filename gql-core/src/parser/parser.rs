@@ -1263,19 +1263,34 @@ impl<'src> Parser<'src> {
     }
 
     fn parse_mul(&mut self) -> Result<Expr, ParseError> {
-        let mut left = self.parse_unary()?;
+        let mut left = self.parse_pow()?;
         loop {
             let op = match self.peek().clone() {
                 TokenKind::Star => BinaryOp::Mul,
                 TokenKind::Slash => BinaryOp::Div,
                 TokenKind::Percent => BinaryOp::Mod,
-                TokenKind::Caret => BinaryOp::Pow,
                 _ => break,
             };
             self.advance();
-            let right = self.parse_unary()?;
+            let right = self.parse_pow()?;
             left = Expr::BinaryOp {
                 op,
+                left: Box::new(left),
+                right: Box::new(right),
+            };
+        }
+        Ok(left)
+    }
+
+    /// Parse exponentiation — higher precedence than `*`, `/`, `%`.
+    /// Left-associative per Cypher spec: `a ^ b ^ c` = `(a ^ b) ^ c`.
+    fn parse_pow(&mut self) -> Result<Expr, ParseError> {
+        let mut left = self.parse_unary()?;
+        while self.at(&TokenKind::Caret) {
+            self.advance();
+            let right = self.parse_unary()?;
+            left = Expr::BinaryOp {
+                op: BinaryOp::Pow,
                 left: Box::new(left),
                 right: Box::new(right),
             };
@@ -1681,6 +1696,33 @@ impl<'src> Parser<'src> {
     /// Scans ahead from `(` to find the matching `)` and checks if it's
     /// followed by `-` or `<-` (relationship indicator).
     fn looks_like_pattern_expr(&self) -> bool {
+        // The first token inside `(` must look like a node pattern start:
+        // an identifier, `:Label`, or `)` (empty node).  If it's a literal
+        // (integer, float, string) or an operator, it's a parenthesised
+        // arithmetic expression, not a pattern.
+        let first_inside = self.pos + 1;
+        if first_inside >= self.tokens.len() {
+            return false;
+        }
+        match &self.tokens[first_inside].kind {
+            // Literals are never pattern starters.
+            TokenKind::IntLiteral(_)
+            | TokenKind::FloatLiteral(_)
+            | TokenKind::StringLiteral(_)
+            | TokenKind::True
+            | TokenKind::False
+            | TokenKind::Null
+            | TokenKind::Plus
+            | TokenKind::Dash
+            | TokenKind::Star
+            | TokenKind::Slash
+            | TokenKind::Percent
+            | TokenKind::Caret
+            | TokenKind::LBracket
+            | TokenKind::LBrace => return false,
+            _ => {}
+        }
+
         // We need to find the matching `)` for the current `(` and check
         // if it's followed by a relationship indicator.
         let mut depth = 0;

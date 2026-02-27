@@ -520,13 +520,8 @@ fn eval_binary<'r>(
 
         BinaryOp::Pow => match (lv, rv) {
             (Value::Null, _) | (_, Value::Null) => Ok(Value::Null),
-            (Value::Int(a), Value::Int(b)) => {
-                if b < 0 {
-                    Ok(Value::Float((a as f64).powi(b as i32)))
-                } else {
-                    Ok(Value::Int(a.wrapping_pow(b as u32)))
-                }
-            }
+            // ^ always returns Float per Cypher spec.
+            (Value::Int(a), Value::Int(b)) => Ok(Value::Float((a as f64).powf(b as f64))),
             (Value::Float(a), Value::Float(b)) => Ok(Value::Float(a.powf(b))),
             (Value::Int(a), Value::Float(b)) => Ok(Value::Float((a as f64).powf(b))),
             (Value::Float(a), Value::Int(b)) => Ok(Value::Float(a.powi(b as i32))),
@@ -957,7 +952,9 @@ pub fn eval_function_with_vals(name: &str, vals: Vec<Value>) -> Result<Value, Gq
             require_arity("toString", 1, &vals)?;
             match &vals[0] {
                 Value::Null => Ok(Value::Null),
-                Value::Int(_) | Value::Float(_) | Value::Str(_) | Value::Bool(_) => {
+                // A String is already a string — return it as-is (no extra quotes).
+                Value::Str(s) => Ok(Value::Str(s.clone())),
+                Value::Int(_) | Value::Float(_) | Value::Bool(_) => {
                     Ok(Value::Str(vals[0].to_string().into_boxed_str()))
                 }
                 Value::Date(_) | Value::LocalTime(_) | Value::LocalDateTime(_)
@@ -974,8 +971,15 @@ pub fn eval_function_with_vals(name: &str, vals: Vec<Value>) -> Result<Value, Gq
                 Value::Int(n) => Ok(Value::Int(*n)),
                 Value::Float(f) => Ok(Value::Int(*f as i64)),
                 Value::Str(s) => {
-                    // TCK expects NULL for non-numeric strings, not an error.
-                    Ok(s.parse::<i64>().map(Value::Int).unwrap_or(Value::Null))
+                    // Try integer parse first, then float parse (truncating).
+                    // TCK expects NULL for truly non-numeric strings.
+                    if let Ok(n) = s.parse::<i64>() {
+                        Ok(Value::Int(n))
+                    } else if let Ok(f) = s.parse::<f64>() {
+                        Ok(Value::Int(f as i64))
+                    } else {
+                        Ok(Value::Null)
+                    }
                 }
                 other => type_error("toInteger", other),
             }
