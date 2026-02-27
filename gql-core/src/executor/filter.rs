@@ -41,6 +41,30 @@ pub fn clear_query_now() {
     QUERY_NOW.with(|c| *c.borrow_mut() = None);
 }
 
+/// RAII guard that initializes the query-level "now" on construction and clears
+/// it on drop, ensuring `clear_query_now()` is always called even on error paths.
+pub struct QueryTimeGuard;
+
+impl QueryTimeGuard {
+    /// Initialize the query "now" and return a guard that will clear it on drop.
+    pub fn new() -> Self {
+        init_query_now();
+        QueryTimeGuard
+    }
+}
+
+impl Default for QueryTimeGuard {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Drop for QueryTimeGuard {
+    fn drop(&mut self) {
+        clear_query_now();
+    }
+}
+
 /// Get the query-level "now", falling back to the system time if not initialized.
 fn get_query_now() -> jiff::Zoned {
     QUERY_NOW.with(|c| c.borrow().clone().unwrap_or_else(jiff::Zoned::now))
@@ -342,7 +366,12 @@ fn eval_unary<'r>(op: UnaryOp, expr: &Expr, row: &Row<'r>) -> Result<Value, GqlE
     match op {
         UnaryOp::Neg => match val {
             Value::Null => Ok(Value::Null),
-            Value::Int(n) => Ok(Value::Int(-n)),
+            Value::Int(n) => Ok(Value::Int(n.checked_neg().ok_or_else(|| {
+                GqlError::Execution(ExecutionError::TypeMismatch {
+                    expected: "integer arithmetic without overflow".to_string(),
+                    actual: "integer overflow".to_string(),
+                })
+            })?)),
             Value::Float(f) => Ok(Value::Float(-f)),
             other => Err(GqlError::Execution(ExecutionError::InvalidOperator {
                 op: "-".to_string(),
@@ -433,7 +462,12 @@ fn eval_binary<'r>(
         // ── Arithmetic ────────────────────────────────────────────────────────
         BinaryOp::Add | BinaryOp::Concat => match (lv, rv) {
             (Value::Null, _) | (_, Value::Null) => Ok(Value::Null),
-            (Value::Int(a), Value::Int(b)) => Ok(Value::Int(a.wrapping_add(b))),
+            (Value::Int(a), Value::Int(b)) => Ok(Value::Int(a.checked_add(b).ok_or_else(|| {
+                GqlError::Execution(ExecutionError::TypeMismatch {
+                    expected: "integer arithmetic without overflow".to_string(),
+                    actual: "integer overflow".to_string(),
+                })
+            })?)),
             (Value::Float(a), Value::Float(b)) => Ok(Value::Float(a + b)),
             (Value::Int(a), Value::Float(b)) => Ok(Value::Float(a as f64 + b)),
             (Value::Float(a), Value::Int(b)) => Ok(Value::Float(a + b as f64)),
@@ -473,7 +507,12 @@ fn eval_binary<'r>(
 
         BinaryOp::Sub => match (lv, rv) {
             (Value::Null, _) | (_, Value::Null) => Ok(Value::Null),
-            (Value::Int(a), Value::Int(b)) => Ok(Value::Int(a.wrapping_sub(b))),
+            (Value::Int(a), Value::Int(b)) => Ok(Value::Int(a.checked_sub(b).ok_or_else(|| {
+                GqlError::Execution(ExecutionError::TypeMismatch {
+                    expected: "integer arithmetic without overflow".to_string(),
+                    actual: "integer overflow".to_string(),
+                })
+            })?)),
             (Value::Float(a), Value::Float(b)) => Ok(Value::Float(a - b)),
             (Value::Int(a), Value::Float(b)) => Ok(Value::Float(a as f64 - b)),
             (Value::Float(a), Value::Int(b)) => Ok(Value::Float(a - b as f64)),
@@ -492,7 +531,12 @@ fn eval_binary<'r>(
 
         BinaryOp::Mul => match (lv, rv) {
             (Value::Null, _) | (_, Value::Null) => Ok(Value::Null),
-            (Value::Int(a), Value::Int(b)) => Ok(Value::Int(a.wrapping_mul(b))),
+            (Value::Int(a), Value::Int(b)) => Ok(Value::Int(a.checked_mul(b).ok_or_else(|| {
+                GqlError::Execution(ExecutionError::TypeMismatch {
+                    expected: "integer arithmetic without overflow".to_string(),
+                    actual: "integer overflow".to_string(),
+                })
+            })?)),
             (Value::Float(a), Value::Float(b)) => Ok(Value::Float(a * b)),
             (Value::Int(a), Value::Float(b)) => Ok(Value::Float(a as f64 * b)),
             (Value::Float(a), Value::Int(b)) => Ok(Value::Float(a * b as f64)),
@@ -959,7 +1003,12 @@ pub fn eval_function_with_vals(name: &str, vals: Vec<Value>) -> Result<Value, Gq
             require_arity("abs", 1, &vals)?;
             match &vals[0] {
                 Value::Null => Ok(Value::Null),
-                Value::Int(n) => Ok(Value::Int(n.abs())),
+                Value::Int(n) => Ok(Value::Int(n.checked_abs().ok_or_else(|| {
+                    GqlError::Execution(ExecutionError::TypeMismatch {
+                        expected: "integer arithmetic without overflow".to_string(),
+                        actual: "integer overflow".to_string(),
+                    })
+                })?)),
                 Value::Float(f) => Ok(Value::Float(f.abs())),
                 other => type_error("abs", other),
             }
@@ -1263,7 +1312,7 @@ pub fn eval_function_with_vals(name: &str, vals: Vec<Value>) -> Result<Value, Gq
         }
         "reverse" => {
             require_arity("reverse", 1, &vals)?;
-            match vals.into_iter().next().unwrap() {
+            match vals.into_iter().next().expect("arity checked") {
                 Value::Null => Ok(Value::Null),
                 Value::List(mut l) => {
                     l.reverse();

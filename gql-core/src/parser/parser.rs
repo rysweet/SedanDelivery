@@ -967,7 +967,7 @@ impl<'src> Parser<'src> {
 
         let min = if let TokenKind::IntLiteral(n) = self.peek().clone() {
             self.advance();
-            Some(n as u32)
+            Some(u32::try_from(n).map_err(|_| self.syntax_err("non-negative integer for range quantifier"))?)
         } else {
             None
         };
@@ -975,7 +975,7 @@ impl<'src> Parser<'src> {
         let max = if self.eat(&TokenKind::DoubleDot) {
             if let TokenKind::IntLiteral(n) = self.peek().clone() {
                 self.advance();
-                Some(n as u32)
+                Some(u32::try_from(n).map_err(|_| self.syntax_err("non-negative integer for range quantifier"))?)
             } else {
                 None
             }
