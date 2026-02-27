@@ -33,7 +33,7 @@ setup:
   - action: api_call
     method: POST
     url: "http://localhost:5000/api/graphs/test-graph/mutate"
-    body: '{"statement": "MATCH (a:Person {name: \"Alice\"}), (b:Person {name: \"Bob\"}) CREATE (a)-[:KNOWS]->(b)"}'
+    body: '{"cypher": "MATCH (a:Person {name: \"Alice\"}), (b:Person {name: \"Bob\"}) CREATE (a)-[:KNOWS]->(b)"}'
     headers:
       Content-Type: "application/json"
 

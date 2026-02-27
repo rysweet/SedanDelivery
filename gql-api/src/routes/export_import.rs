@@ -13,7 +13,7 @@ use gql_core::storage::{validate_graph_name, GraphStore};
 
 use crate::error::ApiError;
 use crate::models::{ExportParams, ExportResponse, ImportBody, ImportResponse};
-use crate::routes::nodes::json_map_to_props;
+use crate::routes::helpers::json_map_to_props;
 use crate::serialize::{edge_to_json, node_to_json};
 use crate::state::AppState;
 
@@ -208,6 +208,7 @@ async fn import_handler(
     Ok(Json(ImportResponse {
         nodes_created,
         edges_created,
+        warnings: edge_warnings,
     }))
 }
 
