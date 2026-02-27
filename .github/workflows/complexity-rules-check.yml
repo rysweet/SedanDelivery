@@ -1,0 +1,281 @@
+name: Complexity Rules Check
+
+on:
+  pull_request:
+    branches: [main, integration]
+    paths:
+      - 'src/**/*.cs'
+      - 'tests/**/*.cs'
+      - 'tools/**/*.cs'
+      - 'Directory.Build.props'
+      - '.editorconfig'
+      - '.github/workflows/complexity-rules-check.yml'
+  push:
+    branches: [main, integration]
+  workflow_dispatch:
+
+concurrency:
+  group: complexity-rules-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  DOTNET_VERSION: '10.0.x'
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: 'true'
+  DOTNET_CLI_TELEMETRY_OPTOUT: 'true'
+
+jobs:
+  complexity-analyzer-check:
+    name: Validate Code Complexity
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    permissions:
+      contents: read
+      pull-requests: write
+      checks: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      - name: Restore dependencies
+        run: dotnet restore CyberGym.sln
+
+      - name: Build with complexity analyzers
+        id: build
+        run: |
+          echo "Building with complexity analyzers enabled..."
+          dotnet build CyberGym.sln --no-restore --configuration Release -warnaserror 2>&1 | tee build.log
+        continue-on-error: true
+
+      - name: Check for complexity violations
+        id: check-violations
+        run: |
+          echo "Checking for complexity violations..."
+
+          # Extract complexity-related warnings (CA1502, CA1505, CA1506, RCS rules)
+          if grep -E "(CA1502|CA1505|CA1506|RCS1138|RCS1163|RCS1208)" build.log; then
+            echo "❌ Complexity rule violations found:"
+            grep -E "(CA1502|CA1505|CA1506|RCS1138|RCS1163|RCS1208)" build.log | head -30
+
+            # Count violations by type
+            COMPLEXITY_COUNT=$(grep -c "CA1502" build.log || echo "0")
+            MAINTAINABILITY_COUNT=$(grep -c "CA1505" build.log || echo "0")
+            COUPLING_COUNT=$(grep -c "CA1506" build.log || echo "0")
+            NESTING_COUNT=$(grep -c "RCS1208" build.log || echo "0")
+            PARAMETER_COUNT=$(grep -c "RCS1163" build.log || echo "0")
+
+            echo "Cyclomatic complexity violations (CA1502): $COMPLEXITY_COUNT"
+            echo "Maintainability violations (CA1505): $MAINTAINABILITY_COUNT"
+            echo "Class coupling violations (CA1506): $COUPLING_COUNT"
+            echo "Nesting depth violations (RCS1208): $NESTING_COUNT"
+            echo "Parameter count violations (RCS1163): $PARAMETER_COUNT"
+
+            TOTAL_VIOLATIONS=$((COMPLEXITY_COUNT + MAINTAINABILITY_COUNT + COUPLING_COUNT + NESTING_COUNT + PARAMETER_COUNT))
+            echo "Total violations: $TOTAL_VIOLATIONS"
+            echo "violation_count=$TOTAL_VIOLATIONS" >> $GITHUB_OUTPUT
+
+            exit 1
+          else
+            echo "✅ No complexity rule violations found"
+            echo "violation_count=0" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Run complexity rules tests
+        if: always()
+        run: |
+          dotnet test tests/CyberGym.ComplexityRules.Tests/ \
+            --no-build \
+            --configuration Release \
+            --verbosity normal \
+            --logger "console;verbosity=detailed"
+
+      - name: Generate code metrics report
+        if: always()
+        run: |
+          echo "# Code Complexity Metrics Report" > metrics-report.md
+          echo "" >> metrics-report.md
+          echo "**Generated:** $(date -u +"%Y-%m-%d %H:%M:%S UTC")" >> metrics-report.md
+          echo "" >> metrics-report.md
+
+          echo "## C# Files Analysis" >> metrics-report.md
+          echo "Total C# files: $(find src/ -name "*.cs" | wc -l)" >> metrics-report.md
+          echo "" >> metrics-report.md
+
+          echo "## Method Length Distribution" >> metrics-report.md
+          echo "Files with methods > 50 lines:" >> metrics-report.md
+          # Simple line count per file (approximate)
+          find src/ -name "*.cs" -exec wc -l {} \; | awk '$1 > 50 { count++ } END { print count }' >> metrics-report.md
+          echo "" >> metrics-report.md
+
+          echo "## Class Size Distribution" >> metrics-report.md
+          echo "Classes > 300 lines:" >> metrics-report.md
+          find src/ -name "*.cs" -exec wc -l {} \; | awk '$1 > 300 { print $2; count++ } END { print "Total: " count }' >> metrics-report.md
+          echo "" >> metrics-report.md
+
+          echo "## Complexity Indicators" >> metrics-report.md
+          echo "Files with nested if statements (depth >= 3):" >> metrics-report.md
+          grep -r "if.*if.*if" src/ --include="*.cs" | wc -l >> metrics-report.md
+          echo "" >> metrics-report.md
+
+          echo "## Recommendations" >> metrics-report.md
+          echo "- Keep methods under 50 lines" >> metrics-report.md
+          echo "- Keep classes under 300 lines" >> metrics-report.md
+          echo "- Limit cyclomatic complexity to < 10" >> metrics-report.md
+          echo "- Limit cognitive complexity to < 15" >> metrics-report.md
+          echo "- Keep nesting depth < 4 levels" >> metrics-report.md
+          echo "- Limit parameters to < 5 per method" >> metrics-report.md
+
+      - name: Upload metrics report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: complexity-metrics-report
+          path: metrics-report.md
+          retention-days: 30
+
+      - name: Upload build log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: complexity-violations-log
+          path: build.log
+          retention-days: 7
+
+      - name: Comment PR with violations
+        if: failure() && github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const buildLog = fs.readFileSync('build.log', 'utf8');
+
+            // Extract complexity violations
+            const complexityViolations = buildLog.match(/CA1502[^\n]*/g) || [];
+            const maintainabilityViolations = buildLog.match(/CA1505[^\n]*/g) || [];
+            const couplingViolations = buildLog.match(/CA1506[^\n]*/g) || [];
+            const nestingViolations = buildLog.match(/RCS1208[^\n]*/g) || [];
+            const parameterViolations = buildLog.match(/RCS1163[^\n]*/g) || [];
+
+            const allViolations = [
+              ...complexityViolations,
+              ...maintainabilityViolations,
+              ...couplingViolations,
+              ...nestingViolations,
+              ...parameterViolations
+            ];
+
+            const uniqueViolations = [...new Set(allViolations)].slice(0, 15);
+
+            const comment = `## ❌ Code Complexity Violations Found
+
+            **Total Violations:** ${allViolations.length}
+
+            ### Breakdown:
+            - **CA1502** (Cyclomatic Complexity): ${complexityViolations.length}
+            - **CA1505** (Maintainability Index): ${maintainabilityViolations.length}
+            - **CA1506** (Class Coupling): ${couplingViolations.length}
+            - **RCS1208** (Nesting Depth): ${nestingViolations.length}
+            - **RCS1163** (Unused Parameters): ${parameterViolations.length}
+
+            ### Sample Violations:
+            \`\`\`
+            ${uniqueViolations.slice(0, 10).join('\n')}
+            \`\`\`
+
+            ### Complexity Rules:
+            | Rule | Threshold | Description |
+            |------|-----------|-------------|
+            | Cyclomatic Complexity | < 10 | Decision points per method |
+            | Cognitive Complexity | < 15 | Mental effort to understand |
+            | Method Length | < 50 lines | Lines per method |
+            | Class Size | < 300 lines | Lines per class |
+            | Parameter Count | < 5 | Parameters per method |
+            | Nesting Depth | < 4 levels | Nested control structures |
+
+            ### How to Fix:
+            1. **Extract Methods**: Break complex methods into smaller pieces
+            2. **Guard Clauses**: Use early returns to reduce nesting
+            3. **Parameter Objects**: Group related parameters into classes
+            4. **Single Responsibility**: Split large classes into focused ones
+            5. **Simplify Logic**: Replace nested conditions with polymorphism
+
+            ### Examples:
+            See \`tests/CyberGym.ComplexityRules.Tests/ComplexityPatternTests.cs\` for refactoring patterns.
+
+            ### Documentation:
+            - [Complexity Rules README](../tests/CyberGym.ComplexityRules.Tests/README.md)
+            - [Roslynator Analyzers](https://github.com/dotnet/roslynator)
+            - [Code Metrics Guide](https://learn.microsoft.com/visualstudio/code-quality/code-metrics-values)
+
+            [Download full build log](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
+            `;
+
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: comment
+            });
+
+      - name: Fail if violations found
+        if: steps.build.outcome == 'failure'
+        run: |
+          echo "❌ Build failed due to complexity rule violations"
+          echo "Review the violations above and refactor code before merging"
+          exit 1
+
+  complexity-trend-analysis:
+    name: Track Complexity Trends
+    runs-on: ubuntu-latest
+    needs: complexity-analyzer-check
+    if: always()
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Full history for trend analysis
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      - name: Analyze complexity trends
+        run: |
+          echo "# Complexity Trend Analysis" > trend-report.md
+          echo "" >> trend-report.md
+          echo "**Branch:** ${{ github.ref_name }}" >> trend-report.md
+          echo "**Commit:** ${{ github.sha }}" >> trend-report.md
+          echo "" >> trend-report.md
+
+          echo "## Historical Metrics" >> trend-report.md
+          echo "Recent commits affecting code complexity:" >> trend-report.md
+          git log --oneline --no-merges -10 --pretty=format:"- %h %s" >> trend-report.md
+          echo "" >> trend-report.md
+          echo "" >> trend-report.md
+
+          echo "## Current State" >> trend-report.md
+          echo "Total source files: $(find src/ -name "*.cs" | wc -l)" >> trend-report.md
+          echo "Total lines of code: $(find src/ -name "*.cs" -exec cat {} \; | wc -l)" >> trend-report.md
+          echo "" >> trend-report.md
+
+          echo "## Recommendations" >> trend-report.md
+          echo "Monitor these metrics over time to ensure code quality:" >> trend-report.md
+          echo "- Average method length (target: < 30 lines)" >> trend-report.md
+          echo "- Average class size (target: < 200 lines)" >> trend-report.md
+          echo "- Cyclomatic complexity distribution" >> trend-report.md
+          echo "- Technical debt ratio" >> trend-report.md
+
+      - name: Upload trend report
+        uses: actions/upload-artifact@v4
+        with:
+          name: complexity-trend-report
+          path: trend-report.md
+          retention-days: 90

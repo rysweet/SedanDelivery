@@ -1,0 +1,393 @@
+name: QA Playwright Tests
+
+# Run against the integration deployment on every PR to integration/main
+# Posts screenshot evidence directly on the PR as a comment.
+
+on:
+  pull_request:
+    branches: [integration, main]
+    paths:
+      - 'src/**'
+      - 'tests/**'
+      - 'scenarios/**'
+      - '.github/workflows/qa-playwright.yml'
+  # NOTE: push trigger deliberately omitted.
+  # Push events to 'integration' trigger PR checks for open PRs targeting integration
+  # (e.g. PR #135 "Integration into main"). Running QA on every push causes spurious
+  # "0 passed / 0 failed" comments on those PRs before the deployment is ready.
+  # QA runs only when a PR explicitly targets integration/main.
+  workflow_dispatch:
+    inputs:
+      target_url:
+        description: 'WebUI URL to test (leave empty for integration default)'
+        required: false
+        type: string
+
+concurrency:
+  group: qa-playwright-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: write
+  checks: write
+
+env:
+  AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+  AZURE_CLIENT_ID: ${{ vars.VITE_AZURE_CLIENT_ID }}
+  E2E_CLIENT_ID: ${{ secrets.E2E_CLIENT_ID }}
+  # CYBERGYM_CLI_TEST_CLIENT_SECRET is the pre-existing secret name for the E2E SP
+  E2E_CLIENT_SECRET: ${{ secrets.CYBERGYM_CLI_TEST_CLIENT_SECRET }}
+
+jobs:
+  playwright-e2e:
+    name: E2E Tests (Playwright)
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    steps:
+      - name: Checkout QA repo
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: 'package-lock.json'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Playwright browsers
+        run: npx playwright install chromium --with-deps
+
+      - name: Discover integration URLs
+        id: get-url
+        run: |
+          # Use explicit input if provided
+          if [ -n "${{ inputs.target_url }}" ]; then
+            echo "url=${{ inputs.target_url }}" >> "$GITHUB_OUTPUT"
+            echo "Using provided URL: ${{ inputs.target_url }}"
+            exit 0
+          fi
+
+          # Auto-discover from Azure Container Apps
+          az login --service-principal \
+            --username "${{ secrets.AZURE_CLIENT_ID }}" \
+            --password "${{ secrets.AZURE_CLIENT_SECRET }}" \
+            --tenant "${{ secrets.AZURE_TENANT_ID }}" \
+            --output none
+
+          WEBUI_FQDN=$(az containerapp show \
+            --name webui \
+            --resource-group rg-integration \
+            --query "properties.configuration.ingress.fqdn" \
+            --output tsv 2>/dev/null || echo "")
+
+          API_FQDN=$(az containerapp show \
+            --name api-gateway \
+            --resource-group rg-integration \
+            --query "properties.configuration.ingress.fqdn" \
+            --output tsv 2>/dev/null || echo "")
+
+          if [ -n "$WEBUI_FQDN" ]; then
+            echo "url=https://${WEBUI_FQDN}" >> "$GITHUB_OUTPUT"
+            echo "Discovered WebUI: https://${WEBUI_FQDN}"
+          else
+            # Use GitHub variable or auto-discover from Azure
+            DOMAIN=$(az containerapp env list \
+              --resource-group rg-integration \
+              --query "[0].properties.defaultDomain" --output tsv 2>/dev/null \
+              || echo "")
+            if [ -z "$DOMAIN" ]; then
+              # Fallback: extract domain from INTEGRATION_WEBUI_URL variable
+              DOMAIN=$(echo "${{ vars.INTEGRATION_WEBUI_URL }}" | sed 's|https://webui\.||')
+            fi
+            WEBUI_FQDN="webui.${DOMAIN}"
+            echo "url=https://${WEBUI_FQDN}" >> "$GITHUB_OUTPUT"
+            echo "Derived WebUI: https://${WEBUI_FQDN}"
+            if [ -z "$API_FQDN" ]; then
+              API_FQDN="api-gateway.${DOMAIN}"
+            fi
+          fi
+
+          if [ -n "$API_FQDN" ]; then
+            echo "api_url=https://${API_FQDN}" >> "$GITHUB_OUTPUT"
+            echo "Discovered API Gateway: https://${API_FQDN}"
+          fi
+
+      - name: Run smoke tests
+        id: smoke
+        env:
+          CYBERGYM_BASE_URL: ${{ steps.get-url.outputs.url }}
+        run: npx playwright test --project smoke --reporter=json,list 2>&1 | tee smoke-output.txt
+        continue-on-error: true
+
+      - name: Run catalog tests
+        id: catalog
+        env:
+          CYBERGYM_BASE_URL: ${{ steps.get-url.outputs.url }}
+          CYBERGYM_API_URL: ${{ steps.get-url.outputs.api_url }}
+          E2E_CLIENT_ID: ${{ secrets.E2E_CLIENT_ID }}
+          E2E_CLIENT_SECRET: ${{ secrets.CYBERGYM_CLI_TEST_CLIENT_SECRET }}
+        run: npx playwright test --project catalog --reporter=json,list 2>&1 | tee catalog-output.txt
+        continue-on-error: true
+
+      - name: Run operations tests
+        id: operations
+        env:
+          CYBERGYM_BASE_URL: ${{ steps.get-url.outputs.url }}
+          CYBERGYM_API_URL: ${{ steps.get-url.outputs.api_url }}
+        run: npx playwright test --project operations --reporter=json,list 2>&1 | tee operations-output.txt
+        continue-on-error: true
+
+      - name: Run analysis tests
+        id: analysis
+        env:
+          CYBERGYM_BASE_URL: ${{ steps.get-url.outputs.url }}
+          CYBERGYM_API_URL: ${{ steps.get-url.outputs.api_url }}
+        run: npx playwright test --project analysis --reporter=json,list 2>&1 | tee analysis-output.txt
+        continue-on-error: true
+
+      - name: Run dashboard tests (authenticated via MSAL injection)
+        id: dashboard
+        env:
+          CYBERGYM_BASE_URL: ${{ steps.get-url.outputs.url }}
+          CYBERGYM_API_URL: ${{ steps.get-url.outputs.api_url }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ vars.VITE_AZURE_CLIENT_ID }}
+          E2E_CLIENT_ID: ${{ secrets.E2E_CLIENT_ID }}
+          E2E_CLIENT_SECRET: ${{ secrets.CYBERGYM_CLI_TEST_CLIENT_SECRET }}
+        run: npx playwright test --project dashboard --reporter=json,list 2>&1 | tee dashboard-output.txt
+        continue-on-error: true
+
+      - name: Run scanning UI tests (authenticated via MSAL injection)
+        id: scanning_ui
+        env:
+          CYBERGYM_BASE_URL: ${{ steps.get-url.outputs.url }}
+          CYBERGYM_API_URL: ${{ steps.get-url.outputs.api_url }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ vars.VITE_AZURE_CLIENT_ID }}
+          E2E_CLIENT_ID: ${{ secrets.E2E_CLIENT_ID }}
+          E2E_CLIENT_SECRET: ${{ secrets.CYBERGYM_CLI_TEST_CLIENT_SECRET }}
+        run: npx playwright test --project scanning --reporter=json,list 2>&1 | tee scanning-ui-output.txt
+        continue-on-error: true
+
+      - name: Run visualization tests (authenticated via MSAL injection)
+        id: visualization
+        env:
+          CYBERGYM_BASE_URL: ${{ steps.get-url.outputs.url }}
+          CYBERGYM_API_URL: ${{ steps.get-url.outputs.api_url }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ vars.VITE_AZURE_CLIENT_ID }}
+          E2E_CLIENT_ID: ${{ secrets.E2E_CLIENT_ID }}
+          E2E_CLIENT_SECRET: ${{ secrets.CYBERGYM_CLI_TEST_CLIENT_SECRET }}
+        run: npx playwright test --project visualization --reporter=json,list 2>&1 | tee viz-output.txt
+        continue-on-error: true
+
+      - name: Run gameboard-tenants tests (authenticated via MSAL injection)
+        id: gameboard_tenants
+        env:
+          CYBERGYM_BASE_URL: ${{ steps.get-url.outputs.url }}
+          CYBERGYM_API_URL: ${{ steps.get-url.outputs.api_url }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ vars.VITE_AZURE_CLIENT_ID }}
+          E2E_CLIENT_ID: ${{ secrets.E2E_CLIENT_ID }}
+          E2E_CLIENT_SECRET: ${{ secrets.CYBERGYM_CLI_TEST_CLIENT_SECRET }}
+        run: npx playwright test --project gameboard-tenants --reporter=json,list 2>&1 | tee gbt-output.txt
+        continue-on-error: true
+
+      - name: Run AI tests
+        id: ai
+        env:
+          CYBERGYM_BASE_URL: ${{ steps.get-url.outputs.url }}
+        run: npx playwright test --project ai --reporter=json,list 2>&1 | tee ai-output.txt
+        continue-on-error: true
+
+      - name: Run integration E2E tests (scan + visualize)
+        id: e2e
+        env:
+          CYBERGYM_BASE_URL: ${{ steps.get-url.outputs.url }}
+          CYBERGYM_API_URL: ${{ steps.get-url.outputs.api_url }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ vars.VITE_AZURE_CLIENT_ID }}
+          E2E_CLIENT_ID: ${{ secrets.E2E_CLIENT_ID }}
+          E2E_CLIENT_SECRET: ${{ secrets.CYBERGYM_CLI_TEST_CLIENT_SECRET }}
+        run: npx playwright test --project integration --reporter=json,list 2>&1 | tee e2e-output.txt
+        continue-on-error: true
+
+      - name: Upload screenshots as artifacts
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: playwright-screenshots-${{ github.run_number }}
+          path: |
+            evidence/screenshots/
+            evidence/**/*.png
+          retention-days: 14
+
+      - name: Upload full test reports
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: playwright-reports-${{ github.run_number }}
+          path: |
+            *-output.txt
+            evidence/
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Post results to PR
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+
+            const webUiUrl = '${{ steps.get-url.outputs.url }}';
+            const apiUrl = '${{ steps.get-url.outputs.api_url }}';
+            const runUrl = `${context.payload.repository.html_url}/actions/runs/${context.runId}`;
+            const artifactUrl = `${context.payload.repository.html_url}/actions/runs/${context.runId}#artifacts`;
+
+            const outcomes = {
+              smoke: '${{ steps.smoke.outcome }}',
+              catalog: '${{ steps.catalog.outcome }}',
+              operations: '${{ steps.operations.outcome }}',
+              analysis: '${{ steps.analysis.outcome }}',
+              ai: '${{ steps.ai.outcome }}',
+              e2e: '${{ steps.e2e.outcome }}',
+            };
+
+            // Parse test results from per-suite JSON output files.
+            // Each suite runs with --reporter=json,list piped to *-output.txt; we read
+            // those individual files rather than the non-existent combined reports/results.json.
+            const counts = { smoke: [0,0], catalog: [0,0], operations: [0,0], analysis: [0,0], ai: [0,0], integration: [0,0] };
+            const suiteFiles = {
+              smoke: 'smoke-output.txt',
+              catalog: 'catalog-output.txt',
+              operations: 'operations-output.txt',
+              analysis: 'analysis-output.txt',
+              ai: 'ai-output.txt',
+              integration: 'e2e-output.txt',
+            };
+            for (const [key, file] of Object.entries(suiteFiles)) {
+              try {
+                const raw = fs.readFileSync(file, 'utf8');
+                // Playwright's JSON reporter writes a single JSON object starting with
+                // {"version": or {"config": after the list reporter's plain-text output.
+                // Find that boundary reliably by scanning lines.
+                let results = null;
+                for (const line of raw.split('\n')) {
+                  const trimmed = line.trim();
+                  if (trimmed.startsWith('{"version":') || trimmed.startsWith('{"config":')) {
+                    try { results = JSON.parse(trimmed); break; } catch {}
+                  }
+                }
+                // Fallback: try the whole file in case JSON spans multiple lines
+                if (!results) results = JSON.parse(raw);
+                const countTests = (obj) => {
+                  for (const test of obj.tests || []) {
+                    counts[key][test.status === 'passed' ? 0 : 1]++;
+                  }
+                  for (const child of [...(obj.suites || []), ...(obj.specs || [])]) countTests(child);
+                };
+                countTests(results);
+              } catch {}
+            }
+
+            const emoji = (pass, fail, outcome) => {
+              if (outcome === 'skipped') return '⏭️';
+              return fail === 0 ? '✅' : '⚠️';
+            };
+
+            // List captured screenshots
+            let screenshotLinks = '';
+            try {
+              const ssDir = 'evidence/screenshots';
+              if (fs.existsSync(ssDir)) {
+                const files = fs.readdirSync(ssDir).filter(f => f.endsWith('.png')).sort();
+                if (files.length > 0) {
+                  screenshotLinks = '\n### Screenshots\n';
+                  screenshotLinks += `📎 [Download all screenshots](${artifactUrl})\n\n`;
+                  screenshotLinks += '| Screenshot |\n|---|\n';
+                  for (const f of files) screenshotLinks += `| \`${f}\` |\n`;
+                }
+              }
+            } catch {}
+
+            const [sp, sf] = counts.smoke;
+            const [cp, cf] = counts.catalog;
+            const [op, of_] = counts.operations;
+            const [ap, af] = counts.analysis;
+            const [aip, aif] = counts.ai;
+            const [ep, ef] = counts.integration;
+
+            const comment = [
+              '## 🎭 Playwright QA Results',
+              '',
+              `**WebUI:** ${webUiUrl}`,
+              apiUrl ? `**API Gateway:** ${apiUrl}` : '',
+              `**Run:** [#${context.runNumber}](${runUrl})`,
+              '',
+              '| Suite | Passed | Failed | Status |',
+              '|-------|--------|--------|--------|',
+              `| Smoke | ${sp} | ${sf} | ${emoji(sp,sf,outcomes.smoke)} ${outcomes.smoke} |`,
+              `| Catalog API | ${cp} | ${cf} | ${emoji(cp,cf,outcomes.catalog)} ${outcomes.catalog} |`,
+              `| Operations | ${op} | ${of_} | ${emoji(op,of_,outcomes.operations)} ${outcomes.operations} |`,
+              `| Analysis | ${ap} | ${af} | ${emoji(ap,af,outcomes.analysis)} ${outcomes.analysis} |`,
+              `| AI / Settings | ${aip} | ${aif} | ${emoji(aip,aif,outcomes.ai)} ${outcomes.ai} |`,
+              `| Integration E2E | ${ep} | ${ef} | ${emoji(ep,ef,outcomes.e2e)} ${outcomes.e2e} |`,
+              '',
+              '### Integration E2E Coverage',
+              '- 🔐 Azure AD auth via service principal → YARP API Gateway',
+              '- 🔍 Tenant scan of **DefenderATEVET17**',
+              '- 📊 Graph visualization data retrieval',
+              '- 📁 Catalog CRUD (create / read-back / delete gameboard config)',
+              '- 📸 WebUI screenshots (6 pages)',
+              screenshotLinks,
+              '',
+              '---',
+              `*[View full report](${artifactUrl})*`,
+            ].filter(l => l !== '').join('\n');
+
+            // Find and update existing bot comment, or create new one
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+            const existing = comments.find(c =>
+              c.user.type === 'Bot' && c.body.includes('Playwright QA Results')
+            );
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body: comment,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: comment,
+              });
+            }
+
+      - name: Fail job if tests failed
+        if: |
+          steps.smoke.outcome == 'failure' ||
+          steps.catalog.outcome == 'failure' ||
+          steps.operations.outcome == 'failure' ||
+          steps.analysis.outcome == 'failure' ||
+          steps.ai.outcome == 'failure' ||
+          steps.dashboard.outcome == 'failure' ||
+          steps.scanning_ui.outcome == 'failure' ||
+          steps.visualization.outcome == 'failure' ||
+          steps.gameboard_tenants.outcome == 'failure' ||
+          steps.e2e.outcome == 'failure'
+        run: |
+          echo "❌ One or more test suites failed — see PR comment for details."
+          exit 1

@@ -1,0 +1,268 @@
+name: Code Style Check
+
+on:
+  pull_request:
+    branches: [main, integration]
+    paths:
+      - 'src/**/*.cs'
+      - 'tests/**/*.cs'
+      - 'tools/**/*.cs'
+      - '.editorconfig'
+      - 'stylecop.json'
+      - 'Directory.Build.props'
+      - '.github/workflows/code-style-check.yml'
+  push:
+    branches: [main, integration]
+  workflow_dispatch:
+
+concurrency:
+  group: code-style-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  DOTNET_VERSION: '10.0.x'
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: 'true'
+  DOTNET_CLI_TELEMETRY_OPTOUT: 'true'
+
+jobs:
+  format-check:
+    name: Format Validation
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    permissions:
+      contents: read
+      pull-requests: write
+      checks: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      - name: Restore dependencies
+        run: dotnet restore CyberGym.sln
+
+      - name: Check code formatting
+        id: format-check
+        run: |
+          echo "Checking code formatting..."
+          dotnet format CyberGym.sln --verify-no-changes --verbosity diagnostic > format-check.log 2>&1 || true
+
+          if grep -q "formatted" format-check.log; then
+            echo "❌ Code formatting issues found"
+            cat format-check.log
+            echo "format_needed=true" >> $GITHUB_OUTPUT
+            exit 1
+          else
+            echo "✅ Code is properly formatted"
+            echo "format_needed=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Upload format check log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: format-check-log
+          path: format-check.log
+          retention-days: 7
+
+      - name: Comment on PR with format issues
+        if: failure() && github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const comment = `## ❌ Code Formatting Issues Found
+
+            Your code needs formatting. Please run:
+
+            \`\`\`bash
+            dotnet format CyberGym.sln
+            git add -A
+            git commit -m "style: auto-format code"
+            git push
+            \`\`\`
+
+            Or configure your IDE to format on save using the .editorconfig settings.
+
+            [Download format check log](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
+            `;
+
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: comment
+            });
+
+  stylecop-check:
+    name: StyleCop Analysis
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    permissions:
+      contents: read
+      pull-requests: write
+      checks: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      - name: Restore dependencies
+        run: dotnet restore CyberGym.sln
+
+      - name: Build with StyleCop analyzers
+        id: build
+        run: |
+          echo "Building with StyleCop analyzers..."
+          dotnet build CyberGym.sln --no-restore --configuration Release -warnaserror 2>&1 | tee build.log
+        continue-on-error: true
+
+      - name: Check for StyleCop violations
+        id: check-violations
+        run: |
+          echo "Checking for SA violations..."
+
+          if grep -E "SA[0-9]{4}" build.log; then
+            echo "❌ StyleCop violations found:"
+            grep -E "SA[0-9]{4}" build.log | head -30
+
+            # Count violations by type
+            echo "" >> violations-summary.txt
+            echo "=== Top 10 Violation Types ===" >> violations-summary.txt
+            grep -oE "SA[0-9]{4}" build.log | sort | uniq -c | sort -rn | head -10 >> violations-summary.txt
+
+            TOTAL=$(grep -c "SA[0-9]{4}" build.log || echo "0")
+            echo "violation_count=$TOTAL" >> $GITHUB_OUTPUT
+
+            cat violations-summary.txt
+            exit 1
+          else
+            echo "✅ No StyleCop violations found"
+            echo "violation_count=0" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Run code style tests
+        if: always()
+        run: |
+          dotnet test tests/CyberGym.CodeStyleRules.Tests/ \
+            --configuration Release \
+            --verbosity normal \
+            --logger "console;verbosity=detailed"
+
+      - name: Upload build log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: stylecop-violations-log
+          path: |
+            build.log
+            violations-summary.txt
+          retention-days: 7
+
+      - name: Comment PR with violations
+        if: failure() && github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const buildLog = fs.readFileSync('build.log', 'utf8');
+            const violations = buildLog.match(/SA[0-9]{4}[^\n]*/g) || [];
+            const violationCount = violations.length;
+
+            // Get top violation types
+            const violationTypes = {};
+            violations.forEach(v => {
+              const code = v.match(/SA[0-9]{4}/)?.[0];
+              if (code) violationTypes[code] = (violationTypes[code] || 0) + 1;
+            });
+
+            const topViolations = Object.entries(violationTypes)
+              .sort((a, b) => b[1] - a[1])
+              .slice(0, 10)
+              .map(([code, count]) => `- **${code}**: ${count} occurrences`)
+              .join('\n');
+
+            const comment = `## ❌ StyleCop Violations Found
+
+            **Total Violations:** ${violationCount}
+
+            ### Top Violation Types:
+            ${topViolations}
+
+            ### Common StyleCop Issues:
+            - **SA1600**: Missing XML documentation
+            - **SA1633**: Missing file header
+            - **SA1200**: Using directives placement
+            - **SA1028**: Code should not contain trailing whitespace
+            - **SA1516**: Elements should be separated by blank line
+            - **SA1513**: Closing brace should be followed by blank line
+
+            ### How to Fix:
+
+            **Quick Fix (Auto-format):**
+            \`\`\`bash
+            dotnet format CyberGym.sln
+            git add -A
+            git commit -m "style: fix StyleCop violations"
+            \`\`\`
+
+            **Manual Fix:**
+            1. Review violations in build log artifact
+            2. Follow patterns in \`tests/CyberGym.CodeStyleRules.Tests/\`
+            3. See [StyleCop Rules](https://github.com/DotNetAnalyzers/StyleCopAnalyzers/blob/master/DOCUMENTATION.md)
+
+            [Download full build log](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
+            `;
+
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: comment
+            });
+
+      - name: Fail if violations found
+        if: steps.build.outcome == 'failure'
+        run: |
+          echo "❌ Build failed due to StyleCop violations"
+          echo "Run 'dotnet format CyberGym.sln' to auto-fix most issues"
+          exit 1
+
+  code-style-summary:
+    name: Generate Code Style Report
+    runs-on: ubuntu-latest
+    needs: [format-check, stylecop-check]
+    if: always()
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Analyze code style
+        run: |
+          echo "# Code Style Analysis Report" > style-report.md
+          echo "" >> style-report.md
+          echo "## File Statistics" >> style-report.md
+          echo "Total C# files: $(find src/ tools/ -name '*.cs' | wc -l)" >> style-report.md
+          echo "Total lines: $(find src/ tools/ -name '*.cs' -exec wc -l {} \; | awk '{sum+=$1} END {print sum}')" >> style-report.md
+          echo "" >> style-report.md
+          echo "## Using Directive Check" >> style-report.md
+          echo "Files with System.* first: $(grep -r "^using System" src/ tools/ --include="*.cs" | wc -l)" >> style-report.md
+
+      - name: Upload style report
+        uses: actions/upload-artifact@v4
+        with:
+          name: code-style-report
+          path: style-report.md
+          retention-days: 30

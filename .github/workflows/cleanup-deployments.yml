@@ -1,0 +1,172 @@
+name: Cleanup PR Deployments
+
+# Automatically cleanup Azure deployments when a PR is closed or merged
+# This prevents stale deployments from accumulating in Azure
+
+on:
+  pull_request:
+    types: [closed]
+    branches: [main, integration]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+env:
+  AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+  AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+  AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+
+jobs:
+  check-deployment:
+    name: Check if PR had deployment
+    runs-on: ubuntu-latest
+    outputs:
+      should-cleanup: ${{ steps.check.outputs.should_cleanup }}
+      env-name: ${{ steps.check.outputs.env_name }}
+      env-type: ${{ steps.check.outputs.env_type }}
+      resource-group: ${{ steps.check.outputs.resource_group }}
+    steps:
+      - name: Check for deployment labels
+        id: check
+        run: |
+          SHOULD_CLEANUP="false"
+          ENV_NAME=""
+          ENV_TYPE="unknown"
+          RESOURCE_GROUP=""
+          
+          # Check if PR had a 'deploy' or 'deploy-integration' label
+          HAS_DEPLOY_LABEL="${{ contains(github.event.pull_request.labels.*.name, 'deploy') }}"
+          HAS_DEPLOY_INTEGRATION_LABEL="${{ contains(github.event.pull_request.labels.*.name, 'deploy-integration') }}"
+          
+          if [[ "$HAS_DEPLOY_INTEGRATION_LABEL" == "true" ]]; then
+            # Integration environment - shared, don't cleanup
+            echo "ℹ️  PR deployed to shared integration environment"
+            echo "   Skipping cleanup (integration is shared and persistent)"
+            SHOULD_CLEANUP="false"
+            
+          elif [[ "$HAS_DEPLOY_LABEL" == "true" ]]; then
+            # Branch-specific deployment - cleanup required
+            SHOULD_CLEANUP="true"
+            ENV_TYPE="branch"
+            
+            BRANCH_NAME="${{ github.event.pull_request.head.ref }}"
+            # Sanitize branch name (same logic as deploy.yml)
+            SANITIZED=$(echo "$BRANCH_NAME" | sed 's/[^a-zA-Z0-9-]/-/g' | tr '[:upper:]' '[:lower:]' | cut -c1-20 | sed 's/^-*//;s/-*$//')
+            if [ -z "$SANITIZED" ]; then
+              SANITIZED="pr-${{ github.event.pull_request.number }}"
+            fi
+            
+            ENV_NAME="${SANITIZED}"
+            RESOURCE_GROUP="rg-${SANITIZED}"
+            
+            echo "🗑️  PR had branch-specific deployment: ${ENV_NAME}"
+            echo "   Resource group to cleanup: ${RESOURCE_GROUP}"
+          else
+            echo "ℹ️  PR had no deployment labels - nothing to cleanup"
+          fi
+          
+          echo "should_cleanup=${SHOULD_CLEANUP}" >> "$GITHUB_OUTPUT"
+          echo "env_name=${ENV_NAME}" >> "$GITHUB_OUTPUT"
+          echo "env_type=${ENV_TYPE}" >> "$GITHUB_OUTPUT"
+          echo "resource_group=${RESOURCE_GROUP}" >> "$GITHUB_OUTPUT"
+
+  cleanup-deployment:
+    name: Cleanup Azure deployment
+    needs: check-deployment
+    if: needs.check-deployment.outputs.should-cleanup == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Azure login
+        run: |
+          az login \
+            --service-principal \
+            --username "${{ secrets.AZURE_CLIENT_ID }}" \
+            --password "${{ secrets.AZURE_CLIENT_SECRET }}" \
+            --tenant "${{ secrets.AZURE_TENANT_ID }}"
+          
+          az account set --subscription "${{ env.AZURE_SUBSCRIPTION_ID }}"
+          echo "✅ Authenticated to Azure"
+
+      - name: Check if resource group exists
+        id: check-rg
+        run: |
+          RG="${{ needs.check-deployment.outputs.resource-group }}"
+          
+          if az group show --name "${RG}" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "✅ Resource group ${RG} exists"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "ℹ️  Resource group ${RG} does not exist (already cleaned up or never created)"
+          fi
+
+      - name: Delete resource group
+        if: steps.check-rg.outputs.exists == 'true'
+        run: |
+          RG="${{ needs.check-deployment.outputs.resource-group }}"
+          ENV_NAME="${{ needs.check-deployment.outputs.env-name }}"
+          
+          echo "🗑️  Deleting resource group: ${RG}"
+          echo "   Environment: ${ENV_NAME}"
+          
+          # Delete resource group asynchronously (don't wait for completion)
+          az group delete \
+            --name "${RG}" \
+            --yes \
+            --no-wait
+          
+          echo "✅ Resource group deletion initiated"
+          echo "   Azure will complete the deletion in the background"
+
+      - name: Comment on PR
+        if: steps.check-rg.outputs.exists == 'true'
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
+        with:
+          script: |
+            const envName = '${{ needs.check-deployment.outputs.env-name }}';
+            const resourceGroup = '${{ needs.check-deployment.outputs.resource-group }}';
+            const prNumber = context.issue.number;
+            const merged = '${{ github.event.pull_request.merged }}' === 'true';
+            const action = merged ? 'merged' : 'closed';
+            
+            const body = `## 🗑️ Deployment Cleanup
+            
+            PR **${action}** - initiating cleanup of branch deployment.
+            
+            **Environment:** \`${envName}\`  
+            **Resource Group:** \`${resourceGroup}\`  
+            **Status:** Deletion initiated (Azure will complete in background)
+            
+            The Azure resource group and all associated resources are being deleted to prevent stale deployments.`;
+            
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prNumber,
+              body: body
+            });
+
+      - name: Comment on PR - already cleaned
+        if: steps.check-rg.outputs.exists == 'false'
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
+        with:
+          script: |
+            const envName = '${{ needs.check-deployment.outputs.env-name }}';
+            const resourceGroup = '${{ needs.check-deployment.outputs.resource-group }}';
+            const prNumber = context.issue.number;
+            
+            const body = `## ℹ️ Deployment Already Cleaned
+            
+            **Environment:** \`${envName}\`  
+            **Resource Group:** \`${resourceGroup}\`  
+            **Status:** Not found (already cleaned up or never created)
+            
+            No cleanup needed.`;
+            
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prNumber,
+              body: body
+            });

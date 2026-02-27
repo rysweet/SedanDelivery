@@ -1,0 +1,246 @@
+name: Logging Rules Check
+
+on:
+  pull_request:
+    branches: [main, integration]
+    paths:
+      - 'src/**/*.cs'
+      - 'tests/**/*.cs'
+      - 'tools/**/*.cs'
+      - 'Directory.Build.props'
+      - '.github/workflows/logging-rules-check.yml'
+  push:
+    branches: [main, integration]
+  workflow_dispatch:
+
+concurrency:
+  group: logging-rules-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  DOTNET_VERSION: '10.0.x'
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: 'true'
+  DOTNET_CLI_TELEMETRY_OPTOUT: 'true'
+
+jobs:
+  logging-analyzer-check:
+    name: Validate Logging Patterns
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    permissions:
+      contents: read
+      pull-requests: write
+      checks: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      - name: Restore dependencies
+        run: dotnet restore CyberGym.sln
+
+      - name: Build with logging analyzers
+        id: build
+        run: |
+          echo "Building with logging analyzers enabled..."
+          dotnet build CyberGym.sln --no-restore --configuration Release -warnaserror 2>&1 | tee build.log
+        continue-on-error: true
+
+      - name: Check for logging violations
+        id: check-violations
+        run: |
+          echo "Checking for logging violations..."
+
+          # Extract logging-related warnings/errors (CA2254, S2629, S2228, CA1848)
+          if grep -E "CA2254|S2629|S2228|CA1848" build.log; then
+            echo "❌ Logging rule violations found:"
+            grep -E "CA2254|S2629|S2228|CA1848" build.log | head -30
+
+            # Count violations by type
+            CA2254_COUNT=$(grep -c "CA2254" build.log || echo "0")
+            S2629_COUNT=$(grep -c "S2629" build.log || echo "0")
+            S2228_COUNT=$(grep -c "S2228" build.log || echo "0")
+            CA1848_COUNT=$(grep -c "CA1848" build.log || echo "0")
+
+            echo "CA2254 (String interpolation): $CA2254_COUNT"
+            echo "S2629 (String interpolation): $S2629_COUNT"
+            echo "S2228 (Console.WriteLine): $S2228_COUNT"
+            echo "CA1848 (LoggerMessage): $CA1848_COUNT"
+
+            TOTAL=$((CA2254_COUNT + S2629_COUNT + S2228_COUNT))
+            echo "Total critical violations: $TOTAL"
+            echo "violation_count=$TOTAL" >> $GITHUB_OUTPUT
+
+            # CA1848 is informational, don't fail on it
+            if [ $TOTAL -gt 0 ]; then
+              exit 1
+            fi
+          else
+            echo "✅ No logging rule violations found"
+            echo "violation_count=0" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Run logging rules tests
+        if: always()
+        run: |
+          dotnet test tests/CyberGym.LoggingRules.Tests/ \
+            --no-build \
+            --configuration Release \
+            --verbosity normal \
+            --logger "console;verbosity=detailed"
+
+      - name: Upload build log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: logging-violations-log
+          path: build.log
+          retention-days: 7
+
+      - name: Comment PR with violations
+        if: failure() && github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const buildLog = fs.readFileSync('build.log', 'utf8');
+
+            // Extract violations
+            const ca2254 = buildLog.match(/CA2254[^\n]*/g) || [];
+            const s2629 = buildLog.match(/S2629[^\n]*/g) || [];
+            const s2228 = buildLog.match(/S2228[^\n]*/g) || [];
+
+            // Get unique violations (limit to 10 per type)
+            const uniqueCA2254 = [...new Set(ca2254)].slice(0, 10);
+            const uniqueS2629 = [...new Set(s2629)].slice(0, 10);
+            const uniqueS2228 = [...new Set(s2228)].slice(0, 10);
+
+            const totalViolations = ca2254.length + s2629.length + s2228.length;
+
+            let comment = `## ❌ Logging Rule Violations Found
+
+            **Total Violations:** ${totalViolations}
+
+            ### Violation Breakdown:
+            - **CA2254** (String interpolation in log template): ${ca2254.length}
+            - **S2629** (String interpolation in logging call): ${s2629.length}
+            - **S2228** (Console.WriteLine usage): ${s2228.length}
+            `;
+
+            if (uniqueCA2254.length > 0) {
+              comment += `\n### CA2254: Template should be a static expression\n\`\`\`\n${uniqueCA2254.slice(0, 5).join('\n')}\n\`\`\`\n`;
+            }
+
+            if (uniqueS2629.length > 0) {
+              comment += `\n### S2629: Don't use string interpolation in logging calls\n\`\`\`\n${uniqueS2629.slice(0, 5).join('\n')}\n\`\`\`\n`;
+            }
+
+            if (uniqueS2228.length > 0) {
+              comment += `\n### S2228: Console output should not be used directly\n\`\`\`\n${uniqueS2228.slice(0, 5).join('\n')}\n\`\`\`\n`;
+            }
+
+            comment += `
+            ### How to Fix:
+
+            #### ❌ String Interpolation (CA2254, S2629)
+            \`\`\`csharp
+            // BAD
+            _logger.LogInformation($"User {userId} performed {action}");
+
+            // GOOD
+            _logger.LogInformation("User {UserId} performed {Action}", userId, action);
+            \`\`\`
+
+            #### ❌ Console Output (S2228)
+            \`\`\`csharp
+            // BAD
+            Console.WriteLine("Application started");
+
+            // GOOD
+            _logger.LogInformation("Application started");
+            \`\`\`
+
+            ### Resources:
+            - Review examples in \`tests/CyberGym.LoggingRules.Tests/LoggingPatternTests.cs\`
+            - See comprehensive guide in \`tests/CyberGym.LoggingRules.Tests/README.md\`
+            - [Microsoft Logging Best Practices](https://learn.microsoft.com/en-us/dotnet/core/extensions/logging-best-practices)
+
+            [Download full build log](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
+            `;
+
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: comment
+            });
+
+      - name: Fail if violations found
+        if: steps.build.outcome == 'failure'
+        run: |
+          echo "❌ Build failed due to logging rule violations"
+          echo "Review the violations above and fix them before merging"
+          exit 1
+
+  logging-pattern-summary:
+    name: Generate Logging Pattern Report
+    runs-on: ubuntu-latest
+    needs: logging-analyzer-check
+    if: always()
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      - name: Analyze logging usage
+        run: |
+          echo "# Logging Pattern Analysis Report" > logging-report.md
+          echo "" >> logging-report.md
+          echo "**Generated:** $(date -u +"%Y-%m-%d %H:%M:%S UTC")" >> logging-report.md
+          echo "" >> logging-report.md
+
+          echo "## Logging Statistics" >> logging-report.md
+          echo "" >> logging-report.md
+
+          # Count logging statements by level
+          echo "### Log Calls by Level" >> logging-report.md
+          echo "- LogInformation: $(grep -r "LogInformation" src/ --include="*.cs" | wc -l)" >> logging-report.md
+          echo "- LogWarning: $(grep -r "LogWarning" src/ --include="*.cs" | wc -l)" >> logging-report.md
+          echo "- LogError: $(grep -r "LogError" src/ --include="*.cs" | wc -l)" >> logging-report.md
+          echo "- LogCritical: $(grep -r "LogCritical" src/ --include="*.cs" | wc -l)" >> logging-report.md
+          echo "- LogDebug: $(grep -r "LogDebug" src/ --include="*.cs" | wc -l)" >> logging-report.md
+          echo "- LogTrace: $(grep -r "LogTrace" src/ --include="*.cs" | wc -l)" >> logging-report.md
+          echo "" >> logging-report.md
+
+          # Count potential issues
+          echo "### Potential Issues" >> logging-report.md
+          echo "- String interpolation (\$\"): $(grep -r '\$"' src/ --include="*.cs" | grep -c "Log" || echo "0")" >> logging-report.md
+          echo "- Console.WriteLine: $(grep -r "Console.WriteLine" src/ --include="*.cs" | wc -l)" >> logging-report.md
+          echo "- String concatenation in logs: $(grep -r 'Log.*+' src/ --include="*.cs" | wc -l)" >> logging-report.md
+          echo "" >> logging-report.md
+
+          # Count best practices
+          echo "### Best Practices Adoption" >> logging-report.md
+          echo "- LoggerMessage usage: $(grep -r "LoggerMessage" src/ --include="*.cs" | wc -l)" >> logging-report.md
+          echo "- BeginScope usage: $(grep -r "BeginScope" src/ --include="*.cs" | wc -l)" >> logging-report.md
+          echo "- Exception parameter usage: $(grep -r "LogError(ex," src/ --include="*.cs" | wc -l)" >> logging-report.md
+
+          cat logging-report.md
+
+      - name: Upload logging report
+        uses: actions/upload-artifact@v4
+        with:
+          name: logging-pattern-report
+          path: logging-report.md
+          retention-days: 30
