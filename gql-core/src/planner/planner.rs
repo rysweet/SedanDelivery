@@ -946,7 +946,7 @@ impl<'s> QueryPlanner<'s> {
             // 1. First augment raw rows with projected aliases (preserving raw vars)
             // 2. Filter with WHERE (can see both scopes)
             // 3. Final project to restrict to only projected aliases
-            if wc.where_clause.is_some() {
+            if let Some(predicate) = wc.where_clause.clone() {
                 // Augmented project: adds projected aliases while keeping raw vars.
                 let child_aliases = crate::planner::collect_visible_aliases(&raw);
                 let mut augmented_items: Vec<(Expr, Option<Identifier>)> = child_aliases
@@ -963,7 +963,7 @@ impl<'s> QueryPlanner<'s> {
 
                 // Filter (WHERE) — can see both raw vars and projected aliases.
                 raw = Operator::Filter {
-                    predicate: wc.where_clause.clone().unwrap(),
+                    predicate,
                     child: Box::new(raw),
                 };
 

@@ -127,9 +127,9 @@ impl<'a> QueryExecutor<'a> {
         plan: &Operator,
         budget: &mut ExecutionBudget,
     ) -> Result<QueryResult, GqlError> {
-        // Initialize the query-level "now" so that temporal no-arg functions (date(), time(), etc.)
-        // return the same value throughout this query execution.
-        crate::executor::filter::init_query_now();
+        // RAII guard: initializes query-level "now" and ensures clear_query_now() is called
+        // even if execution returns early via `?`.
+        let _query_time_guard = crate::executor::filter::QueryTimeGuard::new();
         let pre_existing_labels: HashSet<String> = self
             .store
             .all_label_names(graph)
@@ -141,7 +141,6 @@ impl<'a> QueryExecutor<'a> {
             ..Default::default()
         };
         let rows = self.exec_operator(graph, plan, budget, &[], &mut stats)?;
-        crate::executor::filter::clear_query_now();
         stats.finalize();
 
         // Derive column list.  Handle the case where the root is Distinct{ProduceResults}.
@@ -1013,7 +1012,12 @@ impl<'a> QueryExecutor<'a> {
                         // Yield this path if depth is within [min, max]
                         if depth >= *min && depth <= *max {
                             let mut new_row = row.clone();
-                            let end_node = *path_nodes.last().unwrap();
+                            let end_node = *path_nodes.last().ok_or_else(|| {
+                                GqlError::Execution(ExecutionError::TypeMismatch {
+                                    expected: "non-empty path".to_string(),
+                                    actual: "empty path_nodes".to_string(),
+                                })
+                            })?;
                             new_row.insert(dst_alias.0.clone(), Value::Node(end_node));
                             if let Some(pa) = path_alias {
                                 if *path_mode {
