@@ -4900,4 +4900,445 @@ mod tests {
         };
         assert_eq!(eval_expr(&expr, &empty_row()).unwrap(), Value::List(vec![]));
     }
+
+    // ── Built-in scalar functions ─────────────────────────────────────────────
+
+    #[test]
+    fn builtin_ceil_float() {
+        assert_eq!(
+            eval_function_with_vals("ceil", vec![Value::Float(2.3)]).unwrap(),
+            Value::Float(3.0)
+        );
+    }
+
+    #[test]
+    fn builtin_ceil_int_unchanged() {
+        assert_eq!(
+            eval_function_with_vals("ceil", vec![Value::Int(5)]).unwrap(),
+            Value::Int(5)
+        );
+    }
+
+    #[test]
+    fn builtin_floor_float() {
+        assert_eq!(
+            eval_function_with_vals("floor", vec![Value::Float(3.9)]).unwrap(),
+            Value::Float(3.0)
+        );
+    }
+
+    #[test]
+    fn builtin_round_float() {
+        assert_eq!(
+            eval_function_with_vals("round", vec![Value::Float(2.5)]).unwrap(),
+            Value::Float(3.0)
+        );
+    }
+
+    #[test]
+    fn builtin_sqrt_int() {
+        assert_eq!(
+            eval_function_with_vals("sqrt", vec![Value::Int(9)]).unwrap(),
+            Value::Float(3.0)
+        );
+    }
+
+    #[test]
+    fn builtin_sign_positive() {
+        assert_eq!(
+            eval_function_with_vals("sign", vec![Value::Int(5)]).unwrap(),
+            Value::Int(1)
+        );
+    }
+
+    #[test]
+    fn builtin_sign_negative() {
+        assert_eq!(
+            eval_function_with_vals("sign", vec![Value::Int(-3)]).unwrap(),
+            Value::Int(-1)
+        );
+    }
+
+    #[test]
+    fn builtin_tostring_int() {
+        assert_eq!(
+            eval_function_with_vals("toString", vec![Value::Int(42)]).unwrap(),
+            Value::Str("42".into())
+        );
+    }
+
+    #[test]
+    fn builtin_tostring_bool() {
+        assert_eq!(
+            eval_function_with_vals("toString", vec![Value::Bool(true)]).unwrap(),
+            Value::Str("true".into())
+        );
+    }
+
+    #[test]
+    fn builtin_tointeger_from_string() {
+        assert_eq!(
+            eval_function_with_vals("toInteger", vec![Value::Str("42".into())]).unwrap(),
+            Value::Int(42)
+        );
+    }
+
+    #[test]
+    fn builtin_tointeger_from_float() {
+        assert_eq!(
+            eval_function_with_vals("toInteger", vec![Value::Float(3.9)]).unwrap(),
+            Value::Int(3)
+        );
+    }
+
+    #[test]
+    fn builtin_tofloat_from_int() {
+        assert_eq!(
+            eval_function_with_vals("toFloat", vec![Value::Int(5)]).unwrap(),
+            Value::Float(5.0)
+        );
+    }
+
+    #[test]
+    fn builtin_tofloat_invalid_string_returns_null() {
+        assert_eq!(
+            eval_function_with_vals("toFloat", vec![Value::Str("abc".into())]).unwrap(),
+            Value::Null
+        );
+    }
+
+    #[test]
+    fn builtin_toboolean_true_string() {
+        assert_eq!(
+            eval_function_with_vals("toBoolean", vec![Value::Str("true".into())]).unwrap(),
+            Value::Bool(true)
+        );
+    }
+
+    #[test]
+    fn builtin_toboolean_invalid_returns_null() {
+        assert_eq!(
+            eval_function_with_vals("toBoolean", vec![Value::Str("yes".into())]).unwrap(),
+            Value::Null
+        );
+    }
+
+    #[test]
+    fn builtin_tolower() {
+        assert_eq!(
+            eval_function_with_vals("toLower", vec![Value::Str("HELLO".into())]).unwrap(),
+            Value::Str("hello".into())
+        );
+    }
+
+    #[test]
+    fn builtin_toupper() {
+        assert_eq!(
+            eval_function_with_vals("toUpper", vec![Value::Str("hello".into())]).unwrap(),
+            Value::Str("HELLO".into())
+        );
+    }
+
+    #[test]
+    fn builtin_trim() {
+        assert_eq!(
+            eval_function_with_vals("trim", vec![Value::Str("  hello  ".into())]).unwrap(),
+            Value::Str("hello".into())
+        );
+    }
+
+    #[test]
+    fn builtin_ltrim() {
+        assert_eq!(
+            eval_function_with_vals("ltrim", vec![Value::Str("  hello".into())]).unwrap(),
+            Value::Str("hello".into())
+        );
+    }
+
+    #[test]
+    fn builtin_rtrim() {
+        assert_eq!(
+            eval_function_with_vals("rtrim", vec![Value::Str("hello  ".into())]).unwrap(),
+            Value::Str("hello".into())
+        );
+    }
+
+    #[test]
+    fn builtin_left() {
+        assert_eq!(
+            eval_function_with_vals("left", vec![Value::Str("hello".into()), Value::Int(3)]).unwrap(),
+            Value::Str("hel".into())
+        );
+    }
+
+    #[test]
+    fn builtin_right() {
+        assert_eq!(
+            eval_function_with_vals("right", vec![Value::Str("hello".into()), Value::Int(3)]).unwrap(),
+            Value::Str("llo".into())
+        );
+    }
+
+    #[test]
+    fn builtin_substring_with_start_and_length() {
+        assert_eq!(
+            eval_function_with_vals(
+                "substring",
+                vec![Value::Str("hello".into()), Value::Int(1), Value::Int(3)]
+            )
+            .unwrap(),
+            Value::Str("ell".into())
+        );
+    }
+
+    #[test]
+    fn builtin_replace() {
+        assert_eq!(
+            eval_function_with_vals(
+                "replace",
+                vec![
+                    Value::Str("hello".into()),
+                    Value::Str("l".into()),
+                    Value::Str("r".into()),
+                ]
+            )
+            .unwrap(),
+            Value::Str("herro".into())
+        );
+    }
+
+    #[test]
+    fn builtin_split() {
+        assert_eq!(
+            eval_function_with_vals(
+                "split",
+                vec![Value::Str("a,b,c".into()), Value::Str(",".into())]
+            )
+            .unwrap(),
+            Value::List(vec![
+                Value::Str("a".into()),
+                Value::Str("b".into()),
+                Value::Str("c".into()),
+            ])
+        );
+    }
+
+    #[test]
+    fn builtin_head() {
+        assert_eq!(
+            eval_function_with_vals(
+                "head",
+                vec![Value::List(vec![Value::Int(1), Value::Int(2), Value::Int(3)])]
+            )
+            .unwrap(),
+            Value::Int(1)
+        );
+    }
+
+    #[test]
+    fn builtin_last() {
+        assert_eq!(
+            eval_function_with_vals(
+                "last",
+                vec![Value::List(vec![Value::Int(1), Value::Int(2), Value::Int(3)])]
+            )
+            .unwrap(),
+            Value::Int(3)
+        );
+    }
+
+    #[test]
+    fn builtin_tail() {
+        assert_eq!(
+            eval_function_with_vals(
+                "tail",
+                vec![Value::List(vec![Value::Int(1), Value::Int(2), Value::Int(3)])]
+            )
+            .unwrap(),
+            Value::List(vec![Value::Int(2), Value::Int(3)])
+        );
+    }
+
+    #[test]
+    fn builtin_reverse_list() {
+        assert_eq!(
+            eval_function_with_vals(
+                "reverse",
+                vec![Value::List(vec![Value::Int(1), Value::Int(2), Value::Int(3)])]
+            )
+            .unwrap(),
+            Value::List(vec![Value::Int(3), Value::Int(2), Value::Int(1)])
+        );
+    }
+
+    #[test]
+    fn builtin_range_basic() {
+        assert_eq!(
+            eval_function_with_vals("range", vec![Value::Int(1), Value::Int(4)]).unwrap(),
+            Value::List(vec![
+                Value::Int(1),
+                Value::Int(2),
+                Value::Int(3),
+                Value::Int(4),
+            ])
+        );
+    }
+
+    #[test]
+    fn builtin_keys_returns_non_null_keys() {
+        use indexmap::IndexMap;
+        let mut m: IndexMap<Box<str>, Value> = IndexMap::new();
+        m.insert(Box::from("a"), Value::Int(1));
+        m.insert(Box::from("b"), Value::Int(2));
+        let result = eval_function_with_vals("keys", vec![Value::Map(m)]).unwrap();
+        assert_eq!(
+            result,
+            Value::List(vec![Value::Str("a".into()), Value::Str("b".into())])
+        );
+    }
+
+    #[test]
+    fn builtin_properties_returns_map_clone() {
+        use indexmap::IndexMap;
+        let mut m: IndexMap<Box<str>, Value> = IndexMap::new();
+        m.insert(Box::from("x"), Value::Int(42));
+        let val = Value::Map(m.clone());
+        let result = eval_function_with_vals("properties", vec![val]).unwrap();
+        assert_eq!(result, Value::Map(m));
+    }
+
+    // ── Null three-valued logic ───────────────────────────────────────────────
+
+    #[test]
+    fn null_and_true_is_null() {
+        let expr = Expr::BinaryOp {
+            op: BOp::And,
+            left: Box::new(Expr::Null),
+            right: Box::new(Expr::Bool(true)),
+        };
+        assert_eq!(eval_expr(&expr, &empty_row()).unwrap(), Value::Null);
+    }
+
+    #[test]
+    fn null_and_false_is_false() {
+        let expr = Expr::BinaryOp {
+            op: BOp::And,
+            left: Box::new(Expr::Null),
+            right: Box::new(Expr::Bool(false)),
+        };
+        assert_eq!(eval_expr(&expr, &empty_row()).unwrap(), Value::Bool(false));
+    }
+
+    #[test]
+    fn null_or_true_is_true() {
+        let expr = Expr::BinaryOp {
+            op: BOp::Or,
+            left: Box::new(Expr::Null),
+            right: Box::new(Expr::Bool(true)),
+        };
+        assert_eq!(eval_expr(&expr, &empty_row()).unwrap(), Value::Bool(true));
+    }
+
+    #[test]
+    fn null_or_false_is_null() {
+        let expr = Expr::BinaryOp {
+            op: BOp::Or,
+            left: Box::new(Expr::Null),
+            right: Box::new(Expr::Bool(false)),
+        };
+        assert_eq!(eval_expr(&expr, &empty_row()).unwrap(), Value::Null);
+    }
+
+    #[test]
+    fn not_null_is_null() {
+        let expr = Expr::UnaryOp {
+            op: UOp::Not,
+            expr: Box::new(Expr::Null),
+        };
+        assert_eq!(eval_expr(&expr, &empty_row()).unwrap(), Value::Null);
+    }
+
+    #[test]
+    fn in_list_with_null_element_not_found_is_null() {
+        // 4 IN [1, null, 3] → null (element not present, but null exists)
+        let expr = Expr::BinaryOp {
+            op: BOp::In,
+            left: Box::new(Expr::Integer(4)),
+            right: Box::new(Expr::List(vec![
+                Expr::Integer(1),
+                Expr::Null,
+                Expr::Integer(3),
+            ])),
+        };
+        assert_eq!(eval_expr(&expr, &empty_row()).unwrap(), Value::Null);
+    }
+
+    #[test]
+    fn in_list_with_null_element_found_is_true() {
+        // 3 IN [1, null, 3] → true (exact match found before null check matters)
+        let expr = Expr::BinaryOp {
+            op: BOp::In,
+            left: Box::new(Expr::Integer(3)),
+            right: Box::new(Expr::List(vec![
+                Expr::Integer(1),
+                Expr::Null,
+                Expr::Integer(3),
+            ])),
+        };
+        assert_eq!(eval_expr(&expr, &empty_row()).unwrap(), Value::Bool(true));
+    }
+
+    #[test]
+    fn null_in_empty_list_is_false() {
+        // null IN [] → false
+        let expr = Expr::BinaryOp {
+            op: BOp::In,
+            left: Box::new(Expr::Null),
+            right: Box::new(Expr::List(vec![])),
+        };
+        assert_eq!(eval_expr(&expr, &empty_row()).unwrap(), Value::Bool(false));
+    }
+
+    // ── Integer boundaries ────────────────────────────────────────────────────
+
+    #[test]
+    fn i64_max_plus_one_wraps_to_min() {
+        // The executor uses wrapping_add, so i64::MAX + 1 = i64::MIN.
+        let expr = Expr::BinaryOp {
+            op: BOp::Add,
+            left: Box::new(Expr::Integer(i64::MAX)),
+            right: Box::new(Expr::Integer(1)),
+        };
+        assert_eq!(eval_expr(&expr, &empty_row()).unwrap(), Value::Int(i64::MIN));
+    }
+
+    #[test]
+    #[should_panic]
+    fn abs_i64_min_overflows() {
+        // abs() uses plain i64::abs() which panics on i64::MIN in debug mode.
+        let _ = eval_function_with_vals("abs", vec![Value::Int(i64::MIN)]);
+    }
+
+    #[test]
+    #[should_panic]
+    fn neg_i64_min_overflows() {
+        // Unary negation of i64::MIN overflows in debug mode.
+        let expr = Expr::UnaryOp {
+            op: UOp::Neg,
+            expr: Box::new(Expr::Integer(i64::MIN)),
+        };
+        let _ = eval_expr(&expr, &empty_row());
+    }
+
+    #[test]
+    #[should_panic]
+    fn i64_min_div_neg_one_overflows() {
+        // i64::MIN / -1 overflows (result doesn't fit in i64) in debug mode.
+        let expr = Expr::BinaryOp {
+            op: BOp::Div,
+            left: Box::new(Expr::Integer(i64::MIN)),
+            right: Box::new(Expr::Integer(-1)),
+        };
+        let _ = eval_expr(&expr, &empty_row());
+    }
 }

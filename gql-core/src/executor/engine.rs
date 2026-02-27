@@ -4954,6 +4954,59 @@ mod tests {
         assert_eq!(rows.len(), 0);
     }
 
+    // ── cmp_values ───────────────────────────────────────────────────────────
+
+    #[test]
+    fn cmp_values_cross_type_ordering() {
+        use std::cmp::Ordering;
+        // Type ranks: String=5, Bool=6 — so String sorts before Bool.
+        assert_eq!(
+            cmp_values(&Value::Str("z".into()), &Value::Bool(true)),
+            Ordering::Less
+        );
+        assert_eq!(
+            cmp_values(&Value::Bool(false), &Value::Str("a".into())),
+            Ordering::Greater
+        );
+    }
+
+    #[test]
+    fn cmp_values_nan_sorts_after_regular_float() {
+        use std::cmp::Ordering;
+        let nan = Value::Float(f64::NAN);
+        let regular = Value::Float(1.0);
+        // NaN has type_rank 8; regular float has rank 7 — NaN sorts after.
+        assert_eq!(cmp_values(&nan, &regular), Ordering::Greater);
+        assert_eq!(cmp_values(&regular, &nan), Ordering::Less);
+    }
+
+    #[test]
+    fn cmp_values_list_lexicographic() {
+        use std::cmp::Ordering;
+        let short = Value::List(vec![Value::Int(1), Value::Int(2)]);
+        let long = Value::List(vec![Value::Int(1), Value::Int(2), Value::Int(3)]);
+        let diff = Value::List(vec![Value::Int(1), Value::Int(3)]);
+        // Same prefix but fewer elements → less.
+        assert_eq!(cmp_values(&short, &long), Ordering::Less);
+        // Second element differs: [1,2] < [1,3].
+        assert_eq!(cmp_values(&short, &diff), Ordering::Less);
+        // Equal lists.
+        assert_eq!(cmp_values(&short, &short.clone()), Ordering::Equal);
+    }
+
+    #[test]
+    fn cmp_values_null_sorts_last() {
+        use std::cmp::Ordering;
+        // Null has rank 255 — it is always greater than any other type.
+        assert_eq!(cmp_values(&Value::Null, &Value::Int(0)), Ordering::Greater);
+        assert_eq!(
+            cmp_values(&Value::Null, &Value::Str("z".into())),
+            Ordering::Greater
+        );
+        assert_eq!(cmp_values(&Value::Bool(true), &Value::Null), Ordering::Less);
+        assert_eq!(cmp_values(&Value::Null, &Value::Null), Ordering::Equal);
+    }
+
     // ── E2E integration test: VarLen via parser+planner ─────────────────────
 
     #[test]

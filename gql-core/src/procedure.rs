@@ -122,3 +122,78 @@ fn is_type_compatible(type_name: &str, value: &Value) -> bool {
         _ => true, // unknown types accept anything
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::Value;
+
+    fn make_double_proc() -> ProcedureDefinition {
+        ProcedureDefinition {
+            name: "double".to_string(),
+            input_params: vec![ProcedureParam {
+                name: "n".to_string(),
+                type_name: "INTEGER?".to_string(),
+            }],
+            output_columns: vec![ProcedureParam {
+                name: "doubled".to_string(),
+                type_name: "INTEGER?".to_string(),
+            }],
+            data: vec![
+                vec![Value::Int(1), Value::Int(2)],
+                vec![Value::Int(2), Value::Int(4)],
+                vec![Value::Int(3), Value::Int(6)],
+            ],
+        }
+    }
+
+    #[test]
+    fn registry_register_and_get() {
+        let mut reg = ProcedureRegistry::new();
+        reg.register(make_double_proc());
+        let got = reg.get("double").expect("procedure should be registered");
+        assert_eq!(got.name, "double");
+        assert_eq!(got.input_params.len(), 1);
+        assert_eq!(got.output_columns.len(), 1);
+    }
+
+    #[test]
+    fn registry_contains_after_register() {
+        let mut reg = ProcedureRegistry::new();
+        assert!(!reg.contains("double"));
+        reg.register(make_double_proc());
+        assert!(reg.contains("double"));
+    }
+
+    #[test]
+    fn registry_get_unknown_returns_none() {
+        let reg = ProcedureRegistry::new();
+        assert!(reg.get("nonexistent").is_none());
+    }
+
+    #[test]
+    fn procedure_execute_filters_by_input_arg() {
+        let proc = make_double_proc();
+        // Execute with n=2 should return the row where input=2, output=4.
+        let results = proc.execute(&[Value::Int(2)]);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0]["doubled"], Value::Int(4));
+
+        // Execute with n=99 (no matching row) should return empty.
+        let empty = proc.execute(&[Value::Int(99)]);
+        assert_eq!(empty.len(), 0);
+    }
+
+    #[test]
+    fn check_arg_type_validates_declared_type() {
+        let proc = make_double_proc();
+        // INTEGER? accepts Int values.
+        assert!(proc.check_arg_type(0, &Value::Int(5)));
+        // INTEGER? accepts Null (nullable).
+        assert!(proc.check_arg_type(0, &Value::Null));
+        // INTEGER? rejects String.
+        assert!(!proc.check_arg_type(0, &Value::Str("hello".into())));
+        // Out-of-range param index always returns false.
+        assert!(!proc.check_arg_type(99, &Value::Int(1)));
+    }
+}

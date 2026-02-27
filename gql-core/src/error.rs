@@ -203,4 +203,54 @@ mod tests {
         let e = ExecutionError::unsupported("CALL subquery");
         assert!(e.to_string().contains("CALL subquery"));
     }
+
+    // ── Error path tests ─────────────────────────────────────────────────────
+
+    #[test]
+    fn query_too_large_error_message() {
+        let e = ParseError::QueryTooLarge {
+            size: 2_000_000,
+            limit: 1_000_000,
+        };
+        let msg = e.to_string();
+        assert!(msg.contains("2000000"), "message should include actual size");
+        assert!(msg.contains("1000000"), "message should include limit");
+    }
+
+    #[test]
+    fn index_out_of_bounds_error_message() {
+        let e = ExecutionError::IndexOutOfBounds { index: 5, len: 3 };
+        let msg = e.to_string();
+        assert!(msg.contains('5'), "message should include the index");
+        assert!(msg.contains('3'), "message should include the length");
+    }
+
+    #[test]
+    fn path_depth_exceeded_error_message() {
+        let e = ExecutionError::PathDepthExceeded { max_depth: 100 };
+        let msg = e.to_string();
+        assert!(msg.contains("100"), "message should include the max depth");
+    }
+
+    #[test]
+    fn ambiguous_variable_error_message() {
+        let e = PlanError::AmbiguousVariable {
+            name: "n".to_string(),
+        };
+        let msg = e.to_string();
+        assert!(msg.contains("'n'"), "message should include the variable name");
+        // Wrap in GqlError to verify the From conversion works.
+        let gql: GqlError = e.into();
+        assert!(matches!(gql, GqlError::Plan(PlanError::AmbiguousVariable { .. })));
+    }
+
+    #[test]
+    fn edge_not_found_error_message() {
+        let e = StorageError::EdgeNotFound { id: 42 };
+        let msg = e.to_string();
+        assert!(msg.contains("42"), "message should include the edge id");
+        // Wrap in GqlError to verify the From conversion works.
+        let gql: GqlError = e.into();
+        assert!(matches!(gql, GqlError::Storage(StorageError::EdgeNotFound { id: 42 })));
+    }
 }
