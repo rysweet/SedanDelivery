@@ -98,6 +98,9 @@ export function useCreateNode(graphName: string | null) {
         queryClient.invalidateQueries({ queryKey: queryKeys.graphSchema(graphName) })
       }
     },
+    onError: (error: Error) => {
+      useGraphStore.getState().showToast(`Failed to create node: ${error.message}`, 'error')
+    },
   })
 }
 
@@ -116,6 +119,9 @@ export function useUpdateNode(graphName: string | null) {
       if (graphName) {
         queryClient.invalidateQueries({ queryKey: queryKeys.graphData(graphName) })
       }
+    },
+    onError: (error: Error) => {
+      useGraphStore.getState().showToast(`Failed to update node: ${error.message}`, 'error')
     },
   })
 }
@@ -136,6 +142,9 @@ export function useDeleteNode(graphName: string | null) {
         queryClient.invalidateQueries({ queryKey: queryKeys.graphSchema(graphName) })
       }
     },
+    onError: (error: Error) => {
+      useGraphStore.getState().showToast(`Failed to delete node: ${error.message}`, 'error')
+    },
   })
 }
 
@@ -154,6 +163,9 @@ export function useCreateEdge(graphName: string | null) {
         queryClient.invalidateQueries({ queryKey: queryKeys.graphData(graphName) })
         queryClient.invalidateQueries({ queryKey: queryKeys.graphSchema(graphName) })
       }
+    },
+    onError: (error: Error) => {
+      useGraphStore.getState().showToast(`Failed to create edge: ${error.message}`, 'error')
     },
   })
 }
@@ -174,6 +186,9 @@ export function useUpdateEdge(graphName: string | null) {
         queryClient.invalidateQueries({ queryKey: queryKeys.graphData(graphName) })
       }
     },
+    onError: (error: Error) => {
+      useGraphStore.getState().showToast(`Failed to update edge: ${error.message}`, 'error')
+    },
   })
 }
 
@@ -192,6 +207,9 @@ export function useDeleteEdge(graphName: string | null) {
         queryClient.invalidateQueries({ queryKey: queryKeys.graphData(graphName) })
         queryClient.invalidateQueries({ queryKey: queryKeys.graphSchema(graphName) })
       }
+    },
+    onError: (error: Error) => {
+      useGraphStore.getState().showToast(`Failed to delete edge: ${error.message}`, 'error')
     },
   })
 }
