@@ -325,11 +325,16 @@ jobs:
           # Check if container app already exists
           if az containerapp show --name "${CA_NAME}" --resource-group "${RG}" >/dev/null 2>&1; then
             echo "🔄 Updating existing container app — re-applying env vars and image (Issue #68)..."
+            # Set secrets separately (--secrets is only valid on create, not update)
+            az containerapp secret set \
+              --name "${CA_NAME}" \
+              --resource-group "${RG}" \
+              --secrets ${SECRETS_ARGS} \
+              --output none 2>/dev/null || true
             az containerapp update \
               --name "${CA_NAME}" \
               --resource-group "${RG}" \
               --image "${IMAGE}" \
-              --secrets ${SECRETS_ARGS} \
               --set-env-vars ${ENV_VAR_ARGS} \
               --output none
           else
