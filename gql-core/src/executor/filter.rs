@@ -14,7 +14,7 @@ use std::collections::HashMap;
 
 use crate::ast::{BinaryOp, Expr, Identifier, UnaryOp};
 use crate::error::{ExecutionError, GqlError};
-use crate::types::Value;
+use crate::types::{CypherDuration, Value};
 
 /// A single result row: maps variable names to their current [`Value`].
 ///
@@ -1438,10 +1438,22 @@ pub fn temporal_property_access(val: &Value, key: &str) -> Result<Value, GqlErro
                 let iso = d.iso_week_date();
                 Ok(Value::Int(iso.week() as i64))
             }
-            "dayOfWeek" => Ok(Value::Int(d.weekday().to_monday_one_offset() as i64)),
+            "weekYear" => {
+                let iso = d.iso_week_date();
+                Ok(Value::Int(iso.year() as i64))
+            }
+            "dayOfWeek" | "weekDay" => Ok(Value::Int(d.weekday().to_monday_one_offset() as i64)),
             "dayOfYear" => Ok(Value::Int(d.day_of_year() as i64)),
             "quarter" => Ok(Value::Int(((d.month() as i64 - 1) / 3) + 1)),
             "ordinalDay" => Ok(Value::Int(d.day_of_year() as i64)),
+            "dayOfQuarter" => {
+                let q0 = ((d.month() as i64 - 1) / 3) as i32; // 0-indexed quarter
+                let q_start = jiff::civil::Date::new(d.year(), (q0 * 3 + 1) as i8, 1)
+                    .map_err(|e| temporal_parse_error("date.dayOfQuarter", e))?;
+                let diff = q_start.until(jiff::civil::DateDifference::new(*d).largest(jiff::Unit::Day))
+                    .map_err(|e| temporal_parse_error("date.dayOfQuarter", e))?;
+                Ok(Value::Int(diff.get_days() as i64 + 1))
+            }
             _ => Ok(Value::Null),
         },
         Value::LocalTime(t) => match key {
@@ -1468,9 +1480,22 @@ pub fn temporal_property_access(val: &Value, key: &str) -> Result<Value, GqlErro
                 let iso = d.iso_week_date();
                 Ok(Value::Int(iso.week() as i64))
             }
-            "dayOfWeek" => Ok(Value::Int(dt.date().weekday().to_monday_one_offset() as i64)),
-            "dayOfYear" => Ok(Value::Int(dt.date().day_of_year() as i64)),
+            "weekYear" => {
+                let iso = dt.date().iso_week_date();
+                Ok(Value::Int(iso.year() as i64))
+            }
+            "dayOfWeek" | "weekDay" => Ok(Value::Int(dt.date().weekday().to_monday_one_offset() as i64)),
+            "dayOfYear" | "ordinalDay" => Ok(Value::Int(dt.date().day_of_year() as i64)),
             "quarter" => Ok(Value::Int(((dt.month() as i64 - 1) / 3) + 1)),
+            "dayOfQuarter" => {
+                let d = dt.date();
+                let q0 = ((d.month() as i64 - 1) / 3) as i32;
+                let q_start = jiff::civil::Date::new(d.year(), (q0 * 3 + 1) as i8, 1)
+                    .map_err(|e| temporal_parse_error("localdatetime.dayOfQuarter", e))?;
+                let diff = q_start.until(jiff::civil::DateDifference::new(d).largest(jiff::Unit::Day))
+                    .map_err(|e| temporal_parse_error("localdatetime.dayOfQuarter", e))?;
+                Ok(Value::Int(diff.get_days() as i64 + 1))
+            }
             _ => Ok(Value::Null),
         },
         Value::DateTime(zdt) => match key {
@@ -1483,13 +1508,18 @@ pub fn temporal_property_access(val: &Value, key: &str) -> Result<Value, GqlErro
             "millisecond" => Ok(Value::Int((zdt.subsec_nanosecond() / 1_000_000) as i64)),
             "microsecond" => Ok(Value::Int((zdt.subsec_nanosecond() / 1_000) as i64)),
             "nanosecond" => Ok(Value::Int(zdt.subsec_nanosecond() as i64)),
-            "timezone" => Ok(Value::Str(
-                zdt.time_zone()
-                    .iana_name()
-                    .unwrap_or("UTC")
-                    .to_string()
-                    .into_boxed_str(),
-            )),
+            "timezone" => {
+                if let Some(iana) = zdt.time_zone().iana_name() {
+                    Ok(Value::Str(iana.to_string().into_boxed_str()))
+                } else {
+                    // Fixed offset: format as "+HH:MM"
+                    let off = zdt.offset();
+                    let total_secs = off.seconds();
+                    let h = total_secs / 3600;
+                    let m = (total_secs.abs() % 3600) / 60;
+                    Ok(Value::Str(format!("{:+03}:{:02}", h, m).into_boxed_str()))
+                }
+            }
             "offset" => {
                 let off = zdt.offset();
                 let total_secs = off.seconds();
@@ -1510,15 +1540,29 @@ pub fn temporal_property_access(val: &Value, key: &str) -> Result<Value, GqlErro
                 let iso = d.iso_week_date();
                 Ok(Value::Int(iso.week() as i64))
             }
-            "dayOfWeek" => {
+            "weekYear" => {
+                let d = jiff::civil::Date::from(&**zdt);
+                let iso = d.iso_week_date();
+                Ok(Value::Int(iso.year() as i64))
+            }
+            "dayOfWeek" | "weekDay" => {
                 let d = jiff::civil::Date::from(&**zdt);
                 Ok(Value::Int(d.weekday().to_monday_one_offset() as i64))
             }
-            "dayOfYear" => {
+            "dayOfYear" | "ordinalDay" => {
                 let d = jiff::civil::Date::from(&**zdt);
                 Ok(Value::Int(d.day_of_year() as i64))
             }
             "quarter" => Ok(Value::Int(((zdt.month() as i64 - 1) / 3) + 1)),
+            "dayOfQuarter" => {
+                let d = jiff::civil::Date::from(&**zdt);
+                let q0 = ((d.month() as i64 - 1) / 3) as i32;
+                let q_start = jiff::civil::Date::new(d.year(), (q0 * 3 + 1) as i8, 1)
+                    .map_err(|e| temporal_parse_error("datetime.dayOfQuarter", e))?;
+                let diff = q_start.until(jiff::civil::DateDifference::new(d).largest(jiff::Unit::Day))
+                    .map_err(|e| temporal_parse_error("datetime.dayOfQuarter", e))?;
+                Ok(Value::Int(diff.get_days() as i64 + 1))
+            }
             "epochMillis" => {
                 let ts = zdt.timestamp();
                 Ok(Value::Int(ts.as_millisecond()))
@@ -1529,34 +1573,27 @@ pub fn temporal_property_access(val: &Value, key: &str) -> Result<Value, GqlErro
             }
             _ => Ok(Value::Null),
         },
-        Value::Duration(sp) => match key {
-            "years" => Ok(Value::Int(sp.get_years() as i64)),
-            "months" => Ok(Value::Int(sp.get_months() as i64)),
-            "weeks" => Ok(Value::Int(sp.get_weeks() as i64)),
-            "days" => Ok(Value::Int(sp.get_days() as i64)),
-            "hours" => Ok(Value::Int(sp.get_hours() as i64)),
-            "minutes" => Ok(Value::Int(sp.get_minutes())),
-            // `seconds` = total time-of-duration seconds (hours*3600 + minutes*60 + seconds)
-            "seconds" => {
-                let total = sp.get_hours() as i64 * 3600
-                    + sp.get_minutes() * 60
-                    + sp.get_seconds();
-                let nanos = sp.get_nanoseconds();
-                // Floor toward negative infinity if sub-second component is negative
-                Ok(Value::Int(if nanos < 0 { total - 1 } else { total }))
-            }
-            "milliseconds" => Ok(Value::Int(sp.get_milliseconds())),
-            "microseconds" => Ok(Value::Int(sp.get_microseconds())),
-            "nanoseconds" => Ok(Value::Int(sp.get_nanoseconds())),
-            // `nanosecondsOfSecond`: sub-second nanoseconds, always non-negative
-            "nanosecondsOfSecond" => {
-                let nanos = sp.get_nanoseconds();
-                Ok(Value::Int(if nanos < 0 {
-                    nanos + 1_000_000_000
-                } else {
-                    nanos
-                }))
-            }
+        Value::Duration(d) => match key {
+            "years" => Ok(Value::Int(d.months / 12)),
+            "months" => Ok(Value::Int(d.months)),
+            "quarters" => Ok(Value::Int(d.months / 3)),
+            "quartersOfYear" => Ok(Value::Int((d.months / 3) % 4)),
+            "monthsOfYear" => Ok(Value::Int(d.months % 12)),
+            "monthsOfQuarter" => Ok(Value::Int(d.months % 3)),
+            "weeks" => Ok(Value::Int(d.days / 7)),
+            "days" => Ok(Value::Int(d.days)),
+            "daysOfWeek" => Ok(Value::Int(d.days % 7)),
+            "hours" => Ok(Value::Int(d.nanos / 3_600_000_000_000)),
+            "minutes" => Ok(Value::Int(d.nanos / 60_000_000_000)),
+            "minutesOfHour" => Ok(Value::Int((d.nanos / 60_000_000_000) % 60)),
+            "seconds" => Ok(Value::Int(d.nanos / 1_000_000_000)),
+            "secondsOfMinute" => Ok(Value::Int((d.nanos / 1_000_000_000) % 60)),
+            "milliseconds" => Ok(Value::Int(d.nanos / 1_000_000)),
+            "millisecondsOfSecond" => Ok(Value::Int((d.nanos % 1_000_000_000) / 1_000_000)),
+            "microseconds" => Ok(Value::Int(d.nanos / 1_000)),
+            "microsecondsOfSecond" => Ok(Value::Int((d.nanos % 1_000_000_000) / 1_000)),
+            "nanoseconds" => Ok(Value::Int(d.nanos)),
+            "nanosecondsOfSecond" => Ok(Value::Int(d.nanos % 1_000_000_000)),
             _ => Ok(Value::Null),
         },
         _ => Ok(Value::Null),
@@ -2655,7 +2692,7 @@ fn parse_cypher_duration(s: &str) -> Result<jiff::Span, String> {
 
 fn eval_duration_constructor(vals: &[Value]) -> Result<Value, GqlError> {
     if vals.is_empty() {
-        return Ok(Value::Duration(jiff::Span::new()));
+        return Ok(Value::Duration(CypherDuration { months: 0, days: 0, nanos: 0 }));
     }
     if vals.len() != 1 {
         return Err(GqlError::Execution(ExecutionError::TypeMismatch {
@@ -2666,8 +2703,8 @@ fn eval_duration_constructor(vals: &[Value]) -> Result<Value, GqlError> {
     match &vals[0] {
         Value::Null => Ok(Value::Null),
         Value::Str(s) => {
-            let sp = parse_duration_str(s)?;
-            Ok(Value::Duration(sp))
+            let d = parse_duration_str(s)?;
+            Ok(Value::Duration(d))
         }
         Value::Map(m) => {
             // Helper: get a numeric value as f64, supporting both Int and Float.
@@ -2678,7 +2715,6 @@ fn eval_duration_constructor(vals: &[Value]) -> Result<Value, GqlError> {
                     _ => 0.0,
                 }
             }
-            // Accumulate raw values; milliseconds/microseconds convert to nanoseconds.
             let raw_years = dur_get(m, "years") + dur_get(m, "year");
             let raw_months = dur_get(m, "months") + dur_get(m, "month");
             let raw_weeks = dur_get(m, "weeks") + dur_get(m, "week");
@@ -2688,28 +2724,34 @@ fn eval_duration_constructor(vals: &[Value]) -> Result<Value, GqlError> {
             let raw_seconds = dur_get(m, "seconds") + dur_get(m, "second");
             let raw_millis = dur_get(m, "milliseconds") + dur_get(m, "millisecond");
             let raw_micros = dur_get(m, "microseconds") + dur_get(m, "microsecond");
-            let raw_nanos = dur_get(m, "nanoseconds") + dur_get(m, "nanosecond");
-            let sub_sec_nanos = raw_millis * 1_000_000.0 + raw_micros * 1_000.0 + raw_nanos;
+            let raw_nanos_sub = dur_get(m, "nanoseconds") + dur_get(m, "nanosecond");
+            let sub_sec_nanos = raw_millis * 1_000_000.0 + raw_micros * 1_000.0 + raw_nanos_sub;
 
-            // Phase 1: integer years are kept; fractional years cascade to months.
+            // Phase 1: years + months → total months
             let int_years = raw_years as i64;
             let frac_years = raw_years - int_years as f64;
             let total_month_float = frac_years * 12.0 + raw_months;
-            let int_months = total_month_float as i64;
-            let frac_months = total_month_float - int_months as f64;
+            let int_months_raw = total_month_float as i64;
+            let frac_months = total_month_float - int_months_raw as f64;
+            let total_months = int_years * 12 + int_months_raw;
 
-            // Phase 2: sub-month components expressed in seconds, then distributed.
-            // 1 month = 2629746 s (average Gregorian month = 365.2425*86400/12).
-            let total_raw_secs = frac_months * 2_629_746.0
-                + raw_weeks * 7.0 * 86_400.0
-                + raw_days * 86_400.0
+            // Phase 2: fractional months + weeks + days → total days
+            // 1 month ≈ 30.436875 days (2_629_746 s / 86400 s/day)
+            let total_days_float = frac_months * (2_629_746.0 / 86_400.0)
+                + raw_weeks * 7.0
+                + raw_days;
+            let int_days = total_days_float as i64;
+            let frac_days = total_days_float - int_days as f64;
+
+            // Phase 3: fractional days + hours + minutes + seconds → nanos
+            let total_time_secs = frac_days * 86_400.0
                 + raw_hours * 3_600.0
                 + raw_minutes * 60.0
                 + raw_seconds
                 + sub_sec_nanos / 1_000_000_000.0;
+            let total_nanos = (total_time_secs * 1_000_000_000.0).round() as i64;
 
-            let sp = cascade_span_overflow(int_years, int_months, 0.0, 0.0, 0.0, total_raw_secs)?;
-            Ok(Value::Duration(sp))
+            Ok(Value::Duration(CypherDuration { months: total_months, days: int_days, nanos: total_nanos }))
         }
         other => type_error("duration", other),
     }
@@ -2741,44 +2783,32 @@ fn parse_localdatetime_week_str(s: &str) -> Result<Value, GqlError> {
 
 /// Parse a duration string, supporting decimal ISO 8601 durations (e.g. P1.5Y, PT1.5H)
 /// and cascading overflow (e.g. P12Y5M14DT16H12M70S → 70s cascades to 1m10s).
-fn parse_duration_str(s: &str) -> Result<jiff::Span, GqlError> {
+fn parse_duration_str(s: &str) -> Result<CypherDuration, GqlError> {
+    // Return error for date-like strings (e.g., "2012-02-02")
+    if !s.starts_with('P') && !s.starts_with('p') {
+        return Err(GqlError::Execution(ExecutionError::TypeMismatch {
+            expected: "ISO 8601 duration string starting with 'P'".to_string(),
+            actual: s.to_string(),
+        }));
+    }
     // Try jiff first: handles calendar format (P2012-02-02T14:37:21.545) and basic forms.
     if let Ok(sp) = s.parse::<jiff::Span>() {
-        // Cascade any overflowing time units (e.g. 70S → 1M10S).
-        return cascade_span_overflow(sp.get_years() as i64, sp.get_months() as i64,
-            sp.get_days() as f64, sp.get_hours() as f64, sp.get_minutes() as f64,
-            sp.get_seconds() as f64 + sp.get_nanoseconds() as f64 / 1_000_000_000.0);
+        let total_months = sp.get_years() as i64 * 12 + sp.get_months() as i64;
+        let total_days = sp.get_weeks() as i64 * 7 + sp.get_days() as i64;
+        let time_secs = sp.get_hours() as i64 * 3600
+            + sp.get_minutes() * 60
+            + sp.get_seconds();
+        let ms = sp.get_milliseconds();
+        let us = sp.get_microseconds();
+        let ns_sub = sp.get_nanoseconds();
+        let total_nanos = time_secs * 1_000_000_000
+            + ms * 1_000_000
+            + us * 1_000
+            + ns_sub;
+        return Ok(CypherDuration { months: total_months, days: total_days, nanos: total_nanos });
     }
     // Fall back to custom parser for decimal values and edge cases like 'PT'.
     parse_decimal_iso_duration(s)
-}
-
-/// Cascade overflowing time components into a valid duration Span.
-fn cascade_span_overflow(
-    int_years: i64, int_months: i64,
-    raw_days: f64, raw_hours: f64, raw_minutes: f64, raw_seconds: f64,
-) -> Result<jiff::Span, GqlError> {
-    let total_raw_secs = raw_days * 86_400.0
-        + raw_hours * 3_600.0
-        + raw_minutes * 60.0
-        + raw_seconds;
-    let int_days = (total_raw_secs / 86_400.0) as i64;
-    let rem = total_raw_secs - int_days as f64 * 86_400.0;
-    let int_hours = (rem / 3_600.0) as i64;
-    let rem = rem - int_hours as f64 * 3_600.0;
-    let int_minutes = (rem / 60.0) as i64;
-    let rem = rem - int_minutes as f64 * 60.0;
-    let int_seconds = rem as i64;
-    let frac_secs = rem - int_seconds as f64;
-    let int_nanos = (frac_secs * 1_000_000_000.0).round() as i64;
-    Ok(jiff::Span::new()
-        .years(int_years)
-        .months(int_months)
-        .days(int_days)
-        .hours(int_hours)
-        .minutes(int_minutes)
-        .seconds(int_seconds)
-        .nanoseconds(int_nanos))
 }
 
 /// Parse an ISO 8601 duration string that may contain decimal values.
@@ -2786,7 +2816,7 @@ fn cascade_span_overflow(
 /// Examples: `P1.5Y`, `PT1.5H`, `P1Y2M3.5D`.
 /// Cascades fractional parts to the next smaller unit.
 #[allow(dead_code)]
-fn parse_decimal_iso_duration(s: &str) -> Result<jiff::Span, GqlError> {
+fn parse_decimal_iso_duration(s: &str) -> Result<CypherDuration, GqlError> {
     let s = s.trim();
     let s = s.strip_prefix('P').ok_or_else(|| {
         GqlError::Execution(ExecutionError::TypeMismatch {
@@ -2872,23 +2902,29 @@ fn parse_decimal_iso_duration(s: &str) -> Result<jiff::Span, GqlError> {
         }
     }
 
-    // Phase 1: integer years are kept; fractional years cascade to months.
+    // Phase 1: years + months → total months
     let int_years = years as i64;
     let frac_years = years - int_years as f64;
     let total_month_float = frac_years * 12.0 + months;
-    let int_months = total_month_float as i64;
-    let frac_months = total_month_float - int_months as f64;
+    let int_months_raw = total_month_float as i64;
+    let frac_months = total_month_float - int_months_raw as f64;
+    let total_months = int_years * 12 + int_months_raw;
 
-    // Phase 2: sub-month components expressed in seconds, then distributed.
-    // 1 month = 2629746 s (average Gregorian: 365.2425*86400/12).
-    let total_raw_secs = frac_months * 2_629_746.0
-        + weeks * 7.0 * 86_400.0
-        + days * 86_400.0
+    // Phase 2: fractional months + weeks + days → total days
+    let total_days_float = frac_months * (2_629_746.0 / 86_400.0)
+        + weeks * 7.0
+        + days;
+    let int_days = total_days_float as i64;
+    let frac_days = total_days_float - int_days as f64;
+
+    // Phase 3: fractional days + hours + minutes + seconds → nanos
+    let total_time_secs = frac_days * 86_400.0
         + hours * 3_600.0
         + minutes * 60.0
         + seconds;
+    let total_nanos = (total_time_secs * 1_000_000_000.0).round() as i64;
 
-    cascade_span_overflow(int_years, int_months, 0.0, 0.0, 0.0, total_raw_secs)
+    Ok(CypherDuration { months: total_months, days: int_days, nanos: total_nanos })
 }
 
 // ── Temporal truncate helpers ────────────────────────────────────────────────
@@ -3464,21 +3500,9 @@ fn civil_time_nanos(val: &Value) -> i64 {
         + t.subsec_nanosecond() as i64
 }
 
-fn build_duration_span(total_months: i64, days: i64, secs: i64, subsec_nanos: i32) -> jiff::Span {
-    let years = total_months / 12;
-    let months = total_months % 12;
-    let hours = secs / 3600;
-    let remaining = secs % 3600;
-    let minutes = remaining / 60;
-    let seconds = remaining % 60;
-    jiff::Span::new()
-        .years(years)
-        .months(months)
-        .days(days)
-        .hours(hours)
-        .minutes(minutes)
-        .seconds(seconds)
-        .nanoseconds(subsec_nanos as i64)
+fn build_duration_span(total_months: i64, days: i64, secs: i64, subsec_nanos: i32) -> CypherDuration {
+    let total_nanos = secs * 1_000_000_000 + subsec_nanos as i64;
+    CypherDuration { months: total_months, days, nanos: total_nanos }
 }
 
 fn eval_duration_in_months(vals: &[Value]) -> Result<Value, GqlError> {
@@ -3495,7 +3519,7 @@ fn eval_duration_in_months(vals: &[Value]) -> Result<Value, GqlError> {
     if is_time_only(&vals[0]) || is_time_only(&vals[1])
         || !has_date_component(&vals[0]) || !has_date_component(&vals[1])
     {
-        return Ok(Value::Duration(jiff::Span::new()));
+        return Ok(Value::Duration(CypherDuration { months: 0, days: 0, nanos: 0 }));
     }
     let dt1 = temporal_to_civil_datetime(&vals[0])
         .ok_or_else(|| temporal_parse_error("duration.inMonths", "expected temporal"))?;
@@ -3524,9 +3548,7 @@ fn eval_duration_in_months(vals: &[Value]) -> Result<Value, GqlError> {
         }
     }
 
-    let years = total_months / 12;
-    let months = total_months % 12;
-    Ok(Value::Duration(jiff::Span::new().years(years).months(months)))
+    Ok(Value::Duration(CypherDuration { months: total_months, days: 0, nanos: 0 }))
 }
 
 fn eval_duration_in_days(vals: &[Value]) -> Result<Value, GqlError> {
@@ -3542,7 +3564,7 @@ fn eval_duration_in_days(vals: &[Value]) -> Result<Value, GqlError> {
     if is_time_only(&vals[0]) || is_time_only(&vals[1])
         || !has_date_component(&vals[0]) || !has_date_component(&vals[1])
     {
-        return Ok(Value::Duration(jiff::Span::new()));
+        return Ok(Value::Duration(CypherDuration { months: 0, days: 0, nanos: 0 }));
     }
 
     // For zoned datetimes, compute day difference based on dates
@@ -3555,7 +3577,7 @@ fn eval_duration_in_days(vals: &[Value]) -> Result<Value, GqlError> {
         jiff::civil::DateDifference::new(d2).largest(jiff::Unit::Day),
     ).map_err(|e| temporal_parse_error("duration.inDays", e))?;
     let diff_days = diff_span.get_days() as i64;
-    Ok(Value::Duration(jiff::Span::new().days(diff_days)))
+    Ok(Value::Duration(CypherDuration { months: 0, days: diff_days, nanos: 0 }))
 }
 
 fn eval_duration_in_seconds(vals: &[Value]) -> Result<Value, GqlError> {
@@ -3577,19 +3599,8 @@ fn eval_duration_in_seconds(vals: &[Value]) -> Result<Value, GqlError> {
             // Both are real datetimes: use exact timestamp diff.
             let ts1 = z1.timestamp();
             let ts2 = z2.timestamp();
-            let total_nanos = ts2.as_nanosecond() - ts1.as_nanosecond();
-            let total_secs = total_nanos / 1_000_000_000;
-            let subsec_nanos = (total_nanos % 1_000_000_000) as i32;
-            let hours = total_secs / 3600;
-            let remaining = total_secs % 3600;
-            let minutes = remaining / 60;
-            let seconds = remaining % 60;
-            let sp = jiff::Span::new()
-                .hours(hours as i64)
-                .minutes(minutes as i64)
-                .seconds(seconds as i64)
-                .nanoseconds(subsec_nanos as i64);
-            return Ok(Value::Duration(sp));
+            let total_nanos = (ts2.as_nanosecond() - ts1.as_nanosecond()) as i64;
+            return Ok(Value::Duration(CypherDuration { months: 0, days: 0, nanos: total_nanos }));
         } else {
             // Mixed: one is time-only (epoch date). Compare UTC time-of-day only.
             let utc_tod_nanos = |zdt: &jiff::Zoned| -> i64 {
@@ -3601,22 +3612,11 @@ fn eval_duration_in_seconds(vals: &[Value]) -> Result<Value, GqlError> {
                     + t.subsec_nanosecond() as i64
             };
             let nanos_diff = utc_tod_nanos(z2) - utc_tod_nanos(z1);
-            let secs = nanos_diff / 1_000_000_000;
-            let subsec = (nanos_diff % 1_000_000_000) as i32;
-            let hours = secs / 3600;
-            let remaining = secs % 3600;
-            let minutes = remaining / 60;
-            let seconds = remaining % 60;
-            let sp = jiff::Span::new()
-                .hours(hours)
-                .minutes(minutes)
-                .seconds(seconds)
-                .nanoseconds(subsec as i64);
-            return Ok(Value::Duration(sp));
+            return Ok(Value::Duration(CypherDuration { months: 0, days: 0, nanos: nanos_diff }));
         }
     }
 
-    // Mixed DateTime + LocalDateTime: use DST-aware calculation if possible.
+    // Mixed DateTime + LocalDateTime/LocalTime: use DST-aware calculation if possible.
     let zoned_val = match (&vals[0], &vals[1]) {
         (Value::DateTime(z), _) if has_date_component(&vals[0]) => Some((z.as_ref(), true)),
         (_, Value::DateTime(z)) if has_date_component(&vals[1]) => Some((z.as_ref(), false)),
@@ -3624,29 +3624,25 @@ fn eval_duration_in_seconds(vals: &[Value]) -> Result<Value, GqlError> {
     };
     if let Some((zdt, zdt_is_first)) = zoned_val {
         let tz = zdt.time_zone().clone();
-        // Convert the non-zoned temporal into the same timezone for DST-aware diff.
         let other_val = if zdt_is_first { &vals[1] } else { &vals[0] };
-        let other_dt = temporal_to_civil_datetime(other_val);
-        if let Some(other_civil) = other_dt {
-            if let Ok(other_zoned) = other_civil.to_zoned(tz) {
+        // For LocalTime input, combine with the DateTime's date for proper DST-aware calc.
+        let other_civil: Option<jiff::civil::DateTime> = match other_val {
+            Value::LocalTime(t) => {
+                // Use the date from the zoned datetime, combined with the local time
+                let zdt_date = jiff::civil::Date::from(zdt);
+                Some(zdt_date.to_datetime(*t))
+            }
+            other => temporal_to_civil_datetime(other),
+        };
+        if let Some(other_civil_dt) = other_civil {
+            if let Ok(other_zoned) = other_civil_dt.to_zoned(tz) {
                 let (ts1, ts2) = if zdt_is_first {
                     (zdt.timestamp(), other_zoned.timestamp())
                 } else {
                     (other_zoned.timestamp(), zdt.timestamp())
                 };
-                let total_nanos = ts2.as_nanosecond() - ts1.as_nanosecond();
-                let total_secs = total_nanos / 1_000_000_000;
-                let subsec_nanos = (total_nanos % 1_000_000_000) as i32;
-                let hours = total_secs / 3600;
-                let remaining = total_secs % 3600;
-                let minutes = remaining / 60;
-                let seconds = remaining % 60;
-                let sp = jiff::Span::new()
-                    .hours(hours as i64)
-                    .minutes(minutes as i64)
-                    .seconds(seconds as i64)
-                    .nanoseconds(subsec_nanos as i64);
-                return Ok(Value::Duration(sp));
+                let total_nanos = (ts2.as_nanosecond() - ts1.as_nanosecond()) as i64;
+                return Ok(Value::Duration(CypherDuration { months: 0, days: 0, nanos: total_nanos }));
             }
         }
     }
@@ -3680,18 +3676,7 @@ fn eval_duration_in_seconds(vals: &[Value]) -> Result<Value, GqlError> {
             + t2.subsec_nanosecond() as i64;
 
         let total_nanos = diff_days * 86_400_000_000_000 + (t2_nanos - t1_nanos);
-        let total_secs = total_nanos / 1_000_000_000;
-        let subsec_nanos = (total_nanos % 1_000_000_000) as i32;
-        let hours = total_secs / 3600;
-        let remaining = total_secs % 3600;
-        let minutes = remaining / 60;
-        let seconds = remaining % 60;
-        let sp = jiff::Span::new()
-            .hours(hours)
-            .minutes(minutes)
-            .seconds(seconds)
-            .nanoseconds(subsec_nanos as i64);
-        Ok(Value::Duration(sp))
+        Ok(Value::Duration(CypherDuration { months: 0, days: 0, nanos: total_nanos }))
     } else {
         // Time-only
         let t1 = dt1.time();
@@ -3705,55 +3690,37 @@ fn eval_duration_in_seconds(vals: &[Value]) -> Result<Value, GqlError> {
             + t2.second() as i64 * 1_000_000_000
             + t2.subsec_nanosecond() as i64;
         let diff = t2_nanos - t1_nanos;
-        let secs = diff / 1_000_000_000;
-        let subsec = (diff % 1_000_000_000) as i32;
-        let hours = secs / 3600;
-        let remaining = secs % 3600;
-        let minutes = remaining / 60;
-        let seconds = remaining % 60;
-        let sp = jiff::Span::new()
-            .hours(hours)
-            .minutes(minutes)
-            .seconds(seconds)
-            .nanoseconds(subsec as i64);
-        Ok(Value::Duration(sp))
+        Ok(Value::Duration(CypherDuration { months: 0, days: 0, nanos: diff }))
     }
 }
 
 // ── Temporal arithmetic helpers ─────────────────────────────────────────────
 
 /// Perform temporal + duration or temporal - duration.
-pub fn temporal_add_duration(temporal: &Value, dur: &jiff::Span, subtract: bool) -> Result<Value, GqlError> {
-    let span = if subtract {
-        dur.negate()
+pub fn temporal_add_duration(temporal: &Value, dur: &CypherDuration, subtract: bool) -> Result<Value, GqlError> {
+    let (months, days, nanos) = if subtract {
+        (-dur.months, -dur.days, -dur.nanos)
     } else {
-        *dur
+        (dur.months, dur.days, dur.nanos)
     };
     match temporal {
         Value::Date(d) => {
-            // For Date, only use calendar components (years, months, weeks, days).
-            // Strip time components to avoid jiff errors.
-            let date_span = jiff::Span::new()
-                .years(span.get_years() as i64)
-                .months(span.get_months() as i64)
-                .weeks(span.get_weeks() as i64)
-                .days(span.get_days() as i64);
-            let result = d.checked_add(date_span)
-                .map_err(|e| temporal_parse_error("temporal arithmetic", e))?;
-            Ok(Value::Date(result))
+            let d1 = if months != 0 {
+                d.checked_add(jiff::Span::new().months(months))
+                    .map_err(|e| temporal_parse_error("temporal arithmetic", e))?
+            } else { *d };
+            let d2 = if days != 0 {
+                d1.checked_add(jiff::Span::new().days(days))
+                    .map_err(|e| temporal_parse_error("temporal arithmetic", e))?
+            } else { d1 };
+            Ok(Value::Date(d2))
         }
         Value::LocalTime(t) => {
-            // For time, only use time components.
-            let time_nanos = span.get_hours() as i64 * 3_600_000_000_000
-                + span.get_minutes() * 60_000_000_000
-                + span.get_seconds() * 1_000_000_000
-                + span.get_nanoseconds();
             let cur_nanos = t.hour() as i64 * 3_600_000_000_000
                 + t.minute() as i64 * 60_000_000_000
                 + t.second() as i64 * 1_000_000_000
                 + t.subsec_nanosecond() as i64;
-            let total = cur_nanos + time_nanos;
-            // Wrap around 24 hours
+            let total = cur_nanos + nanos;
             let day_nanos: i64 = 24 * 3_600_000_000_000;
             let wrapped = ((total % day_nanos) + day_nanos) % day_nanos;
             let h = (wrapped / 3_600_000_000_000) as i8;
@@ -3767,14 +3734,34 @@ pub fn temporal_add_duration(temporal: &Value, dur: &jiff::Span, subtract: bool)
             Ok(Value::LocalTime(result))
         }
         Value::LocalDateTime(dt) => {
-            let result = dt.checked_add(span)
-                .map_err(|e| temporal_parse_error("temporal arithmetic", e))?;
-            Ok(Value::LocalDateTime(result))
+            let dt1 = if months != 0 {
+                dt.checked_add(jiff::Span::new().months(months))
+                    .map_err(|e| temporal_parse_error("temporal arithmetic", e))?
+            } else { *dt };
+            let dt2 = if days != 0 {
+                dt1.checked_add(jiff::Span::new().days(days))
+                    .map_err(|e| temporal_parse_error("temporal arithmetic", e))?
+            } else { dt1 };
+            let dt3 = if nanos != 0 {
+                dt2.checked_add(jiff::SignedDuration::from_nanos(nanos))
+                    .map_err(|e| temporal_parse_error("temporal arithmetic", e))?
+            } else { dt2 };
+            Ok(Value::LocalDateTime(dt3))
         }
         Value::DateTime(zdt) => {
-            let result = zdt.as_ref().clone().checked_add(span)
-                .map_err(|e| temporal_parse_error("temporal arithmetic", e))?;
-            Ok(Value::DateTime(Box::new(result)))
+            let zdt1 = if months != 0 {
+                zdt.as_ref().clone().checked_add(jiff::Span::new().months(months))
+                    .map_err(|e| temporal_parse_error("temporal arithmetic", e))?
+            } else { zdt.as_ref().clone() };
+            let zdt2 = if days != 0 {
+                zdt1.checked_add(jiff::Span::new().days(days))
+                    .map_err(|e| temporal_parse_error("temporal arithmetic", e))?
+            } else { zdt1 };
+            let zdt3 = if nanos != 0 {
+                zdt2.checked_add(jiff::SignedDuration::from_nanos(nanos))
+                    .map_err(|e| temporal_parse_error("temporal arithmetic", e))?
+            } else { zdt2 };
+            Ok(Value::DateTime(Box::new(zdt3)))
         }
         _ => Err(GqlError::Execution(ExecutionError::TypeMismatch {
             expected: "temporal value for arithmetic".to_string(),
@@ -3784,74 +3771,42 @@ pub fn temporal_add_duration(temporal: &Value, dur: &jiff::Span, subtract: bool)
 }
 
 /// Add two durations.
-pub fn duration_add(a: &jiff::Span, b: &jiff::Span) -> jiff::Span {
-    jiff::Span::new()
-        .years(a.get_years() as i64 + b.get_years() as i64)
-        .months(a.get_months() as i64 + b.get_months() as i64)
-        .weeks(a.get_weeks() as i64 + b.get_weeks() as i64)
-        .days(a.get_days() as i64 + b.get_days() as i64)
-        .hours(a.get_hours() as i64 + b.get_hours() as i64)
-        .minutes(a.get_minutes() + b.get_minutes())
-        .seconds(a.get_seconds() + b.get_seconds())
-        .nanoseconds(a.get_nanoseconds() + b.get_nanoseconds())
+pub fn duration_add(a: &CypherDuration, b: &CypherDuration) -> CypherDuration {
+    CypherDuration {
+        months: a.months + b.months,
+        days: a.days + b.days,
+        nanos: a.nanos + b.nanos,
+    }
 }
 
 /// Subtract two durations.
-pub fn duration_sub(a: &jiff::Span, b: &jiff::Span) -> jiff::Span {
-    jiff::Span::new()
-        .years(a.get_years() as i64 - b.get_years() as i64)
-        .months(a.get_months() as i64 - b.get_months() as i64)
-        .weeks(a.get_weeks() as i64 - b.get_weeks() as i64)
-        .days(a.get_days() as i64 - b.get_days() as i64)
-        .hours(a.get_hours() as i64 - b.get_hours() as i64)
-        .minutes(a.get_minutes() - b.get_minutes())
-        .seconds(a.get_seconds() - b.get_seconds())
-        .nanoseconds(a.get_nanoseconds() - b.get_nanoseconds())
+pub fn duration_sub(a: &CypherDuration, b: &CypherDuration) -> CypherDuration {
+    CypherDuration {
+        months: a.months - b.months,
+        days: a.days - b.days,
+        nanos: a.nanos - b.nanos,
+    }
 }
 
 /// Multiply a duration by an integer.
-pub fn duration_mul(d: &jiff::Span, n: i64) -> jiff::Span {
-    jiff::Span::new()
-        .years(d.get_years() as i64 * n)
-        .months(d.get_months() as i64 * n)
-        .weeks(d.get_weeks() as i64 * n)
-        .days(d.get_days() as i64 * n)
-        .hours(d.get_hours() as i64 * n)
-        .minutes(d.get_minutes() * n)
-        .seconds(d.get_seconds() * n)
-        .nanoseconds(d.get_nanoseconds() * n)
+pub fn duration_mul(d: &CypherDuration, n: i64) -> CypherDuration {
+    CypherDuration {
+        months: d.months * n,
+        days: d.days * n,
+        nanos: d.nanos * n,
+    }
 }
 
 /// Divide a duration by an integer.
-pub fn duration_div(d: &jiff::Span, n: i64) -> Result<jiff::Span, GqlError> {
+pub fn duration_div(d: &CypherDuration, n: i64) -> Result<CypherDuration, GqlError> {
     if n == 0 {
         return Err(GqlError::Execution(ExecutionError::DivisionByZero));
     }
-    // Convert entire duration to nanoseconds, divide, then reconstruct
-    let total_months = d.get_years() as i64 * 12 + d.get_months() as i64;
-    let total_nanos = d.get_weeks() as i128 * 7 * 86_400_000_000_000
-        + d.get_days() as i128 * 86_400_000_000_000
-        + d.get_hours() as i128 * 3_600_000_000_000
-        + d.get_minutes() as i128 * 60_000_000_000
-        + d.get_seconds() as i128 * 1_000_000_000
-        + d.get_nanoseconds() as i128;
-    let new_months = total_months / n;
-    let new_nanos = total_nanos / n as i128;
-    let days = new_nanos / 86_400_000_000_000;
-    let remaining = new_nanos % 86_400_000_000_000;
-    let hours = remaining / 3_600_000_000_000;
-    let remaining = remaining % 3_600_000_000_000;
-    let minutes = remaining / 60_000_000_000;
-    let remaining = remaining % 60_000_000_000;
-    let seconds = remaining / 1_000_000_000;
-    let nanos = remaining % 1_000_000_000;
-    Ok(jiff::Span::new()
-        .months(new_months)
-        .days(days as i64)
-        .hours(hours as i64)
-        .minutes(minutes as i64)
-        .seconds(seconds as i64)
-        .nanoseconds(nanos as i64))
+    Ok(CypherDuration {
+        months: d.months / n,
+        days: d.days / n,
+        nanos: d.nanos / n,
+    })
 }
 
 // ── CASE evaluation ───────────────────────────────────────────────────────────
