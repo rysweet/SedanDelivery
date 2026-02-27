@@ -95,10 +95,10 @@ impl<'s> QueryPlanner<'s> {
 
                 Clause::OptionalMatch(mc) => {
                     let match_op = self.plan_match(mc)?;
-                    let preserved = pipeline.unwrap_or_else(|| Operator::NodeScan {
-                        label: None,
-                        alias: Identifier::new("__empty__"),
-                    });
+                    // When no prior pipeline exists, use SingleRow so that
+                    // OPTIONAL MATCH still produces one row with NULLs even
+                    // on an empty graph.
+                    let preserved = pipeline.unwrap_or(Operator::SingleRow);
                     pipeline = Some(Operator::LeftOuterApply {
                         preserved: Box::new(preserved),
                         optional_pattern: Box::new(match_op),
@@ -477,6 +477,18 @@ impl<'s> QueryPlanner<'s> {
             }
         }
 
+        // Add label filters for ALL labels beyond the first (which NodeScan handles).
+        // Cypher semantics: (n:A:B:C) matches nodes with ALL of labels A, B, C.
+        if start.labels.len() > 1 {
+            for extra_label in &start.labels[1..] {
+                let pred = label_filter_expr(&start_alias, extra_label);
+                op = Operator::Filter {
+                    predicate: pred,
+                    child: Box::new(op),
+                };
+            }
+        }
+
         // Inline WHERE clause on the start node pattern.
         if let Some(pred) = &start.where_clause {
             op = Operator::Filter {
@@ -531,8 +543,11 @@ impl<'s> QueryPlanner<'s> {
                 // Single-hop expand.
                 // When tracking a named path, ensure we always have a rel_alias
                 // so the edge ID is available for path assembly.
+                let has_rel_props = rel.properties.as_ref().map_or(false, |p| !p.is_empty());
                 let rel_alias =
-                    if has_path_var {
+                    if has_path_var || has_rel_props {
+                        // Ensure rel_alias exists when tracking a named path
+                        // or when inline properties need filtering.
                         Some(rel.variable.clone().unwrap_or_else(|| {
                             Identifier::new(format!("__path_rel_{}__", step_idx))
                         }))
@@ -555,6 +570,21 @@ impl<'s> QueryPlanner<'s> {
                 };
             }
 
+            // If the relationship has inline property constraints, add a property filter.
+            if let Some(props) = &rel.properties {
+                if !props.is_empty() {
+                    // rel_alias is guaranteed to exist because we forced it above.
+                    let filter_alias = rel.variable.clone().unwrap_or_else(|| {
+                        Identifier::new(format!("__path_rel_{}__", step_idx))
+                    });
+                    let pred = props_to_filter_expr(&filter_alias, props);
+                    op = Operator::Filter {
+                        predicate: pred,
+                        child: Box::new(op),
+                    };
+                }
+            }
+
             // Inline WHERE clause on the relationship pattern.
             if let Some(pred) = &rel.where_clause {
                 op = Operator::Filter {
@@ -563,8 +593,9 @@ impl<'s> QueryPlanner<'s> {
                 };
             }
 
-            // If the destination node has label constraints, add a label filter.
-            if let Some(dst_label) = node.labels.first() {
+            // If the destination node has label constraints, add label filters for ALL labels.
+            // Cypher semantics: (n:A:B:C) matches nodes with ALL of labels A, B, C.
+            for dst_label in &node.labels {
                 let pred = label_filter_expr(&dst_alias, dst_label);
                 op = Operator::Filter {
                     predicate: pred,
@@ -981,6 +1012,17 @@ impl<'s> QueryPlanner<'s> {
     fn plan_merge(&self, mc: &MergeClause, child: Option<Operator>) -> Result<Operator, GqlError> {
         let node_alias = mc.pattern.start.variable.clone();
         let labels = mc.pattern.start.labels.clone();
+        let properties: Vec<(String, Expr)> = mc
+            .pattern
+            .start
+            .properties
+            .as_ref()
+            .map(|p| {
+                p.iter()
+                    .map(|(k, v)| (k.to_string(), v.clone()))
+                    .collect()
+            })
+            .unwrap_or_default();
 
         let on_create: Vec<SetItem> = mc.on_create.iter().map(map_set_clause_item).collect();
         let on_match: Vec<SetItem> = mc.on_match.iter().map(map_set_clause_item).collect();
@@ -988,6 +1030,7 @@ impl<'s> QueryPlanner<'s> {
         Ok(Operator::Merge {
             node_alias,
             labels,
+            properties,
             on_create,
             on_match,
             child: child.map(Box::new),

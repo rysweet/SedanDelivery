@@ -110,6 +110,8 @@ pub enum Operator {
     Merge {
         node_alias: Option<Identifier>,
         labels: Vec<Label>,
+        /// Inline property constraints from the MERGE pattern (e.g. `{name: 'Alice'}`).
+        properties: Vec<(String, Expr)>,
         on_create: Vec<SetItem>,
         on_match: Vec<SetItem>,
         child: Option<Box<Operator>>,

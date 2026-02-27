@@ -31,7 +31,7 @@ pub const DEFAULT_MAX_ROWS: usize = 1_000_000;
 /// Default maximum depth for unbounded variable-length patterns `[*]`.
 /// A query with `[*]` uses this as the effective upper bound.
 /// Can be overridden via `GQL.CONFIG SET varlen-expand-default-max`.
-pub const DEFAULT_VARLEN_MAX_DEPTH: u32 = 10;
+pub const DEFAULT_VARLEN_MAX_DEPTH: u32 = 30;
 
 /// Execution budget attached to every query.
 ///
