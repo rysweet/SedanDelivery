@@ -1,5 +1,5 @@
 #!/bin/bash
-cd "/tmp/amplihack-workstreams/ws-39"
+cd "/tmp/amplihack-workstreams/ws-101"
 unset CLAUDECODE
 amplihack claude --subprocess-safe -- -p "@TASK.md
 
