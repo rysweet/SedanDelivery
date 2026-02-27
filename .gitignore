@@ -33,3 +33,6 @@ index.scip
 
 # Bicep compiled ARM templates
 infra/*.json
+
+# Code coverage reports
+coverage/
