@@ -531,6 +531,10 @@ pub struct CallClause {
     pub args: Vec<Expr>,
     /// YIELD items: `(name, optional_alias)`.
     pub yield_items: Vec<(Identifier, Option<Identifier>)>,
+    /// Whether arguments were passed explicitly with parentheses `()`.
+    pub explicit_args: bool,
+    /// Whether `YIELD *` was used.
+    pub yield_star: bool,
 }
 
 /// A single item in a SET clause.

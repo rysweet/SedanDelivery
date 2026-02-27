@@ -577,6 +577,7 @@ impl<'src> Parser<'src> {
         }
 
         // Parse arguments: `(arg1, arg2, ...)`
+        let explicit_args = self.at(&TokenKind::LParen);
         let args = if self.eat(&TokenKind::LParen) {
             let mut a = Vec::new();
             if !self.at(&TokenKind::RParen) {
@@ -591,17 +592,15 @@ impl<'src> Parser<'src> {
             Vec::new()
         };
 
-        // Optional YIELD clause: `YIELD var1 AS alias1, var2`
+        // Optional YIELD clause: `YIELD var1 AS alias1, var2` or `YIELD *`
+        let mut yield_star = false;
         let yield_items = if self.eat(&TokenKind::Yield) {
-            let mut items = Vec::new();
-            let name = Identifier::new(self.expect_identifier()?);
-            let alias = if self.eat(&TokenKind::As) {
-                Some(Identifier::new(self.expect_identifier()?))
+            // Check for YIELD *
+            if self.eat(&TokenKind::Star) {
+                yield_star = true;
+                Vec::new()
             } else {
-                None
-            };
-            items.push((name, alias));
-            while self.eat(&TokenKind::Comma) {
+                let mut items = Vec::new();
                 let name = Identifier::new(self.expect_identifier()?);
                 let alias = if self.eat(&TokenKind::As) {
                     Some(Identifier::new(self.expect_identifier()?))
@@ -609,8 +608,17 @@ impl<'src> Parser<'src> {
                     None
                 };
                 items.push((name, alias));
+                while self.eat(&TokenKind::Comma) {
+                    let name = Identifier::new(self.expect_identifier()?);
+                    let alias = if self.eat(&TokenKind::As) {
+                        Some(Identifier::new(self.expect_identifier()?))
+                    } else {
+                        None
+                    };
+                    items.push((name, alias));
+                }
+                items
             }
-            items
         } else {
             Vec::new()
         };
@@ -619,6 +627,8 @@ impl<'src> Parser<'src> {
             procedure,
             args,
             yield_items,
+            explicit_args,
+            yield_star,
         })
     }
 

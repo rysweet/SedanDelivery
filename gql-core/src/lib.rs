@@ -6,5 +6,6 @@ pub mod error;
 pub mod executor;
 pub mod parser;
 pub mod planner;
+pub mod procedure;
 pub mod storage;
 pub mod types;
