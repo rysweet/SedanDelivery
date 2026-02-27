@@ -34,12 +34,12 @@ use serde_json::{json, Value as JValue};
 use tracing::{debug, warn};
 
 use gql_core::error::StorageError;
+use gql_core::serde_value;
 use gql_core::storage::{
-    AdjEntry, EdgeData, EdgeId, GraphStats, GraphStore, IndexDescriptor, NodeData, NodeId,
-    RangeQuery,
+    validate_graph_name, AdjEntry, EdgeData, EdgeId, GraphStats, GraphStore, IndexDescriptor,
+    NodeData, NodeId, RangeQuery,
 };
 use gql_core::types::Value;
-use gql_core::types::value::{Crs, GeoPoint};
 
 // ── Property name constants ───────────────────────────────────────────────────
 const PROP_GRAPH: &str = "_sd2_graph";
@@ -353,10 +353,9 @@ impl GraphStore for FabricGraphStore {
             ),
             json!({ "graph": graph }),
         )?;
-        rows.iter()
+        Ok(rows.iter()
             .filter_map(|r| r.first()?.as_u64().map(NodeId))
-            .collect::<Vec<_>>()
-            .pipe(Ok)
+            .collect::<Vec<_>>())
     }
 
     fn find_nodes_by_label_and_property(
@@ -379,10 +378,9 @@ impl GraphStore for FabricGraphStore {
             ),
             p,
         )?;
-        rows.iter()
+        Ok(rows.iter()
             .filter_map(|r| r.first()?.as_u64().map(NodeId))
-            .collect::<Vec<_>>()
-            .pipe(Ok)
+            .collect::<Vec<_>>())
     }
 
     fn find_edges_by_type(&self, graph: &str, rel_type: &str) -> Result<Vec<EdgeId>, StorageError> {
@@ -393,10 +391,9 @@ impl GraphStore for FabricGraphStore {
             ),
             json!({ "graph": graph }),
         )?;
-        rows.iter()
+        Ok(rows.iter()
             .filter_map(|r| r.first()?.as_u64().map(EdgeId))
-            .collect::<Vec<_>>()
-            .pipe(Ok)
+            .collect::<Vec<_>>())
     }
 
     // ── Reads: adjacency ──────────────────────────────────────────────────────
@@ -457,10 +454,9 @@ impl GraphStore for FabricGraphStore {
             ),
             json!({ "graph": graph, "id": node_id.0 }),
         )?;
-        rows.iter()
+        Ok(rows.iter()
             .filter_map(|r| r.first()?.as_u64().map(EdgeId))
-            .collect::<Vec<_>>()
-            .pipe(Ok)
+            .collect::<Vec<_>>())
     }
 
     fn in_edge_ids(&self, graph: &str, node_id: NodeId) -> Result<Vec<EdgeId>, StorageError> {
@@ -471,10 +467,9 @@ impl GraphStore for FabricGraphStore {
             ),
             json!({ "graph": graph, "id": node_id.0 }),
         )?;
-        rows.iter()
+        Ok(rows.iter()
             .filter_map(|r| r.first()?.as_u64().map(EdgeId))
-            .collect::<Vec<_>>()
-            .pipe(Ok)
+            .collect::<Vec<_>>())
     }
 
     fn all_node_ids(&self, graph: &str) -> Result<Vec<NodeId>, StorageError> {
@@ -482,10 +477,9 @@ impl GraphStore for FabricGraphStore {
             &format!("MATCH (n {{`{PROP_GRAPH}`: $graph}}) WHERE NOT n:{SEQ_LABEL} RETURN n.`{PROP_NODE_ID}` AS id"),
             json!({ "graph": graph }),
         )?;
-        rows.iter()
+        Ok(rows.iter()
             .filter_map(|r| r.first()?.as_u64().map(NodeId))
-            .collect::<Vec<_>>()
-            .pipe(Ok)
+            .collect::<Vec<_>>())
     }
 
     fn all_edge_ids(&self, graph: &str) -> Result<Vec<EdgeId>, StorageError> {
@@ -493,10 +487,9 @@ impl GraphStore for FabricGraphStore {
             &format!("MATCH ()-[r {{`{PROP_GRAPH}`: $graph}}]->() RETURN r.`{PROP_EDGE_ID}` AS id"),
             json!({ "graph": graph }),
         )?;
-        rows.iter()
+        Ok(rows.iter()
             .filter_map(|r| r.first()?.as_u64().map(EdgeId))
-            .collect::<Vec<_>>()
-            .pipe(Ok)
+            .collect::<Vec<_>>())
     }
 
     // ── Writes: create ────────────────────────────────────────────────────────
@@ -777,6 +770,7 @@ impl GraphStore for FabricGraphStore {
     // ── Graph administration ──────────────────────────────────────────────────
 
     fn create_graph(&self, name: &str) -> Result<(), StorageError> {
+        validate_graph_name(name)?;
         // Idempotently create the sequence counter node that marks the graph's existence.
         self.statement(
             &format!(
@@ -789,6 +783,7 @@ impl GraphStore for FabricGraphStore {
     }
 
     fn delete_graph(&self, name: &str) -> Result<(), StorageError> {
+        validate_graph_name(name)?;
         // Delete all nodes (with relationships) and meta nodes for this graph.
         self.statement(
             &format!("MATCH (n {{`{PROP_GRAPH}`: $graph}}) DETACH DELETE n"),
@@ -802,6 +797,7 @@ impl GraphStore for FabricGraphStore {
     }
 
     fn graph_exists(&self, name: &str) -> Result<bool, StorageError> {
+        validate_graph_name(name)?;
         let rows = self.query(
             &format!("MATCH (c:{SEQ_LABEL} {{_graph: $graph, _is_root: true}}) RETURN count(c) AS n"),
             json!({ "graph": name }),
@@ -925,141 +921,16 @@ fn extract_user_props(props: &JValue) -> HashMap<String, Value> {
     };
     obj.iter()
         .filter(|(k, _)| !k.starts_with("_sd2") && !k.starts_with("__SD2"))
-        .filter_map(|(k, v)| json_to_value(v).map(|val| (k.clone(), val)))
+        .filter_map(|(k, v)| serde_value::json_to_value(v).map(|val| (k.clone(), val)))
         .collect()
 }
 
-/// Translate our Value type to serde_json::Value.
-fn value_to_json(v: &Value) -> JValue {
-    match v {
-        Value::Null => JValue::Null,
-        Value::Bool(b) => json!(b),
-        Value::Int(i) => json!(i),
-        Value::Float(f) => json!(f),
-        Value::Str(s) => json!(s.as_ref()),
-        // Temporal and spatial types: tagged strings for round-trip fidelity.
-        Value::Date(d) => json!(format!("__date:{d}")),
-        Value::LocalTime(t) => json!(format!("__localtime:{t}")),
-        Value::LocalDateTime(dt) => json!(format!("__localdatetime:{dt}")),
-        Value::DateTime(dt) => json!(format!("__datetime:{dt}")),
-        Value::Duration(sp) => json!(format!("__duration:{sp}")),
-        Value::Point(p) => json!(format!("__point:{},{},{:?}", p.x, p.y, p.crs)),
-        Value::List(l) => JValue::Array(l.iter().map(value_to_json).collect()),
-        Value::Map(m) => {
-            let obj: serde_json::Map<String, JValue> =
-                m.iter().map(|(k, v)| (k.as_ref().to_string(), value_to_json(v))).collect();
-            JValue::Object(obj)
-        }
-        // Graph element references.
-        Value::Node(id) => json!(format!("__node:{}", id.0)),
-        Value::Edge(id) => json!(format!("__edge:{}", id.0)),
-        Value::Path { nodes, edges } => {
-            let nodes_json: Vec<_> = nodes.iter().map(|n| json!(n.0)).collect();
-            let edges_json: Vec<_> = edges.iter().map(|e| json!(e.0)).collect();
-            let mut m = serde_json::Map::new();
-            m.insert("__path_nodes".into(), JValue::Array(nodes_json));
-            m.insert("__path_edges".into(), JValue::Array(edges_json));
-            JValue::Object(m)
-        }
-    }
-}
-
-/// Convert serde_json::Value to our Value type (best-effort).
-fn json_to_value(v: &JValue) -> Option<Value> {
-    Some(match v {
-        JValue::Null => Value::Null,
-        JValue::Bool(b) => Value::Bool(*b),
-        JValue::Number(n) => {
-            if let Some(i) = n.as_i64() {
-                Value::Int(i)
-            } else {
-                Value::Float(n.as_f64().unwrap_or(f64::NAN))
-            }
-        }
-        JValue::String(s) => {
-            // Decode tagged temporal/spatial types.
-            if let Some(rest) = s.strip_prefix("__date:") {
-                if let Ok(d) = rest.parse::<jiff::civil::Date>() {
-                    return Some(Value::Date(d));
-                }
-            } else if let Some(rest) = s.strip_prefix("__localtime:") {
-                if let Ok(t) = rest.parse::<jiff::civil::Time>() {
-                    return Some(Value::LocalTime(t));
-                }
-            } else if let Some(rest) = s.strip_prefix("__localdatetime:") {
-                if let Ok(dt) = rest.parse::<jiff::civil::DateTime>() {
-                    return Some(Value::LocalDateTime(dt));
-                }
-            } else if let Some(rest) = s.strip_prefix("__datetime:") {
-                if let Ok(dt) = rest.parse::<jiff::Zoned>() {
-                    return Some(Value::DateTime(Box::new(dt)));
-                }
-            } else if let Some(rest) = s.strip_prefix("__duration:") {
-                if let Ok(sp) = rest.parse::<jiff::Span>() {
-                    return Some(Value::Duration(sp));
-                }
-            } else if let Some(rest) = s.strip_prefix("__point:") {
-                // Format: "x,y,CrsVariant"
-                let parts: Vec<&str> = rest.splitn(3, ',').collect();
-                if parts.len() == 3 {
-                    if let (Ok(x), Ok(y)) = (parts[0].parse::<f64>(), parts[1].parse::<f64>()) {
-                        let crs = match parts[2] {
-                            "Wgs84" => Crs::Wgs84,
-                            "Wgs843d" => Crs::Wgs843d,
-                            "Cartesian" => Crs::Cartesian,
-                            "Cartesian3d" => Crs::Cartesian3d,
-                            _ => Crs::Wgs84,
-                        };
-                        return Some(Value::Point(GeoPoint { x, y, crs }));
-                    }
-                }
-            } else if let Some(rest) = s.strip_prefix("__node:") {
-                if let Ok(id) = rest.parse::<u64>() {
-                    return Some(Value::Node(NodeId(id)));
-                }
-            } else if let Some(rest) = s.strip_prefix("__edge:") {
-                if let Ok(id) = rest.parse::<u64>() {
-                    return Some(Value::Edge(EdgeId(id)));
-                }
-            }
-            Value::Str(s.clone().into())
-        }
-        JValue::Array(a) => Value::List(a.iter().filter_map(json_to_value).collect()),
-        JValue::Object(m) => {
-            // Check for encoded path.
-            if m.contains_key("__path_nodes") && m.contains_key("__path_edges") {
-                let nodes = m["__path_nodes"]
-                    .as_array()
-                    .map(|arr| {
-                        arr.iter()
-                            .filter_map(|v| v.as_u64().map(NodeId))
-                            .collect::<Vec<_>>()
-                    })
-                    .unwrap_or_default();
-                let edges = m["__path_edges"]
-                    .as_array()
-                    .map(|arr| {
-                        arr.iter()
-                            .filter_map(|v| v.as_u64().map(EdgeId))
-                            .collect::<Vec<_>>()
-                    })
-                    .unwrap_or_default();
-                return Some(Value::Path { nodes, edges });
-            }
-            Value::Map(
-                m.iter()
-                    .filter_map(|(k, v)| json_to_value(v).map(|val| (k.as_str().into(), val)))
-                    .collect(),
-            )
-        }
-    })
-}
-
 /// Convert a user property map to JSON, skipping internal SD2 keys.
+/// Non-finite floats are silently converted to JSON null.
 fn user_props_to_json(props: &HashMap<String, Value>) -> HashMap<String, JValue> {
     props.iter()
         .filter(|(k, _)| !k.starts_with("_sd2") && !k.starts_with("__SD2"))
-        .map(|(k, v)| (k.clone(), value_to_json(v)))
+        .map(|(k, v)| (k.clone(), serde_value::value_to_json(v).unwrap_or(JValue::Null)))
         .collect()
 }
 
@@ -1089,26 +960,28 @@ fn urlenc(s: &str) -> String {
 }
 
 /// Build a Cypher WHERE predicate string and parameter map for a RangeQuery.
+/// Non-finite floats in range values are serialized as JSON null.
 fn range_to_cypher(prop: &str, range: RangeQuery<'_>) -> (String, JValue) {
+    let to_json = |v: &Value| serde_value::value_to_json(v).unwrap_or(JValue::Null);
     match range {
         RangeQuery::Eq(v) => (
             format!("n.`{prop}` = $rv"),
-            json!({ "rv": value_to_json(v) }),
+            json!({ "rv": to_json(v) }),
         ),
-        RangeQuery::Lt(v) => (format!("n.`{prop}` < $rv"), json!({ "rv": value_to_json(v) })),
-        RangeQuery::Lte(v) => (format!("n.`{prop}` <= $rv"), json!({ "rv": value_to_json(v) })),
-        RangeQuery::Gt(v) => (format!("n.`{prop}` > $rv"), json!({ "rv": value_to_json(v) })),
-        RangeQuery::Gte(v) => (format!("n.`{prop}` >= $rv"), json!({ "rv": value_to_json(v) })),
+        RangeQuery::Lt(v) => (format!("n.`{prop}` < $rv"), json!({ "rv": to_json(v) })),
+        RangeQuery::Lte(v) => (format!("n.`{prop}` <= $rv"), json!({ "rv": to_json(v) })),
+        RangeQuery::Gt(v) => (format!("n.`{prop}` > $rv"), json!({ "rv": to_json(v) })),
+        RangeQuery::Gte(v) => (format!("n.`{prop}` >= $rv"), json!({ "rv": to_json(v) })),
         RangeQuery::Between { lo, hi, inclusive } => {
             if inclusive {
                 (
                     format!("n.`{prop}` >= $lo AND n.`{prop}` <= $hi"),
-                    json!({ "lo": value_to_json(lo), "hi": value_to_json(hi) }),
+                    json!({ "lo": to_json(lo), "hi": to_json(hi) }),
                 )
             } else {
                 (
                     format!("n.`{prop}` > $lo AND n.`{prop}` < $hi"),
-                    json!({ "lo": value_to_json(lo), "hi": value_to_json(hi) }),
+                    json!({ "lo": to_json(lo), "hi": to_json(hi) }),
                 )
             }
         }
@@ -1119,10 +992,3 @@ fn range_to_cypher(prop: &str, range: RangeQuery<'_>) -> (String, JValue) {
     }
 }
 
-/// Convenience trait for method chaining `.pipe(Ok)` on Vec.
-trait Pipe: Sized {
-    fn pipe<T, F: FnOnce(Self) -> T>(self, f: F) -> T {
-        f(self)
-    }
-}
-impl<T> Pipe for Vec<T> {}

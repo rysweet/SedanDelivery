@@ -51,7 +51,6 @@ RUN mkdir -p /etc/valkey /data && \
     echo "loglevel notice" >> /etc/valkey/valkey-gql.conf && \
     echo "dir /data" >> /etc/valkey/valkey-gql.conf && \
     echo "save 60 1" >> /etc/valkey/valkey-gql.conf && \
-    echo "save 300 1" >> /etc/valkey/valkey-gql.conf && \
     echo "appendonly yes" >> /etc/valkey/valkey-gql.conf && \
     echo "appendfsync everysec" >> /etc/valkey/valkey-gql.conf
 
@@ -63,5 +62,9 @@ EXPOSE 6379
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
     CMD REDISCLI_AUTH="${VALKEY_PASSWORD:-}" valkey-cli ping | grep -q PONG || valkey-cli ping | grep -q PONG
+
+# Run as non-root for security
+RUN chown -R valkey:valkey /etc/valkey /data /entrypoint.sh
+USER valkey
 
 ENTRYPOINT ["/entrypoint.sh"]

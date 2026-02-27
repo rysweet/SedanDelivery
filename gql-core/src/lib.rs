@@ -7,5 +7,6 @@ pub mod executor;
 pub mod parser;
 pub mod planner;
 pub mod procedure;
+pub mod serde_value;
 pub mod storage;
 pub mod types;

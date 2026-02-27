@@ -6,13 +6,7 @@ license.workspace = true
 
 [dependencies]
 gql-core   = { path = "../gql-core" }
-thiserror  = { workspace = true }
-tracing    = { workspace = true }
-serde      = { workspace = true }
 serde_json = { workspace = true }
-smol_str   = { workspace = true }
-indexmap   = { workspace = true }
-jiff       = { workspace = true }
 # Pure Redis client — works with standalone Redis, Valkey, and Azure Cache for Redis.
 # redis-module (cdylib) is only in gql-module; not here.
 # tokio-comp is needed to resolve the async runtime enum in the redis crate;

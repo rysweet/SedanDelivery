@@ -1,15 +1,25 @@
 // gql-module: Valkey/Redis module entry point.
 //
 // Exposes the following commands:
-//   GQL.QUERY <graph> <query>       — execute read query, return JSON rows
-//   GQL.MUTATE <graph> <query>      — execute write query, return OK + stats
-//   GQL.CREATE-GRAPH <graph>        — create a named graph
-//   GQL.DELETE-GRAPH <graph>        — delete a named graph
-//   GQL.LIST-GRAPHS                 — list all graph names
-//   GQL.EXPLAIN <graph> <query>     — return the physical plan as a string
+//   GQL.QUERY <graph> <query>       -- execute read query, return JSON rows
+//   GQL.MUTATE <graph> <query>      -- execute write query, return OK + stats
+//   GQL.CREATE-GRAPH <graph>        -- create a named graph
+//   GQL.DELETE-GRAPH <graph>        -- delete a named graph
+//   GQL.LIST-GRAPHS                 -- list all graph names
+//   GQL.EXPLAIN <graph> <query>     -- return the physical plan as a string
 //
 // Safety: every command handler uses std::panic::catch_unwind to prevent a
 // panic from killing the Redis/Valkey process (and all connected clients).
+//
+// Architecture: graph data is stored in-process via InMemoryGraphStore.
+// This avoids the loopback deadlock that occurs when using a TCP-based
+// RedisGraphStore from within a Redis module (Redis is single-threaded,
+// so a command handler cannot send TCP commands to itself).
+//
+// Persistence: graph data lives in the module's heap memory. Valkey's
+// RDB/AOF persistence saves the full server state, but InMemoryGraphStore
+// data is not currently serialized via RDB save/load hooks. Persistence
+// across restarts requires RDB save/load hooks (tracked as a follow-up).
 
 use std::sync::OnceLock;
 
@@ -18,23 +28,23 @@ use redis_module::{redis_module, Context, NextArg, RedisError, RedisResult, Redi
 use gql_core::executor::{ExecutionBudget, QueryExecutor};
 use gql_core::parser::parse_query;
 use gql_core::planner::QueryPlanner;
-use gql_core::storage::GraphStore;
-use gql_redis_store::RedisGraphStore;
+use gql_core::serde_value::value_to_json;
+use gql_core::storage::{GraphStore, InMemoryGraphStore};
 
-// ── Global engine state ───────────────────────────────────────────────────────
+// -- Global engine state --
 
-/// The global RedisGraphStore, initialised once at module load.
+/// The global InMemoryGraphStore, initialised once at module load.
 ///
-/// Uses `OnceLock` instead of `Mutex<Option<>>` so that query execution
-/// does not serialise behind an outer lock -- the inner `RedisGraphStore`
-/// already guards its connection with its own `Mutex<Connection>`.
-static STORE: OnceLock<RedisGraphStore> = OnceLock::new();
+/// Uses `OnceLock` so that query execution does not serialise behind an
+/// outer lock -- the inner `InMemoryGraphStore` already guards its data
+/// with its own internal synchronization.
+static STORE: OnceLock<InMemoryGraphStore> = OnceLock::new();
 
 /// Acquire a reference to the store.  Returns a RedisError if the store is
 /// not yet initialised (should not happen after OnLoad succeeds).
 fn with_store<F, T>(f: F) -> RedisResult<T>
 where
-    F: FnOnce(&RedisGraphStore) -> RedisResult<T>,
+    F: FnOnce(&InMemoryGraphStore) -> RedisResult<T>,
 {
     match STORE.get() {
         Some(store) => f(store),
@@ -42,26 +52,15 @@ where
     }
 }
 
-// ── Initialisation ────────────────────────────────────────────────────────────
+// -- Initialisation --
 
 fn module_init(_ctx: &Context, _args: &[redis_module::RedisString]) -> redis_module::Status {
-    let url = std::env::var("GQL_REDIS_URL")
-        .or_else(|_| std::env::var("REDIS_URL"))
-        .unwrap_or_else(|_| "redis://127.0.0.1:6379".into());
-
-    match RedisGraphStore::from_url(&url) {
-        Ok(store) => {
-            let _ = STORE.set(store);
-            redis_module::Status::Ok
-        }
-        Err(e) => {
-            eprintln!("gql-module: failed to connect to Redis at {url}: {e}");
-            redis_module::Status::Err  // Fail fast instead of swallowing
-        }
-    }
+    let store = InMemoryGraphStore::new();
+    let _ = STORE.set(store);
+    redis_module::Status::Ok
 }
 
-// ── Command: GQL.QUERY ───────────────────────────────────────────────────────
+// -- Command: GQL.QUERY --
 
 /// GQL.QUERY <graph> <query>
 ///
@@ -99,7 +98,12 @@ fn cmd_gql_query(_ctx: &Context, args: Vec<redis_module::RedisString>) -> RedisR
                         .collect();
                     let json_row: serde_json::Map<String, serde_json::Value> = ordered
                         .into_iter()
-                        .map(|(k, v)| (k.clone(), cypher_value_to_json(v)))
+                        .map(|(k, v)| {
+                            (
+                                k.clone(),
+                                value_to_json(v).unwrap_or(serde_json::Value::Null),
+                            )
+                        })
                         .collect();
                     RedisValue::BulkString(
                         serde_json::to_string(&json_row).unwrap_or_else(|e| {
@@ -114,7 +118,7 @@ fn cmd_gql_query(_ctx: &Context, args: Vec<redis_module::RedisString>) -> RedisR
     .unwrap_or_else(|_| Err(RedisError::Str("GQL.QUERY: internal panic")))
 }
 
-// ── Command: GQL.MUTATE ──────────────────────────────────────────────────────
+// -- Command: GQL.MUTATE --
 
 /// GQL.MUTATE <graph> <query>
 ///
@@ -151,7 +155,12 @@ fn cmd_gql_mutate(_ctx: &Context, args: Vec<redis_module::RedisString>) -> Redis
                         .collect();
                     let json_row: serde_json::Map<String, serde_json::Value> = ordered
                         .into_iter()
-                        .map(|(k, v)| (k.clone(), cypher_value_to_json(v)))
+                        .map(|(k, v)| {
+                            (
+                                k.clone(),
+                                value_to_json(v).unwrap_or(serde_json::Value::Null),
+                            )
+                        })
                         .collect();
                     RedisValue::BulkString(
                         serde_json::to_string(&json_row).unwrap_or_else(|e| {
@@ -178,7 +187,7 @@ fn cmd_gql_mutate(_ctx: &Context, args: Vec<redis_module::RedisString>) -> Redis
     .unwrap_or_else(|_| Err(RedisError::Str("GQL.MUTATE: internal panic")))
 }
 
-// ── Command: GQL.CREATE-GRAPH ────────────────────────────────────────────────
+// -- Command: GQL.CREATE-GRAPH --
 
 fn cmd_gql_create_graph(_ctx: &Context, args: Vec<redis_module::RedisString>) -> RedisResult {
     std::panic::catch_unwind(|| {
@@ -196,7 +205,7 @@ fn cmd_gql_create_graph(_ctx: &Context, args: Vec<redis_module::RedisString>) ->
     .unwrap_or_else(|_| Err(RedisError::Str("GQL.CREATE-GRAPH: internal panic")))
 }
 
-// ── Command: GQL.DELETE-GRAPH ────────────────────────────────────────────────
+// -- Command: GQL.DELETE-GRAPH --
 
 fn cmd_gql_delete_graph(_ctx: &Context, args: Vec<redis_module::RedisString>) -> RedisResult {
     std::panic::catch_unwind(|| {
@@ -214,7 +223,7 @@ fn cmd_gql_delete_graph(_ctx: &Context, args: Vec<redis_module::RedisString>) ->
     .unwrap_or_else(|_| Err(RedisError::Str("GQL.DELETE-GRAPH: internal panic")))
 }
 
-// ── Command: GQL.LIST-GRAPHS ─────────────────────────────────────────────────
+// -- Command: GQL.LIST-GRAPHS --
 
 fn cmd_gql_list_graphs(_ctx: &Context, args: Vec<redis_module::RedisString>) -> RedisResult {
     std::panic::catch_unwind(|| {
@@ -235,7 +244,7 @@ fn cmd_gql_list_graphs(_ctx: &Context, args: Vec<redis_module::RedisString>) -> 
     .unwrap_or_else(|_| Err(RedisError::Str("GQL.LIST-GRAPHS: internal panic")))
 }
 
-// ── Command: GQL.EXPLAIN ─────────────────────────────────────────────────────
+// -- Command: GQL.EXPLAIN --
 
 fn cmd_gql_explain(_ctx: &Context, args: Vec<redis_module::RedisString>) -> RedisResult {
     std::panic::catch_unwind(|| {
@@ -259,47 +268,7 @@ fn cmd_gql_explain(_ctx: &Context, args: Vec<redis_module::RedisString>) -> Redi
     .unwrap_or_else(|_| Err(RedisError::Str("GQL.EXPLAIN: internal panic")))
 }
 
-// ── Value serialisation ───────────────────────────────────────────────────────
-
-fn cypher_value_to_json(v: &gql_core::types::Value) -> serde_json::Value {
-    use gql_core::types::Value;
-    match v {
-        Value::Null => serde_json::Value::Null,
-        Value::Bool(b) => serde_json::Value::Bool(*b),
-        Value::Int(i) => serde_json::Value::Number((*i).into()),
-        Value::Float(f) => serde_json::Number::from_f64(*f)
-            .map(serde_json::Value::Number)
-            .unwrap_or(serde_json::Value::Null),
-        Value::Str(s) => serde_json::Value::String(s.to_string()),
-        Value::Date(d) => serde_json::Value::String(d.to_string()),
-        Value::LocalTime(t) => serde_json::Value::String(t.to_string()),
-        Value::LocalDateTime(dt) => serde_json::Value::String(dt.to_string()),
-        Value::DateTime(dt) => serde_json::Value::String(dt.to_string()),
-        Value::Duration(sp) => serde_json::Value::String(sp.to_string()),
-        Value::Point(p) => {
-            serde_json::json!({"x": p.x, "y": p.y})
-        }
-        Value::List(items) => {
-            serde_json::Value::Array(items.iter().map(cypher_value_to_json).collect())
-        }
-        Value::Map(m) => {
-            let obj: serde_json::Map<_, _> = m
-                .iter()
-                .map(|(k, v)| (k.to_string(), cypher_value_to_json(v)))
-                .collect();
-            serde_json::Value::Object(obj)
-        }
-        Value::Node(id) => serde_json::json!({"__node": id.0}),
-        Value::Edge(id) => serde_json::json!({"__edge": id.0}),
-        Value::Path { nodes, edges } => {
-            let ns: Vec<_> = nodes.iter().map(|n| n.0).collect();
-            let es: Vec<_> = edges.iter().map(|e| e.0).collect();
-            serde_json::json!({"__path": {"nodes": ns, "edges": es}})
-        }
-    }
-}
-
-// ── Module registration ───────────────────────────────────────────────────────
+// -- Module registration --
 
 redis_module! {
     name: "gql",
