@@ -2,8 +2,24 @@
 //!
 //! [`validate_query`] runs after parsing but before planning to catch semantic
 //! errors that the grammar allows but the spec forbids. Each check maps to one
-//! or more openCypher TCK error codes (e.g. `VariableAlreadyBound`,
-//! `UndefinedVariable`, `InvalidClauseComposition`).
+//! or more openCypher TCK error codes.
+//!
+//! ## Error codes covered
+//!
+//! | TCK error code               | Where validated                              |
+//! |------------------------------|----------------------------------------------|
+//! | `VariableAlreadyBound`       | CREATE/MERGE patterns, including `{}` maps   |
+//! | `UndefinedVariable`          | RETURN items, SET values, WHERE, ORDER BY     |
+//! | `InvalidDelete`              | DELETE with label predicate (`n:Label`)      |
+//! | `InvalidAggregation`         | WHERE clause, list comprehension body        |
+//! | `AmbiguousAggregationExpression` | ORDER BY mixing agg and non-agg          |
+//! | `NoVariablesInScope`         | `RETURN *` with empty variable scope         |
+//! | `InvalidArgumentType`        | `type(node)`, `length(node/rel)`, `size(path)`, property on path |
+//! | `NonConstantExpression`      | Non-deterministic functions inside agg       |
+//! | `UnexpectedSyntax`           | PatternExpr in RETURN/WITH projections       |
+//! | `FloatingPointOverflow`      | Float literals that exceed f64 range         |
+//! | `InvalidClauseComposition`   | Write clauses inside `EXISTS {}` subquery    |
+//! | `InvalidArgumentType`        | Standalone node/rel variable as WHERE predicate |
 
 use std::collections::{HashMap, HashSet};
 
@@ -15,13 +31,22 @@ use crate::ast::{
 use crate::error::{GqlError, ParseError, PlanError};
 
 /// The kind of a variable in scope — used to detect type conflicts.
+///
+/// Affects whether re-use in MATCH patterns is allowed:
+/// - `Node` → cannot be used as a Relationship or Path
+/// - `Relationship` → cannot be used as a Node or Path
+/// - `Path` → cannot be used as a Node or Relationship; property access is invalid
+/// - `Value` → came from a scalar expression; cannot be used as a Node in MATCH
+///   (e.g. `WITH 1 AS n MATCH (n)` is a compile-time error)
+/// - `Untyped` → came from CALL YIELD or UNWIND; type is unknown at compile time,
+///   no conflicts are raised (the runtime determines the actual type)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum VarKind {
     Node,
     Relationship,
     Path,
-    Value, // scalar from WITH / UNWIND / RETURN literal
-    Untyped, // from CALL YIELD — type is unknown, no conflicts
+    Value,   // scalar from WITH literal expression (e.g. `WITH 1 AS n`)
+    Untyped, // from CALL YIELD or UNWIND — type not known at compile time
 }
 
 /// Validate `query` for semantic correctness.
