@@ -47,7 +47,14 @@ pub fn value_to_json(v: &Value) -> Result<JsonValue, StorageError> {
             })?;
             Ok(JsonValue::Number(n))
         }
-        Value::Str(s) => Ok(JsonValue::String(s.to_string())),
+        Value::Str(s) => {
+            let s_ref = s.as_ref();
+            if s_ref.starts_with("__") {
+                Ok(JsonValue::String(format!("__str:{s_ref}")))
+            } else {
+                Ok(JsonValue::String(s_ref.to_string()))
+            }
+        }
         // Temporal types: tagged strings for round-trip fidelity.
         Value::Date(d) => Ok(JsonValue::String(format!("__date:{d}"))),
         Value::LocalTime(t) => Ok(JsonValue::String(format!("__localtime:{t}"))),
@@ -102,6 +109,11 @@ pub fn json_to_value(j: &JsonValue) -> Option<Value> {
             }
         }
         JsonValue::String(s) => {
+            // Escaped plain string — must be checked first to prevent
+            // user strings starting with __ from being misinterpreted as tags.
+            if let Some(rest) = s.strip_prefix("__str:") {
+                return Some(Value::Str(rest.into()));
+            }
             // Decode tagged temporal/spatial types.
             if let Some(rest) = s.strip_prefix("__date:") {
                 if let Ok(d) = rest.parse::<jiff::civil::Date>() {
@@ -319,5 +331,113 @@ mod tests {
     fn json_to_props_rejects_non_object() {
         assert!(json_to_props("42").is_err());
         assert!(json_to_props("\"hello\"").is_err());
+    }
+
+    // ── R4-2 / R4-10: tagged string escape tests ─────────────────────────────
+
+    #[test]
+    fn str_escape_round_trip() {
+        // A Value::Str that starts with __ must survive a round-trip via the
+        // __str: escape prefix.
+        let val = Value::Str("__date:2024-01-15".into());
+        let json = value_to_json(&val).unwrap();
+        // Serialised form should be "__str:__date:2024-01-15"
+        assert_eq!(json, JsonValue::String("__str:__date:2024-01-15".into()));
+        let back = json_to_value(&json).unwrap();
+        assert_eq!(val, back);
+    }
+
+    #[test]
+    fn str_escape_double_underscore_prefix() {
+        // Any __ prefix gets escaped, not just known tags
+        let val = Value::Str("__custom_tag:whatever".into());
+        let json = value_to_json(&val).unwrap();
+        let back = json_to_value(&json).unwrap();
+        assert_eq!(val, back);
+    }
+
+    #[test]
+    fn raw_tagged_string_without_str_escape() {
+        // A raw JSON string "__date:not-a-date" (not produced by our serializer)
+        // would try to parse as a date, fail, and fall through to plain Str.
+        let json = JsonValue::String("__date:not-a-date".into());
+        let val = json_to_value(&json).unwrap();
+        // The date parse fails, so it falls through to Value::Str
+        assert_eq!(val, Value::Str("__date:not-a-date".into()));
+    }
+
+    // ── R4-10: empty map ──────────────────────────────────────────────────────
+
+    #[test]
+    fn empty_props_round_trip() {
+        let props = HashMap::new();
+        let json_str = props_to_json(&props).unwrap();
+        assert_eq!(json_str, "{}");
+        let back = json_to_props(&json_str).unwrap();
+        assert!(back.is_empty());
+    }
+
+    // ── R4-10: malformed JSON ─────────────────────────────────────────────────
+
+    #[test]
+    fn malformed_json_errors() {
+        assert!(json_to_props("").is_err());
+        assert!(json_to_props("null").is_err());
+    }
+
+    // ── R4-10: Duration round-trip ────────────────────────────────────────────
+
+    #[test]
+    fn round_trip_duration() {
+        let span = jiff::Span::new().days(3).hours(4).minutes(5);
+        let val = Value::Duration(span);
+        let json = value_to_json(&val).unwrap();
+        let back = json_to_value(&json).unwrap();
+        // Compare via the fieldwise wrapper used by Value's PartialEq
+        assert_eq!(val, back, "Duration round-trip failed");
+    }
+
+    // ── R4-10: negative _sd2_id in InMemoryGraphStore ─────────────────────────
+
+    #[test]
+    fn negative_sd2_id_rejected() {
+        use crate::storage::{GraphStore, InMemoryGraphStore};
+
+        let store = InMemoryGraphStore::new();
+        store.create_graph("test").unwrap();
+
+        let mut props = HashMap::new();
+        props.insert("_sd2_id".to_string(), Value::Int(-1));
+
+        let result = store.create_node("test", vec!["Label".into()], props);
+        assert!(result.is_err(), "negative _sd2_id should be rejected");
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(
+            err_msg.contains("non-negative"),
+            "error should mention non-negative, got: {err_msg}"
+        );
+    }
+
+    #[test]
+    fn negative_sd2_eid_rejected() {
+        use crate::storage::{GraphStore, InMemoryGraphStore, NodeId};
+
+        let store = InMemoryGraphStore::new();
+        store.create_graph("test").unwrap();
+
+        // Create two nodes first
+        let n1 = store.create_node("test", vec!["A".into()], HashMap::new()).unwrap();
+        let n2 = store.create_node("test", vec!["B".into()], HashMap::new()).unwrap();
+
+        let mut props = HashMap::new();
+        props.insert("_sd2_eid".to_string(), Value::Int(-5));
+
+        let result = store.create_edge("test", n1, n2, "KNOWS".into(), props);
+        assert!(result.is_err(), "negative _sd2_eid should be rejected");
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(
+            err_msg.contains("non-negative"),
+            "error should mention non-negative, got: {err_msg}"
+        );
     }
 }

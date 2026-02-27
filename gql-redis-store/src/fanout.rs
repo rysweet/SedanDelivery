@@ -50,6 +50,7 @@ impl FanoutStore {
     }
 
     /// Apply a write that returns a value from each store; returns the primary's result.
+    #[allow(dead_code)] // Available for future use by new GraphStore methods returning values
     fn write_all_primary<T: Clone, F>(&self, f: F) -> Result<T, StorageError>
     where
         F: Fn(&dyn GraphStore) -> Result<T, StorageError>,

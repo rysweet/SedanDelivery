@@ -12,7 +12,7 @@
 //   All nodes set:   G:{g}:nodes            — SADD node id (string)
 //   All edges set:   G:{g}:edges            — SADD edge id (string)
 //   Index set:       G:{g}:indexes          — SADD "{label}:{property}"
-//   Graph registry:  G:{sd2}:graphs         — SADD graph name
+//   Graph registry:  __sd2_registry:graphs   — SADD graph name
 
 pub mod fanout;
 
@@ -102,7 +102,11 @@ fn key_indexes(g: &str) -> String {
     format!("G:{{{g}}}:indexes")
 }
 
-const KEY_GRAPHS: &str = "G:{sd2}:graphs";
+/// Registry key for graph names.  Uses a `__sd2_registry:` prefix that cannot
+/// collide with per-graph data keys (which all start with `G:`).  The key has
+/// no Redis Cluster hash tag, so it routes to its own slot; this is fine because
+/// it's only accessed by standalone operations (SADD, SISMEMBER, SMEMBERS, SREM).
+const KEY_GRAPHS: &str = "__sd2_registry:graphs";
 
 // ── RedisGraphStore ───────────────────────────────────────────────────────────
 

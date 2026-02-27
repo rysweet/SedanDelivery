@@ -25,6 +25,7 @@ use std::sync::OnceLock;
 
 use redis_module::{redis_module, Context, NextArg, RedisError, RedisResult, RedisValue};
 
+use gql_core::ast::Clause;
 use gql_core::executor::{ExecutionBudget, QueryExecutor};
 use gql_core::parser::parse_query;
 use gql_core::planner::QueryPlanner;
@@ -77,6 +78,19 @@ fn cmd_gql_query(_ctx: &Context, args: Vec<redis_module::RedisString>) -> RedisR
             let ast = parse_query(&query).map_err(|e| {
                 RedisError::String(format!("parse error: {e}"))
             })?;
+
+            // GQL.QUERY is registered as "readonly": reject queries that contain
+            // write clauses (Create/Set/Delete/Remove/Merge).  Use GQL.MUTATE instead.
+            let has_write = ast.clauses.iter().any(|c| matches!(c,
+                Clause::Create(_) | Clause::Set(_) | Clause::Delete(_) |
+                Clause::Remove(_) | Clause::Merge(_) | Clause::Foreach(_)
+            ));
+            if has_write {
+                return Err(RedisError::String(
+                    "GQL.QUERY is read-only; use GQL.MUTATE for write operations".into(),
+                ));
+            }
+
             let planner = QueryPlanner::new(store, &graph);
             let plan = planner.plan(&ast).map_err(|e| {
                 RedisError::String(format!("plan error: {e}"))
@@ -277,7 +291,7 @@ redis_module! {
     data_types: [],
     init: module_init,
     commands: [
-        ["GQL.QUERY",        cmd_gql_query,        "write",     1, 1, 1],
+        ["GQL.QUERY",        cmd_gql_query,        "readonly",  1, 1, 1],
         ["GQL.MUTATE",       cmd_gql_mutate,       "write",     1, 1, 1],
         ["GQL.CREATE-GRAPH", cmd_gql_create_graph, "write",     1, 1, 1],
         ["GQL.DELETE-GRAPH", cmd_gql_delete_graph, "write",     1, 1, 1],

@@ -398,12 +398,29 @@ impl GraphStore for InMemoryGraphStore {
     ) -> Result<NodeId, StorageError> {
         let mut guard = self.write()?;
         let g = Self::require_graph_mut(&mut guard, graph)?;
-        let raw_id = g.next_node_id(graph)?;
+
+        // Honor pre-set ID from FanoutStore injection
+        let raw_id = if let Some(Value::Int(i)) = properties.get("_sd2_id") {
+            if *i < 0 {
+                return Err(StorageError::Backend {
+                    msg: format!("_sd2_id must be non-negative, got {i}"),
+                });
+            }
+            *i as u64
+        } else {
+            g.next_node_id(graph)?
+        };
         let node_id = NodeId(raw_id);
+
+        // Strip internal keys before storing
+        let mut clean_props = properties;
+        clean_props.remove("_sd2_id");
+        clean_props.remove("_sd2_eid");
+
         let node = NodeData {
             id: node_id,
             labels: labels.clone(),
-            properties,
+            properties: clean_props,
         };
         g.nodes.insert(raw_id, node);
         for label in &labels {
@@ -432,14 +449,31 @@ impl GraphStore for InMemoryGraphStore {
         if !g.nodes.contains_key(&dst.0) {
             return Err(StorageError::NodeNotFound { id: dst.0 });
         }
-        let raw_id = g.next_edge_id(graph)?;
+
+        // Honor pre-set ID from FanoutStore injection
+        let raw_id = if let Some(Value::Int(i)) = properties.get("_sd2_eid") {
+            if *i < 0 {
+                return Err(StorageError::Backend {
+                    msg: format!("_sd2_eid must be non-negative, got {i}"),
+                });
+            }
+            *i as u64
+        } else {
+            g.next_edge_id(graph)?
+        };
         let edge_id = EdgeId(raw_id);
+
+        // Strip internal keys before storing
+        let mut clean_props = properties;
+        clean_props.remove("_sd2_id");
+        clean_props.remove("_sd2_eid");
+
         let edge = EdgeData {
             id: edge_id,
             rel_type: rel_type.clone(),
             src,
             dst,
-            properties,
+            properties: clean_props,
         };
         g.edges.insert(raw_id, edge);
 

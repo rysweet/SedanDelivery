@@ -302,9 +302,14 @@ jobs:
           # Build volume args — always mount Azure Files share so /data persists across restarts
           VOLUME_ARGS="--volume valkey-data:azureFile:valkey-data --volume-mount valkey-data=/data"
 
-          # Generate Valkey password for authentication (Issue #59)
-          # Generated BEFORE both create and update paths so --secrets works for both
-          VALKEY_PASS=$(openssl rand -base64 32 | tr -d '/+=\n')
+          # Reuse existing Valkey password on updates to avoid credential churn (Issue #59)
+          VALKEY_PASS=""
+          if az containerapp show --name "${CA_NAME}" --resource-group "${RG}" >/dev/null 2>&1; then
+            VALKEY_PASS=$(az containerapp secret show --name "${CA_NAME}" --resource-group "${RG}" --secret-name valkey-password --query value -o tsv 2>/dev/null || true)
+          fi
+          if [[ -z "${VALKEY_PASS}" ]]; then
+            VALKEY_PASS=$(openssl rand -base64 32 | tr -d '/+=\n')
+          fi
           echo "::add-mask::${VALKEY_PASS}"  # mask before any subsequent use
 
           # Build secrets and env-var args
