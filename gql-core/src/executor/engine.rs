@@ -4082,7 +4082,7 @@ mod tests {
         let mut budget = ExecutionBudget::unlimited();
         let result = executor.execute("g", &plan, &mut budget).unwrap();
         // Should terminate and not loop infinitely
-        assert!(result.rows.len() > 0);
+        assert!(!result.rows.is_empty());
         assert!(result.rows.len() < 100); // bounded by cycle avoidance
     }
 
