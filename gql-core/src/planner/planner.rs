@@ -2028,6 +2028,7 @@ fn expr_to_col_name(expr: &Expr) -> String {
             name,
             args,
             distinct,
+            ..
         } => {
             let arg_strs: Vec<String> = args.iter().map(expr_to_col_name).collect();
             if *distinct {

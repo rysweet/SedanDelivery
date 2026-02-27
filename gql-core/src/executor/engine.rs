@@ -552,7 +552,7 @@ impl<'a> QueryExecutor<'a> {
                         }
 
                         // Create edges using the alias map for src/dst lookup.
-                        for (alias, src_alias, dst_alias, rel_type, _direction, prop_exprs) in
+                        for (alias, src_alias, dst_alias, rel_type, direction, prop_exprs) in
                             &pattern.edges
                         {
                             let ctx = self.build_filter_ctx(graph, &row)?;
@@ -586,6 +586,15 @@ impl<'a> QueryExecutor<'a> {
                                 })
                                 .ok_or_else(|| undefined_var(&dst_alias.0))?;
 
+                            // Determine actual src/dst based on direction.
+                            // In the plan, src_alias is always the "left" node in the
+                            // pattern text. For an Incoming arc (a)<-[:R]-(b), we need
+                            // to flip so the edge is stored as b -> a.
+                            let (real_src, real_dst) = match direction {
+                                Direction::Incoming => (dst_id, src_id),
+                                _ => (src_id, dst_id),
+                            };
+
                             let non_null_edge_keys: Vec<String> = props
                                 .iter()
                                 .filter(|(_, v)| !v.is_null())
@@ -593,8 +602,8 @@ impl<'a> QueryExecutor<'a> {
                                 .collect();
                             let edge_id = self.store.create_edge(
                                 graph,
-                                src_id,
-                                dst_id,
+                                real_src,
+                                real_dst,
                                 rel_type.as_str().to_string(),
                                 props,
                             )?;
@@ -999,48 +1008,70 @@ impl<'a> QueryExecutor<'a> {
                 for row in input {
                     budget.check_or_err()?;
                     let ctx = self.build_filter_ctx(graph, &row)?;
+
+                    // Two-pass delete: collect all edges and nodes first so that
+                    // paths sharing nodes don't fail with "node has relationships"
+                    // when one path's edges are deleted but another path's edges
+                    // are not yet deleted.
+                    let mut edges_to_delete: Vec<EdgeId> = Vec::new();
+                    let mut nodes_to_delete: Vec<NodeId> = Vec::new();
+
                     for expr in exprs {
                         let val = self.eval_with_storage(graph, expr, &row, &ctx)?;
                         match val {
                             Value::Node(node_id) => {
-                                match self.store.delete_node(graph, node_id, *detach) {
-                                    Ok(()) => { stats.nodes_deleted += 1; }
-                                    Err(StorageError::NodeNotFound { .. }) => {} // already deleted
-                                    Err(e) => return Err(GqlError::Storage(e)),
-                                }
+                                nodes_to_delete.push(node_id);
                             }
                             Value::Edge(edge_id) => {
-                                match self.store.delete_edge(graph, edge_id) {
-                                    Ok(()) => { stats.edges_deleted += 1; }
-                                    Err(StorageError::EdgeNotFound { .. }) => {} // already deleted
-                                    Err(e) => return Err(GqlError::Storage(e)),
-                                }
+                                edges_to_delete.push(edge_id);
                             }
                             Value::Null => {
                                 // Deleting NULL is a no-op in Cypher
                             }
                             Value::Path { nodes, edges } => {
-                                // DELETE on a path: delete all edges first, then nodes
-                                for edge_id in &edges {
-                                    match self.store.delete_edge(graph, *edge_id) {
-                                        Ok(()) => { stats.edges_deleted += 1; }
-                                        Err(StorageError::EdgeNotFound { .. }) => {}
-                                        Err(e) => return Err(GqlError::Storage(e)),
-                                    }
-                                }
-                                for node_id in &nodes {
-                                    match self.store.delete_node(graph, *node_id, *detach) {
-                                        Ok(()) => { stats.nodes_deleted += 1; }
-                                        Err(StorageError::NodeNotFound { .. }) => {}
-                                        Err(e) => return Err(GqlError::Storage(e)),
-                                    }
-                                }
+                                edges_to_delete.extend(edges.iter().copied());
+                                nodes_to_delete.extend(nodes.iter().copied());
                             }
                             other => {
                                 return Err(GqlError::Execution(ExecutionError::TypeMismatch {
                                     expected: "Node or Relationship for DELETE".to_string(),
                                     actual: other.type_name().to_string(),
                                 }));
+                            }
+                        }
+                    }
+
+                    // Delete all collected edges first.
+                    for edge_id in edges_to_delete {
+                        match self.store.delete_edge(graph, edge_id) {
+                            Ok(()) => { stats.edges_deleted += 1; }
+                            Err(StorageError::EdgeNotFound { .. }) => {} // already deleted
+                            Err(e) => return Err(GqlError::Storage(e)),
+                        }
+                    }
+
+                    // Then delete all collected nodes.
+                    for node_id in nodes_to_delete {
+                        if *detach {
+                            // Count and delete remaining edges before deleting node.
+                            let out_ids = self.store.out_edge_ids(graph, node_id).unwrap_or_default();
+                            let in_ids = self.store.in_edge_ids(graph, node_id).unwrap_or_default();
+                            let mut edge_set: std::collections::HashSet<u64> = out_ids.iter().map(|e| e.0).collect();
+                            edge_set.extend(in_ids.iter().map(|e| e.0));
+                            let detach_edge_count = edge_set.len() as u64;
+                            match self.store.delete_node(graph, node_id, true) {
+                                Ok(()) => {
+                                    stats.nodes_deleted += 1;
+                                    stats.edges_deleted += detach_edge_count;
+                                }
+                                Err(StorageError::NodeNotFound { .. }) => {}
+                                Err(e) => return Err(GqlError::Storage(e)),
+                            }
+                        } else {
+                            match self.store.delete_node(graph, node_id, false) {
+                                Ok(()) => { stats.nodes_deleted += 1; }
+                                Err(StorageError::NodeNotFound { .. }) => {} // already deleted
+                                Err(e) => return Err(GqlError::Storage(e)),
                             }
                         }
                     }
@@ -1086,24 +1117,33 @@ impl<'a> QueryExecutor<'a> {
                         }
                     }
 
-                    // Try to find existing nodes matching ALL labels
-                    let mut candidates: Option<HashSet<u64>> = None;
-                    for label in labels {
-                        let ids = self.store.find_nodes_by_label(graph, label.as_str())?;
-                        let id_set: HashSet<u64> = ids.iter().map(|n| n.0).collect();
-                        candidates = Some(match candidates {
-                            None => id_set,
-                            Some(existing) => existing.intersection(&id_set).copied().collect(),
-                        });
-                    }
+                    // Try to find existing nodes matching ALL labels.
+                    // When labels is empty, scan all nodes (MERGE (n) with no labels).
+                    let candidates: HashSet<u64> = if labels.is_empty() {
+                        self.store
+                            .all_node_ids(graph)?
+                            .into_iter()
+                            .map(|n| n.0)
+                            .collect()
+                    } else {
+                        let mut cands: Option<HashSet<u64>> = None;
+                        for label in labels {
+                            let ids = self.store.find_nodes_by_label(graph, label.as_str())?;
+                            let id_set: HashSet<u64> = ids.iter().map(|n| n.0).collect();
+                            cands = Some(match cands {
+                                None => id_set,
+                                Some(existing) => existing.intersection(&id_set).copied().collect(),
+                            });
+                        }
+                        cands.unwrap_or_default()
+                    };
 
                     // Further filter candidates by inline properties.
-                    let matched_id = if let Some(cands) = candidates {
-                        if labels.is_empty() {
-                            None
-                        } else {
+                    let matched_id = {
+                        let cands = &candidates;
+                        {
                             let mut found = None;
-                            for cand_id in &cands {
+                            for cand_id in cands {
                                 let node_id = NodeId(*cand_id);
                                 if prop_vals.is_empty() {
                                     found = Some(node_id);
@@ -1130,8 +1170,6 @@ impl<'a> QueryExecutor<'a> {
                             }
                             found
                         }
-                    } else {
-                        None
                     };
 
                     if let Some(node_id) = matched_id {
@@ -1836,7 +1874,7 @@ impl<'a> QueryExecutor<'a> {
                                 };
                                 let lc = name.to_lowercase();
                                 let mut match_count: usize = 0;
-                                let mut has_null = false;
+                                let mut null_count: usize = 0;
                                 let total = items.len();
                                 for item in &items {
                                     let mut ext_row = row.clone();
@@ -1853,7 +1891,7 @@ impl<'a> QueryExecutor<'a> {
                                     if pred_result == Value::Bool(true) {
                                         match_count += 1;
                                     } else if pred_result.is_null() {
-                                        has_null = true;
+                                        null_count += 1;
                                     }
                                     // Short-circuit
                                     match lc.as_str() {
@@ -1869,27 +1907,30 @@ impl<'a> QueryExecutor<'a> {
                                         _ => {}
                                     }
                                 }
-                                // Three-valued logic: if has_null and result
-                                // is indeterminate, return null.
+                                // Three-valued logic for quantifiers:
+                                // - false_count = total - match_count - null_count
+                                // For ALL: if any false → false; if all true → true;
+                                //          else (only nulls remaining) → null.
+                                let false_count = total - match_count - null_count;
                                 return match lc.as_str() {
                                     "all" => {
-                                        if match_count == total { Ok(Value::Bool(true)) }
-                                        else if has_null { Ok(Value::Null) }
-                                        else { Ok(Value::Bool(false)) }
+                                        if false_count > 0 { Ok(Value::Bool(false)) }
+                                        else if null_count > 0 { Ok(Value::Null) }
+                                        else { Ok(Value::Bool(true)) }
                                     }
                                     "any" => {
                                         if match_count > 0 { Ok(Value::Bool(true)) }
-                                        else if has_null { Ok(Value::Null) }
+                                        else if null_count > 0 { Ok(Value::Null) }
                                         else { Ok(Value::Bool(false)) }
                                     }
                                     "none" => {
                                         if match_count > 0 { Ok(Value::Bool(false)) }
-                                        else if has_null { Ok(Value::Null) }
+                                        else if null_count > 0 { Ok(Value::Null) }
                                         else { Ok(Value::Bool(true)) }
                                     }
                                     "single" => {
                                         if match_count > 1 { Ok(Value::Bool(false)) }
-                                        else if has_null { Ok(Value::Null) }
+                                        else if null_count > 0 && match_count == 0 { Ok(Value::Null) }
                                         else { Ok(Value::Bool(match_count == 1)) }
                                     }
                                     _ => Ok(Value::Bool(false)),
@@ -2317,19 +2358,30 @@ impl<'a> QueryExecutor<'a> {
                             None => Ok(Value::Null),
                         }
                     }
-                    // List indexed by integer — handle directly to preserve
-                    // Node/Edge values that value_to_expr cannot represent.
-                    (Value::List(items), Value::Int(idx)) => {
-                        let len = items.len() as i64;
-                        let i = if idx < 0 { len + idx } else { idx };
-                        if i < 0 || i >= len {
-                            Ok(Value::Null)
+                    // List[Int]: handle directly to preserve Node/Edge values
+                    // that value_to_expr cannot round-trip.
+                    (Value::List(items), Value::Int(i)) => {
+                        let len = items.len();
+                        let actual = if i < 0 {
+                            let offset = (-i) as usize;
+                            if offset > len {
+                                return Ok(Value::Null);
+                            }
+                            len - offset
                         } else {
-                            Ok(items[i as usize].clone())
+                            i as usize
+                        };
+                        if actual >= len {
+                            return Ok(Value::Null);
                         }
+                        Ok(items[actual].clone())
+                    }
+                    // Map[Str]: delegate to eval_expr (maps don't contain Node/Edge).
+                    (Value::Map(m), Value::Str(key)) => {
+                        Ok(m.get(key.as_ref()).cloned().unwrap_or(Value::Null))
                     }
                     (obj, idx) => {
-                        // Delegate to eval_expr for Map[Str] and other cases.
+                        // Delegate to eval_expr for remaining cases.
                         let rebuilt = Expr::Subscript(
                             Box::new(value_to_expr(&obj)),
                             Box::new(value_to_expr(&idx)),
