@@ -54,12 +54,141 @@ SedanDelivery supports multiple storage backends via the `GraphStore` trait:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
+| `BOLT_BIND_ADDR` | `0.0.0.0:7687` | Bolt TCP listen address |
+| `BOLT_PASSWORD` | — | Optional password for Bolt connections |
+| `BOLT_ENABLED` | `true` | Enable/disable Bolt server in container |
 | `GQL_REDIS_URL` | `redis://127.0.0.1:6379` | Redis connection URL for RedisGraphStore |
 | `GQL_FABRIC_ENDPOINT` | — | Fabric Graph Database REST API URL |
 | `GQL_FABRIC_TENANT_ID` | — | Azure AD tenant for Fabric auth |
 | `GQL_FABRIC_CLIENT_ID` | — | Service principal app ID for Fabric |
 | `GQL_FABRIC_CLIENT_SECRET` | — | Service principal secret for Fabric |
 | `VALKEY_PASSWORD` | — | Password for Valkey authentication (injected at runtime) |
+
+## Bolt Protocol (Recommended)
+
+SedanDelivery includes a built-in Neo4j Bolt v4.4 server (`sedan-bolt`). Any standard Neo4j driver connects directly — no custom SDK needed.
+
+```bash
+# Build and run the Bolt server
+cargo run -p sedan-bolt
+# Listens on 0.0.0.0:7687 (configure via BOLT_BIND_ADDR env var)
+# Optional auth via BOLT_PASSWORD env var
+```
+
+### Python (neo4j driver)
+```bash
+pip install neo4j
+```
+```python
+from neo4j import GraphDatabase
+
+driver = GraphDatabase.driver("bolt://localhost:7687", auth=None)
+with driver.session() as session:
+    session.run("CREATE (:Person {name: 'Alice', age: 30})")
+    result = session.run("MATCH (p:Person) RETURN p.name AS name, p.age AS age")
+    for record in result:
+        print(record["name"], record["age"])
+driver.close()
+```
+
+### .NET (Neo4j.Driver)
+```bash
+dotnet add package Neo4j.Driver
+```
+```csharp
+using Neo4j.Driver;
+
+var driver = GraphDatabase.Driver("bolt://localhost:7687", AuthTokens.None);
+await using var session = driver.AsyncSession();
+await session.RunAsync("CREATE (:Person {name: 'Alice', age: 30})");
+var result = await session.RunAsync("MATCH (p:Person) RETURN p.name AS name, p.age AS age");
+await foreach (var record in result)
+    Console.WriteLine($"{record["name"].As<string>()} {record["age"].As<long>()}");
+```
+
+### Rust (neo4rs)
+```toml
+[dependencies]
+neo4rs = "0.8"
+tokio = { version = "1", features = ["full"] }
+```
+```rust
+use neo4rs::*;
+
+let graph = Graph::connect(
+    ConfigBuilder::default()
+        .uri("bolt://localhost:7687")
+        .user("").password("").build()?
+).await?;
+graph.run(query("CREATE (:Person {name: 'Alice', age: 30})")).await?;
+let mut result = graph.execute(
+    query("MATCH (p:Person) RETURN p.name AS name, p.age AS age")
+).await?;
+while let Some(row) = result.next().await? {
+    println!("{} {}", row.get::<String>("name")?, row.get::<i64>("age")?);
+}
+```
+
+### Java, Go, JavaScript
+Any Neo4j driver that supports Bolt 4.2-4.4 works. See the [Neo4j Driver Manual](https://neo4j.com/docs/create-applications/) for your language.
+
+### Configuration
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `BOLT_BIND_ADDR` | `0.0.0.0:7687` | Bolt TCP listen address |
+| `BOLT_PASSWORD` | (none) | Optional password for Bolt auth |
+| `BOLT_ENABLED` | `true` | Enable/disable Bolt server in container |
+
+See [Bolt Protocol Spec](specs/sedan-bolt-spec) for implementation details.
+
+## Custom Client SDKs (Redis protocol)
+
+For direct Redis protocol access, SedanDelivery also provides custom client libraries:
+
+### Python
+```bash
+pip install sedandelivery   # or: pip install -e sdk/python
+```
+```python
+from sedandelivery import SedanDB
+db = SedanDB(host="localhost", password="secret")
+g = db.select_graph("social")
+g.create()
+g.mutate("CREATE (:Person {name: $name})", name="Alice")
+for r in g.query("MATCH (n) RETURN n.name"):
+    print(r["name"])
+```
+
+### .NET
+```bash
+dotnet add package SedanDelivery.Client
+```
+```csharp
+using var db = new SedanDB("localhost:6379,password=secret");
+var g = db.SelectGraph("social");
+g.Create();
+g.Mutate("CREATE (:Person {name: $name})", new { name = "Alice" });
+foreach (var r in g.Query("MATCH (n) RETURN n.name"))
+    Console.WriteLine(r.Get<string>("name"));
+```
+
+### Rust
+```toml
+[dependencies]
+sedan-client = { path = "sdk/rust/sedan-client" }
+```
+```rust
+let db = SedanDB::new("redis://localhost:6379")?;
+let mut g = db.select_graph("social")?;
+g.create()?;
+g.mutate("CREATE (:Person {name: 'Alice'})")?;
+for record in g.query("MATCH (n) RETURN n.name")? {
+    println!("{}", record.get_str("name").unwrap());
+}
+```
+
+See [sdk/README.md](../sdk/README.md) for the full Redis-protocol SDK API reference.
 
 ## Fabric Graph Replication
 
