@@ -13,6 +13,7 @@ import {
   CircleStop,
   Circle,
   LogOut,
+  Activity,
 } from 'lucide-react'
 import { useMsal } from '@azure/msal-react'
 import { useGraphStore } from '../../store/graph'
@@ -236,6 +237,15 @@ export function Toolbar({
       </ToolbarButton>
       <ToolbarButton tooltip="Import Graph" onClick={onImport}>
         <Upload size={16} />
+      </ToolbarButton>
+
+      <Separator />
+
+      <ToolbarButton
+        tooltip="Service Status"
+        onClick={() => { window.location.hash = '#/status' }}
+      >
+        <Activity size={16} />
       </ToolbarButton>
 
       {/* Graph selector + user info pushed to right */}
