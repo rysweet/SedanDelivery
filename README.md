@@ -1,164 +1,168 @@
 # SedanDelivery
 
-**A Rust GQL/Cypher query engine** — MIT/Apache-2.0-licensed replacement for RedisGraph/FalkorDB.
+A graph database engine for Valkey/Redis. MIT/Apache-2.0 licensed.
 
-> **Status**: Working engine — parser, planner, executor, and TCK runner all functional.
-> **253 tests pass** (237 unit/integration + 6 openCypher TCK cucumber scenarios).
+## Getting started
 
-## Quick Start
+**Step 1** — Clone and run the demo (30 seconds):
 
 ```bash
-# Run the interactive demo (no Redis needed)
+git clone https://github.com/cloud-ecosystem-security/SedanDelivery.git
+cd SedanDelivery
 cargo run -p gql-cli
-
-# Run all tests
-cargo test
-
-# Run the openCypher TCK scenarios
-cargo test --test tck
 ```
 
-## Pre-commit Hooks
+You'll see a graph created with people and companies, queries executed, and results printed. No Redis, no cloud account, no config.
 
-This repo ships with pre-commit hooks that enforce zero-warning policy.
+**Step 2** — Create your first graph (2 minutes):
 
-**Using [pre-commit](https://pre-commit.com):**
+Once the demo finishes, the engine is ready. Here's what it looks like from a Redis client:
 
 ```bash
-pip install pre-commit
-pre-commit install
+# Connect to a running SedanDelivery instance (local or deployed)
+redis-cli -h localhost -p 6379
+
+# Create a graph and add data
+GQL.CREATE-GRAPH social
+GQL.MUTATE social "CREATE (a:Person {name: 'Alice', age: 30})-[:KNOWS]->(b:Person {name: 'Bob', age: 25})"
+GQL.MUTATE social "CREATE (c:Company {name: 'Acme'})"
+GQL.MUTATE social "MATCH (a:Person {name: 'Alice'}), (c:Company {name: 'Acme'}) CREATE (a)-[:WORKS_AT]->(c)"
+
+# Query it
+GQL.QUERY social "MATCH (p:Person)-[:KNOWS]->(f) RETURN p.name, f.name"
+GQL.QUERY social "MATCH (p:Person)-[:WORKS_AT]->(c:Company) RETURN p.name, c.name"
+GQL.QUERY social "MATCH (p:Person) RETURN avg(p.age) AS avg_age, count(p) AS total"
 ```
 
-**Using the native git hook directly:**
+**Step 3** — Deploy to Azure (5 minutes):
+
+## Deploy to Azure
+
+Deploy your own SedanDelivery instance in under 5 minutes:
 
 ```bash
-git config core.hooksPath .githooks
+# 1. Fork and clone the repo
+gh repo fork cloud-ecosystem-security/SedanDelivery --clone
+
+# 2. Set up Azure credentials (one-time)
+az login
+SUBSCRIPTION_ID=$(az account show --query id -o tsv)
+SP=$(az ad sp create-for-rbac --name sedan-deploy --role Contributor \
+  --scopes "subscriptions/${SUBSCRIPTION_ID}" --output json)
+
+# 3. Configure GitHub secrets
+gh secret set AZURE_CLIENT_ID     --body "$(echo $SP | jq -r .appId)"
+gh secret set AZURE_CLIENT_SECRET --body "$(echo $SP | jq -r .password)"
+gh secret set AZURE_TENANT_ID     --body "$(echo $SP | jq -r .tenant)"
+gh secret set AZURE_SUBSCRIPTION_ID --body "${SUBSCRIPTION_ID}"
+
+# 4. Deploy (triggers the workflow manually)
+gh workflow run deploy.yml -f environment=branch
+
+# 5. Or: create a PR and add the 'deploy' label
+gh pr create --title "my feature" --body "test deploy"
+gh pr edit --add-label deploy
 ```
 
-The hooks run: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test -p gql-core --lib`, and a check that no `PLAN.md` exists in the repo root.
+A bot comment will post your Redis endpoint when the deployment completes (~8 minutes).
 
-## Why
+## Use it in your app
 
-- [FalkorDB](https://github.com/FalkorDB/FalkorDB) is SSPL v1 — a licensing risk for Microsoft products offered as services.
-- [RedisGraph](https://github.com/RedisGraph/RedisGraph) is EOL (archived Jan 2024).
-- We need a graph database that: shares state across replicas (no single-writer constraint), cold-starts in <1s, and runs under MIT/Apache-2.0.
-
-## What
-
-A Valkey/Redis module (`gql-module.so`) exposing:
+Connect with any Redis client. The module exposes these commands:
 
 ```
-GQL.QUERY  <graph> "<cypher query>"
-GQL.MUTATE <graph> "<cypher mutation>"
-GQL.EXPLAIN <graph> "<query>"
-GQL.CREATE-GRAPH <graph>
-GQL.DELETE-GRAPH <graph>
-GQL.LIST-GRAPHS
+GQL.CREATE-GRAPH <name>                    Create a named graph
+GQL.MUTATE  <graph> "<cypher>"             Create/update/delete data
+GQL.QUERY   <graph> "<cypher>"             Read data
+GQL.EXPLAIN <graph> "<cypher>"             Show the query plan
+GQL.DELETE-GRAPH <name>                    Drop a graph
+GQL.LIST-GRAPHS                            List all graphs
 ```
 
-Full openCypher + ISO 20030 GQL compliance target. Wire-protocol-compatible with FalkorDB for `.NET` clients using `StackExchange.Redis`.
+### Python example
 
-## Architecture
+```python
+import redis
 
-```
-.NET replicas → StackExchange.Redis → GQL.QUERY → Valkey/Redis Module (Rust)
-                                                       ├── Hand-written lexer (zero-copy)
-                                                       ├── Recursive descent parser
-                                                       ├── Query planner (operator tree)
-                                                       ├── Executor (11 operators)
-                                                       └── GraphStore trait
-                                                           ├── InMemoryGraphStore (tests)
-                                                           └── RedisGraphStore (Phase 3)
-```
+r = redis.Redis(host="your-endpoint.azurecontainerapps.io", port=6379,
+                password="your-valkey-password")
 
-See [PLAN.md](PLAN.md) for the full architecture, storage model, and implementation roadmap.
+r.execute_command("GQL.CREATE-GRAPH", "social")
+r.execute_command("GQL.MUTATE", "social",
+    "CREATE (a:Person {name: 'Alice'})-[:KNOWS]->(b:Person {name: 'Bob'})")
 
-## Getting Started
-
-→ **[docs/TUTORIAL.md](docs/TUTORIAL.md)** — usage guide with code examples
-
-The tutorial covers:
-- Creating graphs and adding nodes/edges
-- Querying with the full pipeline (parse → plan → execute)
-- Traversal, property predicates, aggregation
-- Execution budgets (DoS prevention)
-- Property indexes
-- DETACH DELETE
-
-## Graph Visualizer
-
-An interactive web UI for exploring, editing, and querying SedanDelivery graphs.
-
-```bash
-# Local demo (one command):
-cargo run --release -p gql-api &
-./scripts/seed-demo-graph.sh
-cd sedan-graph-ui/src/sedan-web && VITE_PROXY_TARGET=http://localhost:3001 VITE_PROXY_REWRITE=true npm run dev
-# Open http://localhost:5173, select "supply-chain" graph
-
-# Azure deployment:
-gh workflow run "Deploy SedanDelivery" --field environment=production
+result = r.execute_command("GQL.QUERY", "social",
+    "MATCH (n:Person)-[:KNOWS]->(m) RETURN n.name, m.name")
+print(result)  # JSON rows
 ```
 
-Features: WebGL graph canvas (Sigma.js), Cypher query editor (Monaco), search, schema view, node/edge CRUD, export/import, dark mode UI.
+### .NET example (StackExchange.Redis)
 
-See [docs/graph-visualizer/](docs/graph-visualizer/) for full documentation and [tutorial](docs/graph-visualizer/tutorial.md).
+```csharp
+var redis = ConnectionMultiplexer.Connect("your-endpoint:6379,password=...");
+var db = redis.GetDatabase();
 
-## Workspace Layout
+db.Execute("GQL.CREATE-GRAPH", "social");
+db.Execute("GQL.MUTATE", "social",
+    "CREATE (a:Person {name: 'Alice'})-[:KNOWS]->(b:Person {name: 'Bob'})");
 
-```
-gql-core/          Pure library — AST, parser, planner, executor, GraphStore trait
-                   ├── src/parser/   — hand-written lexer + recursive descent parser
-                   ├── src/planner/  — QueryPlanner (AST → Operator tree)
-                   ├── src/executor/ — QueryExecutor (11 operators)
-                   ├── src/storage/  — GraphStore trait + InMemoryGraphStore
-                   ├── tests/        — integration tests + openCypher TCK runner
-                   └── benches/      — criterion benchmarks
-
-gql-api/           HTTP REST API (Axum) wrapping gql-core for the Graph Visualizer
-gql-redis-store/   Valkey/Redis-backed GraphStore (Phase 3)
-gql-module/        Valkey module entry point (compiles to .so) (Phase 3)
-gql-cli/           Interactive demo: cargo run -p gql-cli
-sedan-graph-ui/    .NET Aspire + React SPA — Graph Visualizer web application
-scripts/           Deployment and demo scripts (seed-demo-graph.sh)
-docs/              Architecture docs, ADRs, tutorials, API reference
+var result = db.Execute("GQL.QUERY", "social",
+    "MATCH (n:Person) RETURN n.name, n.age");
 ```
 
-## Test Results
+### Cypher query examples
+
+```cypher
+-- Create nodes with labels and properties
+CREATE (n:Person {name: 'Alice', age: 30})
+CREATE (n:Company {name: 'Acme', founded: 2020})
+
+-- Create relationships
+MATCH (a:Person {name: 'Alice'}), (c:Company {name: 'Acme'})
+CREATE (a)-[:WORKS_AT {since: 2022}]->(c)
+
+-- Query with patterns
+MATCH (p:Person)-[:WORKS_AT]->(c:Company)
+WHERE p.age > 25
+RETURN p.name, c.name
+
+-- Aggregation
+MATCH (p:Person)
+RETURN avg(p.age) AS avg_age, count(p) AS total
+
+-- Variable-length paths
+MATCH (a:Person)-[:KNOWS*1..3]->(b:Person)
+RETURN a.name, b.name
+```
+
+## Deployment details
+
+| Trigger | Environment | What happens |
+|---------|-------------|-------------|
+| PR + `deploy` label | Isolated per-branch | Provisions ACR + Container Apps + persistent storage |
+| Push to `main` | Production | Updates the production deployment |
+| `workflow_dispatch` | Manual | Deploy any branch on demand |
+
+Each environment gets its own resource group (`rg-sd2-{name}`) with:
+- Azure Container Registry (builds the Rust module)
+- Container Apps Environment with Azure Files volume (data persists across restarts)
+- Valkey 8.1 container with the GQL module loaded and authentication enabled
+
+Cleanup: remove the `deploy` label, or run the **Undeploy** workflow.
+
+## Documentation
+
+- [Tutorial](docs/TUTORIAL.md) — full usage guide with code examples
+- [Docs site](https://cloud-ecosystem-security.github.io/SedanDelivery/) — deployment, storage backends, environment variables
+- [Research](docs/RESEARCH.md) — security analysis
+
+## Tests
 
 ```
-cargo test -p gql-core --lib        308 tests pass (0 failures)
-cargo test -p gql-core --test end_to_end   10 tests pass (0 failures)
-cargo test --test tck               3225/3806 TCK scenarios pass (84.5%)
-cargo clippy -p gql-core -- -D warnings    0 errors, 0 warnings
+cargo test -p gql-core --lib       325+ unit tests
+cargo test --test tck              3150/3806 openCypher TCK scenarios (82.8%)
 ```
-
-**Current TCK pass rate**: 3225/3806 (84.5%) — up from 82.7% baseline.
-
-Supported aggregate functions: `count()`, `sum()`, `avg()`, `min()`, `max()`,
-`collect()`, `stdev()`, `stdevp()`, `percentileDisc()`, `percentileCont()`.
-
-## Security Properties
-
-All queries require an `ExecutionBudget` (wall-clock deadline + row limit). This prevents
-unbounded `MATCH (n)-[*]->(m)` traversals from hanging the process.
-
-Graph names are validated against a whitelist (`[a-zA-Z0-9_.-]`, max 64 chars) to prevent
-Redis key namespace injection and cluster hash-tag corruption.
-
-Node/edge IDs use `u64` (not `u32`) to prevent silent overflow at 4.29 billion entities.
-
-See [docs/RESEARCH.md](docs/RESEARCH.md) for the full security analysis.
 
 ## License
 
-MIT OR Apache-2.0. **No SSPL. No GPL. No LGPL.**
-
-All dependencies are MIT or Apache-2.0. See [PLAN.md §11](PLAN.md#11-dependency-inventory) for the full inventory.
-
-## Related
-
-- [cybergym#431](https://github.com/cloud-ecosystem-security/cybergym/issues/431) — originating issue
-- [openCypher TCK](https://github.com/opencypher/openCypher/tree/main/tck) — conformance test suite
-- [PLAN.md](PLAN.md) — full implementation plan
-- [docs/TUTORIAL.md](docs/TUTORIAL.md) — usage tutorial
+MIT OR Apache-2.0

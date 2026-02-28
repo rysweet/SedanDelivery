@@ -12,12 +12,6 @@ A Rust GQL/Cypher query engine — a clean-room, MIT/Apache-2.0-licensed replace
 - [Tutorial](TUTORIAL) — Getting started with SedanDelivery
 - [Research Notes](RESEARCH) — Security analysis and design rationale
 
-## Architecture Decision Records
-
-- [ADR-001: Storage Model](ADR-001-storage-model) — Redis-native storage design
-- [ADR-002: Full GQL Compliance](ADR-002-full-gql-compliance) — Why we target the full spec
-- [ADR-003: Parser Strategy](ADR-003-parser-strategy) — Hand-written recursive descent
-
 ## Deployment
 
 SedanDelivery deploys to Azure Container Apps via GitHub Actions.
@@ -65,6 +59,25 @@ SedanDelivery supports multiple storage backends via the `GraphStore` trait:
 | `GQL_FABRIC_CLIENT_SECRET` | — | Service principal secret for Fabric |
 | `VALKEY_PASSWORD` | — | Password for Valkey authentication (injected at runtime) |
 
+## Fabric Graph Replication
+
+When `ENABLE_FABRIC=true` is set in the deploy workflow, SedanDelivery provisions a
+[Microsoft Fabric Graph Database](https://learn.microsoft.com/fabric/) workspace alongside
+the Container App. The `FanoutStore` backend writes to both the local Valkey instance and
+the Fabric Graph Database simultaneously, giving you:
+
+- **Low-latency reads** from the co-located Valkey container
+- **Durable, queryable graph** in Fabric for analytics and cross-service joins
+- **Automatic provisioning** via `scripts/provision-fabric.sh` (same pattern as cybergym)
+
+The Fabric endpoint and credentials are injected as Container App environment variables
+(`GQL_FABRIC_ENDPOINT`, `GQL_FABRIC_TENANT_ID`, `GQL_FABRIC_CLIENT_ID`) with the client
+secret stored as a Container App secret.
+
 ## Source Code
 
 - [GitHub Repository](https://github.com/cloud-ecosystem-security/SedanDelivery)
+
+## Internal
+
+- [Design decisions](https://github.com/cloud-ecosystem-security/SedanDelivery/tree/main/docs) (ADRs)

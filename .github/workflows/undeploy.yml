@@ -59,14 +59,19 @@ jobs:
             --output none
           az account set --subscription "${{ env.AZURE_SUBSCRIPTION_ID }}"
 
-      - name: Delete resource group
+      - name: Delete resource group and Fabric workspace
         env:
           INPUT_RG: ${{ inputs.resource_group }}
           INPUT_DRY_RUN: ${{ inputs.dry_run }}
+          CLEANUP_TENANT_ID: ${{ env.AZURE_TENANT_ID }}
+          CLEANUP_CLIENT_ID: ${{ env.AZURE_CLIENT_ID }}
+          CLEANUP_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
         run: |
-          # Use env var instead of direct expression interpolation (shell injection fix)
           RG="${INPUT_RG}"
           DRY_RUN="${INPUT_DRY_RUN}"
+
+          # Extract env name from resource group (rg-sd2-{envname})
+          ENV_NAME="${RG#rg-sd2-}"
 
           if az group show --name "${RG}" >/dev/null 2>&1; then
             RESOURCE_COUNT=$(az resource list --resource-group "${RG}" --query "length(@)" -o tsv)
@@ -77,10 +82,38 @@ jobs:
             else
               echo "🗑️  Deleting resource group: ${RG}..."
               az group delete --name "${RG}" --yes --no-wait
-              echo "✅ Deletion initiated (Azure will complete in background)"
+              echo "✅ Resource group deletion initiated"
             fi
           else
             echo "ℹ️  Resource group ${RG} does not exist (already deleted)"
+          fi
+
+          # Clean up Fabric workspace if it exists
+          FABRIC_WS_NAME="SedanDelivery-${ENV_NAME}"
+          FABRIC_TOKEN=$(curl -s -X POST \
+            "https://login.microsoftonline.com/${CLEANUP_TENANT_ID}/oauth2/v2.0/token" \
+            -d "grant_type=client_credentials&client_id=${CLEANUP_CLIENT_ID}&client_secret=${CLEANUP_CLIENT_SECRET}&scope=https%3A%2F%2Fapi.fabric.microsoft.com%2F.default" \
+            | python3 -c "import json,sys; print(json.load(sys.stdin).get('access_token',''))" 2>/dev/null || echo "")
+
+          if [[ -n "$FABRIC_TOKEN" && "$FABRIC_TOKEN" != "" ]]; then
+            FABRIC_WS_ID=$(curl -s -H "Authorization: Bearer ${FABRIC_TOKEN}" \
+              "https://api.fabric.microsoft.com/v1/workspaces" \
+              | python3 -c "import json,sys; data=json.load(sys.stdin); [print(ws['id']) or sys.exit(0) for ws in data.get('value',[]) if ws['displayName']=='${FABRIC_WS_NAME}']; print('')" 2>/dev/null || echo "")
+
+            if [[ -n "$FABRIC_WS_ID" ]]; then
+              if [[ "$DRY_RUN" == "true" ]]; then
+                echo "🔍 [DRY RUN] Would delete Fabric workspace: ${FABRIC_WS_NAME} (${FABRIC_WS_ID})"
+              else
+                echo "🗑️  Deleting Fabric workspace: ${FABRIC_WS_NAME}..."
+                curl -s -X DELETE -H "Authorization: Bearer ${FABRIC_TOKEN}" \
+                  "https://api.fabric.microsoft.com/v1/workspaces/${FABRIC_WS_ID}" || true
+                echo "✅ Fabric workspace deletion initiated"
+              fi
+            else
+              echo "ℹ️  No Fabric workspace '${FABRIC_WS_NAME}' found"
+            fi
+          else
+            echo "ℹ️  Could not authenticate to Fabric API — skipping workspace cleanup"
           fi
 
   list-and-cleanup-orphaned:
