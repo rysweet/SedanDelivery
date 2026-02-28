@@ -4,8 +4,9 @@ const BOLT_MAGIC: [u8; 4] = [0x60, 0x60, 0xB0, 0x17];
 /// The basic message flow (HELLO, RUN, PULL, RESET, GOODBYE) is identical
 /// across all Bolt 4.x versions. We accept any 4.x version proposed by the
 /// client, preferring the highest minor version offered.
-const SUPPORTED_MAJOR: u8 = 4;
-const SUPPORTED_MINOR_MAX: u8 = 4;
+const SUPPORTED_VERSIONS: &[(u8, u8)] = &[
+    (4, 4), // Bolt 4.0 through 4.4
+];
 
 #[derive(Debug, thiserror::Error)]
 pub enum HandshakeError {
@@ -38,9 +39,8 @@ where
     // The range field indicates the client supports minor versions
     // from (minor - range) through minor (inclusive).
     //
-    // We accept ANY Bolt 4.x version (0..=SUPPORTED_MINOR_MAX).  When the
-    // client proposes a range, we agree on the highest version we both
-    // support: min(client_minor, SUPPORTED_MINOR_MAX).
+    // We try each client proposal against our supported versions,
+    // preferring the first match (client proposals are highest-first).
     let mut agreed: Option<(u8, u8)> = None;
     for i in 0..4 {
         let offset = i * 4;
@@ -51,14 +51,17 @@ where
         if major == 0 && minor == 0 {
             continue;
         }
-        if major == SUPPORTED_MAJOR {
-            let min_minor = minor.saturating_sub(range);
-            // Accept if any version in the client's range overlaps with ours (0..=SUPPORTED_MINOR_MAX)
-            if min_minor <= SUPPORTED_MINOR_MAX {
-                let agreed_minor = minor.min(SUPPORTED_MINOR_MAX);
+        let min_minor = if range > minor { 0 } else { minor - range };
+        // Check against each supported version
+        for &(sup_major, sup_minor_max) in SUPPORTED_VERSIONS {
+            if major == sup_major && min_minor <= sup_minor_max {
+                let agreed_minor = minor.min(sup_minor_max);
                 agreed = Some((major, agreed_minor));
                 break;
             }
+        }
+        if agreed.is_some() {
+            break;
         }
     }
 

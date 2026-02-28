@@ -24,6 +24,11 @@ pub fn value_to_json(v: &Value) -> Json {
         Value::Str(s) => Json::String(s.to_string()),
         Value::Date(d) => Json::String(d.to_string()),
         Value::LocalTime(t) => Json::String(t.to_string()),
+        Value::Time(t, offset) => {
+            let h = offset / 3600;
+            let m = (offset.abs() % 3600) / 60;
+            Json::String(format!("{}{:+03}:{:02}", t, h, m))
+        }
         Value::LocalDateTime(dt) => Json::String(dt.to_string()),
         Value::DateTime(dt) => Json::String(dt.to_string()),
         Value::Duration(sp) => Json::String(gql_core::types::value::format_cypher_duration(sp)),

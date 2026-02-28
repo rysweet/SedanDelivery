@@ -9,7 +9,7 @@ use thiserror::Error;
 /// - `Storage`   → "ERR" or "WRONGTYPE"
 /// - `Type`      → "WRONGTYPE"
 /// - `Timeout`   → "ERR timeout"
-#[derive(Debug, Error)]
+#[derive(Debug, Clone, Error)]
 pub enum GqlError {
     #[error("parse error: {0}")]
     Parse(#[from] ParseError),
@@ -29,7 +29,7 @@ pub enum GqlError {
 
 // ── Parse errors ─────────────────────────────────────────────────────────────
 
-#[derive(Debug, Error)]
+#[derive(Debug, Clone, Error)]
 pub enum ParseError {
     #[error("syntax error at byte {offset}: expected {expected}, found {found}")]
     Syntax {
@@ -59,7 +59,7 @@ pub enum ParseError {
 
 // ── Planning errors ───────────────────────────────────────────────────────────
 
-#[derive(Debug, Error)]
+#[derive(Debug, Clone, Error)]
 pub enum PlanError {
     #[error("undefined variable '{name}' at position {offset}")]
     UndefinedVariable { name: String, offset: usize },
@@ -88,7 +88,7 @@ pub enum PlanError {
 
 // ── Execution errors ──────────────────────────────────────────────────────────
 
-#[derive(Debug, Error)]
+#[derive(Debug, Clone, Error)]
 pub enum ExecutionError {
     #[error("type mismatch: expected {expected}, got {actual}")]
     TypeMismatch { expected: String, actual: String },
@@ -124,7 +124,7 @@ pub enum ExecutionError {
 
 // ── Storage errors ────────────────────────────────────────────────────────────
 
-#[derive(Debug, Error)]
+#[derive(Debug, Clone, Error)]
 pub enum StorageError {
     #[error("graph '{name}' not found")]
     GraphNotFound { name: String },
@@ -156,7 +156,7 @@ pub enum StorageError {
 
 // ── Type errors ───────────────────────────────────────────────────────────────
 
-#[derive(Debug, Error)]
+#[derive(Debug, Clone, Error)]
 pub enum TypeError {
     #[error("cannot coerce {from} to {to}")]
     CannotCoerce { from: String, to: String },

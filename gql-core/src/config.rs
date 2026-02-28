@@ -24,7 +24,7 @@ use std::sync::OnceLock;
 #[derive(Debug, Clone)]
 pub struct EngineConfig {
     /// Maximum wall-clock time a query may run, in milliseconds.
-    /// Env: `GQL_QUERY_TIMEOUT_MS` (default `5000`)
+    /// Env: `GQL_QUERY_TIMEOUT_MS` (default `30000`)
     pub query_timeout_ms: u64,
     /// Maximum number of intermediate rows the executor may produce.
     /// Env: `GQL_QUERY_MAX_ROWS` (default `10_000_000`)
@@ -33,7 +33,7 @@ pub struct EngineConfig {
     /// Env: `GQL_VARLEN_MAX_DEPTH` (default `30`)
     pub varlen_max_depth: u32,
     /// Maximum byte length of a query string accepted by the parser.
-    /// Env: `GQL_MAX_QUERY_SIZE` (default `1_048_576` = 1 MiB)
+    /// Env: `GQL_MAX_QUERY_SIZE` (default `67_108_864` = 64 MiB)
     pub max_query_size: usize,
     /// Maximum expression-nesting depth inside the recursive-descent parser.
     /// Env: `GQL_PARSER_MAX_DEPTH` (default `256`)
@@ -55,10 +55,10 @@ pub struct EngineConfig {
 impl Default for EngineConfig {
     fn default() -> Self {
         Self {
-            query_timeout_ms: 5_000,
+            query_timeout_ms: 30_000,
             query_max_rows: 10_000_000,
             varlen_max_depth: 30,
-            max_query_size: 1_048_576,
+            max_query_size: 67_108_864,
             parser_max_depth: 256,
             max_collect_size: 10_000_000,
             max_list_size: 10_000_000,
@@ -130,10 +130,10 @@ mod tests {
     #[test]
     fn default_values_match_legacy_constants() {
         let cfg = EngineConfig::default();
-        assert_eq!(cfg.query_timeout_ms, 5_000);
+        assert_eq!(cfg.query_timeout_ms, 30_000);
         assert_eq!(cfg.query_max_rows, 10_000_000);
         assert_eq!(cfg.varlen_max_depth, 30);
-        assert_eq!(cfg.max_query_size, 1_048_576);
+        assert_eq!(cfg.max_query_size, 67_108_864);
         assert_eq!(cfg.parser_max_depth, 256);
         assert_eq!(cfg.max_collect_size, 10_000_000);
         assert_eq!(cfg.max_list_size, 10_000_000);

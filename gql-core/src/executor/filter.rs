@@ -126,6 +126,7 @@ pub fn eval_expr<'r>(expr: &Expr, row: &Row<'r>) -> Result<Value, GqlError> {
                 // Temporal property access
                 Value::Date(_)
                 | Value::LocalTime(_)
+                | Value::Time(_, _)
                 | Value::LocalDateTime(_)
                 | Value::DateTime(_)
                 | Value::Duration(_) => temporal_property_access(&obj, key.as_str()),
@@ -509,6 +510,7 @@ fn eval_binary<'r>(
             (
                 ref temporal @ (Value::Date(_)
                 | Value::LocalTime(_)
+                | Value::Time(_, _)
                 | Value::LocalDateTime(_)
                 | Value::DateTime(_)),
                 Value::Duration(ref dur),
@@ -518,6 +520,7 @@ fn eval_binary<'r>(
                 Value::Duration(ref dur),
                 ref temporal @ (Value::Date(_)
                 | Value::LocalTime(_)
+                | Value::Time(_, _)
                 | Value::LocalDateTime(_)
                 | Value::DateTime(_)),
             ) => temporal_add_duration(temporal, dur, false),
@@ -557,6 +560,7 @@ fn eval_binary<'r>(
             (
                 ref temporal @ (Value::Date(_)
                 | Value::LocalTime(_)
+                | Value::Time(_, _)
                 | Value::LocalDateTime(_)
                 | Value::DateTime(_)),
                 Value::Duration(ref dur),
@@ -1230,6 +1234,7 @@ fn builtin_tostring(vals: Vec<Value>) -> Result<Value, GqlError> {
         }
         Value::Date(_)
         | Value::LocalTime(_)
+        | Value::Time(_, _)
         | Value::LocalDateTime(_)
         | Value::DateTime(_)
         | Value::Duration(_) => Ok(Value::Str(vals[0].to_string().into_boxed_str())),
@@ -1741,6 +1746,27 @@ pub fn temporal_property_access(val: &Value, key: &str) -> Result<Value, GqlErro
             "nanosecond" => Ok(Value::Int(t.subsec_nanosecond() as i64)),
             _ => Ok(Value::Null),
         },
+        Value::Time(t, offset_secs) => match key {
+            "hour" => Ok(Value::Int(t.hour() as i64)),
+            "minute" => Ok(Value::Int(t.minute() as i64)),
+            "second" => Ok(Value::Int(t.second() as i64)),
+            "millisecond" => Ok(Value::Int((t.subsec_nanosecond() / 1_000_000) as i64)),
+            "microsecond" => Ok(Value::Int((t.subsec_nanosecond() / 1_000) as i64)),
+            "nanosecond" => Ok(Value::Int(t.subsec_nanosecond() as i64)),
+            "offset" => {
+                let h = offset_secs / 3600;
+                let m = (offset_secs.abs() % 3600) / 60;
+                Ok(Value::Str(format!("{:+03}:{:02}", h, m).into_boxed_str()))
+            }
+            "offsetMinutes" => Ok(Value::Int((*offset_secs / 60) as i64)),
+            "offsetSeconds" => Ok(Value::Int(*offset_secs as i64)),
+            "timezone" => {
+                let h = offset_secs / 3600;
+                let m = (offset_secs.abs() % 3600) / 60;
+                Ok(Value::Str(format!("{:+03}:{:02}", h, m).into_boxed_str()))
+            }
+            _ => Ok(Value::Null),
+        },
         Value::LocalDateTime(dt) => match key {
             "year" => Ok(Value::Int(dt.year() as i64)),
             "month" => Ok(Value::Int(dt.month() as i64)),
@@ -1789,7 +1815,18 @@ pub fn temporal_property_access(val: &Value, key: &str) -> Result<Value, GqlErro
             "nanosecond" => Ok(Value::Int(zdt.subsec_nanosecond() as i64)),
             "timezone" => {
                 if let Some(iana) = zdt.time_zone().iana_name() {
-                    Ok(Value::Str(iana.to_string().into_boxed_str()))
+                    // The IANA "Factory" timezone is valid in jiff but not in
+                    // common timezone libraries (pytz). Treat it as a fixed
+                    // offset to avoid interop issues.
+                    if iana == "Factory" {
+                        let off = zdt.offset();
+                        let total_secs = off.seconds();
+                        let h = total_secs / 3600;
+                        let m = (total_secs.abs() % 3600) / 60;
+                        Ok(Value::Str(format!("{:+03}:{:02}", h, m).into_boxed_str()))
+                    } else {
+                        Ok(Value::Str(iana.to_string().into_boxed_str()))
+                    }
                 } else {
                     // Fixed offset: format as "+HH:MM"
                     let off = zdt.offset();
@@ -2622,6 +2659,7 @@ fn extract_base_time(
 ) -> Result<Option<jiff::civil::Time>, GqlError> {
     match m.get("time") {
         Some(Value::LocalTime(t)) => Ok(Some(*t)),
+        Some(Value::Time(t, _)) => Ok(Some(*t)),
         Some(Value::LocalDateTime(dt)) => Ok(Some(
             jiff::civil::Time::new(dt.hour(), dt.minute(), dt.second(), dt.subsec_nanosecond())
                 .map_err(|e| temporal_parse_error("time", e))?,
@@ -2642,18 +2680,20 @@ fn extract_base_time(
     }
 }
 
+/// Convert a jiff::Zoned (at epoch date) to Value::Time by extracting time + offset.
+fn zoned_to_time_value(z: &jiff::Zoned) -> Value {
+    let dt = jiff::civil::DateTime::from(z);
+    let t = dt.time();
+    let offset_secs = z.offset().seconds();
+    Value::Time(t, offset_secs)
+}
+
 fn eval_time_constructor(vals: &[Value]) -> Result<Value, GqlError> {
     if vals.is_empty() {
         let now = get_query_now();
-        // time() returns a ZonedTime stored as a DateTime with epoch date 1970-01-01
-        let tz = now.time_zone().clone();
         let t = jiff::civil::Time::from(&now);
-        let epoch_date = jiff::civil::Date::new(1970, 1, 1).unwrap();
-        return epoch_date
-            .to_datetime(t)
-            .to_zoned(tz)
-            .map(|z| Value::DateTime(Box::new(z)))
-            .map_err(|e| temporal_parse_error("time", e));
+        let offset_secs = now.offset().seconds();
+        return Ok(Value::Time(t, offset_secs));
     }
     if vals.len() != 1 {
         return Err(GqlError::Execution(ExecutionError::TypeMismatch {
@@ -2673,22 +2713,22 @@ fn eval_time_constructor(vals: &[Value]) -> Result<Value, GqlError> {
                     .parse::<jiff::civil::Time>()
                     .map_err(|e| temporal_parse_error("time", e))?
             };
-            let epoch_dt = jiff::civil::Date::new(1970, 1, 1).unwrap().to_datetime(t);
             // time() always returns a ZonedTime; use explicit offset if present, else UTC
             let tz = extract_offset_from_string(s).unwrap_or(jiff::tz::TimeZone::UTC);
+            let epoch_dt = jiff::civil::Date::new(1970, 1, 1).unwrap().to_datetime(t);
             let zoned = epoch_dt
                 .to_zoned(tz)
                 .map_err(|e| temporal_parse_error("time", e))?;
-            Ok(Value::DateTime(Box::new(zoned)))
+            Ok(zoned_to_time_value(&zoned))
         }
         // Accept temporal values directly — extract time with timezone
         // time() on LocalTime returns a ZonedTime (UTC by default per Cypher spec)
         Value::LocalTime(t) => {
-            let epoch_dt = jiff::civil::Date::new(1970, 1, 1).unwrap().to_datetime(*t);
-            let zoned = epoch_dt
-                .to_zoned(jiff::tz::TimeZone::UTC)
-                .map_err(|e| temporal_parse_error("time", e))?;
-            Ok(Value::DateTime(Box::new(zoned)))
+            Ok(Value::Time(*t, 0)) // UTC offset = 0
+        }
+        Value::Time(t, offset) => {
+            // time() on a Time just returns it as-is
+            Ok(Value::Time(*t, *offset))
         }
         Value::DateTime(zdt) => {
             // time() on a DateTime preserves the timezone as a zoned time
@@ -2696,22 +2736,15 @@ fn eval_time_constructor(vals: &[Value]) -> Result<Value, GqlError> {
             let t =
                 jiff::civil::Time::new(dt.hour(), dt.minute(), dt.second(), dt.subsec_nanosecond())
                     .map_err(|e| temporal_parse_error("time", e))?;
-            let epoch_dt = jiff::civil::Date::new(1970, 1, 1).unwrap().to_datetime(t);
-            let zoned = epoch_dt
-                .to_zoned(zdt.time_zone().clone())
-                .map_err(|e| temporal_parse_error("time", e))?;
-            Ok(Value::DateTime(Box::new(zoned)))
+            let offset_secs = zdt.offset().seconds();
+            Ok(Value::Time(t, offset_secs))
         }
         Value::LocalDateTime(dt) => {
-            // time(LocalDateTime) → ZonedTime with UTC timezone
+            // time(LocalDateTime) -> ZonedTime with UTC timezone
             let t =
                 jiff::civil::Time::new(dt.hour(), dt.minute(), dt.second(), dt.subsec_nanosecond())
                     .map_err(|e| temporal_parse_error("time", e))?;
-            let epoch_dt = jiff::civil::Date::new(1970, 1, 1).unwrap().to_datetime(t);
-            let zoned = epoch_dt
-                .to_zoned(jiff::tz::TimeZone::UTC)
-                .map_err(|e| temporal_parse_error("time", e))?;
-            Ok(Value::DateTime(Box::new(zoned)))
+            Ok(Value::Time(t, 0)) // UTC offset = 0
         }
         Value::Map(m) => {
             let base_time = extract_base_time(m)?;
@@ -2754,9 +2787,12 @@ fn eval_time_constructor(vals: &[Value]) -> Result<Value, GqlError> {
             let t = jiff::civil::Time::new(hour, minute, second, nanosecond)
                 .map_err(|e| temporal_parse_error("time", e))?;
             let epoch_dt = jiff::civil::Date::new(1970, 1, 1).unwrap().to_datetime(t);
-            // Get base timezone if base is a ZonedTime
+            // Get base timezone if base is a ZonedTime (could be DateTime or Time)
             let base_tz = if let Some(Value::DateTime(base_zdt)) = m.get("time") {
                 Some(base_zdt.time_zone().clone())
+            } else if let Some(Value::Time(_, offset)) = m.get("time") {
+                let off = jiff::tz::Offset::from_seconds(*offset).unwrap_or(jiff::tz::Offset::UTC);
+                Some(jiff::tz::TimeZone::fixed(off))
             } else {
                 None
             };
@@ -2770,28 +2806,11 @@ fn eval_time_constructor(vals: &[Value]) -> Result<Value, GqlError> {
                 jiff::tz::TimeZone::UTC
             };
 
-            // Create zoned time: apply field overrides in the base timezone, then convert to target
-            if let Some(base_tz_val) = base_tz {
-                if tz_name.is_some() {
-                    // Field overrides + timezone change: apply overrides in base TZ, then rebase
-                    let with_base_tz = epoch_dt
-                        .to_zoned(base_tz_val)
-                        .map_err(|e| temporal_parse_error("time", e))?;
-                    let rebase_zoned = with_base_tz.with_time_zone(target_tz);
-                    Ok(Value::DateTime(Box::new(rebase_zoned)))
-                } else {
-                    // No timezone change: just apply field overrides, keep base TZ
-                    let zoned = epoch_dt
-                        .to_zoned(target_tz)
-                        .map_err(|e| temporal_parse_error("time", e))?;
-                    Ok(Value::DateTime(Box::new(zoned)))
-                }
-            } else {
-                let zoned = epoch_dt
-                    .to_zoned(target_tz)
-                    .map_err(|e| temporal_parse_error("time", e))?;
-                Ok(Value::DateTime(Box::new(zoned)))
-            }
+            // Create zoned time
+            let zoned = epoch_dt
+                .to_zoned(target_tz)
+                .map_err(|e| temporal_parse_error("time", e))?;
+            Ok(zoned_to_time_value(&zoned))
         }
         other => type_error("time", other),
     }
@@ -3599,6 +3618,7 @@ fn extract_date(val: &Value) -> Option<jiff::civil::Date> {
 fn extract_time(val: &Value) -> Option<jiff::civil::Time> {
     match val {
         Value::LocalTime(t) => Some(*t),
+        Value::Time(t, _) => Some(*t),
         Value::LocalDateTime(dt) => Some(dt.time()),
         Value::DateTime(zdt) => Some(jiff::civil::Time::from(&**zdt)),
         _ => None,
@@ -3608,6 +3628,10 @@ fn extract_time(val: &Value) -> Option<jiff::civil::Time> {
 /// Extract timezone from a temporal value, if available.
 fn extract_tz(val: &Value) -> Option<jiff::tz::TimeZone> {
     match val {
+        Value::Time(_, offset) => {
+            let off = jiff::tz::Offset::from_seconds(*offset).unwrap_or(jiff::tz::Offset::UTC);
+            Some(jiff::tz::TimeZone::fixed(off))
+        }
         Value::DateTime(zdt) => Some(zdt.time_zone().clone()),
         _ => None,
     }
@@ -3945,9 +3969,8 @@ fn eval_time_truncate(vals: &[Value]) -> Result<Value, GqlError> {
         jiff::tz::TimeZone::UTC
     };
 
-    // Build a zoned datetime at epoch date (1970-01-01) with the truncated time.
-    // Then we return as DateTime since `time` in Neo4j is zoned time.
-    let dt = jiff::civil::DateTime::new(
+    // Build a zoned time with the truncated time and determined offset.
+    let epoch_dt = jiff::civil::DateTime::new(
         1970,
         1,
         1,
@@ -3957,10 +3980,10 @@ fn eval_time_truncate(vals: &[Value]) -> Result<Value, GqlError> {
         result.subsec_nanosecond() as i32,
     )
     .map_err(|e| temporal_parse_error("time.truncate", e))?;
-    let zoned = dt
+    let zoned = epoch_dt
         .to_zoned(tz)
         .map_err(|e| temporal_parse_error("time.truncate", e))?;
-    Ok(Value::DateTime(Box::new(zoned)))
+    Ok(zoned_to_time_value(&zoned))
 }
 
 // ── Duration namespace function helpers ──────────────────────────────────────
@@ -3970,6 +3993,7 @@ fn temporal_to_civil_datetime(val: &Value) -> Option<jiff::civil::DateTime> {
     match val {
         Value::Date(d) => Some(d.to_datetime(jiff::civil::Time::midnight())),
         Value::LocalTime(t) => Some(jiff::civil::Date::new(0, 1, 1).unwrap().to_datetime(*t)),
+        Value::Time(t, _) => Some(jiff::civil::Date::new(1970, 1, 1).unwrap().to_datetime(*t)),
         Value::LocalDateTime(dt) => Some(*dt),
         Value::DateTime(zdt) => Some(jiff::civil::DateTime::from(&**zdt)),
         _ => None,
@@ -3981,6 +4005,7 @@ fn temporal_to_civil_datetime(val: &Value) -> Option<jiff::civil::DateTime> {
 fn is_time_only(val: &Value) -> bool {
     match val {
         Value::LocalTime(_) => true,
+        Value::Time(_, _) => true,
         // ZonedTime is stored as DateTime with epoch date 1970-01-01
         Value::DateTime(zdt) => {
             let d = jiff::civil::Date::from(zdt.as_ref());
@@ -4573,6 +4598,25 @@ pub fn temporal_add_duration(
             let result = jiff::civil::Time::new(h, m, s, ns)
                 .map_err(|e| temporal_parse_error("temporal arithmetic", e))?;
             Ok(Value::LocalTime(result))
+        }
+        Value::Time(t, offset) => {
+            // Same as LocalTime but preserves offset
+            let cur_nanos = t.hour() as i128 * 3_600_000_000_000
+                + t.minute() as i128 * 60_000_000_000
+                + t.second() as i128 * 1_000_000_000
+                + t.subsec_nanosecond() as i128;
+            let total = cur_nanos + nanos;
+            let day_nanos: i128 = 24 * 3_600_000_000_000;
+            let wrapped = ((total % day_nanos) + day_nanos) % day_nanos;
+            let h = (wrapped / 3_600_000_000_000) as i8;
+            let rem = wrapped % 3_600_000_000_000;
+            let m = (rem / 60_000_000_000) as i8;
+            let rem = rem % 60_000_000_000;
+            let s = (rem / 1_000_000_000) as i8;
+            let ns = (rem % 1_000_000_000) as i32;
+            let result = jiff::civil::Time::new(h, m, s, ns)
+                .map_err(|e| temporal_parse_error("temporal arithmetic", e))?;
+            Ok(Value::Time(result, *offset))
         }
         Value::LocalDateTime(dt) => {
             let dt1 = if months != 0 {

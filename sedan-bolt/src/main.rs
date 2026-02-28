@@ -27,17 +27,23 @@ async fn main() {
     // Single global bookmark counter shared across all sessions so that
     // bookmarks produced by one session are meaningful when passed to another.
     let global_bookmark = Arc::new(AtomicU64::new(0));
+    // Global write lock for transaction timeout contention.
+    // When a transaction performs a write, it acquires this lock. If another
+    // transaction with a tx_timeout tries to write while the lock is held,
+    // it will time out with Neo.TransientError.Transaction.LockClientStopped.
+    let write_lock = Arc::new(tokio::sync::Mutex::new(()));
 
     loop {
         let (stream, peer_addr) = listener.accept().await.expect("accept failed");
         let store = Arc::clone(&store);
         let conn_id = connection_counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let bookmark = Arc::clone(&global_bookmark);
+        let wl = Arc::clone(&write_lock);
 
         tokio::spawn(async move {
             tracing::info!(%peer_addr, conn_id, "new connection");
             if let Err(e) =
-                sedan_bolt::connection::session::run(stream, store, conn_id, bookmark).await
+                sedan_bolt::connection::session::run(stream, store, conn_id, bookmark, wl).await
             {
                 tracing::warn!(%peer_addr, conn_id, "session error: {}", e);
             }

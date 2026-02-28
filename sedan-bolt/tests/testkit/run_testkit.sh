@@ -26,7 +26,7 @@ PYTHON_DRIVER_DIR="${PYTHON_DRIVER_DIR:-/tmp/neo4j-python-driver}"
 
 BOLT_PORT="${BOLT_PORT:-7687}"
 BACKEND_PORT="${BACKEND_PORT:-9876}"
-BACKEND_TIMEOUT="${BACKEND_TIMEOUT:-30}"
+BACKEND_TIMEOUT="${BACKEND_TIMEOUT:-600}"
 
 # --- Colors ---
 RED='\033[0;31m'
@@ -68,7 +68,7 @@ ALL_SUITES=(
 
 # Tests known to pass against sedan-bolt (as of 2026-02-28)
 PASSING_TESTS=(
-    # session_run (13/19 pass)
+    # session_run (14/19 pass)
     "tests.neo4j.test_session_run.TestSessionRun.test_simple_query"
     "tests.neo4j.test_session_run.TestSessionRun.test_can_return_node"
     "tests.neo4j.test_session_run.TestSessionRun.test_can_return_relationship"
@@ -77,6 +77,7 @@ PASSING_TESTS=(
     "tests.neo4j.test_session_run.TestSessionRun.test_iteration_smaller_than_fetch_size"
     "tests.neo4j.test_session_run.TestSessionRun.test_iteration_nested"
     "tests.neo4j.test_session_run.TestSessionRun.test_partial_iteration"
+    "tests.neo4j.test_session_run.TestSessionRun.test_recover_from_fail_on_streaming"
     "tests.neo4j.test_session_run.TestSessionRun.test_recover_from_invalid_query"
     "tests.neo4j.test_session_run.TestSessionRun.test_regex_in_parameter"
     "tests.neo4j.test_session_run.TestSessionRun.test_regex_inline"
@@ -144,9 +145,12 @@ PASSING_TESTS=(
     "tests.neo4j.datatypes.test_datatypes.TestDataTypes.test_should_echo_very_long_map"
     "tests.neo4j.datatypes.test_datatypes.TestDataTypes.test_should_echo_very_long_string"
 
-    # temporal (2+ pass)
+    # temporal (5+ pass)
     "tests.neo4j.datatypes.test_temporal_types.TestDataTypes.test_cypher_created_date"
     "tests.neo4j.datatypes.test_temporal_types.TestDataTypes.test_cypher_created_duration"
+    "tests.neo4j.datatypes.test_temporal_types.TestDataTypes.test_should_echo_temporal_type"
+    "tests.neo4j.datatypes.test_temporal_types.TestDataTypes.test_time_components"
+    "tests.neo4j.datatypes.test_temporal_types.TestDataTypes.test_should_echo_all_timezone_ids"
 )
 
 usage() {

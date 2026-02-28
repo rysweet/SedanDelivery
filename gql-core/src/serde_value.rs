@@ -59,17 +59,38 @@ pub fn value_to_json(v: &Value) -> Result<JsonValue, StorageError> {
         // Temporal types: tagged strings for round-trip fidelity.
         Value::Date(d) => Ok(JsonValue::String(format!("__date:{d}"))),
         Value::LocalTime(t) => Ok(JsonValue::String(format!("__localtime:{t}"))),
+        Value::Time(t, offset) => {
+            // Serialize zoned time as a tagged datetime at epoch for round-trip.
+            let offset_obj =
+                jiff::tz::Offset::from_seconds(*offset).unwrap_or(jiff::tz::Offset::UTC);
+            let tz = jiff::tz::TimeZone::fixed(offset_obj);
+            let epoch = jiff::civil::Date::new(1970, 1, 1).expect("valid epoch");
+            let dt = epoch.to_datetime(*t);
+            match dt.to_zoned(tz) {
+                Ok(zoned) => Ok(JsonValue::String(format!("__datetime:{zoned}"))),
+                Err(_) => Ok(JsonValue::Null),
+            }
+        }
         Value::LocalDateTime(dt) => Ok(JsonValue::String(format!("__localdatetime:{dt}"))),
         Value::DateTime(dt) => Ok(JsonValue::String(format!("__datetime:{dt}"))),
         Value::Duration(d) => Ok(JsonValue::String(format!(
             "__duration:{}",
             format_cypher_duration(d)
         ))),
-        // Spatial: tagged string "x,y,CrsVariant"
-        Value::Point(p) => Ok(JsonValue::String(format!(
-            "__point:{},{},{:?}",
-            p.x, p.y, p.crs
-        ))),
+        // Spatial: tagged string "x,y[,z],CrsVariant"
+        Value::Point(p) => {
+            if let Some(z) = p.z {
+                Ok(JsonValue::String(format!(
+                    "__point:{},{},{},{:?}",
+                    p.x, p.y, z, p.crs
+                )))
+            } else {
+                Ok(JsonValue::String(format!(
+                    "__point:{},{},{:?}",
+                    p.x, p.y, p.crs
+                )))
+            }
+        }
         // Collections
         Value::List(items) => {
             let arr: Result<Vec<_>, _> = items.iter().map(value_to_json).collect();
@@ -161,8 +182,8 @@ pub fn json_to_value(j: &JsonValue) -> Option<Value> {
                     }));
                 }
             } else if let Some(rest) = s.strip_prefix("__point:") {
-                // Format: "x,y,CrsVariant" e.g. "1.5,2.5,Wgs84"
-                let parts: Vec<&str> = rest.splitn(3, ',').collect();
+                // Format: "x,y,CrsVariant" or "x,y,z,CrsVariant"
+                let parts: Vec<&str> = rest.splitn(4, ',').collect();
                 if parts.len() == 3 {
                     if let (Ok(x), Ok(y)) = (parts[0].parse::<f64>(), parts[1].parse::<f64>()) {
                         let crs = match parts[2] {
@@ -170,9 +191,29 @@ pub fn json_to_value(j: &JsonValue) -> Option<Value> {
                             "Wgs843d" => Crs::Wgs843d,
                             "Cartesian" => Crs::Cartesian,
                             "Cartesian3d" => Crs::Cartesian3d,
-                            _ => Crs::Wgs84, // default to Wgs84 (GIS standard)
+                            _ => Crs::Wgs84,
                         };
-                        return Some(Value::Point(GeoPoint { x, y, crs }));
+                        return Some(Value::Point(GeoPoint { x, y, z: None, crs }));
+                    }
+                } else if parts.len() == 4 {
+                    if let (Ok(x), Ok(y), Ok(z)) = (
+                        parts[0].parse::<f64>(),
+                        parts[1].parse::<f64>(),
+                        parts[2].parse::<f64>(),
+                    ) {
+                        let crs = match parts[3] {
+                            "Wgs84" => Crs::Wgs84,
+                            "Wgs843d" => Crs::Wgs843d,
+                            "Cartesian" => Crs::Cartesian,
+                            "Cartesian3d" => Crs::Cartesian3d,
+                            _ => Crs::Wgs84,
+                        };
+                        return Some(Value::Point(GeoPoint {
+                            x,
+                            y,
+                            z: Some(z),
+                            crs,
+                        }));
                     }
                 }
             } else if let Some(rest) = s.strip_prefix("__node:") {
@@ -294,6 +335,7 @@ mod tests {
         let point = Value::Point(GeoPoint {
             x: 1.5,
             y: 2.5,
+            z: None,
             crs: Crs::Wgs84,
         });
         let json = value_to_json(&point).unwrap();

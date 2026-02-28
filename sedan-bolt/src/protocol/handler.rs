@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
@@ -34,7 +35,10 @@ pub struct Session {
     pub store: Arc<InMemoryGraphStore>,
     pub conn_id: u64,
     pub current_graph: String,
-    pub pending_result: Option<PendingQuery>,
+    /// Multiple concurrent result streams keyed by query ID (qid).
+    pub pending_results: HashMap<i64, PendingQuery>,
+    /// Next query ID to assign.
+    pub next_qid: i64,
     /// Global bookmark counter shared across all sessions connected to the same
     /// store. Bookmarks produced by one session are therefore meaningful when
     /// passed to another session, which is required by the Neo4j driver testkit.
@@ -47,6 +51,10 @@ pub struct Session {
     /// against this store instead of the main store. COMMIT merges it back,
     /// ROLLBACK discards it.
     pub tx_store: Option<Arc<InMemoryGraphStore>>,
+    /// Global write lock for transaction timeout contention.
+    pub write_lock: Arc<tokio::sync::Mutex<()>>,
+    /// Guard held while this session holds the write lock (during a write TX).
+    pub write_lock_guard: Option<tokio::sync::OwnedMutexGuard<()>>,
 }
 
 pub struct PendingQuery {
@@ -62,6 +70,16 @@ pub struct PendingQuery {
     pub explain_plan: Option<BoltValue>,
     /// PROFILE plan to return in PULL SUCCESS (records still emitted).
     pub profile_plan: Option<BoltValue>,
+    /// The effective graph (database) for this query, used in the `db`
+    /// metadata field of PULL SUCCESS.
+    pub graph: String,
+    /// Notifications (e.g. cartesian product warnings) to include in PULL
+    /// SUCCESS metadata.
+    pub notifications: Vec<BoltValue>,
+    /// A per-row error that terminated streaming evaluation. When set,
+    /// handle_pull will emit all buffered records and then send FAILURE
+    /// with this error rather than SUCCESS.
+    pub trailing_error: Option<(String, String)>,
 }
 
 // -- Bookmark helpers --------------------------------------------------------
@@ -133,17 +151,34 @@ pub async fn handle_message(
 
 // -- Bookmark validation -----------------------------------------------------
 
-/// Known valid bookmark prefixes. Bookmarks must start with one of these.
-const VALID_BOOKMARK_PREFIXES: &[&str] = &["sedan:tx:", "neo4j:bookmark:"];
-
 /// Check whether a bookmark string has a recognized format.
+/// Valid formats: "neo4j:bookmark:v{V}:tx{N}" or "sedan:tx:{N}" where V and N are digits.
 fn is_valid_bookmark(bookmark: &str) -> bool {
     if bookmark.is_empty() {
         return true;
     }
-    VALID_BOOKMARK_PREFIXES
-        .iter()
-        .any(|prefix| bookmark.starts_with(prefix))
+    // neo4j:bookmark:vN:txM format — strip prefix, expect "vN:txM" with digits
+    if let Some(rest) = bookmark.strip_prefix("neo4j:bookmark:") {
+        // rest should be "vN:txM" where N and M are digit sequences
+        if let Some(after_v) = rest.strip_prefix('v') {
+            if let Some(colon_pos) = after_v.find(':') {
+                let version_part = &after_v[..colon_pos];
+                let tx_part = &after_v[colon_pos + 1..];
+                if let Some(tx_num) = tx_part.strip_prefix("tx") {
+                    return !version_part.is_empty()
+                        && version_part.chars().all(|c| c.is_ascii_digit())
+                        && !tx_num.is_empty()
+                        && tx_num.chars().all(|c| c.is_ascii_digit());
+                }
+            }
+        }
+        return false;
+    }
+    // sedan:tx:N format
+    if let Some(suffix) = bookmark.strip_prefix("sedan:tx:") {
+        return !suffix.is_empty() && suffix.chars().all(|c| c.is_ascii_digit());
+    }
+    false
 }
 
 /// Validate bookmarks from a message's extra map.
@@ -152,23 +187,33 @@ fn is_valid_bookmark(bookmark: &str) -> bool {
 /// or `None` if all bookmarks are valid (or no bookmarks are present).
 fn validate_bookmarks(extra: &BoltMap) -> Option<ServerMessage> {
     let bookmarks_val = extra.get_value("bookmarks")?;
-    let bookmark_list = match bookmarks_val {
-        BoltValue::List(items) => items,
-        _ => return None, // Non-list bookmarks field is ignored.
+
+    // Collect bookmark strings: either from a List or a single String.
+    let bookmark_strings: Vec<&str> = match bookmarks_val {
+        BoltValue::List(items) => items
+            .iter()
+            .filter_map(|v| {
+                if let BoltValue::String(s) = v {
+                    Some(s.as_str())
+                } else {
+                    None
+                }
+            })
+            .collect(),
+        BoltValue::String(s) => vec![s.as_str()],
+        _ => return None, // Non-list/non-string bookmarks field is ignored.
     };
 
-    for item in bookmark_list {
-        if let BoltValue::String(bm) = item {
-            if !is_valid_bookmark(bm) {
-                return Some(ServerMessage::Failure(bolt_map! {
-                    "code" => BoltValue::String(
-                        "Neo.ClientError.Transaction.InvalidBookmark".to_string(),
-                    ),
-                    "message" => BoltValue::String(
-                        format!("Supplied bookmark '{}' does not conform to pattern {{database_id}}:{{tx_id}}", bm),
-                    )
-                }));
-            }
+    for bm in bookmark_strings {
+        if !is_valid_bookmark(bm) {
+            return Some(ServerMessage::Failure(bolt_map! {
+                "code" => BoltValue::String(
+                    "Neo.ClientError.Transaction.InvalidBookmark".to_string(),
+                ),
+                "message" => BoltValue::String(
+                    format!("Supplied bookmark '{}' does not conform to pattern {{database_id}}:{{tx_id}}", bm),
+                )
+            }));
         }
     }
     None
@@ -216,11 +261,28 @@ async fn handle_hello(
         }
     }
 
+    // Check if the client requests the UTC patch (Bolt 4.3+).
+    // When echoed back, the driver uses UTC-based DateTime encoding (tags 0x49/0x46)
+    // instead of wall-clock encoding (tags 0x69/0x66).
+    let utc_patch = match extra.get_value("patch_bolt") {
+        Some(BoltValue::List(items)) => items
+            .iter()
+            .any(|v| matches!(v, BoltValue::String(s) if s == "utc")),
+        _ => false,
+    };
+
     session.state = ServerState::Ready;
-    Ok(vec![ServerMessage::Success(bolt_map! {
+    let mut success = bolt_map! {
         "server" => BoltValue::String("Neo4j/4.4.0".to_string()),
         "connection_id" => BoltValue::String(format!("sedan-bolt-{}", session.conn_id))
-    })])
+    };
+    if utc_patch {
+        success.push((
+            "patch_bolt".to_string(),
+            BoltValue::List(vec![BoltValue::String("utc".to_string())]),
+        ));
+    }
+    Ok(vec![ServerMessage::Success(success)])
 }
 
 // -- LOGON -------------------------------------------------------------------
@@ -267,8 +329,41 @@ async fn handle_run(
         return Ok(vec![failure]);
     }
 
-    // Detect EXPLAIN / PROFILE prefix (case-insensitive)
+    // Strip Neo4j pre-parser directives like "CYPHER runtime=interpreted ..."
     let trimmed = query.trim();
+    let trimmed = if trimmed.len() > 7 && trimmed[..7].eq_ignore_ascii_case("CYPHER ") {
+        let cypher_keywords = [
+            "MATCH ",
+            "RETURN ",
+            "CREATE ",
+            "MERGE ",
+            "WITH ",
+            "UNWIND ",
+            "CALL ",
+            "OPTIONAL ",
+            "DELETE ",
+            "DETACH ",
+            "SET ",
+            "REMOVE ",
+            "EXPLAIN ",
+            "PROFILE ",
+        ];
+        let upper = trimmed.to_uppercase();
+        let mut start = trimmed.len(); // fallback: keep entire string
+        for kw in &cypher_keywords {
+            if let Some(pos) = upper[7..].find(kw) {
+                let candidate = 7 + pos;
+                if candidate < start {
+                    start = candidate;
+                }
+            }
+        }
+        &trimmed[start..]
+    } else {
+        trimmed
+    };
+
+    // Detect EXPLAIN / PROFILE prefix (case-insensitive)
     tracing::debug!(query = %trimmed, "handle_run query");
     let is_explain = trimmed.len() >= 8 && trimmed[..8].eq_ignore_ascii_case("EXPLAIN ");
     let is_profile =
@@ -276,7 +371,7 @@ async fn handle_run(
     let actual_query = if is_explain || is_profile {
         trimmed[8..].to_string()
     } else {
-        query.clone()
+        trimmed.to_string()
     };
 
     let graph = extra
@@ -290,7 +385,26 @@ async fn handle_run(
         .map(|v| v as u64)
         .or(session.tx_timeout);
 
-    let value_params = bridge::executor::bolt_map_to_value_map(&params);
+    let mut value_params = bridge::executor::bolt_map_to_value_map(&params);
+
+    // Inject tx_metadata as a special parameter so that the tx.getMetaData
+    // procedure can access it. Prefer BEGIN-level metadata over RUN-level.
+    {
+        let effective_meta = if !session.tx_metadata.is_empty() {
+            &session.tx_metadata
+        } else {
+            &run_metadata
+        };
+        let meta_value = bridge::executor::bolt_map_to_value_map(effective_meta);
+        let meta_map: indexmap::IndexMap<Box<str>, gql_core::types::Value> = meta_value
+            .into_iter()
+            .map(|(k, v)| (Box::from(k.as_str()), v))
+            .collect();
+        value_params.insert(
+            "__tx_metadata__".to_string(),
+            gql_core::types::Value::Map(meta_map),
+        );
+    }
 
     // When inside an explicit transaction, execute against the snapshot store
     // so that mutations are isolated until COMMIT.
@@ -320,24 +434,34 @@ async fn handle_run(
         match plan_result {
             Ok(operator) => {
                 let plan_map = operator_to_plan_map(&operator, false, 0);
-                session.pending_result = Some(PendingQuery {
-                    columns: vec![],
-                    records: vec![],
-                    query_type: "r".to_string(),
-                    stats: vec![],
-                    cursor: 0,
-                    start_time: std::time::Instant::now(),
-                    metadata: run_metadata,
-                    explain_plan: Some(plan_map),
-                    profile_plan: None,
-                });
+                let plan_notifications = detect_notifications(&operator);
+                let qid = session.next_qid;
+                session.next_qid += 1;
+                session.pending_results.insert(
+                    qid,
+                    PendingQuery {
+                        columns: vec![],
+                        records: vec![],
+                        query_type: "r".to_string(),
+                        stats: vec![],
+                        cursor: 0,
+                        start_time: std::time::Instant::now(),
+                        metadata: run_metadata,
+                        explain_plan: Some(plan_map),
+                        profile_plan: None,
+                        graph: graph.clone(),
+                        notifications: plan_notifications,
+                        trailing_error: None,
+                    },
+                );
                 session.state = match session.state {
                     ServerState::TxReady | ServerState::TxStreaming => ServerState::TxStreaming,
                     _ => ServerState::Streaming,
                 };
                 return Ok(vec![ServerMessage::Success(bolt_map! {
                     "fields" => BoltValue::List(vec![]),
-                    "t_first" => BoltValue::Int(0)
+                    "t_first" => BoltValue::Int(0),
+                    "qid" => BoltValue::Int(qid)
                 })]);
             }
             Err(e) => {
@@ -348,6 +472,54 @@ async fn handle_run(
                     "message" => BoltValue::String(message)
                 })]);
             }
+        }
+    }
+
+    // Detect write queries for transaction timeout contention.
+    // If the query contains write keywords and we're in a transaction with a
+    // timeout, acquire the global write lock. If it's already held by another
+    // session, wait up to tx_timeout then fail with a lock timeout error.
+    let is_write_query = {
+        let upper = actual_query.to_uppercase();
+        upper.contains("CREATE ")
+            || upper.contains("MERGE ")
+            || upper.contains("DELETE ")
+            || upper.contains("SET ")
+            || upper.contains("REMOVE ")
+    };
+    if is_write_query && session.write_lock_guard.is_none() {
+        let timeout_ms = session
+            .tx_timeout
+            .or(extra.get_int("tx_timeout").map(|v| v as u64));
+        if let Some(ms) = timeout_ms {
+            let lock = Arc::clone(&session.write_lock);
+            match tokio::time::timeout(std::time::Duration::from_millis(ms), lock.lock_owned())
+                .await
+            {
+                Ok(guard) => {
+                    session.write_lock_guard = Some(guard);
+                }
+                Err(_) => {
+                    // Lock acquisition timed out
+                    session.state = ServerState::Failed;
+                    return Ok(vec![ServerMessage::Failure(bolt_map! {
+                        "code" => BoltValue::String(
+                            "Neo.TransientError.Transaction.LockClientStopped".to_string()
+                        ),
+                        "message" => BoltValue::String(
+                            format!("The transaction has been terminated. \
+                                     Retry your operation in a new transaction, \
+                                     and you should see a successful result. \
+                                     Lock acquisition timeout after {} ms", ms)
+                        )
+                    })]);
+                }
+            }
+        } else {
+            // No timeout: just acquire the lock (may block indefinitely)
+            let lock = Arc::clone(&session.write_lock);
+            let guard = lock.lock_owned().await;
+            session.write_lock_guard = Some(guard);
         }
     }
 
@@ -385,8 +557,12 @@ async fn handle_run(
 
     match result {
         Ok(qr) => {
-            let (records, query_type, stats) =
+            let (records, query_type, stats, trailing_err) =
                 bridge::executor::result_to_records(&qr, &effective_store, &graph);
+
+            // Convert the trailing GqlError (if any) to a (code, message) pair
+            // for deferred FAILURE emission during PULL.
+            let trailing_error = trailing_err.map(|e| bridge::errors::gql_error_to_bolt(&e));
 
             let fields: Vec<BoltValue> = qr
                 .columns
@@ -409,30 +585,46 @@ async fn handle_run(
                 plan
             });
 
-            session.pending_result = Some(PendingQuery {
-                columns: qr.columns,
-                records,
-                query_type,
-                stats,
-                cursor: 0,
-                start_time: std::time::Instant::now(),
-                metadata: combined_metadata,
-                explain_plan: None,
-                profile_plan: patched_profile,
-            });
+            let qid = session.next_qid;
+            session.next_qid += 1;
+            session.pending_results.insert(
+                qid,
+                PendingQuery {
+                    columns: qr.columns,
+                    records,
+                    query_type,
+                    stats,
+                    cursor: 0,
+                    start_time: std::time::Instant::now(),
+                    metadata: combined_metadata,
+                    explain_plan: None,
+                    profile_plan: patched_profile,
+                    graph: graph.clone(),
+                    notifications: vec![],
+                    trailing_error,
+                },
+            );
 
             session.state = match session.state {
                 ServerState::TxReady | ServerState::TxStreaming => ServerState::TxStreaming,
-                _ => ServerState::Streaming,
+                _ => {
+                    // For autocommit queries, release the write lock immediately
+                    // since the query has completed.
+                    session.write_lock_guard = None;
+                    ServerState::Streaming
+                }
             };
 
             Ok(vec![ServerMessage::Success(bolt_map! {
                 "fields" => BoltValue::List(fields),
-                "t_first" => BoltValue::Int(0)
+                "t_first" => BoltValue::Int(0),
+                "qid" => BoltValue::Int(qid)
             })])
         }
         Err(gql_err) => {
             let (code, message) = bridge::errors::gql_error_to_bolt(&gql_err);
+            // Release write lock on error
+            session.write_lock_guard = None;
             session.state = ServerState::Failed;
             Ok(vec![ServerMessage::Failure(bolt_map! {
                 "code" => BoltValue::String(code),
@@ -475,12 +667,134 @@ fn operator_to_plan_map(
     BoltValue::Map(entries)
 }
 
+/// Detect cartesian product patterns in an operator tree.
+///
+/// A cartesian product occurs when an `Apply` node joins two independent scans
+/// (no shared variable references). Returns a list of Bolt notification maps.
+fn detect_notifications(op: &gql_core::planner::Operator) -> Vec<BoltValue> {
+    let mut notifications = Vec::new();
+    detect_cartesian_products(op, &mut notifications);
+    notifications
+}
+
+fn detect_cartesian_products(op: &gql_core::planner::Operator, notifications: &mut Vec<BoltValue>) {
+    use gql_core::planner::Operator;
+    match op {
+        Operator::Apply { outer, inner } => {
+            // An Apply with two independent scans (both are leaf-level node scans
+            // or have no shared aliases) is a cartesian product.
+            let outer_aliases: std::collections::HashSet<String> =
+                gql_core::planner::collect_visible_aliases(outer)
+                    .into_iter()
+                    .collect();
+            let inner_aliases: std::collections::HashSet<String> =
+                gql_core::planner::collect_visible_aliases(inner)
+                    .into_iter()
+                    .collect();
+            if outer_aliases.is_disjoint(&inner_aliases) {
+                // Determine which alias to mention in the warning.
+                let inner_alias = inner_aliases
+                    .into_iter()
+                    .next()
+                    .unwrap_or_else(|| "?".to_string());
+                notifications.push(BoltValue::Map(bolt_map! {
+                    "code" => BoltValue::String(
+                        "Neo.ClientNotification.Statement.CartesianProductWarning".to_string()
+                    ),
+                    "title" => BoltValue::String(
+                        "This query builds a cartesian product between disconnected patterns.".to_string()
+                    ),
+                    "description" => BoltValue::String(
+                        format!(
+                            "If a part of a query contains multiple disconnected patterns, this will build a cartesian product between all those parts. This may produce a large amount of data and slow down query processing. While occasionally intended, it may often be possible to reformulate the query that avoids the use of this cross product, perhaps by adding a relationship between the different parts or by using OPTIONAL MATCH (identifier is: ({inner_alias}))"
+                        )
+                    ),
+                    "severity" => BoltValue::String("WARNING".to_string()),
+                    "category" => BoltValue::String("PERFORMANCE".to_string()),
+                    "position" => BoltValue::Map(bolt_map! {
+                        "offset" => BoltValue::Int(0),
+                        "line" => BoltValue::Int(1),
+                        "column" => BoltValue::Int(1)
+                    })
+                }));
+            }
+            detect_cartesian_products(outer, notifications);
+            detect_cartesian_products(inner, notifications);
+        }
+        Operator::Filter { child, .. }
+        | Operator::Sort { child, .. }
+        | Operator::Limit { child, .. }
+        | Operator::Skip { child, .. }
+        | Operator::Distinct { child, .. }
+        | Operator::Set { child, .. }
+        | Operator::Remove { child, .. }
+        | Operator::Delete { child, .. }
+        | Operator::Unwind { child, .. }
+        | Operator::Expand { child, .. }
+        | Operator::VarLenExpand { child, .. }
+        | Operator::AssemblePath { child, .. }
+        | Operator::MergeRelationship { child, .. } => {
+            detect_cartesian_products(child, notifications);
+        }
+        Operator::Project { child, .. } | Operator::Aggregate { child, .. } => {
+            detect_cartesian_products(child, notifications);
+        }
+        Operator::LeftOuterApply {
+            preserved,
+            optional_pattern,
+        } => {
+            detect_cartesian_products(preserved, notifications);
+            detect_cartesian_products(optional_pattern, notifications);
+        }
+        Operator::Union { left, right, .. } => {
+            detect_cartesian_products(left, notifications);
+            detect_cartesian_products(right, notifications);
+        }
+        Operator::Create { child, .. } | Operator::Merge { child, .. } => {
+            if let Some(ch) = child {
+                detect_cartesian_products(ch, notifications);
+            }
+        }
+        Operator::Call { child, .. } => {
+            if let Some(ch) = child {
+                detect_cartesian_products(ch, notifications);
+            }
+        }
+        Operator::ProduceResults { child, .. } => {
+            detect_cartesian_products(child, notifications);
+        }
+        Operator::NodeScan { .. }
+        | Operator::IndexScan { .. }
+        | Operator::NodeByIdSeek { .. }
+        | Operator::SingleRow
+        | Operator::ShortestPath { .. } => {}
+    }
+}
+
 // -- PULL --------------------------------------------------------------------
 
 fn handle_pull(session: &mut Session, extra: BoltMap) -> Result<Vec<ServerMessage>, ProtocolError> {
     let n = extra.get_int("n").unwrap_or(-1);
 
-    let pending = match session.pending_result.as_mut() {
+    // Resolve qid: -1 (or absent) means the last query registered.
+    let requested_qid = extra.get_int("qid").unwrap_or(-1);
+    let qid = if requested_qid == -1 {
+        // Find the highest qid in pending_results (last query).
+        match session.pending_results.keys().max().copied() {
+            Some(q) => q,
+            None => {
+                session.state = ServerState::Failed;
+                return Ok(vec![ServerMessage::Failure(bolt_map! {
+                    "code" => BoltValue::String("Neo.ClientError.Statement.SyntaxError".to_string()),
+                    "message" => BoltValue::String("No result to pull from".to_string())
+                })]);
+            }
+        }
+    } else {
+        requested_qid
+    };
+
+    let pending = match session.pending_results.get_mut(&qid) {
         Some(p) => p,
         None => {
             session.state = ServerState::Failed;
@@ -493,7 +807,7 @@ fn handle_pull(session: &mut Session, extra: BoltMap) -> Result<Vec<ServerMessag
 
     let mut messages = Vec::new();
 
-    // For EXPLAIN, skip all RECORDs — the plan goes in the SUCCESS metadata
+    // For EXPLAIN, skip all RECORDs -- the plan goes in the SUCCESS metadata
     let is_explain = pending.explain_plan.is_some();
     let total = pending.records.len();
 
@@ -512,8 +826,24 @@ fn handle_pull(session: &mut Session, extra: BoltMap) -> Result<Vec<ServerMessag
     }
 
     let has_more = pending.cursor < total;
+    // Check for a trailing streaming error that should be emitted after
+    // all buffered records have been sent.
+    let trailing_error = if !has_more {
+        pending.trailing_error.take()
+    } else {
+        None
+    };
 
-    if has_more {
+    if let Some((code, message)) = trailing_error {
+        // All buffered records have been streamed. Now emit FAILURE for the
+        // per-row error that terminated evaluation, and transition to Failed.
+        messages.push(ServerMessage::Failure(bolt_map! {
+            "code" => BoltValue::String(code),
+            "message" => BoltValue::String(message)
+        }));
+        session.pending_results.remove(&qid);
+        session.state = ServerState::Failed;
+    } else if has_more {
         messages.push(ServerMessage::Success(bolt_map! {
             "has_more" => BoltValue::Bool(true)
         }));
@@ -525,6 +855,8 @@ fn handle_pull(session: &mut Session, extra: BoltMap) -> Result<Vec<ServerMessag
         let metadata = pending.metadata.clone();
         let explain_plan = pending.explain_plan.take();
         let profile_plan = pending.profile_plan.take();
+        let db_name = pending.graph.clone();
+        let query_notifications = std::mem::take(&mut pending.notifications);
 
         let mut meta = bolt_map! {
             "bookmark" => BoltValue::String(bookmark),
@@ -538,6 +870,13 @@ fn handle_pull(session: &mut Session, extra: BoltMap) -> Result<Vec<ServerMessag
         if !metadata.is_empty() {
             meta.push(("tx_metadata".to_string(), BoltValue::Map(metadata)));
         }
+        // Include the database name from the query's effective graph.
+        meta.push(("db".to_string(), BoltValue::String(db_name)));
+        // Include notifications (cartesian product warnings, etc.).
+        meta.push((
+            "notifications".to_string(),
+            BoltValue::List(query_notifications),
+        ));
         if let Some(plan) = explain_plan {
             meta.push(("plan".to_string(), plan));
         }
@@ -546,11 +885,15 @@ fn handle_pull(session: &mut Session, extra: BoltMap) -> Result<Vec<ServerMessag
         }
         messages.push(ServerMessage::Success(meta));
 
-        session.pending_result = None;
-        session.state = match session.state {
-            ServerState::TxStreaming => ServerState::TxReady,
-            _ => ServerState::Ready,
-        };
+        // Remove the completed query from pending_results.
+        session.pending_results.remove(&qid);
+        // Only transition state if no more pending results.
+        if session.pending_results.is_empty() {
+            session.state = match session.state {
+                ServerState::TxStreaming => ServerState::TxReady,
+                _ => ServerState::Ready,
+            };
+        }
     }
 
     Ok(messages)
@@ -560,13 +903,26 @@ fn handle_pull(session: &mut Session, extra: BoltMap) -> Result<Vec<ServerMessag
 
 fn handle_discard(
     session: &mut Session,
-    _extra: BoltMap,
+    extra: BoltMap,
 ) -> Result<Vec<ServerMessage>, ProtocolError> {
-    session.pending_result = None;
-    session.state = match session.state {
-        ServerState::TxStreaming => ServerState::TxReady,
-        _ => ServerState::Ready,
-    };
+    // Resolve qid: -1 (or absent) means the last query registered.
+    let requested_qid = extra.get_int("qid").unwrap_or(-1);
+    if requested_qid == -1 {
+        // Discard the last (highest qid) result.
+        if let Some(&max_qid) = session.pending_results.keys().max() {
+            session.pending_results.remove(&max_qid);
+        }
+    } else {
+        session.pending_results.remove(&requested_qid);
+    }
+
+    // Only transition state if no more pending results.
+    if session.pending_results.is_empty() {
+        session.state = match session.state {
+            ServerState::TxStreaming => ServerState::TxReady,
+            _ => ServerState::Ready,
+        };
+    }
     Ok(vec![ServerMessage::Success(bolt_map! {})])
 }
 
@@ -616,6 +972,8 @@ fn handle_commit(session: &mut Session) -> Result<Vec<ServerMessage>, ProtocolEr
             .map_err(|e| ProtocolError::Internal(e.to_string()))?;
     }
     session.tx_store = None;
+    // Release the write lock if held.
+    session.write_lock_guard = None;
 
     let bookmark = next_bookmark(&session.global_bookmark);
     session.state = ServerState::Ready;
@@ -634,6 +992,8 @@ fn handle_commit(session: &mut Session) -> Result<Vec<ServerMessage>, ProtocolEr
 /// transaction are never applied to the main store.
 fn handle_rollback(session: &mut Session) -> Result<Vec<ServerMessage>, ProtocolError> {
     session.tx_store = None;
+    session.pending_results.clear();
+    session.write_lock_guard = None;
     session.state = ServerState::Ready;
     session.tx_metadata = Vec::new();
     session.tx_timeout = None;
@@ -650,10 +1010,11 @@ fn handle_rollback(session: &mut Session) -> Result<Vec<ServerMessage>, Protocol
 /// snapshot store) and returns to the Ready state. This is also the handler
 /// invoked when a client exception causes the driver to send RESET.
 fn handle_reset(session: &mut Session) -> Result<Vec<ServerMessage>, ProtocolError> {
-    session.pending_result = None;
+    session.pending_results.clear();
     session.tx_metadata = Vec::new();
     session.tx_timeout = None;
     session.tx_store = None;
+    session.write_lock_guard = None;
     session.state = ServerState::Ready;
     Ok(vec![ServerMessage::Success(bolt_map! {})])
 }
@@ -762,11 +1123,34 @@ mod tests {
     }
 
     #[test]
-    fn validate_bookmarks_non_list_ignored() {
+    fn validate_bookmarks_single_string_valid() {
         let extra: BoltMap = vec![(
             "bookmarks".to_string(),
-            BoltValue::String("not_a_list".to_string()),
+            BoltValue::String("neo4j:bookmark:v1:tx1".to_string()),
         )];
+        assert!(validate_bookmarks(&extra).is_none());
+    }
+
+    #[test]
+    fn validate_bookmarks_single_string_invalid() {
+        let extra: BoltMap = vec![(
+            "bookmarks".to_string(),
+            BoltValue::String("not_a_valid_bookmark".to_string()),
+        )];
+        let failure = validate_bookmarks(&extra);
+        assert!(failure.is_some());
+        match failure.unwrap() {
+            ServerMessage::Failure(meta) => {
+                let code = meta.get_str("code").unwrap();
+                assert_eq!(code, "Neo.ClientError.Transaction.InvalidBookmark");
+            }
+            other => panic!("expected Failure, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn validate_bookmarks_non_list_non_string_ignored() {
+        let extra: BoltMap = vec![("bookmarks".to_string(), BoltValue::Int(42))];
         assert!(validate_bookmarks(&extra).is_none());
     }
 
@@ -777,12 +1161,15 @@ mod tests {
             state: ServerState::Ready,
             store: Arc::new(InMemoryGraphStore::new()),
             conn_id: 1,
-            current_graph: "default".to_string(),
-            pending_result: None,
+            current_graph: "neo4j".to_string(),
+            pending_results: HashMap::new(),
+            next_qid: 0,
             global_bookmark: Arc::new(AtomicU64::new(0)),
             tx_metadata: Vec::new(),
             tx_timeout: None,
             tx_store: None,
+            write_lock: Arc::new(tokio::sync::Mutex::new(())),
+            write_lock_guard: None,
         }
     }
 
@@ -795,23 +1182,29 @@ mod tests {
             state: ServerState::Ready,
             store: Arc::clone(&store),
             conn_id: 1,
-            current_graph: "default".to_string(),
-            pending_result: None,
+            current_graph: "neo4j".to_string(),
+            pending_results: HashMap::new(),
+            next_qid: 0,
             global_bookmark: Arc::clone(&bookmark),
             tx_metadata: Vec::new(),
             tx_timeout: None,
             tx_store: None,
+            write_lock: Arc::new(tokio::sync::Mutex::new(())),
+            write_lock_guard: None,
         };
         let s2 = Session {
             state: ServerState::Ready,
             store: Arc::clone(&store),
             conn_id: 2,
-            current_graph: "default".to_string(),
-            pending_result: None,
+            current_graph: "neo4j".to_string(),
+            pending_results: HashMap::new(),
+            next_qid: 0,
             global_bookmark: Arc::clone(&bookmark),
             tx_metadata: Vec::new(),
             tx_timeout: None,
             tx_store: None,
+            write_lock: Arc::new(tokio::sync::Mutex::new(())),
+            write_lock_guard: None,
         };
         (s1, s2)
     }
@@ -963,23 +1356,29 @@ mod tests {
         session.state = ServerState::TxStreaming;
         session.tx_metadata = vec![("key".to_string(), BoltValue::String("val".to_string()))];
         session.tx_timeout = Some(5000);
-        session.pending_result = Some(PendingQuery {
-            columns: vec!["n".to_string()],
-            records: vec![],
-            query_type: "r".to_string(),
-            stats: vec![],
-            cursor: 0,
-            start_time: std::time::Instant::now(),
-            metadata: vec![],
-            explain_plan: None,
-            profile_plan: None,
-        });
+        session.pending_results.insert(
+            0,
+            PendingQuery {
+                columns: vec!["n".to_string()],
+                records: vec![],
+                query_type: "r".to_string(),
+                stats: vec![],
+                cursor: 0,
+                start_time: std::time::Instant::now(),
+                metadata: vec![],
+                explain_plan: None,
+                profile_plan: None,
+                graph: "neo4j".to_string(),
+                notifications: vec![],
+                trailing_error: None,
+            },
+        );
 
         let result = handle_reset(&mut session).unwrap();
         assert_eq!(result.len(), 1);
         assert!(matches!(&result[0], ServerMessage::Success(_)));
         assert_eq!(session.state, ServerState::Ready);
-        assert!(session.pending_result.is_none());
+        assert!(session.pending_results.is_empty());
         assert!(session.tx_metadata.is_empty());
         assert!(session.tx_timeout.is_none());
     }
@@ -1242,6 +1641,161 @@ mod tests {
                 BoltValue::Int(0),
                 "uncommitted mutations should be invisible"
             );
+        }
+    }
+
+    // -- QID support tests ---------------------------------------------------
+
+    #[tokio::test]
+    async fn run_returns_qid_in_success() {
+        let mut session = make_ready_session();
+        let result = handle_run(&mut session, "RETURN 1 AS n".to_string(), vec![], vec![])
+            .await
+            .unwrap();
+        assert_eq!(result.len(), 1);
+        match &result[0] {
+            ServerMessage::Success(meta) => {
+                let qid = meta.get_int("qid");
+                assert!(qid.is_some(), "RUN SUCCESS must include qid");
+                assert_eq!(qid.unwrap(), 0);
+            }
+            other => panic!("expected Success, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn qid_increments_across_runs() {
+        let mut session = make_ready_session();
+        // First RUN
+        let r1 = handle_run(&mut session, "RETURN 1 AS n".to_string(), vec![], vec![])
+            .await
+            .unwrap();
+        // Pull to clear the first result
+        handle_pull(&mut session, bolt_map! { "n" => BoltValue::Int(-1) }).unwrap();
+
+        // Second RUN
+        let r2 = handle_run(&mut session, "RETURN 2 AS m".to_string(), vec![], vec![])
+            .await
+            .unwrap();
+        let qid1 = match &r1[0] {
+            ServerMessage::Success(m) => m.get_int("qid").unwrap(),
+            _ => panic!("expected Success"),
+        };
+        let qid2 = match &r2[0] {
+            ServerMessage::Success(m) => m.get_int("qid").unwrap(),
+            _ => panic!("expected Success"),
+        };
+        assert_eq!(qid1, 0);
+        assert_eq!(qid2, 1);
+    }
+
+    #[tokio::test]
+    async fn pull_uses_qid_from_extra() {
+        let mut session = make_ready_session();
+        // Begin a TX so we can have multiple concurrent results.
+        handle_begin(&mut session, vec![]).unwrap();
+
+        // First RUN (qid=0)
+        let r1 = handle_run(&mut session, "RETURN 1 AS n".to_string(), vec![], vec![])
+            .await
+            .unwrap();
+        let qid0 = match &r1[0] {
+            ServerMessage::Success(m) => m.get_int("qid").unwrap(),
+            _ => panic!("expected Success"),
+        };
+
+        // Second RUN (qid=1)
+        let r2 = handle_run(&mut session, "RETURN 2 AS m".to_string(), vec![], vec![])
+            .await
+            .unwrap();
+        let qid1 = match &r2[0] {
+            ServerMessage::Success(m) => m.get_int("qid").unwrap(),
+            _ => panic!("expected Success"),
+        };
+
+        // Pull from qid=0 specifically
+        let pull0 = handle_pull(
+            &mut session,
+            bolt_map! { "n" => BoltValue::Int(-1), "qid" => BoltValue::Int(qid0) },
+        )
+        .unwrap();
+        let record0 = pull0.iter().find(|m| matches!(m, ServerMessage::Record(_)));
+        assert!(record0.is_some(), "expected record from qid0");
+        if let ServerMessage::Record(fields) = record0.unwrap() {
+            assert_eq!(fields[0], BoltValue::Int(1));
+        }
+
+        // Pull from qid=1 specifically
+        let pull1 = handle_pull(
+            &mut session,
+            bolt_map! { "n" => BoltValue::Int(-1), "qid" => BoltValue::Int(qid1) },
+        )
+        .unwrap();
+        let record1 = pull1.iter().find(|m| matches!(m, ServerMessage::Record(_)));
+        assert!(record1.is_some(), "expected record from qid1");
+        if let ServerMessage::Record(fields) = record1.unwrap() {
+            assert_eq!(fields[0], BoltValue::Int(2));
+        }
+    }
+
+    // -- DB metadata from effective graph tests ------------------------------
+
+    #[tokio::test]
+    async fn pull_db_reflects_run_extra_db() {
+        let mut session = make_ready_session();
+        // RUN with db=custom_graph
+        let extra: BoltMap = vec![(
+            "db".to_string(),
+            BoltValue::String("custom_graph".to_string()),
+        )];
+        handle_run(&mut session, "RETURN 1 AS n".to_string(), vec![], extra)
+            .await
+            .unwrap();
+        let pull_result =
+            handle_pull(&mut session, bolt_map! { "n" => BoltValue::Int(-1) }).unwrap();
+        let success = pull_result.last().unwrap();
+        match success {
+            ServerMessage::Success(meta) => {
+                let db = meta.get_str("db").unwrap();
+                assert_eq!(db, "custom_graph");
+            }
+            other => panic!("expected Success, got {:?}", other),
+        }
+    }
+
+    // -- Notification detection tests ----------------------------------------
+
+    #[tokio::test]
+    async fn explain_cartesian_product_generates_notification() {
+        let mut session = make_ready_session();
+        handle_run(
+            &mut session,
+            "EXPLAIN MATCH (n), (m) RETURN n, m".to_string(),
+            vec![],
+            vec![],
+        )
+        .await
+        .unwrap();
+        let pull_result =
+            handle_pull(&mut session, bolt_map! { "n" => BoltValue::Int(-1) }).unwrap();
+        let success = pull_result.last().unwrap();
+        match success {
+            ServerMessage::Success(meta) => {
+                let notifications = meta.get_value("notifications");
+                assert!(notifications.is_some(), "must have notifications field");
+                if let Some(BoltValue::List(items)) = notifications {
+                    assert_eq!(items.len(), 1, "expected 1 notification");
+                    if let BoltValue::Map(entries) = &items[0] {
+                        let code = entries.get_str("code").unwrap();
+                        assert!(code.contains("CartesianProduct"));
+                    } else {
+                        panic!("expected Map for notification");
+                    }
+                } else {
+                    panic!("expected notifications to be a List");
+                }
+            }
+            other => panic!("expected Success, got {:?}", other),
         }
     }
 }

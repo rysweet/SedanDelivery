@@ -23,7 +23,7 @@ impl ServerState {
             (Authentication, Hello(_)) => true,
             (Authentication, Logon(_)) => true,
             (Ready, Run { .. } | Begin(_) | Reset | Goodbye) => true,
-            (Streaming, Pull(_) | Discard(_) | Reset) => true,
+            (Streaming, Pull(_) | Discard(_) | Run { .. } | Reset) => true,
             (TxReady, Run { .. } | Commit | Rollback | Reset) => true,
             (TxStreaming, Pull(_) | Discard(_) | Run { .. } | Reset) => true,
             (Failed, Reset | Goodbye) => true,

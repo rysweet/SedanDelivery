@@ -29,6 +29,7 @@ pub async fn run(
     store: Arc<InMemoryGraphStore>,
     conn_id: u64,
     global_bookmark: Arc<AtomicU64>,
+    write_lock: Arc<tokio::sync::Mutex<()>>,
 ) -> Result<(), SessionError> {
     let (read_half, write_half) = stream.into_split();
     let mut reader = BufReader::new(read_half);
@@ -42,12 +43,15 @@ pub async fn run(
         state: ServerState::Authentication,
         store,
         conn_id,
-        current_graph: "default".to_string(),
-        pending_result: None,
+        current_graph: "neo4j".to_string(),
+        pending_results: std::collections::HashMap::new(),
+        next_qid: 0,
         global_bookmark,
         tx_metadata: Vec::new(),
         tx_timeout: None,
         tx_store: None,
+        write_lock,
+        write_lock_guard: None,
     };
 
     // Message loop

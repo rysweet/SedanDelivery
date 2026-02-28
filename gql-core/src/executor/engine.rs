@@ -40,6 +40,13 @@ pub struct QueryResult {
     pub columns: Vec<String>,
     pub rows: Vec<Row>,
     pub stats: MutationStats,
+    /// When a per-row error occurs during streaming evaluation (e.g. division
+    /// by zero on one row of an UNWIND), the successfully-computed rows are
+    /// returned in `rows` and the error that terminated evaluation is stored
+    /// here. This allows Bolt-level streaming: the server can emit RECORD
+    /// messages for the partial rows and then emit FAILURE for the trailing
+    /// error.
+    pub trailing_error: Option<GqlError>,
 }
 
 /// Counters for write operations performed during query execution.
@@ -86,6 +93,10 @@ pub struct QueryExecutor<'a> {
     /// Cache of deleted edge ID → rel_type string.
     /// Allows `type(r)` to work on a relationship deleted in the same query.
     deleted_edge_types: std::cell::RefCell<HashMap<u64, String>>,
+    /// When a per-row error occurs in exec_project, the partial rows are
+    /// returned as the "successful" result and the error is stashed here so
+    /// that `execute()` can attach it to `QueryResult::trailing_error`.
+    streaming_error: std::cell::RefCell<Option<GqlError>>,
 }
 
 impl<'a> QueryExecutor<'a> {
@@ -97,6 +108,7 @@ impl<'a> QueryExecutor<'a> {
             registry: EMPTY_REG.get_or_init(ProcedureRegistry::new),
             parameters: HashMap::new(),
             deleted_edge_types: std::cell::RefCell::new(HashMap::new()),
+            streaming_error: std::cell::RefCell::new(None),
         }
     }
 
@@ -123,6 +135,7 @@ impl<'a> QueryExecutor<'a> {
             registry,
             parameters: params,
             deleted_edge_types: std::cell::RefCell::new(HashMap::new()),
+            streaming_error: std::cell::RefCell::new(None),
         }
     }
 
@@ -167,10 +180,14 @@ impl<'a> QueryExecutor<'a> {
                 .unwrap_or_default()
         };
 
+        // Check if a per-row streaming error was stashed during execution.
+        let trailing_error = self.streaming_error.borrow_mut().take();
+
         Ok(QueryResult {
             columns,
             rows,
             stats,
+            trailing_error,
         })
     }
 
@@ -519,12 +536,27 @@ impl<'a> QueryExecutor<'a> {
             let ctx = self.build_filter_ctx(graph, row)?;
             let mut new_row = Row::new();
             for (expr, alias) in items {
-                let val = self.eval_with_storage(graph, expr, row, &ctx)?;
-                let col_name = match alias {
-                    Some(id) => id.0.clone(),
-                    None => expr_to_column_name(expr),
-                };
-                new_row.insert(col_name, val);
+                match self.eval_with_storage(graph, expr, row, &ctx) {
+                    Ok(val) => {
+                        let col_name = match alias {
+                            Some(id) => id.0.clone(),
+                            None => expr_to_column_name(expr),
+                        };
+                        new_row.insert(col_name, val);
+                    }
+                    Err(e) => {
+                        // If we already produced at least one row, treat
+                        // this as a streaming error: return the partial
+                        // rows and stash the error for the caller.
+                        if !out.is_empty() {
+                            *self.streaming_error.borrow_mut() = Some(e);
+                            return Ok(out);
+                        }
+                        // No partial rows yet: propagate the error
+                        // immediately (standard behaviour).
+                        return Err(e);
+                    }
+                }
             }
             // Preserve query parameters through scope changes.
             inject_parameters(&mut new_row, &self.parameters);
@@ -1089,6 +1121,24 @@ impl<'a> QueryExecutor<'a> {
         // runtime expansion (fallback for planner edge-cases).
         let has_star = columns.iter().any(|(name, _)| name == "*");
 
+        // Helper macro to handle per-row expression evaluation errors:
+        // if partial rows have been produced, stash the error and return
+        // the partial result for streaming; otherwise propagate immediately.
+        macro_rules! try_eval_streaming {
+            ($expr_result:expr, $out:ident) => {
+                match $expr_result {
+                    Ok(val) => val,
+                    Err(e) => {
+                        if !$out.is_empty() {
+                            *self.streaming_error.borrow_mut() = Some(e);
+                            return Ok($out);
+                        }
+                        return Err(e);
+                    }
+                }
+            };
+        }
+
         for row in &input {
             budget.check_or_err()?;
             let ctx = self.build_filter_ctx(graph, row)?;
@@ -1106,13 +1156,17 @@ impl<'a> QueryExecutor<'a> {
                             }
                         }
                     } else {
-                        let val = self.eval_with_storage(graph, expr, row, &ctx)?;
+                        let val = try_eval_streaming!(
+                            self.eval_with_storage(graph, expr, row, &ctx),
+                            out
+                        );
                         new_row.insert(col_name.clone(), val);
                     }
                 }
             } else {
                 for (col_name, expr) in columns {
-                    let val = self.eval_with_storage(graph, expr, row, &ctx)?;
+                    let val =
+                        try_eval_streaming!(self.eval_with_storage(graph, expr, row, &ctx), out);
                     new_row.insert(col_name.clone(), val);
                 }
             }
@@ -2319,6 +2373,7 @@ impl<'a> QueryExecutor<'a> {
                     // Temporal property access (e.g. d.year, t.hour)
                     Value::Date(_)
                     | Value::LocalTime(_)
+                    | Value::Time(_, _)
                     | Value::LocalDateTime(_)
                     | Value::DateTime(_)
                     | Value::Duration(_) => {
@@ -4068,6 +4123,7 @@ pub fn cmp_values(a: &Value, b: &Value) -> std::cmp::Ordering {
             Value::Int(_) | Value::Float(_) => 7,
             Value::Date(_) => 10,
             Value::LocalTime(_) => 11,
+            Value::Time(_, _) => 11, // Zoned time sorts same rank as LocalTime
             Value::LocalDateTime(_) => 12,
             Value::DateTime(_) => 13,
             Value::Duration(_) => 14,

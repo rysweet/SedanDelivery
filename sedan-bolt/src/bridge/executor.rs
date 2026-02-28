@@ -6,7 +6,7 @@ use gql_core::executor::budget::DEFAULT_MAX_ROWS;
 use gql_core::executor::{ExecutionBudget, MutationStats, QueryExecutor, QueryResult};
 use gql_core::parser::parse_query;
 use gql_core::planner::QueryPlanner;
-use gql_core::procedure::ProcedureRegistry;
+use gql_core::procedure::{ProcedureDefinition, ProcedureParam, ProcedureRegistry};
 use gql_core::storage::{GraphStore, InMemoryGraphStore};
 use gql_core::types::value::{Crs, CypherDuration, GeoPoint};
 use gql_core::types::Value;
@@ -41,7 +41,25 @@ pub fn execute_query(
     }
 
     let ast = parse_query(query)?;
-    let registry = ProcedureRegistry::default();
+    let mut registry = ProcedureRegistry::default();
+
+    // Register tx.getMetaData procedure. It returns a single row with a
+    // "metadata" column containing the transaction metadata map that was
+    // injected into params as __tx_metadata__.
+    let tx_meta = params
+        .get("__tx_metadata__")
+        .cloned()
+        .unwrap_or(Value::Map(IndexMap::new()));
+    registry.register(ProcedureDefinition {
+        name: "tx.getMetaData".to_string(),
+        input_params: vec![],
+        output_columns: vec![ProcedureParam {
+            name: "metadata".to_string(),
+            type_name: "ANY?".to_string(),
+        }],
+        data: vec![vec![tx_meta]],
+    });
+
     let planner = QueryPlanner::with_context(store, graph, &registry, &params);
     let plan = planner.plan(&ast)?;
 
@@ -75,19 +93,22 @@ pub fn plan_query(
 
 // ── Result conversion to Bolt records ────────────────────────────────────────
 
-/// Convert a `QueryResult` into Bolt-protocol records, a query type tag, and a
-/// statistics map.
+/// Convert a `QueryResult` into Bolt-protocol records, a query type tag, a
+/// statistics map, and an optional trailing error.
 ///
-/// Returns `(records, query_type, stats_map)` where:
+/// Returns `(records, query_type, stats_map, trailing_error)`.
 /// - `records` is a `Vec<Vec<BoltValue>>`, one inner vec per result row,
 ///   with values in column order.
 /// - `query_type` is `"r"` (read-only), `"w"` (write-only), or `"rw"` (both).
 /// - `stats_map` is a `BoltMap` of non-zero mutation counters.
+/// - `trailing_error` is an optional `GqlError` from a per-row evaluation
+///   failure (e.g. division by zero) that terminated streaming after some
+///   rows had already been produced.
 pub fn result_to_records(
     result: &QueryResult,
     store: &InMemoryGraphStore,
     graph: &str,
-) -> (Vec<Vec<BoltValue>>, String, BoltMap) {
+) -> (Vec<Vec<BoltValue>>, String, BoltMap, Option<GqlError>) {
     let records: Vec<Vec<BoltValue>> = result
         .rows
         .iter()
@@ -106,7 +127,12 @@ pub fn result_to_records(
     let query_type = determine_query_type(&result.stats).to_string();
     let stats_map = stats_to_bolt_map(&result.stats);
 
-    (records, query_type, stats_map)
+    (
+        records,
+        query_type,
+        stats_map,
+        result.trailing_error.clone(),
+    )
 }
 
 // ── Value conversion (full: scalars + graph entities) ────────────────────────
@@ -240,14 +266,16 @@ fn bolt_structure_to_gql(tag: u8, fields: &[BoltValue]) -> Value {
     match tag {
         // Date: tag 0x44, 1 field (days since epoch)
         0x44 => decode_date(fields),
+        // Time with UTC offset: tag 0x54, 2 fields (nanos_since_midnight, offset_seconds)
+        0x54 => decode_time_with_offset(fields),
         // LocalTime: tag 0x74, 1 field (nanos since midnight)
         0x74 => decode_local_time(fields),
         // LocalDateTime: tag 0x64, 2 fields (epoch_seconds, nanos)
         0x64 => decode_local_datetime(fields),
-        // DateTime with zone ID: tag 0x49 (Bolt 4.3+) or 0x69 (legacy)
-        0x49 | 0x69 => decode_datetime_zone_id(fields),
-        // DateTime with offset: tag 0x46 (Bolt 4.3+) or 0x66 (legacy)
-        0x46 | 0x66 => decode_datetime_offset(fields),
+        // DateTime with zone ID: tag 0x69 (UTC mode, lowercase 'i') or 0x66 (wall-clock, lowercase 'f')
+        0x69 | 0x66 => decode_datetime_zone_id(fields),
+        // DateTime with offset: tag 0x49 (UTC mode, uppercase 'I') or 0x46 (wall-clock, uppercase 'F')
+        0x49 | 0x46 => decode_datetime_offset(fields),
         // Duration: tag 0x45, 4 fields (months, days, seconds, nanos)
         0x45 => decode_duration(fields),
         // Point2D: tag 0x58, 3 fields (srid, x, y)
@@ -302,6 +330,31 @@ fn decode_local_time(fields: &[BoltValue]) -> Value {
     let ns = (rem % 1_000_000_000) as i32;
     match jiff::civil::Time::new(h, m, s, ns) {
         Ok(t) => Value::LocalTime(t),
+        Err(_) => Value::Null,
+    }
+}
+
+/// Time with UTC offset (tag 0x54): 2 fields -- nanoseconds since midnight, offset_seconds.
+/// Returns a Value::Time (time + offset) representing a zoned time with no date component.
+fn decode_time_with_offset(fields: &[BoltValue]) -> Value {
+    let nanos = match fields.first().and_then(bolt_int) {
+        Some(n) => n,
+        None => return Value::Null,
+    };
+    let offset_secs = match fields.get(1).and_then(bolt_int) {
+        Some(o) => o,
+        None => return Value::Null,
+    };
+
+    let h = (nanos / 3_600_000_000_000) as i8;
+    let rem = nanos % 3_600_000_000_000;
+    let m = (rem / 60_000_000_000) as i8;
+    let rem = rem % 60_000_000_000;
+    let s = (rem / 1_000_000_000) as i8;
+    let ns = (rem % 1_000_000_000) as i32;
+
+    match jiff::civil::Time::new(h, m, s, ns) {
+        Ok(t) => Value::Time(t, offset_secs as i32),
         Err(_) => Value::Null,
     }
 }
@@ -441,11 +494,12 @@ fn decode_point2d(fields: &[BoltValue]) -> Value {
     Value::Point(GeoPoint {
         x,
         y,
+        z: None,
         crs: srid_to_crs(srid),
     })
 }
 
-/// Point3D (tag 0x59): 4 fields -- srid, x, y, z. (z is ignored for now.)
+/// Point3D (tag 0x59): 4 fields -- srid, x, y, z.
 fn decode_point3d(fields: &[BoltValue]) -> Value {
     let srid = match fields.first().and_then(bolt_int) {
         Some(s) => s,
@@ -459,11 +513,12 @@ fn decode_point3d(fields: &[BoltValue]) -> Value {
         Some(v) => v,
         None => return Value::Null,
     };
-    // z = fields.get(3) -- ignored because GeoPoint has no z field yet.
+    let z = fields.get(3).and_then(bolt_float);
 
     Value::Point(GeoPoint {
         x,
         y,
+        z,
         crs: srid_to_crs(srid),
     })
 }
@@ -525,7 +580,7 @@ mod tests {
         )
         .unwrap();
 
-        let (records, query_type, stats) = result_to_records(&result, &store, "default");
+        let (records, query_type, stats, _trailing) = result_to_records(&result, &store, "default");
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].len(), 2);
         assert_eq!(query_type, "r");
@@ -544,7 +599,7 @@ mod tests {
         )
         .unwrap();
 
-        let (records, query_type, stats) = result_to_records(&result, &store, "default");
+        let (records, query_type, stats, _trailing) = result_to_records(&result, &store, "default");
         assert_eq!(records.len(), 1);
         assert_eq!(query_type, "rw");
         assert!(!stats.is_empty());
@@ -762,10 +817,11 @@ mod tests {
     }
 
     #[test]
-    fn decode_datetime_zone_id_from_bolt_structure() {
+    fn decode_datetime_zone_id_tag_0x69() {
+        // 0x69 (lowercase 'i') = UTC-mode DateTimeZoneId: (epoch_secs, nanos, tz_string)
         let epoch_secs: i64 = 19737 * 86_400 + 10 * 3600 + 30 * 60;
         let bv = BoltValue::Structure {
-            tag: 0x49,
+            tag: 0x69,
             fields: vec![
                 BoltValue::Int(epoch_secs),
                 BoltValue::Int(0),
@@ -782,10 +838,11 @@ mod tests {
     }
 
     #[test]
-    fn decode_datetime_legacy_tag_0x69() {
+    fn decode_datetime_zone_id_tag_0x66() {
+        // 0x66 (lowercase 'f') = wall-clock DateTimeZoneId: (epoch_secs, nanos, tz_string)
         let epoch_secs: i64 = 19737 * 86_400 + 10 * 3600 + 30 * 60;
         let bv = BoltValue::Structure {
-            tag: 0x69,
+            tag: 0x66,
             fields: vec![
                 BoltValue::Int(epoch_secs),
                 BoltValue::Int(0),
@@ -874,6 +931,7 @@ mod tests {
         let expected = GeoPoint {
             x: -73.95,
             y: 40.78,
+            z: None,
             crs: Crs::Wgs84,
         };
         assert_eq!(val, Value::Point(expected));
@@ -893,6 +951,7 @@ mod tests {
         let expected = GeoPoint {
             x: 1.5,
             y: 2.5,
+            z: None,
             crs: Crs::Cartesian,
         };
         assert_eq!(val, Value::Point(expected));
@@ -913,6 +972,7 @@ mod tests {
         let expected = GeoPoint {
             x: 1.0,
             y: 2.0,
+            z: Some(3.0),
             crs: Crs::Wgs843d,
         };
         assert_eq!(val, Value::Point(expected));
@@ -967,9 +1027,10 @@ mod tests {
 
     #[test]
     fn roundtrip_datetime_zone_id() {
+        // UTC-mode zone name uses tag 0x69 (lowercase 'i')
         let epoch_secs: i64 = 19737 * 86_400 + 10 * 3600 + 30 * 60;
         let bolt_in = BoltValue::Structure {
-            tag: 0x49,
+            tag: 0x69,
             fields: vec![
                 BoltValue::Int(epoch_secs),
                 BoltValue::Int(0),
@@ -983,9 +1044,10 @@ mod tests {
 
     #[test]
     fn roundtrip_datetime_offset() {
+        // UTC-mode offset uses tag 0x49 (uppercase 'I')
         let epoch_secs: i64 = 19737 * 86_400 + 7 * 3600 + 30 * 60;
         let bolt_in = BoltValue::Structure {
-            tag: 0x46,
+            tag: 0x49,
             fields: vec![
                 BoltValue::Int(epoch_secs),
                 BoltValue::Int(0),
@@ -1057,7 +1119,7 @@ mod tests {
         )];
         let params = bolt_map_to_value_map(&bolt_params);
         let result = execute_query(&store, "default", "RETURN $d AS d", params, None).unwrap();
-        let (records, _, _) = result_to_records(&result, &store, "default");
+        let (records, _, _, _) = result_to_records(&result, &store, "default");
         assert_eq!(records.len(), 1);
         assert_eq!(
             records[0][0],
@@ -1085,7 +1147,7 @@ mod tests {
         )];
         let params = bolt_map_to_value_map(&bolt_params);
         let result = execute_query(&store, "default", "RETURN $d AS d", params, None).unwrap();
-        let (records, _, _) = result_to_records(&result, &store, "default");
+        let (records, _, _, _) = result_to_records(&result, &store, "default");
         assert_eq!(
             records[0][0],
             BoltValue::Structure {
@@ -1116,7 +1178,7 @@ mod tests {
         )];
         let params = bolt_map_to_value_map(&bolt_params);
         let result = execute_query(&store, "default", "RETURN $p AS p", params, None).unwrap();
-        let (records, _, _) = result_to_records(&result, &store, "default");
+        let (records, _, _, _) = result_to_records(&result, &store, "default");
         assert_eq!(
             records[0][0],
             BoltValue::Structure {
@@ -1128,5 +1190,35 @@ mod tests {
                 ],
             }
         );
+    }
+
+    #[test]
+    fn streaming_error_division_by_zero_returns_partial_rows() {
+        let store = InMemoryGraphStore::new();
+        let result = execute_query(
+            &store,
+            "default",
+            "UNWIND [1, 0, 2] AS x RETURN 10 / x",
+            HashMap::new(),
+            None,
+        );
+        match result {
+            Ok(qr) => {
+                // We should get 1 partial row (10/1=10), then a trailing error.
+                assert_eq!(qr.rows.len(), 1, "expected 1 partial row");
+                assert!(
+                    qr.trailing_error.is_some(),
+                    "expected trailing_error for division by zero"
+                );
+                let err_msg = qr.trailing_error.unwrap().to_string();
+                assert!(
+                    err_msg.contains("division by zero"),
+                    "error should mention division by zero, got: {err_msg}"
+                );
+            }
+            Err(e) => {
+                panic!("expected Ok with partial results, got Err: {e}");
+            }
+        }
     }
 }

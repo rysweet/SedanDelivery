@@ -194,6 +194,7 @@ pub fn scalar_value_to_bolt(val: &Value) -> BoltValue {
         // ── Temporal types ───────────────────────────────────────────────
         Value::Date(d) => date_to_bolt(d),
         Value::LocalTime(t) => local_time_to_bolt(t),
+        Value::Time(t, offset_secs) => zoned_time_to_bolt(t, *offset_secs),
         Value::LocalDateTime(dt) => local_datetime_to_bolt(dt),
         Value::DateTime(zoned) => datetime_to_bolt(zoned),
         Value::Duration(dur) => duration_to_bolt(dur),
@@ -261,25 +262,69 @@ fn local_datetime_to_bolt(dt: &jiff::civil::DateTime) -> BoltValue {
     }
 }
 
-/// DateTime (zoned): Bolt 4.3+ encoding.
+/// Zoned time: Bolt Time encoding (tag 0x54).
+///
+/// 2 fields: nanoseconds_since_midnight, offset_seconds.
+/// Used for `Value::Time` which represents a time-of-day with UTC offset
+/// but no date component.
+fn zoned_time_to_bolt(t: &jiff::civil::Time, offset_secs: i32) -> BoltValue {
+    let nanos_since_midnight = (t.hour() as i64) * 3_600_000_000_000
+        + (t.minute() as i64) * 60_000_000_000
+        + (t.second() as i64) * 1_000_000_000
+        + (t.subsec_nanosecond() as i64);
+    BoltValue::Structure {
+        tag: 0x54,
+        fields: vec![
+            BoltValue::Int(nanos_since_midnight),
+            BoltValue::Int(offset_secs as i64),
+        ],
+    }
+}
+
+/// DateTime (zoned): Bolt UTC-mode encoding (patch_bolt: utc).
 ///
 /// When an IANA timezone name is available:
-///   tag 0x49 (DateTimeZoneId), 3 fields: epoch_seconds, nanos, tz_id string.
+///   tag 0x69 (DateTimeZoneId), 3 fields: epoch_seconds, nanos, tz_id string.
 ///
 /// When only a fixed UTC offset is available:
-///   tag 0x46 (DateTimeZoneOffset), 3 fields: epoch_seconds, nanos, offset_seconds.
+///   tag 0x49 (DateTimeZoneOffset), 3 fields: epoch_seconds, nanos, offset_seconds.
 ///
-/// Note: Bolt v1-4.2 used tags 0x69/0x66 (lowercase). Bolt 4.3+ changed to
-/// 0x49/0x46 (uppercase). Since we negotiate Bolt 4.3+, we use the new tags.
+/// Tag convention (confirmed from the Neo4j Python driver source):
+///   - Lowercase tags for zone name:  0x66 (`f`, wall-clock), 0x69 (`i`, UTC)
+///   - Uppercase tags for offset:     0x46 (`F`, wall-clock), 0x49 (`I`, UTC)
+/// Since we negotiate patch_bolt: ["utc"], we use UTC-mode tags 0x69 / 0x49.
 fn datetime_to_bolt(zoned: &jiff::Zoned) -> BoltValue {
     let ts = zoned.timestamp();
-    let epoch_seconds = ts.as_second();
-    let nanos_adj = ts.subsec_nanosecond() as i64;
+    // jiff's as_second() truncates toward zero, which for negative timestamps
+    // can produce a negative subsec_nanosecond(). Bolt requires nanoseconds
+    // to be 0..999999999, so normalize: floor-divide the seconds and ensure
+    // nanoseconds are non-negative.
+    let raw_secs = ts.as_second();
+    let raw_nanos = ts.subsec_nanosecond();
+    let (epoch_seconds, nanos_adj) = if raw_nanos < 0 {
+        (raw_secs - 1, (raw_nanos + 1_000_000_000) as i64)
+    } else {
+        (raw_secs, raw_nanos as i64)
+    };
 
     if let Some(tz_name) = zoned.time_zone().iana_name() {
-        // IANA timezone name available: use DateTimeZoneId (tag 0x49).
+        // The IANA "Factory" timezone is valid in jiff's bundled tz database, but
+        // pytz (used by the Neo4j Python driver) doesn't recognize it, causing
+        // hydration failures. Encode it as a fixed-offset DateTime instead.
+        if tz_name == "Factory" {
+            let offset_seconds = zoned.offset().seconds() as i64;
+            return BoltValue::Structure {
+                tag: 0x49,
+                fields: vec![
+                    BoltValue::Int(epoch_seconds),
+                    BoltValue::Int(nanos_adj),
+                    BoltValue::Int(offset_seconds),
+                ],
+            };
+        }
+        // IANA timezone name available: use DateTimeZoneId (tag 0x69, lowercase 'i').
         BoltValue::Structure {
-            tag: 0x49,
+            tag: 0x69,
             fields: vec![
                 BoltValue::Int(epoch_seconds),
                 BoltValue::Int(nanos_adj),
@@ -287,10 +332,10 @@ fn datetime_to_bolt(zoned: &jiff::Zoned) -> BoltValue {
             ],
         }
     } else {
-        // Fixed offset only: use DateTimeZoneOffset (tag 0x46).
+        // Fixed offset only: use DateTimeZoneOffset (tag 0x49, uppercase 'I').
         let offset_seconds = zoned.offset().seconds() as i64;
         BoltValue::Structure {
-            tag: 0x46,
+            tag: 0x49,
             fields: vec![
                 BoltValue::Int(epoch_seconds),
                 BoltValue::Int(nanos_adj),
@@ -317,7 +362,8 @@ fn duration_to_bolt(dur: &gql_core::types::CypherDuration) -> BoltValue {
     }
 }
 
-/// Point: tag 0x58, 3 fields (srid, x, y).
+/// Point2D: tag 0x58, 3 fields (srid, x, y).
+/// Point3D: tag 0x59, 4 fields (srid, x, y, z).
 fn point_to_bolt(p: &GeoPoint) -> BoltValue {
     let srid: i64 = match p.crs {
         Crs::Wgs84 => 4326,
@@ -325,13 +371,25 @@ fn point_to_bolt(p: &GeoPoint) -> BoltValue {
         Crs::Cartesian => 7203,
         Crs::Cartesian3d => 9157,
     };
-    BoltValue::Structure {
-        tag: 0x58,
-        fields: vec![
-            BoltValue::Int(srid),
-            BoltValue::Float(p.x),
-            BoltValue::Float(p.y),
-        ],
+    if let Some(z) = p.z {
+        BoltValue::Structure {
+            tag: 0x59,
+            fields: vec![
+                BoltValue::Int(srid),
+                BoltValue::Float(p.x),
+                BoltValue::Float(p.y),
+                BoltValue::Float(z),
+            ],
+        }
+    } else {
+        BoltValue::Structure {
+            tag: 0x58,
+            fields: vec![
+                BoltValue::Int(srid),
+                BoltValue::Float(p.x),
+                BoltValue::Float(p.y),
+            ],
+        }
     }
 }
 
@@ -465,6 +523,7 @@ mod tests {
         let p = GeoPoint {
             x: -73.95,
             y: 40.78,
+            z: None,
             crs: Crs::Wgs84,
         };
         let bolt = scalar_value_to_bolt(&Value::Point(p));
@@ -484,6 +543,7 @@ mod tests {
         let p = GeoPoint {
             x: 1.0,
             y: 2.0,
+            z: None,
             crs: Crs::Cartesian,
         };
         let bolt = scalar_value_to_bolt(&Value::Point(p));
@@ -532,8 +592,8 @@ mod tests {
     }
 
     #[test]
-    fn datetime_zoned_uses_tag_0x49() {
-        // Zoned datetime with IANA timezone should use tag 0x49 (Bolt 4.3+)
+    fn datetime_zoned_uses_tag_0x69() {
+        // Zoned datetime with IANA timezone should use tag 0x69 (UTC mode, lowercase 'i')
         let zoned = jiff::civil::DateTime::new(2024, 1, 15, 10, 30, 0, 0)
             .unwrap()
             .to_zoned(jiff::tz::TimeZone::get("UTC").unwrap())
@@ -541,8 +601,8 @@ mod tests {
         let bolt = scalar_value_to_bolt(&Value::DateTime(Box::new(zoned)));
         if let BoltValue::Structure { tag, fields } = &bolt {
             assert_eq!(
-                *tag, 0x49,
-                "Bolt 4.3+ DateTimeZoneId tag should be 0x49, not 0x69"
+                *tag, 0x69,
+                "UTC-mode DateTimeZoneId tag should be 0x69 (lowercase 'i')"
             );
             assert_eq!(fields.len(), 3);
             // epoch seconds for 2024-01-15T10:30:00Z
@@ -556,15 +616,18 @@ mod tests {
     }
 
     #[test]
-    fn datetime_fixed_offset_uses_tag_0x46() {
-        // DateTime with fixed offset (no IANA name) should use tag 0x46
+    fn datetime_fixed_offset_uses_tag_0x49() {
+        // DateTime with fixed offset (no IANA name) should use tag 0x49 (uppercase 'I')
         let zoned = jiff::civil::DateTime::new(2024, 1, 15, 10, 30, 0, 0)
             .unwrap()
             .to_zoned(jiff::tz::TimeZone::fixed(jiff::tz::offset(3)))
             .unwrap();
         let bolt = scalar_value_to_bolt(&Value::DateTime(Box::new(zoned)));
         if let BoltValue::Structure { tag, fields } = &bolt {
-            assert_eq!(*tag, 0x46, "fixed-offset DateTime should use tag 0x46");
+            assert_eq!(
+                *tag, 0x49,
+                "UTC-mode fixed-offset DateTime should use tag 0x49 (uppercase 'I')"
+            );
             assert_eq!(fields.len(), 3);
             // epoch seconds for 2024-01-15T10:30:00+03:00 = 2024-01-15T07:30:00Z
             let expected_secs = 19737_i64 * 86400 + 7 * 3600 + 30 * 60;

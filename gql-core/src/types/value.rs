@@ -56,10 +56,16 @@ pub enum Value {
     /// Local time: hour + minute + second + nanosecond, no date, no time zone.
     LocalTime(civil::Time),
 
+    /// Zoned time: time-of-day + UTC offset in seconds. No date component.
+    /// Distinct from DateTime so that Bolt Time (tag 0x54) values round-trip
+    /// correctly without being confused with DateTime values that happen to
+    /// have an epoch date.
+    Time(civil::Time, i32),
+
     /// Local date-time: date + time, no time zone.
     LocalDateTime(civil::DateTime),
 
-    /// Zoned date-time: date + time + IANA time zone identifier.
+    /// Zoned date-time: date + time + IANA time zone identifier or fixed offset.
     /// Heap-allocated because `Zoned` is 40 bytes.
     DateTime(Box<Zoned>),
 
@@ -91,8 +97,9 @@ pub enum Value {
 /// A geographic point with coordinate reference system tag.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct GeoPoint {
-    pub x: f64, // longitude (WGS-84) or easting (cartesian)
-    pub y: f64, // latitude  (WGS-84) or northing (cartesian)
+    pub x: f64,         // longitude (WGS-84) or easting (cartesian)
+    pub y: f64,         // latitude  (WGS-84) or northing (cartesian)
+    pub z: Option<f64>, // height (WGS-84 3D) or elevation (Cartesian 3D)
     pub crs: Crs,
 }
 
@@ -102,12 +109,10 @@ pub enum Crs {
     /// `srid:4326` — WGS-84 geographic (latitude/longitude)
     Wgs84,
     /// `srid:4979` — WGS-84 3D geographic (latitude/longitude/height)
-    /// NOTE: GeoPoint has no z-field yet; this variant is reserved for Phase N.
     Wgs843d,
     /// `srid:7203` — Cartesian 2D
     Cartesian,
     /// `srid:9157` — Cartesian 3D
-    /// NOTE: GeoPoint has no z-field yet; this variant is reserved for Phase N.
     Cartesian3d,
 }
 
@@ -124,6 +129,7 @@ impl PartialEq for Value {
             (Self::Str(a), Self::Str(b)) => a == b,
             (Self::Date(a), Self::Date(b)) => a == b,
             (Self::LocalTime(a), Self::LocalTime(b)) => a == b,
+            (Self::Time(at, ao), Self::Time(bt, bo)) => at == bt && ao == bo,
             (Self::LocalDateTime(a), Self::LocalDateTime(b)) => a == b,
             (Self::DateTime(a), Self::DateTime(b)) => a == b,
             // CypherDuration: structural field equality
@@ -160,6 +166,7 @@ impl Value {
             Self::Str(_) => "String",
             Self::Date(_) => "Date",
             Self::LocalTime(_) => "LocalTime",
+            Self::Time(_, _) => "Time",
             Self::LocalDateTime(_) => "LocalDateTime",
             Self::DateTime(_) => "DateTime",
             Self::Duration(_) => "Duration",
@@ -176,6 +183,26 @@ impl Value {
     #[inline]
     pub fn is_null(&self) -> bool {
         matches!(self, Self::Null)
+    }
+
+    /// If this is a `Time(t, offset)`, convert to a `DateTime` at epoch date
+    /// (1970-01-01) so that code expecting DateTime can process it uniformly.
+    /// Returns `self` unchanged for all other variants.
+    pub fn time_to_datetime(self) -> Self {
+        match self {
+            Self::Time(t, offset_secs) => {
+                let offset =
+                    jiff::tz::Offset::from_seconds(offset_secs).unwrap_or(jiff::tz::Offset::UTC);
+                let tz = jiff::tz::TimeZone::fixed(offset);
+                let epoch = civil::Date::new(1970, 1, 1).expect("valid epoch");
+                let dt = epoch.to_datetime(t);
+                match dt.to_zoned(tz) {
+                    Ok(zoned) => Self::DateTime(Box::new(zoned)),
+                    Err(_) => Self::Null,
+                }
+            }
+            other => other,
+        }
     }
 
     /// Coerce to `f64` for arithmetic. Returns `None` for non-numeric types.
@@ -305,6 +332,34 @@ impl fmt::Display for Value {
             Self::Str(s) => write!(f, "{s:?}"),
             Self::Date(d) => write!(f, "{d}"),
             Self::LocalTime(t) => write!(f, "{t}"),
+            Self::Time(t, offset_secs) => {
+                let h_off = offset_secs / 3600;
+                let m_off = (offset_secs.abs() % 3600) / 60;
+                let offset_str = format!("{:+03}:{:02}", h_off, m_off);
+                let ns = t.subsec_nanosecond();
+                if ns != 0 {
+                    let ns_str = format!("{:09}", ns);
+                    let ns_trimmed = ns_str.trim_end_matches('0');
+                    write!(
+                        f,
+                        "{:02}:{:02}:{:02}.{}{}",
+                        t.hour(),
+                        t.minute(),
+                        t.second(),
+                        ns_trimmed,
+                        offset_str
+                    )
+                } else {
+                    write!(
+                        f,
+                        "{:02}:{:02}:{:02}{}",
+                        t.hour(),
+                        t.minute(),
+                        t.second(),
+                        offset_str
+                    )
+                }
+            }
             Self::LocalDateTime(dt) => write!(f, "{dt}"),
             Self::DateTime(dt) => {
                 let civil_dt = jiff::civil::DateTime::from(dt.as_ref());
