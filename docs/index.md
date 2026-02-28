@@ -10,6 +10,7 @@ A Rust GQL/Cypher query engine — a clean-room, MIT/Apache-2.0-licensed replace
 ## Guides
 
 - [Tutorial](TUTORIAL) — Getting started with SedanDelivery
+- [Validation Guide](validation) — Full test suite: what was validated, how to re-run, CI tiers, benchmark baselines
 - [Benchmarks](benchmarks) — How to run and interpret performance benchmarks
 - [Research Notes](RESEARCH) — Security analysis and design rationale
 

@@ -158,10 +158,28 @@ Cleanup: remove the `deploy` label, or run the **Undeploy** workflow.
 
 ## Tests
 
+**100% openCypher TCK compliance — 3903/3903 scenarios.**
+
+```bash
+bash scripts/validate.sh           # full validation suite (all tiers, ~5 min)
+bash scripts/validate.sh --fast    # Tier 1+2 only (fmt + clippy + 128 tests, ~2 min)
+bash scripts/validate.sh --tck     # include TCK 3903 scenarios (~3 min extra)
 ```
-cargo test -p gql-core --lib       325+ unit tests
-cargo test --test tck              3150/3806 openCypher TCK scenarios (82.8%)
-```
+
+| Layer | Count | What it validates |
+|-------|-------|------------------|
+| Unit tests | 385 | Parser, planner, executor, storage, budget |
+| End-to-end + pipeline | 46 | Full parse → plan → execute → result |
+| Data integrity | 23 | MERGE atomicity, property round-trips, referential integrity |
+| Adversarial | 11 | DoS guards: size limits, depth limits, budget enforcement |
+| Stress + scale | 8 | 10 K node load, label scan, budget at scale |
+| LDBC SNB | 37 | IC1–IC14 complex reads; all 8 insert + 8 delete operations |
+| Module integration | 18 | GQL command pipeline (GQL.QUERY, GQL.MUTATE, etc.) |
+| Wire format | 28 | JSON serialisation for all value types |
+| openCypher TCK | 3903 | 100% compliance, all 195 feature files |
+
+See [docs/validation.md](docs/validation.md) for the full guide: what each suite proves,
+CI tiers, how to re-run from scratch, and performance baseline tracking.
 
 ## License
 
