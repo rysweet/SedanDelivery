@@ -12,7 +12,9 @@ import {
   Upload,
   CircleStop,
   Circle,
+  LogOut,
 } from 'lucide-react'
+import { useMsal } from '@azure/msal-react'
 import { useGraphStore } from '../../store/graph'
 import { Button } from '../ui/Button'
 import { Tooltip } from '../ui/Tooltip'
@@ -85,6 +87,9 @@ export function Toolbar({
   const schemaPanelOpen = useGraphStore((s) => s.schemaPanelOpen)
   const selectedNodeId = useGraphStore((s) => s.selectedNodeId)
   const selectedEdgeId = useGraphStore((s) => s.selectedEdgeId)
+
+  const { instance, accounts } = useMsal()
+  const userName = accounts[0]?.name ?? accounts[0]?.username ?? null
 
   const hasSelection = selectedNodeId !== null || selectedEdgeId !== null
 
@@ -233,9 +238,23 @@ export function Toolbar({
         <Upload size={16} />
       </ToolbarButton>
 
-      {/* Graph selector pushed to right */}
-      <div className="ml-auto">
+      {/* Graph selector + user info pushed to right */}
+      <div className="ml-auto flex items-center gap-2">
         <GraphSelector />
+        {userName && (
+          <>
+            <Separator />
+            <div className="flex items-center gap-2 text-xs text-gray-400">
+              <span className="truncate max-w-32">{userName}</span>
+              <ToolbarButton
+                tooltip="Sign out"
+                onClick={() => instance.logoutRedirect()}
+              >
+                <LogOut size={16} />
+              </ToolbarButton>
+            </div>
+          </>
+        )}
       </div>
     </div>
   )
