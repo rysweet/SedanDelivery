@@ -15,6 +15,7 @@ import type {
   ImportGraphRequest,
 } from '../types/api'
 import type { GraphNode, GraphEdge } from '../types/graph'
+import { useAuthStore } from '../store/auth'
 
 const BASE_URL = import.meta.env.VITE_API_URL ?? ''
 
@@ -30,13 +31,19 @@ class ApiError extends Error {
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const { token, setRequiresAuth } = useAuthStore.getState()
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    ...(init?.headers as Record<string, string> | undefined),
+  }
+  if (token) {
+    headers['Authorization'] = 'Bearer ' + token
+  }
+
   const url = `${BASE_URL}${path}`
   const response = await fetch(url, {
-    headers: {
-      'Content-Type': 'application/json',
-      ...init?.headers,
-    },
     ...init,
+    headers,
   })
 
   if (!response.ok) {
@@ -48,6 +55,10 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
       detail = body.detail
     } catch {
       // ignore JSON parse error
+    }
+    if (response.status === 401) {
+      setRequiresAuth(true)
+      throw new ApiError(401, 'Authentication required', detail)
     }
     throw new ApiError(response.status, errorMessage, detail)
   }

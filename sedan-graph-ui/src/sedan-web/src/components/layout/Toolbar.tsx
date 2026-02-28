@@ -12,8 +12,11 @@ import {
   Upload,
   CircleStop,
   Circle,
+  Activity,
+  Lock,
 } from 'lucide-react'
 import { useGraphStore } from '../../store/graph'
+import { useAuthStore } from '../../store/auth'
 import { Button } from '../ui/Button'
 import { Tooltip } from '../ui/Tooltip'
 import { GraphSelector } from '../graphs/GraphSelector'
@@ -85,6 +88,9 @@ export function Toolbar({
   const schemaPanelOpen = useGraphStore((s) => s.schemaPanelOpen)
   const selectedNodeId = useGraphStore((s) => s.selectedNodeId)
   const selectedEdgeId = useGraphStore((s) => s.selectedEdgeId)
+
+  const token = useAuthStore((s) => s.token)
+  const clearToken = useAuthStore((s) => s.clearToken)
 
   const hasSelection = selectedNodeId !== null || selectedEdgeId !== null
 
@@ -232,6 +238,21 @@ export function Toolbar({
       <ToolbarButton tooltip="Import Graph" onClick={onImport}>
         <Upload size={16} />
       </ToolbarButton>
+      <ToolbarButton
+        tooltip="Service Status"
+        onClick={() => { window.location.hash = '#/status' }}
+      >
+        <Activity size={16} />
+      </ToolbarButton>
+
+      {token && (
+        <>
+          <Separator />
+          <ToolbarButton tooltip="Authenticated — click to disconnect" onClick={clearToken}>
+            <Lock size={16} />
+          </ToolbarButton>
+        </>
+      )}
 
       {/* Graph selector pushed to right */}
       <div className="ml-auto">
