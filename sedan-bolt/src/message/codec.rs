@@ -29,9 +29,7 @@ pub fn chunk_encode(msg_bytes: &[u8], out: &mut Vec<u8>) {
 /// Reads 2-byte big-endian chunk length headers followed by chunk data,
 /// concatenating all chunks until a zero-length chunk (`0x00 0x00`) is
 /// encountered. Returns the reassembled message bytes.
-pub async fn chunk_decode<R: AsyncRead + Unpin>(
-    reader: &mut R,
-) -> Result<Vec<u8>, std::io::Error> {
+pub async fn chunk_decode<R: AsyncRead + Unpin>(reader: &mut R) -> Result<Vec<u8>, std::io::Error> {
     let mut message = Vec::new();
     loop {
         let mut len_buf = [0u8; 2];
@@ -102,9 +100,7 @@ mod tests {
     #[test]
     fn multi_chunk_roundtrip() {
         // Create a message larger than MAX_CHUNK_SIZE so it spans multiple chunks.
-        let msg: Vec<u8> = (0..MAX_CHUNK_SIZE + 100)
-            .map(|i| (i % 256) as u8)
-            .collect();
+        let msg: Vec<u8> = (0..MAX_CHUNK_SIZE + 100).map(|i| (i % 256) as u8).collect();
         let mut wire = Vec::new();
         chunk_encode(&msg, &mut wire);
 

@@ -17,6 +17,7 @@ use crate::types::Value;
 // ── Per-graph state ────────────────────────────────────────────────────────────
 
 /// All mutable state for a single named graph.
+#[derive(Clone)]
 struct GraphInner {
     nodes: HashMap<u64, NodeData>,
     edges: HashMap<u64, EdgeData>,
@@ -120,6 +121,37 @@ impl InMemoryGraphStore {
         self.inner
             .write()
             .map_err(|e| StorageError::backend(format!("lock poisoned (write): {e}")))
+    }
+
+    /// Create a snapshot containing deep copies of the specified graphs.
+    ///
+    /// The snapshot is an independent `InMemoryGraphStore` that can be mutated
+    /// without affecting the original. Graphs that do not exist in this store
+    /// are silently skipped.
+    pub fn snapshot(&self, graphs: &[&str]) -> Result<InMemoryGraphStore, StorageError> {
+        let guard = self.read()?;
+        let mut snapshot_inner = HashMap::new();
+        for &name in graphs {
+            if let Some(graph) = guard.get(name) {
+                snapshot_inner.insert(name.to_string(), graph.clone());
+            }
+        }
+        Ok(InMemoryGraphStore {
+            inner: RwLock::new(snapshot_inner),
+        })
+    }
+
+    /// Merge all graphs from `other` into this store, replacing existing graphs.
+    ///
+    /// Used to promote a snapshot on COMMIT: every graph in the snapshot
+    /// overwrites the corresponding graph in the main store.
+    pub fn merge_from(&self, other: &InMemoryGraphStore) -> Result<(), StorageError> {
+        let other_guard = other.read()?;
+        let mut self_guard = self.write()?;
+        for (name, graph) in other_guard.iter() {
+            self_guard.insert(name.clone(), graph.clone());
+        }
+        Ok(())
     }
 
     /// Helper: get a reference to a graph or return `GraphNotFound`.
@@ -1353,5 +1385,70 @@ mod tests {
         assert_eq!(out_ids, vec![eid]);
         let in_ids = store.in_edge_ids("test", b).unwrap();
         assert_eq!(in_ids, vec![eid]);
+    }
+
+    // ── Snapshot / merge ─────────────────────────────────────────────────────
+
+    #[test]
+    fn snapshot_creates_independent_copy() {
+        let store = make_store();
+        let mut props = HashMap::new();
+        props.insert("name".to_string(), Value::Str("Alice".into()));
+        let id = store
+            .create_node("test", vec!["Person".to_string()], props)
+            .unwrap();
+
+        let snap = store.snapshot(&["test"]).unwrap();
+
+        // Snapshot has the same node
+        let node = snap.get_node("test", id).unwrap().unwrap();
+        assert_eq!(node.properties["name"], Value::Str("Alice".into()));
+
+        // Mutate the snapshot -- original is unaffected
+        snap.create_node("test", vec!["Extra".to_string()], HashMap::new())
+            .unwrap();
+        let snap_stats = snap.graph_stats("test").unwrap();
+        let orig_stats = store.graph_stats("test").unwrap();
+        assert_eq!(snap_stats.node_count, 2);
+        assert_eq!(orig_stats.node_count, 1);
+    }
+
+    #[test]
+    fn snapshot_skips_missing_graphs() {
+        let store = make_store();
+        let snap = store.snapshot(&["test", "nonexistent"]).unwrap();
+        assert!(snap.graph_exists("test").unwrap());
+        assert!(!snap.graph_exists("nonexistent").unwrap());
+    }
+
+    #[test]
+    fn merge_from_overwrites_existing_graph() {
+        let store = make_store();
+        store
+            .create_node("test", vec!["Original".to_string()], HashMap::new())
+            .unwrap();
+        assert_eq!(store.graph_stats("test").unwrap().node_count, 1);
+
+        let snap = store.snapshot(&["test"]).unwrap();
+        snap.create_node("test", vec!["Added".to_string()], HashMap::new())
+            .unwrap();
+        assert_eq!(snap.graph_stats("test").unwrap().node_count, 2);
+
+        store.merge_from(&snap).unwrap();
+        assert_eq!(store.graph_stats("test").unwrap().node_count, 2);
+    }
+
+    #[test]
+    fn merge_from_adds_new_graphs() {
+        let store = make_store();
+        let other = InMemoryGraphStore::new();
+        other.create_graph("new_graph").unwrap();
+        other
+            .create_node("new_graph", vec![], HashMap::new())
+            .unwrap();
+
+        store.merge_from(&other).unwrap();
+        assert!(store.graph_exists("new_graph").unwrap());
+        assert_eq!(store.graph_stats("new_graph").unwrap().node_count, 1);
     }
 }

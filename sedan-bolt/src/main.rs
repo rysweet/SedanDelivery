@@ -36,7 +36,9 @@ async fn main() {
 
         tokio::spawn(async move {
             tracing::info!(%peer_addr, conn_id, "new connection");
-            if let Err(e) = sedan_bolt::connection::session::run(stream, store, conn_id, bookmark).await {
+            if let Err(e) =
+                sedan_bolt::connection::session::run(stream, store, conn_id, bookmark).await
+            {
                 tracing::warn!(%peer_addr, conn_id, "session error: {}", e);
             }
             tracing::info!(%peer_addr, conn_id, "connection closed");

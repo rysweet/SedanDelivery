@@ -47,6 +47,7 @@ pub async fn run(
         global_bookmark,
         tx_metadata: Vec::new(),
         tx_timeout: None,
+        tx_store: None,
     };
 
     // Message loop

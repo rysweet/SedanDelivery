@@ -45,6 +45,10 @@ pub struct Session {
     pub tx_metadata: BoltMap,
     /// TX-level timeout set via BEGIN extra map (milliseconds).
     pub tx_timeout: Option<u64>,
+    /// Snapshot store for explicit transactions. When set, RUN executes
+    /// against this store instead of the main store. COMMIT merges it back,
+    /// ROLLBACK discards it.
+    pub tx_store: Option<Arc<InMemoryGraphStore>>,
 }
 
 pub struct PendingQuery {
@@ -134,10 +138,7 @@ pub async fn handle_message(
 // -- Bookmark validation -----------------------------------------------------
 
 /// Known valid bookmark prefixes. Bookmarks must start with one of these.
-const VALID_BOOKMARK_PREFIXES: &[&str] = &[
-    "sedan:tx:",
-    "neo4j:bookmark:",
-];
+const VALID_BOOKMARK_PREFIXES: &[&str] = &["sedan:tx:", "neo4j:bookmark:"];
 
 /// Check whether a bookmark string has a recognized format.
 fn is_valid_bookmark(bookmark: &str) -> bool {
@@ -273,11 +274,9 @@ async fn handle_run(
     // Detect EXPLAIN / PROFILE prefix (case-insensitive)
     let trimmed = query.trim();
     tracing::debug!(query = %trimmed, "handle_run query");
-    let is_explain = trimmed.len() >= 8
-        && trimmed[..8].eq_ignore_ascii_case("EXPLAIN ");
-    let is_profile = !is_explain
-        && trimmed.len() >= 8
-        && trimmed[..8].eq_ignore_ascii_case("PROFILE ");
+    let is_explain = trimmed.len() >= 8 && trimmed[..8].eq_ignore_ascii_case("EXPLAIN ");
+    let is_profile =
+        !is_explain && trimmed.len() >= 8 && trimmed[..8].eq_ignore_ascii_case("PROFILE ");
     let actual_query = if is_explain {
         trimmed[8..].to_string()
     } else if is_profile {
@@ -292,21 +291,37 @@ async fn handle_run(
         .to_string();
 
     let run_metadata = extract_tx_metadata(&extra);
-    let timeout_ms = extra.get_int("tx_timeout").map(|v| v as u64).or(session.tx_timeout);
+    let timeout_ms = extra
+        .get_int("tx_timeout")
+        .map(|v| v as u64)
+        .or(session.tx_timeout);
 
     let value_params = bridge::executor::bolt_map_to_value_map(&params);
 
+    // When inside an explicit transaction, execute against the snapshot store
+    // so that mutations are isolated until COMMIT.
+    let effective_store: Arc<InMemoryGraphStore> = match &session.tx_store {
+        Some(ts)
+            if matches!(
+                session.state,
+                ServerState::TxReady | ServerState::TxStreaming
+            ) =>
+        {
+            Arc::clone(ts)
+        }
+        _ => Arc::clone(&session.store),
+    };
+
     // EXPLAIN: plan only, no execution
     if is_explain {
-        let store = Arc::clone(&session.store);
+        let store = Arc::clone(&effective_store);
         let g = graph.clone();
         let q = actual_query.clone();
         let p = value_params.clone();
-        let plan_result = tokio::task::spawn_blocking(move || {
-            bridge::executor::plan_query(&store, &g, &q, p)
-        })
-        .await
-        .map_err(|e| ProtocolError::Internal(e.to_string()))?;
+        let plan_result =
+            tokio::task::spawn_blocking(move || bridge::executor::plan_query(&store, &g, &q, p))
+                .await
+                .map_err(|e| ProtocolError::Internal(e.to_string()))?;
 
         match plan_result {
             Ok(operator) => {
@@ -342,13 +357,13 @@ async fn handle_run(
         }
     }
 
-    let store = Arc::clone(&session.store);
+    let store = Arc::clone(&effective_store);
     let graph_clone = graph.clone();
     let query_clone = actual_query.clone();
 
     // For PROFILE, also get the plan
     let profile_plan = if is_profile {
-        let store2 = Arc::clone(&session.store);
+        let store2 = Arc::clone(&effective_store);
         let g2 = graph.clone();
         let q2 = actual_query.clone();
         let p2 = value_params.clone();
@@ -363,7 +378,13 @@ async fn handle_run(
     };
 
     let result = tokio::task::spawn_blocking(move || {
-        bridge::executor::execute_query(&store, &graph_clone, &query_clone, value_params, timeout_ms)
+        bridge::executor::execute_query(
+            &store,
+            &graph_clone,
+            &query_clone,
+            value_params,
+            timeout_ms,
+        )
     })
     .await
     .map_err(|e| ProtocolError::Internal(format!("spawn_blocking join error: {}", e)))?;
@@ -371,7 +392,7 @@ async fn handle_run(
     match result {
         Ok(qr) => {
             let (records, query_type, stats) =
-                bridge::executor::result_to_records(&qr, &session.store, &graph);
+                bridge::executor::result_to_records(&qr, &effective_store, &graph);
 
             let fields: Vec<BoltValue> = qr
                 .columns
@@ -433,14 +454,28 @@ fn operator_to_plan_map(
     _is_profile: bool,
     _depth: usize,
 ) -> BoltValue {
-    let op_type = format!("{:?}", op).split('(').next().unwrap_or("Unknown").split('{').next().unwrap_or("Unknown").trim().to_string();
+    let op_type = format!("{:?}", op)
+        .split('(')
+        .next()
+        .unwrap_or("Unknown")
+        .split('{')
+        .next()
+        .unwrap_or("Unknown")
+        .trim()
+        .to_string();
     let mut entries: Vec<(String, BoltValue)> = vec![
         ("operatorType".to_string(), BoltValue::String(op_type)),
         ("identifiers".to_string(), BoltValue::List(vec![])),
-        ("args".to_string(), BoltValue::Map(vec![
-            ("runtime".to_string(), BoltValue::String("INTERPRETED".to_string())),
-            ("EstimatedRows".to_string(), BoltValue::Float(1.0)),
-        ])),
+        (
+            "args".to_string(),
+            BoltValue::Map(vec![
+                (
+                    "runtime".to_string(),
+                    BoltValue::String("INTERPRETED".to_string()),
+                ),
+                ("EstimatedRows".to_string(), BoltValue::Float(1.0)),
+            ]),
+        ),
         ("children".to_string(), BoltValue::List(vec![])),
     ];
     BoltValue::Map(entries)
@@ -448,10 +483,7 @@ fn operator_to_plan_map(
 
 // -- PULL --------------------------------------------------------------------
 
-fn handle_pull(
-    session: &mut Session,
-    extra: BoltMap,
-) -> Result<Vec<ServerMessage>, ProtocolError> {
+fn handle_pull(session: &mut Session, extra: BoltMap) -> Result<Vec<ServerMessage>, ProtocolError> {
     let n = extra.get_int("n").unwrap_or(-1);
 
     let pending = match session.pending_result.as_mut() {
@@ -558,6 +590,22 @@ fn handle_begin(
     session.tx_metadata = extract_tx_metadata(&extra);
     session.tx_timeout = extra.get_int("tx_timeout").map(|v| v as u64);
 
+    // If the BEGIN specifies a database, update the session's current graph so
+    // that subsequent RUN messages within the TX use the correct graph.
+    if let Some(db) = extra.get_str("db") {
+        if !db.is_empty() {
+            session.current_graph = db.to_string();
+        }
+    }
+
+    // Create a copy-on-write snapshot of the target graph so that mutations
+    // inside the transaction are isolated until COMMIT.
+    let snapshot = session
+        .store
+        .snapshot(&[&session.current_graph])
+        .map_err(|e| ProtocolError::Internal(e.to_string()))?;
+    session.tx_store = Some(Arc::new(snapshot));
+
     session.state = ServerState::TxReady;
     Ok(vec![ServerMessage::Success(bolt_map! {})])
 }
@@ -565,6 +613,16 @@ fn handle_begin(
 // -- COMMIT ------------------------------------------------------------------
 
 fn handle_commit(session: &mut Session) -> Result<Vec<ServerMessage>, ProtocolError> {
+    // Merge the snapshot back into the main store so that committed mutations
+    // become visible to other sessions.
+    if let Some(ref tx_store) = session.tx_store {
+        session
+            .store
+            .merge_from(tx_store)
+            .map_err(|e| ProtocolError::Internal(e.to_string()))?;
+    }
+    session.tx_store = None;
+
     let bookmark = next_bookmark(&session.global_bookmark);
     session.state = ServerState::Ready;
     session.tx_metadata = Vec::new();
@@ -578,12 +636,10 @@ fn handle_commit(session: &mut Session) -> Result<Vec<ServerMessage>, ProtocolEr
 
 /// Handle ROLLBACK.
 ///
-/// NOTE: sedan-bolt auto-commits writes on RUN (no deferred execution), so a
-/// ROLLBACK cannot actually undo mutations that have already been applied to
-/// the in-memory store. This is a known limitation. The response shape is
-/// correct -- SUCCESS with no bookmark -- so that drivers that only check the
-/// protocol framing will be satisfied.
+/// Discards the copy-on-write snapshot so that mutations performed inside the
+/// transaction are never applied to the main store.
 fn handle_rollback(session: &mut Session) -> Result<Vec<ServerMessage>, ProtocolError> {
+    session.tx_store = None;
     session.state = ServerState::Ready;
     session.tx_metadata = Vec::new();
     session.tx_timeout = None;
@@ -596,17 +652,14 @@ fn handle_rollback(session: &mut Session) -> Result<Vec<ServerMessage>, Protocol
 
 /// Handle RESET.
 ///
-/// Clears all session-local state (pending results, TX metadata/timeout) and
-/// returns to the Ready state. This is also the handler invoked when a client
-/// exception causes the driver to send RESET.
-///
-/// NOTE: Like ROLLBACK, RESET cannot undo mutations that were already applied
-/// during a RUN inside an open transaction. This is a known limitation of
-/// sedan-bolt's auto-commit-on-RUN execution model.
+/// Clears all session-local state (pending results, TX metadata/timeout,
+/// snapshot store) and returns to the Ready state. This is also the handler
+/// invoked when a client exception causes the driver to send RESET.
 fn handle_reset(session: &mut Session) -> Result<Vec<ServerMessage>, ProtocolError> {
     session.pending_result = None;
     session.tx_metadata = Vec::new();
     session.tx_timeout = None;
+    session.tx_store = None;
     session.state = ServerState::Ready;
     Ok(vec![ServerMessage::Success(bolt_map! {})])
 }
@@ -651,10 +704,7 @@ mod tests {
 
     #[test]
     fn validate_bookmarks_empty_list() {
-        let extra: BoltMap = vec![(
-            "bookmarks".to_string(),
-            BoltValue::List(vec![]),
-        )];
+        let extra: BoltMap = vec![("bookmarks".to_string(), BoltValue::List(vec![]))];
         assert!(validate_bookmarks(&extra).is_none());
     }
 
@@ -738,6 +788,7 @@ mod tests {
             global_bookmark: Arc::new(AtomicU64::new(0)),
             tx_metadata: Vec::new(),
             tx_timeout: None,
+            tx_store: None,
         }
     }
 
@@ -755,6 +806,7 @@ mod tests {
             global_bookmark: Arc::clone(&bookmark),
             tx_metadata: Vec::new(),
             tx_timeout: None,
+            tx_store: None,
         };
         let s2 = Session {
             state: ServerState::Ready,
@@ -765,6 +817,7 @@ mod tests {
             global_bookmark: Arc::clone(&bookmark),
             tx_metadata: Vec::new(),
             tx_timeout: None,
+            tx_store: None,
         };
         (s1, s2)
     }
@@ -792,14 +845,9 @@ mod tests {
         let (mut s1, mut s2) = make_shared_sessions();
 
         // Session 1: run a query and pull to get a bookmark.
-        handle_run(
-            &mut s1,
-            "RETURN 1 AS n".to_string(),
-            vec![],
-            vec![],
-        )
-        .await
-        .unwrap();
+        handle_run(&mut s1, "RETURN 1 AS n".to_string(), vec![], vec![])
+            .await
+            .unwrap();
         let pull_result = handle_pull(&mut s1, bolt_map! { "n" => BoltValue::Int(-1) }).unwrap();
         let bookmark = match pull_result.last().unwrap() {
             ServerMessage::Success(meta) => meta.get_str("bookmark").unwrap().to_string(),
@@ -1009,10 +1057,7 @@ mod tests {
     fn begin_stores_tx_metadata() {
         let mut session = make_ready_session();
         let inner: BoltMap = vec![("app".to_string(), BoltValue::String("test".to_string()))];
-        let extra: BoltMap = vec![(
-            "tx_metadata".to_string(),
-            BoltValue::Map(inner.clone()),
-        )];
+        let extra: BoltMap = vec![("tx_metadata".to_string(), BoltValue::Map(inner.clone()))];
 
         handle_begin(&mut session, extra).unwrap();
         assert_eq!(session.tx_metadata, inner);
@@ -1028,14 +1073,9 @@ mod tests {
             BoltValue::List(vec![BoltValue::String("invalid_bookmark".to_string())]),
         )];
 
-        let result = handle_run(
-            &mut session,
-            "RETURN 1".to_string(),
-            vec![],
-            extra,
-        )
-        .await
-        .unwrap();
+        let result = handle_run(&mut session, "RETURN 1".to_string(), vec![], extra)
+            .await
+            .unwrap();
 
         assert_eq!(result.len(), 1);
         match &result[0] {
@@ -1056,16 +1096,158 @@ mod tests {
             BoltValue::List(vec![BoltValue::String("sedan:tx:5".to_string())]),
         )];
 
-        let result = handle_run(
-            &mut session,
-            "RETURN 1 AS n".to_string(),
-            vec![],
-            extra,
-        )
-        .await
-        .unwrap();
+        let result = handle_run(&mut session, "RETURN 1 AS n".to_string(), vec![], extra)
+            .await
+            .unwrap();
 
         assert_eq!(result.len(), 1);
         assert!(matches!(&result[0], ServerMessage::Success(_)));
+    }
+
+    // -- Snapshot transaction isolation tests --------------------------------
+
+    /// Helper: run a query inside a session and pull all results. Returns the
+    /// PULL SUCCESS metadata.
+    async fn run_and_pull(session: &mut Session, query: &str) -> Vec<ServerMessage> {
+        let run_result = handle_run(session, query.to_string(), vec![], vec![])
+            .await
+            .unwrap();
+        assert!(
+            matches!(&run_result[0], ServerMessage::Success(_)),
+            "RUN failed: {:?}",
+            run_result
+        );
+        handle_pull(session, bolt_map! { "n" => BoltValue::Int(-1) }).unwrap()
+    }
+
+    #[tokio::test]
+    async fn begin_creates_tx_store() {
+        let mut session = make_ready_session();
+        assert!(session.tx_store.is_none());
+
+        handle_begin(&mut session, vec![]).unwrap();
+        assert!(session.tx_store.is_some());
+        assert_eq!(session.state, ServerState::TxReady);
+    }
+
+    #[tokio::test]
+    async fn commit_clears_tx_store() {
+        let mut session = make_ready_session();
+        handle_begin(&mut session, vec![]).unwrap();
+        assert!(session.tx_store.is_some());
+
+        handle_commit(&mut session).unwrap();
+        assert!(session.tx_store.is_none());
+    }
+
+    #[tokio::test]
+    async fn rollback_clears_tx_store() {
+        let mut session = make_ready_session();
+        handle_begin(&mut session, vec![]).unwrap();
+        assert!(session.tx_store.is_some());
+
+        handle_rollback(&mut session).unwrap();
+        assert!(session.tx_store.is_none());
+    }
+
+    #[tokio::test]
+    async fn reset_clears_tx_store() {
+        let mut session = make_ready_session();
+        handle_begin(&mut session, vec![]).unwrap();
+        assert!(session.tx_store.is_some());
+
+        handle_reset(&mut session).unwrap();
+        assert!(session.tx_store.is_none());
+    }
+
+    #[tokio::test]
+    async fn tx_read_your_writes() {
+        let mut session = make_ready_session();
+
+        // BEGIN, CREATE inside the TX, then read it back within the same TX.
+        handle_begin(&mut session, vec![]).unwrap();
+        run_and_pull(&mut session, "CREATE (:TxNode {val: 42})").await;
+
+        let pull_msgs = run_and_pull(&mut session, "MATCH (n:TxNode) RETURN count(n) AS c").await;
+
+        // Should have 1 RECORD with c=1, then SUCCESS
+        let record = pull_msgs
+            .iter()
+            .find(|m| matches!(m, ServerMessage::Record(_)));
+        assert!(record.is_some(), "expected a record");
+        if let ServerMessage::Record(fields) = record.unwrap() {
+            assert_eq!(fields[0], BoltValue::Int(1));
+        }
+    }
+
+    #[tokio::test]
+    async fn rollback_discards_mutations() {
+        let (mut s1, mut s2) = make_shared_sessions();
+
+        // Session 1: BEGIN, CREATE, ROLLBACK
+        handle_begin(&mut s1, vec![]).unwrap();
+        run_and_pull(&mut s1, "CREATE (:RollbackNode {val: 1})").await;
+        handle_rollback(&mut s1).unwrap();
+
+        // Session 2: the node should not be visible in the main store.
+        let pull_msgs = run_and_pull(&mut s2, "MATCH (n:RollbackNode) RETURN count(n) AS c").await;
+        let record = pull_msgs
+            .iter()
+            .find(|m| matches!(m, ServerMessage::Record(_)));
+        assert!(record.is_some(), "expected a record");
+        if let ServerMessage::Record(fields) = record.unwrap() {
+            assert_eq!(
+                fields[0],
+                BoltValue::Int(0),
+                "rollback should discard mutations"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn commit_makes_mutations_visible() {
+        let (mut s1, mut s2) = make_shared_sessions();
+
+        // Session 1: BEGIN, CREATE, COMMIT
+        handle_begin(&mut s1, vec![]).unwrap();
+        run_and_pull(&mut s1, "CREATE (:CommitNode {val: 2})").await;
+        handle_commit(&mut s1).unwrap();
+
+        // Session 2: the node should be visible.
+        let pull_msgs = run_and_pull(&mut s2, "MATCH (n:CommitNode) RETURN count(n) AS c").await;
+        let record = pull_msgs
+            .iter()
+            .find(|m| matches!(m, ServerMessage::Record(_)));
+        assert!(record.is_some(), "expected a record");
+        if let ServerMessage::Record(fields) = record.unwrap() {
+            assert_eq!(
+                fields[0],
+                BoltValue::Int(1),
+                "commit should make mutations visible"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn uncommitted_mutations_not_visible_to_other_sessions() {
+        let (mut s1, mut s2) = make_shared_sessions();
+
+        // Session 1: BEGIN, CREATE (but do NOT commit yet)
+        handle_begin(&mut s1, vec![]).unwrap();
+        run_and_pull(&mut s1, "CREATE (:IsolatedNode {val: 3})").await;
+
+        // Session 2: the node should NOT be visible because s1 has not committed.
+        let pull_msgs = run_and_pull(&mut s2, "MATCH (n:IsolatedNode) RETURN count(n) AS c").await;
+        let record = pull_msgs
+            .iter()
+            .find(|m| matches!(m, ServerMessage::Record(_)));
+        assert!(record.is_some(), "expected a record");
+        if let ServerMessage::Record(fields) = record.unwrap() {
+            assert_eq!(
+                fields[0],
+                BoltValue::Int(0),
+                "uncommitted mutations should be invisible"
+            );
+        }
     }
 }

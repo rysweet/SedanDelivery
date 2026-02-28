@@ -477,7 +477,8 @@ mod tests {
         let store = InMemoryGraphStore::new();
         assert!(!store.graph_exists("default").unwrap());
 
-        let result = execute_query(&store, "default", "RETURN 1 AS x", HashMap::new(), None).unwrap();
+        let result =
+            execute_query(&store, "default", "RETURN 1 AS x", HashMap::new(), None).unwrap();
         assert_eq!(result.columns, vec!["x".to_string()]);
         assert_eq!(result.rows.len(), 1);
 
@@ -499,8 +500,14 @@ mod tests {
     #[test]
     fn execute_query_simple_return() {
         let store = InMemoryGraphStore::new();
-        let result =
-            execute_query(&store, "default", "RETURN 42 AS answer", HashMap::new(), None).unwrap();
+        let result = execute_query(
+            &store,
+            "default",
+            "RETURN 42 AS answer",
+            HashMap::new(),
+            None,
+        )
+        .unwrap();
         assert_eq!(result.columns, vec!["answer".to_string()]);
         assert_eq!(result.rows.len(), 1);
         assert_eq!(result.rows[0]["answer"], Value::Int(42));
@@ -731,10 +738,8 @@ mod tests {
 
     #[test]
     fn decode_local_time_with_nanos() {
-        let nanos: i64 = 10 * 3_600_000_000_000
-            + 20 * 60_000_000_000
-            + 30 * 1_000_000_000
-            + 123_456_789;
+        let nanos: i64 =
+            10 * 3_600_000_000_000 + 20 * 60_000_000_000 + 30 * 1_000_000_000 + 123_456_789;
         let bv = BoltValue::Structure {
             tag: 0x74,
             fields: vec![BoltValue::Int(nanos)],
@@ -752,8 +757,7 @@ mod tests {
             fields: vec![BoltValue::Int(epoch_secs), BoltValue::Int(123_456_789)],
         };
         let val = bolt_value_to_gql(&bv);
-        let expected =
-            jiff::civil::DateTime::new(2024, 1, 15, 10, 30, 45, 123_456_789).unwrap();
+        let expected = jiff::civil::DateTime::new(2024, 1, 15, 10, 30, 45, 123_456_789).unwrap();
         assert_eq!(val, Value::LocalDateTime(expected));
     }
 
@@ -1052,8 +1056,7 @@ mod tests {
             },
         )];
         let params = bolt_map_to_value_map(&bolt_params);
-        let result =
-            execute_query(&store, "default", "RETURN $d AS d", params, None).unwrap();
+        let result = execute_query(&store, "default", "RETURN $d AS d", params, None).unwrap();
         let (records, _, _) = result_to_records(&result, &store, "default");
         assert_eq!(records.len(), 1);
         assert_eq!(
@@ -1081,8 +1084,7 @@ mod tests {
             },
         )];
         let params = bolt_map_to_value_map(&bolt_params);
-        let result =
-            execute_query(&store, "default", "RETURN $d AS d", params, None).unwrap();
+        let result = execute_query(&store, "default", "RETURN $d AS d", params, None).unwrap();
         let (records, _, _) = result_to_records(&result, &store, "default");
         assert_eq!(
             records[0][0],
@@ -1113,8 +1115,7 @@ mod tests {
             },
         )];
         let params = bolt_map_to_value_map(&bolt_params);
-        let result =
-            execute_query(&store, "default", "RETURN $p AS p", params, None).unwrap();
+        let result = execute_query(&store, "default", "RETURN $p AS p", params, None).unwrap();
         let (records, _, _) = result_to_records(&result, &store, "default");
         assert_eq!(
             records[0][0],

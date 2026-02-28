@@ -188,9 +188,7 @@ pub fn scalar_value_to_bolt(val: &Value) -> BoltValue {
         Value::Int(i) => BoltValue::Int(*i),
         Value::Float(f) => BoltValue::Float(*f),
         Value::Str(s) => BoltValue::String(s.to_string()),
-        Value::List(items) => {
-            BoltValue::List(items.iter().map(scalar_value_to_bolt).collect())
-        }
+        Value::List(items) => BoltValue::List(items.iter().map(scalar_value_to_bolt).collect()),
         Value::Map(map) => indexmap_to_bolt_map(map),
 
         // ── Temporal types ───────────────────────────────────────────────
@@ -349,8 +347,14 @@ mod tests {
 
     #[test]
     fn bool_converts() {
-        assert_eq!(scalar_value_to_bolt(&Value::Bool(true)), BoltValue::Bool(true));
-        assert_eq!(scalar_value_to_bolt(&Value::Bool(false)), BoltValue::Bool(false));
+        assert_eq!(
+            scalar_value_to_bolt(&Value::Bool(true)),
+            BoltValue::Bool(true)
+        );
+        assert_eq!(
+            scalar_value_to_bolt(&Value::Bool(false)),
+            BoltValue::Bool(false)
+        );
     }
 
     #[test]
@@ -502,7 +506,11 @@ mod tests {
             // Expected: 19737 * 86400 + 10*3600 + 30*60 + 45 = 1705311045
             let expected_secs = 19737_i64 * 86400 + 10 * 3600 + 30 * 60 + 45;
             assert_eq!(fields[0], BoltValue::Int(expected_secs), "epoch seconds");
-            assert_eq!(fields[1], BoltValue::Int(123456789), "nanosecond adjustment");
+            assert_eq!(
+                fields[1],
+                BoltValue::Int(123456789),
+                "nanosecond adjustment"
+            );
         } else {
             panic!("expected Structure for LocalDateTime");
         }
@@ -532,7 +540,10 @@ mod tests {
             .unwrap();
         let bolt = scalar_value_to_bolt(&Value::DateTime(Box::new(zoned)));
         if let BoltValue::Structure { tag, fields } = &bolt {
-            assert_eq!(*tag, 0x49, "Bolt 4.3+ DateTimeZoneId tag should be 0x49, not 0x69");
+            assert_eq!(
+                *tag, 0x49,
+                "Bolt 4.3+ DateTimeZoneId tag should be 0x49, not 0x69"
+            );
             assert_eq!(fields.len(), 3);
             // epoch seconds for 2024-01-15T10:30:00Z
             let expected_secs = 19737_i64 * 86400 + 10 * 3600 + 30 * 60;
@@ -626,12 +637,8 @@ mod tests {
     fn edge_to_bolt_returns_structure() {
         let store = InMemoryGraphStore::new();
         store.create_graph("test").unwrap();
-        let n1 = store
-            .create_node("test", vec![], HashMap::new())
-            .unwrap();
-        let n2 = store
-            .create_node("test", vec![], HashMap::new())
-            .unwrap();
+        let n1 = store.create_node("test", vec![], HashMap::new()).unwrap();
+        let n2 = store.create_node("test", vec![], HashMap::new()).unwrap();
         let eid = store
             .create_edge("test", n1, n2, "KNOWS".to_string(), HashMap::new())
             .unwrap();
@@ -653,12 +660,8 @@ mod tests {
     fn path_to_bolt_simple() {
         let store = InMemoryGraphStore::new();
         store.create_graph("test").unwrap();
-        let n1 = store
-            .create_node("test", vec![], HashMap::new())
-            .unwrap();
-        let n2 = store
-            .create_node("test", vec![], HashMap::new())
-            .unwrap();
+        let n1 = store.create_node("test", vec![], HashMap::new()).unwrap();
+        let n2 = store.create_node("test", vec![], HashMap::new()).unwrap();
         let e1 = store
             .create_edge("test", n1, n2, "KNOWS".to_string(), HashMap::new())
             .unwrap();
