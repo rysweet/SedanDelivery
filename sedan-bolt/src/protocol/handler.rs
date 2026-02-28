@@ -8,6 +8,22 @@ use crate::packstream::value::{BoltMap, BoltMapExt, BoltValue};
 use crate::protocol::state::ServerState;
 use gql_core::storage::InMemoryGraphStore;
 
+/// Constant-time byte comparison to prevent timing side-channel attacks on
+/// credential validation.  Always compares all bytes regardless of mismatch
+/// position, preventing character-by-character brute-force via response timing.
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        // Length mismatch leaks the length but not the content — acceptable
+        // for password comparison where the expected password is fixed-length.
+        return false;
+    }
+    let mut diff = 0u8;
+    for (x, y) in a.iter().zip(b.iter()) {
+        diff |= x ^ y;
+    }
+    diff == 0
+}
+
 // -- Error type --------------------------------------------------------------
 
 #[derive(Debug, thiserror::Error)]
@@ -252,7 +268,7 @@ async fn handle_hello(
             })]);
         }
         let credentials = extra.get_str("credentials").unwrap_or("");
-        if credentials != required_pw {
+        if !constant_time_eq(credentials.as_bytes(), required_pw.as_bytes()) {
             session.state = ServerState::Defunct;
             return Ok(vec![ServerMessage::Failure(bolt_map! {
                 "code" => BoltValue::String("Neo.ClientError.Security.Unauthorized".to_string()),
@@ -303,7 +319,7 @@ async fn handle_logon(
             })]);
         }
         let credentials = auth.get_str("credentials").unwrap_or("");
-        if credentials != required_pw {
+        if !constant_time_eq(credentials.as_bytes(), required_pw.as_bytes()) {
             session.state = ServerState::Defunct;
             return Ok(vec![ServerMessage::Failure(bolt_map! {
                 "code" => BoltValue::String("Neo.ClientError.Security.Unauthorized".to_string()),

@@ -1492,8 +1492,8 @@ impl<'a> QueryExecutor<'a> {
             for node_id in nodes_to_delete {
                 if *detach {
                     // Count and delete remaining edges before deleting node.
-                    let out_ids = self.store.out_edge_ids(graph, node_id).unwrap_or_default();
-                    let in_ids = self.store.in_edge_ids(graph, node_id).unwrap_or_default();
+                    let out_ids = self.store.out_edge_ids(graph, node_id)?;
+                    let in_ids = self.store.in_edge_ids(graph, node_id)?;
                     let mut edge_set: std::collections::HashSet<u64> =
                         out_ids.iter().map(|e| e.0).collect();
                     edge_set.extend(in_ids.iter().map(|e| e.0));
@@ -3323,7 +3323,13 @@ impl AggState {
         distinct: bool,
     ) {
         // For distinct aggregations, skip duplicates.
+        // Cap the set size to prevent OOM via hostile queries with millions
+        // of distinct values — consistent with max_collect_size guard on Collect.
         if distinct {
+            let max_size = crate::config::global().max_collect_size as usize;
+            if self.seen_distinct.len() >= max_size {
+                return; // silently drop excess — same as Collect overflow
+            }
             let key = format!("{:?}", val);
             if !self.seen_distinct.insert(key) {
                 return;
@@ -3382,14 +3388,16 @@ impl AggState {
                 }
             }
             AggFunction::StDev | AggFunction::StDevP => {
-                if !val.is_null() {
+                let max_collect = crate::config::global().max_collect_size;
+                if !val.is_null() && self.collected.len() < max_collect {
                     if let Some(f) = val.as_float() {
                         self.collected.push(Value::Float(f));
                     }
                 }
             }
             AggFunction::PercentileDisc | AggFunction::PercentileCont => {
-                if !val.is_null() {
+                let max_collect = crate::config::global().max_collect_size;
+                if !val.is_null() && self.collected.len() < max_collect {
                     if let Some(f) = val.as_float() {
                         self.collected.push(Value::Float(f));
                     }

@@ -231,10 +231,16 @@ fn need(buf: &[u8], offset: usize, needed: usize) -> Result<(), DecodeError> {
     }
 }
 
+/// Maximum pre-allocation for list/map capacity from untrusted wire data.
+/// The actual element count is still honoured; this only caps the initial
+/// allocation to prevent a single malicious List32/Map32 header from
+/// triggering a multi-GB `Vec::with_capacity` (CVE-class OOM DoS).
+const MAX_PREALLOC: usize = 4096;
+
 /// Decode `count` list items starting at `offset` in `buf`.
 fn decode_list(buf: &[u8], start: usize, count: usize) -> Result<(BoltValue, usize), DecodeError> {
     let mut offset = start;
-    let mut items = Vec::with_capacity(count);
+    let mut items = Vec::with_capacity(count.min(MAX_PREALLOC));
     for _ in 0..count {
         let (val, consumed) = decode(&buf[offset..])?;
         items.push(val);
@@ -246,7 +252,7 @@ fn decode_list(buf: &[u8], start: usize, count: usize) -> Result<(BoltValue, usi
 /// Decode `count` map entries starting at `offset` in `buf`.
 fn decode_map(buf: &[u8], start: usize, count: usize) -> Result<(BoltValue, usize), DecodeError> {
     let mut offset = start;
-    let mut entries = Vec::with_capacity(count);
+    let mut entries = Vec::with_capacity(count.min(MAX_PREALLOC));
     for _ in 0..count {
         let (key_val, key_consumed) = decode(&buf[offset..])?;
         offset += key_consumed;

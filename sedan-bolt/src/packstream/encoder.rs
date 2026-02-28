@@ -119,10 +119,14 @@ fn encode_map(entries: &[(String, BoltValue)], buf: &mut Vec<u8>) {
 }
 
 fn encode_structure(tag: u8, fields: &[BoltValue], buf: &mut Vec<u8>) {
-    let nfields = fields.len().min(15);
-    buf.push(0xB0 | nfields as u8);
+    assert!(
+        fields.len() <= 15,
+        "PackStream TinyStruct supports at most 15 fields, got {}",
+        fields.len()
+    );
+    buf.push(0xB0 | fields.len() as u8);
     buf.push(tag);
-    for field in &fields[..nfields] {
+    for field in fields {
         encode(field, buf);
     }
 }

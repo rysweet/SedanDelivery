@@ -34,7 +34,13 @@ async fn main() {
     let write_lock = Arc::new(tokio::sync::Mutex::new(()));
 
     loop {
-        let (stream, peer_addr) = listener.accept().await.expect("accept failed");
+        let (stream, peer_addr) = match listener.accept().await {
+            Ok(pair) => pair,
+            Err(e) => {
+                tracing::error!("accept error (transient): {e}");
+                continue;
+            }
+        };
         let store = Arc::clone(&store);
         let conn_id = connection_counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let bookmark = Arc::clone(&global_bookmark);

@@ -490,6 +490,10 @@ impl GraphStore for FabricGraphStore {
         node_id: NodeId,
         rel_types: &[&str],
     ) -> Result<Vec<AdjEntry>, StorageError> {
+        // Empty slice means "all types" — short-circuit to avoid WHERE IN [].
+        if rel_types.is_empty() {
+            return self.out_edges(graph, node_id);
+        }
         let rt_list: JValue = rel_types
             .iter()
             .map(|s| s.to_string())
@@ -512,6 +516,9 @@ impl GraphStore for FabricGraphStore {
         node_id: NodeId,
         rel_types: &[&str],
     ) -> Result<Vec<AdjEntry>, StorageError> {
+        if rel_types.is_empty() {
+            return self.in_edges(graph, node_id);
+        }
         let rt_list: JValue = rel_types
             .iter()
             .map(|s| s.to_string())

@@ -1079,7 +1079,7 @@ impl GraphStore for RedisGraphStore {
             .map_err(|e| StorageError::Backend { msg: e.to_string() })?;
         // Delete all keys with pattern G:{name}:* using SCAN.
         // We use SCAN with a match pattern to avoid blocking with KEYS.
-        let pattern = format!("G:{{{name}}}:*");
+        let pattern = format!("{}G:{{{name}}}:*", self.key_prefix);
         let mut cursor: u64 = 0;
         loop {
             let (next_cursor, keys): (u64, Vec<String>) = redis::cmd("SCAN")
@@ -1130,8 +1130,8 @@ impl GraphStore for RedisGraphStore {
             .map_err(|e| StorageError::Backend { msg: e.to_string() })?;
         // Count distinct labels and rel-types by scanning index keys.
         // Pattern: G:{graph}:label:*
-        let label_pattern = format!("G:{{{graph}}}:label:*");
-        let reltype_pattern = format!("G:{{{graph}}}:reltype:*");
+        let label_pattern = format!("{}G:{{{graph}}}:label:*", self.key_prefix);
+        let reltype_pattern = format!("{}G:{{{graph}}}:reltype:*", self.key_prefix);
         let label_count = scan_key_count(&mut conn, &label_pattern)?;
         let rel_type_count = scan_key_count(&mut conn, &reltype_pattern)?;
         Ok(GraphStats {
