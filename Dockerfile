@@ -50,7 +50,7 @@ FROM valkey/valkey:8.1-bookworm AS runtime
 # Copy the compiled module
 COPY --from=builder /app/target/release/libgql_module.so /usr/local/lib/libgql_module.so
 
-# Write static Valkey config (no password — injected at runtime)
+# Write static Valkey config (password injected at runtime via VALKEY_PASSWORD)
 RUN mkdir -p /etc/valkey /data && \
     echo "loadmodule /usr/local/lib/libgql_module.so" > /etc/valkey/valkey-gql.conf && \
     echo "bind 0.0.0.0" >> /etc/valkey/valkey-gql.conf && \

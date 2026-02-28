@@ -15,7 +15,14 @@ if [ -n "${VALKEY_PASSWORD}" ]; then
     printf 'requirepass %s\n' "$VALKEY_PASSWORD" >> /etc/valkey/valkey-gql.conf
     echo "INFO: Valkey authentication enabled" >&2
 else
-    echo "WARNING: VALKEY_PASSWORD not set — running without authentication" >&2
+    if [ "${VALKEY_ALLOW_NO_AUTH:-}" = "true" ]; then
+        echo "WARNING: VALKEY_PASSWORD not set — running WITHOUT authentication (VALKEY_ALLOW_NO_AUTH=true)" >&2
+        echo "WARNING: Do NOT use this in production!" >&2
+    else
+        echo "ERROR: VALKEY_PASSWORD is not set. Refusing to start without authentication." >&2
+        echo "ERROR: Set VALKEY_PASSWORD to a strong secret, or set VALKEY_ALLOW_NO_AUTH=true for local development only." >&2
+        exit 1
+    fi
 fi
 
 exec valkey-server /etc/valkey/valkey-gql.conf
