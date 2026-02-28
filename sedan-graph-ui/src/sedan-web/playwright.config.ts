@@ -18,7 +18,7 @@ export default defineConfig({
     },
   ],
   webServer: {
-    command: 'VITE_PROXY_TARGET=http://localhost:3001 VITE_PROXY_REWRITE=true npx vite --port 5175',
+    command: 'VITE_PROXY_TARGET=http://localhost:3001 VITE_PROXY_REWRITE=true VITE_E2E_TEST_AUTH=true npx vite --port 5175',
     port: 5175,
     timeout: 30_000,
     reuseExistingServer: true,
