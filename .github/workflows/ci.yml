@@ -92,19 +92,10 @@ jobs:
       - name: Install libclang
         run: sudo apt-get update -q && sudo apt-get install -y -q libclang-dev
 
-      - name: Run TCK compliance suite (3806 scenarios)
-        # The cucumber 0.22 runner exits 101 when any of the 191 .feature files
-        # have Gherkin parsing errors, even if all runnable scenarios pass.
-        # Four TCK feature files use extended Gherkin syntax not supported by
-        # the parser version; these have been pre-counted and are benign.
-        # We capture the output and assert exactly 3806 scenarios pass.
-        run: |
-          output=$(cargo test -p gql-core --test tck 2>&1 || true)
-          echo "$output"
-          if ! echo "$output" | grep -q "3806 scenarios (3806 passed)"; then
-            echo "FAIL: TCK did not report 3806/3806 scenarios passed"
-            exit 1
-          fi
+      - name: Run TCK compliance suite (3903 scenarios)
+        # All 3903 openCypher TCK scenarios pass with zero parse errors.
+        # Feature files were fixed to eliminate Gherkin template/parse issues.
+        run: cargo test -p gql-core --test tck
 
       - name: Run stress tests
         run: cargo test -p gql-core --test stress

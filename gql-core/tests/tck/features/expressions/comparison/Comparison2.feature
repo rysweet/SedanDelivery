@@ -122,7 +122,7 @@ Feature: Comparison2 - Half-bounded Range
     Given an empty graph
     When executing query:
       """
-      RETURN <lhs> > <rhs> AS gt, <lhs> >= <rhs> AS gtE, <lhs> < <rhs> AS lt, <lhs> <= <rhs> AS ltE
+      RETURN <lhs> > <rhs> AS gt, <lhs> >= <rhs> AS gtE, <lhs> < <rhs> AS lt, <lhs> <lte> <rhs> AS ltE
       """
     Then the result should be, in any order:
       | gt       | gtE      | lt       | ltE      |
@@ -130,11 +130,11 @@ Feature: Comparison2 - Half-bounded Range
     And no side effects
 
     Examples:
-      | lhs       | rhs       | result |
-      | 0.0 / 0.0 | 1         | false  |
-      | 0.0 / 0.0 | 1.0       | false  |
-      | 0.0 / 0.0 | 0.0 / 0.0 | false  |
-      | 0.0 / 0.0 | 'a'       | null   |
+      | lhs       | rhs       | result | lte |
+      | 0.0 / 0.0 | 1         | false  | <=  |
+      | 0.0 / 0.0 | 1.0       | false  | <=  |
+      | 0.0 / 0.0 | 0.0 / 0.0 | false  | <=  |
+      | 0.0 / 0.0 | 'a'       | null   | <=  |
 
   Scenario Outline: [6] Comparability between numbers and strings
     Given any graph

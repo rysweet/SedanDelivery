@@ -3740,7 +3740,26 @@ fn eval_binary_values(
             if lv.is_null() || rv.is_null() {
                 return Ok(Value::Null);
             }
-            let ord = cmp_values(&lv, &rv);
+            // Cypher §7.2 Comparability: NaN compared with a numeric yields false;
+            // NaN compared with a non-numeric (cross-type) yields null.
+            // This is different from ORDER BY, where cmp_values() sorts NaN last.
+            let lv_is_nan = matches!(&lv, Value::Float(f) if f.is_nan());
+            let rv_is_nan = matches!(&rv, Value::Float(f) if f.is_nan());
+            if lv_is_nan || rv_is_nan {
+                let lv_numeric = matches!(&lv, Value::Int(_) | Value::Float(_));
+                let rv_numeric = matches!(&rv, Value::Int(_) | Value::Float(_));
+                return Ok(if lv_numeric && rv_numeric {
+                    Value::Bool(false) // NaN comparisons between numbers are always false
+                } else {
+                    Value::Null // cross-type with NaN
+                });
+            }
+            // Use Cypher comparison semantics: cross-type comparisons yield null,
+            // not a total-order result.  cmp_values() is for ORDER BY (sorting only).
+            let ord = match crate::executor::filter::cypher_compare(&lv, &rv) {
+                Ok(ord) => ord,
+                Err(_) => return Ok(Value::Null),
+            };
             let result = match op {
                 BinaryOp::Lt => ord == std::cmp::Ordering::Less,
                 BinaryOp::Lte => ord != std::cmp::Ordering::Greater,

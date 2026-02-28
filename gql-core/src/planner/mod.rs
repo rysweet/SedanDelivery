@@ -4,7 +4,7 @@
 //! and the QueryPlanner that translates a parsed Query AST into an Operator tree.
 
 use crate::ast::{Direction, Expr, Identifier, Label, RelType};
-use crate::error::{ExecutionError, GqlError};
+use crate::error::GqlError;
 use crate::executor::budget::DEFAULT_VARLEN_MAX_DEPTH;
 
 // ── Physical Plan Operators ───────────────────────────────────────────────────
@@ -270,13 +270,13 @@ pub(crate) fn is_aggregate_function(name: &str) -> bool {
 
 /// Validate and normalize variable-length expand bounds.
 /// Returns `(effective_min, effective_max)`, capping unbounded `max` at DEFAULT_VARLEN_MAX_DEPTH.
+///
+/// When `min > effective_max` (e.g. `*2..1` or `*1..0`), openCypher specifies that the
+/// pattern matches zero paths.  We return the bounds as-is; the VarLenExpand executor
+/// naturally produces no rows because no depth `d` can satisfy `d >= min && d <= max`
+/// when `min > max`.
 pub fn validate_varlen_bounds(min: u32, max: Option<u32>) -> Result<(u32, u32), GqlError> {
     let effective_max = max.unwrap_or(DEFAULT_VARLEN_MAX_DEPTH);
-    if min > effective_max {
-        return Err(GqlError::Execution(ExecutionError::unsupported(format!(
-            "variable-length pattern: min ({min}) must not exceed max ({effective_max})"
-        ))));
-    }
     Ok((min, effective_max))
 }
 
@@ -457,7 +457,9 @@ mod tests {
     }
 
     #[test]
-    fn varlen_bounds_min_gt_max_is_error() {
-        assert!(validate_varlen_bounds(5, Some(3)).is_err());
+    fn varlen_bounds_min_gt_max_returns_bounds() {
+        // openCypher: min > max is not an error — the pattern simply matches no paths.
+        // The VarLenExpand executor naturally returns 0 rows when no depth d satisfies d >= min && d <= max.
+        assert_eq!(validate_varlen_bounds(5, Some(3)).unwrap(), (5, 3));
     }
 }

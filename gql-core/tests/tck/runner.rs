@@ -757,6 +757,33 @@ async fn no_side_effects(world: &mut GqlWorld) {
 /// - `123` / `-42`              -> Value::Int
 /// - `1.0` / `-3.14`            -> Value::Float
 /// - `'text'`                   -> Value::Str
+/// Unescape Cypher string escape sequences from the inner content of a single-quoted string.
+/// Handles: `\\` → `\`, `\'` → `'`, `\"` → `"`, `\n` → newline, `\t` → tab, `\r` → CR.
+fn unescape_cypher_string(s: &str) -> String {
+    let mut result = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\\' {
+            match chars.next() {
+                Some('\\') => result.push('\\'),
+                Some('\'') => result.push('\''),
+                Some('"') => result.push('"'),
+                Some('n') => result.push('\n'),
+                Some('t') => result.push('\t'),
+                Some('r') => result.push('\r'),
+                Some(other) => {
+                    result.push('\\');
+                    result.push(other);
+                }
+                None => result.push('\\'),
+            }
+        } else {
+            result.push(c);
+        }
+    }
+    result
+}
+
 /// - `[1, 2, 3]`               -> Value::List
 /// - `{key: 'val'}`            -> Value::Map
 /// - `(:Label {prop: 'val'})`  -> Value::Map with labels+properties (node representation)
@@ -780,10 +807,11 @@ fn parse_tck_value(s: &str) -> Value {
         return Value::Bool(false);
     }
 
-    // String (single-quoted)
+    // String (single-quoted): interpret Cypher escape sequences inside the string.
+    // TCK table cells use Cypher literal notation, e.g. '\'' for a string containing '.
     if s.starts_with('\'') && s.ends_with('\'') && s.len() >= 2 {
         let inner = &s[1..s.len() - 1];
-        return Value::Str(inner.into());
+        return Value::Str(unescape_cypher_string(inner).into());
     }
 
     // List

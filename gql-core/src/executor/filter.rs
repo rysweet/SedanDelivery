@@ -753,6 +753,12 @@ fn eval_binary<'r>(
 }
 
 /// Helper for ordered comparisons.  `also_eq` is true for `<=` / `>=`.
+///
+/// Cypher semantics (openCypher §7.2 Comparability):
+/// - NaN compared with a numeric value yields `false` for all ordered comparisons.
+/// - NaN compared with a non-numeric value yields `null` (cross-type).
+/// - All other cross-type comparisons yield `null`.
+/// - This is distinct from ORDER BY, where `cmp_values()` places NaN after regular floats.
 fn compare_values(
     lv: &Value,
     rv: &Value,
@@ -761,6 +767,18 @@ fn compare_values(
 ) -> Result<Value, GqlError> {
     if lv.is_null() || rv.is_null() {
         return Ok(Value::Null);
+    }
+    // NaN check: a float NaN does not compare equal to, less than, or greater than anything.
+    let lv_is_nan = matches!(lv, Value::Float(f) if f.is_nan());
+    let rv_is_nan = matches!(rv, Value::Float(f) if f.is_nan());
+    if lv_is_nan || rv_is_nan {
+        let lv_numeric = matches!(lv, Value::Int(_) | Value::Float(_));
+        let rv_numeric = matches!(rv, Value::Int(_) | Value::Float(_));
+        return Ok(if lv_numeric && rv_numeric {
+            Value::Bool(false) // NaN <op> number and number <op> NaN are always false
+        } else {
+            Value::Null // cross-type
+        });
     }
     match cypher_compare(lv, rv) {
         Ok(ord) => {
@@ -777,7 +795,7 @@ fn compare_values(
 }
 
 /// Total order comparison for Cypher values (comparable types only).
-fn cypher_compare(a: &Value, b: &Value) -> Result<std::cmp::Ordering, GqlError> {
+pub(crate) fn cypher_compare(a: &Value, b: &Value) -> Result<std::cmp::Ordering, GqlError> {
     match (a, b) {
         (Value::Int(x), Value::Int(y)) => Ok(x.cmp(y)),
         (Value::Float(x), Value::Float(y)) => x.partial_cmp(y).ok_or_else(|| {

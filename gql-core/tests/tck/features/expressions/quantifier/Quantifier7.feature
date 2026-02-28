@@ -79,7 +79,7 @@ Feature: Quantifier7 - Any quantifier interop
     Given any graph
     When executing query:
       """
-      RETURN (single(<operands>) OR all(<operands>)) <= any(<operands>) AS result
+      RETURN (single(<operands>) OR all(<operands>)) <lte> any(<operands>) AS result
       """
     # Note that FALSE is less than TRUE, hence A <= B is effectively equivalent to the implication A -> B
     Then the result should be, in any order:
@@ -88,12 +88,12 @@ Feature: Quantifier7 - Any quantifier interop
     And no side effects
 
     Examples:
-      | operands                                         |
-      | x IN [1, 2, 3, 4, 5, 6, 7, 8, 9] WHERE x = 2     |
-      | x IN [1, 2, 3, 4, 5, 6, 7, 8, 9] WHERE x % 2 = 0 |
-      | x IN [1, 2, 3, 4, 5, 6, 7, 8, 9] WHERE x % 3 = 0 |
-      | x IN [1, 2, 3, 4, 5, 6, 7, 8, 9] WHERE x < 7     |
-      | x IN [1, 2, 3, 4, 5, 6, 7, 8, 9] WHERE x >= 3    |
+      | lte | operands                                         |
+      | <=  | x IN [1, 2, 3, 4, 5, 6, 7, 8, 9] WHERE x = 2     |
+      | <=  | x IN [1, 2, 3, 4, 5, 6, 7, 8, 9] WHERE x % 2 = 0 |
+      | <=  | x IN [1, 2, 3, 4, 5, 6, 7, 8, 9] WHERE x % 3 = 0 |
+      | <=  | x IN [1, 2, 3, 4, 5, 6, 7, 8, 9] WHERE x < 7     |
+      | <=  | x IN [1, 2, 3, 4, 5, 6, 7, 8, 9] WHERE x >= 3    |
 
   Scenario Outline: [4] Any quantifier is equal the boolean negative of the none quantifier
     Given any graph

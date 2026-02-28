@@ -71,7 +71,7 @@ Feature: Literals6 - String
       """
     Then the result should be, in any order:
       | literal |
-      | '\''    |
+      | '\\''    |
     And no side effects
 
   @skipStyleCheck
@@ -84,7 +84,7 @@ Feature: Literals6 - String
     # Note that backslashes are an escape character for vertical bar and need to be escaped themselves, i.e. \\\\ for \\
     Then the result should be, in any order:
       | literal                      |
-      | 'a\\\\bcn5t\'"\\\\//\\\\"\'' |
+      | 'a\\\\bcn5t\\'"\\\\//\\\\"\\'' |
     And no side effects
 
   Scenario: [6] Return a single-quoted string with 100 characters
