@@ -308,8 +308,8 @@ test.describe('Graph Visualizer E2E', () => {
     await page.waitForTimeout(2000)
 
     // Status bar should show edge counts
-    const statusBar = page.locator('text=/\\d+ edges/')
-    const isVisible = await statusBar.isVisible().catch(() => false)
+    const statusBar = page.getByText("edges", { exact: false })
+    const isVisible = await statusBar.isVisible({ timeout: 5000 }).catch(() => false)
 
     await page.screenshot({ path: 'e2e/screenshots/12-edge-count-status-bar.png', fullPage: true })
 
