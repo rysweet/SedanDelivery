@@ -2,6 +2,8 @@ import { useIsAuthenticated, useMsal } from '@azure/msal-react'
 import { InteractionStatus } from '@azure/msal-browser'
 import { loginRequest } from './msalConfig'
 
+const isTestAuth = import.meta.env.VITE_E2E_TEST_AUTH === 'true'
+
 function LoadingSpinner({ message = 'Signing in...' }: { message?: string }) {
   return (
     <div className="flex items-center justify-center h-screen bg-surface-50">
@@ -14,6 +16,9 @@ function LoadingSpinner({ message = 'Signing in...' }: { message?: string }) {
 }
 
 export function AuthGuard({ children }: { children: React.ReactNode }) {
+  // In E2E test mode, skip MSAL entirely — the API client sends X-Test-Auth header
+  if (isTestAuth) return <>{children}</>
+
   const isAuthenticated = useIsAuthenticated()
   const { instance, inProgress } = useMsal()
 
