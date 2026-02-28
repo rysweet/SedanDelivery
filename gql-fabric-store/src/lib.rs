@@ -994,17 +994,15 @@ impl GraphStore for FabricGraphStore {
     }
 
     fn graph_stats(&self, graph: &str) -> Result<GraphStats, StorageError> {
-        // Use UNWIND to count distinct individual labels, not distinct label-lists.
-        // Use OPTIONAL MATCH for edges to handle empty graphs.
+        // Count distinct individual labels by UNWINDing labels(n) first (#66).
+        // Step 1: node count + label count via UNWIND.
+        // Step 2: edge count + rel-type count via separate OPTIONAL MATCH.
         let rows = self.query(
             &format!(
                 "MATCH (n {{`{PROP_GRAPH}`: $graph}}) WHERE NOT n:{SEQ_LABEL} \
-                 WITH collect(n) AS nodes, count(n) AS nc \
-                 UNWIND CASE WHEN size(nodes) = 0 THEN [null] ELSE nodes END AS n2 \
-                 WITH nc, CASE WHEN n2 IS NOT NULL THEN labels(n2) ELSE [] END AS lbls \
-                 UNWIND CASE WHEN size(lbls) = 0 THEN [null] ELSE lbls END AS lbl \
-                 WITH nc, collect(DISTINCT lbl) AS distinct_labels \
-                 WITH nc, size([x IN distinct_labels WHERE x IS NOT NULL AND NOT x STARTS WITH '__SD2']) AS lc \
+                 UNWIND labels(n) AS lbl \
+                 WITH count(DISTINCT n) AS nc, \
+                      count(DISTINCT CASE WHEN NOT lbl STARTS WITH '__SD2' THEN lbl END) AS lc \
                  OPTIONAL MATCH ()-[r {{`{PROP_GRAPH}`: $graph}}]->() \
                  WITH nc, lc, count(r) AS ec, count(DISTINCT type(r)) AS rtc \
                  RETURN nc, ec, lc, rtc"
