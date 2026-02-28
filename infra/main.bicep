@@ -130,5 +130,6 @@ output caeName string = cae.name
 output caeId string = cae.id
 output storageAccountName string = storageAccount.name
 output fileShareName string = 'valkey-data'
-output azureCacheHostName string = persistenceBackend == 'azure-cache' ? redisCache.properties.hostName : ''
-output azureCacheSslPort int = persistenceBackend == 'azure-cache' ? redisCache.properties.sslPort : 0
+// Azure Cache resource name only — keys are retrieved at deploy time via
+// `az redis list-keys` so they never appear in ARM deployment history (Issue #58).
+output azureCacheName string = persistenceBackend == 'azure-cache' ? redisCache.name : ''
