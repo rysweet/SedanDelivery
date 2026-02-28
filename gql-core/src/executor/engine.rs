@@ -1508,7 +1508,10 @@ impl<'a> QueryExecutor<'a> {
         let input = if let Some(ch) = child {
             self.exec_operator(graph, ch, budget, outer_rows, stats)?
         } else {
-            vec![Row::new()]
+            // Standalone MERGE (no preceding clause): one row with parameters.
+            let mut row = Row::new();
+            inject_parameters(&mut row, &self.parameters);
+            vec![row]
         };
 
         let mut out = Vec::new();
