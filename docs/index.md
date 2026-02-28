@@ -10,6 +10,7 @@ A Rust GQL/Cypher query engine — a clean-room, MIT/Apache-2.0-licensed replace
 ## Guides
 
 - [Tutorial](TUTORIAL) — Getting started with SedanDelivery
+- [Fabric Graph Tutorial](FABRIC_TUTORIAL) — Deploy, write data, query in Fabric portal, REST API, and monitoring
 - [Validation Guide](validation) — Full test suite: what was validated, how to re-run, CI tiers, benchmark baselines
 - [Secrets Configuration](secrets) — Repository secrets inventory, creation, rotation, and monitoring
 - [Benchmarks](benchmarks) — How to run and interpret performance benchmarks
@@ -193,18 +194,53 @@ See [sdk/README.md](../sdk/README.md) for the full Redis-protocol SDK API refere
 
 ## Fabric Graph Replication
 
-When `ENABLE_FABRIC=true` is set in the deploy workflow, SedanDelivery provisions a
+`ENABLE_FABRIC` is **`true` by default** in `deploy.yml`. Every deployment provisions a
 [Microsoft Fabric Graph Database](https://learn.microsoft.com/fabric/) workspace alongside
-the Container App. The `FanoutStore` backend writes to both the local Valkey instance and
-the Fabric Graph Database simultaneously, giving you:
+the Container App and deploys a `sedandelivery-fabric-sync` sidecar that continuously
+replicates graph mutations to Fabric.
+
+**Architecture:**
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│  Azure Container Apps Environment                            │
+│                                                              │
+│  ┌─────────────────────┐    ┌──────────────────────────┐     │
+│  │  sd2-{env}-redis    │    │  sd2-{env}-fabric-sync   │     │
+│  │  (Valkey + GQL mod) │    │  (sync sidecar)          │     │
+│  │                     │    │                          │     │
+│  │  Bolt :7687         │    │  Reads __sd2:changelog   │     │
+│  │  Redis :6379        │    │  stream from Valkey,     │     │
+│  │                     │    │  writes to Fabric REST   │     │
+│  │  GQL_FABRIC_        │    │  API                     │     │
+│  │  CHANGELOG=1        │    │                          │     │
+│  └─────────┬───────────┘    └────────────┬─────────────┘     │
+│            │ __sd2:changelog stream       │                   │
+│            └─────────────────────────────→│                   │
+└──────────────────────────────────────────┼───────────────────┘
+                                           │ HTTPS
+                                           ▼
+                              ┌─────────────────────────┐
+                              │  Microsoft Fabric        │
+                              │  Workspace:              │
+                              │  SedanDelivery-{env}     │
+                              │  Graph DB: sedan-graph   │
+                              └─────────────────────────┘
+```
+
+**What you get:**
 
 - **Low-latency reads** from the co-located Valkey container
 - **Durable, queryable graph** in Fabric for analytics and cross-service joins
-- **Automatic provisioning** via `scripts/provision-fabric.sh` (same pattern as cybergym)
+- **Automatic provisioning** via `scripts/provision-fabric.sh`
+- **Portal query editor** -- run openCypher queries directly in Fabric
 
 The Fabric endpoint and credentials are injected as Container App environment variables
 (`GQL_FABRIC_ENDPOINT`, `GQL_FABRIC_TENANT_ID`, `GQL_FABRIC_CLIENT_ID`) with the client
-secret stored as a Container App secret.
+secret stored as a Container App secret (`secretref:fabric-client-secret`).
+
+See the [Fabric Graph Tutorial](FABRIC_TUTORIAL) for a complete walkthrough: deploying,
+writing data, viewing in the Fabric portal, REST API access, and monitoring replication.
 
 ## Source Code
 

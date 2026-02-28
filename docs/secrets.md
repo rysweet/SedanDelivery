@@ -25,9 +25,9 @@ gh api repos/cloud-ecosystem-security/SedanDelivery/actions/secrets \
 | `ANTHROPIC_API_KEY` | Claude API access for gh-aw agentic workflows | `secret-validation.lock.yml` (engine: claude) | On compromise or key rotation |
 | `COPILOT_GITHUB_TOKEN` | GitHub Copilot engine for gh-aw agentic workflows | `auto-pr-labeling.lock.yml`, `docs-validation.lock.yml`, `license-compliance-scan.lock.yml`, `mutation-testing.lock.yml`, `stale-pr-management.lock.yml`, `test-coverage-enforcement.lock.yml` | **Every 7 days** (EMU PAT limit) |
 | `GH_AW_GITHUB_TOKEN` | Fallback GitHub token for gh-aw MCP server and tools | Lock.yml workflows (fallback chain: `GH_AW_GITHUB_MCP_SERVER_TOKEN \|\| GH_AW_GITHUB_TOKEN \|\| GITHUB_TOKEN`) | Same as `COPILOT_GITHUB_TOKEN` |
-| `AZURE_CLIENT_ID` | Azure Service Principal app ID | `deploy.yml`, `secret-validation.lock.yml` | When SP is recreated |
-| `AZURE_CLIENT_SECRET` | Azure Service Principal password | `deploy.yml`, `secret-validation.lock.yml` | **Every 90 days** (Azure default expiry) |
-| `AZURE_TENANT_ID` | Azure AD tenant ID | `deploy.yml`, `secret-validation.lock.yml` | Never (stable identifier) |
+| `AZURE_CLIENT_ID` | Azure Service Principal app ID | `deploy.yml`, `secret-validation.lock.yml`, Fabric provisioning | When SP is recreated |
+| `AZURE_CLIENT_SECRET` | Azure Service Principal password | `deploy.yml`, `secret-validation.lock.yml`, Fabric sync sidecar | **Every 90 days** (Azure default expiry) |
+| `AZURE_TENANT_ID` | Azure AD tenant ID | `deploy.yml`, `secret-validation.lock.yml`, Fabric provisioning | Never (stable identifier) |
 | `AZURE_SUBSCRIPTION_ID` | Azure subscription for resource deployment | `deploy.yml` | Never (stable identifier) |
 
 ---
@@ -136,6 +136,40 @@ gh secret set AZURE_SUBSCRIPTION_ID --body "$SUBSCRIPTION_ID"
   ```
 - `AZURE_TENANT_ID`: Stable — never changes
 - `AZURE_SUBSCRIPTION_ID`: Stable — never changes
+
+---
+
+### Fabric Graph Replication (uses existing Azure secrets)
+
+Fabric Graph replication is **enabled by default** (`ENABLE_FABRIC: 'true'` in
+`deploy.yml`). It does not require additional GitHub Actions secrets -- it reuses
+the existing Azure service principal credentials:
+
+| Secret | Fabric usage |
+|--------|-------------|
+| `AZURE_CLIENT_ID` | Passed to `scripts/provision-fabric.sh` and injected as `GQL_FABRIC_CLIENT_ID` on the sync sidecar |
+| `AZURE_CLIENT_SECRET` | Passed to `scripts/provision-fabric.sh` and stored as Container App secret `fabric-client-secret` on the sync sidecar |
+| `AZURE_TENANT_ID` | Passed to `scripts/provision-fabric.sh` and injected as `GQL_FABRIC_TENANT_ID` on the sync sidecar |
+
+The service principal must have permission to create Fabric workspaces and
+Graph Databases. If your SP was created with `Contributor` role on the subscription
+(as described above), it already has sufficient access.
+
+**Container App secrets (injected at deploy time, not stored in GitHub):**
+
+| Container App env var | Source | Container |
+|-----------------------|--------|-----------|
+| `GQL_FABRIC_CHANGELOG` | Set to `1` when Fabric is enabled | `sd2-{env}-redis` (main) |
+| `GQL_FABRIC_ENDPOINT` | Output of `provision-fabric.sh` | `sd2-{env}-fabric-sync` (sidecar) |
+| `GQL_FABRIC_TENANT_ID` | `AZURE_TENANT_ID` secret | `sd2-{env}-fabric-sync` (sidecar) |
+| `GQL_FABRIC_CLIENT_ID` | `AZURE_CLIENT_ID` secret | `sd2-{env}-fabric-sync` (sidecar) |
+| `GQL_FABRIC_CLIENT_SECRET` | `secretref:fabric-client-secret` | `sd2-{env}-fabric-sync` (sidecar) |
+
+When `AZURE_CLIENT_SECRET` is rotated (every 90 days), the Fabric sync sidecar
+must be redeployed to pick up the new secret. Re-running the deploy workflow
+handles this automatically.
+
+See the [Fabric Graph Tutorial](FABRIC_TUTORIAL.md) for the full walkthrough.
 
 ---
 
