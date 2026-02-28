@@ -232,11 +232,7 @@ fn need(buf: &[u8], offset: usize, needed: usize) -> Result<(), DecodeError> {
 }
 
 /// Decode `count` list items starting at `offset` in `buf`.
-fn decode_list(
-    buf: &[u8],
-    start: usize,
-    count: usize,
-) -> Result<(BoltValue, usize), DecodeError> {
+fn decode_list(buf: &[u8], start: usize, count: usize) -> Result<(BoltValue, usize), DecodeError> {
     let mut offset = start;
     let mut items = Vec::with_capacity(count);
     for _ in 0..count {
@@ -248,11 +244,7 @@ fn decode_list(
 }
 
 /// Decode `count` map entries starting at `offset` in `buf`.
-fn decode_map(
-    buf: &[u8],
-    start: usize,
-    count: usize,
-) -> Result<(BoltValue, usize), DecodeError> {
+fn decode_map(buf: &[u8], start: usize, count: usize) -> Result<(BoltValue, usize), DecodeError> {
     let mut offset = start;
     let mut entries = Vec::with_capacity(count);
     for _ in 0..count {
@@ -439,7 +431,19 @@ mod tests {
     #[test]
     fn roundtrip_int_boundaries() {
         let values: Vec<i64> = vec![
-            0, 1, -1, 127, -16, -17, -128, 128, -129, 32767, -32768, 32768, -32769,
+            0,
+            1,
+            -1,
+            127,
+            -16,
+            -17,
+            -128,
+            128,
+            -129,
+            32767,
+            -32768,
+            32768,
+            -32769,
             i32::MAX as i64,
             i32::MIN as i64,
             i32::MAX as i64 + 1,
@@ -496,9 +500,9 @@ mod tests {
         roundtrip(&BoltValue::String(String::new()));
         roundtrip(&BoltValue::String("a".into()));
         roundtrip(&BoltValue::String("abcdefghijklmno".into())); // 15 bytes
-        roundtrip(&BoltValue::String("a".repeat(16)));           // String8
-        roundtrip(&BoltValue::String("a".repeat(255)));          // String8 max
-        roundtrip(&BoltValue::String("a".repeat(256)));          // String16
+        roundtrip(&BoltValue::String("a".repeat(16))); // String8
+        roundtrip(&BoltValue::String("a".repeat(255))); // String8 max
+        roundtrip(&BoltValue::String("a".repeat(256))); // String16
     }
 
     #[test]
@@ -594,10 +598,7 @@ mod tests {
         // {"one": 1} → A1 83 6F 6E 65 01
         let data = [0xA1, 0x83, 0x6F, 0x6E, 0x65, 0x01];
         let (val, n) = decode(&data).unwrap();
-        assert_eq!(
-            val,
-            BoltValue::Map(vec![("one".into(), BoltValue::Int(1))])
-        );
+        assert_eq!(val, BoltValue::Map(vec![("one".into(), BoltValue::Int(1))]));
         assert_eq!(n, 6);
     }
 
@@ -774,8 +775,7 @@ mod tests {
 
     #[test]
     fn spec_hex_float_1_1() {
-        let (val, _) =
-            decode(&[0xC1, 0x3F, 0xF1, 0x99, 0x99, 0x99, 0x99, 0x99, 0x9A]).unwrap();
+        let (val, _) = decode(&[0xC1, 0x3F, 0xF1, 0x99, 0x99, 0x99, 0x99, 0x99, 0x9A]).unwrap();
         match val {
             BoltValue::Float(f) => assert!((f - 1.1).abs() < f64::EPSILON),
             _ => panic!("expected Float"),
@@ -804,10 +804,7 @@ mod tests {
     #[test]
     fn spec_hex_map_one_1() {
         let (val, _) = decode(&[0xA1, 0x83, 0x6F, 0x6E, 0x65, 0x01]).unwrap();
-        assert_eq!(
-            val,
-            BoltValue::Map(vec![("one".into(), BoltValue::Int(1))])
-        );
+        assert_eq!(val, BoltValue::Map(vec![("one".into(), BoltValue::Int(1))]));
     }
 
     // ── Extra bytes after value are not consumed ────────────────────────

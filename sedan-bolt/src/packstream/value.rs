@@ -56,10 +56,7 @@ mod tests {
 
     #[test]
     fn bolt_value_clone() {
-        let v = BoltValue::List(vec![
-            BoltValue::Int(1),
-            BoltValue::String("hello".into()),
-        ]);
+        let v = BoltValue::List(vec![BoltValue::Int(1), BoltValue::String("hello".into())]);
         let v2 = v.clone();
         assert_eq!(v, v2);
     }

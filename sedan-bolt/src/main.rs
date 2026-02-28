@@ -1,5 +1,5 @@
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
 use tokio::net::TcpListener;
 
@@ -14,8 +14,7 @@ async fn main() {
         )
         .init();
 
-    let bind_addr = std::env::var("BOLT_BIND_ADDR")
-        .unwrap_or_else(|_| "0.0.0.0:7687".to_string());
+    let bind_addr = std::env::var("BOLT_BIND_ADDR").unwrap_or_else(|_| "0.0.0.0:7687".to_string());
 
     let store = Arc::new(InMemoryGraphStore::new());
 
@@ -27,10 +26,7 @@ async fn main() {
     let connection_counter = Arc::new(AtomicU64::new(0));
 
     loop {
-        let (stream, peer_addr) = listener
-            .accept()
-            .await
-            .expect("accept failed");
+        let (stream, peer_addr) = listener.accept().await.expect("accept failed");
         let store = Arc::clone(&store);
         let conn_id = connection_counter.fetch_add(1, Ordering::Relaxed);
 

@@ -227,7 +227,7 @@ Cleanup: remove the `deploy` label, or run the **Undeploy** workflow.
 
 ```bash
 bash scripts/validate.sh           # full validation suite (all tiers, ~5 min)
-bash scripts/validate.sh --fast    # Tier 1+2 only (fmt + clippy + 128 tests, ~2 min)
+bash scripts/validate.sh --fast    # Tier 1+2 only (fmt + clippy + 80 integration tests, ~2 min)
 bash scripts/validate.sh --tck     # include TCK 3903 scenarios (~3 min extra)
 ```
 

@@ -220,11 +220,7 @@ pub fn encode_server_message(msg: &ServerMessage) -> Vec<u8> {
 
 // ---- Helpers --------------------------------------------------------------
 
-fn expect_field_count(
-    tag: u8,
-    expected: usize,
-    fields: &[BoltValue],
-) -> Result<(), MessageError> {
+fn expect_field_count(tag: u8, expected: usize, fields: &[BoltValue]) -> Result<(), MessageError> {
     if fields.len() != expected {
         return Err(MessageError::WrongFieldCount {
             tag,
@@ -463,7 +459,10 @@ mod tests {
     #[test]
     fn encode_failure() {
         let meta: BoltMap = vec![
-            ("code".into(), BoltValue::String("Neo.ClientError.Statement.SyntaxError".into())),
+            (
+                "code".into(),
+                BoltValue::String("Neo.ClientError.Statement.SyntaxError".into()),
+            ),
             ("message".into(), BoltValue::String("bad query".into())),
         ];
         let msg = ServerMessage::Failure(meta);

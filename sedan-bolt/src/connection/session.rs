@@ -6,8 +6,8 @@ use tokio::net::TcpStream;
 use gql_core::storage::InMemoryGraphStore;
 
 use crate::connection::handshake;
-use crate::message::{codec, types};
 use crate::message::types::ClientMessage;
+use crate::message::{codec, types};
 use crate::protocol::handler::{self, Session};
 use crate::protocol::state::ServerState;
 

@@ -188,9 +188,7 @@ pub fn scalar_value_to_bolt(val: &Value) -> BoltValue {
         Value::Int(i) => BoltValue::Int(*i),
         Value::Float(f) => BoltValue::Float(*f),
         Value::Str(s) => BoltValue::String(s.to_string()),
-        Value::List(items) => {
-            BoltValue::List(items.iter().map(scalar_value_to_bolt).collect())
-        }
+        Value::List(items) => BoltValue::List(items.iter().map(scalar_value_to_bolt).collect()),
         Value::Map(map) => indexmap_to_bolt_map(map),
 
         // ── Temporal types ───────────────────────────────────────────────
@@ -337,8 +335,14 @@ mod tests {
 
     #[test]
     fn bool_converts() {
-        assert_eq!(scalar_value_to_bolt(&Value::Bool(true)), BoltValue::Bool(true));
-        assert_eq!(scalar_value_to_bolt(&Value::Bool(false)), BoltValue::Bool(false));
+        assert_eq!(
+            scalar_value_to_bolt(&Value::Bool(true)),
+            BoltValue::Bool(true)
+        );
+        assert_eq!(
+            scalar_value_to_bolt(&Value::Bool(false)),
+            BoltValue::Bool(false)
+        );
     }
 
     #[test]
@@ -540,12 +544,8 @@ mod tests {
     fn edge_to_bolt_returns_structure() {
         let store = InMemoryGraphStore::new();
         store.create_graph("test").unwrap();
-        let n1 = store
-            .create_node("test", vec![], HashMap::new())
-            .unwrap();
-        let n2 = store
-            .create_node("test", vec![], HashMap::new())
-            .unwrap();
+        let n1 = store.create_node("test", vec![], HashMap::new()).unwrap();
+        let n2 = store.create_node("test", vec![], HashMap::new()).unwrap();
         let eid = store
             .create_edge("test", n1, n2, "KNOWS".to_string(), HashMap::new())
             .unwrap();
@@ -567,12 +567,8 @@ mod tests {
     fn path_to_bolt_simple() {
         let store = InMemoryGraphStore::new();
         store.create_graph("test").unwrap();
-        let n1 = store
-            .create_node("test", vec![], HashMap::new())
-            .unwrap();
-        let n2 = store
-            .create_node("test", vec![], HashMap::new())
-            .unwrap();
+        let n1 = store.create_node("test", vec![], HashMap::new()).unwrap();
+        let n2 = store.create_node("test", vec![], HashMap::new()).unwrap();
         let e1 = store
             .create_edge("test", n1, n2, "KNOWS".to_string(), HashMap::new())
             .unwrap();

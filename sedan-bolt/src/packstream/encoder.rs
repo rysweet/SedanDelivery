@@ -423,10 +423,7 @@ mod tests {
         let map = vec![("one".into(), BoltValue::Int(1))];
         let result = enc(&BoltValue::Map(map));
         // 0xA1, then key "one" (0x83 + b"one"), then value 1 (0x01)
-        assert_eq!(
-            result,
-            vec![0xA1, 0x83, b'o', b'n', b'e', 0x01]
-        );
+        assert_eq!(result, vec![0xA1, 0x83, b'o', b'n', b'e', 0x01]);
     }
 
     // ── Structure ───────────────────────────────────────────────────────
@@ -527,9 +524,6 @@ mod tests {
     fn spec_example_map_one_1() {
         // {"one": 1} → A1 83 6F 6E 65 01
         let v = BoltValue::Map(vec![("one".into(), BoltValue::Int(1))]);
-        assert_eq!(
-            enc(&v),
-            vec![0xA1, 0x83, 0x6F, 0x6E, 0x65, 0x01]
-        );
+        assert_eq!(enc(&v), vec![0xA1, 0x83, 0x6F, 0x6E, 0x65, 0x01]);
     }
 }

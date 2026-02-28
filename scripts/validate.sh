@@ -106,7 +106,7 @@ pass "All validation tiers complete"
 echo ""
 echo "Summary:"
 echo "  Unit tests:        385"
-echo "  Integration tests: 128  (end_to_end + exists + data_integrity + adversarial + stress + ldbc + module + compat)"
+echo "  Integration tests: 171  (Tier 2: 80 on every PR; Tier 3: 91 on main push)"
 if $WITH_TCK;   then echo "  TCK scenarios:     3903"; fi
 if $WITH_BENCH; then echo "  Benchmarks:        26 (smoke-run only — run without --test for timing)"; fi
 echo ""

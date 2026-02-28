@@ -237,10 +237,7 @@ async fn handle_run(
 
 // ── PULL ────────────────────────────────────────────────────────────────────
 
-fn handle_pull(
-    session: &mut Session,
-    extra: BoltMap,
-) -> Result<Vec<ServerMessage>, ProtocolError> {
+fn handle_pull(session: &mut Session, extra: BoltMap) -> Result<Vec<ServerMessage>, ProtocolError> {
     let n = extra.get_int("n").unwrap_or(-1);
 
     let pending = match session.pending_result.as_mut() {

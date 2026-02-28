@@ -216,8 +216,7 @@ mod tests {
         let store = InMemoryGraphStore::new();
         assert!(!store.graph_exists("default").unwrap());
 
-        let result =
-            execute_query(&store, "default", "RETURN 1 AS x", HashMap::new()).unwrap();
+        let result = execute_query(&store, "default", "RETURN 1 AS x", HashMap::new()).unwrap();
         assert_eq!(result.columns, vec!["x".to_string()]);
         assert_eq!(result.rows.len(), 1);
 
@@ -229,20 +228,18 @@ mod tests {
         let store = InMemoryGraphStore::new();
         // Any graph should be auto-created on first use.
         let result = execute_query(&store, "mydb", "RETURN 1 AS x", HashMap::new());
-        assert!(result.is_ok(), "expected auto-creation of non-default graph");
+        assert!(
+            result.is_ok(),
+            "expected auto-creation of non-default graph"
+        );
         assert!(store.graph_exists("mydb").unwrap());
     }
 
     #[test]
     fn execute_query_simple_return() {
         let store = InMemoryGraphStore::new();
-        let result = execute_query(
-            &store,
-            "default",
-            "RETURN 42 AS answer",
-            HashMap::new(),
-        )
-        .unwrap();
+        let result =
+            execute_query(&store, "default", "RETURN 42 AS answer", HashMap::new()).unwrap();
         assert_eq!(result.columns, vec!["answer".to_string()]);
         assert_eq!(result.rows.len(), 1);
         assert_eq!(result.rows[0]["answer"], Value::Int(42));
@@ -373,8 +370,7 @@ mod tests {
 
     #[test]
     fn bolt_bytes_converts_to_null() {
-        let bolt_map: BoltMap =
-            vec![("data".to_string(), BoltValue::Bytes(vec![0x01, 0x02]))];
+        let bolt_map: BoltMap = vec![("data".to_string(), BoltValue::Bytes(vec![0x01, 0x02]))];
         let value_map = bolt_map_to_value_map(&bolt_map);
         assert_eq!(value_map["data"], Value::Null);
     }
@@ -399,12 +395,8 @@ mod tests {
     fn value_to_bolt_resolves_edge() {
         let store = InMemoryGraphStore::new();
         store.create_graph("test").unwrap();
-        let n1 = store
-            .create_node("test", vec![], HashMap::new())
-            .unwrap();
-        let n2 = store
-            .create_node("test", vec![], HashMap::new())
-            .unwrap();
+        let n1 = store.create_node("test", vec![], HashMap::new()).unwrap();
+        let n2 = store.create_node("test", vec![], HashMap::new()).unwrap();
         let eid = store
             .create_edge("test", n1, n2, "KNOWS".to_string(), HashMap::new())
             .unwrap();
@@ -425,10 +417,7 @@ mod tests {
             value_to_bolt(&Value::Int(42), &store, "test"),
             BoltValue::Int(42)
         );
-        assert_eq!(
-            value_to_bolt(&Value::Null, &store, "test"),
-            BoltValue::Null
-        );
+        assert_eq!(value_to_bolt(&Value::Null, &store, "test"), BoltValue::Null);
     }
 
     #[test]
@@ -437,8 +426,7 @@ mod tests {
         let mut params = HashMap::new();
         params.insert("x".to_string(), Value::Int(99));
 
-        let result =
-            execute_query(&store, "default", "RETURN $x AS val", params).unwrap();
+        let result = execute_query(&store, "default", "RETURN $x AS val", params).unwrap();
         assert_eq!(result.rows.len(), 1);
         assert_eq!(result.rows[0]["val"], Value::Int(99));
     }
