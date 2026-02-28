@@ -6,18 +6,11 @@ interface GraphStats { nodeCount: number; edgeCount: number; labelCount: number;
 interface GraphListResponse { graphs: string[] }
 interface GraphDetail { name: string; stats: GraphStats | null; latencyMs: number }
 
-import { useAuthStore } from '../../store/auth'
-
 const BASE_URL = import.meta.env.VITE_API_URL ?? ''
 
 async function fetchWithLatency<T>(path: string): Promise<{ data: T; latencyMs: number }> {
   const start = performance.now()
   const headers: Record<string, string> = { 'Content-Type': 'application/json' }
-  // Include auth token if available (same as api/client.ts)
-  const token = useAuthStore.getState().token
-  if (token && /^[\w\-._~+/]+=*$/.test(token)) {
-    headers['Authorization'] = `Bearer ${token}`
-  }
   const res = await fetch(`${BASE_URL}${path}`, { headers })
   const latencyMs = Math.round(performance.now() - start)
   if (!res.ok) throw new Error(`HTTP ${res.status}`)

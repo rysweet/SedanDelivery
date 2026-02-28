@@ -17,7 +17,6 @@ import { CreateEdgeDialog } from './components/dialogs/CreateEdgeDialog'
 import { ExportDialog } from './components/dialogs/ExportDialog'
 import { ImportDialog } from './components/dialogs/ImportDialog'
 import { Toast } from './components/ui/Toast'
-import { AuthModal } from './components/auth/AuthModal'
 import type { GraphNode, GraphEdge } from './types/graph'
 import { mergeGraphData, computeLabelCounts } from './utils/graphology'
 
@@ -257,7 +256,6 @@ export default function App() {
         />
       )}
 
-      <AuthModal />
     </>
   )
 }

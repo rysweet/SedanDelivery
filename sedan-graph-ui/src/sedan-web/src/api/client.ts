@@ -17,9 +17,9 @@ import type {
   ImportGraphRequest,
 } from '../types/api'
 import type { GraphNode, GraphEdge } from '../types/graph'
-import { useAuthStore } from '../store/auth'
 
 const BASE_URL = import.meta.env.VITE_API_URL ?? ''
+const isTestAuth = import.meta.env.VITE_E2E_TEST_AUTH === 'true'
 
 // ── MSAL instance management ──────────────────────────────────────────────
 let msalInstance: PublicClientApplication | null = null
@@ -29,6 +29,9 @@ export function setMsalInstance(instance: PublicClientApplication) {
 }
 
 async function getAccessToken(): Promise<string | null> {
+  // In E2E test mode, no MSAL token — use X-Test-Auth header instead
+  if (isTestAuth) return null
+
   if (!msalInstance) return null
   const accounts = msalInstance.getAllAccounts()
   if (accounts.length === 0) return null
@@ -39,7 +42,6 @@ async function getAccessToken(): Promise<string | null> {
     })
     return result.accessToken
   } catch {
-    // Silent token acquisition failed -- trigger interactive login
     msalInstance.loginRedirect(apiTokenRequest).catch(() => {})
     return null
   }
@@ -58,18 +60,6 @@ class ApiError extends Error {
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const { token, setRequiresAuth, clearToken } = useAuthStore.getState()
-  const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
-    ...(init?.headers as Record<string, string> | undefined),
-  }
-  if (token) {
-    // Validate token format — prevent header injection via newline chars
-    if (/^[\w\-._~+/]+=*$/.test(token)) {
-      headers['Authorization'] = `Bearer ${token}`
-    }
-  }
-
   const url = `${BASE_URL}${path}`
 
   const headers: Record<string, string> = {
@@ -77,9 +67,15 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     ...(init?.headers as Record<string, string>),
   }
 
-  const token = await getAccessToken()
-  if (token) {
-    headers['Authorization'] = `Bearer ${token}`
+  if (isTestAuth) {
+    // E2E test mode: send X-Test-Auth header instead of JWT
+    headers['X-Test-Auth'] = 'e2e-playwright'
+  } else {
+    // Production: acquire MSAL JWT token
+    const token = await getAccessToken()
+    if (token) {
+      headers['Authorization'] = `Bearer ${token}`
+    }
   }
 
   const response = await fetch(url, {
@@ -98,8 +94,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
       // ignore JSON parse error
     }
     if (response.status === 401) {
-      clearToken() // Clear the invalid/expired token
-      setRequiresAuth(true)
+      // Token expired or invalid — MSAL will handle re-auth on next acquireTokenSilent
       throw new ApiError(401, 'Authentication required', detail)
     }
     throw new ApiError(response.status, errorMessage, detail)

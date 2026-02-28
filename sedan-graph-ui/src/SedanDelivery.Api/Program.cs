@@ -75,20 +75,42 @@ if (!string.IsNullOrEmpty(gqlApiUrl))
             timeout: TimeSpan.FromSeconds(5));
 }
 
-// ── Entra ID JWT Authentication ────────────────────────────────────────────
-builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
-    .AddMicrosoftIdentityWebApi(options =>
+// ── Authentication ────────────────────────────────────────────────────────
+// In Development mode with E2E_TEST_AUTH=true, bypass Entra ID and accept
+// a test header (X-Test-Auth: <any-value>) that creates a synthetic identity.
+// In production, full Entra ID JWT validation is enforced.
+var useTestAuth = builder.Environment.IsDevelopment()
+    && builder.Configuration.GetValue<bool>("E2E_TEST_AUTH");
+
+if (useTestAuth)
+{
+    // Test-only auth bypass — accepts X-Test-Auth header as identity
+    builder.Services.AddAuthentication("TestScheme")
+        .AddScheme<Microsoft.AspNetCore.Authentication.AuthenticationSchemeOptions,
+            TestAuthHandler>("TestScheme", null);
+    builder.Services.AddAuthorization(options =>
     {
-        options.TokenValidationParameters.ValidateAudience = true;
-    }, options =>
-    {
-        options.Instance = "https://login.microsoftonline.com/";
-        options.TenantId = builder.Configuration["ENTRA_TENANT_ID"]
-            ?? "3cd87a41-1f61-4aef-a212-cefdecd9a2d1";
-        options.ClientId = builder.Configuration["ENTRA_CLIENT_ID"]
-            ?? "97926b31-e1a3-4a76-b09d-eed5aeeabc9f";
+        options.FallbackPolicy = new Microsoft.AspNetCore.Authorization.AuthorizationPolicyBuilder()
+            .RequireAuthenticatedUser()
+            .Build();
     });
-builder.Services.AddAuthorization();
+}
+else
+{
+    builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
+        .AddMicrosoftIdentityWebApi(options =>
+        {
+            options.TokenValidationParameters.ValidateAudience = true;
+        }, options =>
+        {
+            options.Instance = "https://login.microsoftonline.com/";
+            options.TenantId = builder.Configuration["ENTRA_TENANT_ID"]
+                ?? "3cd87a41-1f61-4aef-a212-cefdecd9a2d1";
+            options.ClientId = builder.Configuration["ENTRA_CLIENT_ID"]
+                ?? "97926b31-e1a3-4a76-b09d-eed5aeeabc9f";
+        });
+    builder.Services.AddAuthorization();
+}
 
 // ── Problem Details ────────────────────────────────────────────────────────
 // Registers the ProblemDetails services so Problem() helper methods serialize
