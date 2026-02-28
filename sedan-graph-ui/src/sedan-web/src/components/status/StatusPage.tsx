@@ -6,19 +6,31 @@ interface GraphStats { nodeCount: number; edgeCount: number; labelCount: number;
 interface GraphListResponse { graphs: string[] }
 interface GraphDetail { name: string; stats: GraphStats | null; latencyMs: number }
 
+import { useAuthStore } from '../../store/auth'
+
 const BASE_URL = import.meta.env.VITE_API_URL ?? ''
 
 async function fetchWithLatency<T>(path: string): Promise<{ data: T; latencyMs: number }> {
   const start = performance.now()
-  const res = await fetch(`${BASE_URL}${path}`, { headers: { 'Content-Type': 'application/json' } })
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+  // Include auth token if available (same as api/client.ts)
+  const token = useAuthStore.getState().token
+  if (token && /^[\w\-._~+/]+=*$/.test(token)) {
+    headers['Authorization'] = `Bearer ${token}`
+  }
+  const res = await fetch(`${BASE_URL}${path}`, { headers })
   const latencyMs = Math.round(performance.now() - start)
   if (!res.ok) throw new Error(`HTTP ${res.status}`)
   return { data: (await res.json()) as T, latencyMs }
 }
 
+const LATENCY_GOOD_MS = 100
+const LATENCY_WARN_MS = 500
+const HEALTH_REFETCH_MS = 30_000
+
 function latencyColor(ms: number): string {
-  if (ms < 100) return 'text-green-400'
-  if (ms < 500) return 'text-yellow-400'
+  if (ms < LATENCY_GOOD_MS) return 'text-green-400'
+  if (ms < LATENCY_WARN_MS) return 'text-yellow-400'
   return 'text-red-400'
 }
 
@@ -34,7 +46,7 @@ export function StatusPage() {
   const health = useQuery({
     queryKey: ['status', 'health'],
     queryFn: () => fetchWithLatency<HealthResponse>('/api/health'),
-    refetchInterval: 30_000,
+    refetchInterval: HEALTH_REFETCH_MS,
   })
 
   const graphs = useQuery({
@@ -52,7 +64,7 @@ export function StatusPage() {
       }
       return { listLatencyMs: list.latencyMs, details }
     },
-    refetchInterval: 30_000,
+    refetchInterval: HEALTH_REFETCH_MS,
   })
 
   const isHealthy = health.data && health.data.data.status === 'ok'

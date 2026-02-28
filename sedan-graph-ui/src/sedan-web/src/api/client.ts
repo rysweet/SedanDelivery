@@ -31,13 +31,16 @@ class ApiError extends Error {
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const { token, setRequiresAuth } = useAuthStore.getState()
+  const { token, setRequiresAuth, clearToken } = useAuthStore.getState()
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     ...(init?.headers as Record<string, string> | undefined),
   }
   if (token) {
-    headers['Authorization'] = 'Bearer ' + token
+    // Validate token format — prevent header injection via newline chars
+    if (/^[\w\-._~+/]+=*$/.test(token)) {
+      headers['Authorization'] = `Bearer ${token}`
+    }
   }
 
   const url = `${BASE_URL}${path}`
@@ -57,6 +60,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
       // ignore JSON parse error
     }
     if (response.status === 401) {
+      clearToken() // Clear the invalid/expired token
       setRequiresAuth(true)
       throw new ApiError(401, 'Authentication required', detail)
     }
