@@ -1,9 +1,30 @@
-import React, { useState, useEffect } from 'react'
+import React from 'react'
 import ReactDOM from 'react-dom/client'
+import { PublicClientApplication, EventType } from '@azure/msal-browser'
+import { MsalProvider } from '@azure/msal-react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import App from './App'
-import { StatusPage } from './components/status/StatusPage'
+import { AuthGuard } from './auth/AuthGuard'
+import { msalConfig } from './auth/msalConfig'
+import { setMsalInstance } from './api/client'
 import './index.css'
+
+const msalInstance = new PublicClientApplication(msalConfig)
+
+// Set the active account after redirect completes
+msalInstance.addEventCallback((event) => {
+  if (
+    event.eventType === EventType.LOGIN_SUCCESS &&
+    event.payload &&
+    'account' in event.payload &&
+    event.payload.account
+  ) {
+    msalInstance.setActiveAccount(event.payload.account)
+  }
+})
+
+// Share the MSAL instance with the API client for silent token acquisition
+setMsalInstance(msalInstance)
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -18,26 +39,17 @@ const queryClient = new QueryClient({
   },
 })
 
-function Root() {
-  const [route, setRoute] = useState(window.location.hash)
-
-  useEffect(() => {
-    const onHash = () => setRoute(window.location.hash)
-    window.addEventListener('hashchange', onHash)
-    return () => window.removeEventListener('hashchange', onHash)
-  }, [])
-
-  if (route === '#/status') return <StatusPage />
-  return <App />
-}
-
 const root = document.getElementById('root')
 if (!root) throw new Error('Root element not found')
 
 ReactDOM.createRoot(root).render(
   <React.StrictMode>
-    <QueryClientProvider client={queryClient}>
-      <Root />
-    </QueryClientProvider>
+    <MsalProvider instance={msalInstance}>
+      <AuthGuard>
+        <QueryClientProvider client={queryClient}>
+          <App />
+        </QueryClientProvider>
+      </AuthGuard>
+    </MsalProvider>
   </React.StrictMode>,
 )

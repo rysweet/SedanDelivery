@@ -6,6 +6,7 @@ members = [
     "gql-module",
     "gql-cli",
     "gql-api",
+    "sedan-bolt",
 ]
 resolver = "2"
 

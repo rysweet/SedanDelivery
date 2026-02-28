@@ -1,3 +1,5 @@
+import type { PublicClientApplication } from '@azure/msal-browser'
+import { apiTokenRequest } from '../auth/msalConfig'
 import type {
   GraphListResponse,
   GraphDataResponse,
@@ -19,6 +21,31 @@ import { useAuthStore } from '../store/auth'
 
 const BASE_URL = import.meta.env.VITE_API_URL ?? ''
 
+// ── MSAL instance management ──────────────────────────────────────────────
+let msalInstance: PublicClientApplication | null = null
+
+export function setMsalInstance(instance: PublicClientApplication) {
+  msalInstance = instance
+}
+
+async function getAccessToken(): Promise<string | null> {
+  if (!msalInstance) return null
+  const accounts = msalInstance.getAllAccounts()
+  if (accounts.length === 0) return null
+  try {
+    const result = await msalInstance.acquireTokenSilent({
+      ...apiTokenRequest,
+      account: accounts[0],
+    })
+    return result.accessToken
+  } catch {
+    // Silent token acquisition failed -- trigger interactive login
+    msalInstance.loginRedirect(apiTokenRequest).catch(() => {})
+    return null
+  }
+}
+
+// ── HTTP client ───────────────────────────────────────────────────────────
 class ApiError extends Error {
   constructor(
     public status: number,
@@ -44,6 +71,17 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   }
 
   const url = `${BASE_URL}${path}`
+
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    ...(init?.headers as Record<string, string>),
+  }
+
+  const token = await getAccessToken()
+  if (token) {
+    headers['Authorization'] = `Bearer ${token}`
+  }
+
   const response = await fetch(url, {
     ...init,
     headers,

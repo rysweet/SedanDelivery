@@ -1,0 +1,15 @@
+[package]
+name = "sedan-client"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "Rust client for SedanDelivery graph database"
+
+# Keep this crate out of the root workspace (it would conflict with the
+# redis-module dependency used by the main project).
+[workspace]
+
+[dependencies]
+redis = { version = "0.27", default-features = false }
+serde_json = "1.0"
+thiserror = "2.0"

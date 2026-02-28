@@ -336,6 +336,88 @@ cargo run -p gql-cli
 
 This exercises the storage layer, lexer, and security validation interactively.
 
+## Using the Client SDKs
+
+The examples above use the low-level `gql-core` Rust library directly.
+For application code that talks to a running SedanDelivery server over Redis
+protocol, use one of the client SDKs instead. Python is shown as the primary
+example below; the .NET and Rust SDKs expose the same operations with
+language-idiomatic APIs (see [sdk/README.md](../sdk/README.md) for all three).
+
+### Connect and create a graph
+
+```python
+from sedandelivery import SedanDB
+
+db = SedanDB(host="localhost", port=6379, password="secret")
+g = db.select_graph("social")
+g.create()
+```
+
+### Add nodes and relationships
+
+```python
+# Parameterized mutations -- $name is replaced with the escaped value
+g.mutate(
+    "CREATE (a:Person {name: $name, age: $age})"
+    "-[:KNOWS]->"
+    "(b:Person {name: $friend})",
+    name="Alice", age=30, friend="Bob",
+)
+
+g.mutate(
+    "CREATE (:Company {name: $co})",
+    co="Acme",
+)
+
+g.mutate(
+    "MATCH (a:Person {name: $who}), (c:Company {name: $co}) "
+    "CREATE (a)-[:WORKS_AT {since: $yr}]->(c)",
+    who="Alice", co="Acme", yr=2022,
+)
+```
+
+### Query with structured results
+
+```python
+for record in g.query("MATCH (p:Person)-[:KNOWS]->(f) RETURN p.name, f.name"):
+    print(record["p.name"], "knows", record["f.name"])
+
+# Aggregation
+for record in g.query("MATCH (p:Person) RETURN avg(p.age) AS avg_age, count(p) AS total"):
+    print(f"Average age: {record['avg_age']}, total: {record['total']}")
+```
+
+### Inspect the execution plan
+
+```python
+plan = g.explain("MATCH (p:Person) WHERE p.age > 25 RETURN p.name")
+print(plan)
+```
+
+### Check mutation stats
+
+```python
+result = g.mutate("CREATE (:Company {name: $co})", co="NewCo")
+print(result.stats.nodes_created)   # 1
+print(result.stats.properties_set)  # 1
+```
+
+### Clean up
+
+```python
+g.delete()       # drop the graph
+db.close()       # close the connection
+```
+
+### .NET and Rust
+
+The .NET SDK (`SedanDelivery.Client`) and Rust SDK (`sedan-client`) provide
+the same `SedanDB -> Graph -> query/mutate` workflow with typed results, async
+support (.NET), and parameter substitution. See the
+[full SDK documentation](../sdk/README.md) for installation, API reference, and
+type mapping tables.
+
 ## Architecture Reference
 
 See [PLAN.md](../PLAN.md) for the full architecture and [docs/](.) for ADRs and research notes.

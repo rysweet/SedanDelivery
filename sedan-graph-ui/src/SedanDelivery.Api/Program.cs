@@ -1,8 +1,9 @@
 using System.Threading.RateLimiting;
+using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.RateLimiting;
+using Microsoft.Identity.Web;
 using Scalar.AspNetCore;
-using SedanDelivery.Api.Auth;
 using SedanDelivery.Api.Services;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -74,22 +75,20 @@ if (!string.IsNullOrEmpty(gqlApiUrl))
             timeout: TimeSpan.FromSeconds(5));
 }
 
-// ── API Key Authentication ─────────────────────────────────────────────────
-// When GQL_API_SECRET_TOKEN is set, require it as a Bearer token on all requests.
-// If not set, auth is disabled (dev/test mode).
-var apiSecretToken = builder.Configuration["GQL_API_SECRET_TOKEN"];
-if (!string.IsNullOrEmpty(apiSecretToken))
-{
-    builder.Services.AddAuthentication("ApiKey")
-        .AddScheme<ApiKeyAuthenticationOptions, ApiKeyAuthenticationHandler>(
-            "ApiKey", options => options.ApiKey = apiSecretToken);
-    builder.Services.AddAuthorization(options =>
+// ── Entra ID JWT Authentication ────────────────────────────────────────────
+builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
+    .AddMicrosoftIdentityWebApi(options =>
     {
-        options.FallbackPolicy = new AuthorizationPolicyBuilder()
-            .RequireAuthenticatedUser()
-            .Build();
+        options.TokenValidationParameters.ValidateAudience = true;
+    }, options =>
+    {
+        options.Instance = "https://login.microsoftonline.com/";
+        options.TenantId = builder.Configuration["ENTRA_TENANT_ID"]
+            ?? "3cd87a41-1f61-4aef-a212-cefdecd9a2d1";
+        options.ClientId = builder.Configuration["ENTRA_CLIENT_ID"]
+            ?? "97926b31-e1a3-4a76-b09d-eed5aeeabc9f";
     });
-}
+builder.Services.AddAuthorization();
 
 // ── Problem Details ────────────────────────────────────────────────────────
 // Registers the ProblemDetails services so Problem() helper methods serialize

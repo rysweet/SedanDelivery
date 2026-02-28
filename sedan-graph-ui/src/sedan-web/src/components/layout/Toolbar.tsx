@@ -12,11 +12,10 @@ import {
   Upload,
   CircleStop,
   Circle,
-  Activity,
-  Lock,
+  LogOut,
 } from 'lucide-react'
+import { useMsal } from '@azure/msal-react'
 import { useGraphStore } from '../../store/graph'
-import { useAuthStore } from '../../store/auth'
 import { Button } from '../ui/Button'
 import { Tooltip } from '../ui/Tooltip'
 import { GraphSelector } from '../graphs/GraphSelector'
@@ -89,8 +88,8 @@ export function Toolbar({
   const selectedNodeId = useGraphStore((s) => s.selectedNodeId)
   const selectedEdgeId = useGraphStore((s) => s.selectedEdgeId)
 
-  const token = useAuthStore((s) => s.token)
-  const clearToken = useAuthStore((s) => s.clearToken)
+  const { instance, accounts } = useMsal()
+  const userName = accounts[0]?.name ?? accounts[0]?.username ?? null
 
   const hasSelection = selectedNodeId !== null || selectedEdgeId !== null
 
@@ -238,25 +237,24 @@ export function Toolbar({
       <ToolbarButton tooltip="Import Graph" onClick={onImport}>
         <Upload size={16} />
       </ToolbarButton>
-      <ToolbarButton
-        tooltip="Service Status"
-        onClick={() => { window.location.hash = '#/status' }}
-      >
-        <Activity size={16} />
-      </ToolbarButton>
 
-      {token && (
-        <>
-          <Separator />
-          <ToolbarButton tooltip="Authenticated — click to disconnect" onClick={clearToken}>
-            <Lock size={16} />
-          </ToolbarButton>
-        </>
-      )}
-
-      {/* Graph selector pushed to right */}
-      <div className="ml-auto">
+      {/* Graph selector + user info pushed to right */}
+      <div className="ml-auto flex items-center gap-2">
         <GraphSelector />
+        {userName && (
+          <>
+            <Separator />
+            <div className="flex items-center gap-2 text-xs text-gray-400">
+              <span className="truncate max-w-32">{userName}</span>
+              <ToolbarButton
+                tooltip="Sign out"
+                onClick={() => instance.logoutRedirect()}
+              >
+                <LogOut size={16} />
+              </ToolbarButton>
+            </div>
+          </>
+        )}
       </div>
     </div>
   )

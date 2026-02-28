@@ -66,7 +66,33 @@ gh pr edit --add-label deploy
 
 A bot comment will post your Redis endpoint when the deployment completes (~8 minutes).
 
-## Use it in your app
+## Connect via Bolt protocol (recommended)
+
+Standard Neo4j drivers connect directly — no custom SDK needed:
+
+```python
+from neo4j import GraphDatabase
+
+driver = GraphDatabase.driver("bolt://localhost:7687", auth=None)
+with driver.session() as session:
+    session.run("CREATE (:Person {name: 'Alice', age: 30})")
+    result = session.run("MATCH (p:Person) RETURN p.name, p.age")
+    for record in result:
+        print(record["p.name"], record["p.age"])
+driver.close()
+```
+
+Works with any Neo4j driver: Python, .NET, Java, Go, Rust, JavaScript.
+
+```bash
+# Build and run sedan-bolt
+cargo run -p sedan-bolt
+# Listens on 0.0.0.0:7687 by default (configure via BOLT_BIND_ADDR env var)
+```
+
+See [docs/specs/sedan-bolt-spec.md](docs/specs/sedan-bolt-spec.md) for the full Bolt protocol specification.
+
+## Use it via Redis protocol
 
 Connect with any Redis client. The module exposes these commands:
 
@@ -79,36 +105,74 @@ GQL.DELETE-GRAPH <name>                    Drop a graph
 GQL.LIST-GRAPHS                            List all graphs
 ```
 
-### Python example
+### Python (`pip install sedandelivery`)
 
 ```python
-import redis
+from sedandelivery import SedanDB
 
-r = redis.Redis(host="your-endpoint.azurecontainerapps.io", port=6379,
-                password="your-valkey-password")
+db = SedanDB(host="your-endpoint.azurecontainerapps.io", port=6379,
+             password="your-valkey-password")
+g = db.select_graph("social")
+g.create()
 
-r.execute_command("GQL.CREATE-GRAPH", "social")
-r.execute_command("GQL.MUTATE", "social",
-    "CREATE (a:Person {name: 'Alice'})-[:KNOWS]->(b:Person {name: 'Bob'})")
+# Parameterized mutations
+g.mutate("CREATE (a:Person {name: $name, age: $age})-[:KNOWS]->(b:Person {name: $friend})",
+         name="Alice", age=30, friend="Bob")
 
-result = r.execute_command("GQL.QUERY", "social",
-    "MATCH (n:Person)-[:KNOWS]->(m) RETURN n.name, m.name")
-print(result)  # JSON rows
+# Query with structured results
+for record in g.query("MATCH (p:Person) WHERE p.age > $min RETURN p.name, p.age", min=20):
+    print(record["name"], record["age"])   # dict-like access
+
+# Mutation stats
+result = g.mutate("CREATE (:Company {name: $co})", co="Acme")
+print(result.stats.nodes_created)  # 1
 ```
 
-### .NET example (StackExchange.Redis)
+### .NET (`dotnet add package SedanDelivery.Client`)
 
 ```csharp
-var redis = ConnectionMultiplexer.Connect("your-endpoint:6379,password=...");
-var db = redis.GetDatabase();
+using SedanDelivery.Client;
 
-db.Execute("GQL.CREATE-GRAPH", "social");
-db.Execute("GQL.MUTATE", "social",
-    "CREATE (a:Person {name: 'Alice'})-[:KNOWS]->(b:Person {name: 'Bob'})");
+using var db = new SedanDB("your-endpoint:6379,password=...");
+var g = db.SelectGraph("social");
+g.Create();
 
-var result = db.Execute("GQL.QUERY", "social",
-    "MATCH (n:Person) RETURN n.name, n.age");
+// Parameterized mutations
+g.Mutate("CREATE (a:Person {name: $name})", new { name = "Alice" });
+
+// Query with typed results
+var result = g.Query("MATCH (p:Person) RETURN p.name, p.age");
+foreach (var record in result) {
+    Console.WriteLine($"{record.Get<string>("name")} is {record.Get<int>("age")}");
+}
+
+// Async support
+var count = await g.QueryAsync("MATCH (n) RETURN count(n) AS total");
 ```
+
+### Rust (`sedan-client`)
+
+```rust
+use sedan_client::SedanDB;
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let db = SedanDB::new("redis://your-endpoint:6379")?;
+    let mut g = db.select_graph("social")?;
+    g.create()?;
+
+    // Create data
+    g.mutate("CREATE (a:Person {name: 'Alice', age: 30})-[:KNOWS]->(b:Person {name: 'Bob', age: 25})")?;
+
+    // Query with structured results
+    for record in g.query("MATCH (p:Person) WHERE p.age > 20 RETURN p.name, p.age")? {
+        println!("{} is {}", record.get_str("p.name").unwrap(), record.get_i64("p.age").unwrap());
+    }
+
+    Ok(())
+}
+```
+
+See [sdk/README.md](sdk/README.md) for the full API reference covering all three SDKs.
 
 ### Cypher query examples
 
@@ -153,16 +217,37 @@ Cleanup: remove the `deploy` label, or run the **Undeploy** workflow.
 ## Documentation
 
 - [Tutorial](docs/TUTORIAL.md) — full usage guide with code examples
+- [Bolt Protocol Spec](docs/specs/sedan-bolt-spec.md) — Neo4j Bolt v4.4 server implementation details
 - [Docs site](https://cloud-ecosystem-security.github.io/SedanDelivery/) — deployment, storage backends, environment variables
 - [Research](docs/RESEARCH.md) — security analysis
 
 ## Tests
 
-```
-cargo test -p gql-core --lib       325+ unit tests
-cargo test --test tck              3150/3806 openCypher TCK scenarios (82.8%)
+**100% openCypher TCK compliance — 3903/3903 scenarios.**
+
+```bash
+bash scripts/validate.sh           # full validation suite (all tiers, ~5 min)
+bash scripts/validate.sh --fast    # Tier 1+2 only (fmt + clippy + 128 tests, ~2 min)
+bash scripts/validate.sh --tck     # include TCK 3903 scenarios (~3 min extra)
 ```
 
+| Layer | Count | What it validates |
+|-------|-------|------------------|
+| Unit tests | 385 | Parser, planner, executor, storage, budget |
+| sedan-bolt unit | 197 | PackStream codec, message framing, bridge layer |
+| sedan-bolt integration | 147 | Python neo4j driver: CRUD, aggregation, errors, edge cases |
+| End-to-end + pipeline | 46 | Full parse → plan → execute → result |
+| Data integrity | 23 | MERGE atomicity, property round-trips, referential integrity |
+| Adversarial | 11 | DoS guards: size limits, depth limits, budget enforcement |
+| Stress + scale | 8 | 10 K node load, label scan, budget at scale |
+| LDBC SNB | 37 | IC1–IC14 complex reads; all 8 insert + 8 delete operations |
+| Module integration | 18 | GQL command pipeline (GQL.QUERY, GQL.MUTATE, etc.) |
+| Wire format | 28 | JSON serialisation for all value types |
+| openCypher TCK | 3903 | 100% compliance, all 195 feature files |
+| Bolt driver compat | 3 drivers | neo4j (Python), Neo4j.Driver (.NET), neo4rs (Rust) |
+
+See [docs/validation.md](docs/validation.md) for the full guide: what each suite proves,
+CI tiers, how to re-run from scratch, and performance baseline tracking.
 ## License
 
 MIT OR Apache-2.0
