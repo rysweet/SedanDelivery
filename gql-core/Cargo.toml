@@ -47,3 +47,7 @@ harness = false
 name    = "tck"
 path    = "tests/tck/runner.rs"
 harness = false
+
+[[test]]
+name = "ldbc"
+path = "tests/ldbc/mod.rs"

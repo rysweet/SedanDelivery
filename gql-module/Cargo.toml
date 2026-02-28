@@ -5,10 +5,15 @@ edition.workspace = true
 license.workspace = true
 
 [lib]
-crate-type = ["cdylib"]
+crate-type = ["cdylib", "rlib"]
 name       = "gql_module"
 
 [dependencies]
 gql-core        = { path = "../gql-core" }
 serde_json      = { workspace = true }
 redis-module    = "2.0"
+
+# Note: redis dev-dependency omitted because redis-0.27 does not build on
+# Rust 1.89 (pattern exhaustiveness issues in aio::runtime).
+# Protocol tests against a live Valkey instance use the redis crate from
+# gql-redis-store and are run separately when REDIS_URL is set.
