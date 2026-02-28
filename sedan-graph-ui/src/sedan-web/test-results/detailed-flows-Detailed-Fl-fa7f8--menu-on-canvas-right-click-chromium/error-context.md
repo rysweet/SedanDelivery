@@ -1,0 +1,79 @@
+# Page snapshot
+
+```yaml
+- generic [ref=e3]:
+  - generic [ref=e5]:
+    - button "Select (S)" [ref=e7] [cursor=pointer]:
+      - img [ref=e9]
+    - button "Pan (P)" [ref=e12] [cursor=pointer]:
+      - img [ref=e14]
+    - button "Add Node (N)" [ref=e20] [cursor=pointer]:
+      - img [ref=e22]
+    - button "Delete Selected (Del)" [disabled] [ref=e24]:
+      - img [ref=e26]
+    - generic [ref=e30]:
+      - button "Layout algorithm" [ref=e33] [cursor=pointer]:
+        - generic [ref=e34]:
+          - img [ref=e35]
+          - text: Force Atlas 2
+      - button "Run layout" [ref=e38] [cursor=pointer]:
+        - img [ref=e40]
+    - button "Fit View (F)" [ref=e43] [cursor=pointer]:
+      - img [ref=e45]
+    - button "Cypher Query Editor" [ref=e52] [cursor=pointer]:
+      - img [ref=e54]
+    - button "Schema View" [ref=e57] [cursor=pointer]:
+      - img [ref=e59]
+    - button "Export Graph" [ref=e63] [cursor=pointer]:
+      - img [ref=e65]
+    - button "Import Graph" [ref=e69] [cursor=pointer]:
+      - img [ref=e71]
+    - button "Service Status" [ref=e76] [cursor=pointer]:
+      - img [ref=e78]
+    - generic [ref=e81]:
+      - button "Select graph" [expanded] [active] [ref=e82] [cursor=pointer]:
+        - generic [ref=e83]:
+          - img [ref=e84]
+          - text: Select graph
+          - img [ref=e88]
+      - generic [ref=e90]:
+        - generic [ref=e92]:
+          - button "e2e-pw" [ref=e93] [cursor=pointer]:
+            - generic [ref=e94]: e2e-pw
+          - button "Delete graph" [ref=e95] [cursor=pointer]:
+            - img [ref=e96]
+        - button "Create New Graph" [ref=e101] [cursor=pointer]:
+          - img [ref=e102]
+          - text: Create New Graph
+  - generic [ref=e103]:
+    - generic [ref=e106]:
+      - generic [ref=e107]:
+        - heading "Node Labels" [level=2] [ref=e108]
+        - generic [ref=e109]:
+          - button "Hide all labels" [ref=e110] [cursor=pointer]:
+            - img [ref=e112]
+          - button "Collapse legend panel" [ref=e117] [cursor=pointer]:
+            - img [ref=e119]
+      - paragraph [ref=e122]: No labels
+      - generic [ref=e123]: 0 labels
+    - generic [ref=e126]:
+      - generic [ref=e128]:
+        - generic:
+          - img
+        - textbox "Search graph" [disabled] [ref=e129]:
+          - /placeholder: Search by label or property value...
+      - generic [ref=e132]:
+        - generic [ref=e133]: ◈
+        - paragraph [ref=e134]: No graph selected
+        - paragraph [ref=e135]: Select or create a graph to get started
+    - region "Inspector" [ref=e138]:
+      - heading "Inspector" [level=2] [ref=e140]
+      - paragraph [ref=e142]: Select a node or edge
+  - generic [ref=e144]:
+    - generic [ref=e145]:
+      - generic [ref=e146]: 0nodes
+      - generic [ref=e147]: ·
+      - generic [ref=e148]: 0edges
+    - generic [ref=e149]: No graph selected
+    - generic [ref=e151]: 100%
+```
