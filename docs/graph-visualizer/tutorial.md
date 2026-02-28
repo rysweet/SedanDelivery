@@ -109,7 +109,6 @@ ORDER BY s.revenue
 
 Click the **Schema** button in the toolbar (table icon) to see an overview of the graph structure.
 
-![Schema panel showing labels and relationship types](/graph-visualizer/images/06-schema-panel.png)
 
 The schema panel shows:
 - **Labels**: Warehouse (3), Store (6), Driver (5), Vehicle (4), Product (5)
