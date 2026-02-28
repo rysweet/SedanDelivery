@@ -1523,15 +1523,49 @@ impl<'a> QueryExecutor<'a> {
             if !properties.is_empty() {
                 let ctx = self.build_filter_ctx(graph, &row)?;
                 for (k, expr) in properties {
-                    let val = self.eval_with_storage(graph, expr, &row, &ctx)?;
-                    // MERGE with null property is a SemanticError (MergeReadOwnWrites)
-                    if val.is_null() {
-                        return Err(GqlError::Execution(ExecutionError::TypeMismatch {
-                            expected: "non-null property value in MERGE".to_string(),
-                            actual: "Null".to_string(),
-                        }));
+                    if k.is_empty() {
+                        // Parameter map expansion sentinel.
+                        let val = self.eval_with_storage(graph, expr, &row, &ctx)?;
+                        match val {
+                            Value::Map(entries) => {
+                                for (mk, mv) in entries {
+                                    if mv.is_null() {
+                                        return Err(GqlError::Execution(
+                                            ExecutionError::TypeMismatch {
+                                                expected: "non-null property value in MERGE"
+                                                    .to_string(),
+                                                actual: "Null".to_string(),
+                                            },
+                                        ));
+                                    }
+                                    prop_vals.push((mk.to_string(), mv));
+                                }
+                            }
+                            Value::Null => {
+                                return Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                                    expected: "non-null Map for MERGE parameter properties"
+                                        .to_string(),
+                                    actual: "Null".to_string(),
+                                }));
+                            }
+                            other => {
+                                return Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                                    expected: "Map for MERGE parameter properties".to_string(),
+                                    actual: other.type_name().to_string(),
+                                }));
+                            }
+                        }
+                    } else {
+                        let val = self.eval_with_storage(graph, expr, &row, &ctx)?;
+                        // MERGE with null property is a SemanticError (MergeReadOwnWrites)
+                        if val.is_null() {
+                            return Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                                expected: "non-null property value in MERGE".to_string(),
+                                actual: "Null".to_string(),
+                            }));
+                        }
+                        prop_vals.push((k.clone(), val));
                     }
-                    prop_vals.push((k.clone(), val));
                 }
             }
 
@@ -1684,20 +1718,50 @@ impl<'a> QueryExecutor<'a> {
 
             // Filter by property constraints if any.
             let ctx = self.build_filter_ctx(graph, &row)?;
-            let prop_vals: Vec<(String, Value)> = properties
-                .iter()
-                .map(|(k, expr)| {
+            let mut prop_vals: Vec<(String, Value)> = Vec::new();
+            for (k, expr) in properties {
+                if k.is_empty() {
+                    // Parameter map expansion sentinel.
+                    let val = self.eval_with_storage(graph, expr, &row, &ctx)?;
+                    match val {
+                        Value::Map(entries) => {
+                            for (mk, mv) in entries {
+                                if mv.is_null() {
+                                    return Err(GqlError::Execution(
+                                        ExecutionError::TypeMismatch {
+                                            expected: "non-null property value in MERGE"
+                                                .to_string(),
+                                            actual: "Null".to_string(),
+                                        },
+                                    ));
+                                }
+                                prop_vals.push((mk.to_string(), mv));
+                            }
+                        }
+                        Value::Null => {
+                            return Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                                expected: "non-null Map for MERGE parameter properties".to_string(),
+                                actual: "Null".to_string(),
+                            }));
+                        }
+                        other => {
+                            return Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                                expected: "Map for MERGE parameter properties".to_string(),
+                                actual: other.type_name().to_string(),
+                            }));
+                        }
+                    }
+                } else {
                     let v = self.eval_with_storage(graph, expr, &row, &ctx)?;
-                    // MERGE with null property is a SemanticError (MergeReadOwnWrites)
                     if v.is_null() {
                         return Err(GqlError::Execution(ExecutionError::TypeMismatch {
                             expected: "non-null property value in MERGE".to_string(),
                             actual: "Null".to_string(),
                         }));
                     }
-                    Ok((k.clone(), v))
-                })
-                .collect::<Result<Vec<_>, GqlError>>()?;
+                    prop_vals.push((k.clone(), v));
+                }
+            }
 
             let matched_edges: Vec<EdgeId> = if prop_vals.is_empty() {
                 matching.iter().map(|adj| adj.edge_id).collect::<Vec<_>>()
@@ -2460,6 +2524,42 @@ impl<'a> QueryExecutor<'a> {
                             },
                             _ => Ok(Value::Bool(false)),
                         }
+                    }
+                    // Storage-aware: propertiesMatch(entity, param_map) → bool
+                    // Checks whether all key-value pairs in param_map match the
+                    // entity's properties. Used for MATCH (n $params) patterns.
+                    "propertiesmatch" => {
+                        if evaled_args.len() < 2 {
+                            return Ok(Value::Bool(false));
+                        }
+                        let param_map = match &evaled_args[1] {
+                            Value::Map(m) => m,
+                            Value::Null => return Ok(Value::Null),
+                            other => {
+                                return Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                                    expected: "Map for propertiesMatch".to_string(),
+                                    actual: other.type_name().to_string(),
+                                }));
+                            }
+                        };
+                        let entity_props = match &evaled_args[0] {
+                            Value::Node(node_id) => match self.store.get_node(graph, *node_id)? {
+                                Some(data) => data.properties.clone(),
+                                None => return Ok(Value::Bool(false)),
+                            },
+                            Value::Edge(edge_id) => match self.store.get_edge(graph, *edge_id)? {
+                                Some(data) => data.properties.clone(),
+                                None => return Ok(Value::Bool(false)),
+                            },
+                            _ => return Ok(Value::Bool(false)),
+                        };
+                        let all_match = param_map.iter().all(|(key, expected)| {
+                            entity_props
+                                .get(&**key)
+                                .map(|v| v == expected)
+                                .unwrap_or(false)
+                        });
+                        return Ok(Value::Bool(all_match));
                     }
                     // Storage-aware: labels(node) → list of label strings
                     "labels" => {
@@ -3661,6 +3761,10 @@ fn expr_to_column_name(expr: &Expr) -> String {
 }
 
 /// Evaluate a property map `[(key, Expr)]` into a `HashMap<String, Value>`.
+///
+/// Supports parameter map expansion: when a property entry has an empty key (`""`)
+/// and its value is an `Expr::Parameter`, the parameter is resolved and expected to
+/// be a `Value::Map`. All entries from that map are expanded into the result.
 fn eval_prop_map(
     graph: &str,
     executor: &QueryExecutor<'_>,
@@ -3670,10 +3774,33 @@ fn eval_prop_map(
 ) -> Result<HashMap<String, Value>, GqlError> {
     let mut map = HashMap::new();
     for (key, expr) in pairs {
-        let val = executor.eval_with_storage(graph, expr, row, ctx)?;
-        // Cypher: setting a property to null = removing it (don't store nulls)
-        if !val.is_null() {
-            map.insert(key.clone(), val);
+        if key.is_empty() {
+            // Sentinel: parameter map expansion.
+            let val = executor.eval_with_storage(graph, expr, row, ctx)?;
+            match val {
+                Value::Map(entries) => {
+                    for (k, v) in entries {
+                        if !v.is_null() {
+                            map.insert(k.to_string(), v);
+                        }
+                    }
+                }
+                Value::Null => {
+                    // Null parameter means no properties — skip.
+                }
+                other => {
+                    return Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                        expected: "Map for parameter property expansion".to_string(),
+                        actual: other.type_name().to_string(),
+                    }));
+                }
+            }
+        } else {
+            let val = executor.eval_with_storage(graph, expr, row, ctx)?;
+            // Cypher: setting a property to null = removing it (don't store nulls)
+            if !val.is_null() {
+                map.insert(key.clone(), val);
+            }
         }
     }
     Ok(map)
@@ -5318,5 +5445,41 @@ mod tests {
             eprintln!("  {:?}", row);
         }
         assert_eq!(result.rows.len(), 3, "Expected 3 rows: B, C, D");
+    }
+
+    // ── E2E: CREATE with path variable ──────────────────────────────────────
+
+    #[test]
+    fn e2e_create_path_variable_returns_path() {
+        use crate::parser::parse_query;
+        use crate::planner::QueryPlanner;
+
+        let store = make_store();
+        let planner = QueryPlanner::new(&store, "g");
+
+        // CREATE with a named path variable and RETURN the path.
+        let query = "CREATE p = (a:X)-[r:Y]->(b:Z) RETURN p";
+        let ast = parse_query(query).unwrap();
+        let plan = planner.plan(&ast).unwrap();
+        let mut budget = ExecutionBudget::unlimited();
+        let result = QueryExecutor::new(&store)
+            .execute("g", &plan, &mut budget)
+            .unwrap();
+
+        assert_eq!(
+            result.rows.len(),
+            1,
+            "CREATE should produce exactly one row"
+        );
+
+        let row = &result.rows[0];
+        let p = row.get("p").expect("row should contain path variable 'p'");
+        match p {
+            Value::Path { nodes, edges } => {
+                assert_eq!(nodes.len(), 2, "path should have 2 nodes");
+                assert_eq!(edges.len(), 1, "path should have 1 edge");
+            }
+            other => panic!("expected Value::Path, got {:?}", other),
+        }
     }
 }

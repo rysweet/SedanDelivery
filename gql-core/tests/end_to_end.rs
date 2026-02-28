@@ -1857,3 +1857,87 @@ proptest! {
         }
     }
 }
+
+// ── Parameter map expansion tests ────────────────────────────────────────────
+
+#[test]
+fn test_create_with_parameter_map() {
+    let store = make_store();
+
+    let mut params = HashMap::new();
+    params.insert(
+        "props".to_string(),
+        Value::Map(indexmap::indexmap! {
+            "name".into() => Value::Str("Alice".into()),
+            "age".into() => Value::Int(30),
+        }),
+    );
+
+    let q = parse_query("CREATE (n:Person $props) RETURN n.name, n.age").unwrap();
+    let registry = ProcedureRegistry::new();
+    let planner = QueryPlanner::with_context(&store, "test", &registry, &params);
+    let plan = planner.plan(&q).unwrap();
+
+    let executor = QueryExecutor::with_context(&store, &registry, params);
+    let mut budget = unlimited();
+    let result = executor.execute("test", &plan, &mut budget).unwrap();
+
+    assert_eq!(result.rows.len(), 1, "CREATE should produce one row");
+    assert_eq!(result.stats.nodes_created, 1);
+    assert_eq!(
+        result.rows[0].get("n.name"),
+        Some(&Value::Str("Alice".into()))
+    );
+    assert_eq!(result.rows[0].get("n.age"), Some(&Value::Int(30)));
+}
+
+#[test]
+fn test_merge_with_parameter_map() {
+    let store = make_store();
+
+    let mut params = HashMap::new();
+    params.insert(
+        "props".to_string(),
+        Value::Map(indexmap::indexmap! {
+            "name".into() => Value::Str("Bob".into()),
+            "age".into() => Value::Int(25),
+        }),
+    );
+
+    // First MERGE: should create the node.
+    let q = parse_query("MERGE (n:Person $props) RETURN n.name, n.age").unwrap();
+    let registry = ProcedureRegistry::new();
+    let planner = QueryPlanner::with_context(&store, "test", &registry, &params);
+    let plan = planner.plan(&q).unwrap();
+
+    let executor = QueryExecutor::with_context(&store, &registry, params.clone());
+    let mut budget = unlimited();
+    let result = executor.execute("test", &plan, &mut budget).unwrap();
+
+    assert_eq!(result.rows.len(), 1);
+    assert_eq!(result.stats.nodes_created, 1);
+    assert_eq!(
+        result.rows[0].get("n.name"),
+        Some(&Value::Str("Bob".into()))
+    );
+    assert_eq!(result.rows[0].get("n.age"), Some(&Value::Int(25)));
+
+    // Second MERGE with same params: should match existing, not create.
+    let q2 = parse_query("MERGE (n:Person $props) RETURN n.name").unwrap();
+    let planner2 = QueryPlanner::with_context(&store, "test", &registry, &params);
+    let plan2 = planner2.plan(&q2).unwrap();
+
+    let executor2 = QueryExecutor::with_context(&store, &registry, params);
+    let mut budget2 = unlimited();
+    let result2 = executor2.execute("test", &plan2, &mut budget2).unwrap();
+
+    assert_eq!(result2.rows.len(), 1, "MERGE should match existing node");
+    assert_eq!(
+        result2.stats.nodes_created, 0,
+        "no new node should be created"
+    );
+    assert_eq!(
+        result2.rows[0].get("n.name"),
+        Some(&Value::Str("Bob".into()))
+    );
+}

@@ -477,7 +477,7 @@ pub struct PathStep {
 pub struct NodePattern {
     pub variable: Option<Identifier>,
     pub labels: Vec<Label>,
-    pub properties: Option<MapLiteral>,
+    pub properties: Option<Properties>,
     pub where_clause: Option<Expr>,
 }
 
@@ -489,7 +489,7 @@ pub struct RelPattern {
     pub rel_types: Vec<RelType>,
     pub direction: Direction,
     pub range: Option<RangeQuantifier>,
-    pub properties: Option<MapLiteral>,
+    pub properties: Option<Properties>,
     pub where_clause: Option<Expr>,
 }
 
@@ -502,6 +502,16 @@ pub struct RangeQuantifier {
 
 /// An inline property map `{ key: expr, ... }` used in node/rel patterns.
 pub type MapLiteral = Vec<(SmolStr, Expr)>;
+
+/// Properties on a node/relationship pattern: either an inline map `{k: v, ...}`
+/// or a parameter reference `$param_name` that resolves to a map at execution time.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Properties {
+    /// Inline property map: `{name: 'Alice', age: 30}`.
+    Map(MapLiteral),
+    /// Parameter reference: `$props` — must resolve to a map value at execution time.
+    Parameter(SmolStr),
+}
 
 /// A CREATE clause.
 #[derive(Debug, Clone, PartialEq)]

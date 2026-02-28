@@ -14,8 +14,9 @@ use smol_str::SmolStr;
 use crate::ast::{
     BinaryOp, CallClause, Clause, CreateClause, DeleteClause, Direction, Expr, ForeachClause,
     Identifier, Label, MapLiteral, MatchClause, MergeClause, NodePattern, PathPattern, PathStep,
-    Query, RangeQuantifier, RelPattern, RelType, RemoveClause, RemoveClauseItem, ReturnClause,
-    ReturnItem, SetClause, SetClauseItem, SortItem, UnaryOp, UnwindClause, WithClause,
+    Properties, Query, RangeQuantifier, RelPattern, RelType, RemoveClause, RemoveClauseItem,
+    ReturnClause, ReturnItem, SetClause, SetClauseItem, SortItem, UnaryOp, UnwindClause,
+    WithClause,
 };
 use crate::error::ParseError;
 use crate::parser::lexer::{Token, TokenKind};
@@ -802,7 +803,11 @@ impl<'src> Parser<'src> {
                 let name = self.expect_identifier()?;
                 Some(Identifier::new(name))
             }
-            TokenKind::Colon | TokenKind::RParen | TokenKind::LBrace | TokenKind::Where => None,
+            TokenKind::Colon
+            | TokenKind::RParen
+            | TokenKind::LBrace
+            | TokenKind::DollarSign
+            | TokenKind::Where => None,
             _ => None,
         };
 
@@ -813,7 +818,11 @@ impl<'src> Parser<'src> {
         };
 
         let properties = if self.at(&TokenKind::LBrace) {
-            Some(self.parse_map_literal()?)
+            Some(Properties::Map(self.parse_map_literal()?))
+        } else if self.at(&TokenKind::DollarSign) {
+            self.advance();
+            let name = self.expect_identifier()?;
+            Some(Properties::Parameter(name.into()))
         } else {
             None
         };
@@ -882,7 +891,11 @@ impl<'src> Parser<'src> {
 
             // Optional properties.
             let props = if self.at(&TokenKind::LBrace) {
-                Some(self.parse_map_literal()?)
+                Some(Properties::Map(self.parse_map_literal()?))
+            } else if self.at(&TokenKind::DollarSign) {
+                self.advance();
+                let name = self.expect_identifier()?;
+                Some(Properties::Parameter(name.into()))
             } else {
                 None
             };
@@ -2199,7 +2212,9 @@ mod tests {
         let Clause::Match(mc) = &q.clauses[0] else {
             panic!()
         };
-        let props = mc.patterns[0].start.properties.as_ref().unwrap();
+        let Properties::Map(props) = mc.patterns[0].start.properties.as_ref().unwrap() else {
+            panic!("expected Properties::Map");
+        };
         assert_eq!(props.len(), 2);
         assert_eq!(props[0].0, "name");
         assert!(matches!(&props[0].1, Expr::Str(s) if s.as_ref() == "Alice"));
@@ -2469,8 +2484,52 @@ mod tests {
         let Clause::Create(cc) = &q.clauses[0] else {
             panic!()
         };
-        let props = cc.patterns[0].start.properties.as_ref().unwrap();
+        let Properties::Map(props) = cc.patterns[0].start.properties.as_ref().unwrap() else {
+            panic!("expected Properties::Map");
+        };
         assert!(matches!(&props[0].1, Expr::Parameter(p) if p == "name"));
+    }
+
+    #[test]
+    fn parameter_map_in_create() {
+        let q = parse("CREATE (n:Person $create_params)");
+        let Clause::Create(cc) = &q.clauses[0] else {
+            panic!()
+        };
+        let props = cc.patterns[0].start.properties.as_ref().unwrap();
+        assert!(
+            matches!(props, Properties::Parameter(name) if name == "create_params"),
+            "expected Properties::Parameter('create_params'), got {:?}",
+            props
+        );
+    }
+
+    #[test]
+    fn parameter_map_in_match() {
+        let q = parse("MATCH (n:Person $match_params) RETURN n");
+        let Clause::Match(mc) = &q.clauses[0] else {
+            panic!()
+        };
+        let props = mc.patterns[0].start.properties.as_ref().unwrap();
+        assert!(
+            matches!(props, Properties::Parameter(name) if name == "match_params"),
+            "expected Properties::Parameter('match_params'), got {:?}",
+            props
+        );
+    }
+
+    #[test]
+    fn parameter_map_in_merge() {
+        let q = parse("MERGE (n:Person $merge_params) RETURN n");
+        let Clause::Merge(mc) = &q.clauses[0] else {
+            panic!()
+        };
+        let props = mc.pattern.start.properties.as_ref().unwrap();
+        assert!(
+            matches!(props, Properties::Parameter(name) if name == "merge_params"),
+            "expected Properties::Parameter('merge_params'), got {:?}",
+            props
+        );
     }
 
     // ── CASE expression ───────────────────────────────────────────────────────

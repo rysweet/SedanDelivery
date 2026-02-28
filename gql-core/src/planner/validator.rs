@@ -25,8 +25,8 @@ use std::collections::{HashMap, HashSet};
 
 use crate::ast::{
     BinaryOp, Clause, CreateClause, DeleteClause, Direction, Expr, MatchClause, MergeClause,
-    NodePattern, PathPattern, Query, RelPattern, RemoveClause, ReturnClause, ReturnItem, SetClause,
-    UnaryOp, UnwindClause, WithClause,
+    NodePattern, PathPattern, Properties, Query, RelPattern, RemoveClause, ReturnClause,
+    ReturnItem, SetClause, UnaryOp, UnwindClause, WithClause,
 };
 use crate::error::{GqlError, ParseError, PlanError};
 
@@ -222,10 +222,19 @@ impl ValidationContext {
             }
             self.vars.insert(name, VarKind::Node);
         }
-        if let Some(props) = &node.properties {
-            for (_, expr) in props {
-                self.validate_expr_general(expr)?;
+        match &node.properties {
+            Some(Properties::Map(props)) => {
+                for (_, expr) in props {
+                    self.validate_expr_general(expr)?;
+                }
             }
+            Some(Properties::Parameter(name)) => {
+                return Err(plan_error_semantic(&format!(
+                    "parameter map ${name} cannot be used as a property predicate in MATCH; \
+                     use inline properties or a WHERE clause instead"
+                )));
+            }
+            None => {}
         }
         Ok(())
     }
@@ -251,10 +260,19 @@ impl ValidationContext {
             }
             self.vars.insert(name, VarKind::Relationship);
         }
-        if let Some(props) = &rel.properties {
-            for (_, expr) in props {
-                self.validate_expr_general(expr)?;
+        match &rel.properties {
+            Some(Properties::Map(props)) => {
+                for (_, expr) in props {
+                    self.validate_expr_general(expr)?;
+                }
             }
+            Some(Properties::Parameter(name)) => {
+                return Err(plan_error_semantic(&format!(
+                    "parameter map ${name} cannot be used as a property predicate in MATCH; \
+                     use inline properties or a WHERE clause instead"
+                )));
+            }
+            None => {}
         }
         Ok(())
     }
@@ -495,6 +513,20 @@ impl ValidationContext {
             self.validate_rel_in_create(&step.rel)?;
             self.validate_node_in_create(&step.node)?;
         }
+        // Register the path variable (e.g. `p` in `CREATE p = (a)-[:R]->(b)`)
+        // so it is available in subsequent RETURN / WITH clauses.
+        if let Some(ref path_var) = pattern.variable {
+            let name = path_var.0.clone();
+            if let Some(&existing_kind) = self.vars.get(&name) {
+                if existing_kind != VarKind::Path {
+                    return Err(plan_error_semantic(&format!(
+                        "variable '{name}' already defined as {}, cannot rebind as Path",
+                        kind_name(existing_kind)
+                    )));
+                }
+            }
+            self.vars.insert(name, VarKind::Path);
+        }
         Ok(())
     }
 
@@ -516,10 +548,16 @@ impl ValidationContext {
             }
             self.vars.insert(name, VarKind::Node);
         }
-        if let Some(props) = &node.properties {
-            for (_, expr) in props {
-                self.validate_expr_in_create(expr)?;
+        match &node.properties {
+            Some(Properties::Map(props)) => {
+                for (_, expr) in props {
+                    self.validate_expr_in_create(expr)?;
+                }
             }
+            Some(Properties::Parameter(_)) => {
+                // Parameter references are validated at runtime.
+            }
+            None => {}
         }
         Ok(())
     }
@@ -554,10 +592,16 @@ impl ValidationContext {
             }
             self.vars.insert(name, VarKind::Relationship);
         }
-        if let Some(props) = &rel.properties {
-            for (_, expr) in props {
-                self.validate_expr_in_create(expr)?;
+        match &rel.properties {
+            Some(Properties::Map(props)) => {
+                for (_, expr) in props {
+                    self.validate_expr_in_create(expr)?;
+                }
             }
+            Some(Properties::Parameter(_)) => {
+                // Parameter references are validated at runtime.
+            }
+            None => {}
         }
         Ok(())
     }
@@ -1117,12 +1161,7 @@ impl ValidationContext {
         if let Some(ref var) = mc.pattern.start.variable {
             if self.vars.contains_key(&var.0) {
                 let has_labels = !mc.pattern.start.labels.is_empty();
-                let has_props = mc
-                    .pattern
-                    .start
-                    .properties
-                    .as_ref()
-                    .is_some_and(|p| !p.is_empty());
+                let has_props = mc.pattern.start.properties.is_some();
                 if has_labels || has_props {
                     return Err(plan_error_semantic(&format!(
                         "variable '{}' already bound, cannot be rebound in MERGE with labels/properties",

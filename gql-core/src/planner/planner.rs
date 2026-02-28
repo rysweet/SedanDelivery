@@ -22,8 +22,8 @@ use std::collections::HashMap;
 
 use crate::ast::{
     CallClause, Clause, CreateClause, DeleteClause, Expr, Identifier, Label, MatchClause,
-    MergeClause, PathPattern, PathStep, Query, RemoveClause, RemoveClauseItem, ReturnClause,
-    ReturnItem, SetClause, SetClauseItem, UnwindClause, WithClause,
+    MergeClause, PathPattern, PathStep, Properties, Query, RemoveClause, RemoveClauseItem,
+    ReturnClause, ReturnItem, SetClause, SetClauseItem, UnwindClause, WithClause,
 };
 use crate::error::{ExecutionError, GqlError, PlanError};
 use crate::planner::{AggFunction, CreatePattern, Operator, RemoveItem, SetItem};
@@ -486,7 +486,11 @@ impl<'s> QueryPlanner<'s> {
         // check whether a matching index exists. If so, emit IndexScan directly
         // (skipping the post-filter); otherwise fall back to NodeScan + Filter.
         let mut index_consumed_prop: Option<smol_str::SmolStr> = None;
-        let mut op = if let (Some(label), Some(props)) = (&start_label, &start.properties) {
+        let start_map_props = match &start.properties {
+            Some(Properties::Map(m)) => Some(m.as_slice()),
+            _ => None,
+        };
+        let mut op = if let (Some(label), Some(props)) = (&start_label, start_map_props) {
             // Look for a single-property equality that maps to a literal value.
             // We take the first one that has an index; remaining props become a Filter.
             let indexes = self.store.list_indexes(self.graph).unwrap_or_default();
@@ -511,24 +515,34 @@ impl<'s> QueryPlanner<'s> {
 
         // Wrap with a property filter for any inline properties that weren't
         // consumed by an IndexScan above.
-        if let Some(props) = &start.properties {
-            let remaining: Vec<_> = props
-                .iter()
-                .filter(|(k, _)| {
-                    index_consumed_prop
-                        .as_ref()
-                        .map(|consumed| consumed != k)
-                        .unwrap_or(true)
-                })
-                .cloned()
-                .collect();
-            if !remaining.is_empty() {
-                let pred = props_to_filter_expr(&start_alias, &remaining);
+        match &start.properties {
+            Some(Properties::Map(props)) => {
+                let remaining: Vec<_> = props
+                    .iter()
+                    .filter(|(k, _)| {
+                        index_consumed_prop
+                            .as_ref()
+                            .map(|consumed| consumed != k)
+                            .unwrap_or(true)
+                    })
+                    .cloned()
+                    .collect();
+                if !remaining.is_empty() {
+                    let pred = props_to_filter_expr(&start_alias, &remaining);
+                    op = Operator::Filter {
+                        predicate: pred,
+                        child: Box::new(op),
+                    };
+                }
+            }
+            Some(Properties::Parameter(name)) => {
+                let pred = param_props_filter_expr(&start_alias, name);
                 op = Operator::Filter {
                     predicate: pred,
                     child: Box::new(op),
                 };
             }
+            None => {}
         }
 
         // Add label filters for ALL labels beyond the first (which NodeScan handles).
@@ -586,11 +600,16 @@ impl<'s> QueryPlanner<'s> {
                 // Inline property constraints on a variable-length relationship
                 // must be checked for every edge in the path during BFS traversal.
                 // We pass them as `rel_props` using the sentinel alias `__varlen_edge__`.
-                let rel_props_expr = rel
-                    .properties
-                    .as_ref()
-                    .filter(|p| !p.is_empty())
-                    .map(|props| props_to_filter_expr(&Identifier::new("__varlen_edge__"), props));
+                let rel_props_expr = match &rel.properties {
+                    Some(Properties::Map(props)) if !props.is_empty() => Some(
+                        props_to_filter_expr(&Identifier::new("__varlen_edge__"), props),
+                    ),
+                    Some(Properties::Parameter(name)) => Some(param_props_filter_expr(
+                        &Identifier::new("__varlen_edge__"),
+                        name,
+                    )),
+                    _ => None,
+                };
                 op = Operator::VarLenExpand {
                     direction: rel.direction,
                     rel_types: rel.rel_types.clone(),
@@ -634,8 +653,8 @@ impl<'s> QueryPlanner<'s> {
             // If the relationship has inline property constraints, add a property filter.
             // For variable-length patterns, this is handled inside VarLenExpand via
             // rel_props (each traversed edge is checked during BFS), so skip the Filter.
-            if let Some(props) = &rel.properties {
-                if !props.is_empty() && rel.range.is_none() {
+            match &rel.properties {
+                Some(Properties::Map(props)) if !props.is_empty() && rel.range.is_none() => {
                     // rel_alias is guaranteed to exist because we always assign one above.
                     let filter_alias = rel
                         .variable
@@ -647,6 +666,18 @@ impl<'s> QueryPlanner<'s> {
                         child: Box::new(op),
                     };
                 }
+                Some(Properties::Parameter(name)) if rel.range.is_none() => {
+                    let filter_alias = rel
+                        .variable
+                        .clone()
+                        .unwrap_or_else(|| Identifier::new(format!("__anon_rel_{}__", step_idx)));
+                    let pred = param_props_filter_expr(&filter_alias, name);
+                    op = Operator::Filter {
+                        predicate: pred,
+                        child: Box::new(op),
+                    };
+                }
+                _ => {}
             }
 
             // Inline WHERE clause on the relationship pattern.
@@ -668,14 +699,22 @@ impl<'s> QueryPlanner<'s> {
             }
 
             // If the destination node has property constraints, add a property filter.
-            if let Some(props) = &node.properties {
-                if !props.is_empty() {
+            match &node.properties {
+                Some(Properties::Map(props)) if !props.is_empty() => {
                     let pred = props_to_filter_expr(&dst_alias, props);
                     op = Operator::Filter {
                         predicate: pred,
                         child: Box::new(op),
                     };
                 }
+                Some(Properties::Parameter(name)) => {
+                    let pred = param_props_filter_expr(&dst_alias, name);
+                    op = Operator::Filter {
+                        predicate: pred,
+                        child: Box::new(op),
+                    };
+                }
+                _ => {}
             }
 
             // Inline WHERE clause on the destination node pattern.
@@ -717,9 +756,15 @@ impl<'s> QueryPlanner<'s> {
         let mut patterns = Vec::new();
         let mut anon_counter: usize = 0;
 
+        // Collect path variable info per pattern so we can wrap with
+        // AssemblePath after building the Create operator.
+        let mut path_vars: Vec<Option<(Identifier, Vec<Identifier>, Vec<Identifier>)>> = Vec::new();
+
         for (pat_idx, path_pattern) in cc.patterns.iter().enumerate() {
             let mut nodes: Vec<crate::planner::CreateNodeSpec> = Vec::new();
             let mut edges: Vec<crate::planner::CreateEdgeSpec> = Vec::new();
+            let mut path_node_aliases: Vec<Identifier> = Vec::new();
+            let mut path_edge_aliases: Vec<Identifier> = Vec::new();
 
             // Extract nodes from the pattern.
             // Generate unique aliases for anonymous nodes so the executor can
@@ -729,16 +774,9 @@ impl<'s> QueryPlanner<'s> {
                 anon_counter += 1;
                 Identifier::new(format!("__anon_{pat_idx}_{anon_counter}__"))
             });
-            let node_props = start
-                .properties
-                .as_ref()
-                .map(|p| {
-                    p.iter()
-                        .map(|(k, v)| (k.to_string(), v.clone()))
-                        .collect::<Vec<_>>()
-                })
-                .unwrap_or_default();
+            let node_props = properties_to_prop_pairs(start.properties.as_ref());
             nodes.push((Some(start_alias.clone()), start.labels.clone(), node_props));
+            path_node_aliases.push(start_alias.clone());
 
             // Track the resolved alias for the previous node in the path.
             let mut prev_alias = start_alias.clone();
@@ -751,16 +789,9 @@ impl<'s> QueryPlanner<'s> {
                     anon_counter += 1;
                     Identifier::new(format!("__anon_{pat_idx}_{anon_counter}__"))
                 });
-                let dst_props = node
-                    .properties
-                    .as_ref()
-                    .map(|p| {
-                        p.iter()
-                            .map(|(k, v)| (k.to_string(), v.clone()))
-                            .collect::<Vec<_>>()
-                    })
-                    .unwrap_or_default();
+                let dst_props = properties_to_prop_pairs(node.properties.as_ref());
                 nodes.push((Some(dst_alias.clone()), node.labels.clone(), dst_props));
+                path_node_aliases.push(dst_alias.clone());
 
                 // Edge specification.
                 let rel_type = rel.rel_types.first().ok_or_else(|| {
@@ -773,18 +804,26 @@ impl<'s> QueryPlanner<'s> {
                 let src_for_edge = prev_alias.clone();
                 let dst_for_edge = dst_alias.clone();
 
-                let rel_props = rel
-                    .properties
-                    .as_ref()
-                    .map(|p| {
-                        p.iter()
-                            .map(|(k, v)| (k.to_string(), v.clone()))
-                            .collect::<Vec<_>>()
-                    })
-                    .unwrap_or_default();
+                let rel_props = properties_to_prop_pairs(rel.properties.as_ref());
+
+                // When a path variable exists on the CREATE pattern, ensure
+                // the edge has an alias so AssemblePath can look it up in the
+                // row. Assign a synthetic alias if the user did not provide one.
+                let edge_alias = if path_pattern.variable.is_some() {
+                    Some(rel.variable.clone().unwrap_or_else(|| {
+                        anon_counter += 1;
+                        Identifier::new(format!("__create_rel_{pat_idx}_{step_idx}__"))
+                    }))
+                } else {
+                    rel.variable.clone()
+                };
+
+                if let Some(ref ea) = edge_alias {
+                    path_edge_aliases.push(ea.clone());
+                }
 
                 edges.push((
-                    rel.variable.clone(),
+                    edge_alias,
                     src_for_edge,
                     dst_for_edge,
                     rel_type.clone(),
@@ -796,12 +835,38 @@ impl<'s> QueryPlanner<'s> {
             }
 
             patterns.push(CreatePattern { nodes, edges });
+
+            // Record path variable info for wrapping with AssemblePath.
+            if let Some(ref path_var) = path_pattern.variable {
+                path_vars.push(Some((
+                    path_var.clone(),
+                    path_node_aliases,
+                    path_edge_aliases,
+                )));
+            } else {
+                path_vars.push(None);
+            }
         }
 
-        Ok(Operator::Create {
+        let mut op = Operator::Create {
             patterns,
             child: child.map(Box::new),
-        })
+        };
+
+        // Wrap with AssemblePath for each CREATE pattern that has a named path
+        // variable, so `p` is available in subsequent RETURN / WITH clauses.
+        for path_info in path_vars {
+            if let Some((path_alias, node_aliases, edge_aliases)) = path_info {
+                op = Operator::AssemblePath {
+                    path_alias,
+                    node_aliases,
+                    edge_aliases,
+                    child: Box::new(op),
+                };
+            }
+        }
+
+        Ok(op)
     }
 
     // ── DELETE planning ───────────────────────────────────────────────────────
@@ -1211,13 +1276,7 @@ impl<'s> QueryPlanner<'s> {
 
         let node_alias = mc.pattern.start.variable.clone();
         let labels = mc.pattern.start.labels.clone();
-        let properties: Vec<(String, Expr)> = mc
-            .pattern
-            .start
-            .properties
-            .as_ref()
-            .map(|p| p.iter().map(|(k, v)| (k.to_string(), v.clone())).collect())
-            .unwrap_or_default();
+        let properties = properties_to_prop_pairs(mc.pattern.start.properties.as_ref());
 
         let on_create: Vec<SetItem> = mc.on_create.iter().map(map_set_clause_item).collect();
         let on_match: Vec<SetItem> = mc.on_match.iter().map(map_set_clause_item).collect();
@@ -1289,17 +1348,7 @@ impl<'s> QueryPlanner<'s> {
             .cloned()
             .unwrap_or_else(|| crate::ast::RelType::new(""));
         let direction = step.rel.direction;
-        let properties: Vec<(String, Expr)> = step
-            .rel
-            .properties
-            .as_ref()
-            .map(|props| {
-                props
-                    .iter()
-                    .map(|(k, v)| (k.to_string(), v.clone()))
-                    .collect()
-            })
-            .unwrap_or_default();
+        let properties = properties_to_prop_pairs(step.rel.properties.as_ref());
 
         let on_create: Vec<SetItem> = mc.on_create.iter().map(map_set_clause_item).collect();
         let on_match: Vec<SetItem> = mc.on_match.iter().map(map_set_clause_item).collect();
@@ -2047,6 +2096,43 @@ fn rewrite_agg_to_var(expr: &Expr, alias: &Identifier) -> Expr {
 
 /// Build a filter expression that checks `alias.prop = val` for each property
 /// in an inline map literal `{prop: val, ...}`.
+/// Convert an `Option<&Properties>` to a `Vec<(String, Expr)>` for the planner operator layer.
+///
+/// For `Properties::Map`, converts inline property pairs.
+/// For `Properties::Parameter`, emits a single sentinel entry with an empty key
+/// and an `Expr::Parameter` value. The executor detects this sentinel and expands
+/// the parameter map at runtime.
+fn properties_to_prop_pairs(props: Option<&Properties>) -> Vec<(String, Expr)> {
+    match props {
+        Some(Properties::Map(map)) => map
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.clone()))
+            .collect(),
+        Some(Properties::Parameter(name)) => {
+            // Sentinel: empty key signals "expand this parameter map at runtime".
+            vec![("".to_string(), Expr::Parameter(name.to_string()))]
+        }
+        None => Vec::new(),
+    }
+}
+
+/// Build a filter expression that checks whether an entity's properties match
+/// all key-value pairs from a parameter map.
+///
+/// Generates `propertiesMatch(alias, $param_name)` which the executor evaluates
+/// by comparing all entries in the resolved parameter map against the entity's
+/// properties.
+fn param_props_filter_expr(alias: &Identifier, param_name: &smol_str::SmolStr) -> Expr {
+    Expr::FunctionCall {
+        name: "propertiesMatch".into(),
+        args: vec![
+            Expr::Variable(alias.clone()),
+            Expr::Parameter(param_name.to_string()),
+        ],
+        distinct: false,
+    }
+}
+
 fn props_to_filter_expr(alias: &Identifier, props: &[(smol_str::SmolStr, Expr)]) -> Expr {
     let mut parts: Vec<Expr> = props
         .iter()
@@ -3308,10 +3394,10 @@ mod tests {
                         start: NodePattern {
                             variable: Some(Identifier::new("n")),
                             labels: vec![Label::new("Person")],
-                            properties: Some(vec![(
+                            properties: Some(Properties::Map(vec![(
                                 smol_str::SmolStr::new("name"),
                                 Expr::Str("Alice".into()),
-                            )]),
+                            )])),
                             where_clause: None,
                         },
                         steps: vec![],
@@ -3351,10 +3437,10 @@ mod tests {
                         start: NodePattern {
                             variable: Some(Identifier::new("n")),
                             labels: vec![Label::new("Person")],
-                            properties: Some(vec![(
+                            properties: Some(Properties::Map(vec![(
                                 smol_str::SmolStr::new("name"),
                                 Expr::Str("Alice".into()),
-                            )]),
+                            )])),
                             where_clause: None,
                         },
                         steps: vec![],
