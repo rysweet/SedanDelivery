@@ -6,6 +6,7 @@ use serde_json::Value as Json;
 // ── Health ────────────────────────────────────────────────────────────────────
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct HealthResponse {
     pub status: &'static str,
     pub version: &'static str,
@@ -25,6 +26,7 @@ pub struct GraphListResponse {
 }
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct GraphStatsResponse {
     pub node_count: u64,
     pub edge_count: u64,
@@ -93,6 +95,7 @@ pub struct QueryResponse {
 }
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct MutateResponse {
     pub nodes_created: u64,
     pub nodes_deleted: u64,
@@ -154,6 +157,7 @@ pub struct RelTypeInfo {
 }
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SchemaResponse {
     pub labels: Vec<LabelInfo>,
     pub relationship_types: Vec<RelTypeInfo>,
@@ -226,6 +230,7 @@ pub struct ImportEdge {
 }
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ImportResponse {
     pub nodes_created: usize,
     pub edges_created: usize,
