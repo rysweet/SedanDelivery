@@ -273,7 +273,7 @@ jobs:
           ACR_SERVER="${{ steps.provision.outputs.acr_server }}"
           IMAGE_TAG="${GH_SHA}"
 
-          echo "🐳 Building via ACR Tasks (no local Docker daemon needed)..."
+          echo "🐳 Building sedan-delivery (Valkey+GQL module) via ACR Tasks..."
           echo "   ACR: ${ACR_NAME}"
           echo "   Tag: ${IMAGE_TAG}"
 
@@ -287,6 +287,29 @@ jobs:
 
           echo "✅ Image built and pushed: ${ACR_SERVER}/sedan-delivery:${IMAGE_TAG}"
           echo "image_tag=${IMAGE_TAG}" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push sedan-fabric-sync image via ACR Tasks
+        id: build-sync
+        if: env.ENABLE_FABRIC == 'true'
+        env:
+          GH_SHA: ${{ github.sha }}
+        run: |
+          ACR_NAME="${{ steps.provision.outputs.acr_name }}"
+          ACR_SERVER="${{ steps.provision.outputs.acr_server }}"
+          IMAGE_TAG="${GH_SHA}"
+
+          echo "🐳 Building sedan-fabric-sync (Fabric sync sidecar) via ACR Tasks..."
+
+          az acr build \
+            --registry "${ACR_NAME}" \
+            --image "sedan-fabric-sync:${IMAGE_TAG}" \
+            --image "sedan-fabric-sync:latest" \
+            --file Dockerfile.sync \
+            --platform linux/amd64 \
+            .
+
+          echo "✅ sedan-fabric-sync image pushed: ${ACR_SERVER}/sedan-fabric-sync:${IMAGE_TAG}"
+          echo "sync_image_tag=${IMAGE_TAG}" >> "$GITHUB_OUTPUT"
 
       - name: Create or update Container App
         id: deploy-app
@@ -357,10 +380,11 @@ jobs:
             ENV_VAR_ARGS="${ENV_VAR_ARGS} GQL_REDIS_URL=secretref:redis-conn"
           fi
 
-          # Fabric Graph Database env vars (opt-in via ENABLE_FABRIC)
+          # Fabric Graph Database env vars (opt-in via ENABLE_FABRIC).
+          # GQL_FABRIC_CHANGELOG=1 tells gql-module to write to __sd2:changelog;
+          # the Fabric credentials are only needed by sedan-fabric-sync sidecar.
           if [[ "${DEPLOY_HAS_FABRIC}" == "true" ]]; then
-            SECRETS_ARGS="${SECRETS_ARGS} fabric-client-secret=${DEPLOY_AZURE_CLIENT_SECRET}"
-            ENV_VAR_ARGS="${ENV_VAR_ARGS} GQL_FABRIC_ENDPOINT=${DEPLOY_FABRIC_ENDPOINT} GQL_FABRIC_TENANT_ID=${DEPLOY_AZURE_TENANT_ID} GQL_FABRIC_CLIENT_ID=${DEPLOY_AZURE_CLIENT_ID} GQL_FABRIC_CLIENT_SECRET=secretref:fabric-client-secret"
+            ENV_VAR_ARGS="${ENV_VAR_ARGS} GQL_FABRIC_CHANGELOG=1"
           fi
 
           # Check if container app already exists
@@ -467,6 +491,106 @@ jobs:
             fi
             sleep 10
           done
+
+      - name: Deploy sedan-fabric-sync sidecar Container App
+        id: deploy-sync
+        if: env.ENABLE_FABRIC == 'true' && steps.fabric.outputs.has_fabric == 'true'
+        env:
+          DEPLOY_RG: ${{ needs.determine-environment.outputs.resource-group }}
+          DEPLOY_ENV_NAME: ${{ needs.determine-environment.outputs.env-name }}
+          DEPLOY_CAE_NAME: ${{ steps.provision.outputs.cae_name }}
+          DEPLOY_ACR_SERVER: ${{ steps.provision.outputs.acr_server }}
+          DEPLOY_ACR_NAME: ${{ steps.provision.outputs.acr_name }}
+          DEPLOY_SYNC_IMAGE_TAG: ${{ steps.build-sync.outputs.sync_image_tag }}
+          DEPLOY_FABRIC_ENDPOINT: ${{ steps.fabric.outputs.fabric_endpoint }}
+          DEPLOY_AZURE_TENANT_ID: ${{ env.AZURE_TENANT_ID }}
+          DEPLOY_AZURE_CLIENT_ID: ${{ env.AZURE_CLIENT_ID }}
+          DEPLOY_AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+        run: |
+          # Mask secrets FIRST before any other output.
+          echo "::add-mask::${DEPLOY_AZURE_CLIENT_SECRET}"
+
+          RG="${DEPLOY_RG}"
+          ENV_NAME="${DEPLOY_ENV_NAME}"
+          CAE_NAME="${DEPLOY_CAE_NAME}"
+          ACR_SERVER="${DEPLOY_ACR_SERVER}"
+          ACR_NAME="${DEPLOY_ACR_NAME}"
+          IMAGE="${ACR_SERVER}/sedan-fabric-sync:${DEPLOY_SYNC_IMAGE_TAG}"
+          CA_NAME="sd2-${ENV_NAME}-fabric-sync"
+
+          # Derive Redis FQDN from the already-deployed primary container app
+          # (not from a step that runs later — that would always be empty).
+          REDIS_CA_NAME="sd2-${ENV_NAME}-redis"
+          REDIS_FQDN=$(az containerapp show \
+            --name "${REDIS_CA_NAME}" \
+            --resource-group "${RG}" \
+            --query "properties.configuration.ingress.fqdn" \
+            --output tsv 2>/dev/null || echo "")
+          if [[ -z "${REDIS_FQDN}" ]]; then
+            echo "::error::Could not resolve Redis FQDN from ${REDIS_CA_NAME}"
+            exit 1
+          fi
+          REDIS_URL="redis://${REDIS_FQDN}:6379"
+
+          echo "🔄 Deploying sedan-fabric-sync: ${CA_NAME}"
+          echo "   Image: ${IMAGE}"
+          echo "   Redis: ${REDIS_URL}"
+
+          if az containerapp show --name "${CA_NAME}" --resource-group "${RG}" >/dev/null 2>&1; then
+            echo "🔄 Updating existing sync container app..."
+            az containerapp secret set \
+              --name "${CA_NAME}" --resource-group "${RG}" \
+              --secrets "fabric-client-secret=${DEPLOY_AZURE_CLIENT_SECRET}" \
+              --output none
+            az containerapp update \
+              --name "${CA_NAME}" --resource-group "${RG}" \
+              --image "${IMAGE}" \
+              --set-env-vars \
+                "GQL_REDIS_URL=${REDIS_URL}" \
+                "GQL_FABRIC_ENDPOINT=${DEPLOY_FABRIC_ENDPOINT}" \
+                "GQL_FABRIC_TENANT_ID=${DEPLOY_AZURE_TENANT_ID}" \
+                "GQL_FABRIC_CLIENT_ID=${DEPLOY_AZURE_CLIENT_ID}" \
+                "GQL_FABRIC_CLIENT_SECRET=secretref:fabric-client-secret" \
+              --output none
+          else
+            echo "🆕 Creating sync container app..."
+            az containerapp create \
+              --name "${CA_NAME}" \
+              --resource-group "${RG}" \
+              --environment "${CAE_NAME}" \
+              --image "${IMAGE}" \
+              --registry-server "${ACR_SERVER}" \
+              --registry-identity system \
+              --system-assigned \
+              --cpu 0.25 \
+              --memory 0.5Gi \
+              --min-replicas 1 \
+              --max-replicas 1 \
+              --ingress disabled \
+              --secrets "fabric-client-secret=${DEPLOY_AZURE_CLIENT_SECRET}" \
+              --env-vars \
+                "GQL_REDIS_URL=${REDIS_URL}" \
+                "GQL_FABRIC_ENDPOINT=${DEPLOY_FABRIC_ENDPOINT}" \
+                "GQL_FABRIC_TENANT_ID=${DEPLOY_AZURE_TENANT_ID}" \
+                "GQL_FABRIC_CLIENT_ID=${DEPLOY_AZURE_CLIENT_ID}" \
+                "GQL_FABRIC_CLIENT_SECRET=secretref:fabric-client-secret" \
+              --output none
+          fi
+
+          # Grant AcrPull to the sync app's managed identity
+          SYNC_PRINCIPAL_ID=$(az containerapp show \
+            --name "${CA_NAME}" --resource-group "${RG}" \
+            --query "identity.principalId" -o tsv 2>/dev/null || echo "")
+          if [[ -n "${SYNC_PRINCIPAL_ID}" && "${SYNC_PRINCIPAL_ID}" != "None" ]]; then
+            ACR_RESOURCE_ID=$(az acr show --name "${ACR_NAME}" --query id -o tsv)
+            az role assignment create \
+              --assignee-object-id "${SYNC_PRINCIPAL_ID}" \
+              --assignee-principal-type ServicePrincipal \
+              --role "AcrPull" --scope "${ACR_RESOURCE_ID}" \
+              --output none 2>/dev/null || true
+          fi
+
+          echo "✅ sedan-fabric-sync deployed: ${CA_NAME}"
 
       - name: Get deployment outputs
         id: outputs

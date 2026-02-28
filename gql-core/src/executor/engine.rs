@@ -2559,7 +2559,7 @@ impl<'a> QueryExecutor<'a> {
                                 .map(|v| v == expected)
                                 .unwrap_or(false)
                         });
-                        return Ok(Value::Bool(all_match));
+                        Ok(Value::Bool(all_match))
                     }
                     // Storage-aware: labels(node) → list of label strings
                     "labels" => {

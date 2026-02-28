@@ -1,0 +1,23 @@
+[package]
+name    = "sedan-fabric-sync"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "sedan-fabric-sync"
+path = "src/main.rs"
+
+[dependencies]
+gql-core        = { path = "../gql-core" }
+gql-fabric-store = { path = "../gql-fabric-store" }
+serde_json      = { workspace = true }
+tracing         = { workspace = true }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+# Synchronous Redis client — sedan-fabric-sync is a blocking consumer loop.
+# streams feature enables XADD / XREAD / XREADGROUP / XACK commands.
+redis = { version = "0.27", default-features = false, features = ["streams"] }
+# Graceful shutdown on SIGTERM/SIGINT (container orchestrator signals).
+ctrlc = "3.4"
+# Hostname for default consumer name derivation.
+hostname = "0.4"

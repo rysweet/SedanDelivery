@@ -22,9 +22,7 @@ pub enum ProtocolError {
 
 macro_rules! bolt_map {
     ($($key:expr => $val:expr),* $(,)?) => {{
-        #[allow(unused_mut)]
-        let mut entries: Vec<(String, BoltValue)> = Vec::new();
-        $(entries.push(($key.to_string(), $val));)*
+        let entries: Vec<(String, BoltValue)> = vec![$(($key.to_string(), $val)),*];
         entries
     }};
 }
@@ -101,10 +99,8 @@ pub async fn handle_message(
 
     // In Interrupted state, only RESET is handled normally;
     // everything else gets IGNORED.
-    if session.state == ServerState::Interrupted {
-        if !matches!(&msg, ClientMessage::Reset) {
-            return Ok(vec![ServerMessage::Ignored]);
-        }
+    if session.state == ServerState::Interrupted && !matches!(&msg, ClientMessage::Reset) {
+        return Ok(vec![ServerMessage::Ignored]);
     }
 
     // Check state accepts the message.
@@ -277,9 +273,7 @@ async fn handle_run(
     let is_explain = trimmed.len() >= 8 && trimmed[..8].eq_ignore_ascii_case("EXPLAIN ");
     let is_profile =
         !is_explain && trimmed.len() >= 8 && trimmed[..8].eq_ignore_ascii_case("PROFILE ");
-    let actual_query = if is_explain {
-        trimmed[8..].to_string()
-    } else if is_profile {
+    let actual_query = if is_explain || is_profile {
         trimmed[8..].to_string()
     } else {
         query.clone()
@@ -463,7 +457,7 @@ fn operator_to_plan_map(
         .unwrap_or("Unknown")
         .trim()
         .to_string();
-    let mut entries: Vec<(String, BoltValue)> = vec![
+    let entries: Vec<(String, BoltValue)> = vec![
         ("operatorType".to_string(), BoltValue::String(op_type)),
         ("identifiers".to_string(), BoltValue::List(vec![])),
         (

@@ -80,8 +80,8 @@ pub fn path_to_bolt(
     let mut unique_nodes: Vec<NodeId> = Vec::new();
     let mut node_index_map: HashMap<NodeId, usize> = HashMap::new();
     for &nid in node_ids {
-        if !node_index_map.contains_key(&nid) {
-            node_index_map.insert(nid, unique_nodes.len());
+        if let std::collections::hash_map::Entry::Vacant(e) = node_index_map.entry(nid) {
+            e.insert(unique_nodes.len());
             unique_nodes.push(nid);
         }
     }

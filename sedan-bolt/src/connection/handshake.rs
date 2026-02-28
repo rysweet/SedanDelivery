@@ -52,7 +52,7 @@ where
             continue;
         }
         if major == SUPPORTED_MAJOR {
-            let min_minor = if range > minor { 0 } else { minor - range };
+            let min_minor = minor.saturating_sub(range);
             // Accept if any version in the client's range overlaps with ours (0..=SUPPORTED_MINOR_MAX)
             if min_minor <= SUPPORTED_MINOR_MAX {
                 let agreed_minor = minor.min(SUPPORTED_MINOR_MAX);

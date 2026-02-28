@@ -31,6 +31,10 @@ use crate::procedure::ProcedureRegistry;
 use crate::storage::GraphStore;
 use crate::types::Value;
 
+/// Named path binding: `(path_alias, [node_aliases], [edge_aliases])`.
+/// Used during CREATE planning to wrap the result with `AssemblePath`.
+type PathBinding = (Identifier, Vec<Identifier>, Vec<Identifier>);
+
 // ── Planner ───────────────────────────────────────────────────────────────────
 
 /// Translates a [`Query`] AST into a physical [`Operator`] tree.
@@ -758,7 +762,7 @@ impl<'s> QueryPlanner<'s> {
 
         // Collect path variable info per pattern so we can wrap with
         // AssemblePath after building the Create operator.
-        let mut path_vars: Vec<Option<(Identifier, Vec<Identifier>, Vec<Identifier>)>> = Vec::new();
+        let mut path_vars: Vec<Option<PathBinding>> = Vec::new();
 
         for (pat_idx, path_pattern) in cc.patterns.iter().enumerate() {
             let mut nodes: Vec<crate::planner::CreateNodeSpec> = Vec::new();
@@ -855,15 +859,13 @@ impl<'s> QueryPlanner<'s> {
 
         // Wrap with AssemblePath for each CREATE pattern that has a named path
         // variable, so `p` is available in subsequent RETURN / WITH clauses.
-        for path_info in path_vars {
-            if let Some((path_alias, node_aliases, edge_aliases)) = path_info {
-                op = Operator::AssemblePath {
-                    path_alias,
-                    node_aliases,
-                    edge_aliases,
-                    child: Box::new(op),
-                };
-            }
+        for (path_alias, node_aliases, edge_aliases) in path_vars.into_iter().flatten() {
+            op = Operator::AssemblePath {
+                path_alias,
+                node_aliases,
+                edge_aliases,
+                child: Box::new(op),
+            };
         }
 
         Ok(op)
