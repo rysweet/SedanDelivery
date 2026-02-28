@@ -329,11 +329,7 @@ jobs:
             echo "::add-mask::${AZURE_CACHE_CONN}"
           fi
 
-          # Get ACR credentials
-          # TODO: migrate to managed identity to eliminate need for admin credentials (Issue #67)
-          ACR_USERNAME=$(az acr credential show --name "${ACR_NAME}" --query username -o tsv)
-          ACR_PASSWORD=$(az acr credential show --name "${ACR_NAME}" --query "passwords[0].value" -o tsv)
-          echo "::add-mask::${ACR_PASSWORD}"  # mask before any subsequent use
+          # ACR admin credentials removed — using managed identity auth (Issue #67)
 
           echo "🚀 Deploying Container App: ${CA_NAME}"
           echo "   Image: ${IMAGE}"
@@ -376,6 +372,18 @@ jobs:
               --resource-group "${RG}" \
               --secrets ${SECRETS_ARGS} \
               --output none 2>/dev/null || true
+            # Ensure managed identity is enabled for registry auth (Issue #67)
+            az containerapp identity assign \
+              --name "${CA_NAME}" \
+              --resource-group "${RG}" \
+              --system-assigned \
+              --output none 2>/dev/null || true
+            az containerapp registry set \
+              --name "${CA_NAME}" \
+              --resource-group "${RG}" \
+              --server "${ACR_SERVER}" \
+              --identity system \
+              --output none
             az containerapp update \
               --name "${CA_NAME}" \
               --resource-group "${RG}" \
@@ -390,8 +398,8 @@ jobs:
               --environment "${CAE_NAME}" \
               --image "${IMAGE}" \
               --registry-server "${ACR_SERVER}" \
-              --registry-username "${ACR_USERNAME}" \
-              --registry-password "${ACR_PASSWORD}" \
+              --registry-identity system \
+              --system-assigned \
               --cpu 0.5 \
               --memory 1Gi \
               --min-replicas 1 \
@@ -403,6 +411,34 @@ jobs:
               --secrets ${SECRETS_ARGS} \
               --env-vars ${ENV_VAR_ARGS} \
               ${VOLUME_ARGS} \
+              --output none
+          fi
+
+          # Ensure AcrPull role is assigned to the Container App's managed identity (Issue #67).
+          # On create, --registry-identity system handles this automatically; this is a
+          # safety net for updates and ensures the Bicep role assignment stays in sync.
+          CA_PRINCIPAL_ID=$(az containerapp show \
+            --name "${CA_NAME}" \
+            --resource-group "${RG}" \
+            --query "identity.principalId" \
+            -o tsv 2>/dev/null || echo "")
+          if [[ -n "${CA_PRINCIPAL_ID}" && "${CA_PRINCIPAL_ID}" != "None" ]]; then
+            ACR_RESOURCE_ID=$(az acr show --name "${ACR_NAME}" --query id -o tsv)
+            az role assignment create \
+              --assignee-object-id "${CA_PRINCIPAL_ID}" \
+              --assignee-principal-type ServicePrincipal \
+              --role "AcrPull" \
+              --scope "${ACR_RESOURCE_ID}" \
+              --output none 2>/dev/null || true
+            echo "   AcrPull role assigned to managed identity ${CA_PRINCIPAL_ID}"
+
+            # Re-deploy Bicep with the Container App principal ID so the role assignment
+            # is also captured declaratively in the infrastructure template (Issue #67).
+            az deployment group create \
+              --resource-group "${RG}" \
+              --template-file infra/main.bicep \
+              --parameters environmentName="${ENV_NAME}" containerAppPrincipalId="${CA_PRINCIPAL_ID}" \
+              --name "sd2-acr-role-$(date +%s)" \
               --output none
           fi
 

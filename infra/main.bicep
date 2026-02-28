@@ -46,7 +46,23 @@ resource acr 'Microsoft.ContainerRegistry/registries@2023-07-01' = {
     name: 'Basic'
   }
   properties: {
-    adminUserEnabled: true
+    adminUserEnabled: false
+  }
+}
+
+// ── AcrPull role assignment for Container App managed identity ────────────────
+// Allows Container Apps to pull images via managed identity instead of admin credentials (Issue #67).
+// The AcrPull built-in role ID is 7f951dda-4ed3-4680-a7ca-43fe172d538d.
+@description('Principal ID of the Container App managed identity (set after first deployment)')
+param containerAppPrincipalId string = ''
+
+resource acrPullRoleAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (!empty(containerAppPrincipalId)) {
+  name: guid(acr.id, containerAppPrincipalId, '7f951dda-4ed3-4680-a7ca-43fe172d538d')
+  scope: acr
+  properties: {
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '7f951dda-4ed3-4680-a7ca-43fe172d538d')
+    principalId: containerAppPrincipalId
+    principalType: 'ServicePrincipal'
   }
 }
 
