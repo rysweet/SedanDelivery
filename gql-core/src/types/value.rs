@@ -82,6 +82,11 @@ pub enum Value {
     /// Property map: preserves insertion order (Cypher spec requirement).
     Map(IndexMap<Box<str>, Value>),
 
+    // ── Binary data ──────────────────────────────────────────────────────────
+    /// Raw byte array (Bolt Bytes type). Cypher has no native bytes literal,
+    /// but values may arrive via Bolt parameters.
+    Bytes(Vec<u8>),
+
     // ── Graph element references (returned in result rows) ────────────────────
     Node(NodeId),
     Edge(EdgeId),
@@ -135,6 +140,7 @@ impl PartialEq for Value {
             // CypherDuration: structural field equality
             (Self::Duration(a), Self::Duration(b)) => a == b,
             (Self::Point(a), Self::Point(b)) => a == b,
+            (Self::Bytes(a), Self::Bytes(b)) => a == b,
             (Self::List(a), Self::List(b)) => a == b,
             (Self::Map(a), Self::Map(b)) => a == b,
             (Self::Node(a), Self::Node(b)) => a == b,
@@ -171,6 +177,7 @@ impl Value {
             Self::DateTime(_) => "DateTime",
             Self::Duration(_) => "Duration",
             Self::Point(_) => "Point",
+            Self::Bytes(_) => "ByteArray",
             Self::List(_) => "List",
             Self::Map(_) => "Map",
             Self::Node(_) => "Node",
@@ -316,6 +323,9 @@ impl Value {
             // Duration: direct field comparison
             (Self::Duration(a), Self::Duration(b)) => Some(*a == *b),
 
+            // Bytes: direct comparison
+            (Self::Bytes(a), Self::Bytes(b)) => Some(a == b),
+
             // All other types: delegate to PartialEq
             _ => Some(self == other),
         }
@@ -441,6 +451,13 @@ impl fmt::Display for Value {
                 }
             }
             Self::Duration(d) => write!(f, "{}", format_cypher_duration(d)),
+            Self::Bytes(b) => {
+                write!(f, "0x")?;
+                for byte in b {
+                    write!(f, "{:02X}", byte)?;
+                }
+                Ok(())
+            }
             Self::Point(p) => write!(f, "point({{x: {}, y: {}}})", p.x, p.y),
             Self::List(items) => {
                 write!(f, "[")?;

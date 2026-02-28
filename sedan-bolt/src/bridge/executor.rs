@@ -242,10 +242,7 @@ fn bolt_value_to_gql(bv: &BoltValue) -> Value {
         BoltValue::Int(i) => Value::Int(*i),
         BoltValue::Float(f) => Value::Float(*f),
         BoltValue::String(s) => Value::Str(s.as_str().into()),
-        BoltValue::Bytes(_) => {
-            // Cypher has no native bytes type; represent as Null.
-            Value::Null
-        }
+        BoltValue::Bytes(b) => Value::Bytes(b.clone()),
         BoltValue::List(items) => Value::List(items.iter().map(bolt_value_to_gql).collect()),
         BoltValue::Map(entries) => {
             let mut map = IndexMap::new();
@@ -694,10 +691,10 @@ mod tests {
     }
 
     #[test]
-    fn bolt_bytes_converts_to_null() {
+    fn bolt_bytes_converts_to_bytes() {
         let bolt_map: BoltMap = vec![("data".to_string(), BoltValue::Bytes(vec![0x01, 0x02]))];
         let value_map = bolt_map_to_value_map(&bolt_map);
-        assert_eq!(value_map["data"], Value::Null);
+        assert_eq!(value_map["data"], Value::Bytes(vec![0x01, 0x02]));
     }
 
     #[test]

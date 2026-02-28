@@ -32,6 +32,11 @@ pub fn value_to_json(v: &Value) -> Json {
         Value::LocalDateTime(dt) => Json::String(dt.to_string()),
         Value::DateTime(dt) => Json::String(dt.to_string()),
         Value::Duration(sp) => Json::String(gql_core::types::value::format_cypher_duration(sp)),
+        Value::Bytes(b) => {
+            // Hex-encode bytes for JSON output
+            let hex: String = b.iter().map(|byte| format!("{:02x}", byte)).collect();
+            Json::String(hex)
+        }
         Value::Point(p) => json!({
             "x": p.x,
             "y": p.y,

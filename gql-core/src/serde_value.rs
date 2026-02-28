@@ -91,6 +91,11 @@ pub fn value_to_json(v: &Value) -> Result<JsonValue, StorageError> {
                 )))
             }
         }
+        // Bytes: hex-encoded tagged string for round-trip fidelity.
+        Value::Bytes(b) => {
+            let hex: String = b.iter().map(|byte| format!("{:02x}", byte)).collect();
+            Ok(JsonValue::String(format!("__bytes:{hex}")))
+        }
         // Collections
         Value::List(items) => {
             let arr: Result<Vec<_>, _> = items.iter().map(value_to_json).collect();
@@ -215,6 +220,15 @@ pub fn json_to_value(j: &JsonValue) -> Option<Value> {
                             crs,
                         }));
                     }
+                }
+            } else if let Some(rest) = s.strip_prefix("__bytes:") {
+                // Decode hex pairs
+                let bytes: Result<Vec<u8>, _> = (0..rest.len())
+                    .step_by(2)
+                    .map(|i| u8::from_str_radix(&rest[i..i + 2], 16))
+                    .collect();
+                if let Ok(b) = bytes {
+                    return Some(Value::Bytes(b));
                 }
             } else if let Some(rest) = s.strip_prefix("__node:") {
                 if let Ok(id) = rest.parse::<u64>() {

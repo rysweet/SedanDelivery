@@ -202,6 +202,9 @@ pub fn scalar_value_to_bolt(val: &Value) -> BoltValue {
         // ── Spatial types ────────────────────────────────────────────────
         Value::Point(p) => point_to_bolt(p),
 
+        // Bytes: direct mapping to Bolt Bytes
+        Value::Bytes(b) => BoltValue::Bytes(b.clone()),
+
         // Node/Edge/Path should not appear in scalar context; treat as Null
         // rather than panicking for robustness.
         Value::Node(_) | Value::Edge(_) | Value::Path { .. } => BoltValue::Null,

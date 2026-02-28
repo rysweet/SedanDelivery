@@ -2379,6 +2379,10 @@ impl<'a> QueryExecutor<'a> {
                     | Value::Duration(_) => {
                         crate::executor::filter::temporal_property_access(&obj_val, key.as_str())
                     }
+                    // Point property access (e.g. p.x, p.y, p.srid)
+                    Value::Point(_) => {
+                        crate::executor::filter::temporal_property_access(&obj_val, key.as_str())
+                    }
                     other => Err(GqlError::Execution(ExecutionError::TypeMismatch {
                         expected: "Node, Relationship, or Map".to_string(),
                         actual: other.type_name().to_string(),
@@ -4128,6 +4132,7 @@ pub fn cmp_values(a: &Value, b: &Value) -> std::cmp::Ordering {
             Value::DateTime(_) => 13,
             Value::Duration(_) => 14,
             Value::Point(_) => 15,
+            Value::Bytes(_) => 16,
             Value::Null => 255, // Null sorts LAST (largest) in ascending order
         }
     }
