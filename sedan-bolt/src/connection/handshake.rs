@@ -51,7 +51,7 @@ where
         if major == 0 && minor == 0 {
             continue;
         }
-        let min_minor = if range > minor { 0 } else { minor - range };
+        let min_minor = minor.saturating_sub(range);
         // Check against each supported version
         for &(sup_major, sup_minor_max) in SUPPORTED_VERSIONS {
             if major == sup_major && min_minor <= sup_minor_max {

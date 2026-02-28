@@ -149,12 +149,8 @@ impl<'a> QueryExecutor<'a> {
         // RAII guard: initializes query-level "now" and ensures clear_query_now() is called
         // even if execution returns early via `?`.
         let _query_time_guard = crate::executor::filter::QueryTimeGuard::new();
-        let pre_existing_labels: HashSet<String> = self
-            .store
-            .all_label_names(graph)
-            .unwrap_or_default()
-            .into_iter()
-            .collect();
+        let pre_existing_labels: HashSet<String> =
+            self.store.all_label_names(graph)?.into_iter().collect();
         let mut stats = MutationStats {
             pre_existing_labels,
             ..Default::default()
@@ -167,7 +163,6 @@ impl<'a> QueryExecutor<'a> {
             Operator::Distinct { child } => child.as_ref(),
             other => other,
         };
-        let _has_produce_results = has_produce_results(effective_root);
         let columns = if let Operator::ProduceResults { columns, .. } = effective_root {
             columns.iter().map(|(name, _)| name.clone()).collect()
         } else {
@@ -3523,26 +3518,6 @@ fn undefined_var(name: &str) -> GqlError {
         expected: format!("variable '{name}' in scope"),
         actual: "undefined".to_string(),
     })
-}
-
-/// Check if the operator tree contains a ProduceResults node (i.e., has a RETURN clause).
-fn has_produce_results(op: &Operator) -> bool {
-    match op {
-        Operator::ProduceResults { .. } => true,
-        Operator::Distinct { child }
-        | Operator::Sort { child, .. }
-        | Operator::Limit { child, .. }
-        | Operator::Skip { child, .. }
-        | Operator::Filter { child, .. }
-        | Operator::Project { child, .. }
-        | Operator::Set { child, .. }
-        | Operator::Remove { child, .. }
-        | Operator::Delete { child, .. }
-        | Operator::Unwind { child, .. } => has_produce_results(child),
-        Operator::Aggregate { child, .. } => has_produce_results(child),
-        Operator::AssemblePath { child, .. } => has_produce_results(child),
-        _ => false,
-    }
 }
 
 fn get_adj_entries(

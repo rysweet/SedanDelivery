@@ -48,6 +48,7 @@ async fn list_nodes(
 
     let store = state
         .get_store(&name)
+        .map_err(ApiError::internal)?
         .ok_or_else(|| ApiError::not_found(format!("graph '{name}' not found")))?;
 
     let all_ids = store.all_node_ids(&name).map_err(ApiError::from)?;
@@ -79,6 +80,7 @@ async fn create_node(
 
     let store = state
         .get_store(&name)
+        .map_err(ApiError::internal)?
         .ok_or_else(|| ApiError::not_found(format!("graph '{name}' not found")))?;
 
     let props = json_map_to_props(body.properties)?;
@@ -105,6 +107,7 @@ async fn get_node(
 
     let store = state
         .get_store(&name)
+        .map_err(ApiError::internal)?
         .ok_or_else(|| ApiError::not_found(format!("graph '{name}' not found")))?;
 
     let node = store
@@ -127,6 +130,7 @@ async fn update_node(
 
     let store = state
         .get_store(&name)
+        .map_err(ApiError::internal)?
         .ok_or_else(|| ApiError::not_found(format!("graph '{name}' not found")))?;
 
     // Ensure the node exists before updating.
@@ -159,6 +163,7 @@ async fn delete_node(
 
     let store = state
         .get_store(&name)
+        .map_err(ApiError::internal)?
         .ok_or_else(|| ApiError::not_found(format!("graph '{name}' not found")))?;
 
     store.delete_node(&name, id, true).map_err(|e| {

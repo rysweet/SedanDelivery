@@ -28,10 +28,15 @@ impl AppState {
         }
     }
 
-    /// Returns a cloned `Arc` to the named store, or `None` if the graph
-    /// does not exist.  The map lock is held only for the duration of the
-    /// lookup — callers may execute queries without holding the mutex.
-    pub fn get_store(&self, name: &str) -> Option<Arc<InMemoryGraphStore>> {
-        self.stores.lock().ok()?.get(name).cloned()
+    /// Returns a cloned `Arc` to the named store, or `Ok(None)` if the graph
+    /// does not exist.  Returns `Err` if the mutex is poisoned.
+    /// The map lock is held only for the duration of the lookup — callers may
+    /// execute queries without holding the mutex.
+    pub fn get_store(&self, name: &str) -> Result<Option<Arc<InMemoryGraphStore>>, String> {
+        let guard = self
+            .stores
+            .lock()
+            .map_err(|_| "internal error: store lock poisoned".to_string())?;
+        Ok(guard.get(name).cloned())
     }
 }

@@ -100,6 +100,7 @@ async fn graph_stats(
 
     let store = state
         .get_store(&name)
+        .map_err(ApiError::internal)?
         .ok_or_else(|| ApiError::not_found(format!("graph '{name}' not found")))?;
 
     let stats = store.graph_stats(&name).map_err(ApiError::from)?;

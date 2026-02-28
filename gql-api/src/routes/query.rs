@@ -44,6 +44,7 @@ async fn query_handler(
     // Acquire the lock only to retrieve the Arc — release immediately after.
     let store = state
         .get_store(&name)
+        .map_err(ApiError::internal)?
         .ok_or_else(|| ApiError::not_found(format!("graph '{name}' not found")))?;
 
     let start = Instant::now();
@@ -92,6 +93,7 @@ async fn mutate_handler(
     // Acquire the lock only to retrieve the Arc — release immediately after.
     let store = state
         .get_store(&name)
+        .map_err(ApiError::internal)?
         .ok_or_else(|| ApiError::not_found(format!("graph '{name}' not found")))?;
 
     let ast = parse_query(&body.cypher).map_err(|e| ApiError::bad_request(e.to_string()))?;

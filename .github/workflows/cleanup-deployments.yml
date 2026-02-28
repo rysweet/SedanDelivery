@@ -29,43 +29,43 @@ jobs:
     steps:
       - name: Check for deployment labels
         id: check
+        env:
+          BRANCH_NAME: ${{ github.event.pull_request.head.ref }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HAS_DEPLOY_LABEL: ${{ contains(github.event.pull_request.labels.*.name, 'deploy') }}
+          HAS_DEPLOY_INTEGRATION_LABEL: ${{ contains(github.event.pull_request.labels.*.name, 'deploy-integration') }}
         run: |
           SHOULD_CLEANUP="false"
           ENV_NAME=""
           ENV_TYPE="unknown"
           RESOURCE_GROUP=""
-          
-          # Check if PR had a 'deploy' or 'deploy-integration' label
-          HAS_DEPLOY_LABEL="${{ contains(github.event.pull_request.labels.*.name, 'deploy') }}"
-          HAS_DEPLOY_INTEGRATION_LABEL="${{ contains(github.event.pull_request.labels.*.name, 'deploy-integration') }}"
-          
+
           if [[ "$HAS_DEPLOY_INTEGRATION_LABEL" == "true" ]]; then
             # Integration environment - shared, don't cleanup
             echo "ℹ️  PR deployed to shared integration environment"
             echo "   Skipping cleanup (integration is shared and persistent)"
             SHOULD_CLEANUP="false"
-            
+
           elif [[ "$HAS_DEPLOY_LABEL" == "true" ]]; then
             # Branch-specific deployment - cleanup required
             SHOULD_CLEANUP="true"
             ENV_TYPE="branch"
-            
-            BRANCH_NAME="${{ github.event.pull_request.head.ref }}"
+
             # Sanitize branch name (same logic as deploy.yml)
             SANITIZED=$(echo "$BRANCH_NAME" | sed 's/[^a-zA-Z0-9-]/-/g' | tr '[:upper:]' '[:lower:]' | cut -c1-20 | sed 's/^-*//;s/-*$//')
             if [ -z "$SANITIZED" ]; then
-              SANITIZED="pr-${{ github.event.pull_request.number }}"
+              SANITIZED="pr-${PR_NUMBER}"
             fi
-            
+
             ENV_NAME="${SANITIZED}"
             RESOURCE_GROUP="rg-${SANITIZED}"
-            
+
             echo "🗑️  PR had branch-specific deployment: ${ENV_NAME}"
             echo "   Resource group to cleanup: ${RESOURCE_GROUP}"
           else
             echo "ℹ️  PR had no deployment labels - nothing to cleanup"
           fi
-          
+
           echo "should_cleanup=${SHOULD_CLEANUP}" >> "$GITHUB_OUTPUT"
           echo "env_name=${ENV_NAME}" >> "$GITHUB_OUTPUT"
           echo "env_type=${ENV_TYPE}" >> "$GITHUB_OUTPUT"

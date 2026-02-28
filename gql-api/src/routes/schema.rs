@@ -29,6 +29,7 @@ async fn schema_handler(
 
     let store = state
         .get_store(&name)
+        .map_err(ApiError::internal)?
         .ok_or_else(|| ApiError::not_found(format!("graph '{name}' not found")))?;
 
     // ── Collect label counts ──────────────────────────────────────────────────

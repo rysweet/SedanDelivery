@@ -27,7 +27,7 @@ impl ServerState {
             (TxReady, Run { .. } | Commit | Rollback | Reset) => true,
             (TxStreaming, Pull(_) | Discard(_) | Run { .. } | Reset) => true,
             (Failed, Reset | Goodbye) => true,
-            (Failed, _) => true,      // accept but respond with IGNORED
+            (Failed, _) => false, // only Reset and Goodbye accepted in Failed state
             (Interrupted, _) => true, // accept but respond with IGNORED
             _ => false,
         }

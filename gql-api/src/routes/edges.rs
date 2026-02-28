@@ -48,6 +48,7 @@ async fn list_edges(
 
     let store = state
         .get_store(&name)
+        .map_err(ApiError::internal)?
         .ok_or_else(|| ApiError::not_found(format!("graph '{name}' not found")))?;
 
     let all_ids = store.all_edge_ids(&name).map_err(ApiError::from)?;
@@ -86,6 +87,7 @@ async fn create_edge(
 
     let store = state
         .get_store(&name)
+        .map_err(ApiError::internal)?
         .ok_or_else(|| ApiError::not_found(format!("graph '{name}' not found")))?;
 
     let props = json_map_to_props(body.properties)?;
@@ -112,6 +114,7 @@ async fn get_edge(
 
     let store = state
         .get_store(&name)
+        .map_err(ApiError::internal)?
         .ok_or_else(|| ApiError::not_found(format!("graph '{name}' not found")))?;
 
     let edge = store
@@ -134,6 +137,7 @@ async fn update_edge(
 
     let store = state
         .get_store(&name)
+        .map_err(ApiError::internal)?
         .ok_or_else(|| ApiError::not_found(format!("graph '{name}' not found")))?;
 
     // Verify the edge exists.
@@ -166,6 +170,7 @@ async fn delete_edge(
 
     let store = state
         .get_store(&name)
+        .map_err(ApiError::internal)?
         .ok_or_else(|| ApiError::not_found(format!("graph '{name}' not found")))?;
 
     store.delete_edge(&name, id).map_err(|e| {

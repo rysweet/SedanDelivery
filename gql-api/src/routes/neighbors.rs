@@ -33,6 +33,7 @@ async fn neighbors_handler(
 
     let store = state
         .get_store(&name)
+        .map_err(ApiError::internal)?
         .ok_or_else(|| ApiError::not_found(format!("graph '{name}' not found")))?;
 
     // Verify the node exists.

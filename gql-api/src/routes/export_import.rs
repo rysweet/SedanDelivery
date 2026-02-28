@@ -37,6 +37,7 @@ async fn export_handler(
 
     let store = state
         .get_store(&name)
+        .map_err(ApiError::internal)?
         .ok_or_else(|| ApiError::not_found(format!("graph '{name}' not found")))?;
 
     // Export all nodes.
@@ -106,8 +107,23 @@ async fn import_handler(
 ) -> Result<Json<ImportResponse>, ApiError> {
     validate_graph_name(&name).map_err(ApiError::from)?;
 
+    // Guard: reject imports that exceed the element limit to prevent DoS via
+    // unbounded memory allocation.  The limit is configurable via env var.
+    let import_limit: usize = std::env::var("GQL_API_IMPORT_LIMIT")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(10_000);
+    let total_elements = body.nodes.len().saturating_add(body.edges.len());
+    if total_elements > import_limit {
+        return Err(ApiError::bad_request(format!(
+            "import payload too large: {total_elements} elements exceeds the \
+             {import_limit} element limit (nodes + edges)"
+        )));
+    }
+
     let store = state
         .get_store(&name)
+        .map_err(ApiError::internal)?
         .ok_or_else(|| ApiError::not_found(format!("graph '{name}' not found")))?;
 
     // Map from import ID string to newly-created NodeId, so edges can reference them.

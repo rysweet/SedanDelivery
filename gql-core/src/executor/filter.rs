@@ -708,6 +708,9 @@ fn eval_binary<'r>(
                                 actual: e.to_string(),
                             })
                         })?;
+                        if map.len() >= 512 {
+                            map.clear();
+                        }
                         map.insert(pattern.to_string(), re);
                     }
                     Ok(map[pattern.as_ref()].is_match(s.as_ref()))
@@ -1588,7 +1591,12 @@ fn builtin_range(vals: Vec<Value>) -> Result<Value, GqlError> {
                         }));
                     }
                     result.push(Value::Int(i));
-                    i += step;
+                    i = i.checked_add(step).ok_or_else(|| {
+                        GqlError::Execution(ExecutionError::TypeMismatch {
+                            expected: "range() step addition within i64 bounds".to_string(),
+                            actual: "integer overflow".to_string(),
+                        })
+                    })?;
                 }
             } else {
                 while i >= *end {
@@ -1599,7 +1607,12 @@ fn builtin_range(vals: Vec<Value>) -> Result<Value, GqlError> {
                         }));
                     }
                     result.push(Value::Int(i));
-                    i += step;
+                    i = i.checked_add(step).ok_or_else(|| {
+                        GqlError::Execution(ExecutionError::TypeMismatch {
+                            expected: "range() step addition within i64 bounds".to_string(),
+                            actual: "integer overflow".to_string(),
+                        })
+                    })?;
                 }
             }
             Ok(Value::List(result))

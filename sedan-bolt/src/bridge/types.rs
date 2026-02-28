@@ -295,7 +295,8 @@ fn zoned_time_to_bolt(t: &jiff::civil::Time, offset_secs: i32) -> BoltValue {
 /// Tag convention (confirmed from the Neo4j Python driver source):
 ///   - Lowercase tags for zone name:  0x66 (`f`, wall-clock), 0x69 (`i`, UTC)
 ///   - Uppercase tags for offset:     0x46 (`F`, wall-clock), 0x49 (`I`, UTC)
-/// Since we negotiate patch_bolt: ["utc"], we use UTC-mode tags 0x69 / 0x49.
+///
+/// Since we negotiate patch_bolt: \["utc"\], we use UTC-mode tags 0x69 / 0x49.
 fn datetime_to_bolt(zoned: &jiff::Zoned) -> BoltValue {
     let ts = zoned.timestamp();
     // jiff's as_second() truncates toward zero, which for negative timestamps
