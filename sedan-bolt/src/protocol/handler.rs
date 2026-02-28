@@ -100,6 +100,52 @@ pub async fn handle_message(
     }
 }
 
+// ── Bookmark validation ─────────────────────────────────────────────────────
+
+/// Known valid bookmark prefixes. Bookmarks must start with one of these.
+const VALID_BOOKMARK_PREFIXES: &[&str] = &[
+    "sedan:tx:",
+    "neo4j:bookmark:",
+];
+
+/// Check whether a bookmark string has a recognized format.
+fn is_valid_bookmark(bookmark: &str) -> bool {
+    if bookmark.is_empty() {
+        return true;
+    }
+    VALID_BOOKMARK_PREFIXES
+        .iter()
+        .any(|prefix| bookmark.starts_with(prefix))
+}
+
+/// Validate bookmarks from a message's extra map.
+///
+/// Returns `Some(ServerMessage::Failure(...))` if any bookmark is invalid,
+/// or `None` if all bookmarks are valid (or no bookmarks are present).
+fn validate_bookmarks(extra: &BoltMap) -> Option<ServerMessage> {
+    let bookmarks_val = extra.get_value("bookmarks")?;
+    let bookmark_list = match bookmarks_val {
+        BoltValue::List(items) => items,
+        _ => return None, // Non-list bookmarks field is ignored.
+    };
+
+    for item in bookmark_list {
+        if let BoltValue::String(bm) = item {
+            if !is_valid_bookmark(bm) {
+                return Some(ServerMessage::Failure(bolt_map! {
+                    "code" => BoltValue::String(
+                        "Neo.ClientError.Transaction.InvalidBookmark".to_string(),
+                    ),
+                    "message" => BoltValue::String(
+                        format!("Supplied bookmark '{}' does not conform to pattern {{database_id}}:{{tx_id}}", bm),
+                    )
+                }));
+            }
+        }
+    }
+    None
+}
+
 // ── HELLO ───────────────────────────────────────────────────────────────────
 
 async fn handle_hello(
@@ -177,6 +223,11 @@ async fn handle_run(
     params: BoltMap,
     extra: BoltMap,
 ) -> Result<Vec<ServerMessage>, ProtocolError> {
+    if let Some(failure) = validate_bookmarks(&extra) {
+        session.state = ServerState::Failed;
+        return Ok(vec![failure]);
+    }
+
     let graph = extra
         .get_str("db")
         .unwrap_or(&session.current_graph)
@@ -237,7 +288,10 @@ async fn handle_run(
 
 // ── PULL ────────────────────────────────────────────────────────────────────
 
-fn handle_pull(session: &mut Session, extra: BoltMap) -> Result<Vec<ServerMessage>, ProtocolError> {
+fn handle_pull(
+    session: &mut Session,
+    extra: BoltMap,
+) -> Result<Vec<ServerMessage>, ProtocolError> {
     let n = extra.get_int("n").unwrap_or(-1);
 
     let pending = match session.pending_result.as_mut() {
@@ -317,8 +371,12 @@ fn handle_discard(
 
 fn handle_begin(
     session: &mut Session,
-    _extra: BoltMap,
+    extra: BoltMap,
 ) -> Result<Vec<ServerMessage>, ProtocolError> {
+    if let Some(failure) = validate_bookmarks(&extra) {
+        session.state = ServerState::Failed;
+        return Ok(vec![failure]);
+    }
     session.state = ServerState::TxReady;
     Ok(vec![ServerMessage::Success(bolt_map! {})])
 }
@@ -347,4 +405,228 @@ fn handle_reset(session: &mut Session) -> Result<Vec<ServerMessage>, ProtocolErr
     session.pending_result = None;
     session.state = ServerState::Ready;
     Ok(vec![ServerMessage::Success(bolt_map! {})])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── Bookmark validation unit tests ──────────────────────────────────────
+
+    #[test]
+    fn valid_bookmark_sedan_prefix() {
+        assert!(is_valid_bookmark("sedan:tx:1"));
+        assert!(is_valid_bookmark("sedan:tx:42"));
+        assert!(is_valid_bookmark("sedan:tx:999999"));
+    }
+
+    #[test]
+    fn valid_bookmark_neo4j_prefix() {
+        assert!(is_valid_bookmark("neo4j:bookmark:v1:tx100"));
+        assert!(is_valid_bookmark("neo4j:bookmark:v2:tx1"));
+    }
+
+    #[test]
+    fn valid_bookmark_empty() {
+        assert!(is_valid_bookmark(""));
+    }
+
+    #[test]
+    fn invalid_bookmark_random_string() {
+        assert!(!is_valid_bookmark("invalid_bookmark"));
+        assert!(!is_valid_bookmark("random"));
+        assert!(!is_valid_bookmark("tx:1"));
+        assert!(!is_valid_bookmark("bookmark:1"));
+    }
+
+    #[test]
+    fn validate_bookmarks_none_present() {
+        let extra: BoltMap = vec![];
+        assert!(validate_bookmarks(&extra).is_none());
+    }
+
+    #[test]
+    fn validate_bookmarks_empty_list() {
+        let extra: BoltMap = vec![(
+            "bookmarks".to_string(),
+            BoltValue::List(vec![]),
+        )];
+        assert!(validate_bookmarks(&extra).is_none());
+    }
+
+    #[test]
+    fn validate_bookmarks_valid_sedan() {
+        let extra: BoltMap = vec![(
+            "bookmarks".to_string(),
+            BoltValue::List(vec![BoltValue::String("sedan:tx:1".to_string())]),
+        )];
+        assert!(validate_bookmarks(&extra).is_none());
+    }
+
+    #[test]
+    fn validate_bookmarks_valid_neo4j() {
+        let extra: BoltMap = vec![(
+            "bookmarks".to_string(),
+            BoltValue::List(vec![BoltValue::String(
+                "neo4j:bookmark:v1:tx100".to_string(),
+            )]),
+        )];
+        assert!(validate_bookmarks(&extra).is_none());
+    }
+
+    #[test]
+    fn validate_bookmarks_invalid_returns_failure() {
+        let extra: BoltMap = vec![(
+            "bookmarks".to_string(),
+            BoltValue::List(vec![BoltValue::String("invalid_bookmark".to_string())]),
+        )];
+        let failure = validate_bookmarks(&extra);
+        assert!(failure.is_some());
+        match failure.unwrap() {
+            ServerMessage::Failure(meta) => {
+                let code = meta.get_str("code").unwrap();
+                assert_eq!(code, "Neo.ClientError.Transaction.InvalidBookmark");
+                let msg = meta.get_str("message").unwrap();
+                assert!(msg.contains("invalid_bookmark"));
+            }
+            other => panic!("expected Failure, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn validate_bookmarks_mixed_valid_and_invalid() {
+        let extra: BoltMap = vec![(
+            "bookmarks".to_string(),
+            BoltValue::List(vec![
+                BoltValue::String("sedan:tx:1".to_string()),
+                BoltValue::String("bad_bookmark".to_string()),
+            ]),
+        )];
+        let failure = validate_bookmarks(&extra);
+        assert!(failure.is_some());
+        match failure.unwrap() {
+            ServerMessage::Failure(meta) => {
+                let code = meta.get_str("code").unwrap();
+                assert_eq!(code, "Neo.ClientError.Transaction.InvalidBookmark");
+            }
+            other => panic!("expected Failure, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn validate_bookmarks_non_list_ignored() {
+        // If bookmarks is not a list, it is silently ignored.
+        let extra: BoltMap = vec![(
+            "bookmarks".to_string(),
+            BoltValue::String("not_a_list".to_string()),
+        )];
+        assert!(validate_bookmarks(&extra).is_none());
+    }
+
+    // ── Handler integration tests (bookmark rejection) ──────────────────────
+
+    fn make_ready_session() -> Session {
+        Session {
+            state: ServerState::Ready,
+            store: Arc::new(InMemoryGraphStore::new()),
+            conn_id: 1,
+            current_graph: "default".to_string(),
+            pending_result: None,
+            bookmark_counter: 0,
+        }
+    }
+
+    #[test]
+    fn begin_with_invalid_bookmark_returns_failure() {
+        let mut session = make_ready_session();
+        let extra: BoltMap = vec![(
+            "bookmarks".to_string(),
+            BoltValue::List(vec![BoltValue::String("invalid_bookmark".to_string())]),
+        )];
+
+        let result = handle_begin(&mut session, extra).unwrap();
+        assert_eq!(result.len(), 1);
+        match &result[0] {
+            ServerMessage::Failure(meta) => {
+                let code = meta.get_str("code").unwrap();
+                assert_eq!(code, "Neo.ClientError.Transaction.InvalidBookmark");
+            }
+            other => panic!("expected Failure, got {:?}", other),
+        }
+        assert_eq!(session.state, ServerState::Failed);
+    }
+
+    #[test]
+    fn begin_with_valid_bookmark_succeeds() {
+        let mut session = make_ready_session();
+        let extra: BoltMap = vec![(
+            "bookmarks".to_string(),
+            BoltValue::List(vec![BoltValue::String("sedan:tx:1".to_string())]),
+        )];
+
+        let result = handle_begin(&mut session, extra).unwrap();
+        assert_eq!(result.len(), 1);
+        assert!(matches!(&result[0], ServerMessage::Success(_)));
+        assert_eq!(session.state, ServerState::TxReady);
+    }
+
+    #[test]
+    fn begin_with_no_bookmarks_succeeds() {
+        let mut session = make_ready_session();
+        let extra: BoltMap = vec![];
+
+        let result = handle_begin(&mut session, extra).unwrap();
+        assert_eq!(result.len(), 1);
+        assert!(matches!(&result[0], ServerMessage::Success(_)));
+        assert_eq!(session.state, ServerState::TxReady);
+    }
+
+    #[tokio::test]
+    async fn run_with_invalid_bookmark_returns_failure() {
+        let mut session = make_ready_session();
+        let extra: BoltMap = vec![(
+            "bookmarks".to_string(),
+            BoltValue::List(vec![BoltValue::String("invalid_bookmark".to_string())]),
+        )];
+
+        let result = handle_run(
+            &mut session,
+            "RETURN 1".to_string(),
+            vec![],
+            extra,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result.len(), 1);
+        match &result[0] {
+            ServerMessage::Failure(meta) => {
+                let code = meta.get_str("code").unwrap();
+                assert_eq!(code, "Neo.ClientError.Transaction.InvalidBookmark");
+            }
+            other => panic!("expected Failure, got {:?}", other),
+        }
+        assert_eq!(session.state, ServerState::Failed);
+    }
+
+    #[tokio::test]
+    async fn run_with_valid_bookmark_succeeds() {
+        let mut session = make_ready_session();
+        let extra: BoltMap = vec![(
+            "bookmarks".to_string(),
+            BoltValue::List(vec![BoltValue::String("sedan:tx:5".to_string())]),
+        )];
+
+        let result = handle_run(
+            &mut session,
+            "RETURN 1 AS n".to_string(),
+            vec![],
+            extra,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result.len(), 1);
+        assert!(matches!(&result[0], ServerMessage::Success(_)));
+    }
 }

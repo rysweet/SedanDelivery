@@ -69,7 +69,7 @@ pub fn edge_to_bolt(id: EdgeId, store: &InMemoryGraphStore, graph: &str) -> Bolt
 ///
 /// The index sequence encodes the traversal order: for each step, a positive
 /// relationship index (1-based) means forward traversal, a negative index means
-/// reverse. The subsequent node index (1-based into unique-nodes list) follows.
+/// reverse. The subsequent node index (0-based into unique-nodes list) follows.
 pub fn path_to_bolt(
     node_ids: &[NodeId],
     edge_ids: &[EdgeId],
@@ -188,7 +188,9 @@ pub fn scalar_value_to_bolt(val: &Value) -> BoltValue {
         Value::Int(i) => BoltValue::Int(*i),
         Value::Float(f) => BoltValue::Float(*f),
         Value::Str(s) => BoltValue::String(s.to_string()),
-        Value::List(items) => BoltValue::List(items.iter().map(scalar_value_to_bolt).collect()),
+        Value::List(items) => {
+            BoltValue::List(items.iter().map(scalar_value_to_bolt).collect())
+        }
         Value::Map(map) => indexmap_to_bolt_map(map),
 
         // ── Temporal types ───────────────────────────────────────────────
@@ -244,47 +246,59 @@ fn local_time_to_bolt(t: &jiff::civil::Time) -> BoltValue {
 
 /// LocalDateTime: tag 0x64, 2 fields (epoch_seconds, nanosecond_adjustment).
 fn local_datetime_to_bolt(dt: &jiff::civil::DateTime) -> BoltValue {
-    let epoch_dt =
-        jiff::civil::DateTime::new(1970, 1, 1, 0, 0, 0, 0).expect("valid epoch datetime");
-    let span = dt.since(epoch_dt).expect("datetime diff");
-    // Compute total seconds from the span's component fields.
-    let total_seconds: i64 = (span.get_days() as i64) * 86_400
-        + (span.get_hours() as i64) * 3_600
-        + (span.get_minutes() as i64) * 60
-        + (span.get_seconds() as i64);
-    let nanos_adj = span.get_nanoseconds() as i64;
+    let epoch_date = jiff::civil::Date::new(1970, 1, 1).expect("valid epoch date");
+    let days = dt.date().since(epoch_date).expect("date diff").get_days() as i64;
+    // Compute epoch seconds from days + time-of-day components.
+    let total_seconds: i64 = days * 86_400
+        + (dt.hour() as i64) * 3_600
+        + (dt.minute() as i64) * 60
+        + (dt.second() as i64);
+    // Sub-second nanosecond adjustment: use the datetime's own subsec_nanosecond()
+    // directly rather than span decomposition, because jiff's Span splits sub-second
+    // precision across milliseconds, microseconds, and nanoseconds fields.
+    let nanos_adj = dt.subsec_nanosecond() as i64;
     BoltValue::Structure {
         tag: 0x64,
         fields: vec![BoltValue::Int(total_seconds), BoltValue::Int(nanos_adj)],
     }
 }
 
-/// DateTime (zoned): tag 0x69, 3 fields (epoch_seconds, nanos, timezone_string).
+/// DateTime (zoned): Bolt 4.3+ encoding.
 ///
-/// Uses tag 0x69 ("DateTime with Zone Id") when an IANA timezone name is
-/// available. The epoch seconds are computed from the UTC timestamp.
+/// When an IANA timezone name is available:
+///   tag 0x49 (DateTimeZoneId), 3 fields: epoch_seconds, nanos, tz_id string.
+///
+/// When only a fixed UTC offset is available:
+///   tag 0x46 (DateTimeZoneOffset), 3 fields: epoch_seconds, nanos, offset_seconds.
+///
+/// Note: Bolt v1-4.2 used tags 0x69/0x66 (lowercase). Bolt 4.3+ changed to
+/// 0x49/0x46 (uppercase). Since we negotiate Bolt 4.3+, we use the new tags.
 fn datetime_to_bolt(zoned: &jiff::Zoned) -> BoltValue {
     let ts = zoned.timestamp();
     let epoch_seconds = ts.as_second();
     let nanos_adj = ts.subsec_nanosecond() as i64;
-    let tz_name = zoned
-        .time_zone()
-        .iana_name()
-        .map(|s| s.to_string())
-        .unwrap_or_else(|| {
-            // No IANA name: format as fixed offset string like "+02:00".
-            let offset_secs = zoned.offset().seconds();
-            let h = offset_secs / 3600;
-            let m = (offset_secs.abs() % 3600) / 60;
-            format!("{:+03}:{:02}", h, m)
-        });
-    BoltValue::Structure {
-        tag: 0x69,
-        fields: vec![
-            BoltValue::Int(epoch_seconds),
-            BoltValue::Int(nanos_adj),
-            BoltValue::String(tz_name),
-        ],
+
+    if let Some(tz_name) = zoned.time_zone().iana_name() {
+        // IANA timezone name available: use DateTimeZoneId (tag 0x49).
+        BoltValue::Structure {
+            tag: 0x49,
+            fields: vec![
+                BoltValue::Int(epoch_seconds),
+                BoltValue::Int(nanos_adj),
+                BoltValue::String(tz_name.to_string()),
+            ],
+        }
+    } else {
+        // Fixed offset only: use DateTimeZoneOffset (tag 0x46).
+        let offset_seconds = zoned.offset().seconds() as i64;
+        BoltValue::Structure {
+            tag: 0x46,
+            fields: vec![
+                BoltValue::Int(epoch_seconds),
+                BoltValue::Int(nanos_adj),
+                BoltValue::Int(offset_seconds),
+            ],
+        }
     }
 }
 
@@ -335,14 +349,8 @@ mod tests {
 
     #[test]
     fn bool_converts() {
-        assert_eq!(
-            scalar_value_to_bolt(&Value::Bool(true)),
-            BoltValue::Bool(true)
-        );
-        assert_eq!(
-            scalar_value_to_bolt(&Value::Bool(false)),
-            BoltValue::Bool(false)
-        );
+        assert_eq!(scalar_value_to_bolt(&Value::Bool(true)), BoltValue::Bool(true));
+        assert_eq!(scalar_value_to_bolt(&Value::Bool(false)), BoltValue::Bool(false));
     }
 
     #[test]
@@ -484,6 +492,80 @@ mod tests {
     }
 
     #[test]
+    fn local_datetime_epoch_seconds_correct() {
+        // 2024-01-15T10:30:45.123456789
+        let dt = jiff::civil::DateTime::new(2024, 1, 15, 10, 30, 45, 123456789).unwrap();
+        let bolt = scalar_value_to_bolt(&Value::LocalDateTime(dt));
+        if let BoltValue::Structure { tag, fields } = &bolt {
+            assert_eq!(*tag, 0x64);
+            assert_eq!(fields.len(), 2);
+            // Expected: 19737 * 86400 + 10*3600 + 30*60 + 45 = 1705311045
+            let expected_secs = 19737_i64 * 86400 + 10 * 3600 + 30 * 60 + 45;
+            assert_eq!(fields[0], BoltValue::Int(expected_secs), "epoch seconds");
+            assert_eq!(fields[1], BoltValue::Int(123456789), "nanosecond adjustment");
+        } else {
+            panic!("expected Structure for LocalDateTime");
+        }
+    }
+
+    #[test]
+    fn local_datetime_no_subsec() {
+        // 2024-01-15T10:30:00 (no sub-second)
+        let dt = jiff::civil::DateTime::new(2024, 1, 15, 10, 30, 0, 0).unwrap();
+        let bolt = scalar_value_to_bolt(&Value::LocalDateTime(dt));
+        if let BoltValue::Structure { tag, fields } = &bolt {
+            assert_eq!(*tag, 0x64);
+            let expected_secs = 19737_i64 * 86400 + 10 * 3600 + 30 * 60;
+            assert_eq!(fields[0], BoltValue::Int(expected_secs), "epoch seconds");
+            assert_eq!(fields[1], BoltValue::Int(0), "nanosecond adjustment");
+        } else {
+            panic!("expected Structure for LocalDateTime");
+        }
+    }
+
+    #[test]
+    fn datetime_zoned_uses_tag_0x49() {
+        // Zoned datetime with IANA timezone should use tag 0x49 (Bolt 4.3+)
+        let zoned = jiff::civil::DateTime::new(2024, 1, 15, 10, 30, 0, 0)
+            .unwrap()
+            .to_zoned(jiff::tz::TimeZone::get("UTC").unwrap())
+            .unwrap();
+        let bolt = scalar_value_to_bolt(&Value::DateTime(Box::new(zoned)));
+        if let BoltValue::Structure { tag, fields } = &bolt {
+            assert_eq!(*tag, 0x49, "Bolt 4.3+ DateTimeZoneId tag should be 0x49, not 0x69");
+            assert_eq!(fields.len(), 3);
+            // epoch seconds for 2024-01-15T10:30:00Z
+            let expected_secs = 19737_i64 * 86400 + 10 * 3600 + 30 * 60;
+            assert_eq!(fields[0], BoltValue::Int(expected_secs));
+            assert_eq!(fields[1], BoltValue::Int(0)); // no sub-second nanos
+            assert_eq!(fields[2], BoltValue::String("UTC".to_string()));
+        } else {
+            panic!("expected Structure for DateTime");
+        }
+    }
+
+    #[test]
+    fn datetime_fixed_offset_uses_tag_0x46() {
+        // DateTime with fixed offset (no IANA name) should use tag 0x46
+        let zoned = jiff::civil::DateTime::new(2024, 1, 15, 10, 30, 0, 0)
+            .unwrap()
+            .to_zoned(jiff::tz::TimeZone::fixed(jiff::tz::offset(3)))
+            .unwrap();
+        let bolt = scalar_value_to_bolt(&Value::DateTime(Box::new(zoned)));
+        if let BoltValue::Structure { tag, fields } = &bolt {
+            assert_eq!(*tag, 0x46, "fixed-offset DateTime should use tag 0x46");
+            assert_eq!(fields.len(), 3);
+            // epoch seconds for 2024-01-15T10:30:00+03:00 = 2024-01-15T07:30:00Z
+            let expected_secs = 19737_i64 * 86400 + 7 * 3600 + 30 * 60;
+            assert_eq!(fields[0], BoltValue::Int(expected_secs));
+            assert_eq!(fields[1], BoltValue::Int(0)); // no sub-second nanos
+            assert_eq!(fields[2], BoltValue::Int(10800)); // +3 hours = 10800 seconds
+        } else {
+            panic!("expected Structure for DateTime");
+        }
+    }
+
+    #[test]
     fn node_graph_reference_returns_null() {
         // Node/Edge/Path in scalar context should return Null
         assert_eq!(
@@ -544,8 +626,12 @@ mod tests {
     fn edge_to_bolt_returns_structure() {
         let store = InMemoryGraphStore::new();
         store.create_graph("test").unwrap();
-        let n1 = store.create_node("test", vec![], HashMap::new()).unwrap();
-        let n2 = store.create_node("test", vec![], HashMap::new()).unwrap();
+        let n1 = store
+            .create_node("test", vec![], HashMap::new())
+            .unwrap();
+        let n2 = store
+            .create_node("test", vec![], HashMap::new())
+            .unwrap();
         let eid = store
             .create_edge("test", n1, n2, "KNOWS".to_string(), HashMap::new())
             .unwrap();
@@ -567,8 +653,12 @@ mod tests {
     fn path_to_bolt_simple() {
         let store = InMemoryGraphStore::new();
         store.create_graph("test").unwrap();
-        let n1 = store.create_node("test", vec![], HashMap::new()).unwrap();
-        let n2 = store.create_node("test", vec![], HashMap::new()).unwrap();
+        let n1 = store
+            .create_node("test", vec![], HashMap::new())
+            .unwrap();
+        let n2 = store
+            .create_node("test", vec![], HashMap::new())
+            .unwrap();
         let e1 = store
             .create_edge("test", n1, n2, "KNOWS".to_string(), HashMap::new())
             .unwrap();

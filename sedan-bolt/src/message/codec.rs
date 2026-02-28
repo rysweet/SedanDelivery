@@ -29,7 +29,9 @@ pub fn chunk_encode(msg_bytes: &[u8], out: &mut Vec<u8>) {
 /// Reads 2-byte big-endian chunk length headers followed by chunk data,
 /// concatenating all chunks until a zero-length chunk (`0x00 0x00`) is
 /// encountered. Returns the reassembled message bytes.
-pub async fn chunk_decode<R: AsyncRead + Unpin>(reader: &mut R) -> Result<Vec<u8>, std::io::Error> {
+pub async fn chunk_decode<R: AsyncRead + Unpin>(
+    reader: &mut R,
+) -> Result<Vec<u8>, std::io::Error> {
     let mut message = Vec::new();
     loop {
         let mut len_buf = [0u8; 2];
@@ -100,7 +102,9 @@ mod tests {
     #[test]
     fn multi_chunk_roundtrip() {
         // Create a message larger than MAX_CHUNK_SIZE so it spans multiple chunks.
-        let msg: Vec<u8> = (0..MAX_CHUNK_SIZE + 100).map(|i| (i % 256) as u8).collect();
+        let msg: Vec<u8> = (0..MAX_CHUNK_SIZE + 100)
+            .map(|i| (i % 256) as u8)
+            .collect();
         let mut wire = Vec::new();
         chunk_encode(&msg, &mut wire);
 
@@ -206,5 +210,63 @@ mod tests {
         let wire = vec![0x00, 0x04, 0xB1, 0x71, 0x91, 0x01, 0x00, 0x00];
         let decoded = chunk_decode_sync(&wire).unwrap();
         assert_eq!(decoded, vec![0xB1, 0x71, 0x91, 0x01]);
+    }
+
+    /// Test that a 100K-byte message roundtrips through chunking correctly.
+    #[test]
+    fn large_message_100k_roundtrip() {
+        let msg: Vec<u8> = (0..100_000).map(|i| (i % 256) as u8).collect();
+        let mut wire = Vec::new();
+        chunk_encode(&msg, &mut wire);
+
+        // Verify chunk count: ceil(100_000 / 16384) = 7 chunks.
+        let expected_chunks = (100_000 + MAX_CHUNK_SIZE - 1) / MAX_CHUNK_SIZE;
+        assert_eq!(expected_chunks, 7);
+
+        // Wire size: sum of (2 + chunk_data_len) for each chunk + 2 terminator.
+        let expected_wire_len = expected_chunks * 2 + 100_000 + 2;
+        assert_eq!(wire.len(), expected_wire_len);
+
+        let decoded = chunk_decode_sync(&wire).unwrap();
+        assert_eq!(decoded.len(), 100_000);
+        assert_eq!(decoded, msg);
+    }
+
+    /// Test that a 500K-byte message roundtrips through chunking correctly.
+    #[test]
+    fn large_message_500k_roundtrip() {
+        let msg: Vec<u8> = (0..500_000).map(|i| (i % 256) as u8).collect();
+        let mut wire = Vec::new();
+        chunk_encode(&msg, &mut wire);
+
+        let decoded = chunk_decode_sync(&wire).unwrap();
+        assert_eq!(decoded.len(), 500_000);
+        assert_eq!(decoded, msg);
+    }
+
+    /// Test async decode of a 100K-byte message (simulates server-to-client path).
+    #[tokio::test]
+    async fn async_large_message_100k_roundtrip() {
+        let msg: Vec<u8> = (0..100_000).map(|i| (i % 256) as u8).collect();
+        let mut wire = Vec::new();
+        chunk_encode(&msg, &mut wire);
+
+        let mut cursor = std::io::Cursor::new(wire);
+        let decoded = chunk_decode(&mut cursor).await.unwrap();
+        assert_eq!(decoded.len(), 100_000);
+        assert_eq!(decoded, msg);
+    }
+
+    /// Test async decode of a 500K-byte message.
+    #[tokio::test]
+    async fn async_large_message_500k_roundtrip() {
+        let msg: Vec<u8> = (0..500_000).map(|i| (i % 256) as u8).collect();
+        let mut wire = Vec::new();
+        chunk_encode(&msg, &mut wire);
+
+        let mut cursor = std::io::Cursor::new(wire);
+        let decoded = chunk_decode(&mut cursor).await.unwrap();
+        assert_eq!(decoded.len(), 500_000);
+        assert_eq!(decoded, msg);
     }
 }

@@ -25,6 +25,10 @@ pub fn gql_error_to_bolt(err: &GqlError) -> (String, String) {
             ),
         },
         GqlError::Execution(e) => match e {
+            ExecutionError::TypeMismatch { actual, .. } if actual == "unbound" => (
+                "Neo.ClientError.Statement.ParameterMissing".to_string(),
+                e.to_string(),
+            ),
             ExecutionError::TypeMismatch { .. } | ExecutionError::InvalidOperator { .. } => (
                 "Neo.ClientError.Statement.TypeError".to_string(),
                 e.to_string(),
@@ -175,6 +179,16 @@ mod tests {
         let err = GqlError::Execution(ExecutionError::DivisionByZero);
         let (code, _msg) = gql_error_to_bolt(&err);
         assert_eq!(code, "Neo.DatabaseError.Statement.ExecutionFailed");
+    }
+
+    #[test]
+    fn unbound_parameter_maps_to_parameter_missing() {
+        let err = GqlError::Execution(ExecutionError::TypeMismatch {
+            expected: "parameter '$x' to be bound".to_string(),
+            actual: "unbound".to_string(),
+        });
+        let (code, _msg) = gql_error_to_bolt(&err);
+        assert_eq!(code, "Neo.ClientError.Statement.ParameterMissing");
     }
 
     #[test]
