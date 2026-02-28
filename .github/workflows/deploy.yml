@@ -288,7 +288,7 @@ jobs:
           echo "✅ Image built and pushed: ${ACR_SERVER}/sedan-delivery:${IMAGE_TAG}"
           echo "image_tag=${IMAGE_TAG}" >> "$GITHUB_OUTPUT"
 
-      - name: Build and push sedan-fabric-sync image via ACR Tasks
+      - name: Build and push sedandelivery-fabric-sync image via ACR Tasks
         id: build-sync
         if: env.ENABLE_FABRIC == 'true'
         env:
@@ -298,17 +298,17 @@ jobs:
           ACR_SERVER="${{ steps.provision.outputs.acr_server }}"
           IMAGE_TAG="${GH_SHA}"
 
-          echo "🐳 Building sedan-fabric-sync (Fabric sync sidecar) via ACR Tasks..."
+          echo "🐳 Building sedandelivery-fabric-sync (Fabric sync sidecar) via ACR Tasks..."
 
           az acr build \
             --registry "${ACR_NAME}" \
-            --image "sedan-fabric-sync:${IMAGE_TAG}" \
-            --image "sedan-fabric-sync:latest" \
+            --image "sedandelivery-fabric-sync:${IMAGE_TAG}" \
+            --image "sedandelivery-fabric-sync:latest" \
             --file Dockerfile.sync \
             --platform linux/amd64 \
             .
 
-          echo "✅ sedan-fabric-sync image pushed: ${ACR_SERVER}/sedan-fabric-sync:${IMAGE_TAG}"
+          echo "✅ sedandelivery-fabric-sync image pushed: ${ACR_SERVER}/sedandelivery-fabric-sync:${IMAGE_TAG}"
           echo "sync_image_tag=${IMAGE_TAG}" >> "$GITHUB_OUTPUT"
 
       - name: Create or update Container App
@@ -382,7 +382,7 @@ jobs:
 
           # Fabric Graph Database env vars (opt-in via ENABLE_FABRIC).
           # GQL_FABRIC_CHANGELOG=1 tells gql-module to write to __sd2:changelog;
-          # the Fabric credentials are only needed by sedan-fabric-sync sidecar.
+          # the Fabric credentials are only needed by sedandelivery-fabric-sync sidecar.
           if [[ "${DEPLOY_HAS_FABRIC}" == "true" ]]; then
             ENV_VAR_ARGS="${ENV_VAR_ARGS} GQL_FABRIC_CHANGELOG=1"
           fi
@@ -492,7 +492,7 @@ jobs:
             sleep 10
           done
 
-      - name: Deploy sedan-fabric-sync sidecar Container App
+      - name: Deploy sedandelivery-fabric-sync sidecar Container App
         id: deploy-sync
         if: env.ENABLE_FABRIC == 'true' && steps.fabric.outputs.has_fabric == 'true'
         env:
@@ -515,7 +515,7 @@ jobs:
           CAE_NAME="${DEPLOY_CAE_NAME}"
           ACR_SERVER="${DEPLOY_ACR_SERVER}"
           ACR_NAME="${DEPLOY_ACR_NAME}"
-          IMAGE="${ACR_SERVER}/sedan-fabric-sync:${DEPLOY_SYNC_IMAGE_TAG}"
+          IMAGE="${ACR_SERVER}/sedandelivery-fabric-sync:${DEPLOY_SYNC_IMAGE_TAG}"
           CA_NAME="sd2-${ENV_NAME}-fabric-sync"
 
           # Derive Redis FQDN from the already-deployed primary container app
@@ -532,7 +532,7 @@ jobs:
           fi
           REDIS_URL="redis://${REDIS_FQDN}:6379"
 
-          echo "🔄 Deploying sedan-fabric-sync: ${CA_NAME}"
+          echo "🔄 Deploying sedandelivery-fabric-sync: ${CA_NAME}"
           echo "   Image: ${IMAGE}"
           echo "   Redis: ${REDIS_URL}"
 
@@ -590,7 +590,7 @@ jobs:
               --output none 2>/dev/null || true
           fi
 
-          echo "✅ sedan-fabric-sync deployed: ${CA_NAME}"
+          echo "✅ sedandelivery-fabric-sync deployed: ${CA_NAME}"
 
       - name: Get deployment outputs
         id: outputs

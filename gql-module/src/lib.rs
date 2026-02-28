@@ -26,7 +26,7 @@
 //
 // Changelog: set GQL_FABRIC_CHANGELOG=1 (or GQL_FABRIC_ENDPOINT=<url>) at
 // module load time to enable async replication to Microsoft Fabric via the
-// sedan-fabric-sync sidecar service.
+// sedandelivery-fabric-sync sidecar service.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::OnceLock;

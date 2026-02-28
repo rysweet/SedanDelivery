@@ -2286,7 +2286,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "sedan-fabric-sync"
+name = "sedandelivery-fabric-sync"
 version = "0.1.0"
 dependencies = [
  "ctrlc",

@@ -1,4 +1,4 @@
-# Dockerfile.sync — builds the sedan-fabric-sync sidecar binary.
+# Dockerfile.sync — builds the sedandelivery-fabric-sync sidecar binary.
 #
 # This container:
 #   - Reads the __sd2:changelog Valkey stream
@@ -14,7 +14,7 @@ FROM rust:1.89-bookworm AS builder
 WORKDIR /app
 
 # Install libclang (required for redis-module bindgen — even though
-# sedan-fabric-sync itself doesn't use redis-module, gql-module is in the same
+# sedandelivery-fabric-sync itself doesn't use redis-module, gql-module is in the same
 # workspace and cargo resolves all crate dependencies before building).
 RUN apt-get update -q && apt-get install -y -q libclang-dev && rm -rf /var/lib/apt/lists/*
 
@@ -27,12 +27,12 @@ COPY gql-module/Cargo.toml           ./gql-module/
 COPY gql-cli/Cargo.toml              ./gql-cli/
 COPY gql-api/Cargo.toml              ./gql-api/
 COPY sedan-bolt/Cargo.toml           ./sedan-bolt/
-COPY sedan-fabric-sync/Cargo.toml    ./sedan-fabric-sync/
+COPY sedandelivery-fabric-sync/Cargo.toml    ./sedandelivery-fabric-sync/
 
 # Stub sources so cargo can resolve the dependency graph
 RUN mkdir -p gql-core/src gql-redis-store/src gql-fabric-store/src \
              gql-module/src gql-cli/src gql-api/src \
-             sedan-bolt/src sedan-fabric-sync/src && \
+             sedan-bolt/src sedandelivery-fabric-sync/src && \
     echo "pub fn stub() {}" > gql-core/src/lib.rs && \
     echo "pub fn stub() {}" > gql-redis-store/src/lib.rs && \
     echo "pub fn stub() {}" > gql-fabric-store/src/lib.rs && \
@@ -40,8 +40,8 @@ RUN mkdir -p gql-core/src gql-redis-store/src gql-fabric-store/src \
     echo "fn main() {}" > gql-cli/src/main.rs && \
     echo "fn main() {}" > gql-api/src/main.rs && \
     echo "pub fn stub() {}" > sedan-bolt/src/lib.rs && \
-    echo "fn main() {}" > sedan-fabric-sync/src/main.rs && \
-    cargo build --release -p sedan-fabric-sync 2>/dev/null || true
+    echo "fn main() {}" > sedandelivery-fabric-sync/src/main.rs && \
+    cargo build --release -p sedandelivery-fabric-sync 2>/dev/null || true
 
 # Copy actual source
 COPY gql-core/         ./gql-core/
@@ -51,13 +51,13 @@ COPY gql-module/       ./gql-module/
 COPY gql-cli/          ./gql-cli/
 COPY gql-api/          ./gql-api/
 COPY sedan-bolt/       ./sedan-bolt/
-COPY sedan-fabric-sync/ ./sedan-fabric-sync/
+COPY sedandelivery-fabric-sync/ ./sedandelivery-fabric-sync/
 
 # Build only the sync binary
 RUN touch gql-core/src/lib.rs gql-redis-store/src/lib.rs gql-fabric-store/src/lib.rs \
-         gql-module/src/lib.rs sedan-fabric-sync/src/main.rs && \
-    cargo build --release -p sedan-fabric-sync && \
-    ls -lh target/release/sedan-fabric-sync
+         gql-module/src/lib.rs sedandelivery-fabric-sync/src/main.rs && \
+    cargo build --release -p sedandelivery-fabric-sync && \
+    ls -lh target/release/sedandelivery-fabric-sync
 
 # ── Runtime ───────────────────────────────────────────────────────────────────
 FROM debian:bookworm-slim AS runtime
@@ -66,7 +66,7 @@ RUN apt-get update -q && \
     apt-get install -y -q --no-install-recommends ca-certificates && \
     rm -rf /var/lib/apt/lists/*
 
-COPY --from=builder /app/target/release/sedan-fabric-sync /usr/local/bin/sedan-fabric-sync
+COPY --from=builder /app/target/release/sedandelivery-fabric-sync /usr/local/bin/sedandelivery-fabric-sync
 
 # Run as non-root
 RUN useradd --no-create-home --shell /bin/false sync
@@ -82,4 +82,4 @@ USER sync
 #   SD2_SYNC_BLOCK_MS        (optional, default 1000)
 #   SD2_SYNC_MAX_RETRIES     (optional, default 3)
 
-ENTRYPOINT ["/usr/local/bin/sedan-fabric-sync"]
+ENTRYPOINT ["/usr/local/bin/sedandelivery-fabric-sync"]

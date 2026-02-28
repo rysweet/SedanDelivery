@@ -1,4 +1,4 @@
-//! sedan-fabric-sync — async replication from Valkey to Microsoft Fabric Graph.
+//! sedandelivery-fabric-sync — async replication from Valkey to Microsoft Fabric Graph.
 //!
 //! # What it does
 //!
@@ -53,7 +53,7 @@ use tracing::{error, info, warn};
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
-const GROUP_NAME: &str = "sedan-fabric-sync";
+const GROUP_NAME: &str = "sedandelivery-fabric-sync";
 
 /// Graceful shutdown flag — set by SIGTERM/SIGINT handler.
 static SHUTDOWN: AtomicBool = AtomicBool::new(false);
@@ -75,7 +75,7 @@ fn main() {
         return;
     }
 
-    info!("sedan-fabric-sync starting");
+    info!("sedandelivery-fabric-sync starting");
 
     // Install SIGTERM/SIGINT handler for graceful shutdown.
     ctrlc::set_handler(|| {
@@ -162,7 +162,7 @@ fn main() {
         max_retries,
     );
 
-    info!("sedan-fabric-sync shutting down gracefully");
+    info!("sedandelivery-fabric-sync shutting down gracefully");
 }
 
 // ── Main sync loop ────────────────────────────────────────────────────────────

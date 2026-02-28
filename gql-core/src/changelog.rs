@@ -12,7 +12,7 @@
 //! one Valkey stream entry per event via `ctx.call("XADD", ...)`.  This is a
 //! module-internal call — no TCP socket, no deadlock.
 //!
-//! `sedan-fabric-sync` (a separate process, optional) consumes the stream via
+//! `sedandelivery-fabric-sync` (a separate process, optional) consumes the stream via
 //! `XREADGROUP` and replays each event against `FabricGraphStore`.
 //!
 //! # Property encoding
