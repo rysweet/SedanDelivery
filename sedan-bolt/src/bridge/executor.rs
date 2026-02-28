@@ -1,11 +1,14 @@
 use std::collections::HashMap;
+use std::time::Duration;
 
 use gql_core::error::GqlError;
+use gql_core::executor::budget::DEFAULT_MAX_ROWS;
 use gql_core::executor::{ExecutionBudget, MutationStats, QueryExecutor, QueryResult};
 use gql_core::parser::parse_query;
 use gql_core::planner::QueryPlanner;
 use gql_core::procedure::ProcedureRegistry;
 use gql_core::storage::{GraphStore, InMemoryGraphStore};
+use gql_core::types::value::{Crs, CypherDuration, GeoPoint};
 use gql_core::types::Value;
 use indexmap::IndexMap;
 
@@ -17,11 +20,16 @@ use crate::packstream::value::{BoltMap, BoltValue};
 /// Execute a Cypher query against the given graph in the store.
 ///
 /// Any graph that does not yet exist is auto-created on first use.
+///
+/// If `timeout_ms` is `Some`, uses that value as the query timeout in
+/// milliseconds (from the Bolt `tx_timeout` field). Otherwise uses the
+/// default budget.
 pub fn execute_query(
     store: &InMemoryGraphStore,
     graph: &str,
     query: &str,
     params: HashMap<String, Value>,
+    timeout_ms: Option<u64>,
 ) -> Result<QueryResult, GqlError> {
     // Auto-create any graph that does not yet exist.
     // sedan-bolt is a standalone server with its own InMemoryGraphStore,
@@ -38,8 +46,31 @@ pub fn execute_query(
     let plan = planner.plan(&ast)?;
 
     let executor = QueryExecutor::with_context(store, &registry, params);
-    let mut budget = ExecutionBudget::default_budget();
+    let mut budget = match timeout_ms {
+        Some(ms) => ExecutionBudget::new(Duration::from_millis(ms), DEFAULT_MAX_ROWS),
+        None => ExecutionBudget::default_budget(),
+    };
     executor.execute(graph, &plan, &mut budget)
+}
+
+/// Parse and plan a Cypher query without executing it. Returns the Operator tree.
+///
+/// Used for EXPLAIN support: generates the query plan to return to the client.
+pub fn plan_query(
+    store: &InMemoryGraphStore,
+    graph: &str,
+    query: &str,
+    params: HashMap<String, Value>,
+) -> Result<gql_core::planner::Operator, GqlError> {
+    let exists = store.graph_exists(graph).map_err(GqlError::from)?;
+    if !exists {
+        store.create_graph(graph).map_err(GqlError::from)?;
+    }
+
+    let ast = parse_query(query)?;
+    let registry = ProcedureRegistry::default();
+    let planner = QueryPlanner::with_context(store, graph, &registry, &params);
+    planner.plan(&ast)
 }
 
 // ── Result conversion to Bolt records ────────────────────────────────────────
@@ -197,14 +228,244 @@ fn bolt_value_to_gql(bv: &BoltValue) -> Value {
             }
             Value::Map(map)
         }
-        BoltValue::Structure { .. } => {
-            // Structures in parameters are uncommon. Temporal/spatial structures
-            // from Bolt clients would need dedicated decoding here. For now,
-            // pass as Null -- to be extended when client-side temporal params
-            // are needed.
-            Value::Null
-        }
+        BoltValue::Structure { tag, fields } => bolt_structure_to_gql(*tag, fields),
     }
+}
+
+// ── Bolt Structure -> gql-core Value decoding ────────────────────────────────
+
+/// Decode a Bolt Structure (temporal or spatial) into a gql-core Value.
+/// Unrecognized structure tags fall back to Value::Null.
+fn bolt_structure_to_gql(tag: u8, fields: &[BoltValue]) -> Value {
+    match tag {
+        // Date: tag 0x44, 1 field (days since epoch)
+        0x44 => decode_date(fields),
+        // LocalTime: tag 0x74, 1 field (nanos since midnight)
+        0x74 => decode_local_time(fields),
+        // LocalDateTime: tag 0x64, 2 fields (epoch_seconds, nanos)
+        0x64 => decode_local_datetime(fields),
+        // DateTime with zone ID: tag 0x49 (Bolt 4.3+) or 0x69 (legacy)
+        0x49 | 0x69 => decode_datetime_zone_id(fields),
+        // DateTime with offset: tag 0x46 (Bolt 4.3+) or 0x66 (legacy)
+        0x46 | 0x66 => decode_datetime_offset(fields),
+        // Duration: tag 0x45, 4 fields (months, days, seconds, nanos)
+        0x45 => decode_duration(fields),
+        // Point2D: tag 0x58, 3 fields (srid, x, y)
+        0x58 => decode_point2d(fields),
+        // Point3D: tag 0x59, 4 fields (srid, x, y, z)
+        0x59 => decode_point3d(fields),
+        _ => Value::Null,
+    }
+}
+
+/// Extract an i64 from a BoltValue, returning None if it is not an Int.
+fn bolt_int(v: &BoltValue) -> Option<i64> {
+    match v {
+        BoltValue::Int(i) => Some(*i),
+        _ => None,
+    }
+}
+
+/// Extract an f64 from a BoltValue (accepts both Int and Float).
+fn bolt_float(v: &BoltValue) -> Option<f64> {
+    match v {
+        BoltValue::Float(f) => Some(*f),
+        BoltValue::Int(i) => Some(*i as f64),
+        _ => None,
+    }
+}
+
+/// Date (tag 0x44): 1 field -- days since 1970-01-01.
+fn decode_date(fields: &[BoltValue]) -> Value {
+    let days = match fields.first().and_then(bolt_int) {
+        Some(d) => d,
+        None => return Value::Null,
+    };
+    let epoch = jiff::civil::Date::new(1970, 1, 1).expect("valid epoch");
+    match epoch.checked_add(jiff::Span::new().days(days)) {
+        Ok(d) => Value::Date(d),
+        Err(_) => Value::Null,
+    }
+}
+
+/// LocalTime (tag 0x74): 1 field -- nanoseconds since midnight.
+fn decode_local_time(fields: &[BoltValue]) -> Value {
+    let nanos = match fields.first().and_then(bolt_int) {
+        Some(n) => n,
+        None => return Value::Null,
+    };
+    let h = (nanos / 3_600_000_000_000) as i8;
+    let rem = nanos % 3_600_000_000_000;
+    let m = (rem / 60_000_000_000) as i8;
+    let rem = rem % 60_000_000_000;
+    let s = (rem / 1_000_000_000) as i8;
+    let ns = (rem % 1_000_000_000) as i32;
+    match jiff::civil::Time::new(h, m, s, ns) {
+        Ok(t) => Value::LocalTime(t),
+        Err(_) => Value::Null,
+    }
+}
+
+/// LocalDateTime (tag 0x64): 2 fields -- epoch_seconds, nanosecond_adjustment.
+fn decode_local_datetime(fields: &[BoltValue]) -> Value {
+    let epoch_secs = match fields.first().and_then(bolt_int) {
+        Some(s) => s,
+        None => return Value::Null,
+    };
+    let nanos_adj = fields.get(1).and_then(bolt_int).unwrap_or(0);
+
+    // Decompose epoch_secs into days + time-of-day seconds.
+    // Handle negative epoch_secs correctly (dates before 1970).
+    let (days, day_secs) = if epoch_secs >= 0 {
+        (epoch_secs / 86_400, epoch_secs % 86_400)
+    } else {
+        // Floor division for negative values.
+        let d = (epoch_secs - 86_399) / 86_400;
+        let s = epoch_secs - d * 86_400;
+        (d, s)
+    };
+
+    let epoch = jiff::civil::Date::new(1970, 1, 1).expect("valid epoch");
+    let date = match epoch.checked_add(jiff::Span::new().days(days)) {
+        Ok(d) => d,
+        Err(_) => return Value::Null,
+    };
+
+    let h = (day_secs / 3_600) as i8;
+    let rem = day_secs % 3_600;
+    let m = (rem / 60) as i8;
+    let s = (rem % 60) as i8;
+
+    let time = match jiff::civil::Time::new(h, m, s, nanos_adj as i32) {
+        Ok(t) => t,
+        Err(_) => return Value::Null,
+    };
+
+    Value::LocalDateTime(jiff::civil::DateTime::from_parts(date, time))
+}
+
+/// DateTime with zone ID (tag 0x49/0x69): 3 fields -- epoch_secs, nanos, tz_id string.
+fn decode_datetime_zone_id(fields: &[BoltValue]) -> Value {
+    let epoch_secs = match fields.first().and_then(bolt_int) {
+        Some(s) => s,
+        None => return Value::Null,
+    };
+    let nanos_adj = fields.get(1).and_then(bolt_int).unwrap_or(0);
+    let tz_id = match fields.get(2) {
+        Some(BoltValue::String(s)) => s.as_str(),
+        _ => return Value::Null,
+    };
+
+    let tz = match jiff::tz::TimeZone::get(tz_id) {
+        Ok(tz) => tz,
+        Err(_) => return Value::Null,
+    };
+
+    let ts = match jiff::Timestamp::new(epoch_secs, nanos_adj as i32) {
+        Ok(ts) => ts,
+        Err(_) => return Value::Null,
+    };
+
+    let zoned = ts.to_zoned(tz);
+    Value::DateTime(Box::new(zoned))
+}
+
+/// DateTime with offset (tag 0x46/0x66): 3 fields -- epoch_secs, nanos, offset_seconds.
+fn decode_datetime_offset(fields: &[BoltValue]) -> Value {
+    let epoch_secs = match fields.first().and_then(bolt_int) {
+        Some(s) => s,
+        None => return Value::Null,
+    };
+    let nanos_adj = fields.get(1).and_then(bolt_int).unwrap_or(0);
+    let offset_secs = match fields.get(2).and_then(bolt_int) {
+        Some(o) => o,
+        None => return Value::Null,
+    };
+
+    let offset = match jiff::tz::Offset::from_seconds(offset_secs as i32) {
+        Ok(o) => o,
+        Err(_) => return Value::Null,
+    };
+    let tz = jiff::tz::TimeZone::fixed(offset);
+
+    let ts = match jiff::Timestamp::new(epoch_secs, nanos_adj as i32) {
+        Ok(ts) => ts,
+        Err(_) => return Value::Null,
+    };
+
+    let zoned = ts.to_zoned(tz);
+    Value::DateTime(Box::new(zoned))
+}
+
+/// Duration (tag 0x45): 4 fields -- months, days, seconds, nanoseconds.
+fn decode_duration(fields: &[BoltValue]) -> Value {
+    let months = fields.first().and_then(bolt_int).unwrap_or(0);
+    let days = fields.get(1).and_then(bolt_int).unwrap_or(0);
+    let seconds = fields.get(2).and_then(bolt_int).unwrap_or(0);
+    let nanos = fields.get(3).and_then(bolt_int).unwrap_or(0);
+
+    Value::Duration(CypherDuration {
+        months,
+        days,
+        nanos: (seconds as i128) * 1_000_000_000 + (nanos as i128),
+    })
+}
+
+/// Map an SRID integer to a Crs variant.
+fn srid_to_crs(srid: i64) -> Crs {
+    match srid {
+        4326 => Crs::Wgs84,
+        4979 => Crs::Wgs843d,
+        7203 => Crs::Cartesian,
+        9157 => Crs::Cartesian3d,
+        // Default to Cartesian for unknown SRIDs.
+        _ => Crs::Cartesian,
+    }
+}
+
+/// Point2D (tag 0x58): 3 fields -- srid, x, y.
+fn decode_point2d(fields: &[BoltValue]) -> Value {
+    let srid = match fields.first().and_then(bolt_int) {
+        Some(s) => s,
+        None => return Value::Null,
+    };
+    let x = match fields.get(1).and_then(bolt_float) {
+        Some(v) => v,
+        None => return Value::Null,
+    };
+    let y = match fields.get(2).and_then(bolt_float) {
+        Some(v) => v,
+        None => return Value::Null,
+    };
+
+    Value::Point(GeoPoint {
+        x,
+        y,
+        crs: srid_to_crs(srid),
+    })
+}
+
+/// Point3D (tag 0x59): 4 fields -- srid, x, y, z. (z is ignored for now.)
+fn decode_point3d(fields: &[BoltValue]) -> Value {
+    let srid = match fields.first().and_then(bolt_int) {
+        Some(s) => s,
+        None => return Value::Null,
+    };
+    let x = match fields.get(1).and_then(bolt_float) {
+        Some(v) => v,
+        None => return Value::Null,
+    };
+    let y = match fields.get(2).and_then(bolt_float) {
+        Some(v) => v,
+        None => return Value::Null,
+    };
+    // z = fields.get(3) -- ignored because GeoPoint has no z field yet.
+
+    Value::Point(GeoPoint {
+        x,
+        y,
+        crs: srid_to_crs(srid),
+    })
 }
 
 #[cfg(test)]
@@ -216,7 +477,7 @@ mod tests {
         let store = InMemoryGraphStore::new();
         assert!(!store.graph_exists("default").unwrap());
 
-        let result = execute_query(&store, "default", "RETURN 1 AS x", HashMap::new()).unwrap();
+        let result = execute_query(&store, "default", "RETURN 1 AS x", HashMap::new(), None).unwrap();
         assert_eq!(result.columns, vec!["x".to_string()]);
         assert_eq!(result.rows.len(), 1);
 
@@ -227,7 +488,7 @@ mod tests {
     fn execute_query_auto_creates_non_default_graph() {
         let store = InMemoryGraphStore::new();
         // Any graph should be auto-created on first use.
-        let result = execute_query(&store, "mydb", "RETURN 1 AS x", HashMap::new());
+        let result = execute_query(&store, "mydb", "RETURN 1 AS x", HashMap::new(), None);
         assert!(
             result.is_ok(),
             "expected auto-creation of non-default graph"
@@ -239,7 +500,7 @@ mod tests {
     fn execute_query_simple_return() {
         let store = InMemoryGraphStore::new();
         let result =
-            execute_query(&store, "default", "RETURN 42 AS answer", HashMap::new()).unwrap();
+            execute_query(&store, "default", "RETURN 42 AS answer", HashMap::new(), None).unwrap();
         assert_eq!(result.columns, vec!["answer".to_string()]);
         assert_eq!(result.rows.len(), 1);
         assert_eq!(result.rows[0]["answer"], Value::Int(42));
@@ -253,6 +514,7 @@ mod tests {
             "default",
             "RETURN 1 AS a, 'hello' AS b",
             HashMap::new(),
+            None,
         )
         .unwrap();
 
@@ -271,6 +533,7 @@ mod tests {
             "default",
             "CREATE (n:Person {name: 'Alice'}) RETURN n",
             HashMap::new(),
+            None,
         )
         .unwrap();
 
@@ -426,8 +689,443 @@ mod tests {
         let mut params = HashMap::new();
         params.insert("x".to_string(), Value::Int(99));
 
-        let result = execute_query(&store, "default", "RETURN $x AS val", params).unwrap();
+        let result = execute_query(&store, "default", "RETURN $x AS val", params, None).unwrap();
         assert_eq!(result.rows.len(), 1);
         assert_eq!(result.rows[0]["val"], Value::Int(99));
+    }
+
+    // ── Structure decoding tests (bolt -> gql) ──────────────────────────────
+
+    #[test]
+    fn decode_date_from_bolt_structure() {
+        let bv = BoltValue::Structure {
+            tag: 0x44,
+            fields: vec![BoltValue::Int(19737)],
+        };
+        let val = bolt_value_to_gql(&bv);
+        let expected = jiff::civil::Date::new(2024, 1, 15).unwrap();
+        assert_eq!(val, Value::Date(expected));
+    }
+
+    #[test]
+    fn decode_date_epoch() {
+        let bv = BoltValue::Structure {
+            tag: 0x44,
+            fields: vec![BoltValue::Int(0)],
+        };
+        let val = bolt_value_to_gql(&bv);
+        let expected = jiff::civil::Date::new(1970, 1, 1).unwrap();
+        assert_eq!(val, Value::Date(expected));
+    }
+
+    #[test]
+    fn decode_local_time_from_bolt_structure() {
+        let bv = BoltValue::Structure {
+            tag: 0x74,
+            fields: vec![BoltValue::Int(45_000_000_000_000)],
+        };
+        let val = bolt_value_to_gql(&bv);
+        let expected = jiff::civil::Time::new(12, 30, 0, 0).unwrap();
+        assert_eq!(val, Value::LocalTime(expected));
+    }
+
+    #[test]
+    fn decode_local_time_with_nanos() {
+        let nanos: i64 = 10 * 3_600_000_000_000
+            + 20 * 60_000_000_000
+            + 30 * 1_000_000_000
+            + 123_456_789;
+        let bv = BoltValue::Structure {
+            tag: 0x74,
+            fields: vec![BoltValue::Int(nanos)],
+        };
+        let val = bolt_value_to_gql(&bv);
+        let expected = jiff::civil::Time::new(10, 20, 30, 123_456_789).unwrap();
+        assert_eq!(val, Value::LocalTime(expected));
+    }
+
+    #[test]
+    fn decode_local_datetime_from_bolt_structure() {
+        let epoch_secs: i64 = 19737 * 86_400 + 10 * 3600 + 30 * 60 + 45;
+        let bv = BoltValue::Structure {
+            tag: 0x64,
+            fields: vec![BoltValue::Int(epoch_secs), BoltValue::Int(123_456_789)],
+        };
+        let val = bolt_value_to_gql(&bv);
+        let expected =
+            jiff::civil::DateTime::new(2024, 1, 15, 10, 30, 45, 123_456_789).unwrap();
+        assert_eq!(val, Value::LocalDateTime(expected));
+    }
+
+    #[test]
+    fn decode_datetime_zone_id_from_bolt_structure() {
+        let epoch_secs: i64 = 19737 * 86_400 + 10 * 3600 + 30 * 60;
+        let bv = BoltValue::Structure {
+            tag: 0x49,
+            fields: vec![
+                BoltValue::Int(epoch_secs),
+                BoltValue::Int(0),
+                BoltValue::String("UTC".to_string()),
+            ],
+        };
+        let val = bolt_value_to_gql(&bv);
+        if let Value::DateTime(zoned) = &val {
+            assert_eq!(zoned.time_zone().iana_name(), Some("UTC"));
+            assert_eq!(zoned.timestamp().as_second(), epoch_secs);
+        } else {
+            panic!("expected Value::DateTime, got {:?}", val);
+        }
+    }
+
+    #[test]
+    fn decode_datetime_legacy_tag_0x69() {
+        let epoch_secs: i64 = 19737 * 86_400 + 10 * 3600 + 30 * 60;
+        let bv = BoltValue::Structure {
+            tag: 0x69,
+            fields: vec![
+                BoltValue::Int(epoch_secs),
+                BoltValue::Int(0),
+                BoltValue::String("America/New_York".to_string()),
+            ],
+        };
+        let val = bolt_value_to_gql(&bv);
+        if let Value::DateTime(zoned) = &val {
+            assert!(zoned.time_zone().iana_name().is_some());
+        } else {
+            panic!("expected Value::DateTime, got {:?}", val);
+        }
+    }
+
+    #[test]
+    fn decode_datetime_offset_from_bolt_structure() {
+        let epoch_secs: i64 = 19737 * 86_400 + 7 * 3600 + 30 * 60;
+        let bv = BoltValue::Structure {
+            tag: 0x46,
+            fields: vec![
+                BoltValue::Int(epoch_secs),
+                BoltValue::Int(0),
+                BoltValue::Int(10800),
+            ],
+        };
+        let val = bolt_value_to_gql(&bv);
+        if let Value::DateTime(zoned) = &val {
+            assert_eq!(zoned.offset().seconds(), 10800);
+            assert_eq!(zoned.timestamp().as_second(), epoch_secs);
+        } else {
+            panic!("expected Value::DateTime, got {:?}", val);
+        }
+    }
+
+    #[test]
+    fn decode_duration_from_bolt_structure() {
+        let bv = BoltValue::Structure {
+            tag: 0x45,
+            fields: vec![
+                BoltValue::Int(14),
+                BoltValue::Int(3),
+                BoltValue::Int(100),
+                BoltValue::Int(0),
+            ],
+        };
+        let val = bolt_value_to_gql(&bv);
+        let expected = CypherDuration {
+            months: 14,
+            days: 3,
+            nanos: 100_000_000_000,
+        };
+        assert_eq!(val, Value::Duration(expected));
+    }
+
+    #[test]
+    fn decode_duration_with_sub_second_nanos() {
+        let bv = BoltValue::Structure {
+            tag: 0x45,
+            fields: vec![
+                BoltValue::Int(0),
+                BoltValue::Int(0),
+                BoltValue::Int(5),
+                BoltValue::Int(500_000_000),
+            ],
+        };
+        let val = bolt_value_to_gql(&bv);
+        let expected = CypherDuration {
+            months: 0,
+            days: 0,
+            nanos: 5_500_000_000,
+        };
+        assert_eq!(val, Value::Duration(expected));
+    }
+
+    #[test]
+    fn decode_point2d_wgs84_from_bolt_structure() {
+        let bv = BoltValue::Structure {
+            tag: 0x58,
+            fields: vec![
+                BoltValue::Int(4326),
+                BoltValue::Float(-73.95),
+                BoltValue::Float(40.78),
+            ],
+        };
+        let val = bolt_value_to_gql(&bv);
+        let expected = GeoPoint {
+            x: -73.95,
+            y: 40.78,
+            crs: Crs::Wgs84,
+        };
+        assert_eq!(val, Value::Point(expected));
+    }
+
+    #[test]
+    fn decode_point2d_cartesian_from_bolt_structure() {
+        let bv = BoltValue::Structure {
+            tag: 0x58,
+            fields: vec![
+                BoltValue::Int(7203),
+                BoltValue::Float(1.5),
+                BoltValue::Float(2.5),
+            ],
+        };
+        let val = bolt_value_to_gql(&bv);
+        let expected = GeoPoint {
+            x: 1.5,
+            y: 2.5,
+            crs: Crs::Cartesian,
+        };
+        assert_eq!(val, Value::Point(expected));
+    }
+
+    #[test]
+    fn decode_point3d_from_bolt_structure() {
+        let bv = BoltValue::Structure {
+            tag: 0x59,
+            fields: vec![
+                BoltValue::Int(4979),
+                BoltValue::Float(1.0),
+                BoltValue::Float(2.0),
+                BoltValue::Float(3.0),
+            ],
+        };
+        let val = bolt_value_to_gql(&bv);
+        let expected = GeoPoint {
+            x: 1.0,
+            y: 2.0,
+            crs: Crs::Wgs843d,
+        };
+        assert_eq!(val, Value::Point(expected));
+    }
+
+    #[test]
+    fn decode_unknown_structure_returns_null() {
+        let bv = BoltValue::Structure {
+            tag: 0xFF,
+            fields: vec![BoltValue::Int(1)],
+        };
+        let val = bolt_value_to_gql(&bv);
+        assert_eq!(val, Value::Null);
+    }
+
+    // ── Full round-trip tests (bolt -> gql -> bolt) ─────────────────────────
+
+    #[test]
+    fn roundtrip_date() {
+        let bolt_in = BoltValue::Structure {
+            tag: 0x44,
+            fields: vec![BoltValue::Int(19737)],
+        };
+        let gql = bolt_value_to_gql(&bolt_in);
+        let bolt_out = scalar_value_to_bolt(&gql);
+        assert_eq!(bolt_in, bolt_out);
+    }
+
+    #[test]
+    fn roundtrip_local_time() {
+        let nanos: i64 = 12 * 3_600_000_000_000 + 30 * 60_000_000_000;
+        let bolt_in = BoltValue::Structure {
+            tag: 0x74,
+            fields: vec![BoltValue::Int(nanos)],
+        };
+        let gql = bolt_value_to_gql(&bolt_in);
+        let bolt_out = scalar_value_to_bolt(&gql);
+        assert_eq!(bolt_in, bolt_out);
+    }
+
+    #[test]
+    fn roundtrip_local_datetime() {
+        let epoch_secs: i64 = 19737 * 86_400 + 10 * 3600 + 30 * 60 + 45;
+        let bolt_in = BoltValue::Structure {
+            tag: 0x64,
+            fields: vec![BoltValue::Int(epoch_secs), BoltValue::Int(123_456_789)],
+        };
+        let gql = bolt_value_to_gql(&bolt_in);
+        let bolt_out = scalar_value_to_bolt(&gql);
+        assert_eq!(bolt_in, bolt_out);
+    }
+
+    #[test]
+    fn roundtrip_datetime_zone_id() {
+        let epoch_secs: i64 = 19737 * 86_400 + 10 * 3600 + 30 * 60;
+        let bolt_in = BoltValue::Structure {
+            tag: 0x49,
+            fields: vec![
+                BoltValue::Int(epoch_secs),
+                BoltValue::Int(0),
+                BoltValue::String("UTC".to_string()),
+            ],
+        };
+        let gql = bolt_value_to_gql(&bolt_in);
+        let bolt_out = scalar_value_to_bolt(&gql);
+        assert_eq!(bolt_in, bolt_out);
+    }
+
+    #[test]
+    fn roundtrip_datetime_offset() {
+        let epoch_secs: i64 = 19737 * 86_400 + 7 * 3600 + 30 * 60;
+        let bolt_in = BoltValue::Structure {
+            tag: 0x46,
+            fields: vec![
+                BoltValue::Int(epoch_secs),
+                BoltValue::Int(0),
+                BoltValue::Int(10800),
+            ],
+        };
+        let gql = bolt_value_to_gql(&bolt_in);
+        let bolt_out = scalar_value_to_bolt(&gql);
+        assert_eq!(bolt_in, bolt_out);
+    }
+
+    #[test]
+    fn roundtrip_duration() {
+        let bolt_in = BoltValue::Structure {
+            tag: 0x45,
+            fields: vec![
+                BoltValue::Int(14),
+                BoltValue::Int(3),
+                BoltValue::Int(5),
+                BoltValue::Int(500_000_000),
+            ],
+        };
+        let gql = bolt_value_to_gql(&bolt_in);
+        let bolt_out = scalar_value_to_bolt(&gql);
+        assert_eq!(bolt_in, bolt_out);
+    }
+
+    #[test]
+    fn roundtrip_point2d_wgs84() {
+        let bolt_in = BoltValue::Structure {
+            tag: 0x58,
+            fields: vec![
+                BoltValue::Int(4326),
+                BoltValue::Float(-73.95),
+                BoltValue::Float(40.78),
+            ],
+        };
+        let gql = bolt_value_to_gql(&bolt_in);
+        let bolt_out = scalar_value_to_bolt(&gql);
+        assert_eq!(bolt_in, bolt_out);
+    }
+
+    #[test]
+    fn roundtrip_point2d_cartesian() {
+        let bolt_in = BoltValue::Structure {
+            tag: 0x58,
+            fields: vec![
+                BoltValue::Int(7203),
+                BoltValue::Float(1.5),
+                BoltValue::Float(2.5),
+            ],
+        };
+        let gql = bolt_value_to_gql(&bolt_in);
+        let bolt_out = scalar_value_to_bolt(&gql);
+        assert_eq!(bolt_in, bolt_out);
+    }
+
+    // ── End-to-end round-trip via query params ──────────────────────────────
+
+    #[test]
+    fn roundtrip_date_via_query_params() {
+        let store = InMemoryGraphStore::new();
+        let bolt_params: BoltMap = vec![(
+            "d".to_string(),
+            BoltValue::Structure {
+                tag: 0x44,
+                fields: vec![BoltValue::Int(19737)],
+            },
+        )];
+        let params = bolt_map_to_value_map(&bolt_params);
+        let result =
+            execute_query(&store, "default", "RETURN $d AS d", params, None).unwrap();
+        let (records, _, _) = result_to_records(&result, &store, "default");
+        assert_eq!(records.len(), 1);
+        assert_eq!(
+            records[0][0],
+            BoltValue::Structure {
+                tag: 0x44,
+                fields: vec![BoltValue::Int(19737)],
+            }
+        );
+    }
+
+    #[test]
+    fn roundtrip_duration_via_query_params() {
+        let store = InMemoryGraphStore::new();
+        let bolt_params: BoltMap = vec![(
+            "d".to_string(),
+            BoltValue::Structure {
+                tag: 0x45,
+                fields: vec![
+                    BoltValue::Int(14),
+                    BoltValue::Int(3),
+                    BoltValue::Int(100),
+                    BoltValue::Int(0),
+                ],
+            },
+        )];
+        let params = bolt_map_to_value_map(&bolt_params);
+        let result =
+            execute_query(&store, "default", "RETURN $d AS d", params, None).unwrap();
+        let (records, _, _) = result_to_records(&result, &store, "default");
+        assert_eq!(
+            records[0][0],
+            BoltValue::Structure {
+                tag: 0x45,
+                fields: vec![
+                    BoltValue::Int(14),
+                    BoltValue::Int(3),
+                    BoltValue::Int(100),
+                    BoltValue::Int(0),
+                ],
+            }
+        );
+    }
+
+    #[test]
+    fn roundtrip_point_via_query_params() {
+        let store = InMemoryGraphStore::new();
+        let bolt_params: BoltMap = vec![(
+            "p".to_string(),
+            BoltValue::Structure {
+                tag: 0x58,
+                fields: vec![
+                    BoltValue::Int(7203),
+                    BoltValue::Float(1.5),
+                    BoltValue::Float(2.5),
+                ],
+            },
+        )];
+        let params = bolt_map_to_value_map(&bolt_params);
+        let result =
+            execute_query(&store, "default", "RETURN $p AS p", params, None).unwrap();
+        let (records, _, _) = result_to_records(&result, &store, "default");
+        assert_eq!(
+            records[0][0],
+            BoltValue::Structure {
+                tag: 0x58,
+                fields: vec![
+                    BoltValue::Int(7203),
+                    BoltValue::Float(1.5),
+                    BoltValue::Float(2.5),
+                ],
+            }
+        );
     }
 }

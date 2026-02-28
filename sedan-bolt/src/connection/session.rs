@@ -1,3 +1,4 @@
+use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 
 use tokio::io::{AsyncWriteExt, BufReader};
@@ -27,6 +28,7 @@ pub async fn run(
     stream: TcpStream,
     store: Arc<InMemoryGraphStore>,
     conn_id: u64,
+    global_bookmark: Arc<AtomicU64>,
 ) -> Result<(), SessionError> {
     let (read_half, write_half) = stream.into_split();
     let mut reader = BufReader::new(read_half);
@@ -42,7 +44,9 @@ pub async fn run(
         conn_id,
         current_graph: "default".to_string(),
         pending_result: None,
-        bookmark_counter: 0,
+        global_bookmark,
+        tx_metadata: Vec::new(),
+        tx_timeout: None,
     };
 
     // Message loop
