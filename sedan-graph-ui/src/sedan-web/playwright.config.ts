@@ -5,7 +5,7 @@ export default defineConfig({
   timeout: 60_000,
   retries: 0,
   use: {
-    baseURL: 'http://localhost:5173',
+    baseURL: 'http://localhost:5175',
     headless: true,
     screenshot: 'on',
     trace: 'retain-on-failure',
@@ -18,8 +18,8 @@ export default defineConfig({
     },
   ],
   webServer: {
-    command: 'npm run dev',
-    port: 5173,
+    command: 'VITE_PROXY_TARGET=http://localhost:3001 VITE_PROXY_REWRITE=true npx vite --port 5175',
+    port: 5175,
     timeout: 30_000,
     reuseExistingServer: true,
   },

@@ -3,7 +3,9 @@ import ReactDOM from 'react-dom/client'
 import { PublicClientApplication, EventType } from '@azure/msal-browser'
 import { MsalProvider } from '@azure/msal-react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { useState, useEffect } from 'react'
 import App from './App'
+import { StatusPage } from './components/status/StatusPage'
 import { AuthGuard } from './auth/AuthGuard'
 import { msalConfig } from './auth/msalConfig'
 import { setMsalInstance } from './api/client'
@@ -42,12 +44,23 @@ const queryClient = new QueryClient({
 const root = document.getElementById('root')
 if (!root) throw new Error('Root element not found')
 
+function Root() {
+  const [route, setRoute] = useState(window.location.hash)
+  useEffect(() => {
+    const onHash = () => setRoute(window.location.hash)
+    window.addEventListener('hashchange', onHash)
+    return () => window.removeEventListener('hashchange', onHash)
+  }, [])
+  if (route === '#/status') return <StatusPage />
+  return <App />
+}
+
 ReactDOM.createRoot(root).render(
   <React.StrictMode>
     <MsalProvider instance={msalInstance}>
       <AuthGuard>
         <QueryClientProvider client={queryClient}>
-          <App />
+          <Root />
         </QueryClientProvider>
       </AuthGuard>
     </MsalProvider>
