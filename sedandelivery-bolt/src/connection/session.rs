@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
 
-use gql_core::storage::InMemoryGraphStore;
+use gql_core::storage::GraphStore;
 
 use crate::connection::handshake;
 use crate::message::types::ClientMessage;
@@ -40,7 +40,7 @@ pub enum SessionError {
 /// connections.
 pub async fn run<S>(
     stream: S,
-    store: Arc<InMemoryGraphStore>,
+    store: Arc<dyn GraphStore>,
     conn_id: u64,
     global_bookmark: Arc<AtomicU64>,
     write_lock: Arc<tokio::sync::Mutex<()>>,

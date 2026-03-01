@@ -7,6 +7,25 @@ use tokio::sync::Semaphore;
 
 use gql_core::storage::{GraphStore, InMemoryGraphStore};
 
+/// Create the graph store based on environment configuration.
+///
+/// When `GQL_REDIS_URL` is set, connects to Redis/Valkey via `RedisGraphStore`
+/// (with r2d2 connection pool). Otherwise uses `InMemoryGraphStore` for
+/// single-instance in-process operation.
+fn create_store() -> Arc<dyn GraphStore> {
+    if std::env::var("GQL_REDIS_URL").is_ok() {
+        tracing::info!("GQL_REDIS_URL set — using Redis-backed graph store");
+        match gql_redis_store::RedisGraphStore::from_env() {
+            Ok(store) => return Arc::new(store),
+            Err(e) => {
+                tracing::error!("failed to connect to Redis: {e}, falling back to in-memory");
+            }
+        }
+    }
+    tracing::info!("using in-memory graph store");
+    Arc::new(InMemoryGraphStore::new())
+}
+
 /// RAII guard that decrements the active-connection gauge on drop.
 /// This ensures the counter is accurate even when a session task panics.
 struct ConnectionGuard {
@@ -61,13 +80,18 @@ async fn main() {
     // Active connection gauge (increment on connect, decrement on disconnect).
     let active_connections = Arc::new(AtomicU64::new(0));
 
-    let store = Arc::new(InMemoryGraphStore::new());
+    let store = create_store();
     // Pre-create the default "neo4j" database so it exists before any client
-    // connects. This is required for multi-database support where databases
-    // must be explicitly created (no auto-create for non-default databases).
-    store
-        .create_graph("neo4j")
-        .expect("failed to create default 'neo4j' database");
+    // connects. With Redis-backed stores the graph may already exist from a
+    // previous run (data is persistent), so check first to be idempotent.
+    if !store
+        .graph_exists("neo4j")
+        .expect("failed to check default database")
+    {
+        store
+            .create_graph("neo4j")
+            .expect("failed to create default 'neo4j' database");
+    }
 
     // Load TLS configuration (returns None if BOLT_TLS_CERT / BOLT_TLS_KEY are not set)
     let tls_acceptor = sedandelivery_bolt::tls::load_tls_config();

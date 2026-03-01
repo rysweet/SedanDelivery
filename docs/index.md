@@ -39,11 +39,12 @@ SedanDelivery deploys to Azure Container Apps via GitHub Actions.
 
 | Resource | Purpose |
 |----------|---------|
-| Azure Container Registry | Stores the Docker image |
+| Azure Container Registry | Stores Docker images (Valkey, Bolt, Fabric sync) |
 | Azure Storage Account + File Share | Persistent data volume for Valkey RDB/AOF |
 | Container Apps Environment | Managed container hosting |
-| Container App (Valkey + GQL module) | The deployed Redis with graph query engine |
-| Azure Cache for Redis (optional) | Managed Redis backend (when `persistenceBackend=azure-cache`) |
+| Container App: Valkey + GQL module | Redis server with graph query engine (port 6379) |
+| Container App: sedandelivery-bolt | Standalone Bolt server (port 7687), scalable |
+| Azure Cache for Redis (optional) | Managed HA Redis backend with replication + failover |
 
 ### Storage Backends
 
@@ -56,6 +57,20 @@ SedanDelivery supports multiple storage backends via the `GraphStore` trait:
 | `FabricGraphStore` | `gql-fabric-store` | Microsoft Fabric Graph Database |
 | `FanoutStore` | `gql-redis-store` | Write to multiple backends simultaneously |
 
+### Distributed Mode (ADR-004)
+
+When `GQL_REDIS_URL` is set, the Bolt server uses `RedisGraphStore` with an r2d2
+connection pool to connect to an external Redis/Valkey backend. This enables:
+
+- **HA**: Azure Cache for Redis Standard C1 with active-passive replication
+- **Connection pooling**: r2d2 pool (default 16 connections, configurable)
+- **Multi-instance scaling**: Multiple bolt replicas sharing the same Redis backend
+
+When `GQL_REDIS_URL` is unset, the Bolt server uses `InMemoryGraphStore` with
+full transaction isolation (identical to pre-distributed behavior).
+
+See [ADR-004](ADR-004-distributed-redis) for the full architecture decision record.
+
 ### Environment Variables
 
 | Variable | Default | Description |
@@ -63,7 +78,10 @@ SedanDelivery supports multiple storage backends via the `GraphStore` trait:
 | `BOLT_BIND_ADDR` | `0.0.0.0:7687` | Bolt TCP listen address |
 | `BOLT_PASSWORD` | — | Optional password for Bolt connections |
 | `BOLT_ENABLED` | `true` | Enable/disable Bolt server in container |
-| `GQL_REDIS_URL` | `redis://127.0.0.1:6379` | Redis connection URL for RedisGraphStore |
+| `GQL_REDIS_URL` | — | Redis/Valkey URL; when set, bolt uses Redis-backed store |
+| `GQL_REDIS_POOL_SIZE` | `16` | r2d2 connection pool max size |
+| `GQL_REDIS_POOL_TIMEOUT_SECS` | `5` | Pool checkout timeout in seconds |
+| `GQL_REDIS_KEY_PREFIX` | — | Key prefix for multi-tenant isolation |
 | `GQL_FABRIC_ENDPOINT` | — | Fabric Graph Database REST API URL |
 | `GQL_FABRIC_TENANT_ID` | — | Azure AD tenant for Fabric auth |
 | `GQL_FABRIC_CLIENT_ID` | — | Service principal app ID for Fabric |
@@ -205,31 +223,16 @@ replicates graph mutations to Fabric.
 
 **Architecture:**
 
-```
-┌──────────────────────────────────────────────────────────────┐
-│  Azure Container Apps Environment                            │
-│                                                              │
-│  ┌─────────────────────┐    ┌──────────────────────────┐     │
-│  │  sd2-{env}-redis    │    │  sd2-{env}-fabric-sync   │     │
-│  │  (Valkey + GQL mod) │    │  (sync sidecar)          │     │
-│  │                     │    │                          │     │
-│  │  Bolt :7687         │    │  Reads __sd2:changelog   │     │
-│  │  Redis :6379        │    │  stream from Valkey,     │     │
-│  │                     │    │  writes to Fabric REST   │     │
-│  │  GQL_FABRIC_        │    │  API                     │     │
-│  │  CHANGELOG=1        │    │                          │     │
-│  └─────────┬───────────┘    └────────────┬─────────────┘     │
-│            │ __sd2:changelog stream       │                   │
-│            └─────────────────────────────→│                   │
-└──────────────────────────────────────────┼───────────────────┘
-                                           │ HTTPS
-                                           ▼
-                              ┌─────────────────────────┐
-                              │  Microsoft Fabric        │
-                              │  Workspace:              │
-                              │  SedanDelivery-{env}     │
-                              │  Graph DB: sedan-graph   │
-                              └─────────────────────────┘
+```mermaid
+graph TD
+    subgraph CAE["Azure Container Apps Environment"]
+        BOLT["sd2-env-bolt<br/>Bolt :7687 | Health :7688<br/>GQL_REDIS_URL (r2d2 pool)"]
+        VALKEY["sd2-env-redis<br/>Valkey + GQL module<br/>Redis :6379<br/>GQL_FABRIC_CHANGELOG=1"]
+        SYNC["sd2-env-fabric-sync<br/>Changelog consumer"]
+    end
+    BOLT -- "GQL_REDIS_URL" --> VALKEY
+    VALKEY -- "__sd2:changelog stream" --> SYNC
+    SYNC -- "HTTPS" --> FABRIC["Microsoft Fabric<br/>Graph Database"]
 ```
 
 **What you get:**

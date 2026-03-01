@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use gql_core::storage::{EdgeId, GraphStore, InMemoryGraphStore, NodeId};
+use gql_core::storage::{EdgeId, GraphStore, NodeId};
 use gql_core::types::value::{Crs, GeoPoint};
 use gql_core::types::Value;
 use indexmap::IndexMap;
@@ -15,7 +15,7 @@ use crate::protocol::tags;
 /// Fields: [id: Int, labels: List<String>, properties: Map]
 ///
 /// Returns `BoltValue::Null` if the node is not found in the store.
-pub fn node_to_bolt(id: NodeId, store: &InMemoryGraphStore, graph: &str) -> BoltValue {
+pub fn node_to_bolt(id: NodeId, store: &dyn GraphStore, graph: &str) -> BoltValue {
     let node_data = match store.get_node(graph, id) {
         Ok(Some(data)) => data,
         _ => return BoltValue::Null,
@@ -42,7 +42,7 @@ pub fn node_to_bolt(id: NodeId, store: &InMemoryGraphStore, graph: &str) -> Bolt
 /// Fields: [id: Int, startNodeId: Int, endNodeId: Int, type: String, properties: Map]
 ///
 /// Returns `BoltValue::Null` if the edge is not found in the store.
-pub fn edge_to_bolt(id: EdgeId, store: &InMemoryGraphStore, graph: &str) -> BoltValue {
+pub fn edge_to_bolt(id: EdgeId, store: &dyn GraphStore, graph: &str) -> BoltValue {
     let edge_data = match store.get_edge(graph, id) {
         Ok(Some(data)) => data,
         _ => return BoltValue::Null,
@@ -74,7 +74,7 @@ pub fn edge_to_bolt(id: EdgeId, store: &InMemoryGraphStore, graph: &str) -> Bolt
 pub fn path_to_bolt(
     node_ids: &[NodeId],
     edge_ids: &[EdgeId],
-    store: &InMemoryGraphStore,
+    store: &dyn GraphStore,
     graph: &str,
 ) -> BoltValue {
     // Build the unique-nodes list (preserving first-occurrence order).
@@ -393,6 +393,7 @@ fn point_to_bolt(p: &GeoPoint) -> BoltValue {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gql_core::storage::InMemoryGraphStore;
     use gql_core::types::CypherDuration;
 
     #[test]

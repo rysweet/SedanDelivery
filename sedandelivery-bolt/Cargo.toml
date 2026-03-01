@@ -9,7 +9,8 @@ name = "sedandelivery-bolt"
 path = "src/main.rs"
 
 [dependencies]
-gql-core      = { path = "../gql-core" }
+gql-core        = { path = "../gql-core" }
+gql-redis-store = { path = "../gql-redis-store" }
 tokio         = { version = "1", features = ["full"] }
 tokio-rustls  = "0.26"
 rustls         = "0.23"

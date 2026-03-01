@@ -7,7 +7,7 @@ use crate::message::types::ServerMessage;
 use crate::metrics as bolt_metrics;
 use crate::packstream::value::{BoltMap, BoltMapExt, BoltValue};
 use crate::protocol::state::ServerState;
-use gql_core::storage::{GraphStore, InMemoryGraphStore};
+use gql_core::storage::GraphStore;
 
 use super::{
     bolt_map, extract_tx_metadata, validate_bookmarks, AdminStats, PendingQuery, ProtocolError,
@@ -86,7 +86,7 @@ pub(crate) async fn handle_run(
     // Try to handle as an admin/DDL query (CREATE/DROP DATABASE, SHOW DATABASES,
     // CREATE/DROP INDEX/CONSTRAINT). These commands are not supported by the
     // gql-core parser, so we intercept them here.
-    let effective_store_for_admin: Arc<InMemoryGraphStore> = match &session.tx_store {
+    let effective_store_for_admin: Arc<dyn GraphStore> = match &session.tx_store {
         Some(ts)
             if matches!(
                 session.state,
@@ -98,7 +98,7 @@ pub(crate) async fn handle_run(
         _ => Arc::clone(&session.store),
     };
     if let Some(admin_result) =
-        bridge::admin::try_handle_admin(&effective_store_for_admin, &graph, trimmed)
+        bridge::admin::try_handle_admin(&*effective_store_for_admin, &graph, trimmed)
     {
         match admin_result {
             Ok(ar) => {
@@ -110,7 +110,7 @@ pub(crate) async fn handle_run(
                 };
                 let (records, query_type, stats, _trailing) = bridge::executor::result_to_records(
                     &ar.query_result,
-                    &effective_store_for_admin,
+                    &*effective_store_for_admin,
                     &graph,
                 );
                 let fields: Vec<BoltValue> = ar
@@ -191,16 +191,16 @@ pub(crate) async fn handle_run(
     if extra.get_str("db").is_some() && graph != "neo4j" && graph != "system" {
         let main_store_has_neo4j = session.store.graph_exists("neo4j").unwrap_or(false);
         if main_store_has_neo4j {
-            let check_store: &InMemoryGraphStore = match &session.tx_store {
+            let check_store: &dyn GraphStore = match &session.tx_store {
                 Some(ts)
                     if matches!(
                         session.state,
                         ServerState::TxReady | ServerState::TxStreaming
                     ) =>
                 {
-                    ts
+                    &**ts
                 }
-                _ => &session.store,
+                _ => &*session.store,
             };
             let exists = check_store.graph_exists(&graph).unwrap_or(false);
             if !exists {
@@ -248,7 +248,7 @@ pub(crate) async fn handle_run(
 
     // When inside an explicit transaction, execute against the snapshot store
     // so that mutations are isolated until COMMIT.
-    let effective_store: Arc<InMemoryGraphStore> = match &session.tx_store {
+    let effective_store: Arc<dyn GraphStore> = match &session.tx_store {
         Some(ts)
             if matches!(
                 session.state,
@@ -332,7 +332,7 @@ pub(crate) async fn handle_run(
         let q2 = actual_query.clone();
         let p2 = value_params.clone();
         let plan = tokio::task::spawn_blocking(move || {
-            bridge::executor::plan_query(&store2, &g2, &q2, p2)
+            bridge::executor::plan_query(&*store2, &g2, &q2, p2)
         })
         .await
         .map_err(|e| ProtocolError::Internal(e.to_string()))?;
@@ -343,7 +343,7 @@ pub(crate) async fn handle_run(
 
     let result = tokio::task::spawn_blocking(move || {
         bridge::executor::execute_query(
-            &store,
+            &*store,
             &graph_clone,
             &query_clone,
             value_params,
@@ -356,7 +356,7 @@ pub(crate) async fn handle_run(
     match result {
         Ok(qr) => {
             let (records, query_type, stats, trailing_err) =
-                bridge::executor::result_to_records(&qr, &effective_store, &graph);
+                bridge::executor::result_to_records(&qr, &*effective_store, &graph);
 
             // Convert the trailing GqlError (if any) to a (code, message) pair
             // for deferred FAILURE emission during PULL.
@@ -439,7 +439,7 @@ pub(crate) async fn handle_run(
 /// Handle an EXPLAIN query: plan only, no execution.
 async fn handle_explain(
     session: &mut Session,
-    effective_store: &Arc<InMemoryGraphStore>,
+    effective_store: &Arc<dyn GraphStore>,
     graph: &str,
     actual_query: &str,
     value_params: std::collections::HashMap<String, gql_core::types::Value>,
@@ -450,7 +450,7 @@ async fn handle_explain(
     let q = actual_query.to_string();
     let p = value_params;
     let plan_result =
-        tokio::task::spawn_blocking(move || bridge::executor::plan_query(&store, &g, &q, p))
+        tokio::task::spawn_blocking(move || bridge::executor::plan_query(&*store, &g, &q, p))
             .await
             .map_err(|e| ProtocolError::Internal(e.to_string()))?;
 

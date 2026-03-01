@@ -39,11 +39,14 @@ pub(crate) fn handle_begin(
 
     // Create a copy-on-write snapshot of the target graph so that mutations
     // inside the transaction are isolated until COMMIT.
-    let snapshot = session
+    // Returns None for backends where writes are immediately visible (e.g. Redis).
+    if let Some(snapshot) = session
         .store
-        .snapshot(&[&session.current_graph])
-        .map_err(|e| ProtocolError::Internal(e.to_string()))?;
-    session.tx_store = Some(Arc::new(snapshot));
+        .tx_snapshot(&[&session.current_graph])
+        .map_err(|e| ProtocolError::Internal(e.to_string()))?
+    {
+        session.tx_store = Some(Arc::from(snapshot));
+    }
 
     session.state = ServerState::TxReady;
     Ok(vec![ServerMessage::Success(bolt_map! {})])
@@ -61,7 +64,7 @@ pub(crate) fn handle_commit(session: &mut Session) -> Result<Vec<ServerMessage>,
     if let Some(ref tx_store) = session.tx_store {
         session
             .store
-            .merge_from(tx_store)
+            .tx_commit(tx_store.as_ref())
             .map_err(|e| ProtocolError::Internal(e.to_string()))?;
     }
     session.tx_store = None;

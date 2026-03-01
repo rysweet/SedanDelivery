@@ -296,4 +296,8 @@ impl GraphStore for FanoutStore {
     fn graph_stats(&self, graph: &str) -> Result<GraphStats, StorageError> {
         self.read(|s| s.graph_stats(graph))
     }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
 }

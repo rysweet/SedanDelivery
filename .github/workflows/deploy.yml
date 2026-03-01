@@ -345,6 +345,28 @@ jobs:
           echo "✅ sedandelivery-fabric-sync image pushed: ${ACR_SERVER}/sedandelivery-fabric-sync:${IMAGE_TAG}"
           echo "sync_image_tag=${IMAGE_TAG}" >> "$GITHUB_OUTPUT"
 
+      - name: Build and push sedandelivery-bolt image via ACR Tasks
+        id: build-bolt
+        env:
+          GH_SHA: ${{ github.sha }}
+        run: |
+          ACR_NAME="${{ steps.provision.outputs.acr_name }}"
+          ACR_SERVER="${{ steps.provision.outputs.acr_server }}"
+          IMAGE_TAG="${GH_SHA}"
+
+          echo "🐳 Building sedandelivery-bolt (standalone Bolt server) via ACR Tasks..."
+
+          az acr build \
+            --registry "${ACR_NAME}" \
+            --image "sedandelivery-bolt:${IMAGE_TAG}" \
+            --image "sedandelivery-bolt:latest" \
+            --file Dockerfile.bolt \
+            --platform linux/amd64 \
+            .
+
+          echo "✅ sedandelivery-bolt image pushed: ${ACR_SERVER}/sedandelivery-bolt:${IMAGE_TAG}"
+          echo "bolt_image_tag=${IMAGE_TAG}" >> "$GITHUB_OUTPUT"
+
       - name: Create or update Container App
         id: deploy-app
         env:
@@ -516,18 +538,142 @@ jobs:
             sleep 10
           done
 
-      - name: Add Bolt port 7687 to container app ingress
+      - name: Remove Bolt port 7687 from Valkey container (bolt is now separate)
         run: |
           RG="${{ needs.determine-environment.outputs.resource-group }}"
           CA_NAME="${{ steps.deploy-app.outputs.ca_name }}"
           SUB_ID="${{ env.AZURE_SUBSCRIPTION_ID }}"
 
-          echo "🔌 Adding Bolt port 7687 via additionalPortMappings..."
+          echo "🔌 Removing Bolt port 7687 from Valkey container (now handled by bolt Container App)..."
+          # Clear additionalPortMappings so port 7687 is free for the bolt container.
+          # Use empty array — this is idempotent (safe if already empty).
           az rest --method PATCH \
             --url "https://management.azure.com/subscriptions/${SUB_ID}/resourceGroups/${RG}/providers/Microsoft.App/containerApps/${CA_NAME}?api-version=2024-03-01" \
-            --body '{"properties":{"configuration":{"ingress":{"additionalPortMappings":[{"external":true,"targetPort":7687,"exposedPort":7687}]}}}}' \
+            --body '{"properties":{"configuration":{"ingress":{"additionalPortMappings":[]}}}}' \
             --output none
-          echo "✅ Bolt port 7687 exposed externally"
+          echo "✅ Bolt port 7687 freed for standalone bolt Container App"
+
+      - name: Deploy sedandelivery-bolt standalone Container App
+        id: deploy-bolt
+        env:
+          DEPLOY_RG: ${{ needs.determine-environment.outputs.resource-group }}
+          DEPLOY_ENV_NAME: ${{ needs.determine-environment.outputs.env-name }}
+          DEPLOY_CAE_NAME: ${{ steps.provision.outputs.cae_name }}
+          DEPLOY_ACR_SERVER: ${{ steps.provision.outputs.acr_server }}
+          DEPLOY_ACR_NAME: ${{ steps.provision.outputs.acr_name }}
+          DEPLOY_BOLT_IMAGE_TAG: ${{ steps.build-bolt.outputs.bolt_image_tag }}
+          DEPLOY_AZURE_CACHE_NAME: ${{ steps.provision.outputs.azure_cache_name }}
+        run: |
+          RG="${DEPLOY_RG}"
+          ENV_NAME="${DEPLOY_ENV_NAME}"
+          CAE_NAME="${DEPLOY_CAE_NAME}"
+          ACR_SERVER="${DEPLOY_ACR_SERVER}"
+          ACR_NAME="${DEPLOY_ACR_NAME}"
+          IMAGE="${ACR_SERVER}/sedandelivery-bolt:${DEPLOY_BOLT_IMAGE_TAG}"
+          CA_NAME="sd2-${ENV_NAME}-bolt"
+
+          echo "🚀 Deploying standalone Bolt server: ${CA_NAME}"
+
+          # Determine Redis backend URL for the bolt server.
+          # Priority: Azure Cache (if provisioned) > local Valkey container.
+          REDIS_URL=""
+          if [[ -n "${DEPLOY_AZURE_CACHE_NAME}" && "${DEPLOY_AZURE_CACHE_NAME}" != "" ]]; then
+            # Azure Cache for Redis — use TLS connection (rediss://)
+            AZURE_CACHE_HOST=$(az redis show --name "${DEPLOY_AZURE_CACHE_NAME}" --resource-group "${RG}" --query hostName -o tsv)
+            AZURE_CACHE_PORT=$(az redis show --name "${DEPLOY_AZURE_CACHE_NAME}" --resource-group "${RG}" --query sslPort -o tsv)
+            REDIS_KEY=$(az redis list-keys --name "${DEPLOY_AZURE_CACHE_NAME}" --resource-group "${RG}" --query primaryKey -o tsv)
+            if [[ -n "$REDIS_KEY" ]]; then
+              echo "::add-mask::${REDIS_KEY}"
+              REDIS_URL="rediss://:${REDIS_KEY}@${AZURE_CACHE_HOST}:${AZURE_CACHE_PORT}"
+            fi
+          fi
+          if [[ -z "${REDIS_URL}" ]]; then
+            # Fall back to local Valkey container
+            REDIS_CA_NAME="sd2-${ENV_NAME}-redis"
+            VALKEY_PASS=$(az containerapp secret show \
+              --name "${REDIS_CA_NAME}" --resource-group "${RG}" \
+              --secret-name valkey-password --query value -o tsv 2>/dev/null || echo "")
+            if [[ -n "${VALKEY_PASS}" ]]; then
+              echo "::add-mask::${VALKEY_PASS}"
+              REDIS_URL="redis://:${VALKEY_PASS}@${REDIS_CA_NAME}:6379"
+            else
+              REDIS_URL="redis://${REDIS_CA_NAME}:6379"
+            fi
+          fi
+          echo "::add-mask::${REDIS_URL}"
+
+          # Build secrets and env-var args for bolt
+          SECRETS_ARGS="redis-url=${REDIS_URL}"
+          ENV_VAR_ARGS="GQL_REDIS_URL=secretref:redis-url BOLT_BIND_ADDR=0.0.0.0:7687"
+
+          # Max replicas for horizontal scaling (default 1, configurable)
+          BOLT_MAX_REPLICAS="${BOLT_MAX_REPLICAS:-1}"
+
+          # Helper: create bolt container app
+          create_bolt_app() {
+            az containerapp create \
+              --name "${CA_NAME}" \
+              --resource-group "${RG}" \
+              --environment "${CAE_NAME}" \
+              --image "${IMAGE}" \
+              --registry-server "${ACR_SERVER}" \
+              --registry-identity system \
+              --system-assigned \
+              --cpu 0.5 \
+              --memory 1Gi \
+              --min-replicas 1 \
+              --max-replicas "${BOLT_MAX_REPLICAS}" \
+              --ingress external \
+              --target-port 7687 \
+              --transport tcp \
+              --exposed-port 7687 \
+              --secrets ${SECRETS_ARGS} \
+              --env-vars ${ENV_VAR_ARGS} \
+              --output none
+          }
+
+          # Idempotent create-or-update
+          if az containerapp show --name "${CA_NAME}" --resource-group "${RG}" >/dev/null 2>&1; then
+            echo "🔄 Updating existing bolt container app..."
+            UPDATE_OK=true
+            az containerapp secret set \
+              --name "${CA_NAME}" \
+              --resource-group "${RG}" \
+              --secrets ${SECRETS_ARGS} \
+              --output none 2>/dev/null || true
+            az containerapp update \
+              --name "${CA_NAME}" \
+              --resource-group "${RG}" \
+              --image "${IMAGE}" \
+              --set-env-vars ${ENV_VAR_ARGS} \
+              --max-replicas "${BOLT_MAX_REPLICAS}" \
+              --output none 2>&1 || UPDATE_OK=false
+
+            if [[ "${UPDATE_OK}" == "false" ]]; then
+              echo "⚠️  Update failed — deleting and recreating..."
+              az containerapp delete --name "${CA_NAME}" --resource-group "${RG}" --yes --output none 2>/dev/null || true
+              create_bolt_app
+            fi
+          else
+            create_bolt_app
+          fi
+
+          # Ensure AcrPull role
+          CA_PRINCIPAL_ID=$(az containerapp show \
+            --name "${CA_NAME}" --resource-group "${RG}" \
+            --query "identity.principalId" -o tsv 2>/dev/null || echo "")
+          if [[ -n "${CA_PRINCIPAL_ID}" && "${CA_PRINCIPAL_ID}" != "None" ]]; then
+            ACR_RESOURCE_ID=$(az acr show --name "${ACR_NAME}" --query id -o tsv)
+            az role assignment create \
+              --assignee-object-id "${CA_PRINCIPAL_ID}" \
+              --assignee-principal-type ServicePrincipal \
+              --role "AcrPull" \
+              --scope "${ACR_RESOURCE_ID}" \
+              --output none 2>/dev/null || true
+          fi
+
+          echo "bolt_ca_name=${CA_NAME}" >> "$GITHUB_OUTPUT"
+          echo "✅ Bolt Container App deployed: ${CA_NAME}"
 
       - name: Deploy sedandelivery-fabric-sync sidecar Container App
         id: deploy-sync

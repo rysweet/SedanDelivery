@@ -866,6 +866,28 @@ impl GraphStore for InMemoryGraphStore {
         let g = Self::require_graph(&guard, graph)?;
         Ok(g.label_index.keys().cloned().collect())
     }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn tx_snapshot(
+        &self,
+        graphs: &[&str],
+    ) -> Result<Option<Box<dyn GraphStore>>, StorageError> {
+        let snap = self.snapshot(graphs)?;
+        Ok(Some(Box::new(snap)))
+    }
+
+    fn tx_commit(&self, snapshot: &dyn GraphStore) -> Result<(), StorageError> {
+        let snap = snapshot
+            .as_any()
+            .downcast_ref::<InMemoryGraphStore>()
+            .ok_or_else(|| {
+                StorageError::backend("tx_commit: snapshot is not an InMemoryGraphStore")
+            })?;
+        self.merge_from(snap)
+    }
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────

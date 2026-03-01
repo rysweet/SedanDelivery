@@ -1040,6 +1040,10 @@ impl GraphStore for FabricGraphStore {
             rel_type_count: row.get(3).and_then(|v| v.as_u64()).unwrap_or(0) as u32,
         })
     }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
 }
 
 // ── Private helpers on FabricGraphStore ──────────────────────────────────────

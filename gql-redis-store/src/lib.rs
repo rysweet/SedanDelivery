@@ -20,7 +20,7 @@ pub use fanout::FanoutStore;
 
 use std::collections::HashMap;
 use std::env;
-use std::sync::Mutex;
+use std::time::Duration;
 
 use redis::{Client, Commands, Connection};
 
@@ -110,17 +110,26 @@ const KEY_GRAPHS: &str = "__sd2_registry:graphs";
 
 // ── RedisGraphStore ───────────────────────────────────────────────────────────
 
+/// Default connection pool size.
+const DEFAULT_POOL_SIZE: u32 = 16;
+/// Default pool checkout timeout in seconds.
+const DEFAULT_POOL_TIMEOUT_SECS: u64 = 5;
+
 /// A [`GraphStore`] implementation backed by a Redis/Valkey server.
 ///
 /// Connects to a standalone Redis/Valkey instance or Azure Cache for Redis
 /// via a URL (`redis://host:port` or `rediss://host:port` for TLS).
 ///
-/// The `REDIS_URL` environment variable is read at construction time if no
-/// explicit URL is provided.  Default: `redis://127.0.0.1:6379`.
+/// Uses an `r2d2` connection pool for concurrent access from multiple threads
+/// (e.g. multiple Bolt sessions sharing a single `RedisGraphStore`).
+///
+/// Pool configuration:
+/// - `GQL_REDIS_POOL_SIZE` — max connections (default 16)
+/// - `GQL_REDIS_POOL_TIMEOUT_SECS` — checkout timeout (default 5)
 pub struct RedisGraphStore {
-    /// Mutex-protected connection.  All trait methods are synchronous so this
-    /// is fine.  A production upgrade could switch to a connection pool.
-    conn: Mutex<Connection>,
+    /// r2d2 connection pool.  Each `conn()` call checks out a connection that
+    /// is returned to the pool when the `PooledConnection` guard is dropped.
+    pool: r2d2::Pool<Client>,
     /// Optional key prefix for multi-tenant isolation.
     /// Set via `GQL_REDIS_KEY_PREFIX` environment variable (default empty).
     key_prefix: String,
@@ -132,24 +141,49 @@ impl RedisGraphStore {
     ///
     /// The key prefix is read from `GQL_REDIS_KEY_PREFIX` (default empty string).
     /// Set a prefix to isolate multiple deployments sharing a single Redis instance.
+    ///
+    /// Pool size and timeout are read from `GQL_REDIS_POOL_SIZE` (default 16)
+    /// and `GQL_REDIS_POOL_TIMEOUT_SECS` (default 5).
     pub fn from_env() -> Result<Self, StorageError> {
         let url = env::var("GQL_REDIS_URL")
             .or_else(|_| env::var("REDIS_URL"))
             .unwrap_or_else(|_| "redis://127.0.0.1:6379".into());
         let prefix = env::var("GQL_REDIS_KEY_PREFIX").unwrap_or_default();
-        Self::from_url_with_prefix(&url, &prefix)
+        let pool_size: u32 = env::var("GQL_REDIS_POOL_SIZE")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(DEFAULT_POOL_SIZE);
+        let pool_timeout_secs: u64 = env::var("GQL_REDIS_POOL_TIMEOUT_SECS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(DEFAULT_POOL_TIMEOUT_SECS);
+        Self::from_url_with_options(&url, &prefix, pool_size, pool_timeout_secs)
     }
 
     /// Create a store connecting to an explicit Redis URL with an optional key prefix.
     pub fn from_url_with_prefix(url: &str, key_prefix: &str) -> Result<Self, StorageError> {
+        Self::from_url_with_options(url, key_prefix, DEFAULT_POOL_SIZE, DEFAULT_POOL_TIMEOUT_SECS)
+    }
+
+    /// Create a store with full configuration control.
+    pub fn from_url_with_options(
+        url: &str,
+        key_prefix: &str,
+        pool_size: u32,
+        pool_timeout_secs: u64,
+    ) -> Result<Self, StorageError> {
         let client = Client::open(url).map_err(|e| StorageError::Backend {
             msg: format!("redis client error: {e}"),
         })?;
-        let conn = client.get_connection().map_err(|e| StorageError::Backend {
-            msg: format!("redis connect error: {e}"),
-        })?;
+        let pool = r2d2::Pool::builder()
+            .max_size(pool_size)
+            .connection_timeout(Duration::from_secs(pool_timeout_secs))
+            .build(client)
+            .map_err(|e| StorageError::Backend {
+                msg: format!("redis pool error: {e}"),
+            })?;
         Ok(Self {
-            conn: Mutex::new(conn),
+            pool,
             key_prefix: key_prefix.to_string(),
         })
     }
@@ -161,10 +195,10 @@ impl RedisGraphStore {
 
     // ── Internal helpers ──────────────────────────────────────────────────────
 
-    /// Acquire the connection lock.
-    fn conn(&self) -> Result<std::sync::MutexGuard<'_, Connection>, StorageError> {
-        self.conn.lock().map_err(|e| StorageError::Backend {
-            msg: format!("mutex poisoned: {e}"),
+    /// Check out a connection from the pool.
+    fn conn(&self) -> Result<r2d2::PooledConnection<Client>, StorageError> {
+        self.pool.get().map_err(|e| StorageError::Backend {
+            msg: format!("redis pool checkout error: {e}"),
         })
     }
 
@@ -1141,6 +1175,15 @@ impl GraphStore for RedisGraphStore {
             rel_type_count: rel_type_count as u32,
         })
     }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    // tx_snapshot and tx_commit use the default no-op implementations.
+    // RedisGraphStore writes are immediately durable — no client-side
+    // snapshot is needed. Future Redis Cluster support (Option C) can
+    // add WATCH/MULTI/EXEC for per-slot transaction isolation.
 }
 
 /// Count the number of keys matching a pattern via SCAN.

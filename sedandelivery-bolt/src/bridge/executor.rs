@@ -7,7 +7,7 @@ use gql_core::executor::{ExecutionBudget, MutationStats, QueryExecutor, QueryRes
 use gql_core::parser::parse_query;
 use gql_core::planner::QueryPlanner;
 use gql_core::procedure::{ProcedureDefinition, ProcedureParam, ProcedureRegistry};
-use gql_core::storage::{GraphStore, InMemoryGraphStore};
+use gql_core::storage::GraphStore;
 use gql_core::types::value::{Crs, CypherDuration, GeoPoint};
 use gql_core::types::Value;
 use indexmap::IndexMap;
@@ -26,7 +26,7 @@ use crate::protocol::tags;
 /// milliseconds (from the Bolt `tx_timeout` field). Otherwise uses the
 /// default budget.
 pub fn execute_query(
-    store: &InMemoryGraphStore,
+    store: &dyn GraphStore,
     graph: &str,
     query: &str,
     params: HashMap<String, Value>,
@@ -76,7 +76,7 @@ pub fn execute_query(
 ///
 /// Used for EXPLAIN support: generates the query plan to return to the client.
 pub fn plan_query(
-    store: &InMemoryGraphStore,
+    store: &dyn GraphStore,
     graph: &str,
     query: &str,
     params: HashMap<String, Value>,
@@ -107,7 +107,7 @@ pub fn plan_query(
 ///   rows had already been produced.
 pub fn result_to_records(
     result: &QueryResult,
-    store: &InMemoryGraphStore,
+    store: &dyn GraphStore,
     graph: &str,
 ) -> (Vec<Vec<BoltValue>>, String, BoltMap, Option<GqlError>) {
     let records: Vec<Vec<BoltValue>> = result
@@ -140,7 +140,7 @@ pub fn result_to_records(
 
 /// Convert a gql-core Value to a BoltValue, resolving graph entity references
 /// (Node, Edge, Path) against the store.
-fn value_to_bolt(val: &Value, store: &InMemoryGraphStore, graph: &str) -> BoltValue {
+fn value_to_bolt(val: &Value, store: &dyn GraphStore, graph: &str) -> BoltValue {
     match val {
         Value::Node(id) => node_to_bolt(*id, store, graph),
         Value::Edge(id) => edge_to_bolt(*id, store, graph),
@@ -526,6 +526,7 @@ fn decode_point3d(fields: &[BoltValue]) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gql_core::storage::InMemoryGraphStore;
 
     #[test]
     fn execute_query_auto_creates_default_graph() {

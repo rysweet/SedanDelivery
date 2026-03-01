@@ -8,7 +8,7 @@ use std::collections::HashMap;
 
 use gql_core::error::{GqlError, ParseError, StorageError};
 use gql_core::executor::{MutationStats, QueryResult};
-use gql_core::storage::{GraphStore, InMemoryGraphStore};
+use gql_core::storage::GraphStore;
 use gql_core::types::Value;
 
 /// Result of an admin query, with additional stats that MutationStats doesn't track.
@@ -26,7 +26,7 @@ pub struct AdminResult {
 /// Returns `Some(AdminResult)` if the query was an admin command,
 /// `None` if it should be handled by the normal query executor.
 pub fn try_handle_admin(
-    store: &InMemoryGraphStore,
+    store: &dyn GraphStore,
     graph: &str,
     query: &str,
 ) -> Option<Result<AdminResult, GqlError>> {
@@ -90,7 +90,7 @@ fn syntax_error(msg: &str) -> GqlError {
 }
 
 fn handle_create_database(
-    store: &InMemoryGraphStore,
+    store: &dyn GraphStore,
     query: &str,
 ) -> Result<AdminResult, GqlError> {
     let upper = query.to_uppercase();
@@ -122,7 +122,7 @@ fn handle_create_database(
     })
 }
 
-fn handle_drop_database(store: &InMemoryGraphStore, query: &str) -> Result<AdminResult, GqlError> {
+fn handle_drop_database(store: &dyn GraphStore, query: &str) -> Result<AdminResult, GqlError> {
     let upper = query.to_uppercase();
     let if_exists = upper.contains("IF EXISTS");
 
@@ -156,7 +156,7 @@ fn handle_drop_database(store: &InMemoryGraphStore, query: &str) -> Result<Admin
     })
 }
 
-fn handle_show_databases(store: &InMemoryGraphStore) -> Result<AdminResult, GqlError> {
+fn handle_show_databases(store: &dyn GraphStore) -> Result<AdminResult, GqlError> {
     let graphs = store.list_graphs().map_err(GqlError::from)?;
 
     // Always include "system" in the output even if it doesn't exist as a
@@ -197,7 +197,7 @@ fn handle_show_databases(store: &InMemoryGraphStore) -> Result<AdminResult, GqlE
 }
 
 fn handle_create_index(
-    store: &InMemoryGraphStore,
+    store: &dyn GraphStore,
     graph: &str,
     query: &str,
 ) -> Result<AdminResult, GqlError> {
@@ -228,7 +228,7 @@ fn handle_create_index(
 }
 
 fn handle_drop_index(
-    store: &InMemoryGraphStore,
+    store: &dyn GraphStore,
     graph: &str,
     _query: &str,
 ) -> Result<AdminResult, GqlError> {
@@ -259,7 +259,7 @@ fn handle_drop_index(
 }
 
 fn handle_create_constraint(
-    _store: &InMemoryGraphStore,
+    _store: &dyn GraphStore,
     _graph: &str,
     _query: &str,
 ) -> Result<AdminResult, GqlError> {
@@ -276,7 +276,7 @@ fn handle_create_constraint(
 }
 
 fn handle_drop_constraint(
-    _store: &InMemoryGraphStore,
+    _store: &dyn GraphStore,
     _graph: &str,
     _query: &str,
 ) -> Result<AdminResult, GqlError> {
@@ -349,6 +349,7 @@ fn parse_index_for_on(upper: &str) -> Option<(String, String)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gql_core::storage::InMemoryGraphStore;
 
     #[test]
     fn extract_simple_identifier_basic() {

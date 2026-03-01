@@ -16,7 +16,7 @@ use std::sync::Arc;
 use crate::message::types::{ClientMessage, ServerMessage};
 use crate::packstream::value::{BoltMap, BoltMapExt, BoltValue};
 use crate::protocol::state::ServerState;
-use gql_core::storage::InMemoryGraphStore;
+use gql_core::storage::GraphStore;
 
 // -- Error type --------------------------------------------------------------
 
@@ -54,7 +54,7 @@ pub struct Session {
     /// Current protocol state (Authentication, Ready, Streaming, etc.).
     pub state: ServerState,
     /// Shared graph store.
-    pub store: Arc<InMemoryGraphStore>,
+    pub store: Arc<dyn GraphStore>,
     /// Unique connection identifier for logging.
     pub conn_id: u64,
     /// The current default graph (database) for this session.
@@ -74,7 +74,7 @@ pub struct Session {
     /// Snapshot store for explicit transactions. When set, RUN executes
     /// against this store instead of the main store. COMMIT merges it back,
     /// ROLLBACK discards it.
-    pub tx_store: Option<Arc<InMemoryGraphStore>>,
+    pub tx_store: Option<Arc<dyn GraphStore>>,
     /// Global write lock for transaction timeout contention.
     pub write_lock: Arc<tokio::sync::Mutex<()>>,
     /// Guard held while this session holds the write lock (during a write TX).
@@ -306,6 +306,7 @@ pub async fn handle_message(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gql_core::storage::InMemoryGraphStore;
 
     // -- Bookmark validation unit tests --------------------------------------
 
@@ -460,7 +461,7 @@ mod tests {
     /// Build two sessions that share the same store and global bookmark counter,
     /// simulating two connections to the same server.
     fn make_shared_sessions() -> (Session, Session) {
-        let store = Arc::new(InMemoryGraphStore::new());
+        let store: Arc<dyn GraphStore> = Arc::new(InMemoryGraphStore::new());
         let bookmark = Arc::new(AtomicU64::new(0));
         let s1 = Session {
             state: ServerState::Ready,

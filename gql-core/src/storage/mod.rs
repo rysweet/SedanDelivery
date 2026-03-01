@@ -2,6 +2,7 @@ pub mod mem;
 
 pub use mem::InMemoryGraphStore;
 
+use std::any::Any;
 use std::collections::HashMap;
 
 use crate::error::StorageError;
@@ -275,6 +276,39 @@ pub trait GraphStore: Send + Sync {
     /// Returns the names of all label types currently in the graph.
     /// Used to compute the diff of labels added by a query.
     fn all_label_names(&self, graph: &str) -> Result<Vec<String>, StorageError>;
+
+    // ── Transaction support ──────────────────────────────────────────────────
+
+    /// Downcast to `Any` for type-safe runtime downcasting.
+    ///
+    /// Required by `tx_commit` on `InMemoryGraphStore` to downcast the
+    /// snapshot back to its concrete type. All implementors should return `self`.
+    fn as_any(&self) -> &dyn Any;
+
+    /// Create a copy-on-write snapshot for explicit transaction isolation.
+    ///
+    /// Returns `Some(snapshot)` for backends that support client-side
+    /// snapshots (e.g. `InMemoryGraphStore`). Returns `None` for backends
+    /// where writes are immediately durable (e.g. `RedisGraphStore`) and
+    /// transactions are handled at the protocol level.
+    ///
+    /// The `sedandelivery-bolt` transaction handler (BEGIN/COMMIT/ROLLBACK)
+    /// uses this to provide snapshot isolation when available.
+    fn tx_snapshot(
+        &self,
+        _graphs: &[&str],
+    ) -> Result<Option<Box<dyn GraphStore>>, StorageError> {
+        Ok(None)
+    }
+
+    /// Merge a transaction snapshot back into this store on COMMIT.
+    ///
+    /// Called by the Bolt COMMIT handler to apply mutations that were
+    /// accumulated in a snapshot created by `tx_snapshot`. No-op for backends
+    /// that return `None` from `tx_snapshot`.
+    fn tx_commit(&self, _snapshot: &dyn GraphStore) -> Result<(), StorageError> {
+        Ok(())
+    }
 }
 
 /// Default maximum allowed length for a graph name.

@@ -242,7 +242,7 @@ impl<S> ChangeLogStore<S> {
 
 // ── GraphStore implementation ─────────────────────────────────────────────────
 
-impl<S: GraphStore> GraphStore for ChangeLogStore<S> {
+impl<S: GraphStore + 'static> GraphStore for ChangeLogStore<S> {
     // ── Reads: straight delegation ────────────────────────────────────────────
 
     fn get_node(&self, graph: &str, id: NodeId) -> Result<Option<NodeData>, StorageError> {
@@ -559,6 +559,10 @@ impl<S: GraphStore> GraphStore for ChangeLogStore<S> {
             name: name.to_string(),
         });
         Ok(())
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
     }
 }
 

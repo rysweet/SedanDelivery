@@ -1,0 +1,76 @@
+# Dockerfile.bolt — standalone Bolt protocol server for SedanDelivery
+#
+# This image runs sedandelivery-bolt as an independent service that can
+# connect to any Redis/Valkey backend (standalone, Azure Cache for Redis,
+# or Redis Cluster in the future) via the GQL_REDIS_URL environment variable.
+#
+# When GQL_REDIS_URL is not set, falls back to in-memory graph store
+# (single-instance mode, same behavior as the monolithic container).
+#
+# Usage:
+#   docker build -f Dockerfile.bolt -t sedandelivery-bolt .
+#   docker run -p 7687:7687 -e GQL_REDIS_URL=redis://host:6379 sedandelivery-bolt
+
+# ── Builder ──────────────────────────────────────────────────────────────────
+FROM rust:1.89-bookworm AS builder
+
+WORKDIR /app
+
+# Copy workspace manifests first for layer caching
+COPY Cargo.toml ./
+COPY gql-core/Cargo.toml ./gql-core/
+COPY gql-redis-store/Cargo.toml ./gql-redis-store/
+COPY gql-module/Cargo.toml ./gql-module/
+COPY gql-fabric-store/Cargo.toml ./gql-fabric-store/
+COPY gql-cli/Cargo.toml ./gql-cli/
+COPY gql-api/Cargo.toml ./gql-api/
+COPY sedandelivery-bolt/Cargo.toml ./sedandelivery-bolt/
+COPY sedandelivery-fabric-sync/Cargo.toml ./sedandelivery-fabric-sync/
+
+# Create stub source files so cargo can resolve the dependency graph.
+# libclang not needed for bolt (only needed for gql-module redis-module bindgen).
+RUN mkdir -p gql-core/src gql-redis-store/src gql-fabric-store/src gql-module/src gql-cli/src gql-api/src \
+             sedandelivery-bolt/src sedandelivery-bolt/benches sedandelivery-fabric-sync/src && \
+    echo "pub fn stub() {}" > gql-core/src/lib.rs && \
+    echo "pub fn stub() {}" > gql-redis-store/src/lib.rs && \
+    echo "pub fn stub() {}" > gql-fabric-store/src/lib.rs && \
+    echo "pub fn stub() {}" > gql-module/src/lib.rs && \
+    echo "fn main() {}" > gql-cli/src/main.rs && \
+    echo "fn main() {}" > gql-api/src/main.rs && \
+    echo "pub fn stub() {}" > sedandelivery-bolt/src/lib.rs && \
+    echo "fn main() {}" > sedandelivery-bolt/src/main.rs && \
+    echo "fn main() {}" > sedandelivery-bolt/benches/bolt_benchmarks.rs && \
+    echo "fn main() {}" > sedandelivery-fabric-sync/src/main.rs && \
+    cargo build --release -p sedandelivery-bolt 2>/dev/null || true
+
+# Copy actual source code
+COPY gql-core/ ./gql-core/
+COPY gql-redis-store/ ./gql-redis-store/
+COPY sedandelivery-bolt/ ./sedandelivery-bolt/
+
+# Build the bolt binary
+RUN touch gql-core/src/lib.rs gql-redis-store/src/lib.rs sedandelivery-bolt/src/lib.rs sedandelivery-bolt/src/main.rs && \
+    cargo build --release -p sedandelivery-bolt && \
+    ls -lh target/release/sedandelivery-bolt
+
+# ── Runtime ───────────────────────────────────────────────────────────────────
+FROM debian:bookworm-slim AS runtime
+
+# Install minimal runtime dependencies (TLS support for rediss:// URLs)
+RUN apt-get update -q && \
+    apt-get install -y -q --no-install-recommends ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /app/target/release/sedandelivery-bolt /usr/local/bin/sedandelivery-bolt
+
+# Bolt protocol port + health/metrics HTTP port
+EXPOSE 7687 7688
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
+    CMD curl -sf http://localhost:7688/health || exit 1
+
+# Run as non-root for security
+RUN useradd --system --no-create-home bolt
+USER bolt
+
+ENTRYPOINT ["sedandelivery-bolt"]
