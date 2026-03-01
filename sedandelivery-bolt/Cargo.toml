@@ -25,6 +25,8 @@ metrics-exporter-prometheus = "0.16"
 axum           = { version = "0.8", default-features = false, features = ["tokio", "http1", "json"] }
 serde          = { workspace = true }
 serde_json     = { workspace = true }
+tokio-tungstenite = "0.26"
+futures-util   = "0.3"
 
 [dev-dependencies]
 criterion     = { version = "0.5", features = ["html_reports"] }

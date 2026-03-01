@@ -31,6 +31,7 @@ pub(crate) fn handle_begin(
     // If the BEGIN specifies a database, update the session's current graph so
     // that subsequent RUN messages within the TX use the correct graph.
     if let Some(db) = extra.get_str("db") {
+        let db = db.trim_matches(|c: char| c == '\'' || c == '"');
         if !db.is_empty() {
             session.current_graph = db.to_string();
         }

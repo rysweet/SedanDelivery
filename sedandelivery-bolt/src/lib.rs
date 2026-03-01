@@ -19,3 +19,4 @@ pub mod metrics;
 pub mod packstream;
 pub mod protocol;
 pub mod tls;
+pub mod websocket;

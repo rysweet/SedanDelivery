@@ -190,10 +190,37 @@ async fn main() {
                         }
                     }
                 } else {
-                    sedandelivery_bolt::connection::session::run(
-                        stream, store, conn_id, bookmark, wl,
-                    )
-                    .await
+                    // Detect WebSocket upgrade vs raw Bolt TCP.
+                    let is_ws = sedandelivery_bolt::websocket::is_websocket_upgrade(&stream)
+                        .await
+                        .unwrap_or(false);
+
+                    if is_ws {
+                        tracing::info!(conn_id, "WebSocket upgrade detected");
+                        match sedandelivery_bolt::websocket::accept(stream).await {
+                            Ok(ws_stream) => {
+                                let adapter =
+                                    sedandelivery_bolt::websocket::WsStreamAdapter::new(ws_stream);
+                                tracing::info!(conn_id, "WebSocket connection established");
+                                sedandelivery_bolt::connection::session::run(
+                                    adapter, store, conn_id, bookmark, wl,
+                                )
+                                .await
+                            }
+                            Err(e) => {
+                                tracing::warn!(
+                                    %peer_addr, conn_id,
+                                    "WebSocket upgrade failed: {e}"
+                                );
+                                Ok(())
+                            }
+                        }
+                    } else {
+                        sedandelivery_bolt::connection::session::run(
+                            stream, store, conn_id, bookmark, wl,
+                        )
+                        .await
+                    }
                 }
             })
             .await;
