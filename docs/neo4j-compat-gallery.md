@@ -5,7 +5,7 @@ title: Neo4j Compatibility Gallery
 
 # Neo4j Compatibility Gallery
 
-Four security-focused open-source applications running against SedanDelivery's Bolt v4.4
+Three security-focused open-source applications running against SedanDelivery's Bolt v4.4
 protocol — proving drop-in Neo4j compatibility with **zero code modifications** to any app.
 
 ## Quick Start
@@ -30,7 +30,7 @@ python3 neo4j-compat-gallery/data/load_data.py --clear
 # 5. Load CVE vulnerability data (15 critical CVEs, 28 products)
 python3 neo4j-compat-gallery/app3-graphker/cve_loader.py --sample --no-clear
 
-# 6. Start all 4 apps
+# 6. Start all apps
 ./neo4j-compat-gallery/run-all.sh
 ```
 
@@ -66,17 +66,23 @@ Each app was validated end-to-end from a **fresh `git clone`** of this repositor
 
 **Port 8080** · [neo4j-contrib/neovis.js](https://github.com/neo4j-contrib/neovis.js) · Static HTML
 
-A single HTML file that loads `neovis.js` from CDN. The JavaScript neo4j-driver connects
-directly from the browser to SedanDelivery's Bolt endpoint — no backend server needed.
+[neovis.js](https://github.com/neo4j-contrib/neovis.js) is an open-source graph visualization
+library by the Neo4j community that combines the [neo4j-javascript-driver](https://github.com/neo4j/neo4j-javascript-driver)
+with [vis.js](https://visjs.org/) for interactive browser-based graph rendering.
 
-Four visualization tabs render the MITRE ATT&CK dataset with color-coded nodes
-(red=ThreatGroup, blue=Technique, green=Mitigation, orange=Software, purple=CVE),
-plus a custom Cypher query editor.
+This gallery app uses neovis.js to visualize the [MITRE ATT&CK](https://attack.mitre.org/)
+threat intelligence dataset with color-coded nodes (red=ThreatGroup, blue=Technique,
+green=Mitigation, orange=Software, purple=CVE) and a custom Cypher query editor.
+
+**Upstream projects:**
+- [neo4j-contrib/neovis.js](https://github.com/neo4j-contrib/neovis.js) — Graph visualization for Neo4j
+- [visjs/vis-network](https://github.com/visjs/vis-network) — Network graph rendering engine
+- [neo4j/neo4j-javascript-driver](https://github.com/neo4j/neo4j-javascript-driver) — Official Neo4j JavaScript driver
+- [MITRE ATT&CK](https://attack.mitre.org/) — Threat intelligence knowledge base
 
 ```bash
-# Run with any static file server
 cd neo4j-compat-gallery/app2-neovis
-npx serve -l 8080
+python3 server.py    # Starts proxy + static server on port 8080
 ```
 
 ![neovis.js Threat Intelligence](assets/images/gallery/02-neovis-threat-graph.png)
@@ -85,15 +91,23 @@ npx serve -l 8080
 
 ## App 2: GraphKer — CVE Knowledge Graph Explorer
 
-**Port 5001** · Python Flask + neo4j driver v6.1.0
+**Port 5001** · Python Flask + [neo4j Python driver](https://github.com/neo4j/neo4j-python-driver) v6.1.0
 
-Inspired by [GraphKer](https://github.com/amberzovitis/GraphKer), this app loads
-real CVE/CWE/CPE data from the NVD API (or offline sample data with 15 critical CVEs
-including Log4Shell, ProxyShell, Zerologon, and Spring4Shell) and provides a web UI
-for exploring vulnerability relationships.
+Inspired by [GraphKer](https://github.com/amberzovitis/GraphKer), a tool that scrapes
+MITRE and NIST databases to build a cybersecurity knowledge graph in Neo4j. This gallery
+app loads real CVE/CWE/CPE data from the [NVD API](https://nvd.nist.gov/developers/vulnerabilities)
+(or offline sample data with 15 critical CVEs including Log4Shell, ProxyShell, Zerologon,
+and Spring4Shell) and provides a Flask web UI for exploring vulnerability relationships.
 
 The `/query` endpoint includes **write protection** — destructive Cypher keywords
 (CREATE, DELETE, SET, MERGE, DROP) are blocked.
+
+**Upstream projects:**
+- [amberzovitis/GraphKer](https://github.com/amberzovitis/GraphKer) — Cybersecurity knowledge graph builder
+- [neo4j/neo4j-python-driver](https://github.com/neo4j/neo4j-python-driver) — Official Neo4j Python driver
+- [NVD REST API](https://nvd.nist.gov/developers/vulnerabilities) — NIST National Vulnerability Database
+- [MITRE CWE](https://cwe.mitre.org/) — Common Weakness Enumeration
+- [MITRE CVE](https://www.cve.org/) — Common Vulnerabilities and Exposures
 
 ```bash
 cd neo4j-compat-gallery/app3-graphker
@@ -114,13 +128,23 @@ python3 app.py                    # Start on port 5001
 
 ## App 3: Network Security Graph Analyzer
 
-**Port 5002** · Python Flask + neo4j driver v6.1.0
+**Port 5002** · Python Flask + [neo4j Python driver](https://github.com/neo4j/neo4j-python-driver) v6.1.0
 
 The most complex app in the gallery. Models an enterprise network as a graph:
 20 hosts across 5 subnets (DMZ, Corporate, Server, Management, OT/SCADA),
 15 services, 10 firewall rules, and 12 real CVEs. Then runs graph-based security
 analysis: attack path tracing, lateral movement detection, vulnerability heatmapping,
 and composite risk scoring.
+
+**Upstream projects:**
+- [neo4j/neo4j-python-driver](https://github.com/neo4j/neo4j-python-driver) — Official Neo4j Python driver
+- [visjs/vis-network](https://github.com/visjs/vis-network) — Interactive network graph rendering
+- [pallets/flask](https://github.com/pallets/flask) — Python web framework
+
+**Security data sources:**
+- CVE data from [NVD](https://nvd.nist.gov/) (real CVE IDs and CVSS scores)
+- Network topology inspired by [NIST SP 800-82](https://csrc.nist.gov/pubs/sp/800/82/r3/final) (ICS security guide)
+- Attack path methodology based on [MITRE ATT&CK for ICS](https://attack.mitre.org/techniques/ics/)
 
 ```bash
 cd neo4j-compat-gallery/app4-network-security
@@ -153,9 +177,9 @@ Every feature below was exercised by at least one gallery app during testing.
 
 | Feature | Status | Tested By |
 |---------|--------|-----------|
-| Bolt v4.4 handshake | PASS | All 4 apps |
-| PackStream encoding | PASS | All 4 apps |
-| `auth=None` connections | PASS | All 4 apps |
+| Bolt v4.4 handshake | PASS | All 3 apps |
+| PackStream encoding | PASS | All 3 apps |
+| `auth=None` connections | PASS | All 3 apps |
 | CREATE nodes & edges | PASS | Data loaders |
 | MATCH with WHERE filters | PASS | All query endpoints |
 | MERGE (upsert) | PASS | CVE loader |
@@ -165,9 +189,8 @@ Every feature below was exercised by at least one gallery app during testing.
 | Parameterized queries (`$param`) | PASS | CVE detail, analyzers |
 | ORDER BY / LIMIT / SKIP | PASS | CVE listing, top vulns |
 | String functions (CONTAINS, etc.) | PASS | Search features |
-| Python neo4j driver v6.1.0 | PASS | Apps 3 & 4 |
-| JavaScript neo4j-driver | PASS | App 2 (neovis.js) |
-| Docker cross-container Bolt | PASS | App 1 (Neodash) |
+| [Python neo4j driver](https://github.com/neo4j/neo4j-python-driver) v6.1.0 | PASS | Apps 2 & 3 |
+| [JavaScript neo4j-driver](https://github.com/neo4j/neo4j-javascript-driver) | PASS | App 1 (neovis.js) |
 
 ## Architecture
 
