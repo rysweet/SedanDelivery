@@ -25,15 +25,32 @@
 
 ## Skipped Tests (1)
 
-### Python Driver Limitation (1 skip)
+### Python Driver Limitation (1 skip) — Accepted as architectural limit
+
 - `test_should_echo_temporal_type` (1 subtest) -- Python's pytz library cannot
   distinguish between `+00:00` (fixed offset) and `UTC` (named timezone). The
   driver skips this subtest with: "timezone library cannot tell the difference
   between named UTC and 0s offset timezone"
 
-This is a driver-side limitation in the Python neo4j driver's test code. The
-server correctly handles both UTC representations; the skip occurs because the
-driver's test framework cannot verify the round-trip for offset-based UTC.
+**Root cause analysis (Issue #334, Step 3):**
+
+The server correctly distinguishes these two representations using different
+Bolt protocol tags:
+
+| Input                 | Bolt Tag | Field 3          | Notes                |
+|-----------------------|----------|------------------|----------------------|
+| `UTC` (named tz)     | `0x69`   | String("UTC")    | TAG_DATETIME_ZONE_ID_UTC |
+| `+00:00` (fixed)     | `0x49`   | Int(0)           | TAG_DATETIME_ZONE_OFFSET_UTC |
+
+The skip occurs because `pytz.timezone("UTC")` and `pytz.FixedOffset(0)` are
+treated as interchangeable by the Python driver's test assertion. The Python
+`zoneinfo` module (3.9+) does distinguish them, but the neo4j driver's testkit
+uses `pytz` internally.
+
+**Decision**: Accept 117/118 as the correct result (Option C). Changing the
+server's encoding to work around pytz would violate the Bolt protocol spec.
+The server sends correct, distinguishable structures — the limitation is in the
+test harness, not in the protocol implementation.
 
 ## What Works
 

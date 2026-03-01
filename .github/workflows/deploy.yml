@@ -181,6 +181,7 @@ jobs:
 
     outputs:
       redis-fqdn: ${{ steps.outputs.outputs.redis_fqdn }}
+      bolt-fqdn: ${{ steps.outputs.outputs.bolt_fqdn }}
 
     steps:
       - name: Checkout code
@@ -215,6 +216,26 @@ jobs:
         run: |
           RG="${{ needs.determine-environment.outputs.resource-group }}"
           ENV_NAME="${{ needs.determine-environment.outputs.env-name }}"
+          CAE_NAME="sd2-${ENV_NAME}-cae"
+
+          # If CAE exists without a custom VNet, delete it so Bicep can recreate
+          # with the VNet configuration (VNet is immutable on existing CAEs).
+          EXISTING_SUBNET=$(az containerapp env show \
+            --name "${CAE_NAME}" --resource-group "${RG}" \
+            --query "properties.vnetConfiguration.infrastructureSubnetId" \
+            -o tsv 2>/dev/null || echo "")
+          if az containerapp env show --name "${CAE_NAME}" --resource-group "${RG}" >/dev/null 2>&1; then
+            if [[ -z "${EXISTING_SUBNET}" || "${EXISTING_SUBNET}" == "None" ]]; then
+              echo "⚠️  Existing CAE has no VNet — deleting for VNet migration..."
+              # Delete container apps first (required before deleting environment)
+              for CA in $(az containerapp list --resource-group "${RG}" --query "[].name" -o tsv 2>/dev/null); do
+                echo "   Deleting container app: ${CA}"
+                az containerapp delete --name "${CA}" --resource-group "${RG}" --yes --output none 2>/dev/null || true
+              done
+              az containerapp env delete --name "${CAE_NAME}" --resource-group "${RG}" --yes --output none 2>/dev/null || true
+              echo "   Old CAE deleted — Bicep will recreate with VNet"
+            fi
+          fi
 
           echo "🔧 Provisioning ACR + Container Apps Environment in ${RG}..."
           DEPLOYMENT_OUTPUT=$(az deployment group create \
@@ -415,7 +436,7 @@ jobs:
               --memory 1Gi \
               --min-replicas 1 \
               --max-replicas 1 \
-              --ingress internal \
+              --ingress external \
               --target-port 6379 \
               --transport tcp \
               --exposed-port 6379 \
@@ -494,6 +515,19 @@ jobs:
             fi
             sleep 10
           done
+
+      - name: Add Bolt port 7687 to container app ingress
+        run: |
+          RG="${{ needs.determine-environment.outputs.resource-group }}"
+          CA_NAME="${{ steps.deploy-app.outputs.ca_name }}"
+          SUB_ID="${{ env.AZURE_SUBSCRIPTION_ID }}"
+
+          echo "🔌 Adding Bolt port 7687 via additionalPortMappings..."
+          az rest --method PATCH \
+            --url "https://management.azure.com/subscriptions/${SUB_ID}/resourceGroups/${RG}/providers/Microsoft.App/containerApps/${CA_NAME}?api-version=2024-03-01" \
+            --body '{"properties":{"configuration":{"ingress":{"additionalPortMappings":[{"external":true,"targetPort":7687,"exposedPort":7687}]}}}}' \
+            --output none
+          echo "✅ Bolt port 7687 exposed externally"
 
       - name: Deploy sedandelivery-fabric-sync sidecar Container App
         id: deploy-sync
@@ -615,8 +649,10 @@ jobs:
             --output tsv 2>/dev/null || echo "")
 
           echo "redis_fqdn=${FQDN}" >> "$GITHUB_OUTPUT"
-          echo "✅ SedanDelivery Redis internal FQDN: ${FQDN}"
-          echo "   (Accessible on port 6379 within the Container Apps Environment)"
+          echo "bolt_fqdn=${FQDN}" >> "$GITHUB_OUTPUT"
+          echo "✅ SedanDelivery external FQDN: ${FQDN}"
+          echo "   Redis: port 6379 (external + internal)"
+          echo "   Bolt:  port 7687 (external + internal)"
 
       - name: Post deployment comment to PR
         if: github.event_name == 'pull_request'
@@ -636,18 +672,21 @@ jobs:
             | Environment | \`${envName}\` |
             | Resource Group | \`${rg}\` |
             | Container App | \`${caName}\` |
-            | Redis FQDN (internal) | \`${fqdn}\` |
+            | FQDN | \`${fqdn}\` |
+            | Redis | \`${fqdn}:6379\` (external TCP) |
+            | Bolt | \`${fqdn}:7687\` (external TCP) |
             | Image Tag | \`${imageTag}\` |
 
-            **Connect from another Container App in the same environment:**
-            \`\`\`
-            HOST=${fqdn}  PORT=6379
-            \`\`\`
-
-            **Verify with redis-cli from a test container in the same CAE:**
+            **Connect via Redis:**
             \`\`\`bash
             redis-cli -h ${fqdn} -p 6379 PING
             redis-cli -h ${fqdn} -p 6379 MODULE LIST
+            \`\`\`
+
+            **Connect via Bolt (Neo4j driver):**
+            \`\`\`python
+            from neo4j import GraphDatabase
+            driver = GraphDatabase.driver("bolt://${fqdn}:7687", auth=None)
             \`\`\`
 
             To clean up: run **Undeploy** workflow with resource group \`${rg}\`.`;

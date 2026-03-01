@@ -1,6 +1,7 @@
 // SedanDelivery Infrastructure
-// Provisions: Storage Account + ACR + Container Apps Environment
+// Provisions: VNet + NSG + Storage Account + ACR + Container Apps Environment
 // The Container App is deployed separately after the image is built.
+// A custom VNet is required for external TCP ingress (Bolt port 7687).
 targetScope = 'resourceGroup'
 
 @description('Environment name (e.g. main, pr-42, feat-myfeature)')
@@ -20,6 +21,8 @@ var prefix = 'sd2'
 var acrName = take('sd2${take(replace(environmentName, '-', ''), 5)}${uniqueString(environmentName)}acr', 50)
 var caeName = '${prefix}-${environmentName}-cae'
 var logAnalyticsName = '${prefix}-${environmentName}-logs'
+var vnetName = '${prefix}-${environmentName}-vnet'
+var nsgName = '${prefix}-${environmentName}-cae-nsg'
 // Storage account names: 3-24 chars, lowercase alphanumeric only.
 // uniqueString() ensures global uniqueness (Issue #69).
 var storageAccountName = take('sd2${take(replace(environmentName, '-', ''), 7)}${uniqueString(environmentName)}', 24)
@@ -94,11 +97,83 @@ resource valkeyFileShare 'Microsoft.Storage/storageAccounts/fileServices/shares@
   }
 }
 
+// ── NSG for Container Apps subnet ────────────────────────────────────────────
+resource nsg 'Microsoft.Network/networkSecurityGroups@2023-04-01' = {
+  name: nsgName
+  location: location
+  properties: {
+    securityRules: [
+      {
+        name: 'AllowRedis'
+        properties: {
+          protocol: 'Tcp'
+          sourcePortRange: '*'
+          destinationPortRange: '6379'
+          sourceAddressPrefix: '*'
+          destinationAddressPrefix: '*'
+          access: 'Allow'
+          priority: 100
+          direction: 'Inbound'
+        }
+      }
+      {
+        name: 'AllowBolt'
+        properties: {
+          protocol: 'Tcp'
+          sourcePortRange: '*'
+          destinationPortRange: '7687'
+          sourceAddressPrefix: '*'
+          destinationAddressPrefix: '*'
+          access: 'Allow'
+          priority: 110
+          direction: 'Inbound'
+        }
+      }
+    ]
+  }
+}
+
+// ── VNet for Container Apps (required for external TCP ingress) ───────────────
+resource vnet 'Microsoft.Network/virtualNetworks@2023-04-01' = {
+  name: vnetName
+  location: location
+  properties: {
+    addressSpace: {
+      addressPrefixes: [
+        '10.0.0.0/16'
+      ]
+    }
+    subnets: [
+      {
+        name: 'container-apps'
+        properties: {
+          addressPrefix: '10.0.0.0/23'
+          networkSecurityGroup: {
+            id: nsg.id
+          }
+          delegations: [
+            {
+              name: 'Microsoft.App.environments'
+              properties: {
+                serviceName: 'Microsoft.App/environments'
+              }
+            }
+          ]
+        }
+      }
+    ]
+  }
+}
+
 // ── Container Apps Environment ─────────────────────────────────────────────────
 resource cae 'Microsoft.App/managedEnvironments@2024-03-01' = {
   name: caeName
   location: location
   properties: {
+    vnetConfiguration: {
+      internal: false
+      infrastructureSubnetId: vnet.properties.subnets[0].id
+    }
     appLogsConfiguration: {
       destination: 'log-analytics'
       logAnalyticsConfiguration: {
@@ -144,6 +219,7 @@ output acrLoginServer string = acr.properties.loginServer
 output acrName string = acr.name
 output caeName string = cae.name
 output caeId string = cae.id
+output vnetName string = vnet.name
 output storageAccountName string = storageAccount.name
 output fileShareName string = 'valkey-data'
 // Azure Cache resource name only — keys are retrieved at deploy time via
