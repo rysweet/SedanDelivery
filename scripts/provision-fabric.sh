@@ -132,7 +132,9 @@ fi
 # -- Find or create Graph Database -----------------------------------------
 GDB_NAME="sedangraph"
 echo "Looking for Graph Database '${GDB_NAME}'..."
-GDB_ID=$(curl -s -H "$AUTH" "${FABRIC_API}/workspaces/${WORKSPACE_ID}/items?type=GraphQLApi" \
+# Use type=GraphDatabase (Fabric Graph Database with Cypher/GQL support).
+# Note: GraphQLApi is a different item type (GraphQL endpoint, not Cypher).
+GDB_ID=$(curl -s -H "$AUTH" "${FABRIC_API}/workspaces/${WORKSPACE_ID}/items?type=GraphDatabase" \
   | python3 -c "
 import json, sys
 data = json.load(sys.stdin)
@@ -144,14 +146,33 @@ print('')
 " 2>/dev/null || echo "")
 
 if [[ -z "$GDB_ID" ]]; then
-  echo "Creating Graph Database '${GDB_NAME}'..."
-  GDB_ID=$(curl -s -X POST -H "$AUTH" -H "Content-Type: application/json" \
+  # Check for stale GraphQLApi item with the same name (created by older scripts)
+  OLD_ID=$(curl -s -H "$AUTH" "${FABRIC_API}/workspaces/${WORKSPACE_ID}/items?type=GraphQLApi" \
+    | python3 -c "
+import json, sys
+data = json.load(sys.stdin)
+for item in data.get('value', []):
+    if item['displayName'] == '${GDB_NAME}':
+        print(item['id'])
+        sys.exit(0)
+print('')
+" 2>/dev/null || echo "")
+  if [[ -n "$OLD_ID" ]]; then
+    echo "Found stale GraphQLApi item '${GDB_NAME}' (${OLD_ID}) — deleting to recreate as GraphDatabase..."
+    curl -s -X DELETE -H "$AUTH" "${FABRIC_API}/workspaces/${WORKSPACE_ID}/items/${OLD_ID}" >/dev/null 2>&1 || true
+  fi
+
+  echo "Creating Graph Database '${GDB_NAME}' (type=GraphDatabase)..."
+  CREATE_RESPONSE=$(curl -s -w "\n%{http_code}" -X POST -H "$AUTH" -H "Content-Type: application/json" \
     "${FABRIC_API}/workspaces/${WORKSPACE_ID}/items" \
-    -d "{\"displayName\": \"${GDB_NAME}\", \"type\": \"GraphQLApi\"}" \
-    | python3 -c "import json,sys; print(json.load(sys.stdin).get('id',''))" 2>/dev/null || echo "")
+    -d "{\"displayName\": \"${GDB_NAME}\", \"type\": \"GraphDatabase\"}")
+  CREATE_HTTP=$(echo "$CREATE_RESPONSE" | tail -1)
+  CREATE_BODY=$(echo "$CREATE_RESPONSE" | head -n -1)
+  GDB_ID=$(echo "$CREATE_BODY" | python3 -c "import json,sys; print(json.load(sys.stdin).get('id',''))" 2>/dev/null || echo "")
 
   if [[ -z "$GDB_ID" ]]; then
-    echo "::warning::Could not create Graph Database — Fabric capacity may not be provisioned"
+    echo "::warning::Could not create Graph Database (HTTP ${CREATE_HTTP})"
+    echo "Response: ${CREATE_BODY}"
     echo "FABRIC_ENDPOINT="
     exit 0
   fi
