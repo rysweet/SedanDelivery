@@ -387,53 +387,9 @@ jobs:
             ENV_VAR_ARGS="${ENV_VAR_ARGS} GQL_FABRIC_CHANGELOG=1"
           fi
 
-          # Check if container app already exists
-          if az containerapp show --name "${CA_NAME}" --resource-group "${RG}" >/dev/null 2>&1; then
-            echo "🔄 Updating existing container app — re-applying env vars and image (Issue #68)..."
-            # Set secrets separately (--secrets is only valid on create, not update)
-            az containerapp secret set \
-              --name "${CA_NAME}" \
-              --resource-group "${RG}" \
-              --secrets ${SECRETS_ARGS} \
-              --output none 2>/dev/null || true
-            # Ensure managed identity is enabled for registry auth (Issue #67)
-            az containerapp identity assign \
-              --name "${CA_NAME}" \
-              --resource-group "${RG}" \
-              --system-assigned \
-              --output none 2>/dev/null || true
-            az containerapp registry set \
-              --name "${CA_NAME}" \
-              --resource-group "${RG}" \
-              --server "${ACR_SERVER}" \
-              --identity system \
-              --output none
-            # Assign AcrPull BEFORE image update so the new tag can be pulled
-            UPDATE_PRINCIPAL_ID=$(az containerapp show \
-              --name "${CA_NAME}" \
-              --resource-group "${RG}" \
-              --query "identity.principalId" \
-              -o tsv 2>/dev/null || echo "")
-            if [[ -n "${UPDATE_PRINCIPAL_ID}" && "${UPDATE_PRINCIPAL_ID}" != "None" ]]; then
-              ACR_RESOURCE_ID=$(az acr show --name "${ACR_NAME}" --query id -o tsv)
-              az role assignment create \
-                --assignee-object-id "${UPDATE_PRINCIPAL_ID}" \
-                --assignee-principal-type ServicePrincipal \
-                --role "AcrPull" \
-                --scope "${ACR_RESOURCE_ID}" \
-                --output none 2>/dev/null || true
-              echo "   AcrPull role verified for ${UPDATE_PRINCIPAL_ID}"
-              # Allow role propagation
-              sleep 10
-            fi
-            az containerapp update \
-              --name "${CA_NAME}" \
-              --resource-group "${RG}" \
-              --image "${IMAGE}" \
-              --set-env-vars ${ENV_VAR_ARGS} \
-              --output none
-          else
-            echo "🆕 Creating new container app..."
+          # Helper: create container app from scratch (used for new deploys and recovery)
+          create_container_app() {
+            echo "🆕 Creating container app ${CA_NAME}..."
             az containerapp create \
               --name "${CA_NAME}" \
               --resource-group "${RG}" \
@@ -454,6 +410,33 @@ jobs:
               --env-vars ${ENV_VAR_ARGS} \
               ${VOLUME_ARGS} \
               --output none
+          }
+
+          # Check if container app already exists
+          if az containerapp show --name "${CA_NAME}" --resource-group "${RG}" >/dev/null 2>&1; then
+            echo "🔄 Updating existing container app (Issue #68)..."
+            # Try update; if it fails (broken revision, registry auth issues),
+            # delete and recreate for idempotent recovery.
+            UPDATE_OK=true
+            az containerapp secret set \
+              --name "${CA_NAME}" \
+              --resource-group "${RG}" \
+              --secrets ${SECRETS_ARGS} \
+              --output none 2>/dev/null || true
+            az containerapp update \
+              --name "${CA_NAME}" \
+              --resource-group "${RG}" \
+              --image "${IMAGE}" \
+              --set-env-vars ${ENV_VAR_ARGS} \
+              --output none 2>&1 || UPDATE_OK=false
+
+            if [[ "${UPDATE_OK}" == "false" ]]; then
+              echo "⚠️  Update failed — deleting and recreating for recovery..."
+              az containerapp delete --name "${CA_NAME}" --resource-group "${RG}" --yes --output none 2>/dev/null || true
+              create_container_app
+            fi
+          else
+            create_container_app
           fi
 
           # Ensure AcrPull role is assigned to the Container App's managed identity (Issue #67).
