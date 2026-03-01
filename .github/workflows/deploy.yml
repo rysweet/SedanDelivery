@@ -226,6 +226,10 @@ jobs:
 
           ACR_SERVER=$(echo "$DEPLOYMENT_OUTPUT" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d['properties']['outputs']['acrLoginServer']['value'])")
           ACR_NAME=$(echo "$DEPLOYMENT_OUTPUT" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d['properties']['outputs']['acrName']['value'])")
+
+          # Enable ACR admin credentials for Container App registry auth
+          # (Contributor role cannot create role assignments needed for managed identity)
+          az acr update --name "${ACR_NAME}" --admin-enabled true --output none
           CAE_NAME=$(echo "$DEPLOYMENT_OUTPUT" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d['properties']['outputs']['caeName']['value'])")
 
           # Azure Cache resource name only — no secrets in step outputs (Issue #58)
@@ -388,6 +392,11 @@ jobs:
           fi
 
           # Helper: create container app from scratch (used for new deploys and recovery)
+          # Get ACR admin credentials for registry auth
+          ACR_ADMIN_USER=$(az acr credential show --name "${ACR_NAME}" --query username -o tsv)
+          ACR_ADMIN_PASS=$(az acr credential show --name "${ACR_NAME}" --query "passwords[0].value" -o tsv)
+          echo "::add-mask::${ACR_ADMIN_PASS}"
+
           create_container_app() {
             echo "🆕 Creating container app ${CA_NAME}..."
             az containerapp create \
@@ -396,8 +405,8 @@ jobs:
               --environment "${CAE_NAME}" \
               --image "${IMAGE}" \
               --registry-server "${ACR_SERVER}" \
-              --registry-identity system \
-              --system-assigned \
+              --registry-username "${ACR_ADMIN_USER}" \
+              --registry-password "${ACR_ADMIN_PASS}" \
               --cpu 0.5 \
               --memory 1Gi \
               --min-replicas 1 \
@@ -439,33 +448,7 @@ jobs:
             create_container_app
           fi
 
-          # Ensure AcrPull role is assigned to the Container App's managed identity (Issue #67).
-          # On create, --registry-identity system handles this automatically; this is a
-          # safety net for updates and ensures the Bicep role assignment stays in sync.
-          CA_PRINCIPAL_ID=$(az containerapp show \
-            --name "${CA_NAME}" \
-            --resource-group "${RG}" \
-            --query "identity.principalId" \
-            -o tsv 2>/dev/null || echo "")
-          if [[ -n "${CA_PRINCIPAL_ID}" && "${CA_PRINCIPAL_ID}" != "None" ]]; then
-            ACR_RESOURCE_ID=$(az acr show --name "${ACR_NAME}" --query id -o tsv)
-            az role assignment create \
-              --assignee-object-id "${CA_PRINCIPAL_ID}" \
-              --assignee-principal-type ServicePrincipal \
-              --role "AcrPull" \
-              --scope "${ACR_RESOURCE_ID}" \
-              --output none 2>/dev/null || true
-            echo "   AcrPull role assigned to managed identity ${CA_PRINCIPAL_ID}"
-
-            # Re-deploy Bicep with the Container App principal ID so the role assignment
-            # is also captured declaratively in the infrastructure template (Issue #67).
-            az deployment group create \
-              --resource-group "${RG}" \
-              --template-file infra/main.bicep \
-              --parameters environmentName="${ENV_NAME}" containerAppPrincipalId="${CA_PRINCIPAL_ID}" \
-              --name "sd2-acr-role-$(date +%s)" \
-              --output none
-          fi
+          # ACR auth uses admin credentials (Contributor SP cannot assign roles for managed identity).
 
           echo "ca_name=${CA_NAME}" >> "$GITHUB_OUTPUT"
           echo "✅ Container App deployed: ${CA_NAME}"
