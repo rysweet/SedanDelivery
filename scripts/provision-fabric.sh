@@ -4,13 +4,19 @@
 # Usage: ./provision-fabric.sh <env-name> <tenant-id> <client-id> <client-secret>
 set -euo pipefail
 
-ENV_NAME="${1:?Usage: provision-fabric.sh <env-name> <tenant-id> <client-id> <client-secret>}"
+ENV_NAME="${1:?Usage: provision-fabric.sh <env-name> <tenant-id> <client-id> <client-secret> [capacity-id]}"
 TENANT_ID="${2:?}"
 CLIENT_ID="${3:?}"
 CLIENT_SECRET="${4:?}"
+CAPACITY_ID="${5:-}"  # Optional: Fabric capacity ID for workspace creation
 
 FABRIC_API="https://api.fabric.microsoft.com/v1"
-WORKSPACE_NAME="SedanDelivery-${ENV_NAME}"
+WORKSPACE_NAME="SD2-${ENV_NAME}"
+
+# Auto-detect capacity if not provided
+if [[ -z "$CAPACITY_ID" ]]; then
+  echo "No capacity ID provided — will auto-detect first available..."
+fi
 
 # -- Get access token ------------------------------------------------------
 TOKEN=$(curl -s -X POST "https://login.microsoftonline.com/${TENANT_ID}/oauth2/v2.0/token" \
@@ -52,10 +58,36 @@ print('')
 fi
 
 if [[ -z "$WORKSPACE_ID" ]]; then
+  # Auto-detect capacity if not provided
+  if [[ -z "$CAPACITY_ID" ]]; then
+    CAPACITY_ID=$(curl -s -H "$AUTH" "${FABRIC_API}/capacities" \
+      | python3 -c "
+import json, sys
+caps = json.load(sys.stdin).get('value', [])
+active = [c for c in caps if c.get('state') == 'Active' and c.get('sku', '').startswith('F')]
+if active:
+    print(active[0]['id'])
+else:
+    # Fall back to any active capacity
+    for c in caps:
+        if c.get('state') == 'Active':
+            print(c['id'])
+            break
+" 2>/dev/null || echo "")
+    if [[ -n "$CAPACITY_ID" ]]; then
+      echo "Auto-detected capacity: ${CAPACITY_ID}"
+    fi
+  fi
+
+  CAPACITY_JSON=""
+  if [[ -n "$CAPACITY_ID" ]]; then
+    CAPACITY_JSON=", \"capacityId\": \"${CAPACITY_ID}\""
+  fi
+
   echo "Creating workspace '${WORKSPACE_NAME}'..."
   WORKSPACE_ID=$(curl -s -X POST -H "$AUTH" -H "Content-Type: application/json" \
     "${FABRIC_API}/workspaces" \
-    -d "{\"displayName\": \"${WORKSPACE_NAME}\"}" \
+    -d "{\"displayName\": \"${WORKSPACE_NAME}\"${CAPACITY_JSON}}" \
     | python3 -c "import json,sys; print(json.load(sys.stdin).get('id',''))")
 
   if [[ -z "$WORKSPACE_ID" ]]; then
