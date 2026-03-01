@@ -1,0 +1,241 @@
+{% extends "base.html" %}
+{% set active_page = "attack_paths" %}
+
+{% block title %}Attack Paths - Network Security Analyzer{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1>Attack Path Analysis</h1>
+    <p>Visualize potential attack vectors from the Internet to critical assets</p>
+</div>
+
+<!-- Controls -->
+<div class="card" style="margin-bottom: 1rem;">
+    <div style="display: flex; align-items: center; gap: 1rem;">
+        <label style="font-size: 0.85rem; color: var(--text-secondary);">Target Host:</label>
+        <select id="target-select">
+            <option value="">All Critical Hosts</option>
+            {% for host in critical_hosts %}
+            <option value="{{ host }}">{{ host }}</option>
+            {% endfor %}
+        </select>
+        <button onclick="highlightPaths()">Trace Attack Path</button>
+        <button onclick="resetGraph()" style="background: var(--bg-card); border-color: var(--border);">Reset</button>
+    </div>
+</div>
+
+<!-- Graph + Paths side by side -->
+<div class="grid-2" style="margin-bottom: 1rem;">
+    <div class="card" style="padding: 0;">
+        <div class="graph-container large" id="attack-graph" style="border: none;"></div>
+    </div>
+    <div>
+        <div class="card" style="margin-bottom: 1rem;">
+            <h2>Attack Paths from Internet</h2>
+            <div id="paths-list">
+                {% if paths %}
+                    {% for p in paths %}
+                    <div class="path-item">
+                        <div style="display: flex; justify-content: space-between; align-items: center;">
+                            <strong style="color: var(--accent-red);">Target: {{ p.target }}</strong>
+                            <span class="severity {% if p.hops <= 2 %}critical{% elif p.hops <= 4 %}high{% else %}medium{% endif %}">
+                                {{ p.hops }} hops
+                            </span>
+                        </div>
+                        <div class="path-chain">
+                            <span class="node" style="border-color: var(--accent-red);">Internet</span>
+                            {% for h in p.host_chain %}
+                            <span class="arrow">&rarr;</span>
+                            <span class="node">{{ h }}</span>
+                            {% endfor %}
+                        </div>
+                    </div>
+                    {% endfor %}
+                {% else %}
+                    <p style="color: var(--text-muted); font-size: 0.9rem;">No direct attack paths found from Internet to critical hosts.</p>
+                {% endif %}
+            </div>
+        </div>
+
+        <div class="card">
+            <h2>Lateral Movement Paths</h2>
+            <div style="max-height: 300px; overflow-y: auto;">
+                {% if lateral %}
+                    {% for l in lateral %}
+                    <div class="path-item">
+                        <div style="display: flex; justify-content: space-between; align-items: center;">
+                            <span style="font-size: 0.85rem;">
+                                <strong>{{ l.from_subnet }}</strong> &rarr; <strong>{{ l.to_subnet }}</strong>
+                            </span>
+                            {% if l.target_vulns %}
+                            <span class="severity critical">Vulnerable</span>
+                            {% endif %}
+                        </div>
+                        <div class="path-chain">
+                            <span class="node">{{ l.from_host }}</span>
+                            <span class="arrow">&rarr;</span>
+                            <span class="node">{{ l.to_host }}</span>
+                        </div>
+                        <div style="margin-top: 0.5rem; font-size: 0.75rem; color: var(--text-muted);">
+                            Via: {{ l.via_services | join(', ') }}
+                            {% if l.target_vulns %}
+                            | CVEs: {{ l.target_vulns | join(', ') }}
+                            {% endif %}
+                        </div>
+                    </div>
+                    {% endfor %}
+                {% else %}
+                    <p style="color: var(--text-muted); font-size: 0.9rem;">No cross-subnet lateral movement detected.</p>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    var graphData = {{ graph_json | safe }};
+    var allPaths = {{ paths | tojson }};
+
+    var subnetColors = {
+        'DMZ': '#f97316', 'Corporate': '#3b82f6', 'Server': '#8b5cf6',
+        'Management': '#06b6d4', 'OT': '#ef4444', 'external': '#64748b', 'firewall': '#eab308'
+    };
+
+    function getNodeColor(node) {
+        if (node.type === 'network') return '#64748b';
+        if (node.type === 'firewall') return '#eab308';
+        return subnetColors[node.group] || '#475569';
+    }
+
+    function getNodeShape(node) {
+        if (node.type === 'network') return 'diamond';
+        if (node.type === 'firewall') return 'triangle';
+        if (node.type === 'subnet') return 'box';
+        if (node.critical) return 'star';
+        return 'dot';
+    }
+
+    // Build vis nodes/edges
+    var visNodes = [];
+    var visEdges = [];
+    var nodeDataMap = {};
+
+    graphData.nodes.forEach(function(n) {
+        nodeDataMap[n.id] = n;
+        visNodes.push({
+            id: n.id,
+            label: n.label,
+            color: { background: getNodeColor(n), border: getNodeColor(n) },
+            shape: getNodeShape(n),
+            size: n.type === 'host' ? (n.critical ? 18 : 12) : 25,
+            font: { color: '#e2e8f0', size: 10 },
+        });
+    });
+
+    graphData.edges.forEach(function(e) {
+        var edgeConfig = {
+            from: e.from, to: e.to,
+            color: { color: '#1e293b' },
+            width: 1,
+        };
+        if (e.type === 'can_reach') {
+            edgeConfig.color = { color: e.reach_type === 'external' ? '#ef4444' : '#1e3a5f' };
+            edgeConfig.arrows = 'to';
+            edgeConfig.width = e.reach_type === 'external' ? 2 : 1;
+        }
+        if (e.type === 'denies') {
+            edgeConfig.color = { color: '#ef4444' };
+            edgeConfig.dashes = [8, 4];
+        }
+        visEdges.push(edgeConfig);
+    });
+
+    var nodesDS = new vis.DataSet(visNodes);
+    var edgesDS = new vis.DataSet(visEdges);
+
+    var container = document.getElementById('attack-graph');
+    var network = new vis.Network(container, { nodes: nodesDS, edges: edgesDS }, {
+        physics: {
+            solver: 'forceAtlas2Based',
+            forceAtlas2Based: { gravitationalConstant: -60, springLength: 120 },
+            stabilization: { iterations: 200 }
+        },
+        interaction: { hover: true, zoomView: true },
+    });
+
+    function highlightPaths() {
+        resetGraph();
+        var target = document.getElementById('target-select').value;
+
+        // Find relevant paths
+        var relevantPaths = allPaths.filter(function(p) {
+            return !target || p.target === target;
+        });
+
+        if (relevantPaths.length === 0) return;
+
+        // Dim all nodes
+        visNodes.forEach(function(n) {
+            nodesDS.update({ id: n.id, opacity: 0.2 });
+        });
+
+        // Highlight path nodes
+        var highlightNodes = new Set(['Internet']);
+        relevantPaths.forEach(function(p) {
+            highlightNodes.add(p.target);
+            if (p.host_chain) {
+                p.host_chain.forEach(function(h) { highlightNodes.add(h); });
+            }
+        });
+
+        highlightNodes.forEach(function(nodeId) {
+            nodesDS.update({
+                id: nodeId,
+                opacity: 1.0,
+                borderWidth: 3,
+                color: { border: '#ef4444' },
+                size: 25,
+            });
+        });
+
+        // Add animated attack edges
+        relevantPaths.forEach(function(p) {
+            var chain = ['Internet'].concat(p.host_chain || []);
+            for (var i = 0; i < chain.length - 1; i++) {
+                edgesDS.add({
+                    id: 'attack_' + i + '_' + p.target,
+                    from: chain[i],
+                    to: chain[i + 1],
+                    color: { color: '#ef4444' },
+                    width: 4,
+                    arrows: 'to',
+                    dashes: [10, 5],
+                    smooth: { type: 'curvedCW', roundness: 0.2 },
+                });
+            }
+        });
+    }
+
+    function resetGraph() {
+        // Remove attack edges
+        var toRemove = edgesDS.getIds().filter(function(id) {
+            return typeof id === 'string' && id.startsWith('attack_');
+        });
+        edgesDS.remove(toRemove);
+
+        // Restore node appearance
+        visNodes.forEach(function(n) {
+            var orig = nodeDataMap[n.id] || {};
+            nodesDS.update({
+                id: n.id,
+                opacity: 1.0,
+                borderWidth: 1,
+                color: { background: getNodeColor(orig), border: getNodeColor(orig) },
+                size: orig.type === 'host' ? (orig.critical ? 18 : 12) : 25,
+            });
+        });
+    }
+</script>
+{% endblock %}

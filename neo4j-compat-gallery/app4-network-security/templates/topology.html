@@ -1,0 +1,218 @@
+{% extends "base.html" %}
+{% set active_page = "topology" %}
+
+{% block title %}Network Topology - Network Security Analyzer{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1>Network Topology</h1>
+    <p>Interactive enterprise network graph &mdash; click any node to inspect details</p>
+</div>
+
+<div class="grid-4" style="margin-bottom: 1rem;">
+    <div style="display: flex; align-items: center; gap: 0.5rem;">
+        <span style="width: 12px; height: 12px; border-radius: 50%; background: #f97316; display: inline-block;"></span>
+        <span style="font-size: 0.8rem; color: var(--text-secondary);">DMZ</span>
+    </div>
+    <div style="display: flex; align-items: center; gap: 0.5rem;">
+        <span style="width: 12px; height: 12px; border-radius: 50%; background: #3b82f6; display: inline-block;"></span>
+        <span style="font-size: 0.8rem; color: var(--text-secondary);">Corporate</span>
+    </div>
+    <div style="display: flex; align-items: center; gap: 0.5rem;">
+        <span style="width: 12px; height: 12px; border-radius: 50%; background: #8b5cf6; display: inline-block;"></span>
+        <span style="font-size: 0.8rem; color: var(--text-secondary);">Server</span>
+    </div>
+    <div style="display: flex; align-items: center; gap: 0.5rem;">
+        <span style="width: 12px; height: 12px; border-radius: 50%; background: #06b6d4; display: inline-block;"></span>
+        <span style="font-size: 0.8rem; color: var(--text-secondary);">Management</span>
+    </div>
+</div>
+<div class="grid-4" style="margin-bottom: 1rem;">
+    <div style="display: flex; align-items: center; gap: 0.5rem;">
+        <span style="width: 12px; height: 12px; border-radius: 50%; background: #ef4444; display: inline-block;"></span>
+        <span style="font-size: 0.8rem; color: var(--text-secondary);">OT / SCADA</span>
+    </div>
+    <div style="display: flex; align-items: center; gap: 0.5rem;">
+        <span style="width: 0; height: 0; border-left: 7px solid transparent; border-right: 7px solid transparent; border-bottom: 12px solid #eab308; display: inline-block;"></span>
+        <span style="font-size: 0.8rem; color: var(--text-secondary);">Firewall</span>
+    </div>
+    <div style="display: flex; align-items: center; gap: 0.5rem;">
+        <span style="width: 12px; height: 12px; background: #64748b; transform: rotate(45deg); display: inline-block;"></span>
+        <span style="font-size: 0.8rem; color: var(--text-secondary);">Internet</span>
+    </div>
+    <div style="display: flex; align-items: center; gap: 0.5rem;">
+        <span style="width: 14px; height: 14px; border-radius: 50%; border: 3px solid #ef4444; display: inline-block;"></span>
+        <span style="font-size: 0.8rem; color: var(--text-secondary);">Has Vulnerabilities</span>
+    </div>
+</div>
+
+<div class="graph-container large" id="topology-graph"></div>
+
+<!-- Detail panel -->
+<div id="detail-panel" class="card" style="margin-top: 1rem; display: none;">
+    <h2>Node Details</h2>
+    <div id="detail-content" style="font-size: 0.9rem;"></div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    var graphData = {{ graph_json | safe }};
+
+    var subnetColors = {
+        'DMZ': '#f97316',
+        'Corporate': '#3b82f6',
+        'Server': '#8b5cf6',
+        'Management': '#06b6d4',
+        'OT': '#ef4444',
+        'external': '#64748b',
+        'firewall': '#eab308'
+    };
+
+    function getNodeColor(node) {
+        if (node.type === 'network') return '#64748b';
+        if (node.type === 'firewall') return node.action === 'deny' ? '#ef4444' : '#eab308';
+        if (node.type === 'subnet') return subnetColors[node.group] || '#475569';
+        return subnetColors[node.group] || '#475569';
+    }
+
+    function getNodeShape(node) {
+        if (node.type === 'network') return 'diamond';
+        if (node.type === 'firewall') return 'triangle';
+        if (node.type === 'subnet') return 'box';
+        if (node.critical) return 'star';
+        return 'dot';
+    }
+
+    function getNodeSize(node) {
+        if (node.type === 'subnet') return 30;
+        if (node.type === 'network') return 25;
+        if (node.type === 'firewall') return 15;
+        if (node.critical) return 20;
+        return 14;
+    }
+
+    var nodeMap = {};
+    graphData.nodes.forEach(function(n) { nodeMap[n.id] = n; });
+
+    var visNodes = graphData.nodes.map(function(n) {
+        var borderColor = getNodeColor(n);
+        if (n.type === 'host' && n.vuln_count > 0) {
+            borderColor = '#ef4444';
+        }
+        return {
+            id: n.id,
+            label: n.label,
+            color: {
+                background: getNodeColor(n),
+                border: borderColor,
+                highlight: { background: getNodeColor(n), border: '#ffffff' }
+            },
+            shape: getNodeShape(n),
+            size: getNodeSize(n),
+            font: { color: '#e2e8f0', size: n.type === 'host' ? 10 : 12 },
+            borderWidth: (n.type === 'host' && n.vuln_count > 0) ? 3 : 1,
+            title: n.type === 'host' ?
+                n.id + ' (' + (n.role || '') + ')\nOS: ' + (n.os || '') + '\nVulns: ' + (n.vuln_count || 0) :
+                n.label,
+        };
+    });
+
+    var visEdges = graphData.edges.map(function(e) {
+        if (e.type === 'in_subnet') {
+            return {
+                from: e.from, to: e.to,
+                color: { color: '#1e293b', opacity: 0.6 },
+                width: 1,
+            };
+        }
+        if (e.type === 'can_reach') {
+            return {
+                from: e.from, to: e.to,
+                color: { color: e.reach_type === 'external' ? '#ef4444' : '#2563eb' },
+                width: e.reach_type === 'external' ? 2 : 1,
+                arrows: 'to',
+                dashes: e.reach_type === 'external' ? [5, 5] : false,
+            };
+        }
+        if (e.type === 'filtered_by') {
+            return {
+                from: e.from, to: e.to,
+                color: { color: '#374151' },
+                width: 1, dashes: true,
+            };
+        }
+        if (e.type === 'allows') {
+            return {
+                from: e.from, to: e.to,
+                color: { color: '#10b981' },
+                width: 1, arrows: 'to',
+                label: e.label || '',
+                font: { color: '#64748b', size: 8 },
+            };
+        }
+        if (e.type === 'denies') {
+            return {
+                from: e.from, to: e.to,
+                color: { color: '#ef4444' },
+                width: 2, arrows: 'to',
+                label: 'DENY',
+                font: { color: '#ef4444', size: 9 },
+                dashes: [8, 4],
+            };
+        }
+        return { from: e.from, to: e.to, color: { color: '#334155' } };
+    });
+
+    var container = document.getElementById('topology-graph');
+    var network = new vis.Network(container, {
+        nodes: new vis.DataSet(visNodes),
+        edges: new vis.DataSet(visEdges)
+    }, {
+        physics: {
+            solver: 'forceAtlas2Based',
+            forceAtlas2Based: { gravitationalConstant: -80, springLength: 150 },
+            stabilization: { iterations: 200 }
+        },
+        interaction: { hover: true, tooltipDelay: 100, zoomView: true, dragView: true },
+        layout: { improvedLayout: true },
+    });
+
+    // Click to inspect node
+    network.on('click', function(params) {
+        if (params.nodes.length > 0) {
+            var nodeId = params.nodes[0];
+            var node = nodeMap[nodeId];
+            var panel = document.getElementById('detail-panel');
+            var content = document.getElementById('detail-content');
+
+            if (node) {
+                var html = '<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">';
+                if (node.type === 'host') {
+                    html += '<div><strong>Name:</strong> ' + node.id + '</div>';
+                    html += '<div><strong>IP:</strong> ' + (node.label.split('\n')[1] || '') + '</div>';
+                    html += '<div><strong>OS:</strong> ' + (node.os || 'N/A') + '</div>';
+                    html += '<div><strong>Role:</strong> ' + (node.role || 'N/A') + '</div>';
+                    html += '<div><strong>Subnet:</strong> ' + (node.group || 'N/A') + '</div>';
+                    html += '<div><strong>Critical:</strong> ' + (node.critical ? '<span style="color: var(--accent-red);">YES</span>' : 'No') + '</div>';
+                    html += '<div><strong>Vulnerabilities:</strong> ' + (node.vuln_count || 0) + '</div>';
+                } else if (node.type === 'subnet') {
+                    html += '<div><strong>Subnet:</strong> ' + node.id.replace('subnet_', '') + '</div>';
+                    html += '<div><strong>CIDR:</strong> ' + (node.label.split('\n')[1] || '') + '</div>';
+                    html += '<div><strong>Zone:</strong> ' + (node.zone || 'N/A') + '</div>';
+                    html += '<div><strong>Risk Level:</strong> ' + (node.risk || 'N/A') + '</div>';
+                } else if (node.type === 'firewall') {
+                    html += '<div><strong>Firewall:</strong> ' + node.id + '</div>';
+                    html += '<div><strong>Action:</strong> ' + (node.action || 'N/A') + '</div>';
+                } else {
+                    html += '<div><strong>Node:</strong> ' + node.id + '</div>';
+                    html += '<div><strong>Type:</strong> ' + node.type + '</div>';
+                }
+                html += '</div>';
+                content.innerHTML = html;
+                panel.style.display = 'block';
+            }
+        }
+    });
+</script>
+{% endblock %}

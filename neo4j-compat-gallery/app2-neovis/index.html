@@ -1,0 +1,965 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MITRE ATT&CK Threat Intelligence Dashboard — neovis.js + SedanDelivery</title>
+
+  <!-- vis-network for graph rendering -->
+  <link href="https://unpkg.com/vis-network@9.1.6/dist/dist/vis-network.min.css" rel="stylesheet" />
+  <script src="https://unpkg.com/vis-network@9.1.6/dist/vis-network.min.js"></script>
+
+  <!-- neovis.js — graph visualization backed by neo4j-driver -->
+  <script src="https://unpkg.com/neovis.js@2.1.0"></script>
+
+  <style>
+    /* ── Reset & Base ─────────────────────────────────────────── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg-primary:   #0d1117;
+      --bg-secondary: #161b22;
+      --bg-tertiary:  #1c2128;
+      --border:       #30363d;
+      --text-primary: #e6edf3;
+      --text-muted:   #8b949e;
+      --accent-red:    #f85149;
+      --accent-blue:   #58a6ff;
+      --accent-green:  #3fb950;
+      --accent-orange: #d29922;
+      --accent-purple: #bc8cff;
+      --accent-yellow: #e3b341;
+      --accent-cyan:   #39d2c0;
+      --accent-pink:   #f778ba;
+    }
+
+    body {
+      background: var(--bg-primary);
+      color: var(--text-primary);
+      font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    /* ── Header ───────────────────────────────────────────────── */
+    .header {
+      background: var(--bg-secondary);
+      border-bottom: 1px solid var(--border);
+      padding: 12px 24px;
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      flex-shrink: 0;
+    }
+
+    .header-logo {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .header-logo svg {
+      width: 28px;
+      height: 28px;
+    }
+
+    .header-title {
+      font-size: 16px;
+      font-weight: 600;
+      letter-spacing: 0.5px;
+    }
+
+    .header-subtitle {
+      font-size: 12px;
+      color: var(--text-muted);
+      margin-left: 4px;
+    }
+
+    .header-badge {
+      margin-left: auto;
+      background: var(--bg-tertiary);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 4px 12px;
+      font-size: 11px;
+      color: var(--accent-green);
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .header-badge .dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--accent-green);
+      animation: pulse 2s infinite;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.4; }
+    }
+
+    /* ── Tab Bar ──────────────────────────────────────────────── */
+    .tab-bar {
+      background: var(--bg-secondary);
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      padding: 0 24px;
+      gap: 0;
+      flex-shrink: 0;
+      overflow-x: auto;
+    }
+
+    .tab {
+      padding: 10px 20px;
+      font-size: 13px;
+      color: var(--text-muted);
+      cursor: pointer;
+      border-bottom: 2px solid transparent;
+      transition: all 0.2s;
+      white-space: nowrap;
+      user-select: none;
+    }
+
+    .tab:hover {
+      color: var(--text-primary);
+      background: var(--bg-tertiary);
+    }
+
+    .tab.active {
+      color: var(--accent-blue);
+      border-bottom-color: var(--accent-blue);
+    }
+
+    .tab .tab-icon {
+      margin-right: 6px;
+    }
+
+    /* ── Main Layout ──────────────────────────────────────────── */
+    .main {
+      flex: 1;
+      display: flex;
+      overflow: hidden;
+    }
+
+    /* ── Sidebar ──────────────────────────────────────────────── */
+    .sidebar {
+      width: 320px;
+      background: var(--bg-secondary);
+      border-right: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      flex-shrink: 0;
+      overflow: hidden;
+    }
+
+    .sidebar-section {
+      padding: 16px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .sidebar-section h3 {
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      color: var(--text-muted);
+      margin-bottom: 10px;
+    }
+
+    /* ── Legend ────────────────────────────────────────────────── */
+    .legend-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 6px;
+    }
+
+    .legend-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 12px;
+      padding: 4px 0;
+    }
+
+    .legend-dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+
+    /* ── Stats ─────────────────────────────────────────────────── */
+    .stats-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+    }
+
+    .stat-card {
+      background: var(--bg-tertiary);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 10px;
+      text-align: center;
+    }
+
+    .stat-value {
+      font-size: 20px;
+      font-weight: 700;
+      color: var(--accent-blue);
+    }
+
+    .stat-label {
+      font-size: 10px;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      margin-top: 2px;
+    }
+
+    /* ── Query Box ────────────────────────────────────────────── */
+    .query-section {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      padding: 16px;
+      min-height: 0;
+    }
+
+    .query-section h3 {
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      color: var(--text-muted);
+      margin-bottom: 10px;
+    }
+
+    .query-input {
+      width: 100%;
+      background: var(--bg-tertiary);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      color: var(--text-primary);
+      font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+      font-size: 12px;
+      padding: 10px;
+      resize: vertical;
+      min-height: 80px;
+      flex: 1;
+    }
+
+    .query-input:focus {
+      outline: none;
+      border-color: var(--accent-blue);
+      box-shadow: 0 0 0 2px rgba(88, 166, 255, 0.15);
+    }
+
+    .query-input::placeholder {
+      color: var(--text-muted);
+    }
+
+    .query-actions {
+      display: flex;
+      gap: 8px;
+      margin-top: 10px;
+    }
+
+    .btn {
+      padding: 6px 14px;
+      border-radius: 6px;
+      font-size: 12px;
+      font-weight: 500;
+      cursor: pointer;
+      border: 1px solid var(--border);
+      transition: all 0.15s;
+    }
+
+    .btn-primary {
+      background: var(--accent-blue);
+      color: #fff;
+      border-color: var(--accent-blue);
+    }
+
+    .btn-primary:hover {
+      background: #4c9aed;
+    }
+
+    .btn-secondary {
+      background: var(--bg-tertiary);
+      color: var(--text-primary);
+    }
+
+    .btn-secondary:hover {
+      background: var(--border);
+    }
+
+    /* ── Example Queries ──────────────────────────────────────── */
+    .example-queries {
+      margin-top: 10px;
+    }
+
+    .example-query {
+      font-size: 11px;
+      color: var(--accent-blue);
+      cursor: pointer;
+      padding: 3px 0;
+      display: block;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .example-query:hover {
+      color: var(--accent-cyan);
+      text-decoration: underline;
+    }
+
+    /* ── Visualization Area ───────────────────────────────────── */
+    .viz-container {
+      flex: 1;
+      position: relative;
+      min-width: 0;
+    }
+
+    #viz {
+      width: 100%;
+      height: 100%;
+      background: var(--bg-primary);
+    }
+
+    /* neovis puts a canvas inside the viz div */
+    #viz canvas {
+      width: 100% !important;
+      height: 100% !important;
+    }
+
+    .viz-overlay {
+      position: absolute;
+      top: 16px;
+      right: 16px;
+      display: flex;
+      gap: 8px;
+      z-index: 10;
+    }
+
+    .viz-btn {
+      background: var(--bg-secondary);
+      border: 1px solid var(--border);
+      color: var(--text-muted);
+      width: 32px;
+      height: 32px;
+      border-radius: 6px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      font-size: 16px;
+      transition: all 0.15s;
+    }
+
+    .viz-btn:hover {
+      color: var(--text-primary);
+      border-color: var(--accent-blue);
+    }
+
+    /* ── Loading Overlay ──────────────────────────────────────── */
+    .loading-overlay {
+      position: absolute;
+      inset: 0;
+      background: rgba(13, 17, 23, 0.85);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      z-index: 20;
+      transition: opacity 0.3s;
+    }
+
+    .loading-overlay.hidden {
+      opacity: 0;
+      pointer-events: none;
+    }
+
+    .spinner {
+      width: 40px;
+      height: 40px;
+      border: 3px solid var(--border);
+      border-top-color: var(--accent-blue);
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+
+    .loading-text {
+      margin-top: 12px;
+      font-size: 13px;
+      color: var(--text-muted);
+    }
+
+    /* ── Node Info Panel ──────────────────────────────────────── */
+    .node-info {
+      position: absolute;
+      bottom: 16px;
+      left: 16px;
+      background: var(--bg-secondary);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 14px;
+      max-width: 360px;
+      max-height: 240px;
+      overflow-y: auto;
+      z-index: 10;
+      font-size: 12px;
+      display: none;
+      box-shadow: 0 4px 24px rgba(0, 0, 0, 0.4);
+    }
+
+    .node-info.visible {
+      display: block;
+    }
+
+    .node-info-label {
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: var(--text-muted);
+      margin-bottom: 2px;
+    }
+
+    .node-info-name {
+      font-size: 15px;
+      font-weight: 600;
+      margin-bottom: 8px;
+    }
+
+    .node-info-prop {
+      display: flex;
+      gap: 8px;
+      padding: 2px 0;
+      border-bottom: 1px solid var(--bg-tertiary);
+    }
+
+    .node-info-prop .key {
+      color: var(--accent-blue);
+      flex-shrink: 0;
+      min-width: 80px;
+    }
+
+    .node-info-prop .val {
+      color: var(--text-primary);
+      word-break: break-word;
+    }
+
+    /* ── Error Toast ──────────────────────────────────────────── */
+    .toast {
+      position: absolute;
+      top: 16px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: #3d1a1a;
+      border: 1px solid var(--accent-red);
+      color: var(--accent-red);
+      padding: 10px 20px;
+      border-radius: 8px;
+      font-size: 13px;
+      z-index: 30;
+      display: none;
+      max-width: 500px;
+      text-align: center;
+    }
+
+    .toast.visible {
+      display: block;
+    }
+  </style>
+</head>
+<body>
+
+  <!-- ── Header ──────────────────────────────────────────────── -->
+  <div class="header">
+    <div class="header-logo">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+        <path d="M12 2L2 7l10 5 10-5-10-5z" stroke="var(--accent-red)"/>
+        <path d="M2 17l10 5 10-5" stroke="var(--accent-blue)"/>
+        <path d="M2 12l10 5 10-5" stroke="var(--accent-purple)"/>
+      </svg>
+      <span class="header-title">MITRE ATT&CK Threat Intelligence</span>
+      <span class="header-subtitle">neovis.js + SedanDelivery</span>
+    </div>
+    <div class="header-badge">
+      <span class="dot"></span>
+      <span id="connection-status">Connecting...</span>
+    </div>
+  </div>
+
+  <!-- ── Tab Bar ─────────────────────────────────────────────── -->
+  <div class="tab-bar">
+    <div class="tab active" data-view="threat-actor">
+      <span class="tab-icon">&#9760;</span>Threat Actor Network
+    </div>
+    <div class="tab" data-view="kill-chain">
+      <span class="tab-icon">&#9876;</span>Kill Chain View
+    </div>
+    <div class="tab" data-view="cve-impact">
+      <span class="tab-icon">&#9888;</span>CVE Impact Map
+    </div>
+    <div class="tab" data-view="full-graph">
+      <span class="tab-icon">&#9733;</span>Full ATT&CK Graph
+    </div>
+  </div>
+
+  <!-- ── Main Content ────────────────────────────────────────── -->
+  <div class="main">
+
+    <!-- Sidebar -->
+    <div class="sidebar">
+
+      <!-- Legend -->
+      <div class="sidebar-section">
+        <h3>Node Legend</h3>
+        <div class="legend-grid">
+          <div class="legend-item"><div class="legend-dot" style="background: #f85149"></div>ThreatGroup</div>
+          <div class="legend-item"><div class="legend-dot" style="background: #58a6ff"></div>Technique</div>
+          <div class="legend-item"><div class="legend-dot" style="background: #3fb950"></div>Mitigation</div>
+          <div class="legend-item"><div class="legend-dot" style="background: #d29922"></div>Software</div>
+          <div class="legend-item"><div class="legend-dot" style="background: #bc8cff"></div>CVE</div>
+          <div class="legend-item"><div class="legend-dot" style="background: #e3b341"></div>Campaign</div>
+          <div class="legend-item"><div class="legend-dot" style="background: #39d2c0"></div>Tactic</div>
+          <div class="legend-item"><div class="legend-dot" style="background: #f778ba"></div>Infrastructure</div>
+        </div>
+      </div>
+
+      <!-- Stats -->
+      <div class="sidebar-section">
+        <h3>Graph Statistics</h3>
+        <div class="stats-grid">
+          <div class="stat-card">
+            <div class="stat-value" id="stat-nodes">--</div>
+            <div class="stat-label">Nodes</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-value" id="stat-edges">--</div>
+            <div class="stat-label">Relationships</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-value" id="stat-labels">--</div>
+            <div class="stat-label">Labels</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-value" id="stat-rel-types">--</div>
+            <div class="stat-label">Rel Types</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Custom Query -->
+      <div class="query-section">
+        <h3>Custom Cypher Query</h3>
+        <textarea class="query-input" id="query-input"
+          placeholder="MATCH (n)-[r]->(m) RETURN n, r, m LIMIT 50"></textarea>
+        <div class="query-actions">
+          <button class="btn btn-primary" id="btn-run-query">Run Query</button>
+          <button class="btn btn-secondary" id="btn-clear">Clear</button>
+        </div>
+        <div class="example-queries">
+          <span class="example-query" data-query="MATCH (tg:ThreatGroup)-[r]->(t:Technique) RETURN tg, r, t">Threat Groups &rarr; Techniques</span>
+          <span class="example-query" data-query="MATCH (s:Software)-[r:IMPLEMENTS]->(t:Technique) RETURN s, r, t">Software Implementations</span>
+          <span class="example-query" data-query="MATCH (m:Mitigation)-[r:MITIGATES]->(t:Technique) RETURN m, r, t">Mitigations &rarr; Techniques</span>
+          <span class="example-query" data-query="MATCH (c:Campaign)-[r]->(x) RETURN c, r, x">Campaign Details</span>
+          <span class="example-query" data-query="MATCH p=(a)-[*1..3]->(b) WHERE a.name = 'APT28' RETURN p LIMIT 80">APT28 — 3-Hop Neighborhood</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Visualization -->
+    <div class="viz-container">
+      <div id="viz"></div>
+
+      <div class="viz-overlay">
+        <button class="viz-btn" id="btn-zoom-in" title="Zoom In">+</button>
+        <button class="viz-btn" id="btn-zoom-out" title="Zoom Out">&minus;</button>
+        <button class="viz-btn" id="btn-fit" title="Fit to Screen">&#8982;</button>
+        <button class="viz-btn" id="btn-stabilize" title="Re-stabilize">&#8634;</button>
+      </div>
+
+      <div class="loading-overlay" id="loading">
+        <div class="spinner"></div>
+        <div class="loading-text" id="loading-text">Connecting to SedanDelivery Bolt...</div>
+      </div>
+
+      <div class="node-info" id="node-info"></div>
+      <div class="toast" id="toast"></div>
+    </div>
+  </div>
+
+  <script>
+    // ── Color Palette ──────────────────────────────────────────
+    const LABEL_COLORS = {
+      ThreatGroup:    { bg: '#f85149', border: '#da3633', font: '#ffffff' },
+      Technique:      { bg: '#58a6ff', border: '#388bfd', font: '#ffffff' },
+      Mitigation:     { bg: '#3fb950', border: '#2ea043', font: '#ffffff' },
+      Software:       { bg: '#d29922', border: '#bb8009', font: '#ffffff' },
+      CVE:            { bg: '#bc8cff', border: '#a371f7', font: '#ffffff' },
+      Campaign:       { bg: '#e3b341', border: '#d29922', font: '#0d1117' },
+      Tactic:         { bg: '#39d2c0', border: '#2fb8a8', font: '#0d1117' },
+      Infrastructure: { bg: '#f778ba', border: '#db61a2', font: '#ffffff' },
+    };
+
+    const NODE_SIZES = {
+      ThreatGroup:    30,
+      Technique:      18,
+      Mitigation:     20,
+      Software:       22,
+      CVE:            24,
+      Campaign:       26,
+      Tactic:         22,
+      Infrastructure: 20,
+    };
+
+    // ── Cypher Queries for Each View ──────────────────────────
+    const VIEW_QUERIES = {
+      'threat-actor': `
+        MATCH (tg:ThreatGroup)-[r1]->(t:Technique)
+        OPTIONAL MATCH (tg)-[r2:USES_SOFTWARE]->(s:Software)
+        RETURN tg, r1, t, r2, s
+      `,
+      'kill-chain': `
+        MATCH (e:Software {name: 'Emotet'})-[d1:DELIVERS]->(tb:Software {name: 'TrickBot'})-[d2:DELIVERS]->(r:Software)
+        OPTIONAL MATCH (e)-[ri1:IMPLEMENTS]->(t1:Technique)
+        OPTIONAL MATCH (tb)-[ri2:IMPLEMENTS]->(t2:Technique)
+        OPTIONAL MATCH (r)-[ri3:IMPLEMENTS]->(t3:Technique)
+        RETURN e, d1, tb, d2, r, ri1, t1, ri2, t2, ri3, t3
+      `,
+      'cve-impact': `
+        MATCH (c:CVE)-[r1]->(x)
+        RETURN c, r1, x
+      `,
+      'full-graph': `
+        MATCH (n)-[r]->(m)
+        RETURN n, r, m
+      `
+    };
+
+    // ── State ──────────────────────────────────────────────────
+    let currentViz = null;
+    let currentView = 'threat-actor';
+
+    // ── DOM refs ───────────────────────────────────────────────
+    const vizEl          = document.getElementById('viz');
+    const loadingEl      = document.getElementById('loading');
+    const loadingTextEl  = document.getElementById('loading-text');
+    const nodeInfoEl     = document.getElementById('node-info');
+    const toastEl        = document.getElementById('toast');
+    const queryInput     = document.getElementById('query-input');
+    const statusEl       = document.getElementById('connection-status');
+
+    // ── Helpers ────────────────────────────────────────────────
+    function showLoading(msg) {
+      loadingTextEl.textContent = msg || 'Loading...';
+      loadingEl.classList.remove('hidden');
+    }
+
+    function hideLoading() {
+      loadingEl.classList.add('hidden');
+    }
+
+    function showToast(msg, duration) {
+      toastEl.textContent = msg;
+      toastEl.classList.add('visible');
+      setTimeout(function() { toastEl.classList.remove('visible'); }, duration || 5000);
+    }
+
+    function hideNodeInfo() {
+      nodeInfoEl.classList.remove('visible');
+    }
+
+    function showNodeInfo(node) {
+      if (!node || !node.raw) return;
+
+      var labels = node.raw.labels || [];
+      var props  = node.raw.properties || {};
+      var label  = labels[0] || 'Node';
+      var name   = props.name || props.id || '(unnamed)';
+      var color  = LABEL_COLORS[label] || { bg: '#8b949e' };
+
+      var html = '<div class="node-info-label" style="color:' + color.bg + '">' + label + '</div>';
+      html += '<div class="node-info-name">' + escapeHtml(String(name)) + '</div>';
+
+      var keys = Object.keys(props);
+      for (var i = 0; i < keys.length; i++) {
+        var k = keys[i];
+        html += '<div class="node-info-prop">';
+        html += '<span class="key">' + escapeHtml(k) + '</span>';
+        html += '<span class="val">' + escapeHtml(String(props[k])) + '</span>';
+        html += '</div>';
+      }
+
+      nodeInfoEl.innerHTML = html;
+      nodeInfoEl.classList.add('visible');
+    }
+
+    function escapeHtml(s) {
+      var div = document.createElement('div');
+      div.appendChild(document.createTextNode(s));
+      return div.innerHTML;
+    }
+
+    // ── neovis.js Config Builder ──────────────────────────────
+    function buildConfig(cypherQuery) {
+      // Build labels config for neovis 2.x
+      var labelsConfig = {};
+
+      var labelNames = Object.keys(LABEL_COLORS);
+      for (var i = 0; i < labelNames.length; i++) {
+        var lbl = labelNames[i];
+        var c   = LABEL_COLORS[lbl];
+        var sz  = NODE_SIZES[lbl] || 20;
+
+        labelsConfig[lbl] = {
+          label:    'name',
+          size:     sz,
+          color:    c.bg,
+          font:     { color: c.font, size: 11, strokeWidth: 2, strokeColor: '#000000' },
+          shape:    'dot',
+          // community is a neovis grouping hint; we use color directly instead
+        };
+      }
+
+      // Relationships config
+      var relsConfig = {
+        USES:                { thickness: 'count', caption: true },
+        USES_SOFTWARE:       { thickness: 'count', caption: true },
+        IMPLEMENTS:          { thickness: 'count', caption: true },
+        BELONGS_TO:          { thickness: 'count', caption: true },
+        SUBTECHNIQUE_OF:     { thickness: 'count', caption: true },
+        CONDUCTED:           { thickness: 'count', caption: true },
+        EXPLOITED_TECHNIQUE: { thickness: 'count', caption: true },
+        EXPLOITED_CVE:       { thickness: 'count', caption: true },
+        TARGETED:            { thickness: 'count', caption: true },
+        TARGETS:             { thickness: 'count', caption: true },
+        MITIGATES:           { thickness: 'count', caption: true },
+        DELIVERS:            { thickness: 'count', caption: true },
+        USED_SOFTWARE:       { thickness: 'count', caption: true },
+        ENABLES:             { thickness: 'count', caption: true },
+      };
+
+      return {
+        containerId: 'viz',
+        neo4j: {
+          serverUrl:      'bolt://localhost:7687',
+          serverUser:     '',
+          serverPassword: '',
+        },
+        labels:        labelsConfig,
+        relationships: relsConfig,
+        initialCypher:  cypherQuery,
+        visConfig: {
+          nodes: {
+            borderWidth:         2,
+            borderWidthSelected: 3,
+            shadow:              { enabled: true, color: 'rgba(0,0,0,0.3)', size: 6 },
+            font:                { color: '#e6edf3', size: 11, face: 'Segoe UI', strokeWidth: 2, strokeColor: '#0d1117' },
+          },
+          edges: {
+            arrows:  { to: { enabled: true, scaleFactor: 0.6 } },
+            color:   { color: '#30363d', highlight: '#58a6ff', hover: '#58a6ff', opacity: 0.7 },
+            font:    { color: '#8b949e', size: 9, strokeWidth: 0, background: '#0d1117', align: 'middle' },
+            smooth:  { type: 'continuous' },
+            width:   1.2,
+          },
+          physics: {
+            barnesHut: {
+              gravitationalConstant: -4000,
+              centralGravity:        0.3,
+              springLength:          120,
+              springConstant:        0.04,
+              damping:               0.09,
+            },
+            stabilization: { iterations: 200, fit: true },
+          },
+          interaction: {
+            hover:            true,
+            tooltipDelay:     200,
+            zoomView:         true,
+            navigationButtons: false,
+          },
+          layout: {
+            improvedLayout: true,
+          },
+        },
+      };
+    }
+
+    // ── Draw Visualization ────────────────────────────────────
+    function drawViz(cypherQuery) {
+      showLoading('Rendering graph...');
+      hideNodeInfo();
+
+      // Destroy previous instance
+      if (currentViz) {
+        try { currentViz.clearNetwork(); } catch(e) { /* ignore */ }
+        currentViz = null;
+      }
+
+      // Clear the viz container
+      vizEl.innerHTML = '';
+
+      var config = buildConfig(cypherQuery);
+
+      try {
+        currentViz = new NeoVis.default(config);
+      } catch(e) {
+        hideLoading();
+        showToast('Failed to create NeoVis instance: ' + e.message);
+        return;
+      }
+
+      currentViz.registerOnEvent('completed', function(evt) {
+        hideLoading();
+        statusEl.textContent = 'Connected — bolt://localhost:7687';
+
+        // Update stats
+        var network = currentViz._network;
+        if (network) {
+          var nodeIds = network.body.data.nodes.getIds();
+          var edgeIds = network.body.data.edges.getIds();
+          document.getElementById('stat-nodes').textContent = nodeIds.length;
+          document.getElementById('stat-edges').textContent = edgeIds.length;
+        }
+      });
+
+      currentViz.registerOnEvent('error', function(evt) {
+        hideLoading();
+        var msg = (evt && evt.error) ? evt.error.message || String(evt.error) : 'Unknown error';
+        showToast('Query error: ' + msg, 8000);
+        statusEl.textContent = 'Error';
+      });
+
+      currentViz.registerOnEvent('clickNode', function(evt) {
+        if (evt && evt.node) {
+          showNodeInfo(evt.node);
+        }
+      });
+
+      currentViz.render();
+    }
+
+    // ── Fetch dataset stats on load ──────────────────────────
+    function fetchStats() {
+      // We use a separate NeoVis instance just to get stats — simpler than
+      // importing the raw neo4j-driver. We'll run a counting query via a
+      // hidden approach: draw a tiny graph and read the completed event.
+      // Actually, neovis doesn't expose raw results easily, so let's just
+      // set label/rel counts from what we know about the dataset and update
+      // node/edge counts from the rendered graph.
+      document.getElementById('stat-labels').textContent = '8';
+      document.getElementById('stat-rel-types').textContent = '14';
+    }
+
+    // ── Tab Switching ─────────────────────────────────────────
+    var tabs = document.querySelectorAll('.tab');
+    for (var i = 0; i < tabs.length; i++) {
+      tabs[i].addEventListener('click', function() {
+        var view = this.getAttribute('data-view');
+        if (view === currentView) return;
+
+        // Update active tab
+        for (var j = 0; j < tabs.length; j++) tabs[j].classList.remove('active');
+        this.classList.add('active');
+
+        currentView = view;
+        var query = VIEW_QUERIES[view];
+        if (query) {
+          queryInput.value = query.trim();
+          drawViz(query);
+        }
+      });
+    }
+
+    // ── Custom Query ──────────────────────────────────────────
+    document.getElementById('btn-run-query').addEventListener('click', function() {
+      var q = queryInput.value.trim();
+      if (!q) {
+        showToast('Enter a Cypher query first');
+        return;
+      }
+      // Deselect all tabs when running a custom query
+      for (var j = 0; j < tabs.length; j++) tabs[j].classList.remove('active');
+      currentView = 'custom';
+      drawViz(q);
+    });
+
+    document.getElementById('btn-clear').addEventListener('click', function() {
+      queryInput.value = '';
+      hideNodeInfo();
+    });
+
+    // Run query on Ctrl+Enter
+    queryInput.addEventListener('keydown', function(e) {
+      if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+        document.getElementById('btn-run-query').click();
+      }
+    });
+
+    // ── Example Query Clicks ─────────────────────────────────
+    var exampleEls = document.querySelectorAll('.example-query');
+    for (var i = 0; i < exampleEls.length; i++) {
+      exampleEls[i].addEventListener('click', function() {
+        var q = this.getAttribute('data-query');
+        queryInput.value = q;
+        // Deselect tabs
+        for (var j = 0; j < tabs.length; j++) tabs[j].classList.remove('active');
+        currentView = 'custom';
+        drawViz(q);
+      });
+    }
+
+    // ── Zoom / Fit Buttons ───────────────────────────────────
+    document.getElementById('btn-zoom-in').addEventListener('click', function() {
+      if (currentViz && currentViz._network) {
+        var scale = currentViz._network.getScale();
+        currentViz._network.moveTo({ scale: scale * 1.3 });
+      }
+    });
+
+    document.getElementById('btn-zoom-out').addEventListener('click', function() {
+      if (currentViz && currentViz._network) {
+        var scale = currentViz._network.getScale();
+        currentViz._network.moveTo({ scale: scale / 1.3 });
+      }
+    });
+
+    document.getElementById('btn-fit').addEventListener('click', function() {
+      if (currentViz && currentViz._network) {
+        currentViz._network.fit({ animation: { duration: 500, easingFunction: 'easeInOutQuad' } });
+      }
+    });
+
+    document.getElementById('btn-stabilize').addEventListener('click', function() {
+      if (currentViz && currentViz._network) {
+        currentViz._network.stabilize(200);
+      }
+    });
+
+    // ── Click background to dismiss node info ────────────────
+    vizEl.addEventListener('click', function(e) {
+      // Only dismiss if clicking on the canvas background (not a node)
+      if (e.target === vizEl || e.target.tagName === 'CANVAS') {
+        hideNodeInfo();
+      }
+    });
+
+    // ── Init ─────────────────────────────────────────────────
+    fetchStats();
+    queryInput.value = VIEW_QUERIES['threat-actor'].trim();
+    drawViz(VIEW_QUERIES['threat-actor']);
+  </script>
+</body>
+</html>

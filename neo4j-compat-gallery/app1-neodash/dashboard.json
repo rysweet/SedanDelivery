@@ -1,0 +1,182 @@
+{
+  "title": "MITRE ATT&CK Security Dashboard",
+  "version": "2.4",
+  "settings": {
+    "pagenumber": 0,
+    "editable": true,
+    "fullscreenEnabled": false,
+    "parameters": {},
+    "theme": "dark"
+  },
+  "pages": [
+    {
+      "title": "Threat Landscape Overview",
+      "reports": [
+        {
+          "title": "Threat Groups",
+          "query": "MATCH (g:ThreatGroup) RETURN g.name AS Name, g.country AS Country, g.first_seen AS FirstSeen, g.aliases AS Aliases, g.description AS Description ORDER BY g.first_seen",
+          "width": 6,
+          "height": 3,
+          "x": 0,
+          "y": 0,
+          "type": "table",
+          "selection": {},
+          "settings": {
+            "nodePositions": {},
+            "compact": false,
+            "description": "All known threat groups from the MITRE ATT&CK dataset"
+          }
+        },
+        {
+          "title": "Techniques per Tactic",
+          "query": "MATCH (tac:Tactic)<-[:BELONGS_TO]-(tech:Technique) RETURN tac.name AS Tactic, count(tech) AS TechniqueCount ORDER BY TechniqueCount DESC",
+          "width": 6,
+          "height": 3,
+          "x": 6,
+          "y": 0,
+          "type": "bar",
+          "selection": {
+            "index": "Tactic",
+            "value": "TechniqueCount",
+            "key": "(none)"
+          },
+          "settings": {
+            "marginLeft": 60,
+            "marginBottom": 50,
+            "legend": false,
+            "labelRotation": 45,
+            "barValues": true,
+            "description": "Number of techniques associated with each MITRE ATT&CK tactic"
+          }
+        },
+        {
+          "title": "Threat Group Attack Techniques",
+          "query": "MATCH (g:ThreatGroup)-[r:USES]->(t:Technique) RETURN g, r, t LIMIT 100",
+          "width": 12,
+          "height": 4,
+          "x": 0,
+          "y": 3,
+          "type": "graph",
+          "selection": {
+            "ThreatGroup": "name",
+            "Technique": "name"
+          },
+          "settings": {
+            "nodePositions": {},
+            "nodeLabelColor": "#ffffff",
+            "nodeLabelFontSize": 10,
+            "relLabelFontSize": 8,
+            "relColorPicker": "#a0a0a0",
+            "defaultNodeSize": "medium",
+            "layout": "force-directed",
+            "drilldownLink": "",
+            "hideSelections": false,
+            "description": "Interactive graph of threat groups and the attack techniques they employ"
+          }
+        }
+      ]
+    },
+    {
+      "title": "Attack Paths & Kill Chains",
+      "reports": [
+        {
+          "title": "Full Attack Graph",
+          "query": "MATCH (g:ThreatGroup)-[r1:USES]->(t:Technique) OPTIONAL MATCH (g)-[r2:USES_SOFTWARE]->(s:Software) OPTIONAL MATCH (t)-[r3:BELONGS_TO]->(tac:Tactic) RETURN g, r1, t, r2, s, r3, tac LIMIT 150",
+          "width": 12,
+          "height": 4,
+          "x": 0,
+          "y": 0,
+          "type": "graph",
+          "selection": {
+            "ThreatGroup": "name",
+            "Technique": "name",
+            "Software": "name",
+            "Tactic": "name"
+          },
+          "settings": {
+            "nodePositions": {},
+            "nodeLabelColor": "#ffffff",
+            "nodeLabelFontSize": 9,
+            "relLabelFontSize": 7,
+            "defaultNodeSize": "medium",
+            "layout": "force-directed",
+            "description": "Complete attack graph showing threat groups, techniques, software, and tactics"
+          }
+        },
+        {
+          "title": "CVE Severity Table",
+          "query": "MATCH (c:CVE) RETURN c.id AS CVE_ID, c.name AS Name, c.severity AS Severity, c.cvss AS CVSS, c.affected AS AffectedProduct, c.description AS Description ORDER BY c.cvss DESC",
+          "width": 6,
+          "height": 3,
+          "x": 0,
+          "y": 4,
+          "type": "table",
+          "selection": {},
+          "settings": {
+            "nodePositions": {},
+            "compact": false,
+            "description": "Known CVEs sorted by CVSS score (most critical first)"
+          }
+        },
+        {
+          "title": "Software & Malware Arsenal",
+          "query": "MATCH (s:Software) RETURN s.name AS Name, s.type AS Type, s.description AS Description ORDER BY s.type, s.name",
+          "width": 6,
+          "height": 3,
+          "x": 6,
+          "y": 4,
+          "type": "table",
+          "selection": {},
+          "settings": {
+            "nodePositions": {},
+            "compact": false,
+            "description": "Catalog of malware, tools, and exploits in the dataset"
+          }
+        }
+      ]
+    },
+    {
+      "title": "Mitigations & Coverage",
+      "reports": [
+        {
+          "title": "Mitigations Inventory",
+          "query": "MATCH (m:Mitigation) OPTIONAL MATCH (m)-[:MITIGATES]->(t:Technique) RETURN m.name AS Mitigation, m.id AS MitreID, m.description AS Description, collect(t.name) AS MitigatedTechniques ORDER BY m.name",
+          "width": 12,
+          "height": 3,
+          "x": 0,
+          "y": 0,
+          "type": "table",
+          "selection": {},
+          "settings": {
+            "nodePositions": {},
+            "compact": false,
+            "description": "All mitigations and the techniques they protect against"
+          }
+        },
+        {
+          "title": "Mitigation Coverage Graph",
+          "query": "MATCH (m:Mitigation)-[r:MITIGATES]->(t:Technique) OPTIONAL MATCH (t)-[r2:BELONGS_TO]->(tac:Tactic) RETURN m, r, t, r2, tac LIMIT 150",
+          "width": 12,
+          "height": 4,
+          "x": 0,
+          "y": 3,
+          "type": "graph",
+          "selection": {
+            "Mitigation": "name",
+            "Technique": "name",
+            "Tactic": "name"
+          },
+          "settings": {
+            "nodePositions": {},
+            "nodeLabelColor": "#ffffff",
+            "nodeLabelFontSize": 9,
+            "relLabelFontSize": 7,
+            "defaultNodeSize": "medium",
+            "layout": "force-directed",
+            "description": "Visual map of mitigations and the attack techniques they cover"
+          }
+        }
+      ]
+    }
+  ]
+}

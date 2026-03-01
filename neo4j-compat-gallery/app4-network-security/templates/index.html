@@ -1,0 +1,231 @@
+{% extends "base.html" %}
+{% set active_page = "dashboard" %}
+
+{% block title %}Dashboard - Network Security Analyzer{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1>Network Security Dashboard</h1>
+    <p>Enterprise network posture overview powered by SedanDelivery graph engine</p>
+</div>
+
+<!-- Stats Row -->
+<div class="grid-4" style="margin-bottom: 1rem;">
+    <div class="stat-card">
+        <div class="label">Total Hosts</div>
+        <div class="value" style="color: var(--accent-blue);">{{ risk.total_hosts }}</div>
+        <div class="sub">{{ risk.critical_hosts }} critical assets</div>
+    </div>
+    <div class="stat-card">
+        <div class="label">Exposed Services</div>
+        <div class="value" style="color: var(--accent-orange);">{{ risk.exposed_services }}</div>
+        <div class="sub">{{ risk.exposed_hosts }} internet-facing hosts</div>
+    </div>
+    <div class="stat-card">
+        <div class="label">Vulnerabilities</div>
+        <div class="value" style="color: var(--accent-red);">{{ risk.total_vulnerabilities }}</div>
+        <div class="sub">{{ risk.critical_vulnerabilities }} critical severity</div>
+    </div>
+    <div class="stat-card">
+        <div class="label">Vulnerable Hosts</div>
+        <div class="value" style="color: var(--accent-yellow);">{{ risk.vulnerable_hosts }}</div>
+        <div class="sub">of {{ risk.total_hosts }} total hosts</div>
+    </div>
+</div>
+
+<!-- Risk Gauge + Subnet Breakdown + Mini Graph -->
+<div class="grid-3" style="margin-bottom: 1rem;">
+    <div class="card">
+        <h2>Risk Score</h2>
+        <div class="risk-gauge">
+            <div class="score" id="risk-score" style="color: {% if risk.risk_score >= 70 %}var(--accent-red){% elif risk.risk_score >= 40 %}var(--accent-orange){% else %}var(--accent-green){% endif %};">
+                {{ risk.risk_score }}
+            </div>
+            <div class="grade" style="color: {% if risk.risk_grade in ['F','D'] %}var(--accent-red){% elif risk.risk_grade == 'C' %}var(--accent-orange){% else %}var(--accent-green){% endif %};">
+                Grade: {{ risk.risk_grade }}
+            </div>
+            <div class="bar">
+                <div class="fill" style="width: {{ risk.risk_score }}%; background: linear-gradient(90deg,
+                    var(--accent-green), var(--accent-yellow), var(--accent-orange), var(--accent-red));"></div>
+            </div>
+            <div style="margin-top: 1rem; font-size: 0.8rem; color: var(--text-secondary);">
+                Avg CVSS: {{ risk.avg_cvss }} | Max CVSS: {{ risk.max_cvss }}
+            </div>
+        </div>
+    </div>
+
+    <div class="card">
+        <h2>Subnet Risk Breakdown</h2>
+        <table>
+            <thead>
+                <tr>
+                    <th>Subnet</th>
+                    <th>Hosts</th>
+                    <th>Vulns</th>
+                    <th>Avg CVSS</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for s in risk.subnet_breakdown %}
+                <tr>
+                    <td>{{ s.subnet }}</td>
+                    <td>{{ s.hosts }}</td>
+                    <td>{{ s.vulns }}</td>
+                    <td>
+                        <span class="severity {% if s.avg_cvss >= 9 %}critical{% elif s.avg_cvss >= 7 %}high{% elif s.avg_cvss >= 4 %}medium{% else %}low{% endif %}">
+                            {{ s.avg_cvss }}
+                        </span>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+
+    <div class="card">
+        <h2>Network Overview</h2>
+        <div id="mini-graph" style="width: 100%; height: 300px;"></div>
+    </div>
+</div>
+
+<!-- Exposed Services + Top Vulnerabilities -->
+<div class="grid-2">
+    <div class="card">
+        <h2>Internet-Facing Attack Surface</h2>
+        <table>
+            <thead>
+                <tr>
+                    <th>Host</th>
+                    <th>IP</th>
+                    <th>Services</th>
+                    <th>Vulns</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for e in exposed %}
+                <tr>
+                    <td>{{ e.host }}</td>
+                    <td style="font-family: monospace; font-size: 0.8rem;">{{ e.ip }}</td>
+                    <td>
+                        {% for s in e.services %}
+                        <span style="background: rgba(59,130,246,0.15); color: var(--accent-blue); padding: 0.15rem 0.4rem; border-radius: 3px; font-size: 0.7rem; margin-right: 0.25rem;">{{ s }}</span>
+                        {% endfor %}
+                    </td>
+                    <td>
+                        {% for v in e.vulnerabilities %}
+                        <span class="severity critical" style="display: block; margin-bottom: 0.2rem;">{{ v }}</span>
+                        {% endfor %}
+                        {% if not e.vulnerabilities %}<span style="color: var(--accent-green); font-size: 0.8rem;">Clean</span>{% endif %}
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+
+    <div class="card">
+        <h2>Top Vulnerabilities</h2>
+        <table>
+            <thead>
+                <tr>
+                    <th>CVE</th>
+                    <th>Name</th>
+                    <th>Severity</th>
+                    <th>CVSS</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for v in vulns %}
+                <tr>
+                    <td style="font-family: monospace; font-size: 0.8rem;">{{ v.cve }}</td>
+                    <td>{{ v.vuln_name }}</td>
+                    <td><span class="severity {{ v.severity }}">{{ v.severity }}</span></td>
+                    <td style="font-weight: 700; color: {% if v.cvss >= 9 %}var(--accent-red){% elif v.cvss >= 7 %}var(--accent-orange){% else %}var(--accent-yellow){% endif %};">{{ v.cvss }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    var graphData = {{ graph_json | safe }};
+
+    // Subnet color map
+    var subnetColors = {
+        'DMZ': '#f97316',
+        'Corporate': '#3b82f6',
+        'Server': '#8b5cf6',
+        'Management': '#06b6d4',
+        'OT': '#ef4444',
+        'external': '#64748b',
+        'firewall': '#eab308'
+    };
+
+    function getNodeColor(node) {
+        if (node.type === 'network') return '#64748b';
+        if (node.type === 'firewall') return '#eab308';
+        if (node.type === 'subnet') return subnetColors[node.group] || '#475569';
+        return subnetColors[node.group] || '#475569';
+    }
+
+    function getNodeShape(node) {
+        if (node.type === 'network') return 'diamond';
+        if (node.type === 'firewall') return 'triangle';
+        if (node.type === 'subnet') return 'box';
+        return 'dot';
+    }
+
+    // Build vis.js nodes - only subnets and internet for mini graph
+    var visNodes = [];
+    var visEdges = [];
+    var subnetIds = new Set();
+
+    graphData.nodes.forEach(function(n) {
+        if (n.type === 'subnet' || n.type === 'network') {
+            visNodes.push({
+                id: n.id,
+                label: n.label,
+                color: { background: getNodeColor(n), border: getNodeColor(n) },
+                shape: getNodeShape(n),
+                font: { color: '#e2e8f0', size: 11 },
+                size: n.type === 'subnet' ? 25 : 20,
+            });
+            subnetIds.add(n.id);
+        }
+    });
+
+    // Add firewall edges between subnets
+    graphData.edges.forEach(function(e) {
+        if (e.type === 'filtered_by' && subnetIds.has(e.from)) {
+            visEdges.push({
+                from: e.from,
+                to: e.to,
+                dashes: true,
+                color: { color: '#374151' },
+                width: 1,
+            });
+        }
+        if (e.type === 'allows' && subnetIds.has(e.to)) {
+            visEdges.push({
+                from: e.from,
+                to: e.to,
+                color: { color: '#10b981' },
+                width: 1,
+                arrows: 'to',
+                label: e.label || '',
+                font: { color: '#64748b', size: 8 },
+            });
+        }
+    });
+
+    var container = document.getElementById('mini-graph');
+    new vis.Network(container, { nodes: new vis.DataSet(visNodes), edges: new vis.DataSet(visEdges) }, {
+        physics: { solver: 'forceAtlas2Based', forceAtlas2Based: { gravitationalConstant: -60 } },
+        interaction: { hover: true, zoomView: true },
+        layout: { improvedLayout: true },
+    });
+</script>
+{% endblock %}

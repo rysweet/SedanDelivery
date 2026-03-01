@@ -3136,8 +3136,8 @@ fn eval_datetime_constructor(vals: &[Value]) -> Result<Value, GqlError> {
             let base_time_tz: Option<jiff::tz::TimeZone> = match m.get("time") {
                 Some(Value::DateTime(zdt)) => Some(zdt.time_zone().clone()),
                 Some(Value::Time(_, offset)) => {
-                    let off = jiff::tz::Offset::from_seconds(*offset)
-                        .unwrap_or(jiff::tz::Offset::UTC);
+                    let off =
+                        jiff::tz::Offset::from_seconds(*offset).unwrap_or(jiff::tz::Offset::UTC);
                     Some(jiff::tz::TimeZone::fixed(off))
                 }
                 _ => None,
@@ -4295,7 +4295,8 @@ fn eval_duration_between(vals: &[Value]) -> Result<Value, GqlError> {
 
     // Mixed Time + DateTime: both have offsets, use UTC-normalized time-of-day
     match (&vals[0], &vals[1]) {
-        (Value::Time(t, off), Value::DateTime(zdt)) | (Value::DateTime(zdt), Value::Time(t, off))
+        (Value::Time(t, off), Value::DateTime(zdt))
+        | (Value::DateTime(zdt), Value::Time(t, off))
             if !has_date_component(&vals[0]) || !has_date_component(&vals[1]) =>
         {
             let utc_time_nanos = time_to_utc_nanos_filter(t, *off);
@@ -4680,7 +4681,8 @@ fn eval_duration_in_seconds(vals: &[Value]) -> Result<Value, GqlError> {
 
     // Mixed Time + DateTime: both have offsets, use UTC-normalized time-of-day
     match (&vals[0], &vals[1]) {
-        (Value::Time(t, off), Value::DateTime(zdt)) | (Value::DateTime(zdt), Value::Time(t, off))
+        (Value::Time(t, off), Value::DateTime(zdt))
+        | (Value::DateTime(zdt), Value::Time(t, off))
             if !has_date_component(&vals[0]) || !has_date_component(&vals[1]) =>
         {
             let utc_time_nanos = time_to_utc_nanos_filter(t, *off);

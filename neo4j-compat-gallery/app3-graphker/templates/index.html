@@ -1,0 +1,400 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CVE Knowledge Graph Explorer</title>
+    <script src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
+    <style>
+        :root {
+            --bg-primary: #0d1117;
+            --bg-secondary: #161b22;
+            --bg-tertiary: #21262d;
+            --border: #30363d;
+            --text-primary: #e6edf3;
+            --text-secondary: #8b949e;
+            --accent-red: #ff6b6b;
+            --accent-orange: #ffa726;
+            --accent-green: #4caf50;
+            --accent-blue: #58a6ff;
+            --accent-purple: #bc8cff;
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            line-height: 1.6;
+        }
+
+        .navbar {
+            background: var(--bg-secondary);
+            border-bottom: 1px solid var(--border);
+            padding: 12px 24px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .navbar h1 {
+            font-size: 18px;
+            font-weight: 600;
+            color: var(--accent-red);
+        }
+
+        .navbar h1 span { color: var(--text-secondary); font-weight: 400; }
+
+        .nav-links a {
+            color: var(--text-secondary);
+            text-decoration: none;
+            margin-left: 20px;
+            font-size: 14px;
+            transition: color 0.2s;
+        }
+
+        .nav-links a:hover { color: var(--text-primary); }
+        .nav-links a.active { color: var(--accent-blue); }
+
+        .container { max-width: 1400px; margin: 0 auto; padding: 24px; }
+
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 16px;
+            margin-bottom: 24px;
+        }
+
+        .stat-card {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 20px;
+            text-align: center;
+        }
+
+        .stat-card .number {
+            font-size: 36px;
+            font-weight: 700;
+            margin-bottom: 4px;
+        }
+
+        .stat-card .label {
+            font-size: 13px;
+            color: var(--text-secondary);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .stat-card.cve .number { color: var(--accent-red); }
+        .stat-card.cwe .number { color: var(--accent-orange); }
+        .stat-card.product .number { color: var(--accent-blue); }
+        .stat-card.rel .number { color: var(--accent-purple); }
+
+        .section-title {
+            font-size: 16px;
+            font-weight: 600;
+            margin-bottom: 16px;
+            padding-bottom: 8px;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .graph-container {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            height: 500px;
+            margin-bottom: 24px;
+            position: relative;
+        }
+
+        #graph-vis { width: 100%; height: 100%; border-radius: 8px; }
+
+        .graph-legend {
+            position: absolute;
+            top: 12px;
+            right: 12px;
+            background: rgba(13, 17, 23, 0.9);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            padding: 12px;
+            font-size: 12px;
+            z-index: 10;
+        }
+
+        .legend-item {
+            display: flex;
+            align-items: center;
+            margin-bottom: 6px;
+        }
+
+        .legend-dot {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            margin-right: 8px;
+        }
+
+        .cve-table {
+            width: 100%;
+            border-collapse: collapse;
+            background: var(--bg-secondary);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            overflow: hidden;
+        }
+
+        .cve-table th {
+            background: var(--bg-tertiary);
+            padding: 12px 16px;
+            text-align: left;
+            font-size: 12px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            color: var(--text-secondary);
+            border-bottom: 1px solid var(--border);
+        }
+
+        .cve-table td {
+            padding: 12px 16px;
+            border-bottom: 1px solid var(--border);
+            font-size: 14px;
+        }
+
+        .cve-table tr:last-child td { border-bottom: none; }
+
+        .cve-table tr:hover { background: var(--bg-tertiary); }
+
+        .cve-link {
+            color: var(--accent-blue);
+            text-decoration: none;
+            font-weight: 600;
+            font-family: monospace;
+        }
+
+        .cve-link:hover { text-decoration: underline; }
+
+        .severity-badge {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 12px;
+            font-size: 11px;
+            font-weight: 600;
+            text-transform: uppercase;
+        }
+
+        .severity-critical { background: rgba(255, 107, 107, 0.2); color: var(--accent-red); }
+        .severity-high { background: rgba(255, 167, 38, 0.2); color: var(--accent-orange); }
+        .severity-medium { background: rgba(255, 235, 59, 0.2); color: #ffeb3b; }
+
+        .cvss-score {
+            font-family: monospace;
+            font-weight: 700;
+            font-size: 15px;
+        }
+
+        .cvss-critical { color: var(--accent-red); }
+        .cvss-high { color: var(--accent-orange); }
+
+        .desc-cell {
+            max-width: 500px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            color: var(--text-secondary);
+        }
+
+        .powered-by {
+            text-align: center;
+            padding: 24px;
+            color: var(--text-secondary);
+            font-size: 13px;
+            border-top: 1px solid var(--border);
+            margin-top: 24px;
+        }
+
+        .powered-by a { color: var(--accent-blue); text-decoration: none; }
+    </style>
+</head>
+<body>
+    <nav class="navbar">
+        <h1>CVE Knowledge Graph <span>Explorer</span></h1>
+        <div class="nav-links">
+            <a href="/" class="active">Dashboard</a>
+            <a href="/query">Query</a>
+        </div>
+    </nav>
+
+    <div class="container">
+        <!-- Stats -->
+        <div class="stats-grid">
+            <div class="stat-card cve">
+                <div class="number">{{ stats.cve_count }}</div>
+                <div class="label">CVE Vulnerabilities</div>
+            </div>
+            <div class="stat-card cwe">
+                <div class="number">{{ stats.cwe_count }}</div>
+                <div class="label">CWE Weaknesses</div>
+            </div>
+            <div class="stat-card product">
+                <div class="number">{{ stats.product_count }}</div>
+                <div class="label">Affected Products</div>
+            </div>
+            <div class="stat-card rel">
+                <div class="number">{{ stats.weakness_rels }}</div>
+                <div class="label">Weakness Links</div>
+            </div>
+            <div class="stat-card rel">
+                <div class="number">{{ stats.affects_rels }}</div>
+                <div class="label">Affects Links</div>
+            </div>
+        </div>
+
+        <!-- Graph -->
+        <h2 class="section-title">Vulnerability Graph</h2>
+        <div class="graph-container">
+            <div id="graph-vis"></div>
+            <div class="graph-legend">
+                <div class="legend-item">
+                    <div class="legend-dot" style="background: var(--accent-red);"></div>
+                    <span>CVE</span>
+                </div>
+                <div class="legend-item">
+                    <div class="legend-dot" style="background: var(--accent-orange);"></div>
+                    <span>CWE</span>
+                </div>
+                <div class="legend-item">
+                    <div class="legend-dot" style="background: var(--accent-blue);"></div>
+                    <span>Product</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- Recent CVEs Table -->
+        <h2 class="section-title">Recent Critical CVEs</h2>
+        <table class="cve-table">
+            <thead>
+                <tr>
+                    <th>CVE ID</th>
+                    <th>CVSS</th>
+                    <th>Severity</th>
+                    <th>Published</th>
+                    <th>Description</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for cve in recent %}
+                <tr>
+                    <td><a class="cve-link" href="/cve/{{ cve.id }}">{{ cve.id }}</a></td>
+                    <td>
+                        <span class="cvss-score {% if cve.cvss and cve.cvss >= 9.0 %}cvss-critical{% elif cve.cvss and cve.cvss >= 7.0 %}cvss-high{% endif %}">
+                            {{ cve.cvss if cve.cvss else 'N/A' }}
+                        </span>
+                    </td>
+                    <td>
+                        <span class="severity-badge severity-{{ (cve.severity or 'unknown')|lower }}">
+                            {{ cve.severity or 'N/A' }}
+                        </span>
+                    </td>
+                    <td>{{ cve.published or 'N/A' }}</td>
+                    <td class="desc-cell">{{ cve.description or 'No description' }}</td>
+                </tr>
+                {% endfor %}
+                {% if not recent %}
+                <tr>
+                    <td colspan="5" style="text-align: center; color: var(--text-secondary); padding: 40px;">
+                        No CVEs loaded. Run <code>python cve_loader.py --sample</code> to load sample data.
+                    </td>
+                </tr>
+                {% endif %}
+            </tbody>
+        </table>
+
+        <div class="powered-by">
+            Powered by <a href="https://github.com/cloud-ecosystem-security/SedanDelivery">SedanDelivery</a> graph engine via Bolt v4.4 protocol &middot; neo4j Python driver
+        </div>
+    </div>
+
+    <script>
+        fetch('/graph')
+            .then(r => r.json())
+            .then(data => {
+                if (data.error) {
+                    var errDiv = document.createElement('div');
+                    errDiv.style.cssText = 'display:flex;align-items:center;justify-content:center;height:100%;color:#8b949e;';
+                    errDiv.textContent = 'Graph unavailable: ' + data.error;
+                    var container = document.getElementById('graph-vis');
+                    container.innerHTML = '';
+                    container.appendChild(errDiv);
+                    return;
+                }
+
+                const nodes = new vis.DataSet(data.nodes);
+                const edges = new vis.DataSet(data.edges);
+
+                const container = document.getElementById('graph-vis');
+                const network = new vis.Network(container, { nodes, edges }, {
+                    nodes: {
+                        shape: 'dot',
+                        font: { color: '#e6edf3', size: 12 },
+                        borderWidth: 2,
+                        shadow: true,
+                    },
+                    edges: {
+                        font: { color: '#8b949e', size: 10, strokeWidth: 0 },
+                        smooth: { type: 'continuous' },
+                        width: 1.5,
+                    },
+                    groups: {
+                        CVE: {
+                            color: { background: '#ff6b6b', border: '#ff4444' },
+                            font: { color: '#e6edf3' },
+                        },
+                        CWE: {
+                            color: { background: '#ffa726', border: '#ff8f00' },
+                            font: { color: '#e6edf3' },
+                        },
+                        Product: {
+                            color: { background: '#58a6ff', border: '#1f6feb' },
+                            font: { color: '#e6edf3' },
+                        },
+                    },
+                    physics: {
+                        forceAtlas2Based: {
+                            gravitationalConstant: -40,
+                            centralGravity: 0.005,
+                            springLength: 150,
+                            springConstant: 0.08,
+                        },
+                        solver: 'forceAtlas2Based',
+                        stabilization: { iterations: 150 },
+                    },
+                    interaction: {
+                        hover: true,
+                        tooltipDelay: 200,
+                    },
+                });
+
+                // Click on CVE node to navigate to detail page
+                network.on('doubleClick', function(params) {
+                    if (params.nodes.length > 0) {
+                        const nodeId = params.nodes[0];
+                        const node = nodes.get(nodeId);
+                        if (node.group === 'CVE') {
+                            window.location.href = '/cve/' + node.label;
+                        }
+                    }
+                });
+            })
+            .catch(err => {
+                var errDiv = document.createElement('div');
+                errDiv.style.cssText = 'display:flex;align-items:center;justify-content:center;height:100%;color:#8b949e;';
+                errDiv.textContent = 'Failed to load graph data';
+                var container = document.getElementById('graph-vis');
+                container.innerHTML = '';
+                container.appendChild(errDiv);
+            });
+    </script>
+</body>
+</html>

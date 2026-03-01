@@ -1,0 +1,285 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Cypher Query - CVE Explorer</title>
+    <style>
+        :root {
+            --bg-primary: #0d1117;
+            --bg-secondary: #161b22;
+            --bg-tertiary: #21262d;
+            --border: #30363d;
+            --text-primary: #e6edf3;
+            --text-secondary: #8b949e;
+            --accent-red: #ff6b6b;
+            --accent-orange: #ffa726;
+            --accent-green: #4caf50;
+            --accent-blue: #58a6ff;
+            --accent-purple: #bc8cff;
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            line-height: 1.6;
+        }
+
+        .navbar {
+            background: var(--bg-secondary);
+            border-bottom: 1px solid var(--border);
+            padding: 12px 24px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .navbar h1 {
+            font-size: 18px;
+            font-weight: 600;
+            color: var(--accent-red);
+        }
+
+        .navbar h1 span { color: var(--text-secondary); font-weight: 400; }
+
+        .nav-links a {
+            color: var(--text-secondary);
+            text-decoration: none;
+            margin-left: 20px;
+            font-size: 14px;
+            transition: color 0.2s;
+        }
+
+        .nav-links a:hover { color: var(--text-primary); }
+        .nav-links a.active { color: var(--accent-blue); }
+
+        .container { max-width: 1200px; margin: 0 auto; padding: 24px; }
+
+        .query-section {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 24px;
+        }
+
+        .query-section h2 {
+            font-size: 16px;
+            margin-bottom: 12px;
+        }
+
+        .query-form { display: flex; flex-direction: column; gap: 12px; }
+
+        .query-input {
+            width: 100%;
+            min-height: 100px;
+            background: var(--bg-primary);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            color: var(--text-primary);
+            font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+            font-size: 14px;
+            padding: 12px;
+            resize: vertical;
+        }
+
+        .query-input:focus {
+            outline: none;
+            border-color: var(--accent-blue);
+        }
+
+        .query-input::placeholder { color: var(--text-secondary); }
+
+        .btn-row {
+            display: flex;
+            gap: 12px;
+            align-items: center;
+        }
+
+        .btn {
+            padding: 8px 20px;
+            border: none;
+            border-radius: 6px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+
+        .btn-primary {
+            background: var(--accent-blue);
+            color: #fff;
+        }
+
+        .btn-primary:hover { background: #1f6feb; }
+
+        .btn-secondary {
+            background: var(--bg-tertiary);
+            color: var(--text-primary);
+            border: 1px solid var(--border);
+        }
+
+        .btn-secondary:hover { background: var(--border); }
+
+        .examples {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            margin-top: 8px;
+        }
+
+        .example-btn {
+            background: var(--bg-tertiary);
+            border: 1px solid var(--border);
+            border-radius: 4px;
+            padding: 4px 10px;
+            color: var(--accent-blue);
+            font-size: 12px;
+            cursor: pointer;
+            font-family: monospace;
+        }
+
+        .example-btn:hover { background: var(--border); }
+
+        .error-box {
+            background: rgba(255, 107, 107, 0.1);
+            border: 1px solid rgba(255, 107, 107, 0.3);
+            border-radius: 6px;
+            padding: 12px 16px;
+            color: var(--accent-red);
+            font-family: monospace;
+            font-size: 13px;
+            margin-bottom: 16px;
+        }
+
+        .results-section {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            overflow: hidden;
+        }
+
+        .results-header {
+            padding: 12px 16px;
+            background: var(--bg-tertiary);
+            border-bottom: 1px solid var(--border);
+            font-size: 13px;
+            color: var(--text-secondary);
+        }
+
+        .results-table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+
+        .results-table th {
+            background: var(--bg-tertiary);
+            padding: 10px 16px;
+            text-align: left;
+            font-size: 12px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            color: var(--text-secondary);
+            border-bottom: 1px solid var(--border);
+        }
+
+        .results-table td {
+            padding: 10px 16px;
+            border-bottom: 1px solid var(--border);
+            font-size: 13px;
+            font-family: monospace;
+            max-width: 400px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .results-table tr:hover { background: var(--bg-tertiary); }
+
+        .no-results {
+            padding: 40px;
+            text-align: center;
+            color: var(--text-secondary);
+        }
+    </style>
+</head>
+<body>
+    <nav class="navbar">
+        <h1>CVE Knowledge Graph <span>Explorer</span></h1>
+        <div class="nav-links">
+            <a href="/">Dashboard</a>
+            <a href="/query" class="active">Query</a>
+        </div>
+    </nav>
+
+    <div class="container">
+        <div class="query-section">
+            <h2>Cypher Query</h2>
+            <form class="query-form" method="POST" action="/query">
+                <textarea
+                    class="query-input"
+                    name="cypher"
+                    placeholder="Enter a Cypher query... e.g. MATCH (c:CVE) RETURN c.id, c.cvss ORDER BY c.cvss DESC LIMIT 10"
+                >{{ cypher }}</textarea>
+                <div class="btn-row">
+                    <button type="submit" class="btn btn-primary">Execute</button>
+                    <button type="button" class="btn btn-secondary" onclick="document.querySelector('.query-input').value = '';">Clear</button>
+                </div>
+            </form>
+
+            <div class="examples">
+                <span style="color: var(--text-secondary); font-size: 12px; line-height: 28px;">Examples:</span>
+                <button class="example-btn" onclick="setQuery('MATCH (c:CVE) RETURN c.id AS cve, c.cvss AS cvss, c.severity AS severity ORDER BY c.cvss DESC LIMIT 10')">Top 10 by CVSS</button>
+                <button class="example-btn" onclick="setQuery('MATCH (c:CVE)-[:HAS_WEAKNESS]->(w:CWE) RETURN w.id AS cwe, w.name AS name, count(c) AS cve_count ORDER BY cve_count DESC')">CWEs by CVE count</button>
+                <button class="example-btn" onclick="setQuery('MATCH (c:CVE)-[:AFFECTS]->(p:Product) RETURN p.vendor AS vendor, p.product AS product, count(c) AS vuln_count ORDER BY vuln_count DESC LIMIT 10')">Most affected products</button>
+                <button class="example-btn" onclick="setQuery('MATCH (c:CVE)-[:HAS_WEAKNESS]->(w:CWE), (c)-[:AFFECTS]->(p:Product) RETURN c.id AS cve, w.id AS cwe, p.vendor AS vendor, p.product AS product LIMIT 20')">Full graph paths</button>
+                <button class="example-btn" onclick="setQuery('MATCH (n) RETURN labels(n) AS label, count(n) AS count')">Node counts by label</button>
+            </div>
+        </div>
+
+        {% if error %}
+        <div class="error-box">Error: {{ error }}</div>
+        {% endif %}
+
+        {% if results is not none %}
+        <div class="results-section">
+            <div class="results-header">
+                {{ results|length }} row{{ 's' if results|length != 1 else '' }} returned
+            </div>
+
+            {% if results %}
+            <table class="results-table">
+                <thead>
+                    <tr>
+                        {% for col in columns %}
+                        <th>{{ col }}</th>
+                        {% endfor %}
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for row in results %}
+                    <tr>
+                        {% for col in columns %}
+                        <td title="{{ row[col] }}">{{ row[col] }}</td>
+                        {% endfor %}
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+            {% else %}
+            <div class="no-results">Query returned no results.</div>
+            {% endif %}
+        </div>
+        {% endif %}
+    </div>
+
+    <script>
+        function setQuery(q) {
+            document.querySelector('.query-input').value = q;
+        }
+    </script>
+</body>
+</html>

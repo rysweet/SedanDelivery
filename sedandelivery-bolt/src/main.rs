@@ -190,8 +190,10 @@ async fn main() {
                         }
                     }
                 } else {
-                    sedandelivery_bolt::connection::session::run(stream, store, conn_id, bookmark, wl)
-                        .await
+                    sedandelivery_bolt::connection::session::run(
+                        stream, store, conn_id, bookmark, wl,
+                    )
+                    .await
                 }
             })
             .await;

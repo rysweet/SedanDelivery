@@ -122,10 +122,7 @@ fn handle_create_database(
     })
 }
 
-fn handle_drop_database(
-    store: &InMemoryGraphStore,
-    query: &str,
-) -> Result<AdminResult, GqlError> {
+fn handle_drop_database(store: &InMemoryGraphStore, query: &str) -> Result<AdminResult, GqlError> {
     let upper = query.to_uppercase();
     let if_exists = upper.contains("IF EXISTS");
 
@@ -382,10 +379,8 @@ mod tests {
     #[test]
     fn create_database_basic() {
         let store = InMemoryGraphStore::new();
-        let result = handle_create_database(
-            &store,
-            "CREATE DATABASE `test-database` IF NOT EXISTS WAIT",
-        );
+        let result =
+            handle_create_database(&store, "CREATE DATABASE `test-database` IF NOT EXISTS WAIT");
         assert!(result.is_ok());
         let ar = result.unwrap();
         assert_eq!(ar.system_updates, 1);
@@ -395,8 +390,7 @@ mod tests {
     #[test]
     fn drop_database_if_exists() {
         let store = InMemoryGraphStore::new();
-        let result =
-            handle_drop_database(&store, "DROP  DATABASE `test-database` IF EXISTS WAIT");
+        let result = handle_drop_database(&store, "DROP  DATABASE `test-database` IF EXISTS WAIT");
         assert!(result.is_ok());
     }
 

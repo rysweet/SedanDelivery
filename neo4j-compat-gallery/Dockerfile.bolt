@@ -1,0 +1,64 @@
+# Dockerfile for sedandelivery-bolt (Neo4j Bolt v4.4 compatible server)
+# Connects any Neo4j driver/application to SedanDelivery's graph engine.
+#
+# Build:  docker build -f Dockerfile.bolt -t sedandelivery-bolt ..
+# Run:    docker run -p 7687:7687 -p 7688:7688 sedandelivery-bolt
+
+# ── Builder ──────────────────────────────────────────────────────────────────
+FROM rust:1.89-bookworm AS builder
+
+WORKDIR /app
+
+# Copy workspace manifests for layer caching
+COPY Cargo.toml ./
+COPY gql-core/Cargo.toml ./gql-core/
+COPY gql-redis-store/Cargo.toml ./gql-redis-store/
+COPY gql-module/Cargo.toml ./gql-module/
+COPY gql-fabric-store/Cargo.toml ./gql-fabric-store/
+COPY gql-cli/Cargo.toml ./gql-cli/
+COPY gql-api/Cargo.toml ./gql-api/
+COPY sedandelivery-bolt/Cargo.toml ./sedandelivery-bolt/
+
+# Stub sources for dependency caching
+RUN mkdir -p gql-core/src gql-redis-store/src gql-fabric-store/src \
+             gql-module/src gql-cli/src gql-api/src sedandelivery-bolt/src && \
+    echo "pub fn stub() {}" > gql-core/src/lib.rs && \
+    echo "pub fn stub() {}" > gql-redis-store/src/lib.rs && \
+    echo "pub fn stub() {}" > gql-fabric-store/src/lib.rs && \
+    echo "pub fn stub() {}" > gql-module/src/lib.rs && \
+    echo "fn main() {}" > gql-cli/src/main.rs && \
+    echo "fn main() {}" > gql-api/src/main.rs && \
+    echo "fn main() {}" > sedandelivery-bolt/src/main.rs && \
+    cargo build --release -p sedandelivery-bolt 2>/dev/null || true
+
+# Copy real source code
+COPY gql-core/ ./gql-core/
+COPY sedandelivery-bolt/ ./sedandelivery-bolt/
+
+# Build Bolt server
+RUN touch gql-core/src/lib.rs sedandelivery-bolt/src/main.rs && \
+    cargo build --release -p sedandelivery-bolt && \
+    ls -lh target/release/sedandelivery-bolt
+
+# ── Runtime ──────────────────────────────────────────────────────────────────
+FROM debian:bookworm-slim AS runtime
+
+RUN apt-get update && apt-get install -y ca-certificates curl && rm -rf /var/lib/apt/lists/*
+
+RUN useradd -r -s /bin/false appuser
+
+COPY --from=builder /app/target/release/sedandelivery-bolt /usr/local/bin/sedandelivery-bolt
+
+# Bolt protocol port
+EXPOSE 7687
+# Health/metrics HTTP port
+EXPOSE 7688
+
+ENV RUST_LOG=info
+
+USER appuser
+
+HEALTHCHECK --interval=10s --timeout=5s --start-period=5s --retries=3 \
+    CMD curl -sf http://localhost:7688/health || exit 1
+
+ENTRYPOINT ["sedandelivery-bolt"]

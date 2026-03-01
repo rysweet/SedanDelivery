@@ -16,6 +16,10 @@ A Rust GQL/Cypher query engine — a clean-room, MIT/Apache-2.0-licensed replace
 - [Benchmarks](benchmarks) — How to run and interpret performance benchmarks
 - [Research Notes](RESEARCH) — Security analysis and design rationale
 
+## Neo4j Compatibility
+
+- [**Neo4j Compatibility Gallery**](neo4j-compat-gallery) — 4 security apps validated against SedanDelivery's Bolt v4.4 protocol (Neodash, neovis.js, GraphKer CVE Explorer, Network Security Analyzer)
+
 ## Deployment
 
 SedanDelivery deploys to Azure Container Apps via GitHub Actions.

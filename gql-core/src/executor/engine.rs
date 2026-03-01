@@ -5504,8 +5504,16 @@ mod tests {
         // 10:35-08:00 → UTC 18:35 (should sort AFTER 12:35:15+05:00 → UTC 07:35:15)
         let a = Value::Time(jiff::civil::Time::new(10, 35, 0, 0).unwrap(), -28800); // UTC 18:35
         let d = Value::Time(jiff::civil::Time::new(12, 35, 15, 0).unwrap(), 18000); // UTC 07:35:15
-        assert_eq!(cmp_values(&a, &d), Ordering::Greater, "A(18:35Z) should be > D(07:35Z)");
-        assert_eq!(cmp_values(&d, &a), Ordering::Less, "D(07:35Z) should be < A(18:35Z)");
+        assert_eq!(
+            cmp_values(&a, &d),
+            Ordering::Greater,
+            "A(18:35Z) should be > D(07:35Z)"
+        );
+        assert_eq!(
+            cmp_values(&d, &a),
+            Ordering::Less,
+            "D(07:35Z) should be < A(18:35Z)"
+        );
 
         // Equal in UTC: 14:00+02:00 and 13:00+01:00 are both 12:00Z
         let t1 = Value::Time(jiff::civil::Time::new(14, 0, 0, 0).unwrap(), 7200);

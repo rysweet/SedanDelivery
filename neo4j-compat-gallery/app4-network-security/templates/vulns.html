@@ -1,0 +1,171 @@
+{% extends "base.html" %}
+{% set active_page = "vulns" %}
+
+{% block title %}Vulnerabilities - Network Security Analyzer{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1>Vulnerability Heatmap</h1>
+    <p>Risk distribution across network subnets with CVE details</p>
+</div>
+
+<!-- Subnet heatmap cards -->
+<div class="grid-3" style="margin-bottom: 1rem;">
+    {% for s in risk.subnet_breakdown %}
+    <div class="card" style="border-left: 4px solid {% if s.avg_cvss >= 9 %}var(--accent-red){% elif s.avg_cvss >= 7 %}var(--accent-orange){% elif s.avg_cvss >= 4 %}var(--accent-yellow){% else %}var(--accent-green){% endif %};">
+        <div style="display: flex; justify-content: space-between; align-items: center;">
+            <h2 style="margin: 0; text-transform: none;">{{ s.subnet }}</h2>
+            <span class="severity {% if s.avg_cvss >= 9 %}critical{% elif s.avg_cvss >= 7 %}high{% elif s.avg_cvss >= 4 %}medium{% else %}low{% endif %}">
+                {% if s.avg_cvss >= 9 %}CRITICAL{% elif s.avg_cvss >= 7 %}HIGH{% elif s.avg_cvss >= 4 %}MEDIUM{% else %}LOW{% endif %}
+            </span>
+        </div>
+        <div style="margin-top: 0.75rem; display: flex; gap: 2rem;">
+            <div>
+                <div style="font-size: 0.7rem; color: var(--text-muted); text-transform: uppercase;">Hosts</div>
+                <div style="font-size: 1.5rem; font-weight: 700;">{{ s.hosts }}</div>
+            </div>
+            <div>
+                <div style="font-size: 0.7rem; color: var(--text-muted); text-transform: uppercase;">Vulns</div>
+                <div style="font-size: 1.5rem; font-weight: 700; color: {% if s.vulns > 0 %}var(--accent-red){% else %}var(--accent-green){% endif %};">{{ s.vulns }}</div>
+            </div>
+            <div>
+                <div style="font-size: 0.7rem; color: var(--text-muted); text-transform: uppercase;">Avg CVSS</div>
+                <div style="font-size: 1.5rem; font-weight: 700;">{{ s.avg_cvss }}</div>
+            </div>
+        </div>
+        <!-- Heat bar -->
+        <div style="margin-top: 0.75rem; height: 6px; background: var(--bg-secondary); border-radius: 3px; overflow: hidden;">
+            <div style="height: 100%; width: {{ (s.avg_cvss / 10 * 100) | int }}%; border-radius: 3px; background: linear-gradient(90deg,
+                {% if s.avg_cvss >= 9 %}var(--accent-red), #dc2626{% elif s.avg_cvss >= 7 %}var(--accent-orange), var(--accent-red){% elif s.avg_cvss >= 4 %}var(--accent-yellow), var(--accent-orange){% else %}var(--accent-green), var(--accent-yellow){% endif %});"></div>
+        </div>
+    </div>
+    {% endfor %}
+</div>
+
+<!-- Graph + Vuln Table -->
+<div class="grid-2">
+    <div class="card" style="padding: 0;">
+        <div style="padding: 1.25rem 1.25rem 0;">
+            <h2>Vulnerability Distribution</h2>
+        </div>
+        <div class="graph-container" id="vuln-graph" style="border: none; height: 500px;"></div>
+    </div>
+
+    <div class="card">
+        <h2>All Vulnerabilities by Host</h2>
+        <div style="max-height: 540px; overflow-y: auto;">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Host</th>
+                        <th>Subnet</th>
+                        <th>CVE</th>
+                        <th>Severity</th>
+                        <th>CVSS</th>
+                        <th>Category</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for v in vulns %}
+                    <tr>
+                        <td>
+                            {{ v.host }}
+                            {% if v.host_critical %}<span style="color: var(--accent-red); font-size: 0.7rem;"> CRITICAL</span>{% endif %}
+                        </td>
+                        <td>{{ v.subnet }}</td>
+                        <td style="font-family: monospace; font-size: 0.8rem;">{{ v.cve }}</td>
+                        <td><span class="severity {{ v.severity }}">{{ v.severity }}</span></td>
+                        <td style="font-weight: 700; color: {% if v.cvss >= 9 %}var(--accent-red){% elif v.cvss >= 7 %}var(--accent-orange){% else %}var(--accent-yellow){% endif %};">{{ v.cvss }}</td>
+                        <td style="font-size: 0.8rem; color: var(--text-secondary);">{{ v.category }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    var graphData = {{ graph_json | safe }};
+
+    var subnetColors = {
+        'DMZ': '#f97316', 'Corporate': '#3b82f6', 'Server': '#8b5cf6',
+        'Management': '#06b6d4', 'OT': '#ef4444', 'external': '#64748b', 'firewall': '#eab308'
+    };
+
+    // Build vuln-focused graph: hosts + their vulns
+    var visNodes = [];
+    var visEdges = [];
+
+    // Only include hosts that have vulns, plus their subnets
+    var vulnHosts = new Set();
+    var vulnSubnets = new Set();
+
+    graphData.nodes.forEach(function(n) {
+        if (n.type === 'host' && n.vuln_count > 0) {
+            vulnHosts.add(n.id);
+            vulnSubnets.add(n.group);
+        }
+    });
+
+    // Add subnet nodes
+    graphData.nodes.forEach(function(n) {
+        if (n.type === 'subnet' && vulnSubnets.has(n.group)) {
+            visNodes.push({
+                id: n.id,
+                label: n.label,
+                shape: 'box',
+                size: 30,
+                color: { background: subnetColors[n.group] || '#475569', border: subnetColors[n.group] || '#475569' },
+                font: { color: '#e2e8f0', size: 12 },
+            });
+        }
+    });
+
+    // Add vulnerable host nodes (sized by vuln count)
+    graphData.nodes.forEach(function(n) {
+        if (n.type === 'host' && vulnHosts.has(n.id)) {
+            var size = 12 + (n.vuln_count * 5);
+            visNodes.push({
+                id: n.id,
+                label: n.id + '\n(' + n.vuln_count + ' vulns)',
+                shape: n.critical ? 'star' : 'dot',
+                size: size,
+                color: {
+                    background: n.vuln_count >= 2 ? '#ef4444' : '#f97316',
+                    border: '#ef4444'
+                },
+                borderWidth: 3,
+                font: { color: '#e2e8f0', size: 10 },
+            });
+        }
+    });
+
+    // Add subnet edges for vuln hosts
+    graphData.edges.forEach(function(e) {
+        if (e.type === 'in_subnet' && vulnHosts.has(e.from)) {
+            visEdges.push({
+                from: e.from,
+                to: e.to,
+                color: { color: '#374151' },
+                width: 1,
+            });
+        }
+    });
+
+    var container = document.getElementById('vuln-graph');
+    new vis.Network(container, {
+        nodes: new vis.DataSet(visNodes),
+        edges: new vis.DataSet(visEdges)
+    }, {
+        physics: {
+            solver: 'forceAtlas2Based',
+            forceAtlas2Based: { gravitationalConstant: -80 },
+            stabilization: { iterations: 150 }
+        },
+        interaction: { hover: true, zoomView: true },
+    });
+</script>
+{% endblock %}

@@ -1,0 +1,86 @@
+# Neo4j Compatibility Gallery — Full Stack
+#
+# Runs SedanDelivery Bolt server + all 4 gallery apps.
+# Usage: docker compose up -d
+#
+# Prereqs:
+#   docker build -f Dockerfile.bolt -t sedandelivery-bolt ..
+
+services:
+  # ── SedanDelivery Bolt Protocol Server ──────────────────────────────────
+  sedandelivery-bolt:
+    image: sedandelivery-bolt:latest
+    build:
+      context: ..
+      dockerfile: neo4j-compat-gallery/Dockerfile.bolt
+    ports:
+      - "7687:7687"   # Bolt protocol
+      - "7688:7688"   # Health/metrics
+    environment:
+      - RUST_LOG=info
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:7688/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ── App 1: Neodash Security Dashboard ──────────────────────────────────
+  neodash:
+    image: neo4jlabs/neodash:latest
+    ports:
+      - "5005:5005"
+    environment:
+      - ssoEnabled=false
+      - ssoDiscoveryUrl=
+      - standalone=true
+      - standaloneProtocol=bolt
+      - standaloneHost=sedandelivery-bolt
+      - standalonePort=7687
+      - standaloneDatabase=
+      - standaloneDashboardName=MITRE ATT&CK Security Dashboard
+      - standaloneDashboardDatabase=
+      - standaloneUsername=
+      - standalonePassword=
+      - standaloneAllowLoad=true
+    depends_on:
+      sedandelivery-bolt:
+        condition: service_healthy
+
+  # ── App 2: neovis.js Threat Visualization ──────────────────────────────
+  neovis:
+    image: nginx:alpine
+    ports:
+      - "8080:80"
+    volumes:
+      - ./app2-neovis:/usr/share/nginx/html:ro
+    depends_on:
+      sedandelivery-bolt:
+        condition: service_healthy
+
+  # ── App 3: GraphKer CVE Explorer ───────────────────────────────────────
+  graphker:
+    build:
+      context: ./app3-graphker
+      dockerfile: Dockerfile
+    ports:
+      - "5001:5001"
+    environment:
+      - BOLT_URI=bolt://sedandelivery-bolt:7687
+      - FLASK_ENV=production
+    depends_on:
+      sedandelivery-bolt:
+        condition: service_healthy
+
+  # ── App 4: Network Security Analyzer ───────────────────────────────────
+  network-security:
+    build:
+      context: ./app4-network-security
+      dockerfile: Dockerfile
+    ports:
+      - "5002:5002"
+    environment:
+      - BOLT_URI=bolt://sedandelivery-bolt:7687
+      - FLASK_ENV=production
+    depends_on:
+      sedandelivery-bolt:
+        condition: service_healthy

@@ -1,0 +1,20 @@
+{
+  "name": "app2-neovis",
+  "version": "1.0.0",
+  "description": "MITRE ATT&CK threat intelligence dashboard using neovis.js with SedanDelivery Bolt backend",
+  "private": true,
+  "scripts": {
+    "start": "npx serve -l 8080 -s .",
+    "dev": "npx serve -l 8080 -s . --cors"
+  },
+  "keywords": [
+    "neovis",
+    "neo4j",
+    "sedandelivery",
+    "bolt",
+    "graph-visualization",
+    "mitre-attack",
+    "threat-intelligence"
+  ],
+  "license": "MIT"
+}

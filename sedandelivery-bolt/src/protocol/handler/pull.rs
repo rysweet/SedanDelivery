@@ -111,19 +111,34 @@ pub(crate) fn handle_pull(
         // Merge admin stats into the stats map if present.
         if let Some(ref as_) = admin_stats {
             if as_.indexes_added > 0 {
-                stats.push(("indexes-added".to_string(), BoltValue::Int(as_.indexes_added as i64)));
+                stats.push((
+                    "indexes-added".to_string(),
+                    BoltValue::Int(as_.indexes_added as i64),
+                ));
             }
             if as_.indexes_removed > 0 {
-                stats.push(("indexes-removed".to_string(), BoltValue::Int(as_.indexes_removed as i64)));
+                stats.push((
+                    "indexes-removed".to_string(),
+                    BoltValue::Int(as_.indexes_removed as i64),
+                ));
             }
             if as_.constraints_added > 0 {
-                stats.push(("constraints-added".to_string(), BoltValue::Int(as_.constraints_added as i64)));
+                stats.push((
+                    "constraints-added".to_string(),
+                    BoltValue::Int(as_.constraints_added as i64),
+                ));
             }
             if as_.constraints_removed > 0 {
-                stats.push(("constraints-removed".to_string(), BoltValue::Int(as_.constraints_removed as i64)));
+                stats.push((
+                    "constraints-removed".to_string(),
+                    BoltValue::Int(as_.constraints_removed as i64),
+                ));
             }
             if as_.system_updates > 0 {
-                stats.push(("system-updates".to_string(), BoltValue::Int(as_.system_updates as i64)));
+                stats.push((
+                    "system-updates".to_string(),
+                    BoltValue::Int(as_.system_updates as i64),
+                ));
                 stats.push(("contains-system-updates".to_string(), BoltValue::Bool(true)));
             }
         }
@@ -136,12 +151,19 @@ pub(crate) fn handle_pull(
         };
         // Determine contains-updates from non-admin stats.
         let has_regular_updates = stats.iter().any(|(k, _)| {
-            matches!(k.as_str(),
-                "nodes-created" | "nodes-deleted" |
-                "relationships-created" | "relationships-deleted" |
-                "properties-set" | "labels-added" | "labels-removed" |
-                "indexes-added" | "indexes-removed" |
-                "constraints-added" | "constraints-removed"
+            matches!(
+                k.as_str(),
+                "nodes-created"
+                    | "nodes-deleted"
+                    | "relationships-created"
+                    | "relationships-deleted"
+                    | "properties-set"
+                    | "labels-added"
+                    | "labels-removed"
+                    | "indexes-added"
+                    | "indexes-removed"
+                    | "constraints-added"
+                    | "constraints-removed"
             )
         });
         if has_regular_updates {

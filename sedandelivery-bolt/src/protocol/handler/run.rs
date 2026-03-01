@@ -96,11 +96,9 @@ pub(crate) async fn handle_run(
         }
         _ => Arc::clone(&session.store),
     };
-    if let Some(admin_result) = bridge::admin::try_handle_admin(
-        &effective_store_for_admin,
-        &graph,
-        trimmed,
-    ) {
+    if let Some(admin_result) =
+        bridge::admin::try_handle_admin(&effective_store_for_admin, &graph, trimmed)
+    {
         match admin_result {
             Ok(ar) => {
                 let run_metadata = extract_tx_metadata(&extra);
@@ -109,12 +107,11 @@ pub(crate) async fn handle_run(
                 } else {
                     run_metadata
                 };
-                let (records, query_type, stats, _trailing) =
-                    bridge::executor::result_to_records(
-                        &ar.query_result,
-                        &effective_store_for_admin,
-                        &graph,
-                    );
+                let (records, query_type, stats, _trailing) = bridge::executor::result_to_records(
+                    &ar.query_result,
+                    &effective_store_for_admin,
+                    &graph,
+                );
                 let fields: Vec<BoltValue> = ar
                     .query_result
                     .columns
@@ -191,10 +188,7 @@ pub(crate) async fn handle_run(
     // database has been pre-created at server startup). In unit tests where
     // the store is empty, auto-create still works.
     if extra.get_str("db").is_some() && graph != "neo4j" && graph != "system" {
-        let main_store_has_neo4j = session
-            .store
-            .graph_exists("neo4j")
-            .unwrap_or(false);
+        let main_store_has_neo4j = session.store.graph_exists("neo4j").unwrap_or(false);
         if main_store_has_neo4j {
             let check_store: &InMemoryGraphStore = match &session.tx_store {
                 Some(ts)
