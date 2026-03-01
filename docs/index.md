@@ -68,11 +68,11 @@ SedanDelivery supports multiple storage backends via the `GraphStore` trait:
 
 ## Bolt Protocol (Recommended)
 
-SedanDelivery includes a built-in Neo4j Bolt v4.4 server (`sedan-bolt`). Any standard Neo4j driver connects directly — no custom SDK needed.
+SedanDelivery includes a built-in Neo4j Bolt v4.4 server (`sedandelivery-bolt`). Any standard Neo4j driver connects directly — no custom SDK needed.
 
 ```bash
 # Build and run the Bolt server
-cargo run -p sedan-bolt
+cargo run -p sedandelivery-bolt
 # Listens on 0.0.0.0:7687 (configure via BOLT_BIND_ADDR env var)
 # Optional auth via BOLT_PASSWORD env var
 ```
@@ -142,7 +142,7 @@ Any Neo4j driver that supports Bolt 4.2-4.4 works. See the [Neo4j Driver Manual]
 | `BOLT_PASSWORD` | (none) | Optional password for Bolt auth |
 | `BOLT_ENABLED` | `true` | Enable/disable Bolt server in container |
 
-See [Bolt Protocol Spec](specs/sedan-bolt-spec) for implementation details.
+See [Bolt Protocol Spec](specs/sedandelivery-bolt-spec) for implementation details.
 
 ## Custom Client SDKs (Redis protocol)
 

@@ -13,7 +13,7 @@ use std::time::Duration;
 
 use gql_core::error::{ExecutionError, GqlError, ParseError};
 use gql_core::executor::{ExecutionBudget, QueryExecutor};
-use gql_core::parser::parse_query;
+use gql_core::parser::{parse_query, parse_query_with_max_size};
 use gql_core::planner::QueryPlanner;
 use gql_core::storage::{GraphStore, InMemoryGraphStore};
 use gql_core::types::Value;
@@ -62,18 +62,20 @@ fn test_deeply_nested_expression_rejected() {
     );
 }
 
-/// A query that exceeds the `max_query_size` limit (default 1 MiB) must be
-/// rejected with `QueryTooLarge` before any parsing occurs.
+/// A query that exceeds the `max_query_size` limit must be rejected with
+/// `QueryTooLarge` before any parsing occurs.
 #[test]
 fn test_query_too_large_rejected() {
-    // Build a query slightly larger than the default 1 MiB limit.
-    let padding = "x".repeat(1_100_000);
+    // Use an explicit 1 MiB limit (the global default is 64 MiB which would
+    // require too much memory to test against).
+    let limit: usize = 1_048_576;
+    let padding = "x".repeat(limit);
     let query = format!("MATCH (n) WHERE n.v = '{padding}' RETURN n");
 
-    let result = parse_query(&query);
+    let result = parse_query_with_max_size(&query, limit);
     assert!(
         matches!(result, Err(ParseError::QueryTooLarge { .. })),
-        "a 1.1 MiB query must be rejected with QueryTooLarge; got {:?}",
+        "query exceeding 1 MiB limit must be rejected with QueryTooLarge; got {:?}",
         result
     );
 }

@@ -14,7 +14,7 @@ pub mod lexer;
 pub mod parser;
 
 pub use lexer::{Token, TokenKind};
-pub use parser::parse_query;
+pub use parser::{parse_query, parse_query_with_max_size};
 
 /// Tokenise `src` into a vector of [`Token`]s, terminated by [`TokenKind::Eof`].
 ///

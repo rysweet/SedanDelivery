@@ -841,6 +841,12 @@ pub(crate) fn cypher_compare(a: &Value, b: &Value) -> Result<std::cmp::Ordering,
         // Temporal comparisons
         (Value::Date(x), Value::Date(y)) => Ok(x.cmp(y)),
         (Value::LocalTime(x), Value::LocalTime(y)) => Ok(x.cmp(y)),
+        // Zoned time: compare by UTC-normalized instant
+        (Value::Time(t1, o1), Value::Time(t2, o2)) => {
+            let utc1 = time_to_utc_nanos_filter(t1, *o1);
+            let utc2 = time_to_utc_nanos_filter(t2, *o2);
+            Ok(utc1.cmp(&utc2))
+        }
         (Value::LocalDateTime(x), Value::LocalDateTime(y)) => Ok(x.cmp(y)),
         (Value::DateTime(x), Value::DateTime(y)) => Ok(x.cmp(y)),
         // List comparison: element-by-element
@@ -2951,6 +2957,19 @@ fn eval_time_constructor(vals: &[Value]) -> Result<Value, GqlError> {
                 jiff::tz::TimeZone::UTC
             };
 
+            // When the target timezone differs from the base timezone, we must
+            // construct the time in the BASE timezone first (applying any overrides
+            // to the base's civil time), then convert the UTC instant to the target tz.
+            if let (Some(_), Some(ref btz)) = (&tz_name, &base_tz) {
+                // Create zoned at base tz (with any overridden components),
+                // then convert to target tz.
+                let base_zoned = epoch_dt
+                    .to_zoned(btz.clone())
+                    .map_err(|e| temporal_parse_error("time", e))?;
+                let converted = base_zoned.with_time_zone(target_tz);
+                return Ok(zoned_to_time_value(&converted));
+            }
+
             // Create zoned time
             let zoned = epoch_dt
                 .to_zoned(target_tz)
@@ -3009,6 +3028,7 @@ fn eval_localtime_constructor(vals: &[Value]) -> Result<Value, GqlError> {
             jiff::civil::Time::new(dt.hour(), dt.minute(), dt.second(), dt.subsec_nanosecond())
                 .map_err(|e| temporal_parse_error("localtime", e))?,
         )),
+        Value::Time(t, _offset) => Ok(Value::LocalTime(*t)),
         Value::DateTime(zdt) => {
             let dt = jiff::civil::DateTime::from(zdt.as_ref());
             Ok(Value::LocalTime(
@@ -3111,10 +3131,15 @@ fn eval_datetime_constructor(vals: &[Value]) -> Result<Value, GqlError> {
                     _ => None,
                 };
 
-            // Extract timezone from "time" key when it is a ZonedTime (stored as DateTime).
+            // Extract timezone from "time" key when it is a ZonedTime.
             // This preserves e.g. +01:00 from time({..., timezone: '+01:00'}).
             let base_time_tz: Option<jiff::tz::TimeZone> = match m.get("time") {
                 Some(Value::DateTime(zdt)) => Some(zdt.time_zone().clone()),
+                Some(Value::Time(_, offset)) => {
+                    let off = jiff::tz::Offset::from_seconds(*offset)
+                        .unwrap_or(jiff::tz::Offset::UTC);
+                    Some(jiff::tz::TimeZone::fixed(off))
+                }
                 _ => None,
             };
 
@@ -4131,6 +4156,15 @@ fn eval_time_truncate(vals: &[Value]) -> Result<Value, GqlError> {
     Ok(zoned_to_time_value(&zoned))
 }
 
+/// Convert a zoned time (civil time + offset in seconds) to UTC nanoseconds-from-midnight.
+fn time_to_utc_nanos_filter(t: &jiff::civil::Time, offset_secs: i32) -> i64 {
+    let local_nanos = t.hour() as i64 * 3_600_000_000_000
+        + t.minute() as i64 * 60_000_000_000
+        + t.second() as i64 * 1_000_000_000
+        + t.subsec_nanosecond() as i64;
+    local_nanos - offset_secs as i64 * 1_000_000_000
+}
+
 // ── Duration namespace function helpers ──────────────────────────────────────
 
 /// Helper: extract civil DateTime from any temporal for duration calculations.
@@ -4246,6 +4280,43 @@ fn eval_duration_between(vals: &[Value]) -> Result<Value, GqlError> {
             let sp = build_duration_span(0, 0, secs, subsec);
             return Ok(Value::Duration(sp));
         }
+    }
+
+    // Two zoned times (Value::Time): diff by UTC-normalized instants
+    if let (Value::Time(t1, o1), Value::Time(t2, o2)) = (&vals[0], &vals[1]) {
+        let utc1 = time_to_utc_nanos_filter(t1, *o1);
+        let utc2 = time_to_utc_nanos_filter(t2, *o2);
+        let diff = utc2 - utc1;
+        let secs = diff / 1_000_000_000;
+        let subsec = (diff % 1_000_000_000) as i32;
+        let sp = build_duration_span(0, 0, secs, subsec);
+        return Ok(Value::Duration(sp));
+    }
+
+    // Mixed Time + DateTime: both have offsets, use UTC-normalized time-of-day
+    match (&vals[0], &vals[1]) {
+        (Value::Time(t, off), Value::DateTime(zdt)) | (Value::DateTime(zdt), Value::Time(t, off))
+            if !has_date_component(&vals[0]) || !has_date_component(&vals[1]) =>
+        {
+            let utc_time_nanos = time_to_utc_nanos_filter(t, *off);
+            let utc_zdt = zdt.with_time_zone(jiff::tz::TimeZone::UTC);
+            let zt = jiff::civil::Time::from(&utc_zdt);
+            let utc_zdt_nanos = zt.hour() as i64 * 3_600_000_000_000
+                + zt.minute() as i64 * 60_000_000_000
+                + zt.second() as i64 * 1_000_000_000
+                + zt.subsec_nanosecond() as i64;
+            let (n1, n2) = if matches!(&vals[0], Value::Time(..)) {
+                (utc_time_nanos, utc_zdt_nanos)
+            } else {
+                (utc_zdt_nanos, utc_time_nanos)
+            };
+            let diff = n2 - n1;
+            let secs = diff / 1_000_000_000;
+            let subsec = (diff % 1_000_000_000) as i32;
+            let sp = build_duration_span(0, 0, secs, subsec);
+            return Ok(Value::Duration(sp));
+        }
+        _ => {}
     }
 
     let dt1 = temporal_to_civil_datetime(&vals[0])
@@ -4593,6 +4664,45 @@ fn eval_duration_in_seconds(vals: &[Value]) -> Result<Value, GqlError> {
                 nanos: nanos_diff as i128,
             }));
         }
+    }
+
+    // Two zoned times (Value::Time): diff by UTC-normalized instants
+    if let (Value::Time(t1, o1), Value::Time(t2, o2)) = (&vals[0], &vals[1]) {
+        let utc1 = time_to_utc_nanos_filter(t1, *o1);
+        let utc2 = time_to_utc_nanos_filter(t2, *o2);
+        let diff = (utc2 - utc1) as i128;
+        return Ok(Value::Duration(CypherDuration {
+            months: 0,
+            days: 0,
+            nanos: diff,
+        }));
+    }
+
+    // Mixed Time + DateTime: both have offsets, use UTC-normalized time-of-day
+    match (&vals[0], &vals[1]) {
+        (Value::Time(t, off), Value::DateTime(zdt)) | (Value::DateTime(zdt), Value::Time(t, off))
+            if !has_date_component(&vals[0]) || !has_date_component(&vals[1]) =>
+        {
+            let utc_time_nanos = time_to_utc_nanos_filter(t, *off);
+            let utc_zdt = zdt.with_time_zone(jiff::tz::TimeZone::UTC);
+            let zt = jiff::civil::Time::from(&utc_zdt);
+            let utc_zdt_nanos = zt.hour() as i64 * 3_600_000_000_000
+                + zt.minute() as i64 * 60_000_000_000
+                + zt.second() as i64 * 1_000_000_000
+                + zt.subsec_nanosecond() as i64;
+            let (n1, n2) = if matches!(&vals[0], Value::Time(..)) {
+                (utc_time_nanos, utc_zdt_nanos)
+            } else {
+                (utc_zdt_nanos, utc_time_nanos)
+            };
+            let diff = (n2 - n1) as i128;
+            return Ok(Value::Duration(CypherDuration {
+                months: 0,
+                days: 0,
+                nanos: diff,
+            }));
+        }
+        _ => {}
     }
 
     // Mixed DateTime + LocalDateTime/LocalTime: use DST-aware calculation if possible.
