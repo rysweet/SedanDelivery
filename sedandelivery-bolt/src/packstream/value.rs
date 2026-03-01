@@ -1,14 +1,29 @@
-/// Bolt protocol value type. Deliberately flat -- structures are not pre-parsed.
+/// Bolt protocol value type.
+///
+/// Represents every data type that can appear on the Bolt wire.
+/// Structures are kept in their tagged-fields form rather than
+/// being pre-parsed into domain types so that the packstream layer
+/// remains format-agnostic.
 #[derive(Debug, Clone, PartialEq)]
 pub enum BoltValue {
+    /// The absence of a value.
     Null,
+    /// A boolean value.
     Bool(bool),
+    /// A 64-bit signed integer.
     Int(i64),
+    /// A 64-bit IEEE 754 floating-point number.
     Float(f64),
+    /// A raw byte array.
     Bytes(Vec<u8>),
+    /// A UTF-8 string.
     String(String),
+    /// An ordered sequence of values.
     List(Vec<BoltValue>),
+    /// An ordered sequence of key-value pairs (keys are always strings).
     Map(Vec<(String, BoltValue)>),
+    /// A tagged structure with positional fields (e.g. Node, Relationship,
+    /// temporal types).
     Structure { tag: u8, fields: Vec<BoltValue> },
 }
 

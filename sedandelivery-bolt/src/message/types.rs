@@ -1,39 +1,26 @@
 use crate::packstream::decoder;
 use crate::packstream::encoder;
 use crate::packstream::value::{BoltMap, BoltValue};
-
-// ---- Tag constants --------------------------------------------------------
-
-const TAG_HELLO: u8 = 0x01;
-const TAG_GOODBYE: u8 = 0x02;
-const TAG_RESET: u8 = 0x0F;
-const TAG_RUN: u8 = 0x10;
-const TAG_BEGIN: u8 = 0x11;
-const TAG_COMMIT: u8 = 0x12;
-const TAG_ROLLBACK: u8 = 0x13;
-const TAG_DISCARD: u8 = 0x2F;
-const TAG_PULL: u8 = 0x3F;
-const TAG_LOGON: u8 = 0x6A;
-
-const TAG_SUCCESS: u8 = 0x70;
-const TAG_RECORD: u8 = 0x71;
-const TAG_IGNORED: u8 = 0x7E;
-const TAG_FAILURE: u8 = 0x7F;
+use crate::protocol::tags::*;
 
 // ---- Error type -----------------------------------------------------------
 
 /// Errors that can occur when decoding a Bolt message.
 #[derive(Debug, thiserror::Error)]
 pub enum MessageError {
+    /// The underlying PackStream data could not be decoded.
     #[error("packstream decode error: {0}")]
     Decode(#[from] decoder::DecodeError),
 
+    /// The top-level PackStream value is not a Structure.
     #[error("expected Structure, got {0}")]
     NotAStructure(String),
 
+    /// The structure tag byte does not match any known message type.
     #[error("unknown message tag: 0x{0:02X}")]
     UnknownTag(u8),
 
+    /// The structure has the wrong number of fields for its tag.
     #[error("wrong field count for tag 0x{tag:02X}: expected {expected}, got {actual}")]
     WrongFieldCount {
         tag: u8,
@@ -41,6 +28,7 @@ pub enum MessageError {
         actual: usize,
     },
 
+    /// A field has an unexpected PackStream type.
     #[error("expected {expected} in field {field}, got {actual}")]
     UnexpectedFieldType {
         field: usize,

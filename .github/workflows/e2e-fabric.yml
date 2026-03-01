@@ -1,0 +1,148 @@
+name: Fabric E2E Validation
+
+# Validates the full SedanDelivery -> Fabric Graph replication pipeline
+# by writing test data via Bolt, waiting for the sedandelivery-fabric-sync
+# sidecar to replicate, then verifying all 8 property types and relationships
+# appear correctly in the Fabric Graph Database.
+#
+# Triggers:
+#   - After a successful "Deploy SedanDelivery" workflow run
+#   - Manual dispatch specifying the target environment
+
+on:
+  workflow_run:
+    workflows: ["Deploy SedanDelivery"]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to validate (e.g. main, pr-42, branch-name)'
+        required: true
+        type: string
+      timeout:
+        description: 'Max seconds to wait for Fabric sync'
+        required: false
+        type: number
+        default: 120
+
+env:
+  AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+  AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+
+jobs:
+  validate:
+    name: Validate Fabric Replication
+    runs-on: ubuntu-latest
+    if: >-
+      github.event.workflow_run.conclusion == 'success' ||
+      github.event_name == 'workflow_dispatch'
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install neo4j requests
+
+      - name: Azure login
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Determine environment
+        id: env
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            ENV_NAME="${{ inputs.environment }}"
+          else
+            # Derive env name from the deploy workflow's head branch, matching
+            # the sanitisation logic in deploy.yml.
+            RAW_BRANCH="${{ github.event.workflow_run.head_branch }}"
+            if [[ "${RAW_BRANCH}" == "main" ]]; then
+              ENV_NAME="main"
+            else
+              ENV_NAME=$(echo "${RAW_BRANCH}" | sed 's/[^a-zA-Z0-9-]/-/g' | tr '[:upper:]' '[:lower:]' | cut -c1-20 | sed 's/^-*//;s/-*$//')
+              if [[ -z "${ENV_NAME}" ]]; then
+                ENV_NAME="deploy"
+              fi
+            fi
+          fi
+
+          echo "env_name=${ENV_NAME}" >> "$GITHUB_OUTPUT"
+          echo "resource_group=rg-sd2-${ENV_NAME}" >> "$GITHUB_OUTPUT"
+          echo "Environment: ${ENV_NAME}"
+
+      - name: Get deployment endpoints
+        id: endpoints
+        env:
+          RG: ${{ steps.env.outputs.resource_group }}
+          ENV_NAME: ${{ steps.env.outputs.env_name }}
+        run: |
+          # Get the Redis container app's internal FQDN
+          REDIS_FQDN=$(az containerapp show \
+            --name "sd2-${ENV_NAME}-redis" \
+            --resource-group "${RG}" \
+            --query "properties.configuration.ingress.fqdn" \
+            --output tsv 2>/dev/null || echo "")
+
+          if [[ -z "${REDIS_FQDN}" ]]; then
+            echo "::error::Could not resolve Redis FQDN for sd2-${ENV_NAME}-redis in ${RG}"
+            exit 1
+          fi
+          echo "redis_host=${REDIS_FQDN}" >> "$GITHUB_OUTPUT"
+          echo "bolt_uri=bolt://${REDIS_FQDN}:7687" >> "$GITHUB_OUTPUT"
+          echo "Redis FQDN: ${REDIS_FQDN}"
+
+          # Retrieve the Fabric endpoint from the sync sidecar's env vars
+          FABRIC_ENDPOINT=$(az containerapp show \
+            --name "sd2-${ENV_NAME}-fabric-sync" \
+            --resource-group "${RG}" \
+            --query "properties.template.containers[0].env[?name=='GQL_FABRIC_ENDPOINT'].value | [0]" \
+            --output tsv 2>/dev/null || echo "")
+
+          if [[ -z "${FABRIC_ENDPOINT}" ]]; then
+            echo "::warning::Could not resolve Fabric endpoint — Fabric sync may not be deployed"
+            echo "has_fabric=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "fabric_endpoint=${FABRIC_ENDPOINT}" >> "$GITHUB_OUTPUT"
+            echo "has_fabric=true" >> "$GITHUB_OUTPUT"
+            echo "Fabric endpoint: (resolved)"
+          fi
+
+      - name: Run E2E validation
+        if: steps.endpoints.outputs.has_fabric == 'true'
+        env:
+          BOLT_URI: ${{ steps.endpoints.outputs.bolt_uri }}
+          REDIS_HOST: ${{ steps.endpoints.outputs.redis_host }}
+          FABRIC_ENDPOINT: ${{ steps.endpoints.outputs.fabric_endpoint }}
+          FABRIC_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          FABRIC_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          FABRIC_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+        run: |
+          TIMEOUT=${{ inputs.timeout || 120 }}
+          python scripts/validate-fabric-e2e.py \
+            --timeout "${TIMEOUT}" \
+            --report fabric-e2e-report.json
+
+      - name: Skip notice (no Fabric)
+        if: steps.endpoints.outputs.has_fabric != 'true'
+        run: |
+          echo "::notice::Fabric sync is not deployed for this environment — skipping E2E validation"
+          echo '{"passed": null, "summary": "Skipped — no Fabric endpoint", "tests": []}' > fabric-e2e-report.json
+
+      - name: Upload validation report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fabric-e2e-report
+          path: fabric-e2e-report.json
+          retention-days: 30
