@@ -1,0 +1,25 @@
+---
+---
+
+@import "{{ site.theme }}";
+
+.wrapper {
+  max-width: 1200px;
+}
+
+section {
+  max-width: 1200px;
+  width: 100%;
+}
+
+img {
+  max-width: 100%;
+  border-radius: 8px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+  margin: 16px 0;
+}
+
+code, pre {
+  max-width: 100%;
+  overflow-x: auto;
+}
