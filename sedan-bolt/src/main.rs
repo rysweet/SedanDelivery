@@ -1,6 +1,6 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use tokio::net::TcpListener;
 use tokio::sync::Semaphore;
@@ -16,17 +16,29 @@ struct ConnectionGuard {
 impl Drop for ConnectionGuard {
     fn drop(&mut self) {
         self.active.fetch_sub(1, Ordering::Relaxed);
+        // Record disconnect metrics on drop (covers both normal close and panic).
+        sedan_bolt::metrics::connection_closed();
     }
 }
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
-        )
-        .init();
+    // Structured JSON logging when BOLT_JSON_LOGS=1, otherwise human-readable.
+    let json_logs = std::env::var("BOLT_JSON_LOGS")
+        .map(|v| v == "1")
+        .unwrap_or(false);
+
+    let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+
+    if json_logs {
+        tracing_subscriber::fmt()
+            .json()
+            .with_env_filter(env_filter)
+            .init();
+    } else {
+        tracing_subscriber::fmt().with_env_filter(env_filter).init();
+    }
 
     let bind_addr = std::env::var("BOLT_BIND_ADDR").unwrap_or_else(|_| "0.0.0.0:7687".to_string());
 
@@ -58,6 +70,18 @@ async fn main() {
     } else {
         tracing::info!("TLS not configured, using plaintext");
     }
+
+    // Initialize Prometheus metrics recorder.
+    let prometheus_handle = sedan_bolt::metrics::init_recorder();
+
+    let start_time = Instant::now();
+
+    // Spawn the health/metrics HTTP server.
+    sedan_bolt::health::spawn_health_server(sedan_bolt::health::HealthState {
+        prometheus_handle,
+        active_connections: Arc::clone(&active_connections),
+        start_time,
+    });
 
     let listener = TcpListener::bind(&bind_addr)
         .await
@@ -127,6 +151,9 @@ async fn main() {
         let active = Arc::clone(&active_connections);
         let tls = tls_acceptor.clone();
 
+        // Record connection metrics.
+        sedan_bolt::metrics::connection_accepted();
+
         active.fetch_add(1, Ordering::Relaxed);
         let current = active.load(Ordering::Relaxed);
         tracing::info!(%peer_addr, conn_id, active_connections = current, "new connection");
@@ -137,6 +164,7 @@ async fn main() {
             let _permit = permit;
 
             // ConnectionGuard ensures active count is decremented even on panic.
+            // It also records disconnect metrics via connection_closed().
             let _guard = ConnectionGuard { active };
 
             // Wrap TLS handshake + session::run in a timeout so idle connections are reaped.
@@ -179,8 +207,8 @@ async fn main() {
                 }
             }
 
-            // _guard and _permit drop here, decrementing active count and
-            // releasing the semaphore permit.
+            // _guard and _permit drop here, decrementing active count,
+            // recording disconnect metrics, and releasing the semaphore permit.
         });
 
         // Spawn a lightweight watcher to detect and log panics without

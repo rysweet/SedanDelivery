@@ -1,6 +1,7 @@
 //! PULL and DISCARD message handlers.
 
 use crate::message::types::ServerMessage;
+use crate::metrics as bolt_metrics;
 use crate::packstream::value::{BoltMap, BoltMapExt, BoltValue};
 use crate::protocol::state::ServerState;
 
@@ -80,6 +81,7 @@ pub(crate) fn handle_pull(
     if let Some((code, message)) = trailing_error {
         // All buffered records have been streamed. Now emit FAILURE for the
         // per-row error that terminated evaluation, and transition to Failed.
+        bolt_metrics::error_recorded(&code);
         messages.push(ServerMessage::Failure(bolt_map! {
             "code" => BoltValue::String(code),
             "message" => BoltValue::String(message)
@@ -100,6 +102,10 @@ pub(crate) fn handle_pull(
         let profile_plan = pending.profile_plan.take();
         let db_name = pending.graph.clone();
         let query_notifications = std::mem::take(&mut pending.notifications);
+
+        // Record query metrics on completion.
+        bolt_metrics::query_completed(&query_type);
+        bolt_metrics::query_duration(elapsed_ms as f64 / 1000.0);
 
         let mut meta = bolt_map! {
             "bookmark" => BoltValue::String(bookmark),

@@ -13,7 +13,9 @@
 
 pub mod bridge;
 pub mod connection;
+pub mod health;
 pub mod message;
+pub mod metrics;
 pub mod packstream;
 pub mod protocol;
 pub mod tls;

@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use crate::bridge;
 use crate::message::types::ServerMessage;
+use crate::metrics as bolt_metrics;
 use crate::packstream::value::{BoltMap, BoltMapExt, BoltValue};
 use crate::protocol::state::ServerState;
 use gql_core::storage::InMemoryGraphStore;
@@ -157,6 +158,9 @@ pub(crate) async fn handle_run(
                 }
                 Err(_) => {
                     // Lock acquisition timed out
+                    bolt_metrics::error_recorded(
+                        "Neo.TransientError.Transaction.LockClientStopped",
+                    );
                     session.state = ServerState::Failed;
                     return Ok(vec![ServerMessage::Failure(bolt_map! {
                         "code" => BoltValue::String(
@@ -279,6 +283,7 @@ pub(crate) async fn handle_run(
         }
         Err(gql_err) => {
             let (code, message) = bridge::errors::gql_error_to_bolt(&gql_err);
+            bolt_metrics::error_recorded(&code);
             // Release write lock on error
             session.write_lock_guard = None;
             session.state = ServerState::Failed;
@@ -345,6 +350,7 @@ async fn handle_explain(
         }
         Err(e) => {
             let (code, message) = bridge::errors::gql_error_to_bolt(&e);
+            bolt_metrics::error_recorded(&code);
             session.state = ServerState::Failed;
             Ok(vec![ServerMessage::Failure(bolt_map! {
                 "code" => BoltValue::String(code),

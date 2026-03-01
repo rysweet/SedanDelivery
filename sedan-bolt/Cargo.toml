@@ -15,11 +15,16 @@ tokio-rustls  = "0.26"
 rustls         = "0.23"
 rustls-pemfile = "2"
 tracing       = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 bytes         = "1.5"
 indexmap       = { workspace = true }
 jiff           = { workspace = true }
 thiserror      = { workspace = true }
+metrics        = "0.24"
+metrics-exporter-prometheus = "0.16"
+axum           = { version = "0.8", default-features = false, features = ["tokio", "http1", "json"] }
+serde          = { workspace = true }
+serde_json     = { workspace = true }
 
 [dev-dependencies]
 criterion     = { version = "0.5", features = ["html_reports"] }
