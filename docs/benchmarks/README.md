@@ -3,13 +3,13 @@
 ## Running benchmarks
 
 ```bash
-cargo bench -p sedan-bolt
+cargo bench -p sedandelivery-bolt
 ```
 
 To run a specific benchmark by name:
 
 ```bash
-cargo bench -p sedan-bolt -- encode_int
+cargo bench -p sedandelivery-bolt -- encode_int
 ```
 
 HTML reports are generated in `target/criterion/` after each run.
