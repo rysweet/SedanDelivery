@@ -67,33 +67,42 @@ ALL_SUITES=(
 )
 
 # Tests known to pass against sedan-bolt (as of 2026-02-28)
+# 113/118 pass, 5 skipped (multi-db + Python UTC offset ambiguity)
 PASSING_TESTS=(
-    # session_run (14/19 pass)
-    "tests.neo4j.test_session_run.TestSessionRun.test_simple_query"
+    # session_run (19/19 pass)
+    "tests.neo4j.test_session_run.TestSessionRun.test_autocommit_transactions_should_support_metadata"
+    "tests.neo4j.test_session_run.TestSessionRun.test_autocommit_transactions_should_support_timeout"
     "tests.neo4j.test_session_run.TestSessionRun.test_can_return_node"
+    "tests.neo4j.test_session_run.TestSessionRun.test_can_return_path"
     "tests.neo4j.test_session_run.TestSessionRun.test_can_return_relationship"
     "tests.neo4j.test_session_run.TestSessionRun.test_fails_on_bad_syntax"
+    "tests.neo4j.test_session_run.TestSessionRun.test_fails_on_missing_parameter"
     "tests.neo4j.test_session_run.TestSessionRun.test_iteration_larger_than_fetch_size"
-    "tests.neo4j.test_session_run.TestSessionRun.test_iteration_smaller_than_fetch_size"
     "tests.neo4j.test_session_run.TestSessionRun.test_iteration_nested"
+    "tests.neo4j.test_session_run.TestSessionRun.test_iteration_smaller_than_fetch_size"
+    "tests.neo4j.test_session_run.TestSessionRun.test_long_string"
     "tests.neo4j.test_session_run.TestSessionRun.test_partial_iteration"
     "tests.neo4j.test_session_run.TestSessionRun.test_recover_from_fail_on_streaming"
     "tests.neo4j.test_session_run.TestSessionRun.test_recover_from_invalid_query"
     "tests.neo4j.test_session_run.TestSessionRun.test_regex_in_parameter"
     "tests.neo4j.test_session_run.TestSessionRun.test_regex_inline"
     "tests.neo4j.test_session_run.TestSessionRun.test_session_reuse"
+    "tests.neo4j.test_session_run.TestSessionRun.test_simple_query"
     "tests.neo4j.test_session_run.TestSessionRun.test_updates_last_bookmark"
 
-    # tx_run (15/21 pass)
-    "tests.neo4j.test_tx_run.TestTxRun.test_simple_query"
-    "tests.neo4j.test_tx_run.TestTxRun.test_can_commit_transaction"
-    "tests.neo4j.test_tx_run.TestTxRun.test_consume_after_commit"
+    # tx_run (24/24 pass)
     "tests.neo4j.test_tx_run.TestTxRun.test_broken_transaction_should_not_break_session"
+    "tests.neo4j.test_tx_run.TestTxRun.test_can_commit_transaction"
+    "tests.neo4j.test_tx_run.TestTxRun.test_can_rollback_transaction"
+    "tests.neo4j.test_tx_run.TestTxRun.test_consume_after_commit"
     "tests.neo4j.test_tx_run.TestTxRun.test_does_not_update_last_bookmark_on_failure"
     "tests.neo4j.test_tx_run.TestTxRun.test_does_not_update_last_bookmark_on_rollback"
+    "tests.neo4j.test_tx_run.TestTxRun.test_interwoven_queries"
+    "tests.neo4j.test_tx_run.TestTxRun.test_parallel_queries"
     "tests.neo4j.test_tx_run.TestTxRun.test_should_be_able_to_rollback_a_failure"
     "tests.neo4j.test_tx_run.TestTxRun.test_should_fail_run_in_a_commited_tx"
     "tests.neo4j.test_tx_run.TestTxRun.test_should_fail_run_in_a_rollbacked_tx"
+    "tests.neo4j.test_tx_run.TestTxRun.test_should_fail_to_run_query_for_invalid_bookmark"
     "tests.neo4j.test_tx_run.TestTxRun.test_should_not_allow_run_on_a_commited_tx"
     "tests.neo4j.test_tx_run.TestTxRun.test_should_not_allow_run_on_a_rollbacked_tx"
     "tests.neo4j.test_tx_run.TestTxRun.test_should_not_commit_a_commited_tx"
@@ -101,25 +110,45 @@ PASSING_TESTS=(
     "tests.neo4j.test_tx_run.TestTxRun.test_should_not_rollback_a_commited_tx"
     "tests.neo4j.test_tx_run.TestTxRun.test_should_not_rollback_a_rollbacked_tx"
     "tests.neo4j.test_tx_run.TestTxRun.test_should_not_run_valid_query_in_invalid_tx"
+    "tests.neo4j.test_tx_run.TestTxRun.test_simple_query"
+    "tests.neo4j.test_tx_run.TestTxRun.test_tx_configuration"
+    "tests.neo4j.test_tx_run.TestTxRun.test_tx_timeout"
+    "tests.neo4j.test_tx_run.TestTxRun.test_unconsumed_result"
     "tests.neo4j.test_tx_run.TestTxRun.test_updates_last_bookmark_on_commit"
 
-    # tx_func_run (4/8 pass)
-    "tests.neo4j.test_tx_func_run.TestTxFuncRun.test_simple_query"
-    "tests.neo4j.test_tx_func_run.TestTxFuncRun.test_parameter"
+    # tx_func_run (9/9 pass)
+    "tests.neo4j.test_tx_func_run.TestTxFuncRun.test_client_exception_rolls_back_change"
     "tests.neo4j.test_tx_func_run.TestTxFuncRun.test_does_not_update_last_bookmark_on_rollback"
+    "tests.neo4j.test_tx_func_run.TestTxFuncRun.test_iteration_nested"
+    "tests.neo4j.test_tx_func_run.TestTxFuncRun.test_meta_data"
+    "tests.neo4j.test_tx_func_run.TestTxFuncRun.test_parameter"
+    "tests.neo4j.test_tx_func_run.TestTxFuncRun.test_simple_query"
+    "tests.neo4j.test_tx_func_run.TestTxFuncRun.test_tx_func_configuration"
+    "tests.neo4j.test_tx_func_run.TestTxFuncRun.test_tx_timeout"
     "tests.neo4j.test_tx_func_run.TestTxFuncRun.test_updates_last_bookmark_on_commit"
 
-    # authentication (2/4 pass)
+    # authentication (4/4 pass)
+    "tests.neo4j.test_authentication.TestAuthenticationBasic.test_error_on_incorrect_credentials"
+    "tests.neo4j.test_authentication.TestAuthenticationBasic.test_error_on_incorrect_credentials_tx"
     "tests.neo4j.test_authentication.TestAuthenticationBasic.test_success_on_basic_token"
     "tests.neo4j.test_authentication.TestAuthenticationBasic.test_success_on_provide_realm_with_basic_token"
 
-    # bookmarks (3/8 pass)
+    # bookmarks (8/8 pass)
     "tests.neo4j.test_bookmarks.TestBookmarks.test_can_handle_multiple_bookmarks"
     "tests.neo4j.test_bookmarks.TestBookmarks.test_can_obtain_bookmark_after_commit"
+    "tests.neo4j.test_bookmarks.TestBookmarks.test_can_pass_bookmark_into_next_session"
+    "tests.neo4j.test_bookmarks.TestBookmarks.test_can_pass_read_bookmark_into_write_session"
+    "tests.neo4j.test_bookmarks.TestBookmarks.test_can_pass_write_bookmark_into_write_session"
+    "tests.neo4j.test_bookmarks.TestBookmarks.test_fails_on_invalid_bookmark"
+    "tests.neo4j.test_bookmarks.TestBookmarks.test_fails_on_invalid_bookmark_using_tx_func"
     "tests.neo4j.test_bookmarks.TestBookmarks.test_no_bookmark_after_rollback"
 
-    # summary (9/14 pass)
+    # summary (14/15 pass, 1 skipped: multi-db)
     "tests.neo4j.test_summary.TestSummary.test_address"
+    "tests.neo4j.test_summary.TestSummary.test_agent_string"
+    "tests.neo4j.test_summary.TestSummary.test_can_obtain_notification_info"
+    "tests.neo4j.test_summary.TestSummary.test_can_obtain_plan_info"
+    "tests.neo4j.test_summary.TestSummary.test_can_obtain_profile_info"
     "tests.neo4j.test_summary.TestSummary.test_can_obtain_summary_after_consuming_result"
     "tests.neo4j.test_summary.TestSummary.test_contains_time_information"
     "tests.neo4j.test_summary.TestSummary.test_no_data_status"
@@ -130,27 +159,49 @@ PASSING_TESTS=(
     "tests.neo4j.test_summary.TestSummary.test_success_status"
     "tests.neo4j.test_summary.TestSummary.test_summary_counters_case_1"
 
-    # direct_driver (2/6 pass, 3 skipped)
+    # direct_driver (3/6 pass, 3 skipped: multi-db)
     "tests.neo4j.test_direct_driver.TestDirectDriver.test_custom_resolver"
     "tests.neo4j.test_direct_driver.TestDirectDriver.test_fail_nicely_when_using_http_port"
+    "tests.neo4j.test_direct_driver.TestDirectDriver.test_supports_multi_db"
 
-    # datatypes (8/11 pass, excludes path echo)
+    # datatypes (11/11 pass)
+    "tests.neo4j.datatypes.test_datatypes.TestDataTypes.test_should_echo_back"
     "tests.neo4j.datatypes.test_datatypes.TestDataTypes.test_should_echo_list_of_maps"
     "tests.neo4j.datatypes.test_datatypes.TestDataTypes.test_should_echo_map_of_lists"
     "tests.neo4j.datatypes.test_datatypes.TestDataTypes.test_should_echo_nested_lists"
     "tests.neo4j.datatypes.test_datatypes.TestDataTypes.test_should_echo_nested_map"
     "tests.neo4j.datatypes.test_datatypes.TestDataTypes.test_should_echo_node"
+    "tests.neo4j.datatypes.test_datatypes.TestDataTypes.test_should_echo_path"
     "tests.neo4j.datatypes.test_datatypes.TestDataTypes.test_should_echo_relationship"
     "tests.neo4j.datatypes.test_datatypes.TestDataTypes.test_should_echo_very_long_list"
     "tests.neo4j.datatypes.test_datatypes.TestDataTypes.test_should_echo_very_long_map"
     "tests.neo4j.datatypes.test_datatypes.TestDataTypes.test_should_echo_very_long_string"
 
-    # temporal (5+ pass)
+    # spatial_types (4/4 pass)
+    "tests.neo4j.datatypes.test_spatial_types.TestDataTypes.test_cypher_created_point"
+    "tests.neo4j.datatypes.test_spatial_types.TestDataTypes.test_nested_point"
+    "tests.neo4j.datatypes.test_spatial_types.TestDataTypes.test_point_components"
+    "tests.neo4j.datatypes.test_spatial_types.TestDataTypes.test_should_echo_spatial_point"
+
+    # temporal_types (17/18 pass, 1 skipped: Python UTC offset ambiguity)
     "tests.neo4j.datatypes.test_temporal_types.TestDataTypes.test_cypher_created_date"
+    "tests.neo4j.datatypes.test_temporal_types.TestDataTypes.test_cypher_created_datetime"
     "tests.neo4j.datatypes.test_temporal_types.TestDataTypes.test_cypher_created_duration"
+    "tests.neo4j.datatypes.test_temporal_types.TestDataTypes.test_cypher_created_time"
+    "tests.neo4j.datatypes.test_temporal_types.TestDataTypes.test_date_components"
+    "tests.neo4j.datatypes.test_temporal_types.TestDataTypes.test_date_time_cypher_created_tz_id"
+    "tests.neo4j.datatypes.test_temporal_types.TestDataTypes.test_datetime_components"
+    "tests.neo4j.datatypes.test_temporal_types.TestDataTypes.test_datetime_with_offset_components"
+    "tests.neo4j.datatypes.test_temporal_types.TestDataTypes.test_datetime_with_timezone_components"
+    "tests.neo4j.datatypes.test_temporal_types.TestDataTypes.test_duration_components"
+    "tests.neo4j.datatypes.test_temporal_types.TestDataTypes.test_nested_date"
+    "tests.neo4j.datatypes.test_temporal_types.TestDataTypes.test_nested_datetime"
+    "tests.neo4j.datatypes.test_temporal_types.TestDataTypes.test_nested_duration"
+    "tests.neo4j.datatypes.test_temporal_types.TestDataTypes.test_nested_time"
+    "tests.neo4j.datatypes.test_temporal_types.TestDataTypes.test_should_echo_all_timezone_ids"
     "tests.neo4j.datatypes.test_temporal_types.TestDataTypes.test_should_echo_temporal_type"
     "tests.neo4j.datatypes.test_temporal_types.TestDataTypes.test_time_components"
-    "tests.neo4j.datatypes.test_temporal_types.TestDataTypes.test_should_echo_all_timezone_ids"
+    "tests.neo4j.datatypes.test_temporal_types.TestDataTypes.test_time_with_offset_components"
 )
 
 usage() {
