@@ -81,6 +81,22 @@ else
   echo "Found existing workspace: ${WORKSPACE_ID}"
 fi
 
+# -- Ensure SP is a workspace member (needed to list/create items) ----------------
+echo "Ensuring SP has workspace member access..."
+# Get the SP's own object ID from the token
+SP_OBJECT_ID=$(python3 -c "
+import json, base64, sys
+token = '${TOKEN}'
+payload = token.split('.')[1]
+payload += '=' * (4 - len(payload) % 4)  # pad base64
+data = json.loads(base64.urlsafe_b64decode(payload))
+print(data.get('oid', ''))
+")
+if [[ -n "$SP_OBJECT_ID" ]]; then
+  curl -s -X POST -H "$AUTH" -H "Content-Type: application/json"     "${FABRIC_API}/workspaces/${WORKSPACE_ID}/roleAssignments"     -d "{\"principal\": {\"id\": \"${SP_OBJECT_ID}\", \"type\": \"ServicePrincipal\"}, \"role\": \"Admin\"}"     >/dev/null 2>&1 || true
+  echo "SP ${SP_OBJECT_ID} granted workspace access (or already had it)"
+fi
+
 # -- Find or create Graph Database -----------------------------------------
 GDB_NAME="sedangraph"
 echo "Looking for Graph Database '${GDB_NAME}'..."
