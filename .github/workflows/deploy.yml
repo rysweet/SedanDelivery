@@ -408,6 +408,24 @@ jobs:
               --server "${ACR_SERVER}" \
               --identity system \
               --output none
+            # Assign AcrPull BEFORE image update so the new tag can be pulled
+            UPDATE_PRINCIPAL_ID=$(az containerapp show \
+              --name "${CA_NAME}" \
+              --resource-group "${RG}" \
+              --query "identity.principalId" \
+              -o tsv 2>/dev/null || echo "")
+            if [[ -n "${UPDATE_PRINCIPAL_ID}" && "${UPDATE_PRINCIPAL_ID}" != "None" ]]; then
+              ACR_RESOURCE_ID=$(az acr show --name "${ACR_NAME}" --query id -o tsv)
+              az role assignment create \
+                --assignee-object-id "${UPDATE_PRINCIPAL_ID}" \
+                --assignee-principal-type ServicePrincipal \
+                --role "AcrPull" \
+                --scope "${ACR_RESOURCE_ID}" \
+                --output none 2>/dev/null || true
+              echo "   AcrPull role verified for ${UPDATE_PRINCIPAL_ID}"
+              # Allow role propagation
+              sleep 10
+            fi
             az containerapp update \
               --name "${CA_NAME}" \
               --resource-group "${RG}" \
