@@ -533,7 +533,15 @@ jobs:
             echo "::error::Could not resolve Redis FQDN from ${REDIS_CA_NAME}"
             exit 1
           fi
-          REDIS_URL="redis://${REDIS_FQDN}:6379"
+          # Use short hostname (app name) for internal Container Apps communication
+          # Include Valkey password from the main container's secrets
+          VALKEY_PASS=$(az containerapp secret show             --name "${REDIS_CA_NAME}" --resource-group "${RG}"             --secret-name valkey-password --query value -o tsv 2>/dev/null || echo "")
+          if [[ -n "${VALKEY_PASS}" ]]; then
+            echo "::add-mask::${VALKEY_PASS}"
+            REDIS_URL="redis://:${VALKEY_PASS}@${REDIS_CA_NAME}:6379"
+          else
+            REDIS_URL="redis://${REDIS_CA_NAME}:6379"
+          fi
 
           echo "🔄 Deploying sedandelivery-fabric-sync: ${CA_NAME}"
           echo "   Image: ${IMAGE}"
