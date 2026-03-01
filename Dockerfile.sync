@@ -69,8 +69,8 @@ RUN apt-get update -q && \
 COPY --from=builder /app/target/release/sedandelivery-fabric-sync /usr/local/bin/sedandelivery-fabric-sync
 
 # Run as non-root
-RUN useradd --no-create-home --shell /bin/false sync
-USER sync
+RUN useradd --no-create-home --shell /bin/false syncuser
+USER syncuser
 
 # Configuration via environment variables:
 #   GQL_REDIS_URL            (default: redis://127.0.0.1:6379)
