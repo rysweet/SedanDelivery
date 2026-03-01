@@ -51,6 +51,14 @@ async fn main() {
 
     let store = Arc::new(InMemoryGraphStore::new());
 
+    // Load TLS configuration (returns None if BOLT_TLS_CERT / BOLT_TLS_KEY are not set)
+    let tls_acceptor = sedan_bolt::tls::load_tls_config();
+    if tls_acceptor.is_some() {
+        tracing::info!("TLS enabled for Bolt connections");
+    } else {
+        tracing::info!("TLS not configured, using plaintext");
+    }
+
     let listener = TcpListener::bind(&bind_addr)
         .await
         .expect("failed to bind Bolt TCP listener");
@@ -117,6 +125,7 @@ async fn main() {
         let bookmark = Arc::clone(&global_bookmark);
         let wl = Arc::clone(&write_lock);
         let active = Arc::clone(&active_connections);
+        let tls = tls_acceptor.clone();
 
         active.fetch_add(1, Ordering::Relaxed);
         let current = active.load(Ordering::Relaxed);
@@ -130,11 +139,27 @@ async fn main() {
             // ConnectionGuard ensures active count is decremented even on panic.
             let _guard = ConnectionGuard { active };
 
-            // Wrap session::run in a timeout so idle connections are reaped.
-            let result = tokio::time::timeout(
-                idle_timeout,
-                sedan_bolt::connection::session::run(stream, store, conn_id, bookmark, wl),
-            )
+            // Wrap TLS handshake + session::run in a timeout so idle connections are reaped.
+            let result = tokio::time::timeout(idle_timeout, async {
+                if let Some(acceptor) = tls {
+                    match acceptor.accept(stream).await {
+                        Ok(tls_stream) => {
+                            tracing::debug!(conn_id, "TLS handshake complete");
+                            sedan_bolt::connection::session::run(
+                                tls_stream, store, conn_id, bookmark, wl,
+                            )
+                            .await
+                        }
+                        Err(e) => {
+                            tracing::warn!(%peer_addr, conn_id, "TLS handshake failed: {e}");
+                            Ok(())
+                        }
+                    }
+                } else {
+                    sedan_bolt::connection::session::run(stream, store, conn_id, bookmark, wl)
+                        .await
+                }
+            })
             .await;
 
             match result {

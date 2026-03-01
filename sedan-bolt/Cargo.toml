@@ -11,6 +11,9 @@ path = "src/main.rs"
 [dependencies]
 gql-core      = { path = "../gql-core" }
 tokio         = { version = "1", features = ["full"] }
+tokio-rustls  = "0.26"
+rustls         = "0.23"
+rustls-pemfile = "2"
 tracing       = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 bytes         = "1.5"
@@ -21,6 +24,7 @@ thiserror      = { workspace = true }
 [dev-dependencies]
 criterion     = { version = "0.5", features = ["html_reports"] }
 tokio-test    = "0.4"
+rcgen          = "0.13"
 
 [[bench]]
 name = "bolt_benchmarks"

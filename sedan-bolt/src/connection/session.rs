@@ -1,8 +1,7 @@
 use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 
-use tokio::io::{AsyncWriteExt, BufReader};
-use tokio::net::TcpStream;
+use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
 
 use gql_core::storage::InMemoryGraphStore;
 
@@ -29,20 +28,27 @@ pub enum SessionError {
     Protocol(#[from] handler::ProtocolError),
 }
 
-/// Run a complete Bolt session on the given TCP stream.
+/// Run a complete Bolt session on the given stream.
 ///
 /// Performs the version-negotiation handshake, then enters the message loop:
 /// reads chunked messages from the client, dispatches them through the
 /// protocol handler, and writes back the encoded responses.  The loop
 /// terminates on GOODBYE, connection close, or a Defunct state transition.
-pub async fn run(
-    stream: TcpStream,
+///
+/// The stream is generic over any type implementing `AsyncRead + AsyncWrite`,
+/// which allows it to work with both plaintext TCP streams and TLS-wrapped
+/// connections.
+pub async fn run<S>(
+    stream: S,
     store: Arc<InMemoryGraphStore>,
     conn_id: u64,
     global_bookmark: Arc<AtomicU64>,
     write_lock: Arc<tokio::sync::Mutex<()>>,
-) -> Result<(), SessionError> {
-    let (read_half, write_half) = stream.into_split();
+) -> Result<(), SessionError>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    let (read_half, write_half) = tokio::io::split(stream);
     let mut reader = BufReader::new(read_half);
     let mut writer = write_half;
 
