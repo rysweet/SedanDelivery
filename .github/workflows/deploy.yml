@@ -569,7 +569,6 @@ jobs:
               --memory 0.5Gi \
               --min-replicas 1 \
               --max-replicas 1 \
-              --ingress disabled \
               --secrets "fabric-client-secret=${DEPLOY_AZURE_CLIENT_SECRET}" \
               --env-vars \
                 "GQL_REDIS_URL=${REDIS_URL}" \
