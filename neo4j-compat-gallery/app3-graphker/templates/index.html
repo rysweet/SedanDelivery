@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>CVE Knowledge Graph Explorer</title>
-    <script src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
+    <script src="/static/vis-network.min.js"></script>
     <style>
         :root {
             --bg-primary: #0d1117;
@@ -109,7 +109,7 @@
             position: relative;
         }
 
-        #graph-vis { width: 100%; height: 100%; border-radius: 8px; }
+        #graph-vis { width: 100%; height: 500px; border-radius: 8px; }
 
         .graph-legend {
             position: absolute;
@@ -317,6 +317,7 @@
     </div>
 
     <script>
+        window.addEventListener('DOMContentLoaded', function() {
         fetch('/graph')
             .then(r => r.json())
             .then(data => {
@@ -395,6 +396,7 @@
                 container.innerHTML = '';
                 container.appendChild(errDiv);
             });
+        }); // end DOMContentLoaded
     </script>
 </body>
 </html>

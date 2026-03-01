@@ -22,8 +22,9 @@ from neo4j import GraphDatabase
 # ── Configuration ────────────────────────────────────────────────────────────
 
 BOLT_URI = os.environ.get("BOLT_URI", "bolt://localhost:7687")
+APP_DIR = os.path.dirname(os.path.abspath(__file__))
 
-app = Flask(__name__)
+app = Flask(__name__, static_folder=os.path.join(APP_DIR, "static"))
 
 driver = GraphDatabase.driver(BOLT_URI, auth=None)
 

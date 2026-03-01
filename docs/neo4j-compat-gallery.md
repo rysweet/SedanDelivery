@@ -191,30 +191,7 @@ Every feature below was exercised by at least one gallery app during testing.
 
 ## Architecture
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    Neo4j Compatibility Gallery                   │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                 │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────┐  ┌────────┐ │
-│  │   Neodash     │  │  neovis.js   │  │ GraphKer │  │NetSec  │ │
-│  │  Dashboard    │  │  Threat Viz  │  │ CVE Graph│  │Analyzer│ │
-│  │  :5005        │  │  :8080       │  │  :5001   │  │  :5002 │ │
-│  └──────┬───────┘  └──────┬───────┘  └────┬─────┘  └───┬────┘ │
-│         │     neo4j-driver (Bolt v4.4)     │            │      │
-│         └──────────┬──────┴────────────────┴────────────┘      │
-│                    │                                            │
-│         ┌──────────▼──────────┐                                │
-│         │  sedandelivery-bolt  │                                │
-│         │   Bolt Server :7687  │                                │
-│         └──────────┬──────────┘                                │
-│                    │                                            │
-│         ┌──────────▼──────────┐                                │
-│         │     gql-core         │                                │
-│         │  Rust Graph Engine   │                                │
-│         └─────────────────────┘                                │
-└─────────────────────────────────────────────────────────────────┘
-```
+![Gallery Architecture](assets/images/gallery/architecture.svg)
 
 ## Source Code
 
