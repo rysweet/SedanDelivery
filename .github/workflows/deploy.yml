@@ -250,19 +250,31 @@ jobs:
           FABRIC_CLIENT: ${{ env.AZURE_CLIENT_ID }}
           FABRIC_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
         run: |
+          # Run fabric provisioning — tee stdout so it appears in logs AND is captured
+          set +e  # Don't fail the step if provisioning fails
           FABRIC_OUTPUT=$(scripts/provision-fabric.sh \
             "${FABRIC_ENV_NAME}" \
             "${FABRIC_TENANT}" \
             "${FABRIC_CLIENT}" \
-            "${FABRIC_SECRET}")
+            "${FABRIC_SECRET}" 2>&1 | tee /dev/stderr)
+          FABRIC_RC=$?
+          set -e
 
-          FABRIC_ENDPOINT=$(echo "$FABRIC_OUTPUT" | grep "^FABRIC_ENDPOINT=" | cut -d= -f2-)
-          if [[ -n "$FABRIC_ENDPOINT" ]]; then
-            echo "::add-mask::${FABRIC_ENDPOINT}"
-            echo "fabric_endpoint=${FABRIC_ENDPOINT}" >> "$GITHUB_OUTPUT"
-            echo "has_fabric=true" >> "$GITHUB_OUTPUT"
-          else
+          if [[ $FABRIC_RC -ne 0 ]]; then
+            echo "::warning::Fabric provisioning failed (exit code ${FABRIC_RC})"
             echo "has_fabric=false" >> "$GITHUB_OUTPUT"
+          else
+            FABRIC_ENDPOINT=$(echo "$FABRIC_OUTPUT" | grep "^FABRIC_ENDPOINT=" | cut -d= -f2-)
+            if [[ -n "$FABRIC_ENDPOINT" ]]; then
+              echo "::add-mask::${FABRIC_ENDPOINT}"
+              echo "fabric_endpoint=${FABRIC_ENDPOINT}" >> "$GITHUB_OUTPUT"
+              echo "has_fabric=true" >> "$GITHUB_OUTPUT"
+              echo "Fabric provisioned: has_fabric=true"
+            else
+              echo "::warning::Fabric provisioning succeeded but FABRIC_ENDPOINT was empty"
+              echo "Script output: ${FABRIC_OUTPUT}"
+              echo "has_fabric=false" >> "$GITHUB_OUTPUT"
+            fi
           fi
 
       - name: Build and push Docker image via ACR Tasks
