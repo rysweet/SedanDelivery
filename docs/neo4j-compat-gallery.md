@@ -38,7 +38,6 @@ python3 neo4j-compat-gallery/app3-graphker/cve_loader.py --sample --no-clear
 
 | App | URL | What You'll See |
 |-----|-----|-----------------|
-| Neodash | [localhost:5005](http://localhost:5005) | Dashboard builder — connect with bolt://localhost:7687 |
 | neovis.js | [localhost:8080](http://localhost:8080) | Threat intelligence graph visualization |
 | GraphKer | [localhost:5001](http://localhost:5001) | CVE knowledge graph explorer |
 | Network Security | [localhost:5002](http://localhost:5002) | Enterprise network attack surface analyzer |
@@ -63,30 +62,7 @@ Each app was validated end-to-end from a **fresh `git clone`** of this repositor
 
 ---
 
-## App 1: Neodash — Security Dashboard Builder
-
-**Port 5005** · [Neo4j Labs](https://github.com/neo4j-labs/neodash) · Docker container
-
-Neodash is an open-source dashboard builder maintained by Neo4j Labs. It runs as a Docker
-container and connects to any Bolt-compatible server. Here it connects to SedanDelivery
-with the same `bolt://localhost:7687` connection string you would use for Neo4j.
-
-The gallery includes a pre-built `dashboard.json` with 3 pages of MITRE ATT&CK analysis:
-threat group inventory, techniques-per-tactic breakdown, and mitigation coverage graphs.
-
-```bash
-# Run standalone (Docker required)
-docker run -d --network=host -p 5005:5005 \
-  -e standalone=true -e standaloneProtocol=bolt \
-  -e standaloneHost=localhost -e standalonePort=7687 \
-  neo4jlabs/neodash:latest
-```
-
-![Neodash Dashboard](assets/images/gallery/01-neodash-dashboard.png)
-
----
-
-## App 2: neovis.js — Threat Intelligence Visualization
+## App 1: neovis.js — Threat Intelligence Visualization
 
 **Port 8080** · [neo4j-contrib/neovis.js](https://github.com/neo4j-contrib/neovis.js) · Static HTML
 
@@ -107,7 +83,7 @@ npx serve -l 8080
 
 ---
 
-## App 3: GraphKer — CVE Knowledge Graph Explorer
+## App 2: GraphKer — CVE Knowledge Graph Explorer
 
 **Port 5001** · Python Flask + neo4j driver v6.1.0
 
@@ -126,13 +102,17 @@ python3 cve_loader.py --sample    # Load 15 CVEs offline
 python3 app.py                    # Start on port 5001
 ```
 
-![GraphKer CVE Explorer](assets/images/gallery/03-graphker-dashboard.png)
+**Cypher Query Interface** — Top 10 CVEs by CVSS score, queried live from SedanDelivery:
+
+![GraphKer Query Results](assets/images/gallery/03-graphker-dashboard.png)
+
+**CVE Detail Page** — Log4Shell (CVE-2021-44228) with weaknesses and affected products:
 
 ![GraphKer CVE Detail — Log4Shell](assets/images/gallery/03b-graphker-cve-detail.png)
 
 ---
 
-## App 4: Network Security Graph Analyzer
+## App 3: Network Security Graph Analyzer
 
 **Port 5002** · Python Flask + neo4j driver v6.1.0
 
