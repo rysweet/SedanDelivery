@@ -166,6 +166,7 @@ resource vnet 'Microsoft.Network/virtualNetworks@2023-04-01' = {
 }
 
 // ── Container Apps Environment ─────────────────────────────────────────────────
+// Custom VNet requires at least one workload profile (Consumption is the default).
 resource cae 'Microsoft.App/managedEnvironments@2024-03-01' = {
   name: caeName
   location: location
@@ -174,6 +175,12 @@ resource cae 'Microsoft.App/managedEnvironments@2024-03-01' = {
       internal: false
       infrastructureSubnetId: vnet.properties.subnets[0].id
     }
+    workloadProfiles: [
+      {
+        name: 'Consumption'
+        workloadProfileType: 'Consumption'
+      }
+    ]
     appLogsConfiguration: {
       destination: 'log-analytics'
       logAnalyticsConfiguration: {
