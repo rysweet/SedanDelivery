@@ -63,6 +63,19 @@ jobs:
       - name: Run adversarial query tests
         run: cargo test -p gql-core --test adversarial
 
+      # ── sedan-bolt & Fabric sync checks ───────────────────────────────────
+      - name: Build sedan-bolt
+        run: cargo build -p sedan-bolt
+
+      - name: Test sedan-bolt
+        run: cargo test -p sedan-bolt --lib
+
+      - name: Clippy sedan-bolt (deny warnings)
+        run: cargo clippy -p sedan-bolt -- -D warnings
+
+      - name: Check Fabric sync compiles
+        run: cargo check -p sedandelivery-fabric-sync
+
       - name: Check all crates compile
         run: cargo check --workspace
 
@@ -108,6 +121,12 @@ jobs:
 
       - name: Run FalkorDB compatibility tests
         run: cargo test -p gql-module --test compatibility
+
+      - name: Testkit smoke test (sedan-bolt)
+        run: |
+          cargo build -p sedan-bolt
+          # Run only the passing testkit tests; allowed to fail in CI
+          bash sedan-bolt/tests/testkit/run_testkit.sh --passing-only || true
 
   # ── Tier 3b: Valkey integration (load gql-module.so via Docker) ────────────
   valkey-integration:
