@@ -26,6 +26,7 @@ AUTH="Authorization: Bearer ${TOKEN}"
 
 # -- Find or create workspace ----------------------------------------------
 echo "Looking for workspace '${WORKSPACE_NAME}'..."
+# Try both regular and admin API to find workspace (SP may own it but not see it in /workspaces)
 WORKSPACE_ID=$(curl -s -H "$AUTH" "${FABRIC_API}/workspaces" \
   | python3 -c "
 import json, sys
@@ -36,6 +37,19 @@ for ws in data.get('value', []):
         sys.exit(0)
 print('')
 ")
+if [[ -z "$WORKSPACE_ID" ]]; then
+  # Fallback: admin API can see workspaces the SP created but isn't a member of
+  WORKSPACE_ID=$(curl -s -H "$AUTH" "${FABRIC_API}/admin/workspaces" \
+    | python3 -c "
+import json, sys
+data = json.load(sys.stdin)
+for ws in data.get('workspaces', data.get('value', [])):
+    if ws.get('displayName', ws.get('name', '')) == '${WORKSPACE_NAME}':
+        print(ws['id'])
+        sys.exit(0)
+print('')
+" 2>/dev/null || echo "")
+fi
 
 if [[ -z "$WORKSPACE_ID" ]]; then
   echo "Creating workspace '${WORKSPACE_NAME}'..."
@@ -45,8 +59,22 @@ if [[ -z "$WORKSPACE_ID" ]]; then
     | python3 -c "import json,sys; print(json.load(sys.stdin).get('id',''))")
 
   if [[ -z "$WORKSPACE_ID" ]]; then
-    echo "::error::Failed to create Fabric workspace" >&2
-    exit 1
+    # Name already exists but we couldn't find it — try admin API
+    echo "Create returned empty ID — looking up via admin API..."
+    WORKSPACE_ID=$(curl -s -H "$AUTH" "${FABRIC_API}/admin/workspaces" \
+      | python3 -c "
+import json, sys
+data = json.load(sys.stdin)
+for ws in data.get('workspaces', data.get('value', [])):
+    if ws.get('displayName', ws.get('name', '')) == '${WORKSPACE_NAME}':
+        print(ws['id'])
+        sys.exit(0)
+print('')
+" 2>/dev/null || echo "")
+    if [[ -z "$WORKSPACE_ID" ]]; then
+      echo "::error::Failed to create or find Fabric workspace" >&2
+      exit 1
+    fi
   fi
   echo "Created workspace: ${WORKSPACE_ID}"
 else
@@ -54,7 +82,7 @@ else
 fi
 
 # -- Find or create Graph Database -----------------------------------------
-GDB_NAME="sedan-graph"
+GDB_NAME="sedangraph"
 echo "Looking for Graph Database '${GDB_NAME}'..."
 GDB_ID=$(curl -s -H "$AUTH" "${FABRIC_API}/workspaces/${WORKSPACE_ID}/items?type=GraphQLApi" \
   | python3 -c "
