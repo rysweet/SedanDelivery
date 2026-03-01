@@ -1,6 +1,6 @@
 # TestKit Conformance Test Results
 
-**Date:** 2026-02-28
+**Date:** 2026-03-01
 **sedandelivery-bolt version:** 0.1.0 (Bolt v4.x)
 **neo4j Python driver:** 6.0.3
 **testkit:** latest (neo4j-drivers/testkit, main branch)
@@ -14,33 +14,26 @@
 | test_tx_func_run | 9 | 0 | 0 | 0 | 9 |
 | test_authentication | 4 | 0 | 0 | 0 | 4 |
 | test_bookmarks | 8 | 0 | 0 | 0 | 8 |
-| test_summary | 14 | 0 | 0 | 1 | 15 |
-| test_direct_driver | 3 | 0 | 0 | 3 | 6 |
+| test_summary | 15 | 0 | 0 | 0 | 15 |
+| test_direct_driver | 6 | 0 | 0 | 0 | 6 |
 | test_datatypes | 11 | 0 | 0 | 0 | 11 |
 | test_spatial_types | 4 | 0 | 0 | 0 | 4 |
 | test_temporal_types | 17 | 0 | 0 | 1 | 18 |
-| **Total** | **113** | **0** | **0** | **5** | **118** |
+| **Total** | **117** | **0** | **0** | **1** | **118** |
 
-**Overall pass rate: 113/118 (95.8%), 0 failures, 5 skipped**
+**Overall pass rate: 117/118 (99.2%), 0 failures, 1 skipped**
 
-## Skipped Tests (5)
-
-All 5 skips are expected and cannot be resolved:
-
-### Multi-Database (4 skips)
-sedandelivery-bolt is a single-database engine. The Python driver correctly detects this
-via `supports_multi_db()` and skips multi-database tests:
-
-- `test_summary_counters_case_2` -- "Server does not support multiple databases."
-- `test_multi_db` -- "Server does not support multiple databases."
-- `test_multi_db_non_existing` -- "Needs multi DB support"
-- `test_multi_db_various_databases` -- "Server does not support multiple databases."
+## Skipped Tests (1)
 
 ### Python Driver Limitation (1 skip)
 - `test_should_echo_temporal_type` (1 subtest) -- Python's pytz library cannot
   distinguish between `+00:00` (fixed offset) and `UTC` (named timezone). The
   driver skips this subtest with: "timezone library cannot tell the difference
   between named UTC and 0s offset timezone"
+
+This is a driver-side limitation in the Python neo4j driver's test code. The
+server correctly handles both UTC representations; the skip occurs because the
+driver's test framework cannot verify the round-trip for offset-based UTC.
 
 ## What Works
 
@@ -91,7 +84,7 @@ via `supports_multi_db()` and skips multi-database tests:
 - Invalid bookmark rejection with proper error code
 - Invalid bookmark rejection via tx functions
 
-### Summary (14/15, 1 skipped)
+### Summary (15/15)
 - Server address in summary
 - Time information
 - Status codes (success, no_data, omitted)
@@ -102,11 +95,17 @@ via `supports_multi_db()` and skips multi-database tests:
 - PROFILE plan info
 - Notification info (cartesian product warnings)
 - Summary after consume
+- Multi-database summary counters (CREATE/DROP DATABASE, CREATE/DROP INDEX,
+  CREATE/DROP CONSTRAINT with system_updates, indexes_added/removed,
+  constraints_added/removed, labels_removed)
 
-### Direct Driver (3/6, 3 skipped)
+### Direct Driver (6/6)
 - Custom address resolution
 - HTTP port detection
-- Multi-db support detection (correctly reports unsupported)
+- Multi-db support detection (correctly reports supported)
+- Multi-db with non-existing database (DatabaseNotFound error)
+- Multi-db create/drop database and query isolation
+- Multi-db various databases (isolation between testa, testb, default)
 
 ### Datatypes (11/11)
 - Primitive echo (bool, null, int, float, string, bytes)
@@ -131,6 +130,27 @@ via `supports_multi_db()` and skips multi-database tests:
 - Duration components extraction
 - Nested temporal types in lists
 - Cypher datetime creation with various formats
+
+## Multi-Database Support
+
+sedandelivery-bolt implements enterprise-level multi-database support:
+
+- **CREATE DATABASE / DROP DATABASE**: Full lifecycle management with IF NOT
+  EXISTS / IF EXISTS support
+- **SHOW DATABASES**: Lists all databases including the virtual "system" database
+- **Database isolation**: Data created in one database is invisible to queries
+  targeting a different database
+- **DatabaseNotFound errors**: Queries targeting non-existent databases return
+  proper `Neo.ClientError.Database.DatabaseNotFound` errors
+- **Default database**: The "neo4j" database is pre-created at server startup
+
+### DDL Support
+
+- **CREATE INDEX / DROP INDEX**: Index lifecycle management with proper
+  `indexes_added` / `indexes_removed` counters
+- **CREATE CONSTRAINT / DROP CONSTRAINT**: Constraint lifecycle (accepted and
+  tracked for counters, not enforced)
+- **labels_removed**: REMOVE label operations correctly tracked
 
 ## Running Tests
 

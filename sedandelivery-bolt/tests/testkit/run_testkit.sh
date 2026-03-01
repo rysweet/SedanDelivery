@@ -66,8 +66,8 @@ ALL_SUITES=(
     "tests.neo4j.datatypes.test_temporal_types"
 )
 
-# Tests known to pass against sedandelivery-bolt (as of 2026-02-28)
-# 113/118 pass, 5 skipped (multi-db + Python UTC offset ambiguity)
+# Tests known to pass against sedandelivery-bolt (as of 2026-03-01)
+# 117/118 pass, 1 skipped (Python UTC offset ambiguity)
 PASSING_TESTS=(
     # session_run (19/19 pass)
     "tests.neo4j.test_session_run.TestSessionRun.test_autocommit_transactions_should_support_metadata"
@@ -143,7 +143,7 @@ PASSING_TESTS=(
     "tests.neo4j.test_bookmarks.TestBookmarks.test_fails_on_invalid_bookmark_using_tx_func"
     "tests.neo4j.test_bookmarks.TestBookmarks.test_no_bookmark_after_rollback"
 
-    # summary (14/15 pass, 1 skipped: multi-db)
+    # summary (15/15 pass)
     "tests.neo4j.test_summary.TestSummary.test_address"
     "tests.neo4j.test_summary.TestSummary.test_agent_string"
     "tests.neo4j.test_summary.TestSummary.test_can_obtain_notification_info"
@@ -158,10 +158,14 @@ PASSING_TESTS=(
     "tests.neo4j.test_summary.TestSummary.test_protocol_version_information"
     "tests.neo4j.test_summary.TestSummary.test_success_status"
     "tests.neo4j.test_summary.TestSummary.test_summary_counters_case_1"
+    "tests.neo4j.test_summary.TestSummary.test_summary_counters_case_2"
 
-    # direct_driver (3/6 pass, 3 skipped: multi-db)
+    # direct_driver (6/6 pass)
     "tests.neo4j.test_direct_driver.TestDirectDriver.test_custom_resolver"
     "tests.neo4j.test_direct_driver.TestDirectDriver.test_fail_nicely_when_using_http_port"
+    "tests.neo4j.test_direct_driver.TestDirectDriver.test_multi_db"
+    "tests.neo4j.test_direct_driver.TestDirectDriver.test_multi_db_non_existing"
+    "tests.neo4j.test_direct_driver.TestDirectDriver.test_multi_db_various_databases"
     "tests.neo4j.test_direct_driver.TestDirectDriver.test_supports_multi_db"
 
     # datatypes (11/11 pass)
@@ -318,7 +322,7 @@ export TEST_NEO4J_USER=neo4j
 export TEST_NEO4J_PASS=pass
 export TEST_NEO4J_SCHEME=bolt
 export TEST_NEO4J_VERSION=4.4
-export TEST_NEO4J_EDITION=community
+export TEST_NEO4J_EDITION=enterprise
 export TEST_BACKEND_TIMEOUT=$BACKEND_TIMEOUT
 export PYTHONPATH=$TESTKIT_DIR
 

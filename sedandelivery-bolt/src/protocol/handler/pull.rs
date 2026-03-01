@@ -96,7 +96,8 @@ pub(crate) fn handle_pull(
         let bookmark = next_bookmark(&session.global_bookmark);
         let elapsed_ms = pending.start_time.elapsed().as_millis() as i64;
         let query_type = pending.query_type.clone();
-        let stats = pending.stats.clone();
+        let mut stats = pending.stats.clone();
+        let admin_stats = pending.admin_stats.take();
         let metadata = pending.metadata.clone();
         let explain_plan = pending.explain_plan.take();
         let profile_plan = pending.profile_plan.take();
@@ -107,12 +108,48 @@ pub(crate) fn handle_pull(
         bolt_metrics::query_completed(&query_type);
         bolt_metrics::query_duration(elapsed_ms as f64 / 1000.0);
 
+        // Merge admin stats into the stats map if present.
+        if let Some(ref as_) = admin_stats {
+            if as_.indexes_added > 0 {
+                stats.push(("indexes-added".to_string(), BoltValue::Int(as_.indexes_added as i64)));
+            }
+            if as_.indexes_removed > 0 {
+                stats.push(("indexes-removed".to_string(), BoltValue::Int(as_.indexes_removed as i64)));
+            }
+            if as_.constraints_added > 0 {
+                stats.push(("constraints-added".to_string(), BoltValue::Int(as_.constraints_added as i64)));
+            }
+            if as_.constraints_removed > 0 {
+                stats.push(("constraints-removed".to_string(), BoltValue::Int(as_.constraints_removed as i64)));
+            }
+            if as_.system_updates > 0 {
+                stats.push(("system-updates".to_string(), BoltValue::Int(as_.system_updates as i64)));
+                stats.push(("contains-system-updates".to_string(), BoltValue::Bool(true)));
+            }
+        }
+
         let mut meta = bolt_map! {
             "bookmark" => BoltValue::String(bookmark),
             "t_last" => BoltValue::Int(elapsed_ms),
             "type" => BoltValue::String(query_type),
             "has_more" => BoltValue::Bool(false)
         };
+        // Determine contains-updates from non-admin stats.
+        let has_regular_updates = stats.iter().any(|(k, _)| {
+            matches!(k.as_str(),
+                "nodes-created" | "nodes-deleted" |
+                "relationships-created" | "relationships-deleted" |
+                "properties-set" | "labels-added" | "labels-removed" |
+                "indexes-added" | "indexes-removed" |
+                "constraints-added" | "constraints-removed"
+            )
+        });
+        if has_regular_updates {
+            // Add contains-updates if not already present
+            if !stats.iter().any(|(k, _)| k == "contains-updates") {
+                stats.push(("contains-updates".to_string(), BoltValue::Bool(true)));
+            }
+        }
         if !stats.is_empty() {
             meta.push(("stats".to_string(), BoltValue::Map(stats)));
         }

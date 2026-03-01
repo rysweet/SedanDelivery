@@ -58,6 +58,7 @@ pub struct MutationStats {
     pub edges_deleted: u64,
     pub properties_set: u64,
     pub labels_added: u64,
+    pub labels_removed: u64,
     /// Internal: distinct label types seen during this execution.
     labels_seen: HashSet<String>,
     /// Internal: label types that existed in the graph before this query.
@@ -1399,9 +1400,10 @@ impl<'a> QueryExecutor<'a> {
                         let node_id = extract_node_id(val, &alias.0)?;
                         let label_strings: Vec<String> =
                             labels.iter().map(|l| l.as_str().to_string()).collect();
+                        let removed_count = label_strings.len() as u64;
                         self.store
                             .remove_node_labels(graph, node_id, &label_strings)?;
-                        // REMOVE labels does not count as labels_added.
+                        stats.labels_removed += removed_count;
                     }
                 }
             }

@@ -7,10 +7,11 @@ use crate::message::types::ServerMessage;
 use crate::metrics as bolt_metrics;
 use crate::packstream::value::{BoltMap, BoltMapExt, BoltValue};
 use crate::protocol::state::ServerState;
-use gql_core::storage::InMemoryGraphStore;
+use gql_core::storage::{GraphStore, InMemoryGraphStore};
 
 use super::{
-    bolt_map, extract_tx_metadata, validate_bookmarks, PendingQuery, ProtocolError, Session,
+    bolt_map, extract_tx_metadata, validate_bookmarks, AdminStats, PendingQuery, ProtocolError,
+    Session,
 };
 
 // -- RUN ---------------------------------------------------------------------
@@ -80,6 +81,148 @@ pub(crate) async fn handle_run(
         .get_str("db")
         .unwrap_or(&session.current_graph)
         .to_string();
+
+    // Try to handle as an admin/DDL query (CREATE/DROP DATABASE, SHOW DATABASES,
+    // CREATE/DROP INDEX/CONSTRAINT). These commands are not supported by the
+    // gql-core parser, so we intercept them here.
+    let effective_store_for_admin: Arc<InMemoryGraphStore> = match &session.tx_store {
+        Some(ts)
+            if matches!(
+                session.state,
+                ServerState::TxReady | ServerState::TxStreaming
+            ) =>
+        {
+            Arc::clone(ts)
+        }
+        _ => Arc::clone(&session.store),
+    };
+    if let Some(admin_result) = bridge::admin::try_handle_admin(
+        &effective_store_for_admin,
+        &graph,
+        trimmed,
+    ) {
+        match admin_result {
+            Ok(ar) => {
+                let run_metadata = extract_tx_metadata(&extra);
+                let combined_metadata = if !session.tx_metadata.is_empty() {
+                    session.tx_metadata.clone()
+                } else {
+                    run_metadata
+                };
+                let (records, query_type, stats, _trailing) =
+                    bridge::executor::result_to_records(
+                        &ar.query_result,
+                        &effective_store_for_admin,
+                        &graph,
+                    );
+                let fields: Vec<BoltValue> = ar
+                    .query_result
+                    .columns
+                    .iter()
+                    .map(|c| BoltValue::String(c.clone()))
+                    .collect();
+
+                // Determine query type: admin commands are "s" (system) when
+                // they have system_updates, otherwise use the computed type.
+                let effective_type = if ar.system_updates > 0 {
+                    "s".to_string()
+                } else {
+                    query_type
+                };
+
+                let qid = session.next_qid;
+                session.next_qid += 1;
+                session.pending_results.insert(
+                    qid,
+                    PendingQuery {
+                        columns: ar.query_result.columns,
+                        records,
+                        query_type: effective_type,
+                        stats,
+                        cursor: 0,
+                        start_time: std::time::Instant::now(),
+                        metadata: combined_metadata,
+                        explain_plan: None,
+                        profile_plan: None,
+                        graph: graph.clone(),
+                        notifications: vec![],
+                        trailing_error: None,
+                        admin_stats: Some(AdminStats {
+                            indexes_added: ar.indexes_added,
+                            indexes_removed: ar.indexes_removed,
+                            constraints_added: ar.constraints_added,
+                            constraints_removed: ar.constraints_removed,
+                            system_updates: ar.system_updates,
+                        }),
+                    },
+                );
+
+                session.state = match session.state {
+                    ServerState::TxReady | ServerState::TxStreaming => ServerState::TxStreaming,
+                    _ => {
+                        session.write_lock_guard = None;
+                        ServerState::Streaming
+                    }
+                };
+
+                return Ok(vec![ServerMessage::Success(bolt_map! {
+                    "fields" => BoltValue::List(fields),
+                    "t_first" => BoltValue::Int(0),
+                    "qid" => BoltValue::Int(qid)
+                })]);
+            }
+            Err(gql_err) => {
+                let (code, message) = bridge::errors::gql_error_to_bolt(&gql_err);
+                bolt_metrics::error_recorded(&code);
+                session.write_lock_guard = None;
+                session.state = ServerState::Failed;
+                return Ok(vec![ServerMessage::Failure(bolt_map! {
+                    "code" => BoltValue::String(code),
+                    "message" => BoltValue::String(message)
+                })]);
+            }
+        }
+    }
+
+    // For non-admin queries, check if the target database exists.
+    // If the target database was explicitly specified (via the `db` parameter)
+    // and doesn't exist, return DatabaseNotFound instead of auto-creating.
+    // This check only applies in "multi-db mode" (when the default "neo4j"
+    // database has been pre-created at server startup). In unit tests where
+    // the store is empty, auto-create still works.
+    if extra.get_str("db").is_some() && graph != "neo4j" && graph != "system" {
+        let main_store_has_neo4j = session
+            .store
+            .graph_exists("neo4j")
+            .unwrap_or(false);
+        if main_store_has_neo4j {
+            let check_store: &InMemoryGraphStore = match &session.tx_store {
+                Some(ts)
+                    if matches!(
+                        session.state,
+                        ServerState::TxReady | ServerState::TxStreaming
+                    ) =>
+                {
+                    ts
+                }
+                _ => &session.store,
+            };
+            let exists = check_store.graph_exists(&graph).unwrap_or(false);
+            if !exists {
+                use gql_core::error::{GqlError, StorageError};
+                let err = GqlError::Storage(StorageError::GraphNotFound {
+                    name: graph.clone(),
+                });
+                let (code, message) = bridge::errors::gql_error_to_bolt(&err);
+                bolt_metrics::error_recorded(&code);
+                session.state = ServerState::Failed;
+                return Ok(vec![ServerMessage::Failure(bolt_map! {
+                    "code" => BoltValue::String(code),
+                    "message" => BoltValue::String(message)
+                })]);
+            }
+        }
+    }
 
     let run_metadata = extract_tx_metadata(&extra);
     let timeout_ms = extra
@@ -262,6 +405,7 @@ pub(crate) async fn handle_run(
                     graph: graph.clone(),
                     notifications: vec![],
                     trailing_error,
+                    admin_stats: None,
                 },
             );
 
@@ -336,6 +480,7 @@ async fn handle_explain(
                     graph: graph.to_string(),
                     notifications: plan_notifications,
                     trailing_error: None,
+                    admin_stats: None,
                 },
             );
             session.state = match session.state {

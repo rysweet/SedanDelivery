@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 use tokio::net::TcpListener;
 use tokio::sync::Semaphore;
 
-use gql_core::storage::InMemoryGraphStore;
+use gql_core::storage::{GraphStore, InMemoryGraphStore};
 
 /// RAII guard that decrements the active-connection gauge on drop.
 /// This ensures the counter is accurate even when a session task panics.
@@ -62,6 +62,12 @@ async fn main() {
     let active_connections = Arc::new(AtomicU64::new(0));
 
     let store = Arc::new(InMemoryGraphStore::new());
+    // Pre-create the default "neo4j" database so it exists before any client
+    // connects. This is required for multi-database support where databases
+    // must be explicitly created (no auto-create for non-default databases).
+    store
+        .create_graph("neo4j")
+        .expect("failed to create default 'neo4j' database");
 
     // Load TLS configuration (returns None if BOLT_TLS_CERT / BOLT_TLS_KEY are not set)
     let tls_acceptor = sedandelivery_bolt::tls::load_tls_config();

@@ -111,6 +111,20 @@ pub struct PendingQuery {
     /// handle_pull will emit all buffered records and then send FAILURE
     /// with this error rather than SUCCESS.
     pub trailing_error: Option<(String, String)>,
+    /// Extended stats for admin/DDL operations (indexes, constraints, system updates).
+    /// These are merged into the stats map when emitting PULL SUCCESS.
+    pub admin_stats: Option<AdminStats>,
+}
+
+/// Extended statistics for admin/DDL operations that go beyond standard
+/// MutationStats.
+#[derive(Debug, Clone, Default)]
+pub struct AdminStats {
+    pub indexes_added: u64,
+    pub indexes_removed: u64,
+    pub constraints_added: u64,
+    pub constraints_removed: u64,
+    pub system_updates: u64,
 }
 
 // -- Bookmark helpers --------------------------------------------------------
@@ -642,6 +656,7 @@ mod tests {
                 graph: "neo4j".to_string(),
                 notifications: vec![],
                 trailing_error: None,
+                admin_stats: None,
             },
         );
 

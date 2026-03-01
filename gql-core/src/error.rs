@@ -126,7 +126,7 @@ pub enum ExecutionError {
 
 #[derive(Debug, Clone, Error)]
 pub enum StorageError {
-    #[error("graph '{name}' not found")]
+    #[error("database '{name}' does not exist")]
     GraphNotFound { name: String },
 
     #[error("graph '{name}' already exists")]

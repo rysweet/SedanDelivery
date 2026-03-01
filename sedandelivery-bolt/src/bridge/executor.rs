@@ -161,7 +161,8 @@ fn determine_query_type(stats: &MutationStats) -> &'static str {
         || stats.edges_created > 0
         || stats.edges_deleted > 0
         || stats.properties_set > 0
-        || stats.labels_added > 0;
+        || stats.labels_added > 0
+        || stats.labels_removed > 0;
 
     if has_writes {
         "rw"
@@ -218,6 +219,12 @@ pub fn stats_to_bolt_map(stats: &MutationStats) -> BoltMap {
         map.push((
             "labels-added".to_string(),
             BoltValue::Int(stats.labels_added as i64),
+        ));
+    }
+    if stats.labels_removed > 0 {
+        map.push((
+            "labels-removed".to_string(),
+            BoltValue::Int(stats.labels_removed as i64),
         ));
     }
 
