@@ -14,6 +14,7 @@ use indexmap::IndexMap;
 
 use crate::bridge::types::{edge_to_bolt, node_to_bolt, path_to_bolt, scalar_value_to_bolt};
 use crate::packstream::value::{BoltMap, BoltValue};
+use crate::protocol::tags;
 
 // ── Query execution ──────────────────────────────────────────────────────────
 
@@ -261,24 +262,19 @@ fn bolt_value_to_gql(bv: &BoltValue) -> Value {
 /// Unrecognized structure tags fall back to Value::Null.
 fn bolt_structure_to_gql(tag: u8, fields: &[BoltValue]) -> Value {
     match tag {
-        // Date: tag 0x44, 1 field (days since epoch)
-        0x44 => decode_date(fields),
-        // Time with UTC offset: tag 0x54, 2 fields (nanos_since_midnight, offset_seconds)
-        0x54 => decode_time_with_offset(fields),
-        // LocalTime: tag 0x74, 1 field (nanos since midnight)
-        0x74 => decode_local_time(fields),
-        // LocalDateTime: tag 0x64, 2 fields (epoch_seconds, nanos)
-        0x64 => decode_local_datetime(fields),
-        // DateTime with zone ID: tag 0x69 (UTC mode, lowercase 'i') or 0x66 (wall-clock, lowercase 'f')
-        0x69 | 0x66 => decode_datetime_zone_id(fields),
-        // DateTime with offset: tag 0x49 (UTC mode, uppercase 'I') or 0x46 (wall-clock, uppercase 'F')
-        0x49 | 0x46 => decode_datetime_offset(fields),
-        // Duration: tag 0x45, 4 fields (months, days, seconds, nanos)
-        0x45 => decode_duration(fields),
-        // Point2D: tag 0x58, 3 fields (srid, x, y)
-        0x58 => decode_point2d(fields),
-        // Point3D: tag 0x59, 4 fields (srid, x, y, z)
-        0x59 => decode_point3d(fields),
+        tags::TAG_DATE => decode_date(fields),
+        tags::TAG_TIME => decode_time_with_offset(fields),
+        tags::TAG_LOCAL_TIME => decode_local_time(fields),
+        tags::TAG_LOCAL_DATE_TIME => decode_local_datetime(fields),
+        tags::TAG_DATETIME_ZONE_ID_UTC | tags::TAG_DATETIME_ZONE_ID_WALL => {
+            decode_datetime_zone_id(fields)
+        }
+        tags::TAG_DATETIME_ZONE_OFFSET_UTC | tags::TAG_DATETIME_ZONE_OFFSET_WALL => {
+            decode_datetime_offset(fields)
+        }
+        tags::TAG_DURATION => decode_duration(fields),
+        tags::TAG_POINT_2D => decode_point2d(fields),
+        tags::TAG_POINT_3D => decode_point3d(fields),
         _ => Value::Null,
     }
 }

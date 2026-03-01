@@ -6,6 +6,7 @@ use gql_core::types::Value;
 use indexmap::IndexMap;
 
 use crate::packstream::value::BoltValue;
+use crate::protocol::tags;
 
 // ── Node / Edge / Path conversion ────────────────────────────────────────────
 
@@ -31,7 +32,7 @@ pub fn node_to_bolt(id: NodeId, store: &InMemoryGraphStore, graph: &str) -> Bolt
     let props = props_to_bolt_map(&node_data.properties);
 
     BoltValue::Structure {
-        tag: 0x4E,
+        tag: tags::TAG_NODE,
         fields: vec![BoltValue::Int(id.0 as i64), labels, props],
     }
 }
@@ -50,7 +51,7 @@ pub fn edge_to_bolt(id: EdgeId, store: &InMemoryGraphStore, graph: &str) -> Bolt
     let props = props_to_bolt_map(&edge_data.properties);
 
     BoltValue::Structure {
-        tag: 0x52,
+        tag: tags::TAG_RELATIONSHIP,
         fields: vec![
             BoltValue::Int(id.0 as i64),
             BoltValue::Int(edge_data.src.0 as i64),
@@ -105,7 +106,7 @@ pub fn path_to_bolt(
 
             let rel = match store.get_edge(graph, eid) {
                 Ok(Some(data)) => BoltValue::Structure {
-                    tag: 0x72,
+                    tag: tags::TAG_UNBOUND_RELATIONSHIP,
                     fields: vec![
                         BoltValue::Int(eid.0 as i64),
                         BoltValue::String(data.rel_type.clone()),
@@ -113,7 +114,7 @@ pub fn path_to_bolt(
                     ],
                 },
                 _ => BoltValue::Structure {
-                    tag: 0x72,
+                    tag: tags::TAG_UNBOUND_RELATIONSHIP,
                     fields: vec![
                         BoltValue::Int(eid.0 as i64),
                         BoltValue::String(String::new()),
@@ -154,7 +155,7 @@ pub fn path_to_bolt(
     }
 
     BoltValue::Structure {
-        tag: 0x50,
+        tag: tags::TAG_PATH,
         fields: vec![
             BoltValue::List(bolt_unique_nodes),
             BoltValue::List(unbound_rels),
@@ -223,17 +224,17 @@ fn indexmap_to_bolt_map(map: &IndexMap<Box<str>, Value>) -> BoltValue {
 
 // ── Temporal encodings ───────────────────────────────────────────────────────
 
-/// Date: tag 0x44, 1 field (days since 1970-01-01 epoch).
+/// Date: 1 field (days since 1970-01-01 epoch).
 fn date_to_bolt(d: &jiff::civil::Date) -> BoltValue {
     let epoch = jiff::civil::Date::new(1970, 1, 1).expect("valid epoch date");
     let days = d.since(epoch).expect("date diff").get_days() as i64;
     BoltValue::Structure {
-        tag: 0x44,
+        tag: tags::TAG_DATE,
         fields: vec![BoltValue::Int(days)],
     }
 }
 
-/// LocalTime: tag 0x74, 1 field (nanoseconds since midnight).
+/// LocalTime: 1 field (nanoseconds since midnight).
 fn local_time_to_bolt(t: &jiff::civil::Time) -> BoltValue {
     // Compute total nanoseconds since midnight from individual components.
     let nanos: i64 = (t.hour() as i64) * 3_600_000_000_000
@@ -241,12 +242,12 @@ fn local_time_to_bolt(t: &jiff::civil::Time) -> BoltValue {
         + (t.second() as i64) * 1_000_000_000
         + (t.subsec_nanosecond() as i64);
     BoltValue::Structure {
-        tag: 0x74,
+        tag: tags::TAG_LOCAL_TIME,
         fields: vec![BoltValue::Int(nanos)],
     }
 }
 
-/// LocalDateTime: tag 0x64, 2 fields (epoch_seconds, nanosecond_adjustment).
+/// LocalDateTime: 2 fields (epoch_seconds, nanosecond_adjustment).
 fn local_datetime_to_bolt(dt: &jiff::civil::DateTime) -> BoltValue {
     let epoch_date = jiff::civil::Date::new(1970, 1, 1).expect("valid epoch date");
     let days = dt.date().since(epoch_date).expect("date diff").get_days() as i64;
@@ -260,12 +261,12 @@ fn local_datetime_to_bolt(dt: &jiff::civil::DateTime) -> BoltValue {
     // precision across milliseconds, microseconds, and nanoseconds fields.
     let nanos_adj = dt.subsec_nanosecond() as i64;
     BoltValue::Structure {
-        tag: 0x64,
+        tag: tags::TAG_LOCAL_DATE_TIME,
         fields: vec![BoltValue::Int(total_seconds), BoltValue::Int(nanos_adj)],
     }
 }
 
-/// Zoned time: Bolt Time encoding (tag 0x54).
+/// Zoned time: Bolt Time encoding.
 ///
 /// 2 fields: nanoseconds_since_midnight, offset_seconds.
 /// Used for `Value::Time` which represents a time-of-day with UTC offset
@@ -276,7 +277,7 @@ fn zoned_time_to_bolt(t: &jiff::civil::Time, offset_secs: i32) -> BoltValue {
         + (t.second() as i64) * 1_000_000_000
         + (t.subsec_nanosecond() as i64);
     BoltValue::Structure {
-        tag: 0x54,
+        tag: tags::TAG_TIME,
         fields: vec![
             BoltValue::Int(nanos_since_midnight),
             BoltValue::Int(offset_secs as i64),
@@ -286,17 +287,10 @@ fn zoned_time_to_bolt(t: &jiff::civil::Time, offset_secs: i32) -> BoltValue {
 
 /// DateTime (zoned): Bolt UTC-mode encoding (patch_bolt: utc).
 ///
-/// When an IANA timezone name is available:
-///   tag 0x69 (DateTimeZoneId), 3 fields: epoch_seconds, nanos, tz_id string.
+/// When an IANA timezone name is available, uses `TAG_DATETIME_ZONE_ID_UTC`.
+/// When only a fixed UTC offset is available, uses `TAG_DATETIME_ZONE_OFFSET_UTC`.
 ///
-/// When only a fixed UTC offset is available:
-///   tag 0x49 (DateTimeZoneOffset), 3 fields: epoch_seconds, nanos, offset_seconds.
-///
-/// Tag convention (confirmed from the Neo4j Python driver source):
-///   - Lowercase tags for zone name:  0x66 (`f`, wall-clock), 0x69 (`i`, UTC)
-///   - Uppercase tags for offset:     0x46 (`F`, wall-clock), 0x49 (`I`, UTC)
-///
-/// Since we negotiate patch_bolt: \["utc"\], we use UTC-mode tags 0x69 / 0x49.
+/// Since we negotiate patch_bolt: \["utc"\], we always use UTC-mode tags.
 fn datetime_to_bolt(zoned: &jiff::Zoned) -> BoltValue {
     let ts = zoned.timestamp();
     // jiff's as_second() truncates toward zero, which for negative timestamps
@@ -318,7 +312,7 @@ fn datetime_to_bolt(zoned: &jiff::Zoned) -> BoltValue {
         if tz_name == "Factory" {
             let offset_seconds = zoned.offset().seconds() as i64;
             return BoltValue::Structure {
-                tag: 0x49,
+                tag: tags::TAG_DATETIME_ZONE_OFFSET_UTC,
                 fields: vec![
                     BoltValue::Int(epoch_seconds),
                     BoltValue::Int(nanos_adj),
@@ -326,9 +320,9 @@ fn datetime_to_bolt(zoned: &jiff::Zoned) -> BoltValue {
                 ],
             };
         }
-        // IANA timezone name available: use DateTimeZoneId (tag 0x69, lowercase 'i').
+        // IANA timezone name available: use DateTimeZoneId (UTC mode).
         BoltValue::Structure {
-            tag: 0x69,
+            tag: tags::TAG_DATETIME_ZONE_ID_UTC,
             fields: vec![
                 BoltValue::Int(epoch_seconds),
                 BoltValue::Int(nanos_adj),
@@ -336,10 +330,10 @@ fn datetime_to_bolt(zoned: &jiff::Zoned) -> BoltValue {
             ],
         }
     } else {
-        // Fixed offset only: use DateTimeZoneOffset (tag 0x49, uppercase 'I').
+        // Fixed offset only: use DateTimeZoneOffset (UTC mode).
         let offset_seconds = zoned.offset().seconds() as i64;
         BoltValue::Structure {
-            tag: 0x49,
+            tag: tags::TAG_DATETIME_ZONE_OFFSET_UTC,
             fields: vec![
                 BoltValue::Int(epoch_seconds),
                 BoltValue::Int(nanos_adj),
@@ -349,14 +343,14 @@ fn datetime_to_bolt(zoned: &jiff::Zoned) -> BoltValue {
     }
 }
 
-/// Duration: tag 0x45, 4 fields (months, days, seconds, nanoseconds).
+/// Duration: 4 fields (months, days, seconds, nanoseconds).
 fn duration_to_bolt(dur: &gql_core::types::CypherDuration) -> BoltValue {
     // CypherDuration stores nanos as i128. Split into seconds + sub-second nanos.
     let total_nanos = dur.nanos;
     let seconds = (total_nanos / 1_000_000_000) as i64;
     let nanos = (total_nanos % 1_000_000_000) as i64;
     BoltValue::Structure {
-        tag: 0x45,
+        tag: tags::TAG_DURATION,
         fields: vec![
             BoltValue::Int(dur.months),
             BoltValue::Int(dur.days),
@@ -366,8 +360,7 @@ fn duration_to_bolt(dur: &gql_core::types::CypherDuration) -> BoltValue {
     }
 }
 
-/// Point2D: tag 0x58, 3 fields (srid, x, y).
-/// Point3D: tag 0x59, 4 fields (srid, x, y, z).
+/// Point2D or Point3D encoding based on the presence of a z coordinate.
 fn point_to_bolt(p: &GeoPoint) -> BoltValue {
     let srid: i64 = match p.crs {
         Crs::Wgs84 => 4326,
@@ -377,7 +370,7 @@ fn point_to_bolt(p: &GeoPoint) -> BoltValue {
     };
     if let Some(z) = p.z {
         BoltValue::Structure {
-            tag: 0x59,
+            tag: tags::TAG_POINT_3D,
             fields: vec![
                 BoltValue::Int(srid),
                 BoltValue::Float(p.x),
@@ -387,7 +380,7 @@ fn point_to_bolt(p: &GeoPoint) -> BoltValue {
         }
     } else {
         BoltValue::Structure {
-            tag: 0x58,
+            tag: tags::TAG_POINT_2D,
             fields: vec![
                 BoltValue::Int(srid),
                 BoltValue::Float(p.x),

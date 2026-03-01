@@ -12,18 +12,29 @@ use crate::message::{codec, types};
 use crate::protocol::handler::{self, Session};
 use crate::protocol::state::ServerState;
 
+/// Errors that can occur during a Bolt session.
 #[derive(Debug, thiserror::Error)]
 pub enum SessionError {
+    /// The version-negotiation handshake failed.
     #[error("handshake error: {0}")]
     Handshake(#[from] handshake::HandshakeError),
+    /// A low-level I/O error on the TCP stream.
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
+    /// A received message could not be decoded.
     #[error("message decode error: {0}")]
     MessageDecode(#[from] types::MessageError),
+    /// The protocol handler rejected the message.
     #[error("protocol error: {0}")]
     Protocol(#[from] handler::ProtocolError),
 }
 
+/// Run a complete Bolt session on the given TCP stream.
+///
+/// Performs the version-negotiation handshake, then enters the message loop:
+/// reads chunked messages from the client, dispatches them through the
+/// protocol handler, and writes back the encoded responses.  The loop
+/// terminates on GOODBYE, connection close, or a Defunct state transition.
 pub async fn run(
     stream: TcpStream,
     store: Arc<InMemoryGraphStore>,
