@@ -52,11 +52,15 @@ jobs:
         run: pip install neo4j requests
 
       - name: Azure login
-        uses: azure/login@v2
-        with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+        run: |
+          az login \
+            --service-principal \
+            --username "${{ env.AZURE_CLIENT_ID }}" \
+            --password "${{ secrets.AZURE_CLIENT_SECRET }}" \
+            --tenant "${{ env.AZURE_TENANT_ID }}" \
+            --output none
+          az account set --subscription "${{ secrets.AZURE_SUBSCRIPTION_ID }}"
+          echo "✅ Authenticated to Azure"
 
       - name: Determine environment
         id: env
@@ -87,20 +91,33 @@ jobs:
           RG: ${{ steps.env.outputs.resource_group }}
           ENV_NAME: ${{ steps.env.outputs.env_name }}
         run: |
-          # Get the Redis container app's internal FQDN
-          REDIS_FQDN=$(az containerapp show \
-            --name "sd2-${ENV_NAME}-redis" \
+          CA_NAME="sd2-${ENV_NAME}-redis"
+
+          # Get the container app's external FQDN (external TCP ingress via custom VNet)
+          FQDN=$(az containerapp show \
+            --name "${CA_NAME}" \
             --resource-group "${RG}" \
             --query "properties.configuration.ingress.fqdn" \
             --output tsv 2>/dev/null || echo "")
 
-          if [[ -z "${REDIS_FQDN}" ]]; then
-            echo "::error::Could not resolve Redis FQDN for sd2-${ENV_NAME}-redis in ${RG}"
+          if [[ -z "${FQDN}" ]]; then
+            echo "::error::Could not resolve FQDN for ${CA_NAME} in ${RG}"
             exit 1
           fi
-          echo "redis_host=${REDIS_FQDN}" >> "$GITHUB_OUTPUT"
-          echo "bolt_uri=bolt://${REDIS_FQDN}:7687" >> "$GITHUB_OUTPUT"
-          echo "Redis FQDN: ${REDIS_FQDN}"
+
+          # Verify ingress is external (not internal-only)
+          INGRESS_EXTERNAL=$(az containerapp show \
+            --name "${CA_NAME}" \
+            --resource-group "${RG}" \
+            --query "properties.configuration.ingress.external" \
+            --output tsv 2>/dev/null || echo "false")
+          if [[ "${INGRESS_EXTERNAL}" != "true" ]]; then
+            echo "::warning::Ingress is not external — Bolt endpoint may not be reachable from CI"
+          fi
+
+          echo "redis_host=${FQDN}" >> "$GITHUB_OUTPUT"
+          echo "bolt_uri=bolt://${FQDN}:7687" >> "$GITHUB_OUTPUT"
+          echo "FQDN: ${FQDN} (Redis:6379, Bolt:7687)"
 
           # Retrieve the Fabric endpoint from the sync sidecar's env vars
           FABRIC_ENDPOINT=$(az containerapp show \

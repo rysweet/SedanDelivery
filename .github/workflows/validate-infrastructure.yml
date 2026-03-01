@@ -3,60 +3,20 @@ name: Validate Infrastructure
 on:
   pull_request:
     paths:
-      - 'src/CyberGym.AppHost/**'
-      - 'azure.yaml'
       - 'infra/**'
     branches: [ "main", "integration" ]
 
 jobs:
   validate:
-    name: Validate Aspire AppHost
+    name: Validate Bicep Templates
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout code
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
-      - name: Setup .NET
-        uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4.3.1
-        with:
-          dotnet-version: '10.0.x'
-
-      - name: Build AppHost
+      - name: Validate Bicep
         run: |
-          echo "🔧 Building Aspire AppHost..."
-          dotnet build src/CyberGym.AppHost/CyberGym.AppHost.csproj
-          echo "✅ AppHost builds successfully"
-
-      - name: Validate azure.yaml
-        run: |
-          echo "📋 Validating azure.yaml..."
-          if [ ! -f azure.yaml ]; then
-            echo "❌ azure.yaml not found"
-            exit 1
-          fi
-
-          echo "🔎 azure.yaml contents:"
-          cat azure.yaml
-
-          echo "📦 Installing YAML parser (PyYAML)..."
-          python3 -m pip install --quiet pyyaml
-
-          echo "✅ Parsing azure.yaml to verify it is valid YAML..."
-          python3 - << 'EOF'
-          import sys
-          from pathlib import Path
-
-          import yaml  # Provided by PyYAML installed above
-
-          path = Path("azure.yaml")
-          try:
-              with path.open("r", encoding="utf-8") as f:
-                  yaml.safe_load(f)
-          except yaml.YAMLError as e:
-              print("❌ azure.yaml is not valid YAML:")
-              print(e)
-              sys.exit(1)
-
-          print("✅ azure.yaml is valid YAML syntax.")
-          EOF
+          echo "🔧 Validating Bicep templates..."
+          az bicep build --file infra/main.bicep --stdout > /dev/null
+          echo "✅ infra/main.bicep compiles successfully"
