@@ -24,7 +24,7 @@ COPY sedandelivery-fabric-sync/Cargo.toml ./sedandelivery-fabric-sync/
 
 # Create stub source files so cargo can resolve the dependency graph
 RUN mkdir -p gql-core/src gql-redis-store/src gql-fabric-store/src gql-module/src gql-cli/src gql-api/src \
-             sedandelivery-bolt/src sedandelivery-fabric-sync/src && \
+             sedandelivery-bolt/src sedandelivery-bolt/benches sedandelivery-fabric-sync/src && \
     echo "pub fn stub() {}" > gql-core/src/lib.rs && \
     echo "pub fn stub() {}" > gql-redis-store/src/lib.rs && \
     echo "pub fn stub() {}" > gql-fabric-store/src/lib.rs && \
@@ -32,6 +32,8 @@ RUN mkdir -p gql-core/src gql-redis-store/src gql-fabric-store/src gql-module/sr
     echo "fn main() {}" > gql-cli/src/main.rs && \
     echo "fn main() {}" > gql-api/src/main.rs && \
     echo "pub fn stub() {}" > sedandelivery-bolt/src/lib.rs && \
+    echo "fn main() {}" > sedandelivery-bolt/src/main.rs && \
+    echo "fn main() {}" > sedandelivery-bolt/benches/bolt_benchmarks.rs && \
     echo "fn main() {}" > sedandelivery-fabric-sync/src/main.rs && \
     cargo build --release -p gql-module 2>/dev/null || true
 
