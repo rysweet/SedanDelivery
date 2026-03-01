@@ -5,7 +5,7 @@ title: Neo4j Compatibility Gallery
 
 # Neo4j Compatibility Gallery
 
-Three security-focused open-source applications running against SedanDelivery's Bolt v4.4
+Four security-focused open-source applications running against SedanDelivery's Bolt v4.4
 protocol — proving drop-in Neo4j compatibility with **zero code modifications** to any app.
 
 ## Quick Start
@@ -38,6 +38,7 @@ python3 neo4j-compat-gallery/app3-graphker/cve_loader.py --sample --no-clear
 
 | App | URL | What You'll See |
 |-----|-----|-----------------|
+| Neodash | [localhost:5005](http://localhost:5005) | Neo4j Labs dashboard builder (Docker) |
 | neovis.js | [localhost:8080](http://localhost:8080) | Threat intelligence graph visualization |
 | GraphKer | [localhost:5001](http://localhost:5001) | CVE knowledge graph explorer |
 | Network Security | [localhost:5002](http://localhost:5002) | Enterprise network attack surface analyzer |
@@ -62,7 +63,33 @@ Each app was validated end-to-end from a **fresh `git clone`** of this repositor
 
 ---
 
-## App 1: neovis.js — Threat Intelligence Visualization
+## App 1: Neodash — Security Dashboard Builder
+
+**Port 5005** · [neo4j-labs/neodash](https://github.com/neo4j-labs/neodash) · Docker
+
+[Neodash](https://github.com/neo4j-labs/neodash) is an open-source dashboard builder by
+[Neo4j Labs](https://neo4j.com/labs/). It connects to any Bolt-compatible server via
+WebSocket and lets you build interactive dashboards with tables, bar charts, graphs, and maps.
+
+The gallery includes a pre-built `dashboard.json` with 3 pages of MITRE ATT&CK analysis.
+
+**Upstream projects:**
+- [neo4j-labs/neodash](https://github.com/neo4j-labs/neodash) — Dashboard builder for Neo4j
+- [neo4j/neo4j-javascript-driver](https://github.com/neo4j/neo4j-javascript-driver) — Official Neo4j JavaScript driver
+
+```bash
+docker run -d --network=host \
+  -e standalone=true -e standaloneProtocol=bolt \
+  -e standaloneHost=localhost -e standalonePort=7687 \
+  -e standaloneUsername=neo4j -e standalonePassword=neo4j \
+  neo4jlabs/neodash:latest
+```
+
+![Neodash Dashboard](assets/images/gallery/01-neodash-dashboard.png)
+
+---
+
+## App 2: neovis.js — Threat Intelligence Visualization
 
 **Port 8080** · [neo4j-contrib/neovis.js](https://github.com/neo4j-contrib/neovis.js) · Static HTML
 
@@ -89,7 +116,7 @@ python3 server.py    # Starts proxy + static server on port 8080
 
 ---
 
-## App 2: GraphKer — CVE Knowledge Graph Explorer
+## App 3: GraphKer — CVE Knowledge Graph Explorer
 
 **Port 5001** · Python Flask + [neo4j Python driver](https://github.com/neo4j/neo4j-python-driver) v6.1.0
 
@@ -126,7 +153,7 @@ python3 app.py                    # Start on port 5001
 
 ---
 
-## App 3: Network Security Graph Analyzer
+## App 4: Network Security Graph Analyzer
 
 **Port 5002** · Python Flask + [neo4j Python driver](https://github.com/neo4j/neo4j-python-driver) v6.1.0
 
@@ -177,9 +204,9 @@ Every feature below was exercised by at least one gallery app during testing.
 
 | Feature | Status | Tested By |
 |---------|--------|-----------|
-| Bolt v4.4 handshake | PASS | All 3 apps |
-| PackStream encoding | PASS | All 3 apps |
-| `auth=None` connections | PASS | All 3 apps |
+| Bolt v4.4 handshake | PASS | All 4 apps |
+| PackStream encoding | PASS | All 4 apps |
+| `auth=None` connections | PASS | All 4 apps |
 | CREATE nodes & edges | PASS | Data loaders |
 | MATCH with WHERE filters | PASS | All query endpoints |
 | MERGE (upsert) | PASS | CVE loader |
@@ -189,8 +216,10 @@ Every feature below was exercised by at least one gallery app during testing.
 | Parameterized queries (`$param`) | PASS | CVE detail, analyzers |
 | ORDER BY / LIMIT / SKIP | PASS | CVE listing, top vulns |
 | String functions (CONTAINS, etc.) | PASS | Search features |
-| [Python neo4j driver](https://github.com/neo4j/neo4j-python-driver) v6.1.0 | PASS | Apps 2 & 3 |
-| [JavaScript neo4j-driver](https://github.com/neo4j/neo4j-javascript-driver) | PASS | App 1 (neovis.js) |
+| [Python neo4j driver](https://github.com/neo4j/neo4j-python-driver) v6.1.0 | PASS | Apps 2, 3 & 4 |
+| [JavaScript neo4j-driver](https://github.com/neo4j/neo4j-javascript-driver) | PASS | Apps 1 & 2 (Neodash, neovis.js) |
+| WebSocket transport | PASS | Apps 1 & 2 (browser-based drivers) |
+| Docker cross-container Bolt | PASS | App 1 (Neodash) |
 
 ## Architecture
 
