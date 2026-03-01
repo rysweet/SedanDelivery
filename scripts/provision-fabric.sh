@@ -151,16 +151,52 @@ for SEARCH_TYPE in GraphModel Graph GraphDatabase GraphQLApi; do
   fi
 done
 
-# 3. Create new item (try GraphDatabase first, fall back to GraphQLApi)
+# 3. Create new item (try GraphModel first, fall back to others)
 if [[ -z "$GDB_ID" ]]; then
   for TRY_TYPE in GraphModel Graph GraphDatabase GraphQLApi; do
     echo "Creating '${GDB_NAME}' (type=${TRY_TYPE})..."
-    CREATE_RESPONSE=$(curl -s -w "\n%{http_code}" -X POST -H "$AUTH" -H "Content-Type: application/json" \
+    CREATE_RESPONSE=$(curl -s -w "\n%{http_code}" -D /tmp/fabric-create-headers -X POST -H "$AUTH" -H "Content-Type: application/json" \
       "${FABRIC_API}/workspaces/${WORKSPACE_ID}/items" \
       -d "{\"displayName\": \"${GDB_NAME}\", \"type\": \"${TRY_TYPE}\"}")
     CREATE_HTTP=$(echo "$CREATE_RESPONSE" | tail -1)
     CREATE_BODY=$(echo "$CREATE_RESPONSE" | head -n -1)
-    GDB_ID=$(echo "$CREATE_BODY" | python3 -c "import json,sys; print(json.load(sys.stdin).get('id',''))" 2>/dev/null || echo "")
+
+    # 201 Created: item ID in response body
+    if [[ "$CREATE_HTTP" == "201" ]]; then
+      GDB_ID=$(echo "$CREATE_BODY" | python3 -c "import json,sys; print(json.load(sys.stdin).get('id',''))" 2>/dev/null || echo "")
+    fi
+
+    # 202 Accepted: async creation — poll for completion
+    if [[ "$CREATE_HTTP" == "202" ]]; then
+      echo "  ${TRY_TYPE} creation accepted (async) — polling for completion..."
+      POLL_URL=$(grep -i "^location:" /tmp/fabric-create-headers | tr -d '\r' | sed 's/^[Ll]ocation: *//')
+      RETRY_AFTER=$(grep -i "^retry-after:" /tmp/fabric-create-headers | tr -d '\r' | sed 's/^[Rr]etry-[Aa]fter: *//')
+      RETRY_AFTER="${RETRY_AFTER:-5}"
+
+      for ATTEMPT in $(seq 1 12); do
+        sleep "${RETRY_AFTER}"
+        if [[ -n "$POLL_URL" ]]; then
+          POLL_RESP=$(curl -s -H "$AUTH" "$POLL_URL")
+          POLL_STATUS=$(echo "$POLL_RESP" | python3 -c "import json,sys; print(json.load(sys.stdin).get('status',''))" 2>/dev/null || echo "")
+          echo "  Poll ${ATTEMPT}/12: status=${POLL_STATUS}"
+          if [[ "$POLL_STATUS" == "Succeeded" ]]; then
+            # Re-fetch the item to get the ID
+            GDB_ID=$(find_item "$TRY_TYPE")
+            break
+          elif [[ "$POLL_STATUS" == "Failed" ]]; then
+            echo "  ${TRY_TYPE} creation failed"
+            break
+          fi
+        else
+          # No Location header — try finding the item directly
+          GDB_ID=$(find_item "$TRY_TYPE")
+          if [[ -n "$GDB_ID" ]]; then
+            break
+          fi
+        fi
+      done
+    fi
+
     if [[ -n "$GDB_ID" ]]; then
       ITEM_TYPE="${TRY_TYPE}"
       echo "Created ${TRY_TYPE}: ${GDB_ID}"
