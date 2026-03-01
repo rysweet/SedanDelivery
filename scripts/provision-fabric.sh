@@ -141,8 +141,8 @@ print('')
 
 echo "Looking for Graph Database '${GDB_NAME}'..."
 
-# Check for existing items (try Graph first, then GraphDatabase, then GraphQLApi)
-for SEARCH_TYPE in Graph GraphDatabase GraphQLApi; do
+# Check for existing items (try GraphModel first — the native Fabric Graph type)
+for SEARCH_TYPE in GraphModel Graph GraphDatabase GraphQLApi; do
   GDB_ID=$(find_item "$SEARCH_TYPE")
   if [[ -n "$GDB_ID" ]]; then
     ITEM_TYPE="$SEARCH_TYPE"
@@ -153,7 +153,7 @@ done
 
 # 3. Create new item (try GraphDatabase first, fall back to GraphQLApi)
 if [[ -z "$GDB_ID" ]]; then
-  for TRY_TYPE in Graph GraphDatabase GraphQLApi; do
+  for TRY_TYPE in GraphModel Graph GraphDatabase GraphQLApi; do
     echo "Creating '${GDB_NAME}' (type=${TRY_TYPE})..."
     CREATE_RESPONSE=$(curl -s -w "\n%{http_code}" -X POST -H "$AUTH" -H "Content-Type: application/json" \
       "${FABRIC_API}/workspaces/${WORKSPACE_ID}/items" \
@@ -177,10 +177,14 @@ if [[ -z "$GDB_ID" ]]; then
 fi
 
 # -- Output the endpoint ---------------------------------------------------
-# Graph:         /graphDatabases/{id} (GQL via /query and /statements — preview)
+# GraphModel:    /GraphModels/{id}    (GQL via /executeQuery?preview=true — native Fabric Graph)
+# Graph:         /graphDatabases/{id} (GQL via /query and /statements)
 # GraphDatabase: /graphDatabases/{id} (GQL via /query and /statements)
 # GraphQLApi:    /graphqlApis/{id}    (GraphQL via /graphql)
 case "$ITEM_TYPE" in
+  GraphModel)
+    FABRIC_ENDPOINT="${FABRIC_API}/workspaces/${WORKSPACE_ID}/GraphModels/${GDB_ID}"
+    ;;
   Graph|GraphDatabase)
     FABRIC_ENDPOINT="${FABRIC_API}/workspaces/${WORKSPACE_ID}/graphDatabases/${GDB_ID}"
     ;;

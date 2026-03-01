@@ -93,41 +93,56 @@ def get_fabric_token(tenant_id: str, client_id: str, client_secret: str) -> str:
     return resp.json()["access_token"]
 
 
+def _fabric_url(endpoint: str, is_write: bool) -> str:
+    """Build the correct Fabric API URL based on endpoint type.
+
+    GraphModel endpoints use /executeQuery?preview=true (GQL Query API).
+    Legacy endpoints use /query (read) and /statements (write).
+    """
+    if "/GraphModels/" in endpoint:
+        return f"{endpoint}/executeQuery?preview=true"
+    return f"{endpoint}/statements" if is_write else f"{endpoint}/query"
+
+
 def fabric_query(token: str, endpoint: str, cypher: str) -> dict:
-    """Execute a read-only Cypher query against the Fabric Graph Database.
+    """Execute a read-only GQL/Cypher query against the Fabric Graph.
 
-    The Fabric Graph REST API uses POST {endpoint}/query with:
-        { "query": "<cypher>", "parameters": {} }
+    Supports both GraphModel (GQL Query API) and legacy endpoints.
 
-    Response shape:
+    GraphModel response shape:
+        { "status": {...}, "result": { "kind": "TABLE", "columns": [...], "data": [...] } }
+
+    Legacy response shape:
         { "results": [ { "headers": [...], "data": [[col0, col1, ...], ...] } ] }
     """
     import requests
 
-    url = f"{endpoint}/query"
+    url = _fabric_url(endpoint, is_write=False)
     headers = {
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/json",
+        "Accept": "application/json",
     }
-    body = {"query": cypher, "parameters": {}}
+    body = {"query": cypher}
     resp = requests.post(url, json=body, headers=headers, timeout=30)
     resp.raise_for_status()
     return resp.json()
 
 
 def fabric_statement(token: str, endpoint: str, cypher: str) -> dict:
-    """Execute a write Cypher statement against the Fabric Graph Database.
+    """Execute a write GQL/Cypher statement against the Fabric Graph.
 
-    Uses POST {endpoint}/statements.
+    Uses the same endpoint as queries for GraphModel (GQL API is unified).
     """
     import requests
 
-    url = f"{endpoint}/statements"
+    url = _fabric_url(endpoint, is_write=True)
     headers = {
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/json",
+        "Accept": "application/json",
     }
-    body = {"query": cypher, "parameters": {}}
+    body = {"query": cypher}
     resp = requests.post(url, json=body, headers=headers, timeout=30)
     resp.raise_for_status()
     return resp.json()
@@ -136,9 +151,37 @@ def fabric_statement(token: str, endpoint: str, cypher: str) -> dict:
 def parse_fabric_rows(resp: dict) -> list[list]:
     """Extract rows from a Fabric query response.
 
+    Supports both GraphModel (GQL Query API) and legacy response formats.
     Returns a list of rows, each row being a list of column values.
     """
     rows = []
+
+    # GraphModel GQL Query API format:
+    # { "status": {...}, "result": { "kind": "TABLE", "columns": [...], "data": [...] } }
+    result = resp.get("result")
+    if result and result.get("kind") == "TABLE":
+        columns = [c["name"] for c in result.get("columns", [])]
+        for row_dict in result.get("data", []):
+            if isinstance(row_dict, dict):
+                # Extract values, unwrapping typed GQL values if needed
+                row_vals = []
+                for col in columns:
+                    val = row_dict.get(col)
+                    if isinstance(val, dict) and "value" in val:
+                        val = val["value"]  # unwrap {gqlType, value}
+                    row_vals.append(val)
+                rows.append(row_vals)
+            elif isinstance(row_dict, list):
+                rows.append(row_dict)
+        return rows
+
+    # Check for GQL API errors
+    status = resp.get("status", {})
+    code = status.get("code", "")
+    if code and not code.startswith("0"):
+        raise RuntimeError(f"Fabric GQL error: {status.get('description', code)}")
+
+    # Legacy format: { "results": [ { "headers": [...], "data": [[...], ...] } ] }
     for result_block in resp.get("results", []):
         if "error" in result_block:
             raise RuntimeError(f"Fabric result error: {result_block['error']}")

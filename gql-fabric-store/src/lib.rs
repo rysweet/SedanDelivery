@@ -177,17 +177,32 @@ impl FabricGraphStore {
 
     // ── HTTP helpers ──────────────────────────────────────────────────────────
 
-    /// POST a read-only openCypher query.
+    /// Build the correct query URL based on the endpoint type.
+    /// GraphModel endpoints use /executeQuery?preview=true (GQL Query API).
+    /// Legacy endpoints use /query (read) and /statements (write).
+    fn query_url(&self, is_write: bool) -> String {
+        if self.endpoint.contains("/GraphModels/") {
+            // Fabric Graph GQL Query API — single endpoint for all operations
+            format!("{}/executeQuery?preview=true", self.endpoint)
+        } else if is_write {
+            format!("{}/statements", self.endpoint)
+        } else {
+            format!("{}/query", self.endpoint)
+        }
+    }
+
+    /// POST a read-only GQL/openCypher query.
     fn query(&self, cypher: &str, params: JValue) -> Result<Vec<Vec<JValue>>, StorageError> {
         let token = self.bearer_token()?;
         debug!(cypher, "fabric query");
-        let url = format!("{}/query", self.endpoint);
+        let url = self.query_url(false);
         let body = json!({ "query": cypher, "parameters": params });
         let resp: JValue = self
             .http_agent()
             .post(&url)
             .set("Authorization", &format!("Bearer {token}"))
             .set("Content-Type", "application/json")
+            .set("Accept", "application/json")
             .send_json(body)
             .map_err(|e| StorageError::Backend {
                 msg: format!("fabric query: {e}"),
@@ -199,17 +214,18 @@ impl FabricGraphStore {
         parse_rows(&resp)
     }
 
-    /// POST a write openCypher statement.
+    /// POST a write GQL/openCypher statement.
     fn statement(&self, cypher: &str, params: JValue) -> Result<Vec<Vec<JValue>>, StorageError> {
         let token = self.bearer_token()?;
         debug!(cypher, "fabric statement");
-        let url = format!("{}/statements", self.endpoint);
+        let url = self.query_url(true);
         let body = json!({ "query": cypher, "parameters": params });
         let resp: JValue = self
             .http_agent()
             .post(&url)
             .set("Authorization", &format!("Bearer {token}"))
             .set("Content-Type", "application/json")
+            .set("Accept", "application/json")
             .send_json(body)
             .map_err(|e| StorageError::Backend {
                 msg: format!("fabric statement: {e}"),
