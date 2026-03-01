@@ -49,7 +49,9 @@ jobs:
           python-version: '3.12'
 
       - name: Install dependencies
-        run: pip install neo4j requests
+        run: |
+          pip install neo4j requests
+          sudo apt-get update -q && sudo apt-get install -y -q redis-tools
 
       - name: Azure login
         run: |
@@ -116,8 +118,16 @@ jobs:
           fi
 
           echo "redis_host=${FQDN}" >> "$GITHUB_OUTPUT"
-          echo "bolt_uri=bolt://${FQDN}:7687" >> "$GITHUB_OUTPUT"
-          echo "FQDN: ${FQDN} (Redis:6379, Bolt:7687)"
+          echo "FQDN: ${FQDN} (Redis:6379)"
+
+          # Retrieve Valkey password for redis-cli auth
+          VALKEY_PASS=$(az containerapp secret show \
+            --name "${CA_NAME}" --resource-group "${RG}" \
+            --secret-name valkey-password --query value -o tsv 2>/dev/null || echo "")
+          if [[ -n "${VALKEY_PASS}" ]]; then
+            echo "::add-mask::${VALKEY_PASS}"
+            echo "redis_password=${VALKEY_PASS}" >> "$GITHUB_OUTPUT"
+          fi
 
           # Retrieve the Fabric endpoint from the sync sidecar's env vars
           FABRIC_ENDPOINT=$(az containerapp show \
@@ -138,8 +148,9 @@ jobs:
       - name: Run E2E validation
         if: steps.endpoints.outputs.has_fabric == 'true'
         env:
-          BOLT_URI: ${{ steps.endpoints.outputs.bolt_uri }}
           REDIS_HOST: ${{ steps.endpoints.outputs.redis_host }}
+          REDIS_PORT: '6379'
+          REDIS_PASSWORD: ${{ steps.endpoints.outputs.redis_password }}
           FABRIC_ENDPOINT: ${{ steps.endpoints.outputs.fabric_endpoint }}
           FABRIC_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
           FABRIC_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
