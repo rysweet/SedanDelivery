@@ -49,8 +49,8 @@ if [[ -z "$WORKSPACE_ID" ]]; then
     | python3 -c "
 import json, sys
 data = json.load(sys.stdin)
-for ws in data.get('workspaces', data.get('value', [])):
-    if ws.get('displayName', ws.get('name', '')) == '${WORKSPACE_NAME}':
+for ws in data.get('value', []):
+    if ws.get('displayName','') == '${WORKSPACE_NAME}' or ws.get('name','') == '${WORKSPACE_NAME}':
         print(ws['id'])
         sys.exit(0)
 print('')
@@ -58,96 +58,76 @@ print('')
 fi
 
 if [[ -z "$WORKSPACE_ID" ]]; then
+  echo "Workspace '${WORKSPACE_NAME}' not found — creating..."
+
   # Auto-detect capacity if not provided
   if [[ -z "$CAPACITY_ID" ]]; then
+    echo "Querying available Fabric capacities..."
     CAPACITY_ID=$(curl -s -H "$AUTH" "${FABRIC_API}/capacities" \
       | python3 -c "
 import json, sys
-caps = json.load(sys.stdin).get('value', [])
-active = [c for c in caps if c.get('state') == 'Active' and c.get('sku', '').startswith('F')]
-if active:
-    print(active[0]['id'])
-else:
-    # Fall back to any active capacity
-    for c in caps:
-        if c.get('state') == 'Active':
-            print(c['id'])
-            break
-" 2>/dev/null || echo "")
-    if [[ -n "$CAPACITY_ID" ]]; then
-      echo "Auto-detected capacity: ${CAPACITY_ID}"
-    fi
-  fi
-
-  CAPACITY_JSON=""
-  if [[ -n "$CAPACITY_ID" ]]; then
-    CAPACITY_JSON=", \"capacityId\": \"${CAPACITY_ID}\""
-  fi
-
-  echo "Creating workspace '${WORKSPACE_NAME}'..."
-  WORKSPACE_ID=$(curl -s -X POST -H "$AUTH" -H "Content-Type: application/json" \
-    "${FABRIC_API}/workspaces" \
-    -d "{\"displayName\": \"${WORKSPACE_NAME}\"${CAPACITY_JSON}}" \
-    | python3 -c "import json,sys; print(json.load(sys.stdin).get('id',''))")
-
-  if [[ -z "$WORKSPACE_ID" ]]; then
-    # Name already exists but we couldn't find it — try admin API
-    echo "Create returned empty ID — looking up via admin API..."
-    WORKSPACE_ID=$(curl -s -H "$AUTH" "${FABRIC_API}/admin/workspaces" \
-      | python3 -c "
-import json, sys
 data = json.load(sys.stdin)
-for ws in data.get('workspaces', data.get('value', [])):
-    if ws.get('displayName', ws.get('name', '')) == '${WORKSPACE_NAME}':
-        print(ws['id'])
+for cap in data.get('value', []):
+    state = cap.get('state', '')
+    sku = cap.get('sku', '')
+    if state == 'Active' and sku.startswith('F'):
+        print(cap['id'])
         sys.exit(0)
 print('')
 " 2>/dev/null || echo "")
-    if [[ -z "$WORKSPACE_ID" ]]; then
-      echo "::error::Failed to create or find Fabric workspace" >&2
-      exit 1
+
+    if [[ -z "$CAPACITY_ID" ]]; then
+      echo "::warning::No active Fabric capacity found (need F-SKU)"
+      echo "FABRIC_ENDPOINT="
+      exit 0
     fi
+    echo "Auto-detected capacity: ${CAPACITY_ID}"
+  fi
+
+  WORKSPACE_ID=$(curl -s -X POST -H "$AUTH" -H "Content-Type: application/json" \
+    "${FABRIC_API}/workspaces" \
+    -d "{\"displayName\": \"${WORKSPACE_NAME}\", \"capacityId\": \"${CAPACITY_ID}\"}" \
+    | python3 -c "import json,sys; print(json.load(sys.stdin).get('id',''))" 2>/dev/null || echo "")
+
+  if [[ -z "$WORKSPACE_ID" ]]; then
+    echo "::warning::Failed to create workspace '${WORKSPACE_NAME}'"
+    echo "FABRIC_ENDPOINT="
+    exit 0
   fi
   echo "Created workspace: ${WORKSPACE_ID}"
 else
   echo "Found existing workspace: ${WORKSPACE_ID}"
 fi
 
-# -- Ensure SP is a workspace member (needed to list/create items) ----------------
+# -- Ensure SP has workspace access ----------------------------------------
 echo "Ensuring SP has workspace member access..."
-# Get the SP's own object ID from the token
-SP_OBJECT_ID=$(python3 -c "
-import json, base64, sys
-token = '${TOKEN}'
+SP_OBJECT_ID=$(echo "$TOKEN" | python3 -c "
+import json, sys, base64
+token = sys.stdin.read().strip()
 payload = token.split('.')[1]
-payload += '=' * (4 - len(payload) % 4)  # pad base64
+payload += '=' * (-len(payload) % 4)
 data = json.loads(base64.urlsafe_b64decode(payload))
 print(data.get('oid', ''))
 ")
 if [[ -n "$SP_OBJECT_ID" ]]; then
-  curl -s -X POST -H "$AUTH" -H "Content-Type: application/json"     "${FABRIC_API}/workspaces/${WORKSPACE_ID}/roleAssignments"     -d "{\"principal\": {\"id\": \"${SP_OBJECT_ID}\", \"type\": \"ServicePrincipal\"}, \"role\": \"Admin\"}"     >/dev/null 2>&1 || true
+  curl -s -X POST -H "$AUTH" -H "Content-Type: application/json" \
+    "${FABRIC_API}/workspaces/${WORKSPACE_ID}/roleAssignments" \
+    -d "{\"principal\": {\"id\": \"${SP_OBJECT_ID}\", \"type\": \"ServicePrincipal\"}, \"role\": \"Admin\"}" \
+    >/dev/null 2>&1 || true
   echo "SP ${SP_OBJECT_ID} granted workspace access (or already had it)"
 fi
 
-# -- Find or create Graph Database -----------------------------------------
+# -- Find or create Graph item ----------------------------------------------
+# Try GraphDatabase first (native Cypher/GQL, preview feature).
+# Fall back to GraphQLApi if GraphDatabase is not available on this capacity.
 GDB_NAME="sedangraph"
-echo "Looking for Graph Database '${GDB_NAME}'..."
-# Use type=GraphDatabase (Fabric Graph Database with Cypher/GQL support).
-# Note: GraphQLApi is a different item type (GraphQL endpoint, not Cypher).
-GDB_ID=$(curl -s -H "$AUTH" "${FABRIC_API}/workspaces/${WORKSPACE_ID}/items?type=GraphDatabase" \
-  | python3 -c "
-import json, sys
-data = json.load(sys.stdin)
-for item in data.get('value', []):
-    if item['displayName'] == '${GDB_NAME}':
-        print(item['id'])
-        sys.exit(0)
-print('')
-" 2>/dev/null || echo "")
+ITEM_TYPE=""
+GDB_ID=""
 
-if [[ -z "$GDB_ID" ]]; then
-  # Check for stale GraphQLApi item with the same name (created by older scripts)
-  OLD_ID=$(curl -s -H "$AUTH" "${FABRIC_API}/workspaces/${WORKSPACE_ID}/items?type=GraphQLApi" \
+# Helper: find item by type and name
+find_item() {
+  local type="$1"
+  curl -s -H "$AUTH" "${FABRIC_API}/workspaces/${WORKSPACE_ID}/items?type=${type}" \
     | python3 -c "
 import json, sys
 data = json.load(sys.stdin)
@@ -156,33 +136,59 @@ for item in data.get('value', []):
         print(item['id'])
         sys.exit(0)
 print('')
-" 2>/dev/null || echo "")
-  if [[ -n "$OLD_ID" ]]; then
-    echo "Found stale GraphQLApi item '${GDB_NAME}' (${OLD_ID}) — deleting to recreate as GraphDatabase..."
-    curl -s -X DELETE -H "$AUTH" "${FABRIC_API}/workspaces/${WORKSPACE_ID}/items/${OLD_ID}" >/dev/null 2>&1 || true
-  fi
+" 2>/dev/null || echo ""
+}
 
-  echo "Creating Graph Database '${GDB_NAME}' (type=GraphDatabase)..."
-  CREATE_RESPONSE=$(curl -s -w "\n%{http_code}" -X POST -H "$AUTH" -H "Content-Type: application/json" \
-    "${FABRIC_API}/workspaces/${WORKSPACE_ID}/items" \
-    -d "{\"displayName\": \"${GDB_NAME}\", \"type\": \"GraphDatabase\"}")
-  CREATE_HTTP=$(echo "$CREATE_RESPONSE" | tail -1)
-  CREATE_BODY=$(echo "$CREATE_RESPONSE" | head -n -1)
-  GDB_ID=$(echo "$CREATE_BODY" | python3 -c "import json,sys; print(json.load(sys.stdin).get('id',''))" 2>/dev/null || echo "")
+echo "Looking for Graph Database '${GDB_NAME}'..."
 
-  if [[ -z "$GDB_ID" ]]; then
-    echo "::warning::Could not create Graph Database (HTTP ${CREATE_HTTP})"
-    echo "Response: ${CREATE_BODY}"
-    echo "FABRIC_ENDPOINT="
-    exit 0
+# Check for existing items (try Graph first, then GraphDatabase, then GraphQLApi)
+for SEARCH_TYPE in Graph GraphDatabase GraphQLApi; do
+  GDB_ID=$(find_item "$SEARCH_TYPE")
+  if [[ -n "$GDB_ID" ]]; then
+    ITEM_TYPE="$SEARCH_TYPE"
+    echo "Found existing ${SEARCH_TYPE}: ${GDB_ID}"
+    break
   fi
-  echo "Created Graph Database: ${GDB_ID}"
-else
-  echo "Found existing Graph Database: ${GDB_ID}"
+done
+
+# 3. Create new item (try GraphDatabase first, fall back to GraphQLApi)
+if [[ -z "$GDB_ID" ]]; then
+  for TRY_TYPE in Graph GraphDatabase GraphQLApi; do
+    echo "Creating '${GDB_NAME}' (type=${TRY_TYPE})..."
+    CREATE_RESPONSE=$(curl -s -w "\n%{http_code}" -X POST -H "$AUTH" -H "Content-Type: application/json" \
+      "${FABRIC_API}/workspaces/${WORKSPACE_ID}/items" \
+      -d "{\"displayName\": \"${GDB_NAME}\", \"type\": \"${TRY_TYPE}\"}")
+    CREATE_HTTP=$(echo "$CREATE_RESPONSE" | tail -1)
+    CREATE_BODY=$(echo "$CREATE_RESPONSE" | head -n -1)
+    GDB_ID=$(echo "$CREATE_BODY" | python3 -c "import json,sys; print(json.load(sys.stdin).get('id',''))" 2>/dev/null || echo "")
+    if [[ -n "$GDB_ID" ]]; then
+      ITEM_TYPE="${TRY_TYPE}"
+      echo "Created ${TRY_TYPE}: ${GDB_ID}"
+      break
+    fi
+    echo "  ${TRY_TYPE} not available (HTTP ${CREATE_HTTP})"
+  done
+fi
+
+if [[ -z "$GDB_ID" ]]; then
+  echo "::warning::Could not create graph item in Fabric"
+  echo "FABRIC_ENDPOINT="
+  exit 0
 fi
 
 # -- Output the endpoint ---------------------------------------------------
-FABRIC_ENDPOINT="${FABRIC_API}/workspaces/${WORKSPACE_ID}/graphDatabases/${GDB_ID}"
+# Graph:         /graphDatabases/{id} (GQL via /query and /statements — preview)
+# GraphDatabase: /graphDatabases/{id} (GQL via /query and /statements)
+# GraphQLApi:    /graphqlApis/{id}    (GraphQL via /graphql)
+case "$ITEM_TYPE" in
+  Graph|GraphDatabase)
+    FABRIC_ENDPOINT="${FABRIC_API}/workspaces/${WORKSPACE_ID}/graphDatabases/${GDB_ID}"
+    ;;
+  GraphQLApi)
+    FABRIC_ENDPOINT="${FABRIC_API}/workspaces/${WORKSPACE_ID}/graphqlApis/${GDB_ID}"
+    ;;
+esac
 echo "FABRIC_ENDPOINT=${FABRIC_ENDPOINT}"
+echo "FABRIC_ITEM_TYPE=${ITEM_TYPE}"
 echo "FABRIC_WORKSPACE_ID=${WORKSPACE_ID}"
 echo "FABRIC_GDB_ID=${GDB_ID}"
