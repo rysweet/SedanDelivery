@@ -34,7 +34,7 @@ use gql_core::executor::{ExecutionBudget, QueryExecutor};
 use gql_core::parser::parse_query;
 use gql_core::planner::QueryPlanner;
 use gql_core::serde_value::value_to_json;
-use gql_core::storage::{EdgeId, GraphStore, InMemoryGraphStore, NodeId};
+use gql_core::storage::{GraphStore, InMemoryGraphStore};
 use gql_core::types::Value;
 
 // ── Helper ────────────────────────────────────────────────────────────────────
@@ -124,9 +124,9 @@ fn compat_negative_integer_encodes_correctly() {
 #[test]
 fn compat_float_encodes_as_json_number() {
     let store = make_store("c-float");
-    let rows = serialize_query(&store, "c-float", "RETURN 3.14 AS v");
+    let rows = serialize_query(&store, "c-float", "RETURN 2.72 AS v");
     match rows[0]["v"].as_f64() {
-        Some(f) => assert!((f - 3.14).abs() < 1e-9, "float must be ~3.14; got {f}"),
+        Some(f) => assert!((f - 2.72).abs() < 1e-9, "float must be ~2.72; got {f}"),
         None => panic!("expected JSON number for float"),
     }
 }
@@ -407,8 +407,8 @@ fn compat_value_to_json_int() {
 
 #[test]
 fn compat_value_to_json_float_finite() {
-    let v = value_to_json(&Value::Float(2.718)).unwrap();
-    assert!((v.as_f64().unwrap() - 2.718).abs() < 1e-9);
+    let v = value_to_json(&Value::Float(1.234)).unwrap();
+    assert!((v.as_f64().unwrap() - 1.234).abs() < 1e-9);
 }
 
 #[test]

@@ -749,14 +749,13 @@ async fn no_side_effects(world: &mut GqlWorld) {
 
 // ── TCK value parser ─────────────────────────────────────────────────────────
 
-/// Parse a TCK table cell value into a `Value`.
-///
-/// TCK value formats:
-/// - `null`                     -> Value::Null
-/// - `true` / `false`           -> Value::Bool
-/// - `123` / `-42`              -> Value::Int
-/// - `1.0` / `-3.14`            -> Value::Float
-/// - `'text'`                   -> Value::Str
+// TCK table cell value formats:
+// - `null`                     -> Value::Null
+// - `true` / `false`           -> Value::Bool
+// - `123` / `-42`              -> Value::Int
+// - `1.0` / `-3.14`            -> Value::Float
+// - `'text'`                   -> Value::Str
+
 /// Unescape Cypher string escape sequences from the inner content of a single-quoted string.
 /// Handles: `\\` → `\`, `\'` → `'`, `\"` → `"`, `\n` → newline, `\t` → tab, `\r` → CR.
 fn unescape_cypher_string(s: &str) -> String {
@@ -1605,9 +1604,15 @@ fn value_matches(
             let actual = gql_core::types::value::format_cypher_duration(sp);
             actual == s.as_ref() || normalize_duration_str(&actual) == normalize_duration_str(s)
         }
+        // Zoned time: format as time+offset and compare against TCK string
+        (Value::Time(t, offset_secs), Value::Str(s)) => {
+            let actual = format_time_with_offset(t, *offset_secs);
+            actual == s.as_ref() || normalize_time_str(&actual) == normalize_time_str(s)
+        }
         // Temporal equality
         (Value::Date(_), Value::Date(_))
         | (Value::LocalTime(_), Value::LocalTime(_))
+        | (Value::Time(_, _), Value::Time(_, _))
         | (Value::LocalDateTime(_), Value::LocalDateTime(_))
         | (Value::DateTime(_), Value::DateTime(_)) => actual == expected,
         _ => {
@@ -1819,6 +1824,25 @@ fn format_zoned_time(zdt: &jiff::Zoned) -> String {
         format!("{time_part}Z")
     } else {
         format!("{time_part}{}", fmt_tz_offset(total_secs))
+    }
+}
+
+/// Format a `Value::Time(civil::Time, i32)` as a time string with offset.
+/// Uses the same compact formatting as `format_zoned_time`: skip trailing
+/// `:00` seconds, use "Z" for UTC offset, nanoseconds if present.
+fn format_time_with_offset(t: &jiff::civil::Time, offset_secs: i32) -> String {
+    let time_part = if t.subsec_nanosecond() != 0 {
+        format!("{t}")
+    } else if t.second() != 0 {
+        format!("{:02}:{:02}:{:02}", t.hour(), t.minute(), t.second())
+    } else {
+        format!("{:02}:{:02}", t.hour(), t.minute())
+    };
+
+    if offset_secs == 0 {
+        format!("{time_part}Z")
+    } else {
+        format!("{time_part}{}", fmt_tz_offset(offset_secs))
     }
 }
 

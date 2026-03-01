@@ -223,7 +223,13 @@ fn is_keyword_usable_as_property(kind: &TokenKind) -> bool {
 /// Returns [`ParseError::EmptyQuery`] for blank/empty input.
 /// Returns [`ParseError::Syntax`] for any structural grammar error.
 pub fn parse_query(src: &str) -> Result<Query, ParseError> {
-    let max_query_size = crate::config::global().max_query_size;
+    parse_query_with_max_size(src, crate::config::global().max_query_size)
+}
+
+/// Like [`parse_query`] but with an explicit byte-length limit.
+///
+/// Useful for testing the size guard without relying on the global config.
+pub fn parse_query_with_max_size(src: &str, max_query_size: usize) -> Result<Query, ParseError> {
     if src.len() > max_query_size {
         return Err(ParseError::QueryTooLarge {
             size: src.len(),

@@ -3875,6 +3875,8 @@ fn eval_binary_values(
             | (_, Value::Date(_))
             | (Value::LocalTime(_), _)
             | (_, Value::LocalTime(_))
+            | (Value::Time(_, _), _)
+            | (_, Value::Time(_, _))
             | (Value::LocalDateTime(_), _)
             | (_, Value::LocalDateTime(_))
             | (Value::DateTime(_), _)
@@ -3949,6 +3951,7 @@ fn eval_binary_values(
                 (
                     temporal @ (Value::Date(_)
                     | Value::LocalTime(_)
+                    | Value::Time(_, _)
                     | Value::LocalDateTime(_)
                     | Value::DateTime(_)),
                     Value::Duration(dur),
@@ -3957,6 +3960,7 @@ fn eval_binary_values(
                     Value::Duration(dur),
                     temporal @ (Value::Date(_)
                     | Value::LocalTime(_)
+                    | Value::Time(_, _)
                     | Value::LocalDateTime(_)
                     | Value::DateTime(_)),
                 ) => temporal_add_duration(temporal, dur, false),
@@ -3987,6 +3991,7 @@ fn eval_binary_values(
                 (
                     temporal @ (Value::Date(_)
                     | Value::LocalTime(_)
+                    | Value::Time(_, _)
                     | Value::LocalDateTime(_)
                     | Value::DateTime(_)),
                     Value::Duration(dur),
@@ -4085,6 +4090,23 @@ fn value_to_expr(val: &Value) -> Expr {
     }
 }
 
+/// Convert a zoned time (civil time + offset in seconds) to UTC nanoseconds-from-midnight.
+fn time_to_utc_nanos(t: &jiff::civil::Time, offset_secs: i32) -> i64 {
+    let local_nanos = t.hour() as i64 * 3_600_000_000_000
+        + t.minute() as i64 * 60_000_000_000
+        + t.second() as i64 * 1_000_000_000
+        + t.subsec_nanosecond() as i64;
+    local_nanos - offset_secs as i64 * 1_000_000_000
+}
+
+/// Convert a civil time to nanoseconds-from-midnight.
+fn civil_time_to_nanos(t: &jiff::civil::Time) -> i64 {
+    t.hour() as i64 * 3_600_000_000_000
+        + t.minute() as i64 * 60_000_000_000
+        + t.second() as i64 * 1_000_000_000
+        + t.subsec_nanosecond() as i64
+}
+
 /// Compare two `Value`s for ordering purposes.
 ///
 /// Ordering follows openCypher/Neo4j semantics for ORDER BY / min / max.
@@ -4140,6 +4162,23 @@ pub fn cmp_values(a: &Value, b: &Value) -> std::cmp::Ordering {
         (Value::Str(x), Value::Str(y)) => x.cmp(y),
         (Value::Date(x), Value::Date(y)) => x.cmp(y),
         (Value::LocalTime(x), Value::LocalTime(y)) => x.cmp(y),
+        // Zoned time: compare by UTC-normalized instant
+        (Value::Time(t1, o1), Value::Time(t2, o2)) => {
+            let utc1 = time_to_utc_nanos(t1, *o1);
+            let utc2 = time_to_utc_nanos(t2, *o2);
+            utc1.cmp(&utc2)
+        }
+        // Mixed LocalTime / Time: LocalTime treated as-is, Time UTC-normalized
+        (Value::LocalTime(t1), Value::Time(t2, o2)) => {
+            let n1 = civil_time_to_nanos(t1);
+            let n2 = time_to_utc_nanos(t2, *o2);
+            n1.cmp(&n2)
+        }
+        (Value::Time(t1, o1), Value::LocalTime(t2)) => {
+            let n1 = time_to_utc_nanos(t1, *o1);
+            let n2 = civil_time_to_nanos(t2);
+            n1.cmp(&n2)
+        }
         (Value::LocalDateTime(x), Value::LocalDateTime(y)) => x.cmp(y),
         (Value::DateTime(x), Value::DateTime(y)) => x.cmp(y),
         (Value::List(x), Value::List(y)) => {
@@ -5457,6 +5496,21 @@ mod tests {
         assert_eq!(cmp_values(&Value::Null, &Value::Null), Ordering::Equal);
     }
 
+    #[test]
+    fn cmp_values_time_utc_normalized() {
+        use std::cmp::Ordering;
+        // 10:35-08:00 → UTC 18:35 (should sort AFTER 12:35:15+05:00 → UTC 07:35:15)
+        let a = Value::Time(jiff::civil::Time::new(10, 35, 0, 0).unwrap(), -28800); // UTC 18:35
+        let d = Value::Time(jiff::civil::Time::new(12, 35, 15, 0).unwrap(), 18000); // UTC 07:35:15
+        assert_eq!(cmp_values(&a, &d), Ordering::Greater, "A(18:35Z) should be > D(07:35Z)");
+        assert_eq!(cmp_values(&d, &a), Ordering::Less, "D(07:35Z) should be < A(18:35Z)");
+
+        // Equal in UTC: 14:00+02:00 and 13:00+01:00 are both 12:00Z
+        let t1 = Value::Time(jiff::civil::Time::new(14, 0, 0, 0).unwrap(), 7200);
+        let t2 = Value::Time(jiff::civil::Time::new(13, 0, 0, 0).unwrap(), 3600);
+        assert_eq!(cmp_values(&t1, &t2), Ordering::Equal);
+    }
+
     // ── E2E integration test: VarLen via parser+planner ─────────────────────
 
     #[test]
@@ -5479,15 +5533,10 @@ mod tests {
         let query = "MATCH (a {name: 'A'})-[*]->(x) RETURN x";
         let ast2 = parse_query(query).unwrap();
         let plan2 = planner.plan(&ast2).unwrap();
-        eprintln!("VarLen plan: {:#?}", plan2);
         let mut budget2 = ExecutionBudget::unlimited();
         let result = QueryExecutor::new(&store)
             .execute("g", &plan2, &mut budget2)
             .unwrap();
-        eprintln!("VarLen result: {} rows", result.rows.len());
-        for row in &result.rows {
-            eprintln!("  {:?}", row);
-        }
         assert_eq!(result.rows.len(), 3, "Expected 3 rows: B, C, D");
     }
 

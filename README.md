@@ -85,12 +85,12 @@ driver.close()
 Works with any Neo4j driver: Python, .NET, Java, Go, Rust, JavaScript.
 
 ```bash
-# Build and run sedan-bolt
-cargo run -p sedan-bolt
+# Build and run sedandelivery-bolt
+cargo run -p sedandelivery-bolt
 # Listens on 0.0.0.0:7687 by default (configure via BOLT_BIND_ADDR env var)
 ```
 
-See [docs/specs/sedan-bolt-spec.md](docs/specs/sedan-bolt-spec.md) for the full Bolt protocol specification.
+See [docs/specs/sedandelivery-bolt-spec.md](docs/specs/sedandelivery-bolt-spec.md) for the full Bolt protocol specification.
 
 ## Use it via Redis protocol
 
@@ -238,7 +238,7 @@ See [docs/FABRIC_TUTORIAL.md](docs/FABRIC_TUTORIAL.md) for the complete walkthro
 ## Documentation
 
 - [Tutorial](docs/TUTORIAL.md) — full usage guide with code examples
-- [Bolt Protocol Spec](docs/specs/sedan-bolt-spec.md) — Neo4j Bolt v4.4 server implementation details
+- [Bolt Protocol Spec](docs/specs/sedandelivery-bolt-spec.md) — Neo4j Bolt v4.4 server implementation details
 - [Docs site](https://cloud-ecosystem-security.github.io/SedanDelivery/) — deployment, storage backends, environment variables
 - [Research](docs/RESEARCH.md) — security analysis
 
@@ -255,8 +255,8 @@ bash scripts/validate.sh --tck     # include TCK 3903 scenarios (~3 min extra)
 | Layer | Count | What it validates |
 |-------|-------|------------------|
 | Unit tests | 385 | Parser, planner, executor, storage, budget |
-| sedan-bolt unit | 197 | PackStream codec, message framing, bridge layer |
-| sedan-bolt integration | 147 | Python neo4j driver: CRUD, aggregation, errors, edge cases |
+| sedandelivery-bolt unit | 197 | PackStream codec, message framing, bridge layer |
+| sedandelivery-bolt integration | 147 | Python neo4j driver: CRUD, aggregation, errors, edge cases |
 | End-to-end + pipeline | 46 | Full parse → plan → execute → result |
 | Data integrity | 23 | MERGE atomicity, property round-trips, referential integrity |
 | Adversarial | 11 | DoS guards: size limits, depth limits, budget enforcement |

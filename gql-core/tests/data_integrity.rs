@@ -232,7 +232,7 @@ fn test_merge_same_pattern_idempotent() {
 #[test]
 fn test_set_then_read_integer_and_float() {
     let store = make_store();
-    run_query(&store, "CREATE (:Item {qty: 42, price: 3.14})");
+    run_query(&store, "CREATE (:Item {qty: 42, price: 2.72})");
     let rows = run_query(
         &store,
         "MATCH (n:Item) RETURN n.qty AS qty, n.price AS price",
@@ -240,8 +240,8 @@ fn test_set_then_read_integer_and_float() {
     assert_eq!(rows[0]["qty"], Value::Int(42));
     match &rows[0]["price"] {
         Value::Float(f) => assert!(
-            (f - 3.14_f64).abs() < 1e-9,
-            "price should be ~3.14, got {f}"
+            (f - 2.72_f64).abs() < 1e-9,
+            "price should be ~2.72, got {f}"
         ),
         other => panic!("expected float for price, got {:?}", other),
     }
