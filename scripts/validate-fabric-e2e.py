@@ -45,6 +45,7 @@ class Config:
     bolt_uri: Optional[str]
     redis_host: Optional[str]
     redis_port: int
+    redis_password: Optional[str]
     fabric_endpoint: str
     fabric_tenant_id: str
     fabric_client_id: str
@@ -196,13 +197,16 @@ def write_test_data_bolt(bolt_uri: str) -> None:
         driver.close()
 
 
-def write_test_data_redis(host: str, port: int) -> None:
+def write_test_data_redis(host: str, port: int, password: Optional[str] = None) -> None:
     """Write E2E test data via redis-cli / GQL.MUTATE commands.
 
     Fallback path when Bolt driver is unavailable.
     """
     def redis_cli(*args: str) -> str:
-        cmd = ["redis-cli", "-h", host, "-p", str(port)] + list(args)
+        cmd = ["redis-cli", "-h", host, "-p", str(port)]
+        if password:
+            cmd.extend(["-a", password, "--no-auth-warning"])
+        cmd.extend(list(args))
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
         if result.returncode != 0:
             raise RuntimeError(f"redis-cli failed: {result.stderr.strip()}")
@@ -507,13 +511,15 @@ def cleanup_bolt(bolt_uri: str) -> None:
         driver.close()
 
 
-def cleanup_redis(host: str, port: int) -> None:
+def cleanup_redis(host: str, port: int, password: Optional[str] = None) -> None:
     """Remove E2E test nodes via redis-cli."""
-    cmd = [
-        "redis-cli", "-h", host, "-p", str(port),
+    cmd = ["redis-cli", "-h", host, "-p", str(port)]
+    if password:
+        cmd.extend(["-a", password, "--no-auth-warning"])
+    cmd.extend([
         "GQL.MUTATE", "default",
         "MATCH (n) WHERE n:E2ETest OR n:E2ESource OR n:E2ETarget DETACH DELETE n",
-    ]
+    ])
     subprocess.run(cmd, capture_output=True, text=True, timeout=10)
     print("[CLEAN] Test data removed via redis-cli")
 
@@ -550,6 +556,7 @@ def build_config(args: argparse.Namespace) -> Config:
     bolt_uri = env("BOLT_URI")
     redis_host = env("REDIS_HOST")
     redis_port = int(env("REDIS_PORT", "6379"))
+    redis_password = env("REDIS_PASSWORD")
 
     if not bolt_uri and not redis_host:
         print(
@@ -562,6 +569,7 @@ def build_config(args: argparse.Namespace) -> Config:
         bolt_uri=bolt_uri,
         redis_host=redis_host,
         redis_port=redis_port,
+        redis_password=redis_password,
         fabric_endpoint=require_env("FABRIC_ENDPOINT").rstrip("/"),
         fabric_tenant_id=require_env("FABRIC_TENANT_ID"),
         fabric_client_id=require_env("FABRIC_CLIENT_ID"),
@@ -618,7 +626,7 @@ def main() -> int:
         if cfg.bolt_uri:
             write_test_data_bolt(cfg.bolt_uri)
         else:
-            write_test_data_redis(cfg.redis_host, cfg.redis_port)
+            write_test_data_redis(cfg.redis_host, cfg.redis_port, cfg.redis_password)
         report.tests.append(TestResult("write_test_data", True, "OK").__dict__)
     except Exception as exc:
         print(f"[WRITE] FAILED: {exc}", file=sys.stderr)
@@ -674,7 +682,7 @@ def main() -> int:
             if cfg.bolt_uri:
                 cleanup_bolt(cfg.bolt_uri)
             else:
-                cleanup_redis(cfg.redis_host, cfg.redis_port)
+                cleanup_redis(cfg.redis_host, cfg.redis_port, cfg.redis_password)
             cleanup_fabric(token, cfg.fabric_endpoint)
         except Exception as exc:
             print(f"[CLEAN] Warning: cleanup failed: {exc}")
