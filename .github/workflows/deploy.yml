@@ -286,11 +286,17 @@ jobs:
             echo "has_fabric=false" >> "$GITHUB_OUTPUT"
           else
             FABRIC_ENDPOINT=$(echo "$FABRIC_OUTPUT" | grep "^FABRIC_ENDPOINT=" | cut -d= -f2-)
+            FABRIC_WORKSPACE_ID=$(echo "$FABRIC_OUTPUT" | grep "^FABRIC_WORKSPACE_ID=" | cut -d= -f2-)
+            FABRIC_LAKEHOUSE_ID=$(echo "$FABRIC_OUTPUT" | grep "^FABRIC_LAKEHOUSE_ID=" | cut -d= -f2-)
+            FABRIC_GDB_ID=$(echo "$FABRIC_OUTPUT" | grep "^FABRIC_GDB_ID=" | cut -d= -f2-)
             if [[ -n "$FABRIC_ENDPOINT" ]]; then
               echo "::add-mask::${FABRIC_ENDPOINT}"
               echo "fabric_endpoint=${FABRIC_ENDPOINT}" >> "$GITHUB_OUTPUT"
+              echo "fabric_workspace_id=${FABRIC_WORKSPACE_ID}" >> "$GITHUB_OUTPUT"
+              echo "fabric_lakehouse_id=${FABRIC_LAKEHOUSE_ID}" >> "$GITHUB_OUTPUT"
+              echo "fabric_gdb_id=${FABRIC_GDB_ID}" >> "$GITHUB_OUTPUT"
               echo "has_fabric=true" >> "$GITHUB_OUTPUT"
-              echo "Fabric provisioned: has_fabric=true"
+              echo "Fabric provisioned: has_fabric=true (lakehouse=${FABRIC_LAKEHOUSE_ID})"
             else
               echo "::warning::Fabric provisioning succeeded but FABRIC_ENDPOINT was empty"
               echo "Script output: ${FABRIC_OUTPUT}"

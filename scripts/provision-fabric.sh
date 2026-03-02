@@ -212,6 +212,37 @@ if [[ -z "$GDB_ID" ]]; then
   exit 0
 fi
 
+# -- Find or create Lakehouse (required for OneLake data uploads) -----------
+LH_NAME="sd2lakehouse"
+echo "Looking for Lakehouse '${LH_NAME}'..."
+LH_ID=$(curl -s -H "$AUTH" "${FABRIC_API}/workspaces/${WORKSPACE_ID}/items?type=Lakehouse" \
+  | python3 -c "
+import json, sys
+data = json.load(sys.stdin)
+for item in data.get('value', []):
+    if item['displayName'] == '${LH_NAME}':
+        print(item['id'])
+        sys.exit(0)
+print('')
+" 2>/dev/null || echo "")
+
+if [[ -z "$LH_ID" ]]; then
+  echo "Creating Lakehouse '${LH_NAME}'..."
+  LH_RESPONSE=$(curl -s -w "\n%{http_code}" -X POST -H "$AUTH" -H "Content-Type: application/json" \
+    "${FABRIC_API}/workspaces/${WORKSPACE_ID}/items" \
+    -d "{\"displayName\": \"${LH_NAME}\", \"type\": \"Lakehouse\"}")
+  LH_HTTP=$(echo "$LH_RESPONSE" | tail -1)
+  LH_BODY=$(echo "$LH_RESPONSE" | head -n -1)
+  LH_ID=$(echo "$LH_BODY" | python3 -c "import json,sys; print(json.load(sys.stdin).get('id',''))" 2>/dev/null || echo "")
+  if [[ -n "$LH_ID" ]]; then
+    echo "Created Lakehouse: ${LH_ID}"
+  else
+    echo "::warning::Could not create Lakehouse (HTTP ${LH_HTTP})"
+  fi
+else
+  echo "Found existing Lakehouse: ${LH_ID}"
+fi
+
 # -- Output the endpoint ---------------------------------------------------
 # GraphModel:    /GraphModels/{id}    (GQL via /executeQuery?preview=true — native Fabric Graph)
 # Graph:         /graphDatabases/{id} (GQL via /query and /statements)
@@ -231,4 +262,5 @@ esac
 echo "FABRIC_ENDPOINT=${FABRIC_ENDPOINT}"
 echo "FABRIC_ITEM_TYPE=${ITEM_TYPE}"
 echo "FABRIC_WORKSPACE_ID=${WORKSPACE_ID}"
+echo "FABRIC_LAKEHOUSE_ID=${LH_ID}"
 echo "FABRIC_GDB_ID=${GDB_ID}"
