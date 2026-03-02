@@ -871,10 +871,7 @@ impl GraphStore for InMemoryGraphStore {
         self
     }
 
-    fn tx_snapshot(
-        &self,
-        graphs: &[&str],
-    ) -> Result<Option<Box<dyn GraphStore>>, StorageError> {
+    fn tx_snapshot(&self, graphs: &[&str]) -> Result<Option<Box<dyn GraphStore>>, StorageError> {
         let snap = self.snapshot(graphs)?;
         Ok(Some(Box::new(snap)))
     }
