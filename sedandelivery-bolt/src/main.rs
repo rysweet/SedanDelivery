@@ -11,14 +11,16 @@ use gql_core::storage::{GraphStore, InMemoryGraphStore};
 ///
 /// Priority: `GQL_REDIS_CLUSTER_NODES` (cluster) > `GQL_REDIS_URL` (standalone) > in-memory.
 ///
-/// `from_env()` handles the cluster vs standalone dispatch internally.
+/// When a Redis URL is configured, connection failure is **fatal** — the server
+/// will not silently degrade to in-memory mode in production. In-memory mode
+/// is only used when no Redis env vars are set (local dev / tests).
 fn create_store() -> Arc<dyn GraphStore> {
     if std::env::var("GQL_REDIS_CLUSTER_NODES").is_ok() {
         tracing::info!("GQL_REDIS_CLUSTER_NODES set — using Redis Cluster-backed graph store");
         match gql_redis_store::RedisGraphStore::from_env() {
             Ok(store) => return Arc::new(store),
             Err(e) => {
-                tracing::error!("failed to connect to Redis Cluster: {e}, falling back to in-memory");
+                panic!("GQL_REDIS_CLUSTER_NODES is set but connection failed: {e}");
             }
         }
     } else if std::env::var("GQL_REDIS_URL").is_ok() {
@@ -26,11 +28,11 @@ fn create_store() -> Arc<dyn GraphStore> {
         match gql_redis_store::RedisGraphStore::from_env() {
             Ok(store) => return Arc::new(store),
             Err(e) => {
-                tracing::error!("failed to connect to Redis: {e}, falling back to in-memory");
+                panic!("GQL_REDIS_URL is set but connection failed: {e}");
             }
         }
     }
-    tracing::info!("using in-memory graph store");
+    tracing::warn!("no Redis configured (GQL_REDIS_URL / GQL_REDIS_CLUSTER_NODES unset) — using volatile in-memory store");
     Arc::new(InMemoryGraphStore::new())
 }
 
