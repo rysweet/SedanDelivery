@@ -162,7 +162,12 @@ impl RedisGraphStore {
 
     /// Create a store connecting to an explicit Redis URL with an optional key prefix.
     pub fn from_url_with_prefix(url: &str, key_prefix: &str) -> Result<Self, StorageError> {
-        Self::from_url_with_options(url, key_prefix, DEFAULT_POOL_SIZE, DEFAULT_POOL_TIMEOUT_SECS)
+        Self::from_url_with_options(
+            url,
+            key_prefix,
+            DEFAULT_POOL_SIZE,
+            DEFAULT_POOL_TIMEOUT_SECS,
+        )
     }
 
     /// Create a store with full configuration control.

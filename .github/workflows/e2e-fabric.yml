@@ -129,7 +129,7 @@ jobs:
             echo "redis_password=${VALKEY_PASS}" >> "$GITHUB_OUTPUT"
           fi
 
-          # Retrieve the Fabric endpoint from the sync sidecar's env vars
+          # Retrieve Fabric IDs from the sync sidecar's env vars
           FABRIC_ENDPOINT=$(az containerapp show \
             --name "sd2-${ENV_NAME}-fabric-sync" \
             --resource-group "${RG}" \
@@ -142,8 +142,51 @@ jobs:
           else
             echo "fabric_endpoint=${FABRIC_ENDPOINT}" >> "$GITHUB_OUTPUT"
             echo "has_fabric=true" >> "$GITHUB_OUTPUT"
-            echo "Fabric endpoint: (resolved)"
+
+            # Extract workspace ID and GraphModel ID from the endpoint URL
+            # Format: .../workspaces/{ws}/GraphModels/{gm}
+            FABRIC_WS_ID=$(echo "${FABRIC_ENDPOINT}" | grep -oP 'workspaces/\K[^/]+')
+            FABRIC_GM_ID=$(echo "${FABRIC_ENDPOINT}" | grep -oP 'GraphModels/\K[^/]+')
+            echo "fabric_workspace_id=${FABRIC_WS_ID}" >> "$GITHUB_OUTPUT"
+            echo "fabric_graphmodel_id=${FABRIC_GM_ID}" >> "$GITHUB_OUTPUT"
+
+            # Find the Lakehouse ID in the workspace
+            FABRIC_LH_ID=$(az rest --method get --resource "https://api.fabric.microsoft.com" \
+              --url "https://api.fabric.microsoft.com/v1/workspaces/${FABRIC_WS_ID}/items?type=Lakehouse" \
+              --query "value[0].id" -o tsv 2>/dev/null || echo "")
+            echo "fabric_lakehouse_id=${FABRIC_LH_ID}" >> "$GITHUB_OUTPUT"
+
+            echo "Fabric: ws=${FABRIC_WS_ID}, lh=${FABRIC_LH_ID}, gm=${FABRIC_GM_ID}"
           fi
+
+      - name: Write test data to Valkey
+        if: steps.endpoints.outputs.has_fabric == 'true'
+        env:
+          REDIS_HOST: ${{ steps.endpoints.outputs.redis_host }}
+          REDIS_PASSWORD: ${{ steps.endpoints.outputs.redis_password }}
+        run: |
+          echo "[WRITE] Writing E2E test data to SedanDelivery..."
+          redis-cli -h "${REDIS_HOST}" -p 6379 -a "${REDIS_PASSWORD}" --no-auth-warning \
+            GQL.MUTATE default "CREATE (:E2ETest {str_val: 'hello', int_val: 42, float_val: 3.14, bool_val: true})"
+          redis-cli -h "${REDIS_HOST}" -p 6379 -a "${REDIS_PASSWORD}" --no-auth-warning \
+            GQL.MUTATE default "CREATE (:E2ESource {name: 'src'})-[:E2E_LINK {weight: 1.5}]->(:E2ETarget {name: 'tgt'})"
+          echo "[WRITE] Test data written"
+
+      - name: Sync to OneLake
+        if: steps.endpoints.outputs.has_fabric == 'true' && steps.endpoints.outputs.fabric_lakehouse_id != ''
+        env:
+          REDIS_HOST: ${{ steps.endpoints.outputs.redis_host }}
+          REDIS_PORT: '6379'
+          REDIS_PASSWORD: ${{ steps.endpoints.outputs.redis_password }}
+          FABRIC_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          FABRIC_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          FABRIC_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          FABRIC_WORKSPACE_ID: ${{ steps.endpoints.outputs.fabric_workspace_id }}
+          FABRIC_LAKEHOUSE_ID: ${{ steps.endpoints.outputs.fabric_lakehouse_id }}
+          FABRIC_GRAPHMODEL_ID: ${{ steps.endpoints.outputs.fabric_graphmodel_id }}
+        run: |
+          pip install pyarrow 2>/dev/null || true
+          python scripts/sync-to-onelake.py
 
       - name: Run E2E validation
         if: steps.endpoints.outputs.has_fabric == 'true'

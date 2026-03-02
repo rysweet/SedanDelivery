@@ -89,10 +89,7 @@ fn syntax_error(msg: &str) -> GqlError {
     })
 }
 
-fn handle_create_database(
-    store: &dyn GraphStore,
-    query: &str,
-) -> Result<AdminResult, GqlError> {
+fn handle_create_database(store: &dyn GraphStore, query: &str) -> Result<AdminResult, GqlError> {
     let upper = query.to_uppercase();
     let if_not_exists = upper.contains("IF NOT EXISTS");
 

@@ -294,10 +294,7 @@ pub trait GraphStore: Send + Sync {
     ///
     /// The `sedandelivery-bolt` transaction handler (BEGIN/COMMIT/ROLLBACK)
     /// uses this to provide snapshot isolation when available.
-    fn tx_snapshot(
-        &self,
-        _graphs: &[&str],
-    ) -> Result<Option<Box<dyn GraphStore>>, StorageError> {
+    fn tx_snapshot(&self, _graphs: &[&str]) -> Result<Option<Box<dyn GraphStore>>, StorageError> {
         Ok(None)
     }
 
