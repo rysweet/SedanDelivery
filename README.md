@@ -210,9 +210,14 @@ RETURN a.name, b.name
 | `workflow_dispatch` | Manual | Deploy any branch on demand |
 
 Each environment gets its own resource group (`rg-sd2-{name}`) with:
-- Azure Container Registry (builds the Rust module)
-- Container Apps Environment with Azure Files volume (data persists across restarts)
-- Valkey 8.1 container with the GQL module loaded and authentication enabled
+- Azure Container Registry (builds Docker images)
+- Valkey 8.1 container with GQL module (Redis :6379)
+- Standalone Bolt server container (Bolt :7687, scalable)
+- Azure Files persistent volume for RDB/AOF
+- Optional: Azure Cache for Redis (managed HA with automatic failover)
+- Optional: Fabric sync sidecar (replication to Microsoft Fabric)
+
+**Full deployment guide**: [docs/DEPLOY.md](docs/DEPLOY.md) — prerequisites, step-by-step setup, scaling, HA configuration, troubleshooting.
 
 Cleanup: remove the `deploy` label, or run the **Undeploy** workflow.
 
