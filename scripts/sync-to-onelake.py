@@ -467,18 +467,27 @@ def update_graph_model_definition(
         },
     }
 
+    # .platform metadata (required by Fabric item definitions)
+    platform = {
+        "$schema": "https://developer.microsoft.com/json-schemas/fabric/gitIntegration/platformProperties/2.0.0/schema.json",
+        "metadata": {"type": "GraphModel", "displayName": "sedangraph"},
+        "config": {"version": "2.0", "logicalId": graph_model_id},
+    }
+
     def encode_part(path: str, payload: dict) -> dict:
         b64 = base64.b64encode(json.dumps(payload).encode()).decode()
         return {"path": path, "payload": b64, "payloadType": "InlineBase64"}
 
     definition = {
         "definition": {
+            "format": "json",
             "parts": [
-                encode_part("dataSources", data_sources),
-                encode_part("graphDefinition", graph_definition),
-                encode_part("graphType", graph_type),
-                encode_part("stylingConfiguration", styling),
-            ]
+                encode_part(".platform", platform),
+                encode_part("graphType.json", graph_type),
+                encode_part("graphDefinition.json", graph_definition),
+                encode_part("dataSources.json", data_sources),
+                encode_part("stylingConfiguration.json", styling),
+            ],
         }
     }
 
