@@ -320,24 +320,50 @@ def refresh_graph_model(
         print(f"  GraphModel refresh: HTTP {resp.status_code} — {resp.text[:200]}")
         return False
 
-    print("  GraphModel refresh triggered")
+    # Extract job ID from response headers
+    job_id = resp.headers.get("x-ms-job-id", "")
+    location = resp.headers.get("Location", "")
+    print(f"  GraphModel refresh triggered (job={job_id or 'unknown'})")
 
     if not wait:
         return True
 
-    # Poll until graph is queryable or timeout
+    # Poll job status AND query endpoint
+    jobs_url = (
+        f"https://api.fabric.microsoft.com/v1/workspaces/{workspace_id}"
+        f"/items/{graph_model_id}/jobs/instances"
+    )
     query_url = (
         f"https://api.fabric.microsoft.com/v1/workspaces/{workspace_id}"
         f"/GraphModels/{graph_model_id}/executeQuery?preview=true"
     )
+    auth_headers = {"Authorization": f"Bearer {token}"}
     poll_interval = 10
     elapsed = 0
     while elapsed < max_wait_s:
         time.sleep(poll_interval)
         elapsed += poll_interval
         try:
+            # Check job status first
+            if elapsed % 30 == 0:  # every 30s check job
+                try:
+                    jobs_resp = requests.get(jobs_url, headers=auth_headers, timeout=15)
+                    if jobs_resp.status_code == 200:
+                        jobs_data = jobs_resp.json()
+                        for job in jobs_data.get("value", [])[:3]:
+                            status = job.get("status", "")
+                            jtype = job.get("jobType", "")
+                            fail_reason = job.get("failureReason", {}).get("message", "")
+                            if fail_reason:
+                                print(f"  Job {jtype}: {status} — FAILURE: {fail_reason[:200]}")
+                            else:
+                                print(f"  Job {jtype}: {status}")
+                except Exception:
+                    pass
+
+            # Check if graph is queryable
             check = requests.post(query_url, json={"query": "MATCH (n) RETURN count(n) AS cnt LIMIT 1"}, headers={
-                "Authorization": f"Bearer {token}",
+                **auth_headers,
                 "Content-Type": "application/json",
                 "Accept": "application/json",
             }, timeout=30)
@@ -347,9 +373,10 @@ def refresh_graph_model(
             body = check.json() if check.headers.get("content-type", "").startswith("application/json") else {}
             err_code = body.get("errorCode", "")
             if err_code == "GraphNotQueryable":
-                print(f"  Waiting for graph load... ({elapsed}s/{max_wait_s}s)")
+                msg = body.get("message", "")
+                print(f"  Waiting for graph load... ({elapsed}s/{max_wait_s}s) [{msg}]")
             else:
-                print(f"  Poll: HTTP {check.status_code} — {err_code}: {body.get('message', '')[:100]}")
+                print(f"  Poll: HTTP {check.status_code} — {err_code}: {body.get('message', '')[:200]}")
         except Exception as e:
             print(f"  Poll error: {e}")
 
