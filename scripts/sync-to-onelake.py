@@ -90,46 +90,48 @@ def redis_cli(host: str, port: int, password: Optional[str], *args: str) -> str:
 
 
 def extract_nodes(host: str, port: int, password: Optional[str], graph: str = "default") -> list[dict]:
-    """Extract all nodes from a SedanDelivery graph via GQL.QUERY."""
+    """Extract all nodes from a SedanDelivery graph via GQL.QUERY.
+
+    GQL.QUERY returns one JSON object per line:
+        {"id(n)":10,"labels(n)":["Person"],"n.name":"Alice","n.age":30}
+    """
     raw = redis_cli(host, port, password,
                     "GQL.QUERY", graph,
-                    "MATCH (n) RETURN id(n) AS node_id, labels(n) AS labels, properties(n) AS props")
+                    "MATCH (n) RETURN id(n) AS node_id, labels(n) AS node_labels, properties(n) AS props")
     if not raw:
         return []
 
     nodes = []
     for line in raw.split("\n"):
         line = line.strip()
-        if not line or line.startswith("node_id") or line.startswith("---"):
+        if not line:
             continue
-        # GQL.QUERY returns tab-separated values
-        parts = line.split("\t")
-        if len(parts) >= 3:
-            try:
-                node_id = parts[0].strip()
-                labels_str = parts[1].strip()
-                props_str = parts[2].strip()
-                node = {
-                    "node_id": node_id,
-                    "labels": labels_str,
-                    "properties_json": props_str,
-                }
-                # Try to parse properties JSON and flatten common fields
-                try:
-                    props = json.loads(props_str) if props_str.startswith("{") else {}
-                    for k, v in props.items():
-                        if isinstance(v, (str, int, float, bool)):
-                            node[k] = v
-                except (json.JSONDecodeError, TypeError):
-                    pass
-                nodes.append(node)
-            except (IndexError, ValueError):
-                continue
+        try:
+            row = json.loads(line)
+            node = {
+                "node_id": str(row.get("node_id", "")),
+                "node_labels": json.dumps(row.get("node_labels", [])),
+            }
+            # Flatten properties into columns
+            props = row.get("props", {})
+            if isinstance(props, dict):
+                node["properties_json"] = json.dumps(props)
+                for k, v in props.items():
+                    if isinstance(v, (str, int, float, bool)):
+                        node[k] = v
+            else:
+                node["properties_json"] = str(props)
+            nodes.append(node)
+        except (json.JSONDecodeError, TypeError):
+            continue
     return nodes
 
 
 def extract_edges(host: str, port: int, password: Optional[str], graph: str = "default") -> list[dict]:
-    """Extract all edges from a SedanDelivery graph via GQL.QUERY."""
+    """Extract all edges from a SedanDelivery graph via GQL.QUERY.
+
+    GQL.QUERY returns one JSON object per line.
+    """
     raw = redis_cli(host, port, password,
                     "GQL.QUERY", graph,
                     "MATCH (s)-[r]->(t) RETURN id(r) AS edge_id, type(r) AS edge_type, "
@@ -140,21 +142,24 @@ def extract_edges(host: str, port: int, password: Optional[str], graph: str = "d
     edges = []
     for line in raw.split("\n"):
         line = line.strip()
-        if not line or line.startswith("edge_id") or line.startswith("---"):
+        if not line:
             continue
-        parts = line.split("\t")
-        if len(parts) >= 5:
-            try:
-                edge = {
-                    "edge_id": parts[0].strip(),
-                    "edge_type": parts[1].strip(),
-                    "source_id": parts[2].strip(),
-                    "target_id": parts[3].strip(),
-                    "properties_json": parts[4].strip(),
-                }
-                edges.append(edge)
-            except (IndexError, ValueError):
-                continue
+        try:
+            row = json.loads(line)
+            edge = {
+                "edge_id": str(row.get("edge_id", "")),
+                "edge_type": str(row.get("edge_type", "")),
+                "source_id": str(row.get("source_id", "")),
+                "target_id": str(row.get("target_id", "")),
+            }
+            props = row.get("props", {})
+            if isinstance(props, dict):
+                edge["properties_json"] = json.dumps(props)
+            else:
+                edge["properties_json"] = str(props)
+            edges.append(edge)
+        except (json.JSONDecodeError, TypeError):
+            continue
     return edges
 
 
