@@ -9,11 +9,19 @@ use gql_core::storage::{GraphStore, InMemoryGraphStore};
 
 /// Create the graph store based on environment configuration.
 ///
-/// When `GQL_REDIS_URL` is set, connects to Redis/Valkey via `RedisGraphStore`
-/// (with r2d2 connection pool). Otherwise uses `InMemoryGraphStore` for
-/// single-instance in-process operation.
+/// Priority: `GQL_REDIS_CLUSTER_NODES` (cluster) > `GQL_REDIS_URL` (standalone) > in-memory.
+///
+/// `from_env()` handles the cluster vs standalone dispatch internally.
 fn create_store() -> Arc<dyn GraphStore> {
-    if std::env::var("GQL_REDIS_URL").is_ok() {
+    if std::env::var("GQL_REDIS_CLUSTER_NODES").is_ok() {
+        tracing::info!("GQL_REDIS_CLUSTER_NODES set — using Redis Cluster-backed graph store");
+        match gql_redis_store::RedisGraphStore::from_env() {
+            Ok(store) => return Arc::new(store),
+            Err(e) => {
+                tracing::error!("failed to connect to Redis Cluster: {e}, falling back to in-memory");
+            }
+        }
+    } else if std::env::var("GQL_REDIS_URL").is_ok() {
         tracing::info!("GQL_REDIS_URL set — using Redis-backed graph store");
         match gql_redis_store::RedisGraphStore::from_env() {
             Ok(store) => return Arc::new(store),

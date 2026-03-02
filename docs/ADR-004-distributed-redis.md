@@ -98,15 +98,20 @@ graph TD
 - Additional Container App adds deployment complexity
 - r2d2 pool adds a dependency (but replaces custom Mutex pattern)
 
-### Future: Option C (Redis Cluster)
+### Option C: Redis Cluster (Implemented)
 
-The clean abstraction enables a straightforward upgrade path:
+Redis Cluster support was added via enum-based connection dispatch:
 
-1. Add `cluster` feature to redis crate
-2. Replace `redis::Client` with `redis::cluster::ClusterClient` when
-   `GQL_REDIS_CLUSTER_NODES` env var is set
-3. No data model changes — hash tags already route correctly
-4. See GitHub issue for detailed implementation spec
+- `RedisPool` enum wraps either `r2d2::Pool<Client>` (standalone) or
+  `r2d2::Pool<ClusterClient>` (cluster)
+- `RedisConn` enum wraps either connection type, exposing `&mut dyn ConnectionLike`
+- Set `GQL_REDIS_CLUSTER_NODES=redis://node1:6379,redis://node2:6379,...`
+  to use cluster mode
+- All `redis::Commands` calls replaced with explicit `redis::cmd()` to work
+  with `dyn ConnectionLike` (the `Commands` trait requires `Sized`)
+- Pipeline operations dispatch to `redis::pipe()` or `cluster_pipe()` based
+  on connection variant
+- No data model changes — `{graphname}` hash tags route correctly
 
 ## Alternatives Considered
 

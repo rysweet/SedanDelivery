@@ -81,6 +81,7 @@ See [ADR-004](ADR-004-distributed-redis) for the full architecture decision reco
 | `GQL_REDIS_URL` | — | Redis/Valkey URL; when set, bolt uses Redis-backed store |
 | `GQL_REDIS_POOL_SIZE` | `16` | r2d2 connection pool max size |
 | `GQL_REDIS_POOL_TIMEOUT_SECS` | `5` | Pool checkout timeout in seconds |
+| `GQL_REDIS_CLUSTER_NODES` | — | Comma-separated cluster seed URLs (enables Redis Cluster mode) |
 | `GQL_REDIS_KEY_PREFIX` | — | Key prefix for multi-tenant isolation |
 | `GQL_FABRIC_ENDPOINT` | — | Fabric Graph Database REST API URL |
 | `GQL_FABRIC_TENANT_ID` | — | Azure AD tenant for Fabric auth |
