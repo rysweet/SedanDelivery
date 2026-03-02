@@ -125,7 +125,8 @@ def fabric_query(token: str, endpoint: str, cypher: str) -> dict:
     }
     body = {"query": cypher}
     resp = requests.post(url, json=body, headers=headers, timeout=30)
-    resp.raise_for_status()
+    if resp.status_code != 200:
+        raise RuntimeError(f"{resp.status_code} {resp.reason} for url: {url}\nBody: {resp.text[:500]}")
     return resp.json()
 
 
@@ -144,7 +145,8 @@ def fabric_statement(token: str, endpoint: str, cypher: str) -> dict:
     }
     body = {"query": cypher}
     resp = requests.post(url, json=body, headers=headers, timeout=30)
-    resp.raise_for_status()
+    if resp.status_code != 200:
+        raise RuntimeError(f"{resp.status_code} {resp.reason} for url: {url}\nBody: {resp.text[:500]}")
     return resp.json()
 
 

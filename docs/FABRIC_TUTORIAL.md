@@ -4,13 +4,16 @@ This tutorial walks through deploying SedanDelivery with Fabric Graph replicatio
 writing graph data, viewing it in the Microsoft Fabric portal, querying via the
 Fabric REST API, and monitoring the replication pipeline.
 
+For the complete technical data flow documentation, see
+[FABRIC_DATA_FLOW.md](FABRIC_DATA_FLOW.md).
+
 ## Contents
 
 - [Prerequisites](#prerequisites)
 - [1. Deploy SedanDelivery with Fabric Graph](#1-deploy-sedandelivery-with-fabric-graph)
 - [2. Write graph data](#2-write-graph-data)
-- [3. View replicated data in the Fabric portal](#3-view-replicated-data-in-the-fabric-portal)
-- [4. Query Fabric Graph via REST API](#4-query-fabric-graph-via-rest-api)
+- [3. Sync to Fabric via OneLake](#3-sync-to-fabric-via-onelake)
+- [4. Query Fabric Graph via GQL API](#4-query-fabric-graph-via-gql-api)
 - [5. Monitor replication](#5-monitor-replication)
 - [Troubleshooting](#troubleshooting)
 
@@ -49,11 +52,16 @@ The deployment workflow will:
 
 1. Provision Azure infrastructure (ACR, Container Apps Environment, storage)
 2. Run `scripts/provision-fabric.sh` to create a Fabric workspace named
-   **SedanDelivery-{env}** and a Graph Database named **sedan-graph**
+   **SD2-{env}** with a Lakehouse (**sd2lakehouse**) and GraphModel (**sedangraph**)
 3. Build and deploy the main Valkey+GQL container (`sd2-{env}-redis`)
    with `GQL_FABRIC_CHANGELOG=1` to enable changelog writes
 4. Build and deploy the `sedandelivery-fabric-sync` sidecar (`sd2-{env}-fabric-sync`)
-   which reads the changelog stream and writes to Fabric
+   which reads the changelog stream
+
+Data is synced to Fabric via `scripts/sync-to-onelake.py` which exports
+graph data as Parquet, uploads to the Lakehouse via OneLake, and refreshes
+the GraphModel. See [FABRIC_DATA_FLOW.md](FABRIC_DATA_FLOW.md) for the
+complete pipeline.
 
 A bot comment on the PR will post the Redis endpoint when deployment completes
 (approximately 8 minutes).
