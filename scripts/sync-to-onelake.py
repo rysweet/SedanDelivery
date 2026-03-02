@@ -237,6 +237,7 @@ def load_table(
     lakehouse_id: str,
     table_name: str,
     relative_path: str,
+    use_parquet: bool = True,
 ) -> None:
     """Load files from OneLake Files into a Delta table via LoadTable API."""
     import requests
@@ -249,30 +250,44 @@ def load_table(
         "relativePath": relative_path,
         "pathType": "File",
         "mode": "Overwrite",
-        "formatOptions": {
-            "format": "Csv",
-            "header": True,
-            "delimiter": "\n",
-        },
     }
-    # NDJSON needs special handling — use Csv with newline delimiter as workaround,
-    # or just load as Parquet if we convert.
-    # Actually, LoadTable supports Parquet natively. Let's use that.
-    # For NDJSON, we need "format": "Json"  (unsupported in some versions)
-    # Simplest: use Parquet via pyarrow if available, else raw JSON.
-    body = {
-        "relativePath": relative_path,
-        "pathType": "File",
-        "mode": "Overwrite",
-    }
+    if use_parquet:
+        body["formatOptions"] = {"format": "Parquet"}
+
     resp = requests.post(url, json=body, headers={
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/json",
     }, timeout=60)
     if resp.status_code == 202:
-        print(f"  LoadTable accepted for {table_name} (async)")
+        # Poll the operation until complete
+        location = resp.headers.get("Location", "")
+        retry_after = int(resp.headers.get("Retry-After", "5"))
+        print(f"  LoadTable accepted for {table_name} (async, polling...)")
+        for attempt in range(1, 13):  # up to 60s
+            time.sleep(retry_after)
+            if location:
+                poll = requests.get(location, headers={
+                    "Authorization": f"Bearer {token}",
+                }, timeout=30)
+                if poll.status_code == 200:
+                    poll_body = poll.json() if poll.headers.get("content-type", "").startswith("application/json") else {}
+                    status = poll_body.get("status", "")
+                    if status in ("Succeeded", "Completed"):
+                        print(f"  LoadTable {table_name}: completed ({attempt * retry_after}s)")
+                        return
+                    elif status == "Failed":
+                        print(f"  LoadTable {table_name}: FAILED — {poll_body.get('error', {}).get('message', '')[:200]}")
+                        return
+                    print(f"  LoadTable {table_name}: {status} ({attempt * retry_after}s)")
+                elif poll.status_code == 202:
+                    pass  # Still in progress
+            else:
+                break  # No Location header, can't poll
+        print(f"  LoadTable {table_name}: assuming complete after polling")
+    elif resp.status_code == 200:
+        print(f"  LoadTable {table_name}: completed (sync)")
     else:
-        resp.raise_for_status()
+        print(f"  LoadTable {table_name}: HTTP {resp.status_code} — {resp.text[:200]}")
 
 
 # ---------------------------------------------------------------------------
@@ -574,12 +589,12 @@ def main() -> int:
 
         # 5. LoadTable
         print("\n[LOAD] Loading tables in Lakehouse...")
-        load_table(fabric_token, workspace_id, lakehouse_id, "sd2_nodes", nodes_remote)
-        load_table(fabric_token, workspace_id, lakehouse_id, "sd2_edges", edges_remote)
+        load_table(fabric_token, workspace_id, lakehouse_id, "sd2_nodes", nodes_remote, use_parquet)
+        load_table(fabric_token, workspace_id, lakehouse_id, "sd2_edges", edges_remote, use_parquet)
 
         # 6. Wait for tables to materialize
-        print("  Waiting 15s for Delta tables...")
-        time.sleep(15)
+        print("  Waiting 30s for Delta tables to materialize...")
+        time.sleep(30)
 
         # 7. Update GraphModel definition (schema mapping)
         if graph_model_id and lakehouse_id:
