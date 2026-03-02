@@ -279,8 +279,17 @@ def load_table(
 # GraphModel refresh
 # ---------------------------------------------------------------------------
 
-def refresh_graph_model(token: str, workspace_id: str, graph_model_id: str) -> None:
-    """Trigger a GraphModel refresh so GQL queries see updated data."""
+def refresh_graph_model(
+    token: str,
+    workspace_id: str,
+    graph_model_id: str,
+    wait: bool = True,
+    max_wait_s: int = 120,
+) -> bool:
+    """Trigger a GraphModel refresh and optionally wait for completion.
+
+    Returns True if the graph is loaded and queryable.
+    """
     import requests
 
     url = (
@@ -291,10 +300,46 @@ def refresh_graph_model(token: str, workspace_id: str, graph_model_id: str) -> N
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/json",
     }, json={}, timeout=30)
-    if resp.status_code in (200, 202):
-        print("  GraphModel refresh triggered")
-    else:
+
+    if resp.status_code not in (200, 202):
         print(f"  GraphModel refresh: HTTP {resp.status_code} — {resp.text[:200]}")
+        return False
+
+    print("  GraphModel refresh triggered")
+
+    if not wait:
+        return True
+
+    # Poll until graph is queryable or timeout
+    query_url = (
+        f"https://api.fabric.microsoft.com/v1/workspaces/{workspace_id}"
+        f"/GraphModels/{graph_model_id}/executeQuery?preview=true"
+    )
+    poll_interval = 10
+    elapsed = 0
+    while elapsed < max_wait_s:
+        time.sleep(poll_interval)
+        elapsed += poll_interval
+        try:
+            check = requests.post(query_url, json={"query": "MATCH (n) RETURN count(n) AS cnt LIMIT 1"}, headers={
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+            }, timeout=30)
+            if check.status_code == 200:
+                print(f"  GraphModel queryable after {elapsed}s")
+                return True
+            body = check.json() if check.headers.get("content-type", "").startswith("application/json") else {}
+            err_code = body.get("errorCode", "")
+            if err_code == "GraphNotQueryable":
+                print(f"  Waiting for graph load... ({elapsed}s/{max_wait_s}s)")
+            else:
+                print(f"  Poll: HTTP {check.status_code} — {err_code}: {body.get('message', '')[:100]}")
+        except Exception as e:
+            print(f"  Poll error: {e}")
+
+    print(f"  GraphModel not queryable after {max_wait_s}s")
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -546,10 +591,17 @@ def main() -> int:
                 graph_model_id, node_cols, edge_cols,
             )
 
-        # 8. Refresh GraphModel
+        # 8. Refresh GraphModel and wait for it to become queryable
         if graph_model_id:
-            print("\n[REFRESH] Triggering GraphModel refresh...")
-            refresh_graph_model(fabric_token, workspace_id, graph_model_id)
+            print("\n[REFRESH] Triggering GraphModel refresh (waiting up to 120s)...")
+            queryable = refresh_graph_model(
+                fabric_token, workspace_id, graph_model_id,
+                wait=True, max_wait_s=120,
+            )
+            if queryable:
+                print("  Graph is loaded and queryable")
+            else:
+                print("  Warning: Graph may not be queryable yet — refresh still in progress")
 
     print("\n" + "=" * 60)
     print(f"SUCCESS: Synced {len(nodes)} nodes + {len(edges)} edges to OneLake")
