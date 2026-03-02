@@ -298,6 +298,145 @@ def refresh_graph_model(token: str, workspace_id: str, graph_model_id: str) -> N
 
 
 # ---------------------------------------------------------------------------
+# GraphModel definition (schema setup)
+# ---------------------------------------------------------------------------
+
+def update_graph_model_definition(
+    token: str,
+    workspace_id: str,
+    lakehouse_id: str,
+    graph_model_id: str,
+    node_columns: list[str],
+    edge_columns: list[str],
+) -> None:
+    """Configure the GraphModel schema to map lakehouse tables to graph nodes/edges.
+
+    This is the bridge: it tells the GraphModel which lakehouse columns
+    correspond to node IDs, labels, properties, and edge source/target.
+    """
+    import base64
+    import requests
+
+    # Data source paths (abfss:// format for OneLake Delta tables)
+    abfss_base = f"abfss://{workspace_id}@onelake.dfs.fabric.microsoft.com/{lakehouse_id}/Tables"
+
+    data_sources = {
+        "dataSources": [
+            {
+                "name": "sd2_nodes_table",
+                "type": "DeltaTable",
+                "properties": {"path": f"{abfss_base}/sd2_nodes"},
+            },
+            {
+                "name": "sd2_edges_table",
+                "type": "DeltaTable",
+                "properties": {"path": f"{abfss_base}/sd2_edges"},
+            },
+        ]
+    }
+
+    # Node property mappings — map all columns from the Parquet
+    node_props = []
+    for col in node_columns:
+        node_props.append({"propertyName": col, "sourceColumn": col})
+
+    # Edge property mappings
+    edge_props = []
+    for col in edge_columns:
+        if col not in ("edge_id", "source_id", "target_id", "edge_type"):
+            edge_props.append({"propertyName": col, "sourceColumn": col})
+
+    graph_definition = {
+        "schemaVersion": "1.0.0",
+        "nodeTables": [
+            {
+                "id": "sd2_nodes_mapping",
+                "nodeTypeAlias": "SD2Node",
+                "dataSourceName": "sd2_nodes_table",
+                "propertyMappings": node_props,
+            }
+        ],
+        "edgeTables": [
+            {
+                "id": "sd2_edges_mapping",
+                "edgeTypeAlias": "SD2Edge",
+                "dataSourceName": "sd2_edges_table",
+                "sourceNodeKeyColumns": ["source_id"],
+                "destinationNodeKeyColumns": ["target_id"],
+                "propertyMappings": edge_props,
+            }
+        ],
+    }
+
+    # Node/edge type schema
+    node_type_props = [{"name": col, "type": "STRING"} for col in node_columns]
+    edge_type_props = [
+        {"name": col, "type": "STRING"}
+        for col in edge_columns
+        if col not in ("edge_id", "source_id", "target_id", "edge_type")
+    ]
+
+    graph_type = {
+        "schemaVersion": "1.0.0",
+        "nodeTypes": [
+            {
+                "alias": "SD2Node",
+                "labels": ["SD2Node"],
+                "primaryKeyProperties": ["node_id"],
+                "properties": node_type_props,
+            }
+        ],
+        "edgeTypes": [
+            {
+                "alias": "SD2Edge",
+                "labels": ["SD2Edge"],
+                "sourceNodeType": {"alias": "SD2Node"},
+                "destinationNodeType": {"alias": "SD2Node"},
+                "properties": edge_type_props,
+            }
+        ],
+    }
+
+    styling = {
+        "schemaVersion": "1.0.0",
+        "modelLayout": {
+            "positions": {"SD2Node": {"x": 100, "y": 100}},
+            "styles": {"SD2Node": {"size": 30}, "SD2Edge": {"size": 30}},
+            "pan": {"x": 0, "y": 0},
+            "zoomLevel": 1,
+        },
+    }
+
+    def encode_part(path: str, payload: dict) -> dict:
+        b64 = base64.b64encode(json.dumps(payload).encode()).decode()
+        return {"path": path, "payload": b64, "payloadType": "InlineBase64"}
+
+    definition = {
+        "definition": {
+            "parts": [
+                encode_part("dataSources", data_sources),
+                encode_part("graphDefinition", graph_definition),
+                encode_part("graphType", graph_type),
+                encode_part("stylingConfiguration", styling),
+            ]
+        }
+    }
+
+    url = (
+        f"https://api.fabric.microsoft.com/v1/workspaces/{workspace_id}"
+        f"/GraphModels/{graph_model_id}/updateDefinition"
+    )
+    resp = requests.post(url, json=definition, headers={
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+    }, timeout=60)
+    if resp.status_code in (200, 202):
+        print("  GraphModel definition updated")
+    else:
+        print(f"  GraphModel definition update: HTTP {resp.status_code} — {resp.text[:300]}")
+
+
+# ---------------------------------------------------------------------------
 # Parquet conversion (if pyarrow available)
 # ---------------------------------------------------------------------------
 
@@ -397,7 +536,17 @@ def main() -> int:
         print("  Waiting 15s for Delta tables...")
         time.sleep(15)
 
-        # 7. Refresh GraphModel
+        # 7. Update GraphModel definition (schema mapping)
+        if graph_model_id and lakehouse_id:
+            node_cols = list(nodes[0].keys()) if nodes else ["node_id", "node_labels", "properties_json"]
+            edge_cols = list(edges[0].keys()) if edges else ["edge_id", "edge_type", "source_id", "target_id", "properties_json"]
+            print("\n[SCHEMA] Updating GraphModel definition...")
+            update_graph_model_definition(
+                fabric_token, workspace_id, lakehouse_id,
+                graph_model_id, node_cols, edge_cols,
+            )
+
+        # 8. Refresh GraphModel
         if graph_model_id:
             print("\n[REFRESH] Triggering GraphModel refresh...")
             refresh_graph_model(fabric_token, workspace_id, graph_model_id)
