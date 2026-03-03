@@ -158,7 +158,7 @@ pub(crate) async fn handle_run(
                 session.state = match session.state {
                     ServerState::TxReady | ServerState::TxStreaming => ServerState::TxStreaming,
                     _ => {
-                        session.write_lock_guard = None;
+                        session.write_permit = None;
                         ServerState::Streaming
                     }
                 };
@@ -172,7 +172,7 @@ pub(crate) async fn handle_run(
             Err(gql_err) => {
                 let (code, message) = bridge::errors::gql_error_to_bolt(&gql_err);
                 bolt_metrics::error_recorded(&code);
-                session.write_lock_guard = None;
+                session.write_permit = None;
                 session.state = ServerState::Failed;
                 return Ok(vec![ServerMessage::Failure(bolt_map! {
                     "code" => BoltValue::String(code),
@@ -282,20 +282,44 @@ pub(crate) async fn handle_run(
             || upper.contains("SET ")
             || upper.contains("REMOVE ")
     };
-    if is_write_query && session.write_lock_guard.is_none() {
+    // Only acquire the write semaphore when tx_timeout is set (to detect
+    // contention) or inside an explicit transaction. Autocommit writes
+    // without tx_timeout bypass the semaphore entirely — Redis operations
+    // are atomic and single-statement queries need no cross-session
+    // serialization. This enables thousands of concurrent writes/s.
+    let in_explicit_tx = matches!(
+        session.state,
+        ServerState::TxReady | ServerState::TxStreaming
+    );
+    if is_write_query && session.write_permit.is_none() {
         let timeout_ms = session
             .tx_timeout
             .or(extra.get_int("tx_timeout").map(|v| v as u64));
         if let Some(ms) = timeout_ms {
-            let lock = Arc::clone(&session.write_lock);
-            match tokio::time::timeout(std::time::Duration::from_millis(ms), lock.lock_owned())
-                .await
+            let sem = Arc::clone(&session.write_semaphore);
+            match tokio::time::timeout(
+                std::time::Duration::from_millis(ms),
+                sem.acquire_owned(),
+            )
+            .await
             {
-                Ok(guard) => {
-                    session.write_lock_guard = Some(guard);
+                Ok(Ok(permit)) => {
+                    session.write_permit = Some(permit);
+                }
+                Ok(Err(_closed)) => {
+                    // Semaphore closed (shutdown)
+                    session.state = ServerState::Failed;
+                    return Ok(vec![ServerMessage::Failure(bolt_map! {
+                        "code" => BoltValue::String(
+                            "Neo.TransientError.Transaction.LockClientStopped".to_string()
+                        ),
+                        "message" => BoltValue::String(
+                            "Server is shutting down".to_string()
+                        )
+                    })]);
                 }
                 Err(_) => {
-                    // Lock acquisition timed out
+                    // Semaphore acquisition timed out
                     bolt_metrics::error_recorded(
                         "Neo.TransientError.Transaction.LockClientStopped",
                     );
@@ -313,12 +337,28 @@ pub(crate) async fn handle_run(
                     })]);
                 }
             }
-        } else {
-            // No timeout: just acquire the lock (may block indefinitely)
-            let lock = Arc::clone(&session.write_lock);
-            let guard = lock.lock_owned().await;
-            session.write_lock_guard = Some(guard);
+        } else if in_explicit_tx {
+            // Explicit transaction without timeout: acquire permit (may wait).
+            let sem = Arc::clone(&session.write_semaphore);
+            match sem.acquire_owned().await {
+                Ok(permit) => {
+                    session.write_permit = Some(permit);
+                }
+                Err(_) => {
+                    session.state = ServerState::Failed;
+                    return Ok(vec![ServerMessage::Failure(bolt_map! {
+                        "code" => BoltValue::String(
+                            "Neo.TransientError.Transaction.LockClientStopped".to_string()
+                        ),
+                        "message" => BoltValue::String(
+                            "Server is shutting down".to_string()
+                        )
+                    })]);
+                }
+            }
         }
+        // else: autocommit write without tx_timeout — skip semaphore entirely
+        // for maximum concurrency. Redis handles atomicity at the command level.
     }
 
     let store = Arc::clone(&effective_store);
@@ -409,7 +449,7 @@ pub(crate) async fn handle_run(
                 _ => {
                     // For autocommit queries, release the write lock immediately
                     // since the query has completed.
-                    session.write_lock_guard = None;
+                    session.write_permit = None;
                     ServerState::Streaming
                 }
             };
@@ -424,7 +464,7 @@ pub(crate) async fn handle_run(
             let (code, message) = bridge::errors::gql_error_to_bolt(&gql_err);
             bolt_metrics::error_recorded(&code);
             // Release write lock on error
-            session.write_lock_guard = None;
+            session.write_permit = None;
             session.state = ServerState::Failed;
             Ok(vec![ServerMessage::Failure(bolt_map! {
                 "code" => BoltValue::String(code),

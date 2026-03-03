@@ -1620,14 +1620,35 @@ impl<'a> QueryExecutor<'a> {
                 }
             }
 
-            // Try to find existing nodes matching ALL labels.
-            // When labels is empty, scan all nodes (MERGE (n) with no labels).
+            // Try to find existing nodes matching ALL labels and properties.
+            // Fast path: when there is at least one label and one property, use
+            // find_nodes_by_label_and_property for the first (label, property)
+            // pair. This is O(1) when a property index exists (vs O(N) label scan).
             let candidates: HashSet<u64> = if labels.is_empty() {
                 self.store
                     .all_node_ids(graph)?
                     .into_iter()
                     .map(|n| n.0)
                     .collect()
+            } else if !prop_vals.is_empty() {
+                // Use indexed lookup on the first property for the first label,
+                // then intersect with remaining labels and verify remaining props.
+                let first_label = labels[0].as_str();
+                let (first_prop_key, first_prop_val) = &prop_vals[0];
+                let indexed_ids = self.store.find_nodes_by_label_and_property(
+                    graph,
+                    first_label,
+                    first_prop_key,
+                    RangeQuery::Eq(first_prop_val),
+                )?;
+                let mut cands: HashSet<u64> = indexed_ids.into_iter().map(|n| n.0).collect();
+                // Intersect with remaining labels.
+                for label in &labels[1..] {
+                    let ids = self.store.find_nodes_by_label(graph, label.as_str())?;
+                    let id_set: HashSet<u64> = ids.iter().map(|n| n.0).collect();
+                    cands = cands.intersection(&id_set).copied().collect();
+                }
+                cands
             } else {
                 let mut cands: Option<HashSet<u64>> = None;
                 for label in labels {
@@ -1642,13 +1663,20 @@ impl<'a> QueryExecutor<'a> {
             };
 
             // Collect ALL matching nodes (MERGE returns one row per match).
+            // When the indexed fast-path was used, candidates are already filtered
+            // by the first property — only verify remaining properties.
+            let skip_first_prop = !labels.is_empty() && !prop_vals.is_empty();
+            let check_props = if skip_first_prop { &prop_vals[1..] } else { &prop_vals[..] };
             let mut matched_ids: Vec<NodeId> = Vec::new();
             for cand_id in &candidates {
                 let node_id = NodeId(*cand_id);
                 if prop_vals.is_empty() {
                     matched_ids.push(node_id);
+                } else if check_props.is_empty() {
+                    // All properties already matched by index lookup.
+                    matched_ids.push(node_id);
                 } else if let Ok(Some(node_data)) = self.store.get_node(graph, node_id) {
-                    let all_match = prop_vals.iter().all(|(key, expected)| {
+                    let all_match = check_props.iter().all(|(key, expected)| {
                         node_data
                             .properties
                             .get(key.as_str())

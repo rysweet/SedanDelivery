@@ -18,6 +18,9 @@ services:
       - "7688:7688"   # Health/metrics
     environment:
       - RUST_LOG=info
+      - BOLT_IDLE_TIMEOUT_SECS=3600
+      - BOLT_MAX_CONNECTIONS=1024
+      - BOLT_WRITE_CONCURRENCY=128
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:7688/health"]
       interval: 5s

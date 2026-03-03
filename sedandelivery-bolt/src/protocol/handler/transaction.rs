@@ -69,7 +69,7 @@ pub(crate) fn handle_commit(session: &mut Session) -> Result<Vec<ServerMessage>,
     }
     session.tx_store = None;
     // Release the write lock if held.
-    session.write_lock_guard = None;
+    session.write_permit = None;
 
     let bookmark = next_bookmark(&session.global_bookmark);
     session.state = ServerState::Ready;
@@ -89,7 +89,7 @@ pub(crate) fn handle_commit(session: &mut Session) -> Result<Vec<ServerMessage>,
 pub(crate) fn handle_rollback(session: &mut Session) -> Result<Vec<ServerMessage>, ProtocolError> {
     session.tx_store = None;
     session.pending_results.clear();
-    session.write_lock_guard = None;
+    session.write_permit = None;
     session.state = ServerState::Ready;
     session.tx_metadata = Vec::new();
     session.tx_timeout = None;
@@ -110,7 +110,7 @@ pub(crate) fn handle_reset(session: &mut Session) -> Result<Vec<ServerMessage>, 
     session.tx_metadata = Vec::new();
     session.tx_timeout = None;
     session.tx_store = None;
-    session.write_lock_guard = None;
+    session.write_permit = None;
     session.state = ServerState::Ready;
     Ok(vec![ServerMessage::Success(bolt_map! {})])
 }

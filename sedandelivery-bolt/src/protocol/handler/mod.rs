@@ -75,10 +75,11 @@ pub struct Session {
     /// against this store instead of the main store. COMMIT merges it back,
     /// ROLLBACK discards it.
     pub tx_store: Option<Arc<dyn GraphStore>>,
-    /// Global write lock for transaction timeout contention.
-    pub write_lock: Arc<tokio::sync::Mutex<()>>,
-    /// Guard held while this session holds the write lock (during a write TX).
-    pub write_lock_guard: Option<tokio::sync::OwnedMutexGuard<()>>,
+    /// Write concurrency semaphore for transaction timeout contention.
+    /// Autocommit writes without tx_timeout bypass this (full concurrency).
+    pub write_semaphore: Arc<tokio::sync::Semaphore>,
+    /// Permit held while this session holds a write slot (during a write TX).
+    pub write_permit: Option<tokio::sync::OwnedSemaphorePermit>,
 }
 
 /// A pending query result awaiting PULL or DISCARD.
@@ -453,8 +454,8 @@ mod tests {
             tx_metadata: Vec::new(),
             tx_timeout: None,
             tx_store: None,
-            write_lock: Arc::new(tokio::sync::Mutex::new(())),
-            write_lock_guard: None,
+            write_semaphore: Arc::new(tokio::sync::Semaphore::new(128)),
+            write_permit: None,
         }
     }
 
@@ -474,8 +475,8 @@ mod tests {
             tx_metadata: Vec::new(),
             tx_timeout: None,
             tx_store: None,
-            write_lock: Arc::new(tokio::sync::Mutex::new(())),
-            write_lock_guard: None,
+            write_semaphore: Arc::new(tokio::sync::Semaphore::new(128)),
+            write_permit: None,
         };
         let s2 = Session {
             state: ServerState::Ready,
@@ -488,8 +489,8 @@ mod tests {
             tx_metadata: Vec::new(),
             tx_timeout: None,
             tx_store: None,
-            write_lock: Arc::new(tokio::sync::Mutex::new(())),
-            write_lock_guard: None,
+            write_semaphore: Arc::new(tokio::sync::Semaphore::new(128)),
+            write_permit: None,
         };
         (s1, s2)
     }

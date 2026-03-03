@@ -43,7 +43,7 @@ pub async fn run<S>(
     store: Arc<dyn GraphStore>,
     conn_id: u64,
     global_bookmark: Arc<AtomicU64>,
-    write_lock: Arc<tokio::sync::Mutex<()>>,
+    write_semaphore: Arc<tokio::sync::Semaphore>,
 ) -> Result<(), SessionError>
 where
     S: AsyncRead + AsyncWrite + Unpin,
@@ -67,8 +67,8 @@ where
         tx_metadata: Vec::new(),
         tx_timeout: None,
         tx_store: None,
-        write_lock,
-        write_lock_guard: None,
+        write_semaphore: write_semaphore,
+        write_permit: None,
     };
 
     // Message loop

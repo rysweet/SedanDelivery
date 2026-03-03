@@ -81,8 +81,13 @@ async fn main() {
     let idle_timeout_secs: u64 = std::env::var("BOLT_IDLE_TIMEOUT_SECS")
         .ok()
         .and_then(|v| v.parse().ok())
-        .unwrap_or(300);
+        .unwrap_or(3600); // 1 hour default (up from 300s) to support bulk write workloads.
     let idle_timeout = Duration::from_secs(idle_timeout_secs);
+
+    let write_concurrency: u32 = std::env::var("BOLT_WRITE_CONCURRENCY")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(128);
 
     // Semaphore gates new connections once max_connections is reached.
     let semaphore = Arc::new(Semaphore::new(max_connections));
@@ -127,10 +132,11 @@ async fn main() {
         .await
         .expect("failed to bind Bolt TCP listener");
     tracing::info!(
-        "sedandelivery-bolt listening on {} (max_connections={}, idle_timeout={}s)",
+        "sedandelivery-bolt listening on {} (max_connections={}, idle_timeout={}s, write_concurrency={})",
         bind_addr,
         max_connections,
-        idle_timeout_secs
+        idle_timeout_secs,
+        write_concurrency
     );
 
     // Monotonic connection ID (not the same as active count).
@@ -138,11 +144,13 @@ async fn main() {
     // Single global bookmark counter shared across all sessions so that
     // bookmarks produced by one session are meaningful when passed to another.
     let global_bookmark = Arc::new(AtomicU64::new(0));
-    // Global write lock for transaction timeout contention.
-    // When a transaction performs a write, it acquires this lock. If another
-    // transaction with a tx_timeout tries to write while the lock is held,
-    // it will time out with Neo.TransientError.Transaction.LockClientStopped.
-    let write_lock = Arc::new(tokio::sync::Mutex::new(()));
+    // Write concurrency semaphore for transaction timeout contention.
+    // Controls how many write queries can execute concurrently. Autocommit
+    // writes without tx_timeout bypass this semaphore entirely (safe because
+    // Redis operations are atomic and single-statement queries need no
+    // cross-session isolation). When tx_timeout is specified, the semaphore
+    // detects contention and returns LockClientStopped on timeout.
+    let write_semaphore = Arc::new(tokio::sync::Semaphore::new(write_concurrency as usize));
 
     // --- Graceful shutdown signal ---
     let mut shutdown_rx = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
@@ -187,7 +195,7 @@ async fn main() {
         let store = Arc::clone(&store);
         let conn_id = connection_counter.fetch_add(1, Ordering::Relaxed);
         let bookmark = Arc::clone(&global_bookmark);
-        let wl = Arc::clone(&write_lock);
+        let wl = Arc::clone(&write_semaphore);
         let active = Arc::clone(&active_connections);
         let tls = tls_acceptor.clone();
 
