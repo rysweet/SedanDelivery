@@ -11,5 +11,5 @@ serde_json = { workspace = true }
 # redis-module (cdylib) is only in gql-module; not here.
 # tokio-comp is needed to resolve the async runtime enum in the redis crate;
 # we use only synchronous (blocking) connections.
-redis = { version = "0.27", default-features = false, features = ["tokio-comp", "r2d2", "cluster"] }
+redis = { version = "1.0", default-features = false, features = ["tokio-comp", "r2d2", "cluster"] }
 r2d2 = "0.8"
