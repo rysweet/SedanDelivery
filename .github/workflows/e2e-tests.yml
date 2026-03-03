@@ -113,7 +113,7 @@ jobs:
 
       - name: Comment PR with test results
         if: always() && github.event_name == 'pull_request'
-        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
+        uses: actions/github-script@450193c5abd4cdb17ba9f3ffcfe8f635c4bb6c2a # v7.1.0
         with:
           script: |
             const fs = require('fs');

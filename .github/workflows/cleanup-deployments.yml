@@ -121,7 +121,7 @@ jobs:
 
       - name: Comment on PR
         if: steps.check-rg.outputs.exists == 'true'
-        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
+        uses: actions/github-script@450193c5abd4cdb17ba9f3ffcfe8f635c4bb6c2a # v8.0.0
         with:
           script: |
             const envName = '${{ needs.check-deployment.outputs.env-name }}';
@@ -149,7 +149,7 @@ jobs:
 
       - name: Comment on PR - already cleaned
         if: steps.check-rg.outputs.exists == 'false'
-        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
+        uses: actions/github-script@450193c5abd4cdb17ba9f3ffcfe8f635c4bb6c2a # v8.0.0
         with:
           script: |
             const envName = '${{ needs.check-deployment.outputs.env-name }}';

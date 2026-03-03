@@ -31,7 +31,7 @@ jobs:
           sleep 60
 
       - name: Check for unresolved Repo Guardian violations
-        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7.0.1
+        uses: actions/github-script@450193c5abd4cdb17ba9f3ffcfe8f635c4bb6c2a # v7.0.1
         with:
           script: |
             const prNumber = context.issue?.number || context.payload.pull_request?.number;
