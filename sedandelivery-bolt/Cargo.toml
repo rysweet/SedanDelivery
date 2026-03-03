@@ -22,7 +22,7 @@ indexmap       = { workspace = true }
 jiff           = { workspace = true }
 thiserror      = { workspace = true }
 metrics        = "0.24"
-metrics-exporter-prometheus = "0.16"
+metrics-exporter-prometheus = "0.18"
 axum           = { version = "0.8", default-features = false, features = ["tokio", "http1", "json"] }
 serde          = { workspace = true }
 serde_json     = { workspace = true }
