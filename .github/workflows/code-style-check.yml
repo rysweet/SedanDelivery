@@ -65,7 +65,7 @@ jobs:
 
       - name: Upload format check log
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: format-check-log
           path: format-check.log
@@ -162,7 +162,7 @@ jobs:
 
       - name: Upload build log
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: stylecop-violations-log
           path: |
@@ -261,7 +261,7 @@ jobs:
           echo "Files with System.* first: $(grep -r "^using System" src/ tools/ --include="*.cs" | wc -l)" >> style-report.md
 
       - name: Upload style report
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: code-style-report
           path: style-report.md

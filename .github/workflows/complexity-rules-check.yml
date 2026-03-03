@@ -133,7 +133,7 @@ jobs:
 
       - name: Upload metrics report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: complexity-metrics-report
           path: metrics-report.md
@@ -141,7 +141,7 @@ jobs:
 
       - name: Upload build log
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: complexity-violations-log
           path: build.log
@@ -274,7 +274,7 @@ jobs:
           echo "- Technical debt ratio" >> trend-report.md
 
       - name: Upload trend report
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: complexity-trend-report
           path: trend-report.md

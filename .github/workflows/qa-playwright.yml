@@ -218,7 +218,7 @@ jobs:
         continue-on-error: true
 
       - name: Upload screenshots as artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         if: always()
         with:
           name: playwright-screenshots-${{ github.run_number }}
@@ -228,7 +228,7 @@ jobs:
           retention-days: 14
 
       - name: Upload full test reports
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         if: always()
         with:
           name: playwright-reports-${{ github.run_number }}

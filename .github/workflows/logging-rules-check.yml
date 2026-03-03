@@ -97,7 +97,7 @@ jobs:
 
       - name: Upload build log
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: logging-violations-log
           path: build.log
@@ -239,7 +239,7 @@ jobs:
           cat logging-report.md
 
       - name: Upload logging report
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: logging-pattern-report
           path: logging-report.md
