@@ -30,7 +30,7 @@ tokio-tungstenite = "0.26"
 futures-util   = "0.3"
 
 [dev-dependencies]
-criterion     = { version = "0.5", features = ["html_reports"] }
+criterion     = { version = "0.8", features = ["html_reports"] }
 tokio-test    = "0.4"
 rcgen          = "0.13"
 
