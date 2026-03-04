@@ -1,0 +1,11 @@
+.git
+.github
+target
+docs
+scripts
+tests
+neo4j-compat-gallery
+*.md
+coverage
+index.scip
+sedandelivery-bolt/tests

@@ -58,7 +58,7 @@ jobs:
             fi
 
             ENV_NAME="${SANITIZED}"
-            RESOURCE_GROUP="rg-${SANITIZED}"
+            RESOURCE_GROUP="rg-sd2-${SANITIZED}"
 
             echo "🗑️  PR had branch-specific deployment: ${ENV_NAME}"
             echo "   Resource group to cleanup: ${RESOURCE_GROUP}"

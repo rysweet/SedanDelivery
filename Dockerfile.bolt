@@ -58,7 +58,7 @@ FROM debian:bookworm-slim AS runtime
 
 # Install minimal runtime dependencies (TLS support for rediss:// URLs)
 RUN apt-get update -q && \
-    apt-get install -y -q --no-install-recommends ca-certificates && \
+    apt-get install -y -q --no-install-recommends ca-certificates curl && \
     rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /app/target/release/sedandelivery-bolt /usr/local/bin/sedandelivery-bolt
