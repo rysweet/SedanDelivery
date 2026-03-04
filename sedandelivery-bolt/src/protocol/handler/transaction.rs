@@ -26,7 +26,10 @@ pub(crate) fn handle_begin(
     }
 
     session.tx_metadata = extract_tx_metadata(&extra);
-    session.tx_timeout = extra.get_int("tx_timeout").map(|v| v as u64);
+    session.tx_timeout = extra
+        .get_int("tx_timeout")
+        .filter(|&v| v > 0)
+        .map(|v| v as u64);
 
     // If the BEGIN specifies a database, save the previous graph so that
     // ROLLBACK / RESET can restore it, then update the session's current
@@ -77,6 +80,10 @@ pub(crate) fn handle_commit(session: &mut Session) -> Result<Vec<ServerMessage>,
     session.state = ServerState::Ready;
     session.tx_metadata = Vec::new();
     session.tx_timeout = None;
+    // Restore the pre-BEGIN graph so that `db=` does not leak across TXs.
+    if let Some(graph) = session.saved_graph.take() {
+        session.current_graph = graph;
+    }
     Ok(vec![ServerMessage::Success(bolt_map! {
         "bookmark" => BoltValue::String(bookmark)
     })])
