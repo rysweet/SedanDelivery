@@ -38,6 +38,7 @@
 //! | `SD2_SYNC_BATCH`       | `100`                       | Events per XREADGROUP call           |
 //! | `SD2_SYNC_BLOCK_MS`    | `1000`                      | XREADGROUP blocking timeout (ms)     |
 //! | `SD2_SYNC_MAX_RETRIES` | `3`                         | Per-event retry limit                |
+//! | `SD2_SYNC_CONSUMER`    | hostname / `worker-0`       | Consumer name for XREADGROUP         |
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};

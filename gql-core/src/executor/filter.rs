@@ -843,8 +843,8 @@ pub(crate) fn cypher_compare(a: &Value, b: &Value) -> Result<std::cmp::Ordering,
         (Value::LocalTime(x), Value::LocalTime(y)) => Ok(x.cmp(y)),
         // Zoned time: compare by UTC-normalized instant
         (Value::Time(t1, o1), Value::Time(t2, o2)) => {
-            let utc1 = time_to_utc_nanos_filter(t1, *o1);
-            let utc2 = time_to_utc_nanos_filter(t2, *o2);
+            let utc1 = time_to_utc_nanos(t1, *o1);
+            let utc2 = time_to_utc_nanos(t2, *o2);
             Ok(utc1.cmp(&utc2))
         }
         (Value::LocalDateTime(x), Value::LocalDateTime(y)) => Ok(x.cmp(y)),
@@ -1940,7 +1940,15 @@ pub fn temporal_property_access(val: &Value, key: &str) -> Result<Value, GqlErro
             "microsecondsOfSecond" => Ok(Value::Int(
                 (d.nanos.rem_euclid(1_000_000_000) / 1_000) as i64,
             )),
-            "nanoseconds" => Ok(Value::Int(d.nanos as i64)),
+            "nanoseconds" => {
+                let nanos_i64 = i64::try_from(d.nanos).map_err(|_| {
+                    GqlError::Execution(ExecutionError::TypeMismatch {
+                        expected: "duration nanoseconds within i64 range".to_string(),
+                        actual: format!("nanoseconds {} overflow i64 range", d.nanos),
+                    })
+                })?;
+                Ok(Value::Int(nanos_i64))
+            }
             "nanosecondsOfSecond" => Ok(Value::Int(d.nanos.rem_euclid(1_000_000_000) as i64)),
             _ => Ok(Value::Null),
         },
@@ -4157,7 +4165,7 @@ fn eval_time_truncate(vals: &[Value]) -> Result<Value, GqlError> {
 }
 
 /// Convert a zoned time (civil time + offset in seconds) to UTC nanoseconds-from-midnight.
-fn time_to_utc_nanos_filter(t: &jiff::civil::Time, offset_secs: i32) -> i64 {
+pub(crate) fn time_to_utc_nanos(t: &jiff::civil::Time, offset_secs: i32) -> i64 {
     let local_nanos = t.hour() as i64 * 3_600_000_000_000
         + t.minute() as i64 * 60_000_000_000
         + t.second() as i64 * 1_000_000_000
@@ -4284,8 +4292,8 @@ fn eval_duration_between(vals: &[Value]) -> Result<Value, GqlError> {
 
     // Two zoned times (Value::Time): diff by UTC-normalized instants
     if let (Value::Time(t1, o1), Value::Time(t2, o2)) = (&vals[0], &vals[1]) {
-        let utc1 = time_to_utc_nanos_filter(t1, *o1);
-        let utc2 = time_to_utc_nanos_filter(t2, *o2);
+        let utc1 = time_to_utc_nanos(t1, *o1);
+        let utc2 = time_to_utc_nanos(t2, *o2);
         let diff = utc2 - utc1;
         let secs = diff / 1_000_000_000;
         let subsec = (diff % 1_000_000_000) as i32;
@@ -4299,7 +4307,7 @@ fn eval_duration_between(vals: &[Value]) -> Result<Value, GqlError> {
         | (Value::DateTime(zdt), Value::Time(t, off))
             if !has_date_component(&vals[0]) || !has_date_component(&vals[1]) =>
         {
-            let utc_time_nanos = time_to_utc_nanos_filter(t, *off);
+            let utc_time_nanos = time_to_utc_nanos(t, *off);
             let utc_zdt = zdt.with_time_zone(jiff::tz::TimeZone::UTC);
             let zt = jiff::civil::Time::from(&utc_zdt);
             let utc_zdt_nanos = zt.hour() as i64 * 3_600_000_000_000
@@ -4669,8 +4677,8 @@ fn eval_duration_in_seconds(vals: &[Value]) -> Result<Value, GqlError> {
 
     // Two zoned times (Value::Time): diff by UTC-normalized instants
     if let (Value::Time(t1, o1), Value::Time(t2, o2)) = (&vals[0], &vals[1]) {
-        let utc1 = time_to_utc_nanos_filter(t1, *o1);
-        let utc2 = time_to_utc_nanos_filter(t2, *o2);
+        let utc1 = time_to_utc_nanos(t1, *o1);
+        let utc2 = time_to_utc_nanos(t2, *o2);
         let diff = (utc2 - utc1) as i128;
         return Ok(Value::Duration(CypherDuration {
             months: 0,
@@ -4685,7 +4693,7 @@ fn eval_duration_in_seconds(vals: &[Value]) -> Result<Value, GqlError> {
         | (Value::DateTime(zdt), Value::Time(t, off))
             if !has_date_component(&vals[0]) || !has_date_component(&vals[1]) =>
         {
-            let utc_time_nanos = time_to_utc_nanos_filter(t, *off);
+            let utc_time_nanos = time_to_utc_nanos(t, *off);
             let utc_zdt = zdt.with_time_zone(jiff::tz::TimeZone::UTC);
             let zt = jiff::civil::Time::from(&utc_zdt);
             let utc_zdt_nanos = zt.hour() as i64 * 3_600_000_000_000
@@ -4889,7 +4897,13 @@ pub fn temporal_add_duration(
                 dt1
             };
             let dt3 = if nanos != 0 {
-                dt2.checked_add(jiff::SignedDuration::from_nanos(nanos as i64))
+                let nanos_i64 = i64::try_from(nanos).map_err(|_| {
+                    GqlError::Execution(ExecutionError::TypeMismatch {
+                        expected: "duration nanoseconds within i64 range".to_string(),
+                        actual: format!("nanoseconds {nanos} overflow i64 range"),
+                    })
+                })?;
+                dt2.checked_add(jiff::SignedDuration::from_nanos(nanos_i64))
                     .map_err(|e| temporal_parse_error("temporal arithmetic", e))?
             } else {
                 dt2
@@ -4912,7 +4926,13 @@ pub fn temporal_add_duration(
                 zdt1
             };
             let zdt3 = if nanos != 0 {
-                zdt2.checked_add(jiff::SignedDuration::from_nanos(nanos as i64))
+                let nanos_i64 = i64::try_from(nanos).map_err(|_| {
+                    GqlError::Execution(ExecutionError::TypeMismatch {
+                        expected: "duration nanoseconds within i64 range".to_string(),
+                        actual: format!("nanoseconds {nanos} overflow i64 range"),
+                    })
+                })?;
+                zdt2.checked_add(jiff::SignedDuration::from_nanos(nanos_i64))
                     .map_err(|e| temporal_parse_error("temporal arithmetic", e))?
             } else {
                 zdt2

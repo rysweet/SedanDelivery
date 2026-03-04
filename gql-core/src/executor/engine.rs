@@ -17,7 +17,9 @@ use crate::ast::{Direction, Expr};
 use crate::error::{ExecutionError, GqlError, StorageError};
 use crate::executor::budget::ExecutionBudget;
 use crate::executor::filter::Row as FilterRow;
-use crate::executor::filter::{eval_expr, eval_function_with_vals, quantifier_result};
+use crate::executor::filter::{
+    eval_expr, eval_function_with_vals, quantifier_result, time_to_utc_nanos,
+};
 use crate::planner::{AggFunction, Operator, QueryPlanner, RemoveItem, SetItem};
 use crate::procedure::ProcedureRegistry;
 use crate::storage::{EdgeId, GraphStore, NodeId, RangeQuery};
@@ -1537,6 +1539,60 @@ impl<'a> QueryExecutor<'a> {
         Ok(out)
     }
 
+    /// Evaluate MERGE property expressions, expanding parameter maps and
+    /// rejecting null values.  Shared by `exec_merge` and `exec_merge_rel`.
+    fn eval_merge_properties(
+        &self,
+        graph: &str,
+        properties: &[(String, Expr)],
+        row: &Row,
+        ctx: &FilterRow<'_>,
+    ) -> Result<Vec<(String, Value)>, GqlError> {
+        let mut prop_vals: Vec<(String, Value)> = Vec::new();
+        for (k, expr) in properties {
+            if k.is_empty() {
+                // Parameter map expansion sentinel.
+                let val = self.eval_with_storage(graph, expr, row, ctx)?;
+                match val {
+                    Value::Map(entries) => {
+                        for (mk, mv) in entries {
+                            if mv.is_null() {
+                                return Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                                    expected: "non-null property value in MERGE".to_string(),
+                                    actual: "Null".to_string(),
+                                }));
+                            }
+                            prop_vals.push((mk.to_string(), mv));
+                        }
+                    }
+                    Value::Null => {
+                        return Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                            expected: "non-null Map for MERGE parameter properties".to_string(),
+                            actual: "Null".to_string(),
+                        }));
+                    }
+                    other => {
+                        return Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                            expected: "Map for MERGE parameter properties".to_string(),
+                            actual: other.type_name().to_string(),
+                        }));
+                    }
+                }
+            } else {
+                let val = self.eval_with_storage(graph, expr, row, ctx)?;
+                // MERGE with null property is a SemanticError (MergeReadOwnWrites)
+                if val.is_null() {
+                    return Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                        expected: "non-null property value in MERGE".to_string(),
+                        actual: "Null".to_string(),
+                    }));
+                }
+                prop_vals.push((k.clone(), val));
+            }
+        }
+        Ok(prop_vals)
+    }
+
     fn exec_merge(
         &self,
         graph: &str,
@@ -1570,55 +1626,12 @@ impl<'a> QueryExecutor<'a> {
             budget.check_or_err()?;
 
             // Evaluate inline property values from the MERGE pattern.
-            let mut prop_vals: Vec<(String, Value)> = Vec::new();
-            if !properties.is_empty() {
+            let prop_vals = if !properties.is_empty() {
                 let ctx = self.build_filter_ctx(graph, &row)?;
-                for (k, expr) in properties {
-                    if k.is_empty() {
-                        // Parameter map expansion sentinel.
-                        let val = self.eval_with_storage(graph, expr, &row, &ctx)?;
-                        match val {
-                            Value::Map(entries) => {
-                                for (mk, mv) in entries {
-                                    if mv.is_null() {
-                                        return Err(GqlError::Execution(
-                                            ExecutionError::TypeMismatch {
-                                                expected: "non-null property value in MERGE"
-                                                    .to_string(),
-                                                actual: "Null".to_string(),
-                                            },
-                                        ));
-                                    }
-                                    prop_vals.push((mk.to_string(), mv));
-                                }
-                            }
-                            Value::Null => {
-                                return Err(GqlError::Execution(ExecutionError::TypeMismatch {
-                                    expected: "non-null Map for MERGE parameter properties"
-                                        .to_string(),
-                                    actual: "Null".to_string(),
-                                }));
-                            }
-                            other => {
-                                return Err(GqlError::Execution(ExecutionError::TypeMismatch {
-                                    expected: "Map for MERGE parameter properties".to_string(),
-                                    actual: other.type_name().to_string(),
-                                }));
-                            }
-                        }
-                    } else {
-                        let val = self.eval_with_storage(graph, expr, &row, &ctx)?;
-                        // MERGE with null property is a SemanticError (MergeReadOwnWrites)
-                        if val.is_null() {
-                            return Err(GqlError::Execution(ExecutionError::TypeMismatch {
-                                expected: "non-null property value in MERGE".to_string(),
-                                actual: "Null".to_string(),
-                            }));
-                        }
-                        prop_vals.push((k.clone(), val));
-                    }
-                }
-            }
+                self.eval_merge_properties(graph, properties, &row, &ctx)?
+            } else {
+                Vec::new()
+            };
 
             // Try to find existing nodes matching ALL labels and properties.
             // Fast path: when there is at least one label and one property, use
@@ -1801,50 +1814,7 @@ impl<'a> QueryExecutor<'a> {
 
             // Filter by property constraints if any.
             let ctx = self.build_filter_ctx(graph, &row)?;
-            let mut prop_vals: Vec<(String, Value)> = Vec::new();
-            for (k, expr) in properties {
-                if k.is_empty() {
-                    // Parameter map expansion sentinel.
-                    let val = self.eval_with_storage(graph, expr, &row, &ctx)?;
-                    match val {
-                        Value::Map(entries) => {
-                            for (mk, mv) in entries {
-                                if mv.is_null() {
-                                    return Err(GqlError::Execution(
-                                        ExecutionError::TypeMismatch {
-                                            expected: "non-null property value in MERGE"
-                                                .to_string(),
-                                            actual: "Null".to_string(),
-                                        },
-                                    ));
-                                }
-                                prop_vals.push((mk.to_string(), mv));
-                            }
-                        }
-                        Value::Null => {
-                            return Err(GqlError::Execution(ExecutionError::TypeMismatch {
-                                expected: "non-null Map for MERGE parameter properties".to_string(),
-                                actual: "Null".to_string(),
-                            }));
-                        }
-                        other => {
-                            return Err(GqlError::Execution(ExecutionError::TypeMismatch {
-                                expected: "Map for MERGE parameter properties".to_string(),
-                                actual: other.type_name().to_string(),
-                            }));
-                        }
-                    }
-                } else {
-                    let v = self.eval_with_storage(graph, expr, &row, &ctx)?;
-                    if v.is_null() {
-                        return Err(GqlError::Execution(ExecutionError::TypeMismatch {
-                            expected: "non-null property value in MERGE".to_string(),
-                            actual: "Null".to_string(),
-                        }));
-                    }
-                    prop_vals.push((k.clone(), v));
-                }
-            }
+            let prop_vals = self.eval_merge_properties(graph, properties, &row, &ctx)?;
 
             let matched_edges: Vec<EdgeId> = if prop_vals.is_empty() {
                 matching.iter().map(|adj| adj.edge_id).collect::<Vec<_>>()
@@ -4122,15 +4092,6 @@ fn value_to_expr(val: &Value) -> Expr {
         // These should not appear in the middle of a compound expression being rebuilt.
         _ => Expr::Null,
     }
-}
-
-/// Convert a zoned time (civil time + offset in seconds) to UTC nanoseconds-from-midnight.
-fn time_to_utc_nanos(t: &jiff::civil::Time, offset_secs: i32) -> i64 {
-    let local_nanos = t.hour() as i64 * 3_600_000_000_000
-        + t.minute() as i64 * 60_000_000_000
-        + t.second() as i64 * 1_000_000_000
-        + t.subsec_nanosecond() as i64;
-    local_nanos - offset_secs as i64 * 1_000_000_000
 }
 
 /// Convert a civil time to nanoseconds-from-midnight.

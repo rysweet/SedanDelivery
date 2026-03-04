@@ -3,7 +3,6 @@
 use std::collections::HashMap;
 
 use serde_json::{json, Value as JValue};
-use tracing::warn;
 
 use gql_core::error::StorageError;
 use gql_core::storage::{
@@ -584,7 +583,7 @@ impl GraphStore for FabricGraphStore {
         self.statement(
             &format!("CREATE INDEX sd2_{label_s}_{prop_s} IF NOT EXISTS FOR (n:`{label_s}`) ON (n.`{prop_s}`)"),
             json!({}),
-        ).unwrap_or_else(|e| { warn!("create_index native: {e}"); vec![] });
+        )?;
         self.statement(
             &format!(
                 "MERGE (__i:__SD2Index {{`{PROP_GRAPH}`: $graph, _label: $lbl, _property: $prop}})"
@@ -601,10 +600,7 @@ impl GraphStore for FabricGraphStore {
             &format!("DROP INDEX sd2_{label_s}_{prop_s} IF EXISTS"),
             json!({}),
         )
-        .unwrap_or_else(|e| {
-            warn!("drop_index native: {e}");
-            vec![]
-        });
+        ?;
         self.statement(
             &format!(
                 "MATCH (__i:__SD2Index {{`{PROP_GRAPH}`: $graph, _label: $lbl, _property: $prop}}) DELETE __i"
