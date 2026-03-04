@@ -1,0 +1,98 @@
+name: Publish Container Images to GHCR
+
+# Build and publish all SedanDelivery container images to GitHub Container
+# Registry (ghcr.io) on every push to main, on version tags, and on manual
+# dispatch.  Uses GITHUB_TOKEN — no custom secrets required.
+#
+# Images:
+#   ghcr.io/cloud-ecosystem-security/sedandelivery           — Valkey + GQL module
+#   ghcr.io/cloud-ecosystem-security/sedandelivery-bolt       — Bolt protocol server
+#   ghcr.io/cloud-ecosystem-security/sedandelivery-fabric-sync — Fabric sync sidecar
+#
+# Closes #433
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+concurrency:
+  group: ghcr-publish-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_BASE: ghcr.io/${{ github.repository_owner }}/sedandelivery
+
+jobs:
+  build-and-push:
+    name: Build & Push (${{ matrix.image }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: sedandelivery
+            dockerfile: Dockerfile
+            suffix: ""
+            description: "SedanDelivery — Valkey server with GQL graph module"
+          - image: sedandelivery-bolt
+            dockerfile: Dockerfile.bolt
+            suffix: "-bolt"
+            description: "SedanDelivery Bolt — Neo4j Bolt protocol server"
+          - image: sedandelivery-fabric-sync
+            dockerfile: Dockerfile.sync
+            suffix: "-fabric-sync"
+            description: "SedanDelivery Fabric Sync — Microsoft Fabric graph sync sidecar"
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.1.5
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@184bdaa0721073962dff0199f1fb9940f07167d1 # v3.5.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract image metadata (tags, labels)
+        id: meta
+        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5.10.0
+        with:
+          images: ${{ env.IMAGE_BASE }}${{ matrix.suffix }}
+          tags: |
+            # On push to main: tag as "latest" and date-based "YYYYMMDD"
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value={{date 'YYYYMMDD'}},enable={{is_default_branch}}
+            # On version tags (v1.2.3): use the version string
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            # Always tag with the short SHA for traceability
+            type=sha,prefix=sha-
+          labels: |
+            org.opencontainers.image.title=${{ matrix.image }}
+            org.opencontainers.image.description=${{ matrix.description }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.licenses=MIT
+
+      - name: Build and push image
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          platforms: linux/amd64
