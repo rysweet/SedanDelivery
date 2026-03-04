@@ -14,16 +14,12 @@ use super::{
     Session,
 };
 
-// -- Pending results cap -----------------------------------------------------
+// -- Pending-results cap -----------------------------------------------------
 
-/// Default maximum number of pending (un-PULLed / un-DISCARDed) query results
-/// per session.  Override with the `BOLT_MAX_PENDING_RESULTS` env var.
 const DEFAULT_MAX_PENDING_RESULTS: usize = 16;
 
-/// Read the pending-results cap from the environment (once, on first call).
 fn max_pending_results() -> usize {
-    use std::sync::OnceLock;
-    static CAP: OnceLock<usize> = OnceLock::new();
+    static CAP: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
     *CAP.get_or_init(|| {
         std::env::var("BOLT_MAX_PENDING_RESULTS")
             .ok()
@@ -32,42 +28,17 @@ fn max_pending_results() -> usize {
     })
 }
 
-// -- RUN ---------------------------------------------------------------------
+// -- Query pre-processing helpers --------------------------------------------
 
-/// Handle the RUN message (submit a Cypher query for execution).
+/// Strip Neo4j pre-parser directives like `CYPHER runtime=interpreted ...`
+/// from the beginning of a query string.
 ///
-/// Parses the query, resolves the target graph and parameters, executes the
-/// query (or plans it for EXPLAIN/PROFILE), and stores the result as a
-/// `PendingQuery` for subsequent PULL.
-pub(crate) async fn handle_run(
-    session: &mut Session,
-    query: String,
-    params: BoltMap,
-    extra: BoltMap,
-) -> Result<Vec<ServerMessage>, ProtocolError> {
-    if let Some(failure) = validate_bookmarks(&extra) {
-        session.state = ServerState::Failed;
-        return Ok(vec![failure]);
-    }
-
-    // Reject the RUN if the session already has too many un-consumed results.
-    // Clients must PULL or DISCARD existing results before running more queries.
-    let cap = max_pending_results();
-    if session.pending_results.len() >= cap {
-        session.state = ServerState::Failed;
-        return Ok(vec![ServerMessage::Failure(bolt_map! {
-            "code" => BoltValue::String(
-                "Neo.ClientError.Request.Invalid".to_string()
-            ),
-            "message" => BoltValue::String(
-                "Too many pending results. Send PULL or DISCARD before running more queries.".to_string()
-            )
-        })]);
-    }
-
-    // Strip Neo4j pre-parser directives like "CYPHER runtime=interpreted ..."
+/// If the query starts with `"CYPHER "` (case-insensitive), scans forward for
+/// the first recognized Cypher keyword and returns the substring starting at
+/// that keyword. Otherwise returns the trimmed input unchanged.
+fn strip_cypher_prefix(query: &str) -> &str {
     let trimmed = query.trim();
-    let trimmed = if trimmed.len() > 7 && trimmed[..7].eq_ignore_ascii_case("CYPHER ") {
+    if trimmed.len() > 7 && trimmed[..7].eq_ignore_ascii_case("CYPHER ") {
         let cypher_keywords = [
             "MATCH ",
             "RETURN ",
@@ -97,29 +68,33 @@ pub(crate) async fn handle_run(
         &trimmed[start..]
     } else {
         trimmed
-    };
+    }
+}
 
-    // Detect EXPLAIN / PROFILE prefix (case-insensitive)
-    tracing::debug!(query = %trimmed, "handle_run query");
-    let is_explain = trimmed.len() >= 8 && trimmed[..8].eq_ignore_ascii_case("EXPLAIN ");
-    let is_profile =
-        !is_explain && trimmed.len() >= 8 && trimmed[..8].eq_ignore_ascii_case("PROFILE ");
+/// Detect `EXPLAIN` or `PROFILE` prefix on a query (case-insensitive).
+///
+/// Returns `(is_explain, is_profile, actual_query)` where `actual_query` is
+/// the query text with the prefix stripped.
+fn detect_explain_profile(query: &str) -> (bool, bool, String) {
+    let is_explain = query.len() >= 8 && query[..8].eq_ignore_ascii_case("EXPLAIN ");
+    let is_profile = !is_explain && query.len() >= 8 && query[..8].eq_ignore_ascii_case("PROFILE ");
     let actual_query = if is_explain || is_profile {
-        trimmed[8..].to_string()
+        query[8..].to_string()
     } else {
-        trimmed.to_string()
+        query.to_string()
     };
+    (is_explain, is_profile, actual_query)
+}
 
-    let graph = extra
-        .get_str("db")
-        .unwrap_or(&session.current_graph)
-        .trim_matches(|c| c == '\'' || c == '"')
-        .to_string();
+// -- Store resolution --------------------------------------------------------
 
-    // Try to handle as an admin/DDL query (CREATE/DROP DATABASE, SHOW DATABASES,
-    // CREATE/DROP INDEX/CONSTRAINT). These commands are not supported by the
-    // gql-core parser, so we intercept them here.
-    let effective_store_for_admin: Arc<dyn GraphStore> = match &session.tx_store {
+/// Resolve the effective store for query execution.
+///
+/// When inside an explicit transaction (`TxReady`/`TxStreaming`), returns the
+/// snapshot store so that mutations are isolated until COMMIT. Otherwise
+/// returns the main session store.
+fn resolve_effective_store(session: &Session) -> Arc<dyn GraphStore> {
+    match &session.tx_store {
         Some(ts)
             if matches!(
                 session.state,
@@ -129,127 +104,384 @@ pub(crate) async fn handle_run(
             Arc::clone(ts)
         }
         _ => Arc::clone(&session.store),
-    };
-    if let Some(admin_result) =
-        bridge::admin::try_handle_admin(&*effective_store_for_admin, &graph, trimmed)
-    {
-        match admin_result {
-            Ok(ar) => {
-                let run_metadata = extract_tx_metadata(&extra);
-                let combined_metadata = if !session.tx_metadata.is_empty() {
-                    session.tx_metadata.clone()
-                } else {
-                    run_metadata
-                };
-                let (records, query_type, stats, _trailing) = bridge::executor::result_to_records(
-                    &ar.query_result,
-                    &*effective_store_for_admin,
-                    &graph,
-                );
-                let fields: Vec<BoltValue> = ar
-                    .query_result
-                    .columns
-                    .iter()
-                    .map(|c| BoltValue::String(c.clone()))
-                    .collect();
+    }
+}
 
-                // Determine query type: admin commands are "s" (system) when
-                // they have system_updates, otherwise use the computed type.
-                let effective_type = if ar.system_updates > 0 {
-                    "s".to_string()
-                } else {
-                    query_type
-                };
+// -- Admin query interception ------------------------------------------------
 
-                let qid = session.next_qid;
-                session.next_qid += 1;
-                session.pending_results.insert(
-                    qid,
-                    PendingQuery {
-                        columns: ar.query_result.columns,
-                        records,
-                        query_type: effective_type,
-                        stats,
-                        cursor: 0,
-                        start_time: std::time::Instant::now(),
-                        metadata: combined_metadata,
-                        explain_plan: None,
-                        profile_plan: None,
-                        graph: graph.clone(),
-                        notifications: vec![],
-                        trailing_error: None,
-                        admin_stats: Some(AdminStats {
-                            indexes_added: ar.indexes_added,
-                            indexes_removed: ar.indexes_removed,
-                            constraints_added: ar.constraints_added,
-                            constraints_removed: ar.constraints_removed,
-                            system_updates: ar.system_updates,
-                        }),
-                    },
-                );
+/// Try to handle a query as an admin/DDL command (CREATE/DROP DATABASE,
+/// SHOW DATABASES, CREATE/DROP INDEX/CONSTRAINT).
+///
+/// These commands are not supported by the gql-core parser, so we intercept
+/// them before normal query execution. Returns `Some(response)` if the query
+/// was handled as admin, `None` if it should proceed through normal execution.
+fn intercept_admin_query(
+    session: &mut Session,
+    store: &Arc<dyn GraphStore>,
+    graph: &str,
+    trimmed: &str,
+    extra: &BoltMap,
+) -> Option<Result<Vec<ServerMessage>, ProtocolError>> {
+    let admin_result = bridge::admin::try_handle_admin(&**store, graph, trimmed)?;
 
-                session.state = match session.state {
-                    ServerState::TxReady | ServerState::TxStreaming => ServerState::TxStreaming,
-                    _ => {
-                        session.write_permit = None;
-                        ServerState::Streaming
-                    }
-                };
+    Some(match admin_result {
+        Ok(ar) => {
+            let run_metadata = extract_tx_metadata(extra);
+            let combined_metadata = if !session.tx_metadata.is_empty() {
+                session.tx_metadata.clone()
+            } else {
+                run_metadata
+            };
+            let (records, query_type, stats, _trailing) =
+                bridge::executor::result_to_records(&ar.query_result, &**store, graph);
+            let fields: Vec<BoltValue> = ar
+                .query_result
+                .columns
+                .iter()
+                .map(|c: &String| BoltValue::String(c.clone()))
+                .collect();
 
-                return Ok(vec![ServerMessage::Success(bolt_map! {
-                    "fields" => BoltValue::List(fields),
-                    "t_first" => BoltValue::Int(0),
-                    "qid" => BoltValue::Int(qid)
-                })]);
-            }
-            Err(gql_err) => {
-                let (code, message) = bridge::errors::gql_error_to_bolt(&gql_err);
-                bolt_metrics::error_recorded(&code);
-                session.write_permit = None;
-                session.state = ServerState::Failed;
-                return Ok(vec![ServerMessage::Failure(bolt_map! {
-                    "code" => BoltValue::String(code),
-                    "message" => BoltValue::String(message)
-                })]);
-            }
+            // Determine query type: admin commands are "s" (system) when
+            // they have system_updates, otherwise use the computed type.
+            let effective_type = if ar.system_updates > 0 {
+                "s".to_string()
+            } else {
+                query_type
+            };
+
+            let qid = session.next_qid;
+            session.next_qid += 1;
+            session.pending_results.insert(
+                qid,
+                PendingQuery {
+                    columns: ar.query_result.columns,
+                    records,
+                    query_type: effective_type,
+                    stats,
+                    cursor: 0,
+                    start_time: std::time::Instant::now(),
+                    metadata: combined_metadata,
+                    explain_plan: None,
+                    profile_plan: None,
+                    graph: graph.to_string(),
+                    notifications: vec![],
+                    trailing_error: None,
+                    admin_stats: Some(AdminStats {
+                        indexes_added: ar.indexes_added,
+                        indexes_removed: ar.indexes_removed,
+                        constraints_added: ar.constraints_added,
+                        constraints_removed: ar.constraints_removed,
+                        system_updates: ar.system_updates,
+                    }),
+                },
+            );
+
+            session.state = match session.state {
+                ServerState::TxReady | ServerState::TxStreaming => ServerState::TxStreaming,
+                _ => {
+                    session.write_permit = None;
+                    ServerState::Streaming
+                }
+            };
+
+            Ok(vec![ServerMessage::Success(bolt_map! {
+                "fields" => BoltValue::List(fields),
+                "t_first" => BoltValue::Int(0),
+                "qid" => BoltValue::Int(qid)
+            })])
         }
+        Err(gql_err) => {
+            let (code, message) = bridge::errors::gql_error_to_bolt(&gql_err);
+            bolt_metrics::error_recorded(&code);
+            session.write_permit = None;
+            session.state = ServerState::Failed;
+            Ok(vec![ServerMessage::Failure(bolt_map! {
+                "code" => BoltValue::String(code),
+                "message" => BoltValue::String(message)
+            })])
+        }
+    })
+}
+
+// -- Database existence check ------------------------------------------------
+
+/// Check whether the target database exists when explicitly specified.
+///
+/// Returns `Some(failure_messages)` if the database doesn't exist, `None` if
+/// the check passes or doesn't apply.
+fn check_database_exists(
+    session: &mut Session,
+    extra: &BoltMap,
+    graph: &str,
+) -> Option<Vec<ServerMessage>> {
+    if extra.get_str("db").is_none() || graph == "neo4j" || graph == "system" {
+        return None;
     }
 
-    // For non-admin queries, check if the target database exists.
-    // If the target database was explicitly specified (via the `db` parameter)
-    // and doesn't exist, return DatabaseNotFound instead of auto-creating.
-    // This check only applies in "multi-db mode" (when the default "neo4j"
-    // database has been pre-created at server startup). In unit tests where
-    // the store is empty, auto-create still works.
-    if extra.get_str("db").is_some() && graph != "neo4j" && graph != "system" {
-        let main_store_has_neo4j = session.store.graph_exists("neo4j").unwrap_or(false);
-        if main_store_has_neo4j {
-            let check_store: &dyn GraphStore = match &session.tx_store {
-                Some(ts)
-                    if matches!(
-                        session.state,
-                        ServerState::TxReady | ServerState::TxStreaming
-                    ) =>
-                {
-                    &**ts
-                }
-                _ => &*session.store,
-            };
-            let exists = check_store.graph_exists(&graph).unwrap_or(false);
-            if !exists {
-                use gql_core::error::{GqlError, StorageError};
-                let err = GqlError::Storage(StorageError::GraphNotFound {
-                    name: graph.clone(),
-                });
-                let (code, message) = bridge::errors::gql_error_to_bolt(&err);
-                bolt_metrics::error_recorded(&code);
+    let main_store_has_neo4j = session.store.graph_exists("neo4j").unwrap_or(false);
+    if !main_store_has_neo4j {
+        return None;
+    }
+
+    let check_store: &dyn GraphStore = match &session.tx_store {
+        Some(ts)
+            if matches!(
+                session.state,
+                ServerState::TxReady | ServerState::TxStreaming
+            ) =>
+        {
+            &**ts
+        }
+        _ => &*session.store,
+    };
+    let exists = check_store.graph_exists(graph).unwrap_or(false);
+    if exists {
+        return None;
+    }
+
+    use gql_core::error::{GqlError, StorageError};
+    let err = GqlError::Storage(StorageError::GraphNotFound {
+        name: graph.to_string(),
+    });
+    let (code, message) = bridge::errors::gql_error_to_bolt(&err);
+    bolt_metrics::error_recorded(&code);
+    session.state = ServerState::Failed;
+    Some(vec![ServerMessage::Failure(bolt_map! {
+        "code" => BoltValue::String(code),
+        "message" => BoltValue::String(message)
+    })])
+}
+
+// -- Write semaphore acquisition ---------------------------------------------
+
+/// Acquire the write semaphore if the query is a write and contention
+/// management is needed.
+///
+/// Returns `Some(failure_messages)` if acquisition fails or times out, `None`
+/// on success (permit stored in session) or when no acquisition is needed.
+async fn acquire_write_semaphore(
+    session: &mut Session,
+    query: &str,
+    extra: &BoltMap,
+) -> Option<Vec<ServerMessage>> {
+    let is_write_query = {
+        let upper = query.to_uppercase();
+        upper.contains("CREATE ")
+            || upper.contains("MERGE ")
+            || upper.contains("DELETE ")
+            || upper.contains("SET ")
+            || upper.contains("REMOVE ")
+    };
+    if !is_write_query || session.write_permit.is_some() {
+        return None;
+    }
+
+    let in_explicit_tx = matches!(
+        session.state,
+        ServerState::TxReady | ServerState::TxStreaming
+    );
+
+    let timeout_ms = session
+        .tx_timeout
+        .or(extra.get_int("tx_timeout").map(|v| v as u64));
+
+    if let Some(ms) = timeout_ms {
+        let sem = Arc::clone(&session.write_semaphore);
+        match tokio::time::timeout(std::time::Duration::from_millis(ms), sem.acquire_owned()).await
+        {
+            Ok(Ok(permit)) => {
+                session.write_permit = Some(permit);
+                None
+            }
+            Ok(Err(_closed)) => {
+                // Semaphore closed (shutdown)
                 session.state = ServerState::Failed;
-                return Ok(vec![ServerMessage::Failure(bolt_map! {
-                    "code" => BoltValue::String(code),
-                    "message" => BoltValue::String(message)
-                })]);
+                Some(vec![ServerMessage::Failure(bolt_map! {
+                    "code" => BoltValue::String(
+                        "Neo.TransientError.Transaction.LockClientStopped".to_string()
+                    ),
+                    "message" => BoltValue::String(
+                        "Server is shutting down".to_string()
+                    )
+                })])
+            }
+            Err(_) => {
+                // Semaphore acquisition timed out
+                bolt_metrics::error_recorded("Neo.TransientError.Transaction.LockClientStopped");
+                session.state = ServerState::Failed;
+                Some(vec![ServerMessage::Failure(bolt_map! {
+                    "code" => BoltValue::String(
+                        "Neo.TransientError.Transaction.LockClientStopped".to_string()
+                    ),
+                    "message" => BoltValue::String(
+                        format!("The transaction has been terminated. \
+                                 Retry your operation in a new transaction, \
+                                 and you should see a successful result. \
+                                 Lock acquisition timeout after {} ms", ms)
+                    )
+                })])
             }
         }
+    } else if in_explicit_tx {
+        // Explicit transaction without timeout: acquire permit (may wait).
+        let sem = Arc::clone(&session.write_semaphore);
+        match sem.acquire_owned().await {
+            Ok(permit) => {
+                session.write_permit = Some(permit);
+                None
+            }
+            Err(_) => {
+                session.state = ServerState::Failed;
+                Some(vec![ServerMessage::Failure(bolt_map! {
+                    "code" => BoltValue::String(
+                        "Neo.TransientError.Transaction.LockClientStopped".to_string()
+                    ),
+                    "message" => BoltValue::String(
+                        "Server is shutting down".to_string()
+                    )
+                })])
+            }
+        }
+    } else {
+        // Autocommit write without tx_timeout -- skip semaphore entirely
+        // for maximum concurrency. Redis handles atomicity at the command level.
+        None
+    }
+}
+
+// -- Success response construction -------------------------------------------
+
+/// Build the SUCCESS response after a successful query execution.
+fn build_success_response(
+    session: &mut Session,
+    qr: gql_core::executor::QueryResult,
+    effective_store: &Arc<dyn GraphStore>,
+    graph: &str,
+    run_metadata: BoltMap,
+    profile_plan: Option<BoltValue>,
+) -> Vec<ServerMessage> {
+    let (records, query_type, stats, trailing_err) =
+        bridge::executor::result_to_records(&qr, &**effective_store, graph);
+
+    // Convert the trailing GqlError (if any) to a (code, message) pair
+    // for deferred FAILURE emission during PULL.
+    let trailing_error = trailing_err.map(|e| bridge::errors::gql_error_to_bolt(&e));
+
+    let fields: Vec<BoltValue> = qr
+        .columns
+        .iter()
+        .map(|c: &String| BoltValue::String(c.clone()))
+        .collect();
+
+    let combined_metadata = if !session.tx_metadata.is_empty() {
+        session.tx_metadata.clone()
+    } else {
+        run_metadata
+    };
+
+    // For PROFILE, patch rows into plan
+    let patched_profile = profile_plan.map(|mut plan| {
+        if let BoltValue::Map(ref mut entries) = plan {
+            entries.push(("rows".to_string(), BoltValue::Int(qr.rows.len() as i64)));
+            entries.push(("dbHits".to_string(), BoltValue::Int(qr.rows.len() as i64)));
+        }
+        plan
+    });
+
+    let qid = session.next_qid;
+    session.next_qid += 1;
+    session.pending_results.insert(
+        qid,
+        PendingQuery {
+            columns: qr.columns,
+            records,
+            query_type,
+            stats,
+            cursor: 0,
+            start_time: std::time::Instant::now(),
+            metadata: combined_metadata,
+            explain_plan: None,
+            profile_plan: patched_profile,
+            graph: graph.to_string(),
+            notifications: vec![],
+            trailing_error,
+            admin_stats: None,
+        },
+    );
+
+    session.state = match session.state {
+        ServerState::TxReady | ServerState::TxStreaming => ServerState::TxStreaming,
+        _ => {
+            // For autocommit queries, release the write lock immediately
+            // since the query has completed.
+            session.write_permit = None;
+            ServerState::Streaming
+        }
+    };
+
+    vec![ServerMessage::Success(bolt_map! {
+        "fields" => BoltValue::List(fields),
+        "t_first" => BoltValue::Int(0),
+        "qid" => BoltValue::Int(qid)
+    })]
+}
+
+// -- RUN ---------------------------------------------------------------------
+
+/// Handle the RUN message (submit a Cypher query for execution).
+///
+/// Parses the query, resolves the target graph and parameters, executes the
+/// query (or plans it for EXPLAIN/PROFILE), and stores the result as a
+/// `PendingQuery` for subsequent PULL.
+pub(crate) async fn handle_run(
+    session: &mut Session,
+    query: String,
+    params: BoltMap,
+    extra: BoltMap,
+) -> Result<Vec<ServerMessage>, ProtocolError> {
+    if let Some(failure) = validate_bookmarks(&extra) {
+        session.state = ServerState::Failed;
+        return Ok(vec![failure]);
+    }
+
+    // Reject if too many pending results (prevents OOM from misbehaving clients).
+    let cap = max_pending_results();
+    if session.pending_results.len() >= cap {
+        session.state = ServerState::Failed;
+        return Ok(vec![ServerMessage::Failure(bolt_map! {
+            "code" => BoltValue::String(
+                "Neo.ClientError.Request.Invalid".to_string()
+            ),
+            "message" => BoltValue::String(
+                format!(
+                    "Too many pending results ({}). Send PULL or DISCARD before running more queries.",
+                    cap
+                )
+            )
+        })]);
+    }
+
+    let trimmed = strip_cypher_prefix(&query);
+
+    tracing::debug!(query = %trimmed, "handle_run query");
+    let (is_explain, is_profile, actual_query) = detect_explain_profile(trimmed);
+
+    let graph = extra
+        .get_str("db")
+        .unwrap_or(&session.current_graph)
+        .trim_matches(|c| c == '\'' || c == '"')
+        .to_string();
+
+    // Try to handle as an admin/DDL query.
+    let effective_store = resolve_effective_store(session);
+    if let Some(result) = intercept_admin_query(session, &effective_store, &graph, trimmed, &extra)
+    {
+        return result;
+    }
+
+    // Check that the target database exists (when explicitly specified).
+    if let Some(failure) = check_database_exists(session, &extra, &graph) {
+        return Ok(failure);
     }
 
     let run_metadata = extract_tx_metadata(&extra);
@@ -279,19 +511,9 @@ pub(crate) async fn handle_run(
         );
     }
 
-    // When inside an explicit transaction, execute against the snapshot store
-    // so that mutations are isolated until COMMIT.
-    let effective_store: Arc<dyn GraphStore> = match &session.tx_store {
-        Some(ts)
-            if matches!(
-                session.state,
-                ServerState::TxReady | ServerState::TxStreaming
-            ) =>
-        {
-            Arc::clone(ts)
-        }
-        _ => Arc::clone(&session.store),
-    };
+    // Re-resolve effective store (state has not changed since admin check,
+    // but we need a fresh Arc for the execution closures below).
+    let effective_store = resolve_effective_store(session);
 
     // EXPLAIN: plan only, no execution
     if is_explain {
@@ -306,89 +528,9 @@ pub(crate) async fn handle_run(
         .await;
     }
 
-    // Detect write queries for transaction timeout contention.
-    let is_write_query = {
-        let upper = actual_query.to_uppercase();
-        upper.contains("CREATE ")
-            || upper.contains("MERGE ")
-            || upper.contains("DELETE ")
-            || upper.contains("SET ")
-            || upper.contains("REMOVE ")
-    };
-    // Only acquire the write semaphore when tx_timeout is set (to detect
-    // contention) or inside an explicit transaction. Autocommit writes
-    // without tx_timeout bypass the semaphore entirely — Redis operations
-    // are atomic and single-statement queries need no cross-session
-    // serialization. This enables thousands of concurrent writes/s.
-    let in_explicit_tx = matches!(
-        session.state,
-        ServerState::TxReady | ServerState::TxStreaming
-    );
-    if is_write_query && session.write_permit.is_none() {
-        let timeout_ms = session
-            .tx_timeout
-            .or(extra.get_int("tx_timeout").map(|v| v as u64));
-        if let Some(ms) = timeout_ms {
-            let sem = Arc::clone(&session.write_semaphore);
-            match tokio::time::timeout(std::time::Duration::from_millis(ms), sem.acquire_owned())
-                .await
-            {
-                Ok(Ok(permit)) => {
-                    session.write_permit = Some(permit);
-                }
-                Ok(Err(_closed)) => {
-                    // Semaphore closed (shutdown)
-                    session.state = ServerState::Failed;
-                    return Ok(vec![ServerMessage::Failure(bolt_map! {
-                        "code" => BoltValue::String(
-                            "Neo.TransientError.Transaction.LockClientStopped".to_string()
-                        ),
-                        "message" => BoltValue::String(
-                            "Server is shutting down".to_string()
-                        )
-                    })]);
-                }
-                Err(_) => {
-                    // Semaphore acquisition timed out
-                    bolt_metrics::error_recorded(
-                        "Neo.TransientError.Transaction.LockClientStopped",
-                    );
-                    session.state = ServerState::Failed;
-                    return Ok(vec![ServerMessage::Failure(bolt_map! {
-                        "code" => BoltValue::String(
-                            "Neo.TransientError.Transaction.LockClientStopped".to_string()
-                        ),
-                        "message" => BoltValue::String(
-                            format!("The transaction has been terminated. \
-                                     Retry your operation in a new transaction, \
-                                     and you should see a successful result. \
-                                     Lock acquisition timeout after {} ms", ms)
-                        )
-                    })]);
-                }
-            }
-        } else if in_explicit_tx {
-            // Explicit transaction without timeout: acquire permit (may wait).
-            let sem = Arc::clone(&session.write_semaphore);
-            match sem.acquire_owned().await {
-                Ok(permit) => {
-                    session.write_permit = Some(permit);
-                }
-                Err(_) => {
-                    session.state = ServerState::Failed;
-                    return Ok(vec![ServerMessage::Failure(bolt_map! {
-                        "code" => BoltValue::String(
-                            "Neo.TransientError.Transaction.LockClientStopped".to_string()
-                        ),
-                        "message" => BoltValue::String(
-                            "Server is shutting down".to_string()
-                        )
-                    })]);
-                }
-            }
-        }
-        // else: autocommit write without tx_timeout — skip semaphore entirely
-        // for maximum concurrency. Redis handles atomicity at the command level.
+    // Acquire the write semaphore if needed.
+    if let Some(failure) = acquire_write_semaphore(session, &actual_query, &extra).await {
+        return Ok(failure);
     }
 
     let store = Arc::clone(&effective_store);
@@ -424,72 +566,14 @@ pub(crate) async fn handle_run(
     .map_err(|e| ProtocolError::Internal(format!("spawn_blocking join error: {}", e)))?;
 
     match result {
-        Ok(qr) => {
-            let (records, query_type, stats, trailing_err) =
-                bridge::executor::result_to_records(&qr, &*effective_store, &graph);
-
-            // Convert the trailing GqlError (if any) to a (code, message) pair
-            // for deferred FAILURE emission during PULL.
-            let trailing_error = trailing_err.map(|e| bridge::errors::gql_error_to_bolt(&e));
-
-            let fields: Vec<BoltValue> = qr
-                .columns
-                .iter()
-                .map(|c| BoltValue::String(c.clone()))
-                .collect();
-
-            let combined_metadata = if !session.tx_metadata.is_empty() {
-                session.tx_metadata.clone()
-            } else {
-                run_metadata
-            };
-
-            // For PROFILE, patch rows into plan
-            let patched_profile = profile_plan.map(|mut plan| {
-                if let BoltValue::Map(ref mut entries) = plan {
-                    entries.push(("rows".to_string(), BoltValue::Int(qr.rows.len() as i64)));
-                    entries.push(("dbHits".to_string(), BoltValue::Int(qr.rows.len() as i64)));
-                }
-                plan
-            });
-
-            let qid = session.next_qid;
-            session.next_qid += 1;
-            session.pending_results.insert(
-                qid,
-                PendingQuery {
-                    columns: qr.columns,
-                    records,
-                    query_type,
-                    stats,
-                    cursor: 0,
-                    start_time: std::time::Instant::now(),
-                    metadata: combined_metadata,
-                    explain_plan: None,
-                    profile_plan: patched_profile,
-                    graph: graph.clone(),
-                    notifications: vec![],
-                    trailing_error,
-                    admin_stats: None,
-                },
-            );
-
-            session.state = match session.state {
-                ServerState::TxReady | ServerState::TxStreaming => ServerState::TxStreaming,
-                _ => {
-                    // For autocommit queries, release the write lock immediately
-                    // since the query has completed.
-                    session.write_permit = None;
-                    ServerState::Streaming
-                }
-            };
-
-            Ok(vec![ServerMessage::Success(bolt_map! {
-                "fields" => BoltValue::List(fields),
-                "t_first" => BoltValue::Int(0),
-                "qid" => BoltValue::Int(qid)
-            })])
-        }
+        Ok(qr) => Ok(build_success_response(
+            session,
+            qr,
+            &effective_store,
+            &graph,
+            run_metadata,
+            profile_plan,
+        )),
         Err(gql_err) => {
             let (code, message) = bridge::errors::gql_error_to_bolt(&gql_err);
             bolt_metrics::error_recorded(&code);
