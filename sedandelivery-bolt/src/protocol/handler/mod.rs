@@ -1063,14 +1063,10 @@ mod tests {
         let cap: usize = 16;
         // Fill up to the cap without pulling.
         for i in 0..cap {
-            let result = run::handle_run(
-                &mut session,
-                format!("RETURN {} AS n", i),
-                vec![],
-                vec![],
-            )
-            .await
-            .unwrap();
+            let result =
+                run::handle_run(&mut session, format!("RETURN {} AS n", i), vec![], vec![])
+                    .await
+                    .unwrap();
             assert!(
                 matches!(&result[0], ServerMessage::Success(_)),
                 "RUN {} should succeed, got {:?}",
@@ -1113,14 +1109,9 @@ mod tests {
         let cap: usize = 16;
         // Fill up to the cap.
         for i in 0..cap {
-            run::handle_run(
-                &mut session,
-                format!("RETURN {} AS n", i),
-                vec![],
-                vec![],
-            )
-            .await
-            .unwrap();
+            run::handle_run(&mut session, format!("RETURN {} AS n", i), vec![], vec![])
+                .await
+                .unwrap();
         }
 
         // Pull one result to free a slot (pull qid=0).
