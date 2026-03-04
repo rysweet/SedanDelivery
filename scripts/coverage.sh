@@ -1,5 +1,5 @@
-#!/bin/bash
-set -e
+#!/usr/bin/env bash
+set -euo pipefail
 echo "Installing cargo-tarpaulin if needed..."
 cargo install cargo-tarpaulin --version 0.31.4 2>/dev/null || true
 echo "Running coverage analysis..."

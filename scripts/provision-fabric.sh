@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # scripts/provision-fabric.sh
 # Provisions a Microsoft Fabric Graph Database workspace for SedanDelivery.
 # Usage: ./provision-fabric.sh <env-name> <tenant-id> <client-id> <client-secret>
@@ -34,11 +34,12 @@ AUTH="Authorization: Bearer ${TOKEN}"
 echo "Looking for workspace '${WORKSPACE_NAME}'..."
 # Try both regular and admin API to find workspace (SP may own it but not see it in /workspaces)
 WORKSPACE_ID=$(curl -s -H "$AUTH" "${FABRIC_API}/workspaces" \
-  | python3 -c "
-import json, sys
+  | WORKSPACE_NAME="$WORKSPACE_NAME" python3 -c "
+import json, sys, os
+name = os.environ['WORKSPACE_NAME']
 data = json.load(sys.stdin)
 for ws in data.get('value', []):
-    if ws['displayName'] == '${WORKSPACE_NAME}':
+    if ws['displayName'] == name:
         print(ws['id'])
         sys.exit(0)
 print('')
@@ -46,11 +47,12 @@ print('')
 if [[ -z "$WORKSPACE_ID" ]]; then
   # Fallback: admin API can see workspaces the SP created but isn't a member of
   WORKSPACE_ID=$(curl -s -H "$AUTH" "${FABRIC_API}/admin/workspaces" \
-    | python3 -c "
-import json, sys
+    | WORKSPACE_NAME="$WORKSPACE_NAME" python3 -c "
+import json, sys, os
+name = os.environ['WORKSPACE_NAME']
 data = json.load(sys.stdin)
 for ws in data.get('value', []):
-    if ws.get('displayName','') == '${WORKSPACE_NAME}' or ws.get('name','') == '${WORKSPACE_NAME}':
+    if ws.get('displayName','') == name or ws.get('name','') == name:
         print(ws['id'])
         sys.exit(0)
 print('')
@@ -128,11 +130,12 @@ GDB_ID=""
 find_item() {
   local type="$1"
   curl -s -H "$AUTH" "${FABRIC_API}/workspaces/${WORKSPACE_ID}/items?type=${type}" \
-    | python3 -c "
-import json, sys
+    | GDB_NAME="$GDB_NAME" python3 -c "
+import json, sys, os
+name = os.environ['GDB_NAME']
 data = json.load(sys.stdin)
 for item in data.get('value', []):
-    if item['displayName'] == '${GDB_NAME}':
+    if item['displayName'] == name:
         print(item['id'])
         sys.exit(0)
 print('')
@@ -216,11 +219,12 @@ fi
 LH_NAME="sd2lakehouse"
 echo "Looking for Lakehouse '${LH_NAME}'..."
 LH_ID=$(curl -s -H "$AUTH" "${FABRIC_API}/workspaces/${WORKSPACE_ID}/items?type=Lakehouse" \
-  | python3 -c "
-import json, sys
+  | LH_NAME="$LH_NAME" python3 -c "
+import json, sys, os
+name = os.environ['LH_NAME']
 data = json.load(sys.stdin)
 for item in data.get('value', []):
-    if item['displayName'] == '${LH_NAME}':
+    if item['displayName'] == name:
         print(item['id'])
         sys.exit(0)
 print('')

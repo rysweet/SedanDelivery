@@ -21,6 +21,10 @@ env:
 
 jobs:
   e2e-tests:
+    # Disabled: this workflow references CyberGym.sln (.NET) which does not
+    # exist in this Rust/Valkey repo.  Kept for reference; remove once a
+    # Rust-native E2E workflow replaces it.
+    if: false
     name: Run E2E Tests
     runs-on: ubuntu-latest
     timeout-minutes: 60

@@ -43,7 +43,7 @@ jobs:
   playwright-e2e:
     name: E2E Tests (Playwright)
     runs-on: ubuntu-latest
-    timeout-minutes: 360
+    timeout-minutes: 45
 
     steps:
       - name: Checkout QA repo

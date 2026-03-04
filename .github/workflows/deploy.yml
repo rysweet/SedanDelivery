@@ -731,7 +731,7 @@ jobs:
 
           echo "🔄 Deploying sedandelivery-fabric-sync: ${CA_NAME}"
           echo "   Image: ${IMAGE}"
-          echo "   Redis: ${REDIS_URL}"
+          echo "   Redis: [masked]"
 
           if az containerapp show --name "${CA_NAME}" --resource-group "${RG}" >/dev/null 2>&1; then
             echo "🔄 Updating existing sync container app..."

@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # scripts/fabric-sync-status.sh
 # Quick health-check for the SedanDelivery Fabric replication pipeline.
 #

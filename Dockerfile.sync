@@ -43,19 +43,15 @@ RUN mkdir -p gql-core/src gql-redis-store/src gql-fabric-store/src \
     echo "fn main() {}" > sedandelivery-fabric-sync/src/main.rs && \
     cargo build --release -p sedandelivery-fabric-sync 2>/dev/null || true
 
-# Copy actual source
+# Copy actual source (only crates sedandelivery-fabric-sync depends on)
 COPY gql-core/         ./gql-core/
 COPY gql-redis-store/  ./gql-redis-store/
 COPY gql-fabric-store/ ./gql-fabric-store/
-COPY gql-module/       ./gql-module/
-COPY gql-cli/          ./gql-cli/
-COPY gql-api/          ./gql-api/
-COPY sedandelivery-bolt/       ./sedandelivery-bolt/
 COPY sedandelivery-fabric-sync/ ./sedandelivery-fabric-sync/
 
 # Build only the sync binary
 RUN touch gql-core/src/lib.rs gql-redis-store/src/lib.rs gql-fabric-store/src/lib.rs \
-         gql-module/src/lib.rs sedandelivery-fabric-sync/src/main.rs && \
+         sedandelivery-fabric-sync/src/main.rs && \
     cargo build --release -p sedandelivery-fabric-sync && \
     ls -lh target/release/sedandelivery-fabric-sync
 
