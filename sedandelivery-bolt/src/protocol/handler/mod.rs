@@ -465,6 +465,7 @@ mod tests {
             tx_store: None,
             write_semaphore: Arc::new(tokio::sync::Semaphore::new(128)),
             write_permit: None,
+            saved_graph: None,
         }
     }
 
@@ -486,6 +487,7 @@ mod tests {
             tx_store: None,
             write_semaphore: Arc::new(tokio::sync::Semaphore::new(128)),
             write_permit: None,
+            saved_graph: None,
         };
         let s2 = Session {
             state: ServerState::Ready,
@@ -500,6 +502,7 @@ mod tests {
             tx_store: None,
             write_semaphore: Arc::new(tokio::sync::Semaphore::new(128)),
             write_permit: None,
+            saved_graph: None,
         };
         (s1, s2)
     }

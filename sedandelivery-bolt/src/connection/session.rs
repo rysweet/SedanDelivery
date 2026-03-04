@@ -69,6 +69,7 @@ where
         tx_store: None,
         write_semaphore,
         write_permit: None,
+        saved_graph: None,
     };
 
     // Message loop

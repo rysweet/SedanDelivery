@@ -59,7 +59,7 @@ pub(crate) fn handle_pull(
         let end = if n < 0 {
             total
         } else {
-            (pending.cursor + n as usize).min(total)
+            pending.cursor.saturating_add(n as usize).min(total)
         };
         for i in pending.cursor..end {
             messages.push(ServerMessage::Record(pending.records[i].clone()));
@@ -219,13 +219,19 @@ pub(crate) fn handle_discard(
 ) -> Result<Vec<ServerMessage>, ProtocolError> {
     // Resolve qid: -1 (or absent) means the last query registered.
     let requested_qid = extra.get_int("qid").unwrap_or(-1);
-    if requested_qid == -1 {
-        // Discard the last (highest qid) result.
-        if let Some(&max_qid) = session.pending_results.keys().max() {
-            session.pending_results.remove(&max_qid);
-        }
+    let target_qid = if requested_qid == -1 {
+        session.pending_results.keys().max().copied()
     } else {
-        session.pending_results.remove(&requested_qid);
+        Some(requested_qid)
+    };
+    if let Some(qid) = target_qid {
+        // Record metrics before discarding the pending result.
+        if let Some(pending) = session.pending_results.get(&qid) {
+            let elapsed_ms = pending.start_time.elapsed().as_millis() as f64;
+            bolt_metrics::query_completed(&pending.query_type);
+            bolt_metrics::query_duration(elapsed_ms / 1000.0);
+        }
+        session.pending_results.remove(&qid);
     }
 
     // Only transition state if no more pending results.
