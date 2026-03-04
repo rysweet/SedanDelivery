@@ -51,22 +51,6 @@ impl FanoutStore {
         }
         Ok(())
     }
-
-    /// Apply a write that returns a value from each store; returns the primary's result.
-    #[allow(dead_code)] // Available for future use by new GraphStore methods returning values
-    fn write_all_primary<T: Clone, F>(&self, f: F) -> Result<T, StorageError>
-    where
-        F: Fn(&dyn GraphStore) -> Result<T, StorageError>,
-    {
-        let mut primary_result: Option<T> = None;
-        for (i, store) in self.stores.iter().enumerate() {
-            let result = f(store.as_ref())?;
-            if i == 0 {
-                primary_result = Some(result);
-            }
-        }
-        Ok(primary_result.expect("stores is non-empty"))
-    }
 }
 
 impl GraphStore for FanoutStore {

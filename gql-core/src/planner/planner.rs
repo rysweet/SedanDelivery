@@ -1857,24 +1857,6 @@ fn return_item_name(item: &ReturnItem) -> String {
     expr_to_col_name(&item.expr)
 }
 
-#[allow(dead_code)]
-fn expr_name(expr: &Expr) -> String {
-    match expr {
-        Expr::Variable(id) => id.0.clone(),
-        Expr::Property(obj, key) => format!("{}.{}", expr_name(obj), key),
-        Expr::FunctionCall { name, args, .. } => {
-            let arg_strs: Vec<String> = args.iter().map(expr_name).collect();
-            format!("{}({})", name, arg_strs.join(", "))
-        }
-        Expr::Integer(n) => n.to_string(),
-        Expr::Float(f) => f.to_string(),
-        Expr::Str(s) => s.to_string(),
-        Expr::Bool(b) => b.to_string(),
-        Expr::Null => "null".to_string(),
-        _ => "expr".to_string(),
-    }
-}
-
 /// Returns `true` if the expression is or contains an aggregate function call.
 fn has_agg_function(expr: &Expr) -> bool {
     match expr {

@@ -1,18 +1,18 @@
 //! Export and import endpoints.
 //!
-//! GET  /graphs/{name}/export?format=json
+//! GET  /graphs/{name}/export
 //! POST /graphs/{name}/import
 
 use std::collections::HashMap;
 
-use axum::extract::{Path, Query, State};
+use axum::extract::{Path, State};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 
 use gql_core::storage::{validate_graph_name, GraphStore};
 
 use crate::error::ApiError;
-use crate::models::{ExportParams, ExportResponse, ImportBody, ImportResponse};
+use crate::models::{ExportResponse, ImportBody, ImportResponse};
 use crate::routes::helpers::json_map_to_props;
 use crate::serialize::{edge_to_json, node_to_json};
 use crate::state::AppState;
@@ -26,12 +26,11 @@ pub fn router() -> Router<AppState> {
         .route("/graphs/{name}/import", post(import_handler))
 }
 
-// ── GET /graphs/{name}/export?format=json ────────────────────────────────────
+// ── GET /graphs/{name}/export ─────────────────────────────────────────────────
 
 async fn export_handler(
     State(state): State<AppState>,
     Path(name): Path<String>,
-    Query(_params): Query<ExportParams>,
 ) -> Result<Json<ExportResponse>, ApiError> {
     validate_graph_name(&name).map_err(ApiError::from)?;
 

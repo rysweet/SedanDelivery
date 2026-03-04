@@ -76,8 +76,7 @@ async fn neighbors_handler(
                     .map_err(ApiError::from)?
             }
         }
-        _ => {
-            // "both" or any other value
+        "both" => {
             let mut entries = if type_filter.is_empty() {
                 store.out_edges(&name, node_id).map_err(ApiError::from)?
             } else {
@@ -94,6 +93,11 @@ async fn neighbors_handler(
             };
             entries.extend(inbound);
             entries
+        }
+        other => {
+            return Err(ApiError::bad_request(format!(
+                "invalid direction '{other}': must be \"in\", \"out\", or \"both\""
+            )));
         }
     };
 

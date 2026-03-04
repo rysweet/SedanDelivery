@@ -187,13 +187,6 @@ pub struct NeighborResponse {
 
 // ── Export / Import ───────────────────────────────────────────────────────────
 
-#[derive(Deserialize)]
-pub struct ExportParams {
-    /// Response format: currently only "json" is supported.
-    #[allow(dead_code)]
-    pub format: Option<String>,
-}
-
 #[derive(Serialize)]
 pub struct ExportResponse {
     pub nodes: Vec<Json>,

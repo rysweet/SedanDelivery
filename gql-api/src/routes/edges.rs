@@ -37,6 +37,9 @@ async fn list_edges(
     Path(name): Path<String>,
     Query(params): Query<PaginationParams>,
 ) -> Result<Json<EdgeListResponse>, ApiError> {
+    if params.limit == 0 {
+        return Err(ApiError::bad_request("limit must be >= 1"));
+    }
     let limit_cap = max_page_limit();
     if params.limit > limit_cap {
         return Err(ApiError::bad_request(format!(
