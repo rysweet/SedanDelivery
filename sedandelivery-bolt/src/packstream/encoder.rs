@@ -460,15 +460,12 @@ mod tests {
     fn encode_structure_caps_at_15_fields() {
         // 16 fields should NOT panic; the encoder should cap at 15.
         let fields: Vec<BoltValue> = (0..16).map(BoltValue::Int).collect();
-        let s = BoltValue::Structure {
-            tag: 0x01,
-            fields,
-        };
+        let s = BoltValue::Structure { tag: 0x01, fields };
         let result = enc(&s);
         // Marker should indicate 15 fields (0xBF = 0xB0 | 15)
         assert_eq!(result[0], 0xBF);
         assert_eq!(result[1], 0x01); // tag
-        // Only 15 encoded field values should follow (fields 0..15, each a TinyInt)
+                                     // Only 15 encoded field values should follow (fields 0..15, each a TinyInt)
         assert_eq!(result.len(), 2 + 15);
     }
 

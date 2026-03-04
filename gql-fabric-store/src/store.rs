@@ -599,8 +599,7 @@ impl GraphStore for FabricGraphStore {
         self.statement(
             &format!("DROP INDEX sd2_{label_s}_{prop_s} IF EXISTS"),
             json!({}),
-        )
-        ?;
+        )?;
         self.statement(
             &format!(
                 "MATCH (__i:__SD2Index {{`{PROP_GRAPH}`: $graph, _label: $lbl, _property: $prop}}) DELETE __i"

@@ -22,10 +22,10 @@ OBJ_ID=$(az ad app show --id "$APP_ID" --query id -o tsv)
 EXISTING=$(az ad app show --id "$APP_ID" --query "spa.redirectUris" -o json)
 
 # Add new URI if not already present
-RESULT=$(echo "$EXISTING" | python3 -c "
-import json, sys
+RESULT=$(echo "$EXISTING" | REDIRECT_URI="$REDIRECT_URI" python3 -c "
+import json, sys, os
 uris = json.load(sys.stdin)
-new_uri = '$REDIRECT_URI'
+new_uri = os.environ['REDIRECT_URI']
 if new_uri not in uris:
     uris.append(new_uri)
     print(json.dumps(uris))

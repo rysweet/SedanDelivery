@@ -330,6 +330,59 @@ impl Value {
             _ => Some(self == other),
         }
     }
+
+    /// Produce a deterministic, equality-consistent string key for use in
+    /// hash-based grouping (aggregation GROUP BY, DISTINCT dedup, UNION dedup).
+    ///
+    /// Invariant: if `a == b` (per `PartialEq`), then
+    /// `a.canonical_key() == b.canonical_key()`.
+    ///
+    /// The default `Debug` format violates this for:
+    /// - `Float`: `-0.0` vs `0.0` (equal per IEEE 754 but different Debug)
+    /// - `Map`: insertion-order-dependent Debug output
+    /// - `DateTime`: same instant in different time zones
+    pub fn canonical_key(&self) -> String {
+        match self {
+            Self::Float(f) => {
+                let v = if *f == 0.0 {
+                    // Normalize -0.0 to 0.0 (IEEE 754: -0.0 == 0.0)
+                    0.0_f64
+                } else if f.is_nan() {
+                    // All NaN bit patterns map to the same key
+                    f64::NAN
+                } else {
+                    *f
+                };
+                format!("Float({:?})", v)
+            }
+            Self::Map(m) => {
+                // Sort entries by key so insertion order does not affect the key.
+                let mut entries: Vec<(&str, String)> = m
+                    .iter()
+                    .map(|(k, v)| (k.as_ref(), v.canonical_key()))
+                    .collect();
+                entries.sort_by_key(|(k, _)| *k);
+                let inner: Vec<String> = entries
+                    .iter()
+                    .map(|(k, v)| format!("{k:?}: {v}"))
+                    .collect();
+                format!("Map({{{}}})", inner.join(", "))
+            }
+            Self::DateTime(z) => {
+                // Compare by UTC instant (epoch nanoseconds), not by
+                // civil-time-plus-timezone representation.
+                let nanos = z.timestamp().as_nanosecond();
+                format!("DateTime(utc_ns={})", nanos)
+            }
+            Self::List(items) => {
+                // Recurse so nested Float/Map/DateTime values are also canonical.
+                let inner: Vec<String> = items.iter().map(|v| v.canonical_key()).collect();
+                format!("List([{}])", inner.join(", "))
+            }
+            // All other variants: Debug format is already equality-consistent.
+            other => format!("{:?}", other),
+        }
+    }
 }
 
 impl fmt::Display for Value {

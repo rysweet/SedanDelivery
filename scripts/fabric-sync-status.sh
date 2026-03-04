@@ -10,7 +10,7 @@
 #   - Per-consumer lag
 #
 # Usage:
-#   ./scripts/fabric-sync-status.sh <redis-host> [redis-port]
+#   ./scripts/fabric-sync-status.sh <redis-host> [redis-port] [password]
 #
 # Exit codes:
 #   0 — healthy (stream exists, no pending entries)
@@ -19,15 +19,20 @@
 
 set -euo pipefail
 
-REDIS_HOST="${1:?Usage: fabric-sync-status.sh <redis-host> [port]}"
+REDIS_HOST="${1:?Usage: fabric-sync-status.sh <redis-host> [port] [password]}"
 REDIS_PORT="${2:-6379}"
+REDIS_PASSWORD="${3:-}"
 STREAM="__sd2:changelog"
 GROUP="sedandelivery-fabric-sync"
 
 EXIT_CODE=0
 
 cli() {
-  redis-cli -h "$REDIS_HOST" -p "$REDIS_PORT" "$@" 2>/dev/null
+  if [ -n "$REDIS_PASSWORD" ]; then
+    redis-cli -h "$REDIS_HOST" -p "$REDIS_PORT" -a "$REDIS_PASSWORD" --no-auth-warning "$@" 2>/dev/null
+  else
+    redis-cli -h "$REDIS_HOST" -p "$REDIS_PORT" "$@" 2>/dev/null
+  fi
 }
 
 echo "=========================================="

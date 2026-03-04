@@ -80,6 +80,9 @@ pub struct Session {
     pub(crate) write_semaphore: Arc<tokio::sync::Semaphore>,
     /// Permit held while this session holds a write slot (during a write TX).
     pub(crate) write_permit: Option<tokio::sync::OwnedSemaphorePermit>,
+    /// Saved `current_graph` from before BEGIN overrode it, so that ROLLBACK
+    /// and RESET can restore the original default graph.
+    pub(crate) saved_graph: Option<String>,
 }
 
 /// A pending query result awaiting PULL or DISCARD.
@@ -278,9 +281,15 @@ pub async fn handle_message(
 
     // Check state accepts the message.
     if !session.state.accepts(&msg) {
-        return Err(ProtocolError::InvalidState {
-            state: session.state,
-        });
+        let prev_state = session.state;
+        session.state = ServerState::Failed;
+        return Ok(vec![ServerMessage::Failure(bolt_map! {
+            "code" => BoltValue::String("Neo.ClientError.Request.Invalid".to_string()),
+            "message" => BoltValue::String(format!(
+                "message not accepted in current state {:?}",
+                prev_state
+            ))
+        })]);
     }
 
     match msg {
