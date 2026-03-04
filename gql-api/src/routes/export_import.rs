@@ -13,7 +13,7 @@ use gql_core::storage::{validate_graph_name, GraphStore};
 
 use crate::error::ApiError;
 use crate::models::{ExportResponse, ImportBody, ImportResponse};
-use crate::routes::helpers::{compute_schema_counts, json_map_to_props};
+use crate::routes::helpers::json_map_to_props;
 use crate::serialize::{edge_to_json, node_to_json};
 use crate::state::AppState;
 
@@ -56,8 +56,18 @@ async fn export_handler(
         .map_err(ApiError::from)?;
     let edges: Vec<serde_json::Value> = edge_batch.iter().flatten().map(edge_to_json).collect();
 
-    // Build schema summary using the shared helper.
-    let (label_counts, reltype_counts) = compute_schema_counts(store.as_ref(), &name)?;
+    // Build schema summary inline from the already-fetched batches to avoid
+    // a redundant second scan of all nodes and edges.
+    let mut label_counts: HashMap<String, usize> = HashMap::new();
+    for node in node_batch.iter().flatten() {
+        for label in &node.labels {
+            *label_counts.entry(label.clone()).or_insert(0) += 1;
+        }
+    }
+    let mut reltype_counts: HashMap<String, usize> = HashMap::new();
+    for edge in edge_batch.iter().flatten() {
+        *reltype_counts.entry(edge.rel_type.clone()).or_insert(0) += 1;
+    }
 
     let schema_labels: Vec<serde_json::Value> = {
         let mut v: Vec<(&String, &usize)> = label_counts.iter().collect();

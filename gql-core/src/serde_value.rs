@@ -222,13 +222,16 @@ pub fn json_to_value(j: &JsonValue) -> Option<Value> {
                     }
                 }
             } else if let Some(rest) = s.strip_prefix("__bytes:") {
-                // Decode hex pairs
-                let bytes: Result<Vec<u8>, _> = (0..rest.len())
-                    .step_by(2)
-                    .map(|i| u8::from_str_radix(&rest[i..i + 2], 16))
-                    .collect();
-                if let Ok(b) = bytes {
-                    return Some(Value::Bytes(b));
+                // Decode hex pairs — odd-length strings are not valid hex byte
+                // sequences, so fall through to Value::Str rather than panicking.
+                if rest.len() % 2 == 0 {
+                    let bytes: Result<Vec<u8>, _> = (0..rest.len())
+                        .step_by(2)
+                        .map(|i| u8::from_str_radix(&rest[i..i + 2], 16))
+                        .collect();
+                    if let Ok(b) = bytes {
+                        return Some(Value::Bytes(b));
+                    }
                 }
             } else if let Some(rest) = s.strip_prefix("__node:") {
                 if let Ok(id) = rest.parse::<u64>() {

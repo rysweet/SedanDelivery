@@ -1376,11 +1376,9 @@ impl<'a> QueryExecutor<'a> {
                             }
                             Value::Node(node_id) => {
                                 self.store.remove_node_property(graph, *node_id, key)?;
-                                stats.properties_set += 1;
                             }
                             Value::Edge(edge_id) => {
                                 self.store.remove_edge_property(graph, *edge_id, key)?;
-                                stats.properties_set += 1;
                             }
                             other => {
                                 return Err(GqlError::Execution(ExecutionError::TypeMismatch {
@@ -1464,6 +1462,14 @@ impl<'a> QueryExecutor<'a> {
                         // Deleting NULL is a no-op in Cypher
                     }
                     Value::Path { nodes, edges } => {
+                        // Cache rel_type before deleting so type(r) still works.
+                        for &eid in &edges {
+                            if let Ok(Some(data)) = self.store.get_edge(graph, eid) {
+                                self.deleted_edge_types
+                                    .borrow_mut()
+                                    .insert(eid.0, data.rel_type);
+                            }
+                        }
                         edges_to_delete.extend(edges.iter().copied());
                         nodes_to_delete.extend(nodes.iter().copied());
                     }
@@ -3329,7 +3335,7 @@ impl AggState {
             if self.seen_distinct.len() >= max_size {
                 return; // silently drop excess — same as Collect overflow
             }
-            let key = format!("{:?}", val);
+            let key = val.canonical_key();
             if !self.seen_distinct.insert(key) {
                 return;
             }
@@ -3633,7 +3639,7 @@ fn inject_parameters(row: &mut Row, params: &HashMap<String, Value>) {
 fn row_key(row: &Row) -> String {
     let mut pairs: Vec<(&str, String)> = row
         .iter()
-        .map(|(k, v)| (k.as_str(), format!("{:?}", v)))
+        .map(|(k, v)| (k.as_str(), v.canonical_key()))
         .collect();
     pairs.sort_by_key(|(k, _)| *k);
     pairs

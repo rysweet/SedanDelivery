@@ -201,11 +201,41 @@ impl RedisGraphStore {
         property: &str,
     ) -> Result<(), StorageError> {
         let mut conn = self.conn()?;
+        // Remove the metadata entry from the indexes set.
         redis::cmd("SREM")
             .arg(self.kp(key_indexes(graph)))
             .arg(format!("{label}:{property}"))
             .query::<()>(conn.as_mut())
             .map_err(|e| StorageError::Backend { msg: e.to_string() })?;
+
+        // Clean up orphaned propidx keys via SCAN+DEL.
+        let pattern = format!(
+            "{}G:{{{graph}}}:propidx:{label}:{property}:*",
+            self.key_prefix
+        );
+        let mut cursor: u64 = 0;
+        loop {
+            let (next_cursor, keys): (u64, Vec<String>) = redis::cmd("SCAN")
+                .arg(cursor)
+                .arg("MATCH")
+                .arg(&pattern)
+                .arg("COUNT")
+                .arg(100u64)
+                .query(conn.as_mut())
+                .map_err(|e| StorageError::Backend { msg: e.to_string() })?;
+            if !keys.is_empty() {
+                let mut del = redis::cmd("DEL");
+                for key in &keys {
+                    del.arg(key);
+                }
+                del.query::<()>(conn.as_mut())
+                    .map_err(|e| StorageError::Backend { msg: e.to_string() })?;
+            }
+            cursor = next_cursor;
+            if cursor == 0 {
+                break;
+            }
+        }
         Ok(())
     }
 }

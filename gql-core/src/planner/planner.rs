@@ -116,9 +116,9 @@ impl<'s> QueryPlanner<'s> {
 
                 Clause::Where(pred) => {
                     let child = pipeline.ok_or_else(|| {
-                        GqlError::Plan(PlanError::UndefinedVariable {
-                            name: "WHERE without preceding MATCH".to_string(),
-                            offset: 0,
+                        GqlError::Plan(PlanError::SemanticError {
+                            message: "WHERE clause requires a preceding MATCH or WITH clause"
+                                .to_string(),
                         })
                     })?;
                     pipeline = Some(Operator::Filter {

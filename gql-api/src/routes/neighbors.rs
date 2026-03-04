@@ -11,7 +11,7 @@ use axum::{Json, Router};
 use gql_core::storage::{validate_graph_name, GraphStore, NodeId};
 
 use crate::error::ApiError;
-use crate::models::NeighborParams;
+use crate::models::{max_page_limit, NeighborParams};
 use crate::serialize::{edge_to_json, node_to_json};
 use crate::state::AppState;
 
@@ -101,8 +101,8 @@ async fn neighbors_handler(
         }
     };
 
-    // Apply limit.
-    let limit = params.limit;
+    // Apply limit, clamped to the configured max page limit.
+    let limit = params.limit.min(max_page_limit());
     let limited: Vec<_> = adj_entries.into_iter().take(limit).collect();
 
     // Collect unique neighbor node IDs and unique edge IDs.
