@@ -1051,6 +1051,103 @@ mod tests {
         }
     }
 
+    // -- Pending results limit tests -----------------------------------------
+
+    #[tokio::test]
+    async fn run_rejects_when_pending_results_at_cap() {
+        let mut session = make_ready_session();
+        // Begin a TX so multiple pending results can coexist.
+        transaction::handle_begin(&mut session, vec![]).unwrap();
+
+        // Default cap is 16 (DEFAULT_MAX_PENDING_RESULTS).
+        let cap: usize = 16;
+        // Fill up to the cap without pulling.
+        for i in 0..cap {
+            let result = run::handle_run(
+                &mut session,
+                format!("RETURN {} AS n", i),
+                vec![],
+                vec![],
+            )
+            .await
+            .unwrap();
+            assert!(
+                matches!(&result[0], ServerMessage::Success(_)),
+                "RUN {} should succeed, got {:?}",
+                i,
+                result
+            );
+        }
+
+        assert_eq!(session.pending_results.len(), cap);
+
+        // The next RUN should be rejected.
+        let rejected = run::handle_run(
+            &mut session,
+            "RETURN 'one too many' AS x".to_string(),
+            vec![],
+            vec![],
+        )
+        .await
+        .unwrap();
+        assert_eq!(rejected.len(), 1);
+        match &rejected[0] {
+            ServerMessage::Failure(meta) => {
+                let code = meta.get_str("code").unwrap();
+                assert_eq!(code, "Neo.ClientError.Request.Invalid");
+                let msg = meta.get_str("message").unwrap();
+                assert!(msg.contains("Too many pending results"));
+            }
+            other => panic!("expected Failure, got {:?}", other),
+        }
+        assert_eq!(session.state, ServerState::Failed);
+    }
+
+    #[tokio::test]
+    async fn run_succeeds_after_pulling_pending_result() {
+        let mut session = make_ready_session();
+        // Begin a TX so multiple pending results can coexist.
+        transaction::handle_begin(&mut session, vec![]).unwrap();
+
+        // Default cap is 16.
+        let cap: usize = 16;
+        // Fill up to the cap.
+        for i in 0..cap {
+            run::handle_run(
+                &mut session,
+                format!("RETURN {} AS n", i),
+                vec![],
+                vec![],
+            )
+            .await
+            .unwrap();
+        }
+
+        // Pull one result to free a slot (pull qid=0).
+        pull::handle_pull(
+            &mut session,
+            bolt_map! { "n" => BoltValue::Int(-1), "qid" => BoltValue::Int(0) },
+        )
+        .unwrap();
+
+        assert_eq!(session.pending_results.len(), cap - 1);
+
+        // Now a new RUN should succeed.
+        let result = run::handle_run(
+            &mut session,
+            "RETURN 'after pull' AS x".to_string(),
+            vec![],
+            vec![],
+        )
+        .await
+        .unwrap();
+        assert!(
+            matches!(&result[0], ServerMessage::Success(_)),
+            "RUN after pull should succeed, got {:?}",
+            result
+        );
+    }
+
     // -- Notification detection tests ----------------------------------------
 
     #[tokio::test]

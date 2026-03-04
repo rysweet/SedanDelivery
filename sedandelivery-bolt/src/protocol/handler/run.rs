@@ -14,6 +14,24 @@ use super::{
     Session,
 };
 
+// -- Pending results cap -----------------------------------------------------
+
+/// Default maximum number of pending (un-PULLed / un-DISCARDed) query results
+/// per session.  Override with the `BOLT_MAX_PENDING_RESULTS` env var.
+const DEFAULT_MAX_PENDING_RESULTS: usize = 16;
+
+/// Read the pending-results cap from the environment (once, on first call).
+fn max_pending_results() -> usize {
+    use std::sync::OnceLock;
+    static CAP: OnceLock<usize> = OnceLock::new();
+    *CAP.get_or_init(|| {
+        std::env::var("BOLT_MAX_PENDING_RESULTS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(DEFAULT_MAX_PENDING_RESULTS)
+    })
+}
+
 // -- RUN ---------------------------------------------------------------------
 
 /// Handle the RUN message (submit a Cypher query for execution).
@@ -30,6 +48,21 @@ pub(crate) async fn handle_run(
     if let Some(failure) = validate_bookmarks(&extra) {
         session.state = ServerState::Failed;
         return Ok(vec![failure]);
+    }
+
+    // Reject the RUN if the session already has too many un-consumed results.
+    // Clients must PULL or DISCARD existing results before running more queries.
+    let cap = max_pending_results();
+    if session.pending_results.len() >= cap {
+        session.state = ServerState::Failed;
+        return Ok(vec![ServerMessage::Failure(bolt_map! {
+            "code" => BoltValue::String(
+                "Neo.ClientError.Request.Invalid".to_string()
+            ),
+            "message" => BoltValue::String(
+                "Too many pending results. Send PULL or DISCARD before running more queries.".to_string()
+            )
+        })]);
     }
 
     // Strip Neo4j pre-parser directives like "CYPHER runtime=interpreted ..."
