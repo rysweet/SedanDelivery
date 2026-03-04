@@ -4,6 +4,11 @@ use tokio::io::{AsyncRead, AsyncReadExt};
 /// to keep individual TCP writes manageable.
 const MAX_CHUNK_SIZE: usize = 16384;
 
+/// Maximum reassembled message size (64 MiB). Prevents OOM denial-of-service
+/// when a malicious peer sends an unbounded stream of non-zero-length chunks
+/// without a terminator.
+const MAX_MESSAGE_SIZE: usize = 67_108_864;
+
 /// Encode a serialized message into chunked wire format.
 ///
 /// The message bytes are split into chunks of at most `MAX_CHUNK_SIZE` bytes.
@@ -41,6 +46,16 @@ pub async fn chunk_decode<R: AsyncRead + Unpin>(reader: &mut R) -> Result<Vec<u8
         let mut chunk = vec![0u8; chunk_len];
         reader.read_exact(&mut chunk).await?;
         message.extend_from_slice(&chunk);
+        if message.len() > MAX_MESSAGE_SIZE {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "message size {} exceeds maximum allowed size {}",
+                    message.len(),
+                    MAX_MESSAGE_SIZE
+                ),
+            ));
+        }
     }
     Ok(message)
 }
@@ -71,6 +86,16 @@ pub fn chunk_decode_sync(wire: &[u8]) -> Result<Vec<u8>, std::io::Error> {
             ));
         }
         message.extend_from_slice(&wire[pos..pos + chunk_len]);
+        if message.len() > MAX_MESSAGE_SIZE {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "message size {} exceeds maximum allowed size {}",
+                    message.len(),
+                    MAX_MESSAGE_SIZE
+                ),
+            ));
+        }
         pos += chunk_len;
     }
     Ok(message)
