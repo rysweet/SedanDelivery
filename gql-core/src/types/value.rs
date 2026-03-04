@@ -672,4 +672,120 @@ mod tests {
     fn display_null() {
         assert_eq!(Value::Null.to_string(), "null");
     }
+
+    // ── canonical_key tests ──────────────────────────────────────────────────
+
+    #[test]
+    fn canonical_key_float_neg_zero_equals_pos_zero() {
+        let a = Value::Float(0.0);
+        let b = Value::Float(-0.0);
+        assert_eq!(a, b, "PartialEq says 0.0 == -0.0");
+        assert_eq!(
+            a.canonical_key(),
+            b.canonical_key(),
+            "canonical_key must agree with PartialEq"
+        );
+    }
+
+    #[test]
+    fn canonical_key_float_nan_consistent() {
+        let a = Value::Float(f64::NAN);
+        let b = Value::Float(f64::NAN);
+        // NaN != NaN per IEEE 754 / PartialEq, but for hashing we need a
+        // stable key so all NaN values land in the same bucket.
+        assert_eq!(a.canonical_key(), b.canonical_key());
+    }
+
+    #[test]
+    fn canonical_key_float_distinct_values() {
+        let a = Value::Float(1.0);
+        let b = Value::Float(2.0);
+        assert_ne!(a.canonical_key(), b.canonical_key());
+    }
+
+    #[test]
+    fn canonical_key_map_insertion_order_independent() {
+        let mut m1 = IndexMap::new();
+        m1.insert(Box::<str>::from("a"), Value::Int(1));
+        m1.insert(Box::<str>::from("b"), Value::Int(2));
+
+        let mut m2 = IndexMap::new();
+        m2.insert(Box::<str>::from("b"), Value::Int(2));
+        m2.insert(Box::<str>::from("a"), Value::Int(1));
+
+        let v1 = Value::Map(m1);
+        let v2 = Value::Map(m2);
+        assert_eq!(v1, v2, "PartialEq says maps with same k/v are equal");
+        assert_eq!(
+            v1.canonical_key(),
+            v2.canonical_key(),
+            "canonical_key must agree with PartialEq"
+        );
+    }
+
+    #[test]
+    fn canonical_key_map_different_values_differ() {
+        let mut m1 = IndexMap::new();
+        m1.insert(Box::<str>::from("a"), Value::Int(1));
+
+        let mut m2 = IndexMap::new();
+        m2.insert(Box::<str>::from("a"), Value::Int(2));
+
+        assert_ne!(
+            Value::Map(m1).canonical_key(),
+            Value::Map(m2).canonical_key()
+        );
+    }
+
+    #[test]
+    fn canonical_key_datetime_same_instant_different_tz() {
+        use jiff::tz::TimeZone;
+
+        // 2024-06-15T12:00:00 UTC
+        let utc_tz = TimeZone::UTC;
+        let zdt_utc = civil::DateTime::new(2024, 6, 15, 12, 0, 0, 0)
+            .expect("valid")
+            .to_zoned(utc_tz)
+            .expect("valid");
+
+        // Same instant expressed as 2024-06-15T14:00:00+02:00
+        let plus2 = TimeZone::fixed(jiff::tz::Offset::from_seconds(7200).unwrap());
+        let zdt_plus2 = civil::DateTime::new(2024, 6, 15, 14, 0, 0, 0)
+            .expect("valid")
+            .to_zoned(plus2)
+            .expect("valid");
+
+        assert_eq!(zdt_utc, zdt_plus2, "jiff::Zoned compares instants");
+
+        let v1 = Value::DateTime(Box::new(zdt_utc));
+        let v2 = Value::DateTime(Box::new(zdt_plus2));
+        assert_eq!(v1, v2, "Value::DateTime delegates to Zoned PartialEq");
+        assert_eq!(
+            v1.canonical_key(),
+            v2.canonical_key(),
+            "canonical_key must agree with PartialEq"
+        );
+    }
+
+    #[test]
+    fn canonical_key_list_with_nested_float() {
+        let a = Value::List(vec![Value::Float(0.0), Value::Int(1)]);
+        let b = Value::List(vec![Value::Float(-0.0), Value::Int(1)]);
+        assert_eq!(a, b);
+        assert_eq!(a.canonical_key(), b.canonical_key());
+    }
+
+    #[test]
+    fn canonical_key_simple_types_match_debug() {
+        // For non-special types, canonical_key uses Debug format
+        let vals = vec![
+            Value::Null,
+            Value::Bool(true),
+            Value::Int(42),
+            Value::Str("hello".into()),
+        ];
+        for v in &vals {
+            assert_eq!(v.canonical_key(), format!("{:?}", v));
+        }
+    }
 }

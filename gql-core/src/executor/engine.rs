@@ -699,7 +699,14 @@ impl<'a> QueryExecutor<'a> {
                 .collect::<Result<Vec<_>, GqlError>>()?;
 
             // Find existing group or create new — O(1) via the index.
-            let key_str = format!("{:?}", group_key);
+            // canonical_key() ensures equal values (e.g. -0.0/0.0, maps with
+            // different insertion order, same-instant DateTimes in different
+            // time zones) produce the same hash key.
+            let key_str: String = group_key
+                .iter()
+                .map(|v| v.canonical_key())
+                .collect::<Vec<_>>()
+                .join("|");
             let idx = if let Some(&i) = group_index.get(&key_str) {
                 i
             } else {
