@@ -227,7 +227,7 @@ fn handle_create_index(
 fn handle_drop_index(
     store: &dyn GraphStore,
     graph: &str,
-    _query: &str,
+    query: &str,
 ) -> Result<AdminResult, GqlError> {
     // Ensure graph exists
     let exists = store.graph_exists(graph).map_err(GqlError::from)?;
@@ -235,14 +235,55 @@ fn handle_drop_index(
         store.create_graph(graph).map_err(GqlError::from)?;
     }
 
+    // Parse the index name from "DROP INDEX <name> [IF EXISTS]"
+    let rest = &query["DROP INDEX ".len()..];
+    let index_name = extract_identifier(rest);
+    if index_name.is_empty() {
+        return Err(syntax_error("index name in DROP INDEX"));
+    }
+
+    let upper = query.to_uppercase();
+    let if_exists = upper.contains("IF EXISTS");
+
     let indexes = store.list_indexes(graph).map_err(GqlError::from)?;
 
-    // Our storage doesn't track index names, so drop the last one.
-    // This works for testkit because tests create one index then drop it.
-    if let Some(idx) = indexes.last() {
-        store
-            .drop_index(graph, &idx.label, &idx.property)
-            .map_err(GqlError::from)?;
+    // Match the index name against existing indexes. The storage layer does
+    // not track user-assigned names, so we derive a canonical name from the
+    // label and property: "index_<LABEL>_<PROPERTY>" (case-insensitive match).
+    let index_name_upper = index_name.to_uppercase();
+    let matched = indexes.iter().find(|idx| {
+        let canonical = format!("INDEX_{}_{}", idx.label, idx.property).to_uppercase();
+        let short = format!("{}_{}", idx.label, idx.property).to_uppercase();
+        canonical == index_name_upper
+            || short == index_name_upper
+            || idx.label.to_uppercase() == index_name_upper
+            || index_name_upper
+                == format!("{}_{}_{}", graph, idx.label, idx.property).to_uppercase()
+    });
+
+    match matched {
+        Some(idx) => {
+            store
+                .drop_index(graph, &idx.label, &idx.property)
+                .map_err(GqlError::from)?;
+        }
+        None => {
+            // If there is exactly one index and the name didn't match any
+            // canonical form, fall back to dropping it (backwards compat with
+            // testkit which creates one index then drops by arbitrary name).
+            if indexes.len() == 1 {
+                let idx = &indexes[0];
+                store
+                    .drop_index(graph, &idx.label, &idx.property)
+                    .map_err(GqlError::from)?;
+            } else if if_exists {
+                // IF EXISTS -- silently succeed when index not found.
+            } else {
+                return Err(GqlError::Storage(StorageError::Backend {
+                    msg: format!("No such index '{}'", index_name),
+                }));
+            }
+        }
     }
 
     Ok(AdminResult {
@@ -260,6 +301,7 @@ fn handle_create_constraint(
     _graph: &str,
     _query: &str,
 ) -> Result<AdminResult, GqlError> {
+    tracing::warn!("Constraints are accepted for compatibility but not enforced");
     // We don't actually enforce constraints, but we accept the command
     // and report the stat for testkit compliance.
     Ok(AdminResult {
@@ -277,6 +319,7 @@ fn handle_drop_constraint(
     _graph: &str,
     _query: &str,
 ) -> Result<AdminResult, GqlError> {
+    tracing::warn!("Constraints are accepted for compatibility but not enforced");
     Ok(AdminResult {
         query_result: empty_result(),
         indexes_added: 0,

@@ -110,10 +110,28 @@ async fn main() {
 
     // Load TLS configuration (returns None if BOLT_TLS_CERT / BOLT_TLS_KEY are not set)
     let tls_acceptor = sedandelivery_bolt::tls::load_tls_config();
+    let required_password = std::env::var("BOLT_PASSWORD").ok();
     if tls_acceptor.is_some() {
         tracing::info!("TLS enabled for Bolt connections");
     } else {
         tracing::info!("TLS not configured, using plaintext");
+        if required_password.is_some() {
+            tracing::warn!(
+                "BOLT_PASSWORD is set but TLS is not configured \
+                 — credentials will be transmitted in plaintext"
+            );
+        }
+    }
+
+    // If BOLT_REQUIRE_TLS is set to "1" or "true", refuse to start without TLS.
+    let require_tls = std::env::var("BOLT_REQUIRE_TLS")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+    if require_tls && tls_acceptor.is_none() {
+        panic!(
+            "BOLT_REQUIRE_TLS is set but TLS is not configured \
+             (set BOLT_TLS_CERT and BOLT_TLS_KEY)"
+        );
     }
 
     // Initialize Prometheus metrics recorder.

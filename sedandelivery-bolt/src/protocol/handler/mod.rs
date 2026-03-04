@@ -52,80 +52,80 @@ pub(crate) use bolt_map;
 /// query results, and transaction metadata.
 pub struct Session {
     /// Current protocol state (Authentication, Ready, Streaming, etc.).
-    pub state: ServerState,
+    pub(crate) state: ServerState,
     /// Shared graph store.
-    pub store: Arc<dyn GraphStore>,
+    pub(crate) store: Arc<dyn GraphStore>,
     /// Unique connection identifier for logging.
-    pub conn_id: u64,
+    pub(crate) conn_id: u64,
     /// The current default graph (database) for this session.
-    pub current_graph: String,
+    pub(crate) current_graph: String,
     /// Multiple concurrent result streams keyed by query ID (qid).
-    pub pending_results: HashMap<i64, PendingQuery>,
+    pub(crate) pending_results: HashMap<i64, PendingQuery>,
     /// Next query ID to assign.
-    pub next_qid: i64,
+    pub(crate) next_qid: i64,
     /// Global bookmark counter shared across all sessions connected to the same
     /// store. Bookmarks produced by one session are therefore meaningful when
     /// passed to another session, which is required by the Neo4j driver testkit.
-    pub global_bookmark: Arc<AtomicU64>,
+    pub(crate) global_bookmark: Arc<AtomicU64>,
     /// TX metadata set via BEGIN extra map, echoed back on PULL completion.
-    pub tx_metadata: BoltMap,
+    pub(crate) tx_metadata: BoltMap,
     /// TX-level timeout set via BEGIN extra map (milliseconds).
-    pub tx_timeout: Option<u64>,
+    pub(crate) tx_timeout: Option<u64>,
     /// Snapshot store for explicit transactions. When set, RUN executes
     /// against this store instead of the main store. COMMIT merges it back,
     /// ROLLBACK discards it.
-    pub tx_store: Option<Arc<dyn GraphStore>>,
+    pub(crate) tx_store: Option<Arc<dyn GraphStore>>,
     /// Write concurrency semaphore for transaction timeout contention.
     /// Autocommit writes without tx_timeout bypass this (full concurrency).
-    pub write_semaphore: Arc<tokio::sync::Semaphore>,
+    pub(crate) write_semaphore: Arc<tokio::sync::Semaphore>,
     /// Permit held while this session holds a write slot (during a write TX).
-    pub write_permit: Option<tokio::sync::OwnedSemaphorePermit>,
+    pub(crate) write_permit: Option<tokio::sync::OwnedSemaphorePermit>,
 }
 
 /// A pending query result awaiting PULL or DISCARD.
 pub struct PendingQuery {
     /// Column names from the query result.
-    pub columns: Vec<String>,
+    pub(crate) columns: Vec<String>,
     /// Result rows, each row being a list of `BoltValue` in column order.
-    pub records: Vec<Vec<BoltValue>>,
+    pub(crate) records: Vec<Vec<BoltValue>>,
     /// Query type string: `"r"` (read), `"w"` (write), or `"rw"` (both).
-    pub query_type: String,
+    pub(crate) query_type: String,
     /// Non-zero mutation statistics.
-    pub stats: BoltMap,
+    pub(crate) stats: BoltMap,
     /// Current cursor position into `records`.
-    pub cursor: usize,
+    pub(crate) cursor: usize,
     /// When the query started executing (for `t_last` computation).
-    pub start_time: std::time::Instant,
+    pub(crate) start_time: std::time::Instant,
     /// TX metadata from RUN extra map, echoed back on PULL completion.
-    pub metadata: BoltMap,
+    pub(crate) metadata: BoltMap,
     /// EXPLAIN plan to return in PULL SUCCESS (no records emitted).
-    pub explain_plan: Option<BoltValue>,
+    pub(crate) explain_plan: Option<BoltValue>,
     /// PROFILE plan to return in PULL SUCCESS (records still emitted).
-    pub profile_plan: Option<BoltValue>,
+    pub(crate) profile_plan: Option<BoltValue>,
     /// The effective graph (database) for this query, used in the `db`
     /// metadata field of PULL SUCCESS.
-    pub graph: String,
+    pub(crate) graph: String,
     /// Notifications (e.g. cartesian product warnings) to include in PULL
     /// SUCCESS metadata.
-    pub notifications: Vec<BoltValue>,
+    pub(crate) notifications: Vec<BoltValue>,
     /// A per-row error that terminated streaming evaluation. When set,
     /// handle_pull will emit all buffered records and then send FAILURE
     /// with this error rather than SUCCESS.
-    pub trailing_error: Option<(String, String)>,
+    pub(crate) trailing_error: Option<(String, String)>,
     /// Extended stats for admin/DDL operations (indexes, constraints, system updates).
     /// These are merged into the stats map when emitting PULL SUCCESS.
-    pub admin_stats: Option<AdminStats>,
+    pub(crate) admin_stats: Option<AdminStats>,
 }
 
 /// Extended statistics for admin/DDL operations that go beyond standard
 /// MutationStats.
 #[derive(Debug, Clone, Default)]
 pub struct AdminStats {
-    pub indexes_added: u64,
-    pub indexes_removed: u64,
-    pub constraints_added: u64,
-    pub constraints_removed: u64,
-    pub system_updates: u64,
+    pub(crate) indexes_added: u64,
+    pub(crate) indexes_removed: u64,
+    pub(crate) constraints_added: u64,
+    pub(crate) constraints_removed: u64,
+    pub(crate) system_updates: u64,
 }
 
 // -- Bookmark helpers --------------------------------------------------------

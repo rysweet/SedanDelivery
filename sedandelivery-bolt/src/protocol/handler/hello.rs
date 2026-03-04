@@ -1,10 +1,21 @@
 //! HELLO and LOGON message handlers.
 
+use std::sync::OnceLock;
+
 use crate::message::types::ServerMessage;
 use crate::packstream::value::{BoltMap, BoltMapExt, BoltValue};
 use crate::protocol::state::ServerState;
 
 use super::{bolt_map, constant_time_eq, ProtocolError, Session};
+
+/// Read `BOLT_PASSWORD` from the environment once and cache the result for the
+/// lifetime of the process. Avoids repeated `std::env::var` calls on every
+/// HELLO / LOGON message.
+pub(crate) fn required_password() -> Option<&'static str> {
+    static PW: OnceLock<Option<String>> = OnceLock::new();
+    PW.get_or_init(|| std::env::var("BOLT_PASSWORD").ok())
+        .as_deref()
+}
 
 // -- HELLO -------------------------------------------------------------------
 
@@ -16,9 +27,7 @@ pub(crate) async fn handle_hello(
     session: &mut Session,
     extra: BoltMap,
 ) -> Result<Vec<ServerMessage>, ProtocolError> {
-    let required_password = std::env::var("BOLT_PASSWORD").ok();
-
-    if let Some(required_pw) = required_password {
+    if let Some(required_pw) = required_password() {
         let scheme = extra.get_str("scheme").unwrap_or("");
         if scheme != "basic" {
             session.state = ServerState::Defunct;
@@ -71,9 +80,7 @@ pub(crate) async fn handle_logon(
     session: &mut Session,
     auth: BoltMap,
 ) -> Result<Vec<ServerMessage>, ProtocolError> {
-    let required_password = std::env::var("BOLT_PASSWORD").ok();
-
-    if let Some(required_pw) = required_password {
+    if let Some(required_pw) = required_password() {
         let scheme = auth.get_str("scheme").unwrap_or("");
         if scheme != "basic" {
             session.state = ServerState::Defunct;
