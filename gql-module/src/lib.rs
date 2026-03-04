@@ -266,10 +266,19 @@ fn cmd_gql_mutate(ctx: &Context, args: Vec<redis_module::RedisString>) -> RedisR
 
     // Emit changelog events on success; discard partial events on failure.
     // ctx.call("XADD") uses internal dispatch — no TCP, no deadlock.
+    //
+    // Both emit_changelog and discard_changelog are wrapped in catch_unwind
+    // to prevent a panic from unwinding into the Redis event loop (see #397).
     if result.is_ok() {
-        emit_changelog(ctx);
-    } else {
+        if let Err(e) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            emit_changelog(ctx);
+        })) {
+            tracing::warn!("GQL.MUTATE: panic in emit_changelog: {e:?}");
+        }
+    } else if let Err(e) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         discard_changelog();
+    })) {
+        tracing::warn!("GQL.MUTATE: panic in discard_changelog: {e:?}");
     }
 
     result
@@ -293,9 +302,15 @@ fn cmd_gql_create_graph(ctx: &Context, args: Vec<redis_module::RedisString>) -> 
     .unwrap_or_else(|_| Err(RedisError::Str("GQL.CREATE-GRAPH: internal panic")));
 
     if result.is_ok() {
-        emit_changelog(ctx);
-    } else {
+        if let Err(e) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            emit_changelog(ctx);
+        })) {
+            tracing::warn!("GQL.CREATE-GRAPH: panic in emit_changelog: {e:?}");
+        }
+    } else if let Err(e) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         discard_changelog();
+    })) {
+        tracing::warn!("GQL.CREATE-GRAPH: panic in discard_changelog: {e:?}");
     }
 
     result
@@ -319,9 +334,15 @@ fn cmd_gql_delete_graph(ctx: &Context, args: Vec<redis_module::RedisString>) -> 
     .unwrap_or_else(|_| Err(RedisError::Str("GQL.DELETE-GRAPH: internal panic")));
 
     if result.is_ok() {
-        emit_changelog(ctx);
-    } else {
+        if let Err(e) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            emit_changelog(ctx);
+        })) {
+            tracing::warn!("GQL.DELETE-GRAPH: panic in emit_changelog: {e:?}");
+        }
+    } else if let Err(e) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         discard_changelog();
+    })) {
+        tracing::warn!("GQL.DELETE-GRAPH: panic in discard_changelog: {e:?}");
     }
 
     result
