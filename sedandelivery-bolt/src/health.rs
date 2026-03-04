@@ -33,13 +33,17 @@ struct HealthResponse {
 
 /// Spawn the health/metrics HTTP server as a background tokio task.
 ///
-/// The server binds to `0.0.0.0:{port}` where port defaults to 7688 but
-/// can be overridden with the `BOLT_HEALTH_PORT` environment variable.
+/// The server binds to `{bind_addr}:{port}` where bind_addr defaults to
+/// `127.0.0.1` (override with `BOLT_HEALTH_BIND_ADDR`) and port defaults
+/// to 7688 (override with `BOLT_HEALTH_PORT`).
 pub fn spawn_health_server(state: HealthState) {
     let port = std::env::var("BOLT_HEALTH_PORT")
         .ok()
         .and_then(|v| v.parse::<u16>().ok())
         .unwrap_or(7688);
+
+    let bind_addr =
+        std::env::var("BOLT_HEALTH_BIND_ADDR").unwrap_or_else(|_| "127.0.0.1".to_string());
 
     let app = Router::new()
         .route("/health", get(health_handler))
@@ -47,10 +51,10 @@ pub fn spawn_health_server(state: HealthState) {
         .with_state(state);
 
     tokio::spawn(async move {
-        let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{port}"))
+        let listener = tokio::net::TcpListener::bind(format!("{bind_addr}:{port}"))
             .await
             .expect("failed to bind health HTTP listener");
-        tracing::info!(port, "health/metrics server listening");
+        tracing::info!(%bind_addr, port, "health/metrics server listening");
         if let Err(e) = axum::serve(listener, app).await {
             tracing::error!("health server error: {e}");
         }

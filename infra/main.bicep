@@ -14,6 +14,9 @@ param location string = resourceGroup().location
 @allowed(['valkey-volume', 'azure-cache'])
 param persistenceBackend string = 'valkey-volume'
 
+@description('Allowed source CIDR for database ports. Default is open for dev; restrict in production.')
+param allowedDatabaseSourceCidr string = '*'
+
 // ── Variables ─────────────────────────────────────────────────────────────────
 var prefix = 'sd2'
 // ACR names: 5-50 chars, alphanumeric only.
@@ -109,7 +112,7 @@ resource nsg 'Microsoft.Network/networkSecurityGroups@2023-04-01' = {
           protocol: 'Tcp'
           sourcePortRange: '*'
           destinationPortRange: '6379'
-          sourceAddressPrefix: '*'
+          sourceAddressPrefix: allowedDatabaseSourceCidr
           destinationAddressPrefix: '*'
           access: 'Allow'
           priority: 100
@@ -122,7 +125,7 @@ resource nsg 'Microsoft.Network/networkSecurityGroups@2023-04-01' = {
           protocol: 'Tcp'
           sourcePortRange: '*'
           destinationPortRange: '7687'
-          sourceAddressPrefix: '*'
+          sourceAddressPrefix: allowedDatabaseSourceCidr
           destinationAddressPrefix: '*'
           access: 'Allow'
           priority: 110
@@ -198,6 +201,8 @@ resource caeStorage 'Microsoft.App/managedEnvironments/storages@2024-03-01' = {
   properties: {
     azureFile: {
       accountName: storageAccount.name
+      // NOTE: Storage key is embedded in ARM deployment history.
+      // For production, consider using managed identity or Key Vault reference.
       accountKey: storageAccount.listKeys().keys[0].value
       shareName: valkeyFileShare.name   // use resource reference, not string literal (Issue #72)
       accessMode: 'ReadWrite'
