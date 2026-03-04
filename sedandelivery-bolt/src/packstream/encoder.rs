@@ -119,14 +119,19 @@ fn encode_map(entries: &[(String, BoltValue)], buf: &mut Vec<u8>) {
 }
 
 fn encode_structure(tag: u8, fields: &[BoltValue], buf: &mut Vec<u8>) {
-    assert!(
-        fields.len() <= 15,
-        "PackStream TinyStruct supports at most 15 fields, got {}",
+    let field_count = if fields.len() > 15 {
+        tracing::warn!(
+            tag,
+            actual = fields.len(),
+            "PackStream TinyStruct supports at most 15 fields; capping to 15"
+        );
+        15
+    } else {
         fields.len()
-    );
-    buf.push(0xB0 | fields.len() as u8);
+    };
+    buf.push(0xB0 | field_count as u8);
     buf.push(tag);
-    for field in fields {
+    for field in &fields[..field_count] {
         encode(field, buf);
     }
 }
@@ -449,6 +454,22 @@ mod tests {
         };
         let result = enc(&s);
         assert_eq!(result, vec![0xB1, 0x71, 0x2A]);
+    }
+
+    #[test]
+    fn encode_structure_caps_at_15_fields() {
+        // 16 fields should NOT panic; the encoder should cap at 15.
+        let fields: Vec<BoltValue> = (0..16).map(BoltValue::Int).collect();
+        let s = BoltValue::Structure {
+            tag: 0x01,
+            fields,
+        };
+        let result = enc(&s);
+        // Marker should indicate 15 fields (0xBF = 0xB0 | 15)
+        assert_eq!(result[0], 0xBF);
+        assert_eq!(result[1], 0x01); // tag
+        // Only 15 encoded field values should follow (fields 0..15, each a TinyInt)
+        assert_eq!(result.len(), 2 + 15);
     }
 
     // ── Roundtrip sanity (uses decoder in decoder.rs tests) ─────────────
