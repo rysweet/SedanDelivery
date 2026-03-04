@@ -1666,7 +1666,11 @@ impl<'a> QueryExecutor<'a> {
             // When the indexed fast-path was used, candidates are already filtered
             // by the first property — only verify remaining properties.
             let skip_first_prop = !labels.is_empty() && !prop_vals.is_empty();
-            let check_props = if skip_first_prop { &prop_vals[1..] } else { &prop_vals[..] };
+            let check_props = if skip_first_prop {
+                &prop_vals[1..]
+            } else {
+                &prop_vals[..]
+            };
             let mut matched_ids: Vec<NodeId> = Vec::new();
             for cand_id in &candidates {
                 let node_id = NodeId(*cand_id);

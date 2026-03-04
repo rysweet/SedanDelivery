@@ -67,7 +67,7 @@ where
         tx_metadata: Vec::new(),
         tx_timeout: None,
         tx_store: None,
-        write_semaphore: write_semaphore,
+        write_semaphore,
         write_permit: None,
     };
 

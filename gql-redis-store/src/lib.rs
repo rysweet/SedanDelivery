@@ -151,7 +151,7 @@ enum RedisPool {
 /// so single-command operations work identically via [`RedisConn::as_mut`].
 enum RedisConn {
     Standalone(r2d2::PooledConnection<Client>),
-    Cluster(r2d2::PooledConnection<ClusterClient>),
+    Cluster(Box<r2d2::PooledConnection<ClusterClient>>),
 }
 
 impl RedisConn {
@@ -305,13 +305,12 @@ impl RedisGraphStore {
                         msg: format!("redis pool checkout error: {e}"),
                     })
             }
-            RedisPool::Cluster(pool) => {
-                pool.get()
-                    .map(RedisConn::Cluster)
-                    .map_err(|e| StorageError::Backend {
-                        msg: format!("redis cluster pool checkout error: {e}"),
-                    })
-            }
+            RedisPool::Cluster(pool) => pool
+                .get()
+                .map(|c| RedisConn::Cluster(Box::new(c)))
+                .map_err(|e| StorageError::Backend {
+                    msg: format!("redis cluster pool checkout error: {e}"),
+                }),
         }
     }
 

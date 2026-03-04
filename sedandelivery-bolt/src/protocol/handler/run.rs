@@ -297,11 +297,8 @@ pub(crate) async fn handle_run(
             .or(extra.get_int("tx_timeout").map(|v| v as u64));
         if let Some(ms) = timeout_ms {
             let sem = Arc::clone(&session.write_semaphore);
-            match tokio::time::timeout(
-                std::time::Duration::from_millis(ms),
-                sem.acquire_owned(),
-            )
-            .await
+            match tokio::time::timeout(std::time::Duration::from_millis(ms), sem.acquire_owned())
+                .await
             {
                 Ok(Ok(permit)) => {
                     session.write_permit = Some(permit);
