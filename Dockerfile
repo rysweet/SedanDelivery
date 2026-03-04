@@ -45,11 +45,10 @@ COPY gql-module/ ./gql-module/
 COPY gql-cli/ ./gql-cli/
 COPY gql-api/ ./gql-api/
 
-# Build the Redis module .so and gql-api HTTP service
-RUN touch gql-core/src/lib.rs gql-redis-store/src/lib.rs gql-fabric-store/src/lib.rs gql-module/src/lib.rs gql-api/src/main.rs && \
+# Build the Redis module .so
+RUN touch gql-core/src/lib.rs gql-redis-store/src/lib.rs gql-fabric-store/src/lib.rs gql-module/src/lib.rs && \
     cargo build --release -p gql-module && \
-    cargo build --release -p gql-api && \
-    ls -lh target/release/libgql_module.so target/release/gql-api
+    ls -lh target/release/libgql_module.so
 
 # ── Runtime ───────────────────────────────────────────────────────────────────
 FROM valkey/valkey:8.1-bookworm AS runtime

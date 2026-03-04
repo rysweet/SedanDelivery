@@ -4,7 +4,6 @@ on:
   push:
     branches:
       - main
-      - 'feat/issue-208-*'
     paths:
       - 'src/CyberGym.Graph*/**'
       - 'src/CyberGym.Aad*/**'
