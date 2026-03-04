@@ -15,7 +15,7 @@
 /// Every operator's `next()` call MUST call `budget.check_or_err()` as its first statement.
 ///
 /// Default values are set by module config; these are compile-time fallbacks:
-/// - `DEFAULT_TIMEOUT_MS = 120000` (120 seconds)
+/// - `DEFAULT_TIMEOUT_MS = 30000` (30 seconds)
 /// - `DEFAULT_MAX_ROWS = 1_000_000` (1 million intermediate rows)
 /// - `DEFAULT_VARLEN_MAX_DEPTH = 10` (default max for unbounded `[*]` patterns)
 use std::time::{Duration, Instant};
@@ -23,7 +23,7 @@ use std::time::{Duration, Instant};
 use crate::error::{ExecutionError, GqlError};
 
 /// Default query timeout: 30 seconds. Can be overridden via `GQL.CONFIG SET query-timeout-ms`.
-pub const DEFAULT_TIMEOUT_MS: u64 = 300_000;
+pub const DEFAULT_TIMEOUT_MS: u64 = 30_000;
 
 /// Default maximum intermediate rows. Can be overridden via `GQL.CONFIG SET query-max-rows`.
 pub const DEFAULT_MAX_ROWS: usize = 10_000_000;
