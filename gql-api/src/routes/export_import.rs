@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 
-use axum::extract::{Path, State};
+use axum::extract::{DefaultBodyLimit, Path, State};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 
@@ -13,7 +13,7 @@ use gql_core::storage::{validate_graph_name, GraphStore};
 
 use crate::error::ApiError;
 use crate::models::{ExportResponse, ImportBody, ImportResponse};
-use crate::routes::helpers::json_map_to_props;
+use crate::routes::helpers::{compute_schema_counts, json_map_to_props};
 use crate::serialize::{edge_to_json, node_to_json};
 use crate::state::AppState;
 
@@ -23,7 +23,10 @@ pub fn router() -> Router<AppState> {
         // /data is the same as /export but without schema — returns just {nodes, edges}
         // Used by the React SPA's graphDataApi.getAll()
         .route("/graphs/{name}/data", get(export_handler))
-        .route("/graphs/{name}/import", post(import_handler))
+        .route(
+            "/graphs/{name}/import",
+            post(import_handler).layer(DefaultBodyLimit::max(2 * 1024 * 1024)),
+        )
 }
 
 // ── GET /graphs/{name}/export ─────────────────────────────────────────────────
@@ -53,19 +56,8 @@ async fn export_handler(
         .map_err(ApiError::from)?;
     let edges: Vec<serde_json::Value> = edge_batch.iter().flatten().map(edge_to_json).collect();
 
-    // Build schema summary.
-    let mut label_counts: HashMap<String, usize> = HashMap::new();
-    for node_batch_item in node_batch.iter().flatten() {
-        for label in &node_batch_item.labels {
-            *label_counts.entry(label.clone()).or_insert(0) += 1;
-        }
-    }
-    let mut reltype_counts: HashMap<String, usize> = HashMap::new();
-    for edge_batch_item in edge_batch.iter().flatten() {
-        *reltype_counts
-            .entry(edge_batch_item.rel_type.clone())
-            .or_insert(0) += 1;
-    }
+    // Build schema summary using the shared helper.
+    let (label_counts, reltype_counts) = compute_schema_counts(store.as_ref(), &name)?;
 
     let schema_labels: Vec<serde_json::Value> = {
         let mut v: Vec<(&String, &usize)> = label_counts.iter().collect();
@@ -96,8 +88,7 @@ async fn export_handler(
 
 // ── POST /graphs/{name}/import ────────────────────────────────────────────────
 //
-// Note: Axum's default body size limit of 2 MB applies to this endpoint.
-// Large graph imports may need the limit raised at the router level.
+// An explicit 2 MB body size limit is applied via DefaultBodyLimit on the route.
 
 async fn import_handler(
     State(state): State<AppState>,

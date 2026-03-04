@@ -16,6 +16,7 @@ NEODASH_PORT=5005
 BOLT_PORT=7687
 IMAGE="neo4jlabs/neodash:latest"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BOLT_PASSWORD="${BOLT_PASSWORD:-neo4j}"
 
 # Colors for output
 RED='\033[0;31m'
@@ -100,7 +101,7 @@ docker run -d \
     -e standalonePort="${BOLT_PORT}" \
     -e standaloneDatabase="" \
     -e standaloneUsername="neo4j" \
-    -e standalonePassword="neo4j" \
+    -e standalonePassword="${BOLT_PASSWORD}" \
     --restart unless-stopped \
     "$IMAGE"
 
@@ -133,7 +134,7 @@ echo -e "    Protocol:  bolt"
 echo -e "    Host:      localhost"
 echo -e "    Port:      7687"
 echo -e "    Username:  neo4j"
-echo -e "    Password:  neo4j"
+echo -e "    Password:  (from \$BOLT_PASSWORD env var)"
 echo ""
 echo -e "  Pre-built dashboard:"
 echo -e "    ${CYAN}${SCRIPT_DIR}/dashboard.json${NC}"

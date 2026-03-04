@@ -29,7 +29,7 @@ services:
       standalonePort: "7687"
       standaloneDatabase: ""
       standaloneUsername: "neo4j"
-      standalonePassword: "neo4j"
+      standalonePassword: "${BOLT_PASSWORD:-neo4j}"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     restart: unless-stopped

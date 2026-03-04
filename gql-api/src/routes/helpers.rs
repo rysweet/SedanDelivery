@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use gql_core::storage::{EdgeId, NodeId};
+use gql_core::storage::{EdgeId, GraphStore, NodeId};
 use gql_core::types::Value;
 
 use crate::error::ApiError;
@@ -67,4 +67,37 @@ pub fn json_map_to_props(
             Ok((k, val))
         })
         .collect()
+}
+
+/// Compute label counts and relationship-type counts for the given graph.
+///
+/// Returns `(label_counts, reltype_counts)` where each map associates a name
+/// with the number of nodes/edges carrying that label/type.
+pub(crate) fn compute_schema_counts(
+    store: &dyn GraphStore,
+    graph: &str,
+) -> Result<(HashMap<String, usize>, HashMap<String, usize>), ApiError> {
+    // Label counts from all nodes.
+    let all_node_ids = store.all_node_ids(graph).map_err(ApiError::from)?;
+    let node_batch = store
+        .get_nodes_batch(graph, &all_node_ids)
+        .map_err(ApiError::from)?;
+    let mut label_counts: HashMap<String, usize> = HashMap::new();
+    for node in node_batch.into_iter().flatten() {
+        for label in &node.labels {
+            *label_counts.entry(label.clone()).or_insert(0) += 1;
+        }
+    }
+
+    // Relationship-type counts from all edges.
+    let all_edge_ids = store.all_edge_ids(graph).map_err(ApiError::from)?;
+    let edge_batch = store
+        .get_edges_batch(graph, &all_edge_ids)
+        .map_err(ApiError::from)?;
+    let mut reltype_counts: HashMap<String, usize> = HashMap::new();
+    for edge in edge_batch.into_iter().flatten() {
+        *reltype_counts.entry(edge.rel_type.clone()).or_insert(0) += 1;
+    }
+
+    Ok((label_counts, reltype_counts))
 }
