@@ -362,10 +362,8 @@ impl Value {
                     .map(|(k, v)| (k.as_ref(), v.canonical_key()))
                     .collect();
                 entries.sort_by_key(|(k, _)| *k);
-                let inner: Vec<String> = entries
-                    .iter()
-                    .map(|(k, v)| format!("{k:?}: {v}"))
-                    .collect();
+                let inner: Vec<String> =
+                    entries.iter().map(|(k, v)| format!("{k:?}: {v}")).collect();
                 format!("Map({{{}}})", inner.join(", "))
             }
             Self::DateTime(z) => {
