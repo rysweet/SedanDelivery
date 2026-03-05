@@ -10,9 +10,7 @@ permissions:
   issues: read
   pull-requests: read
 
-engine:
-  id: copilot
-  model: claude-sonnet-4
+engine: claude
 
 tools:
   github:

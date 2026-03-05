@@ -1,10 +1,7 @@
 ---
 # Stale PR Management Workflow Configuration
 #
-# Note: This workflow uses GitHub Copilot AI engine which may occasionally
-# experience API errors (e.g., "missing finish_reason for choice 0").
-# If the workflow fails, GitHub Actions will automatically retry the job.
-# You can also manually re-run failed jobs from the Actions tab.
+# This workflow uses the Anthropic Claude AI engine.
 #
 on:
   schedule:
@@ -16,9 +13,7 @@ permissions:
   issues: read
   pull-requests: read
 
-engine:
-  id: copilot
-  model: claude-sonnet-4
+engine: claude
 
 tools:
   github:

@@ -5,17 +5,17 @@ on:
 
 permissions:
   contents: read
-  issues: write
+  issues: read
   pull-requests: read
   actions: read
 
-engine: copilot
+engine: claude
 
 tools:
   github:
     toolsets: [repos, issues, pull_requests, actions]
     mode: remote
-    read-only: false
+    read-only: true
   repo-memory:
     branch-name: memory/coverage
 
@@ -32,12 +32,6 @@ safe-outputs:
     max: 2
     expires: 7
     close-older-issues: true
-
-threat-detection:
-  prompt: |
-    Check for:
-    - Secret leaks in coverage reports
-    - Exposure of internal file paths or infrastructure details
 ---
 
 # Test Coverage Enforcement and Trend Analysis

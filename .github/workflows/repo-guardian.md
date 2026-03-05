@@ -8,6 +8,8 @@ permissions:
   issues: read
   pull-requests: read
 
+engine: claude
+
 safe-outputs:
   jobs:
     submit-review:

@@ -6,13 +6,13 @@ on:
 permissions:
   contents: read
 
-engine: copilot
+engine: claude
 
 tools:
   github:
     toolsets: [repos, issues, pull_requests, actions]
     mode: remote
-    read-only: false
+    read-only: true
   repo-memory:
     branch-name: memory/mutation
 

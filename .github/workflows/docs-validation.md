@@ -7,7 +7,7 @@ permissions:
   contents: read
   pull-requests: read
 
-engine: copilot
+engine: claude
 
 safe-outputs:
   create-issue:

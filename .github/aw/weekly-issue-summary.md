@@ -9,7 +9,7 @@ permissions:
   discussions: read
   issues: read
 
-engine: copilot
+engine: claude
 
 tools:
   github:
