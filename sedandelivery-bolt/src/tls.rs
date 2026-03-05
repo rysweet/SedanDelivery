@@ -107,7 +107,7 @@ mod tests {
             .expect("failed to generate self-signed cert");
 
         let cert_pem = cert.cert.pem();
-        let key_pem = cert.key_pair.serialize_pem();
+        let key_pem = cert.signing_key.serialize_pem();
 
         // Write to temp files
         let tmp_dir = std::env::temp_dir().join("sedandelivery-bolt-tls-test");
