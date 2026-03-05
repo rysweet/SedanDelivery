@@ -67,7 +67,7 @@ ALL_SUITES=(
 )
 
 # Tests known to pass against sedandelivery-bolt (as of 2026-03-01)
-# 117/118 pass, 1 skipped (Python UTC offset ambiguity)
+# 118/118 pass (UTC offset fix: offset_secs=0 promoted to named UTC timezone)
 PASSING_TESTS=(
     # session_run (19/19 pass)
     "tests.neo4j.test_session_run.TestSessionRun.test_autocommit_transactions_should_support_metadata"

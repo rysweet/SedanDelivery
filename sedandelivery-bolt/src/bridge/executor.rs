@@ -435,11 +435,18 @@ fn decode_datetime_offset(fields: &[BoltValue]) -> Value {
         None => return Value::Null,
     };
 
-    let offset = match jiff::tz::Offset::from_seconds(offset_secs as i32) {
-        Ok(o) => o,
-        Err(_) => return Value::Null,
+    // When offset is exactly 0, use the named "UTC" timezone so the round-trip
+    // preserves the IANA name.  This lets the Python pytz driver distinguish
+    // named UTC from a bare +00:00 fixed offset (testkit 118/118).
+    let tz = if offset_secs == 0 {
+        jiff::tz::TimeZone::get("UTC").expect("UTC timezone must be available")
+    } else {
+        let offset = match jiff::tz::Offset::from_seconds(offset_secs as i32) {
+            Ok(o) => o,
+            Err(_) => return Value::Null,
+        };
+        jiff::tz::TimeZone::fixed(offset)
     };
-    let tz = jiff::tz::TimeZone::fixed(offset);
 
     let ts = match jiff::Timestamp::new(epoch_secs, nanos_adj as i32) {
         Ok(ts) => ts,

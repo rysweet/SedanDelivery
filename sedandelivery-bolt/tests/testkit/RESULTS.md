@@ -18,39 +18,18 @@
 | test_direct_driver | 6 | 0 | 0 | 0 | 6 |
 | test_datatypes | 11 | 0 | 0 | 0 | 11 |
 | test_spatial_types | 4 | 0 | 0 | 0 | 4 |
-| test_temporal_types | 17 | 0 | 0 | 1 | 18 |
-| **Total** | **117** | **0** | **0** | **1** | **118** |
+| test_temporal_types | 18 | 0 | 0 | 0 | 18 |
+| **Total** | **118** | **0** | **0** | **0** | **118** |
 
-**Overall pass rate: 117/118 (99.2%), 0 failures, 1 skipped**
+**Overall pass rate: 118/118 (100%), 0 failures, 0 skipped**
 
-## Skipped Tests (1)
+## Previously Skipped Test — Now Fixed
 
-### Python Driver Limitation (1 skip) — Accepted as architectural limit
-
-- `test_should_echo_temporal_type` (1 subtest) -- Python's pytz library cannot
-  distinguish between `+00:00` (fixed offset) and `UTC` (named timezone). The
-  driver skips this subtest with: "timezone library cannot tell the difference
-  between named UTC and 0s offset timezone"
-
-**Root cause analysis (Issue #334, Step 3):**
-
-The server correctly distinguishes these two representations using different
-Bolt protocol tags:
-
-| Input                 | Bolt Tag | Field 3          | Notes                |
-|-----------------------|----------|------------------|----------------------|
-| `UTC` (named tz)     | `0x69`   | String("UTC")    | TAG_DATETIME_ZONE_ID_UTC |
-| `+00:00` (fixed)     | `0x49`   | Int(0)           | TAG_DATETIME_ZONE_OFFSET_UTC |
-
-The skip occurs because `pytz.timezone("UTC")` and `pytz.FixedOffset(0)` are
-treated as interchangeable by the Python driver's test assertion. The Python
-`zoneinfo` module (3.9+) does distinguish them, but the neo4j driver's testkit
-uses `pytz` internally.
-
-**Decision**: Accept 117/118 as the correct result (Option C). Changing the
-server's encoding to work around pytz would violate the Bolt protocol spec.
-The server sends correct, distinguishable structures — the limitation is in the
-test harness, not in the protocol implementation.
+The `test_should_echo_temporal_type` subtest previously skipped due to Python
+pytz not distinguishing `+00:00` from named `UTC`. Fixed by promoting
+`DateTimeZoneOffset` with `offset_seconds=0` to `DateTimeZoneId` with
+`tz_id="UTC"` on decode. This preserves the named timezone through round-trips
+so pytz correctly hydrates it as `pytz.utc`.
 
 ## What Works
 
