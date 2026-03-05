@@ -11,7 +11,7 @@ safe-outputs:
   add-labels:
     max: 5
 
-engine: copilot
+engine: claude
 ---
 
 # Auto PR Labeling
