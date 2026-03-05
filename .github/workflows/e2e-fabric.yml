@@ -120,6 +120,20 @@ jobs:
           echo "redis_host=${FQDN}" >> "$GITHUB_OUTPUT"
           echo "FQDN: ${FQDN} (Redis:6379)"
 
+          # Get the standalone Bolt container app FQDN
+          BOLT_CA_NAME="sd2-${ENV_NAME}-bolt"
+          BOLT_FQDN=$(az containerapp show \
+            --name "${BOLT_CA_NAME}" \
+            --resource-group "${RG}" \
+            --query "properties.configuration.ingress.fqdn" \
+            --output tsv 2>/dev/null || echo "")
+          if [[ -n "${BOLT_FQDN}" ]]; then
+            echo "bolt_uri=bolt://${BOLT_FQDN}:7687" >> "$GITHUB_OUTPUT"
+            echo "Bolt: bolt://${BOLT_FQDN}:7687"
+          else
+            echo "::warning::Bolt container app not found — E2E will use redis-cli only"
+          fi
+
           # Retrieve Valkey password for redis-cli auth
           VALKEY_PASS=$(az containerapp secret show \
             --name "${CA_NAME}" --resource-group "${RG}" \
@@ -194,6 +208,7 @@ jobs:
           REDIS_HOST: ${{ steps.endpoints.outputs.redis_host }}
           REDIS_PORT: '6379'
           REDIS_PASSWORD: ${{ steps.endpoints.outputs.redis_password }}
+          BOLT_URI: ${{ steps.endpoints.outputs.bolt_uri }}
           FABRIC_ENDPOINT: ${{ steps.endpoints.outputs.fabric_endpoint }}
           FABRIC_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
           FABRIC_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
