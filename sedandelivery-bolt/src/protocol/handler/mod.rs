@@ -87,8 +87,6 @@ pub struct Session {
 
 /// A pending query result awaiting PULL or DISCARD.
 pub struct PendingQuery {
-    /// Column names from the query result.
-    pub(crate) columns: Vec<String>,
     /// Result rows, each row being a list of `BoltValue` in column order.
     pub(crate) records: Vec<Vec<BoltValue>>,
     /// Query type string: `"r"` (read), `"w"` (write), or `"rw"` (both).
@@ -658,7 +656,6 @@ mod tests {
         session.pending_results.insert(
             0,
             PendingQuery {
-                columns: vec!["n".to_string()],
                 records: vec![],
                 query_type: "r".to_string(),
                 stats: vec![],

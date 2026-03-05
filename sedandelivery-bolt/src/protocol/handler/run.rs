@@ -154,7 +154,6 @@ fn intercept_admin_query(
             session.pending_results.insert(
                 qid,
                 PendingQuery {
-                    columns: ar.query_result.columns,
                     records,
                     query_type: effective_type,
                     stats,
@@ -281,9 +280,10 @@ async fn acquire_write_semaphore(
         ServerState::TxReady | ServerState::TxStreaming
     );
 
-    let timeout_ms = session
-        .tx_timeout
-        .or(extra.get_int("tx_timeout").map(|v| v as u64));
+    let timeout_ms = session.tx_timeout.or(extra
+        .get_int("tx_timeout")
+        .filter(|&v| v > 0)
+        .map(|v| v as u64));
 
     if let Some(ms) = timeout_ms {
         let sem = Arc::clone(&session.write_semaphore);
@@ -393,7 +393,6 @@ fn build_success_response(
     session.pending_results.insert(
         qid,
         PendingQuery {
-            columns: qr.columns,
             records,
             query_type,
             stats,
@@ -487,6 +486,7 @@ pub(crate) async fn handle_run(
     let run_metadata = extract_tx_metadata(&extra);
     let timeout_ms = extra
         .get_int("tx_timeout")
+        .filter(|&v| v > 0)
         .map(|v| v as u64)
         .or(session.tx_timeout);
 
@@ -617,7 +617,6 @@ async fn handle_explain(
             session.pending_results.insert(
                 qid,
                 PendingQuery {
-                    columns: vec![],
                     records: vec![],
                     query_type: "r".to_string(),
                     stats: vec![],
