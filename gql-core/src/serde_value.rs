@@ -61,14 +61,28 @@ pub fn value_to_json(v: &Value) -> Result<JsonValue, StorageError> {
         Value::LocalTime(t) => Ok(JsonValue::String(format!("__localtime:{t}"))),
         Value::Time(t, offset) => {
             // Serialize zoned time as a tagged datetime at epoch for round-trip.
-            let offset_obj =
-                jiff::tz::Offset::from_seconds(*offset).unwrap_or(jiff::tz::Offset::UTC);
+            let offset_obj = match jiff::tz::Offset::from_seconds(*offset) {
+                Ok(o) => o,
+                Err(_) => {
+                    tracing::warn!(
+                        offset_secs = offset,
+                        "timezone offset out of range during JSON export, falling back to UTC"
+                    );
+                    jiff::tz::Offset::UTC
+                }
+            };
             let tz = jiff::tz::TimeZone::fixed(offset_obj);
             let epoch = jiff::civil::Date::new(1970, 1, 1).expect("valid epoch");
             let dt = epoch.to_datetime(*t);
             match dt.to_zoned(tz) {
                 Ok(zoned) => Ok(JsonValue::String(format!("__datetime:{zoned}"))),
-                Err(_) => Ok(JsonValue::Null),
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        "failed to zone Time value during JSON export, returning Null"
+                    );
+                    Ok(JsonValue::Null)
+                }
             }
         }
         Value::LocalDateTime(dt) => Ok(JsonValue::String(format!("__localdatetime:{dt}"))),
@@ -531,5 +545,41 @@ mod tests {
             err_msg.contains("non-negative"),
             "error should mention non-negative, got: {err_msg}"
         );
+    }
+
+    // ── JSON export: valid Time offset round-trips correctly ────────────────
+
+    #[test]
+    fn time_value_valid_offset_to_json() {
+        let t = jiff::civil::time(14, 30, 0, 0);
+        let val = Value::Time(t, 3600);
+        let json = value_to_json(&val).unwrap();
+        match &json {
+            JsonValue::String(s) => {
+                assert!(
+                    s.starts_with("__datetime:"),
+                    "expected __datetime tag, got: {s}"
+                );
+            }
+            other => panic!("expected JSON string, got {other:?}"),
+        }
+    }
+
+    // ── JSON export: invalid offset warns and falls back to UTC ─────────────
+
+    #[test]
+    fn time_value_invalid_offset_falls_back_to_utc_in_json() {
+        let t = jiff::civil::time(12, 0, 0, 0);
+        let val = Value::Time(t, 200_000);
+        let json = value_to_json(&val).unwrap();
+        match &json {
+            JsonValue::String(s) => {
+                assert!(
+                    s.starts_with("__datetime:"),
+                    "expected __datetime tag with UTC fallback, got: {s}"
+                );
+            }
+            other => panic!("expected JSON string with UTC fallback, got {other:?}"),
+        }
     }
 }

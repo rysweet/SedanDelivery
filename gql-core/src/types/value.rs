@@ -198,14 +198,28 @@ impl Value {
     pub fn time_to_datetime(self) -> Self {
         match self {
             Self::Time(t, offset_secs) => {
-                let offset =
-                    jiff::tz::Offset::from_seconds(offset_secs).unwrap_or(jiff::tz::Offset::UTC);
+                let offset = match jiff::tz::Offset::from_seconds(offset_secs) {
+                    Ok(o) => o,
+                    Err(_) => {
+                        tracing::warn!(
+                            offset_secs = offset_secs,
+                            "timezone offset out of range, falling back to UTC"
+                        );
+                        jiff::tz::Offset::UTC
+                    }
+                };
                 let tz = jiff::tz::TimeZone::fixed(offset);
                 let epoch = civil::Date::new(1970, 1, 1).expect("valid epoch");
                 let dt = epoch.to_datetime(t);
                 match dt.to_zoned(tz) {
                     Ok(zoned) => Self::DateTime(Box::new(zoned)),
-                    Err(_) => Self::Null,
+                    Err(e) => {
+                        tracing::warn!(
+                            error = %e,
+                            "failed to convert Time to zoned DateTime, returning Null"
+                        );
+                        Self::Null
+                    }
                 }
             }
             other => other,
@@ -961,5 +975,33 @@ mod tests {
         assert_ne!(hash_value(&Value::Int(0)), hash_value(&Value::Bool(false)));
         // Int(1) vs Float(1.0) should produce different hashes (different types)
         assert_ne!(hash_value(&Value::Int(1)), hash_value(&Value::Float(1.0)));
+    }
+    // ── time_to_datetime: valid offset still works ─────────────────────────
+
+    #[test]
+    fn time_to_datetime_valid_offset() {
+        let t = civil::Time::new(10, 30, 0, 0).expect("valid time");
+        let val = Value::Time(t, 19800);
+        match val.time_to_datetime() {
+            Value::DateTime(zdt) => {
+                assert_eq!(zdt.hour(), 10);
+                assert_eq!(zdt.minute(), 30);
+            }
+            other => panic!("expected DateTime, got {other:?}"),
+        }
+    }
+
+    // ── time_to_datetime: out-of-range offset warns and falls back to UTC ──
+
+    #[test]
+    fn time_to_datetime_invalid_offset_falls_back_to_utc() {
+        let t = civil::Time::new(12, 0, 0, 0).expect("valid time");
+        let val = Value::Time(t, 200_000);
+        match val.time_to_datetime() {
+            Value::DateTime(zdt) => {
+                assert_eq!(zdt.offset().seconds(), 0, "should fall back to UTC");
+            }
+            other => panic!("expected DateTime with UTC fallback, got {other:?}"),
+        }
     }
 }
