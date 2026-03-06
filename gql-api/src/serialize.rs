@@ -175,3 +175,468 @@ fn resolve_edge(id: EdgeId, store: &dyn GraphStore, graph: &str) -> Json {
         _ => json!({ "$type": "edge", "id": id.0 }),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gql_core::storage::{EdgeData, EdgeId, InMemoryGraphStore, NodeData, NodeId};
+    use gql_core::types::value::{Crs, CypherDuration, GeoPoint};
+    use gql_core::types::Value;
+    use indexmap::IndexMap;
+    use serde_json::json;
+    use std::collections::HashMap;
+
+    // ── value_to_json ────────────────────────────────────────────────────────
+
+    #[test]
+    fn value_to_json_null() {
+        assert_eq!(value_to_json(&Value::Null), Json::Null);
+    }
+
+    #[test]
+    fn value_to_json_bool_true() {
+        assert_eq!(value_to_json(&Value::Bool(true)), Json::Bool(true));
+    }
+
+    #[test]
+    fn value_to_json_bool_false() {
+        assert_eq!(value_to_json(&Value::Bool(false)), Json::Bool(false));
+    }
+
+    #[test]
+    fn value_to_json_int_positive() {
+        assert_eq!(value_to_json(&Value::Int(42)), json!(42));
+    }
+
+    #[test]
+    fn value_to_json_int_negative() {
+        assert_eq!(value_to_json(&Value::Int(-7)), json!(-7));
+    }
+
+    #[test]
+    fn value_to_json_int_zero() {
+        assert_eq!(value_to_json(&Value::Int(0)), json!(0));
+    }
+
+    #[test]
+    fn value_to_json_float() {
+        assert_eq!(value_to_json(&Value::Float(3.14)), json!(3.14));
+    }
+
+    #[test]
+    fn value_to_json_float_nan_becomes_null() {
+        assert_eq!(value_to_json(&Value::Float(f64::NAN)), Json::Null);
+    }
+
+    #[test]
+    fn value_to_json_float_infinity_becomes_null() {
+        assert_eq!(value_to_json(&Value::Float(f64::INFINITY)), Json::Null);
+    }
+
+    #[test]
+    fn value_to_json_string() {
+        assert_eq!(
+            value_to_json(&Value::Str("hello".into())),
+            Json::String("hello".to_string())
+        );
+    }
+
+    #[test]
+    fn value_to_json_empty_string() {
+        assert_eq!(
+            value_to_json(&Value::Str("".into())),
+            Json::String(String::new())
+        );
+    }
+
+    #[test]
+    fn value_to_json_date() {
+        let d = jiff::civil::Date::new(2024, 6, 15).expect("valid date");
+        let result = value_to_json(&Value::Date(d));
+        assert!(result.is_string());
+        assert_eq!(result.as_str().unwrap(), "2024-06-15");
+    }
+
+    #[test]
+    fn value_to_json_local_time() {
+        let t = jiff::civil::Time::new(10, 30, 45, 0).expect("valid time");
+        let result = value_to_json(&Value::LocalTime(t));
+        assert!(result.is_string());
+        let s = result.as_str().unwrap();
+        assert!(s.contains("10"), "should contain hour: {s}");
+        assert!(s.contains("30"), "should contain minute: {s}");
+    }
+
+    #[test]
+    fn value_to_json_time_with_positive_offset() {
+        let t = jiff::civil::Time::new(14, 0, 0, 0).expect("valid time");
+        let result = value_to_json(&Value::Time(t, 7200)); // +02:00
+        assert!(result.is_string());
+        let s = result.as_str().unwrap();
+        assert!(s.contains("+02:00"), "should contain offset: {s}");
+    }
+
+    #[test]
+    fn value_to_json_time_with_negative_offset() {
+        let t = jiff::civil::Time::new(9, 0, 0, 0).expect("valid time");
+        let result = value_to_json(&Value::Time(t, -18000)); // -05:00
+        assert!(result.is_string());
+        let s = result.as_str().unwrap();
+        assert!(s.contains("-05:00"), "should contain negative offset: {s}");
+    }
+
+    #[test]
+    fn value_to_json_local_datetime() {
+        let dt = jiff::civil::DateTime::new(2024, 1, 15, 9, 30, 0, 0).expect("valid");
+        let result = value_to_json(&Value::LocalDateTime(dt));
+        assert!(result.is_string());
+        let s = result.as_str().unwrap();
+        assert!(s.contains("2024"), "should contain year: {s}");
+    }
+
+    #[test]
+    fn value_to_json_datetime_zoned() {
+        let tz = jiff::tz::TimeZone::UTC;
+        let zdt = jiff::civil::DateTime::new(2024, 6, 15, 12, 0, 0, 0)
+            .expect("valid")
+            .to_zoned(tz)
+            .expect("valid");
+        let result = value_to_json(&Value::DateTime(Box::new(zdt)));
+        assert!(result.is_string());
+    }
+
+    #[test]
+    fn value_to_json_duration() {
+        let d = CypherDuration {
+            months: 14,
+            days: 3,
+            nanos: 0,
+        };
+        let result = value_to_json(&Value::Duration(d));
+        assert!(result.is_string());
+        let s = result.as_str().unwrap();
+        assert!(s.starts_with('P'), "duration should start with P: {s}");
+    }
+
+    #[test]
+    fn value_to_json_bytes() {
+        let result = value_to_json(&Value::Bytes(vec![0xde, 0xad, 0xbe, 0xef]));
+        assert_eq!(result, Json::String("deadbeef".to_string()));
+    }
+
+    #[test]
+    fn value_to_json_point() {
+        let p = GeoPoint {
+            x: 1.5,
+            y: 2.5,
+            z: None,
+            crs: Crs::Wgs84,
+        };
+        let result = value_to_json(&Value::Point(p));
+        assert!(result.is_object());
+        assert_eq!(result["x"], json!(1.5));
+        assert_eq!(result["y"], json!(2.5));
+        assert!(result["crs"].is_string());
+    }
+
+    #[test]
+    fn value_to_json_list() {
+        let list = Value::List(vec![Value::Int(1), Value::Bool(true), Value::Null]);
+        let result = value_to_json(&list);
+        assert!(result.is_array());
+        let arr = result.as_array().unwrap();
+        assert_eq!(arr.len(), 3);
+        assert_eq!(arr[0], json!(1));
+        assert_eq!(arr[1], json!(true));
+        assert_eq!(arr[2], Json::Null);
+    }
+
+    #[test]
+    fn value_to_json_empty_list() {
+        let result = value_to_json(&Value::List(vec![]));
+        assert_eq!(result, json!([]));
+    }
+
+    #[test]
+    fn value_to_json_map() {
+        let mut m = IndexMap::new();
+        m.insert(Box::<str>::from("name"), Value::Str("Alice".into()));
+        m.insert(Box::<str>::from("age"), Value::Int(30));
+        let result = value_to_json(&Value::Map(m));
+        assert!(result.is_object());
+        assert_eq!(result["name"], json!("Alice"));
+        assert_eq!(result["age"], json!(30));
+    }
+
+    #[test]
+    fn value_to_json_empty_map() {
+        let m: IndexMap<Box<str>, Value> = IndexMap::new();
+        let result = value_to_json(&Value::Map(m));
+        assert_eq!(result, json!({}));
+    }
+
+    #[test]
+    fn value_to_json_node_reference() {
+        let result = value_to_json(&Value::Node(NodeId(42)));
+        assert_eq!(result["$type"], json!("node"));
+        assert_eq!(result["id"], json!(42));
+    }
+
+    #[test]
+    fn value_to_json_edge_reference() {
+        let result = value_to_json(&Value::Edge(EdgeId(99)));
+        assert_eq!(result["$type"], json!("edge"));
+        assert_eq!(result["id"], json!(99));
+    }
+
+    #[test]
+    fn value_to_json_path() {
+        let result = value_to_json(&Value::Path {
+            nodes: vec![NodeId(1), NodeId(2), NodeId(3)],
+            edges: vec![EdgeId(10), EdgeId(20)],
+        });
+        assert_eq!(result["$type"], json!("path"));
+        assert_eq!(result["nodes"], json!([1, 2, 3]));
+        assert_eq!(result["edges"], json!([10, 20]));
+    }
+
+    // ── props_to_json ────────────────────────────────────────────────────────
+
+    #[test]
+    fn props_to_json_empty() {
+        let props: HashMap<String, Value> = HashMap::new();
+        assert_eq!(props_to_json(&props), json!({}));
+    }
+
+    #[test]
+    fn props_to_json_mixed_types() {
+        let mut props = HashMap::new();
+        props.insert("name".to_string(), Value::Str("Alice".into()));
+        props.insert("age".to_string(), Value::Int(30));
+        props.insert("active".to_string(), Value::Bool(true));
+
+        let result = props_to_json(&props);
+        assert!(result.is_object());
+        assert_eq!(result["name"], json!("Alice"));
+        assert_eq!(result["age"], json!(30));
+        assert_eq!(result["active"], json!(true));
+    }
+
+    #[test]
+    fn props_to_json_nested_list() {
+        let mut props = HashMap::new();
+        props.insert(
+            "tags".to_string(),
+            Value::List(vec![Value::Str("a".into()), Value::Str("b".into())]),
+        );
+        let result = props_to_json(&props);
+        assert_eq!(result["tags"], json!(["a", "b"]));
+    }
+
+    // ── node_to_json ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn node_to_json_basic() {
+        let mut props = HashMap::new();
+        props.insert("name".to_string(), Value::Str("Bob".into()));
+        let node = NodeData {
+            id: NodeId(7),
+            labels: vec!["Person".to_string(), "Employee".to_string()],
+            properties: props,
+        };
+        let result = node_to_json(&node);
+        assert_eq!(result["id"], json!("7"));
+        assert_eq!(result["labels"], json!(["Person", "Employee"]));
+        assert_eq!(result["properties"]["name"], json!("Bob"));
+    }
+
+    #[test]
+    fn node_to_json_no_labels_no_props() {
+        let node = NodeData {
+            id: NodeId(0),
+            labels: vec![],
+            properties: HashMap::new(),
+        };
+        let result = node_to_json(&node);
+        assert_eq!(result["id"], json!("0"));
+        assert_eq!(result["labels"], json!([]));
+        assert_eq!(result["properties"], json!({}));
+    }
+
+    // ── edge_to_json ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn edge_to_json_basic() {
+        let mut props = HashMap::new();
+        props.insert("weight".to_string(), Value::Float(0.75));
+        let edge = EdgeData {
+            id: EdgeId(42),
+            rel_type: "KNOWS".to_string(),
+            src: NodeId(1),
+            dst: NodeId(2),
+            properties: props,
+        };
+        let result = edge_to_json(&edge);
+        assert_eq!(result["id"], json!("42"));
+        assert_eq!(result["type"], json!("KNOWS"));
+        assert_eq!(result["source"], json!("1"));
+        assert_eq!(result["target"], json!("2"));
+        assert_eq!(result["properties"]["weight"], json!(0.75));
+    }
+
+    #[test]
+    fn edge_to_json_no_properties() {
+        let edge = EdgeData {
+            id: EdgeId(1),
+            rel_type: "FOLLOWS".to_string(),
+            src: NodeId(10),
+            dst: NodeId(20),
+            properties: HashMap::new(),
+        };
+        let result = edge_to_json(&edge);
+        assert_eq!(result["id"], json!("1"));
+        assert_eq!(result["type"], json!("FOLLOWS"));
+        assert_eq!(result["properties"], json!({}));
+    }
+
+    // ── row_to_json ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn row_to_json_scalar_values() {
+        let store = InMemoryGraphStore::new();
+        store.create_graph("g").unwrap();
+
+        let mut row = HashMap::new();
+        row.insert("x".to_string(), Value::Int(1));
+        row.insert("y".to_string(), Value::Str("hello".into()));
+
+        let columns = vec!["x".to_string(), "y".to_string()];
+        let result = row_to_json(&row, &columns, &store, "g");
+
+        assert_eq!(result["x"], json!(1));
+        assert_eq!(result["y"], json!("hello"));
+    }
+
+    #[test]
+    fn row_to_json_missing_column_becomes_null() {
+        let store = InMemoryGraphStore::new();
+        store.create_graph("g").unwrap();
+
+        let row = HashMap::new();
+        let columns = vec!["missing".to_string()];
+        let result = row_to_json(&row, &columns, &store, "g");
+
+        assert_eq!(result["missing"], Json::Null);
+    }
+
+    #[test]
+    fn row_to_json_resolves_node_reference() {
+        let store = InMemoryGraphStore::new();
+        store.create_graph("g").unwrap();
+        let node_id = store
+            .create_node("g", vec!["Person".to_string()], {
+                let mut p = HashMap::new();
+                p.insert("name".to_string(), Value::Str("Alice".into()));
+                p
+            })
+            .unwrap();
+
+        let mut row = HashMap::new();
+        row.insert("n".to_string(), Value::Node(node_id));
+
+        let columns = vec!["n".to_string()];
+        let result = row_to_json(&row, &columns, &store, "g");
+
+        assert_eq!(result["n"]["type"], json!("node"));
+        assert_eq!(result["n"]["labels"], json!(["Person"]));
+        assert_eq!(result["n"]["properties"]["name"], json!("Alice"));
+    }
+
+    #[test]
+    fn row_to_json_resolves_edge_reference() {
+        let store = InMemoryGraphStore::new();
+        store.create_graph("g").unwrap();
+        let n1 = store.create_node("g", vec![], HashMap::new()).unwrap();
+        let n2 = store.create_node("g", vec![], HashMap::new()).unwrap();
+        let edge_id = store
+            .create_edge("g", n1, n2, "KNOWS".to_string(), HashMap::new())
+            .unwrap();
+
+        let mut row = HashMap::new();
+        row.insert("r".to_string(), Value::Edge(edge_id));
+
+        let columns = vec!["r".to_string()];
+        let result = row_to_json(&row, &columns, &store, "g");
+
+        assert_eq!(result["r"]["type"], json!("KNOWS"));
+    }
+
+    #[test]
+    fn row_to_json_unresolvable_node_emits_reference() {
+        let store = InMemoryGraphStore::new();
+        store.create_graph("g").unwrap();
+
+        let mut row = HashMap::new();
+        row.insert("n".to_string(), Value::Node(NodeId(9999)));
+
+        let columns = vec!["n".to_string()];
+        let result = row_to_json(&row, &columns, &store, "g");
+
+        assert_eq!(result["n"]["$type"], json!("node"));
+        assert_eq!(result["n"]["id"], json!(9999));
+    }
+
+    #[test]
+    fn row_to_json_resolves_path() {
+        let store = InMemoryGraphStore::new();
+        store.create_graph("g").unwrap();
+        let n1 = store
+            .create_node("g", vec!["A".to_string()], HashMap::new())
+            .unwrap();
+        let n2 = store
+            .create_node("g", vec!["B".to_string()], HashMap::new())
+            .unwrap();
+        let e = store
+            .create_edge("g", n1, n2, "REL".to_string(), HashMap::new())
+            .unwrap();
+
+        let mut row = HashMap::new();
+        row.insert(
+            "p".to_string(),
+            Value::Path {
+                nodes: vec![n1, n2],
+                edges: vec![e],
+            },
+        );
+
+        let columns = vec!["p".to_string()];
+        let result = row_to_json(&row, &columns, &store, "g");
+
+        assert_eq!(result["p"]["type"], json!("path"));
+        assert!(result["p"]["nodes"].is_array());
+        assert!(result["p"]["edges"].is_array());
+    }
+
+    #[test]
+    fn row_to_json_resolves_nested_list() {
+        let store = InMemoryGraphStore::new();
+        store.create_graph("g").unwrap();
+        let nid = store
+            .create_node("g", vec!["X".to_string()], HashMap::new())
+            .unwrap();
+
+        let mut row = HashMap::new();
+        row.insert(
+            "items".to_string(),
+            Value::List(vec![Value::Node(nid), Value::Int(42)]),
+        );
+
+        let columns = vec!["items".to_string()];
+        let result = row_to_json(&row, &columns, &store, "g");
+
+        let arr = result["items"].as_array().unwrap();
+        assert_eq!(arr.len(), 2);
+        assert_eq!(arr[0]["type"], json!("node"));
+        assert_eq!(arr[1], json!(42));
+    }
+}
