@@ -13,7 +13,7 @@ use crate::storage::{EdgeId, NodeId, RangeQuery};
 use crate::types::Value;
 
 use super::helpers::{extract_node_id, get_adj_entries, inject_parameters, undefined_var};
-use super::{MutationStats, QueryExecutor, Row, VarLenBfsEntry};
+use super::{BfsArena, MutationStats, QueryExecutor, Row};
 
 impl<'a> QueryExecutor<'a> {
     pub(crate) fn exec_node_scan(
@@ -271,10 +271,15 @@ impl<'a> QueryExecutor<'a> {
                 .ok_or_else(|| undefined_var(&src_alias.0))?;
             let src_id = extract_node_id(src_val, &src_alias.0)?;
 
-            // BFS tracking full paths: queue entries are
-            // (node_id, path_nodes, path_edges, path_edge_set) where path_edge_set
-            // mirrors path_edges as a HashSet for O(1) duplicate-edge checks.
-            let mut queue: VecDeque<VarLenBfsEntry> = VecDeque::new();
+            // Arena-based BFS: instead of cloning Vec<NodeId>, Vec<EdgeId>, and
+            // HashSet<EdgeId> at every expansion step (O(depth) per step), we use
+            // a parent-pointer arena where each step is O(1).  Paths are
+            // reconstructed only when yielding output rows.
+            let (mut arena, root_idx) = BfsArena::new(src_id);
+
+            // BFS queue entries: (current_node_id, arena_index, depth)
+            let mut queue: VecDeque<(NodeId, usize, u32)> = VecDeque::new();
+
             // Collect edges already used in earlier steps of this named path.
             // This enforces cross-operator relationship isomorphism:
             // - Direct Value::Edge in the row (from regular Expand steps, incl. pre-bound r)
@@ -284,7 +289,7 @@ impl<'a> QueryExecutor<'a> {
             // We intentionally exclude user-defined list variables (like `rs` from WITH)
             // that contain edges intended to be FOLLOWED by this VarLen, not avoided.
             // Heuristic: collect Value::Edge (direct edge vars) and __path_rel_* (VarLen storage).
-            let prior_path_edges: std::collections::HashSet<EdgeId> = row
+            let prior_path_edges: HashSet<EdgeId> = row
                 .iter()
                 .flat_map(|(k, v)| match v {
                     Value::Edge(e) => vec![*e],
@@ -302,21 +307,26 @@ impl<'a> QueryExecutor<'a> {
                     _ => vec![],
                 })
                 .collect();
-            queue.push_back((src_id, vec![src_id], vec![], HashSet::new()));
+            queue.push_back((src_id, root_idx, 0));
 
-            while let Some((current, path_nodes, path_edges, path_edge_set)) = queue.pop_front() {
+            // Scratch row for edge property constraint evaluation -- built once
+            // from the base `row` and reused across all candidate edges instead
+            // of cloning the entire row per candidate.
+            let mut edge_scratch: Option<Row> = None;
+
+            while let Some((current, arena_idx, depth)) = queue.pop_front() {
                 budget.check_or_err()?;
-                let depth = path_edges.len() as u32;
 
                 // Yield this path if depth is within [min, max]
                 if depth >= *min && depth <= *max {
-                    let mut new_row = row.clone();
+                    let (path_nodes, path_edges) = arena.reconstruct_path(arena_idx);
                     let end_node = *path_nodes.last().ok_or_else(|| {
                         GqlError::Execution(ExecutionError::TypeMismatch {
                             expected: "non-empty path".to_string(),
                             actual: "empty path_nodes".to_string(),
                         })
                     })?;
+                    let mut new_row = row.clone();
                     new_row.insert(dst_alias.0.clone(), Value::Node(end_node));
                     if let Some(pa) = path_alias {
                         if *path_mode {
@@ -324,8 +334,8 @@ impl<'a> QueryExecutor<'a> {
                             new_row.insert(
                                 pa.0.clone(),
                                 Value::Path {
-                                    nodes: path_nodes.clone(),
-                                    edges: path_edges.clone(),
+                                    nodes: path_nodes,
+                                    edges: path_edges,
                                 },
                             );
                         } else {
@@ -350,34 +360,30 @@ impl<'a> QueryExecutor<'a> {
                         // relationship cannot appear twice in one path), but node
                         // repetition is allowed. This prevents infinite loops.
                         // Also check edges from prior steps in this named path.
-                        if path_edge_set.contains(&adj.edge_id)
+                        if arena.path_contains_edge(arena_idx, adj.edge_id)
                             || prior_path_edges.contains(&adj.edge_id)
                         {
                             continue;
                         }
                         // Check inline property constraints on the traversed edge.
+                        // Instead of cloning the entire row per candidate edge, we
+                        // build a scratch row once and update only the edge entry.
                         if let Some(pred) = rel_props {
-                            let mut edge_row = row.clone();
-                            edge_row
-                                .insert("__varlen_edge__".to_string(), Value::Edge(adj.edge_id));
-                            let ctx = self.build_filter_ctx(graph, &edge_row)?;
-                            match self.eval_with_storage(graph, pred, &edge_row, &ctx) {
+                            let scratch = edge_scratch.get_or_insert_with(|| {
+                                let mut s = row.clone();
+                                s.insert("__varlen_edge__".to_string(), Value::Edge(adj.edge_id));
+                                s
+                            });
+                            // Update just the edge entry for this candidate
+                            scratch.insert("__varlen_edge__".to_string(), Value::Edge(adj.edge_id));
+                            let ctx = self.build_filter_ctx(graph, scratch)?;
+                            match self.eval_with_storage(graph, pred, scratch, &ctx) {
                                 Ok(Value::Bool(true)) => {}
                                 _ => continue, // edge doesn't satisfy constraints
                             }
                         }
-                        let mut new_path_nodes = path_nodes.clone();
-                        new_path_nodes.push(adj.neighbor_id);
-                        let mut new_path_edges = path_edges.clone();
-                        new_path_edges.push(adj.edge_id);
-                        let mut new_path_edge_set = path_edge_set.clone();
-                        new_path_edge_set.insert(adj.edge_id);
-                        queue.push_back((
-                            adj.neighbor_id,
-                            new_path_nodes,
-                            new_path_edges,
-                            new_path_edge_set,
-                        ));
+                        let child_idx = arena.push(adj.neighbor_id, adj.edge_id, arena_idx);
+                        queue.push_back((adj.neighbor_id, child_idx, depth + 1));
                     }
                 }
             }
@@ -525,19 +531,23 @@ impl<'a> QueryExecutor<'a> {
                 .ok_or_else(|| undefined_var(&dst_alias.0))?;
             let dst_id = extract_node_id(dst_val, &dst_alias.0)?;
 
-            // BFS from src to dst, tracking full paths
-            // Queue: (current_node, path_nodes, path_edges)
-            let mut queue: VecDeque<(NodeId, Vec<NodeId>, Vec<EdgeId>)> = VecDeque::new();
-            queue.push_back((src_id, vec![src_id], vec![]));
+            // Arena-based BFS from src to dst.  Instead of cloning
+            // Vec<NodeId> and Vec<EdgeId> per queue entry (O(depth) per step),
+            // we use a parent-pointer arena -- O(1) per step.
+            let (mut arena, root_idx) = BfsArena::new(src_id);
+
+            // Queue: (current_node, arena_index, depth)
+            let mut queue: VecDeque<(NodeId, usize, u32)> = VecDeque::new();
+            queue.push_back((src_id, root_idx, 0));
             let mut visited = HashSet::new();
             visited.insert(src_id);
 
-            let mut found_paths: Vec<(Vec<NodeId>, Vec<EdgeId>)> = Vec::new();
+            // Store arena indices of found paths; reconstruct only at the end.
+            let mut found_indices: Vec<usize> = Vec::new();
             let mut shortest_len: Option<u32> = None;
 
-            while let Some((current, path_nodes, path_edges)) = queue.pop_front() {
+            while let Some((current, arena_idx, depth)) = queue.pop_front() {
                 budget.check_or_err()?;
-                let depth = path_edges.len() as u32;
 
                 // If we already found shortest paths and current depth exceeds
                 // that length, stop (BFS guarantees depth ordering).
@@ -549,7 +559,7 @@ impl<'a> QueryExecutor<'a> {
 
                 // Check if we reached the destination
                 if current == dst_id && depth > 0 {
-                    found_paths.push((path_nodes.clone(), path_edges.clone()));
+                    found_indices.push(arena_idx);
                     shortest_len = Some(depth);
                     if !*all_paths {
                         // shortestPath: just need the first one
@@ -577,16 +587,14 @@ impl<'a> QueryExecutor<'a> {
                     if !is_dst {
                         visited.insert(adj.neighbor_id);
                     }
-                    let mut new_nodes = path_nodes.clone();
-                    new_nodes.push(adj.neighbor_id);
-                    let mut new_edges = path_edges.clone();
-                    new_edges.push(adj.edge_id);
-                    queue.push_back((adj.neighbor_id, new_nodes, new_edges));
+                    let child_idx = arena.push(adj.neighbor_id, adj.edge_id, arena_idx);
+                    queue.push_back((adj.neighbor_id, child_idx, depth + 1));
                 }
             }
 
-            // Produce output rows for each found path
-            for (pn, pe) in found_paths {
+            // Produce output rows for each found path, reconstructing only now.
+            for idx in found_indices {
+                let (pn, pe) = arena.reconstruct_path(idx);
                 let mut new_row = row.clone();
                 new_row.insert(
                     path_alias.0.clone(),
@@ -834,5 +842,260 @@ mod tests {
             result.is_err(),
             "expected budget error for Cartesian product exceeding row limit"
         );
+    }
+
+    // -- Arena-based BFS path tests ------------------------------------------
+
+    /// Test VarLenExpand with a longer chain (depth 5) to verify arena
+    /// reconstruction produces the correct path at each depth.
+    #[test]
+    fn varlen_expand_deep_chain() {
+        let store = make_store();
+        // Build a chain: n0 -> n1 -> n2 -> n3 -> n4 -> n5
+        let mut nodes = Vec::new();
+        for _ in 0..6 {
+            nodes.push(
+                store
+                    .create_node("g", vec!["N".to_string()], HashMap::new())
+                    .unwrap(),
+            );
+        }
+        for i in 0..5 {
+            store
+                .create_edge("g", nodes[i], nodes[i + 1], "R".to_string(), HashMap::new())
+                .unwrap();
+        }
+        let executor = QueryExecutor::new(&store);
+        let plan = Operator::VarLenExpand {
+            direction: Direction::Outgoing,
+            rel_types: vec![RelType::new("R")],
+            min: 1,
+            max: 5,
+            src_alias: Identifier::new("a"),
+            path_alias: Some(Identifier::new("p")),
+            path_mode: true,
+            dst_alias: Identifier::new("b"),
+            child: Box::new(Operator::NodeScan {
+                label: Some(Label::new("N")),
+                alias: Identifier::new("a"),
+            }),
+            rel_props: None,
+        };
+        let mut budget = ExecutionBudget::unlimited();
+        let result = executor.execute("g", &plan, &mut budget).unwrap();
+        // For a 6-node chain, from each starting node we get paths:
+        // n0: depth 1..5 -> 5 paths  (to n1, n2, n3, n4, n5)
+        // n1: depth 1..4 -> 4 paths  (to n2, n3, n4, n5)
+        // n2: depth 1..3 -> 3 paths  (to n3, n4, n5)
+        // n3: depth 1..2 -> 2 paths  (to n4, n5)
+        // n4: depth 1    -> 1 path   (to n5)
+        // n5: no outgoing edges -> 0
+        // Total: 5+4+3+2+1 = 15
+        assert_eq!(result.rows.len(), 15);
+
+        // Verify that path_nodes for the longest path (depth=5) from n0 is correct
+        let depth5_rows: Vec<_> = result
+            .rows
+            .iter()
+            .filter(|r| {
+                if let Some(Value::Path { nodes: pn, .. }) = r.get("p") {
+                    pn.len() == 6 // 6 nodes = depth 5
+                } else {
+                    false
+                }
+            })
+            .collect();
+        assert_eq!(depth5_rows.len(), 1);
+        if let Some(Value::Path {
+            nodes: pn,
+            edges: pe,
+        }) = depth5_rows[0].get("p")
+        {
+            assert_eq!(pn.len(), 6);
+            assert_eq!(pe.len(), 5);
+            for i in 0..6 {
+                assert_eq!(pn[i], nodes[i]);
+            }
+        }
+    }
+
+    /// Test VarLenExpand with relationship variable mode (path_mode=false).
+    #[test]
+    fn varlen_expand_rel_variable_mode() {
+        let store = make_store();
+        let a = store
+            .create_node("g", vec!["N".to_string()], HashMap::new())
+            .unwrap();
+        let b = store
+            .create_node("g", vec!["N".to_string()], HashMap::new())
+            .unwrap();
+        let c = store
+            .create_node("g", vec!["N".to_string()], HashMap::new())
+            .unwrap();
+        let e1 = store
+            .create_edge("g", a, b, "R".to_string(), HashMap::new())
+            .unwrap();
+        let e2 = store
+            .create_edge("g", b, c, "R".to_string(), HashMap::new())
+            .unwrap();
+        let executor = QueryExecutor::new(&store);
+        let plan = Operator::VarLenExpand {
+            direction: Direction::Outgoing,
+            rel_types: vec![RelType::new("R")],
+            min: 2,
+            max: 2,
+            src_alias: Identifier::new("a"),
+            path_alias: Some(Identifier::new("rs")),
+            path_mode: false, // relationship variable mode
+            dst_alias: Identifier::new("b"),
+            child: Box::new(Operator::NodeScan {
+                label: Some(Label::new("N")),
+                alias: Identifier::new("a"),
+            }),
+            rel_props: None,
+        };
+        let mut budget = ExecutionBudget::unlimited();
+        let result = executor.execute("g", &plan, &mut budget).unwrap();
+        // Only 1 result: a-[e1]->b-[e2]->c with min=max=2
+        assert_eq!(result.rows.len(), 1);
+        if let Some(Value::List(edges)) = result.rows[0].get("rs") {
+            assert_eq!(edges.len(), 2);
+            assert_eq!(edges[0], Value::Edge(e1));
+            assert_eq!(edges[1], Value::Edge(e2));
+        } else {
+            panic!("expected list of edges for relationship variable mode");
+        }
+    }
+
+    /// Test ShortestPath with a longer chain to verify arena reconstruction.
+    #[test]
+    fn shortest_path_deep_chain() {
+        let store = make_store();
+        // Build: n0 -> n1 -> n2 -> n3
+        let mut nodes = Vec::new();
+        for _ in 0..4 {
+            nodes.push(
+                store
+                    .create_node("g", vec!["N".to_string()], HashMap::new())
+                    .unwrap(),
+            );
+        }
+        for i in 0..3 {
+            store
+                .create_edge("g", nodes[i], nodes[i + 1], "R".to_string(), HashMap::new())
+                .unwrap();
+        }
+        let mut start_row = Row::new();
+        start_row.insert("src".to_string(), Value::Node(nodes[0]));
+        start_row.insert("dst".to_string(), Value::Node(nodes[3]));
+        let executor = QueryExecutor::new(&store);
+        let plan = Operator::ShortestPath {
+            src_alias: Identifier::new("src"),
+            dst_alias: Identifier::new("dst"),
+            rel_types: vec![],
+            direction: Direction::Outgoing,
+            min: 1,
+            max: 10,
+            path_alias: Identifier::new("p"),
+            all_paths: false,
+        };
+        let mut budget = ExecutionBudget::unlimited();
+        let mut stats = MutationStats::default();
+        let rows = executor
+            .exec_operator("g", &plan, &mut budget, &[start_row], &mut stats)
+            .unwrap();
+        assert_eq!(rows.len(), 1);
+        if let Some(Value::Path {
+            nodes: pn,
+            edges: pe,
+        }) = rows[0].get("p")
+        {
+            assert_eq!(pn.len(), 4);
+            assert_eq!(pe.len(), 3);
+            for i in 0..4 {
+                assert_eq!(pn[i], nodes[i]);
+            }
+        } else {
+            panic!("expected path in result row");
+        }
+    }
+
+    /// Test VarLenExpand with min=0 (includes zero-length paths).
+    #[test]
+    fn varlen_expand_min_zero() {
+        let store = make_store();
+        let a = store
+            .create_node("g", vec!["N".to_string()], HashMap::new())
+            .unwrap();
+        let b = store
+            .create_node("g", vec!["N".to_string()], HashMap::new())
+            .unwrap();
+        store
+            .create_edge("g", a, b, "R".to_string(), HashMap::new())
+            .unwrap();
+        let executor = QueryExecutor::new(&store);
+        let plan = Operator::VarLenExpand {
+            direction: Direction::Outgoing,
+            rel_types: vec![RelType::new("R")],
+            min: 0,
+            max: 1,
+            src_alias: Identifier::new("a"),
+            path_alias: Some(Identifier::new("p")),
+            path_mode: true,
+            dst_alias: Identifier::new("b"),
+            child: Box::new(Operator::NodeScan {
+                label: Some(Label::new("N")),
+                alias: Identifier::new("a"),
+            }),
+            rel_props: None,
+        };
+        let mut budget = ExecutionBudget::unlimited();
+        let result = executor.execute("g", &plan, &mut budget).unwrap();
+        // n=a: depth 0 -> itself, depth 1 -> b (2 paths)
+        // n=b: depth 0 -> itself (1 path, no outgoing R)
+        // Total: 3
+        assert_eq!(result.rows.len(), 3);
+    }
+
+    /// Test edge isomorphism in VarLenExpand: a cycle a->b->a should not
+    /// reuse the same edge.
+    #[test]
+    fn varlen_expand_cycle_edge_isomorphism() {
+        let store = make_store();
+        let a = store
+            .create_node("g", vec!["N".to_string()], HashMap::new())
+            .unwrap();
+        let b = store
+            .create_node("g", vec!["N".to_string()], HashMap::new())
+            .unwrap();
+        // a->b and b->a (two distinct edges)
+        store
+            .create_edge("g", a, b, "R".to_string(), HashMap::new())
+            .unwrap();
+        store
+            .create_edge("g", b, a, "R".to_string(), HashMap::new())
+            .unwrap();
+        let executor = QueryExecutor::new(&store);
+        let plan = Operator::VarLenExpand {
+            direction: Direction::Outgoing,
+            rel_types: vec![RelType::new("R")],
+            min: 1,
+            max: 3,
+            src_alias: Identifier::new("a"),
+            path_alias: Some(Identifier::new("p")),
+            path_mode: true,
+            dst_alias: Identifier::new("b"),
+            child: Box::new(Operator::NodeScan {
+                label: Some(Label::new("N")),
+                alias: Identifier::new("a"),
+            }),
+            rel_props: None,
+        };
+        let mut budget = ExecutionBudget::unlimited();
+        let result = executor.execute("g", &plan, &mut budget).unwrap();
+        // From a: a->b (d=1), a->b->a (d=2). d=3 would need reusing e(a->b). STOP.
+        // From b: b->a (d=1), b->a->b (d=2). d=3 would need reusing e(b->a). STOP.
+        // Total = 4
+        assert_eq!(result.rows.len(), 4);
     }
 }
