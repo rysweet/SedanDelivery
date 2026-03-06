@@ -6,7 +6,7 @@ SedanDelivery is a Rust GQL/Cypher query engine that runs as a Redis/Valkey modu
 
 ## Workspace Structure
 
-Cargo workspace with 5 crates:
+Cargo workspace with 8 crates:
 
 | Crate | Type | Purpose |
 |-------|------|---------|
@@ -15,6 +15,9 @@ Cargo workspace with 5 crates:
 | `gql-fabric-store` | lib | Microsoft Fabric-backed `GraphStore` implementation |
 | `gql-module` | cdylib | Redis module entry point (`redis_module!` macro) |
 | `gql-cli` | bin | Standalone REPL for development and debugging |
+| `gql-api` | bin | HTTP REST API server |
+| `sedandelivery-bolt` | bin | Neo4j Bolt v4.4 protocol server (compatible with all Neo4j drivers) |
+| `sedandelivery-fabric-sync` | bin | Fabric replication sidecar (streams changelog to Microsoft Fabric Graph Database) |
 
 ## Core Abstractions
 
