@@ -881,3 +881,162 @@ impl<'a> QueryExecutor<'a> {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ast::{Direction, Expr, Identifier, Label, RelType};
+    use crate::executor::budget::ExecutionBudget;
+    use crate::planner::{CreatePattern, Operator};
+    use crate::storage::{GraphStore, InMemoryGraphStore};
+
+    fn make_store() -> InMemoryGraphStore {
+        let store = InMemoryGraphStore::new();
+        store.create_graph("g").unwrap();
+        store
+    }
+
+    #[test]
+    fn create_node() {
+        let store = make_store();
+        let executor = QueryExecutor::new(&store);
+        let plan = Operator::Create {
+            patterns: vec![CreatePattern {
+                nodes: vec![(
+                    Some(Identifier::new("n")),
+                    vec![Label::new("P")],
+                    vec![("name".to_string(), Expr::Str("A".into()))],
+                )],
+                edges: vec![],
+            }],
+            child: None,
+        };
+        let mut budget = ExecutionBudget::unlimited();
+        let result = executor.execute("g", &plan, &mut budget).unwrap();
+        assert_eq!(result.stats.nodes_created, 1);
+    }
+
+    #[test]
+    fn delete_detach() {
+        let store = make_store();
+        let a = store
+            .create_node("g", vec!["N".to_string()], HashMap::new())
+            .unwrap();
+        let b = store
+            .create_node("g", vec!["N".to_string()], HashMap::new())
+            .unwrap();
+        store
+            .create_edge("g", a, b, "R".to_string(), HashMap::new())
+            .unwrap();
+        let executor = QueryExecutor::new(&store);
+        let plan = Operator::Delete {
+            exprs: vec![Expr::Variable(Identifier::new("n"))],
+            detach: true,
+            child: Box::new(Operator::NodeScan {
+                label: Some(Label::new("N")),
+                alias: Identifier::new("n"),
+            }),
+        };
+        let mut budget = ExecutionBudget::unlimited();
+        let result = executor.execute("g", &plan, &mut budget).unwrap();
+        assert_eq!(result.stats.nodes_deleted, 2);
+    }
+
+    #[test]
+    fn set_property() {
+        let store = make_store();
+        let nid = store
+            .create_node("g", vec!["P".to_string()], HashMap::new())
+            .unwrap();
+        let executor = QueryExecutor::new(&store);
+        let plan = Operator::Set {
+            items: vec![SetItem::Property {
+                alias: Identifier::new("n"),
+                key: "x".to_string(),
+                value: Expr::Integer(1),
+            }],
+            child: Box::new(Operator::NodeScan {
+                label: Some(Label::new("P")),
+                alias: Identifier::new("n"),
+            }),
+        };
+        let mut budget = ExecutionBudget::unlimited();
+        let result = executor.execute("g", &plan, &mut budget).unwrap();
+        assert_eq!(result.stats.properties_set, 1);
+        assert_eq!(
+            store
+                .get_node("g", nid)
+                .unwrap()
+                .unwrap()
+                .properties
+                .get("x"),
+            Some(&Value::Int(1))
+        );
+    }
+
+    #[test]
+    fn remove_property() {
+        let store = make_store();
+        let mut props = HashMap::new();
+        props.insert("x".to_string(), Value::Int(1));
+        let nid = store
+            .create_node("g", vec!["P".to_string()], props)
+            .unwrap();
+        let executor = QueryExecutor::new(&store);
+        let plan = Operator::Remove {
+            items: vec![RemoveItem::Property {
+                alias: Identifier::new("n"),
+                key: "x".to_string(),
+            }],
+            child: Box::new(Operator::NodeScan {
+                label: Some(Label::new("P")),
+                alias: Identifier::new("n"),
+            }),
+        };
+        let mut budget = ExecutionBudget::unlimited();
+        let _ = executor.execute("g", &plan, &mut budget).unwrap();
+        assert!(!store
+            .get_node("g", nid)
+            .unwrap()
+            .unwrap()
+            .properties
+            .contains_key("x"));
+    }
+
+    #[test]
+    fn merge_creates_when_not_found() {
+        let store = make_store();
+        let executor = QueryExecutor::new(&store);
+        let plan = Operator::Merge {
+            node_alias: Some(Identifier::new("n")),
+            labels: vec![Label::new("P")],
+            properties: vec![],
+            on_create: vec![],
+            on_match: vec![],
+            child: None,
+        };
+        let mut budget = ExecutionBudget::unlimited();
+        let result = executor.execute("g", &plan, &mut budget).unwrap();
+        assert_eq!(result.stats.nodes_created, 1);
+    }
+
+    #[test]
+    fn merge_matches_existing() {
+        let store = make_store();
+        store
+            .create_node("g", vec!["P".to_string()], HashMap::new())
+            .unwrap();
+        let executor = QueryExecutor::new(&store);
+        let plan = Operator::Merge {
+            node_alias: Some(Identifier::new("n")),
+            labels: vec![Label::new("P")],
+            properties: vec![],
+            on_create: vec![],
+            on_match: vec![],
+            child: None,
+        };
+        let mut budget = ExecutionBudget::unlimited();
+        let result = executor.execute("g", &plan, &mut budget).unwrap();
+        assert_eq!(result.stats.nodes_created, 0);
+    }
+}

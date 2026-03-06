@@ -696,3 +696,133 @@ pub fn cmp_values(a: &Value, b: &Value) -> std::cmp::Ordering {
         _ => Equal,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ast::{BinaryOp, Identifier, Label};
+    use std::cmp::Ordering;
+
+    #[test]
+    fn extract_node_id_success() {
+        assert_eq!(
+            extract_node_id(&Value::Node(NodeId(42)), "n").unwrap(),
+            NodeId(42)
+        );
+    }
+
+    #[test]
+    fn extract_node_id_wrong_type() {
+        assert!(extract_node_id(&Value::Int(1), "n").is_err());
+    }
+
+    #[test]
+    fn inject_params_no_overwrite() {
+        let mut row = Row::new();
+        row.insert("$x".to_string(), Value::Int(1));
+        let mut params = HashMap::new();
+        params.insert("$x".to_string(), Value::Int(999));
+        params.insert("$y".to_string(), Value::Int(2));
+        inject_parameters(&mut row, &params);
+        assert_eq!(row.get("$x"), Some(&Value::Int(1)));
+        assert_eq!(row.get("$y"), Some(&Value::Int(2)));
+    }
+
+    #[test]
+    fn row_key_deterministic() {
+        let mut r1 = Row::new();
+        r1.insert("a".to_string(), Value::Int(1));
+        r1.insert("b".to_string(), Value::Str("h".into()));
+        let mut r2 = Row::new();
+        r2.insert("b".to_string(), Value::Str("h".into()));
+        r2.insert("a".to_string(), Value::Int(1));
+        assert_eq!(row_key(&r1), row_key(&r2));
+    }
+
+    #[test]
+    fn eval_count_expr_valid() {
+        assert_eq!(eval_count_expr(&Expr::Integer(5), &Row::new()).unwrap(), 5);
+    }
+
+    #[test]
+    fn eval_count_expr_negative() {
+        assert!(eval_count_expr(&Expr::Integer(-1), &Row::new()).is_err());
+    }
+
+    #[test]
+    fn expr_to_col_variable() {
+        assert_eq!(
+            expr_to_column_name(&Expr::Variable(Identifier::new("n"))),
+            "n"
+        );
+    }
+
+    #[test]
+    fn expr_to_col_property() {
+        let expr = Expr::Property(
+            Box::new(Expr::Variable(Identifier::new("n"))),
+            "name".into(),
+        );
+        assert_eq!(expr_to_column_name(&expr), "n.name");
+    }
+
+    #[test]
+    fn expr_to_col_function() {
+        let expr = Expr::FunctionCall {
+            name: "count".into(),
+            args: vec![Expr::Variable(Identifier::new("n"))],
+            distinct: false,
+        };
+        assert_eq!(expr_to_column_name(&expr), "count(n)");
+    }
+
+    #[test]
+    fn value_to_expr_roundtrip() {
+        assert_eq!(value_to_expr(&Value::Null), Expr::Null);
+        assert_eq!(value_to_expr(&Value::Bool(true)), Expr::Bool(true));
+        assert_eq!(value_to_expr(&Value::Int(42)), Expr::Integer(42));
+    }
+
+    #[test]
+    fn discover_aliases_node_scan() {
+        let op = Operator::NodeScan {
+            label: Some(Label::new("N")),
+            alias: Identifier::new("n"),
+        };
+        assert_eq!(discover_operator_aliases(&op), vec!["n".to_string()]);
+    }
+
+    #[test]
+    fn cmp_values_null_last() {
+        assert_eq!(cmp_values(&Value::Null, &Value::Int(0)), Ordering::Greater);
+        assert_eq!(cmp_values(&Value::Null, &Value::Null), Ordering::Equal);
+    }
+
+    #[test]
+    fn cmp_values_nan_after_regular() {
+        assert_eq!(
+            cmp_values(&Value::Float(f64::NAN), &Value::Float(1.0)),
+            Ordering::Greater
+        );
+    }
+
+    #[test]
+    fn cmp_values_list_lex() {
+        let a = Value::List(vec![Value::Int(1), Value::Int(2)]);
+        let b = Value::List(vec![Value::Int(1), Value::Int(3)]);
+        assert_eq!(cmp_values(&a, &b), Ordering::Less);
+    }
+
+    #[test]
+    fn eval_binary_values_list_concat() {
+        let ctx: FilterRow<'_> = HashMap::new();
+        let result = eval_binary_values(
+            BinaryOp::Add,
+            Value::List(vec![Value::Int(1)]),
+            Value::List(vec![Value::Int(2)]),
+            &ctx,
+        )
+        .unwrap();
+        assert_eq!(result, Value::List(vec![Value::Int(1), Value::Int(2)]));
+    }
+}

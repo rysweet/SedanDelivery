@@ -189,3 +189,131 @@ impl<'a> QueryExecutor<'a> {
         Ok(input.into_iter().skip(n).collect())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ast::{BinaryOp, Expr, Identifier, Label};
+    use crate::executor::budget::ExecutionBudget;
+    use crate::planner::Operator;
+    use crate::storage::{GraphStore, InMemoryGraphStore};
+    use std::collections::HashMap;
+
+    fn make_store() -> InMemoryGraphStore {
+        let store = InMemoryGraphStore::new();
+        store.create_graph("g").unwrap();
+        store
+    }
+
+    #[test]
+    fn filter_keeps_matching() {
+        let store = make_store();
+        let mut p = HashMap::new();
+        p.insert("x".to_string(), Value::Int(10));
+        store.create_node("g", vec!["N".to_string()], p).unwrap();
+        store
+            .create_node("g", vec!["N".to_string()], HashMap::new())
+            .unwrap();
+        let executor = QueryExecutor::new(&store);
+        let plan = Operator::Filter {
+            predicate: Expr::BinaryOp {
+                op: BinaryOp::Gte,
+                left: Box::new(Expr::Property(
+                    Box::new(Expr::Variable(Identifier::new("n"))),
+                    "x".into(),
+                )),
+                right: Box::new(Expr::Integer(5)),
+            },
+            child: Box::new(Operator::NodeScan {
+                label: Some(Label::new("N")),
+                alias: Identifier::new("n"),
+            }),
+        };
+        let mut budget = ExecutionBudget::unlimited();
+        let result = executor.execute("g", &plan, &mut budget).unwrap();
+        assert_eq!(result.rows.len(), 1);
+    }
+
+    #[test]
+    fn distinct_removes_duplicates() {
+        let store = make_store();
+        store
+            .create_node("g", vec!["N".to_string()], HashMap::new())
+            .unwrap();
+        store
+            .create_node("g", vec!["N".to_string()], HashMap::new())
+            .unwrap();
+        let executor = QueryExecutor::new(&store);
+        let plan = Operator::Distinct {
+            child: Box::new(Operator::Project {
+                items: vec![(Expr::Integer(1), Some(Identifier::new("x")))],
+                child: Box::new(Operator::NodeScan {
+                    label: Some(Label::new("N")),
+                    alias: Identifier::new("n"),
+                }),
+            }),
+        };
+        let mut budget = ExecutionBudget::unlimited();
+        let result = executor.execute("g", &plan, &mut budget).unwrap();
+        assert_eq!(result.rows.len(), 1);
+    }
+
+    #[test]
+    fn sort_ascending() {
+        let store = make_store();
+        for name in &["C", "A", "B"] {
+            let mut p = HashMap::new();
+            p.insert("name".to_string(), Value::Str((*name).into()));
+            store.create_node("g", vec!["P".to_string()], p).unwrap();
+        }
+        let executor = QueryExecutor::new(&store);
+        let plan = Operator::ProduceResults {
+            columns: vec![(
+                "n.name".to_string(),
+                Expr::Property(
+                    Box::new(Expr::Variable(Identifier::new("n"))),
+                    "name".into(),
+                ),
+            )],
+            child: Box::new(Operator::Sort {
+                items: vec![(
+                    Expr::Property(
+                        Box::new(Expr::Variable(Identifier::new("n"))),
+                        "name".into(),
+                    ),
+                    true,
+                )],
+                child: Box::new(Operator::NodeScan {
+                    label: Some(Label::new("P")),
+                    alias: Identifier::new("n"),
+                }),
+            }),
+        };
+        let mut budget = ExecutionBudget::unlimited();
+        let result = executor.execute("g", &plan, &mut budget).unwrap();
+        assert_eq!(result.rows[0]["n.name"], Value::Str("A".into()));
+        assert_eq!(result.rows[2]["n.name"], Value::Str("C".into()));
+    }
+
+    #[test]
+    fn limit_and_skip() {
+        let store = make_store();
+        for _ in 0..5 {
+            store.create_node("g", vec![], HashMap::new()).unwrap();
+        }
+        let executor = QueryExecutor::new(&store);
+        let plan = Operator::Limit {
+            count: Expr::Integer(2),
+            child: Box::new(Operator::Skip {
+                count: Expr::Integer(1),
+                child: Box::new(Operator::NodeScan {
+                    label: None,
+                    alias: Identifier::new("n"),
+                }),
+            }),
+        };
+        let mut budget = ExecutionBudget::unlimited();
+        let result = executor.execute("g", &plan, &mut budget).unwrap();
+        assert_eq!(result.rows.len(), 2);
+    }
+}
