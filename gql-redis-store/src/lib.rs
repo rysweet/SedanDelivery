@@ -183,8 +183,13 @@ impl RedisGraphStore {
         idle_timeout_secs: u64,
         min_idle: u32,
     ) -> Result<Self, StorageError> {
-        let pool =
-            RedisPool::standalone(url, pool_size, pool_timeout_secs, idle_timeout_secs, min_idle)?;
+        let pool = RedisPool::standalone(
+            url,
+            pool_size,
+            pool_timeout_secs,
+            idle_timeout_secs,
+            min_idle,
+        )?;
         Ok(Self {
             pool,
             key_prefix: key_prefix.to_string(),
@@ -204,8 +209,13 @@ impl RedisGraphStore {
         idle_timeout_secs: u64,
         min_idle: u32,
     ) -> Result<Self, StorageError> {
-        let pool =
-            RedisPool::cluster(nodes, pool_size, pool_timeout_secs, idle_timeout_secs, min_idle)?;
+        let pool = RedisPool::cluster(
+            nodes,
+            pool_size,
+            pool_timeout_secs,
+            idle_timeout_secs,
+            min_idle,
+        )?;
         Ok(Self {
             pool,
             key_prefix: key_prefix.to_string(),
