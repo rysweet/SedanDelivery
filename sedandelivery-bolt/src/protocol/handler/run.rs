@@ -801,3 +801,349 @@ fn detect_cartesian_products(op: &gql_core::planner::Operator, notifications: &m
         | Operator::ShortestPath { .. } => {}
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::packstream::value::BoltMapExt;
+    use gql_core::ast::Identifier;
+    use gql_core::planner::Operator;
+
+    // ── strip_cypher_prefix ─────────────────────────────────────────────
+
+    #[test]
+    fn strip_cypher_prefix_no_prefix() {
+        assert_eq!(
+            strip_cypher_prefix("MATCH (n) RETURN n"),
+            "MATCH (n) RETURN n"
+        );
+    }
+
+    #[test]
+    fn strip_cypher_prefix_with_runtime_directive() {
+        let q = "CYPHER runtime=interpreted MATCH (n) RETURN n";
+        assert_eq!(strip_cypher_prefix(q), "MATCH (n) RETURN n");
+    }
+
+    #[test]
+    fn strip_cypher_prefix_case_insensitive() {
+        let q = "cypher planner=cost RETURN 1";
+        assert_eq!(strip_cypher_prefix(q), "RETURN 1");
+    }
+
+    #[test]
+    fn strip_cypher_prefix_mixed_case() {
+        let q = "Cypher runtime=slotted CREATE (n:Foo)";
+        assert_eq!(strip_cypher_prefix(q), "CREATE (n:Foo)");
+    }
+
+    #[test]
+    fn strip_cypher_prefix_with_explain() {
+        let q = "CYPHER version=3.5 EXPLAIN MATCH (n) RETURN n";
+        assert_eq!(strip_cypher_prefix(q), "EXPLAIN MATCH (n) RETURN n");
+    }
+
+    #[test]
+    fn strip_cypher_prefix_with_profile() {
+        let q = "CYPHER runtime=compiled PROFILE MATCH (n) RETURN n";
+        assert_eq!(strip_cypher_prefix(q), "PROFILE MATCH (n) RETURN n");
+    }
+
+    #[test]
+    fn strip_cypher_prefix_trims_whitespace() {
+        assert_eq!(strip_cypher_prefix("  RETURN 1  "), "RETURN 1");
+    }
+
+    #[test]
+    fn strip_cypher_prefix_short_string() {
+        assert_eq!(strip_cypher_prefix("RET"), "RET");
+    }
+
+    #[test]
+    fn strip_cypher_prefix_exactly_cypher_space() {
+        let q = "CYPHER  ";
+        let result = strip_cypher_prefix(q);
+        assert!(!result.is_empty() || q.trim().is_empty());
+    }
+
+    // ── detect_explain_profile ──────────────────────────────────────────
+
+    #[test]
+    fn detect_explain_prefix() {
+        let (is_explain, is_profile, actual) = detect_explain_profile("EXPLAIN MATCH (n) RETURN n");
+        assert!(is_explain);
+        assert!(!is_profile);
+        assert_eq!(actual, "MATCH (n) RETURN n");
+    }
+
+    #[test]
+    fn detect_profile_prefix() {
+        let (is_explain, is_profile, actual) = detect_explain_profile("PROFILE MATCH (n) RETURN n");
+        assert!(!is_explain);
+        assert!(is_profile);
+        assert_eq!(actual, "MATCH (n) RETURN n");
+    }
+
+    #[test]
+    fn detect_explain_case_insensitive() {
+        let (is_explain, _, actual) = detect_explain_profile("explain RETURN 1");
+        assert!(is_explain);
+        assert_eq!(actual, "RETURN 1");
+    }
+
+    #[test]
+    fn detect_profile_case_insensitive() {
+        let (_, is_profile, actual) = detect_explain_profile("profile RETURN 1");
+        assert!(is_profile);
+        assert_eq!(actual, "RETURN 1");
+    }
+
+    #[test]
+    fn detect_normal_query_no_prefix() {
+        let (is_explain, is_profile, actual) = detect_explain_profile("MATCH (n) RETURN n");
+        assert!(!is_explain);
+        assert!(!is_profile);
+        assert_eq!(actual, "MATCH (n) RETURN n");
+    }
+
+    #[test]
+    fn detect_explain_profile_short_query() {
+        let (is_explain, is_profile, actual) = detect_explain_profile("RET");
+        assert!(!is_explain);
+        assert!(!is_profile);
+        assert_eq!(actual, "RET");
+    }
+
+    #[test]
+    fn detect_explain_profile_empty() {
+        let (is_explain, is_profile, actual) = detect_explain_profile("");
+        assert!(!is_explain);
+        assert!(!is_profile);
+        assert_eq!(actual, "");
+    }
+
+    #[test]
+    fn detect_explain_not_profile() {
+        let (is_explain, is_profile, _) =
+            detect_explain_profile("EXPLAIN PROFILE MATCH (n) RETURN n");
+        assert!(is_explain);
+        assert!(!is_profile);
+    }
+
+    // ── operator_to_plan_map ────────────────────────────────────────────
+
+    #[test]
+    fn operator_to_plan_map_single_row() {
+        let op = Operator::SingleRow;
+        let plan = operator_to_plan_map(&op, false, 0);
+        match plan {
+            BoltValue::Map(entries) => {
+                let op_type = entries.get_str("operatorType").unwrap();
+                assert_eq!(op_type, "SingleRow");
+                assert!(entries.get_value("children").is_some());
+                assert!(entries.get_value("args").is_some());
+                assert!(entries.get_value("identifiers").is_some());
+            }
+            _ => panic!("expected BoltValue::Map"),
+        }
+    }
+
+    #[test]
+    fn operator_to_plan_map_node_scan() {
+        let op = Operator::NodeScan {
+            label: None,
+            alias: Identifier::new("n"),
+        };
+        let plan = operator_to_plan_map(&op, false, 0);
+        match plan {
+            BoltValue::Map(entries) => {
+                let op_type = entries.get_str("operatorType").unwrap();
+                assert_eq!(op_type, "NodeScan");
+            }
+            _ => panic!("expected BoltValue::Map"),
+        }
+    }
+
+    #[test]
+    fn operator_to_plan_map_filter_wrapping_scan() {
+        let child = Operator::NodeScan {
+            label: None,
+            alias: Identifier::new("n"),
+        };
+        let op = Operator::Filter {
+            predicate: gql_core::ast::Expr::Bool(true),
+            child: Box::new(child),
+        };
+        let plan = operator_to_plan_map(&op, false, 0);
+        match plan {
+            BoltValue::Map(entries) => {
+                let op_type = entries.get_str("operatorType").unwrap();
+                assert_eq!(op_type, "Filter");
+                if let Some(BoltValue::List(children)) = entries.get_value("children") {
+                    assert!(children.is_empty());
+                }
+            }
+            _ => panic!("expected BoltValue::Map"),
+        }
+    }
+
+    #[test]
+    fn operator_to_plan_map_has_runtime_in_args() {
+        let op = Operator::SingleRow;
+        let plan = operator_to_plan_map(&op, true, 0);
+        match plan {
+            BoltValue::Map(entries) => {
+                if let Some(BoltValue::Map(args)) = entries.get_value("args") {
+                    let runtime = args.get_str("runtime").unwrap();
+                    assert_eq!(runtime, "INTERPRETED");
+                } else {
+                    panic!("expected args to be a Map");
+                }
+            }
+            _ => panic!("expected BoltValue::Map"),
+        }
+    }
+
+    // ── detect_notifications / detect_cartesian_products ────────────────
+
+    #[test]
+    fn detect_notifications_empty_for_single_scan() {
+        let op = Operator::NodeScan {
+            label: None,
+            alias: Identifier::new("n"),
+        };
+        let notes = detect_notifications(&op);
+        assert!(notes.is_empty());
+    }
+
+    #[test]
+    fn detect_cartesian_product_on_disjoint_apply() {
+        let outer = Operator::NodeScan {
+            label: None,
+            alias: Identifier::new("a"),
+        };
+        let inner = Operator::NodeScan {
+            label: None,
+            alias: Identifier::new("b"),
+        };
+        let op = Operator::Apply {
+            outer: Box::new(outer),
+            inner: Box::new(inner),
+        };
+        let notes = detect_notifications(&op);
+        assert_eq!(notes.len(), 1);
+        if let BoltValue::Map(entries) = &notes[0] {
+            let code = entries.get_str("code").unwrap();
+            assert!(code.contains("CartesianProduct"));
+            let severity = entries.get_str("severity").unwrap();
+            assert_eq!(severity, "WARNING");
+            let category = entries.get_str("category").unwrap();
+            assert_eq!(category, "PERFORMANCE");
+        } else {
+            panic!("expected Map notification");
+        }
+    }
+
+    #[test]
+    fn detect_no_cartesian_product_on_shared_alias() {
+        let outer = Operator::NodeScan {
+            label: None,
+            alias: Identifier::new("n"),
+        };
+        let inner = Operator::NodeScan {
+            label: None,
+            alias: Identifier::new("n"),
+        };
+        let op = Operator::Apply {
+            outer: Box::new(outer),
+            inner: Box::new(inner),
+        };
+        let notes = detect_notifications(&op);
+        assert!(
+            notes.is_empty(),
+            "shared alias should not trigger cartesian warning"
+        );
+    }
+
+    #[test]
+    fn detect_cartesian_products_recurses_through_filter() {
+        let outer = Operator::NodeScan {
+            label: None,
+            alias: Identifier::new("a"),
+        };
+        let inner = Operator::NodeScan {
+            label: None,
+            alias: Identifier::new("b"),
+        };
+        let apply = Operator::Apply {
+            outer: Box::new(outer),
+            inner: Box::new(inner),
+        };
+        let filter = Operator::Filter {
+            predicate: gql_core::ast::Expr::Bool(true),
+            child: Box::new(apply),
+        };
+        let notes = detect_notifications(&filter);
+        assert_eq!(notes.len(), 1);
+    }
+
+    #[test]
+    fn detect_cartesian_notification_has_position() {
+        let outer = Operator::NodeScan {
+            label: None,
+            alias: Identifier::new("x"),
+        };
+        let inner = Operator::NodeScan {
+            label: None,
+            alias: Identifier::new("y"),
+        };
+        let op = Operator::Apply {
+            outer: Box::new(outer),
+            inner: Box::new(inner),
+        };
+        let notes = detect_notifications(&op);
+        if let BoltValue::Map(entries) = &notes[0] {
+            if let Some(BoltValue::Map(pos)) = entries.get_value("position") {
+                assert_eq!(pos.get_int("offset"), Some(0));
+                assert_eq!(pos.get_int("line"), Some(1));
+                assert_eq!(pos.get_int("column"), Some(1));
+            } else {
+                panic!("expected position map");
+            }
+        }
+    }
+
+    #[test]
+    fn detect_notifications_on_leaf_operators() {
+        let single_row = Operator::SingleRow;
+        assert!(detect_notifications(&single_row).is_empty());
+    }
+
+    #[test]
+    fn detect_cartesian_products_union() {
+        let outer = Operator::NodeScan {
+            label: None,
+            alias: Identifier::new("a"),
+        };
+        let inner = Operator::NodeScan {
+            label: None,
+            alias: Identifier::new("b"),
+        };
+        let apply = Operator::Apply {
+            outer: Box::new(outer),
+            inner: Box::new(inner),
+        };
+        let right = Operator::SingleRow;
+        let union_op = Operator::Union {
+            left: Box::new(apply),
+            right: Box::new(right),
+            all: true,
+        };
+        let notes = detect_notifications(&union_op);
+        assert_eq!(
+            notes.len(),
+            1,
+            "should find cartesian product in left branch of union"
+        );
+    }
+}
