@@ -1519,5 +1519,4 @@ mod tests {
 
         REGEX_CACHE.with(|cache| cache.borrow_mut().clear());
     }
-
 }
