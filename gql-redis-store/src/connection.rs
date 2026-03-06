@@ -12,6 +12,12 @@ use gql_core::error::StorageError;
 pub(crate) const DEFAULT_POOL_SIZE: u32 = 64;
 /// Default pool checkout timeout in seconds.
 pub(crate) const DEFAULT_POOL_TIMEOUT_SECS: u64 = 5;
+/// Default idle timeout in seconds.  Connections idle longer than this are
+/// reaped, preventing stale TCP sockets after transient network events.
+pub(crate) const DEFAULT_IDLE_TIMEOUT_SECS: u64 = 300;
+/// Default minimum idle connections.  Keeps at least this many connections
+/// warm so the first requests after an idle period avoid cold-connect latency.
+pub(crate) const DEFAULT_MIN_IDLE: u32 = 1;
 
 /// Connection pool supporting both standalone and Redis Cluster modes.
 ///
@@ -52,6 +58,8 @@ impl RedisPool {
         url: &str,
         pool_size: u32,
         pool_timeout_secs: u64,
+        idle_timeout_secs: u64,
+        min_idle: u32,
     ) -> Result<Self, StorageError> {
         let client = Client::open(url).map_err(|e| StorageError::Backend {
             msg: format!("redis client error: {e}"),
@@ -59,6 +67,8 @@ impl RedisPool {
         let pool = r2d2::Pool::builder()
             .max_size(pool_size)
             .connection_timeout(Duration::from_secs(pool_timeout_secs))
+            .idle_timeout(Some(Duration::from_secs(idle_timeout_secs)))
+            .min_idle(Some(min_idle))
             .build(client)
             .map_err(|e| StorageError::Backend {
                 msg: format!("redis pool error: {e}"),
@@ -71,6 +81,8 @@ impl RedisPool {
         nodes: &[&str],
         pool_size: u32,
         pool_timeout_secs: u64,
+        idle_timeout_secs: u64,
+        min_idle: u32,
     ) -> Result<Self, StorageError> {
         let client = ClusterClient::new(nodes.iter().map(|s| s.to_string()).collect::<Vec<_>>())
             .map_err(|e| StorageError::Backend {
@@ -79,6 +91,8 @@ impl RedisPool {
         let pool = r2d2::Pool::builder()
             .max_size(pool_size)
             .connection_timeout(Duration::from_secs(pool_timeout_secs))
+            .idle_timeout(Some(Duration::from_secs(idle_timeout_secs)))
+            .min_idle(Some(min_idle))
             .build(client)
             .map_err(|e| StorageError::Backend {
                 msg: format!("redis cluster pool error: {e}"),
