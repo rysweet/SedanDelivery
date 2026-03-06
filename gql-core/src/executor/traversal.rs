@@ -37,7 +37,7 @@ use crate::storage::{GraphStore, NodeId};
 ///     Direction::Outgoing,
 ///     &["KNOWS"],
 ///     /*max_depth*/ 3,
-///     &budget,
+///     &mut budget,
 /// );
 /// for result in traversal {
 ///     let (node_id, depth) = result?;
@@ -53,7 +53,7 @@ pub struct BfsTraversal<'s> {
     rel_type_filter: Vec<String>,
     direction: Direction,
     max_depth: u32,
-    budget: &'s ExecutionBudget,
+    budget: &'s mut ExecutionBudget,
     /// Whether to yield the start node itself (depth 0).
     include_start: bool,
     /// Pending error from a previous expansion step, to be returned next call.
@@ -79,7 +79,7 @@ impl<'s> BfsTraversal<'s> {
         direction: Direction,
         rel_types: &[&str],
         max_depth: u32,
-        budget: &'s ExecutionBudget,
+        budget: &'s mut ExecutionBudget,
     ) -> Self {
         let mut visited = FxHashSet::default();
         visited.insert(start);
@@ -110,7 +110,7 @@ impl<'s> BfsTraversal<'s> {
         direction: Direction,
         rel_types: &[&str],
         max_depth: u32,
-        budget: &'s ExecutionBudget,
+        budget: &'s mut ExecutionBudget,
     ) -> Self {
         let mut t = Self::new(store, graph, start, direction, rel_types, max_depth, budget);
         t.include_start = false;
@@ -226,8 +226,16 @@ mod tests {
     #[test]
     fn bfs_linear_chain_outgoing() {
         let (store, ids) = build_chain(4);
-        let budget = ExecutionBudget::unlimited();
-        let trav = BfsTraversal::new(&store, "g", ids[0], Direction::Outgoing, &[], 10, &budget);
+        let mut budget = ExecutionBudget::unlimited();
+        let trav = BfsTraversal::new(
+            &store,
+            "g",
+            ids[0],
+            Direction::Outgoing,
+            &[],
+            10,
+            &mut budget,
+        );
         let results: Vec<_> = trav.map(|r| r.unwrap()).collect();
         // Should visit all 4 nodes in order: depths 0, 1, 2, 3
         assert_eq!(results.len(), 4);
@@ -240,8 +248,16 @@ mod tests {
     #[test]
     fn bfs_max_depth_limits_traversal() {
         let (store, ids) = build_chain(5);
-        let budget = ExecutionBudget::unlimited();
-        let trav = BfsTraversal::new(&store, "g", ids[0], Direction::Outgoing, &[], 2, &budget);
+        let mut budget = ExecutionBudget::unlimited();
+        let trav = BfsTraversal::new(
+            &store,
+            "g",
+            ids[0],
+            Direction::Outgoing,
+            &[],
+            2,
+            &mut budget,
+        );
         let results: Vec<_> = trav.map(|r| r.unwrap()).collect();
         // With max_depth=2: nodes at depths 0, 1, 2 = first 3 nodes
         assert_eq!(results.len(), 3);
@@ -268,8 +284,8 @@ mod tests {
             .create_edge("g", c, a, "R".to_string(), HashMap::new())
             .unwrap();
 
-        let budget = ExecutionBudget::unlimited();
-        let trav = BfsTraversal::new(&store, "g", a, Direction::Outgoing, &[], 10, &budget);
+        let mut budget = ExecutionBudget::unlimited();
+        let trav = BfsTraversal::new(&store, "g", a, Direction::Outgoing, &[], 10, &mut budget);
         let results: Vec<_> = trav.map(|r| r.unwrap()).collect();
         // Each node visited once
         assert_eq!(results.len(), 3);
@@ -282,8 +298,16 @@ mod tests {
         let (store, ids) = build_chain(3);
         // ids[0] -> ids[1] -> ids[2]
         // BFS incoming from ids[2]: should reach ids[1] at depth 1, ids[0] at depth 2
-        let budget = ExecutionBudget::unlimited();
-        let trav = BfsTraversal::new(&store, "g", ids[2], Direction::Incoming, &[], 10, &budget);
+        let mut budget = ExecutionBudget::unlimited();
+        let trav = BfsTraversal::new(
+            &store,
+            "g",
+            ids[2],
+            Direction::Incoming,
+            &[],
+            10,
+            &mut budget,
+        );
         let results: Vec<_> = trav.map(|r| r.unwrap()).collect();
         assert_eq!(results.len(), 3);
         assert_eq!(results[0], (ids[2], 0));
@@ -306,9 +330,9 @@ mod tests {
             .create_edge("g", c, b, "R".to_string(), HashMap::new())
             .unwrap();
 
-        let budget = ExecutionBudget::unlimited();
+        let mut budget = ExecutionBudget::unlimited();
         // Start from b, undirected: should reach both a and c
-        let trav = BfsTraversal::new(&store, "g", b, Direction::Undirected, &[], 10, &budget);
+        let trav = BfsTraversal::new(&store, "g", b, Direction::Undirected, &[], 10, &mut budget);
         let mut node_ids: Vec<NodeId> = trav.map(|r| r.unwrap().0).collect();
         node_ids.sort();
         assert!(node_ids.contains(&a));
@@ -333,9 +357,17 @@ mod tests {
             .create_edge("g", a, c, "LIKES".to_string(), HashMap::new())
             .unwrap();
 
-        let budget = ExecutionBudget::unlimited();
+        let mut budget = ExecutionBudget::unlimited();
         // Only follow KNOWS edges — should not reach c
-        let trav = BfsTraversal::new(&store, "g", a, Direction::Outgoing, &["KNOWS"], 10, &budget);
+        let trav = BfsTraversal::new(
+            &store,
+            "g",
+            a,
+            Direction::Outgoing,
+            &["KNOWS"],
+            10,
+            &mut budget,
+        );
         let ids: Vec<NodeId> = trav.map(|r| r.unwrap().0).collect();
         assert!(ids.contains(&b));
         assert!(!ids.contains(&c));
@@ -346,7 +378,7 @@ mod tests {
     #[test]
     fn bfs_exclude_start_node() {
         let (store, ids) = build_chain(3);
-        let budget = ExecutionBudget::unlimited();
+        let mut budget = ExecutionBudget::unlimited();
         let trav = BfsTraversal::new_exclude_start(
             &store,
             "g",
@@ -354,7 +386,7 @@ mod tests {
             Direction::Outgoing,
             &[],
             10,
-            &budget,
+            &mut budget,
         );
         let results: Vec<_> = trav.map(|r| r.unwrap()).collect();
         // ids[0] should not be in results
@@ -366,15 +398,28 @@ mod tests {
 
     #[test]
     fn bfs_respects_budget_timeout() {
+        use crate::executor::budget::CHECK_INTERVAL;
         use std::time::Duration;
         let (store, ids) = build_chain(10);
-        // Create an already-expired budget.
-        let budget = ExecutionBudget::new(Duration::from_millis(0), usize::MAX);
+        // Create an already-expired budget and pump the check counter close to
+        // the amortization threshold so the next check_or_err() call actually
+        // tests Instant::now().
+        let mut budget = ExecutionBudget::new(Duration::from_millis(0), usize::MAX);
         std::thread::sleep(Duration::from_millis(5));
+        for _ in 0..CHECK_INTERVAL - 1 {
+            let _ = budget.check_or_err();
+        }
 
-        let mut trav =
-            BfsTraversal::new(&store, "g", ids[0], Direction::Outgoing, &[], 10, &budget);
-        // First call should return an error.
+        let mut trav = BfsTraversal::new(
+            &store,
+            "g",
+            ids[0],
+            Direction::Outgoing,
+            &[],
+            10,
+            &mut budget,
+        );
+        // First call should trigger the amortized timeout check and return an error.
         let first = trav.next();
         assert!(first.is_some());
         assert!(first.unwrap().is_err());
@@ -387,8 +432,8 @@ mod tests {
         let store = InMemoryGraphStore::new();
         store.create_graph("g").unwrap();
         let a = store.create_node("g", vec![], HashMap::new()).unwrap();
-        let budget = ExecutionBudget::unlimited();
-        let trav = BfsTraversal::new(&store, "g", a, Direction::Outgoing, &[], 10, &budget);
+        let mut budget = ExecutionBudget::unlimited();
+        let trav = BfsTraversal::new(&store, "g", a, Direction::Outgoing, &[], 10, &mut budget);
         let results: Vec<_> = trav.map(|r| r.unwrap()).collect();
         assert_eq!(results, vec![(a, 0)]);
     }
@@ -417,8 +462,8 @@ mod tests {
             .create_edge("g", c, d, "R".to_string(), HashMap::new())
             .unwrap();
 
-        let budget = ExecutionBudget::unlimited();
-        let trav = BfsTraversal::new(&store, "g", a, Direction::Outgoing, &[], 10, &budget);
+        let mut budget = ExecutionBudget::unlimited();
+        let trav = BfsTraversal::new(&store, "g", a, Direction::Outgoing, &[], 10, &mut budget);
         let results: Vec<_> = trav.map(|r| r.unwrap()).collect();
         // 4 nodes, each visited exactly once
         assert_eq!(results.len(), 4);

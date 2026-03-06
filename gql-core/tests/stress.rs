@@ -245,8 +245,13 @@ fn test_expired_budget_returns_timeout_error() {
     let plan = planner.plan(&ast).unwrap();
     let executor = QueryExecutor::new(&store);
     // Budget that has already expired (1 ns timeout, then sleep to ensure expiry).
+    // Pre-pump the check counter close to the amortization threshold so the first
+    // check_or_err() inside execute() actually calls Instant::now().
     let mut budget = ExecutionBudget::new(Duration::from_nanos(1), usize::MAX);
     std::thread::sleep(Duration::from_millis(5));
+    for _ in 0..gql_core::executor::budget::CHECK_INTERVAL - 1 {
+        let _ = budget.check_or_err();
+    }
     let result = executor.execute("test", &plan, &mut budget);
 
     assert!(

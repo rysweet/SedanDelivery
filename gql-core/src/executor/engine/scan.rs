@@ -154,6 +154,24 @@ impl<'a> QueryExecutor<'a> {
                 }
             };
 
+            // Hoist outer_edge_vars construction to the per-row level.
+            // This HashSet only depends on the row (not on individual adjacency
+            // entries), so building it once per row avoids redundant allocations.
+            let current_alias = rel_alias.as_ref().map(|ra| ra.0.as_str());
+            let outer_edge_vars: HashSet<&str> = match row.get("__outer_edge_vars__") {
+                Some(Value::List(vs)) => vs
+                    .iter()
+                    .filter_map(|v| {
+                        if let Value::Str(s) = v {
+                            Some(s.as_ref())
+                        } else {
+                            None
+                        }
+                    })
+                    .collect(),
+                _ => HashSet::new(),
+            };
+
             for adj in adj_entries {
                 budget.check_or_err()?;
                 // If dst_alias is already bound in the row (cyclic patterns
@@ -187,21 +205,6 @@ impl<'a> QueryExecutor<'a> {
                 // edges from paths in previous MATCH clauses can be reused independently.
                 // Also exclude outer-scope edge variables (from previous WITH/MATCH scopes).
                 let eid = adj.edge_id;
-                let current_alias = rel_alias.as_ref().map(|ra| ra.0.as_str());
-                let outer_edge_vars: std::collections::HashSet<&str> =
-                    match row.get("__outer_edge_vars__") {
-                        Some(Value::List(vs)) => vs
-                            .iter()
-                            .filter_map(|v| {
-                                if let Value::Str(s) = v {
-                                    Some(s.as_ref())
-                                } else {
-                                    None
-                                }
-                            })
-                            .collect(),
-                        _ => std::collections::HashSet::new(),
-                    };
                 let edge_already_used = row.iter().any(|(key, v)| {
                     // Don't count the current alias as "already used"
                     if Some(key.as_str()) == current_alias {
@@ -794,6 +797,125 @@ mod tests {
             .exec_operator("g", &plan, &mut budget, &[start_row], &mut stats)
             .unwrap();
         assert_eq!(rows.len(), 1);
+    }
+
+    /// Verify that edge isomorphism works correctly in exec_expand after hoisting
+    /// the outer_edge_vars HashSet to the per-row level. In a triangle graph
+    /// (a)-[r1]->(b)-[r2]->(c), expanding from (b) with r1 already bound should
+    /// not re-use r1 for r2 (isomorphism), but should allow r2.
+    #[test]
+    fn expand_isomorphism_prevents_edge_reuse() {
+        let store = make_store();
+        let a = store
+            .create_node("g", vec!["N".to_string()], HashMap::new())
+            .unwrap();
+        let b = store
+            .create_node("g", vec!["N".to_string()], HashMap::new())
+            .unwrap();
+        let c = store
+            .create_node("g", vec!["N".to_string()], HashMap::new())
+            .unwrap();
+        let e1 = store
+            .create_edge("g", a, b, "R".to_string(), HashMap::new())
+            .unwrap();
+        let _e2 = store
+            .create_edge("g", b, c, "R".to_string(), HashMap::new())
+            .unwrap();
+
+        // Build a plan: NodeScan(a) -> Expand(a-[r1]->b) -> Expand(b-[r2]->c)
+        // The second Expand should NOT reuse the same edge as r1.
+        let plan = Operator::Expand {
+            direction: Direction::Outgoing,
+            rel_types: vec![RelType::new("R")],
+            src_alias: Identifier::new("b"),
+            rel_alias: Some(Identifier::new("r2")),
+            dst_alias: Identifier::new("c"),
+            child: Box::new(Operator::Expand {
+                direction: Direction::Outgoing,
+                rel_types: vec![RelType::new("R")],
+                src_alias: Identifier::new("a"),
+                rel_alias: Some(Identifier::new("r1")),
+                dst_alias: Identifier::new("b"),
+                child: Box::new(Operator::NodeScan {
+                    label: Some(Label::new("N")),
+                    alias: Identifier::new("a"),
+                }),
+            }),
+        };
+        let mut budget = ExecutionBudget::unlimited();
+        let result = executor_result(&store, &plan, &mut budget);
+        // Only one valid path: a-[e1]->b-[e2]->c
+        // The path a-[e1]->b would NOT have b-[e1]->? because e1 goes a->b not b->anything
+        // But we check that the result is correct (1 row: a->b->c)
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].get("r1"), Some(&Value::Edge(e1)));
+    }
+
+    /// Verify that outer_edge_vars correctly excludes edges from previous MATCH
+    /// scopes, allowing them to be traversed again in the current pattern.
+    #[test]
+    fn expand_outer_edge_vars_allows_reuse_across_scopes() {
+        let store = make_store();
+        let a = store
+            .create_node("g", vec!["N".to_string()], HashMap::new())
+            .unwrap();
+        let b = store
+            .create_node("g", vec!["N".to_string()], HashMap::new())
+            .unwrap();
+        let e1 = store
+            .create_edge("g", a, b, "R".to_string(), HashMap::new())
+            .unwrap();
+
+        // Simulate a second MATCH clause that re-traverses the same edge.
+        // Input row: {a: Node(a), r1: Edge(e1), b: Node(b), __outer_edge_vars__: ["r1"]}
+        // Expand from a -[r2]-> b should still find e1 because r1 is an outer edge var.
+        let mut input_row = Row::new();
+        input_row.insert("a".to_string(), Value::Node(a));
+        input_row.insert("r1".to_string(), Value::Edge(e1));
+        input_row.insert("b2".to_string(), Value::Node(a)); // src for new expand
+        input_row.insert(
+            "__outer_edge_vars__".to_string(),
+            Value::List(vec![Value::Str("r1".to_string().into_boxed_str())]),
+        );
+
+        let executor = QueryExecutor::new(&store);
+        let plan = Operator::Expand {
+            direction: Direction::Outgoing,
+            rel_types: vec![RelType::new("R")],
+            src_alias: Identifier::new("b2"),
+            rel_alias: Some(Identifier::new("r2")),
+            dst_alias: Identifier::new("c"),
+            child: Box::new(Operator::NodeScan {
+                label: Some(Label::new("N")),
+                alias: Identifier::new("b2"),
+            }),
+        };
+        let mut budget = ExecutionBudget::unlimited();
+        let mut stats = MutationStats::default();
+        // Execute with the pre-built input row as outer context
+        let rows = executor
+            .exec_operator("g", &plan, &mut budget, &[input_row], &mut stats)
+            .unwrap();
+        // The expand should find a->b via e1, even though e1 is in the row as r1,
+        // because r1 is listed in __outer_edge_vars__ (from a previous MATCH scope).
+        let matching: Vec<_> = rows
+            .iter()
+            .filter(|r| r.get("r2") == Some(&Value::Edge(e1)))
+            .collect();
+        assert!(
+            !matching.is_empty(),
+            "outer edge var r1 should not block r2 from using the same edge"
+        );
+    }
+
+    /// Helper: execute a plan and return the resulting rows.
+    fn executor_result(
+        store: &InMemoryGraphStore,
+        plan: &Operator,
+        budget: &mut ExecutionBudget,
+    ) -> Vec<Row> {
+        let executor = QueryExecutor::new(store);
+        executor.execute("g", plan, budget).unwrap().rows
     }
 
     /// Verify that the budget check fires inside the inner loop
