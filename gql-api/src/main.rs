@@ -54,7 +54,19 @@ async fn main() {
     let allowed_origins: Vec<HeaderValue> = match std::env::var("GQL_API_ALLOWED_ORIGINS") {
         Ok(origins) => origins
             .split(',')
-            .filter_map(|o| o.trim().parse().ok())
+            .filter_map(|o| {
+                let trimmed = o.trim();
+                match trimmed.parse() {
+                    Ok(val) => Some(val),
+                    Err(e) => {
+                        tracing::warn!(
+                            origin = trimmed,
+                            "invalid CORS origin in GQL_API_ALLOWED_ORIGINS: {e:?}, skipping"
+                        );
+                        None
+                    }
+                }
+            })
             .collect(),
         Err(_) => {
             tracing::warn!(

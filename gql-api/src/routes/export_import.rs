@@ -111,7 +111,15 @@ async fn import_handler(
     // unbounded memory allocation.  The limit is configurable via env var.
     let import_limit: usize = std::env::var("GQL_API_IMPORT_LIMIT")
         .ok()
-        .and_then(|v| v.parse().ok())
+        .and_then(|v| match v.parse() {
+            Ok(val) => Some(val),
+            Err(_) => {
+                tracing::warn!(
+                    "invalid value for GQL_API_IMPORT_LIMIT: {v:?}, using default 10000"
+                );
+                None
+            }
+        })
         .unwrap_or(10_000);
     let total_elements = body.nodes.len().saturating_add(body.edges.len());
     if total_elements > import_limit {

@@ -111,13 +111,22 @@ pub fn global() -> &'static EngineConfig {
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 /// Parse `var` from the environment, returning `default` on any failure.
+///
+/// Logs a warning when the variable is set but cannot be parsed, so operators
+/// can spot typos in their deployment configuration.
 fn parse_env<T>(var: &str, default: T) -> T
 where
-    T: std::str::FromStr,
+    T: std::str::FromStr + std::fmt::Display,
 {
     std::env::var(var)
         .ok()
-        .and_then(|v| v.parse().ok())
+        .and_then(|v| match v.parse() {
+            Ok(val) => Some(val),
+            Err(_) => {
+                tracing::warn!("invalid value for {var}: {v:?}, using default {default}");
+                None
+            }
+        })
         .unwrap_or(default)
 }
 
@@ -155,5 +164,28 @@ mod tests {
         assert!(cfg.max_query_size >= 1);
         // Sanity: parser_max_depth should be at least the default if not overridden.
         let _ = defaults; // suppress unused warning
+    }
+
+    #[test]
+    fn parse_env_returns_default_when_var_absent() {
+        // Use a name that won't collide with real env vars.
+        let result: usize = parse_env("__GQL_TEST_PARSE_ENV_ABSENT__", 42);
+        assert_eq!(result, 42);
+    }
+
+    #[test]
+    fn parse_env_parses_valid_value() {
+        std::env::set_var("__GQL_TEST_PARSE_ENV_VALID__", "99");
+        let result: usize = parse_env("__GQL_TEST_PARSE_ENV_VALID__", 42);
+        assert_eq!(result, 99);
+        std::env::remove_var("__GQL_TEST_PARSE_ENV_VALID__");
+    }
+
+    #[test]
+    fn parse_env_returns_default_for_invalid_value() {
+        std::env::set_var("__GQL_TEST_PARSE_ENV_INVALID__", "not_a_number");
+        let result: usize = parse_env("__GQL_TEST_PARSE_ENV_INVALID__", 42);
+        assert_eq!(result, 42);
+        std::env::remove_var("__GQL_TEST_PARSE_ENV_INVALID__");
     }
 }

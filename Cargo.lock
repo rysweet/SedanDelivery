@@ -1229,6 +1229,7 @@ dependencies = [
  "r2d2",
  "redis",
  "serde_json",
+ "tracing",
 ]
 
 [[package]]

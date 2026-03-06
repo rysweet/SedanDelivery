@@ -81,11 +81,27 @@ impl RedisGraphStore {
         let prefix = env::var("GQL_REDIS_KEY_PREFIX").unwrap_or_default();
         let pool_size: u32 = env::var("GQL_REDIS_POOL_SIZE")
             .ok()
-            .and_then(|v| v.parse().ok())
+            .and_then(|v| match v.parse() {
+                Ok(val) => Some(val),
+                Err(_) => {
+                    tracing::warn!(
+                        "invalid value for GQL_REDIS_POOL_SIZE: {v:?}, using default {DEFAULT_POOL_SIZE}"
+                    );
+                    None
+                }
+            })
             .unwrap_or(DEFAULT_POOL_SIZE);
         let pool_timeout_secs: u64 = env::var("GQL_REDIS_POOL_TIMEOUT_SECS")
             .ok()
-            .and_then(|v| v.parse().ok())
+            .and_then(|v| match v.parse() {
+                Ok(val) => Some(val),
+                Err(_) => {
+                    tracing::warn!(
+                        "invalid value for GQL_REDIS_POOL_TIMEOUT_SECS: {v:?}, using default {DEFAULT_POOL_TIMEOUT_SECS}"
+                    );
+                    None
+                }
+            })
             .unwrap_or(DEFAULT_POOL_TIMEOUT_SECS);
 
         // Cluster mode: GQL_REDIS_CLUSTER_NODES takes priority.
