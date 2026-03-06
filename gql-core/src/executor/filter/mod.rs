@@ -19,6 +19,8 @@ mod temporal;
 use std::cell::RefCell;
 use std::collections::HashMap;
 
+use indexmap::IndexMap;
+
 use crate::ast::{Expr, Identifier};
 use crate::error::{ExecutionError, GqlError};
 use crate::types::Value;
@@ -48,7 +50,9 @@ thread_local! {
     static QUERY_NOW: RefCell<Option<jiff::Zoned>> = const { RefCell::new(None) };
 
     /// Per-thread cache of compiled regexes to avoid recompilation on repeated pattern use.
-    static REGEX_CACHE: RefCell<HashMap<String, regex::Regex>> = RefCell::new(HashMap::new());
+    /// Uses `IndexMap` to preserve insertion order so we can evict the oldest half
+    /// instead of clearing the entire cache when the capacity limit is reached.
+    static REGEX_CACHE: RefCell<IndexMap<String, regex::Regex>> = RefCell::new(IndexMap::new());
 }
 
 /// Initialize the query-level "now". Call once at the start of each query execution.
@@ -1417,5 +1421,102 @@ mod tests {
             right: Box::new(Expr::Integer(-1)),
         };
         let _ = eval_expr(&expr, &empty_row());
+    }
+
+    // -- Regex cache eviction tests ------------------------------------------
+
+    /// Helper: evaluate `string =~ pattern` and return the boolean result.
+    fn eval_regex_match(string: &str, pattern: &str) -> Result<Value, GqlError> {
+        let expr = Expr::BinaryOp {
+            op: BOp::RegexMatch,
+            left: Box::new(Expr::str_lit(string)),
+            right: Box::new(Expr::str_lit(pattern)),
+        };
+        eval_expr(&expr, &empty_row())
+    }
+
+    #[test]
+    fn regex_cache_basic_hit() {
+        // First call compiles; second call should hit cache. Both return true.
+        assert_eq!(eval_regex_match("abc", "^abc$").unwrap(), Value::Bool(true));
+        assert_eq!(eval_regex_match("abc", "^abc$").unwrap(), Value::Bool(true));
+    }
+
+    #[test]
+    fn regex_cache_eviction_preserves_recent_entries() {
+        for i in 0..513 {
+            let pattern = format!("^pattern_{i}$");
+            let input = format!("pattern_{i}");
+            assert_eq!(
+                eval_regex_match(&input, &pattern).unwrap(),
+                Value::Bool(true),
+                "pattern_{i} should match"
+            );
+        }
+
+        REGEX_CACHE.with(|cache| {
+            let map = cache.borrow();
+            assert!(
+                map.len() <= 512,
+                "cache should not exceed 512 entries, got {}",
+                map.len()
+            );
+            assert!(
+                map.len() > 1,
+                "cache should retain entries after eviction, got {}",
+                map.len()
+            );
+            assert!(
+                map.contains_key("^pattern_512$"),
+                "most recent pattern should survive eviction"
+            );
+            assert!(
+                !map.contains_key("^pattern_0$"),
+                "oldest pattern should have been evicted"
+            );
+        });
+
+        REGEX_CACHE.with(|cache| cache.borrow_mut().clear());
+    }
+
+    #[test]
+    fn regex_cache_eviction_keeps_half() {
+        for i in 0..512 {
+            let pattern = format!("^evict_{i}$");
+            let input = format!("evict_{i}");
+            assert_eq!(
+                eval_regex_match(&input, &pattern).unwrap(),
+                Value::Bool(true)
+            );
+        }
+
+        REGEX_CACHE.with(|cache| {
+            assert_eq!(
+                cache.borrow().len(),
+                512,
+                "cache should have 512 entries before eviction"
+            );
+        });
+
+        assert_eq!(
+            eval_regex_match("evict_512", "^evict_512$").unwrap(),
+            Value::Bool(true)
+        );
+
+        REGEX_CACHE.with(|cache| {
+            let map = cache.borrow();
+            assert_eq!(
+                map.len(),
+                257,
+                "after eviction cache should have 257 entries (256 survivors + 1 new)"
+            );
+            assert!(!map.contains_key("^evict_0$"));
+            assert!(!map.contains_key("^evict_255$"));
+            assert!(map.contains_key("^evict_256$"));
+            assert!(map.contains_key("^evict_511$"));
+            assert!(map.contains_key("^evict_512$"));
+        });
+
+        REGEX_CACHE.with(|cache| cache.borrow_mut().clear());
     }
 }
