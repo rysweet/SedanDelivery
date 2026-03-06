@@ -11,12 +11,6 @@
 //! The wildcard `Any` origin is intentionally **not** used because this service
 //! accepts mutations.
 
-mod error;
-mod models;
-mod routes;
-mod serialize;
-mod state;
-
 use std::net::SocketAddr;
 
 use axum::http::HeaderValue;
@@ -26,7 +20,8 @@ use tower_http::trace::TraceLayer;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 
-use crate::state::AppState;
+use gql_api::routes;
+use gql_api::state::AppState;
 
 #[tokio::main]
 async fn main() {

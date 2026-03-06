@@ -16,7 +16,7 @@ use gql_core::storage::InMemoryGraphStore;
 ///
 /// `InMemoryGraphStore` has its own internal `RwLock` for all data access,
 /// so concurrent queries against the same graph are still parallelised.
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct AppState {
     pub stores: Arc<Mutex<HashMap<String, Arc<InMemoryGraphStore>>>>,
 }
