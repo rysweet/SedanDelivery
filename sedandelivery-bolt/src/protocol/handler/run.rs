@@ -23,7 +23,15 @@ fn max_pending_results() -> usize {
     *CAP.get_or_init(|| {
         std::env::var("BOLT_MAX_PENDING_RESULTS")
             .ok()
-            .and_then(|v| v.parse().ok())
+            .and_then(|v| match v.parse() {
+                Ok(val) => Some(val),
+                Err(_) => {
+                    tracing::warn!(
+                        "invalid value for BOLT_MAX_PENDING_RESULTS: {v:?}, using default {DEFAULT_MAX_PENDING_RESULTS}"
+                    );
+                    None
+                }
+            })
             .unwrap_or(DEFAULT_MAX_PENDING_RESULTS)
     })
 }

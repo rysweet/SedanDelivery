@@ -13,3 +13,4 @@ serde_json = { workspace = true }
 # we use only synchronous (blocking) connections.
 redis = { version = "1.0", default-features = false, features = ["tokio-comp", "r2d2", "cluster"] }
 r2d2 = "0.8"
+tracing = { workspace = true }

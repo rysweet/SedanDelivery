@@ -115,7 +115,15 @@ pub fn max_page_limit() -> usize {
     *VAL.get_or_init(|| {
         std::env::var("GQL_API_MAX_PAGE_LIMIT")
             .ok()
-            .and_then(|v| v.parse().ok())
+            .and_then(|v| match v.parse() {
+                Ok(val) => Some(val),
+                Err(_) => {
+                    tracing::warn!(
+                        "invalid value for GQL_API_MAX_PAGE_LIMIT: {v:?}, using default 10000"
+                    );
+                    None
+                }
+            })
             .unwrap_or(10_000)
     })
 }
@@ -129,7 +137,15 @@ pub fn default_page_limit() -> usize {
     *VAL.get_or_init(|| {
         std::env::var("GQL_API_DEFAULT_PAGE_LIMIT")
             .ok()
-            .and_then(|v| v.parse().ok())
+            .and_then(|v| match v.parse() {
+                Ok(val) => Some(val),
+                Err(_) => {
+                    tracing::warn!(
+                        "invalid value for GQL_API_DEFAULT_PAGE_LIMIT: {v:?}, using default 100"
+                    );
+                    None
+                }
+            })
             .unwrap_or(100)
     })
 }

@@ -75,18 +75,40 @@ async fn main() {
 
     let max_connections: usize = std::env::var("BOLT_MAX_CONNECTIONS")
         .ok()
-        .and_then(|v| v.parse().ok())
+        .and_then(|v| match v.parse() {
+            Ok(val) => Some(val),
+            Err(_) => {
+                tracing::warn!("invalid value for BOLT_MAX_CONNECTIONS: {v:?}, using default 1024");
+                None
+            }
+        })
         .unwrap_or(1024);
 
     let idle_timeout_secs: u64 = std::env::var("BOLT_IDLE_TIMEOUT_SECS")
         .ok()
-        .and_then(|v| v.parse().ok())
+        .and_then(|v| match v.parse() {
+            Ok(val) => Some(val),
+            Err(_) => {
+                tracing::warn!(
+                    "invalid value for BOLT_IDLE_TIMEOUT_SECS: {v:?}, using default 3600"
+                );
+                None
+            }
+        })
         .unwrap_or(3600); // 1 hour default (up from 300s) to support bulk write workloads.
     let idle_timeout = Duration::from_secs(idle_timeout_secs);
 
     let write_concurrency: u32 = std::env::var("BOLT_WRITE_CONCURRENCY")
         .ok()
-        .and_then(|v| v.parse().ok())
+        .and_then(|v| match v.parse() {
+            Ok(val) => Some(val),
+            Err(_) => {
+                tracing::warn!(
+                    "invalid value for BOLT_WRITE_CONCURRENCY: {v:?}, using default 128"
+                );
+                None
+            }
+        })
         .unwrap_or(128);
 
     // Semaphore gates new connections once max_connections is reached.

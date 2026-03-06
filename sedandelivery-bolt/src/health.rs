@@ -39,7 +39,13 @@ struct HealthResponse {
 pub fn spawn_health_server(state: HealthState) {
     let port = std::env::var("BOLT_HEALTH_PORT")
         .ok()
-        .and_then(|v| v.parse::<u16>().ok())
+        .and_then(|v| match v.parse::<u16>() {
+            Ok(val) => Some(val),
+            Err(_) => {
+                tracing::warn!("invalid value for BOLT_HEALTH_PORT: {v:?}, using default 7688");
+                None
+            }
+        })
         .unwrap_or(7688);
 
     let bind_addr =
