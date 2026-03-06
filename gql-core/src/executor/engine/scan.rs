@@ -1,0 +1,603 @@
+//! Graph traversal operators: node scan, expand, variable-length expand,
+//! index scan, node-by-id seek, and shortest path.
+
+use std::collections::{HashMap, HashSet, VecDeque};
+
+use crate::ast::Direction;
+use crate::error::{ExecutionError, GqlError};
+use crate::executor::budget::ExecutionBudget;
+use crate::executor::filter::eval_expr;
+use crate::executor::filter::Row as FilterRow;
+use crate::planner::Operator;
+use crate::storage::{EdgeId, NodeId, RangeQuery};
+use crate::types::Value;
+
+use super::helpers::{extract_node_id, get_adj_entries, inject_parameters, undefined_var};
+use super::{MutationStats, QueryExecutor, Row, VarLenBfsEntry};
+
+impl<'a> QueryExecutor<'a> {
+    pub(crate) fn exec_node_scan(
+        &self,
+        graph: &str,
+        op: &Operator,
+        budget: &mut ExecutionBudget,
+        outer_rows: &[Row],
+        _stats: &mut MutationStats,
+    ) -> Result<Vec<Row>, GqlError> {
+        let Operator::NodeScan { label, alias } = op else {
+            unreachable!()
+        };
+        let node_ids = if let Some(lbl) = label {
+            self.store.find_nodes_by_label(graph, lbl.as_str())?
+        } else {
+            self.store.all_node_ids(graph)?
+        };
+
+        // When used as the inner side of Apply/LeftOuterApply,
+        // outer_rows carries context variables that inner operators
+        // (e.g., Filter) may reference. Merge them into each produced row.
+        // Exclude internal anonymous edge aliases (__anon_rel_*) — these are
+        // per-pattern tracking variables and must not leak into inner patterns.
+        let base_rows: &[Row] = if outer_rows.is_empty() {
+            &[]
+        } else {
+            outer_rows
+        };
+
+        let mut rows = Vec::with_capacity(node_ids.len());
+        for id in &node_ids {
+            budget.check_or_err()?;
+            if base_rows.is_empty() {
+                let mut row = Row::new();
+                row.insert(alias.0.clone(), Value::Node(*id));
+                inject_parameters(&mut row, &self.parameters);
+                budget.record_row();
+                rows.push(row);
+            } else {
+                for outer_row in base_rows {
+                    // If the alias is already pre-bound in outer_row to a specific node,
+                    // only produce a row when the scanned node matches that bound node.
+                    // This correctly handles correlated subqueries and repeated MATCH clauses.
+                    // Only apply for non-anonymous variables (anonymous vars like __anon*
+                    // should always scan all nodes independently).
+                    if !alias.0.starts_with("__anon") {
+                        if let Some(Value::Node(pre_bound_id)) = outer_row.get(alias.0.as_str()) {
+                            if *pre_bound_id != *id {
+                                continue; // Skip: doesn't match the pre-bound value
+                            }
+                        }
+                    }
+                    let mut row: Row = outer_row
+                        .iter()
+                        .filter(|(k, _)| !k.starts_with("__anon_rel_"))
+                        .map(|(k, v)| (k.clone(), v.clone()))
+                        .collect();
+                    row.insert(alias.0.clone(), Value::Node(*id));
+                    // Track outer-scope edge variable names so Expand's isomorphism
+                    // check doesn't block edges from previous MATCH clauses.
+                    let outer_edge_keys: Vec<Value> = outer_row
+                        .iter()
+                        .filter(|(k, v)| {
+                            !k.starts_with("__anon_rel_")
+                                && !k.starts_with("__outer_edge_vars__")
+                                && matches!(v, Value::Edge(_))
+                        })
+                        .map(|(k, _)| Value::Str(k.clone().into_boxed_str()))
+                        .collect();
+                    if !outer_edge_keys.is_empty() {
+                        let mut existing: Vec<Value> = match row.get("__outer_edge_vars__") {
+                            Some(Value::List(vs)) => vs.clone(),
+                            _ => vec![],
+                        };
+                        existing.extend(outer_edge_keys);
+                        row.insert("__outer_edge_vars__".to_string(), Value::List(existing));
+                    }
+                    budget.record_row();
+                    rows.push(row);
+                }
+            }
+        }
+        Ok(rows)
+    }
+
+    pub(crate) fn exec_expand(
+        &self,
+        graph: &str,
+        op: &Operator,
+        budget: &mut ExecutionBudget,
+        outer_rows: &[Row],
+        stats: &mut MutationStats,
+    ) -> Result<Vec<Row>, GqlError> {
+        let Operator::Expand {
+            direction,
+            rel_types,
+            src_alias,
+            rel_alias,
+            dst_alias,
+            child,
+        } = op
+        else {
+            unreachable!()
+        };
+        let input = self.exec_operator(graph, child, budget, outer_rows, stats)?;
+        let type_strs: Vec<&str> = rel_types.iter().map(|r| r.as_str()).collect();
+        let mut out = Vec::new();
+
+        for row in input {
+            budget.check_or_err()?;
+            let src_val = row
+                .get(src_alias.0.as_str())
+                .ok_or_else(|| undefined_var(&src_alias.0))?;
+            let src_id = extract_node_id(src_val, &src_alias.0)?;
+
+            let adj_entries = match direction {
+                Direction::Outgoing => self.store.out_edges_by_type(graph, src_id, &type_strs)?,
+                Direction::Incoming => self.store.in_edges_by_type(graph, src_id, &type_strs)?,
+                Direction::Undirected => {
+                    let mut out_entries =
+                        self.store.out_edges_by_type(graph, src_id, &type_strs)?;
+                    let in_entries = self.store.in_edges_by_type(graph, src_id, &type_strs)?;
+                    // Deduplicate: for self-loops (src==dst), the same edge
+                    // appears in both out_edges and in_edges. Keep only unique
+                    // (edge_id, neighbor_id) pairs.
+                    let mut seen_edges: HashSet<(u64, u64)> = HashSet::new();
+                    for e in &out_entries {
+                        seen_edges.insert((e.edge_id.0, e.neighbor_id.0));
+                    }
+                    for e in in_entries {
+                        if seen_edges.insert((e.edge_id.0, e.neighbor_id.0)) {
+                            out_entries.push(e);
+                        }
+                    }
+                    out_entries
+                }
+            };
+
+            for adj in adj_entries {
+                budget.check_or_err()?;
+                // If dst_alias is already bound in the row (cyclic patterns
+                // like (a)-->()-->(a)), only keep the result if the bound
+                // value matches the expansion result.
+                // Skip this check for anonymous variables: they may be
+                // inherited from an outer scope (e.g. pattern comprehension)
+                // and should not constrain the inner expansion.
+                let dst_val = Value::Node(adj.neighbor_id);
+                if !dst_alias.0.starts_with("__anon") {
+                    if let Some(existing) = row.get(dst_alias.0.as_str()) {
+                        if *existing != dst_val {
+                            continue;
+                        }
+                    }
+                }
+                // Same for rel_alias: if already bound, values must match.
+                if let Some(ra) = rel_alias {
+                    let rel_val = Value::Edge(adj.edge_id);
+                    if let Some(existing) = row.get(ra.0.as_str()) {
+                        if *existing != rel_val {
+                            continue;
+                        }
+                    }
+                }
+                // Edge isomorphism: per openCypher spec, each relationship in a
+                // pattern can only be bound once in any single path traversal.
+                // Skip this edge if it is already used by a DIFFERENT rel in the row
+                // (exclude the current rel_alias, which may legitimately re-bind it).
+                // Note: named path variables (Value::Path) are NOT checked here because
+                // edges from paths in previous MATCH clauses can be reused independently.
+                // Also exclude outer-scope edge variables (from previous WITH/MATCH scopes).
+                let eid = adj.edge_id;
+                let current_alias = rel_alias.as_ref().map(|ra| ra.0.as_str());
+                let outer_edge_vars: std::collections::HashSet<&str> =
+                    match row.get("__outer_edge_vars__") {
+                        Some(Value::List(vs)) => vs
+                            .iter()
+                            .filter_map(|v| {
+                                if let Value::Str(s) = v {
+                                    Some(s.as_ref())
+                                } else {
+                                    None
+                                }
+                            })
+                            .collect(),
+                        _ => std::collections::HashSet::new(),
+                    };
+                let edge_already_used = row.iter().any(|(key, v)| {
+                    // Don't count the current alias as "already used"
+                    if Some(key.as_str()) == current_alias {
+                        return false;
+                    }
+                    // Don't count outer-scope edges (from previous MATCH clauses)
+                    if outer_edge_vars.contains(key.as_str()) {
+                        return false;
+                    }
+                    match v {
+                        Value::Edge(e) => *e == eid,
+                        Value::List(items) => items
+                            .iter()
+                            .any(|item| matches!(item, Value::Edge(e) if *e == eid)),
+                        // Named path variables are NOT subject to edge isomorphism
+                        // across MATCH clauses — only relationship variables are.
+                        Value::Path { .. } => false,
+                        _ => false,
+                    }
+                });
+                if edge_already_used {
+                    continue;
+                }
+                let mut new_row = row.clone();
+                if let Some(ra) = rel_alias {
+                    new_row.insert(ra.0.clone(), Value::Edge(adj.edge_id));
+                }
+                new_row.insert(dst_alias.0.clone(), dst_val);
+                budget.record_row();
+                out.push(new_row);
+            }
+        }
+        Ok(out)
+    }
+
+    pub(crate) fn exec_var_len_expand(
+        &self,
+        graph: &str,
+        op: &Operator,
+        budget: &mut ExecutionBudget,
+        outer_rows: &[Row],
+        stats: &mut MutationStats,
+    ) -> Result<Vec<Row>, GqlError> {
+        let Operator::VarLenExpand {
+            direction,
+            rel_types,
+            min,
+            max,
+            src_alias,
+            path_alias,
+            path_mode,
+            dst_alias,
+            child,
+            rel_props,
+        } = op
+        else {
+            unreachable!()
+        };
+        let input = self.exec_operator(graph, child, budget, outer_rows, stats)?;
+        let type_strs: Vec<&str> = rel_types.iter().map(|r| r.as_str()).collect();
+        let mut out = Vec::new();
+
+        for row in input {
+            budget.check_or_err()?;
+            let src_val = row
+                .get(src_alias.0.as_str())
+                .ok_or_else(|| undefined_var(&src_alias.0))?;
+            let src_id = extract_node_id(src_val, &src_alias.0)?;
+
+            // BFS tracking full paths: queue entries are
+            // (node_id, path_nodes, path_edges, path_edge_set) where path_edge_set
+            // mirrors path_edges as a HashSet for O(1) duplicate-edge checks.
+            let mut queue: VecDeque<VarLenBfsEntry> = VecDeque::new();
+            // Collect edges already used in earlier steps of this named path.
+            // This enforces cross-operator relationship isomorphism:
+            // - Direct Value::Edge in the row (from regular Expand steps, incl. pre-bound r)
+            //   should not be re-traversed.
+            // - Value::Path and Value::List([Edge]) from __path_rel_* (VarLen internal storage)
+            //   also shouldn't be re-traversed.
+            // We intentionally exclude user-defined list variables (like `rs` from WITH)
+            // that contain edges intended to be FOLLOWED by this VarLen, not avoided.
+            // Heuristic: collect Value::Edge (direct edge vars) and __path_rel_* (VarLen storage).
+            let prior_path_edges: std::collections::HashSet<EdgeId> = row
+                .iter()
+                .flat_map(|(k, v)| match v {
+                    Value::Edge(e) => vec![*e],
+                    Value::List(items) if k.starts_with("__path_rel_") => items
+                        .iter()
+                        .filter_map(|i| {
+                            if let Value::Edge(e) = i {
+                                Some(*e)
+                            } else {
+                                None
+                            }
+                        })
+                        .collect(),
+                    Value::Path { edges, .. } if k.starts_with("__path_rel_") => edges.clone(),
+                    _ => vec![],
+                })
+                .collect();
+            queue.push_back((src_id, vec![src_id], vec![], HashSet::new()));
+
+            while let Some((current, path_nodes, path_edges, path_edge_set)) = queue.pop_front() {
+                budget.check_or_err()?;
+                let depth = path_edges.len() as u32;
+
+                // Yield this path if depth is within [min, max]
+                if depth >= *min && depth <= *max {
+                    let mut new_row = row.clone();
+                    let end_node = *path_nodes.last().ok_or_else(|| {
+                        GqlError::Execution(ExecutionError::TypeMismatch {
+                            expected: "non-empty path".to_string(),
+                            actual: "empty path_nodes".to_string(),
+                        })
+                    })?;
+                    new_row.insert(dst_alias.0.clone(), Value::Node(end_node));
+                    if let Some(pa) = path_alias {
+                        if *path_mode {
+                            // Named path mode: store full path for AssemblePath
+                            new_row.insert(
+                                pa.0.clone(),
+                                Value::Path {
+                                    nodes: path_nodes.clone(),
+                                    edges: path_edges.clone(),
+                                },
+                            );
+                        } else {
+                            // Relationship variable mode: store list of edges
+                            new_row.insert(
+                                pa.0.clone(),
+                                Value::List(path_edges.iter().map(|e| Value::Edge(*e)).collect()),
+                            );
+                        }
+                    }
+                    budget.record_row();
+                    out.push(new_row);
+                }
+
+                // Expand further if depth < max
+                if depth < *max {
+                    let adj_entries =
+                        get_adj_entries(self.store, graph, current, direction, &type_strs)?;
+                    for adj in adj_entries {
+                        budget.check_or_err()?;
+                        // Per openCypher spec: edge isomorphism is enforced (same
+                        // relationship cannot appear twice in one path), but node
+                        // repetition is allowed. This prevents infinite loops.
+                        // Also check edges from prior steps in this named path.
+                        if path_edge_set.contains(&adj.edge_id)
+                            || prior_path_edges.contains(&adj.edge_id)
+                        {
+                            continue;
+                        }
+                        // Check inline property constraints on the traversed edge.
+                        if let Some(pred) = rel_props {
+                            let mut edge_row = row.clone();
+                            edge_row
+                                .insert("__varlen_edge__".to_string(), Value::Edge(adj.edge_id));
+                            let ctx = self.build_filter_ctx(graph, &edge_row)?;
+                            match self.eval_with_storage(graph, pred, &edge_row, &ctx) {
+                                Ok(Value::Bool(true)) => {}
+                                _ => continue, // edge doesn't satisfy constraints
+                            }
+                        }
+                        let mut new_path_nodes = path_nodes.clone();
+                        new_path_nodes.push(adj.neighbor_id);
+                        let mut new_path_edges = path_edges.clone();
+                        new_path_edges.push(adj.edge_id);
+                        let mut new_path_edge_set = path_edge_set.clone();
+                        new_path_edge_set.insert(adj.edge_id);
+                        queue.push_back((
+                            adj.neighbor_id,
+                            new_path_nodes,
+                            new_path_edges,
+                            new_path_edge_set,
+                        ));
+                    }
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    pub(crate) fn exec_index_scan(
+        &self,
+        graph: &str,
+        op: &Operator,
+        budget: &mut ExecutionBudget,
+        _outer_rows: &[Row],
+        _stats: &mut MutationStats,
+    ) -> Result<Vec<Row>, GqlError> {
+        let Operator::IndexScan {
+            label,
+            property,
+            alias,
+        } = op
+        else {
+            unreachable!()
+        };
+        // Use the property index to find matching nodes.
+        // For a bare IndexScan (no specific value predicate), we scan all nodes
+        // with the label that have the property defined (using Gte on lowest value).
+        // In practice, the planner pairs this with a Filter for the predicate.
+        let node_ids = self.store.find_nodes_by_label_and_property(
+            graph,
+            label.as_str(),
+            property,
+            RangeQuery::Gte(&Value::Null),
+        )?;
+
+        // Fallback: if the range query returns empty (Null comparison issue),
+        // fall back to label scan with property existence check.
+        let effective_ids = if node_ids.is_empty() {
+            let all_label = self.store.find_nodes_by_label(graph, label.as_str())?;
+            let mut with_prop = Vec::new();
+            for id in all_label {
+                if let Some(node) = self.store.get_node(graph, id)? {
+                    if node.properties.contains_key(property.as_str()) {
+                        with_prop.push(id);
+                    }
+                }
+            }
+            with_prop
+        } else {
+            node_ids
+        };
+
+        let mut rows = Vec::with_capacity(effective_ids.len());
+        for id in effective_ids {
+            budget.check_or_err()?;
+            let mut row = Row::new();
+            row.insert(alias.0.clone(), Value::Node(id));
+            budget.record_row();
+            rows.push(row);
+        }
+        Ok(rows)
+    }
+
+    pub(crate) fn exec_node_by_id_seek(
+        &self,
+        graph: &str,
+        op: &Operator,
+        budget: &mut ExecutionBudget,
+        _outer_rows: &[Row],
+        _stats: &mut MutationStats,
+    ) -> Result<Vec<Row>, GqlError> {
+        let Operator::NodeByIdSeek { id_expr, alias } = op else {
+            unreachable!()
+        };
+        let ctx: FilterRow<'_> = HashMap::new();
+        let id_val = eval_expr(id_expr, &ctx)?;
+        let raw_id = match id_val {
+            Value::Int(n) if n >= 0 => n as u64,
+            Value::Int(n) => {
+                return Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                    expected: "non-negative integer for node ID".to_string(),
+                    actual: n.to_string(),
+                }));
+            }
+            other => {
+                return Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                    expected: "integer for node ID".to_string(),
+                    actual: other.type_name().to_string(),
+                }));
+            }
+        };
+
+        let node_id = NodeId(raw_id);
+        let mut rows = Vec::new();
+        if let Some(_node_data) = self.store.get_node(graph, node_id)? {
+            let mut row = Row::new();
+            row.insert(alias.0.clone(), Value::Node(node_id));
+            budget.record_row();
+            rows.push(row);
+        }
+        Ok(rows)
+    }
+
+    pub(crate) fn exec_shortest_path(
+        &self,
+        graph: &str,
+        op: &Operator,
+        budget: &mut ExecutionBudget,
+        outer_rows: &[Row],
+        _stats: &mut MutationStats,
+    ) -> Result<Vec<Row>, GqlError> {
+        let Operator::ShortestPath {
+            src_alias,
+            dst_alias,
+            rel_types,
+            direction,
+            min: _min,
+            max,
+            path_alias,
+            all_paths,
+        } = op
+        else {
+            unreachable!()
+        };
+        // ShortestPath requires both src and dst to be bound in outer context.
+        // For now, work from outer_rows or require them to be bound.
+        let type_strs: Vec<&str> = rel_types.iter().map(|r| r.as_str()).collect();
+        let mut out = Vec::new();
+
+        // If there are outer rows, use them. Otherwise create an empty row.
+        let context_rows = if outer_rows.is_empty() {
+            vec![Row::new()]
+        } else {
+            outer_rows.to_vec()
+        };
+
+        for row in &context_rows {
+            budget.check_or_err()?;
+            let src_val = row
+                .get(src_alias.0.as_str())
+                .ok_or_else(|| undefined_var(&src_alias.0))?;
+            let src_id = extract_node_id(src_val, &src_alias.0)?;
+
+            let dst_val = row
+                .get(dst_alias.0.as_str())
+                .ok_or_else(|| undefined_var(&dst_alias.0))?;
+            let dst_id = extract_node_id(dst_val, &dst_alias.0)?;
+
+            // BFS from src to dst, tracking full paths
+            // Queue: (current_node, path_nodes, path_edges)
+            let mut queue: VecDeque<(NodeId, Vec<NodeId>, Vec<EdgeId>)> = VecDeque::new();
+            queue.push_back((src_id, vec![src_id], vec![]));
+            let mut visited = HashSet::new();
+            visited.insert(src_id);
+
+            let mut found_paths: Vec<(Vec<NodeId>, Vec<EdgeId>)> = Vec::new();
+            let mut shortest_len: Option<u32> = None;
+
+            while let Some((current, path_nodes, path_edges)) = queue.pop_front() {
+                budget.check_or_err()?;
+                let depth = path_edges.len() as u32;
+
+                // If we already found shortest paths and current depth exceeds
+                // that length, stop (BFS guarantees depth ordering).
+                if let Some(sl) = shortest_len {
+                    if depth > sl {
+                        break;
+                    }
+                }
+
+                // Check if we reached the destination
+                if current == dst_id && depth > 0 {
+                    found_paths.push((path_nodes.clone(), path_edges.clone()));
+                    shortest_len = Some(depth);
+                    if !*all_paths {
+                        // shortestPath: just need the first one
+                        break;
+                    }
+                    // For allShortestPaths, continue at same depth level
+                    continue;
+                }
+
+                // Don't expand beyond max depth
+                if depth >= *max {
+                    continue;
+                }
+
+                let adj_entries =
+                    get_adj_entries(self.store, graph, current, direction, &type_strs)?;
+                for adj in adj_entries {
+                    budget.check_or_err()?;
+                    // For shortest path BFS, we track visited globally
+                    // but allow reaching dst through different paths at same depth.
+                    let is_dst = adj.neighbor_id == dst_id;
+                    if !is_dst && visited.contains(&adj.neighbor_id) {
+                        continue;
+                    }
+                    if !is_dst {
+                        visited.insert(adj.neighbor_id);
+                    }
+                    let mut new_nodes = path_nodes.clone();
+                    new_nodes.push(adj.neighbor_id);
+                    let mut new_edges = path_edges.clone();
+                    new_edges.push(adj.edge_id);
+                    queue.push_back((adj.neighbor_id, new_nodes, new_edges));
+                }
+            }
+
+            // Produce output rows for each found path
+            for (pn, pe) in found_paths {
+                let mut new_row = row.clone();
+                new_row.insert(
+                    path_alias.0.clone(),
+                    Value::Path {
+                        nodes: pn,
+                        edges: pe,
+                    },
+                );
+                budget.record_row();
+                out.push(new_row);
+            }
+        }
+        Ok(out)
+    }
+}
