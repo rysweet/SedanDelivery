@@ -282,7 +282,10 @@ fn bolt_structure_to_gql(tag: u8, fields: &[BoltValue]) -> Value {
         tags::TAG_DURATION => decode_duration(fields),
         tags::TAG_POINT_2D => decode_point2d(fields),
         tags::TAG_POINT_3D => decode_point3d(fields),
-        _ => Value::Null,
+        _ => {
+            tracing::warn!("bolt_decode: unrecognized structure tag=0x{tag:02X}");
+            Value::Null
+        }
     }
 }
 
@@ -307,12 +310,18 @@ fn bolt_float(v: &BoltValue) -> Option<f64> {
 fn decode_date(fields: &[BoltValue]) -> Value {
     let days = match fields.first().and_then(bolt_int) {
         Some(d) => d,
-        None => return Value::Null,
+        None => {
+            tracing::warn!("bolt_decode: missing or non-integer 'days' field in Date structure, fields={fields:?}");
+            return Value::Null;
+        }
     };
     let epoch = jiff::civil::Date::new(1970, 1, 1).expect("valid epoch");
     match epoch.checked_add(jiff::Span::new().days(days)) {
         Ok(d) => Value::Date(d),
-        Err(_) => Value::Null,
+        Err(_) => {
+            tracing::warn!("bolt_decode: date overflow, days={days} out of representable range");
+            Value::Null
+        }
     }
 }
 
@@ -320,7 +329,10 @@ fn decode_date(fields: &[BoltValue]) -> Value {
 fn decode_local_time(fields: &[BoltValue]) -> Value {
     let nanos = match fields.first().and_then(bolt_int) {
         Some(n) => n,
-        None => return Value::Null,
+        None => {
+            tracing::warn!("bolt_decode: missing or non-integer 'nanos' field in LocalTime structure, fields={fields:?}");
+            return Value::Null;
+        }
     };
     let h = (nanos / 3_600_000_000_000) as i8;
     let rem = nanos % 3_600_000_000_000;
@@ -330,7 +342,10 @@ fn decode_local_time(fields: &[BoltValue]) -> Value {
     let ns = (rem % 1_000_000_000) as i32;
     match jiff::civil::Time::new(h, m, s, ns) {
         Ok(t) => Value::LocalTime(t),
-        Err(_) => Value::Null,
+        Err(_) => {
+            tracing::warn!("bolt_decode: out-of-range LocalTime, nanos={nanos}");
+            Value::Null
+        }
     }
 }
 
@@ -339,11 +354,17 @@ fn decode_local_time(fields: &[BoltValue]) -> Value {
 fn decode_time_with_offset(fields: &[BoltValue]) -> Value {
     let nanos = match fields.first().and_then(bolt_int) {
         Some(n) => n,
-        None => return Value::Null,
+        None => {
+            tracing::warn!("bolt_decode: missing or non-integer 'nanos' field in Time structure, fields={fields:?}");
+            return Value::Null;
+        }
     };
     let offset_secs = match fields.get(1).and_then(bolt_int) {
         Some(o) => o,
-        None => return Value::Null,
+        None => {
+            tracing::warn!("bolt_decode: missing or non-integer 'offset_seconds' field in Time structure, fields={fields:?}");
+            return Value::Null;
+        }
     };
 
     let h = (nanos / 3_600_000_000_000) as i8;
@@ -355,7 +376,12 @@ fn decode_time_with_offset(fields: &[BoltValue]) -> Value {
 
     match jiff::civil::Time::new(h, m, s, ns) {
         Ok(t) => Value::Time(t, offset_secs as i32),
-        Err(_) => Value::Null,
+        Err(_) => {
+            tracing::warn!(
+                "bolt_decode: out-of-range Time, nanos={nanos}, offset_secs={offset_secs}"
+            );
+            Value::Null
+        }
     }
 }
 
@@ -363,7 +389,10 @@ fn decode_time_with_offset(fields: &[BoltValue]) -> Value {
 fn decode_local_datetime(fields: &[BoltValue]) -> Value {
     let epoch_secs = match fields.first().and_then(bolt_int) {
         Some(s) => s,
-        None => return Value::Null,
+        None => {
+            tracing::warn!("bolt_decode: missing or non-integer 'epoch_seconds' field in LocalDateTime structure, fields={fields:?}");
+            return Value::Null;
+        }
     };
     let nanos_adj = fields.get(1).and_then(bolt_int).unwrap_or(0);
 
@@ -381,7 +410,12 @@ fn decode_local_datetime(fields: &[BoltValue]) -> Value {
     let epoch = jiff::civil::Date::new(1970, 1, 1).expect("valid epoch");
     let date = match epoch.checked_add(jiff::Span::new().days(days)) {
         Ok(d) => d,
-        Err(_) => return Value::Null,
+        Err(_) => {
+            tracing::warn!(
+                "bolt_decode: LocalDateTime date overflow, epoch_secs={epoch_secs}, days={days}"
+            );
+            return Value::Null;
+        }
     };
 
     let h = (day_secs / 3_600) as i8;
@@ -391,7 +425,10 @@ fn decode_local_datetime(fields: &[BoltValue]) -> Value {
 
     let time = match jiff::civil::Time::new(h, m, s, nanos_adj as i32) {
         Ok(t) => t,
-        Err(_) => return Value::Null,
+        Err(_) => {
+            tracing::warn!("bolt_decode: out-of-range LocalDateTime time component, epoch_secs={epoch_secs}, nanos_adj={nanos_adj}");
+            return Value::Null;
+        }
     };
 
     Value::LocalDateTime(jiff::civil::DateTime::from_parts(date, time))
@@ -401,22 +438,36 @@ fn decode_local_datetime(fields: &[BoltValue]) -> Value {
 fn decode_datetime_zone_id(fields: &[BoltValue]) -> Value {
     let epoch_secs = match fields.first().and_then(bolt_int) {
         Some(s) => s,
-        None => return Value::Null,
+        None => {
+            tracing::warn!("bolt_decode: missing or non-integer 'epoch_seconds' field in DateTimeZoneId structure, fields={fields:?}");
+            return Value::Null;
+        }
     };
     let nanos_adj = fields.get(1).and_then(bolt_int).unwrap_or(0);
     let tz_id = match fields.get(2) {
         Some(BoltValue::String(s)) => s.as_str(),
-        _ => return Value::Null,
+        _ => {
+            tracing::warn!("bolt_decode: missing or non-string 'tz_id' field in DateTimeZoneId structure, fields={fields:?}");
+            return Value::Null;
+        }
     };
 
     let tz = match jiff::tz::TimeZone::get(tz_id) {
         Ok(tz) => tz,
-        Err(_) => return Value::Null,
+        Err(_) => {
+            tracing::warn!(
+                "bolt_decode: invalid timezone ID '{tz_id}' in DateTimeZoneId structure"
+            );
+            return Value::Null;
+        }
     };
 
     let ts = match jiff::Timestamp::new(epoch_secs, nanos_adj as i32) {
         Ok(ts) => ts,
-        Err(_) => return Value::Null,
+        Err(_) => {
+            tracing::warn!("bolt_decode: out-of-range timestamp in DateTimeZoneId, epoch_secs={epoch_secs}, nanos_adj={nanos_adj}");
+            return Value::Null;
+        }
     };
 
     let zoned = ts.to_zoned(tz);
@@ -427,12 +478,18 @@ fn decode_datetime_zone_id(fields: &[BoltValue]) -> Value {
 fn decode_datetime_offset(fields: &[BoltValue]) -> Value {
     let epoch_secs = match fields.first().and_then(bolt_int) {
         Some(s) => s,
-        None => return Value::Null,
+        None => {
+            tracing::warn!("bolt_decode: missing or non-integer 'epoch_seconds' field in DateTimeOffset structure, fields={fields:?}");
+            return Value::Null;
+        }
     };
     let nanos_adj = fields.get(1).and_then(bolt_int).unwrap_or(0);
     let offset_secs = match fields.get(2).and_then(bolt_int) {
         Some(o) => o,
-        None => return Value::Null,
+        None => {
+            tracing::warn!("bolt_decode: missing or non-integer 'offset_seconds' field in DateTimeOffset structure, fields={fields:?}");
+            return Value::Null;
+        }
     };
 
     // When offset is exactly 0, use the named "UTC" timezone so the round-trip
@@ -443,14 +500,20 @@ fn decode_datetime_offset(fields: &[BoltValue]) -> Value {
     } else {
         let offset = match jiff::tz::Offset::from_seconds(offset_secs as i32) {
             Ok(o) => o,
-            Err(_) => return Value::Null,
+            Err(_) => {
+                tracing::warn!("bolt_decode: out-of-range offset_seconds={offset_secs} in DateTimeOffset structure");
+                return Value::Null;
+            }
         };
         jiff::tz::TimeZone::fixed(offset)
     };
 
     let ts = match jiff::Timestamp::new(epoch_secs, nanos_adj as i32) {
         Ok(ts) => ts,
-        Err(_) => return Value::Null,
+        Err(_) => {
+            tracing::warn!("bolt_decode: out-of-range timestamp in DateTimeOffset, epoch_secs={epoch_secs}, nanos_adj={nanos_adj}");
+            return Value::Null;
+        }
     };
 
     let zoned = ts.to_zoned(tz);
@@ -487,15 +550,24 @@ fn srid_to_crs(srid: i64) -> Crs {
 fn decode_point2d(fields: &[BoltValue]) -> Value {
     let srid = match fields.first().and_then(bolt_int) {
         Some(s) => s,
-        None => return Value::Null,
+        None => {
+            tracing::warn!("bolt_decode: missing or non-integer 'srid' field in Point2D structure, fields={fields:?}");
+            return Value::Null;
+        }
     };
     let x = match fields.get(1).and_then(bolt_float) {
         Some(v) => v,
-        None => return Value::Null,
+        None => {
+            tracing::warn!("bolt_decode: missing or non-numeric 'x' field in Point2D structure, fields={fields:?}");
+            return Value::Null;
+        }
     };
     let y = match fields.get(2).and_then(bolt_float) {
         Some(v) => v,
-        None => return Value::Null,
+        None => {
+            tracing::warn!("bolt_decode: missing or non-numeric 'y' field in Point2D structure, fields={fields:?}");
+            return Value::Null;
+        }
     };
 
     Value::Point(GeoPoint {
@@ -510,15 +582,24 @@ fn decode_point2d(fields: &[BoltValue]) -> Value {
 fn decode_point3d(fields: &[BoltValue]) -> Value {
     let srid = match fields.first().and_then(bolt_int) {
         Some(s) => s,
-        None => return Value::Null,
+        None => {
+            tracing::warn!("bolt_decode: missing or non-integer 'srid' field in Point3D structure, fields={fields:?}");
+            return Value::Null;
+        }
     };
     let x = match fields.get(1).and_then(bolt_float) {
         Some(v) => v,
-        None => return Value::Null,
+        None => {
+            tracing::warn!("bolt_decode: missing or non-numeric 'x' field in Point3D structure, fields={fields:?}");
+            return Value::Null;
+        }
     };
     let y = match fields.get(2).and_then(bolt_float) {
         Some(v) => v,
-        None => return Value::Null,
+        None => {
+            tracing::warn!("bolt_decode: missing or non-numeric 'y' field in Point3D structure, fields={fields:?}");
+            return Value::Null;
+        }
     };
     let z = fields.get(3).and_then(bolt_float);
 
@@ -826,7 +907,6 @@ mod tests {
 
     #[test]
     fn decode_datetime_zone_id_tag_0x69() {
-        // 0x69 (lowercase 'i') = UTC-mode DateTimeZoneId: (epoch_secs, nanos, tz_string)
         let epoch_secs: i64 = 19737 * 86_400 + 10 * 3600 + 30 * 60;
         let bv = BoltValue::Structure {
             tag: 0x69,
@@ -847,7 +927,6 @@ mod tests {
 
     #[test]
     fn decode_datetime_zone_id_tag_0x66() {
-        // 0x66 (lowercase 'f') = wall-clock DateTimeZoneId: (epoch_secs, nanos, tz_string)
         let epoch_secs: i64 = 19737 * 86_400 + 10 * 3600 + 30 * 60;
         let bv = BoltValue::Structure {
             tag: 0x66,
@@ -1035,7 +1114,6 @@ mod tests {
 
     #[test]
     fn roundtrip_datetime_zone_id() {
-        // UTC-mode zone name uses tag 0x69 (lowercase 'i')
         let epoch_secs: i64 = 19737 * 86_400 + 10 * 3600 + 30 * 60;
         let bolt_in = BoltValue::Structure {
             tag: 0x69,
@@ -1052,7 +1130,6 @@ mod tests {
 
     #[test]
     fn roundtrip_datetime_offset() {
-        // UTC-mode offset uses tag 0x49 (uppercase 'I')
         let epoch_secs: i64 = 19737 * 86_400 + 7 * 3600 + 30 * 60;
         let bolt_in = BoltValue::Structure {
             tag: 0x49,
@@ -1133,7 +1210,7 @@ mod tests {
             records[0][0],
             BoltValue::Structure {
                 tag: 0x44,
-                fields: vec![BoltValue::Int(19737)],
+                fields: vec![BoltValue::Int(19737)]
             }
         );
     }
@@ -1164,8 +1241,8 @@ mod tests {
                     BoltValue::Int(14),
                     BoltValue::Int(3),
                     BoltValue::Int(100),
-                    BoltValue::Int(0),
-                ],
+                    BoltValue::Int(0)
+                ]
             }
         );
     }
@@ -1194,8 +1271,8 @@ mod tests {
                 fields: vec![
                     BoltValue::Int(7203),
                     BoltValue::Float(1.5),
-                    BoltValue::Float(2.5),
-                ],
+                    BoltValue::Float(2.5)
+                ]
             }
         );
     }
@@ -1212,7 +1289,6 @@ mod tests {
         );
         match result {
             Ok(qr) => {
-                // We should get 1 partial row (10/1=10), then a trailing error.
                 assert_eq!(qr.rows.len(), 1, "expected 1 partial row");
                 assert!(
                     qr.trailing_error.is_some(),
@@ -1228,5 +1304,267 @@ mod tests {
                 panic!("expected Ok with partial results, got Err: {e}");
             }
         }
+    }
+
+    // ── Decode edge-case tests (invalid inputs produce Value::Null) ─────────
+
+    #[test]
+    fn decode_date_missing_field_returns_null() {
+        assert_eq!(decode_date(&[]), Value::Null);
+    }
+
+    #[test]
+    fn decode_date_non_integer_field_returns_null() {
+        assert_eq!(
+            decode_date(&[BoltValue::String("not-a-number".into())]),
+            Value::Null
+        );
+    }
+
+    #[test]
+    fn decode_date_overflow_returns_null() {
+        // 7_304_484 is jiff's Span::days upper limit; this value exceeds
+        // the representable date range and triggers checked_add overflow.
+        assert_eq!(decode_date(&[BoltValue::Int(7_304_484)]), Value::Null);
+    }
+
+    #[test]
+    fn decode_local_time_missing_field_returns_null() {
+        assert_eq!(decode_local_time(&[]), Value::Null);
+    }
+
+    #[test]
+    fn decode_local_time_non_integer_returns_null() {
+        assert_eq!(decode_local_time(&[BoltValue::Bool(true)]), Value::Null);
+    }
+
+    #[test]
+    fn decode_local_time_out_of_range_returns_null() {
+        let nanos_25h = 25 * 3_600_000_000_000_i64;
+        assert_eq!(decode_local_time(&[BoltValue::Int(nanos_25h)]), Value::Null);
+    }
+
+    #[test]
+    fn decode_time_with_offset_missing_nanos_returns_null() {
+        assert_eq!(decode_time_with_offset(&[]), Value::Null);
+    }
+
+    #[test]
+    fn decode_time_with_offset_missing_offset_returns_null() {
+        assert_eq!(decode_time_with_offset(&[BoltValue::Int(0)]), Value::Null);
+    }
+
+    #[test]
+    fn decode_time_with_offset_non_integer_offset_returns_null() {
+        assert_eq!(
+            decode_time_with_offset(&[BoltValue::Int(0), BoltValue::String("bad".into())]),
+            Value::Null
+        );
+    }
+
+    #[test]
+    fn decode_time_with_offset_out_of_range_returns_null() {
+        let nanos_25h = 25 * 3_600_000_000_000_i64;
+        assert_eq!(
+            decode_time_with_offset(&[BoltValue::Int(nanos_25h), BoltValue::Int(0)]),
+            Value::Null
+        );
+    }
+
+    #[test]
+    fn decode_local_datetime_missing_epoch_returns_null() {
+        assert_eq!(decode_local_datetime(&[]), Value::Null);
+    }
+
+    #[test]
+    fn decode_local_datetime_non_integer_returns_null() {
+        assert_eq!(decode_local_datetime(&[BoltValue::Float(1.0)]), Value::Null);
+    }
+
+    #[test]
+    fn decode_local_datetime_overflow_returns_null() {
+        // 7_304_484 days * 86400 secs/day -- divides into days at jiff's
+        // Span upper limit, causing checked_add overflow on the date.
+        let huge_epoch = 7_304_484_i64 * 86_400;
+        assert_eq!(
+            decode_local_datetime(&[BoltValue::Int(huge_epoch), BoltValue::Int(0)]),
+            Value::Null
+        );
+    }
+
+    #[test]
+    fn decode_datetime_zone_id_missing_epoch_returns_null() {
+        assert_eq!(decode_datetime_zone_id(&[]), Value::Null);
+    }
+
+    #[test]
+    fn decode_datetime_zone_id_missing_tz_returns_null() {
+        assert_eq!(
+            decode_datetime_zone_id(&[BoltValue::Int(0), BoltValue::Int(0)]),
+            Value::Null
+        );
+    }
+
+    #[test]
+    fn decode_datetime_zone_id_non_string_tz_returns_null() {
+        assert_eq!(
+            decode_datetime_zone_id(&[BoltValue::Int(0), BoltValue::Int(0), BoltValue::Int(999)]),
+            Value::Null
+        );
+    }
+
+    #[test]
+    fn decode_datetime_zone_id_invalid_tz_returns_null() {
+        assert_eq!(
+            decode_datetime_zone_id(&[
+                BoltValue::Int(0),
+                BoltValue::Int(0),
+                BoltValue::String("Not/A/Real/Timezone".into())
+            ]),
+            Value::Null
+        );
+    }
+
+    #[test]
+    fn decode_datetime_zone_id_overflow_returns_null() {
+        assert_eq!(
+            decode_datetime_zone_id(&[
+                BoltValue::Int(i64::MAX),
+                BoltValue::Int(0),
+                BoltValue::String("UTC".into())
+            ]),
+            Value::Null
+        );
+    }
+
+    #[test]
+    fn decode_datetime_offset_missing_epoch_returns_null() {
+        assert_eq!(decode_datetime_offset(&[]), Value::Null);
+    }
+
+    #[test]
+    fn decode_datetime_offset_missing_offset_returns_null() {
+        assert_eq!(
+            decode_datetime_offset(&[BoltValue::Int(0), BoltValue::Int(0)]),
+            Value::Null
+        );
+    }
+
+    #[test]
+    fn decode_datetime_offset_non_integer_offset_returns_null() {
+        assert_eq!(
+            decode_datetime_offset(&[
+                BoltValue::Int(0),
+                BoltValue::Int(0),
+                BoltValue::String("bad".into())
+            ]),
+            Value::Null
+        );
+    }
+
+    #[test]
+    fn decode_datetime_offset_out_of_range_offset_returns_null() {
+        assert_eq!(
+            decode_datetime_offset(&[
+                BoltValue::Int(0),
+                BoltValue::Int(0),
+                BoltValue::Int(999_999)
+            ]),
+            Value::Null
+        );
+    }
+
+    #[test]
+    fn decode_datetime_offset_overflow_timestamp_returns_null() {
+        assert_eq!(
+            decode_datetime_offset(&[
+                BoltValue::Int(i64::MAX),
+                BoltValue::Int(0),
+                BoltValue::Int(3600)
+            ]),
+            Value::Null
+        );
+    }
+
+    #[test]
+    fn decode_duration_missing_fields_uses_defaults() {
+        let val = decode_duration(&[]);
+        assert_eq!(
+            val,
+            Value::Duration(CypherDuration {
+                months: 0,
+                days: 0,
+                nanos: 0
+            })
+        );
+    }
+
+    #[test]
+    fn decode_duration_partial_fields_uses_defaults() {
+        let val = decode_duration(&[BoltValue::Int(6)]);
+        assert_eq!(
+            val,
+            Value::Duration(CypherDuration {
+                months: 6,
+                days: 0,
+                nanos: 0
+            })
+        );
+    }
+
+    #[test]
+    fn decode_point2d_missing_srid_returns_null() {
+        assert_eq!(decode_point2d(&[]), Value::Null);
+    }
+
+    #[test]
+    fn decode_point2d_missing_x_returns_null() {
+        assert_eq!(decode_point2d(&[BoltValue::Int(7203)]), Value::Null);
+    }
+
+    #[test]
+    fn decode_point2d_missing_y_returns_null() {
+        assert_eq!(
+            decode_point2d(&[BoltValue::Int(7203), BoltValue::Float(1.0)]),
+            Value::Null
+        );
+    }
+
+    #[test]
+    fn decode_point3d_missing_srid_returns_null() {
+        assert_eq!(decode_point3d(&[]), Value::Null);
+    }
+
+    #[test]
+    fn decode_point3d_missing_x_returns_null() {
+        assert_eq!(decode_point3d(&[BoltValue::Int(4979)]), Value::Null);
+    }
+
+    #[test]
+    fn decode_point3d_missing_y_returns_null() {
+        assert_eq!(
+            decode_point3d(&[BoltValue::Int(4979), BoltValue::Float(1.0)]),
+            Value::Null
+        );
+    }
+
+    #[test]
+    fn decode_point3d_missing_z_still_succeeds() {
+        let val = decode_point3d(&[
+            BoltValue::Int(4979),
+            BoltValue::Float(1.0),
+            BoltValue::Float(2.0),
+        ]);
+        if let Value::Point(p) = val {
+            assert!(p.z.is_none());
+        } else {
+            panic!("expected Value::Point, got {val:?}");
+        }
+    }
+
+    #[test]
+    fn bolt_structure_unknown_tag_returns_null() {
+        let val = bolt_structure_to_gql(0xFF, &[BoltValue::Int(1)]);
+        assert_eq!(val, Value::Null);
     }
 }
