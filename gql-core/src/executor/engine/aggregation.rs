@@ -1,6 +1,6 @@
 //! Aggregation operator and state for the query executor.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use crate::ast::Expr;
 use crate::error::{ExecutionError, GqlError};
@@ -11,6 +11,97 @@ use crate::types::Value;
 use super::helpers::{cmp_values, expr_to_column_name, inject_parameters};
 use super::{MutationStats, QueryExecutor, Row};
 
+// ── Hash-based distinct dedup ────────────────────────────────────────────────
+
+/// Dedup bucket for hash-first distinct tracking.
+///
+/// On the fast path (no hash collision), we store a single `Value` and never
+/// allocate a `String`.  Only when two different values hash to the same `u64`
+/// do we fall back to `canonical_key()` string comparison.
+#[derive(Debug)]
+enum DistinctBucket {
+    /// One entry whose canonical string key has NOT been computed yet.
+    Single(Value),
+    /// Two or more entries that collided — tracked by canonical string keys.
+    Resolved(Vec<String>),
+}
+
+/// Hash-first dedup set for `COUNT(DISTINCT ...)` values.
+///
+/// Mirrors the `RowDedupSet` design: the fast path (no collision) avoids any
+/// `String` allocation.  Only hash-bucket collisions trigger `canonical_key()`.
+#[derive(Debug, Default)]
+struct DistinctSet {
+    inner: HashMap<u64, DistinctBucket>,
+}
+
+impl DistinctSet {
+    #[cfg(test)]
+    fn new() -> Self {
+        Self {
+            inner: HashMap::new(),
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.inner
+            .values()
+            .map(|b| match b {
+                DistinctBucket::Single(_) => 1,
+                DistinctBucket::Resolved(keys) => keys.len(),
+            })
+            .sum()
+    }
+
+    /// Returns `true` if the value was **not** previously present (inserted).
+    fn insert(&mut self, val: &Value) -> bool {
+        use std::collections::hash_map::Entry;
+
+        let h = value_hash(val);
+        match self.inner.entry(h) {
+            Entry::Vacant(e) => {
+                // Fast path: hash never seen.  Zero String allocations.
+                e.insert(DistinctBucket::Single(val.clone()));
+                true
+            }
+            Entry::Occupied(mut e) => {
+                let key = val.canonical_key();
+                let bucket = e.get_mut();
+                match bucket {
+                    DistinctBucket::Single(first_val) => {
+                        let first_key = first_val.canonical_key();
+                        if first_key == key {
+                            // Duplicate
+                            *bucket = DistinctBucket::Resolved(vec![first_key]);
+                            false
+                        } else {
+                            // True collision — different values, same hash
+                            *bucket = DistinctBucket::Resolved(vec![first_key, key]);
+                            true
+                        }
+                    }
+                    DistinctBucket::Resolved(keys) => {
+                        if keys.contains(&key) {
+                            false
+                        } else {
+                            keys.push(key);
+                            true
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Compute a `u64` hash for a single `Value` via `canonical_hash`.
+fn value_hash(val: &Value) -> u64 {
+    use std::hash::Hasher;
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    val.canonical_hash(&mut hasher);
+    hasher.finish()
+}
+
 // ── Aggregation state ─────────────────────────────────────────────────────────
 
 #[derive(Debug, Default)]
@@ -20,7 +111,7 @@ pub(crate) struct AggState {
     min: Option<Value>,
     max: Option<Value>,
     collected: Vec<Value>,
-    seen_distinct: HashSet<String>,
+    seen_distinct: DistinctSet,
     /// Percentile parameter for percentileDisc/percentileCont (0.0..=1.0).
     percentile: Option<f64>,
 }
@@ -41,8 +132,7 @@ impl AggState {
             if self.seen_distinct.len() >= max_size {
                 return; // silently drop excess — same as Collect overflow
             }
-            let key = val.canonical_key();
-            if !self.seen_distinct.insert(key) {
+            if !self.seen_distinct.insert(&val) {
                 return;
             }
         }
@@ -214,6 +304,40 @@ impl AggState {
     }
 }
 
+// ── Group key hashing helpers ────────────────────────────────────────────────
+
+/// Bucket for the group-key hash index (mirrors `DistinctBucket` / `RowDedupSet`).
+enum GroupBucket {
+    /// One group whose canonical string key has NOT been computed yet.
+    Single(usize),
+    /// Two or more groups that share the same u64 hash — tracked by canonical
+    /// string keys paired with their group index.
+    Resolved(Vec<(String, usize)>),
+}
+
+/// Compute a combined u64 hash from a slice of group-key `Value`s.
+fn group_key_hash(group_key: &[Value]) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    group_key.len().hash(&mut hasher);
+    for v in group_key {
+        v.canonical_hash(&mut hasher);
+    }
+    hasher.finish()
+}
+
+/// Build a canonical string key from a slice of group-key `Value`s.
+///
+/// Only called on hash collision (rare).  The result is deterministic and
+/// consistent with `canonical_key()` — equal values produce equal strings.
+fn group_key_string(group_key: &[Value]) -> String {
+    group_key
+        .iter()
+        .map(|v| v.canonical_key())
+        .collect::<Vec<_>>()
+        .join("|")
+}
+
 // ── QueryExecutor impl for aggregation ────────────────────────────────────────
 
 impl<'a> QueryExecutor<'a> {
@@ -238,10 +362,13 @@ impl<'a> QueryExecutor<'a> {
 
         // Group rows by the key expression values.
         // We use a Vec-of-(key_row, agg_state) for ordered output and a
-        // HashMap<String, usize> index for O(1) group lookup (Value doesn't impl Hash,
-        // so we serialize the key via Debug for the index key).
+        // hash-first index for O(1) group lookup.
+        //
+        // Fast path (no hash collisions): only u64 hashes are stored — zero
+        // String allocations.  On collision we fall back to canonical_key()
+        // comparison, matching the RowDedupSet pattern.
         let mut groups: Vec<(Vec<Value>, Vec<AggState>)> = Vec::new();
-        let mut group_index: HashMap<String, usize> = HashMap::new();
+        let mut group_index: HashMap<u64, GroupBucket> = HashMap::new();
 
         for row in &input {
             let ctx = self.build_filter_ctx(graph, row)?;
@@ -250,23 +377,58 @@ impl<'a> QueryExecutor<'a> {
                 .map(|expr| self.eval_with_storage(graph, expr, row, &ctx))
                 .collect::<Result<Vec<_>, GqlError>>()?;
 
-            // Find existing group or create new — O(1) via the index.
-            // canonical_key() ensures equal values (e.g. -0.0/0.0, maps with
+            // Compute a u64 hash from the group key values via canonical_hash.
+            let h = group_key_hash(&group_key);
+
+            // Find existing group or create new — O(1) via the hash index.
+            // canonical_hash() ensures equal values (e.g. -0.0/0.0, maps with
             // different insertion order, same-instant DateTimes in different
-            // time zones) produce the same hash key.
-            let key_str: String = group_key
-                .iter()
-                .map(|v| v.canonical_key())
-                .collect::<Vec<_>>()
-                .join("|");
-            let idx = if let Some(&i) = group_index.get(&key_str) {
-                i
-            } else {
-                let i = groups.len();
-                let new_states = aggregations.iter().map(|_| AggState::default()).collect();
-                groups.push((group_key, new_states));
-                group_index.insert(key_str, i);
-                i
+            // time zones) produce the same hash.
+            let idx = match group_index.entry(h) {
+                std::collections::hash_map::Entry::Vacant(e) => {
+                    // Fast path: hash never seen — zero String allocations.
+                    let i = groups.len();
+                    let new_states = aggregations.iter().map(|_| AggState::default()).collect();
+                    groups.push((group_key, new_states));
+                    e.insert(GroupBucket::Single(i));
+                    i
+                }
+                std::collections::hash_map::Entry::Occupied(mut e) => {
+                    let key_str = group_key_string(&group_key);
+                    match e.get_mut() {
+                        GroupBucket::Single(first_idx) => {
+                            let first_key_str = group_key_string(&groups[*first_idx].0);
+                            if first_key_str == key_str {
+                                // Same group
+                                let i = *first_idx;
+                                *e.get_mut() = GroupBucket::Resolved(vec![(first_key_str, i)]);
+                                i
+                            } else {
+                                // True collision — different groups share the same hash
+                                let i = groups.len();
+                                let new_states =
+                                    aggregations.iter().map(|_| AggState::default()).collect();
+                                groups.push((group_key, new_states));
+                                let fi = *first_idx;
+                                *e.get_mut() =
+                                    GroupBucket::Resolved(vec![(first_key_str, fi), (key_str, i)]);
+                                i
+                            }
+                        }
+                        GroupBucket::Resolved(entries) => {
+                            if let Some(&(_, i)) = entries.iter().find(|(k, _)| *k == key_str) {
+                                i
+                            } else {
+                                let i = groups.len();
+                                let new_states =
+                                    aggregations.iter().map(|_| AggState::default()).collect();
+                                groups.push((group_key, new_states));
+                                entries.push((key_str, i));
+                                i
+                            }
+                        }
+                    }
+                }
             };
 
             // Accumulate into each aggregation state.
@@ -390,6 +552,54 @@ mod tests {
         s.accumulate(&AggFunction::Count, Value::Int(1), None, true);
         s.accumulate(&AggFunction::Count, Value::Int(2), None, true);
         assert_eq!(s.finalize(&AggFunction::Count).unwrap(), Value::Int(2));
+    }
+
+    #[test]
+    fn distinct_set_basic() {
+        let mut ds = DistinctSet::new();
+        assert!(ds.insert(&Value::Int(1)));
+        assert!(!ds.insert(&Value::Int(1))); // duplicate
+        assert!(ds.insert(&Value::Int(2)));
+        assert_eq!(ds.len(), 2);
+    }
+
+    #[test]
+    fn distinct_set_float_neg_zero() {
+        let mut ds = DistinctSet::new();
+        assert!(ds.insert(&Value::Float(0.0)));
+        assert!(!ds.insert(&Value::Float(-0.0))); // -0.0 == 0.0
+        assert_eq!(ds.len(), 1);
+    }
+
+    #[test]
+    fn distinct_set_mixed_types() {
+        let mut ds = DistinctSet::new();
+        assert!(ds.insert(&Value::Int(1)));
+        assert!(ds.insert(&Value::Str("1".into())));
+        assert!(ds.insert(&Value::Float(1.0)));
+        assert_eq!(ds.len(), 3);
+    }
+
+    #[test]
+    fn group_key_hash_deterministic() {
+        let key1 = vec![Value::Int(1), Value::Str("a".into())];
+        let key2 = vec![Value::Int(1), Value::Str("a".into())];
+        assert_eq!(group_key_hash(&key1), group_key_hash(&key2));
+    }
+
+    #[test]
+    fn group_key_hash_different_keys_differ() {
+        let key1 = vec![Value::Int(1)];
+        let key2 = vec![Value::Int(2)];
+        assert_ne!(group_key_hash(&key1), group_key_hash(&key2));
+    }
+
+    #[test]
+    fn group_key_string_deterministic() {
+        let key = vec![Value::Int(1), Value::Str("hello".into())];
+        let s1 = group_key_string(&key);
+        let s2 = group_key_string(&key);
+        assert_eq!(s1, s2);
     }
 
     #[test]

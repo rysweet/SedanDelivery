@@ -38,7 +38,10 @@ use gql_core::storage::{
 };
 use gql_core::types::Value;
 
-use connection::{RedisConn, RedisPool, DEFAULT_POOL_SIZE, DEFAULT_POOL_TIMEOUT_SECS};
+use connection::{
+    RedisConn, RedisPool, DEFAULT_IDLE_TIMEOUT_SECS, DEFAULT_MIN_IDLE, DEFAULT_POOL_SIZE,
+    DEFAULT_POOL_TIMEOUT_SECS,
+};
 use keys::{decode_adj, key_edge, key_node, KEY_GRAPHS};
 
 // ── RedisGraphStore ─────────────────────────────────────────────────────────
@@ -56,8 +59,10 @@ use keys::{decode_adj, key_edge, key_node, KEY_GRAPHS};
 /// - `GQL_REDIS_URL` / `REDIS_URL` — standalone URL (fallback `redis://127.0.0.1:6379`)
 ///
 /// Pool configuration:
-/// - `GQL_REDIS_POOL_SIZE` — max connections (default 16)
+/// - `GQL_REDIS_POOL_SIZE` — max connections (default 64)
 /// - `GQL_REDIS_POOL_TIMEOUT_SECS` — checkout timeout (default 5)
+/// - `GQL_REDIS_IDLE_TIMEOUT_SECS` — idle connection reap timeout (default 300)
+/// - `GQL_REDIS_MIN_IDLE` — minimum warm connections kept in pool (default 1)
 pub struct RedisGraphStore {
     pool: RedisPool,
     /// Optional key prefix for multi-tenant isolation.
@@ -75,8 +80,10 @@ impl RedisGraphStore {
     /// The key prefix is read from `GQL_REDIS_KEY_PREFIX` (default empty string).
     /// Set a prefix to isolate multiple deployments sharing a single Redis instance.
     ///
-    /// Pool size and timeout are read from `GQL_REDIS_POOL_SIZE` (default 16)
+    /// Pool size and timeout are read from `GQL_REDIS_POOL_SIZE` (default 64)
     /// and `GQL_REDIS_POOL_TIMEOUT_SECS` (default 5).
+    /// Idle timeout and min-idle are read from `GQL_REDIS_IDLE_TIMEOUT_SECS` (default 300)
+    /// and `GQL_REDIS_MIN_IDLE` (default 1).
     pub fn from_env() -> Result<Self, StorageError> {
         let prefix = env::var("GQL_REDIS_KEY_PREFIX").unwrap_or_default();
         let pool_size: u32 = env::var("GQL_REDIS_POOL_SIZE")
@@ -103,18 +110,56 @@ impl RedisGraphStore {
                 }
             })
             .unwrap_or(DEFAULT_POOL_TIMEOUT_SECS);
+        let idle_timeout_secs: u64 = env::var("GQL_REDIS_IDLE_TIMEOUT_SECS")
+            .ok()
+            .and_then(|v| match v.parse() {
+                Ok(val) => Some(val),
+                Err(_) => {
+                    tracing::warn!(
+                        "invalid value for GQL_REDIS_IDLE_TIMEOUT_SECS: {v:?}, using default {DEFAULT_IDLE_TIMEOUT_SECS}"
+                    );
+                    None
+                }
+            })
+            .unwrap_or(DEFAULT_IDLE_TIMEOUT_SECS);
+        let min_idle: u32 = env::var("GQL_REDIS_MIN_IDLE")
+            .ok()
+            .and_then(|v| match v.parse() {
+                Ok(val) => Some(val),
+                Err(_) => {
+                    tracing::warn!(
+                        "invalid value for GQL_REDIS_MIN_IDLE: {v:?}, using default {DEFAULT_MIN_IDLE}"
+                    );
+                    None
+                }
+            })
+            .unwrap_or(DEFAULT_MIN_IDLE);
 
         // Cluster mode: GQL_REDIS_CLUSTER_NODES takes priority.
         if let Ok(nodes_str) = env::var("GQL_REDIS_CLUSTER_NODES") {
             let nodes: Vec<&str> = nodes_str.split(',').map(|s| s.trim()).collect();
-            return Self::from_cluster_nodes(&nodes, &prefix, pool_size, pool_timeout_secs);
+            return Self::from_cluster_nodes(
+                &nodes,
+                &prefix,
+                pool_size,
+                pool_timeout_secs,
+                idle_timeout_secs,
+                min_idle,
+            );
         }
 
         // Standalone mode.
         let url = env::var("GQL_REDIS_URL")
             .or_else(|_| env::var("REDIS_URL"))
             .unwrap_or_else(|_| "redis://127.0.0.1:6379".into());
-        Self::from_url_with_options(&url, &prefix, pool_size, pool_timeout_secs)
+        Self::from_url_with_options(
+            &url,
+            &prefix,
+            pool_size,
+            pool_timeout_secs,
+            idle_timeout_secs,
+            min_idle,
+        )
     }
 
     /// Create a store connecting to an explicit Redis URL with an optional key prefix.
@@ -124,6 +169,8 @@ impl RedisGraphStore {
             key_prefix,
             DEFAULT_POOL_SIZE,
             DEFAULT_POOL_TIMEOUT_SECS,
+            DEFAULT_IDLE_TIMEOUT_SECS,
+            DEFAULT_MIN_IDLE,
         )
     }
 
@@ -133,8 +180,11 @@ impl RedisGraphStore {
         key_prefix: &str,
         pool_size: u32,
         pool_timeout_secs: u64,
+        idle_timeout_secs: u64,
+        min_idle: u32,
     ) -> Result<Self, StorageError> {
-        let pool = RedisPool::standalone(url, pool_size, pool_timeout_secs)?;
+        let pool =
+            RedisPool::standalone(url, pool_size, pool_timeout_secs, idle_timeout_secs, min_idle)?;
         Ok(Self {
             pool,
             key_prefix: key_prefix.to_string(),
@@ -151,8 +201,11 @@ impl RedisGraphStore {
         key_prefix: &str,
         pool_size: u32,
         pool_timeout_secs: u64,
+        idle_timeout_secs: u64,
+        min_idle: u32,
     ) -> Result<Self, StorageError> {
-        let pool = RedisPool::cluster(nodes, pool_size, pool_timeout_secs)?;
+        let pool =
+            RedisPool::cluster(nodes, pool_size, pool_timeout_secs, idle_timeout_secs, min_idle)?;
         Ok(Self {
             pool,
             key_prefix: key_prefix.to_string(),
