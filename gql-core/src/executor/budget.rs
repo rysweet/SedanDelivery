@@ -47,7 +47,14 @@ pub struct ExecutionBudget {
     rows_produced: usize,
     /// The original timeout, for inclusion in error messages.
     timeout: Duration,
+    /// Counter for amortizing `Instant::now()` calls. The expensive syscall is
+    /// only performed every `CHECK_INTERVAL` invocations of `check_or_err()`.
+    check_counter: u64,
 }
+
+/// Only call `Instant::now()` once every this many `check_or_err()` invocations.
+/// Row-budget checks are always performed (they are a simple integer comparison).
+pub const CHECK_INTERVAL: u64 = 1024;
 
 impl ExecutionBudget {
     /// Create a budget with explicit timeout and row limit.
@@ -57,6 +64,7 @@ impl ExecutionBudget {
             max_rows,
             rows_produced: 0,
             timeout,
+            check_counter: 0,
         }
     }
 
@@ -87,21 +95,31 @@ impl ExecutionBudget {
     /// Check both the deadline and row budget. Returns `Err` if either is exceeded.
     ///
     /// Call this as the FIRST STATEMENT in every operator's `next()` implementation.
+    ///
+    /// The row-budget check (a cheap integer comparison) runs on every call.
+    /// The deadline check (which requires an `Instant::now()` syscall, ~20 ns)
+    /// is amortized: it only executes once every [`CHECK_INTERVAL`] invocations.
     #[inline]
-    pub fn check_or_err(&self) -> Result<(), GqlError> {
-        let now = Instant::now();
-        if now > self.deadline {
-            let elapsed = now.duration_since(self.deadline - self.timeout);
-            return Err(GqlError::Execution(ExecutionError::Timeout {
-                elapsed_ms: elapsed.as_millis() as u64,
-                limit_ms: self.timeout.as_millis() as u64,
-            }));
-        }
+    pub fn check_or_err(&mut self) -> Result<(), GqlError> {
+        // Always check the row budget — this is a cheap integer comparison.
         if self.rows_produced >= self.max_rows {
             return Err(GqlError::Execution(ExecutionError::ResultSetTooLarge {
                 count: self.rows_produced,
                 limit: self.max_rows,
             }));
+        }
+        // Amortize the Instant::now() syscall: only check deadline every
+        // CHECK_INTERVAL invocations.
+        self.check_counter += 1;
+        if self.check_counter & (CHECK_INTERVAL - 1) == 0 {
+            let now = Instant::now();
+            if now > self.deadline {
+                let elapsed = now.duration_since(self.deadline - self.timeout);
+                return Err(GqlError::Execution(ExecutionError::Timeout {
+                    elapsed_ms: elapsed.as_millis() as u64,
+                    limit_ms: self.timeout.as_millis() as u64,
+                }));
+            }
         }
         Ok(())
     }
@@ -139,7 +157,7 @@ mod tests {
 
     #[test]
     fn fresh_budget_allows_rows() {
-        let budget = ExecutionBudget::default_budget();
+        let mut budget = ExecutionBudget::default_budget();
         assert!(budget.check_or_err().is_ok());
     }
 
@@ -161,8 +179,14 @@ mod tests {
 
     #[test]
     fn timeout_detected() {
-        let budget = ExecutionBudget::new(Duration::from_millis(1), DEFAULT_MAX_ROWS);
+        let mut budget = ExecutionBudget::new(Duration::from_millis(1), DEFAULT_MAX_ROWS);
         sleep(Duration::from_millis(5));
+        // The deadline check is amortized: only fires every CHECK_INTERVAL calls.
+        // Pump (CHECK_INTERVAL - 1) calls to bring the counter to the trigger point,
+        // then the next call will actually check Instant::now() and detect the timeout.
+        for _ in 0..CHECK_INTERVAL - 1 {
+            let _ = budget.check_or_err();
+        }
         assert!(budget.check_or_err().is_err());
     }
 
@@ -182,5 +206,54 @@ mod tests {
         let r = budget.remaining();
         assert!(r.is_some());
         assert!(r.unwrap() <= Duration::from_secs(10));
+    }
+
+    /// Verify that the amortized check still detects row budget immediately
+    /// (row checks are never amortized, only Instant::now() is).
+    #[test]
+    fn row_budget_always_checked_even_with_amortization() {
+        let mut budget = ExecutionBudget::new(Duration::from_secs(60), 5);
+        for _ in 0..5 {
+            budget.record_row();
+        }
+        // The very first check_or_err() after exceeding the row budget should fail,
+        // regardless of the amortization counter state.
+        assert!(budget.check_or_err().is_err());
+    }
+
+    /// Verify that the amortized timeout check still fires within CHECK_INTERVAL calls.
+    #[test]
+    fn amortized_timeout_fires_within_check_interval() {
+        let mut budget = ExecutionBudget::new(Duration::from_millis(1), DEFAULT_MAX_ROWS);
+        sleep(Duration::from_millis(5));
+
+        // The timeout may not be detected on the first call (amortized), but
+        // it MUST be detected within CHECK_INTERVAL calls.
+        let mut detected = false;
+        for _ in 0..CHECK_INTERVAL + 1 {
+            if budget.check_or_err().is_err() {
+                detected = true;
+                break;
+            }
+        }
+        assert!(
+            detected,
+            "timeout should be detected within CHECK_INTERVAL+1 calls"
+        );
+    }
+
+    /// Verify that amortization doesn't prevent detection -- the counter wraps
+    /// correctly and keeps checking periodically.
+    #[test]
+    fn amortized_check_counter_wraps_correctly() {
+        let mut budget = ExecutionBudget::new(Duration::from_secs(60), DEFAULT_MAX_ROWS);
+        // Call check_or_err many times (more than CHECK_INTERVAL) -- should never
+        // error because timeout is far in the future and rows haven't been recorded.
+        for _ in 0..CHECK_INTERVAL * 3 {
+            assert!(budget.check_or_err().is_ok());
+        }
+        // Counter should have wrapped around and checked Instant::now() 3 times,
+        // none of which triggered a timeout.
+        assert_eq!(budget.check_counter, CHECK_INTERVAL * 3);
     }
 }
