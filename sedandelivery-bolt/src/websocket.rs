@@ -200,3 +200,79 @@ impl AsyncWrite for WsStreamAdapter {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::net::TcpListener;
+
+    /// Helper: creates a connected TCP pair (client, server) for testing.
+    async fn tcp_pair() -> (TcpStream, TcpStream) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let client = TcpStream::connect(addr).await.unwrap();
+        let (server, _) = listener.accept().await.unwrap();
+        (client, server)
+    }
+
+    #[tokio::test]
+    async fn is_websocket_upgrade_detects_http_get() {
+        let (mut client, server) = tcp_pair().await;
+        tokio::io::AsyncWriteExt::write_all(&mut client, b"G")
+            .await
+            .unwrap();
+        let result = is_websocket_upgrade(&server).await.unwrap();
+        assert!(
+            result,
+            "first byte 'G' should be detected as websocket upgrade"
+        );
+    }
+
+    #[tokio::test]
+    async fn is_websocket_upgrade_detects_bolt_magic() {
+        let (mut client, server) = tcp_pair().await;
+        tokio::io::AsyncWriteExt::write_all(&mut client, &[0x60])
+            .await
+            .unwrap();
+        let result = is_websocket_upgrade(&server).await.unwrap();
+        assert!(
+            !result,
+            "first byte 0x60 should NOT be detected as websocket upgrade"
+        );
+    }
+
+    #[tokio::test]
+    async fn is_websocket_upgrade_returns_false_on_eof() {
+        let (client, server) = tcp_pair().await;
+        drop(client);
+        let result = is_websocket_upgrade(&server).await.unwrap();
+        assert!(!result, "EOF should return false");
+    }
+
+    #[tokio::test]
+    async fn is_websocket_upgrade_random_byte_is_not_ws() {
+        let (mut client, server) = tcp_pair().await;
+        tokio::io::AsyncWriteExt::write_all(&mut client, &[0xAB])
+            .await
+            .unwrap();
+        let result = is_websocket_upgrade(&server).await.unwrap();
+        assert!(
+            !result,
+            "random byte 0xAB should not be detected as websocket"
+        );
+    }
+
+    #[test]
+    fn ws_error_display_format() {
+        let err = WsError::Handshake(tokio_tungstenite::tungstenite::Error::ConnectionClosed);
+        let msg = format!("{}", err);
+        assert!(msg.contains("WebSocket handshake failed"));
+    }
+
+    #[test]
+    fn ws_error_is_debug() {
+        let err = WsError::Handshake(tokio_tungstenite::tungstenite::Error::ConnectionClosed);
+        let dbg = format!("{:?}", err);
+        assert!(dbg.contains("Handshake"));
+    }
+}
