@@ -227,7 +227,13 @@ fn indexmap_to_bolt_map(map: &IndexMap<Box<str>, Value>) -> BoltValue {
 /// Date: 1 field (days since 1970-01-01 epoch).
 fn date_to_bolt(d: &jiff::civil::Date) -> BoltValue {
     let epoch = jiff::civil::Date::new(1970, 1, 1).expect("valid epoch date");
-    let days = d.since(epoch).expect("date diff").get_days() as i64;
+    let days = match d.since(epoch) {
+        Ok(span) => span.get_days() as i64,
+        Err(_) => {
+            tracing::warn!("bolt_encode: date diff overflow for date={d}, returning Null");
+            return BoltValue::Null;
+        }
+    };
     BoltValue::Structure {
         tag: tags::TAG_DATE,
         fields: vec![BoltValue::Int(days)],
@@ -250,7 +256,13 @@ fn local_time_to_bolt(t: &jiff::civil::Time) -> BoltValue {
 /// LocalDateTime: 2 fields (epoch_seconds, nanosecond_adjustment).
 fn local_datetime_to_bolt(dt: &jiff::civil::DateTime) -> BoltValue {
     let epoch_date = jiff::civil::Date::new(1970, 1, 1).expect("valid epoch date");
-    let days = dt.date().since(epoch_date).expect("date diff").get_days() as i64;
+    let days = match dt.date().since(epoch_date) {
+        Ok(span) => span.get_days() as i64,
+        Err(_) => {
+            tracing::warn!("bolt_encode: date diff overflow for datetime={dt}, returning Null");
+            return BoltValue::Null;
+        }
+    };
     // Compute epoch seconds from days + time-of-day components.
     let total_seconds: i64 = days * 86_400
         + (dt.hour() as i64) * 3_600
@@ -754,6 +766,35 @@ mod tests {
             }
         } else {
             panic!("expected Structure for path");
+        }
+    }
+
+    // ── Extreme date encoding tests ─────────────────────────────────────────
+
+    #[test]
+    fn date_to_bolt_extreme_date_does_not_panic() {
+        // jiff::civil::Date::MAX may overflow the since(epoch) span computation.
+        // Verify we get Null (graceful fallback) instead of a panic.
+        let extreme = jiff::civil::Date::MAX;
+        let bolt = date_to_bolt(&extreme);
+        match bolt {
+            BoltValue::Null => {} // graceful fallback
+            BoltValue::Structure { tag, .. } => assert_eq!(tag, tags::TAG_DATE),
+            other => panic!("unexpected BoltValue: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn local_datetime_to_bolt_extreme_date_does_not_panic() {
+        let extreme_dt = jiff::civil::DateTime::from_parts(
+            jiff::civil::Date::MAX,
+            jiff::civil::Time::new(0, 0, 0, 0).unwrap(),
+        );
+        let bolt = local_datetime_to_bolt(&extreme_dt);
+        match bolt {
+            BoltValue::Null => {} // graceful fallback
+            BoltValue::Structure { tag, .. } => assert_eq!(tag, tags::TAG_LOCAL_DATE_TIME),
+            other => panic!("unexpected BoltValue: {other:?}"),
         }
     }
 }

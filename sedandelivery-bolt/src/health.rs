@@ -81,5 +81,12 @@ async fn metrics_handler(State(state): State<HealthState>) -> Response {
     Response::builder()
         .header("content-type", "text/plain; version=0.0.4; charset=utf-8")
         .body(axum::body::Body::from(body))
-        .unwrap()
+        .unwrap_or_else(|_| {
+            Response::builder()
+                .status(500)
+                .body(axum::body::Body::from(
+                    "internal error building metrics response",
+                ))
+                .expect("fallback response must be valid")
+        })
 }

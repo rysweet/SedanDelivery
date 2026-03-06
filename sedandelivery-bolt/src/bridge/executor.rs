@@ -374,8 +374,18 @@ fn decode_time_with_offset(fields: &[BoltValue]) -> Value {
     let s = (rem / 1_000_000_000) as i8;
     let ns = (rem % 1_000_000_000) as i32;
 
+    let offset_i32 = match i32::try_from(offset_secs) {
+        Ok(v) => v,
+        Err(_) => {
+            tracing::warn!(
+                "bolt_decode: offset_secs={offset_secs} overflows i32 in Time structure"
+            );
+            return Value::Null;
+        }
+    };
+
     match jiff::civil::Time::new(h, m, s, ns) {
-        Ok(t) => Value::Time(t, offset_secs as i32),
+        Ok(t) => Value::Time(t, offset_i32),
         Err(_) => {
             tracing::warn!(
                 "bolt_decode: out-of-range Time, nanos={nanos}, offset_secs={offset_secs}"
@@ -423,7 +433,17 @@ fn decode_local_datetime(fields: &[BoltValue]) -> Value {
     let m = (rem / 60) as i8;
     let s = (rem % 60) as i8;
 
-    let time = match jiff::civil::Time::new(h, m, s, nanos_adj as i32) {
+    let nanos_i32 = match i32::try_from(nanos_adj) {
+        Ok(v) => v,
+        Err(_) => {
+            tracing::warn!(
+                "bolt_decode: nanos_adj={nanos_adj} overflows i32 in LocalDateTime structure"
+            );
+            return Value::Null;
+        }
+    };
+
+    let time = match jiff::civil::Time::new(h, m, s, nanos_i32) {
         Ok(t) => t,
         Err(_) => {
             tracing::warn!("bolt_decode: out-of-range LocalDateTime time component, epoch_secs={epoch_secs}, nanos_adj={nanos_adj}");
@@ -462,7 +482,17 @@ fn decode_datetime_zone_id(fields: &[BoltValue]) -> Value {
         }
     };
 
-    let ts = match jiff::Timestamp::new(epoch_secs, nanos_adj as i32) {
+    let nanos_i32 = match i32::try_from(nanos_adj) {
+        Ok(v) => v,
+        Err(_) => {
+            tracing::warn!(
+                "bolt_decode: nanos_adj={nanos_adj} overflows i32 in DateTimeZoneId structure"
+            );
+            return Value::Null;
+        }
+    };
+
+    let ts = match jiff::Timestamp::new(epoch_secs, nanos_i32) {
         Ok(ts) => ts,
         Err(_) => {
             tracing::warn!("bolt_decode: out-of-range timestamp in DateTimeZoneId, epoch_secs={epoch_secs}, nanos_adj={nanos_adj}");
@@ -498,7 +528,14 @@ fn decode_datetime_offset(fields: &[BoltValue]) -> Value {
     let tz = if offset_secs == 0 {
         jiff::tz::TimeZone::get("UTC").expect("UTC timezone must be available")
     } else {
-        let offset = match jiff::tz::Offset::from_seconds(offset_secs as i32) {
+        let offset_i32 = match i32::try_from(offset_secs) {
+            Ok(v) => v,
+            Err(_) => {
+                tracing::warn!("bolt_decode: offset_secs={offset_secs} overflows i32 in DateTimeOffset structure");
+                return Value::Null;
+            }
+        };
+        let offset = match jiff::tz::Offset::from_seconds(offset_i32) {
             Ok(o) => o,
             Err(_) => {
                 tracing::warn!("bolt_decode: out-of-range offset_seconds={offset_secs} in DateTimeOffset structure");
@@ -508,7 +545,17 @@ fn decode_datetime_offset(fields: &[BoltValue]) -> Value {
         jiff::tz::TimeZone::fixed(offset)
     };
 
-    let ts = match jiff::Timestamp::new(epoch_secs, nanos_adj as i32) {
+    let nanos_i32 = match i32::try_from(nanos_adj) {
+        Ok(v) => v,
+        Err(_) => {
+            tracing::warn!(
+                "bolt_decode: nanos_adj={nanos_adj} overflows i32 in DateTimeOffset structure"
+            );
+            return Value::Null;
+        }
+    };
+
+    let ts = match jiff::Timestamp::new(epoch_secs, nanos_i32) {
         Ok(ts) => ts,
         Err(_) => {
             tracing::warn!("bolt_decode: out-of-range timestamp in DateTimeOffset, epoch_secs={epoch_secs}, nanos_adj={nanos_adj}");
@@ -1566,5 +1613,63 @@ mod tests {
     fn bolt_structure_unknown_tag_returns_null() {
         let val = bolt_structure_to_gql(0xFF, &[BoltValue::Int(1)]);
         assert_eq!(val, Value::Null);
+    }
+
+    // ── i32 overflow tests ──────────────────────────────────────────────────
+
+    #[test]
+    fn decode_time_offset_i32_overflow_returns_null() {
+        let nanos_noon = 12 * 3_600_000_000_000_i64;
+        assert_eq!(
+            decode_time_with_offset(&[
+                BoltValue::Int(nanos_noon),
+                BoltValue::Int(i64::from(i32::MAX) + 1)
+            ]),
+            Value::Null
+        );
+    }
+
+    #[test]
+    fn decode_local_datetime_nanos_i32_overflow_returns_null() {
+        assert_eq!(
+            decode_local_datetime(&[BoltValue::Int(0), BoltValue::Int(i64::from(i32::MAX) + 1)]),
+            Value::Null
+        );
+    }
+
+    #[test]
+    fn decode_datetime_zone_id_nanos_i32_overflow_returns_null() {
+        assert_eq!(
+            decode_datetime_zone_id(&[
+                BoltValue::Int(0),
+                BoltValue::Int(i64::from(i32::MAX) + 1),
+                BoltValue::String("UTC".into())
+            ]),
+            Value::Null
+        );
+    }
+
+    #[test]
+    fn decode_datetime_offset_offset_i32_overflow_returns_null() {
+        assert_eq!(
+            decode_datetime_offset(&[
+                BoltValue::Int(0),
+                BoltValue::Int(0),
+                BoltValue::Int(i64::from(i32::MAX) + 1)
+            ]),
+            Value::Null
+        );
+    }
+
+    #[test]
+    fn decode_datetime_offset_nanos_i32_overflow_returns_null() {
+        assert_eq!(
+            decode_datetime_offset(&[
+                BoltValue::Int(0),
+                BoltValue::Int(i64::from(i32::MAX) + 1),
+                BoltValue::Int(3600)
+            ]),
+            Value::Null
+        );
     }
 }
