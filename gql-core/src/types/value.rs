@@ -331,6 +331,101 @@ impl Value {
         }
     }
 
+    /// Feed a deterministic, equality-consistent representation into a
+    /// [`Hasher`](std::hash::Hasher), mirroring [`canonical_key`](Self::canonical_key)
+    /// without allocating intermediate `String`s.
+    ///
+    /// Invariant: if `a == b` (per `PartialEq`), then `a` and `b` produce the
+    /// same hash sequence.
+    pub fn canonical_hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        use std::hash::Hash;
+        std::mem::discriminant(self).hash(state);
+        match self {
+            Self::Null => {}
+            Self::Bool(b) => b.hash(state),
+            Self::Int(i) => i.hash(state),
+            Self::Float(f) => {
+                let bits = if *f == 0.0 {
+                    0.0_f64.to_bits()
+                } else if f.is_nan() {
+                    f64::NAN.to_bits()
+                } else {
+                    f.to_bits()
+                };
+                bits.hash(state);
+            }
+            Self::Str(s) => s.hash(state),
+            Self::Date(d) => {
+                d.year().hash(state);
+                d.month().hash(state);
+                d.day().hash(state);
+            }
+            Self::LocalTime(t) => {
+                t.hour().hash(state);
+                t.minute().hash(state);
+                t.second().hash(state);
+                t.subsec_nanosecond().hash(state);
+            }
+            Self::Time(t, offset) => {
+                t.hour().hash(state);
+                t.minute().hash(state);
+                t.second().hash(state);
+                t.subsec_nanosecond().hash(state);
+                offset.hash(state);
+            }
+            Self::LocalDateTime(dt) => {
+                dt.year().hash(state);
+                dt.month().hash(state);
+                dt.day().hash(state);
+                dt.hour().hash(state);
+                dt.minute().hash(state);
+                dt.second().hash(state);
+                dt.subsec_nanosecond().hash(state);
+            }
+            Self::DateTime(z) => {
+                z.timestamp().as_nanosecond().hash(state);
+            }
+            Self::Duration(d) => d.hash(state),
+            Self::Point(p) => {
+                let nx = if p.x == 0.0 { 0.0_f64 } else { p.x };
+                let ny = if p.y == 0.0 { 0.0_f64 } else { p.y };
+                nx.to_bits().hash(state);
+                ny.to_bits().hash(state);
+                match p.z {
+                    Some(z) => {
+                        true.hash(state);
+                        let nz = if z == 0.0 { 0.0_f64 } else { z };
+                        nz.to_bits().hash(state);
+                    }
+                    None => false.hash(state),
+                }
+                std::mem::discriminant(&p.crs).hash(state);
+            }
+            Self::Bytes(b) => b.hash(state),
+            Self::List(items) => {
+                items.len().hash(state);
+                for v in items {
+                    v.canonical_hash(state);
+                }
+            }
+            Self::Map(m) => {
+                m.len().hash(state);
+                let mut keys: Vec<&str> = m.keys().map(|k| k.as_ref()).collect();
+                keys.sort();
+                for k in keys {
+                    k.hash(state);
+                    m.get(k).unwrap().canonical_hash(state);
+                }
+            }
+            Self::Node(id) => id.hash(state),
+            Self::Edge(id) => id.hash(state),
+            Self::Path { nodes, edges } => {
+                nodes.hash(state);
+                edges.hash(state);
+            }
+        }
+    }
+
     /// Produce a deterministic, equality-consistent string key for use in
     /// hash-based grouping (aggregation GROUP BY, DISTINCT dedup, UNION dedup).
     ///
@@ -785,5 +880,86 @@ mod tests {
         for v in &vals {
             assert_eq!(v.canonical_key(), format!("{:?}", v));
         }
+    }
+
+    // ── canonical_hash tests ─────────────────────────────────────────────────
+
+    fn hash_value(v: &Value) -> u64 {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::Hasher;
+        let mut h = DefaultHasher::new();
+        v.canonical_hash(&mut h);
+        h.finish()
+    }
+
+    #[test]
+    fn canonical_hash_float_neg_zero() {
+        assert_eq!(
+            hash_value(&Value::Float(0.0)),
+            hash_value(&Value::Float(-0.0))
+        );
+    }
+
+    #[test]
+    fn canonical_hash_float_nan() {
+        assert_eq!(
+            hash_value(&Value::Float(f64::NAN)),
+            hash_value(&Value::Float(f64::NAN))
+        );
+    }
+
+    #[test]
+    fn canonical_hash_float_distinct() {
+        assert_ne!(
+            hash_value(&Value::Float(1.0)),
+            hash_value(&Value::Float(2.0))
+        );
+    }
+
+    #[test]
+    fn canonical_hash_map_order_independent() {
+        let mut m1 = IndexMap::new();
+        m1.insert(Box::<str>::from("a"), Value::Int(1));
+        m1.insert(Box::<str>::from("b"), Value::Int(2));
+
+        let mut m2 = IndexMap::new();
+        m2.insert(Box::<str>::from("b"), Value::Int(2));
+        m2.insert(Box::<str>::from("a"), Value::Int(1));
+
+        assert_eq!(hash_value(&Value::Map(m1)), hash_value(&Value::Map(m2)));
+    }
+
+    #[test]
+    fn canonical_hash_datetime_same_instant() {
+        use jiff::tz::TimeZone;
+        let utc_tz = TimeZone::UTC;
+        let zdt_utc = civil::DateTime::new(2024, 6, 15, 12, 0, 0, 0)
+            .expect("valid")
+            .to_zoned(utc_tz)
+            .expect("valid");
+        let plus2 = TimeZone::fixed(jiff::tz::Offset::from_seconds(7200).unwrap());
+        let zdt_plus2 = civil::DateTime::new(2024, 6, 15, 14, 0, 0, 0)
+            .expect("valid")
+            .to_zoned(plus2)
+            .expect("valid");
+        assert_eq!(
+            hash_value(&Value::DateTime(Box::new(zdt_utc))),
+            hash_value(&Value::DateTime(Box::new(zdt_plus2)))
+        );
+    }
+
+    #[test]
+    fn canonical_hash_list_with_nested_float() {
+        let a = Value::List(vec![Value::Float(0.0), Value::Int(1)]);
+        let b = Value::List(vec![Value::Float(-0.0), Value::Int(1)]);
+        assert_eq!(hash_value(&a), hash_value(&b));
+    }
+
+    #[test]
+    fn canonical_hash_different_types_differ() {
+        // Int(0) vs Bool(false) should produce different hashes
+        assert_ne!(hash_value(&Value::Int(0)), hash_value(&Value::Bool(false)));
+        // Int(1) vs Float(1.0) should produce different hashes (different types)
+        assert_ne!(hash_value(&Value::Int(1)), hash_value(&Value::Float(1.0)));
     }
 }

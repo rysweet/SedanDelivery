@@ -1,14 +1,12 @@
 //! Row-shaping operators: filter, project, distinct, sort, skip, limit.
 
-use std::collections::HashSet;
-
 use crate::error::GqlError;
 use crate::executor::budget::ExecutionBudget;
 use crate::planner::Operator;
 use crate::types::Value;
 
 use super::helpers::{
-    cmp_values, eval_count_expr, expr_to_column_name, inject_parameters, row_key,
+    cmp_values, eval_count_expr, expr_to_column_name, inject_parameters, RowDedupSet,
 };
 use super::{MutationStats, QueryExecutor, Row};
 
@@ -100,12 +98,11 @@ impl<'a> QueryExecutor<'a> {
             unreachable!()
         };
         let input = self.exec_operator(graph, child, budget, outer_rows, stats)?;
-        let mut seen: HashSet<String> = HashSet::new();
+        let mut seen = RowDedupSet::new();
         let mut out = Vec::new();
         for row in input {
             budget.check_or_err()?;
-            let key = row_key(&row);
-            if seen.insert(key) {
+            if seen.insert(&row) {
                 out.push(row);
             }
         }
