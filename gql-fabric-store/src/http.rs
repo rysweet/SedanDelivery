@@ -111,3 +111,152 @@ pub(crate) fn parse_rows(resp: &JValue) -> Result<Vec<Vec<JValue>>, StorageError
     }
     Ok(all_rows)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::FabricGraphStore;
+    use serde_json::json;
+
+    fn make_store(endpoint: &str) -> FabricGraphStore {
+        FabricGraphStore::new(
+            endpoint.to_string(),
+            "tenant".into(),
+            "client".into(),
+            "secret".into(),
+        )
+    }
+
+    // ── query_url ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn query_url_graph_model_endpoint() {
+        let store =
+            make_store("https://api.fabric.microsoft.com/v1/workspaces/ws1/GraphModels/gm1");
+        assert_eq!(
+            store.query_url(false),
+            "https://api.fabric.microsoft.com/v1/workspaces/ws1/GraphModels/gm1/executeQuery?preview=true"
+        );
+        assert_eq!(
+            store.query_url(true),
+            "https://api.fabric.microsoft.com/v1/workspaces/ws1/GraphModels/gm1/executeQuery?preview=true"
+        );
+    }
+
+    #[test]
+    fn query_url_legacy_endpoint_read() {
+        let store =
+            make_store("https://api.fabric.microsoft.com/v1/workspaces/ws1/graphDatabases/db1");
+        assert_eq!(
+            store.query_url(false),
+            "https://api.fabric.microsoft.com/v1/workspaces/ws1/graphDatabases/db1/query"
+        );
+    }
+
+    #[test]
+    fn query_url_legacy_endpoint_write() {
+        let store =
+            make_store("https://api.fabric.microsoft.com/v1/workspaces/ws1/graphDatabases/db1");
+        assert_eq!(
+            store.query_url(true),
+            "https://api.fabric.microsoft.com/v1/workspaces/ws1/graphDatabases/db1/statements"
+        );
+    }
+
+    #[test]
+    fn query_url_trailing_slash_stripped() {
+        let store =
+            make_store("https://api.fabric.microsoft.com/v1/workspaces/ws1/graphDatabases/db1/");
+        assert!(store.query_url(false).ends_with("/query"));
+    }
+
+    // ── parse_rows ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn parse_rows_valid_response() {
+        let resp = json!({
+            "results": [{
+                "headers": ["id", "name"],
+                "data": [[1, "Alice"], [2, "Bob"]]
+            }]
+        });
+        let rows = parse_rows(&resp).unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0], vec![json!(1), json!("Alice")]);
+        assert_eq!(rows[1], vec![json!(2), json!("Bob")]);
+    }
+
+    #[test]
+    fn parse_rows_multiple_results() {
+        let resp = json!({
+            "results": [
+                { "data": [[1]] },
+                { "data": [[2], [3]] }
+            ]
+        });
+        let rows = parse_rows(&resp).unwrap();
+        assert_eq!(rows.len(), 3);
+    }
+
+    #[test]
+    fn parse_rows_empty_results() {
+        let resp = json!({ "results": [] });
+        let rows = parse_rows(&resp).unwrap();
+        assert!(rows.is_empty());
+    }
+
+    #[test]
+    fn parse_rows_empty_data() {
+        let resp = json!({ "results": [{ "data": [] }] });
+        let rows = parse_rows(&resp).unwrap();
+        assert!(rows.is_empty());
+    }
+
+    #[test]
+    fn parse_rows_result_without_data() {
+        let resp = json!({ "results": [{ "headers": ["x"] }] });
+        let rows = parse_rows(&resp).unwrap();
+        assert!(rows.is_empty());
+    }
+
+    #[test]
+    fn parse_rows_top_level_error() {
+        let resp = json!({ "error": "Unauthorized" });
+        let err = parse_rows(&resp).unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("Fabric API error"), "got: {msg}");
+    }
+
+    #[test]
+    fn parse_rows_top_level_message_error() {
+        let resp = json!({ "message": "Rate limited" });
+        let err = parse_rows(&resp).unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("Fabric API error"), "got: {msg}");
+    }
+
+    #[test]
+    fn parse_rows_per_result_error() {
+        let resp = json!({ "results": [{ "error": "syntax error at line 1" }] });
+        let err = parse_rows(&resp).unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("Fabric result error"), "got: {msg}");
+    }
+
+    #[test]
+    fn parse_rows_missing_results_key() {
+        let resp = json!({ "data": "wrong shape" });
+        let err = parse_rows(&resp).unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("unexpected Fabric response"), "got: {msg}");
+    }
+
+    #[test]
+    fn parse_rows_non_array_row_becomes_empty_vec() {
+        let resp = json!({ "results": [{ "data": ["not_an_array", [1, 2]] }] });
+        let rows = parse_rows(&resp).unwrap();
+        assert_eq!(rows.len(), 2);
+        assert!(rows[0].is_empty());
+        assert_eq!(rows[1], vec![json!(1), json!(2)]);
+    }
+}

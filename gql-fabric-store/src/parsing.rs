@@ -130,3 +130,127 @@ pub(crate) fn rows_to_adj(rows: Vec<Vec<JValue>>) -> Result<Vec<AdjEntry>, Stora
         })
         .collect()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    // ── extract_user_props ───────────────────────────────────────────────────
+
+    #[test]
+    fn extract_user_props_filters_sd2_keys() {
+        let props = json!({
+            "name": "Alice",
+            "age": 30,
+            "_sd2_id": 1,
+            "_sd2_graph": "g",
+            "__SD2Seq": true,
+            "city": "NYC"
+        });
+        let result = extract_user_props(&props);
+        assert_eq!(result.len(), 3);
+        assert!(result.contains_key("name"));
+        assert!(result.contains_key("age"));
+        assert!(result.contains_key("city"));
+        assert!(!result.contains_key("_sd2_id"));
+        assert!(!result.contains_key("_sd2_graph"));
+        assert!(!result.contains_key("__SD2Seq"));
+    }
+
+    #[test]
+    fn extract_user_props_empty_object() {
+        let props = json!({});
+        let result = extract_user_props(&props);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn extract_user_props_non_object_returns_empty() {
+        assert!(extract_user_props(&json!("not an object")).is_empty());
+        assert!(extract_user_props(&json!(null)).is_empty());
+        assert!(extract_user_props(&json!([1, 2, 3])).is_empty());
+    }
+
+    #[test]
+    fn extract_user_props_preserves_types() {
+        let props = json!({
+            "name": "Bob",
+            "age": 25,
+            "active": true,
+            "score": 99.5
+        });
+        let result = extract_user_props(&props);
+        assert_eq!(result.len(), 4);
+        assert_eq!(result["name"], Value::Str("Bob".into()));
+        assert_eq!(result["age"], Value::Int(25));
+        assert_eq!(result["active"], Value::Bool(true));
+        assert_eq!(result["score"], Value::Float(99.5));
+    }
+
+    // ── user_props_to_json ──────────────────────────────────────────────────
+
+    #[test]
+    fn user_props_to_json_filters_internal_keys() {
+        let mut props = HashMap::new();
+        props.insert("name".to_string(), Value::Str("Carol".into()));
+        props.insert("_sd2_id".to_string(), Value::Int(7));
+        props.insert("__SD2graph".to_string(), Value::Str("g".into()));
+        let result = user_props_to_json(&props);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result["name"], json!("Carol"));
+    }
+
+    #[test]
+    fn user_props_to_json_empty() {
+        let props = HashMap::new();
+        let result = user_props_to_json(&props);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn user_props_to_json_non_finite_float_becomes_null() {
+        let mut props = HashMap::new();
+        props.insert("x".to_string(), Value::Float(f64::NAN));
+        let result = user_props_to_json(&props);
+        assert!(result["x"].is_null());
+    }
+
+    // ── rows_to_adj ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn rows_to_adj_valid() {
+        let rows = vec![
+            vec![json!(1), json!(10), json!("KNOWS")],
+            vec![json!(2), json!(20), json!("LIKES")],
+        ];
+        let result = rows_to_adj(rows).unwrap();
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].edge_id, EdgeId(1));
+        assert_eq!(result[0].neighbor_id, NodeId(10));
+        assert_eq!(result[0].rel_type, "KNOWS");
+        assert_eq!(result[1].edge_id, EdgeId(2));
+        assert_eq!(result[1].neighbor_id, NodeId(20));
+        assert_eq!(result[1].rel_type, "LIKES");
+    }
+
+    #[test]
+    fn rows_to_adj_empty() {
+        let result = rows_to_adj(vec![]).unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn rows_to_adj_skips_malformed_rows() {
+        let rows = vec![
+            vec![json!(1), json!(10), json!("KNOWS")],
+            vec![json!("bad"), json!(20), json!("X")],
+            vec![json!(3)],
+            vec![],
+            vec![json!(4), json!(40), json!(null)],
+        ];
+        let result = rows_to_adj(rows).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].edge_id, EdgeId(1));
+    }
+}

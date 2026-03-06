@@ -581,3 +581,208 @@ fn connect_with_retry(client: &Client) -> Option<Connection> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── redis_str ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn redis_str_bulk_string() {
+        let v = RV::BulkString(b"hello".to_vec());
+        assert_eq!(redis_str(&v), Some("hello".to_string()));
+    }
+
+    #[test]
+    fn redis_str_simple_string() {
+        let v = RV::SimpleString("OK".into());
+        assert_eq!(redis_str(&v), Some("OK".to_string()));
+    }
+
+    #[test]
+    fn redis_str_integer_returns_none() {
+        let v = RV::Int(42);
+        assert_eq!(redis_str(&v), None);
+    }
+
+    #[test]
+    fn redis_str_nil_returns_none() {
+        let v = RV::Nil;
+        assert_eq!(redis_str(&v), None);
+    }
+
+    #[test]
+    fn redis_str_non_utf8_lossy() {
+        let v = RV::BulkString(vec![0xFF, 0xFE]);
+        let result = redis_str(&v);
+        assert!(result.is_some());
+        assert!(result.unwrap().contains('\u{FFFD}'));
+    }
+
+    // ── extract_entries ─────────────────────────────────────────────────────
+
+    #[test]
+    fn extract_entries_valid_single_stream() {
+        let reply = RV::Array(vec![RV::Array(vec![
+            RV::BulkString(b"mystream".to_vec()),
+            RV::Array(vec![RV::Array(vec![
+                RV::BulkString(b"1-0".to_vec()),
+                RV::Array(vec![
+                    RV::BulkString(b"e".to_vec()),
+                    RV::BulkString(b"{\"CreateGraph\":{\"name\":\"g1\"}}".to_vec()),
+                ]),
+            ])]),
+        ])]);
+        let entries = extract_entries(reply);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].0, "1-0");
+        assert_eq!(
+            entries[0].1.get("e").unwrap(),
+            "{\"CreateGraph\":{\"name\":\"g1\"}}"
+        );
+    }
+
+    #[test]
+    fn extract_entries_multiple_entries() {
+        let reply = RV::Array(vec![RV::Array(vec![
+            RV::BulkString(b"s".to_vec()),
+            RV::Array(vec![
+                RV::Array(vec![
+                    RV::BulkString(b"1-0".to_vec()),
+                    RV::Array(vec![
+                        RV::BulkString(b"k1".to_vec()),
+                        RV::BulkString(b"v1".to_vec()),
+                    ]),
+                ]),
+                RV::Array(vec![
+                    RV::BulkString(b"2-0".to_vec()),
+                    RV::Array(vec![
+                        RV::BulkString(b"k2".to_vec()),
+                        RV::BulkString(b"v2".to_vec()),
+                    ]),
+                ]),
+            ]),
+        ])]);
+        let entries = extract_entries(reply);
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].0, "1-0");
+        assert_eq!(entries[1].0, "2-0");
+    }
+
+    #[test]
+    fn extract_entries_non_array_returns_empty() {
+        assert!(extract_entries(RV::Nil).is_empty());
+        assert!(extract_entries(RV::Int(0)).is_empty());
+        assert!(extract_entries(RV::BulkString(b"nope".to_vec())).is_empty());
+    }
+
+    #[test]
+    fn extract_entries_empty_array() {
+        assert!(extract_entries(RV::Array(vec![])).is_empty());
+    }
+
+    #[test]
+    fn extract_entries_stream_too_few_parts() {
+        let reply = RV::Array(vec![RV::Array(vec![RV::BulkString(b"key".to_vec())])]);
+        assert!(extract_entries(reply).is_empty());
+    }
+
+    #[test]
+    fn extract_entries_skips_non_array_entry() {
+        let reply = RV::Array(vec![RV::Array(vec![
+            RV::BulkString(b"s".to_vec()),
+            RV::Array(vec![RV::Int(42)]),
+        ])]);
+        assert!(extract_entries(reply).is_empty());
+    }
+
+    #[test]
+    fn extract_entries_entry_too_few_parts() {
+        let reply = RV::Array(vec![RV::Array(vec![
+            RV::BulkString(b"s".to_vec()),
+            RV::Array(vec![RV::Array(vec![RV::BulkString(b"1-0".to_vec())])]),
+        ])]);
+        assert!(extract_entries(reply).is_empty());
+    }
+
+    #[test]
+    fn extract_entries_simple_string_entry_id() {
+        let reply = RV::Array(vec![RV::Array(vec![
+            RV::BulkString(b"s".to_vec()),
+            RV::Array(vec![RV::Array(vec![
+                RV::SimpleString("3-0".into()),
+                RV::Array(vec![
+                    RV::BulkString(b"f".to_vec()),
+                    RV::BulkString(b"v".to_vec()),
+                ]),
+            ])]),
+        ])]);
+        let entries = extract_entries(reply);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].0, "3-0");
+    }
+
+    #[test]
+    fn extract_entries_non_string_field_key_skipped() {
+        let reply = RV::Array(vec![RV::Array(vec![
+            RV::BulkString(b"s".to_vec()),
+            RV::Array(vec![RV::Array(vec![
+                RV::BulkString(b"1-0".to_vec()),
+                RV::Array(vec![
+                    RV::Int(99),
+                    RV::BulkString(b"val".to_vec()),
+                    RV::BulkString(b"good".to_vec()),
+                    RV::BulkString(b"yes".to_vec()),
+                ]),
+            ])]),
+        ])]);
+        let entries = extract_entries(reply);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].1.len(), 1);
+        assert_eq!(entries[0].1.get("good").unwrap(), "yes");
+    }
+
+    #[test]
+    fn extract_entries_odd_field_count_ignores_trailing() {
+        let reply = RV::Array(vec![RV::Array(vec![
+            RV::BulkString(b"s".to_vec()),
+            RV::Array(vec![RV::Array(vec![
+                RV::BulkString(b"1-0".to_vec()),
+                RV::Array(vec![
+                    RV::BulkString(b"k".to_vec()),
+                    RV::BulkString(b"v".to_vec()),
+                    RV::BulkString(b"orphan".to_vec()),
+                ]),
+            ])]),
+        ])]);
+        let entries = extract_entries(reply);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].1.len(), 1);
+        assert_eq!(entries[0].1.get("k").unwrap(), "v");
+    }
+
+    // ── env_usize ───────────────────────────────────────────────────────────
+
+    #[test]
+    fn env_usize_returns_default_when_unset() {
+        let val = env_usize("__FABRIC_SYNC_TEST_NEVER_SET_12345", 42);
+        assert_eq!(val, 42);
+    }
+
+    #[test]
+    fn env_usize_parses_valid_value() {
+        std::env::set_var("__FABRIC_SYNC_TEST_VALID", "99");
+        let val = env_usize("__FABRIC_SYNC_TEST_VALID", 0);
+        assert_eq!(val, 99);
+        std::env::remove_var("__FABRIC_SYNC_TEST_VALID");
+    }
+
+    #[test]
+    fn env_usize_invalid_returns_default() {
+        std::env::set_var("__FABRIC_SYNC_TEST_INVALID", "not_a_number");
+        let val = env_usize("__FABRIC_SYNC_TEST_INVALID", 77);
+        assert_eq!(val, 77);
+        std::env::remove_var("__FABRIC_SYNC_TEST_INVALID");
+    }
+}
