@@ -55,6 +55,7 @@ impl<'a> QueryExecutor<'a> {
                 rows.push(row);
             } else {
                 for outer_row in base_rows {
+                    budget.check_or_err()?;
                     // If the alias is already pre-bound in outer_row to a specific node,
                     // only produce a row when the scanned node matches that bound node.
                     // This correctly handles correlated subqueries and repeated MATCH clauses.
@@ -793,5 +794,45 @@ mod tests {
             .exec_operator("g", &plan, &mut budget, &[start_row], &mut stats)
             .unwrap();
         assert_eq!(rows.len(), 1);
+    }
+
+    /// Verify that the budget check fires inside the inner loop
+    /// (node * outer_row Cartesian product) of exec_node_scan.
+    #[test]
+    fn node_scan_budget_enforced_in_inner_loop() {
+        use std::time::Duration;
+
+        let store = make_store();
+        // Create a few nodes.
+        for _ in 0..3 {
+            store
+                .create_node("g", vec!["N".to_string()], HashMap::new())
+                .unwrap();
+        }
+
+        // Build outer_rows with 3 rows so the Cartesian product is 3 nodes * 3 rows = 9.
+        let outer_rows: Vec<Row> = (0..3)
+            .map(|_| {
+                let mut r = Row::new();
+                r.insert("__dummy__".to_string(), Value::Int(0));
+                r
+            })
+            .collect();
+
+        let executor = QueryExecutor::new(&store);
+        let plan = Operator::NodeScan {
+            label: Some(Label::new("N")),
+            alias: Identifier::new("x"),
+        };
+
+        // Budget that allows only 2 rows -- the inner loop should hit the limit
+        // before completing all 9 combinations.
+        let mut budget = ExecutionBudget::new(Duration::from_secs(60), 2);
+        let mut stats = MutationStats::default();
+        let result = executor.exec_node_scan("g", &plan, &mut budget, &outer_rows, &mut stats);
+        assert!(
+            result.is_err(),
+            "expected budget error for Cartesian product exceeding row limit"
+        );
     }
 }

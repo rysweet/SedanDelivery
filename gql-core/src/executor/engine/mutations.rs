@@ -515,7 +515,8 @@ impl<'a> QueryExecutor<'a> {
                 cands.unwrap_or_default()
             };
 
-            // Collect ALL matching nodes (MERGE returns one row per match).
+            // Check candidates for matching nodes. MERGE returns one row per
+            // match; if no matches are found, it creates a new node instead.
             // When the indexed fast-path was used, candidates are already filtered
             // by the first property — only verify remaining properties.
             let skip_first_prop = !labels.is_empty() && !prop_vals.is_empty();
@@ -526,6 +527,7 @@ impl<'a> QueryExecutor<'a> {
             };
             let mut matched_ids: Vec<NodeId> = Vec::new();
             for cand_id in &candidates {
+                budget.check_or_err()?;
                 let node_id = NodeId(*cand_id);
                 if prop_vals.is_empty() {
                     matched_ids.push(node_id);
@@ -548,11 +550,11 @@ impl<'a> QueryExecutor<'a> {
 
             if !matched_ids.is_empty() {
                 // ON MATCH: one output row per matched node
-                for node_id in matched_ids {
+                for node_id in &matched_ids {
                     budget.check_or_err()?;
                     let mut new_row = row.clone();
                     if let Some(alias) = node_alias {
-                        new_row.insert(alias.0.clone(), Value::Node(node_id));
+                        new_row.insert(alias.0.clone(), Value::Node(*node_id));
                     }
                     for item in on_match {
                         self.apply_set_item(graph, &new_row, item, stats)?;
@@ -748,10 +750,10 @@ impl<'a> QueryExecutor<'a> {
                 if prop_val.is_null() {
                     match val {
                         Value::Node(node_id) => {
-                            let _ = self.store.remove_node_property(graph, *node_id, key);
+                            self.store.remove_node_property(graph, *node_id, key)?;
                         }
                         Value::Edge(edge_id) => {
-                            let _ = self.store.remove_edge_property(graph, *edge_id, key);
+                            self.store.remove_edge_property(graph, *edge_id, key)?;
                         }
                         _ => {}
                     }
@@ -885,7 +887,7 @@ impl<'a> QueryExecutor<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ast::{Direction, Expr, Identifier, Label, RelType};
+    use crate::ast::{Expr, Identifier, Label};
     use crate::executor::budget::ExecutionBudget;
     use crate::planner::{CreatePattern, Operator};
     use crate::storage::{GraphStore, InMemoryGraphStore};
@@ -1038,5 +1040,66 @@ mod tests {
         let mut budget = ExecutionBudget::unlimited();
         let result = executor.execute("g", &plan, &mut budget).unwrap();
         assert_eq!(result.stats.nodes_created, 0);
+    }
+
+    /// Verify that storage errors during SET n.prop = null (property removal)
+    /// are propagated instead of silently discarded.
+    #[test]
+    fn set_null_propagates_removal_error() {
+        let store = make_store();
+        // Create and then delete a node so the NodeId becomes stale.
+        let nid = store
+            .create_node("g", vec!["P".to_string()], HashMap::new())
+            .unwrap();
+        store.delete_node("g", nid, true).unwrap();
+
+        let executor = QueryExecutor::new(&store);
+        let mut row = Row::new();
+        row.insert("n".to_string(), Value::Node(nid));
+        let mut stats = MutationStats::default();
+
+        // SET n.prop = null should attempt remove_node_property on a
+        // non-existent node and propagate the StorageError.
+        let item = SetItem::Property {
+            alias: Identifier::new("n"),
+            key: "prop".to_string(),
+            value: Expr::Null,
+        };
+        let result = executor.apply_set_item("g", &row, &item, &mut stats);
+        assert!(
+            result.is_err(),
+            "expected error when removing property from deleted node"
+        );
+    }
+
+    /// Verify that MERGE returns all matching nodes (one row per match)
+    /// and does not create when matches exist.
+    #[test]
+    fn merge_returns_all_matches_no_create() {
+        let store = make_store();
+        // Create 5 nodes with the same label.
+        for _ in 0..5 {
+            store
+                .create_node("g", vec!["P".to_string()], HashMap::new())
+                .unwrap();
+        }
+        let executor = QueryExecutor::new(&store);
+        let plan = Operator::Merge {
+            node_alias: Some(Identifier::new("n")),
+            labels: vec![Label::new("P")],
+            properties: vec![],
+            on_create: vec![],
+            on_match: vec![],
+            child: None,
+        };
+        let mut budget = ExecutionBudget::unlimited();
+        let result = executor.execute("g", &plan, &mut budget).unwrap();
+        // All 5 existing nodes should match; no new nodes created.
+        assert_eq!(result.stats.nodes_created, 0);
+        assert_eq!(
+            result.rows.len(),
+            5,
+            "MERGE should produce one row per matching node"
+        );
     }
 }
