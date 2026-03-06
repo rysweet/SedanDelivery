@@ -39,7 +39,7 @@ impl<'a> QueryExecutor<'a> {
             unreachable!()
         };
         let left_rows = self.exec_operator(graph, preserved, budget, outer_rows, stats)?;
-        let mut out = Vec::new();
+        let mut out = Vec::with_capacity(left_rows.len());
 
         for left_row in left_rows {
             budget.check_or_err()?;
@@ -103,7 +103,7 @@ impl<'a> QueryExecutor<'a> {
             unreachable!()
         };
         let outer_rows = self.exec_operator(graph, outer, budget, outer_rows, stats)?;
-        let mut out = Vec::new();
+        let mut out = Vec::with_capacity(outer_rows.len());
 
         for outer_row in &outer_rows {
             budget.check_or_err()?;

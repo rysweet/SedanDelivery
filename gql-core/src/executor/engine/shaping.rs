@@ -23,7 +23,7 @@ impl<'a> QueryExecutor<'a> {
             unreachable!()
         };
         let input = self.exec_operator(graph, child, budget, outer_rows, stats)?;
-        let mut out = Vec::new();
+        let mut out = Vec::with_capacity(input.len());
         for row in input {
             budget.check_or_err()?;
             let ctx = self.build_filter_ctx(graph, &row)?;
@@ -99,7 +99,7 @@ impl<'a> QueryExecutor<'a> {
         };
         let input = self.exec_operator(graph, child, budget, outer_rows, stats)?;
         let mut seen = RowDedupSet::new();
-        let mut out = Vec::new();
+        let mut out = Vec::with_capacity(input.len());
         for row in input {
             budget.check_or_err()?;
             if seen.insert(&row) {

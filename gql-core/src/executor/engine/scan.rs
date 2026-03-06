@@ -122,7 +122,7 @@ impl<'a> QueryExecutor<'a> {
         };
         let input = self.exec_operator(graph, child, budget, outer_rows, stats)?;
         let type_strs: Vec<&str> = rel_types.iter().map(|r| r.as_str()).collect();
-        let mut out = Vec::new();
+        let mut out = Vec::with_capacity(input.len());
 
         for row in input {
             budget.check_or_err()?;
@@ -262,7 +262,7 @@ impl<'a> QueryExecutor<'a> {
         };
         let input = self.exec_operator(graph, child, budget, outer_rows, stats)?;
         let type_strs: Vec<&str> = rel_types.iter().map(|r| r.as_str()).collect();
-        let mut out = Vec::new();
+        let mut out = Vec::with_capacity(input.len());
 
         for row in input {
             budget.check_or_err()?;
@@ -470,7 +470,7 @@ impl<'a> QueryExecutor<'a> {
         };
 
         let node_id = NodeId(raw_id);
-        let mut rows = Vec::new();
+        let mut rows = Vec::with_capacity(1);
         if let Some(_node_data) = self.store.get_node(graph, node_id)? {
             let mut row = Row::new();
             row.insert(alias.0.clone(), Value::Node(node_id));
