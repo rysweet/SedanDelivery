@@ -7,6 +7,23 @@ Deploy a production-ready graph database on Azure in under 10 minutes. You get:
 - **Horizontal scaling** — the Bolt server runs as a separate container that can scale independently
 - **Optional Fabric replication** — automatic sync to Microsoft Fabric Graph Database for analytics
 
+## Pre-built Container Images (GHCR)
+
+All images are published to GitHub Container Registry on every push to `main`:
+
+```bash
+# Valkey + GQL module
+docker pull ghcr.io/cloud-ecosystem-security/sedandelivery:latest
+
+# Bolt protocol server
+docker pull ghcr.io/cloud-ecosystem-security/sedandelivery-bolt:latest
+
+# Fabric sync sidecar
+docker pull ghcr.io/cloud-ecosystem-security/sedandelivery-fabric-sync:latest
+```
+
+Tags: `latest`, `YYYYMMDD` (date-based), `sha-<commit>`, and semver on version tags.
+
 ## Prerequisites
 
 - An **Azure subscription** (free trial works)
