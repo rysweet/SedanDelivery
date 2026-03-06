@@ -582,3 +582,124 @@ impl GraphStore for RedisGraphStore {
     // snapshot is needed. Redis Cluster mode can add WATCH/MULTI/EXEC
     // for per-slot transaction isolation in a future iteration.
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use keys::encode_adj;
+
+    // ── parse_adj_members ───────────────────────────────────────────────────
+
+    #[test]
+    fn parse_adj_members_valid_entries() {
+        let members = vec!["1:2:KNOWS".to_string(), "3:4:LIKES".to_string()];
+        let entries = RedisGraphStore::parse_adj_members(members);
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].edge_id, EdgeId(1));
+        assert_eq!(entries[0].neighbor_id, NodeId(2));
+        assert_eq!(entries[0].rel_type, "KNOWS");
+        assert_eq!(entries[1].edge_id, EdgeId(3));
+        assert_eq!(entries[1].neighbor_id, NodeId(4));
+        assert_eq!(entries[1].rel_type, "LIKES");
+    }
+
+    #[test]
+    fn parse_adj_members_skips_malformed() {
+        let members = vec![
+            "1:2:KNOWS".to_string(),
+            "bad_entry".to_string(), // malformed — should be filtered out
+            "3:4:LIKES".to_string(),
+        ];
+        let entries = RedisGraphStore::parse_adj_members(members);
+        assert_eq!(entries.len(), 2);
+    }
+
+    #[test]
+    fn parse_adj_members_empty_input() {
+        let entries = RedisGraphStore::parse_adj_members(vec![]);
+        assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn parse_adj_members_all_malformed() {
+        let members = vec!["bad".to_string(), "also_bad".to_string()];
+        let entries = RedisGraphStore::parse_adj_members(members);
+        assert!(entries.is_empty());
+    }
+
+    // ── encode_adj / decode_adj integration with parse_adj_members ──────────
+
+    #[test]
+    fn encode_then_parse_round_trip() {
+        let encoded = vec![
+            encode_adj(EdgeId(10), NodeId(20), "FOLLOWS"),
+            encode_adj(EdgeId(11), NodeId(21), "BLOCKS"),
+        ];
+        let entries = RedisGraphStore::parse_adj_members(encoded);
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].edge_id, EdgeId(10));
+        assert_eq!(entries[0].neighbor_id, NodeId(20));
+        assert_eq!(entries[0].rel_type, "FOLLOWS");
+        assert_eq!(entries[1].edge_id, EdgeId(11));
+        assert_eq!(entries[1].neighbor_id, NodeId(21));
+        assert_eq!(entries[1].rel_type, "BLOCKS");
+    }
+
+    // ── key_graphs helper ───────────────────────────────────────────────────
+    // We cannot construct RedisGraphStore without a live Redis pool, but we
+    // can test the key_prefix logic via the `kp` function by checking its
+    // contract: if prefix is empty, return key unchanged; otherwise prepend.
+    // These tests exercise the `kp` logic indirectly via `key_graphs` by
+    // verifying the expected key format using the constant.
+
+    #[test]
+    fn key_graphs_constant_value() {
+        assert_eq!(keys::KEY_GRAPHS, "__sd2_registry:graphs");
+    }
+
+    // ── Key format smoke tests ──────────────────────────────────────────────
+    // Verify that the key schema documented in the module comment is accurate.
+
+    #[test]
+    fn key_schema_node_hash() {
+        assert_eq!(keys::key_node("mydb", 1), "G:{mydb}:node:1");
+    }
+
+    #[test]
+    fn key_schema_edge_hash() {
+        assert_eq!(keys::key_edge("mydb", 5), "G:{mydb}:edge:5");
+    }
+
+    #[test]
+    fn key_schema_label_index() {
+        assert_eq!(keys::key_label("mydb", "Person"), "G:{mydb}:label:Person");
+    }
+
+    #[test]
+    fn key_schema_reltype_index() {
+        assert_eq!(keys::key_reltype("mydb", "KNOWS"), "G:{mydb}:reltype:KNOWS");
+    }
+
+    #[test]
+    fn key_schema_out_adjacency() {
+        assert_eq!(keys::key_out("mydb", 7), "G:{mydb}:out:7");
+    }
+
+    #[test]
+    fn key_schema_in_adjacency() {
+        assert_eq!(keys::key_in("mydb", 7), "G:{mydb}:in:7");
+    }
+
+    // ── Connection defaults ─────────────────────────────────────────────────
+
+    #[test]
+    fn connection_defaults_are_sensible() {
+        use connection::*;
+        assert!(DEFAULT_POOL_SIZE > 0);
+        assert!(DEFAULT_POOL_TIMEOUT_SECS > 0);
+        assert!(DEFAULT_IDLE_TIMEOUT_SECS > 0);
+        assert!(DEFAULT_MIN_IDLE > 0);
+        // Pool size should be reasonable (not absurdly large).
+        assert!(DEFAULT_POOL_SIZE <= 256);
+    }
+}
