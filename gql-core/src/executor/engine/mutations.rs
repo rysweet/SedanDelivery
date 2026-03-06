@@ -35,7 +35,7 @@ impl<'a> QueryExecutor<'a> {
             vec![row]
         };
 
-        let mut out = Vec::new();
+        let mut out = Vec::with_capacity(input.len());
         for mut row in input {
             budget.check_or_err()?;
             for pattern in patterns {
@@ -173,7 +173,7 @@ impl<'a> QueryExecutor<'a> {
             unreachable!()
         };
         let input = self.exec_operator(graph, child, budget, outer_rows, stats)?;
-        let mut out = Vec::new();
+        let mut out = Vec::with_capacity(input.len());
 
         for row in input {
             budget.check_or_err()?;
@@ -461,7 +461,7 @@ impl<'a> QueryExecutor<'a> {
             vec![row]
         };
 
-        let mut out = Vec::new();
+        let mut out = Vec::with_capacity(input.len());
         for mut row in input {
             budget.check_or_err()?;
 
@@ -618,7 +618,7 @@ impl<'a> QueryExecutor<'a> {
         };
         let input = self.exec_operator(graph, child, budget, outer_rows, stats)?;
         let type_str = rel_type.as_str();
-        let mut out = Vec::new();
+        let mut out = Vec::with_capacity(input.len());
 
         for mut row in input {
             budget.check_or_err()?;
