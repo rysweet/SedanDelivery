@@ -335,7 +335,11 @@ pub(super) fn eval_binary<'r>(
                             })
                         })?;
                         if map.len() >= 512 {
-                            map.clear();
+                            // Evict the oldest half instead of clearing everything.
+                            // This avoids a "cache cliff" where all compiled regexes
+                            // are dropped simultaneously, causing a spike of recompilation.
+                            let half = map.len() / 2;
+                            map.drain(..half);
                         }
                         map.insert(pattern.to_string(), re);
                     }
