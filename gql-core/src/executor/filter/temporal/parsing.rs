@@ -592,15 +592,35 @@ pub(crate) fn parse_decimal_iso_duration(s: &str) -> Result<CypherDuration, GqlE
         // Parse YYYY-MM-DD as year/month/day components directly.
         let parts: Vec<&str> = date_str.splitn(3, '-').collect();
         if parts.len() == 3 {
-            let years: f64 = parts[0].parse().unwrap_or(0.0);
-            let months: f64 = parts[1].parse().unwrap_or(0.0);
-            let days: f64 = parts[2].parse().unwrap_or(0.0);
+            let parse_cal = |s: &str, name: &str| -> Result<f64, GqlError> {
+                s.parse::<f64>().map_err(|_| {
+                    GqlError::Execution(ExecutionError::TypeMismatch {
+                        expected: format!("numeric {name} value in calendar-format duration"),
+                        actual: s.to_string(),
+                    })
+                })
+            };
+            let years: f64 = parse_cal(parts[0], "years")?;
+            let months: f64 = parse_cal(parts[1], "months")?;
+            let days: f64 = parse_cal(parts[2], "days")?;
             // Parse time part: HH:MM:SS.sss
             let (t_hours, t_mins, t_secs) = if !time_str.is_empty() {
                 let t_parts: Vec<&str> = time_str.splitn(3, ':').collect();
-                let h: f64 = t_parts.first().and_then(|s| s.parse().ok()).unwrap_or(0.0);
-                let m: f64 = t_parts.get(1).and_then(|s| s.parse().ok()).unwrap_or(0.0);
-                let s: f64 = t_parts.get(2).and_then(|s| s.parse().ok()).unwrap_or(0.0);
+                let h: f64 = t_parts
+                    .first()
+                    .map(|s| parse_cal(s, "hours"))
+                    .transpose()?
+                    .unwrap_or(0.0);
+                let m: f64 = t_parts
+                    .get(1)
+                    .map(|s| parse_cal(s, "minutes"))
+                    .transpose()?
+                    .unwrap_or(0.0);
+                let s: f64 = t_parts
+                    .get(2)
+                    .map(|s| parse_cal(s, "seconds"))
+                    .transpose()?
+                    .unwrap_or(0.0);
                 (h, m, s)
             } else {
                 (0.0, 0.0, 0.0)
@@ -896,5 +916,84 @@ mod tests {
     #[test]
     fn ldt_nanos_hour() {
         assert_eq!(ldt_nanos(1, 0, 0, 0), 3_600_000_000_000);
+    }
+
+    // ── Calendar-format duration: valid input still works ───────────────────
+
+    #[test]
+    fn calendar_duration_valid() {
+        let d = parse_decimal_iso_duration("P2012-02-02T14:37:21.545").unwrap();
+        assert_eq!(d.months, 2012 * 12 + 2);
+        assert_eq!(d.days, 2);
+        let expected_nanos: f64 = (14.0 * 3_600.0 + 37.0 * 60.0 + 21.545) * 1_000_000_000.0;
+        assert_eq!(d.nanos, expected_nanos.round() as i128);
+    }
+
+    // ── Calendar-format duration: non-numeric date component errors ─────────
+
+    #[test]
+    fn calendar_duration_invalid_year_component() {
+        let result = parse_decimal_iso_duration("P -02-02T14:37:21");
+        assert!(result.is_err(), "non-numeric year should be rejected");
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(
+            err_msg.contains("years"),
+            "error should mention years, got: {err_msg}"
+        );
+    }
+
+    #[test]
+    fn calendar_duration_invalid_month_component() {
+        let result = parse_decimal_iso_duration("P2012-!!-02T14:37:21");
+        assert!(result.is_err(), "non-numeric month should be rejected");
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(
+            err_msg.contains("months"),
+            "error should mention months, got: {err_msg}"
+        );
+    }
+
+    #[test]
+    fn calendar_duration_invalid_day_component() {
+        let result = parse_decimal_iso_duration("P2012-02-??T14:37:21");
+        assert!(result.is_err(), "non-numeric day should be rejected");
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(
+            err_msg.contains("days"),
+            "error should mention days, got: {err_msg}"
+        );
+    }
+
+    #[test]
+    fn calendar_duration_invalid_time_hours() {
+        let result = parse_decimal_iso_duration("P2012-02-02T!!:37:21");
+        assert!(result.is_err(), "non-numeric hours should be rejected");
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(
+            err_msg.contains("hours"),
+            "error should mention hours, got: {err_msg}"
+        );
+    }
+
+    #[test]
+    fn calendar_duration_invalid_time_minutes() {
+        let result = parse_decimal_iso_duration("P2012-02-02T14:##:21");
+        assert!(result.is_err(), "non-numeric minutes should be rejected");
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(
+            err_msg.contains("minutes"),
+            "error should mention minutes, got: {err_msg}"
+        );
+    }
+
+    #[test]
+    fn calendar_duration_invalid_time_seconds() {
+        let result = parse_decimal_iso_duration("P2012-02-02T14:37:$$");
+        assert!(result.is_err(), "non-numeric seconds should be rejected");
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(
+            err_msg.contains("seconds"),
+            "error should mention seconds, got: {err_msg}"
+        );
     }
 }
