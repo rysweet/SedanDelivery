@@ -71,12 +71,15 @@ pub fn json_map_to_props(
 
 /// Compute label counts and relationship-type counts for the given graph.
 ///
+/// Label and relationship-type count maps returned by [`compute_schema_counts`].
+pub(crate) type SchemaCounts = (HashMap<String, usize>, HashMap<String, usize>);
+
 /// Returns `(label_counts, reltype_counts)` where each map associates a name
 /// with the number of nodes/edges carrying that label/type.
 pub(crate) fn compute_schema_counts(
     store: &dyn GraphStore,
     graph: &str,
-) -> Result<(HashMap<String, usize>, HashMap<String, usize>), ApiError> {
+) -> Result<SchemaCounts, ApiError> {
     // Label counts from all nodes.
     let all_node_ids = store.all_node_ids(graph).map_err(ApiError::from)?;
     let node_batch = store
