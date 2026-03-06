@@ -41,7 +41,8 @@ pub(super) fn eval_point_constructor(vals: &[Value]) -> Result<Value, GqlError> 
     // Extract explicit SRID if provided
     let explicit_srid: Option<i64> = match m.get("srid") {
         Some(Value::Int(n)) => Some(*n),
-        Some(Value::Float(f)) => Some(*f as i64),
+        Some(Value::Float(f)) if f.is_finite() => Some(*f as i64),
+        Some(Value::Float(_)) => None,
         _ => None,
     };
 

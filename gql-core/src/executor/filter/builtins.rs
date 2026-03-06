@@ -137,14 +137,24 @@ pub(super) fn builtin_tointeger(vals: Vec<Value>) -> Result<Value, GqlError> {
     match &vals[0] {
         Value::Null => Ok(Value::Null),
         Value::Int(n) => Ok(Value::Int(*n)),
-        Value::Float(f) => Ok(Value::Int(*f as i64)),
+        Value::Float(f) => {
+            if f.is_finite() {
+                Ok(Value::Int(*f as i64))
+            } else {
+                Ok(Value::Null)
+            }
+        }
         Value::Str(s) => {
             // Try integer parse first, then float parse (truncating).
             // TCK expects NULL for truly non-numeric strings.
             if let Ok(n) = s.parse::<i64>() {
                 Ok(Value::Int(n))
             } else if let Ok(f) = s.parse::<f64>() {
-                Ok(Value::Int(f as i64))
+                if f.is_finite() {
+                    Ok(Value::Int(f as i64))
+                } else {
+                    Ok(Value::Null)
+                }
             } else {
                 Ok(Value::Null)
             }
@@ -505,5 +515,64 @@ pub(super) fn builtin_range(vals: Vec<Value>) -> Result<Value, GqlError> {
             expected: "Integer, Integer".to_string(),
             actual: format!("{}, {}", vals[0].type_name(), vals[1].type_name()),
         })),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tointeger_nan_returns_null() {
+        let result = builtin_tointeger(vec![Value::Float(f64::NAN)]).unwrap();
+        assert_eq!(result, Value::Null);
+    }
+
+    #[test]
+    fn tointeger_positive_infinity_returns_null() {
+        let result = builtin_tointeger(vec![Value::Float(f64::INFINITY)]).unwrap();
+        assert_eq!(result, Value::Null);
+    }
+
+    #[test]
+    fn tointeger_negative_infinity_returns_null() {
+        let result = builtin_tointeger(vec![Value::Float(f64::NEG_INFINITY)]).unwrap();
+        assert_eq!(result, Value::Null);
+    }
+
+    #[test]
+    fn tointeger_finite_float_returns_int() {
+        let result = builtin_tointeger(vec![Value::Float(3.7)]).unwrap();
+        assert_eq!(result, Value::Int(3));
+    }
+
+    #[test]
+    fn tointeger_string_nan_returns_null() {
+        let result = builtin_tointeger(vec![Value::Str("NaN".into())]).unwrap();
+        assert_eq!(result, Value::Null);
+    }
+
+    #[test]
+    fn tointeger_string_infinity_returns_null() {
+        let result = builtin_tointeger(vec![Value::Str("Infinity".into())]).unwrap();
+        assert_eq!(result, Value::Null);
+    }
+
+    #[test]
+    fn tointeger_string_neg_infinity_returns_null() {
+        let result = builtin_tointeger(vec![Value::Str("-Infinity".into())]).unwrap();
+        assert_eq!(result, Value::Null);
+    }
+
+    #[test]
+    fn tointeger_null_returns_null() {
+        let result = builtin_tointeger(vec![Value::Null]).unwrap();
+        assert_eq!(result, Value::Null);
+    }
+
+    #[test]
+    fn tointeger_int_returns_same() {
+        let result = builtin_tointeger(vec![Value::Int(42)]).unwrap();
+        assert_eq!(result, Value::Int(42));
     }
 }
