@@ -14,12 +14,17 @@ use super::{MutationStats, QueryExecutor, Row};
 
 impl<'a> QueryExecutor<'a> {
     /// Build a `FilterRow` (borrowed string-key map) from an owned `Row`.
+    ///
+    /// Pre-allocates the `HashMap` with the exact row size to avoid rehashing.
     pub(crate) fn build_filter_ctx<'r>(
         &self,
         _graph: &str,
         row: &'r Row,
     ) -> Result<FilterRow<'r>, GqlError> {
-        let ctx: FilterRow<'r> = row.iter().map(|(k, v)| (k.as_str(), v)).collect();
+        let mut ctx = FilterRow::with_capacity(row.len());
+        for (k, v) in row {
+            ctx.insert(k.as_str(), v);
+        }
         Ok(ctx)
     }
 

@@ -1,15 +1,13 @@
 //! Output and stream operators: exec_produce_results, exec_call, exec_assemble_path,
 //! exec_unwind, exec_union.
 
-use std::collections::HashSet;
-
 use crate::error::{ExecutionError, GqlError};
 use crate::executor::budget::ExecutionBudget;
 use crate::planner::Operator;
 use crate::storage::{EdgeId, NodeId};
 use crate::types::Value;
 
-use super::helpers::{inject_parameters, row_key};
+use super::helpers::{inject_parameters, RowDedupSet};
 use super::{MutationStats, QueryExecutor, Row};
 
 impl<'a> QueryExecutor<'a> {
@@ -313,11 +311,10 @@ impl<'a> QueryExecutor<'a> {
             out.extend(left_rows);
             out.extend(right_rows);
         } else {
-            let mut seen: HashSet<String> = HashSet::new();
+            let mut seen = RowDedupSet::new();
             for row in left_rows.into_iter().chain(right_rows) {
                 budget.check_or_err()?;
-                let key = row_key(&row);
-                if seen.insert(key) {
+                if seen.insert(&row) {
                     out.push(row);
                 }
             }
