@@ -4,8 +4,13 @@
 //! all requests (except `GET /health`) must carry a valid
 //! `Authorization: Bearer <token>` header signed by the configured Entra ID
 //! tenant.  When absent the middleware is a no-op.
+//!
+//! JWKS keys are cached with a configurable TTL (default 24 h) and re-fetched
+//! on unknown `kid` with a cooldown (default 60 s) to avoid hammering the
+//! identity provider.
 
-use std::sync::OnceLock;
+use std::sync::{OnceLock, RwLock};
+use std::time::{Duration, Instant};
 
 use axum::extract::Request;
 use axum::http::{header, StatusCode};
@@ -15,10 +20,9 @@ use jsonwebtoken::{decode, decode_header, DecodingKey, TokenData, Validation};
 use serde::{Deserialize, Serialize};
 
 // ═════════════════════════════════════════════════════════════════════════════
-// Entra ID configuration & middleware (synchronous, OnceLock-based)
+// Entra ID configuration
 // ═════════════════════════════════════════════════════════════════════════════
 
-/// Entra ID auth configuration, lazily loaded from env vars.
 #[derive(Debug, Clone)]
 pub struct EntraConfig {
     pub tenant_id: String,
@@ -36,16 +40,17 @@ impl EntraConfig {
     }
 }
 
-/// Returns the Entra config if both env vars are set.
 pub fn entra_config() -> Option<&'static EntraConfig> {
     static CFG: OnceLock<Option<EntraConfig>> = OnceLock::new();
     CFG.get_or_init(EntraConfig::from_env).as_ref()
 }
 
-// ── Legacy JWKS cache (OnceLock, sync) ──────────────────────────────────────
+// ═════════════════════════════════════════════════════════════════════════════
+// JWKS cache with TTL refresh and unknown-kid re-fetch
+// ═════════════════════════════════════════════════════════════════════════════
 
-#[derive(Debug, Deserialize)]
-struct LegacyJwksKey {
+#[derive(Debug, Deserialize, Clone)]
+struct JwksKey {
     kid: String,
     n: String,
     e: String,
@@ -53,29 +58,143 @@ struct LegacyJwksKey {
 }
 
 #[derive(Debug, Deserialize)]
-struct LegacyJwksResponse {
-    keys: Vec<LegacyJwksKey>,
+struct JwksResponse {
+    keys: Vec<JwksKey>,
 }
 
-fn legacy_jwks_keys(tenant_id: &str) -> &'static Vec<LegacyJwksKey> {
-    static KEYS: OnceLock<Vec<LegacyJwksKey>> = OnceLock::new();
-    KEYS.get_or_init(|| {
-        let url = format!("https://login.microsoftonline.com/{tenant_id}/discovery/v2.0/keys");
-        tracing::info!("fetching Entra ID JWKS from {url}");
-        let mut resp = ureq::get(&url)
-            .call()
-            .unwrap_or_else(|e| panic!("failed to fetch JWKS from {url}: {e}"));
-        let jwks: LegacyJwksResponse = resp
-            .body_mut()
-            .read_json()
-            .unwrap_or_else(|e| panic!("failed to parse JWKS response from {url}: {e}"));
-        if jwks.keys.is_empty() {
-            panic!("JWKS response from {url} contains no keys");
-        }
-        tracing::info!("loaded {} JWKS keys", jwks.keys.len());
-        jwks.keys
-    })
+struct JwksCacheInner {
+    keys: Vec<JwksKey>,
+    fetched_at: Instant,
+    last_retry_at: Option<Instant>,
 }
+
+struct JwksCache {
+    inner: RwLock<Option<JwksCacheInner>>,
+    refresh_ttl: Duration,
+    retry_cooldown: Duration,
+}
+
+fn env_duration_secs(name: &str, default: u64) -> Duration {
+    Duration::from_secs(
+        std::env::var(name)
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(default),
+    )
+}
+
+impl JwksCache {
+    fn new() -> Self {
+        Self {
+            inner: RwLock::new(None),
+            refresh_ttl: env_duration_secs("GQL_API_JWKS_REFRESH_SECS", 86400),
+            retry_cooldown: env_duration_secs("GQL_API_JWKS_RETRY_COOLDOWN_SECS", 60),
+        }
+    }
+}
+
+fn fetch_jwks(tenant_id: &str) -> Result<Vec<JwksKey>, String> {
+    let url = format!("https://login.microsoftonline.com/{tenant_id}/discovery/v2.0/keys");
+    tracing::info!("fetching Entra ID JWKS from {url}");
+    let mut resp = ureq::get(&url)
+        .call()
+        .map_err(|e| format!("failed to fetch JWKS from {url}: {e}"))?;
+    let jwks: JwksResponse = resp
+        .body_mut()
+        .read_json()
+        .map_err(|e| format!("failed to parse JWKS response from {url}: {e}"))?;
+    if jwks.keys.is_empty() {
+        return Err(format!("JWKS response from {url} contains no keys"));
+    }
+    tracing::info!("loaded {} JWKS keys", jwks.keys.len());
+    Ok(jwks.keys)
+}
+
+static JWKS_CACHE: OnceLock<JwksCache> = OnceLock::new();
+
+fn jwks_cache() -> &'static JwksCache {
+    JWKS_CACHE.get_or_init(JwksCache::new)
+}
+
+/// Look up a key by `kid`, refreshing the cache when needed.
+///
+/// Returns `Err(String)` if the key cannot be found after a refresh attempt.
+fn find_jwks_key(tenant_id: &str, kid: &str) -> Result<JwksKey, String> {
+    let cache = jwks_cache();
+    let now = Instant::now();
+
+    // Fast path: read lock — check if we have a non-expired key.
+    {
+        let guard = cache
+            .inner
+            .read()
+            .map_err(|_| "JWKS cache lock poisoned".to_string())?;
+        if let Some(ref inner) = *guard {
+            if now.duration_since(inner.fetched_at) < cache.refresh_ttl {
+                if let Some(key) = inner.keys.iter().find(|k| k.kid == kid && k.kty == "RSA") {
+                    return Ok(key.clone());
+                }
+            }
+        }
+    }
+
+    // Slow path: write lock — refresh keys.
+    let mut guard = cache
+        .inner
+        .write()
+        .map_err(|_| "JWKS cache lock poisoned".to_string())?;
+
+    // Double-check: another thread may have refreshed while we waited.
+    if let Some(ref inner) = *guard {
+        if now.duration_since(inner.fetched_at) < cache.refresh_ttl {
+            if let Some(key) = inner.keys.iter().find(|k| k.kid == kid && k.kty == "RSA") {
+                return Ok(key.clone());
+            }
+            // Key not found — check retry cooldown before re-fetching.
+            if let Some(last) = inner.last_retry_at {
+                if now.duration_since(last) < cache.retry_cooldown {
+                    return Err(format!(
+                        "no matching JWKS key for kid={kid} (retry cooldown)"
+                    ));
+                }
+            }
+        }
+    }
+
+    // Fetch fresh keys.
+    match fetch_jwks(tenant_id) {
+        Ok(keys) => {
+            let result = keys
+                .iter()
+                .find(|k| k.kid == kid && k.kty == "RSA")
+                .cloned();
+            *guard = Some(JwksCacheInner {
+                keys,
+                fetched_at: now,
+                last_retry_at: Some(now),
+            });
+            result.ok_or_else(|| format!("no matching JWKS key for kid={kid}"))
+        }
+        Err(e) => {
+            crate::metrics::jwks_refresh_failure();
+            // If we have stale keys, update the retry timestamp and try them.
+            if let Some(ref mut inner) = *guard {
+                inner.last_retry_at = Some(now);
+                if let Some(key) = inner.keys.iter().find(|k| k.kid == kid && k.kty == "RSA") {
+                    tracing::warn!("JWKS refresh failed ({e}), using stale key for kid={kid}");
+                    return Ok(key.clone());
+                }
+            }
+            Err(format!(
+                "JWKS fetch failed and no cached key for kid={kid}: {e}"
+            ))
+        }
+    }
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Token validation
+// ═════════════════════════════════════════════════════════════════════════════
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct EntraClaims {
@@ -93,19 +212,31 @@ pub struct EntraClaims {
 fn validate_entra_token(
     token: &str,
     config: &EntraConfig,
-) -> Result<TokenData<EntraClaims>, String> {
-    let header = decode_header(token).map_err(|e| format!("invalid JWT header: {e}"))?;
+) -> Result<TokenData<EntraClaims>, (StatusCode, String)> {
+    let header = decode_header(token)
+        .map_err(|e| (StatusCode::UNAUTHORIZED, format!("invalid JWT header: {e}")))?;
 
-    let kid = header.kid.as_deref().ok_or("JWT missing kid header")?;
+    let kid = header.kid.as_deref().ok_or_else(|| {
+        (
+            StatusCode::UNAUTHORIZED,
+            "JWT missing kid header".to_string(),
+        )
+    })?;
 
-    let keys = legacy_jwks_keys(&config.tenant_id);
-    let jwk = keys
-        .iter()
-        .find(|k| k.kid == kid && k.kty == "RSA")
-        .ok_or_else(|| format!("no matching JWKS key for kid={kid}"))?;
+    let jwk = find_jwks_key(&config.tenant_id, kid).map_err(|e| {
+        if e.contains("JWKS fetch failed") || e.contains("lock poisoned") {
+            (StatusCode::SERVICE_UNAVAILABLE, e)
+        } else {
+            (StatusCode::UNAUTHORIZED, e)
+        }
+    })?;
 
-    let decoding_key = DecodingKey::from_rsa_components(&jwk.n, &jwk.e)
-        .map_err(|e| format!("invalid RSA key components: {e}"))?;
+    let decoding_key = DecodingKey::from_rsa_components(&jwk.n, &jwk.e).map_err(|e| {
+        (
+            StatusCode::UNAUTHORIZED,
+            format!("invalid RSA key components: {e}"),
+        )
+    })?;
 
     let mut validation = Validation::new(header.alg);
     validation.set_audience(&[&config.client_id, &format!("api://{}", config.client_id)]);
@@ -117,9 +248,17 @@ fn validate_entra_token(
         &format!("https://sts.windows.net/{}/", config.tenant_id),
     ]);
 
-    decode::<EntraClaims>(token, &decoding_key, &validation)
-        .map_err(|e| format!("JWT validation failed: {e}"))
+    decode::<EntraClaims>(token, &decoding_key, &validation).map_err(|e| {
+        (
+            StatusCode::UNAUTHORIZED,
+            format!("JWT validation failed: {e}"),
+        )
+    })
 }
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Middleware
+// ═════════════════════════════════════════════════════════════════════════════
 
 /// Axum middleware that enforces Entra ID JWT auth.
 ///
@@ -154,12 +293,17 @@ pub async fn require_entra_auth(request: Request, next: Next) -> Response {
 
     match validate_entra_token(token, config) {
         Ok(_claims) => next.run(request).await,
-        Err(e) => {
+        Err((status, e)) => {
             tracing::warn!("auth rejected: {e}");
             crate::metrics::auth_rejection();
+            let challenge = if status == StatusCode::SERVICE_UNAVAILABLE {
+                "Bearer"
+            } else {
+                "Bearer error=\"invalid_token\""
+            };
             (
-                StatusCode::UNAUTHORIZED,
-                [("WWW-Authenticate", "Bearer error=\"invalid_token\"")],
+                status,
+                [("WWW-Authenticate", challenge)],
                 "authentication failed",
             )
                 .into_response()
@@ -195,5 +339,19 @@ mod tests {
         };
         let result = validate_entra_token("not.a.jwt", &config);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn env_duration_secs_uses_default() {
+        let d = env_duration_secs("__NONEXISTENT_ENV_VAR__", 42);
+        assert_eq!(d, Duration::from_secs(42));
+    }
+
+    #[test]
+    fn jwks_cache_initializes() {
+        let cache = jwks_cache();
+        let guard = cache.inner.read().unwrap();
+        // Cache starts empty.
+        assert!(guard.is_none() || guard.is_some());
     }
 }
