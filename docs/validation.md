@@ -33,8 +33,13 @@ cargo bench -p gql-core -- --test                  # compile + smoke-run benchma
 
 | Suite | File | Count | What it proves |
 |-------|------|-------|----------------|
-| Unit tests | `gql-core/src/**` | 385 | Individual functions: parser, planner, executor, storage, budget, config |
-| End-to-end | `tests/end_to_end.rs` | 40 | Full pipeline: parse → plan → execute → result |
+| gql-core unit | `gql-core/src/**` | 678 | Individual functions: parser, planner, executor, storage, budget, config |
+| sedandelivery-bolt unit | `sedandelivery-bolt/src/**` | 399 | PackStream codec, message framing, Bolt state machine, bridge layer |
+| gql-api unit | `gql-api/src/**` | 115 | API handler pure functions |
+| gql-redis-store unit | `gql-redis-store/src/**` | 59 | Redis storage layer logic |
+| gql-fabric-store unit | `gql-fabric-store/src/**` | 45 | Fabric storage layer logic |
+| sedandelivery-bolt integration | `sedandelivery-bolt/tests/integration/` | 178 | Python neo4j driver: CRUD, transactions, paths, concurrency |
+| End-to-end | `tests/end_to_end.rs` | 42 | Full pipeline: parse → plan → execute → result |
 | Exists/interactive | `tests/exists_interactive.rs` | 6 | EXISTS subqueries and pattern predicates |
 | **Data integrity** | `tests/data_integrity.rs` | 23 | Referential integrity, MERGE atomicity, property round-trips, label/ID invariants |
 | **Stress** | `tests/stress.rs` | 8 | 10 K node load, `all_node_ids`, label scan at scale, budget enforcement |
@@ -44,8 +49,8 @@ cargo bench -p gql-core -- --test                  # compile + smoke-run benchma
 | **Compatibility** | `gql-module/tests/compatibility.rs` | 28 | JSON wire format: null, bool, int, float, string, list, map, node, edge, path encodings; column ordering |
 | **TCK compliance** | `tests/tck/` | 3903 | 100% openCypher TCK (all 195 feature files, 3903 scenarios, 16 031 steps) |
 | **Benchmarks** | `benches/` | 26 | Performance baselines (see [benchmarks.md](benchmarks.md)) |
-| **Total (excluding TCK)** | | **556** | |
-| **Total (including TCK)** | | **4459** | |
+| **Total (excluding TCK)** | | **1,673** | |
+| **Total (including TCK)** | | **5,576** | |
 
 Bold entries were added by issue #189.
 
@@ -241,7 +246,7 @@ have been fixed.
 | New PR | Tier 1 + 2 must pass (green) before merge |
 | Merge to main | Tier 3 must pass; Tier 4 uploads benchmark artifact |
 | TCK count drops | Build failure (cargo test exits non-zero) |
-| Unit test count < 385 | Would indicate deleted tests — investigate |
+| gql-core unit test count < 678 | Would indicate deleted tests — investigate |
 | Benchmark regresses > 10% | Download artifact, run `--baseline` locally, investigate |
 
 The TCK count is self-enforcing: if a previously-passing scenario starts

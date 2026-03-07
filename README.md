@@ -262,10 +262,14 @@ bash scripts/validate.sh --tck     # include TCK 3903 scenarios (~3 min extra)
 
 | Layer | Count | What it validates |
 |-------|-------|------------------|
-| Unit tests | 385 | Parser, planner, executor, storage, budget |
-| sedandelivery-bolt unit | 197 | PackStream codec, message framing, bridge layer |
-| sedandelivery-bolt integration | 147 | Python neo4j driver: CRUD, aggregation, errors, edge cases |
-| End-to-end + pipeline | 46 | Full parse → plan → execute → result |
+| gql-core unit | 678 | Parser, planner, executor, storage, budget, config |
+| sedandelivery-bolt unit | 399 | PackStream codec, message framing, Bolt state machine, bridge layer |
+| gql-api unit | 115 | API handler pure functions |
+| gql-redis-store unit | 59 | Redis storage layer logic |
+| gql-fabric-store unit | 45 | Fabric storage layer logic |
+| sedandelivery-bolt integration | 178 | Python neo4j driver: CRUD, transactions, paths, concurrency |
+| End-to-end + pipeline | 42 | Full parse → plan → execute → result |
+| Exists / interactive | 6 | EXISTS subqueries and pattern predicates |
 | Data integrity | 23 | MERGE atomicity, property round-trips, referential integrity |
 | Adversarial | 11 | DoS guards: size limits, depth limits, budget enforcement |
 | Stress + scale | 8 | 10 K node load, label scan, budget at scale |
