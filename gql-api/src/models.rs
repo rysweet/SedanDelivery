@@ -85,6 +85,8 @@ pub struct EdgeListResponse {
 #[derive(Deserialize)]
 pub struct CypherBody {
     pub cypher: String,
+    #[serde(default)]
+    pub params: Option<serde_json::Map<String, Json>>,
 }
 
 #[derive(Serialize)]
@@ -348,6 +350,35 @@ mod tests {
         let body: CypherBody =
             serde_json::from_value(json!({"cypher": "MATCH (n) RETURN n"})).unwrap();
         assert_eq!(body.cypher, "MATCH (n) RETURN n");
+        assert!(body.params.is_none());
+    }
+
+    #[test]
+    fn cypher_body_with_params() {
+        let body: CypherBody = serde_json::from_value(json!({
+            "cypher": "MATCH (n) WHERE n.name = $name RETURN n",
+            "params": {"name": "Alice", "age": 30}
+        }))
+        .unwrap();
+        assert_eq!(body.cypher, "MATCH (n) WHERE n.name = $name RETURN n");
+        let params = body.params.unwrap();
+        assert_eq!(params.len(), 2);
+        assert_eq!(params["name"], json!("Alice"));
+        assert_eq!(params["age"], json!(30));
+    }
+
+    #[test]
+    fn cypher_body_without_params_defaults_to_none() {
+        let body: CypherBody = serde_json::from_value(json!({"cypher": "RETURN 1"})).unwrap();
+        assert!(body.params.is_none());
+    }
+
+    #[test]
+    fn cypher_body_with_empty_params() {
+        let body: CypherBody =
+            serde_json::from_value(json!({"cypher": "RETURN 1", "params": {}})).unwrap();
+        let params = body.params.unwrap();
+        assert!(params.is_empty());
     }
 
     // ── QueryResponse serialization ──────────────────────────────────────────
