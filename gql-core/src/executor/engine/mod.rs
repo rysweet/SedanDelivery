@@ -26,7 +26,7 @@ use crate::error::GqlError;
 use crate::executor::budget::ExecutionBudget;
 use crate::planner::Operator;
 use crate::procedure::ProcedureRegistry;
-use crate::storage::{EdgeId, GraphStore, NodeId};
+use crate::storage::{EdgeData, EdgeId, GraphStore, NodeData, NodeId};
 use crate::types::Value;
 pub use helpers::cmp_values;
 
@@ -168,6 +168,13 @@ pub struct QueryExecutor<'a> {
     /// returned as the "successful" result and the error is stashed here so
     /// that `execute()` can attach it to `QueryResult::trailing_error`.
     pub(crate) streaming_error: std::cell::RefCell<Option<GqlError>>,
+    /// Property access cache for nodes. Avoids redundant store reads when
+    /// the same node is accessed multiple times within a single read-only
+    /// operator (e.g. `RETURN n.name, n.age, n.email`).
+    /// Mutation operators invalidate this cache to prevent stale data.
+    pub(crate) node_cache: std::cell::RefCell<HashMap<NodeId, NodeData>>,
+    /// Property access cache for edges. Same rationale as `node_cache`.
+    pub(crate) edge_cache: std::cell::RefCell<HashMap<EdgeId, EdgeData>>,
 }
 
 impl<'a> QueryExecutor<'a> {
@@ -180,6 +187,8 @@ impl<'a> QueryExecutor<'a> {
             parameters: HashMap::new(),
             deleted_edge_types: std::cell::RefCell::new(HashMap::new()),
             streaming_error: std::cell::RefCell::new(None),
+            node_cache: std::cell::RefCell::new(HashMap::new()),
+            edge_cache: std::cell::RefCell::new(HashMap::new()),
         }
     }
 
@@ -207,7 +216,58 @@ impl<'a> QueryExecutor<'a> {
             parameters: params,
             deleted_edge_types: std::cell::RefCell::new(HashMap::new()),
             streaming_error: std::cell::RefCell::new(None),
+            node_cache: std::cell::RefCell::new(HashMap::new()),
+            edge_cache: std::cell::RefCell::new(HashMap::new()),
         }
+    }
+
+    // ── Property access cache helpers ──────────────────────────────────────────
+
+    /// Fetch a node's data, returning a cached copy if available.
+    /// On a cache miss the node is fetched from the store and cached.
+    pub(crate) fn cached_get_node(
+        &self,
+        graph: &str,
+        node_id: NodeId,
+    ) -> Result<Option<NodeData>, GqlError> {
+        {
+            let cache = self.node_cache.borrow();
+            if let Some(data) = cache.get(&node_id) {
+                return Ok(Some(data.clone()));
+            }
+        }
+        let result = self.store.get_node(graph, node_id)?;
+        if let Some(ref data) = result {
+            self.node_cache.borrow_mut().insert(node_id, data.clone());
+        }
+        Ok(result)
+    }
+
+    /// Fetch an edge's data, returning a cached copy if available.
+    /// On a cache miss the edge is fetched from the store and cached.
+    pub(crate) fn cached_get_edge(
+        &self,
+        graph: &str,
+        edge_id: EdgeId,
+    ) -> Result<Option<EdgeData>, GqlError> {
+        {
+            let cache = self.edge_cache.borrow();
+            if let Some(data) = cache.get(&edge_id) {
+                return Ok(Some(data.clone()));
+            }
+        }
+        let result = self.store.get_edge(graph, edge_id)?;
+        if let Some(ref data) = result {
+            self.edge_cache.borrow_mut().insert(edge_id, data.clone());
+        }
+        Ok(result)
+    }
+
+    /// Invalidate the property access caches.  Must be called after any
+    /// mutation (CREATE, SET, REMOVE, DELETE, MERGE) to prevent stale reads.
+    pub(crate) fn invalidate_property_cache(&self) {
+        self.node_cache.borrow_mut().clear();
+        self.edge_cache.borrow_mut().clear();
     }
 
     /// Execute `plan` against the named `graph`, enforcing `budget`.

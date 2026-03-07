@@ -40,7 +40,7 @@ impl<'a> QueryExecutor<'a> {
             Expr::Property(obj_expr, key) => {
                 let obj_val = self.eval_with_storage(graph, obj_expr, row, ctx)?;
                 match obj_val {
-                    Value::Node(node_id) => match self.store.get_node(graph, node_id)? {
+                    Value::Node(node_id) => match self.cached_get_node(graph, node_id)? {
                         Some(node_data) => Ok(node_data
                             .properties
                             .get(key.as_str())
@@ -51,7 +51,7 @@ impl<'a> QueryExecutor<'a> {
                             actual: "deleted or missing Node".to_string(),
                         })),
                     },
-                    Value::Edge(edge_id) => match self.store.get_edge(graph, edge_id)? {
+                    Value::Edge(edge_id) => match self.cached_get_edge(graph, edge_id)? {
                         Some(edge_data) => Ok(edge_data
                             .properties
                             .get(key.as_str())
@@ -121,7 +121,7 @@ impl<'a> QueryExecutor<'a> {
                 let base_val = self.eval_with_storage(graph, base_expr, row, ctx)?;
                 match base_val {
                     Value::Null => Ok(Value::Null),
-                    Value::Node(node_id) => match self.store.get_node(graph, node_id)? {
+                    Value::Node(node_id) => match self.cached_get_node(graph, node_id)? {
                         Some(node_data) => {
                             let has = labels_to_check
                                 .iter()
@@ -130,7 +130,7 @@ impl<'a> QueryExecutor<'a> {
                         }
                         None => Ok(Value::Bool(false)),
                     },
-                    Value::Edge(edge_id) => match self.store.get_edge(graph, edge_id)? {
+                    Value::Edge(edge_id) => match self.cached_get_edge(graph, edge_id)? {
                         Some(edge_data) => {
                             Ok(Value::Bool(edge_data.rel_type.as_str() == label.as_str()))
                         }
@@ -244,7 +244,7 @@ impl<'a> QueryExecutor<'a> {
                             _ => return Ok(Value::Bool(false)),
                         };
                         match &evaled_args[0] {
-                            Value::Node(node_id) => match self.store.get_node(graph, *node_id)? {
+                            Value::Node(node_id) => match self.cached_get_node(graph, *node_id)? {
                                 Some(data) => {
                                     Ok(Value::Bool(data.labels.iter().any(|l| l == &label_name)))
                                 }
@@ -268,11 +268,11 @@ impl<'a> QueryExecutor<'a> {
                             }
                         };
                         let entity_props = match &evaled_args[0] {
-                            Value::Node(node_id) => match self.store.get_node(graph, *node_id)? {
+                            Value::Node(node_id) => match self.cached_get_node(graph, *node_id)? {
                                 Some(data) => data.properties.clone(),
                                 None => return Ok(Value::Bool(false)),
                             },
-                            Value::Edge(edge_id) => match self.store.get_edge(graph, *edge_id)? {
+                            Value::Edge(edge_id) => match self.cached_get_edge(graph, *edge_id)? {
                                 Some(data) => data.properties.clone(),
                                 None => return Ok(Value::Bool(false)),
                             },
@@ -295,7 +295,7 @@ impl<'a> QueryExecutor<'a> {
                         }
                         match &evaled_args[0] {
                             Value::Null => Ok(Value::Null),
-                            Value::Node(node_id) => match self.store.get_node(graph, *node_id)? {
+                            Value::Node(node_id) => match self.cached_get_node(graph, *node_id)? {
                                 Some(data) => Ok(Value::List(
                                     data.labels
                                         .iter()
@@ -322,7 +322,7 @@ impl<'a> QueryExecutor<'a> {
                         }
                         match &evaled_args[0] {
                             Value::Null => Ok(Value::Null),
-                            Value::Edge(edge_id) => match self.store.get_edge(graph, *edge_id)? {
+                            Value::Edge(edge_id) => match self.cached_get_edge(graph, *edge_id)? {
                                 Some(data) => Ok(Value::Str(data.rel_type.into_boxed_str())),
                                 None => {
                                     let cached = self
@@ -365,7 +365,7 @@ impl<'a> QueryExecutor<'a> {
                         }
                         match &evaled_args[0] {
                             Value::Null => Ok(Value::Null),
-                            Value::Node(node_id) => match self.store.get_node(graph, *node_id)? {
+                            Value::Node(node_id) => match self.cached_get_node(graph, *node_id)? {
                                 Some(data) => {
                                     let map: indexmap::IndexMap<Box<str>, Value> = data
                                         .properties
@@ -376,7 +376,7 @@ impl<'a> QueryExecutor<'a> {
                                 }
                                 None => Ok(Value::Map(indexmap::IndexMap::new())),
                             },
-                            Value::Edge(edge_id) => match self.store.get_edge(graph, *edge_id)? {
+                            Value::Edge(edge_id) => match self.cached_get_edge(graph, *edge_id)? {
                                 Some(data) => {
                                     let map: indexmap::IndexMap<Box<str>, Value> = data
                                         .properties
@@ -403,7 +403,7 @@ impl<'a> QueryExecutor<'a> {
                         }
                         match &evaled_args[0] {
                             Value::Null => Ok(Value::Null),
-                            Value::Node(node_id) => match self.store.get_node(graph, *node_id)? {
+                            Value::Node(node_id) => match self.cached_get_node(graph, *node_id)? {
                                 Some(data) => Ok(Value::List(
                                     data.properties
                                         .iter()
@@ -413,7 +413,7 @@ impl<'a> QueryExecutor<'a> {
                                 )),
                                 None => Ok(Value::List(vec![])),
                             },
-                            Value::Edge(edge_id) => match self.store.get_edge(graph, *edge_id)? {
+                            Value::Edge(edge_id) => match self.cached_get_edge(graph, *edge_id)? {
                                 Some(data) => Ok(Value::List(
                                     data.properties
                                         .iter()
@@ -490,7 +490,7 @@ impl<'a> QueryExecutor<'a> {
                         }
                         match &evaled_args[0] {
                             Value::Null => Ok(Value::Null),
-                            Value::Edge(edge_id) => match self.store.get_edge(graph, *edge_id)? {
+                            Value::Edge(edge_id) => match self.cached_get_edge(graph, *edge_id)? {
                                 Some(data) => Ok(Value::Node(data.src)),
                                 None => Ok(Value::Null),
                             },
@@ -509,7 +509,7 @@ impl<'a> QueryExecutor<'a> {
                         }
                         match &evaled_args[0] {
                             Value::Null => Ok(Value::Null),
-                            Value::Edge(edge_id) => match self.store.get_edge(graph, *edge_id)? {
+                            Value::Edge(edge_id) => match self.cached_get_edge(graph, *edge_id)? {
                                 Some(data) => Ok(Value::Node(data.dst)),
                                 None => Ok(Value::Null),
                             },
@@ -622,7 +622,7 @@ impl<'a> QueryExecutor<'a> {
                 match (obj_val, idx_val) {
                     (Value::Null, _) | (_, Value::Null) => Ok(Value::Null),
                     (Value::Node(node_id), Value::Str(key)) => {
-                        match self.store.get_node(graph, node_id)? {
+                        match self.cached_get_node(graph, node_id)? {
                             Some(node_data) => Ok(node_data
                                 .properties
                                 .get(key.as_ref())
@@ -632,7 +632,7 @@ impl<'a> QueryExecutor<'a> {
                         }
                     }
                     (Value::Edge(edge_id), Value::Str(key)) => {
-                        match self.store.get_edge(graph, edge_id)? {
+                        match self.cached_get_edge(graph, edge_id)? {
                             Some(edge_data) => Ok(edge_data
                                 .properties
                                 .get(key.as_ref())
