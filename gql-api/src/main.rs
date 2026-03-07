@@ -21,6 +21,7 @@ use tracing::info;
 use tracing_subscriber::EnvFilter;
 
 use gql_api::auth;
+use gql_api::metrics;
 use gql_api::rate_limit;
 use gql_api::routes;
 use gql_api::state::AppState;
@@ -49,6 +50,9 @@ async fn main() {
             panic!("GQL_API_ENTRA_CLIENT_ID is required when ENVIRONMENT=production");
         }
     }
+
+    // Initialize Prometheus metrics recorder.
+    let prometheus_handle = metrics::init_recorder();
 
     let state = AppState::new();
 
@@ -124,9 +128,11 @@ async fn main() {
         .merge(routes::schema::router())
         .merge(routes::neighbors::router())
         .merge(routes::export_import::router())
-        .layer(axum::middleware::from_fn(auth::require_entra_auth))
-        .layer(axum::middleware::from_fn(rate_limit::rate_limit_middleware))
+        .merge(metrics::router(prometheus_handle))
+        .layer(middleware::from_fn(auth::require_entra_auth))
+        .layer(middleware::from_fn(rate_limit::rate_limit_middleware))
         .layer(axum::Extension(limiter))
+        .layer(middleware::from_fn(metrics::track_http_metrics))
         .layer(cors)
         .layer(TraceLayer::new_for_http())
         .with_state(state);

@@ -62,6 +62,7 @@ async fn create_graph(
     store.create_graph(&body.name).map_err(ApiError::from)?;
 
     map.insert(body.name.clone(), store);
+    crate::metrics::set_active_graphs(map.len());
 
     Ok((
         StatusCode::CREATED,
@@ -87,6 +88,7 @@ async fn delete_graph(
     }
 
     map.remove(&name);
+    crate::metrics::set_active_graphs(map.len());
     Ok(StatusCode::NO_CONTENT)
 }
 
