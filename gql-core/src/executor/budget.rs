@@ -50,6 +50,21 @@ pub struct ExecutionBudget {
     /// Counter for amortizing `Instant::now()` calls. The expensive syscall is
     /// only performed every `CHECK_INTERVAL` invocations of `check_or_err()`.
     check_counter: u64,
+    /// Optional soft row cap set by LIMIT operators for early termination.
+    ///
+    /// When set, leaf scan operators check [`reached_row_cap`] and stop
+    /// producing rows once the cap is reached. Unlike `max_rows` (which
+    /// triggers an error), hitting the row cap is a normal "we have enough
+    /// rows" signal — operators simply break out of their loops.
+    ///
+    /// The cap is expressed as an absolute count of leaf-level rows
+    /// (tracked by [`record_leaf_row`]).
+    row_cap: Option<usize>,
+    /// Counter of leaf-level rows produced. Only incremented by leaf scan
+    /// operators (NodeScan, Expand, etc.) when a row cap is active. This
+    /// is separate from `rows_produced` (which counts all intermediate rows)
+    /// so that the cap is not inflated by intermediate operators like Project.
+    leaf_rows_produced: usize,
 }
 
 /// Only call `Instant::now()` once every this many `check_or_err()` invocations.
@@ -65,6 +80,8 @@ impl ExecutionBudget {
             rows_produced: 0,
             timeout,
             check_counter: 0,
+            row_cap: None,
+            leaf_rows_produced: 0,
         }
     }
 
@@ -146,6 +163,59 @@ impl ExecutionBudget {
     #[inline]
     pub fn is_expired(&self) -> bool {
         Instant::now() > self.deadline
+    }
+
+    /// Set a soft row cap for early termination by LIMIT operators.
+    ///
+    /// `needed` is the number of leaf-level rows needed from this point
+    /// forward. The cap is computed as `leaf_rows_produced + needed`.
+    ///
+    /// Returns the previous cap so the caller can restore it via
+    /// [`restore_row_cap`].
+    #[inline]
+    pub fn set_row_cap(&mut self, needed: usize) -> Option<usize> {
+        let prev = self.row_cap;
+        let new_cap = self.leaf_rows_produced.saturating_add(needed);
+        // When nesting limits, take the tighter (smaller) cap.
+        self.row_cap = Some(match prev {
+            Some(existing) => existing.min(new_cap),
+            None => new_cap,
+        });
+        prev
+    }
+
+    /// Clear or restore the soft row cap. Pass the value returned by
+    /// [`set_row_cap`] to restore the previous state.
+    #[inline]
+    pub fn restore_row_cap(&mut self, prev: Option<usize>) {
+        self.row_cap = prev;
+    }
+
+    /// Returns the current soft row cap, if any.
+    #[inline]
+    pub fn row_cap(&self) -> Option<usize> {
+        self.row_cap
+    }
+
+    /// Record a leaf-level row. Called by leaf scan operators (NodeScan,
+    /// Expand, VarLenExpand, IndexScan, etc.) alongside `record_row()`.
+    /// This counter is used by `reached_row_cap()` and is separate from
+    /// the general `rows_produced` counter.
+    #[inline]
+    pub fn record_leaf_row(&mut self) {
+        self.leaf_rows_produced += 1;
+    }
+
+    /// Returns `true` when a soft row cap is active and the number of
+    /// leaf-level rows produced has reached it. Leaf scan operators should
+    /// break out of their loops (returning rows collected so far) when
+    /// this returns `true`.
+    #[inline]
+    pub fn reached_row_cap(&self) -> bool {
+        match self.row_cap {
+            Some(cap) => self.leaf_rows_produced >= cap,
+            None => false,
+        }
     }
 }
 
