@@ -269,7 +269,10 @@ pub async fn require_entra_auth(request: Request, next: Next) -> Response {
         None => return next.run(request).await,
     };
 
-    if request.uri().path() == "/health" {
+    // /health and /metrics are exempt: health for liveness probes,
+    // /metrics for Prometheus scraping (typically from a pod-network sidecar).
+    let path = request.uri().path();
+    if path == "/health" || path == "/metrics" {
         return next.run(request).await;
     }
 

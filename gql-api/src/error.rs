@@ -94,6 +94,7 @@ impl From<gql_core::error::GqlError> for ApiError {
             GqlError::Storage(StorageError::InvalidGraphName { .. }) => {
                 ApiError::bad_request(e.to_string())
             }
+            GqlError::Storage(StorageError::Backend { .. }) => ApiError::internal(e.to_string()),
             GqlError::Parse(_) => ApiError::bad_request(e.to_string()),
             GqlError::Plan(_) => ApiError::bad_request(e.to_string()),
             GqlError::Execution(exec_err) => {
