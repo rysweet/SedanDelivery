@@ -5,6 +5,8 @@
 
 use std::collections::HashMap;
 
+use tracing;
+
 use gql_core::error::StorageError;
 use gql_core::storage::{
     AdjEntry, EdgeData, EdgeId, GraphStats, GraphStore, IndexDescriptor, NodeData, NodeId,
@@ -159,7 +161,10 @@ impl GraphStore for FanoutStore {
         })?;
         props_with_id.insert("_sd2_id".to_string(), Value::Int(id_i64));
         for store in &self.stores[1..] {
-            store.create_node(graph, labels.clone(), props_with_id.clone())?;
+            if let Err(e) = store.create_node(graph, labels.clone(), props_with_id.clone()) {
+                tracing::error!(node_id = %id.0, error = %e, "secondary store failed to create node");
+                return Err(e);
+            }
         }
         Ok(id)
     }
@@ -180,7 +185,12 @@ impl GraphStore for FanoutStore {
         })?;
         props_with_id.insert("_sd2_eid".to_string(), Value::Int(id_i64));
         for store in &self.stores[1..] {
-            store.create_edge(graph, src, dst, rel_type.clone(), props_with_id.clone())?;
+            if let Err(e) =
+                store.create_edge(graph, src, dst, rel_type.clone(), props_with_id.clone())
+            {
+                tracing::error!(edge_id = %id.0, error = %e, "secondary store failed to create edge");
+                return Err(e);
+            }
         }
         Ok(id)
     }

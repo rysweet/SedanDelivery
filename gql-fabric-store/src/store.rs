@@ -305,17 +305,22 @@ impl GraphStore for FabricGraphStore {
             self.next_node_id(graph)?
         };
 
-        let label_str = if labels.is_empty() {
+        let sanitized_labels: Vec<String> = labels
+            .iter()
+            .filter_map(|l| {
+                let s = sanitize_label(l);
+                if s.is_empty() {
+                    tracing::warn!(label = %l, "skipping empty label after sanitization in create_node");
+                    None
+                } else {
+                    Some(s)
+                }
+            })
+            .collect();
+        let label_str = if sanitized_labels.is_empty() {
             String::new()
         } else {
-            format!(
-                ":`{}`",
-                labels
-                    .iter()
-                    .map(|l| sanitize_label(l))
-                    .collect::<Vec<_>>()
-                    .join("`:`")
-            )
+            format!(":`{}`", sanitized_labels.join("`:`"))
         };
         let labels_json = serde_json::to_string(&labels).unwrap_or_else(|_| "[]".into());
 
@@ -476,7 +481,15 @@ impl GraphStore for FabricGraphStore {
     ) -> Result<(), StorageError> {
         let label_str = labels
             .iter()
-            .map(|l| format!("`{}`", sanitize_label(l)))
+            .filter_map(|l| {
+                let s = sanitize_label(l);
+                if s.is_empty() {
+                    tracing::warn!(label = %l, "skipping empty label after sanitization in add_node_labels");
+                    None
+                } else {
+                    Some(format!("`{}`", s))
+                }
+            })
             .collect::<Vec<_>>()
             .join(":");
         if label_str.is_empty() {
@@ -500,7 +513,15 @@ impl GraphStore for FabricGraphStore {
     ) -> Result<(), StorageError> {
         let label_str = labels
             .iter()
-            .map(|l| format!("`{}`", sanitize_label(l)))
+            .filter_map(|l| {
+                let s = sanitize_label(l);
+                if s.is_empty() {
+                    tracing::warn!(label = %l, "skipping empty label after sanitization in remove_node_labels");
+                    None
+                } else {
+                    Some(format!("`{}`", s))
+                }
+            })
             .collect::<Vec<_>>()
             .join(":");
         if label_str.is_empty() {
@@ -579,7 +600,15 @@ impl GraphStore for FabricGraphStore {
 
     fn create_index(&self, graph: &str, label: &str, property: &str) -> Result<(), StorageError> {
         let label_s = sanitize_label(label);
+        if label_s.is_empty() {
+            tracing::warn!(label = %label, "skipping create_index: empty label after sanitization");
+            return Ok(());
+        }
         let prop_s = sanitize_label(property);
+        if prop_s.is_empty() {
+            tracing::warn!(property = %property, "skipping create_index: empty property after sanitization");
+            return Ok(());
+        }
         self.statement(
             &format!("CREATE INDEX sd2_{label_s}_{prop_s} IF NOT EXISTS FOR (n:`{label_s}`) ON (n.`{prop_s}`)"),
             json!({}),
@@ -595,7 +624,15 @@ impl GraphStore for FabricGraphStore {
 
     fn drop_index(&self, graph: &str, label: &str, property: &str) -> Result<(), StorageError> {
         let label_s = sanitize_label(label);
+        if label_s.is_empty() {
+            tracing::warn!(label = %label, "skipping drop_index: empty label after sanitization");
+            return Ok(());
+        }
         let prop_s = sanitize_label(property);
+        if prop_s.is_empty() {
+            tracing::warn!(property = %property, "skipping drop_index: empty property after sanitization");
+            return Ok(());
+        }
         self.statement(
             &format!("DROP INDEX sd2_{label_s}_{prop_s} IF EXISTS"),
             json!({}),

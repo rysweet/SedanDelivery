@@ -97,8 +97,7 @@ pub(crate) fn discover_operator_aliases(op: &Operator) -> Vec<String> {
         | Operator::Distinct { child, .. }
         | Operator::Set { child, .. }
         | Operator::Remove { child, .. }
-        | Operator::Delete { child, .. }
-        | Operator::Unwind { child, .. } => {
+        | Operator::Delete { child, .. } => {
             aliases.extend(discover_operator_aliases(child));
         }
         Operator::AssemblePath {
@@ -121,7 +120,74 @@ pub(crate) fn discover_operator_aliases(op: &Operator) -> Vec<String> {
                 aliases.push(ra.0.clone());
             }
         }
-        _ => {}
+        Operator::Unwind { alias, child, .. } => {
+            aliases.extend(discover_operator_aliases(child));
+            aliases.push(alias.0.clone());
+        }
+        Operator::Apply { outer, inner } => {
+            aliases.extend(discover_operator_aliases(outer));
+            aliases.extend(discover_operator_aliases(inner));
+        }
+        Operator::LeftOuterApply {
+            preserved,
+            optional_pattern,
+        } => {
+            aliases.extend(discover_operator_aliases(preserved));
+            aliases.extend(discover_operator_aliases(optional_pattern));
+        }
+        Operator::Create { patterns, child } => {
+            if let Some(ch) = child {
+                aliases.extend(discover_operator_aliases(ch));
+            }
+            for pattern in patterns {
+                for (alias, _, _) in &pattern.nodes {
+                    if let Some(a) = alias {
+                        aliases.push(a.0.clone());
+                    }
+                }
+                for (alias, _, _, _, _, _) in &pattern.edges {
+                    if let Some(a) = alias {
+                        aliases.push(a.0.clone());
+                    }
+                }
+            }
+        }
+        Operator::Merge {
+            child, node_alias, ..
+        } => {
+            if let Some(ch) = child {
+                aliases.extend(discover_operator_aliases(ch));
+            }
+            if let Some(a) = node_alias {
+                aliases.push(a.0.clone());
+            }
+        }
+        Operator::Union { left, right, .. } => {
+            aliases.extend(discover_operator_aliases(left));
+            aliases.extend(discover_operator_aliases(right));
+        }
+        Operator::ShortestPath {
+            path_alias,
+            src_alias,
+            dst_alias,
+            ..
+        } => {
+            aliases.push(path_alias.0.clone());
+            aliases.push(src_alias.0.clone());
+            aliases.push(dst_alias.0.clone());
+        }
+        Operator::Call {
+            yield_items, child, ..
+        } => {
+            if let Some(ch) = child {
+                aliases.extend(discover_operator_aliases(ch));
+            }
+            for (name, alias) in yield_items {
+                let col_name = alias.as_ref().unwrap_or(name);
+                aliases.push(col_name.0.clone());
+            }
+        }
+        Operator::SingleRow | Operator::ProduceResults { .. } => {}
     }
     aliases
 }
