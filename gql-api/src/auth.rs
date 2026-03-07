@@ -1,4 +1,4 @@
-//! Entra ID (Azure AD) JWT validation middleware.
+//! Entra ID (Azure AD) JWT validation middleware with JWKS TTL cache.
 //!
 //! When `GQL_API_ENTRA_TENANT_ID` and `GQL_API_ENTRA_CLIENT_ID` are set,
 //! all requests (except `GET /health`) must carry a valid
@@ -7,8 +7,13 @@
 //!
 //! When these env vars are absent the middleware is a no-op, allowing
 //! unauthenticated local development.
+//!
+//! Keys are cached in an `RwLock<(Vec<JwksKey>, Instant)>` and refreshed when
+//! older than `GQL_API_JWKS_REFRESH_SECS` (default 86 400 s = 24 h).
 
 use std::sync::OnceLock;
+use std::sync::RwLock;
+use std::time::{Duration, Instant};
 
 use axum::extract::Request;
 use axum::http::{header, StatusCode};
@@ -43,10 +48,10 @@ pub fn entra_config() -> Option<&'static EntraConfig> {
     CFG.get_or_init(EntraConfig::from_env).as_ref()
 }
 
-// ── JWKS cache ───────────────────────────────────────────────────────────────
+// ── Legacy JWKS cache (OnceLock) ────────────────────────────────────────────
 
 #[derive(Debug, Deserialize)]
-struct JwksKey {
+struct LegacyJwksKey {
     kid: String,
     n: String,
     e: String,
@@ -55,7 +60,7 @@ struct JwksKey {
 
 #[derive(Debug, Deserialize)]
 struct JwksResponse {
-    keys: Vec<JwksKey>,
+    keys: Vec<LegacyJwksKey>,
 }
 
 /// Fetch JWKS keys from the Entra OIDC endpoint.
@@ -63,8 +68,8 @@ struct JwksResponse {
 /// Keys are cached in a `OnceLock` on success. On failure, the function
 /// **panics** rather than caching an empty set — a permanently empty JWKS
 /// cache would silently reject all tokens for the process lifetime.
-fn jwks_keys(tenant_id: &str) -> &'static Vec<JwksKey> {
-    static KEYS: OnceLock<Vec<JwksKey>> = OnceLock::new();
+fn jwks_keys(tenant_id: &str) -> &'static Vec<LegacyJwksKey> {
+    static KEYS: OnceLock<Vec<LegacyJwksKey>> = OnceLock::new();
     KEYS.get_or_init(|| {
         let url = format!("https://login.microsoftonline.com/{tenant_id}/discovery/v2.0/keys");
         tracing::info!("fetching Entra ID JWKS from {url}");
@@ -177,15 +182,108 @@ pub async fn require_entra_auth(request: Request, next: Next) -> Response {
     }
 }
 
+// ── JWKS TTL cache (RwLock-based) ───────────────────────────────────────────
+
+/// Default TTL for cached JWKS keys: 24 hours.
+const DEFAULT_JWKS_REFRESH_SECS: u64 = 86_400;
+
+/// A single JSON Web Key from a JWKS endpoint.
+#[derive(Debug, Clone, PartialEq)]
+pub struct JwksKey {
+    pub kid: String,
+    pub n: String,
+    pub e: String,
+}
+
+/// Fetches JWKS keys from a remote endpoint.
+///
+/// In production this performs an HTTP GET; tests inject a custom fetcher.
+pub type JwksFetcher = Box<dyn Fn() -> Result<Vec<JwksKey>, String> + Send + Sync>;
+
+/// Thread-safe JWKS key cache with TTL-based refresh.
+pub struct JwksCache {
+    /// Cached keys and the instant they were fetched.
+    inner: RwLock<(Vec<JwksKey>, Instant)>,
+    /// How long keys are considered fresh.
+    ttl: Duration,
+    /// Function that retrieves fresh keys.
+    fetcher: JwksFetcher,
+}
+
+impl JwksCache {
+    /// Creates a new cache, immediately fetching keys via `fetcher`.
+    ///
+    /// `ttl` is read from `GQL_API_JWKS_REFRESH_SECS` (falls back to 86 400).
+    pub fn new(fetcher: JwksFetcher) -> Result<Self, String> {
+        let ttl = jwks_ttl_from_env();
+        let keys = fetcher()?;
+        Ok(Self {
+            inner: RwLock::new((keys, Instant::now())),
+            ttl,
+            fetcher,
+        })
+    }
+
+    /// Creates a cache with an explicit TTL (useful for tests).
+    pub fn with_ttl(fetcher: JwksFetcher, ttl: Duration) -> Result<Self, String> {
+        let keys = fetcher()?;
+        Ok(Self {
+            inner: RwLock::new((keys, Instant::now())),
+            ttl,
+            fetcher,
+        })
+    }
+
+    /// Returns a snapshot of the current keys, refreshing first if stale.
+    pub fn keys(&self) -> Result<Vec<JwksKey>, String> {
+        // Fast path: read lock — check freshness.
+        {
+            let guard = self.inner.read().map_err(|e| format!("read lock: {e}"))?;
+            if guard.1.elapsed() < self.ttl {
+                return Ok(guard.0.clone());
+            }
+        }
+        // Slow path: write lock — re-check then refresh.
+        {
+            let mut guard = self.inner.write().map_err(|e| format!("write lock: {e}"))?;
+            // Another thread may have refreshed while we waited.
+            if guard.1.elapsed() < self.ttl {
+                return Ok(guard.0.clone());
+            }
+            let fresh = (self.fetcher)()?;
+            *guard = (fresh.clone(), Instant::now());
+            Ok(fresh)
+        }
+    }
+
+    /// Returns `true` if the cached keys are older than the TTL.
+    pub fn is_stale(&self) -> bool {
+        self.inner
+            .read()
+            .map(|g| g.1.elapsed() >= self.ttl)
+            .unwrap_or(true)
+    }
+}
+
+/// Reads `GQL_API_JWKS_REFRESH_SECS` from the environment.
+fn jwks_ttl_from_env() -> Duration {
+    let secs = std::env::var("GQL_API_JWKS_REFRESH_SECS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(DEFAULT_JWKS_REFRESH_SECS);
+    Duration::from_secs(secs)
+}
+
 // ── Tests ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
 
     #[test]
     fn entra_config_from_env_returns_some_or_none() {
-        // EntraConfig::from_env() should return Some only when both env vars are set.
         let cfg = EntraConfig::from_env();
         if std::env::var("GQL_API_ENTRA_TENANT_ID").is_ok()
             && std::env::var("GQL_API_ENTRA_CLIENT_ID").is_ok()
@@ -204,5 +302,94 @@ mod tests {
         };
         let result = validate_token("not.a.jwt", &config);
         assert!(result.is_err());
+    }
+
+    fn sample_keys() -> Vec<JwksKey> {
+        vec![JwksKey {
+            kid: "key-1".into(),
+            n: "modulus".into(),
+            e: "AQAB".into(),
+        }]
+    }
+
+    #[test]
+    fn fresh_cache_returns_keys_without_refetch() {
+        let call_count = Arc::new(AtomicUsize::new(0));
+        let cc = Arc::clone(&call_count);
+
+        let cache = JwksCache::with_ttl(
+            Box::new(move || {
+                cc.fetch_add(1, Ordering::SeqCst);
+                Ok(sample_keys())
+            }),
+            Duration::from_secs(3600),
+        )
+        .unwrap();
+
+        assert_eq!(call_count.load(Ordering::SeqCst), 1);
+
+        let keys = cache.keys().unwrap();
+        assert_eq!(keys, sample_keys());
+        assert_eq!(call_count.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn stale_cache_triggers_refetch() {
+        let call_count = Arc::new(AtomicUsize::new(0));
+        let cc = Arc::clone(&call_count);
+
+        let cache = JwksCache::with_ttl(
+            Box::new(move || {
+                cc.fetch_add(1, Ordering::SeqCst);
+                Ok(sample_keys())
+            }),
+            Duration::from_secs(0),
+        )
+        .unwrap();
+
+        assert_eq!(call_count.load(Ordering::SeqCst), 1);
+
+        let _ = cache.keys().unwrap();
+        assert_eq!(call_count.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn is_stale_reflects_ttl() {
+        let cache =
+            JwksCache::with_ttl(Box::new(|| Ok(sample_keys())), Duration::from_secs(3600)).unwrap();
+
+        assert!(!cache.is_stale());
+
+        // Zero-TTL cache is immediately stale.
+        let stale_cache =
+            JwksCache::with_ttl(Box::new(|| Ok(sample_keys())), Duration::from_secs(0)).unwrap();
+
+        assert!(stale_cache.is_stale());
+    }
+
+    #[test]
+    fn fetcher_error_propagates() {
+        let result = JwksCache::with_ttl(
+            Box::new(|| Err("network error".into())),
+            Duration::from_secs(60),
+        );
+
+        let err = result.err().expect("should be Err");
+        assert!(err.contains("network error"));
+    }
+
+    #[test]
+    fn default_ttl_is_24_hours() {
+        std::env::remove_var("GQL_API_JWKS_REFRESH_SECS");
+        let ttl = jwks_ttl_from_env();
+        assert_eq!(ttl, Duration::from_secs(86_400));
+    }
+
+    #[test]
+    fn env_var_overrides_ttl() {
+        std::env::set_var("GQL_API_JWKS_REFRESH_SECS", "300");
+        let ttl = jwks_ttl_from_env();
+        assert_eq!(ttl, Duration::from_secs(300));
+        std::env::remove_var("GQL_API_JWKS_REFRESH_SECS");
     }
 }
