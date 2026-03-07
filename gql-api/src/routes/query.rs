@@ -2,12 +2,6 @@
 //!
 //! POST /graphs/{name}/query   — read queries
 //! POST /graphs/{name}/mutate  — write queries
-//!
-//! # Lock discipline
-//! The outer `Mutex` on `AppState.stores` guards only the graph-name→store
-//! map.  We clone the `Arc<InMemoryGraphStore>` while holding the lock, then
-//! release the lock **before** running any query/plan/execute work.  This
-//! prevents slow CPU-bound executor work from serialising all other requests.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -27,6 +21,7 @@ use gql_core::types::Value;
 
 use crate::error::ApiError;
 use crate::models::{CypherBody, MutateResponse, QueryResponse};
+use crate::routes::helpers::require_graph;
 use crate::serialize::row_to_json;
 use crate::state::AppState;
 
@@ -57,13 +52,9 @@ async fn query_handler(
     Json(body): Json<CypherBody>,
 ) -> Result<Json<QueryResponse>, ApiError> {
     validate_graph_name(&name).map_err(ApiError::from)?;
+    require_graph(&state, &name)?;
 
-    // Acquire the lock only to retrieve the Arc — release immediately after.
-    let store = state
-        .get_store(&name)
-        .map_err(ApiError::internal)?
-        .ok_or_else(|| ApiError::not_found(format!("graph '{name}' not found")))?;
-
+    let store = Arc::clone(&state.store);
     let start = Instant::now();
 
     let ast = parse_query(&body.cypher).map_err(|e| ApiError::bad_request(e.to_string()))?;
@@ -114,12 +105,9 @@ async fn mutate_handler(
     Json(body): Json<CypherBody>,
 ) -> Result<Json<MutateResponse>, ApiError> {
     validate_graph_name(&name).map_err(ApiError::from)?;
+    require_graph(&state, &name)?;
 
-    // Acquire the lock only to retrieve the Arc — release immediately after.
-    let store = state
-        .get_store(&name)
-        .map_err(ApiError::internal)?
-        .ok_or_else(|| ApiError::not_found(format!("graph '{name}' not found")))?;
+    let store = Arc::clone(&state.store);
 
     let ast = parse_query(&body.cypher).map_err(|e| ApiError::bad_request(e.to_string()))?;
     let planner = QueryPlanner::new(store.as_ref(), &name);

@@ -11,13 +11,13 @@ use axum::http::StatusCode;
 use axum::routing::{delete, get, post, put};
 use axum::{Json, Router};
 
-use gql_core::storage::{validate_graph_name, EdgeId, GraphStore};
+use gql_core::storage::{validate_graph_name, EdgeId};
 
 use crate::error::ApiError;
 use crate::models::{
     max_page_limit, CreateEdgeBody, EdgeListResponse, PaginationParams, UpdateEdgeBody,
 };
-use crate::routes::helpers::{json_map_to_props, parse_edge_id, parse_node_id};
+use crate::routes::helpers::{json_map_to_props, parse_edge_id, parse_node_id, require_graph};
 use crate::serialize::edge_to_json;
 use crate::state::AppState;
 
@@ -48,12 +48,9 @@ async fn list_edges(
         )));
     }
     validate_graph_name(&name).map_err(ApiError::from)?;
+    require_graph(&state, &name)?;
 
-    let store = state
-        .get_store(&name)
-        .map_err(ApiError::internal)?
-        .ok_or_else(|| ApiError::not_found(format!("graph '{name}' not found")))?;
-
+    let store = &state.store;
     let all_ids = store.all_edge_ids(&name).map_err(ApiError::from)?;
     let total = all_ids.len();
 
@@ -88,11 +85,9 @@ async fn create_edge(
         return Err(ApiError::bad_request("relationship type must not be empty"));
     }
 
-    let store = state
-        .get_store(&name)
-        .map_err(ApiError::internal)?
-        .ok_or_else(|| ApiError::not_found(format!("graph '{name}' not found")))?;
+    require_graph(&state, &name)?;
 
+    let store = &state.store;
     let props = json_map_to_props(body.properties)?;
     let edge_id = store
         .create_edge(&name, src_id, dst_id, body.rel_type, props)
@@ -114,13 +109,10 @@ async fn get_edge(
 ) -> Result<Json<serde_json::Value>, ApiError> {
     validate_graph_name(&name).map_err(ApiError::from)?;
     let id = parse_edge_id(&id_str)?;
+    require_graph(&state, &name)?;
 
-    let store = state
-        .get_store(&name)
-        .map_err(ApiError::internal)?
-        .ok_or_else(|| ApiError::not_found(format!("graph '{name}' not found")))?;
-
-    let edge = store
+    let edge = state
+        .store
         .get_edge(&name, id)
         .map_err(ApiError::from)?
         .ok_or_else(|| ApiError::not_found(format!("edge {id_str} not found")))?;
@@ -137,11 +129,9 @@ async fn update_edge(
 ) -> Result<Json<serde_json::Value>, ApiError> {
     validate_graph_name(&name).map_err(ApiError::from)?;
     let id = parse_edge_id(&id_str)?;
+    require_graph(&state, &name)?;
 
-    let store = state
-        .get_store(&name)
-        .map_err(ApiError::internal)?
-        .ok_or_else(|| ApiError::not_found(format!("graph '{name}' not found")))?;
+    let store = &state.store;
 
     // Verify the edge exists.
     store
@@ -170,13 +160,9 @@ async fn delete_edge(
 ) -> Result<StatusCode, ApiError> {
     validate_graph_name(&name).map_err(ApiError::from)?;
     let id = parse_edge_id(&id_str)?;
+    require_graph(&state, &name)?;
 
-    let store = state
-        .get_store(&name)
-        .map_err(ApiError::internal)?
-        .ok_or_else(|| ApiError::not_found(format!("graph '{name}' not found")))?;
-
-    store.delete_edge(&name, id).map_err(|e| {
+    state.store.delete_edge(&name, id).map_err(|e| {
         use gql_core::error::StorageError;
         match e {
             StorageError::EdgeNotFound { .. } => {

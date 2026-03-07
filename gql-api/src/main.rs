@@ -2,7 +2,11 @@
 //!
 //! Exposes all graph operations (CRUD for nodes/edges, Cypher query/mutate,
 //! schema inspection, neighbor traversal, export/import) over a JSON API.
-//! All graph data is held in `InMemoryGraphStore` instances — one per named graph.
+//!
+//! # Storage backend
+//! Set `GQL_REDIS_URL` to use `RedisGraphStore` with r2d2 connection pooling
+//! (pool size configurable via `GQL_REDIS_POOL_SIZE`, default 64).
+//! When unset, falls back to volatile `InMemoryGraphStore` (local dev / tests).
 //!
 //! # CORS policy
 //! By default only `http://localhost:5000` (the .NET BFF) and
@@ -12,6 +16,7 @@
 //! accepts mutations.
 
 use std::net::SocketAddr;
+use std::sync::Arc;
 
 use axum::http::HeaderValue;
 use axum::{middleware, Router};
@@ -23,8 +28,41 @@ use tracing_subscriber::EnvFilter;
 use gql_api::auth;
 use gql_api::metrics;
 use gql_api::rate_limit;
+use gql_core::storage::{GraphStore, InMemoryGraphStore};
+
 use gql_api::routes;
 use gql_api::state::AppState;
+
+/// Create the graph store based on environment configuration.
+///
+/// Priority: `GQL_REDIS_CLUSTER_NODES` (cluster) > `GQL_REDIS_URL` (standalone) > in-memory.
+///
+/// When a Redis URL is configured, connection failure is **fatal** — the server
+/// will not silently degrade to in-memory mode in production.
+fn create_store() -> Arc<dyn GraphStore> {
+    if std::env::var("GQL_REDIS_CLUSTER_NODES").is_ok() {
+        tracing::info!("GQL_REDIS_CLUSTER_NODES set — using Redis Cluster-backed graph store");
+        match gql_redis_store::RedisGraphStore::from_env() {
+            Ok(store) => return Arc::new(store),
+            Err(e) => {
+                panic!("GQL_REDIS_CLUSTER_NODES is set but connection failed: {e}");
+            }
+        }
+    } else if std::env::var("GQL_REDIS_URL").is_ok() {
+        tracing::info!("GQL_REDIS_URL set — using Redis-backed graph store");
+        match gql_redis_store::RedisGraphStore::from_env() {
+            Ok(store) => return Arc::new(store),
+            Err(e) => {
+                panic!("GQL_REDIS_URL is set but connection failed: {e}");
+            }
+        }
+    }
+    tracing::warn!(
+        "no Redis configured (GQL_REDIS_URL / GQL_REDIS_CLUSTER_NODES unset) \
+         — using volatile in-memory store"
+    );
+    Arc::new(InMemoryGraphStore::new())
+}
 
 #[tokio::main]
 async fn main() {
@@ -54,7 +92,8 @@ async fn main() {
     // Initialize Prometheus metrics recorder.
     let prometheus_handle = metrics::init_recorder();
 
-    let state = AppState::new();
+    let store = create_store();
+    let state = AppState::new(store);
 
     // Build the allowed-origins list from the environment, defaulting to
     // the .NET BFF and the Vite dev server only.

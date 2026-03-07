@@ -177,6 +177,10 @@ Set these in your Container App or `deploy.yml` to customize behavior:
 | `GQL_REDIS_POOL_SIZE` | `16` | Connection pool max size |
 | `GQL_REDIS_POOL_TIMEOUT_SECS` | `5` | Pool checkout timeout |
 | `GQL_REDIS_KEY_PREFIX` | (none) | Key prefix for multi-tenant isolation |
+| **REST API (gql-api)** | | |
+| `GQL_API_BIND_ADDR` | `0.0.0.0:3001` | HTTP listen address |
+| `GQL_API_ALLOWED_ORIGINS` | localhost:5000,5173 | Comma-separated CORS origins |
+| `ENVIRONMENT` | (none) | Set to `production` to require `GQL_REDIS_URL` and `GQL_API_ALLOWED_ORIGINS` |
 | **Query Engine** | | |
 | `GQL_QUERY_TIMEOUT_MS` | `30000` | Max query execution time |
 | `GQL_QUERY_MAX_ROWS` | `10000000` | Max intermediate rows |

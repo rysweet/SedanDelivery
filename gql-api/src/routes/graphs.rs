@@ -10,9 +10,7 @@ use axum::http::StatusCode;
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 
-use std::sync::Arc;
-
-use gql_core::storage::{validate_graph_name, GraphStore, InMemoryGraphStore};
+use gql_core::storage::validate_graph_name;
 
 use crate::error::ApiError;
 use crate::models::{CreateGraphBody, GraphListResponse, GraphStatsResponse};
@@ -29,11 +27,7 @@ pub fn router() -> Router<AppState> {
 // ── GET /graphs ───────────────────────────────────────────────────────────────
 
 async fn list_graphs(State(state): State<AppState>) -> Result<Json<GraphListResponse>, ApiError> {
-    let map = state
-        .stores
-        .lock()
-        .map_err(|_| ApiError::internal("lock poisoned"))?;
-    let mut graphs: Vec<String> = map.keys().cloned().collect();
+    let mut graphs = state.store.list_graphs().map_err(ApiError::from)?;
     graphs.sort();
     Ok(Json(GraphListResponse { graphs }))
 }
@@ -46,23 +40,24 @@ async fn create_graph(
 ) -> Result<(StatusCode, Json<serde_json::Value>), ApiError> {
     validate_graph_name(&body.name).map_err(ApiError::from)?;
 
-    let mut map = state
-        .stores
-        .lock()
-        .map_err(|_| ApiError::internal("lock poisoned"))?;
-
-    if map.contains_key(&body.name) {
+    if state
+        .store
+        .graph_exists(&body.name)
+        .map_err(ApiError::from)?
+    {
         return Err(ApiError::conflict(format!(
             "graph '{}' already exists",
             body.name
         )));
     }
 
-    let store = Arc::new(InMemoryGraphStore::default());
-    store.create_graph(&body.name).map_err(ApiError::from)?;
-
-    map.insert(body.name.clone(), store);
-    crate::metrics::set_active_graphs(map.len());
+    state
+        .store
+        .create_graph(&body.name)
+        .map_err(ApiError::from)?;
+    if let Ok(graphs) = state.store.list_graphs() {
+        crate::metrics::set_active_graphs(graphs.len());
+    }
 
     Ok((
         StatusCode::CREATED,
@@ -78,17 +73,14 @@ async fn delete_graph(
 ) -> Result<StatusCode, ApiError> {
     validate_graph_name(&name).map_err(ApiError::from)?;
 
-    let mut map = state
-        .stores
-        .lock()
-        .map_err(|_| ApiError::internal("lock poisoned"))?;
-
-    if !map.contains_key(&name) {
+    if !state.store.graph_exists(&name).map_err(ApiError::from)? {
         return Err(ApiError::not_found(format!("graph '{name}' not found")));
     }
 
-    map.remove(&name);
-    crate::metrics::set_active_graphs(map.len());
+    state.store.delete_graph(&name).map_err(ApiError::from)?;
+    if let Ok(graphs) = state.store.list_graphs() {
+        crate::metrics::set_active_graphs(graphs.len());
+    }
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -100,12 +92,11 @@ async fn graph_stats(
 ) -> Result<Json<GraphStatsResponse>, ApiError> {
     validate_graph_name(&name).map_err(ApiError::from)?;
 
-    let store = state
-        .get_store(&name)
-        .map_err(ApiError::internal)?
-        .ok_or_else(|| ApiError::not_found(format!("graph '{name}' not found")))?;
+    if !state.store.graph_exists(&name).map_err(ApiError::from)? {
+        return Err(ApiError::not_found(format!("graph '{name}' not found")));
+    }
 
-    let stats = store.graph_stats(&name).map_err(ApiError::from)?;
+    let stats = state.store.graph_stats(&name).map_err(ApiError::from)?;
     Ok(Json(GraphStatsResponse {
         node_count: stats.node_count,
         edge_count: stats.edge_count,

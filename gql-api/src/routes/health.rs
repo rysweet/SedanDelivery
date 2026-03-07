@@ -12,11 +12,7 @@ pub fn router() -> Router<AppState> {
 }
 
 async fn health_handler(State(state): State<AppState>) -> Json<HealthResponse> {
-    let demo_graph_exists = state
-        .stores
-        .lock()
-        .map(|map| map.contains_key("demo"))
-        .unwrap_or(false);
+    let demo_graph_exists = state.store.graph_exists("demo").unwrap_or(false);
 
     Json(HealthResponse {
         status: "ok",

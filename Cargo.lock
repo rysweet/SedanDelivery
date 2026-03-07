@@ -1207,6 +1207,7 @@ dependencies = [
  "axum",
  "governor",
  "gql-core",
+ "gql-redis-store",
  "http-body-util",
  "indexmap",
  "jiff",

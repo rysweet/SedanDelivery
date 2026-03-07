@@ -6,6 +6,15 @@ use gql_core::storage::{EdgeId, GraphStore, NodeId};
 use gql_core::types::Value;
 
 use crate::error::ApiError;
+use crate::state::AppState;
+
+/// Verify that a graph exists in the store; return a 404 error if not.
+pub fn require_graph(state: &AppState, name: &str) -> Result<(), ApiError> {
+    if !state.store.graph_exists(name).map_err(ApiError::from)? {
+        return Err(ApiError::not_found(format!("graph '{name}' not found")));
+    }
+    Ok(())
+}
 
 /// Parse a URL path segment as a `NodeId`.
 pub fn parse_node_id(s: &str) -> Result<NodeId, ApiError> {

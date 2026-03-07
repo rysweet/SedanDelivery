@@ -11,13 +11,13 @@ use axum::http::StatusCode;
 use axum::routing::{delete, get, post, put};
 use axum::{Json, Router};
 
-use gql_core::storage::{validate_graph_name, GraphStore, NodeId};
+use gql_core::storage::{validate_graph_name, NodeId};
 
 use crate::error::ApiError;
 use crate::models::{
     max_page_limit, CreateNodeBody, NodeListResponse, PaginationParams, UpdateNodeBody,
 };
-use crate::routes::helpers::{json_map_to_props, parse_node_id};
+use crate::routes::helpers::{json_map_to_props, parse_node_id, require_graph};
 use crate::serialize::node_to_json;
 use crate::state::AppState;
 
@@ -48,12 +48,9 @@ async fn list_nodes(
         )));
     }
     validate_graph_name(&name).map_err(ApiError::from)?;
+    require_graph(&state, &name)?;
 
-    let store = state
-        .get_store(&name)
-        .map_err(ApiError::internal)?
-        .ok_or_else(|| ApiError::not_found(format!("graph '{name}' not found")))?;
-
+    let store = &state.store;
     let all_ids = store.all_node_ids(&name).map_err(ApiError::from)?;
     let total = all_ids.len();
 
@@ -80,12 +77,9 @@ async fn create_node(
     Json(body): Json<CreateNodeBody>,
 ) -> Result<(StatusCode, Json<serde_json::Value>), ApiError> {
     validate_graph_name(&name).map_err(ApiError::from)?;
+    require_graph(&state, &name)?;
 
-    let store = state
-        .get_store(&name)
-        .map_err(ApiError::internal)?
-        .ok_or_else(|| ApiError::not_found(format!("graph '{name}' not found")))?;
-
+    let store = &state.store;
     let props = json_map_to_props(body.properties)?;
     let id = store
         .create_node(&name, body.labels, props)
@@ -107,13 +101,10 @@ async fn get_node(
 ) -> Result<Json<serde_json::Value>, ApiError> {
     validate_graph_name(&name).map_err(ApiError::from)?;
     let id = parse_node_id(&id_str)?;
+    require_graph(&state, &name)?;
 
-    let store = state
-        .get_store(&name)
-        .map_err(ApiError::internal)?
-        .ok_or_else(|| ApiError::not_found(format!("graph '{name}' not found")))?;
-
-    let node = store
+    let node = state
+        .store
         .get_node(&name, id)
         .map_err(ApiError::from)?
         .ok_or_else(|| ApiError::not_found(format!("node {id_str} not found")))?;
@@ -130,11 +121,9 @@ async fn update_node(
 ) -> Result<Json<serde_json::Value>, ApiError> {
     validate_graph_name(&name).map_err(ApiError::from)?;
     let id = parse_node_id(&id_str)?;
+    require_graph(&state, &name)?;
 
-    let store = state
-        .get_store(&name)
-        .map_err(ApiError::internal)?
-        .ok_or_else(|| ApiError::not_found(format!("graph '{name}' not found")))?;
+    let store = &state.store;
 
     // Ensure the node exists before updating.
     store
@@ -163,13 +152,9 @@ async fn delete_node(
 ) -> Result<StatusCode, ApiError> {
     validate_graph_name(&name).map_err(ApiError::from)?;
     let id = parse_node_id(&id_str)?;
+    require_graph(&state, &name)?;
 
-    let store = state
-        .get_store(&name)
-        .map_err(ApiError::internal)?
-        .ok_or_else(|| ApiError::not_found(format!("graph '{name}' not found")))?;
-
-    store.delete_node(&name, id, true).map_err(|e| {
+    state.store.delete_node(&name, id, true).map_err(|e| {
         use gql_core::error::StorageError;
         match &e {
             StorageError::NodeNotFound { .. } => {

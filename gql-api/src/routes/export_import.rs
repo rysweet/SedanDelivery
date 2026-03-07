@@ -10,11 +10,11 @@ use axum::extract::{DefaultBodyLimit, Path, State};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 
-use gql_core::storage::{validate_graph_name, GraphStore};
+use gql_core::storage::validate_graph_name;
 
 use crate::error::ApiError;
 use crate::models::{ExportResponse, ImportBody, ImportResponse};
-use crate::routes::helpers::json_map_to_props;
+use crate::routes::helpers::{json_map_to_props, require_graph};
 use crate::serialize::{edge_to_json, node_to_json};
 use crate::state::AppState;
 
@@ -49,11 +49,9 @@ async fn export_handler(
     Path(name): Path<String>,
 ) -> Result<Json<ExportResponse>, ApiError> {
     validate_graph_name(&name).map_err(ApiError::from)?;
+    require_graph(&state, &name)?;
 
-    let store = state
-        .get_store(&name)
-        .map_err(ApiError::internal)?
-        .ok_or_else(|| ApiError::not_found(format!("graph '{name}' not found")))?;
+    let store = &state.store;
 
     // Export all nodes.
     let all_node_ids = store.all_node_ids(&name).map_err(ApiError::from)?;
@@ -142,10 +140,9 @@ async fn import_handler(
         )));
     }
 
-    let store = state
-        .get_store(&name)
-        .map_err(ApiError::internal)?
-        .ok_or_else(|| ApiError::not_found(format!("graph '{name}' not found")))?;
+    require_graph(&state, &name)?;
+
+    let store = &state.store;
 
     // Map from import ID string to newly-created NodeId, so edges can reference them.
     let mut id_map: HashMap<String, gql_core::storage::NodeId> = HashMap::new();
@@ -168,8 +165,6 @@ async fn import_handler(
     }
 
     // Attempt to create each edge; collect failures rather than aborting early.
-    // InMemoryGraphStore does not support transactions, so partial writes cannot
-    // be rolled back — we report what was actually created.
     let mut edges_created: usize = 0;
     let mut edge_warnings: Vec<String> = Vec::new();
 

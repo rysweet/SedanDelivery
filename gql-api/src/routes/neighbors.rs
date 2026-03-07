@@ -8,10 +8,11 @@ use axum::extract::{Path, Query, State};
 use axum::routing::get;
 use axum::{Json, Router};
 
-use gql_core::storage::{validate_graph_name, GraphStore, NodeId};
+use gql_core::storage::{validate_graph_name, NodeId};
 
 use crate::error::ApiError;
 use crate::models::{max_page_limit, NeighborParams};
+use crate::routes::helpers::require_graph;
 use crate::serialize::{edge_to_json, node_to_json};
 use crate::state::AppState;
 
@@ -31,10 +32,9 @@ async fn neighbors_handler(
         .map(NodeId)
         .map_err(|_| ApiError::bad_request(format!("invalid node id: '{node_id_str}'")))?;
 
-    let store = state
-        .get_store(&name)
-        .map_err(ApiError::internal)?
-        .ok_or_else(|| ApiError::not_found(format!("graph '{name}' not found")))?;
+    require_graph(&state, &name)?;
+
+    let store = &state.store;
 
     // Verify the node exists.
     store
