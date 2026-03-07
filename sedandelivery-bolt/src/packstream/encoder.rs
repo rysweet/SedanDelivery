@@ -120,10 +120,11 @@ fn encode_map(entries: &[(String, BoltValue)], buf: &mut Vec<u8>) {
 
 fn encode_structure(tag: u8, fields: &[BoltValue], buf: &mut Vec<u8>) {
     let field_count = if fields.len() > 15 {
-        tracing::warn!(
+        tracing::error!(
             tag,
             actual = fields.len(),
-            "PackStream TinyStruct supports at most 15 fields; capping to 15"
+            "PackStream TinyStruct supports at most 15 fields; \
+             truncating — this indicates a bug in the caller"
         );
         15
     } else {

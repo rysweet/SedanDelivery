@@ -242,8 +242,19 @@ This gives you low-latency reads from the co-located Valkey container and a dura
 
 See [docs/FABRIC_TUTORIAL.md](docs/FABRIC_TUTORIAL.md) for the complete walkthrough: writing data, querying in Fabric, REST API access, and monitoring replication.
 
+## REST API (`gql-api`)
+
+A standalone HTTP API for graph operations (CRUD, Cypher queries, export/import):
+
+```bash
+cargo run -p gql-api   # listens on 0.0.0.0:3001
+```
+
+**Authentication**: Set `GQL_API_ENTRA_TENANT_ID` and `GQL_API_ENTRA_CLIENT_ID` to enable Entra ID JWT auth. All requests (except `/health`) require a valid `Authorization: Bearer <token>` header. See [docs/auth.md](docs/auth.md) for setup.
+
 ## Documentation
 
+- [Authentication (Entra ID)](docs/auth.md) — Configure JWT auth for the REST API
 - [Neo4j Compatibility Gallery](https://turbo-adventure-3eloook.pages.github.io/neo4j-compat-gallery) — 3 security apps validated against SedanDelivery's Bolt protocol
 - [Tutorial](docs/TUTORIAL.md) — full usage guide with code examples
 - [Bolt Protocol Spec](docs/specs/sedandelivery-bolt-spec.md) — Neo4j Bolt v4.4 server implementation details

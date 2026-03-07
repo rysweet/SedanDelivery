@@ -34,6 +34,8 @@ permissions:
 
 jobs:
   playwright-e2e:
+    # Skip when package-lock.json is absent (pure-Rust repo has no Node.js project)
+    if: hashFiles('package-lock.json') != ''
     name: E2E Tests (Playwright)
     runs-on: ubuntu-latest
     timeout-minutes: 45

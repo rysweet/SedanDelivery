@@ -1,0 +1,72 @@
+scenario:
+  name: "Entra ID Auth Enforcement"
+  description: "Validates that when GQL_API_ENTRA_TENANT_ID and GQL_API_ENTRA_CLIENT_ID are set, unauthenticated requests are rejected with 401. Health endpoint remains accessible."
+  type: web
+  tags: [e2e, api, security, auth]
+  timeout: 60s
+
+  # IMPORTANT: This scenario requires the API to be started with:
+  #   GQL_API_ENTRA_TENANT_ID=<real-tenant-id>
+  #   GQL_API_ENTRA_CLIENT_ID=<real-client-id>
+  # When auth is disabled (env vars unset), these tests should be skipped.
+
+  variables:
+    api_base: "http://localhost:3001"
+
+  steps:
+    # Health endpoint is exempt from auth
+    - action: api_call
+      method: GET
+      url: "${api_base}/health"
+      expected_status: 200
+      description: "Health endpoint accessible without auth token"
+
+    # All other endpoints require auth when Entra is configured
+    - action: api_call
+      method: GET
+      url: "${api_base}/graphs"
+      expected_status: 401
+      verify_headers:
+        WWW-Authenticate: "Bearer"
+      description: "GET /graphs returns 401 without Bearer token"
+
+    - action: api_call
+      method: POST
+      url: "${api_base}/graphs"
+      body: '{"name": "auth-test"}'
+      expected_status: 401
+      description: "POST /graphs returns 401 without Bearer token"
+
+    - action: api_call
+      method: GET
+      url: "${api_base}/graphs/test/stats"
+      headers:
+        Authorization: "Bearer invalid.jwt.token"
+      expected_status: 401
+      description: "Invalid JWT returns 401"
+
+    - action: api_call
+      method: POST
+      url: "${api_base}/graphs/test/query"
+      body: '{"cypher": "MATCH (n) RETURN n"}'
+      expected_status: 401
+      description: "Query endpoint returns 401 without auth"
+
+    - action: api_call
+      method: POST
+      url: "${api_base}/graphs/test/mutate"
+      body: '{"cypher": "CREATE (:Hack {owned: true})"}'
+      expected_status: 401
+      description: "Mutate endpoint returns 401 — mutations blocked without auth"
+
+    - action: api_call
+      method: GET
+      url: "${api_base}/graphs/test/export"
+      expected_status: 401
+      description: "Export endpoint returns 401 — data exfil blocked without auth"
+
+    - action: api_call
+      method: DELETE
+      url: "${api_base}/graphs/test"
+      expected_status: 401
+      description: "Delete endpoint returns 401 — destructive ops blocked without auth"

@@ -154,7 +154,10 @@ impl GraphStore for FanoutStore {
         // IDs consistent across all backends (e.g. Redis primary + Fabric secondary).
         let id = self.stores[0].create_node(graph, labels.clone(), properties.clone())?;
         let mut props_with_id = properties.clone();
-        props_with_id.insert("_sd2_id".to_string(), Value::Int(id.0 as i64));
+        let id_i64 = i64::try_from(id.0).map_err(|_| StorageError::Backend {
+            msg: format!("node ID {} exceeds i64::MAX", id.0),
+        })?;
+        props_with_id.insert("_sd2_id".to_string(), Value::Int(id_i64));
         for store in &self.stores[1..] {
             store.create_node(graph, labels.clone(), props_with_id.clone())?;
         }
@@ -172,7 +175,10 @@ impl GraphStore for FanoutStore {
         let id =
             self.stores[0].create_edge(graph, src, dst, rel_type.clone(), properties.clone())?;
         let mut props_with_id = properties.clone();
-        props_with_id.insert("_sd2_eid".to_string(), Value::Int(id.0 as i64));
+        let id_i64 = i64::try_from(id.0).map_err(|_| StorageError::Backend {
+            msg: format!("edge ID {} exceeds i64::MAX", id.0),
+        })?;
+        props_with_id.insert("_sd2_eid".to_string(), Value::Int(id_i64));
         for store in &self.stores[1..] {
             store.create_edge(graph, src, dst, rel_type.clone(), props_with_id.clone())?;
         }

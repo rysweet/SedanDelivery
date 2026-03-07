@@ -79,7 +79,12 @@ impl FabricGraphStore {
             client_secret,
             token: Mutex::new(None),
             agent: ureq::Agent::config_builder()
-                .timeout_global(Some(std::time::Duration::from_secs(10)))
+                .timeout_global(Some(std::time::Duration::from_secs(
+                    std::env::var("GQL_FABRIC_TIMEOUT_SECS")
+                        .ok()
+                        .and_then(|v| v.parse().ok())
+                        .unwrap_or(10),
+                )))
                 .build()
                 .new_agent(),
         }

@@ -76,18 +76,23 @@ impl EngineConfig {
     pub fn from_env() -> Self {
         let defaults = Self::default();
         Self {
-            query_timeout_ms: parse_env("GQL_QUERY_TIMEOUT_MS", defaults.query_timeout_ms),
-            query_max_rows: parse_env("GQL_QUERY_MAX_ROWS", defaults.query_max_rows),
-            varlen_max_depth: parse_env("GQL_VARLEN_MAX_DEPTH", defaults.varlen_max_depth),
-            max_query_size: parse_env("GQL_MAX_QUERY_SIZE", defaults.max_query_size),
-            parser_max_depth: parse_env("GQL_PARSER_MAX_DEPTH", defaults.parser_max_depth),
-            max_collect_size: parse_env("GQL_MAX_COLLECT_SIZE", defaults.max_collect_size),
-            max_list_size: parse_env("GQL_MAX_LIST_SIZE", defaults.max_list_size),
-            max_regex_pattern_len: parse_env(
+            query_timeout_ms: parse_env_min("GQL_QUERY_TIMEOUT_MS", defaults.query_timeout_ms, 1),
+            query_max_rows: parse_env_min("GQL_QUERY_MAX_ROWS", defaults.query_max_rows, 1),
+            varlen_max_depth: parse_env_min("GQL_VARLEN_MAX_DEPTH", defaults.varlen_max_depth, 1),
+            max_query_size: parse_env_min("GQL_MAX_QUERY_SIZE", defaults.max_query_size, 1),
+            parser_max_depth: parse_env_min("GQL_PARSER_MAX_DEPTH", defaults.parser_max_depth, 1),
+            max_collect_size: parse_env_min("GQL_MAX_COLLECT_SIZE", defaults.max_collect_size, 1),
+            max_list_size: parse_env_min("GQL_MAX_LIST_SIZE", defaults.max_list_size, 1),
+            max_regex_pattern_len: parse_env_min(
                 "GQL_MAX_REGEX_PATTERN_LEN",
                 defaults.max_regex_pattern_len,
+                1,
             ),
-            graph_name_max_len: parse_env("GQL_GRAPH_NAME_MAX_LEN", defaults.graph_name_max_len),
+            graph_name_max_len: parse_env_min(
+                "GQL_GRAPH_NAME_MAX_LEN",
+                defaults.graph_name_max_len,
+                1,
+            ),
         }
     }
 }
@@ -128,6 +133,20 @@ where
             }
         })
         .unwrap_or(default)
+}
+
+/// Like [`parse_env`] but clamps the result to at least `min`.
+fn parse_env_min<T>(var: &str, default: T, min: T) -> T
+where
+    T: std::str::FromStr + std::fmt::Display + PartialOrd + Copy,
+{
+    let val = parse_env(var, default);
+    if val < min {
+        tracing::warn!("{var}={val} is below minimum {min}, clamping to {min}");
+        min
+    } else {
+        val
+    }
 }
 
 // ── Tests ──────────────────────────────────────────────────────────────────────

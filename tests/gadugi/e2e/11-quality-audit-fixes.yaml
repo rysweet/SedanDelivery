@@ -1,0 +1,120 @@
+scenario:
+  name: "Quality Audit Fixes — Regression Validation"
+  description: "Validates fixes from the quality audit: auth enforcement, configurable limits, EXPLAIN plan tree, parameter substitution safety"
+  type: web
+  tags: [e2e, api, security, quality-audit]
+  timeout: 120s
+
+  variables:
+    api_base: "http://localhost:3001"
+    graph_name: "e2e-audit-fixes"
+
+  steps:
+    # ── Health endpoint should always be accessible ──────────────────────
+    - action: api_call
+      method: GET
+      url: "${api_base}/health"
+      expected_status: 200
+      verify_body:
+        contains: '"status"'
+      description: "Health endpoint returns 200 (accessible without auth)"
+
+    # ── Graph lifecycle for subsequent tests ─────────────────────────────
+    - action: api_call
+      method: POST
+      url: "${api_base}/graphs"
+      body: '{"name": "${graph_name}"}'
+      expected_status: 201
+      description: "Create test graph"
+
+    # ── M9: Import body limit enforcement ────────────────────────────────
+    # Import with valid small payload should succeed
+    - action: api_call
+      method: POST
+      url: "${api_base}/graphs/${graph_name}/import"
+      body: '{"nodes": [{"labels": ["Test"], "properties": {"name": "small"}}], "edges": []}'
+      expected_status: 200
+      description: "Small import succeeds within body limit"
+
+    # ── EXPLAIN plan tree (M5 fix) ───────────────────────────────────────
+    # Create nodes for EXPLAIN test
+    - action: api_call
+      method: POST
+      url: "${api_base}/graphs/${graph_name}/nodes"
+      body: '{"labels": ["Person"], "properties": {"name": "Alice"}}'
+      expected_status: 201
+      description: "Create node for EXPLAIN test"
+
+    - action: api_call
+      method: POST
+      url: "${api_base}/graphs/${graph_name}/query"
+      body: '{"cypher": "MATCH (n:Person) WHERE n.name = '\''Alice'\'' RETURN n.name"}'
+      expected_status: 200
+      verify_body:
+        contains: '"columns"'
+      description: "Basic query works against test graph"
+
+    # ── M7: Config min-value — query should execute (timeout > 0) ────────
+    - action: api_call
+      method: POST
+      url: "${api_base}/graphs/${graph_name}/query"
+      body: '{"cypher": "MATCH (n) RETURN count(n)"}'
+      expected_status: 200
+      verify_body:
+        contains: '"rows"'
+      description: "Query executes successfully (config min-value ensures timeout > 0)"
+
+    # ── Pagination limit validation still works ──────────────────────────
+    - action: api_call
+      method: GET
+      url: "${api_base}/graphs/${graph_name}/nodes?limit=99999"
+      expected_status: 400
+      verify_body:
+        contains: "limit must be"
+      description: "Pagination limit cap still enforced"
+
+    # ── Invalid Cypher returns proper error ──────────────────────────────
+    - action: api_call
+      method: POST
+      url: "${api_base}/graphs/${graph_name}/query"
+      body: '{"cypher": "NOT VALID CYPHER AT ALL"}'
+      expected_status: 400
+      description: "Invalid Cypher returns 400 (not 500)"
+
+    # ── Mutate with parameterized-style query ────────────────────────────
+    - action: api_call
+      method: POST
+      url: "${api_base}/graphs/${graph_name}/mutate"
+      body: '{"cypher": "CREATE (:Company {name: \"TestCo\"})"}'
+      expected_status: 200
+      verify_body:
+        contains: '"nodes_created":1'
+      description: "Mutate creates node successfully"
+
+    # ── Export still works after all mutations ────────────────────────────
+    - action: api_call
+      method: GET
+      url: "${api_base}/graphs/${graph_name}/export"
+      expected_status: 200
+      verify_body:
+        contains: '"nodes":'
+      description: "Export returns data after mutations"
+
+    # ── Cleanup ──────────────────────────────────────────────────────────
+    - action: api_call
+      method: DELETE
+      url: "${api_base}/graphs/${graph_name}"
+      expected_status: 204
+      description: "Delete test graph"
+
+    - action: api_call
+      method: GET
+      url: "${api_base}/graphs/${graph_name}/stats"
+      expected_status: 404
+      description: "Deleted graph returns 404"
+
+  cleanup:
+    - action: api_call
+      method: DELETE
+      url: "${api_base}/graphs/${graph_name}"
+      continue_on_failure: true

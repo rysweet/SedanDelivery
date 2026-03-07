@@ -373,6 +373,39 @@ jobs:
           echo "✅ sedandelivery-bolt image pushed: ${ACR_SERVER}/sedandelivery-bolt:${IMAGE_TAG}"
           echo "bolt_image_tag=${IMAGE_TAG}" >> "$GITHUB_OUTPUT"
 
+      - name: Build and push gql-api image via ACR Tasks
+        id: build-api
+        env:
+          GH_SHA: ${{ github.sha }}
+        run: |
+          ACR_NAME="${{ steps.provision.outputs.acr_name }}"
+          ACR_SERVER="${{ steps.provision.outputs.acr_server }}"
+          IMAGE_TAG="${GH_SHA}"
+
+          echo "🐳 Building gql-api (REST API server) via ACR Tasks..."
+
+          az acr build \
+            --registry "${ACR_NAME}" \
+            --image "gql-api:${IMAGE_TAG}" \
+            --image "gql-api:latest" \
+            --file Dockerfile.api \
+            --platform linux/amd64 \
+            .
+
+          echo "✅ gql-api image pushed: ${ACR_SERVER}/gql-api:${IMAGE_TAG}"
+          echo "api_image_tag=${IMAGE_TAG}" >> "$GITHUB_OUTPUT"
+
+      - name: Provision Entra ID API scope (idempotent)
+        id: provision-entra-api
+        env:
+          ENTRA_CLIENT_ID: ${{ vars.ENTRA_CLIENT_ID || '97926b31-e1a3-4a76-b09d-eed5aeeabc9f' }}
+        run: |
+          ENTRA_OUTPUT=$(scripts/provision-entra-api.sh "${ENTRA_CLIENT_ID}" 2>&1 | tee /dev/stderr)
+          TENANT_ID=$(echo "$ENTRA_OUTPUT" | grep "^GQL_API_ENTRA_TENANT_ID=" | cut -d= -f2-)
+          CLIENT_ID=$(echo "$ENTRA_OUTPUT" | grep "^GQL_API_ENTRA_CLIENT_ID=" | cut -d= -f2-)
+          echo "entra_tenant_id=${TENANT_ID}" >> "$GITHUB_OUTPUT"
+          echo "entra_client_id=${CLIENT_ID}" >> "$GITHUB_OUTPUT"
+
       - name: Create or update Container App
         id: deploy-app
         env:
@@ -680,6 +713,86 @@ jobs:
 
           echo "bolt_ca_name=${CA_NAME}" >> "$GITHUB_OUTPUT"
           echo "✅ Bolt Container App deployed: ${CA_NAME}"
+
+      - name: Deploy gql-api REST API Container App
+        id: deploy-api
+        env:
+          DEPLOY_RG: ${{ needs.determine-environment.outputs.resource-group }}
+          DEPLOY_ENV_NAME: ${{ needs.determine-environment.outputs.env-name }}
+          DEPLOY_CAE_NAME: ${{ steps.provision.outputs.cae_name }}
+          DEPLOY_ACR_SERVER: ${{ steps.provision.outputs.acr_server }}
+          DEPLOY_ACR_NAME: ${{ steps.provision.outputs.acr_name }}
+          DEPLOY_API_IMAGE_TAG: ${{ steps.build-api.outputs.api_image_tag }}
+          DEPLOY_ENTRA_TENANT_ID: ${{ steps.provision-entra-api.outputs.entra_tenant_id }}
+          DEPLOY_ENTRA_CLIENT_ID: ${{ steps.provision-entra-api.outputs.entra_client_id }}
+        run: |
+          RG="${DEPLOY_RG}"
+          ENV_NAME="${DEPLOY_ENV_NAME}"
+          CAE_NAME="${DEPLOY_CAE_NAME}"
+          ACR_SERVER="${DEPLOY_ACR_SERVER}"
+          ACR_NAME="${DEPLOY_ACR_NAME}"
+          IMAGE="${ACR_SERVER}/gql-api:${DEPLOY_API_IMAGE_TAG}"
+          CA_NAME="sd2-${ENV_NAME}-api"
+
+          echo "🚀 Deploying gql-api REST API: ${CA_NAME}"
+
+          # Build env vars — auth is always enabled in deployed environments
+          ENV_VAR_ARGS="ENVIRONMENT=production"
+          ENV_VAR_ARGS="${ENV_VAR_ARGS} GQL_API_ENTRA_TENANT_ID=${DEPLOY_ENTRA_TENANT_ID}"
+          ENV_VAR_ARGS="${ENV_VAR_ARGS} GQL_API_ENTRA_CLIENT_ID=${DEPLOY_ENTRA_CLIENT_ID}"
+          ENV_VAR_ARGS="${ENV_VAR_ARGS} GQL_API_BIND_ADDR=0.0.0.0:3001"
+          ENV_VAR_ARGS="${ENV_VAR_ARGS} GQL_API_ALLOWED_ORIGINS=*"
+
+          # Idempotent create-or-update
+          if az containerapp show --name "${CA_NAME}" --resource-group "${RG}" >/dev/null 2>&1; then
+            echo "🔄 Updating existing gql-api container app..."
+            az containerapp update \
+              --name "${CA_NAME}" \
+              --resource-group "${RG}" \
+              --image "${IMAGE}" \
+              --set-env-vars ${ENV_VAR_ARGS} \
+              --output none
+          else
+            echo "🆕 Creating gql-api container app..."
+            az containerapp create \
+              --name "${CA_NAME}" \
+              --resource-group "${RG}" \
+              --environment "${CAE_NAME}" \
+              --image "${IMAGE}" \
+              --registry-server "${ACR_SERVER}" \
+              --registry-identity system \
+              --system-assigned \
+              --cpu 0.25 \
+              --memory 0.5Gi \
+              --min-replicas 1 \
+              --max-replicas 3 \
+              --ingress external \
+              --target-port 3001 \
+              --transport http \
+              --env-vars ${ENV_VAR_ARGS} \
+              --output none
+          fi
+
+          # Ensure AcrPull role
+          CA_PRINCIPAL_ID=$(az containerapp show \
+            --name "${CA_NAME}" --resource-group "${RG}" \
+            --query "identity.principalId" -o tsv 2>/dev/null || echo "")
+          if [[ -n "${CA_PRINCIPAL_ID}" && "${CA_PRINCIPAL_ID}" != "None" ]]; then
+            ACR_RESOURCE_ID=$(az acr show --name "${ACR_NAME}" --query id -o tsv)
+            az role assignment create \
+              --assignee-object-id "${CA_PRINCIPAL_ID}" \
+              --assignee-principal-type ServicePrincipal \
+              --role "AcrPull" \
+              --scope "${ACR_RESOURCE_ID}" \
+              --output none 2>/dev/null || true
+          fi
+
+          API_FQDN=$(az containerapp show \
+            --name "${CA_NAME}" --resource-group "${RG}" \
+            --query "properties.configuration.ingress.fqdn" -o tsv 2>/dev/null || echo "")
+          echo "api_ca_name=${CA_NAME}" >> "$GITHUB_OUTPUT"
+          echo "api_fqdn=${API_FQDN}" >> "$GITHUB_OUTPUT"
+          echo "✅ gql-api Container App deployed: ${CA_NAME} (https://${API_FQDN})"
 
       - name: Deploy sedandelivery-fabric-sync sidecar Container App
         id: deploy-sync

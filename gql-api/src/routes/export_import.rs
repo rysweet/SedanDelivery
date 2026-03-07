@@ -4,6 +4,7 @@
 //! POST /graphs/{name}/import
 
 use std::collections::HashMap;
+use std::sync::OnceLock;
 
 use axum::extract::{DefaultBodyLimit, Path, State};
 use axum::routing::{get, post};
@@ -17,6 +18,18 @@ use crate::routes::helpers::json_map_to_props;
 use crate::serialize::{edge_to_json, node_to_json};
 use crate::state::AppState;
 
+/// Maximum import body size in bytes. Default 2 MiB.
+/// Override via `GQL_API_IMPORT_BODY_LIMIT_BYTES`.
+fn import_body_limit() -> usize {
+    static LIMIT: OnceLock<usize> = OnceLock::new();
+    *LIMIT.get_or_init(|| {
+        std::env::var("GQL_API_IMPORT_BODY_LIMIT_BYTES")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(2 * 1024 * 1024)
+    })
+}
+
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/graphs/{name}/export", get(export_handler))
@@ -25,7 +38,7 @@ pub fn router() -> Router<AppState> {
         .route("/graphs/{name}/data", get(export_handler))
         .route(
             "/graphs/{name}/import",
-            post(import_handler).layer(DefaultBodyLimit::max(2 * 1024 * 1024)),
+            post(import_handler).layer(DefaultBodyLimit::max(import_body_limit())),
         )
 }
 

@@ -3,6 +3,7 @@
 //! This library crate contains all API logic (routes, models, serialization,
 //! error handling). The binary crate (`main.rs`) handles server startup only.
 
+pub mod auth;
 pub mod error;
 pub mod models;
 pub mod routes;

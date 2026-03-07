@@ -6,8 +6,13 @@ use gql_core::types::Value;
 use serde_json::{json, Value as JValue};
 
 /// Sanitise a label / property name: keep alphanumeric + underscore, truncate to 128 chars.
+///
+/// Returns an empty string only when the input is empty. Callers MUST reject
+/// empty results before interpolating into Cypher templates — an empty
+/// backtick-quoted label (`` n:`` ``) is invalid syntax.
 pub(crate) fn sanitize_label(s: &str) -> String {
-    s.chars()
+    let result: String = s
+        .chars()
         .map(|c| {
             if c.is_alphanumeric() || c == '_' {
                 c
@@ -16,7 +21,18 @@ pub(crate) fn sanitize_label(s: &str) -> String {
             }
         })
         .take(128)
-        .collect()
+        .collect();
+    if result.is_empty() && !s.is_empty() {
+        tracing::warn!("sanitize_label produced empty string from non-empty input: {s:?}");
+    }
+    if result.chars().count() < s.chars().count() {
+        tracing::warn!(
+            "sanitize_label truncated label from {} to {} chars",
+            s.chars().count(),
+            result.chars().count()
+        );
+    }
+    result
 }
 
 /// URL-encode a string for use in x-www-form-urlencoded bodies.

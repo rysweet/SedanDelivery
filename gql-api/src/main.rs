@@ -20,6 +20,7 @@ use tower_http::trace::TraceLayer;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 
+use gql_api::auth;
 use gql_api::routes;
 use gql_api::state::AppState;
 
@@ -39,6 +40,12 @@ async fn main() {
         }
         if std::env::var("GQL_API_ALLOWED_ORIGINS").is_err() {
             panic!("GQL_API_ALLOWED_ORIGINS is required when ENVIRONMENT=production");
+        }
+        if std::env::var("GQL_API_ENTRA_TENANT_ID").is_err() {
+            panic!("GQL_API_ENTRA_TENANT_ID is required when ENVIRONMENT=production");
+        }
+        if std::env::var("GQL_API_ENTRA_CLIENT_ID").is_err() {
+            panic!("GQL_API_ENTRA_CLIENT_ID is required when ENVIRONMENT=production");
         }
     }
 
@@ -92,6 +99,16 @@ async fn main() {
             axum::http::header::ACCEPT,
         ]);
 
+    // Log whether Entra ID auth is enabled.
+    if auth::entra_config().is_some() {
+        info!("Entra ID authentication ENABLED (GQL_API_ENTRA_TENANT_ID is set)");
+    } else {
+        tracing::warn!(
+            "Entra ID authentication DISABLED — set GQL_API_ENTRA_TENANT_ID \
+             and GQL_API_ENTRA_CLIENT_ID to enable"
+        );
+    }
+
     let app = Router::new()
         .merge(routes::health::router())
         .merge(routes::graphs::router())
@@ -101,6 +118,7 @@ async fn main() {
         .merge(routes::schema::router())
         .merge(routes::neighbors::router())
         .merge(routes::export_import::router())
+        .layer(axum::middleware::from_fn(auth::require_entra_auth))
         .layer(cors)
         .layer(TraceLayer::new_for_http())
         .with_state(state);

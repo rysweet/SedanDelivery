@@ -4,8 +4,8 @@
 //! and the QueryPlanner that translates a parsed Query AST into an Operator tree.
 
 use crate::ast::{Direction, Expr, Identifier, Label, RelType};
+use crate::config;
 use crate::error::GqlError;
-use crate::executor::budget::DEFAULT_VARLEN_MAX_DEPTH;
 
 // ── Physical Plan Operators ───────────────────────────────────────────────────
 
@@ -269,14 +269,15 @@ pub(crate) fn is_aggregate_function(name: &str) -> bool {
 }
 
 /// Validate and normalize variable-length expand bounds.
-/// Returns `(effective_min, effective_max)`, capping unbounded `max` at DEFAULT_VARLEN_MAX_DEPTH.
+/// Returns `(effective_min, effective_max)`, capping unbounded `max` at the
+/// configured `varlen_max_depth` (env: `GQL_VARLEN_MAX_DEPTH`, default 30).
 ///
 /// When `min > effective_max` (e.g. `*2..1` or `*1..0`), openCypher specifies that the
 /// pattern matches zero paths.  We return the bounds as-is; the VarLenExpand executor
 /// naturally produces no rows because no depth `d` can satisfy `d >= min && d <= max`
 /// when `min > max`.
 pub fn validate_varlen_bounds(min: u32, max: Option<u32>) -> Result<(u32, u32), GqlError> {
-    let effective_max = max.unwrap_or(DEFAULT_VARLEN_MAX_DEPTH);
+    let effective_max = max.unwrap_or(config::global().varlen_max_depth);
     Ok((min, effective_max))
 }
 
@@ -438,7 +439,23 @@ fn collect_all_aliases(op: &Operator) -> Vec<String> {
                 aliases.push(col_name.0.clone());
             }
         }
-        _ => {}
+        Operator::Union { left, right, .. } => {
+            aliases.extend(collect_all_aliases(left));
+            aliases.extend(collect_all_aliases(right));
+        }
+        Operator::ShortestPath {
+            path_alias,
+            src_alias,
+            dst_alias,
+            ..
+        } => {
+            aliases.push(path_alias.0.clone());
+            aliases.push(src_alias.0.clone());
+            aliases.push(dst_alias.0.clone());
+        }
+        // SingleRow and ProduceResults have no aliases of their own
+        // (ProduceResults aliases come from its columns, already surfaced via child).
+        Operator::SingleRow | Operator::ProduceResults { .. } => {}
     }
     aliases
 }
@@ -452,7 +469,7 @@ mod tests {
         assert_eq!(validate_varlen_bounds(1, Some(5)).unwrap(), (1, 5));
         assert_eq!(
             validate_varlen_bounds(0, None).unwrap(),
-            (0, DEFAULT_VARLEN_MAX_DEPTH)
+            (0, config::global().varlen_max_depth)
         );
     }
 

@@ -48,7 +48,10 @@ pub fn load_tls_config() -> Option<TlsAcceptor> {
     let key = read_private_key(&mut key_reader)
         .unwrap_or_else(|| panic!("TLS key file {key_path} contains no private key"));
 
-    let config = rustls::ServerConfig::builder()
+    let provider = rustls::crypto::ring::default_provider();
+    let config = rustls::ServerConfig::builder_with_provider(std::sync::Arc::new(provider))
+        .with_safe_default_protocol_versions()
+        .expect("failed to set TLS protocol versions")
         .with_no_client_auth()
         .with_single_cert(certs, key)
         .expect("failed to build TLS ServerConfig");

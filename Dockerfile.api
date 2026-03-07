@@ -1,0 +1,79 @@
+# Dockerfile.api — standalone REST API server for SedanDelivery
+#
+# This image runs gql-api as an independent HTTP service. It uses
+# InMemoryGraphStore by default (for dev/demo) or can connect to a
+# shared Redis/Valkey backend for multi-service deployments.
+#
+# Authentication is configured via GQL_API_ENTRA_TENANT_ID and
+# GQL_API_ENTRA_CLIENT_ID environment variables. When set, all
+# requests (except GET /health) require a valid Entra ID JWT.
+#
+# Usage:
+#   docker build -f Dockerfile.api -t gql-api .
+#   docker run -p 3001:3001 \
+#     -e GQL_API_ENTRA_TENANT_ID=... \
+#     -e GQL_API_ENTRA_CLIENT_ID=... \
+#     gql-api
+
+# ── Builder ──────────────────────────────────────────────────────────────────
+FROM rust:1.89-bookworm AS builder
+
+WORKDIR /app
+
+# Copy workspace manifests first for layer caching
+COPY Cargo.toml ./
+COPY gql-core/Cargo.toml ./gql-core/
+COPY gql-redis-store/Cargo.toml ./gql-redis-store/
+COPY gql-module/Cargo.toml ./gql-module/
+COPY gql-fabric-store/Cargo.toml ./gql-fabric-store/
+COPY gql-cli/Cargo.toml ./gql-cli/
+COPY gql-api/Cargo.toml ./gql-api/
+COPY sedandelivery-bolt/Cargo.toml ./sedandelivery-bolt/
+COPY sedandelivery-fabric-sync/Cargo.toml ./sedandelivery-fabric-sync/
+
+# Create stub source files so cargo can resolve the dependency graph.
+RUN mkdir -p gql-core/src gql-redis-store/src gql-fabric-store/src gql-module/src gql-cli/src gql-api/src \
+             sedandelivery-bolt/src sedandelivery-bolt/benches sedandelivery-fabric-sync/src && \
+    echo "pub fn stub() {}" > gql-core/src/lib.rs && \
+    echo "pub fn stub() {}" > gql-redis-store/src/lib.rs && \
+    echo "pub fn stub() {}" > gql-fabric-store/src/lib.rs && \
+    echo "pub fn stub() {}" > gql-module/src/lib.rs && \
+    echo "fn main() {}" > gql-cli/src/main.rs && \
+    echo "pub fn stub() {}" > gql-api/src/lib.rs && \
+    echo "fn main() {}" > gql-api/src/main.rs && \
+    echo "pub fn stub() {}" > sedandelivery-bolt/src/lib.rs && \
+    echo "fn main() {}" > sedandelivery-bolt/src/main.rs && \
+    echo "fn main() {}" > sedandelivery-bolt/benches/bolt_benchmarks.rs && \
+    echo "fn main() {}" > sedandelivery-fabric-sync/src/main.rs && \
+    cargo build --release -p gql-api 2>/dev/null || true
+
+# Copy actual source code
+COPY gql-core/ ./gql-core/
+COPY gql-api/ ./gql-api/
+
+# Build the api binary
+RUN touch gql-core/src/lib.rs gql-api/src/lib.rs gql-api/src/main.rs && \
+    cargo build --release -p gql-api && \
+    ls -lh target/release/gql-api
+
+# ── Runtime ───────────────────────────────────────────────────────────────────
+FROM debian:bookworm-slim AS runtime
+
+# Install minimal runtime dependencies (TLS for JWKS fetch + health checks)
+RUN apt-get update -q && \
+    apt-get install -y -q --no-install-recommends ca-certificates curl && \
+    rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /app/target/release/gql-api /usr/local/bin/gql-api
+
+# HTTP API port
+EXPOSE 3001
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
+    CMD curl -sf http://localhost:3001/health || exit 1
+
+# Run as non-root for security
+RUN useradd --system --no-create-home api
+USER api
+
+ENTRYPOINT ["gql-api"]

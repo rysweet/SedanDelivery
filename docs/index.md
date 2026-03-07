@@ -13,6 +13,7 @@ A Rust GQL/Cypher query engine — a clean-room, MIT/Apache-2.0-licensed replace
 - [Tutorial](TUTORIAL) — Getting started with SedanDelivery
 - [Fabric Graph Tutorial](FABRIC_TUTORIAL) — Deploy, write data, query in Fabric portal, REST API, and monitoring
 - [Validation Guide](validation) — Full test suite: what was validated, how to re-run, CI tiers, benchmark baselines
+- [Authentication (Entra ID)](auth) — Configure JWT auth for the REST API
 - [Secrets Configuration](secrets) — Repository secrets inventory, creation, rotation, and monitoring
 - [Benchmarks](benchmarks) — How to run and interpret performance benchmarks
 - [Research Notes](RESEARCH) — Security analysis and design rationale
@@ -88,7 +89,29 @@ See [ADR-004](ADR-004-distributed-redis) for the full architecture decision reco
 | `GQL_FABRIC_TENANT_ID` | — | Azure AD tenant for Fabric auth |
 | `GQL_FABRIC_CLIENT_ID` | — | Service principal app ID for Fabric |
 | `GQL_FABRIC_CLIENT_SECRET` | — | Service principal secret for Fabric |
+| `GQL_FABRIC_TIMEOUT_SECS` | `10` | HTTP timeout for Fabric API calls |
 | `VALKEY_PASSWORD` | — | Password for Valkey authentication (injected at runtime) |
+
+### gql-api (REST API)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `GQL_API_BIND_ADDR` | `0.0.0.0:3001` | HTTP listen address |
+| `GQL_API_ALLOWED_ORIGINS` | `localhost:5000,5173` | Comma-separated CORS origins |
+| `GQL_API_ENTRA_TENANT_ID` | — | Entra ID tenant for JWT auth (required in production) |
+| `GQL_API_ENTRA_CLIENT_ID` | — | App registration client ID for JWT audience validation |
+| `GQL_API_IMPORT_BODY_LIMIT_BYTES` | `2097152` | Max import request body size (bytes) |
+| `ENVIRONMENT` | — | Set to `production` to enforce auth and CORS config |
+
+### GQL Engine Limits
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `GQL_QUERY_TIMEOUT_MS` | `30000` | Max query execution time (ms). Min: 1 |
+| `GQL_QUERY_MAX_ROWS` | `10000000` | Max intermediate rows per query. Min: 1 |
+| `GQL_VARLEN_MAX_DEPTH` | `30` | Default max depth for `[*]` patterns. Min: 1 |
+| `GQL_MAX_QUERY_SIZE` | `67108864` | Max query string size (bytes). Min: 1 |
+| `GQL_PARSER_MAX_DEPTH` | `256` | Max expression nesting depth. Min: 1 |
 
 ## Bolt Protocol (Recommended)
 
