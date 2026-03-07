@@ -149,6 +149,26 @@ where
     }
 }
 
+/// Parse `var` from the environment, clamping to `[min, max]` and warning on
+/// parse failure or out-of-range values.
+///
+/// This is the public entry point for crates that need range-validated env vars.
+pub fn parse_env_range<T>(var: &str, default: T, min: T, max: T) -> T
+where
+    T: std::str::FromStr + std::fmt::Display + PartialOrd + Copy,
+{
+    let val = parse_env(var, default);
+    if val < min {
+        tracing::warn!("{var}={val} is below minimum {min}, clamping to {min}");
+        min
+    } else if val > max {
+        tracing::warn!("{var}={val} is above maximum {max}, clamping to {max}");
+        max
+    } else {
+        val
+    }
+}
+
 // ── Tests ──────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]

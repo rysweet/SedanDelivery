@@ -82,7 +82,15 @@ impl FabricGraphStore {
                 .timeout_global(Some(std::time::Duration::from_secs(
                     std::env::var("GQL_FABRIC_TIMEOUT_SECS")
                         .ok()
-                        .and_then(|v| v.parse().ok())
+                        .and_then(|v| match v.parse() {
+                            Ok(val) => Some(val),
+                            Err(_) => {
+                                tracing::warn!(
+                                    "invalid value for GQL_FABRIC_TIMEOUT_SECS: {v:?}, using default 10"
+                                );
+                                None
+                            }
+                        })
                         .unwrap_or(10),
                 )))
                 .build()

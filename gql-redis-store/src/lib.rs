@@ -86,54 +86,22 @@ impl RedisGraphStore {
     /// and `GQL_REDIS_MIN_IDLE` (default 1).
     pub fn from_env() -> Result<Self, StorageError> {
         let prefix = env::var("GQL_REDIS_KEY_PREFIX").unwrap_or_default();
-        let pool_size: u32 = env::var("GQL_REDIS_POOL_SIZE")
-            .ok()
-            .and_then(|v| match v.parse() {
-                Ok(val) => Some(val),
-                Err(_) => {
-                    tracing::warn!(
-                        "invalid value for GQL_REDIS_POOL_SIZE: {v:?}, using default {DEFAULT_POOL_SIZE}"
-                    );
-                    None
-                }
-            })
-            .unwrap_or(DEFAULT_POOL_SIZE);
-        let pool_timeout_secs: u64 = env::var("GQL_REDIS_POOL_TIMEOUT_SECS")
-            .ok()
-            .and_then(|v| match v.parse() {
-                Ok(val) => Some(val),
-                Err(_) => {
-                    tracing::warn!(
-                        "invalid value for GQL_REDIS_POOL_TIMEOUT_SECS: {v:?}, using default {DEFAULT_POOL_TIMEOUT_SECS}"
-                    );
-                    None
-                }
-            })
-            .unwrap_or(DEFAULT_POOL_TIMEOUT_SECS);
-        let idle_timeout_secs: u64 = env::var("GQL_REDIS_IDLE_TIMEOUT_SECS")
-            .ok()
-            .and_then(|v| match v.parse() {
-                Ok(val) => Some(val),
-                Err(_) => {
-                    tracing::warn!(
-                        "invalid value for GQL_REDIS_IDLE_TIMEOUT_SECS: {v:?}, using default {DEFAULT_IDLE_TIMEOUT_SECS}"
-                    );
-                    None
-                }
-            })
-            .unwrap_or(DEFAULT_IDLE_TIMEOUT_SECS);
-        let min_idle: u32 = env::var("GQL_REDIS_MIN_IDLE")
-            .ok()
-            .and_then(|v| match v.parse() {
-                Ok(val) => Some(val),
-                Err(_) => {
-                    tracing::warn!(
-                        "invalid value for GQL_REDIS_MIN_IDLE: {v:?}, using default {DEFAULT_MIN_IDLE}"
-                    );
-                    None
-                }
-            })
-            .unwrap_or(DEFAULT_MIN_IDLE);
+        let pool_size: u32 =
+            gql_core::config::parse_env_range("GQL_REDIS_POOL_SIZE", DEFAULT_POOL_SIZE, 1, 1024);
+        let pool_timeout_secs: u64 = gql_core::config::parse_env_range(
+            "GQL_REDIS_POOL_TIMEOUT_SECS",
+            DEFAULT_POOL_TIMEOUT_SECS,
+            1,
+            300,
+        );
+        let idle_timeout_secs: u64 = gql_core::config::parse_env_range(
+            "GQL_REDIS_IDLE_TIMEOUT_SECS",
+            DEFAULT_IDLE_TIMEOUT_SECS,
+            0,
+            86400,
+        );
+        let min_idle: u32 =
+            gql_core::config::parse_env_range("GQL_REDIS_MIN_IDLE", DEFAULT_MIN_IDLE, 0, pool_size);
 
         // Cluster mode: GQL_REDIS_CLUSTER_NODES takes priority.
         if let Ok(nodes_str) = env::var("GQL_REDIS_CLUSTER_NODES") {

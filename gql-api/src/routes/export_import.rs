@@ -25,7 +25,15 @@ fn import_body_limit() -> usize {
     *LIMIT.get_or_init(|| {
         std::env::var("GQL_API_IMPORT_BODY_LIMIT_BYTES")
             .ok()
-            .and_then(|v| v.parse().ok())
+            .and_then(|v| match v.parse() {
+                Ok(val) => Some(val),
+                Err(_) => {
+                    tracing::warn!(
+                        "invalid value for GQL_API_IMPORT_BODY_LIMIT_BYTES: {v:?}, using default 2097152"
+                    );
+                    None
+                }
+            })
             .unwrap_or(2 * 1024 * 1024)
     })
 }

@@ -21,8 +21,20 @@ pub type KeyedRateLimiter = RateLimiter<IpAddr, DashMapStateStore<IpAddr>, Defau
 pub fn rps_from_env() -> NonZeroU32 {
     std::env::var("GQL_API_RATE_LIMIT_RPS")
         .ok()
-        .and_then(|v| v.parse::<u32>().ok())
-        .and_then(NonZeroU32::new)
+        .and_then(|v| match v.parse::<u32>() {
+            Ok(val) => NonZeroU32::new(val).or_else(|| {
+                tracing::warn!(
+                    "GQL_API_RATE_LIMIT_RPS=0 is invalid (must be >0), using default 100"
+                );
+                None
+            }),
+            Err(_) => {
+                tracing::warn!(
+                    "invalid value for GQL_API_RATE_LIMIT_RPS: {v:?}, using default 100"
+                );
+                None
+            }
+        })
         .unwrap_or(NonZeroU32::new(100).unwrap())
 }
 

@@ -112,7 +112,18 @@ fn discard_changelog() {
 fn module_init(_ctx: &Context, _args: &[redis_module::RedisString]) -> redis_module::Status {
     // Enable changelog when Fabric endpoint or explicit flag is set.
     let enabled = std::env::var("GQL_FABRIC_CHANGELOG")
-        .map(|v| v == "1" || v.to_lowercase() == "true")
+        .map(|v| {
+            if v == "1" || v.to_lowercase() == "true" {
+                true
+            } else if v == "0" || v.to_lowercase() == "false" || v.is_empty() {
+                false
+            } else {
+                tracing::warn!(
+                    "unrecognized value for GQL_FABRIC_CHANGELOG: {v:?}, expected \"1\"/\"true\" or \"0\"/\"false\"; treating as disabled"
+                );
+                false
+            }
+        })
         .unwrap_or(false)
         || std::env::var("GQL_FABRIC_ENDPOINT")
             .map(|v| !v.is_empty())

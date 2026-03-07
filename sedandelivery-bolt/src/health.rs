@@ -51,13 +51,28 @@ pub fn spawn_health_server(state: HealthState) {
     let bind_addr =
         std::env::var("BOLT_HEALTH_BIND_ADDR").unwrap_or_else(|_| "127.0.0.1".to_string());
 
+    // Pre-validate the full socket address to catch typos early.
+    let sock_addr_str = format!("{bind_addr}:{port}");
+    let sock_addr: std::net::SocketAddr = match sock_addr_str.parse() {
+        Ok(addr) => addr,
+        Err(_) => {
+            tracing::warn!(
+                "BOLT_HEALTH_BIND_ADDR={bind_addr:?} with port={port} does not form a valid SocketAddr, \
+                 falling back to 127.0.0.1:{port}"
+            );
+            format!("127.0.0.1:{port}")
+                .parse()
+                .expect("fallback addr must parse")
+        }
+    };
+
     let app = Router::new()
         .route("/health", get(health_handler))
         .route("/metrics", get(metrics_handler))
         .with_state(state);
 
     tokio::spawn(async move {
-        let listener = tokio::net::TcpListener::bind(format!("{bind_addr}:{port}"))
+        let listener = tokio::net::TcpListener::bind(sock_addr)
             .await
             .expect("failed to bind health HTTP listener");
         tracing::info!(%bind_addr, port, "health/metrics server listening");

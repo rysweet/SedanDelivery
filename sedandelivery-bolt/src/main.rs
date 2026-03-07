@@ -83,43 +83,15 @@ async fn main() {
 
     // --- Connection lifecycle configuration ---
 
-    let max_connections: usize = std::env::var("BOLT_MAX_CONNECTIONS")
-        .ok()
-        .and_then(|v| match v.parse() {
-            Ok(val) => Some(val),
-            Err(_) => {
-                tracing::warn!("invalid value for BOLT_MAX_CONNECTIONS: {v:?}, using default 1024");
-                None
-            }
-        })
-        .unwrap_or(1024);
+    let max_connections: usize =
+        gql_core::config::parse_env_range("BOLT_MAX_CONNECTIONS", 1024, 1, 65535);
 
-    let idle_timeout_secs: u64 = std::env::var("BOLT_IDLE_TIMEOUT_SECS")
-        .ok()
-        .and_then(|v| match v.parse() {
-            Ok(val) => Some(val),
-            Err(_) => {
-                tracing::warn!(
-                    "invalid value for BOLT_IDLE_TIMEOUT_SECS: {v:?}, using default 3600"
-                );
-                None
-            }
-        })
-        .unwrap_or(3600); // 1 hour default (up from 300s) to support bulk write workloads.
+    let idle_timeout_secs: u64 =
+        gql_core::config::parse_env_range("BOLT_IDLE_TIMEOUT_SECS", 3600, 1, 86400);
     let idle_timeout = Duration::from_secs(idle_timeout_secs);
 
-    let write_concurrency: u32 = std::env::var("BOLT_WRITE_CONCURRENCY")
-        .ok()
-        .and_then(|v| match v.parse() {
-            Ok(val) => Some(val),
-            Err(_) => {
-                tracing::warn!(
-                    "invalid value for BOLT_WRITE_CONCURRENCY: {v:?}, using default 128"
-                );
-                None
-            }
-        })
-        .unwrap_or(128);
+    let write_concurrency: u32 =
+        gql_core::config::parse_env_range("BOLT_WRITE_CONCURRENCY", 128, 1, 10000);
 
     // Semaphore gates new connections once max_connections is reached.
     let semaphore = Arc::new(Semaphore::new(max_connections));
