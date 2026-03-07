@@ -26,11 +26,7 @@ ureq          = { version = "3", features = ["json"] }
 governor      = "0.8"
 metrics       = "0.24"
 metrics-exporter-prometheus = "0.18"
-reqwest       = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
-thiserror     = { workspace = true }
 
 [dev-dependencies]
 tower         = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
-rsa           = "0.9"
-base64        = "0.22"

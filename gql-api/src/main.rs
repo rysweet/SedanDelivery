@@ -143,6 +143,14 @@ async fn main() {
             axum::http::header::ACCEPT,
         ]);
 
+    // Warn if the legacy GQL_API_JWKS_URL env var is set — it has no effect.
+    if std::env::var("GQL_API_JWKS_URL").is_ok() {
+        tracing::warn!(
+            "GQL_API_JWKS_URL is set but has no effect — \
+             authentication uses the Entra ID path (GQL_API_ENTRA_TENANT_ID / GQL_API_ENTRA_CLIENT_ID)"
+        );
+    }
+
     // Log whether Entra ID auth is enabled.
     if auth::entra_config().is_some() {
         info!("Entra ID authentication ENABLED (GQL_API_ENTRA_TENANT_ID is set)");

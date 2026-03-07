@@ -61,7 +61,10 @@ impl FabricGraphStore {
                 msg: "no access_token in response".into(),
             })?
             .to_string();
-        let expires_in = resp["expires_in"].as_u64().unwrap_or(3600);
+        let expires_in = resp["expires_in"].as_u64().unwrap_or_else(|| {
+            tracing::warn!("token response missing expires_in field, defaulting to 3600s");
+            3600
+        });
 
         // Phase 3: Re-acquire the lock and update the cache.  Another thread
         // may have raced us and already written a fresh token -- that is fine;

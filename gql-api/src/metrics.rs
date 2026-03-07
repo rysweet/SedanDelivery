@@ -21,6 +21,7 @@ pub const HTTP_REQUESTS_TOTAL: &str = "http_requests_total";
 pub const HTTP_REQUEST_DURATION_SECONDS: &str = "http_request_duration_seconds";
 pub const AUTH_REJECTIONS_TOTAL: &str = "auth_rejections_total";
 pub const ACTIVE_GRAPHS: &str = "active_graphs";
+pub const JWKS_REFRESH_FAILURES_TOTAL: &str = "jwks_refresh_failures_total";
 
 /// Install the Prometheus recorder and return a handle for scraping.
 ///
@@ -34,6 +35,11 @@ pub fn init_recorder() -> PrometheusHandle {
 /// Record an authentication rejection.
 pub fn auth_rejection() {
     counter!(AUTH_REJECTIONS_TOTAL).increment(1);
+}
+
+/// Record a JWKS refresh failure.
+pub fn jwks_refresh_failure() {
+    counter!(JWKS_REFRESH_FAILURES_TOTAL).increment(1);
 }
 
 /// Set the active_graphs gauge to the current number of graphs.
@@ -110,5 +116,6 @@ mod tests {
         );
         assert_eq!(AUTH_REJECTIONS_TOTAL, "auth_rejections_total");
         assert_eq!(ACTIVE_GRAPHS, "active_graphs");
+        assert_eq!(JWKS_REFRESH_FAILURES_TOTAL, "jwks_refresh_failures_total");
     }
 }

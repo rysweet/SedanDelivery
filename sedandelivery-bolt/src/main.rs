@@ -69,6 +69,16 @@ async fn main() {
         tracing_subscriber::fmt().with_env_filter(env_filter).init();
     }
 
+    // In production mode, require security-sensitive variables.
+    if std::env::var("ENVIRONMENT").as_deref() == Ok("production") {
+        if std::env::var("BOLT_PASSWORD").is_err() {
+            panic!("BOLT_PASSWORD is required when ENVIRONMENT=production");
+        }
+        if std::env::var("BOLT_TLS_CERT").is_err() || std::env::var("BOLT_TLS_KEY").is_err() {
+            panic!("BOLT_TLS_CERT and BOLT_TLS_KEY are required when ENVIRONMENT=production");
+        }
+    }
+
     let bind_addr = std::env::var("BOLT_BIND_ADDR").unwrap_or_else(|_| "0.0.0.0:7687".to_string());
 
     // --- Connection lifecycle configuration ---
