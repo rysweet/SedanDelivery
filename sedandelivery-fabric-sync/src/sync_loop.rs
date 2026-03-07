@@ -6,12 +6,16 @@ use std::time::Duration;
 
 use gql_core::changelog::CHANGELOG_STREAM;
 use gql_fabric_store::FabricGraphStore;
+use metrics::counter;
 use redis::{Client, Connection, RedisResult, Value as RV};
 use tracing::{error, warn};
 
 use crate::apply::apply_event;
 use crate::parse_reply::{extract_entries, StreamEntry};
 use crate::{connect_with_retry, GROUP_NAME, SHUTDOWN};
+
+const DLQ_STREAM: &str = "__sd2:changelog:dlq";
+const PERMANENT_FAILURES_TOTAL: &str = "fabric_sync_permanent_failures_total";
 
 pub(crate) fn run_sync_loop(
     client: &Client,
@@ -155,11 +159,44 @@ fn process_entries(
             error!(
                 entry_id = %entry_id,
                 "Permanent failure applying changelog event after {max_retries} retries: {e}. \
-                 Acknowledging to unblock stream. Manual replay via XCLAIM may be needed."
+                 Writing to DLQ and acknowledging to unblock stream."
             );
+            counter!(PERMANENT_FAILURES_TOTAL).increment(1);
+            send_to_dlq(conn, &entry_id, event_json, &e.to_string());
         }
 
         ack(conn, &entry_id);
+    }
+}
+
+/// Write a permanently failed event to the dead-letter queue stream.
+/// On failure, logs an error but does not panic — the caller will still ACK
+/// the original event to prevent infinite retry loops.
+fn send_to_dlq(conn: &mut Connection, entry_id: &str, event_json: &str, error_msg: &str) {
+    let result: RedisResult<String> = redis::cmd("XADD")
+        .arg(DLQ_STREAM)
+        .arg("*")
+        .arg("original_id")
+        .arg(entry_id)
+        .arg("event")
+        .arg(event_json)
+        .arg("error")
+        .arg(error_msg)
+        .query(conn);
+    match result {
+        Ok(dlq_id) => {
+            warn!(
+                entry_id = %entry_id,
+                dlq_id = %dlq_id,
+                "Event written to DLQ stream"
+            );
+        }
+        Err(e) => {
+            error!(
+                entry_id = %entry_id,
+                "Failed to write event to DLQ stream: {e} — event data will be lost"
+            );
+        }
     }
 }
 

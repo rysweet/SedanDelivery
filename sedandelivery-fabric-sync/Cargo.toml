@@ -21,3 +21,4 @@ redis = { version = "1.0", default-features = false, features = ["streams"] }
 ctrlc = "3.4"
 # Hostname for default consumer name derivation.
 hostname = "0.4"
+metrics = "0.24"

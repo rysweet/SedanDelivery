@@ -3390,6 +3390,7 @@ dependencies = [
  "gql-core",
  "gql-fabric-store",
  "hostname",
+ "metrics",
  "redis",
  "serde_json",
  "tracing",

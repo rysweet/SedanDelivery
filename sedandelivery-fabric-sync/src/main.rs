@@ -67,8 +67,17 @@ fn main() {
         }
     };
 
-    let redis_url =
-        std::env::var("GQL_REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string());
+    let redis_url = std::env::var("GQL_REDIS_URL").unwrap_or_else(|_| {
+        if std::env::var("GQL_FABRIC_ENDPOINT").is_ok() {
+            panic!(
+                "GQL_REDIS_URL must be set when GQL_FABRIC_ENDPOINT is configured — \
+                 refusing to fall back to localhost for production Fabric sync"
+            );
+        }
+        "redis://127.0.0.1:6379".to_string()
+    });
+
+    info!(redis_url = %redis_url, "Connecting to Redis");
 
     let client = match Client::open(redis_url.as_str()) {
         Ok(c) => c,
