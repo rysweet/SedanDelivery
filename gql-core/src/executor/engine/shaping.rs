@@ -163,10 +163,91 @@ impl<'a> QueryExecutor<'a> {
         let Operator::Limit { count, child } = op else {
             unreachable!()
         };
-        let input = self.exec_operator(graph, child, budget, outer_rows, stats)?;
-        budget.check_or_err()?;
         let n = eval_count_expr(count, &self.parameters)?;
+
+        // Early termination optimisation: tell leaf scan operators to stop
+        // producing rows once we have enough. This is only safe when:
+        // 1. The child subtree contains no mutation operators (Create,
+        //    Delete, Set, Remove, Merge) — mutations must execute on ALL
+        //    qualifying rows regardless of the result-set LIMIT.
+        // 2. The child subtree is a "simple pipeline" — no row-multiplying
+        //    operators (Expand, VarLenExpand, Unwind, Apply, LeftOuterApply,
+        //    Union) between the Limit and the leaf scan. Multiplying
+        //    operators break the 1:1 mapping between leaf rows produced
+        //    and output rows, making a leaf-level cap unreliable.
+        let can_early_terminate = Self::subtree_is_simple_pipeline(child);
+        let prev_cap = if can_early_terminate {
+            let needed = n.saturating_add(Self::child_skip_amount(child, &self.parameters));
+            Some(budget.set_row_cap(needed))
+        } else {
+            None
+        };
+        let input = self.exec_operator(graph, child, budget, outer_rows, stats)?;
+        if let Some(prev) = prev_cap {
+            budget.restore_row_cap(prev);
+        }
+
+        budget.check_or_err()?;
         Ok(input.into_iter().take(n).collect())
+    }
+
+    /// If `op` is a `Skip` operator, evaluate and return its skip count.
+    /// Otherwise return 0. This is used by `exec_limit` to account for
+    /// rows consumed by an immediate Skip child.
+    fn child_skip_amount(op: &Operator, params: &super::Row) -> usize {
+        if let Operator::Skip { count, .. } = op {
+            eval_count_expr(count, params).unwrap_or(0)
+        } else {
+            0
+        }
+    }
+
+    /// Returns `true` if `op` is a "simple pipeline" — a linear chain of
+    /// 1:1 operators ending at a single leaf scan. Early termination is
+    /// only safe when every row produced by the leaf scan maps to exactly
+    /// one output row, so no row-multiplying (Expand, VarLenExpand, Unwind)
+    /// or joining (Apply, LeftOuterApply, Union) operators are allowed,
+    /// and no mutation operators (Create, Delete, Set, Remove, Merge, Call)
+    /// are present.
+    fn subtree_is_simple_pipeline(op: &Operator) -> bool {
+        match op {
+            // Leaf operators — pipeline terminus.
+            Operator::SingleRow
+            | Operator::NodeScan { .. }
+            | Operator::IndexScan { .. }
+            | Operator::NodeByIdSeek { .. } => true,
+
+            // 1:1 pass-through operators that don't reduce rows — safe.
+            Operator::Project { child, .. }
+            | Operator::Limit { child, .. }
+            | Operator::Skip { child, .. }
+            | Operator::AssemblePath { child, .. }
+            | Operator::ProduceResults { child, .. } => Self::subtree_is_simple_pipeline(child),
+
+            // Filter may reject rows, so the leaf-level cap doesn't guarantee
+            // enough output rows. Sort/Distinct/Aggregate need ALL input
+            // rows to produce correct output. All of these are barriers.
+            Operator::Filter { .. }
+            | Operator::Sort { .. }
+            | Operator::Distinct { .. }
+            | Operator::Aggregate { .. } => false,
+
+            // Row-multiplying, joining, or mutating operators — not safe.
+            Operator::Expand { .. }
+            | Operator::VarLenExpand { .. }
+            | Operator::Unwind { .. }
+            | Operator::ShortestPath { .. }
+            | Operator::Union { .. }
+            | Operator::Apply { .. }
+            | Operator::LeftOuterApply { .. }
+            | Operator::Create { .. }
+            | Operator::Delete { .. }
+            | Operator::Set { .. }
+            | Operator::Remove { .. }
+            | Operator::Merge { .. }
+            | Operator::MergeRelationship { .. }
+            | Operator::Call { .. } => false,
+        }
     }
 
     pub(crate) fn exec_skip(
@@ -312,5 +393,152 @@ mod tests {
         let mut budget = ExecutionBudget::unlimited();
         let result = executor.execute("g", &plan, &mut budget).unwrap();
         assert_eq!(result.rows.len(), 2);
+    }
+
+    /// LIMIT over a bare NodeScan triggers early termination: on 1000 nodes,
+    /// LIMIT 10 should NOT materialise all 1000 rows. Verify that the
+    /// budget's leaf_rows_produced counter stays well below the total node
+    /// count.
+    #[test]
+    fn limit_early_termination_avoids_full_scan() {
+        let store = make_store();
+        let total_nodes = 1000;
+        for _ in 0..total_nodes {
+            store
+                .create_node("g", vec!["N".to_string()], HashMap::new())
+                .unwrap();
+        }
+        let executor = QueryExecutor::new(&store);
+        // Plan: Limit { 10, NodeScan }
+        let plan = Operator::Limit {
+            count: Expr::Integer(10),
+            child: Box::new(Operator::NodeScan {
+                label: Some(Label::new("N")),
+                alias: Identifier::new("n"),
+            }),
+        };
+        let mut budget = ExecutionBudget::unlimited();
+        let result = executor.execute("g", &plan, &mut budget).unwrap();
+        assert_eq!(result.rows.len(), 10, "LIMIT should return exactly 10 rows");
+        // The total rows_produced should be far less than 1000.
+        // With early termination, NodeScan produces only ~10 leaf rows.
+        // budget.rows_produced() includes both leaf and intermediate rows,
+        // but should still be much less than 1000.
+        assert!(
+            budget.rows_produced() < 100,
+            "Expected early termination to avoid full scan; \
+             rows_produced={} but total_nodes={}",
+            budget.rows_produced(),
+            total_nodes,
+        );
+    }
+
+    /// LIMIT over Project(NodeScan) also triggers early termination.
+    #[test]
+    fn limit_over_project_early_termination() {
+        let store = make_store();
+        let total_nodes = 500;
+        for i in 0..total_nodes {
+            let mut p = HashMap::new();
+            p.insert("i".to_string(), Value::Int(i));
+            store.create_node("g", vec!["N".to_string()], p).unwrap();
+        }
+        let executor = QueryExecutor::new(&store);
+        // Plan: Limit { 5, Project { items: [n], child: NodeScan } }
+        let plan = Operator::Limit {
+            count: Expr::Integer(5),
+            child: Box::new(Operator::Project {
+                items: vec![(
+                    Expr::Variable(Identifier::new("n")),
+                    Some(Identifier::new("n")),
+                )],
+                child: Box::new(Operator::NodeScan {
+                    label: Some(Label::new("N")),
+                    alias: Identifier::new("n"),
+                }),
+            }),
+        };
+        let mut budget = ExecutionBudget::unlimited();
+        let result = executor.execute("g", &plan, &mut budget).unwrap();
+        assert_eq!(result.rows.len(), 5);
+        assert!(
+            budget.rows_produced() < 100,
+            "Expected early termination through Project; rows_produced={}",
+            budget.rows_produced(),
+        );
+    }
+
+    /// LIMIT over Sort(NodeScan) does NOT early-terminate (sort needs all rows).
+    #[test]
+    fn limit_over_sort_no_early_termination() {
+        let store = make_store();
+        let total_nodes = 50;
+        for i in 0..total_nodes {
+            let mut p = HashMap::new();
+            p.insert("i".to_string(), Value::Int(i));
+            store.create_node("g", vec!["N".to_string()], p).unwrap();
+        }
+        let executor = QueryExecutor::new(&store);
+        // Plan: Limit { 5, Sort { child: NodeScan } }
+        let plan = Operator::Limit {
+            count: Expr::Integer(5),
+            child: Box::new(Operator::Sort {
+                items: vec![(
+                    Expr::Property(Box::new(Expr::Variable(Identifier::new("n"))), "i".into()),
+                    true,
+                )],
+                child: Box::new(Operator::NodeScan {
+                    label: Some(Label::new("N")),
+                    alias: Identifier::new("n"),
+                }),
+            }),
+        };
+        let mut budget = ExecutionBudget::unlimited();
+        let result = executor.execute("g", &plan, &mut budget).unwrap();
+        assert_eq!(result.rows.len(), 5);
+        // Sort needs all rows so early termination must NOT fire.
+        // rows_produced >= total_nodes because NodeScan produces 50 rows.
+        assert!(
+            budget.rows_produced() >= total_nodes as usize,
+            "Sort should prevent early termination; rows_produced={}",
+            budget.rows_produced(),
+        );
+    }
+
+    /// SKIP 3 LIMIT 2 with early termination: should produce exactly 2 rows
+    /// and the scan should materialise only skip+limit=5 rows.
+    #[test]
+    fn skip_limit_early_termination() {
+        let store = make_store();
+        let total_nodes = 200;
+        for _ in 0..total_nodes {
+            store
+                .create_node("g", vec!["N".to_string()], HashMap::new())
+                .unwrap();
+        }
+        let executor = QueryExecutor::new(&store);
+        // Plan: Limit { 2, Skip { 3, NodeScan } }
+        let plan = Operator::Limit {
+            count: Expr::Integer(2),
+            child: Box::new(Operator::Skip {
+                count: Expr::Integer(3),
+                child: Box::new(Operator::NodeScan {
+                    label: Some(Label::new("N")),
+                    alias: Identifier::new("n"),
+                }),
+            }),
+        };
+        let mut budget = ExecutionBudget::unlimited();
+        let result = executor.execute("g", &plan, &mut budget).unwrap();
+        assert_eq!(result.rows.len(), 2, "SKIP 3 LIMIT 2 should return 2 rows");
+        // With early termination, NodeScan should produce only 5 leaf rows
+        // (skip=3 + limit=2). Budget rows_produced includes both leaf and
+        // intermediate counts, but should be far less than 200.
+        assert!(
+            budget.rows_produced() < 50,
+            "Expected early termination for SKIP+LIMIT; rows_produced={} but total_nodes={}",
+            budget.rows_produced(),
+            total_nodes,
+        );
     }
 }

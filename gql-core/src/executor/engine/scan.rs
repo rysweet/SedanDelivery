@@ -46,15 +46,22 @@ impl<'a> QueryExecutor<'a> {
 
         let mut rows = Vec::with_capacity(node_ids.len());
         for id in &node_ids {
+            if budget.reached_row_cap() {
+                break;
+            }
             budget.check_or_err()?;
             if base_rows.is_empty() {
                 let mut row = Row::new();
                 row.insert(alias.0.clone(), Value::Node(*id));
                 inject_parameters(&mut row, &self.parameters);
                 budget.record_row();
+                budget.record_leaf_row();
                 rows.push(row);
             } else {
                 for outer_row in base_rows {
+                    if budget.reached_row_cap() {
+                        break;
+                    }
                     budget.check_or_err()?;
                     // If the alias is already pre-bound in outer_row to a specific node,
                     // only produce a row when the scanned node matches that bound node.
@@ -94,6 +101,7 @@ impl<'a> QueryExecutor<'a> {
                         row.insert("__outer_edge_vars__".to_string(), Value::List(existing));
                     }
                     budget.record_row();
+                    budget.record_leaf_row();
                     rows.push(row);
                 }
             }
@@ -440,10 +448,14 @@ impl<'a> QueryExecutor<'a> {
 
         let mut rows = Vec::with_capacity(effective_ids.len());
         for id in effective_ids {
+            if budget.reached_row_cap() {
+                break;
+            }
             budget.check_or_err()?;
             let mut row = Row::new();
             row.insert(alias.0.clone(), Value::Node(id));
             budget.record_row();
+            budget.record_leaf_row();
             rows.push(row);
         }
         Ok(rows)
