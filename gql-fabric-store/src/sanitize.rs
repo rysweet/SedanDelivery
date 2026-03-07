@@ -55,7 +55,12 @@ pub(crate) fn urlenc(s: &str) -> String {
 /// Build a Cypher WHERE predicate string and parameter map for a RangeQuery.
 /// Non-finite floats in range values are serialized as JSON null.
 pub(crate) fn range_to_cypher(prop: &str, range: RangeQuery<'_>) -> (String, JValue) {
-    let to_json = |v: &Value| serde_value::value_to_json(v).unwrap_or(JValue::Null);
+    let to_json = |v: &Value| {
+        serde_value::value_to_json(v).unwrap_or_else(|e| {
+            tracing::warn!(error = %e, "value_to_json failed in range_to_cypher, using null");
+            JValue::Null
+        })
+    };
     match range {
         RangeQuery::Eq(v) => (format!("n.`{prop}` = $rv"), json!({ "rv": to_json(v) })),
         RangeQuery::Lt(v) => (format!("n.`{prop}` < $rv"), json!({ "rv": to_json(v) })),

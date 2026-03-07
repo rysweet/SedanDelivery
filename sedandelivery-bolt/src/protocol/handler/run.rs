@@ -556,7 +556,12 @@ pub(crate) async fn handle_run(
         })
         .await
         .map_err(|e| ProtocolError::Internal(e.to_string()))?;
-        plan.ok().map(|op| operator_to_plan_map(&op, true, 0))
+        plan.map_err(|e| {
+            tracing::debug!(error = %e, "PROFILE plan_query failed");
+            e
+        })
+        .ok()
+        .map(|op| operator_to_plan_map(&op, true, 0))
     } else {
         None
     };

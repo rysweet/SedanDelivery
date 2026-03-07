@@ -20,7 +20,10 @@ pub fn value_to_json(v: &Value) -> Json {
         Value::Int(i) => Json::Number((*i).into()),
         Value::Float(f) => serde_json::Number::from_f64(*f)
             .map(Json::Number)
-            .unwrap_or(Json::Null),
+            .unwrap_or_else(|| {
+                tracing::debug!(value = *f, "non-finite float coerced to JSON null");
+                Json::Null
+            }),
         Value::Str(s) => Json::String(s.to_string()),
         Value::Date(d) => Json::String(d.to_string()),
         Value::LocalTime(t) => Json::String(t.to_string()),
@@ -159,7 +162,11 @@ fn resolve_node(id: NodeId, store: &dyn GraphStore, graph: &str) -> Json {
             "labels":     node.labels,
             "properties": props_to_json(&node.properties),
         }),
-        _ => json!({ "$type": "node", "id": id.0 }),
+        Err(e) => {
+            tracing::warn!(node_id = id.0, error = %e, "failed to resolve node from store");
+            json!({ "$type": "node", "id": id.0 })
+        }
+        Ok(None) => json!({ "$type": "node", "id": id.0 }),
     }
 }
 
@@ -172,7 +179,11 @@ fn resolve_edge(id: EdgeId, store: &dyn GraphStore, graph: &str) -> Json {
             "target":     edge.dst.0.to_string(),
             "properties": props_to_json(&edge.properties),
         }),
-        _ => json!({ "$type": "edge", "id": id.0 }),
+        Err(e) => {
+            tracing::warn!(edge_id = id.0, error = %e, "failed to resolve edge from store");
+            json!({ "$type": "edge", "id": id.0 })
+        }
+        Ok(None) => json!({ "$type": "edge", "id": id.0 }),
     }
 }
 

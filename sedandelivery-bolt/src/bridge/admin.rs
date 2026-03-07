@@ -301,7 +301,7 @@ fn handle_create_constraint(
     _graph: &str,
     _query: &str,
 ) -> Result<AdminResult, GqlError> {
-    tracing::warn!("Constraints are accepted for compatibility but not enforced");
+    tracing::error!("Constraints are accepted for compatibility but not enforced");
     // We don't actually enforce constraints, but we accept the command
     // and report the stat for testkit compliance.
     Ok(AdminResult {
@@ -319,7 +319,7 @@ fn handle_drop_constraint(
     _graph: &str,
     _query: &str,
 ) -> Result<AdminResult, GqlError> {
-    tracing::warn!("Constraints are accepted for compatibility but not enforced");
+    tracing::error!("Constraints are accepted for compatibility but not enforced");
     Ok(AdminResult {
         query_result: empty_result(),
         indexes_added: 0,

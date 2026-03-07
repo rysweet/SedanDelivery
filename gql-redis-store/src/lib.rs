@@ -336,13 +336,34 @@ impl RedisGraphStore {
                     properties,
                 }))
             }
-            _ => Ok(None),
+            (None, None, None, None) => Ok(None),
+            _ => {
+                tracing::error!(
+                    edge_id = id,
+                    graph = g,
+                    src = ?fields[0],
+                    dst = ?fields[1],
+                    rel_type = ?fields[2],
+                    props = ?fields[3],
+                    "partial edge data detected — possible data corruption"
+                );
+                Ok(None)
+            }
         }
     }
 
     /// Parse adjacency set members into `AdjEntry` list.
     pub(crate) fn parse_adj_members(members: Vec<String>) -> Vec<AdjEntry> {
-        members.into_iter().filter_map(|m| decode_adj(&m)).collect()
+        let mut entries = Vec::new();
+        for m in members {
+            match decode_adj(&m) {
+                Some(entry) => entries.push(entry),
+                None => {
+                    tracing::warn!(member = %m, "failed to decode adjacency member, skipping");
+                }
+            }
+        }
+        entries
     }
 }
 

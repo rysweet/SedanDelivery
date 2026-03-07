@@ -50,7 +50,14 @@ pub async fn rate_limit_middleware(
         .extensions()
         .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
         .map(|ci| ci.0.ip())
-        .unwrap_or(IpAddr::from([127, 0, 0, 1]));
+        .unwrap_or_else(|| {
+            use std::sync::atomic::{AtomicBool, Ordering};
+            static WARNED: AtomicBool = AtomicBool::new(false);
+            if !WARNED.swap(true, Ordering::Relaxed) {
+                tracing::warn!("ConnectInfo missing, falling back to 127.0.0.1 for rate limiting");
+            }
+            IpAddr::from([127, 0, 0, 1])
+        });
 
     match limiter.check_key(&ip) {
         Ok(_) => next.run(request).await,

@@ -76,7 +76,13 @@ impl FabricGraphStore {
                 .ok_or_else(|| StorageError::Serialization {
                     msg: "edge missing _sd2_dst".into(),
                 })?;
-        let rel_type = v["type"].as_str().unwrap_or("UNKNOWN").to_string();
+        let rel_type = v["type"]
+            .as_str()
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| {
+                tracing::warn!(edge_id = id_raw, "edge type missing, defaulting to UNKNOWN");
+                "UNKNOWN".to_string()
+            });
         let properties = extract_user_props(&v["properties"]);
         Ok(Some(EdgeData {
             id: EdgeId(id_raw),
@@ -94,10 +100,21 @@ pub(crate) fn extract_user_props(props: &JValue) -> HashMap<String, Value> {
         Some(o) => o,
         None => return HashMap::new(),
     };
-    obj.iter()
+    let mut result = HashMap::new();
+    for (k, v) in obj
+        .iter()
         .filter(|(k, _)| !k.starts_with("_sd2") && !k.starts_with("__SD2"))
-        .filter_map(|(k, v)| serde_value::json_to_value(v).map(|val| (k.clone(), val)))
-        .collect()
+    {
+        match serde_value::json_to_value(v) {
+            Some(val) => {
+                result.insert(k.clone(), val);
+            }
+            None => {
+                tracing::warn!(key = %k, json = %v, "json_to_value conversion failed, skipping property");
+            }
+        }
+    }
+    result
 }
 
 /// Convert a user property map to JSON, skipping internal SD2 keys.
@@ -109,7 +126,10 @@ pub(crate) fn user_props_to_json(props: &HashMap<String, Value>) -> HashMap<Stri
         .map(|(k, v)| {
             (
                 k.clone(),
-                serde_value::value_to_json(v).unwrap_or(JValue::Null),
+                serde_value::value_to_json(v).unwrap_or_else(|e| {
+                    tracing::warn!(key = %k, error = %e, "value_to_json failed, using null");
+                    JValue::Null
+                }),
             )
         })
         .collect()
@@ -117,18 +137,26 @@ pub(crate) fn user_props_to_json(props: &HashMap<String, Value>) -> HashMap<Stri
 
 /// Convert adjacency query rows (eid, nbr, rt) to AdjEntry vec.
 pub(crate) fn rows_to_adj(rows: Vec<Vec<JValue>>) -> Result<Vec<AdjEntry>, StorageError> {
-    rows.into_iter()
-        .filter_map(|r| {
+    let mut entries = Vec::new();
+    for r in rows {
+        let parsed = (|| {
             let eid = r.first()?.as_u64().map(EdgeId)?;
             let nbr = r.get(1)?.as_u64().map(NodeId)?;
             let rt = r.get(2)?.as_str()?.to_string();
-            Some(Ok(AdjEntry {
+            Some(AdjEntry {
                 edge_id: eid,
                 neighbor_id: nbr,
                 rel_type: rt,
-            }))
-        })
-        .collect()
+            })
+        })();
+        match parsed {
+            Some(entry) => entries.push(entry),
+            None => {
+                tracing::warn!(row = ?r, "dropping malformed adjacency row");
+            }
+        }
+    }
+    Ok(entries)
 }
 
 #[cfg(test)]
