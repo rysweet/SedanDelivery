@@ -220,6 +220,53 @@ fn bench_e2e_recommendation(c: &mut Criterion) {
     });
 }
 
+// ── §4.4 Property Cache ─────────────────────────────────────────────────────
+
+fn make_rich_person_store(n: usize) -> InMemoryGraphStore {
+    let store = InMemoryGraphStore::default();
+    store.create_graph("bench").unwrap();
+    for i in 0..n {
+        let props = HashMap::from([
+            ("name".to_string(), Value::Str(format!("person_{i}").into())),
+            ("age".to_string(), Value::Int((i % 100) as i64)),
+            (
+                "email".to_string(),
+                Value::Str(format!("person_{i}@example.com").into()),
+            ),
+            (
+                "city".to_string(),
+                Value::Str(format!("city_{}", i % 50).into()),
+            ),
+            ("score".to_string(), Value::Float((i as f64) * 1.5)),
+        ]);
+        store
+            .create_node("bench", vec!["Person".to_string()], props)
+            .unwrap();
+    }
+    store
+}
+
+fn bench_multi_property_access(c: &mut Criterion) {
+    let mut group = c.benchmark_group("property_cache");
+    for size in [100usize, 1_000] {
+        let store = make_rich_person_store(size);
+        // Access 5 properties of the same node per row — exercises the cache.
+        group.bench_with_input(BenchmarkId::new("multi_prop_5", size), &size, |b, _| {
+            b.iter(|| {
+                run_query(
+                    &store,
+                    "MATCH (n:Person) RETURN n.name, n.age, n.email, n.city, n.score",
+                )
+            });
+        });
+        // Single property access (baseline).
+        group.bench_with_input(BenchmarkId::new("single_prop", size), &size, |b, _| {
+            b.iter(|| run_query(&store, "MATCH (n:Person) RETURN n.name"));
+        });
+    }
+    group.finish();
+}
+
 // ── §4.2 CREATE Throughput ───────────────────────────────────────────────────
 
 fn bench_create_node_throughput(c: &mut Criterion) {

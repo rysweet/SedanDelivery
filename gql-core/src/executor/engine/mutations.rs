@@ -153,6 +153,7 @@ impl<'a> QueryExecutor<'a> {
             budget.record_row();
             out.push(row);
         }
+        self.invalidate_property_cache();
         Ok(out)
     }
 
@@ -285,6 +286,7 @@ impl<'a> QueryExecutor<'a> {
             budget.record_row();
             out.push(row);
         }
+        self.invalidate_property_cache();
         Ok(out)
     }
 
@@ -311,6 +313,7 @@ impl<'a> QueryExecutor<'a> {
             budget.record_row();
             out.push(current_row);
         }
+        self.invalidate_property_cache();
         Ok(out)
     }
 
@@ -376,6 +379,7 @@ impl<'a> QueryExecutor<'a> {
             budget.record_row();
             out.push(row);
         }
+        self.invalidate_property_cache();
         Ok(out)
     }
 
@@ -591,6 +595,7 @@ impl<'a> QueryExecutor<'a> {
                 out.push(row);
             }
         }
+        self.invalidate_property_cache();
         Ok(out)
     }
 
@@ -723,6 +728,7 @@ impl<'a> QueryExecutor<'a> {
                 out.push(row);
             }
         }
+        self.invalidate_property_cache();
         Ok(out)
     }
 
