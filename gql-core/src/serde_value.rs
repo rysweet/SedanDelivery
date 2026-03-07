@@ -72,6 +72,7 @@ pub fn value_to_json(v: &Value) -> Result<JsonValue, StorageError> {
                 }
             };
             let tz = jiff::tz::TimeZone::fixed(offset_obj);
+            // safe: constant epoch date 1970-01-01 is always valid
             let epoch = jiff::civil::Date::new(1970, 1, 1).expect("valid epoch");
             let dt = epoch.to_datetime(*t);
             match dt.to_zoned(tz) {

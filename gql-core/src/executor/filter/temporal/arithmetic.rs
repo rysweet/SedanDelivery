@@ -237,8 +237,22 @@ pub fn duration_div(d: &CypherDuration, n: i64) -> Result<CypherDuration, GqlErr
 fn temporal_to_civil_datetime(val: &Value) -> Option<jiff::civil::DateTime> {
     match val {
         Value::Date(d) => Some(d.to_datetime(jiff::civil::Time::midnight())),
-        Value::LocalTime(t) => Some(jiff::civil::Date::new(0, 1, 1).unwrap().to_datetime(*t)),
-        Value::Time(t, _) => Some(jiff::civil::Date::new(1970, 1, 1).unwrap().to_datetime(*t)),
+        Value::LocalTime(t) => {
+            // safe: constant date year=0 month=1 day=1 is always valid
+            Some(
+                jiff::civil::Date::new(0, 1, 1)
+                    .expect("ISO 8601 year 0")
+                    .to_datetime(*t),
+            )
+        }
+        Value::Time(t, _) => {
+            // safe: constant epoch date 1970-01-01 is always valid
+            Some(
+                jiff::civil::Date::new(1970, 1, 1)
+                    .expect("epoch")
+                    .to_datetime(*t),
+            )
+        }
         Value::LocalDateTime(dt) => Some(*dt),
         Value::DateTime(zdt) => Some(jiff::civil::DateTime::from(&**zdt)),
         _ => None,
@@ -491,8 +505,9 @@ pub(crate) fn eval_duration_between(vals: &[Value]) -> Result<Value, GqlError> {
 /// Get the civil time-of-day nanoseconds for a temporal value.
 fn civil_time_nanos(val: &Value) -> i64 {
     let dt = temporal_to_civil_datetime(val).unwrap_or_else(|| {
+        // safe: constant date 0001-01-01 is always valid
         jiff::civil::Date::new(1, 1, 1)
-            .unwrap()
+            .expect("0001-01-01")
             .to_datetime(jiff::civil::Time::midnight())
     });
     let t = dt.time();

@@ -398,6 +398,7 @@ pub(super) fn builtin_tail(vals: Vec<Value>) -> Result<Value, GqlError> {
 
 pub(super) fn builtin_reverse(vals: Vec<Value>) -> Result<Value, GqlError> {
     require_arity("reverse", 1, &vals)?;
+    // safe: require_arity(1) above guarantees at least one element
     match vals.into_iter().next().expect("arity checked") {
         Value::Null => Ok(Value::Null),
         Value::List(mut l) => {
