@@ -683,55 +683,11 @@ fn operator_to_plan_map(
         .unwrap_or("Unknown")
         .trim()
         .to_string();
-
-    // Collect child operators for recursive conversion.
-    let children: Vec<BoltValue> = match op {
-        Operator::SingleRow
-        | Operator::NodeScan { .. }
-        | Operator::IndexScan { .. }
-        | Operator::NodeByIdSeek { .. }
-        | Operator::ShortestPath { .. } => vec![],
-        Operator::Filter { child, .. }
-        | Operator::Expand { child, .. }
-        | Operator::VarLenExpand { child, .. }
-        | Operator::Project { child, .. }
-        | Operator::Aggregate { child, .. }
-        | Operator::Distinct { child, .. }
-        | Operator::Sort { child, .. }
-        | Operator::Limit { child, .. }
-        | Operator::Skip { child, .. }
-        | Operator::Unwind { child, .. }
-        | Operator::Set { child, .. }
-        | Operator::Remove { child, .. }
-        | Operator::Delete { child, .. }
-        | Operator::AssemblePath { child, .. }
-        | Operator::MergeRelationship { child, .. }
-        | Operator::ProduceResults { child, .. } => {
-            vec![operator_to_plan_map(child, is_profile, depth + 1)]
-        }
-        Operator::Apply { outer, inner }
-        | Operator::LeftOuterApply {
-            preserved: outer,
-            optional_pattern: inner,
-        } => {
-            vec![
-                operator_to_plan_map(outer, is_profile, depth + 1),
-                operator_to_plan_map(inner, is_profile, depth + 1),
-            ]
-        }
-        Operator::Union { left, right, .. } => {
-            vec![
-                operator_to_plan_map(left, is_profile, depth + 1),
-                operator_to_plan_map(right, is_profile, depth + 1),
-            ]
-        }
-        Operator::Create { child, .. }
-        | Operator::Merge { child, .. }
-        | Operator::Call { child, .. } => child.as_ref().map_or_else(Vec::new, |c| {
-            vec![operator_to_plan_map(c, is_profile, depth + 1)]
-        }),
-    };
-
+    let children_bolt: Vec<BoltValue> = op
+        .children()
+        .into_iter()
+        .map(|child| operator_to_plan_map(child, is_profile, depth + 1))
+        .collect();
     let entries: Vec<(String, BoltValue)> = vec![
         ("operatorType".to_string(), BoltValue::String(op_type)),
         ("identifiers".to_string(), BoltValue::List(vec![])),
@@ -745,7 +701,7 @@ fn operator_to_plan_map(
                 ("EstimatedRows".to_string(), BoltValue::Float(1.0)),
             ]),
         ),
-        ("children".to_string(), BoltValue::List(children)),
+        ("children".to_string(), BoltValue::List(children_bolt)),
     ];
     BoltValue::Map(entries)
 }
@@ -1034,13 +990,13 @@ mod tests {
                 let op_type = entries.get_str("operatorType").unwrap();
                 assert_eq!(op_type, "Filter");
                 if let Some(BoltValue::List(children)) = entries.get_value("children") {
-                    assert_eq!(children.len(), 1, "Filter should have 1 child (NodeScan)");
-                    // Verify the child is the NodeScan operator
+                    assert_eq!(children.len(), 1, "Filter should have one child (NodeScan)");
+                    // Verify child is a NodeScan
                     if let BoltValue::Map(child_entries) = &children[0] {
                         let child_type = child_entries.get_str("operatorType").unwrap();
                         assert_eq!(child_type, "NodeScan");
                     } else {
-                        panic!("expected child to be BoltValue::Map");
+                        panic!("expected child to be a Map");
                     }
                 }
             }

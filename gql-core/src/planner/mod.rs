@@ -174,6 +174,51 @@ pub enum Operator {
     },
 }
 
+impl Operator {
+    /// Return references to all direct child operators.
+    pub fn children(&self) -> Vec<&Operator> {
+        match self {
+            Operator::SingleRow
+            | Operator::NodeScan { .. }
+            | Operator::IndexScan { .. }
+            | Operator::NodeByIdSeek { .. }
+            | Operator::ShortestPath { .. } => vec![],
+
+            Operator::Filter { child, .. }
+            | Operator::Project { child, .. }
+            | Operator::Aggregate { child, .. }
+            | Operator::Distinct { child }
+            | Operator::Sort { child, .. }
+            | Operator::Limit { child, .. }
+            | Operator::Skip { child, .. }
+            | Operator::Unwind { child, .. }
+            | Operator::Set { child, .. }
+            | Operator::Remove { child, .. }
+            | Operator::Delete { child, .. }
+            | Operator::ProduceResults { child, .. }
+            | Operator::Expand { child, .. }
+            | Operator::VarLenExpand { child, .. }
+            | Operator::AssemblePath { child, .. }
+            | Operator::MergeRelationship { child, .. } => vec![child],
+
+            Operator::Apply { outer, inner }
+            | Operator::LeftOuterApply {
+                preserved: outer,
+                optional_pattern: inner,
+            } => vec![outer, inner],
+
+            Operator::Union { left, right, .. } => vec![left, right],
+
+            Operator::Create { child, .. }
+            | Operator::Merge { child, .. }
+            | Operator::Call { child, .. } => match child {
+                Some(c) => vec![c],
+                None => vec![],
+            },
+        }
+    }
+}
+
 // ── Supporting types ──────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, PartialEq, Eq)]
