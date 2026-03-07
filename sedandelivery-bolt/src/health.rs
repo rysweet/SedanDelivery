@@ -10,9 +10,11 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use axum::extract::State;
+use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::Router;
+use gql_core::storage::GraphStore;
 use metrics_exporter_prometheus::PrometheusHandle;
 use serde::Serialize;
 
@@ -22,6 +24,7 @@ pub struct HealthState {
     pub prometheus_handle: PrometheusHandle,
     pub active_connections: Arc<AtomicU64>,
     pub start_time: Instant,
+    pub store: Arc<dyn GraphStore>,
 }
 
 #[derive(Serialize)]
@@ -29,6 +32,8 @@ struct HealthResponse {
     status: &'static str,
     connections: u64,
     uptime_seconds: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
 }
 
 /// Spawn the health/metrics HTTP server as a background tokio task.
@@ -83,12 +88,29 @@ pub fn spawn_health_server(state: HealthState) {
 }
 
 async fn health_handler(State(state): State<HealthState>) -> impl IntoResponse {
-    let resp = HealthResponse {
-        status: "ok",
-        connections: state.active_connections.load(Ordering::Relaxed),
-        uptime_seconds: state.start_time.elapsed().as_secs(),
-    };
-    axum::Json(resp)
+    let connections = state.active_connections.load(Ordering::Relaxed);
+    let uptime_seconds = state.start_time.elapsed().as_secs();
+
+    match state.store.graph_exists("__health_probe") {
+        Ok(_) => (
+            StatusCode::OK,
+            axum::Json(HealthResponse {
+                status: "ok",
+                connections,
+                uptime_seconds,
+                error: None,
+            }),
+        ),
+        Err(e) => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            axum::Json(HealthResponse {
+                status: "degraded",
+                connections,
+                uptime_seconds,
+                error: Some(e.to_string()),
+            }),
+        ),
+    }
 }
 
 async fn metrics_handler(State(state): State<HealthState>) -> Response {

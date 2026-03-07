@@ -148,6 +148,7 @@ async fn main() {
         prometheus_handle,
         active_connections: Arc::clone(&active_connections),
         start_time,
+        store: Arc::clone(&store),
     });
 
     let listener = TcpListener::bind(&bind_addr)

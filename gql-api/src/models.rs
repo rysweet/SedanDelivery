@@ -11,6 +11,8 @@ pub struct HealthResponse {
     pub status: &'static str,
     pub version: &'static str,
     pub demo_graph_exists: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 // ── Graphs ────────────────────────────────────────────────────────────────────
@@ -261,6 +263,7 @@ mod tests {
             status: "ok",
             version: "0.1.0",
             demo_graph_exists: true,
+            error: None,
         };
         let json = serde_json::to_value(&resp).unwrap();
         assert_eq!(json["status"], "ok");

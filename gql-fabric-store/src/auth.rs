@@ -19,7 +19,10 @@ impl FabricGraphStore {
         // Phase 1: Check the cache under the lock.  If the token is still
         // valid, clone it and return immediately -- no HTTP call needed.
         {
-            let cache = self.token.lock().unwrap_or_else(|e| e.into_inner());
+            let cache = self.token.lock().unwrap_or_else(|e| {
+                tracing::warn!("token cache mutex was poisoned, recovering");
+                e.into_inner()
+            });
             if let Some(ref c) = *cache {
                 // Safe comparison: avoids Instant subtraction panic when
                 // expires_at is in the past.
@@ -70,7 +73,10 @@ impl FabricGraphStore {
         // may have raced us and already written a fresh token -- that is fine;
         // we overwrite with our equally-fresh one.
         {
-            let mut cache = self.token.lock().unwrap_or_else(|e| e.into_inner());
+            let mut cache = self.token.lock().unwrap_or_else(|e| {
+                tracing::warn!("token cache mutex was poisoned, recovering");
+                e.into_inner()
+            });
             *cache = Some(TokenCache {
                 token: token.clone(),
                 expires_at: Instant::now() + Duration::from_secs(expires_in),
