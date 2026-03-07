@@ -327,9 +327,9 @@ impl<'a> QueryExecutor<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ast::{Expr, Identifier, Label};
+    use crate::ast::{Direction, Expr, Identifier, Label, RelType};
     use crate::executor::budget::ExecutionBudget;
-    use crate::planner::{AggFunction, Operator};
+    use crate::planner::{AggFunction, Operator, SetItem};
     use crate::storage::InMemoryGraphStore;
 
     fn make_store() -> InMemoryGraphStore {

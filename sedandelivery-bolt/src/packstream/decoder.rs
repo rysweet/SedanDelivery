@@ -17,12 +17,25 @@ pub enum DecodeError {
     TooManyFields(usize),
     #[error("map key is not a string at offset {0}")]
     NonStringMapKey(usize),
+    #[error("nesting depth exceeds maximum ({0})")]
+    MaxDepthExceeded(usize),
 }
+
+/// Maximum nesting depth for recursive structures (lists, maps, structures).
+/// Prevents stack overflow from maliciously crafted deeply-nested messages.
+const MAX_DECODE_DEPTH: usize = 128;
 
 /// Decode one `BoltValue` from the front of `buf`.
 ///
 /// Returns `(value, bytes_consumed)` on success.
 pub fn decode(buf: &[u8]) -> Result<(BoltValue, usize), DecodeError> {
+    decode_inner(buf, 0)
+}
+
+fn decode_inner(buf: &[u8], depth: usize) -> Result<(BoltValue, usize), DecodeError> {
+    if depth > MAX_DECODE_DEPTH {
+        return Err(DecodeError::MaxDepthExceeded(MAX_DECODE_DEPTH));
+    }
     if buf.is_empty() {
         return Err(DecodeError::UnexpectedEof {
             offset: 0,
@@ -133,42 +146,42 @@ pub fn decode(buf: &[u8]) -> Result<(BoltValue, usize), DecodeError> {
         0xD4 => {
             need(buf, 1, 1)?;
             let count = buf[1] as usize;
-            decode_list(buf, 2, count)
+            decode_list(buf, 2, count, depth)
         }
 
         // ── List16 ──────────────────────────────────────────────────
         0xD5 => {
             need(buf, 1, 2)?;
             let count = u16::from_be_bytes([buf[1], buf[2]]) as usize;
-            decode_list(buf, 3, count)
+            decode_list(buf, 3, count, depth)
         }
 
         // ── List32 ──────────────────────────────────────────────────
         0xD6 => {
             need(buf, 1, 4)?;
             let count = u32::from_be_bytes(buf[1..5].try_into().unwrap()) as usize; // safe: need() verified 4 bytes
-            decode_list(buf, 5, count)
+            decode_list(buf, 5, count, depth)
         }
 
         // ── Map8 ────────────────────────────────────────────────────
         0xD8 => {
             need(buf, 1, 1)?;
             let count = buf[1] as usize;
-            decode_map(buf, 2, count)
+            decode_map(buf, 2, count, depth)
         }
 
         // ── Map16 ───────────────────────────────────────────────────
         0xD9 => {
             need(buf, 1, 2)?;
             let count = u16::from_be_bytes([buf[1], buf[2]]) as usize;
-            decode_map(buf, 3, count)
+            decode_map(buf, 3, count, depth)
         }
 
         // ── Map32 ───────────────────────────────────────────────────
         0xDA => {
             need(buf, 1, 4)?;
             let count = u32::from_be_bytes(buf[1..5].try_into().unwrap()) as usize; // safe: need() verified 4 bytes
-            decode_map(buf, 5, count)
+            decode_map(buf, 5, count, depth)
         }
 
         // ── TinyString (0x80..=0x8F) ────────────────────────────────
@@ -182,13 +195,13 @@ pub fn decode(buf: &[u8]) -> Result<(BoltValue, usize), DecodeError> {
         // ── TinyList (0x90..=0x9F) ──────────────────────────────────
         m if (0x90..=0x9F).contains(&m) => {
             let count = (m & 0x0F) as usize;
-            decode_list(buf, 1, count)
+            decode_list(buf, 1, count, depth)
         }
 
         // ── TinyMap (0xA0..=0xAF) ───────────────────────────────────
         m if (0xA0..=0xAF).contains(&m) => {
             let count = (m & 0x0F) as usize;
-            decode_map(buf, 1, count)
+            decode_map(buf, 1, count, depth)
         }
 
         // ── Structure (0xB0..=0xBF) ─────────────────────────────────
@@ -199,7 +212,7 @@ pub fn decode(buf: &[u8]) -> Result<(BoltValue, usize), DecodeError> {
             let mut offset = 2;
             let mut fields = Vec::with_capacity(nfields);
             for _ in 0..nfields {
-                let (val, consumed) = decode(&buf[offset..])?;
+                let (val, consumed) = decode_inner(&buf[offset..], depth + 1)?;
                 fields.push(val);
                 offset += consumed;
             }
@@ -238,11 +251,16 @@ fn need(buf: &[u8], offset: usize, needed: usize) -> Result<(), DecodeError> {
 const MAX_PREALLOC: usize = 4096;
 
 /// Decode `count` list items starting at `offset` in `buf`.
-fn decode_list(buf: &[u8], start: usize, count: usize) -> Result<(BoltValue, usize), DecodeError> {
+fn decode_list(
+    buf: &[u8],
+    start: usize,
+    count: usize,
+    depth: usize,
+) -> Result<(BoltValue, usize), DecodeError> {
     let mut offset = start;
     let mut items = Vec::with_capacity(count.min(MAX_PREALLOC));
     for _ in 0..count {
-        let (val, consumed) = decode(&buf[offset..])?;
+        let (val, consumed) = decode_inner(&buf[offset..], depth + 1)?;
         items.push(val);
         offset += consumed;
     }
@@ -250,17 +268,22 @@ fn decode_list(buf: &[u8], start: usize, count: usize) -> Result<(BoltValue, usi
 }
 
 /// Decode `count` map entries starting at `offset` in `buf`.
-fn decode_map(buf: &[u8], start: usize, count: usize) -> Result<(BoltValue, usize), DecodeError> {
+fn decode_map(
+    buf: &[u8],
+    start: usize,
+    count: usize,
+    depth: usize,
+) -> Result<(BoltValue, usize), DecodeError> {
     let mut offset = start;
     let mut entries = Vec::with_capacity(count.min(MAX_PREALLOC));
     for _ in 0..count {
-        let (key_val, key_consumed) = decode(&buf[offset..])?;
+        let (key_val, key_consumed) = decode_inner(&buf[offset..], depth + 1)?;
         offset += key_consumed;
         let key = match key_val {
             BoltValue::String(s) => s,
             _ => return Err(DecodeError::NonStringMapKey(offset - key_consumed)),
         };
-        let (val, val_consumed) = decode(&buf[offset..])?;
+        let (val, val_consumed) = decode_inner(&buf[offset..], depth + 1)?;
         offset += val_consumed;
         entries.push((key, val));
     }

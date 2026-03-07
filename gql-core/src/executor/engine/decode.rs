@@ -74,7 +74,7 @@ mod tests {
     use super::super::helpers::cmp_values;
     use crate::ast::{Direction, Expr, Identifier, Label, RelType};
     use crate::executor::budget::ExecutionBudget;
-    use crate::executor::engine::{MutationStats, QueryExecutor, Row};
+    use crate::executor::engine::{ExecContext, MutationStats, QueryExecutor, Row};
     use crate::planner::Operator;
     use crate::storage::{GraphStore, InMemoryGraphStore};
     use crate::types::Value;
@@ -238,9 +238,13 @@ mod tests {
         };
         let mut budget = ExecutionBudget::unlimited();
         let mut stats = MutationStats::default();
-        let rows = executor
-            .exec_operator("g", &plan, &mut budget, &[start_row], &mut stats)
-            .unwrap();
+        let mut cx = ExecContext {
+            graph: "g",
+            budget: &mut budget,
+            outer_rows: &[start_row],
+            stats: &mut stats,
+        };
+        let rows = executor.exec_operator(&mut cx, &plan).unwrap();
         assert_eq!(rows.len(), 1);
         match &rows[0]["p"] {
             Value::Path { nodes, edges } => {
@@ -295,9 +299,13 @@ mod tests {
         };
         let mut budget = ExecutionBudget::unlimited();
         let mut stats = MutationStats::default();
-        let rows = executor
-            .exec_operator("g", &plan, &mut budget, &[start_row], &mut stats)
-            .unwrap();
+        let mut cx = ExecContext {
+            graph: "g",
+            budget: &mut budget,
+            outer_rows: &[start_row],
+            stats: &mut stats,
+        };
+        let rows = executor.exec_operator(&mut cx, &plan).unwrap();
         assert_eq!(rows.len(), 2);
         for row in &rows {
             match &row["p"] {
@@ -332,9 +340,13 @@ mod tests {
         };
         let mut budget = ExecutionBudget::unlimited();
         let mut stats = MutationStats::default();
-        let rows = executor
-            .exec_operator("g", &plan, &mut budget, &[start_row], &mut stats)
-            .unwrap();
+        let mut cx = ExecContext {
+            graph: "g",
+            budget: &mut budget,
+            outer_rows: &[start_row],
+            stats: &mut stats,
+        };
+        let rows = executor.exec_operator(&mut cx, &plan).unwrap();
         assert_eq!(rows.len(), 0);
     }
 

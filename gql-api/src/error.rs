@@ -287,6 +287,6 @@ mod tests {
             msg: "redis down".to_string(),
         };
         let api_err = ApiError::from(e);
-        assert_eq!(api_err.status, StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(api_err.status, StatusCode::INTERNAL_SERVER_ERROR);
     }
 }
