@@ -14,13 +14,14 @@
 use std::net::SocketAddr;
 
 use axum::http::HeaderValue;
-use axum::Router;
+use axum::{middleware, Router};
 use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::trace::TraceLayer;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 
 use gql_api::auth;
+use gql_api::rate_limit;
 use gql_api::routes;
 use gql_api::state::AppState;
 
@@ -109,6 +110,11 @@ async fn main() {
         );
     }
 
+    // Per-IP rate limiting — configurable via GQL_API_RATE_LIMIT_RPS (default 100).
+    let rps = rate_limit::rps_from_env();
+    let limiter = rate_limit::build_limiter(rps);
+    info!("Per-IP rate limit: {rps} requests/second");
+
     let app = Router::new()
         .merge(routes::health::router())
         .merge(routes::graphs::router())
@@ -119,6 +125,8 @@ async fn main() {
         .merge(routes::neighbors::router())
         .merge(routes::export_import::router())
         .layer(axum::middleware::from_fn(auth::require_entra_auth))
+        .layer(axum::middleware::from_fn(rate_limit::rate_limit_middleware))
+        .layer(axum::Extension(limiter))
         .layer(cors)
         .layer(TraceLayer::new_for_http())
         .with_state(state);
