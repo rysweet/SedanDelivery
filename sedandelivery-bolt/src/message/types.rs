@@ -121,9 +121,9 @@ pub fn decode_client_message(bytes: &[u8]) -> Result<ClientMessage, MessageError
         TAG_RUN => {
             expect_field_count(tag, 3, &fields)?;
             let mut it = fields.into_iter();
-            let query = extract_string_from_value(0, it.next().unwrap())?;
-            let params = extract_map_from_value(1, it.next().unwrap())?;
-            let extra = extract_map_from_value(2, it.next().unwrap())?;
+            let query = extract_string_from_value(0, it.next().unwrap())?; // safe: field count verified as 3
+            let params = extract_map_from_value(1, it.next().unwrap())?; // safe: field count verified as 3
+            let extra = extract_map_from_value(2, it.next().unwrap())?; // safe: field count verified as 3
             Ok(ClientMessage::Run {
                 query,
                 params,

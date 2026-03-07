@@ -43,7 +43,7 @@ pub fn decode(buf: &[u8]) -> Result<(BoltValue, usize), DecodeError> {
         // ── Float64 ─────────────────────────────────────────────────
         0xC1 => {
             need(buf, 1, 8)?;
-            let f = f64::from_be_bytes(buf[1..9].try_into().unwrap());
+            let f = f64::from_be_bytes(buf[1..9].try_into().unwrap()); // safe: need() verified 8 bytes
             Ok((BoltValue::Float(f), 9))
         }
 
@@ -64,14 +64,14 @@ pub fn decode(buf: &[u8]) -> Result<(BoltValue, usize), DecodeError> {
         // ── Int32 ───────────────────────────────────────────────────
         0xCA => {
             need(buf, 1, 4)?;
-            let v = i32::from_be_bytes(buf[1..5].try_into().unwrap()) as i64;
+            let v = i32::from_be_bytes(buf[1..5].try_into().unwrap()) as i64; // safe: need() verified 4 bytes
             Ok((BoltValue::Int(v), 5))
         }
 
         // ── Int64 ───────────────────────────────────────────────────
         0xCB => {
             need(buf, 1, 8)?;
-            let v = i64::from_be_bytes(buf[1..9].try_into().unwrap());
+            let v = i64::from_be_bytes(buf[1..9].try_into().unwrap()); // safe: need() verified 8 bytes
             Ok((BoltValue::Int(v), 9))
         }
 
@@ -96,7 +96,7 @@ pub fn decode(buf: &[u8]) -> Result<(BoltValue, usize), DecodeError> {
         // ── Bytes32 ─────────────────────────────────────────────────
         0xCE => {
             need(buf, 1, 4)?;
-            let len = u32::from_be_bytes(buf[1..5].try_into().unwrap()) as usize;
+            let len = u32::from_be_bytes(buf[1..5].try_into().unwrap()) as usize; // safe: need() verified 4 bytes
             need(buf, 5, len)?;
             let data = buf[5..5 + len].to_vec();
             Ok((BoltValue::Bytes(data), 5 + len))
@@ -123,7 +123,7 @@ pub fn decode(buf: &[u8]) -> Result<(BoltValue, usize), DecodeError> {
         // ── String32 ────────────────────────────────────────────────
         0xD2 => {
             need(buf, 1, 4)?;
-            let len = u32::from_be_bytes(buf[1..5].try_into().unwrap()) as usize;
+            let len = u32::from_be_bytes(buf[1..5].try_into().unwrap()) as usize; // safe: need() verified 4 bytes
             need(buf, 5, len)?;
             let s = String::from_utf8(buf[5..5 + len].to_vec())?;
             Ok((BoltValue::String(s), 5 + len))
@@ -146,7 +146,7 @@ pub fn decode(buf: &[u8]) -> Result<(BoltValue, usize), DecodeError> {
         // ── List32 ──────────────────────────────────────────────────
         0xD6 => {
             need(buf, 1, 4)?;
-            let count = u32::from_be_bytes(buf[1..5].try_into().unwrap()) as usize;
+            let count = u32::from_be_bytes(buf[1..5].try_into().unwrap()) as usize; // safe: need() verified 4 bytes
             decode_list(buf, 5, count)
         }
 
@@ -167,7 +167,7 @@ pub fn decode(buf: &[u8]) -> Result<(BoltValue, usize), DecodeError> {
         // ── Map32 ───────────────────────────────────────────────────
         0xDA => {
             need(buf, 1, 4)?;
-            let count = u32::from_be_bytes(buf[1..5].try_into().unwrap()) as usize;
+            let count = u32::from_be_bytes(buf[1..5].try_into().unwrap()) as usize; // safe: need() verified 4 bytes
             decode_map(buf, 5, count)
         }
 
