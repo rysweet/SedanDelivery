@@ -34,14 +34,18 @@ pub fn router() -> Router<AppState> {
 /// Convert optional JSON params map to `HashMap<String, Value>` for the executor.
 fn convert_params(
     params: Option<&serde_json::Map<String, serde_json::Value>>,
-) -> HashMap<String, Value> {
-    match params {
-        Some(map) => map
-            .iter()
-            .filter_map(|(k, v)| json_to_value(v).map(|val| (k.clone(), val)))
-            .collect(),
-        None => HashMap::new(),
+) -> Result<HashMap<String, Value>, ApiError> {
+    let Some(map) = params else {
+        return Ok(HashMap::new());
+    };
+    let mut result = HashMap::with_capacity(map.len());
+    for (k, v) in map {
+        let val = json_to_value(v).ok_or_else(|| {
+            ApiError::bad_request(format!("unsupported value for parameter '{k}'"))
+        })?;
+        result.insert(k.clone(), val);
     }
+    Ok(result)
 }
 
 // ── POST /graphs/{name}/query ─────────────────────────────────────────────────
@@ -63,7 +67,7 @@ async fn query_handler(
         .plan(&ast)
         .map_err(|e| ApiError::bad_request(e.to_string()))?;
 
-    let params = convert_params(body.params.as_ref());
+    let params = convert_params(body.params.as_ref())?;
 
     // Move the Arc and the plan into spawn_blocking so CPU-bound execution
     // does not block the Tokio async thread pool.
@@ -115,7 +119,7 @@ async fn mutate_handler(
         .plan(&ast)
         .map_err(|e| ApiError::bad_request(e.to_string()))?;
 
-    let params = convert_params(body.params.as_ref());
+    let params = convert_params(body.params.as_ref())?;
 
     // Move the Arc and plan into spawn_blocking so CPU-bound execution
     // does not block the Tokio async thread pool.
@@ -150,14 +154,14 @@ mod tests {
 
     #[test]
     fn convert_params_none_returns_empty() {
-        let result = convert_params(None);
+        let result = convert_params(None).unwrap();
         assert!(result.is_empty());
     }
 
     #[test]
     fn convert_params_empty_map() {
         let map = serde_json::Map::new();
-        let result = convert_params(Some(&map));
+        let result = convert_params(Some(&map)).unwrap();
         assert!(result.is_empty());
     }
 
@@ -165,7 +169,7 @@ mod tests {
     fn convert_params_string_value() {
         let mut map = serde_json::Map::new();
         map.insert("name".to_string(), json!("Alice"));
-        let result = convert_params(Some(&map));
+        let result = convert_params(Some(&map)).unwrap();
         assert_eq!(result.len(), 1);
         assert_eq!(result["name"], Value::Str("Alice".into()));
     }
@@ -174,7 +178,7 @@ mod tests {
     fn convert_params_int_value() {
         let mut map = serde_json::Map::new();
         map.insert("age".to_string(), json!(30));
-        let result = convert_params(Some(&map));
+        let result = convert_params(Some(&map)).unwrap();
         assert_eq!(result["age"], Value::Int(30));
     }
 
@@ -185,7 +189,7 @@ mod tests {
         map.insert("age".to_string(), json!(25));
         map.insert("active".to_string(), json!(true));
         map.insert("score".to_string(), json!(3.14));
-        let result = convert_params(Some(&map));
+        let result = convert_params(Some(&map)).unwrap();
         assert_eq!(result.len(), 4);
         assert_eq!(result["name"], Value::Str("Bob".into()));
         assert_eq!(result["age"], Value::Int(25));
@@ -197,7 +201,7 @@ mod tests {
     fn convert_params_null_value() {
         let mut map = serde_json::Map::new();
         map.insert("x".to_string(), json!(null));
-        let result = convert_params(Some(&map));
+        let result = convert_params(Some(&map)).unwrap();
         assert_eq!(result["x"], Value::Null);
     }
 
@@ -205,7 +209,7 @@ mod tests {
     fn convert_params_list_value() {
         let mut map = serde_json::Map::new();
         map.insert("ids".to_string(), json!([1, 2, 3]));
-        let result = convert_params(Some(&map));
+        let result = convert_params(Some(&map)).unwrap();
         assert!(matches!(result["ids"], Value::List(_)));
     }
 }

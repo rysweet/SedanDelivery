@@ -38,6 +38,26 @@ fn import_body_limit() -> usize {
     })
 }
 
+/// Maximum number of elements (nodes + edges) per import. Default 10 000.
+/// Override via `GQL_API_IMPORT_LIMIT`.
+fn import_element_limit() -> &'static usize {
+    static LIMIT: OnceLock<usize> = OnceLock::new();
+    LIMIT.get_or_init(|| {
+        std::env::var("GQL_API_IMPORT_LIMIT")
+            .ok()
+            .and_then(|v| match v.parse() {
+                Ok(val) => Some(val),
+                Err(_) => {
+                    tracing::warn!(
+                        "invalid value for GQL_API_IMPORT_LIMIT: {v:?}, using default 10000"
+                    );
+                    None
+                }
+            })
+            .unwrap_or(10_000)
+    })
+}
+
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/graphs/{name}/export", get(export_handler))
@@ -128,18 +148,7 @@ async fn import_handler(
 
     // Guard: reject imports that exceed the element limit to prevent DoS via
     // unbounded memory allocation.  The limit is configurable via env var.
-    let import_limit: usize = std::env::var("GQL_API_IMPORT_LIMIT")
-        .ok()
-        .and_then(|v| match v.parse() {
-            Ok(val) => Some(val),
-            Err(_) => {
-                tracing::warn!(
-                    "invalid value for GQL_API_IMPORT_LIMIT: {v:?}, using default 10000"
-                );
-                None
-            }
-        })
-        .unwrap_or(10_000);
+    let import_limit: usize = *import_element_limit();
     let total_elements = body.nodes.len().saturating_add(body.edges.len());
     if total_elements > import_limit {
         return Err(ApiError::bad_request(format!(
