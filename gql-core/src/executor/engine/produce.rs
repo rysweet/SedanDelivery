@@ -2,22 +2,18 @@
 //! exec_unwind, exec_union.
 
 use crate::error::{ExecutionError, GqlError};
-use crate::executor::budget::ExecutionBudget;
 use crate::planner::Operator;
 use crate::storage::{EdgeId, NodeId};
 use crate::types::Value;
 
 use super::helpers::{inject_parameters, RowDedupSet};
-use super::{MutationStats, QueryExecutor, Row};
+use super::{ExecContext, QueryExecutor, Row};
 
 impl<'a> QueryExecutor<'a> {
     pub(crate) fn exec_assemble_path(
         &self,
-        graph: &str,
+        cx: &mut ExecContext<'_>,
         op: &Operator,
-        budget: &mut ExecutionBudget,
-        outer_rows: &[Row],
-        stats: &mut MutationStats,
     ) -> Result<Vec<Row>, GqlError> {
         let Operator::AssemblePath {
             path_alias,
@@ -28,10 +24,10 @@ impl<'a> QueryExecutor<'a> {
         else {
             unreachable!()
         };
-        let input = self.exec_operator(graph, child, budget, outer_rows, stats)?;
+        let input = self.exec_operator(cx, child)?;
         let mut out = Vec::with_capacity(input.len());
         for mut row in input {
-            budget.check_or_err()?;
+            cx.budget.check_or_err()?;
 
             let mut nodes: Vec<NodeId> = Vec::new();
             let mut edges: Vec<EdgeId> = Vec::new();
@@ -101,11 +97,8 @@ impl<'a> QueryExecutor<'a> {
 
     pub(crate) fn exec_call(
         &self,
-        graph: &str,
+        cx: &mut ExecContext<'_>,
         op: &Operator,
-        budget: &mut ExecutionBudget,
-        outer_rows: &[Row],
-        stats: &mut MutationStats,
     ) -> Result<Vec<Row>, GqlError> {
         let Operator::Call {
             procedure,
@@ -125,7 +118,7 @@ impl<'a> QueryExecutor<'a> {
         })?;
 
         let input_rows = if let Some(ch) = child {
-            self.exec_operator(graph, ch, budget, outer_rows, stats)?
+            self.exec_operator(cx, ch)?
         } else {
             let mut row = Row::new();
             inject_parameters(&mut row, &self.parameters);
@@ -134,12 +127,12 @@ impl<'a> QueryExecutor<'a> {
 
         let mut out = Vec::with_capacity(input_rows.len());
         for input_row in &input_rows {
-            budget.check_or_err()?;
+            cx.budget.check_or_err()?;
 
-            let ctx = self.build_filter_ctx(graph, input_row)?;
+            let ctx = self.build_filter_ctx(cx.graph, input_row)?;
             let mut arg_vals = Vec::with_capacity(args.len());
             for arg_expr in args {
-                let val = self.eval_with_storage(graph, arg_expr, input_row, &ctx)?;
+                let val = self.eval_with_storage(cx.graph, arg_expr, input_row, &ctx)?;
                 arg_vals.push(val);
             }
 
@@ -148,13 +141,13 @@ impl<'a> QueryExecutor<'a> {
             if proc_def.output_columns.is_empty() && child.is_none() {
                 // Standalone void procedure: produce no output rows.
             } else if proc_def.output_columns.is_empty() {
-                budget.record_row();
+                cx.budget.record_row();
                 out.push(input_row.clone());
             } else if proc_rows.is_empty() {
                 // Procedure returned no rows: drop this input row.
             } else {
                 for proc_row in proc_rows {
-                    budget.check_or_err()?;
+                    cx.budget.check_or_err()?;
                     let mut new_row = input_row.clone();
                     if !yield_items.is_empty() {
                         for (name, alias) in yield_items {
@@ -167,7 +160,7 @@ impl<'a> QueryExecutor<'a> {
                             new_row.insert(k.clone(), v.clone());
                         }
                     }
-                    budget.record_row();
+                    cx.budget.record_row();
                     out.push(new_row);
                 }
             }
@@ -177,16 +170,13 @@ impl<'a> QueryExecutor<'a> {
 
     pub(crate) fn exec_produce_results(
         &self,
-        graph: &str,
+        cx: &mut ExecContext<'_>,
         op: &Operator,
-        budget: &mut ExecutionBudget,
-        outer_rows: &[Row],
-        stats: &mut MutationStats,
     ) -> Result<Vec<Row>, GqlError> {
         let Operator::ProduceResults { columns, child } = op else {
             unreachable!()
         };
-        let input = self.exec_operator(graph, child, budget, outer_rows, stats)?;
+        let input = self.exec_operator(cx, child)?;
 
         if columns.is_empty() {
             return Ok(vec![]);
@@ -212,8 +202,8 @@ impl<'a> QueryExecutor<'a> {
         }
 
         for row in &input {
-            budget.check_or_err()?;
-            let ctx = self.build_filter_ctx(graph, row)?;
+            cx.budget.check_or_err()?;
+            let ctx = self.build_filter_ctx(cx.graph, row)?;
             let mut new_row = Row::new();
 
             if has_star {
@@ -226,7 +216,7 @@ impl<'a> QueryExecutor<'a> {
                         }
                     } else {
                         let val = try_eval_streaming!(
-                            self.eval_with_storage(graph, expr, row, &ctx),
+                            self.eval_with_storage(cx.graph, expr, row, &ctx),
                             out
                         );
                         new_row.insert(col_name.clone(), val);
@@ -235,11 +225,11 @@ impl<'a> QueryExecutor<'a> {
             } else {
                 for (col_name, expr) in columns {
                     let val =
-                        try_eval_streaming!(self.eval_with_storage(graph, expr, row, &ctx), out);
+                        try_eval_streaming!(self.eval_with_storage(cx.graph, expr, row, &ctx), out);
                     new_row.insert(col_name.clone(), val);
                 }
             }
-            budget.record_row();
+            cx.budget.record_row();
             out.push(new_row);
         }
         Ok(out)
@@ -247,11 +237,8 @@ impl<'a> QueryExecutor<'a> {
 
     pub(crate) fn exec_unwind(
         &self,
-        graph: &str,
+        cx: &mut ExecContext<'_>,
         op: &Operator,
-        budget: &mut ExecutionBudget,
-        outer_rows: &[Row],
-        stats: &mut MutationStats,
     ) -> Result<Vec<Row>, GqlError> {
         let Operator::Unwind {
             list_expr,
@@ -261,20 +248,20 @@ impl<'a> QueryExecutor<'a> {
         else {
             unreachable!()
         };
-        let input = self.exec_operator(graph, child, budget, outer_rows, stats)?;
+        let input = self.exec_operator(cx, child)?;
         let mut out = Vec::with_capacity(input.len());
 
         for row in input {
-            budget.check_or_err()?;
-            let ctx = self.build_filter_ctx(graph, &row)?;
-            let list_val = self.eval_with_storage(graph, list_expr, &row, &ctx)?;
+            cx.budget.check_or_err()?;
+            let ctx = self.build_filter_ctx(cx.graph, &row)?;
+            let list_val = self.eval_with_storage(cx.graph, list_expr, &row, &ctx)?;
             match list_val {
                 Value::List(items) => {
                     for item in items {
-                        budget.check_or_err()?;
+                        cx.budget.check_or_err()?;
                         let mut new_row = row.clone();
                         new_row.insert(alias.0.clone(), item);
-                        budget.record_row();
+                        cx.budget.record_row();
                         out.push(new_row);
                     }
                 }
@@ -294,17 +281,14 @@ impl<'a> QueryExecutor<'a> {
 
     pub(crate) fn exec_union(
         &self,
-        graph: &str,
+        cx: &mut ExecContext<'_>,
         op: &Operator,
-        budget: &mut ExecutionBudget,
-        outer_rows: &[Row],
-        stats: &mut MutationStats,
     ) -> Result<Vec<Row>, GqlError> {
         let Operator::Union { left, right, all } = op else {
             unreachable!()
         };
-        let left_rows = self.exec_operator(graph, left, budget, outer_rows, stats)?;
-        let right_rows = self.exec_operator(graph, right, budget, outer_rows, stats)?;
+        let left_rows = self.exec_operator(cx, left)?;
+        let right_rows = self.exec_operator(cx, right)?;
 
         let mut out = Vec::with_capacity(left_rows.len() + right_rows.len());
         if *all {
@@ -313,7 +297,7 @@ impl<'a> QueryExecutor<'a> {
         } else {
             let mut seen = RowDedupSet::new();
             for row in left_rows.into_iter().chain(right_rows) {
-                budget.check_or_err()?;
+                cx.budget.check_or_err()?;
                 if seen.insert(&row) {
                     out.push(row);
                 }

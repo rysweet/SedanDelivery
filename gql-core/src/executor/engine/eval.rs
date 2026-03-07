@@ -10,7 +10,7 @@ use crate::planner::QueryPlanner;
 use crate::types::Value;
 
 use super::helpers::{eval_binary_values, value_to_expr};
-use super::{MutationStats, QueryExecutor, Row};
+use super::{ExecContext, MutationStats, QueryExecutor, Row};
 
 impl<'a> QueryExecutor<'a> {
     /// Build a `FilterRow` (borrowed string-key map) from an owned `Row`.
@@ -679,7 +679,13 @@ impl<'a> QueryExecutor<'a> {
         let outer = vec![outer_row.clone()];
         let mut budget = ExecutionBudget::default_budget();
         let mut stats = MutationStats::default();
-        let sub_rows = self.exec_operator(graph, &sub_op, &mut budget, &outer, &mut stats)?;
+        let mut sub_ctx = ExecContext {
+            graph,
+            budget: &mut budget,
+            outer_rows: &outer,
+            stats: &mut stats,
+        };
+        let sub_rows = self.exec_operator(&mut sub_ctx, &sub_op)?;
 
         let has_match = sub_rows.iter().any(|sub_row| {
             outer_row
@@ -702,7 +708,13 @@ impl<'a> QueryExecutor<'a> {
         let outer = vec![outer_row.clone()];
         let mut budget = ExecutionBudget::default_budget();
         let mut stats = MutationStats::default();
-        let sub_rows = self.exec_operator(graph, &inner_op, &mut budget, &outer, &mut stats)?;
+        let mut sub_ctx = ExecContext {
+            graph,
+            budget: &mut budget,
+            outer_rows: &outer,
+            stats: &mut stats,
+        };
+        let sub_rows = self.exec_operator(&mut sub_ctx, &inner_op)?;
         let has_match = sub_rows.iter().any(|sub_row| {
             outer_row
                 .iter()
@@ -727,7 +739,13 @@ impl<'a> QueryExecutor<'a> {
         let outer = vec![outer_row.clone()];
         let mut budget = ExecutionBudget::default_budget();
         let mut stats = MutationStats::default();
-        let sub_rows = self.exec_operator(graph, &sub_op, &mut budget, &outer, &mut stats)?;
+        let mut sub_ctx = ExecContext {
+            graph,
+            budget: &mut budget,
+            outer_rows: &outer,
+            stats: &mut stats,
+        };
+        let sub_rows = self.exec_operator(&mut sub_ctx, &sub_op)?;
 
         let mut result = Vec::new();
         for sub_row in &sub_rows {

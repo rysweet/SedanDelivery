@@ -5,7 +5,6 @@ use std::collections::{HashMap, HashSet, VecDeque};
 
 use crate::ast::Direction;
 use crate::error::{ExecutionError, GqlError};
-use crate::executor::budget::ExecutionBudget;
 use crate::executor::filter::eval_expr;
 use crate::executor::filter::Row as FilterRow;
 use crate::planner::Operator;
@@ -13,24 +12,21 @@ use crate::storage::{EdgeId, NodeId, RangeQuery};
 use crate::types::Value;
 
 use super::helpers::{extract_node_id, get_adj_entries, inject_parameters, undefined_var};
-use super::{BfsArena, MutationStats, QueryExecutor, Row};
+use super::{BfsArena, ExecContext, QueryExecutor, Row};
 
 impl<'a> QueryExecutor<'a> {
     pub(crate) fn exec_node_scan(
         &self,
-        graph: &str,
+        cx: &mut ExecContext<'_>,
         op: &Operator,
-        budget: &mut ExecutionBudget,
-        outer_rows: &[Row],
-        _stats: &mut MutationStats,
     ) -> Result<Vec<Row>, GqlError> {
         let Operator::NodeScan { label, alias } = op else {
             unreachable!()
         };
         let node_ids = if let Some(lbl) = label {
-            self.store.find_nodes_by_label(graph, lbl.as_str())?
+            self.store.find_nodes_by_label(cx.graph, lbl.as_str())?
         } else {
-            self.store.all_node_ids(graph)?
+            self.store.all_node_ids(cx.graph)?
         };
 
         // When used as the inner side of Apply/LeftOuterApply,
@@ -38,31 +34,31 @@ impl<'a> QueryExecutor<'a> {
         // (e.g., Filter) may reference. Merge them into each produced row.
         // Exclude internal anonymous edge aliases (__anon_rel_*) — these are
         // per-pattern tracking variables and must not leak into inner patterns.
-        let base_rows: &[Row] = if outer_rows.is_empty() {
+        let base_rows: &[Row] = if cx.outer_rows.is_empty() {
             &[]
         } else {
-            outer_rows
+            cx.outer_rows
         };
 
         let mut rows = Vec::with_capacity(node_ids.len());
         for id in &node_ids {
-            if budget.reached_row_cap() {
+            if cx.budget.reached_row_cap() {
                 break;
             }
-            budget.check_or_err()?;
+            cx.budget.check_or_err()?;
             if base_rows.is_empty() {
                 let mut row = Row::new();
                 row.insert(alias.0.clone(), Value::Node(*id));
                 inject_parameters(&mut row, &self.parameters);
-                budget.record_row();
-                budget.record_leaf_row();
+                cx.budget.record_row();
+                cx.budget.record_leaf_row();
                 rows.push(row);
             } else {
                 for outer_row in base_rows {
-                    if budget.reached_row_cap() {
+                    if cx.budget.reached_row_cap() {
                         break;
                     }
-                    budget.check_or_err()?;
+                    cx.budget.check_or_err()?;
                     // If the alias is already pre-bound in outer_row to a specific node,
                     // only produce a row when the scanned node matches that bound node.
                     // This correctly handles correlated subqueries and repeated MATCH clauses.
@@ -100,8 +96,8 @@ impl<'a> QueryExecutor<'a> {
                         existing.extend(outer_edge_keys);
                         row.insert("__outer_edge_vars__".to_string(), Value::List(existing));
                     }
-                    budget.record_row();
-                    budget.record_leaf_row();
+                    cx.budget.record_row();
+                    cx.budget.record_leaf_row();
                     rows.push(row);
                 }
             }
@@ -111,11 +107,8 @@ impl<'a> QueryExecutor<'a> {
 
     pub(crate) fn exec_expand(
         &self,
-        graph: &str,
+        cx: &mut ExecContext<'_>,
         op: &Operator,
-        budget: &mut ExecutionBudget,
-        outer_rows: &[Row],
-        stats: &mut MutationStats,
     ) -> Result<Vec<Row>, GqlError> {
         let Operator::Expand {
             direction,
@@ -128,24 +121,26 @@ impl<'a> QueryExecutor<'a> {
         else {
             unreachable!()
         };
-        let input = self.exec_operator(graph, child, budget, outer_rows, stats)?;
+        let input = self.exec_operator(cx, child)?;
         let type_strs: Vec<&str> = rel_types.iter().map(|r| r.as_str()).collect();
         let mut out = Vec::with_capacity(input.len());
 
         for row in input {
-            budget.check_or_err()?;
+            cx.budget.check_or_err()?;
             let src_val = row
                 .get(src_alias.0.as_str())
                 .ok_or_else(|| undefined_var(&src_alias.0))?;
             let src_id = extract_node_id(src_val, &src_alias.0)?;
 
             let adj_entries = match direction {
-                Direction::Outgoing => self.store.out_edges_by_type(graph, src_id, &type_strs)?,
-                Direction::Incoming => self.store.in_edges_by_type(graph, src_id, &type_strs)?,
+                Direction::Outgoing => {
+                    self.store.out_edges_by_type(cx.graph, src_id, &type_strs)?
+                }
+                Direction::Incoming => self.store.in_edges_by_type(cx.graph, src_id, &type_strs)?,
                 Direction::Undirected => {
                     let mut out_entries =
-                        self.store.out_edges_by_type(graph, src_id, &type_strs)?;
-                    let in_entries = self.store.in_edges_by_type(graph, src_id, &type_strs)?;
+                        self.store.out_edges_by_type(cx.graph, src_id, &type_strs)?;
+                    let in_entries = self.store.in_edges_by_type(cx.graph, src_id, &type_strs)?;
                     // Deduplicate: for self-loops (src==dst), the same edge
                     // appears in both out_edges and in_edges. Keep only unique
                     // (edge_id, neighbor_id) pairs.
@@ -181,7 +176,7 @@ impl<'a> QueryExecutor<'a> {
             };
 
             for adj in adj_entries {
-                budget.check_or_err()?;
+                cx.budget.check_or_err()?;
                 // If dst_alias is already bound in the row (cyclic patterns
                 // like (a)-->()-->(a)), only keep the result if the bound
                 // value matches the expansion result.
@@ -241,7 +236,7 @@ impl<'a> QueryExecutor<'a> {
                     new_row.insert(ra.0.clone(), Value::Edge(adj.edge_id));
                 }
                 new_row.insert(dst_alias.0.clone(), dst_val);
-                budget.record_row();
+                cx.budget.record_row();
                 out.push(new_row);
             }
         }
@@ -250,11 +245,8 @@ impl<'a> QueryExecutor<'a> {
 
     pub(crate) fn exec_var_len_expand(
         &self,
-        graph: &str,
+        cx: &mut ExecContext<'_>,
         op: &Operator,
-        budget: &mut ExecutionBudget,
-        outer_rows: &[Row],
-        stats: &mut MutationStats,
     ) -> Result<Vec<Row>, GqlError> {
         let Operator::VarLenExpand {
             direction,
@@ -271,12 +263,12 @@ impl<'a> QueryExecutor<'a> {
         else {
             unreachable!()
         };
-        let input = self.exec_operator(graph, child, budget, outer_rows, stats)?;
+        let input = self.exec_operator(cx, child)?;
         let type_strs: Vec<&str> = rel_types.iter().map(|r| r.as_str()).collect();
         let mut out = Vec::with_capacity(input.len());
 
         for row in input {
-            budget.check_or_err()?;
+            cx.budget.check_or_err()?;
             let src_val = row
                 .get(src_alias.0.as_str())
                 .ok_or_else(|| undefined_var(&src_alias.0))?;
@@ -326,7 +318,7 @@ impl<'a> QueryExecutor<'a> {
             let mut edge_scratch: Option<Row> = None;
 
             while let Some((current, arena_idx, depth)) = queue.pop_front() {
-                budget.check_or_err()?;
+                cx.budget.check_or_err()?;
 
                 // Yield this path if depth is within [min, max]
                 if depth >= *min && depth <= *max {
@@ -357,16 +349,16 @@ impl<'a> QueryExecutor<'a> {
                             );
                         }
                     }
-                    budget.record_row();
+                    cx.budget.record_row();
                     out.push(new_row);
                 }
 
                 // Expand further if depth < max
                 if depth < *max {
                     let adj_entries =
-                        get_adj_entries(self.store, graph, current, direction, &type_strs)?;
+                        get_adj_entries(self.store, cx.graph, current, direction, &type_strs)?;
                     for adj in adj_entries {
-                        budget.check_or_err()?;
+                        cx.budget.check_or_err()?;
                         // Per openCypher spec: edge isomorphism is enforced (same
                         // relationship cannot appear twice in one path), but node
                         // repetition is allowed. This prevents infinite loops.
@@ -387,8 +379,8 @@ impl<'a> QueryExecutor<'a> {
                             });
                             // Update just the edge entry for this candidate
                             scratch.insert("__varlen_edge__".to_string(), Value::Edge(adj.edge_id));
-                            let ctx = self.build_filter_ctx(graph, scratch)?;
-                            match self.eval_with_storage(graph, pred, scratch, &ctx) {
+                            let ctx = self.build_filter_ctx(cx.graph, scratch)?;
+                            match self.eval_with_storage(cx.graph, pred, scratch, &ctx) {
                                 Ok(Value::Bool(true)) => {}
                                 _ => continue, // edge doesn't satisfy constraints
                             }
@@ -404,11 +396,8 @@ impl<'a> QueryExecutor<'a> {
 
     pub(crate) fn exec_index_scan(
         &self,
-        graph: &str,
+        cx: &mut ExecContext<'_>,
         op: &Operator,
-        budget: &mut ExecutionBudget,
-        _outer_rows: &[Row],
-        _stats: &mut MutationStats,
     ) -> Result<Vec<Row>, GqlError> {
         let Operator::IndexScan {
             label,
@@ -423,7 +412,7 @@ impl<'a> QueryExecutor<'a> {
         // with the label that have the property defined (using Gte on lowest value).
         // In practice, the planner pairs this with a Filter for the predicate.
         let node_ids = self.store.find_nodes_by_label_and_property(
-            graph,
+            cx.graph,
             label.as_str(),
             property,
             RangeQuery::Gte(&Value::Null),
@@ -432,10 +421,10 @@ impl<'a> QueryExecutor<'a> {
         // Fallback: if the range query returns empty (Null comparison issue),
         // fall back to label scan with property existence check.
         let effective_ids = if node_ids.is_empty() {
-            let all_label = self.store.find_nodes_by_label(graph, label.as_str())?;
+            let all_label = self.store.find_nodes_by_label(cx.graph, label.as_str())?;
             let mut with_prop = Vec::new();
             for id in all_label {
-                if let Some(node) = self.store.get_node(graph, id)? {
+                if let Some(node) = self.store.get_node(cx.graph, id)? {
                     if node.properties.contains_key(property.as_str()) {
                         with_prop.push(id);
                     }
@@ -448,14 +437,14 @@ impl<'a> QueryExecutor<'a> {
 
         let mut rows = Vec::with_capacity(effective_ids.len());
         for id in effective_ids {
-            if budget.reached_row_cap() {
+            if cx.budget.reached_row_cap() {
                 break;
             }
-            budget.check_or_err()?;
+            cx.budget.check_or_err()?;
             let mut row = Row::new();
             row.insert(alias.0.clone(), Value::Node(id));
-            budget.record_row();
-            budget.record_leaf_row();
+            cx.budget.record_row();
+            cx.budget.record_leaf_row();
             rows.push(row);
         }
         Ok(rows)
@@ -463,11 +452,8 @@ impl<'a> QueryExecutor<'a> {
 
     pub(crate) fn exec_node_by_id_seek(
         &self,
-        graph: &str,
+        cx: &mut ExecContext<'_>,
         op: &Operator,
-        budget: &mut ExecutionBudget,
-        _outer_rows: &[Row],
-        _stats: &mut MutationStats,
     ) -> Result<Vec<Row>, GqlError> {
         let Operator::NodeByIdSeek { id_expr, alias } = op else {
             unreachable!()
@@ -492,10 +478,10 @@ impl<'a> QueryExecutor<'a> {
 
         let node_id = NodeId(raw_id);
         let mut rows = Vec::with_capacity(1);
-        if let Some(_node_data) = self.store.get_node(graph, node_id)? {
+        if let Some(_node_data) = self.store.get_node(cx.graph, node_id)? {
             let mut row = Row::new();
             row.insert(alias.0.clone(), Value::Node(node_id));
-            budget.record_row();
+            cx.budget.record_row();
             rows.push(row);
         }
         Ok(rows)
@@ -503,11 +489,8 @@ impl<'a> QueryExecutor<'a> {
 
     pub(crate) fn exec_shortest_path(
         &self,
-        graph: &str,
+        cx: &mut ExecContext<'_>,
         op: &Operator,
-        budget: &mut ExecutionBudget,
-        outer_rows: &[Row],
-        _stats: &mut MutationStats,
     ) -> Result<Vec<Row>, GqlError> {
         let Operator::ShortestPath {
             src_alias,
@@ -528,14 +511,14 @@ impl<'a> QueryExecutor<'a> {
         let mut out = Vec::new();
 
         // If there are outer rows, use them. Otherwise create an empty row.
-        let context_rows = if outer_rows.is_empty() {
+        let context_rows = if cx.outer_rows.is_empty() {
             vec![Row::new()]
         } else {
-            outer_rows.to_vec()
+            cx.outer_rows.to_vec()
         };
 
         for row in &context_rows {
-            budget.check_or_err()?;
+            cx.budget.check_or_err()?;
             let src_val = row
                 .get(src_alias.0.as_str())
                 .ok_or_else(|| undefined_var(&src_alias.0))?;
@@ -562,7 +545,7 @@ impl<'a> QueryExecutor<'a> {
             let mut shortest_len: Option<u32> = None;
 
             while let Some((current, arena_idx, depth)) = queue.pop_front() {
-                budget.check_or_err()?;
+                cx.budget.check_or_err()?;
 
                 // If we already found shortest paths and current depth exceeds
                 // that length, stop (BFS guarantees depth ordering).
@@ -590,9 +573,9 @@ impl<'a> QueryExecutor<'a> {
                 }
 
                 let adj_entries =
-                    get_adj_entries(self.store, graph, current, direction, &type_strs)?;
+                    get_adj_entries(self.store, cx.graph, current, direction, &type_strs)?;
                 for adj in adj_entries {
-                    budget.check_or_err()?;
+                    cx.budget.check_or_err()?;
                     // For shortest path BFS, we track visited globally
                     // but allow reaching dst through different paths at same depth.
                     let is_dst = adj.neighbor_id == dst_id;
@@ -618,7 +601,7 @@ impl<'a> QueryExecutor<'a> {
                         edges: pe,
                     },
                 );
-                budget.record_row();
+                cx.budget.record_row();
                 out.push(new_row);
             }
         }
@@ -633,6 +616,7 @@ mod tests {
     use super::*;
     use crate::ast::{Direction, Identifier, Label, RelType};
     use crate::executor::budget::ExecutionBudget;
+    use crate::executor::engine::MutationStats;
     use crate::storage::{GraphStore, InMemoryGraphStore};
 
     fn make_store() -> InMemoryGraphStore {
@@ -814,7 +798,15 @@ mod tests {
         let mut budget = ExecutionBudget::unlimited();
         let mut stats = MutationStats::default();
         let rows = executor
-            .exec_operator("g", &plan, &mut budget, &[start_row], &mut stats)
+            .exec_operator(
+                &mut ExecContext {
+                    graph: "g",
+                    budget: &mut budget,
+                    outer_rows: &[start_row],
+                    stats: &mut stats,
+                },
+                &plan,
+            )
             .unwrap();
         assert_eq!(rows.len(), 1);
     }
@@ -914,7 +906,15 @@ mod tests {
         let mut stats = MutationStats::default();
         // Execute with the pre-built input row as outer context
         let rows = executor
-            .exec_operator("g", &plan, &mut budget, &[input_row], &mut stats)
+            .exec_operator(
+                &mut ExecContext {
+                    graph: "g",
+                    budget: &mut budget,
+                    outer_rows: &[input_row],
+                    stats: &mut stats,
+                },
+                &plan,
+            )
             .unwrap();
         // The expand should find a->b via e1, even though e1 is in the row as r1,
         // because r1 is listed in __outer_edge_vars__ (from a previous MATCH scope).
@@ -971,7 +971,13 @@ mod tests {
         // before completing all 9 combinations.
         let mut budget = ExecutionBudget::new(Duration::from_secs(60), 2);
         let mut stats = MutationStats::default();
-        let result = executor.exec_node_scan("g", &plan, &mut budget, &outer_rows, &mut stats);
+        let mut cx = ExecContext {
+            graph: "g",
+            budget: &mut budget,
+            outer_rows: &outer_rows,
+            stats: &mut stats,
+        };
+        let result = executor.exec_node_scan(&mut cx, &plan);
         assert!(
             result.is_err(),
             "expected budget error for Cartesian product exceeding row limit"
@@ -1136,7 +1142,15 @@ mod tests {
         let mut budget = ExecutionBudget::unlimited();
         let mut stats = MutationStats::default();
         let rows = executor
-            .exec_operator("g", &plan, &mut budget, &[start_row], &mut stats)
+            .exec_operator(
+                &mut ExecContext {
+                    graph: "g",
+                    budget: &mut budget,
+                    outer_rows: &[start_row],
+                    stats: &mut stats,
+                },
+                &plan,
+            )
             .unwrap();
         assert_eq!(rows.len(), 1);
         if let Some(Value::Path {

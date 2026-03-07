@@ -1,23 +1,19 @@
 //! Join operators: exec_left_outer_apply, exec_apply, exec_single_row.
 
 use crate::error::GqlError;
-use crate::executor::budget::ExecutionBudget;
 use crate::planner::Operator;
 use crate::types::Value;
 
 use super::helpers::{discover_operator_aliases, inject_parameters};
-use super::{MutationStats, QueryExecutor, Row};
+use super::{ExecContext, QueryExecutor, Row};
 
 impl<'a> QueryExecutor<'a> {
     pub(crate) fn exec_single_row(
         &self,
-        _graph: &str,
+        cx: &mut ExecContext<'_>,
         _op: &Operator,
-        budget: &mut ExecutionBudget,
-        _outer_rows: &[Row],
-        _stats: &mut MutationStats,
     ) -> Result<Vec<Row>, GqlError> {
-        budget.record_row();
+        cx.budget.record_row();
         let mut row = Row::new();
         inject_parameters(&mut row, &self.parameters);
         Ok(vec![row])
@@ -25,11 +21,8 @@ impl<'a> QueryExecutor<'a> {
 
     pub(crate) fn exec_left_outer_apply(
         &self,
-        graph: &str,
+        cx: &mut ExecContext<'_>,
         op: &Operator,
-        budget: &mut ExecutionBudget,
-        outer_rows: &[Row],
-        stats: &mut MutationStats,
     ) -> Result<Vec<Row>, GqlError> {
         let Operator::LeftOuterApply {
             preserved,
@@ -38,17 +31,14 @@ impl<'a> QueryExecutor<'a> {
         else {
             unreachable!()
         };
-        let left_rows = self.exec_operator(graph, preserved, budget, outer_rows, stats)?;
+        let left_rows = self.exec_operator(cx, preserved)?;
         let mut out = Vec::with_capacity(left_rows.len());
 
         for left_row in left_rows {
-            budget.check_or_err()?;
+            cx.budget.check_or_err()?;
             let right_rows = self.exec_operator(
-                graph,
+                &mut cx.with_outer(std::slice::from_ref(&left_row)),
                 optional_pattern,
-                budget,
-                std::slice::from_ref(&left_row),
-                stats,
             )?;
 
             let compatible_rows: Vec<Row> = right_rows
@@ -74,16 +64,16 @@ impl<'a> QueryExecutor<'a> {
                 for col in null_cols {
                     result_row.entry(col).or_insert(Value::Null);
                 }
-                budget.record_row();
+                cx.budget.record_row();
                 out.push(result_row);
             } else {
                 for right_row in compatible_rows {
-                    budget.check_or_err()?;
+                    cx.budget.check_or_err()?;
                     let mut combined = left_row.clone();
                     for (k, v) in right_row {
                         combined.insert(k, v);
                     }
-                    budget.record_row();
+                    cx.budget.record_row();
                     out.push(combined);
                 }
             }
@@ -93,25 +83,22 @@ impl<'a> QueryExecutor<'a> {
 
     pub(crate) fn exec_apply(
         &self,
-        graph: &str,
+        cx: &mut ExecContext<'_>,
         op: &Operator,
-        budget: &mut ExecutionBudget,
-        outer_rows: &[Row],
-        stats: &mut MutationStats,
     ) -> Result<Vec<Row>, GqlError> {
         let Operator::Apply { outer, inner } = op else {
             unreachable!()
         };
-        let outer_rows = self.exec_operator(graph, outer, budget, outer_rows, stats)?;
+        let outer_rows = self.exec_operator(cx, outer)?;
         let mut out = Vec::with_capacity(outer_rows.len());
 
         for outer_row in &outer_rows {
-            budget.check_or_err()?;
+            cx.budget.check_or_err()?;
             let inner_rows =
-                self.exec_operator(graph, inner, budget, std::slice::from_ref(outer_row), stats)?;
+                self.exec_operator(&mut cx.with_outer(std::slice::from_ref(outer_row)), inner)?;
 
             for inner_row in inner_rows {
-                budget.check_or_err()?;
+                cx.budget.check_or_err()?;
                 let mut compatible = true;
                 for (k, v) in &inner_row {
                     if k.starts_with("__anon") {
@@ -131,7 +118,7 @@ impl<'a> QueryExecutor<'a> {
                 for (k, v) in inner_row {
                     combined.insert(k, v);
                 }
-                budget.record_row();
+                cx.budget.record_row();
                 out.push(combined);
             }
         }
@@ -146,6 +133,7 @@ mod tests {
     use super::*;
     use crate::ast::{Direction, Identifier, Label, RelType};
     use crate::executor::budget::ExecutionBudget;
+    use crate::executor::engine::MutationStats;
     use crate::storage::{GraphStore, InMemoryGraphStore};
 
     use std::collections::HashMap;
@@ -162,9 +150,15 @@ mod tests {
         let executor = QueryExecutor::new(&store);
         let mut budget = ExecutionBudget::unlimited();
         let mut stats = MutationStats::default();
+        let mut cx = ExecContext {
+            graph: "g",
+            budget: &mut budget,
+            outer_rows: &[],
+            stats: &mut stats,
+        };
 
         let result = executor
-            .exec_single_row("g", &Operator::SingleRow, &mut budget, &[], &mut stats)
+            .exec_single_row(&mut cx, &Operator::SingleRow)
             .unwrap();
         assert_eq!(result.len(), 1);
     }
@@ -179,8 +173,14 @@ mod tests {
 
         let mut budget = ExecutionBudget::unlimited();
         let mut stats = MutationStats::default();
+        let mut cx = ExecContext {
+            graph: "g",
+            budget: &mut budget,
+            outer_rows: &[],
+            stats: &mut stats,
+        };
         let result = executor
-            .exec_single_row("g", &Operator::SingleRow, &mut budget, &[], &mut stats)
+            .exec_single_row(&mut cx, &Operator::SingleRow)
             .unwrap();
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].get("$name"), Some(&Value::Str("Alice".into())));

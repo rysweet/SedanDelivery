@@ -4,12 +4,11 @@ use std::collections::HashMap;
 
 use crate::ast::Expr;
 use crate::error::{ExecutionError, GqlError};
-use crate::executor::budget::ExecutionBudget;
 use crate::planner::{AggFunction, Operator};
 use crate::types::Value;
 
 use super::helpers::{cmp_values, expr_to_column_name, inject_parameters};
-use super::{MutationStats, QueryExecutor, Row};
+use super::{ExecContext, QueryExecutor, Row};
 
 // ── Hash-based distinct dedup ────────────────────────────────────────────────
 
@@ -343,11 +342,8 @@ fn group_key_string(group_key: &[Value]) -> String {
 impl<'a> QueryExecutor<'a> {
     pub(crate) fn exec_aggregate(
         &self,
-        graph: &str,
+        cx: &mut ExecContext<'_>,
         op: &Operator,
-        budget: &mut ExecutionBudget,
-        outer_rows: &[Row],
-        stats: &mut MutationStats,
     ) -> Result<Vec<Row>, GqlError> {
         let Operator::Aggregate {
             keys,
@@ -357,8 +353,8 @@ impl<'a> QueryExecutor<'a> {
         else {
             unreachable!()
         };
-        let input = self.exec_operator(graph, child, budget, outer_rows, stats)?;
-        budget.check_or_err()?;
+        let input = self.exec_operator(cx, child)?;
+        cx.budget.check_or_err()?;
 
         // Group rows by the key expression values.
         // We use a Vec-of-(key_row, agg_state) for ordered output and a
@@ -371,10 +367,10 @@ impl<'a> QueryExecutor<'a> {
         let mut group_index: HashMap<u64, GroupBucket> = HashMap::new();
 
         for row in &input {
-            let ctx = self.build_filter_ctx(graph, row)?;
+            let ctx = self.build_filter_ctx(cx.graph, row)?;
             let group_key: Vec<Value> = keys
                 .iter()
-                .map(|expr| self.eval_with_storage(graph, expr, row, &ctx))
+                .map(|expr| self.eval_with_storage(cx.graph, expr, row, &ctx))
                 .collect::<Result<Vec<_>, GqlError>>()?;
 
             // Compute a u64 hash from the group key values via canonical_hash.
@@ -440,11 +436,11 @@ impl<'a> QueryExecutor<'a> {
                 let arg_val = if matches!(arg_expr, Expr::Variable(ref id) if id.0 == "*") {
                     Value::Bool(true)
                 } else {
-                    self.eval_with_storage(graph, arg_expr, row, &ctx)?
+                    self.eval_with_storage(cx.graph, arg_expr, row, &ctx)?
                 };
                 let second_val = second_arg_expr
                     .as_ref()
-                    .map(|e| self.eval_with_storage(graph, e, row, &ctx))
+                    .map(|e| self.eval_with_storage(cx.graph, e, row, &ctx))
                     .transpose()?;
                 groups[idx].1[agg_idx].accumulate(func, arg_val, second_val, *distinct);
             }
@@ -460,7 +456,7 @@ impl<'a> QueryExecutor<'a> {
         // Build output rows.
         let mut out = Vec::with_capacity(groups.len());
         for (key_vals, agg_states) in groups {
-            budget.check_or_err()?;
+            cx.budget.check_or_err()?;
             let mut row = Row::new();
 
             // Add group key columns — derive names from key expressions.
@@ -475,7 +471,7 @@ impl<'a> QueryExecutor<'a> {
             // Preserve query parameters so downstream operators (e.g. Delete,
             // Filter) can still access $param bindings after aggregation.
             inject_parameters(&mut row, &self.parameters);
-            budget.record_row();
+            cx.budget.record_row();
             out.push(row);
         }
         Ok(out)

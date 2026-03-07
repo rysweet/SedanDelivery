@@ -1,35 +1,31 @@
 //! Row-shaping operators: filter, project, distinct, sort, skip, limit.
 
 use crate::error::GqlError;
-use crate::executor::budget::ExecutionBudget;
 use crate::planner::Operator;
 use crate::types::Value;
 
 use super::helpers::{
     cmp_values, eval_count_expr, expr_to_column_name, inject_parameters, RowDedupSet,
 };
-use super::{MutationStats, QueryExecutor, Row};
+use super::{ExecContext, QueryExecutor, Row};
 
 impl<'a> QueryExecutor<'a> {
     pub(crate) fn exec_filter(
         &self,
-        graph: &str,
+        cx: &mut ExecContext<'_>,
         op: &Operator,
-        budget: &mut ExecutionBudget,
-        outer_rows: &[Row],
-        stats: &mut MutationStats,
     ) -> Result<Vec<Row>, GqlError> {
         let Operator::Filter { predicate, child } = op else {
             unreachable!()
         };
-        let input = self.exec_operator(graph, child, budget, outer_rows, stats)?;
+        let input = self.exec_operator(cx, child)?;
         let mut out = Vec::with_capacity(input.len());
         for row in input {
-            budget.check_or_err()?;
-            let ctx = self.build_filter_ctx(graph, &row)?;
+            cx.budget.check_or_err()?;
+            let ctx = self.build_filter_ctx(cx.graph, &row)?;
             // Use eval_with_storage so that property access on Node/Edge IDs
             // is resolved against the store rather than returning Null.
-            let result = self.eval_with_storage(graph, predicate, &row, &ctx)?;
+            let result = self.eval_with_storage(cx.graph, predicate, &row, &ctx)?;
             if result == Value::Bool(true) {
                 out.push(row);
             }
@@ -39,24 +35,21 @@ impl<'a> QueryExecutor<'a> {
 
     pub(crate) fn exec_project(
         &self,
-        graph: &str,
+        cx: &mut ExecContext<'_>,
         op: &Operator,
-        budget: &mut ExecutionBudget,
-        outer_rows: &[Row],
-        stats: &mut MutationStats,
     ) -> Result<Vec<Row>, GqlError> {
         let Operator::Project { items, child } = op else {
             unreachable!()
         };
-        let input = self.exec_operator(graph, child, budget, outer_rows, stats)?;
+        let input = self.exec_operator(cx, child)?;
         let mut out = Vec::with_capacity(input.len());
 
         for row in &input {
-            budget.check_or_err()?;
-            let ctx = self.build_filter_ctx(graph, row)?;
+            cx.budget.check_or_err()?;
+            let ctx = self.build_filter_ctx(cx.graph, row)?;
             let mut new_row = Row::new();
             for (expr, alias) in items {
-                match self.eval_with_storage(graph, expr, row, &ctx) {
+                match self.eval_with_storage(cx.graph, expr, row, &ctx) {
                     Ok(val) => {
                         let col_name = match alias {
                             Some(id) => id.0.clone(),
@@ -80,7 +73,7 @@ impl<'a> QueryExecutor<'a> {
             }
             // Preserve query parameters through scope changes.
             inject_parameters(&mut new_row, &self.parameters);
-            budget.record_row();
+            cx.budget.record_row();
             out.push(new_row);
         }
         Ok(out)
@@ -88,20 +81,17 @@ impl<'a> QueryExecutor<'a> {
 
     pub(crate) fn exec_distinct(
         &self,
-        graph: &str,
+        cx: &mut ExecContext<'_>,
         op: &Operator,
-        budget: &mut ExecutionBudget,
-        outer_rows: &[Row],
-        stats: &mut MutationStats,
     ) -> Result<Vec<Row>, GqlError> {
         let Operator::Distinct { child } = op else {
             unreachable!()
         };
-        let input = self.exec_operator(graph, child, budget, outer_rows, stats)?;
+        let input = self.exec_operator(cx, child)?;
         let mut seen = RowDedupSet::new();
         let mut out = Vec::with_capacity(input.len());
         for row in input {
-            budget.check_or_err()?;
+            cx.budget.check_or_err()?;
             if seen.insert(&row) {
                 out.push(row);
             }
@@ -111,26 +101,23 @@ impl<'a> QueryExecutor<'a> {
 
     pub(crate) fn exec_sort(
         &self,
-        graph: &str,
+        cx: &mut ExecContext<'_>,
         op: &Operator,
-        budget: &mut ExecutionBudget,
-        outer_rows: &[Row],
-        stats: &mut MutationStats,
     ) -> Result<Vec<Row>, GqlError> {
         let Operator::Sort { items, child } = op else {
             unreachable!()
         };
-        let input = self.exec_operator(graph, child, budget, outer_rows, stats)?;
-        budget.check_or_err()?;
+        let input = self.exec_operator(cx, child)?;
+        cx.budget.check_or_err()?;
 
         // Evaluate all sort keys up front to avoid repeated store lookups.
         let mut keyed: Vec<(Vec<Value>, Row)> = input
             .into_iter()
             .map(|row| {
-                let ctx = self.build_filter_ctx(graph, &row)?;
+                let ctx = self.build_filter_ctx(cx.graph, &row)?;
                 let keys: Result<Vec<Value>, GqlError> = items
                     .iter()
-                    .map(|(expr, _)| self.eval_with_storage(graph, expr, &row, &ctx))
+                    .map(|(expr, _)| self.eval_with_storage(cx.graph, expr, &row, &ctx))
                     .collect();
                 Ok((keys?, row))
             })
@@ -154,11 +141,8 @@ impl<'a> QueryExecutor<'a> {
 
     pub(crate) fn exec_limit(
         &self,
-        graph: &str,
+        cx: &mut ExecContext<'_>,
         op: &Operator,
-        budget: &mut ExecutionBudget,
-        outer_rows: &[Row],
-        stats: &mut MutationStats,
     ) -> Result<Vec<Row>, GqlError> {
         let Operator::Limit { count, child } = op else {
             unreachable!()
@@ -178,16 +162,16 @@ impl<'a> QueryExecutor<'a> {
         let can_early_terminate = Self::subtree_is_simple_pipeline(child);
         let prev_cap = if can_early_terminate {
             let needed = n.saturating_add(Self::child_skip_amount(child, &self.parameters));
-            Some(budget.set_row_cap(needed))
+            Some(cx.budget.set_row_cap(needed))
         } else {
             None
         };
-        let input = self.exec_operator(graph, child, budget, outer_rows, stats)?;
+        let input = self.exec_operator(cx, child)?;
         if let Some(prev) = prev_cap {
-            budget.restore_row_cap(prev);
+            cx.budget.restore_row_cap(prev);
         }
 
-        budget.check_or_err()?;
+        cx.budget.check_or_err()?;
         Ok(input.into_iter().take(n).collect())
     }
 
@@ -252,17 +236,14 @@ impl<'a> QueryExecutor<'a> {
 
     pub(crate) fn exec_skip(
         &self,
-        graph: &str,
+        cx: &mut ExecContext<'_>,
         op: &Operator,
-        budget: &mut ExecutionBudget,
-        outer_rows: &[Row],
-        stats: &mut MutationStats,
     ) -> Result<Vec<Row>, GqlError> {
         let Operator::Skip { count, child } = op else {
             unreachable!()
         };
-        let input = self.exec_operator(graph, child, budget, outer_rows, stats)?;
-        budget.check_or_err()?;
+        let input = self.exec_operator(cx, child)?;
+        cx.budget.check_or_err()?;
         let n = eval_count_expr(count, &self.parameters)?;
         Ok(input.into_iter().skip(n).collect())
     }
