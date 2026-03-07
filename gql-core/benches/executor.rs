@@ -1,7 +1,9 @@
 // Executor benchmarks — Phase 4 (issue #189): comprehensive performance baselines.
 //
 // Covers: node scan, label scan, filter, sort, aggregation, graph expansion,
-// end-to-end social queries, and CREATE throughput.
+// end-to-end social queries, CREATE throughput, DISTINCT, LIMIT, SKIP, UNION,
+// variable-length paths, aggregation with many groups, multi-property access,
+// and MERGE.
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use gql_core::executor::{ExecutionBudget, QueryExecutor};
@@ -230,6 +232,165 @@ fn bench_create_node_throughput(c: &mut Criterion) {
     });
 }
 
+// ── §4.4 DISTINCT ───────────────────────────────────────────────────────────
+
+fn bench_distinct(c: &mut Criterion) {
+    // 10K nodes with 100 distinct label values (reuses age field for grouping).
+    let store = make_person_store(10_000);
+    c.bench_function("distinct_10k_100vals", |b| {
+        b.iter(|| run_query(&store, "MATCH (n:Person) RETURN DISTINCT n.age"));
+    });
+}
+
+// ── §4.4 LIMIT ──────────────────────────────────────────────────────────────
+
+fn bench_limit(c: &mut Criterion) {
+    // Measures materialization cost — scan 10K but only return 10 rows.
+    let store = make_person_store(10_000);
+    c.bench_function("limit_10_of_10k", |b| {
+        b.iter(|| run_query(&store, "MATCH (n:Person) RETURN n LIMIT 10"));
+    });
+}
+
+// ── §4.4 SKIP ───────────────────────────────────────────────────────────────
+
+fn bench_skip(c: &mut Criterion) {
+    // Skip almost all rows — scan 10K, skip 9990, return the last 10.
+    let store = make_person_store(10_000);
+    c.bench_function("skip_9990_of_10k", |b| {
+        b.iter(|| run_query(&store, "MATCH (n:Person) RETURN n SKIP 9990"));
+    });
+}
+
+// ── §4.4 UNION ──────────────────────────────────────────────────────────────
+
+fn bench_union(c: &mut Criterion) {
+    // Two label scans combined via UNION. Store has both :A and :B nodes.
+    let store = InMemoryGraphStore::default();
+    store.create_graph("bench").unwrap();
+    for i in 0..500i64 {
+        store
+            .create_node(
+                "bench",
+                vec!["A".to_string()],
+                HashMap::from([("i".to_string(), Value::Int(i))]),
+            )
+            .unwrap();
+        store
+            .create_node(
+                "bench",
+                vec!["B".to_string()],
+                HashMap::from([("i".to_string(), Value::Int(i))]),
+            )
+            .unwrap();
+    }
+
+    c.bench_function("union_500a_500b", |b| {
+        b.iter(|| {
+            run_query(
+                &store,
+                "MATCH (n:A) RETURN n.i AS val \
+                 UNION \
+                 MATCH (m:B) RETURN m.i AS val",
+            )
+        });
+    });
+}
+
+// ── §4.4 Variable-Length Paths ───────────────────────────────────────────────
+
+fn bench_varlen_paths(c: &mut Criterion) {
+    // 100-node chain: 0→1→2→…→99. Query paths of length 1..3.
+    let store = InMemoryGraphStore::default();
+    store.create_graph("bench").unwrap();
+    let mut prev = store
+        .create_node("bench", vec!["VL".to_string()], HashMap::new())
+        .unwrap();
+    for _ in 0..99 {
+        let next = store
+            .create_node("bench", vec!["VL".to_string()], HashMap::new())
+            .unwrap();
+        store
+            .create_edge("bench", prev, next, "NEXT".to_string(), HashMap::new())
+            .unwrap();
+        prev = next;
+    }
+
+    c.bench_function("varlen_1to3_chain100", |b| {
+        b.iter(|| run_query(&store, "MATCH (a:VL)-[:NEXT*1..3]->(b:VL) RETURN count(*)"));
+    });
+}
+
+// ── §4.4 Aggregation with Many Groups ───────────────────────────────────────
+
+fn bench_aggregate_many_groups(c: &mut Criterion) {
+    // 10K nodes with 1000 distinct groups.
+    let store = InMemoryGraphStore::default();
+    store.create_graph("bench").unwrap();
+    for i in 0..10_000usize {
+        let props = HashMap::from([
+            (
+                "group".to_string(),
+                Value::Str(format!("g_{}", i % 1_000).into()),
+            ),
+            ("val".to_string(), Value::Int(i as i64)),
+        ]);
+        store
+            .create_node("bench", vec!["Item".to_string()], props)
+            .unwrap();
+    }
+
+    c.bench_function("aggregate_1000_groups_10k", |b| {
+        b.iter(|| run_query(&store, "MATCH (n:Item) RETURN n.group, count(*)"));
+    });
+}
+
+// ── §4.4 Multi-Property Access ──────────────────────────────────────────────
+
+fn bench_multi_property_access(c: &mut Criterion) {
+    // 10K nodes with 5 properties each.
+    let store = InMemoryGraphStore::default();
+    store.create_graph("bench").unwrap();
+    for i in 0..10_000i64 {
+        let props = HashMap::from([
+            ("a".to_string(), Value::Int(i)),
+            ("b".to_string(), Value::Int(i * 2)),
+            ("c".to_string(), Value::Str(format!("c_{i}").into())),
+            ("d".to_string(), Value::Bool(i % 2 == 0)),
+            ("e".to_string(), Value::Int(i * 10)),
+        ]);
+        store
+            .create_node("bench", vec!["Wide".to_string()], props)
+            .unwrap();
+    }
+
+    c.bench_function("multi_prop_5cols_10k", |b| {
+        b.iter(|| run_query(&store, "MATCH (n:Wide) RETURN n.a, n.b, n.c, n.d, n.e"));
+    });
+}
+
+// ── §4.4 MERGE ──────────────────────────────────────────────────────────────
+
+fn bench_merge(c: &mut Criterion) {
+    // MERGE on existing data — measures match-existing-node path.
+    // Each iteration creates a fresh store with pre-existing data, then MERGEs.
+    c.bench_function("merge_existing_100", |b| {
+        b.iter(|| {
+            let store = InMemoryGraphStore::default();
+            store.create_graph("bench").unwrap();
+            for i in 0..100i64 {
+                let props =
+                    HashMap::from([("name".to_string(), Value::Str(format!("node_{i}").into()))]);
+                store
+                    .create_node("bench", vec!["Label".to_string()], props)
+                    .unwrap();
+            }
+            // MERGE should find existing node, not create a new one.
+            run_query(&store, "MERGE (n:Label {name: 'node_50'}) RETURN n.name");
+        });
+    });
+}
+
 criterion_group!(
     benches,
     bench_node_scan,
@@ -244,5 +405,13 @@ criterion_group!(
     bench_e2e_full_text_like,
     bench_e2e_recommendation,
     bench_create_node_throughput,
+    bench_distinct,
+    bench_limit,
+    bench_skip,
+    bench_union,
+    bench_varlen_paths,
+    bench_aggregate_many_groups,
+    bench_multi_property_access,
+    bench_merge,
 );
 criterion_main!(benches);
