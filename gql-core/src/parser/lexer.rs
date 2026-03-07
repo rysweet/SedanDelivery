@@ -335,6 +335,7 @@ impl<'src> Lexer<'src> {
                             while digits < 4 {
                                 match self.peek_byte(0) {
                                     Some(b) if (b as char).is_ascii_hexdigit() => {
+                                        // safe: is_ascii_hexdigit guard ensures to_digit(16) succeeds
                                         code = code * 16 + (b as char).to_digit(16).unwrap();
                                         self.pos += 1;
                                         digits += 1;
@@ -370,6 +371,7 @@ impl<'src> Lexer<'src> {
                 }
                 Some(_) => {
                     // Regular character — may be multi-byte UTF-8.
+                    // safe: peek_byte returned Some, so rest() is non-empty
                     let c = self.rest().chars().next().unwrap();
                     self.pos += c.len_utf8();
                     buf.push(c);
@@ -546,6 +548,7 @@ impl<'src> Lexer<'src> {
             if self.rest().is_empty() {
                 return Ok(None);
             }
+            // safe: rest().is_empty() returned false above, so byte 0 exists
             let b0 = self.peek_byte(0).unwrap();
             let b1 = self.peek_byte(1);
             if b0 == b'/' && b1 == Some(b'/') {
@@ -565,6 +568,7 @@ impl<'src> Lexer<'src> {
         }
 
         let start = self.pos;
+        // safe: loop above only breaks when rest() is non-empty
         let b0 = self.peek_byte(0).unwrap();
         let b1 = self.peek_byte(1);
 

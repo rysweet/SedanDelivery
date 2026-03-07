@@ -352,7 +352,10 @@ pub(crate) fn eval_time_constructor(vals: &[Value]) -> Result<Value, GqlError> {
             };
             // time() always returns a ZonedTime; use explicit offset if present, else UTC
             let tz = extract_offset_from_string(s).unwrap_or(jiff::tz::TimeZone::UTC);
-            let epoch_dt = jiff::civil::Date::new(1970, 1, 1).unwrap().to_datetime(t);
+            // safe: constant epoch date 1970-01-01 is always valid
+            let epoch_dt = jiff::civil::Date::new(1970, 1, 1)
+                .expect("epoch")
+                .to_datetime(t);
             let zoned = epoch_dt
                 .to_zoned(tz)
                 .map_err(|e| temporal_parse_error("time", e))?;
@@ -423,7 +426,10 @@ pub(crate) fn eval_time_constructor(vals: &[Value]) -> Result<Value, GqlError> {
             let tz_name = map_get_str(m, "timezone");
             let t = jiff::civil::Time::new(hour, minute, second, nanosecond)
                 .map_err(|e| temporal_parse_error("time", e))?;
-            let epoch_dt = jiff::civil::Date::new(1970, 1, 1).unwrap().to_datetime(t);
+            // safe: constant epoch date 1970-01-01 is always valid
+            let epoch_dt = jiff::civil::Date::new(1970, 1, 1)
+                .expect("epoch")
+                .to_datetime(t);
             // Get base timezone if base is a ZonedTime (could be DateTime or Time)
             let base_tz = if let Some(Value::DateTime(base_zdt)) = m.get("time") {
                 Some(base_zdt.time_zone().clone())

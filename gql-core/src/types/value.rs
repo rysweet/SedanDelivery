@@ -209,6 +209,7 @@ impl Value {
                     }
                 };
                 let tz = jiff::tz::TimeZone::fixed(offset);
+                // safe: constant epoch date 1970-01-01 is always valid
                 let epoch = civil::Date::new(1970, 1, 1).expect("valid epoch");
                 let dt = epoch.to_datetime(t);
                 match dt.to_zoned(tz) {
@@ -428,6 +429,7 @@ impl Value {
                 keys.sort();
                 for k in keys {
                     k.hash(state);
+                    // safe: k was obtained from m.keys() so get() always succeeds
                     m.get(k).unwrap().canonical_hash(state);
                 }
             }
@@ -533,7 +535,9 @@ impl fmt::Display for Value {
             Self::LocalDateTime(dt) => write!(f, "{dt}"),
             Self::DateTime(dt) => {
                 let civil_dt = jiff::civil::DateTime::from(dt.as_ref());
-                let is_epoch_date = civil_dt.date() == jiff::civil::Date::new(1970, 1, 1).unwrap();
+                // safe: constant epoch date 1970-01-01 is always valid
+                let is_epoch_date =
+                    civil_dt.date() == jiff::civil::Date::new(1970, 1, 1).expect("epoch");
                 let tz = dt.time_zone();
                 let has_named_tz = tz.iana_name().is_some();
                 if is_epoch_date {
