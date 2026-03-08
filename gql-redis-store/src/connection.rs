@@ -7,6 +7,17 @@ use redis::{Client, ConnectionLike};
 
 use gql_core::error::StorageError;
 
+/// Snapshot of connection pool utilization.
+#[derive(Debug, Clone, Copy)]
+pub struct PoolStats {
+    /// Total connections managed by the pool (idle + active).
+    pub size: u32,
+    /// Connections sitting idle in the pool.
+    pub idle: u32,
+    /// Connections currently checked out by application code.
+    pub active: u32,
+}
+
 /// Default connection pool size. Set high enough for concurrent bulk writes
 /// (each Bolt session may hold a pool connection during query execution).
 pub(crate) const DEFAULT_POOL_SIZE: u32 = 64;
@@ -23,6 +34,7 @@ pub(crate) const DEFAULT_MIN_IDLE: u32 = 1;
 ///
 /// Standalone mode uses a single Redis URL; cluster mode uses multiple seed
 /// node URLs and auto-discovers the full cluster topology.
+#[derive(Clone)]
 pub(crate) enum RedisPool {
     Standalone(r2d2::Pool<Client>),
     Cluster(r2d2::Pool<ClusterClient>),
@@ -101,8 +113,11 @@ impl RedisPool {
     }
 
     /// Check out a connection from the pool.
+    ///
+    /// Records `redis_pool_checkouts_total` on success and
+    /// `redis_pool_timeout_total` on failure.
     pub(crate) fn get(&self) -> Result<RedisConn, StorageError> {
-        match self {
+        let result = match self {
             RedisPool::Standalone(pool) => {
                 pool.get()
                     .map(RedisConn::Standalone)
@@ -116,6 +131,44 @@ impl RedisPool {
                 .map_err(|e| StorageError::Backend {
                     msg: format!("redis cluster pool checkout error: {e}"),
                 }),
+        };
+        match &result {
+            Ok(_) => metrics::counter!("redis_pool_checkouts_total").increment(1),
+            Err(_) => metrics::counter!("redis_pool_timeout_total").increment(1),
         }
+        result
+    }
+
+    /// Return a snapshot of current pool utilization.
+    pub(crate) fn stats(&self) -> PoolStats {
+        let s = match self {
+            RedisPool::Standalone(pool) => pool.state(),
+            RedisPool::Cluster(pool) => pool.state(),
+        };
+        PoolStats {
+            size: s.connections,
+            idle: s.idle_connections,
+            active: s.connections.saturating_sub(s.idle_connections),
+        }
+    }
+
+    /// Spawn a background tokio task that periodically records pool utilization
+    /// gauges: `redis_pool_size`, `redis_pool_idle`, `redis_pool_active`.
+    ///
+    /// The task runs every 15 seconds and stops when the pool is dropped
+    /// (the internal `r2d2::Pool` is `Arc`-backed, so the task keeps a
+    /// cheap clone alive until the last reference is gone).
+    pub(crate) fn spawn_stats_reporter(&self) {
+        let pool = self.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(15));
+            loop {
+                interval.tick().await;
+                let stats = pool.stats();
+                metrics::gauge!("redis_pool_size").set(f64::from(stats.size));
+                metrics::gauge!("redis_pool_idle").set(f64::from(stats.idle));
+                metrics::gauge!("redis_pool_active").set(f64::from(stats.active));
+            }
+        });
     }
 }

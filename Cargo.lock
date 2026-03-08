@@ -1427,9 +1427,12 @@ name = "gql-redis-store"
 version = "0.1.0"
 dependencies = [
  "gql-core",
+ "metrics",
+ "metrics-exporter-prometheus",
  "r2d2",
  "redis",
  "serde_json",
+ "tokio",
  "tracing",
 ]
 

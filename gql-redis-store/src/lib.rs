@@ -24,6 +24,7 @@ mod range;
 mod reads;
 mod writes;
 
+pub use connection::PoolStats;
 pub use fanout::FanoutStore;
 
 use std::collections::HashMap;
@@ -197,6 +198,26 @@ impl RedisGraphStore {
     /// Create a store connecting to an explicit Redis URL with no key prefix.
     pub fn from_url(url: &str) -> Result<Self, StorageError> {
         Self::from_url_with_prefix(url, "")
+    }
+
+    // ── Pool metrics ────────────────────────────────────────────────────────
+
+    /// Return a snapshot of current connection pool utilization.
+    ///
+    /// Callers (bolt, api) can integrate this with their metrics endpoints
+    /// or health checks.
+    pub fn pool_stats(&self) -> PoolStats {
+        self.pool.stats()
+    }
+
+    /// Spawn a background tokio task that records pool utilization gauges
+    /// every 15 seconds: `redis_pool_size`, `redis_pool_idle`,
+    /// `redis_pool_active`.
+    ///
+    /// Call once after constructing the store (requires a running tokio
+    /// runtime).
+    pub fn spawn_pool_stats_reporter(&self) {
+        self.pool.spawn_stats_reporter();
     }
 
     // ── Internal helpers (shared across modules) ────────────────────────────
