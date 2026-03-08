@@ -8,6 +8,7 @@ use std::collections::HashMap;
 
 use gql_core::error::{GqlError, ParseError, StorageError};
 use gql_core::executor::{MutationStats, QueryResult};
+use gql_core::plan_cache;
 use gql_core::storage::GraphStore;
 use gql_core::types::Value;
 
@@ -214,6 +215,9 @@ fn handle_create_index(
         .create_index(graph, &label, &property)
         .map_err(GqlError::from)?;
 
+    // Invalidate cached plans — index changes may alter plan selection.
+    plan_cache::global().clear();
+
     Ok(AdminResult {
         query_result: empty_result(),
         indexes_added: 1,
@@ -285,6 +289,9 @@ fn handle_drop_index(
             }
         }
     }
+
+    // Invalidate cached plans — index changes may alter plan selection.
+    plan_cache::global().clear();
 
     Ok(AdminResult {
         query_result: empty_result(),

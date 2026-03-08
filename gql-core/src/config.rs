@@ -50,6 +50,9 @@ pub struct EngineConfig {
     /// Maximum byte length of a graph name.
     /// Env: `GQL_GRAPH_NAME_MAX_LEN` (default `64`)
     pub graph_name_max_len: usize,
+    /// Maximum number of entries in the query plan cache.
+    /// Env: `GQL_PLAN_CACHE_SIZE` (default `1024`)
+    pub plan_cache_size: usize,
 }
 
 impl Default for EngineConfig {
@@ -64,6 +67,7 @@ impl Default for EngineConfig {
             max_list_size: 10_000_000,
             max_regex_pattern_len: 1_024,
             graph_name_max_len: 64,
+            plan_cache_size: 1024,
         }
     }
 }
@@ -93,6 +97,7 @@ impl EngineConfig {
                 defaults.graph_name_max_len,
                 1,
             ),
+            plan_cache_size: parse_env_min("GQL_PLAN_CACHE_SIZE", defaults.plan_cache_size, 0),
         }
     }
 }
@@ -187,6 +192,7 @@ mod tests {
         assert_eq!(cfg.max_list_size, 10_000_000);
         assert_eq!(cfg.max_regex_pattern_len, 1_024);
         assert_eq!(cfg.graph_name_max_len, 64);
+        assert_eq!(cfg.plan_cache_size, 1024);
     }
 
     #[test]

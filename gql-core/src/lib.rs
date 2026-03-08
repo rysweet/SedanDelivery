@@ -7,6 +7,7 @@ pub mod config;
 pub mod error;
 pub mod executor;
 pub mod parser;
+pub mod plan_cache;
 pub mod planner;
 pub mod procedure;
 pub mod serde_value;

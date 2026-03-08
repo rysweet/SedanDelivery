@@ -13,6 +13,7 @@ use axum::{Json, Router};
 
 use gql_core::executor::{ExecutionBudget, QueryExecutor};
 use gql_core::parser::parse_query;
+use gql_core::plan_cache;
 use gql_core::planner::QueryPlanner;
 use gql_core::procedure::ProcedureRegistry;
 use gql_core::serde_value::json_to_value;
@@ -61,11 +62,20 @@ async fn query_handler(
     let store = Arc::clone(&state.store);
     let start = Instant::now();
 
-    let ast = parse_query(&body.cypher).map_err(|e| ApiError::bad_request(e.to_string()))?;
-    let planner = QueryPlanner::new(store.as_ref(), &name);
-    let plan = planner
-        .plan(&ast)
-        .map_err(|e| ApiError::bad_request(e.to_string()))?;
+    let cache = plan_cache::global();
+    let plan = if let Some((_cached_ast, cached_plan)) = cache.get(&body.cypher) {
+        metrics::counter!("plan_cache_hits_total").increment(1);
+        cached_plan
+    } else {
+        metrics::counter!("plan_cache_misses_total").increment(1);
+        let ast = parse_query(&body.cypher).map_err(|e| ApiError::bad_request(e.to_string()))?;
+        let planner = QueryPlanner::new(store.as_ref(), &name);
+        let plan = planner
+            .plan(&ast)
+            .map_err(|e| ApiError::bad_request(e.to_string()))?;
+        cache.insert(&body.cypher, ast, plan.clone());
+        plan
+    };
 
     let params = convert_params(body.params.as_ref())?;
 
@@ -113,11 +123,20 @@ async fn mutate_handler(
 
     let store = Arc::clone(&state.store);
 
-    let ast = parse_query(&body.cypher).map_err(|e| ApiError::bad_request(e.to_string()))?;
-    let planner = QueryPlanner::new(store.as_ref(), &name);
-    let plan = planner
-        .plan(&ast)
-        .map_err(|e| ApiError::bad_request(e.to_string()))?;
+    let cache = plan_cache::global();
+    let plan = if let Some((_cached_ast, cached_plan)) = cache.get(&body.cypher) {
+        metrics::counter!("plan_cache_hits_total").increment(1);
+        cached_plan
+    } else {
+        metrics::counter!("plan_cache_misses_total").increment(1);
+        let ast = parse_query(&body.cypher).map_err(|e| ApiError::bad_request(e.to_string()))?;
+        let planner = QueryPlanner::new(store.as_ref(), &name);
+        let plan = planner
+            .plan(&ast)
+            .map_err(|e| ApiError::bad_request(e.to_string()))?;
+        cache.insert(&body.cypher, ast, plan.clone());
+        plan
+    };
 
     let params = convert_params(body.params.as_ref())?;
 

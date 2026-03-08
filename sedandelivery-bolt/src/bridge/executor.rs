@@ -5,6 +5,7 @@ use gql_core::error::GqlError;
 use gql_core::executor::budget::DEFAULT_MAX_ROWS;
 use gql_core::executor::{ExecutionBudget, MutationStats, QueryExecutor, QueryResult};
 use gql_core::parser::parse_query;
+use gql_core::plan_cache;
 use gql_core::planner::QueryPlanner;
 use gql_core::procedure::{ProcedureDefinition, ProcedureParam, ProcedureRegistry};
 use gql_core::storage::GraphStore;
@@ -41,7 +42,6 @@ pub fn execute_query(
         store.create_graph(graph).map_err(GqlError::from)?;
     }
 
-    let ast = parse_query(query)?;
     let mut registry = ProcedureRegistry::default();
 
     // Register tx.getMetaData procedure. It returns a single row with a
@@ -61,8 +61,18 @@ pub fn execute_query(
         data: vec![vec![tx_meta]],
     });
 
-    let planner = QueryPlanner::with_context(store, graph, &registry, &params);
-    let plan = planner.plan(&ast)?;
+    let cache = plan_cache::global();
+    let plan = if let Some((_cached_ast, cached_plan)) = cache.get(query) {
+        metrics::counter!("plan_cache_hits_total").increment(1);
+        cached_plan
+    } else {
+        metrics::counter!("plan_cache_misses_total").increment(1);
+        let ast = parse_query(query)?;
+        let planner = QueryPlanner::with_context(store, graph, &registry, &params);
+        let plan = planner.plan(&ast)?;
+        cache.insert(query, ast, plan.clone());
+        plan
+    };
 
     let executor = QueryExecutor::with_context(store, &registry, params);
     let mut budget = match timeout_ms {
