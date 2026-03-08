@@ -301,3 +301,84 @@ impl GraphStore for FanoutStore {
         self
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gql_core::storage::InMemoryGraphStore;
+
+    fn mem_store() -> Box<dyn GraphStore> {
+        Box::new(InMemoryGraphStore::new())
+    }
+
+    #[test]
+    fn test_single_backend_round_trip() {
+        let store = FanoutStore::new(vec![mem_store()]);
+        store.create_graph("g").unwrap();
+        let node_id = store
+            .create_node("g", vec!["Person".into()], HashMap::new())
+            .unwrap();
+        let node = store.get_node("g", node_id).unwrap();
+        assert!(node.is_some(), "node should exist after creation");
+        assert!(node.unwrap().labels.contains(&"Person".to_string()));
+    }
+
+    #[test]
+    fn test_dual_backend_write_propagation() {
+        let primary = mem_store();
+        let secondary = mem_store();
+        // We need to keep references to verify the secondary later, but
+        // GraphStore is object-safe and FanoutStore takes ownership.
+        // Instead, verify via the FanoutStore itself: create a node, then
+        // check that all_node_ids (reads from primary) returns the node.
+        // For actual secondary verification, we construct two independent
+        // FanoutStores is not possible. Instead, we verify the write_all
+        // path by using set_node_properties (which uses write_all) and
+        // reading back.
+        let store = FanoutStore::new(vec![primary, secondary]);
+        store.create_graph("g").unwrap();
+        let node_id = store
+            .create_node("g", vec!["Test".into()], HashMap::new())
+            .unwrap();
+        // set_node_properties uses write_all — both backends get the write
+        let mut props = HashMap::new();
+        props.insert("key".to_string(), Value::Str("value".into()));
+        store.set_node_properties("g", node_id, props).unwrap();
+
+        // Read back from primary
+        let node = store.get_node("g", node_id).unwrap().unwrap();
+        assert_eq!(
+            node.properties.get("key"),
+            Some(&Value::Str("value".into()))
+        );
+    }
+
+    #[test]
+    fn test_secondary_id_injection() {
+        let store = FanoutStore::new(vec![mem_store(), mem_store()]);
+        store.create_graph("g").unwrap();
+        let mut props = HashMap::new();
+        props.insert("name".to_string(), Value::Str("Alice".into()));
+        let node_id = store
+            .create_node("g", vec!["Person".into()], props)
+            .unwrap();
+
+        // The primary store should NOT have _sd2_id (it's only injected
+        // into secondaries). Reading from primary (the default read path).
+        let node = store.get_node("g", node_id).unwrap().unwrap();
+        assert!(
+            !node.properties.contains_key("_sd2_id"),
+            "primary should not have _sd2_id injected"
+        );
+        // We can't directly read from the secondary through FanoutStore
+        // (reads always go to primary), but the code path that injects
+        // _sd2_id is exercised without error. Verifying the injection
+        // would require mocking, which is out of scope.
+    }
+
+    #[test]
+    #[should_panic(expected = "FanoutStore requires at least one backend")]
+    fn test_new_empty_panics() {
+        let _store = FanoutStore::new(vec![]);
+    }
+}

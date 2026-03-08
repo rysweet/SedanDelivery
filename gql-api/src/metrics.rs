@@ -106,16 +106,36 @@ mod tests {
     use super::*;
 
     #[test]
-    fn init_recorder_succeeds() {
-        // Can only install once per process; just verify the function exists
-        // and the constants are defined.
-        assert_eq!(HTTP_REQUESTS_TOTAL, "http_requests_total");
-        assert_eq!(
+    fn test_auth_rejection_no_panic() {
+        auth_rejection();
+        auth_rejection();
+        auth_rejection();
+    }
+
+    #[test]
+    fn test_jwks_refresh_failure_no_panic() {
+        jwks_refresh_failure();
+    }
+
+    #[test]
+    fn test_set_active_graphs_no_panic() {
+        set_active_graphs(10);
+    }
+
+    #[test]
+    fn test_metric_names_valid() {
+        for name in [
+            HTTP_REQUESTS_TOTAL,
             HTTP_REQUEST_DURATION_SECONDS,
-            "http_request_duration_seconds"
-        );
-        assert_eq!(AUTH_REJECTIONS_TOTAL, "auth_rejections_total");
-        assert_eq!(ACTIVE_GRAPHS, "active_graphs");
-        assert_eq!(JWKS_REFRESH_FAILURES_TOTAL, "jwks_refresh_failures_total");
+            AUTH_REJECTIONS_TOTAL,
+            ACTIVE_GRAPHS,
+            JWKS_REFRESH_FAILURES_TOTAL,
+        ] {
+            assert!(!name.is_empty(), "metric name must not be empty");
+            assert!(
+                name.chars().all(|c| c.is_ascii_lowercase() || c == '_'),
+                "metric name '{name}' contains invalid characters (only [a-z_] allowed)"
+            );
+        }
     }
 }

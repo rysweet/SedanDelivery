@@ -845,4 +845,69 @@ mod tests {
         assert_eq!(val, BoltValue::Int(1));
         assert_eq!(n, 1); // only 1 byte consumed
     }
+
+    // ── Depth limit tests ──────────────────────────────────────────────
+
+    /// Build `depth` levels of nested TinyList(1 element), with a Null at the
+    /// innermost level: 0x91 0x91 ... 0x91 0xC0
+    fn nested_list_bytes(depth: usize) -> Vec<u8> {
+        let mut buf = Vec::with_capacity(depth + 1);
+        for _ in 0..depth {
+            buf.push(0x91); // TinyList with 1 element
+        }
+        buf.push(0xC0); // Null at the innermost level
+        buf
+    }
+
+    /// Build `depth` levels of nested TinyMap(1 entry), with a Null value at
+    /// the innermost level: 0xA1 0x80 0xA1 0x80 ... 0xA1 0x80 0xC0
+    /// Each map has key="" (0x80 = TinyString of length 0) and the value is
+    /// the next nested map (or Null at the bottom).
+    fn nested_map_bytes(depth: usize) -> Vec<u8> {
+        let mut buf = Vec::with_capacity(depth * 2 + 1);
+        for _ in 0..depth {
+            buf.push(0xA1); // TinyMap with 1 entry
+            buf.push(0x80); // key: empty string
+        }
+        buf.push(0xC0); // Null value at the innermost level
+        buf
+    }
+
+    #[test]
+    fn test_max_depth_exceeded() {
+        // 129 levels of nesting exceeds MAX_DECODE_DEPTH (128).
+        // The top-level decode starts at depth 0, each TinyList adds +1.
+        // After 128 TinyLists the depth is 128, and the next decode_inner
+        // call at depth 129 triggers the > MAX_DECODE_DEPTH check.
+        let buf = nested_list_bytes(129);
+        let err = decode(&buf).unwrap_err();
+        assert!(
+            matches!(err, DecodeError::MaxDepthExceeded(128)),
+            "expected MaxDepthExceeded(128), got: {:?}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_depth_128_succeeds() {
+        // Exactly 128 levels of nesting should succeed. The outermost
+        // decode starts at depth 0, and the innermost Null is decoded
+        // at depth 128 which is == MAX_DECODE_DEPTH (the check is >).
+        let buf = nested_list_bytes(128);
+        let result = decode(&buf);
+        assert!(result.is_ok(), "128-deep nesting should decode OK");
+    }
+
+    #[test]
+    fn test_nested_map_depth_exceeded() {
+        // Maps also increment depth. 129 nested maps should trigger
+        // the depth limit just like lists do.
+        let buf = nested_map_bytes(129);
+        let err = decode(&buf).unwrap_err();
+        assert!(
+            matches!(err, DecodeError::MaxDepthExceeded(128)),
+            "expected MaxDepthExceeded(128) for nested maps, got: {:?}",
+            err
+        );
+    }
 }

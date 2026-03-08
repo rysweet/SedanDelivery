@@ -1352,6 +1352,7 @@ dependencies = [
  "governor",
  "gql-core",
  "gql-redis-store",
+ "http",
  "http-body-util",
  "indexmap",
  "jiff",

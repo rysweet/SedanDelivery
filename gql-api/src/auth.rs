@@ -354,7 +354,37 @@ mod tests {
     fn jwks_cache_initializes() {
         let cache = jwks_cache();
         let guard = cache.inner.read().unwrap();
-        // Cache starts empty.
-        assert!(guard.is_none() || guard.is_some());
+        assert!(guard.is_none(), "fresh cache should be empty");
+    }
+
+    #[test]
+    fn test_validate_token_rejects_garbage() {
+        let config = EntraConfig {
+            tenant_id: "test-tenant".to_string(),
+            client_id: "test-client".to_string(),
+        };
+        let result = validate_entra_token("not.a.jwt", &config);
+        assert!(result.is_err(), "garbage token must be rejected");
+    }
+
+    #[test]
+    fn test_entra_config_none_without_env_vars() {
+        // Save current values so we can restore them.
+        let saved_tenant = std::env::var("GQL_API_ENTRA_TENANT_ID").ok();
+        let saved_client = std::env::var("GQL_API_ENTRA_CLIENT_ID").ok();
+
+        std::env::remove_var("GQL_API_ENTRA_TENANT_ID");
+        std::env::remove_var("GQL_API_ENTRA_CLIENT_ID");
+
+        let cfg = EntraConfig::from_env();
+        assert!(cfg.is_none(), "EntraConfig should be None without env vars");
+
+        // Restore env vars if they were set.
+        if let Some(v) = saved_tenant {
+            std::env::set_var("GQL_API_ENTRA_TENANT_ID", v);
+        }
+        if let Some(v) = saved_client {
+            std::env::set_var("GQL_API_ENTRA_CLIENT_ID", v);
+        }
     }
 }

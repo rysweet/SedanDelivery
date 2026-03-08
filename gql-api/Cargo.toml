@@ -28,5 +28,9 @@ metrics       = "0.24"
 metrics-exporter-prometheus = "0.18"
 
 [dev-dependencies]
-tower         = { version = "0.5", features = ["util"] }
+tower          = { version = "0.5", features = ["util"] }
+http             = "1"
 http-body-util = "0.1"
+serde_json     = { workspace = true }
+gql-core       = { path = "../gql-core" }
+tokio          = { workspace = true, features = ["macros", "rt-multi-thread"] }

@@ -326,4 +326,69 @@ mod tests {
         // none of which triggered a timeout.
         assert_eq!(budget.check_counter, CHECK_INTERVAL * 3);
     }
+
+    // ── Row cap tests ──────────────────────────────────────────────────
+
+    #[test]
+    fn test_set_row_cap_and_reached() {
+        let mut budget = ExecutionBudget::unlimited();
+        budget.set_row_cap(5);
+        for _ in 0..5 {
+            assert!(!budget.reached_row_cap());
+            budget.record_leaf_row();
+        }
+        assert!(
+            budget.reached_row_cap(),
+            "row cap should be reached after 5 leaf rows"
+        );
+    }
+
+    #[test]
+    fn test_restore_row_cap() {
+        let mut budget = ExecutionBudget::unlimited();
+        let prev = budget.set_row_cap(3);
+        for _ in 0..3 {
+            budget.record_leaf_row();
+        }
+        assert!(budget.reached_row_cap());
+        // Restore to None (no cap)
+        budget.restore_row_cap(prev);
+        assert!(
+            !budget.reached_row_cap(),
+            "after restoring None cap, reached_row_cap should be false"
+        );
+    }
+
+    #[test]
+    fn test_nested_caps_take_tighter() {
+        let mut budget = ExecutionBudget::unlimited();
+        let prev_outer = budget.set_row_cap(10);
+        // The cap is now leaf_rows_produced(0) + 10 = 10
+        assert_eq!(budget.row_cap(), Some(10));
+
+        let _prev_inner = budget.set_row_cap(5);
+        // The inner cap would be 0 + 5 = 5, which is tighter than 10
+        assert_eq!(
+            budget.row_cap(),
+            Some(5),
+            "nested set_row_cap should take the tighter (smaller) cap"
+        );
+
+        // Restore outer
+        budget.restore_row_cap(prev_outer);
+        assert_eq!(budget.row_cap(), None);
+    }
+
+    #[test]
+    fn test_no_cap_means_unlimited() {
+        let mut budget = ExecutionBudget::unlimited();
+        // No set_row_cap call — cap is None
+        for _ in 0..1000 {
+            budget.record_leaf_row();
+        }
+        assert!(
+            !budget.reached_row_cap(),
+            "without a row cap, reached_row_cap should always be false"
+        );
+    }
 }
