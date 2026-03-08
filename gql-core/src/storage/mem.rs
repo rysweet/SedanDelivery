@@ -5,7 +5,7 @@
 //! and test velocity, not raw throughput (the Redis backend handles production load).
 
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::sync::RwLock;
+use std::sync::{Arc, RwLock};
 
 use crate::error::StorageError;
 use crate::storage::{
@@ -93,9 +93,9 @@ type PropIndex = BTreeMap<PropIndexKey, HashSet<u64>>;
 
 /// All mutable state for a single named graph.
 #[derive(Clone)]
-struct GraphInner {
-    nodes: HashMap<u64, NodeData>,
-    edges: HashMap<u64, EdgeData>,
+pub(crate) struct GraphInner {
+    pub(crate) nodes: HashMap<u64, NodeData>,
+    pub(crate) edges: HashMap<u64, EdgeData>,
     /// Outgoing adjacency: node_id -> list of (edge_id, neighbor_id, rel_type)
     out_adj: HashMap<u64, Vec<AdjEntry>>,
     /// Incoming adjacency: node_id -> list of (edge_id, neighbor_id, rel_type)
@@ -196,16 +196,36 @@ impl GraphInner {
 
 /// Thread-safe in-memory implementation of [`GraphStore`].
 ///
-/// All operations are `O(1)` amortised for single-item reads/writes. Batch reads
-/// are a single pass over the internal `HashMap`. Label scans are `O(|label set|)`.
+/// Uses an `Arc`-based copy-on-write approach for snapshot isolation: the inner
+/// state is wrapped in `Arc` so readers can clone the `Arc` (a cheap refcount
+/// bump) to obtain a frozen snapshot that is immune to concurrent writes.
+/// Writers call `Arc::make_mut` which clones the data only when other references
+/// exist, providing copy-on-write semantics.
 pub struct InMemoryGraphStore {
-    /// map: graph_name -> per-graph state
-    inner: RwLock<HashMap<String, GraphInner>>,
+    /// map: graph_name -> per-graph state, wrapped in Arc for COW snapshots.
+    inner: RwLock<Arc<HashMap<String, GraphInner>>>,
+}
+
+/// A frozen, read-only snapshot of the store at a point in time.
+///
+/// Obtained via [`InMemoryGraphStore::snapshot_handle`]. All reads through
+/// this handle see a consistent view even if the underlying store is
+/// mutated concurrently.
+#[allow(dead_code)]
+pub(crate) struct Snapshot {
+    data: Arc<HashMap<String, GraphInner>>,
+}
+
+impl Snapshot {
+    /// Look up a graph by name.
+    #[allow(dead_code)]
+    pub(crate) fn get_graph(&self, name: &str) -> Option<&GraphInner> {
+        self.data.get(name)
+    }
 }
 
 impl std::fmt::Debug for InMemoryGraphStore {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        // Expose only graph names (not full contents) to keep output readable.
         let graph_names: Vec<String> = self
             .inner
             .read()
@@ -221,26 +241,37 @@ impl InMemoryGraphStore {
     /// Create a new empty store.
     pub fn new() -> Self {
         Self {
-            inner: RwLock::new(HashMap::new()),
+            inner: RwLock::new(Arc::new(HashMap::new())),
         }
     }
 
-    /// Acquire a read lock, mapping the `PoisonError` to `StorageError::Backend`.
-    fn read(
-        &self,
-    ) -> Result<std::sync::RwLockReadGuard<'_, HashMap<String, GraphInner>>, StorageError> {
-        self.inner
+    /// Acquire a read snapshot: clones the `Arc` (cheap refcount bump) and
+    /// immediately releases the lock. The returned `Arc` is a frozen view.
+    fn read_snapshot(&self) -> Result<Arc<HashMap<String, GraphInner>>, StorageError> {
+        let guard = self
+            .inner
             .read()
-            .map_err(|e| StorageError::backend(format!("lock poisoned (read): {e}")))
+            .map_err(|e| StorageError::backend(format!("lock poisoned (read): {e}")))?;
+        Ok(Arc::clone(&guard))
     }
 
     /// Acquire a write lock.
     fn write(
         &self,
-    ) -> Result<std::sync::RwLockWriteGuard<'_, HashMap<String, GraphInner>>, StorageError> {
+    ) -> Result<std::sync::RwLockWriteGuard<'_, Arc<HashMap<String, GraphInner>>>, StorageError>
+    {
         self.inner
             .write()
             .map_err(|e| StorageError::backend(format!("lock poisoned (write): {e}")))
+    }
+
+    /// Take a consistent, multi-read snapshot that can be held across
+    /// multiple operations without being affected by concurrent writes.
+    #[allow(dead_code)]
+    pub(crate) fn snapshot_handle(&self) -> Result<Snapshot, StorageError> {
+        Ok(Snapshot {
+            data: self.read_snapshot()?,
+        })
     }
 
     /// Create a snapshot containing deep copies of the specified graphs.
@@ -249,15 +280,15 @@ impl InMemoryGraphStore {
     /// without affecting the original. Graphs that do not exist in this store
     /// are silently skipped.
     pub fn snapshot(&self, graphs: &[&str]) -> Result<InMemoryGraphStore, StorageError> {
-        let guard = self.read()?;
+        let snap = self.read_snapshot()?;
         let mut snapshot_inner = HashMap::new();
         for &name in graphs {
-            if let Some(graph) = guard.get(name) {
+            if let Some(graph) = snap.get(name) {
                 snapshot_inner.insert(name.to_string(), graph.clone());
             }
         }
         Ok(InMemoryGraphStore {
-            inner: RwLock::new(snapshot_inner),
+            inner: RwLock::new(Arc::new(snapshot_inner)),
         })
     }
 
@@ -266,10 +297,11 @@ impl InMemoryGraphStore {
     /// Used to promote a snapshot on COMMIT: every graph in the snapshot
     /// overwrites the corresponding graph in the main store.
     pub fn merge_from(&self, other: &InMemoryGraphStore) -> Result<(), StorageError> {
-        let other_guard = other.read()?;
+        let other_snap = other.read_snapshot()?;
         let mut self_guard = self.write()?;
-        for (name, graph) in other_guard.iter() {
-            self_guard.insert(name.clone(), graph.clone());
+        let map = Arc::make_mut(&mut self_guard);
+        for (name, graph) in other_snap.iter() {
+            map.insert(name.clone(), graph.clone());
         }
         Ok(())
     }
@@ -522,14 +554,14 @@ impl GraphStore for InMemoryGraphStore {
     // ── Single-item reads ──────────────────────────────────────────────────────
 
     fn get_node(&self, graph: &str, id: NodeId) -> Result<Option<NodeData>, StorageError> {
-        let guard = self.read()?;
-        let g = Self::require_graph(&guard, graph)?;
+        let snap = self.read_snapshot()?;
+        let g = Self::require_graph(&snap, graph)?;
         Ok(g.nodes.get(&id.0).cloned())
     }
 
     fn get_edge(&self, graph: &str, id: EdgeId) -> Result<Option<EdgeData>, StorageError> {
-        let guard = self.read()?;
-        let g = Self::require_graph(&guard, graph)?;
+        let snap = self.read_snapshot()?;
+        let g = Self::require_graph(&snap, graph)?;
         Ok(g.edges.get(&id.0).cloned())
     }
 
@@ -540,8 +572,8 @@ impl GraphStore for InMemoryGraphStore {
         graph: &str,
         ids: &[NodeId],
     ) -> Result<Vec<Option<NodeData>>, StorageError> {
-        let guard = self.read()?;
-        let g = Self::require_graph(&guard, graph)?;
+        let snap = self.read_snapshot()?;
+        let g = Self::require_graph(&snap, graph)?;
         Ok(ids.iter().map(|id| g.nodes.get(&id.0).cloned()).collect())
     }
 
@@ -550,16 +582,16 @@ impl GraphStore for InMemoryGraphStore {
         graph: &str,
         ids: &[EdgeId],
     ) -> Result<Vec<Option<EdgeData>>, StorageError> {
-        let guard = self.read()?;
-        let g = Self::require_graph(&guard, graph)?;
+        let snap = self.read_snapshot()?;
+        let g = Self::require_graph(&snap, graph)?;
         Ok(ids.iter().map(|id| g.edges.get(&id.0).cloned()).collect())
     }
 
     // ── Label/type index reads ─────────────────────────────────────────────────
 
     fn find_nodes_by_label(&self, graph: &str, label: &str) -> Result<Vec<NodeId>, StorageError> {
-        let guard = self.read()?;
-        let g = Self::require_graph(&guard, graph)?;
+        let snap = self.read_snapshot()?;
+        let g = Self::require_graph(&snap, graph)?;
         let ids = g
             .label_index
             .get(label)
@@ -575,8 +607,8 @@ impl GraphStore for InMemoryGraphStore {
         property: &str,
         range: RangeQuery<'_>,
     ) -> Result<Vec<NodeId>, StorageError> {
-        let guard = self.read()?;
-        let g = Self::require_graph(&guard, graph)?;
+        let snap = self.read_snapshot()?;
+        let g = Self::require_graph(&snap, graph)?;
 
         // Use BTreeMap index if available.
         if g.has_index(label, property) {
@@ -602,8 +634,8 @@ impl GraphStore for InMemoryGraphStore {
     }
 
     fn find_edges_by_type(&self, graph: &str, rel_type: &str) -> Result<Vec<EdgeId>, StorageError> {
-        let guard = self.read()?;
-        let g = Self::require_graph(&guard, graph)?;
+        let snap = self.read_snapshot()?;
+        let g = Self::require_graph(&snap, graph)?;
         let ids = g
             .reltype_index
             .get(rel_type)
@@ -615,14 +647,14 @@ impl GraphStore for InMemoryGraphStore {
     // ── Adjacency reads ────────────────────────────────────────────────────────
 
     fn out_edges(&self, graph: &str, node_id: NodeId) -> Result<Vec<AdjEntry>, StorageError> {
-        let guard = self.read()?;
-        let g = Self::require_graph(&guard, graph)?;
+        let snap = self.read_snapshot()?;
+        let g = Self::require_graph(&snap, graph)?;
         Ok(g.out_adj.get(&node_id.0).cloned().unwrap_or_default())
     }
 
     fn in_edges(&self, graph: &str, node_id: NodeId) -> Result<Vec<AdjEntry>, StorageError> {
-        let guard = self.read()?;
-        let g = Self::require_graph(&guard, graph)?;
+        let snap = self.read_snapshot()?;
+        let g = Self::require_graph(&snap, graph)?;
         Ok(g.in_adj.get(&node_id.0).cloned().unwrap_or_default())
     }
 
@@ -632,8 +664,8 @@ impl GraphStore for InMemoryGraphStore {
         node_id: NodeId,
         rel_types: &[&str],
     ) -> Result<Vec<AdjEntry>, StorageError> {
-        let guard = self.read()?;
-        let g = Self::require_graph(&guard, graph)?;
+        let snap = self.read_snapshot()?;
+        let g = Self::require_graph(&snap, graph)?;
         let all = g.out_adj.get(&node_id.0).cloned().unwrap_or_default();
         if rel_types.is_empty() {
             return Ok(all);
@@ -650,8 +682,8 @@ impl GraphStore for InMemoryGraphStore {
         node_id: NodeId,
         rel_types: &[&str],
     ) -> Result<Vec<AdjEntry>, StorageError> {
-        let guard = self.read()?;
-        let g = Self::require_graph(&guard, graph)?;
+        let snap = self.read_snapshot()?;
+        let g = Self::require_graph(&snap, graph)?;
         let all = g.in_adj.get(&node_id.0).cloned().unwrap_or_default();
         if rel_types.is_empty() {
             return Ok(all);
@@ -663,8 +695,8 @@ impl GraphStore for InMemoryGraphStore {
     }
 
     fn out_edge_ids(&self, graph: &str, node_id: NodeId) -> Result<Vec<EdgeId>, StorageError> {
-        let guard = self.read()?;
-        let g = Self::require_graph(&guard, graph)?;
+        let snap = self.read_snapshot()?;
+        let g = Self::require_graph(&snap, graph)?;
         Ok(g.out_adj
             .get(&node_id.0)
             .map(|v| v.iter().map(|e| e.edge_id).collect())
@@ -672,8 +704,8 @@ impl GraphStore for InMemoryGraphStore {
     }
 
     fn in_edge_ids(&self, graph: &str, node_id: NodeId) -> Result<Vec<EdgeId>, StorageError> {
-        let guard = self.read()?;
-        let g = Self::require_graph(&guard, graph)?;
+        let snap = self.read_snapshot()?;
+        let g = Self::require_graph(&snap, graph)?;
         Ok(g.in_adj
             .get(&node_id.0)
             .map(|v| v.iter().map(|e| e.edge_id).collect())
@@ -681,14 +713,14 @@ impl GraphStore for InMemoryGraphStore {
     }
 
     fn all_node_ids(&self, graph: &str) -> Result<Vec<NodeId>, StorageError> {
-        let guard = self.read()?;
-        let g = Self::require_graph(&guard, graph)?;
+        let snap = self.read_snapshot()?;
+        let g = Self::require_graph(&snap, graph)?;
         Ok(g.nodes.keys().copied().map(NodeId).collect())
     }
 
     fn all_edge_ids(&self, graph: &str) -> Result<Vec<EdgeId>, StorageError> {
-        let guard = self.read()?;
-        let g = Self::require_graph(&guard, graph)?;
+        let snap = self.read_snapshot()?;
+        let g = Self::require_graph(&snap, graph)?;
         Ok(g.edges.keys().copied().map(EdgeId).collect())
     }
 
@@ -701,7 +733,8 @@ impl GraphStore for InMemoryGraphStore {
         properties: HashMap<String, Value>,
     ) -> Result<NodeId, StorageError> {
         let mut guard = self.write()?;
-        let g = Self::require_graph_mut(&mut guard, graph)?;
+        let map = Arc::make_mut(&mut guard);
+        let g = Self::require_graph_mut(map, graph)?;
 
         // Honor pre-set ID from FanoutStore injection
         let raw_id = if let Some(Value::Int(i)) = properties.get("_sd2_id") {
@@ -747,7 +780,8 @@ impl GraphStore for InMemoryGraphStore {
         properties: HashMap<String, Value>,
     ) -> Result<EdgeId, StorageError> {
         let mut guard = self.write()?;
-        let g = Self::require_graph_mut(&mut guard, graph)?;
+        let map = Arc::make_mut(&mut guard);
+        let g = Self::require_graph_mut(map, graph)?;
         // Validate that both endpoints exist.
         if !g.nodes.contains_key(&src.0) {
             return Err(StorageError::NodeNotFound { id: src.0 });
@@ -807,7 +841,8 @@ impl GraphStore for InMemoryGraphStore {
         properties: HashMap<String, Value>,
     ) -> Result<(), StorageError> {
         let mut guard = self.write()?;
-        let g = Self::require_graph_mut(&mut guard, graph)?;
+        let map = Arc::make_mut(&mut guard);
+        let g = Self::require_graph_mut(map, graph)?;
         let node = g
             .nodes
             .get_mut(&id.0)
@@ -835,7 +870,8 @@ impl GraphStore for InMemoryGraphStore {
         properties: HashMap<String, Value>,
     ) -> Result<(), StorageError> {
         let mut guard = self.write()?;
-        let g = Self::require_graph_mut(&mut guard, graph)?;
+        let map = Arc::make_mut(&mut guard);
+        let g = Self::require_graph_mut(map, graph)?;
         let node = g
             .nodes
             .get_mut(&id.0)
@@ -856,7 +892,8 @@ impl GraphStore for InMemoryGraphStore {
         properties: HashMap<String, Value>,
     ) -> Result<(), StorageError> {
         let mut guard = self.write()?;
-        let g = Self::require_graph_mut(&mut guard, graph)?;
+        let map = Arc::make_mut(&mut guard);
+        let g = Self::require_graph_mut(map, graph)?;
         let edge = g
             .edges
             .get_mut(&id.0)
@@ -874,7 +911,8 @@ impl GraphStore for InMemoryGraphStore {
         properties: HashMap<String, Value>,
     ) -> Result<(), StorageError> {
         let mut guard = self.write()?;
-        let g = Self::require_graph_mut(&mut guard, graph)?;
+        let map = Arc::make_mut(&mut guard);
+        let g = Self::require_graph_mut(map, graph)?;
         let edge = g
             .edges
             .get_mut(&id.0)
@@ -885,7 +923,8 @@ impl GraphStore for InMemoryGraphStore {
 
     fn remove_node_property(&self, graph: &str, id: NodeId, key: &str) -> Result<(), StorageError> {
         let mut guard = self.write()?;
-        let g = Self::require_graph_mut(&mut guard, graph)?;
+        let map = Arc::make_mut(&mut guard);
+        let g = Self::require_graph_mut(map, graph)?;
         let node = g
             .nodes
             .get_mut(&id.0)
@@ -900,7 +939,8 @@ impl GraphStore for InMemoryGraphStore {
 
     fn remove_edge_property(&self, graph: &str, id: EdgeId, key: &str) -> Result<(), StorageError> {
         let mut guard = self.write()?;
-        let g = Self::require_graph_mut(&mut guard, graph)?;
+        let map = Arc::make_mut(&mut guard);
+        let g = Self::require_graph_mut(map, graph)?;
         let edge = g
             .edges
             .get_mut(&id.0)
@@ -916,7 +956,8 @@ impl GraphStore for InMemoryGraphStore {
         labels: &[String],
     ) -> Result<(), StorageError> {
         let mut guard = self.write()?;
-        let g = Self::require_graph_mut(&mut guard, graph)?;
+        let map = Arc::make_mut(&mut guard);
+        let g = Self::require_graph_mut(map, graph)?;
         let node = g
             .nodes
             .get_mut(&id.0)
@@ -946,7 +987,8 @@ impl GraphStore for InMemoryGraphStore {
         labels: &[String],
     ) -> Result<(), StorageError> {
         let mut guard = self.write()?;
-        let g = Self::require_graph_mut(&mut guard, graph)?;
+        let map = Arc::make_mut(&mut guard);
+        let g = Self::require_graph_mut(map, graph)?;
         let node = g
             .nodes
             .get_mut(&id.0)
@@ -971,7 +1013,8 @@ impl GraphStore for InMemoryGraphStore {
 
     fn delete_node(&self, graph: &str, id: NodeId, detach: bool) -> Result<(), StorageError> {
         let mut guard = self.write()?;
-        let g = Self::require_graph_mut(&mut guard, graph)?;
+        let map = Arc::make_mut(&mut guard);
+        let g = Self::require_graph_mut(map, graph)?;
 
         if !g.nodes.contains_key(&id.0) {
             return Err(StorageError::NodeNotFound { id: id.0 });
@@ -1054,7 +1097,8 @@ impl GraphStore for InMemoryGraphStore {
 
     fn delete_edge(&self, graph: &str, id: EdgeId) -> Result<(), StorageError> {
         let mut guard = self.write()?;
-        let g = Self::require_graph_mut(&mut guard, graph)?;
+        let map = Arc::make_mut(&mut guard);
+        let g = Self::require_graph_mut(map, graph)?;
 
         let edge = g
             .edges
@@ -1083,14 +1127,15 @@ impl GraphStore for InMemoryGraphStore {
     // ── Index management ───────────────────────────────────────────────────────
 
     fn list_indexes(&self, graph: &str) -> Result<Vec<IndexDescriptor>, StorageError> {
-        let guard = self.read()?;
-        let g = Self::require_graph(&guard, graph)?;
+        let snap = self.read_snapshot()?;
+        let g = Self::require_graph(&snap, graph)?;
         Ok(g.indexes.clone())
     }
 
     fn create_index(&self, graph: &str, label: &str, property: &str) -> Result<(), StorageError> {
         let mut guard = self.write()?;
-        let g = Self::require_graph_mut(&mut guard, graph)?;
+        let map = Arc::make_mut(&mut guard);
+        let g = Self::require_graph_mut(map, graph)?;
         // Idempotent: only add if not already present.
         if g.has_index(label, property) {
             return Ok(());
@@ -1123,7 +1168,8 @@ impl GraphStore for InMemoryGraphStore {
 
     fn drop_index(&self, graph: &str, label: &str, property: &str) -> Result<(), StorageError> {
         let mut guard = self.write()?;
-        let g = Self::require_graph_mut(&mut guard, graph)?;
+        let map = Arc::make_mut(&mut guard);
+        let g = Self::require_graph_mut(map, graph)?;
         g.indexes
             .retain(|i| !(i.label == label && i.property == property));
         // Remove all BTreeMap entries for this label+property.
@@ -1151,18 +1197,20 @@ impl GraphStore for InMemoryGraphStore {
     fn create_graph(&self, name: &str) -> Result<(), StorageError> {
         validate_graph_name(name)?;
         let mut guard = self.write()?;
-        if guard.contains_key(name) {
+        let map = Arc::make_mut(&mut guard);
+        if map.contains_key(name) {
             return Err(StorageError::GraphAlreadyExists {
                 name: name.to_string(),
             });
         }
-        guard.insert(name.to_string(), GraphInner::new());
+        map.insert(name.to_string(), GraphInner::new());
         Ok(())
     }
 
     fn delete_graph(&self, name: &str) -> Result<(), StorageError> {
         let mut guard = self.write()?;
-        if guard.remove(name).is_none() {
+        let map = Arc::make_mut(&mut guard);
+        if map.remove(name).is_none() {
             return Err(StorageError::GraphNotFound {
                 name: name.to_string(),
             });
@@ -1171,20 +1219,20 @@ impl GraphStore for InMemoryGraphStore {
     }
 
     fn graph_exists(&self, name: &str) -> Result<bool, StorageError> {
-        let guard = self.read()?;
-        Ok(guard.contains_key(name))
+        let snap = self.read_snapshot()?;
+        Ok(snap.contains_key(name))
     }
 
     fn list_graphs(&self) -> Result<Vec<String>, StorageError> {
-        let guard = self.read()?;
-        let mut names: Vec<String> = guard.keys().cloned().collect();
+        let snap = self.read_snapshot()?;
+        let mut names: Vec<String> = snap.keys().cloned().collect();
         names.sort();
         Ok(names)
     }
 
     fn graph_stats(&self, graph: &str) -> Result<GraphStats, StorageError> {
-        let guard = self.read()?;
-        let g = Self::require_graph(&guard, graph)?;
+        let snap = self.read_snapshot()?;
+        let g = Self::require_graph(&snap, graph)?;
         Ok(GraphStats {
             node_count: g.nodes.len() as u64,
             edge_count: g.edges.len() as u64,
@@ -1194,8 +1242,8 @@ impl GraphStore for InMemoryGraphStore {
     }
 
     fn all_label_names(&self, graph: &str) -> Result<Vec<String>, StorageError> {
-        let guard = self.read()?;
-        let g = Self::require_graph(&guard, graph)?;
+        let snap = self.read_snapshot()?;
+        let g = Self::require_graph(&snap, graph)?;
         Ok(g.label_index.keys().cloned().collect())
     }
 
@@ -2085,5 +2133,107 @@ mod tests {
             .find_nodes_by_label_and_property("test", "Person", "age", RangeQuery::Eq(&bound))
             .unwrap();
         assert_eq!(result.len(), 1);
+    }
+
+    // ── Snapshot isolation ──────────────────────────────────────────────────
+
+    #[test]
+    fn snapshot_isolation_readers_see_pre_mutation_state() {
+        use std::sync::Arc as StdArc;
+
+        let store = StdArc::new(make_store());
+        let mut props = HashMap::new();
+        props.insert("name".to_string(), Value::Str("Alice".into()));
+        let id = store
+            .create_node("test", vec!["Person".to_string()], props)
+            .unwrap();
+
+        // Reader takes a snapshot *before* the writer mutates.
+        let snap = store.snapshot_handle().unwrap();
+
+        // Verify the snapshot sees the original state.
+        let g = snap.get_graph("test").unwrap();
+        assert_eq!(g.nodes.len(), 1);
+        let node = g.nodes.get(&id.0).unwrap();
+        assert_eq!(node.properties["name"], Value::Str("Alice".into()));
+
+        // Writer mutates the store concurrently.
+        let mut new_props = HashMap::new();
+        new_props.insert("name".to_string(), Value::Str("Bob".into()));
+        store.set_node_properties("test", id, new_props).unwrap();
+
+        // Also add a new node.
+        store
+            .create_node("test", vec!["Person".to_string()], HashMap::new())
+            .unwrap();
+
+        // The snapshot STILL sees the old state (1 node, name=Alice).
+        let g = snap.get_graph("test").unwrap();
+        assert_eq!(g.nodes.len(), 1, "snapshot must not see the new node");
+        let node = g.nodes.get(&id.0).unwrap();
+        assert_eq!(
+            node.properties["name"],
+            Value::Str("Alice".into()),
+            "snapshot must see pre-mutation name"
+        );
+
+        // But a fresh read from the store sees the updated state.
+        let fresh = store.get_node("test", id).unwrap().unwrap();
+        assert_eq!(fresh.properties["name"], Value::Str("Bob".into()));
+        assert_eq!(store.graph_stats("test").unwrap().node_count, 2);
+    }
+
+    #[test]
+    fn snapshot_isolation_concurrent_threads() {
+        use std::sync::Arc as StdArc;
+        use std::sync::Barrier;
+
+        let store = StdArc::new(make_store());
+        let mut props = HashMap::new();
+        props.insert("v".to_string(), Value::Int(1));
+        let id = store
+            .create_node("test", vec!["N".to_string()], props)
+            .unwrap();
+
+        let barrier = StdArc::new(Barrier::new(2));
+
+        // Reader thread: takes snapshot, waits for writer, then asserts old value.
+        let store_r = StdArc::clone(&store);
+        let barrier_r = StdArc::clone(&barrier);
+        let reader = std::thread::spawn(move || {
+            let snap = store_r.snapshot_handle().unwrap();
+            // Signal writer to proceed.
+            barrier_r.wait();
+            // Wait for writer to finish.
+            barrier_r.wait();
+            // Snapshot must still show old value.
+            let g = snap.get_graph("test").unwrap();
+            let node = g.nodes.get(&id.0).unwrap();
+            assert_eq!(
+                node.properties["v"],
+                Value::Int(1),
+                "reader snapshot must be isolated from concurrent write"
+            );
+        });
+
+        // Writer thread: waits for reader to snapshot, then mutates.
+        let store_w = StdArc::clone(&store);
+        let barrier_w = StdArc::clone(&barrier);
+        let writer = std::thread::spawn(move || {
+            // Wait for reader to take snapshot.
+            barrier_w.wait();
+            let mut new_props = HashMap::new();
+            new_props.insert("v".to_string(), Value::Int(999));
+            store_w.set_node_properties("test", id, new_props).unwrap();
+            // Signal reader that write is done.
+            barrier_w.wait();
+        });
+
+        reader.join().unwrap();
+        writer.join().unwrap();
+
+        // Post-test: store reflects the write.
+        let node = store.get_node("test", id).unwrap().unwrap();
+        assert_eq!(node.properties["v"], Value::Int(999));
     }
 }
