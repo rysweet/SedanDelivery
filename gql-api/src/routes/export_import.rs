@@ -11,6 +11,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 
 use gql_core::storage::validate_graph_name;
+use gql_redis_store::RedisGraphStore;
 
 use crate::error::ApiError;
 use crate::models::{ExportResponse, ImportBody, ImportResponse};
@@ -35,6 +36,24 @@ fn import_body_limit() -> usize {
                 }
             })
             .unwrap_or(2 * 1024 * 1024)
+    })
+}
+
+/// Redis pipeline batch size for bulk node creation. Default 100.
+/// Override via `GQL_REDIS_BATCH_SIZE`.
+fn redis_batch_size() -> usize {
+    static SIZE: OnceLock<usize> = OnceLock::new();
+    *SIZE.get_or_init(|| {
+        std::env::var("GQL_REDIS_BATCH_SIZE")
+            .ok()
+            .and_then(|v| match v.parse() {
+                Ok(val) if val > 0 => Some(val),
+                _ => {
+                    tracing::warn!("invalid value for GQL_REDIS_BATCH_SIZE, using default 100");
+                    None
+                }
+            })
+            .unwrap_or(100)
     })
 }
 
@@ -165,20 +184,62 @@ async fn import_handler(
     let mut id_map: HashMap<String, gql_core::storage::NodeId> = HashMap::new();
     let mut nodes_created: usize = 0;
 
-    for import_node in body.nodes {
-        let props = json_map_to_props(import_node.properties)?;
-        let new_id = store
-            .create_node(&name, import_node.labels, props)
-            .map_err(ApiError::from)?;
-        nodes_created += 1;
+    // Try batched path if the store is a RedisGraphStore.
+    let redis_store = store.as_any().downcast_ref::<RedisGraphStore>();
+    if let Some(rs) = redis_store {
+        let batch_size = redis_batch_size();
+        // Collect stable IDs so we can build the id_map after batch creation.
+        let mut stable_ids: Vec<Option<String>> = Vec::with_capacity(body.nodes.len());
+        let mut batch: Vec<(Vec<String>, HashMap<String, gql_core::types::Value>)> =
+            Vec::with_capacity(batch_size);
 
-        // If the import payload supplied a stable string ID, record the mapping.
-        if let Some(ref stable_id) = import_node.id {
-            id_map.insert(stable_id.clone(), new_id);
+        for import_node in body.nodes.into_iter() {
+            stable_ids.push(import_node.id.clone());
+            let props = json_map_to_props(import_node.properties)?;
+            batch.push((import_node.labels, props));
+
+            if batch.len() >= batch_size {
+                let new_ids = rs
+                    .batch_create_nodes(&name, std::mem::take(&mut batch))
+                    .map_err(ApiError::from)?;
+                let offset = nodes_created;
+                nodes_created += new_ids.len();
+                for (i, new_id) in new_ids.into_iter().enumerate() {
+                    if let Some(ref stable_id) = stable_ids[offset + i] {
+                        id_map.insert(stable_id.clone(), new_id);
+                    }
+                    id_map.insert(new_id.0.to_string(), new_id);
+                }
+            }
         }
-        // Also register by the numeric value so that imports from export can
-        // resolve edges by numeric string IDs.
-        id_map.insert(new_id.0.to_string(), new_id);
+        // Flush remaining nodes.
+        if !batch.is_empty() {
+            let new_ids = rs
+                .batch_create_nodes(&name, batch)
+                .map_err(ApiError::from)?;
+            let offset = nodes_created;
+            nodes_created += new_ids.len();
+            for (i, new_id) in new_ids.into_iter().enumerate() {
+                if let Some(ref stable_id) = stable_ids[offset + i] {
+                    id_map.insert(stable_id.clone(), new_id);
+                }
+                id_map.insert(new_id.0.to_string(), new_id);
+            }
+        }
+    } else {
+        // Fallback: sequential single-node creation for non-Redis stores.
+        for import_node in body.nodes {
+            let props = json_map_to_props(import_node.properties)?;
+            let new_id = store
+                .create_node(&name, import_node.labels, props)
+                .map_err(ApiError::from)?;
+            nodes_created += 1;
+
+            if let Some(ref stable_id) = import_node.id {
+                id_map.insert(stable_id.clone(), new_id);
+            }
+            id_map.insert(new_id.0.to_string(), new_id);
+        }
     }
 
     // Attempt to create each edge; collect failures rather than aborting early.

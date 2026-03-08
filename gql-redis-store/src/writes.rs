@@ -507,6 +507,97 @@ impl RedisGraphStore {
         self.delete_edge_inner(conn.as_mut(), graph, id)
     }
 
+    // ── Batch write operations ────────────────────────────────────────────
+
+    /// Batch-create multiple nodes in a single Redis pipeline round-trip.
+    ///
+    /// For each node: INCRBY to allocate IDs, HSET to store node data,
+    /// SADD to update label indexes and the all-nodes set.
+    /// Property indexing is performed in a second pipeline pass.
+    ///
+    /// Returns the newly created `NodeId`s in the same order as the input.
+    pub fn batch_create_nodes(
+        &self,
+        graph: &str,
+        nodes: Vec<(Vec<String>, HashMap<String, Value>)>,
+    ) -> Result<Vec<NodeId>, StorageError> {
+        if nodes.is_empty() {
+            return Ok(Vec::new());
+        }
+        self.require_graph(graph)?;
+        let mut conn = self.conn()?;
+
+        let count = nodes.len() as i64;
+
+        // Allocate a contiguous block of IDs with a single INCRBY.
+        let end_id: i64 = redis::cmd("INCRBY")
+            .arg(self.kp(key_node_seq(graph)))
+            .arg(count)
+            .query(conn.as_mut())
+            .map_err(|e| StorageError::Backend { msg: e.to_string() })?;
+        if end_id <= 0 || end_id < count {
+            return Err(StorageError::IdOverflow {
+                graph: graph.to_string(),
+            });
+        }
+        let start_id = (end_id - count + 1) as u64;
+
+        // Pre-serialize all nodes and build the pipeline.
+        let mut pipe = redis::pipe();
+        let mut node_meta: Vec<(u64, Vec<String>, HashMap<String, Value>)> =
+            Vec::with_capacity(nodes.len());
+
+        for (i, (labels, properties)) in nodes.into_iter().enumerate() {
+            let id = start_id + i as u64;
+
+            // Strip internal FanoutStore keys before storing.
+            let mut clean_props = properties;
+            clean_props.remove("_sd2_id");
+            clean_props.remove("_sd2_eid");
+
+            let node_key = self.kp(key_node(graph, id));
+            let labels_json = serde_json::to_string(&labels)
+                .map_err(|e| StorageError::Serialization { msg: e.to_string() })?;
+            let props_json = props_to_json(&clean_props)?;
+
+            // HSET node hash.
+            pipe.cmd("HSET")
+                .arg(&node_key)
+                .arg("labels")
+                .arg(&labels_json)
+                .arg("props")
+                .arg(&props_json)
+                .ignore();
+
+            // SADD to label indexes.
+            for label in &labels {
+                pipe.cmd("SADD")
+                    .arg(self.kp(key_label(graph, label)))
+                    .arg(id.to_string())
+                    .ignore();
+            }
+
+            // SADD to all-nodes set.
+            pipe.cmd("SADD")
+                .arg(self.kp(key_nodes_set(graph)))
+                .arg(id.to_string())
+                .ignore();
+
+            node_meta.push((id, labels, clean_props));
+        }
+
+        // Execute the main pipeline in one round-trip.
+        pipe.query::<()>(conn.as_mut())
+            .map_err(|e| StorageError::Backend { msg: e.to_string() })?;
+
+        // Property indexing pass (uses its own pipeline internally).
+        for (id, labels, props) in &node_meta {
+            self.index_node_properties(conn.as_mut(), graph, *id, labels, props)?;
+        }
+
+        Ok(node_meta.iter().map(|(id, _, _)| NodeId(*id)).collect())
+    }
+
     // ── Graph administration writes ─────────────────────────────────────────
 
     pub(crate) fn create_graph_impl(&self, name: &str) -> Result<(), StorageError> {

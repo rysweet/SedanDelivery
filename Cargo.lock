@@ -1426,6 +1426,7 @@ dependencies = [
 name = "gql-redis-store"
 version = "0.1.0"
 dependencies = [
+ "criterion",
  "gql-core",
  "metrics",
  "metrics-exporter-prometheus",

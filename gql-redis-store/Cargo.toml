@@ -17,3 +17,10 @@ tracing = { workspace = true }
 metrics = "0.24"
 metrics-exporter-prometheus = "0.18"
 tokio = { workspace = true, features = ["rt", "time"] }
+
+[dev-dependencies]
+criterion = { workspace = true }
+
+[[bench]]
+name    = "batch_write"
+harness = false
