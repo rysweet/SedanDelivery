@@ -368,8 +368,15 @@ fn datetime_to_bolt(zoned: &jiff::Zoned) -> BoltValue {
 fn duration_to_bolt(dur: &gql_core::types::CypherDuration) -> BoltValue {
     // CypherDuration stores nanos as i128. Split into seconds + sub-second nanos.
     let total_nanos = dur.nanos;
-    let seconds = (total_nanos / 1_000_000_000) as i64;
-    let nanos = (total_nanos % 1_000_000_000) as i64;
+    let mut seconds = (total_nanos / 1_000_000_000) as i64;
+    let mut nanos = (total_nanos % 1_000_000_000) as i32;
+    // Normalize: Bolt spec requires nanoseconds in 0..999_999_999.
+    // Rust's `%` on negative values produces negative remainders.
+    if nanos < 0 {
+        seconds -= 1;
+        nanos += 1_000_000_000;
+    }
+    let nanos = nanos as i64;
     BoltValue::Structure {
         tag: tags::TAG_DURATION,
         fields: vec![
@@ -804,6 +811,29 @@ mod tests {
             BoltValue::Null => {} // graceful fallback
             BoltValue::Structure { tag, .. } => assert_eq!(tag, tags::TAG_LOCAL_DATE_TIME),
             other => panic!("unexpected BoltValue: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn duration_encoding_negative_nanos_normalized() {
+        // -1.5 seconds = -1_500_000_000 nanos.
+        // Bolt spec requires nanoseconds in 0..999_999_999, so this should
+        // become seconds=-2, nanos=500_000_000 (i.e., -2s + 0.5s = -1.5s).
+        let dur = CypherDuration {
+            months: 0,
+            days: 0,
+            nanos: -1_500_000_000,
+        };
+        let bolt = scalar_value_to_bolt(&Value::Duration(dur));
+        if let BoltValue::Structure { tag, fields } = &bolt {
+            assert_eq!(*tag, 0x45);
+            assert_eq!(fields.len(), 4);
+            assert_eq!(fields[0], BoltValue::Int(0)); // months
+            assert_eq!(fields[1], BoltValue::Int(0)); // days
+            assert_eq!(fields[2], BoltValue::Int(-2)); // seconds
+            assert_eq!(fields[3], BoltValue::Int(500_000_000)); // nanos (non-negative)
+        } else {
+            panic!("expected Structure for Duration");
         }
     }
 }
