@@ -200,11 +200,15 @@ jobs:
           name: coverage-report
           path: coverage/
 
-  # ── Tier 4: Nightly benchmarks (scheduled) ──────────────────────────────────
+  # ── Tier 4: Performance benchmarks with regression detection ────────────────
   benchmarks:
     name: Performance Benchmarks
     runs-on: ubuntu-latest
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: >-
+      (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+      (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'perf'))
+    env:
+      PERF_REGRESSION_THRESHOLD: ${{ vars.PERF_REGRESSION_THRESHOLD || '10' }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.1.5
 
@@ -226,6 +230,7 @@ jobs:
       - name: Install libclang
         run: sudo apt-get update -q && sudo apt-get install -y -q libclang-dev
 
+      # ── Run all benchmarks ──────────────────────────────────────────────
       - name: Run parser benchmarks
         run: cargo bench -p gql-core --bench parser -- --output-format bencher | tee bench-parser.txt
 
@@ -235,11 +240,47 @@ jobs:
       - name: Run scale benchmarks
         run: cargo bench -p gql-core --bench scale -- --output-format bencher | tee bench-scale.txt
 
+      - name: Run bolt benchmarks
+        run: cargo bench -p sedandelivery-bolt --bench bolt_benchmarks -- --output-format bencher | tee bench-bolt.txt
+
+      # Combine all results into a single file for comparison
+      - name: Combine benchmark results
+        run: cat bench-parser.txt bench-executor.txt bench-scale.txt bench-bolt.txt > new.txt
+
+      # ── Regression detection ────────────────────────────────────────────
+      - name: Download baseline artifact
+        if: github.event_name == 'pull_request'
+        uses: dawidd6/action-download-artifact@v6
+        with:
+          name: benchmark-baseline
+          workflow: ci.yml
+          branch: main
+          path: baseline/
+          if_no_artifact_found: warn
+
+      - name: Compare against baseline
+        if: github.event_name == 'pull_request'
+        run: |
+          bash scripts/bench-compare.sh baseline/baseline.txt new.txt "$PERF_REGRESSION_THRESHOLD"
+
+      # ── Store baseline on main pushes ───────────────────────────────────
+      - name: Prepare baseline
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: cp new.txt baseline.txt
+
+      - name: Upload baseline artifact
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@v7
+        with:
+          name: benchmark-baseline
+          path: baseline.txt
+          retention-days: 90
+
       - name: Upload benchmark results
         uses: actions/upload-artifact@v7
         with:
           name: benchmark-results
-          path: "*.txt"
+          path: bench-*.txt
 
   # ── MSRV check ───────────────────────────────────────────────────────────────
   msrv:
