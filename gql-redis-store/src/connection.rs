@@ -1,5 +1,6 @@
 // connection.rs — Connection pooling for standalone and Redis Cluster modes.
 
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use redis::cluster::ClusterClient;
@@ -170,5 +171,79 @@ impl RedisPool {
                 metrics::gauge!("redis_pool_active").set(f64::from(stats.active));
             }
         });
+    }
+}
+
+/// A pool of read-only replica connections with round-robin selection.
+///
+/// Each replica URL gets its own standalone `r2d2` pool. Connections are
+/// distributed across replicas using an atomic counter for even load
+/// distribution. The `READONLY` command is sent on each new connection
+/// to allow reads from Redis replicas.
+pub(crate) struct ReplicaPool {
+    pools: Vec<r2d2::Pool<Client>>,
+    next: AtomicUsize,
+}
+
+impl ReplicaPool {
+    /// Build a replica pool from one or more Redis replica URLs.
+    ///
+    /// Each URL gets its own connection pool. The `READONLY` command is
+    /// issued on connection checkout to ensure replicas accept read commands.
+    pub(crate) fn new(
+        urls: &[&str],
+        pool_size: u32,
+        pool_timeout_secs: u64,
+        idle_timeout_secs: u64,
+        min_idle: u32,
+    ) -> Result<Self, StorageError> {
+        if urls.is_empty() {
+            return Err(StorageError::Backend {
+                msg: "replica pool requires at least one URL".into(),
+            });
+        }
+        // Distribute pool_size evenly across replicas (minimum 1 per replica).
+        let per_replica = (pool_size / urls.len() as u32).max(1);
+        let mut pools = Vec::with_capacity(urls.len());
+        for url in urls {
+            let client = Client::open(*url).map_err(|e| StorageError::Backend {
+                msg: format!("redis replica client error: {e}"),
+            })?;
+            let pool = r2d2::Pool::builder()
+                .max_size(per_replica)
+                .connection_timeout(Duration::from_secs(pool_timeout_secs))
+                .idle_timeout(Some(Duration::from_secs(idle_timeout_secs)))
+                .min_idle(Some(min_idle.min(per_replica)))
+                .build(client)
+                .map_err(|e| StorageError::Backend {
+                    msg: format!("redis replica pool error: {e}"),
+                })?;
+            pools.push(pool);
+        }
+        Ok(Self {
+            pools,
+            next: AtomicUsize::new(0),
+        })
+    }
+
+    /// Check out a connection from the next replica in round-robin order.
+    ///
+    /// Sends `READONLY` on the connection so Redis replicas accept read
+    /// commands even when `slave-read-only` is enabled on the server.
+    pub(crate) fn get(&self) -> Result<RedisConn, StorageError> {
+        let idx = self.next.fetch_add(1, Ordering::Relaxed) % self.pools.len();
+        let mut conn = self.pools[idx]
+            .get()
+            .map(RedisConn::Standalone)
+            .map_err(|e| StorageError::Backend {
+                msg: format!("redis replica pool checkout error: {e}"),
+            })?;
+        // Issue READONLY so replica accepts read commands.
+        redis::cmd("READONLY")
+            .query::<String>(conn.as_mut())
+            .map_err(|e| StorageError::Backend {
+                msg: format!("redis READONLY command failed: {e}"),
+            })?;
+        Ok(conn)
     }
 }

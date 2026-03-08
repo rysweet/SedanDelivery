@@ -19,7 +19,7 @@ impl RedisGraphStore {
         graph: &str,
         id: NodeId,
     ) -> Result<Option<NodeData>, StorageError> {
-        let mut conn = self.conn()?;
+        let mut conn = self.route_read()?;
         self.read_node(conn.as_mut(), graph, id.0)
     }
 
@@ -28,7 +28,7 @@ impl RedisGraphStore {
         graph: &str,
         id: EdgeId,
     ) -> Result<Option<EdgeData>, StorageError> {
-        let mut conn = self.conn()?;
+        let mut conn = self.route_read()?;
         self.read_edge(conn.as_mut(), graph, id.0)
     }
 
@@ -42,7 +42,7 @@ impl RedisGraphStore {
         if ids.is_empty() {
             return Ok(vec![]);
         }
-        let mut conn = self.conn()?;
+        let mut conn = self.route_read()?;
         let mut results = Vec::with_capacity(ids.len());
         // Pipeline all HMGET commands.
         let mut pipe = redis::pipe();
@@ -88,7 +88,7 @@ impl RedisGraphStore {
         if ids.is_empty() {
             return Ok(vec![]);
         }
-        let mut conn = self.conn()?;
+        let mut conn = self.route_read()?;
         let mut pipe = redis::pipe();
         for id in ids {
             pipe.cmd("HMGET")
@@ -147,7 +147,7 @@ impl RedisGraphStore {
         graph: &str,
         label: &str,
     ) -> Result<Vec<NodeId>, StorageError> {
-        let mut conn = self.conn()?;
+        let mut conn = self.route_read()?;
         let members: Vec<String> = redis::cmd("SMEMBERS")
             .arg(self.kp(key_label(graph, label)))
             .query(conn.as_mut())
@@ -171,7 +171,7 @@ impl RedisGraphStore {
         property: &str,
         range: RangeQuery<'_>,
     ) -> Result<Vec<NodeId>, StorageError> {
-        let mut conn = self.conn()?;
+        let mut conn = self.route_read()?;
 
         // Fast path: use property index for exact-match queries when an index exists.
         if let RangeQuery::Eq(val) = &range {
@@ -216,7 +216,7 @@ impl RedisGraphStore {
         graph: &str,
         rel_type: &str,
     ) -> Result<Vec<EdgeId>, StorageError> {
-        let mut conn = self.conn()?;
+        let mut conn = self.route_read()?;
         let members: Vec<String> = redis::cmd("SMEMBERS")
             .arg(self.kp(key_reltype(graph, rel_type)))
             .query(conn.as_mut())
@@ -240,7 +240,7 @@ impl RedisGraphStore {
         graph: &str,
         node_id: NodeId,
     ) -> Result<Vec<AdjEntry>, StorageError> {
-        let mut conn = self.conn()?;
+        let mut conn = self.route_read()?;
         let members: Vec<String> = redis::cmd("SMEMBERS")
             .arg(self.kp(key_out(graph, node_id.0)))
             .query(conn.as_mut())
@@ -253,7 +253,7 @@ impl RedisGraphStore {
         graph: &str,
         node_id: NodeId,
     ) -> Result<Vec<AdjEntry>, StorageError> {
-        let mut conn = self.conn()?;
+        let mut conn = self.route_read()?;
         let members: Vec<String> = redis::cmd("SMEMBERS")
             .arg(self.kp(key_in(graph, node_id.0)))
             .query(conn.as_mut())
@@ -318,7 +318,7 @@ impl RedisGraphStore {
     }
 
     pub(crate) fn all_node_ids_impl(&self, graph: &str) -> Result<Vec<NodeId>, StorageError> {
-        let mut conn = self.conn()?;
+        let mut conn = self.route_read()?;
         let members: Vec<String> = redis::cmd("SMEMBERS")
             .arg(self.kp(key_nodes_set(graph)))
             .query(conn.as_mut())
@@ -336,7 +336,7 @@ impl RedisGraphStore {
     }
 
     pub(crate) fn all_edge_ids_impl(&self, graph: &str) -> Result<Vec<EdgeId>, StorageError> {
-        let mut conn = self.conn()?;
+        let mut conn = self.route_read()?;
         let members: Vec<String> = redis::cmd("SMEMBERS")
             .arg(self.kp(key_edges_set(graph)))
             .query(conn.as_mut())
@@ -356,7 +356,7 @@ impl RedisGraphStore {
     pub(crate) fn all_label_names_impl(&self, graph: &str) -> Result<Vec<String>, StorageError> {
         let prefix = format!("{}G:{{{graph}}}:label:", self.key_prefix);
         let pattern = format!("{prefix}*");
-        let mut conn = self.conn()?;
+        let mut conn = self.route_read()?;
         let mut cursor: u64 = 0;
         let mut labels = Vec::new();
         loop {
@@ -384,7 +384,7 @@ impl RedisGraphStore {
     // ── Graph administration reads ──────────────────────────────────────────
 
     pub(crate) fn graph_exists_impl(&self, name: &str) -> Result<bool, StorageError> {
-        let mut conn = self.conn()?;
+        let mut conn = self.route_read()?;
         redis::cmd("SISMEMBER")
             .arg(self.key_graphs())
             .arg(name)
@@ -393,7 +393,7 @@ impl RedisGraphStore {
     }
 
     pub(crate) fn list_graphs_impl(&self) -> Result<Vec<String>, StorageError> {
-        let mut conn = self.conn()?;
+        let mut conn = self.route_read()?;
         redis::cmd("SMEMBERS")
             .arg(self.key_graphs())
             .query(conn.as_mut())
@@ -402,7 +402,7 @@ impl RedisGraphStore {
 
     pub(crate) fn graph_stats_impl(&self, graph: &str) -> Result<GraphStats, StorageError> {
         self.require_graph(graph)?;
-        let mut conn = self.conn()?;
+        let mut conn = self.route_read()?;
         let node_count: u64 = redis::cmd("SCARD")
             .arg(self.kp(key_nodes_set(graph)))
             .query(conn.as_mut())

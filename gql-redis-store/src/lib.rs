@@ -41,8 +41,8 @@ use gql_core::storage::{
 use gql_core::types::Value;
 
 use connection::{
-    RedisConn, RedisPool, DEFAULT_IDLE_TIMEOUT_SECS, DEFAULT_MIN_IDLE, DEFAULT_POOL_SIZE,
-    DEFAULT_POOL_TIMEOUT_SECS,
+    RedisConn, RedisPool, ReplicaPool, DEFAULT_IDLE_TIMEOUT_SECS, DEFAULT_MIN_IDLE,
+    DEFAULT_POOL_SIZE, DEFAULT_POOL_TIMEOUT_SECS,
 };
 use keys::{decode_adj, key_edge, key_node, KEY_GRAPHS};
 
@@ -65,8 +65,14 @@ use keys::{decode_adj, key_edge, key_node, KEY_GRAPHS};
 /// - `GQL_REDIS_POOL_TIMEOUT_SECS` — checkout timeout (default 5)
 /// - `GQL_REDIS_IDLE_TIMEOUT_SECS` — idle connection reap timeout (default 300)
 /// - `GQL_REDIS_MIN_IDLE` — minimum warm connections kept in pool (default 1)
+///
+/// Read-replica configuration:
+/// - `GQL_REDIS_REPLICA_URL` — comma-separated replica URLs for read routing
 pub struct RedisGraphStore {
     pool: RedisPool,
+    /// Optional read-replica pool. When present, `route_read()` returns
+    /// connections from replicas; when absent, falls back to the primary pool.
+    replica_pool: Option<ReplicaPool>,
     /// Optional key prefix for multi-tenant isolation.
     /// Set via `GQL_REDIS_KEY_PREFIX` environment variable (default empty).
     key_prefix: String,
@@ -105,17 +111,53 @@ impl RedisGraphStore {
         let min_idle: u32 =
             gql_core::config::parse_env_range("GQL_REDIS_MIN_IDLE", DEFAULT_MIN_IDLE, 0, pool_size);
 
+        // Build optional replica pool from GQL_REDIS_REPLICA_URL (comma-separated).
+        let replica_pool = if let Ok(replica_str) = env::var("GQL_REDIS_REPLICA_URL") {
+            let urls: Vec<&str> = replica_str.split(',').map(|s| s.trim()).collect();
+            if urls.is_empty() || urls.iter().all(|u| u.is_empty()) {
+                None
+            } else {
+                let valid_urls: Vec<&str> = urls.into_iter().filter(|u| !u.is_empty()).collect();
+                match ReplicaPool::new(
+                    &valid_urls,
+                    pool_size,
+                    pool_timeout_secs,
+                    idle_timeout_secs,
+                    min_idle,
+                ) {
+                    Ok(rp) => {
+                        tracing::info!(
+                            replica_count = valid_urls.len(),
+                            "read-replica pool initialized"
+                        );
+                        Some(rp)
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            error = %e,
+                            "failed to initialize replica pool, reads will use primary"
+                        );
+                        None
+                    }
+                }
+            }
+        } else {
+            None
+        };
+
         // Cluster mode: GQL_REDIS_CLUSTER_NODES takes priority.
         if let Ok(nodes_str) = env::var("GQL_REDIS_CLUSTER_NODES") {
             let nodes: Vec<&str> = nodes_str.split(',').map(|s| s.trim()).collect();
-            return Self::from_cluster_nodes(
+            let mut store = Self::from_cluster_nodes(
                 &nodes,
                 &prefix,
                 pool_size,
                 pool_timeout_secs,
                 idle_timeout_secs,
                 min_idle,
-            );
+            )?;
+            store.replica_pool = replica_pool;
+            return Ok(store);
         }
 
         // Standalone mode.
@@ -125,14 +167,16 @@ impl RedisGraphStore {
                 tracing::warn!("GQL_REDIS_URL not set, falling back to redis://127.0.0.1:6379");
                 "redis://127.0.0.1:6379".into()
             });
-        Self::from_url_with_options(
+        let mut store = Self::from_url_with_options(
             &url,
             &prefix,
             pool_size,
             pool_timeout_secs,
             idle_timeout_secs,
             min_idle,
-        )
+        )?;
+        store.replica_pool = replica_pool;
+        Ok(store)
     }
 
     /// Create a store connecting to an explicit Redis URL with an optional key prefix.
@@ -165,6 +209,7 @@ impl RedisGraphStore {
         )?;
         Ok(Self {
             pool,
+            replica_pool: None,
             key_prefix: key_prefix.to_string(),
         })
     }
@@ -191,6 +236,7 @@ impl RedisGraphStore {
         )?;
         Ok(Self {
             pool,
+            replica_pool: None,
             key_prefix: key_prefix.to_string(),
         })
     }
@@ -224,6 +270,18 @@ impl RedisGraphStore {
 
     /// Check out a connection from the pool.
     pub(crate) fn conn(&self) -> Result<RedisConn, StorageError> {
+        self.pool.get()
+    }
+
+    /// Check out a read-only connection, preferring replicas when available.
+    ///
+    /// If a replica pool is configured (`GQL_REDIS_REPLICA_URL`), returns a
+    /// connection from the replica pool with round-robin selection. Otherwise
+    /// falls back to the primary pool.
+    pub(crate) fn route_read(&self) -> Result<RedisConn, StorageError> {
+        if let Some(ref rp) = self.replica_pool {
+            return rp.get();
+        }
         self.pool.get()
     }
 

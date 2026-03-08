@@ -181,6 +181,22 @@ fn determine_query_type(stats: &MutationStats) -> &'static str {
     }
 }
 
+// ── Read-only query detection ────────────────────────────────────────────────
+
+/// Check whether a Cypher query is read-only by inspecting its text for
+/// mutating keywords (CREATE, SET, DELETE, MERGE, REMOVE).
+///
+/// This is a lightweight pre-parse check used for read-replica routing.
+/// False negatives (classifying a write as a read) are not dangerous because
+/// replicas will reject writes; false positives just skip the replica pool.
+pub fn is_read_only_query(query: &str) -> bool {
+    // Uppercase for case-insensitive matching.
+    let upper = query.to_uppercase();
+    !["CREATE", "SET", "DELETE", "MERGE", "REMOVE"]
+        .iter()
+        .any(|kw| upper.contains(kw))
+}
+
 // ── Stats conversion ─────────────────────────────────────────────────────────
 
 /// Convert `MutationStats` to a `BoltMap`, including only non-zero counters.
@@ -1681,5 +1697,53 @@ mod tests {
             ]),
             Value::Null
         );
+    }
+
+    // ── is_read_only_query tests ────────────────────────────────────────────
+
+    #[test]
+    fn is_read_only_query_match_only() {
+        assert!(is_read_only_query("MATCH (n) RETURN n"));
+        assert!(is_read_only_query("match (n:Person) return n.name"));
+        assert!(is_read_only_query("MATCH (a)-[r]->(b) RETURN a, r, b"));
+    }
+
+    #[test]
+    fn is_read_only_query_with_create() {
+        assert!(!is_read_only_query("CREATE (n:Person {name: 'Alice'})"));
+        assert!(!is_read_only_query("MATCH (a) CREATE (a)-[:KNOWS]->(b)"));
+    }
+
+    #[test]
+    fn is_read_only_query_with_set() {
+        assert!(!is_read_only_query("MATCH (n) SET n.x = 1"));
+    }
+
+    #[test]
+    fn is_read_only_query_with_delete() {
+        assert!(!is_read_only_query("MATCH (n) DELETE n"));
+        assert!(!is_read_only_query("MATCH (n) DETACH DELETE n"));
+    }
+
+    #[test]
+    fn is_read_only_query_with_merge() {
+        assert!(!is_read_only_query("MERGE (n:Person {name: 'Bob'})"));
+    }
+
+    #[test]
+    fn is_read_only_query_with_remove() {
+        assert!(!is_read_only_query("MATCH (n) REMOVE n.prop"));
+        assert!(!is_read_only_query("MATCH (n) REMOVE n:Label"));
+    }
+
+    #[test]
+    fn is_read_only_query_case_insensitive() {
+        assert!(!is_read_only_query("match (n) set n.x = 1"));
+        assert!(!is_read_only_query("Match (n) Delete n"));
+    }
+
+    #[test]
+    fn is_read_only_query_return_only() {
+        assert!(is_read_only_query("RETURN 1 AS x"));
     }
 }
