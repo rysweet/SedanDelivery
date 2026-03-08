@@ -714,11 +714,39 @@ impl GraphStore for FabricGraphStore {
             json!({ "graph": graph }),
         )?;
         let row = rows.first().cloned().unwrap_or_default();
+        let node_count = row.first().and_then(|v| v.as_u64()).unwrap_or_else(|| {
+            tracing::debug!(
+                graph,
+                "node_count defaulting to 0: unexpected Fabric response format"
+            );
+            0
+        });
+        let edge_count = row.get(1).and_then(|v| v.as_u64()).unwrap_or_else(|| {
+            tracing::debug!(
+                graph,
+                "edge_count defaulting to 0: unexpected Fabric response format"
+            );
+            0
+        });
+        let label_count = row.get(2).and_then(|v| v.as_u64()).unwrap_or_else(|| {
+            tracing::debug!(
+                graph,
+                "label_count defaulting to 0: unexpected Fabric response format"
+            );
+            0
+        }) as u32;
+        let rel_type_count = row.get(3).and_then(|v| v.as_u64()).unwrap_or_else(|| {
+            tracing::debug!(
+                graph,
+                "rel_type_count defaulting to 0: unexpected Fabric response format"
+            );
+            0
+        }) as u32;
         Ok(GraphStats {
-            node_count: row.first().and_then(|v| v.as_u64()).unwrap_or(0),
-            edge_count: row.get(1).and_then(|v| v.as_u64()).unwrap_or(0),
-            label_count: row.get(2).and_then(|v| v.as_u64()).unwrap_or(0) as u32,
-            rel_type_count: row.get(3).and_then(|v| v.as_u64()).unwrap_or(0) as u32,
+            node_count,
+            edge_count,
+            label_count,
+            rel_type_count,
         })
     }
 

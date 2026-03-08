@@ -14,6 +14,7 @@
 //   Index set:       G:{g}:indexes          — SADD "{label}:{property}"
 //   Graph registry:  __sd2_registry:graphs   — SADD graph name
 
+pub mod create_store;
 pub mod fanout;
 
 mod connection;
@@ -119,7 +120,10 @@ impl RedisGraphStore {
         // Standalone mode.
         let url = env::var("GQL_REDIS_URL")
             .or_else(|_| env::var("REDIS_URL"))
-            .unwrap_or_else(|_| "redis://127.0.0.1:6379".into());
+            .unwrap_or_else(|_| {
+                tracing::warn!("GQL_REDIS_URL not set, falling back to redis://127.0.0.1:6379");
+                "redis://127.0.0.1:6379".into()
+            });
         Self::from_url_with_options(
             &url,
             &prefix,

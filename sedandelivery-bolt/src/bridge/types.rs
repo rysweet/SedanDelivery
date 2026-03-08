@@ -150,7 +150,16 @@ pub fn path_to_bolt(
         indices.push(BoltValue::Int(rel_index));
 
         let to_node = node_ids[i + 1];
-        let node_idx = *node_index_map.get(&to_node).unwrap_or(&0) as i64;
+        let node_idx = match node_index_map.get(&to_node) {
+            Some(&idx) => idx as i64,
+            None => {
+                tracing::warn!(
+                    node_id = to_node.0,
+                    "node_index_map missing to_node in path encoding, falling back to index 0"
+                );
+                0
+            }
+        };
         indices.push(BoltValue::Int(node_idx));
     }
 
