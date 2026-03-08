@@ -1436,6 +1436,43 @@ mod tests {
     }
 
     #[test]
+    fn regex_match_requires_full_string() {
+        // Substring match must return false — Cypher =~ is implicitly anchored.
+        assert_eq!(
+            eval_regex_match("hello world", "hello").unwrap(),
+            Value::Bool(false),
+            "substring pattern should NOT match"
+        );
+    }
+
+    #[test]
+    fn regex_match_exact_string() {
+        assert_eq!(
+            eval_regex_match("hello", "hello").unwrap(),
+            Value::Bool(true),
+            "exact pattern should match the full string"
+        );
+    }
+
+    #[test]
+    fn regex_match_full_with_wildcard() {
+        assert_eq!(
+            eval_regex_match("hello", "hel.*").unwrap(),
+            Value::Bool(true),
+            "regex that covers the full string should match"
+        );
+    }
+
+    #[test]
+    fn regex_match_already_anchored() {
+        assert_eq!(
+            eval_regex_match("hello", "^hello$").unwrap(),
+            Value::Bool(true),
+            "already-anchored pattern should still work"
+        );
+    }
+
+    #[test]
     fn regex_cache_basic_hit() {
         // First call compiles; second call should hit cache. Both return true.
         assert_eq!(eval_regex_match("abc", "^abc$").unwrap(), Value::Bool(true));
@@ -1466,12 +1503,13 @@ mod tests {
                 "cache should retain entries after eviction, got {}",
                 map.len()
             );
+            // Cache keys are anchored: ^(?:<original>)$
             assert!(
-                map.contains_key("^pattern_512$"),
+                map.contains_key("^(?:^pattern_512$)$"),
                 "most recent pattern should survive eviction"
             );
             assert!(
-                !map.contains_key("^pattern_0$"),
+                !map.contains_key("^(?:^pattern_0$)$"),
                 "oldest pattern should have been evicted"
             );
         });
@@ -1510,11 +1548,12 @@ mod tests {
                 257,
                 "after eviction cache should have 257 entries (256 survivors + 1 new)"
             );
-            assert!(!map.contains_key("^evict_0$"));
-            assert!(!map.contains_key("^evict_255$"));
-            assert!(map.contains_key("^evict_256$"));
-            assert!(map.contains_key("^evict_511$"));
-            assert!(map.contains_key("^evict_512$"));
+            // Cache keys are anchored: ^(?:<original>)$
+            assert!(!map.contains_key("^(?:^evict_0$)$"));
+            assert!(!map.contains_key("^(?:^evict_255$)$"));
+            assert!(map.contains_key("^(?:^evict_256$)$"));
+            assert!(map.contains_key("^(?:^evict_511$)$"));
+            assert!(map.contains_key("^(?:^evict_512$)$"));
         });
 
         REGEX_CACHE.with(|cache| cache.borrow_mut().clear());

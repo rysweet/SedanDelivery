@@ -325,10 +325,15 @@ pub(super) fn eval_binary<'r>(
                         actual: format!("{} bytes", pattern.len()),
                     }));
                 }
+                // Cypher's =~ operator requires the pattern to match the ENTIRE
+                // string (implicit ^..$ anchoring), but regex::is_match() succeeds
+                // on substring matches.  Wrap with ^(?:...)$ so the compiled regex
+                // enforces a full-string match.
+                let anchored = format!("^(?:{})$", pattern);
                 let matched = REGEX_CACHE.with(|cache| -> Result<bool, GqlError> {
                     let mut map = cache.borrow_mut();
-                    if !map.contains_key(pattern.as_ref()) {
-                        let re = regex::Regex::new(pattern.as_ref()).map_err(|e| {
+                    if !map.contains_key(anchored.as_str()) {
+                        let re = regex::Regex::new(&anchored).map_err(|e| {
                             GqlError::Execution(ExecutionError::TypeMismatch {
                                 expected: "valid regex pattern".to_string(),
                                 actual: e.to_string(),
@@ -341,9 +346,9 @@ pub(super) fn eval_binary<'r>(
                             let half = map.len() / 2;
                             map.drain(..half);
                         }
-                        map.insert(pattern.to_string(), re);
+                        map.insert(anchored.to_string(), re);
                     }
-                    Ok(map[pattern.as_ref()].is_match(s.as_ref()))
+                    Ok(map[anchored.as_str()].is_match(s.as_ref()))
                 })?;
                 Ok(Value::Bool(matched))
             }
@@ -434,6 +439,44 @@ fn compare_values(
     }
 }
 
+/// Compare an i64 and f64 without precision loss for large integers.
+///
+/// A plain `i as f64` cast silently rounds integers beyond 2^53, which can
+/// produce incorrect comparison results.  This function detects the rounding
+/// case and falls back to integer-based bounds checking.
+fn safe_int_float_cmp(i: i64, f: f64) -> Option<std::cmp::Ordering> {
+    if f.is_nan() {
+        return None;
+    }
+    let as_f = i as f64;
+    if as_f as i64 == i {
+        // Exact representation -- safe to compare as f64
+        as_f.partial_cmp(&f)
+    } else {
+        // Precision loss -- compare by converting float to integer bounds
+        if f > i64::MAX as f64 {
+            return Some(std::cmp::Ordering::Less);
+        }
+        if f < i64::MIN as f64 {
+            return Some(std::cmp::Ordering::Greater);
+        }
+        let f_trunc = f as i64;
+        match i.cmp(&f_trunc) {
+            std::cmp::Ordering::Equal => {
+                // i == trunc(f), compare fractional part
+                if f > f_trunc as f64 {
+                    Some(std::cmp::Ordering::Less)
+                } else if f < f_trunc as f64 {
+                    Some(std::cmp::Ordering::Greater)
+                } else {
+                    Some(std::cmp::Ordering::Equal)
+                }
+            }
+            other => Some(other),
+        }
+    }
+}
+
 /// Total order comparison for Cypher values (comparable types only).
 pub(crate) fn cypher_compare(a: &Value, b: &Value) -> Result<std::cmp::Ordering, GqlError> {
     match (a, b) {
@@ -448,7 +491,7 @@ pub(crate) fn cypher_compare(a: &Value, b: &Value) -> Result<std::cmp::Ordering,
             if y.is_nan() {
                 return Ok(std::cmp::Ordering::Less);
             }
-            (*x as f64).partial_cmp(y).ok_or_else(|| {
+            safe_int_float_cmp(*x, *y).ok_or_else(|| {
                 GqlError::Execution(ExecutionError::TypeMismatch {
                     expected: "comparable Float".to_string(),
                     actual: "NaN".to_string(),
@@ -459,12 +502,14 @@ pub(crate) fn cypher_compare(a: &Value, b: &Value) -> Result<std::cmp::Ordering,
             if x.is_nan() {
                 return Ok(std::cmp::Ordering::Greater);
             }
-            x.partial_cmp(&(*y as f64)).ok_or_else(|| {
-                GqlError::Execution(ExecutionError::TypeMismatch {
-                    expected: "comparable Float".to_string(),
-                    actual: "NaN".to_string(),
+            safe_int_float_cmp(*y, *x)
+                .map(|ord| ord.reverse())
+                .ok_or_else(|| {
+                    GqlError::Execution(ExecutionError::TypeMismatch {
+                        expected: "comparable Float".to_string(),
+                        actual: "NaN".to_string(),
+                    })
                 })
-            })
         }
         (Value::Str(x), Value::Str(y)) => Ok(x.as_ref().cmp(y.as_ref())),
         (Value::Bool(x), Value::Bool(y)) => Ok(x.cmp(y)),
