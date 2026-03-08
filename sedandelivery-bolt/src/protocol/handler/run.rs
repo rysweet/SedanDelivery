@@ -575,7 +575,12 @@ pub(crate) async fn handle_run(
             e
         })
         .ok()
-        .map(|op| operator_to_plan_map(&op, true, 0))
+        .map(|op| {
+            let est = gql_core::planner::collect_graph_statistics(effective_store.as_ref(), &graph)
+                .ok()
+                .map(|gs| gql_core::planner::estimate_cardinality(&op, &gs));
+            operator_to_plan_map(&op, true, 0, est.as_ref())
+        })
     } else {
         None
     };
@@ -637,7 +642,11 @@ async fn handle_explain(
 
     match plan_result {
         Ok(operator) => {
-            let plan_map = operator_to_plan_map(&operator, false, 0);
+            let estimates =
+                gql_core::planner::collect_graph_statistics(effective_store.as_ref(), graph)
+                    .ok()
+                    .map(|gs| gql_core::planner::estimate_cardinality(&operator, &gs));
+            let plan_map = operator_to_plan_map(&operator, false, 0, estimates.as_ref());
             let plan_notifications = detect_notifications(&operator);
             let qid = session.next_qid;
             session.next_qid += 1;
@@ -685,11 +694,14 @@ async fn handle_explain(
 /// Convert a gql-core Operator tree into a Bolt plan map structure.
 ///
 /// Recursively descends into child operators so EXPLAIN returns a proper tree.
+/// When `estimates` is provided, populates `EstimatedRows` from the cardinality
+/// estimator; otherwise falls back to 1.0.
 #[allow(clippy::only_used_in_recursion)]
 fn operator_to_plan_map(
     op: &gql_core::planner::Operator,
     is_profile: bool,
     depth: usize,
+    estimates: Option<&std::collections::HashMap<*const gql_core::planner::Operator, f64>>,
 ) -> BoltValue {
     use gql_core::planner::Operator;
 
@@ -705,8 +717,12 @@ fn operator_to_plan_map(
     let children_bolt: Vec<BoltValue> = op
         .children()
         .into_iter()
-        .map(|child| operator_to_plan_map(child, is_profile, depth + 1))
+        .map(|child| operator_to_plan_map(child, is_profile, depth + 1, estimates))
         .collect();
+    let estimated_rows = estimates
+        .and_then(|m| m.get(&(op as *const Operator)))
+        .copied()
+        .unwrap_or(1.0);
     let entries: Vec<(String, BoltValue)> = vec![
         ("operatorType".to_string(), BoltValue::String(op_type)),
         ("identifiers".to_string(), BoltValue::List(vec![])),
@@ -717,7 +733,10 @@ fn operator_to_plan_map(
                     "runtime".to_string(),
                     BoltValue::String("INTERPRETED".to_string()),
                 ),
-                ("EstimatedRows".to_string(), BoltValue::Float(1.0)),
+                (
+                    "EstimatedRows".to_string(),
+                    BoltValue::Float(estimated_rows),
+                ),
             ]),
         ),
         ("children".to_string(), BoltValue::List(children_bolt)),
@@ -964,7 +983,7 @@ mod tests {
     #[test]
     fn operator_to_plan_map_single_row() {
         let op = Operator::SingleRow;
-        let plan = operator_to_plan_map(&op, false, 0);
+        let plan = operator_to_plan_map(&op, false, 0, None);
         match plan {
             BoltValue::Map(entries) => {
                 let op_type = entries.get_str("operatorType").unwrap();
@@ -983,7 +1002,7 @@ mod tests {
             label: None,
             alias: Identifier::new("n"),
         };
-        let plan = operator_to_plan_map(&op, false, 0);
+        let plan = operator_to_plan_map(&op, false, 0, None);
         match plan {
             BoltValue::Map(entries) => {
                 let op_type = entries.get_str("operatorType").unwrap();
@@ -1003,7 +1022,7 @@ mod tests {
             predicate: gql_core::ast::Expr::Bool(true),
             child: Box::new(child),
         };
-        let plan = operator_to_plan_map(&op, false, 0);
+        let plan = operator_to_plan_map(&op, false, 0, None);
         match plan {
             BoltValue::Map(entries) => {
                 let op_type = entries.get_str("operatorType").unwrap();
@@ -1026,7 +1045,7 @@ mod tests {
     #[test]
     fn operator_to_plan_map_has_runtime_in_args() {
         let op = Operator::SingleRow;
-        let plan = operator_to_plan_map(&op, true, 0);
+        let plan = operator_to_plan_map(&op, true, 0, None);
         match plan {
             BoltValue::Map(entries) => {
                 if let Some(BoltValue::Map(args)) = entries.get_value("args") {

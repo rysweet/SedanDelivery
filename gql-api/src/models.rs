@@ -109,6 +109,14 @@ pub struct MutateResponse {
     pub properties_set: u64,
 }
 
+// ── Explain ──────────────────────────────────────────────────────────────────
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExplainResponse {
+    pub plan: serde_json::Value,
+}
+
 // ── Pagination query params ───────────────────────────────────────────────────
 
 /// Return the maximum number of items that may be requested in a single page.

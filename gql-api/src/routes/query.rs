@@ -21,7 +21,7 @@ use gql_core::storage::validate_graph_name;
 use gql_core::types::Value;
 
 use crate::error::ApiError;
-use crate::models::{CypherBody, MutateResponse, QueryResponse};
+use crate::models::{CypherBody, ExplainResponse, MutateResponse, QueryResponse};
 use crate::routes::helpers::require_graph;
 use crate::serialize::row_to_json;
 use crate::state::AppState;
@@ -30,6 +30,7 @@ pub fn router() -> Router<AppState> {
     Router::new()
         .route("/graphs/{name}/query", post(query_handler))
         .route("/graphs/{name}/mutate", post(mutate_handler))
+        .route("/graphs/{name}/explain", post(explain_handler))
 }
 
 /// Convert optional JSON params map to `HashMap<String, Value>` for the executor.
@@ -109,6 +110,61 @@ async fn query_handler(
         rows,
         elapsed_ms,
     }))
+}
+
+// ── POST /graphs/{name}/explain ────────────────────────────────────────────────
+
+async fn explain_handler(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+    Json(body): Json<CypherBody>,
+) -> Result<Json<ExplainResponse>, ApiError> {
+    validate_graph_name(&name).map_err(ApiError::from)?;
+    require_graph(&state, &name)?;
+
+    let store = Arc::clone(&state.store);
+
+    let ast = parse_query(&body.cypher).map_err(|e| ApiError::bad_request(e.to_string()))?;
+    let planner = QueryPlanner::new(store.as_ref(), &name);
+    let plan = planner
+        .plan(&ast)
+        .map_err(|e| ApiError::bad_request(e.to_string()))?;
+
+    let store_ref = store.as_ref();
+    let graph_stats =
+        gql_core::planner::collect_graph_statistics(store_ref, &name).map_err(ApiError::from)?;
+    let estimates = gql_core::planner::estimate_cardinality(&plan, &graph_stats);
+
+    let plan_json = operator_to_json(&plan, &estimates);
+
+    Ok(Json(ExplainResponse { plan: plan_json }))
+}
+
+/// Convert an operator tree to a JSON plan tree with estimated rows.
+fn operator_to_json(
+    op: &gql_core::planner::Operator,
+    estimates: &std::collections::HashMap<*const gql_core::planner::Operator, f64>,
+) -> serde_json::Value {
+    let op_type = format!("{:?}", op)
+        .split(['(', '{'])
+        .next()
+        .unwrap_or("Unknown")
+        .trim()
+        .to_string();
+    let estimated_rows = estimates
+        .get(&(op as *const gql_core::planner::Operator))
+        .copied()
+        .unwrap_or(1.0);
+    let children: Vec<serde_json::Value> = op
+        .children()
+        .into_iter()
+        .map(|child| operator_to_json(child, estimates))
+        .collect();
+    serde_json::json!({
+        "operatorType": op_type,
+        "estimatedRows": estimated_rows,
+        "children": children,
+    })
 }
 
 // ── POST /graphs/{name}/mutate ────────────────────────────────────────────────

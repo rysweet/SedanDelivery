@@ -286,6 +286,222 @@ pub enum RemoveItem {
     },
 }
 
+// ── Cardinality Estimation ────────────────────────────────────────────────────
+
+use std::collections::HashMap;
+
+/// Graph-level statistics used by the cardinality estimator.
+#[derive(Debug, Clone)]
+pub struct GraphStatistics {
+    /// Total node count across all labels.
+    pub total_nodes: u64,
+    /// Total edge count across all relationship types.
+    pub total_edges: u64,
+    /// Node count per label (label name -> count).
+    pub nodes_per_label: HashMap<String, u64>,
+    /// Edge count per relationship type (type name -> count).
+    pub edges_per_type: HashMap<String, u64>,
+}
+
+impl GraphStatistics {
+    /// Average out-degree: total_edges / total_nodes (or 1.0 if no nodes).
+    fn avg_degree(&self) -> f64 {
+        if self.total_nodes == 0 {
+            1.0
+        } else {
+            self.total_edges as f64 / self.total_nodes as f64
+        }
+    }
+
+    /// Average out-degree for a specific relationship type.
+    fn avg_degree_for_type(&self, rel_type: &str) -> f64 {
+        if self.total_nodes == 0 {
+            return 1.0;
+        }
+        let edge_count = self
+            .edges_per_type
+            .get(rel_type)
+            .copied()
+            .unwrap_or(self.total_edges);
+        edge_count as f64 / self.total_nodes as f64
+    }
+}
+
+/// Default selectivity for unknown filter predicates.
+const DEFAULT_FILTER_SELECTIVITY: f64 = 0.1;
+
+/// Estimate cardinality (row count) for each operator in a plan tree.
+///
+/// Returns a `HashMap<*const Operator, f64>` mapping each operator pointer to its
+/// estimated row count. Using raw pointers as keys avoids cloning operators;
+/// the map is only valid while the operator tree is alive.
+pub fn estimate_cardinality(
+    op: &Operator,
+    stats: &GraphStatistics,
+) -> HashMap<*const Operator, f64> {
+    let mut estimates: HashMap<*const Operator, f64> = HashMap::new();
+    estimate_recursive(op, stats, &mut estimates);
+    estimates
+}
+
+fn estimate_recursive(
+    op: &Operator,
+    stats: &GraphStatistics,
+    estimates: &mut HashMap<*const Operator, f64>,
+) -> f64 {
+    let est = match op {
+        Operator::SingleRow => 1.0,
+
+        Operator::NodeScan { label, .. } => match label {
+            Some(Label(l)) => stats.nodes_per_label.get(l.as_str()).copied().unwrap_or(0) as f64,
+            None => stats.total_nodes as f64,
+        },
+
+        Operator::IndexScan { label, .. } => {
+            let label_count = stats
+                .nodes_per_label
+                .get(label.0.as_str())
+                .copied()
+                .unwrap_or(0) as f64;
+            // Index scan with equality: estimate ~10% of label count, at least 1
+            (label_count * DEFAULT_FILTER_SELECTIVITY).max(1.0)
+        }
+
+        Operator::NodeByIdSeek { .. } => 1.0,
+
+        Operator::Filter { child, .. } => {
+            let child_est = estimate_recursive(child, stats, estimates);
+            (child_est * DEFAULT_FILTER_SELECTIVITY).max(1.0)
+        }
+
+        Operator::Expand {
+            rel_types, child, ..
+        } => {
+            let child_est = estimate_recursive(child, stats, estimates);
+            let degree = if rel_types.len() == 1 {
+                stats.avg_degree_for_type(&rel_types[0].0)
+            } else {
+                stats.avg_degree()
+            };
+            child_est * degree.max(1.0)
+        }
+
+        Operator::VarLenExpand {
+            min, max, child, ..
+        } => {
+            let child_est = estimate_recursive(child, stats, estimates);
+            let degree = stats.avg_degree().max(1.0);
+            // Estimate: sum of degree^depth for depth in min..=max, simplified
+            let depth_range = (*max as f64 - *min as f64 + 1.0).max(1.0);
+            child_est * degree * depth_range
+        }
+
+        Operator::Limit { count, child, .. } => {
+            let child_est = estimate_recursive(child, stats, estimates);
+            match count {
+                Expr::Integer(n) => child_est.min(*n as f64),
+                _ => child_est.min(100.0), // default limit guess
+            }
+        }
+
+        Operator::Skip { count, child, .. } => {
+            let child_est = estimate_recursive(child, stats, estimates);
+            match count {
+                Expr::Integer(n) => (child_est - *n as f64).max(0.0),
+                _ => (child_est - 10.0).max(0.0),
+            }
+        }
+
+        Operator::Project { child, .. }
+        | Operator::Sort { child, .. }
+        | Operator::Set { child, .. }
+        | Operator::Remove { child, .. }
+        | Operator::Delete { child, .. }
+        | Operator::ProduceResults { child, .. }
+        | Operator::AssemblePath { child, .. }
+        | Operator::MergeRelationship { child, .. } => estimate_recursive(child, stats, estimates),
+
+        Operator::Distinct { child } => {
+            let child_est = estimate_recursive(child, stats, estimates);
+            // Assume distinct removes ~20% of rows
+            (child_est * 0.8).max(1.0)
+        }
+
+        Operator::Aggregate { child, .. } => {
+            let _child_est = estimate_recursive(child, stats, estimates);
+            // Aggregation typically reduces to a small number of groups
+            10.0_f64.min(stats.total_nodes as f64).max(1.0)
+        }
+
+        Operator::Unwind { child, .. } => {
+            let child_est = estimate_recursive(child, stats, estimates);
+            child_est * 5.0 // assume average list length of 5
+        }
+
+        Operator::Union { left, right, .. } => {
+            let l = estimate_recursive(left, stats, estimates);
+            let r = estimate_recursive(right, stats, estimates);
+            l + r
+        }
+
+        Operator::Apply { outer, inner } => {
+            let o = estimate_recursive(outer, stats, estimates);
+            let i = estimate_recursive(inner, stats, estimates);
+            o * i
+        }
+
+        Operator::LeftOuterApply {
+            preserved,
+            optional_pattern,
+        } => {
+            let p = estimate_recursive(preserved, stats, estimates);
+            let o = estimate_recursive(optional_pattern, stats, estimates);
+            p * o.max(1.0)
+        }
+
+        Operator::Create { child, .. }
+        | Operator::Merge { child, .. }
+        | Operator::Call { child, .. } => match child {
+            Some(c) => estimate_recursive(c, stats, estimates),
+            None => 1.0,
+        },
+
+        Operator::ShortestPath { .. } => 1.0,
+    };
+
+    estimates.insert(op as *const Operator, est);
+    est
+}
+
+/// Build `GraphStatistics` from a `GraphStore` for a given graph.
+pub fn collect_graph_statistics(
+    store: &dyn crate::storage::GraphStore,
+    graph: &str,
+) -> Result<GraphStatistics, crate::error::GqlError> {
+    let gs = store
+        .graph_stats(graph)
+        .map_err(crate::error::GqlError::from)?;
+    let label_names = store
+        .all_label_names(graph)
+        .map_err(crate::error::GqlError::from)?;
+    let mut nodes_per_label = HashMap::new();
+    for label in &label_names {
+        let ids = store
+            .find_nodes_by_label(graph, label)
+            .map_err(crate::error::GqlError::from)?;
+        nodes_per_label.insert(label.clone(), ids.len() as u64);
+    }
+    // Edge counts per type: use find_edges_by_type for each known type.
+    // For now, we don't have an `all_rel_type_names` method, so we skip per-type
+    // counts and rely on the total edge count + avg degree.
+    Ok(GraphStatistics {
+        total_nodes: gs.node_count,
+        total_edges: gs.edge_count,
+        nodes_per_label,
+        edges_per_type: HashMap::new(),
+    })
+}
+
 // ── Planner module ────────────────────────────────────────────────────────────
 
 #[allow(clippy::module_inception)]
@@ -523,5 +739,104 @@ mod tests {
         // openCypher: min > max is not an error — the pattern simply matches no paths.
         // The VarLenExpand executor naturally returns 0 rows when no depth d satisfies d >= min && d <= max.
         assert_eq!(validate_varlen_bounds(5, Some(3)).unwrap(), (5, 3));
+    }
+
+    // ── Cardinality estimation tests ─────────────────────────────────────────
+
+    fn test_stats() -> GraphStatistics {
+        let mut nodes_per_label = HashMap::new();
+        nodes_per_label.insert("Person".to_string(), 100);
+        nodes_per_label.insert("City".to_string(), 10);
+        GraphStatistics {
+            total_nodes: 110,
+            total_edges: 200,
+            nodes_per_label,
+            edges_per_type: HashMap::new(),
+        }
+    }
+
+    #[test]
+    fn estimate_node_scan_with_label() {
+        let stats = test_stats();
+        let op = Operator::NodeScan {
+            label: Some(Label::new("Person")),
+            alias: Identifier::new("n"),
+        };
+        let estimates = estimate_cardinality(&op, &stats);
+        let est = estimates[&(&op as *const Operator)];
+        assert!((est - 100.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn estimate_node_scan_no_label() {
+        let stats = test_stats();
+        let op = Operator::NodeScan {
+            label: None,
+            alias: Identifier::new("n"),
+        };
+        let estimates = estimate_cardinality(&op, &stats);
+        let est = estimates[&(&op as *const Operator)];
+        assert!((est - 110.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn estimate_filter_applies_selectivity() {
+        let stats = test_stats();
+        let op = Operator::Filter {
+            predicate: Expr::Bool(true),
+            child: Box::new(Operator::NodeScan {
+                label: Some(Label::new("Person")),
+                alias: Identifier::new("n"),
+            }),
+        };
+        let estimates = estimate_cardinality(&op, &stats);
+        let est = estimates[&(&op as *const Operator)];
+        // 100 * 0.1 = 10
+        assert!((est - 10.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn estimate_limit_caps_rows() {
+        let stats = test_stats();
+        let op = Operator::Limit {
+            count: Expr::Integer(5),
+            child: Box::new(Operator::NodeScan {
+                label: Some(Label::new("Person")),
+                alias: Identifier::new("n"),
+            }),
+        };
+        let estimates = estimate_cardinality(&op, &stats);
+        let est = estimates[&(&op as *const Operator)];
+        assert!((est - 5.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn estimate_expand_multiplies_by_degree() {
+        let stats = test_stats();
+        let op = Operator::Expand {
+            direction: Direction::Outgoing,
+            rel_types: vec![],
+            src_alias: Identifier::new("n"),
+            rel_alias: None,
+            dst_alias: Identifier::new("m"),
+            child: Box::new(Operator::NodeScan {
+                label: Some(Label::new("City")),
+                alias: Identifier::new("n"),
+            }),
+        };
+        let estimates = estimate_cardinality(&op, &stats);
+        let est = estimates[&(&op as *const Operator)];
+        // 10 nodes * (200/110 avg degree) ≈ 18.18
+        let expected = 10.0 * (200.0 / 110.0);
+        assert!((est - expected).abs() < 0.01);
+    }
+
+    #[test]
+    fn estimate_single_row() {
+        let stats = test_stats();
+        let op = Operator::SingleRow;
+        let estimates = estimate_cardinality(&op, &stats);
+        let est = estimates[&(&op as *const Operator)];
+        assert!((est - 1.0).abs() < f64::EPSILON);
     }
 }
