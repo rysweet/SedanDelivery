@@ -4,7 +4,7 @@
 //! an exclusive lock. There are no sub-graph locks; the store is optimised for correctness
 //! and test velocity, not raw throughput (the Redis backend handles production load).
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::RwLock;
 
 use crate::error::StorageError;
@@ -13,6 +13,81 @@ use crate::storage::{
     NodeData, NodeId, RangeQuery,
 };
 use crate::types::Value;
+
+// ── IndexableValue: Ord-compatible wrapper for BTreeMap keys ──────────────────
+
+/// A value that can be used as a BTreeMap key for property indexes.
+/// Wraps the subset of `Value` variants that support total ordering.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum IndexableValue {
+    Bool(bool),
+    Int(i64),
+    /// f64 stored as raw bits for Ord. NaN values are excluded at insertion time.
+    Float(u64),
+    Str(Box<str>),
+}
+
+impl IndexableValue {
+    /// Convert a `Value` to an `IndexableValue`, returning `None` for non-indexable types.
+    fn from_value(v: &Value) -> Option<Self> {
+        match v {
+            Value::Bool(b) => Some(IndexableValue::Bool(*b)),
+            Value::Int(i) => Some(IndexableValue::Int(*i)),
+            Value::Float(f) => {
+                if f.is_nan() {
+                    None
+                } else {
+                    Some(IndexableValue::Float(f.to_bits()))
+                }
+            }
+            Value::Str(s) => Some(IndexableValue::Str(s.clone())),
+            _ => None,
+        }
+    }
+}
+
+impl PartialOrd for IndexableValue {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for IndexableValue {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        // Different types are ordered by discriminant to keep BTreeMap consistent.
+        let disc = |v: &IndexableValue| -> u8 {
+            match v {
+                IndexableValue::Bool(_) => 0,
+                IndexableValue::Int(_) => 1,
+                IndexableValue::Float(_) => 2,
+                IndexableValue::Str(_) => 3,
+            }
+        };
+        let d1 = disc(self);
+        let d2 = disc(other);
+        if d1 != d2 {
+            return d1.cmp(&d2);
+        }
+        match (self, other) {
+            (IndexableValue::Bool(a), IndexableValue::Bool(b)) => a.cmp(b),
+            (IndexableValue::Int(a), IndexableValue::Int(b)) => a.cmp(b),
+            (IndexableValue::Float(a), IndexableValue::Float(b)) => {
+                // Both are non-NaN, use total_cmp semantics via bits
+                let fa = f64::from_bits(*a);
+                let fb = f64::from_bits(*b);
+                fa.total_cmp(&fb)
+            }
+            (IndexableValue::Str(a), IndexableValue::Str(b)) => a.cmp(b),
+            _ => unreachable!(),
+        }
+    }
+}
+
+/// Composite key for the property index BTreeMap: (label, property, value).
+type PropIndexKey = (String, String, IndexableValue);
+
+/// The property index: maps (label, property, value) -> set of raw node IDs.
+type PropIndex = BTreeMap<PropIndexKey, HashSet<u64>>;
 
 // ── Per-graph state ────────────────────────────────────────────────────────────
 
@@ -30,6 +105,8 @@ struct GraphInner {
     /// rel_type -> set of edge IDs
     reltype_index: HashMap<String, HashSet<u64>>,
     indexes: Vec<IndexDescriptor>,
+    /// BTreeMap-based property indexes: (label, property, value) -> node IDs.
+    prop_index: PropIndex,
     node_seq: u64,
     edge_seq: u64,
 }
@@ -44,6 +121,7 @@ impl GraphInner {
             label_index: HashMap::new(),
             reltype_index: HashMap::new(),
             indexes: Vec::new(),
+            prop_index: BTreeMap::new(),
             node_seq: 0,
             edge_seq: 0,
         }
@@ -58,6 +136,48 @@ impl GraphInner {
                 graph: graph_name.to_string(),
             })?;
         Ok(self.node_seq)
+    }
+
+    /// Check if an index exists for the given (label, property) pair.
+    fn has_index(&self, label: &str, property: &str) -> bool {
+        self.indexes
+            .iter()
+            .any(|i| i.label == label && i.property == property)
+    }
+
+    /// Insert a node's property value into the BTreeMap index if an index exists.
+    fn index_insert(&mut self, raw_id: u64, labels: &[String], props: &HashMap<String, Value>) {
+        for idx in &self.indexes {
+            if labels.contains(&idx.label) {
+                if let Some(val) = props.get(&idx.property) {
+                    if let Some(iv) = IndexableValue::from_value(val) {
+                        self.prop_index
+                            .entry((idx.label.clone(), idx.property.clone(), iv))
+                            .or_default()
+                            .insert(raw_id);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Remove a node's property value from the BTreeMap index.
+    fn index_remove(&mut self, raw_id: u64, labels: &[String], props: &HashMap<String, Value>) {
+        for idx in &self.indexes {
+            if labels.contains(&idx.label) {
+                if let Some(val) = props.get(&idx.property) {
+                    if let Some(iv) = IndexableValue::from_value(val) {
+                        let key = (idx.label.clone(), idx.property.clone(), iv);
+                        if let Some(set) = self.prop_index.get_mut(&key) {
+                            set.remove(&raw_id);
+                            if set.is_empty() {
+                                self.prop_index.remove(&key);
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 
     /// Allocate the next edge ID.
@@ -251,6 +371,151 @@ fn matches_range(prop_val: &Value, range: &RangeQuery<'_>) -> bool {
     }
 }
 
+// ── Indexed range query helpers ───────────────────────────────────────────────
+
+/// Collect node IDs from the BTreeMap property index that match the given range query.
+fn indexed_range_query(
+    prop_index: &PropIndex,
+    label: &str,
+    property: &str,
+    range: &RangeQuery<'_>,
+) -> Vec<NodeId> {
+    use std::ops::Bound;
+
+    let l = label.to_string();
+    let p = property.to_string();
+
+    // Helper: collect all node IDs from a BTreeMap range.
+    macro_rules! collect_range {
+        ($lo:expr, $hi:expr) => {{
+            let mut result = Vec::new();
+            for ((_l, _p, _v), ids) in prop_index.range(($lo, $hi)) {
+                if _l != &l || _p != &p {
+                    continue;
+                }
+                for &raw_id in ids {
+                    result.push(NodeId(raw_id));
+                }
+            }
+            result
+        }};
+    }
+
+    // The smallest possible key for this (label, property).
+    let min_key = (l.clone(), p.clone(), IndexableValue::Bool(false));
+
+    match range {
+        RangeQuery::Eq(target) => {
+            if let Some(iv) = IndexableValue::from_value(target) {
+                let key = (l, p, iv);
+                prop_index
+                    .get(&key)
+                    .map(|ids| ids.iter().copied().map(NodeId).collect())
+                    .unwrap_or_default()
+            } else {
+                vec![]
+            }
+        }
+        RangeQuery::Lt(bound) => {
+            if let Some(iv) = IndexableValue::from_value(bound) {
+                let lo = Bound::Included(min_key);
+                let hi = Bound::Excluded((l.clone(), p.clone(), iv));
+                collect_range!(lo, hi)
+            } else {
+                vec![]
+            }
+        }
+        RangeQuery::Lte(bound) => {
+            if let Some(iv) = IndexableValue::from_value(bound) {
+                let lo = Bound::Included(min_key);
+                let hi = Bound::Included((l.clone(), p.clone(), iv));
+                collect_range!(lo, hi)
+            } else {
+                vec![]
+            }
+        }
+        RangeQuery::Gt(bound) => {
+            if let Some(iv) = IndexableValue::from_value(bound) {
+                let mut result = Vec::new();
+                for ((kl, kp, _kv), ids) in prop_index.range((
+                    Bound::Excluded((l.clone(), p.clone(), iv)),
+                    Bound::Unbounded,
+                )) {
+                    if kl != &l || kp != &p {
+                        break;
+                    }
+                    for &raw_id in ids {
+                        result.push(NodeId(raw_id));
+                    }
+                }
+                result
+            } else {
+                vec![]
+            }
+        }
+        RangeQuery::Gte(bound) => {
+            if let Some(iv) = IndexableValue::from_value(bound) {
+                let mut result = Vec::new();
+                for ((kl, kp, _kv), ids) in prop_index.range((
+                    Bound::Included((l.clone(), p.clone(), iv)),
+                    Bound::Unbounded,
+                )) {
+                    if kl != &l || kp != &p {
+                        break;
+                    }
+                    for &raw_id in ids {
+                        result.push(NodeId(raw_id));
+                    }
+                }
+                result
+            } else {
+                vec![]
+            }
+        }
+        RangeQuery::Between { lo, hi, inclusive } => {
+            let lo_iv = IndexableValue::from_value(lo);
+            let hi_iv = IndexableValue::from_value(hi);
+            match (lo_iv, hi_iv) {
+                (Some(lo_v), Some(hi_v)) => {
+                    let lo_bound = Bound::Included((l.clone(), p.clone(), lo_v));
+                    let hi_bound = if *inclusive {
+                        Bound::Included((l.clone(), p.clone(), hi_v))
+                    } else {
+                        Bound::Excluded((l.clone(), p.clone(), hi_v))
+                    };
+                    collect_range!(lo_bound, hi_bound)
+                }
+                _ => vec![],
+            }
+        }
+        RangeQuery::StartsWith(prefix) => {
+            // Scan string range: from prefix to prefix with last byte incremented.
+            let lo_v = IndexableValue::Str((*prefix).into());
+            let mut result = Vec::new();
+            for ((kl, kp, kv), ids) in prop_index.range((
+                Bound::Included((l.clone(), p.clone(), lo_v)),
+                Bound::Unbounded,
+            )) {
+                if kl != &l || kp != &p {
+                    break;
+                }
+                if let IndexableValue::Str(s) = kv {
+                    if s.starts_with(prefix) {
+                        for &raw_id in ids {
+                            result.push(NodeId(raw_id));
+                        }
+                    } else {
+                        break;
+                    }
+                } else {
+                    break;
+                }
+            }
+            result
+        }
+    }
+}
+
 // ── GraphStore impl ───────────────────────────────────────────────────────────
 
 impl GraphStore for InMemoryGraphStore {
@@ -312,6 +577,13 @@ impl GraphStore for InMemoryGraphStore {
     ) -> Result<Vec<NodeId>, StorageError> {
         let guard = self.read()?;
         let g = Self::require_graph(&guard, graph)?;
+
+        // Use BTreeMap index if available.
+        if g.has_index(label, property) {
+            return Ok(indexed_range_query(&g.prop_index, label, property, &range));
+        }
+
+        // Fallback: full scan over label set.
         let candidate_ids = match g.label_index.get(label) {
             Some(s) => s,
             None => return Ok(vec![]),
@@ -454,6 +726,8 @@ impl GraphStore for InMemoryGraphStore {
             labels: labels.clone(),
             properties: clean_props,
         };
+        // Insert into BTreeMap property indexes before storing (need props ref).
+        g.index_insert(raw_id, &labels, &node.properties);
         g.nodes.insert(raw_id, node);
         for label in &labels {
             g.label_index
@@ -538,10 +812,19 @@ impl GraphStore for InMemoryGraphStore {
             .nodes
             .get_mut(&id.0)
             .ok_or(StorageError::NodeNotFound { id: id.0 })?;
+        // Remove old index entries for changed keys, then insert new ones.
+        let labels = node.labels.clone();
+        let old_props: HashMap<String, Value> = properties
+            .keys()
+            .filter_map(|k| node.properties.get(k).map(|v| (k.clone(), v.clone())))
+            .collect();
+        g.index_remove(id.0, &labels, &old_props);
         // Merge: overwrite keys present in `properties`, leave others alone.
-        for (k, v) in properties {
-            node.properties.insert(k, v);
+        let node = g.nodes.get_mut(&id.0).unwrap();
+        for (k, v) in &properties {
+            node.properties.insert(k.clone(), v.clone());
         }
+        g.index_insert(id.0, &labels, &properties);
         Ok(())
     }
 
@@ -557,7 +840,12 @@ impl GraphStore for InMemoryGraphStore {
             .nodes
             .get_mut(&id.0)
             .ok_or(StorageError::NodeNotFound { id: id.0 })?;
-        node.properties = properties;
+        let labels = node.labels.clone();
+        let old_props = node.properties.clone();
+        g.index_remove(id.0, &labels, &old_props);
+        let node = g.nodes.get_mut(&id.0).unwrap();
+        node.properties = properties.clone();
+        g.index_insert(id.0, &labels, &properties);
         Ok(())
     }
 
@@ -602,7 +890,11 @@ impl GraphStore for InMemoryGraphStore {
             .nodes
             .get_mut(&id.0)
             .ok_or(StorageError::NodeNotFound { id: id.0 })?;
-        node.properties.remove(key);
+        if let Some(old_val) = node.properties.remove(key) {
+            let labels = node.labels.clone();
+            let old_props = HashMap::from([(key.to_string(), old_val)]);
+            g.index_remove(id.0, &labels, &old_props);
+        }
         Ok(())
     }
 
@@ -629,17 +921,21 @@ impl GraphStore for InMemoryGraphStore {
             .nodes
             .get_mut(&id.0)
             .ok_or(StorageError::NodeNotFound { id: id.0 })?;
-        for label in labels {
-            if !node.labels.contains(label) {
-                node.labels.push(label.clone());
-            }
+        let new_labels: Vec<String> = labels
+            .iter()
+            .filter(|l| !node.labels.contains(l))
+            .cloned()
+            .collect();
+        let props = node.properties.clone();
+        for label in &new_labels {
+            node.labels.push(label.clone());
         }
-        // Update label index after borrowing node immutably is done.
-        // We need to re-borrow. Collect labels to add first to avoid borrow conflict.
-        let to_add: Vec<String> = labels.to_vec();
-        for label in to_add {
-            g.label_index.entry(label).or_default().insert(id.0);
+        // Update label index.
+        for label in &new_labels {
+            g.label_index.entry(label.clone()).or_default().insert(id.0);
         }
+        // Index new label+property combinations.
+        g.index_insert(id.0, &new_labels, &props);
         Ok(())
     }
 
@@ -655,9 +951,12 @@ impl GraphStore for InMemoryGraphStore {
             .nodes
             .get_mut(&id.0)
             .ok_or(StorageError::NodeNotFound { id: id.0 })?;
+        let props = node.properties.clone();
         for label in labels {
             node.labels.retain(|l| l != label);
         }
+        // Remove from property indexes for removed labels.
+        g.index_remove(id.0, labels, &props);
         // Update label index.
         for label in labels {
             if let Some(set) = g.label_index.get_mut(label) {
@@ -737,8 +1036,9 @@ impl GraphStore for InMemoryGraphStore {
             g.in_adj.remove(&id.0);
         }
 
-        // Remove from label index.
+        // Remove from label index and property indexes.
         if let Some(node) = g.nodes.remove(&id.0) {
+            g.index_remove(id.0, &node.labels, &node.properties);
             for label in &node.labels {
                 if let Some(set) = g.label_index.get_mut(label) {
                     set.remove(&id.0);
@@ -791,17 +1091,32 @@ impl GraphStore for InMemoryGraphStore {
     fn create_index(&self, graph: &str, label: &str, property: &str) -> Result<(), StorageError> {
         let mut guard = self.write()?;
         let g = Self::require_graph_mut(&mut guard, graph)?;
+        // Idempotent: only add if not already present.
+        if g.has_index(label, property) {
+            return Ok(());
+        }
         let desc = IndexDescriptor {
             label: label.to_string(),
             property: property.to_string(),
         };
-        // Idempotent: only add if not already present.
-        if !g
-            .indexes
-            .iter()
-            .any(|i| i.label == label && i.property == property)
-        {
-            g.indexes.push(desc);
+        g.indexes.push(desc);
+        // Backfill: index all existing nodes that match this label+property.
+        let node_ids: Vec<u64> = g
+            .label_index
+            .get(label)
+            .map(|s| s.iter().copied().collect())
+            .unwrap_or_default();
+        for raw_id in node_ids {
+            if let Some(node) = g.nodes.get(&raw_id) {
+                if let Some(val) = node.properties.get(property) {
+                    if let Some(iv) = IndexableValue::from_value(val) {
+                        g.prop_index
+                            .entry((label.to_string(), property.to_string(), iv))
+                            .or_default()
+                            .insert(raw_id);
+                    }
+                }
+            }
         }
         Ok(())
     }
@@ -811,6 +1126,23 @@ impl GraphStore for InMemoryGraphStore {
         let g = Self::require_graph_mut(&mut guard, graph)?;
         g.indexes
             .retain(|i| !(i.label == label && i.property == property));
+        // Remove all BTreeMap entries for this label+property.
+        let prefix = (label.to_string(), property.to_string());
+        let keys_to_remove: Vec<PropIndexKey> = g
+            .prop_index
+            .range(
+                (
+                    prefix.0.clone(),
+                    prefix.1.clone(),
+                    IndexableValue::Bool(false),
+                )..,
+            )
+            .take_while(|((l, p, _), _)| l == &prefix.0 && p == &prefix.1)
+            .map(|(k, _)| k.clone())
+            .collect();
+        for key in keys_to_remove {
+            g.prop_index.remove(&key);
+        }
         Ok(())
     }
 
@@ -1469,5 +1801,289 @@ mod tests {
         store.merge_from(&other).unwrap();
         assert!(store.graph_exists("new_graph").unwrap());
         assert_eq!(store.graph_stats("new_graph").unwrap().node_count, 1);
+    }
+
+    // ── BTreeMap property index tests ────────────────────────────────────────
+
+    fn make_indexed_store() -> InMemoryGraphStore {
+        let s = make_store();
+        s.create_index("test", "Person", "age").unwrap();
+        s.create_index("test", "Person", "name").unwrap();
+        s
+    }
+
+    #[test]
+    fn indexed_eq_query() {
+        let store = make_indexed_store();
+        let p1 = HashMap::from([("age".to_string(), Value::Int(30))]);
+        let a = store
+            .create_node("test", vec!["Person".to_string()], p1)
+            .unwrap();
+        let p2 = HashMap::from([("age".to_string(), Value::Int(25))]);
+        let _b = store
+            .create_node("test", vec!["Person".to_string()], p2)
+            .unwrap();
+
+        let bound = Value::Int(30);
+        let result = store
+            .find_nodes_by_label_and_property("test", "Person", "age", RangeQuery::Eq(&bound))
+            .unwrap();
+        assert_eq!(result, vec![a]);
+    }
+
+    #[test]
+    fn indexed_lt_lte_gt_gte_queries() {
+        let store = make_indexed_store();
+        let ages = vec![10, 20, 30, 40, 50];
+        let mut ids = Vec::new();
+        for age in &ages {
+            let p = HashMap::from([("age".to_string(), Value::Int(*age))]);
+            ids.push(
+                store
+                    .create_node("test", vec!["Person".to_string()], p)
+                    .unwrap(),
+            );
+        }
+
+        let bound = Value::Int(30);
+        // Lt(30): ages 10, 20
+        let mut lt = store
+            .find_nodes_by_label_and_property("test", "Person", "age", RangeQuery::Lt(&bound))
+            .unwrap();
+        lt.sort();
+        assert_eq!(lt, vec![ids[0], ids[1]]);
+
+        // Lte(30): ages 10, 20, 30
+        let mut lte = store
+            .find_nodes_by_label_and_property("test", "Person", "age", RangeQuery::Lte(&bound))
+            .unwrap();
+        lte.sort();
+        assert_eq!(lte, vec![ids[0], ids[1], ids[2]]);
+
+        // Gt(30): ages 40, 50
+        let mut gt = store
+            .find_nodes_by_label_and_property("test", "Person", "age", RangeQuery::Gt(&bound))
+            .unwrap();
+        gt.sort();
+        assert_eq!(gt, vec![ids[3], ids[4]]);
+
+        // Gte(30): ages 30, 40, 50
+        let mut gte = store
+            .find_nodes_by_label_and_property("test", "Person", "age", RangeQuery::Gte(&bound))
+            .unwrap();
+        gte.sort();
+        assert_eq!(gte, vec![ids[2], ids[3], ids[4]]);
+    }
+
+    #[test]
+    fn indexed_between_query() {
+        let store = make_indexed_store();
+        let ages = vec![10, 20, 30, 40, 50];
+        let mut ids = Vec::new();
+        for age in &ages {
+            let p = HashMap::from([("age".to_string(), Value::Int(*age))]);
+            ids.push(
+                store
+                    .create_node("test", vec!["Person".to_string()], p)
+                    .unwrap(),
+            );
+        }
+
+        let lo = Value::Int(20);
+        let hi = Value::Int(40);
+        let mut result = store
+            .find_nodes_by_label_and_property(
+                "test",
+                "Person",
+                "age",
+                RangeQuery::Between {
+                    lo: &lo,
+                    hi: &hi,
+                    inclusive: true,
+                },
+            )
+            .unwrap();
+        result.sort();
+        assert_eq!(result, vec![ids[1], ids[2], ids[3]]);
+
+        // Non-inclusive hi
+        let mut result = store
+            .find_nodes_by_label_and_property(
+                "test",
+                "Person",
+                "age",
+                RangeQuery::Between {
+                    lo: &lo,
+                    hi: &hi,
+                    inclusive: false,
+                },
+            )
+            .unwrap();
+        result.sort();
+        assert_eq!(result, vec![ids[1], ids[2]]);
+    }
+
+    #[test]
+    fn indexed_starts_with_query() {
+        let store = make_indexed_store();
+        let names = vec!["Alice", "Albert", "Bob", "Charlie"];
+        let mut ids = Vec::new();
+        for name in &names {
+            let p = HashMap::from([("name".to_string(), Value::Str((*name).into()))]);
+            ids.push(
+                store
+                    .create_node("test", vec!["Person".to_string()], p)
+                    .unwrap(),
+            );
+        }
+
+        let mut result = store
+            .find_nodes_by_label_and_property(
+                "test",
+                "Person",
+                "name",
+                RangeQuery::StartsWith("Al"),
+            )
+            .unwrap();
+        result.sort();
+        assert_eq!(result, vec![ids[0], ids[1]]);
+    }
+
+    #[test]
+    fn index_backfill_existing_nodes() {
+        let store = make_store();
+        // Create nodes BEFORE the index
+        let p1 = HashMap::from([("age".to_string(), Value::Int(30))]);
+        let a = store
+            .create_node("test", vec!["Person".to_string()], p1)
+            .unwrap();
+        let p2 = HashMap::from([("age".to_string(), Value::Int(25))]);
+        let _b = store
+            .create_node("test", vec!["Person".to_string()], p2)
+            .unwrap();
+
+        // Create index AFTER nodes exist -- should backfill
+        store.create_index("test", "Person", "age").unwrap();
+
+        let bound = Value::Int(30);
+        let result = store
+            .find_nodes_by_label_and_property("test", "Person", "age", RangeQuery::Eq(&bound))
+            .unwrap();
+        assert_eq!(result, vec![a]);
+    }
+
+    #[test]
+    fn index_maintained_on_property_update() {
+        let store = make_indexed_store();
+        let p = HashMap::from([("age".to_string(), Value::Int(30))]);
+        let a = store
+            .create_node("test", vec!["Person".to_string()], p)
+            .unwrap();
+
+        // Update property
+        store
+            .set_node_properties(
+                "test",
+                a,
+                HashMap::from([("age".to_string(), Value::Int(40))]),
+            )
+            .unwrap();
+
+        // Old value should not match
+        let bound30 = Value::Int(30);
+        let result = store
+            .find_nodes_by_label_and_property("test", "Person", "age", RangeQuery::Eq(&bound30))
+            .unwrap();
+        assert!(result.is_empty());
+
+        // New value should match
+        let bound40 = Value::Int(40);
+        let result = store
+            .find_nodes_by_label_and_property("test", "Person", "age", RangeQuery::Eq(&bound40))
+            .unwrap();
+        assert_eq!(result, vec![a]);
+    }
+
+    #[test]
+    fn index_maintained_on_property_replace() {
+        let store = make_indexed_store();
+        let p = HashMap::from([("age".to_string(), Value::Int(30))]);
+        let a = store
+            .create_node("test", vec!["Person".to_string()], p)
+            .unwrap();
+
+        store
+            .replace_node_properties(
+                "test",
+                a,
+                HashMap::from([("age".to_string(), Value::Int(50))]),
+            )
+            .unwrap();
+
+        let bound30 = Value::Int(30);
+        assert!(store
+            .find_nodes_by_label_and_property("test", "Person", "age", RangeQuery::Eq(&bound30))
+            .unwrap()
+            .is_empty());
+
+        let bound50 = Value::Int(50);
+        assert_eq!(
+            store
+                .find_nodes_by_label_and_property("test", "Person", "age", RangeQuery::Eq(&bound50))
+                .unwrap(),
+            vec![a]
+        );
+    }
+
+    #[test]
+    fn index_maintained_on_property_remove() {
+        let store = make_indexed_store();
+        let p = HashMap::from([("age".to_string(), Value::Int(30))]);
+        let a = store
+            .create_node("test", vec!["Person".to_string()], p)
+            .unwrap();
+
+        store.remove_node_property("test", a, "age").unwrap();
+
+        let bound = Value::Int(30);
+        let result = store
+            .find_nodes_by_label_and_property("test", "Person", "age", RangeQuery::Eq(&bound))
+            .unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn index_maintained_on_node_delete() {
+        let store = make_indexed_store();
+        let p = HashMap::from([("age".to_string(), Value::Int(30))]);
+        let a = store
+            .create_node("test", vec!["Person".to_string()], p)
+            .unwrap();
+
+        store.delete_node("test", a, false).unwrap();
+
+        let bound = Value::Int(30);
+        let result = store
+            .find_nodes_by_label_and_property("test", "Person", "age", RangeQuery::Eq(&bound))
+            .unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn drop_index_cleans_btreemap() {
+        let store = make_indexed_store();
+        let p = HashMap::from([("age".to_string(), Value::Int(30))]);
+        store
+            .create_node("test", vec!["Person".to_string()], p)
+            .unwrap();
+
+        store.drop_index("test", "Person", "age").unwrap();
+
+        // After dropping, lookups still work (fall back to full scan)
+        let bound = Value::Int(30);
+        let result = store
+            .find_nodes_by_label_and_property("test", "Person", "age", RangeQuery::Eq(&bound))
+            .unwrap();
+        assert_eq!(result.len(), 1);
     }
 }
