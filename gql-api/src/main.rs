@@ -17,6 +17,7 @@
 
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::http::HeaderValue;
 use axum::{middleware, Router};
@@ -38,6 +39,20 @@ use gql_api::state::AppState;
 /// Delegates to [`gql_redis_store::create_store::create_store`].
 fn create_store() -> Arc<dyn GraphStore> {
     gql_redis_store::create_store::create_store()
+}
+
+/// Wait for SIGINT (Ctrl-C) or SIGTERM, then return.
+async fn shutdown_signal() {
+    let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+        .expect("failed to register SIGTERM handler");
+    tokio::select! {
+        _ = tokio::signal::ctrl_c() => {
+            info!("received SIGINT, initiating graceful shutdown");
+        }
+        _ = sigterm.recv() => {
+            info!("received SIGTERM, initiating graceful shutdown");
+        }
+    }
 }
 
 #[tokio::main]
@@ -171,10 +186,40 @@ async fn main() {
         .await
         .expect("failed to bind TCP listener");
 
-    axum::serve(
+    let drain_timeout_secs: u64 = std::env::var("GQL_API_DRAIN_TIMEOUT_SECS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(30);
+
+    let shutdown_notify = Arc::new(tokio::sync::Notify::new());
+    let shutdown_notify2 = Arc::clone(&shutdown_notify);
+
+    let server = axum::serve(
         listener,
         app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
     )
-    .await
-    .expect("server error");
+    .with_graceful_shutdown(async move {
+        shutdown_signal().await;
+        shutdown_notify2.notify_one();
+    });
+
+    tokio::select! {
+        result = server => {
+            if let Err(e) = result {
+                tracing::error!("server error: {e}");
+            }
+        }
+        _ = async {
+            shutdown_notify.notified().await;
+            info!(drain_timeout_secs, "draining connections");
+            tokio::time::sleep(Duration::from_secs(drain_timeout_secs)).await;
+        } => {
+            tracing::warn!(
+                drain_timeout_secs,
+                "drain timeout exceeded, shutting down with in-flight connections"
+            );
+        }
+    }
+
+    info!("gql-api shutdown complete");
 }
