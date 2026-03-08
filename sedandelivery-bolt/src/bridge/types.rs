@@ -8,6 +8,20 @@ use indexmap::IndexMap;
 use crate::packstream::value::BoltValue;
 use crate::protocol::tags;
 
+// ── ID conversion helper ─────────────────────────────────────────────────────
+
+/// Convert a `u64` storage ID to an `i64` for the Bolt wire format.
+/// Returns an error message and `BoltValue::Null` if the ID exceeds `i64::MAX`.
+fn u64_to_bolt_int(id: u64, context: &str) -> BoltValue {
+    match i64::try_from(id) {
+        Ok(v) => BoltValue::Int(v),
+        Err(_) => {
+            tracing::error!(id, context, "ID exceeds i64::MAX, cannot encode for Bolt");
+            BoltValue::Null
+        }
+    }
+}
+
 // ── Node / Edge / Path conversion ────────────────────────────────────────────
 
 /// Convert a node to a Bolt Structure (tag 0x4E).
@@ -18,7 +32,11 @@ use crate::protocol::tags;
 pub fn node_to_bolt(id: NodeId, store: &dyn GraphStore, graph: &str) -> BoltValue {
     let node_data = match store.get_node(graph, id) {
         Ok(Some(data)) => data,
-        _ => return BoltValue::Null,
+        Ok(None) => return BoltValue::Null,
+        Err(e) => {
+            tracing::error!(node_id = id.0, graph = graph, error = %e, "node_to_bolt: store lookup failed");
+            return BoltValue::Null;
+        }
     };
 
     let labels = BoltValue::List(
@@ -33,7 +51,7 @@ pub fn node_to_bolt(id: NodeId, store: &dyn GraphStore, graph: &str) -> BoltValu
 
     BoltValue::Structure {
         tag: tags::TAG_NODE,
-        fields: vec![BoltValue::Int(id.0 as i64), labels, props],
+        fields: vec![u64_to_bolt_int(id.0, "node_to_bolt"), labels, props],
     }
 }
 
@@ -45,7 +63,11 @@ pub fn node_to_bolt(id: NodeId, store: &dyn GraphStore, graph: &str) -> BoltValu
 pub fn edge_to_bolt(id: EdgeId, store: &dyn GraphStore, graph: &str) -> BoltValue {
     let edge_data = match store.get_edge(graph, id) {
         Ok(Some(data)) => data,
-        _ => return BoltValue::Null,
+        Ok(None) => return BoltValue::Null,
+        Err(e) => {
+            tracing::error!(edge_id = id.0, graph = graph, error = %e, "edge_to_bolt: store lookup failed");
+            return BoltValue::Null;
+        }
     };
 
     let props = props_to_bolt_map(&edge_data.properties);
@@ -53,9 +75,9 @@ pub fn edge_to_bolt(id: EdgeId, store: &dyn GraphStore, graph: &str) -> BoltValu
     BoltValue::Structure {
         tag: tags::TAG_RELATIONSHIP,
         fields: vec![
-            BoltValue::Int(id.0 as i64),
-            BoltValue::Int(edge_data.src.0 as i64),
-            BoltValue::Int(edge_data.dst.0 as i64),
+            u64_to_bolt_int(id.0, "edge_to_bolt:id"),
+            u64_to_bolt_int(edge_data.src.0, "edge_to_bolt:src"),
+            u64_to_bolt_int(edge_data.dst.0, "edge_to_bolt:dst"),
             BoltValue::String(edge_data.rel_type.clone()),
             props,
         ],
@@ -108,19 +130,33 @@ pub fn path_to_bolt(
                 Ok(Some(data)) => BoltValue::Structure {
                     tag: tags::TAG_UNBOUND_RELATIONSHIP,
                     fields: vec![
-                        BoltValue::Int(eid.0 as i64),
+                        u64_to_bolt_int(eid.0, "path_to_bolt:rel_id"),
                         BoltValue::String(data.rel_type.clone()),
                         props_to_bolt_map(&data.properties),
                     ],
                 },
-                _ => BoltValue::Structure {
-                    tag: tags::TAG_UNBOUND_RELATIONSHIP,
-                    fields: vec![
-                        BoltValue::Int(eid.0 as i64),
-                        BoltValue::String(String::new()),
-                        BoltValue::Map(vec![]),
-                    ],
-                },
+                Ok(None) => {
+                    tracing::warn!(edge_id = eid.0, graph = graph, "path_to_bolt: edge not found in store, using empty relationship");
+                    BoltValue::Structure {
+                        tag: tags::TAG_UNBOUND_RELATIONSHIP,
+                        fields: vec![
+                            u64_to_bolt_int(eid.0, "path_to_bolt:rel_id"),
+                            BoltValue::String(String::new()),
+                            BoltValue::Map(vec![]),
+                        ],
+                    }
+                }
+                Err(e) => {
+                    tracing::error!(edge_id = eid.0, graph = graph, error = %e, "path_to_bolt: store lookup failed for edge, using empty relationship");
+                    BoltValue::Structure {
+                        tag: tags::TAG_UNBOUND_RELATIONSHIP,
+                        fields: vec![
+                            u64_to_bolt_int(eid.0, "path_to_bolt:rel_id"),
+                            BoltValue::String(String::new()),
+                            BoltValue::Map(vec![]),
+                        ],
+                    }
+                }
             };
             unbound_rels.push(rel);
         }
@@ -145,7 +181,14 @@ pub fn path_to_bolt(
                     -rel_1based
                 }
             }
-            _ => rel_1based, // default to forward if edge not found
+            Ok(None) => {
+                tracing::warn!(edge_id = edge_ids[i].0, graph = graph, "path_to_bolt: edge not found when determining direction, defaulting to forward");
+                rel_1based
+            }
+            Err(e) => {
+                tracing::error!(edge_id = edge_ids[i].0, graph = graph, error = %e, "path_to_bolt: store lookup failed when determining direction, defaulting to forward");
+                rel_1based
+            }
         };
         indices.push(BoltValue::Int(rel_index));
 

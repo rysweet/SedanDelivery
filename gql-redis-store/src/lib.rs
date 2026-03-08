@@ -328,7 +328,7 @@ impl RedisGraphStore {
             .query(conn)
             .map_err(|e| StorageError::Backend { msg: e.to_string() })?;
         match (&fields[0], &fields[1]) {
-            (None, _) | (_, None) => Ok(None),
+            (None, None) => Ok(None),
             (Some(labels_json), Some(props_json)) => {
                 let labels: Vec<String> =
                     serde_json::from_str(labels_json).map_err(|e| StorageError::Serialization {
@@ -340,6 +340,20 @@ impl RedisGraphStore {
                     labels,
                     properties,
                 }))
+            }
+            _ => {
+                tracing::error!(
+                    node_id = id,
+                    graph = g,
+                    labels = ?fields[0],
+                    props = ?fields[1],
+                    "partial node data detected — possible data corruption"
+                );
+                Err(StorageError::Backend {
+                    msg: format!(
+                        "corrupted node data: node {id} in graph '{g}' has partial fields"
+                    ),
+                })
             }
         }
     }
@@ -398,7 +412,11 @@ impl RedisGraphStore {
                     props = ?fields[3],
                     "partial edge data detected — possible data corruption"
                 );
-                Ok(None)
+                Err(StorageError::Backend {
+                    msg: format!(
+                        "corrupted edge data: edge {id} in graph '{g}' has partial fields"
+                    ),
+                })
             }
         }
     }

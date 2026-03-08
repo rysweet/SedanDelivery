@@ -92,12 +92,13 @@ async fn metrics_handler(State(handle): State<PrometheusHandle>) -> impl IntoRes
         .header("content-type", "text/plain; version=0.0.4; charset=utf-8")
         .body(axum::body::Body::from(body))
         .unwrap_or_else(|_| {
-            Response::builder()
-                .status(500)
-                .body(axum::body::Body::from(
-                    "internal error building metrics response",
-                ))
-                .expect("fallback response must be valid")
+            // If even the fallback Response::builder fails, return a minimal
+            // hardcoded response. No panics in error paths.
+            let mut resp = Response::new(axum::body::Body::from(
+                "internal error building metrics response",
+            ));
+            *resp.status_mut() = axum::http::StatusCode::INTERNAL_SERVER_ERROR;
+            resp
         })
 }
 

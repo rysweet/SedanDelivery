@@ -1,8 +1,31 @@
 use tokio::io::{AsyncRead, AsyncReadExt};
 
-/// Maximum chunk data size. The Bolt spec allows up to 65535; we use 16384
+/// Default chunk data size. The Bolt spec allows up to 65535; we use 16384
 /// to keep individual TCP writes manageable.
-const MAX_CHUNK_SIZE: usize = 16384;
+/// Configurable via `BOLT_MAX_CHUNK_SIZE` env var, clamped to the Bolt spec
+/// maximum of 65535.
+const DEFAULT_MAX_CHUNK_SIZE: usize = 16384;
+
+/// Bolt spec maximum chunk size (u16::MAX).
+const BOLT_SPEC_MAX_CHUNK_SIZE: usize = 65535;
+
+fn max_chunk_size() -> usize {
+    static SIZE: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *SIZE.get_or_init(|| {
+        std::env::var("BOLT_MAX_CHUNK_SIZE")
+            .ok()
+            .and_then(|v| match v.parse::<usize>() {
+                Ok(val) if val > 0 => Some(val.min(BOLT_SPEC_MAX_CHUNK_SIZE)),
+                _ => {
+                    tracing::warn!(
+                        "invalid BOLT_MAX_CHUNK_SIZE value, using default {DEFAULT_MAX_CHUNK_SIZE}"
+                    );
+                    None
+                }
+            })
+            .unwrap_or(DEFAULT_MAX_CHUNK_SIZE)
+    })
+}
 
 /// Default maximum reassembled message size (16 MiB). Prevents OOM
 /// denial-of-service when a malicious peer sends an unbounded stream of
@@ -30,7 +53,7 @@ fn max_message_size() -> usize {
 
 /// Encode a serialized message into chunked wire format.
 ///
-/// The message bytes are split into chunks of at most `MAX_CHUNK_SIZE` bytes.
+/// The message bytes are split into chunks of at most `max_chunk_size()` bytes.
 /// Each chunk is prefixed with a 2-byte big-endian length header. The message
 /// is terminated by a zero-length chunk (`0x00 0x00`).
 ///
@@ -40,7 +63,7 @@ pub fn chunk_encode(msg_bytes: &[u8], out: &mut Vec<u8>) {
         out.extend_from_slice(&[0x00, 0x00]);
         return;
     }
-    for chunk in msg_bytes.chunks(MAX_CHUNK_SIZE) {
+    for chunk in msg_bytes.chunks(max_chunk_size()) {
         let len = chunk.len() as u16;
         out.extend_from_slice(&len.to_be_bytes());
         out.extend_from_slice(chunk);
@@ -143,21 +166,21 @@ mod tests {
 
     #[test]
     fn multi_chunk_roundtrip() {
-        // Create a message larger than MAX_CHUNK_SIZE so it spans multiple chunks.
-        let msg: Vec<u8> = (0..MAX_CHUNK_SIZE + 100).map(|i| (i % 256) as u8).collect();
+        // Create a message larger than max_chunk_size() so it spans multiple chunks.
+        let msg: Vec<u8> = (0..max_chunk_size() + 100).map(|i| (i % 256) as u8).collect();
         let mut wire = Vec::new();
         chunk_encode(&msg, &mut wire);
 
-        // Should have 2 chunks: one of MAX_CHUNK_SIZE and one of 100.
-        // Wire size: (2 + MAX_CHUNK_SIZE) + (2 + 100) + 2 = MAX_CHUNK_SIZE + 106
-        assert_eq!(wire.len(), MAX_CHUNK_SIZE + 106);
+        // Should have 2 chunks: one of max_chunk_size() and one of 100.
+        // Wire size: (2 + max_chunk_size()) + (2 + 100) + 2 = max_chunk_size() + 106
+        assert_eq!(wire.len(), max_chunk_size() + 106);
 
-        // First chunk header should be MAX_CHUNK_SIZE
+        // First chunk header should be max_chunk_size()
         let first_len = u16::from_be_bytes([wire[0], wire[1]]) as usize;
-        assert_eq!(first_len, MAX_CHUNK_SIZE);
+        assert_eq!(first_len, max_chunk_size());
 
         // Second chunk header should be 100
-        let second_header_pos = 2 + MAX_CHUNK_SIZE;
+        let second_header_pos = 2 + max_chunk_size();
         let second_len =
             u16::from_be_bytes([wire[second_header_pos], wire[second_header_pos + 1]]) as usize;
         assert_eq!(second_len, 100);
@@ -208,7 +231,7 @@ mod tests {
 
     #[tokio::test]
     async fn async_multi_chunk_roundtrip() {
-        let msg: Vec<u8> = (0..MAX_CHUNK_SIZE * 2 + 50)
+        let msg: Vec<u8> = (0..max_chunk_size() * 2 + 50)
             .map(|i| (i % 256) as u8)
             .collect();
         let mut wire = Vec::new();
@@ -231,13 +254,13 @@ mod tests {
 
     #[test]
     fn exact_chunk_boundary() {
-        // Message that is exactly MAX_CHUNK_SIZE should produce one data chunk + terminator.
-        let msg: Vec<u8> = vec![0xAB; MAX_CHUNK_SIZE];
+        // Message that is exactly max_chunk_size() should produce one data chunk + terminator.
+        let msg: Vec<u8> = vec![0xAB; max_chunk_size()];
         let mut wire = Vec::new();
         chunk_encode(&msg, &mut wire);
 
-        // Wire: (2 + MAX_CHUNK_SIZE) + 2 terminator
-        assert_eq!(wire.len(), 2 + MAX_CHUNK_SIZE + 2);
+        // Wire: (2 + max_chunk_size()) + 2 terminator
+        assert_eq!(wire.len(), 2 + max_chunk_size() + 2);
 
         let decoded = chunk_decode_sync(&wire).unwrap();
         assert_eq!(decoded, msg);
@@ -260,7 +283,7 @@ mod tests {
         chunk_encode(&msg, &mut wire);
 
         // Verify chunk count: ceil(100_000 / 16384) = 7 chunks.
-        let expected_chunks = 100_000_usize.div_ceil(MAX_CHUNK_SIZE);
+        let expected_chunks = 100_000_usize.div_ceil(max_chunk_size());
         assert_eq!(expected_chunks, 7);
 
         // Wire size: sum of (2 + chunk_data_len) for each chunk + 2 terminator.

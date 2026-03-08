@@ -24,15 +24,24 @@ impl MutationStats {
         let mut stats = Self::default();
         for part in s.split_whitespace() {
             if let Some((key, val_str)) = part.split_once('=') {
-                if let Ok(val) = val_str.parse::<u64>() {
-                    match key {
+                match val_str.parse::<u64>() {
+                    Ok(val) => match key {
                         "nodes_created" => stats.nodes_created = val,
                         "nodes_deleted" => stats.nodes_deleted = val,
                         "edges_created" => stats.edges_created = val,
                         "edges_deleted" => stats.edges_deleted = val,
                         "properties_set" => stats.properties_set = val,
                         "labels_added" => stats.labels_added = val,
-                        _ => {} // ignore unknown keys
+                        _ => {
+                            eprintln!(
+                                "MutationStats::parse: unknown key '{key}' with value '{val_str}'"
+                            );
+                        }
+                    },
+                    Err(e) => {
+                        eprintln!(
+                            "MutationStats::parse: failed to parse value '{val_str}' for key '{key}': {e}"
+                        );
                     }
                 }
             }

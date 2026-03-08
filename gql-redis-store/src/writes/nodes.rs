@@ -1,67 +1,28 @@
-// writes.rs — All GraphStore write method implementations for RedisGraphStore.
+// writes/nodes.rs -- Node write operations for RedisGraphStore.
 
 use std::collections::HashMap;
 
-use redis::ConnectionLike;
-
 use gql_core::error::StorageError;
 use gql_core::serde_value::props_to_json;
-use gql_core::storage::{validate_graph_name, EdgeId, NodeId};
+use gql_core::storage::NodeId;
 use gql_core::types::Value;
 
 use crate::keys::{
-    decode_adj, encode_adj, key_edge, key_edge_seq, key_edges_set, key_in, key_label, key_node,
-    key_node_seq, key_nodes_set, key_out, key_reltype,
+    key_in, key_label, key_node, key_node_seq, key_nodes_set, key_out,
 };
 use crate::RedisGraphStore;
 
+use super::helpers::{clean_fanout_props, extract_injected_id};
+
 impl RedisGraphStore {
-    /// Delete an edge using an already-locked connection. This avoids dropping
-    /// and re-acquiring the lock when called from `delete_node(detach=true)`.
-    pub(crate) fn delete_edge_inner(
-        &self,
-        conn: &mut dyn ConnectionLike,
-        graph: &str,
-        id: EdgeId,
-    ) -> Result<(), StorageError> {
-        let edge = self
-            .read_edge(conn, graph, id.0)?
-            .ok_or(StorageError::EdgeNotFound { id: id.0 })?;
-        // Remove from rel-type index.
-        redis::cmd("SREM")
-            .arg(self.kp(key_reltype(graph, &edge.rel_type)))
-            .arg(id.0.to_string())
-            .query::<()>(conn)
-            .map_err(|e| StorageError::Backend { msg: e.to_string() })?;
-        // Remove from all-edges set.
-        redis::cmd("SREM")
-            .arg(self.kp(key_edges_set(graph)))
-            .arg(id.0.to_string())
-            .query::<()>(conn)
-            .map_err(|e| StorageError::Backend { msg: e.to_string() })?;
-        // Remove from adjacency sets.
-        let out_member = encode_adj(id, edge.dst, &edge.rel_type);
-        let in_member = encode_adj(id, edge.src, &edge.rel_type);
-        redis::cmd("SREM")
-            .arg(self.kp(key_out(graph, edge.src.0)))
-            .arg(out_member)
-            .query::<()>(conn)
-            .map_err(|e| StorageError::Backend { msg: e.to_string() })?;
-        redis::cmd("SREM")
-            .arg(self.kp(key_in(graph, edge.dst.0)))
-            .arg(in_member)
-            .query::<()>(conn)
-            .map_err(|e| StorageError::Backend { msg: e.to_string() })?;
-        // Delete edge hash.
-        redis::cmd("DEL")
-            .arg(self.kp(key_edge(graph, id.0)))
-            .query::<()>(conn)
-            .map_err(|e| StorageError::Backend { msg: e.to_string() })?;
-        Ok(())
-    }
-
-    // ── GraphStore trait method implementations for writes ───────────────────
-
+    /// Create a single node in the given graph.
+    ///
+    /// Allocates a new node ID via Redis INCRBY on the node sequence key,
+    /// unless the special `_sd2_id` property is present (injected by FanoutStore
+    /// for cross-cluster ID stability). Stores the node hash, updates label
+    /// indexes, and the all-nodes set atomically via a Redis pipeline.
+    ///
+    /// Property indexing is performed after the main pipeline completes.
     pub(crate) fn create_node_impl(
         &self,
         graph: &str,
@@ -72,151 +33,61 @@ impl RedisGraphStore {
         let mut conn = self.conn()?;
 
         // If FanoutStore injected _sd2_id, use it instead of INCR.
-        let id = if let Some(Value::Int(i)) = properties.get("_sd2_id") {
-            if *i < 0 {
-                return Err(StorageError::Backend {
-                    msg: format!("_sd2_id must be non-negative, got {i}"),
-                });
+        let id = match extract_injected_id(&properties, "_sd2_id")? {
+            Some(id) => id,
+            None => {
+                let raw_id: i64 = redis::cmd("INCRBY")
+                    .arg(self.kp(key_node_seq(graph)))
+                    .arg(1)
+                    .query(conn.as_mut())
+                    .map_err(|e| StorageError::Backend { msg: e.to_string() })?;
+                if raw_id <= 0 {
+                    return Err(StorageError::IdOverflow {
+                        graph: graph.to_string(),
+                    });
+                }
+                raw_id as u64
             }
-            *i as u64
-        } else {
-            let raw_id: i64 = redis::cmd("INCRBY")
-                .arg(self.kp(key_node_seq(graph)))
-                .arg(1)
-                .query(conn.as_mut())
-                .map_err(|e| StorageError::Backend { msg: e.to_string() })?;
-            if raw_id <= 0 {
-                return Err(StorageError::IdOverflow {
-                    graph: graph.to_string(),
-                });
-            }
-            raw_id as u64
         };
 
         // Strip internal FanoutStore keys before storing.
-        let mut clean_props = properties;
-        clean_props.remove("_sd2_id");
-        clean_props.remove("_sd2_eid");
+        let clean_props = clean_fanout_props(properties);
 
         let node_key = self.kp(key_node(graph, id));
         let labels_json = serde_json::to_string(&labels)
             .map_err(|e| StorageError::Serialization { msg: e.to_string() })?;
         let props_json = props_to_json(&clean_props)?;
-        // Store node hash.
-        redis::cmd("HSET")
+        // Store node hash, label indexes, and all-nodes set atomically.
+        let mut pipe = redis::pipe();
+        pipe.atomic()
+            .cmd("HSET")
             .arg(&node_key)
             .arg("labels")
             .arg(&labels_json)
             .arg("props")
             .arg(&props_json)
-            .query::<()>(conn.as_mut())
-            .map_err(|e| StorageError::Backend { msg: e.to_string() })?;
-        // Update label indexes.
+            .ignore();
         for label in &labels {
-            redis::cmd("SADD")
+            pipe.cmd("SADD")
                 .arg(self.kp(key_label(graph, label)))
                 .arg(id.to_string())
-                .query::<()>(conn.as_mut())
-                .map_err(|e| StorageError::Backend { msg: e.to_string() })?;
+                .ignore();
         }
-        // Update all-nodes set.
-        redis::cmd("SADD")
+        pipe.cmd("SADD")
             .arg(self.kp(key_nodes_set(graph)))
             .arg(id.to_string())
-            .query::<()>(conn.as_mut())
+            .ignore();
+        pipe.query::<()>(conn.as_mut())
             .map_err(|e| StorageError::Backend { msg: e.to_string() })?;
         // Maintain property indexes.
         self.index_node_properties(conn.as_mut(), graph, id, &labels, &clean_props)?;
         Ok(NodeId(id))
     }
 
-    pub(crate) fn create_edge_impl(
-        &self,
-        graph: &str,
-        src: NodeId,
-        dst: NodeId,
-        rel_type: String,
-        properties: HashMap<String, Value>,
-    ) -> Result<EdgeId, StorageError> {
-        self.require_graph(graph)?;
-        let mut conn = self.conn()?;
-        // Verify src and dst exist.
-        if self.read_node(conn.as_mut(), graph, src.0)?.is_none() {
-            return Err(StorageError::NodeNotFound { id: src.0 });
-        }
-        if self.read_node(conn.as_mut(), graph, dst.0)?.is_none() {
-            return Err(StorageError::NodeNotFound { id: dst.0 });
-        }
-
-        // If FanoutStore injected _sd2_eid, use it instead of INCR.
-        let id = if let Some(Value::Int(i)) = properties.get("_sd2_eid") {
-            if *i < 0 {
-                return Err(StorageError::Backend {
-                    msg: format!("_sd2_eid must be non-negative, got {i}"),
-                });
-            }
-            *i as u64
-        } else {
-            let raw_id: i64 = redis::cmd("INCRBY")
-                .arg(self.kp(key_edge_seq(graph)))
-                .arg(1)
-                .query(conn.as_mut())
-                .map_err(|e| StorageError::Backend { msg: e.to_string() })?;
-            if raw_id <= 0 {
-                return Err(StorageError::IdOverflow {
-                    graph: graph.to_string(),
-                });
-            }
-            raw_id as u64
-        };
-
-        // Strip internal FanoutStore keys before storing.
-        let mut clean_props = properties;
-        clean_props.remove("_sd2_id");
-        clean_props.remove("_sd2_eid");
-
-        let edge_key = self.kp(key_edge(graph, id));
-        let props_json = props_to_json(&clean_props)?;
-        redis::cmd("HSET")
-            .arg(&edge_key)
-            .arg("src")
-            .arg(src.0.to_string())
-            .arg("dst")
-            .arg(dst.0.to_string())
-            .arg("rel_type")
-            .arg(&rel_type)
-            .arg("props")
-            .arg(&props_json)
-            .query::<()>(conn.as_mut())
-            .map_err(|e| StorageError::Backend { msg: e.to_string() })?;
-        // Update rel-type index.
-        redis::cmd("SADD")
-            .arg(self.kp(key_reltype(graph, &rel_type)))
-            .arg(id.to_string())
-            .query::<()>(conn.as_mut())
-            .map_err(|e| StorageError::Backend { msg: e.to_string() })?;
-        // Update adjacency sets.
-        let out_member = encode_adj(EdgeId(id), dst, &rel_type);
-        let in_member = encode_adj(EdgeId(id), src, &rel_type);
-        redis::cmd("SADD")
-            .arg(self.kp(key_out(graph, src.0)))
-            .arg(out_member)
-            .query::<()>(conn.as_mut())
-            .map_err(|e| StorageError::Backend { msg: e.to_string() })?;
-        redis::cmd("SADD")
-            .arg(self.kp(key_in(graph, dst.0)))
-            .arg(in_member)
-            .query::<()>(conn.as_mut())
-            .map_err(|e| StorageError::Backend { msg: e.to_string() })?;
-        // Update all-edges set.
-        redis::cmd("SADD")
-            .arg(self.kp(key_edges_set(graph)))
-            .arg(id.to_string())
-            .query::<()>(conn.as_mut())
-            .map_err(|e| StorageError::Backend { msg: e.to_string() })?;
-        Ok(EdgeId(id))
-    }
-
+    /// Merge additional properties into an existing node (SET semantics).
+    ///
+    /// Reads the current node, deindexes old property values, merges new
+    /// properties on top, writes the merged set back, and reindexes.
     pub(crate) fn set_node_properties_impl(
         &self,
         graph: &str,
@@ -243,6 +114,10 @@ impl RedisGraphStore {
         Ok(())
     }
 
+    /// Replace all properties on an existing node (REPLACE semantics).
+    ///
+    /// Unlike `set_node_properties_impl`, this discards all existing properties
+    /// and replaces them entirely with the provided map.
     pub(crate) fn replace_node_properties_impl(
         &self,
         graph: &str,
@@ -267,46 +142,10 @@ impl RedisGraphStore {
         Ok(())
     }
 
-    pub(crate) fn set_edge_properties_impl(
-        &self,
-        graph: &str,
-        id: EdgeId,
-        properties: HashMap<String, Value>,
-    ) -> Result<(), StorageError> {
-        let mut conn = self.conn()?;
-        let edge = self
-            .read_edge(conn.as_mut(), graph, id.0)?
-            .ok_or(StorageError::EdgeNotFound { id: id.0 })?;
-        let mut merged = edge.properties;
-        merged.extend(properties);
-        let props_json = props_to_json(&merged)?;
-        redis::cmd("HSET")
-            .arg(self.kp(key_edge(graph, id.0)))
-            .arg("props")
-            .arg(&props_json)
-            .query::<()>(conn.as_mut())
-            .map_err(|e| StorageError::Backend { msg: e.to_string() })
-    }
-
-    pub(crate) fn replace_edge_properties_impl(
-        &self,
-        graph: &str,
-        id: EdgeId,
-        properties: HashMap<String, Value>,
-    ) -> Result<(), StorageError> {
-        let mut conn = self.conn()?;
-        if self.read_edge(conn.as_mut(), graph, id.0)?.is_none() {
-            return Err(StorageError::EdgeNotFound { id: id.0 });
-        }
-        let props_json = props_to_json(&properties)?;
-        redis::cmd("HSET")
-            .arg(self.kp(key_edge(graph, id.0)))
-            .arg("props")
-            .arg(&props_json)
-            .query::<()>(conn.as_mut())
-            .map_err(|e| StorageError::Backend { msg: e.to_string() })
-    }
-
+    /// Remove a single property key from a node.
+    ///
+    /// Deindexes all current properties, removes the specified key, writes
+    /// the remaining properties back, and reindexes.
     pub(crate) fn remove_node_property_impl(
         &self,
         graph: &str,
@@ -333,27 +172,10 @@ impl RedisGraphStore {
         Ok(())
     }
 
-    pub(crate) fn remove_edge_property_impl(
-        &self,
-        graph: &str,
-        id: EdgeId,
-        key: &str,
-    ) -> Result<(), StorageError> {
-        let mut conn = self.conn()?;
-        let edge = self
-            .read_edge(conn.as_mut(), graph, id.0)?
-            .ok_or(StorageError::EdgeNotFound { id: id.0 })?;
-        let mut props = edge.properties;
-        props.remove(key);
-        let props_json = props_to_json(&props)?;
-        redis::cmd("HSET")
-            .arg(self.kp(key_edge(graph, id.0)))
-            .arg("props")
-            .arg(&props_json)
-            .query::<()>(conn.as_mut())
-            .map_err(|e| StorageError::Backend { msg: e.to_string() })
-    }
-
+    /// Add labels to an existing node without removing any existing labels.
+    ///
+    /// For each genuinely new label, adds the node ID to that label's index set.
+    /// Then writes the updated label list back to the node hash.
     pub(crate) fn add_node_labels_impl(
         &self,
         graph: &str,
@@ -386,6 +208,10 @@ impl RedisGraphStore {
             .map_err(|e| StorageError::Backend { msg: e.to_string() })
     }
 
+    /// Remove labels from an existing node.
+    ///
+    /// For each label being removed, removes the node ID from that label's
+    /// index set. Then writes the filtered label list back to the node hash.
     pub(crate) fn remove_node_labels_impl(
         &self,
         graph: &str,
@@ -419,6 +245,14 @@ impl RedisGraphStore {
             .map_err(|e| StorageError::Backend { msg: e.to_string() })
     }
 
+    /// Delete a node and optionally detach (delete) all its edges first.
+    ///
+    /// When `detach` is false, returns an error if the node has any edges.
+    /// When `detach` is true, deletes all adjacent edges (both incoming and
+    /// outgoing) before removing the node itself.
+    ///
+    /// Node deletion removes: label index entries, the all-nodes set entry,
+    /// adjacency keys, property indexes, and the node hash.
     pub(crate) fn delete_node_impl(
         &self,
         graph: &str,
@@ -456,9 +290,9 @@ impl RedisGraphStore {
                 .arg(self.kp(key_in(graph, id.0)))
                 .query(conn.as_mut())
                 .map_err(|e| StorageError::Backend { msg: e.to_string() })?;
-            let mut edge_ids: Vec<EdgeId> = Vec::new();
+            let mut edge_ids: Vec<gql_core::storage::EdgeId> = Vec::new();
             for m in out_members.iter().chain(in_members.iter()) {
-                if let Some(adj) = decode_adj(m) {
+                if let Some(adj) = crate::keys::decode_adj(m) {
                     edge_ids.push(adj.edge_id);
                 }
             }
@@ -469,45 +303,34 @@ impl RedisGraphStore {
                 self.delete_edge_inner(conn.as_mut(), graph, eid)?;
             }
         }
-        // Remove property indexes.
+        // Remove property indexes (requires reads, so must stay outside transaction).
         self.deindex_node_properties(conn.as_mut(), graph, id.0, &node.labels, &node.properties)?;
-        // Remove label indexes.
+        // Remove label indexes, all-nodes set, adjacency keys, and node hash atomically.
+        let mut pipe = redis::pipe();
+        pipe.atomic();
         for label in &node.labels {
-            redis::cmd("SREM")
+            pipe.cmd("SREM")
                 .arg(self.kp(key_label(graph, label)))
                 .arg(id.0.to_string())
-                .query::<()>(conn.as_mut())
-                .map_err(|e| StorageError::Backend { msg: e.to_string() })?;
+                .ignore();
         }
-        // Remove from all-nodes set.
-        redis::cmd("SREM")
+        pipe.cmd("SREM")
             .arg(self.kp(key_nodes_set(graph)))
             .arg(id.0.to_string())
-            .query::<()>(conn.as_mut())
-            .map_err(|e| StorageError::Backend { msg: e.to_string() })?;
-        // Delete adjacency keys.
-        redis::cmd("DEL")
+            .ignore()
+            .cmd("DEL")
             .arg(self.kp(key_out(graph, id.0)))
-            .query::<()>(conn.as_mut())
-            .map_err(|e| StorageError::Backend { msg: e.to_string() })?;
-        redis::cmd("DEL")
+            .ignore()
+            .cmd("DEL")
             .arg(self.kp(key_in(graph, id.0)))
-            .query::<()>(conn.as_mut())
-            .map_err(|e| StorageError::Backend { msg: e.to_string() })?;
-        // Delete node hash.
-        redis::cmd("DEL")
+            .ignore()
+            .cmd("DEL")
             .arg(self.kp(key_node(graph, id.0)))
-            .query::<()>(conn.as_mut())
+            .ignore();
+        pipe.query::<()>(conn.as_mut())
             .map_err(|e| StorageError::Backend { msg: e.to_string() })?;
         Ok(())
     }
-
-    pub(crate) fn delete_edge_impl(&self, graph: &str, id: EdgeId) -> Result<(), StorageError> {
-        let mut conn = self.conn()?;
-        self.delete_edge_inner(conn.as_mut(), graph, id)
-    }
-
-    // ── Batch write operations ────────────────────────────────────────────
 
     /// Batch-create multiple nodes in a single Redis pipeline round-trip.
     ///
@@ -527,7 +350,12 @@ impl RedisGraphStore {
         self.require_graph(graph)?;
         let mut conn = self.conn()?;
 
-        let count = nodes.len() as i64;
+        let count = i64::try_from(nodes.len()).map_err(|_| StorageError::Backend {
+            msg: format!(
+                "batch size {} exceeds i64::MAX, cannot allocate IDs",
+                nodes.len()
+            ),
+        })?;
 
         // Allocate a contiguous block of IDs with a single INCRBY.
         let end_id: i64 = redis::cmd("INCRBY")
@@ -551,9 +379,7 @@ impl RedisGraphStore {
             let id = start_id + i as u64;
 
             // Strip internal FanoutStore keys before storing.
-            let mut clean_props = properties;
-            clean_props.remove("_sd2_id");
-            clean_props.remove("_sd2_eid");
+            let clean_props = clean_fanout_props(properties);
 
             let node_key = self.kp(key_node(graph, id));
             let labels_json = serde_json::to_string(&labels)
@@ -597,64 +423,82 @@ impl RedisGraphStore {
 
         Ok(node_meta.iter().map(|(id, _, _)| NodeId(*id)).collect())
     }
+}
 
-    // ── Graph administration writes ─────────────────────────────────────────
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::writes::helpers::{clean_fanout_props, extract_injected_id};
 
-    pub(crate) fn create_graph_impl(&self, name: &str) -> Result<(), StorageError> {
-        validate_graph_name(name)?;
-        let mut conn = self.conn()?;
-        let added: i64 = redis::cmd("SADD")
-            .arg(self.key_graphs())
-            .arg(name)
-            .query(conn.as_mut())
-            .map_err(|e| StorageError::Backend { msg: e.to_string() })?;
-        if added == 0 {
-            return Err(StorageError::GraphAlreadyExists {
-                name: name.to_string(),
-            });
-        }
-        Ok(())
+    // ---- Pure logic tests for extract_injected_id ---------------------------
+
+    #[test]
+    fn extract_injected_id_present_positive() {
+        let mut props = HashMap::new();
+        props.insert("_sd2_id".to_string(), Value::Int(42));
+        let result = extract_injected_id(&props, "_sd2_id").unwrap();
+        assert_eq!(result, Some(42));
     }
 
-    pub(crate) fn delete_graph_impl(&self, name: &str) -> Result<(), StorageError> {
-        if !self.graph_exists_impl(name)? {
-            return Err(StorageError::GraphNotFound {
-                name: name.to_string(),
-            });
-        }
-        let mut conn = self.conn()?;
-        // Remove from registry.
-        redis::cmd("SREM")
-            .arg(self.key_graphs())
-            .arg(name)
-            .query::<()>(conn.as_mut())
-            .map_err(|e| StorageError::Backend { msg: e.to_string() })?;
-        // Delete all keys with pattern G:{name}:* using SCAN.
-        let pattern = format!("{}G:{{{name}}}:*", self.key_prefix);
-        let mut cursor: u64 = 0;
-        loop {
-            let (next_cursor, keys): (u64, Vec<String>) = redis::cmd("SCAN")
-                .arg(cursor)
-                .arg("MATCH")
-                .arg(&pattern)
-                .arg("COUNT")
-                .arg(100u64)
-                .query(conn.as_mut())
-                .map_err(|e| StorageError::Backend { msg: e.to_string() })?;
-            if !keys.is_empty() {
-                let mut del_cmd = redis::cmd("DEL");
-                for k in &keys {
-                    del_cmd.arg(k);
-                }
-                del_cmd
-                    .query::<()>(conn.as_mut())
-                    .map_err(|e| StorageError::Backend { msg: e.to_string() })?;
-            }
-            cursor = next_cursor;
-            if cursor == 0 {
-                break;
-            }
-        }
-        Ok(())
+    #[test]
+    fn extract_injected_id_present_zero() {
+        let mut props = HashMap::new();
+        props.insert("_sd2_id".to_string(), Value::Int(0));
+        let result = extract_injected_id(&props, "_sd2_id").unwrap();
+        assert_eq!(result, Some(0));
+    }
+
+    #[test]
+    fn extract_injected_id_present_negative_fails() {
+        let mut props = HashMap::new();
+        props.insert("_sd2_id".to_string(), Value::Int(-5));
+        let result = extract_injected_id(&props, "_sd2_id");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn extract_injected_id_absent() {
+        let props = HashMap::new();
+        let result = extract_injected_id(&props, "_sd2_id").unwrap();
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn extract_injected_id_wrong_type_ignored() {
+        let mut props = HashMap::new();
+        props.insert("_sd2_id".to_string(), Value::Str("not_an_int".into()));
+        // Non-Int values are not matched, so returns None.
+        let result = extract_injected_id(&props, "_sd2_id").unwrap();
+        assert_eq!(result, None);
+    }
+
+    // ---- Pure logic tests for clean_fanout_props ----------------------------
+
+    #[test]
+    fn clean_fanout_props_removes_internal_keys() {
+        let mut props = HashMap::new();
+        props.insert("_sd2_id".to_string(), Value::Int(1));
+        props.insert("_sd2_eid".to_string(), Value::Int(2));
+        props.insert("name".to_string(), Value::Str("Alice".into()));
+        let cleaned = clean_fanout_props(props);
+        assert!(!cleaned.contains_key("_sd2_id"));
+        assert!(!cleaned.contains_key("_sd2_eid"));
+        assert_eq!(cleaned.get("name"), Some(&Value::Str("Alice".into())));
+    }
+
+    #[test]
+    fn clean_fanout_props_noop_when_no_internal_keys() {
+        let mut props = HashMap::new();
+        props.insert("age".to_string(), Value::Int(30));
+        let cleaned = clean_fanout_props(props);
+        assert_eq!(cleaned.len(), 1);
+        assert_eq!(cleaned.get("age"), Some(&Value::Int(30)));
+    }
+
+    #[test]
+    fn clean_fanout_props_empty_map() {
+        let props = HashMap::new();
+        let cleaned = clean_fanout_props(props);
+        assert!(cleaned.is_empty());
     }
 }

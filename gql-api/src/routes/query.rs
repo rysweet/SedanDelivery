@@ -4,10 +4,11 @@
 //! POST /graphs/{name}/mutate  — write queries
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::Instant;
 
-use axum::extract::{Path, State};
+use axum::extract::{DefaultBodyLimit, Path, State};
+use axum::http::StatusCode;
 use axum::routing::post;
 use axum::{Json, Router};
 
@@ -26,11 +27,68 @@ use crate::routes::helpers::require_graph;
 use crate::serialize::row_to_json;
 use crate::state::AppState;
 
+/// Maximum Cypher query string length in bytes. Default 1 MiB (1_048_576).
+/// Override via `GQL_API_MAX_QUERY_LENGTH`.
+fn max_query_length() -> usize {
+    static LIMIT: OnceLock<usize> = OnceLock::new();
+    *LIMIT.get_or_init(|| {
+        std::env::var("GQL_API_MAX_QUERY_LENGTH")
+            .ok()
+            .and_then(|v| match v.parse() {
+                Ok(val) => Some(val),
+                Err(_) => {
+                    tracing::warn!(
+                        "invalid value for GQL_API_MAX_QUERY_LENGTH: {v:?}, using default 1048576"
+                    );
+                    None
+                }
+            })
+            .unwrap_or(1024 * 1024)
+    })
+}
+
+/// Maximum query/mutate/explain body size in bytes. Default 1 MiB.
+/// Override via `GQL_API_QUERY_BODY_LIMIT_BYTES`.
+fn query_body_limit() -> usize {
+    static LIMIT: OnceLock<usize> = OnceLock::new();
+    *LIMIT.get_or_init(|| {
+        std::env::var("GQL_API_QUERY_BODY_LIMIT_BYTES")
+            .ok()
+            .and_then(|v| match v.parse() {
+                Ok(val) => Some(val),
+                Err(_) => {
+                    tracing::warn!(
+                        "invalid value for GQL_API_QUERY_BODY_LIMIT_BYTES: {v:?}, using default 1048576"
+                    );
+                    None
+                }
+            })
+            .unwrap_or(1024 * 1024)
+    })
+}
+
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/graphs/{name}/query", post(query_handler))
         .route("/graphs/{name}/mutate", post(mutate_handler))
         .route("/graphs/{name}/explain", post(explain_handler))
+        .layer(DefaultBodyLimit::max(query_body_limit()))
+}
+
+/// Reject queries whose Cypher string exceeds `max_query_length()`. Returns 413.
+fn reject_oversized_query(cypher: &str) -> Result<(), ApiError> {
+    let max = max_query_length();
+    if cypher.len() > max {
+        return Err(ApiError::new(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            format!(
+                "query length {} bytes exceeds maximum allowed {} bytes",
+                cypher.len(),
+                max
+            ),
+        ));
+    }
+    Ok(())
 }
 
 /// Convert optional JSON params map to `HashMap<String, Value>` for the executor.
@@ -59,6 +117,7 @@ async fn query_handler(
     Json(body): Json<CypherBody>,
 ) -> Result<Json<QueryResponse>, ApiError> {
     validate_graph_name(&name).map_err(ApiError::from)?;
+    reject_oversized_query(&body.cypher)?;
     require_graph(&state, &name)?;
 
     let store = Arc::clone(&state.store);
@@ -106,13 +165,14 @@ async fn query_handler(
     .await
     .map_err(|_| ApiError::internal("query executor panicked"))??;
 
-    let elapsed_ms = start.elapsed().as_millis();
+    let elapsed_ms = start.elapsed().as_millis() as u64;
 
     let rows: Vec<serde_json::Value> = result
         .rows
         .iter()
         .map(|row| row_to_json(row, &result.columns, store.as_ref(), &name))
-        .collect();
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| ApiError::internal(format!("failed to serialize result: {e}")))?;
 
     Ok(Json(QueryResponse {
         columns: result.columns,
@@ -129,6 +189,7 @@ async fn explain_handler(
     Json(body): Json<CypherBody>,
 ) -> Result<Json<ExplainResponse>, ApiError> {
     validate_graph_name(&name).map_err(ApiError::from)?;
+    reject_oversized_query(&body.cypher)?;
     require_graph(&state, &name)?;
 
     let store = Arc::clone(&state.store);
@@ -185,6 +246,7 @@ async fn mutate_handler(
     Json(body): Json<CypherBody>,
 ) -> Result<Json<MutateResponse>, ApiError> {
     validate_graph_name(&name).map_err(ApiError::from)?;
+    reject_oversized_query(&body.cypher)?;
     require_graph(&state, &name)?;
 
     let store = Arc::clone(&state.store);

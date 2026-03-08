@@ -6,4 +6,6 @@
 pub mod admin;
 pub mod errors;
 pub mod executor;
+pub mod spatial;
+pub mod temporal;
 pub mod types;

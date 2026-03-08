@@ -57,19 +57,18 @@ pub async fn rate_limit_middleware(
         return next.run(request).await;
     }
 
-    // Extract client IP from ConnectInfo if available, otherwise default to loopback.
-    let ip = request
+    // Extract client IP from ConnectInfo. If absent, rate limiting cannot function
+    // correctly so we fail with 500 rather than silently allowing all traffic through.
+    let ip = match request
         .extensions()
         .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
-        .map(|ci| ci.0.ip())
-        .unwrap_or_else(|| {
-            use std::sync::atomic::{AtomicBool, Ordering};
-            static WARNED: AtomicBool = AtomicBool::new(false);
-            if !WARNED.swap(true, Ordering::Relaxed) {
-                tracing::warn!("ConnectInfo missing, falling back to 127.0.0.1 for rate limiting");
-            }
-            IpAddr::from([127, 0, 0, 1])
-        });
+    {
+        Some(ci) => ci.0.ip(),
+        None => {
+            tracing::error!("ConnectInfo missing — cannot identify client for rate limiting");
+            return (StatusCode::INTERNAL_SERVER_ERROR, "server misconfiguration: unable to identify client").into_response();
+        }
+    };
 
     match limiter.check_key(&ip) {
         Ok(_) => next.run(request).await,
@@ -95,13 +94,22 @@ mod tests {
             .layer(axum::Extension(limiter))
     }
 
+    /// Build a request with ConnectInfo set (required by the middleware).
+    fn req_with_connect_info(uri: &str) -> Request<Body> {
+        let addr: std::net::SocketAddr = "127.0.0.1:12345".parse().unwrap();
+        let mut req = Request::builder()
+            .uri(uri)
+            .body(Body::empty())
+            .unwrap();
+        req.extensions_mut()
+            .insert(axum::extract::ConnectInfo(addr));
+        req
+    }
+
     #[tokio::test]
     async fn allows_requests_under_limit() {
         let app = test_app(10);
-        let req = Request::builder()
-            .uri("/graphql")
-            .body(Body::empty())
-            .unwrap();
+        let req = req_with_connect_info("/graphql");
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
     }
@@ -111,18 +119,12 @@ mod tests {
         let app = test_app(1);
 
         // First request should succeed
-        let req = Request::builder()
-            .uri("/graphql")
-            .body(Body::empty())
-            .unwrap();
+        let req = req_with_connect_info("/graphql");
         let resp = app.clone().oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
 
         // Second request should be rate limited
-        let req = Request::builder()
-            .uri("/graphql")
-            .body(Body::empty())
-            .unwrap();
+        let req = req_with_connect_info("/graphql");
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
     }
@@ -132,10 +134,7 @@ mod tests {
         let app = test_app(1);
 
         // Exhaust the limit
-        let req = Request::builder()
-            .uri("/graphql")
-            .body(Body::empty())
-            .unwrap();
+        let req = req_with_connect_info("/graphql");
         let _ = app.clone().oneshot(req).await.unwrap();
 
         // /health should still work even after limit exhausted
@@ -148,5 +147,17 @@ mod tests {
 
         let body = resp.into_body().collect().await.unwrap().to_bytes();
         assert_eq!(&body[..], b"ok");
+    }
+
+    #[tokio::test]
+    async fn returns_500_when_connect_info_missing() {
+        let app = test_app(10);
+        // Request without ConnectInfo
+        let req = Request::builder()
+            .uri("/graphql")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
     }
 }

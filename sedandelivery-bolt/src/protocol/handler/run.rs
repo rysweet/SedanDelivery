@@ -1,4 +1,4 @@
-//! RUN message handler and query plan helpers.
+//! RUN message handler and query pre-processing.
 
 use std::sync::Arc;
 
@@ -9,6 +9,7 @@ use crate::packstream::value::{BoltMap, BoltMapExt, BoltValue};
 use crate::protocol::state::ServerState;
 use gql_core::storage::GraphStore;
 
+use super::explain::{detect_notifications, operator_to_plan_map};
 use super::{
     bolt_map, extract_tx_metadata, validate_bookmarks, AdminStats, PendingQuery, ProtocolError,
     Session,
@@ -165,8 +166,10 @@ fn intercept_admin_query(
                 query_type
             };
 
-            let qid = session.next_qid;
-            session.next_qid += 1;
+            let qid = match session.allocate_qid() {
+                Ok(q) => q,
+                Err(e) => return Some(Err(e)),
+            };
             session.pending_results.insert(
                 qid,
                 PendingQuery {
@@ -381,7 +384,7 @@ fn build_success_response(
     graph: &str,
     run_metadata: BoltMap,
     profile_plan: Option<BoltValue>,
-) -> Vec<ServerMessage> {
+) -> Result<Vec<ServerMessage>, ProtocolError> {
     let (records, query_type, stats, trailing_err) =
         bridge::executor::result_to_records(&qr, &**effective_store, graph);
 
@@ -410,8 +413,7 @@ fn build_success_response(
         plan
     });
 
-    let qid = session.next_qid;
-    session.next_qid += 1;
+    let qid = session.allocate_qid()?;
     session.pending_results.insert(
         qid,
         PendingQuery {
@@ -440,11 +442,11 @@ fn build_success_response(
         }
     };
 
-    vec![ServerMessage::Success(bolt_map! {
+    Ok(vec![ServerMessage::Success(bolt_map! {
         "fields" => BoltValue::List(fields),
         "t_first" => BoltValue::Int(0),
         "qid" => BoltValue::Int(qid)
-    })]
+    })])
 }
 
 // -- RUN ---------------------------------------------------------------------
@@ -599,14 +601,14 @@ pub(crate) async fn handle_run(
     .map_err(|e| ProtocolError::Internal(format!("spawn_blocking join error: {}", e)))?;
 
     match result {
-        Ok(qr) => Ok(build_success_response(
+        Ok(qr) => build_success_response(
             session,
             qr,
             &effective_store,
             &graph,
             run_metadata,
             profile_plan,
-        )),
+        ),
         Err(gql_err) => {
             let (code, message) = bridge::errors::gql_error_to_bolt(&gql_err);
             bolt_metrics::error_recorded(&code);
@@ -649,8 +651,7 @@ async fn handle_explain(
                     .map(|gs| gql_core::planner::estimate_cardinality(&operator, &gs));
             let plan_map = operator_to_plan_map(&operator, false, 0, estimates.as_ref());
             let plan_notifications = detect_notifications(&operator);
-            let qid = session.next_qid;
-            session.next_qid += 1;
+            let qid = session.allocate_qid()?;
             session.pending_results.insert(
                 qid,
                 PendingQuery {
@@ -690,173 +691,9 @@ async fn handle_explain(
     }
 }
 
-// -- Plan conversion ---------------------------------------------------------
-
-/// Convert a gql-core Operator tree into a Bolt plan map structure.
-///
-/// Recursively descends into child operators so EXPLAIN returns a proper tree.
-/// When `estimates` is provided, populates `EstimatedRows` from the cardinality
-/// estimator; otherwise falls back to 1.0.
-#[allow(clippy::only_used_in_recursion)]
-fn operator_to_plan_map(
-    op: &gql_core::planner::Operator,
-    is_profile: bool,
-    depth: usize,
-    estimates: Option<&std::collections::HashMap<*const gql_core::planner::Operator, f64>>,
-) -> BoltValue {
-    use gql_core::planner::Operator;
-
-    let op_type = format!("{:?}", op)
-        .split('(')
-        .next()
-        .unwrap_or("Unknown")
-        .split('{')
-        .next()
-        .unwrap_or("Unknown")
-        .trim()
-        .to_string();
-    let children_bolt: Vec<BoltValue> = op
-        .children()
-        .into_iter()
-        .map(|child| operator_to_plan_map(child, is_profile, depth + 1, estimates))
-        .collect();
-    let estimated_rows = estimates
-        .and_then(|m| m.get(&(op as *const Operator)))
-        .copied()
-        .unwrap_or(1.0);
-    let entries: Vec<(String, BoltValue)> = vec![
-        ("operatorType".to_string(), BoltValue::String(op_type)),
-        ("identifiers".to_string(), BoltValue::List(vec![])),
-        (
-            "args".to_string(),
-            BoltValue::Map(vec![
-                (
-                    "runtime".to_string(),
-                    BoltValue::String("INTERPRETED".to_string()),
-                ),
-                (
-                    "EstimatedRows".to_string(),
-                    BoltValue::Float(estimated_rows),
-                ),
-            ]),
-        ),
-        ("children".to_string(), BoltValue::List(children_bolt)),
-    ];
-    BoltValue::Map(entries)
-}
-
-// -- Notification detection --------------------------------------------------
-
-/// Detect cartesian product patterns in an operator tree.
-///
-/// A cartesian product occurs when an `Apply` node joins two independent scans
-/// (no shared variable references). Returns a list of Bolt notification maps.
-fn detect_notifications(op: &gql_core::planner::Operator) -> Vec<BoltValue> {
-    let mut notifications = Vec::new();
-    detect_cartesian_products(op, &mut notifications);
-    notifications
-}
-
-fn detect_cartesian_products(op: &gql_core::planner::Operator, notifications: &mut Vec<BoltValue>) {
-    use gql_core::planner::Operator;
-    match op {
-        Operator::Apply { outer, inner } => {
-            // An Apply with two independent scans (both are leaf-level node scans
-            // or have no shared aliases) is a cartesian product.
-            let outer_aliases: std::collections::HashSet<String> =
-                gql_core::planner::collect_visible_aliases(outer)
-                    .into_iter()
-                    .collect();
-            let inner_aliases: std::collections::HashSet<String> =
-                gql_core::planner::collect_visible_aliases(inner)
-                    .into_iter()
-                    .collect();
-            if outer_aliases.is_disjoint(&inner_aliases) {
-                // Determine which alias to mention in the warning.
-                let inner_alias = inner_aliases
-                    .into_iter()
-                    .next()
-                    .unwrap_or_else(|| "?".to_string());
-                notifications.push(BoltValue::Map(bolt_map! {
-                    "code" => BoltValue::String(
-                        "Neo.ClientNotification.Statement.CartesianProductWarning".to_string()
-                    ),
-                    "title" => BoltValue::String(
-                        "This query builds a cartesian product between disconnected patterns.".to_string()
-                    ),
-                    "description" => BoltValue::String(
-                        format!(
-                            "If a part of a query contains multiple disconnected patterns, this will build a cartesian product between all those parts. This may produce a large amount of data and slow down query processing. While occasionally intended, it may often be possible to reformulate the query that avoids the use of this cross product, perhaps by adding a relationship between the different parts or by using OPTIONAL MATCH (identifier is: ({inner_alias}))"
-                        )
-                    ),
-                    "severity" => BoltValue::String("WARNING".to_string()),
-                    "category" => BoltValue::String("PERFORMANCE".to_string()),
-                    "position" => BoltValue::Map(bolt_map! {
-                        "offset" => BoltValue::Int(0),
-                        "line" => BoltValue::Int(1),
-                        "column" => BoltValue::Int(1)
-                    })
-                }));
-            }
-            detect_cartesian_products(outer, notifications);
-            detect_cartesian_products(inner, notifications);
-        }
-        Operator::Filter { child, .. }
-        | Operator::Sort { child, .. }
-        | Operator::Limit { child, .. }
-        | Operator::Skip { child, .. }
-        | Operator::Distinct { child, .. }
-        | Operator::Set { child, .. }
-        | Operator::Remove { child, .. }
-        | Operator::Delete { child, .. }
-        | Operator::Unwind { child, .. }
-        | Operator::Expand { child, .. }
-        | Operator::VarLenExpand { child, .. }
-        | Operator::AssemblePath { child, .. }
-        | Operator::MergeRelationship { child, .. } => {
-            detect_cartesian_products(child, notifications);
-        }
-        Operator::Project { child, .. } | Operator::Aggregate { child, .. } => {
-            detect_cartesian_products(child, notifications);
-        }
-        Operator::LeftOuterApply {
-            preserved,
-            optional_pattern,
-        } => {
-            detect_cartesian_products(preserved, notifications);
-            detect_cartesian_products(optional_pattern, notifications);
-        }
-        Operator::Union { left, right, .. } => {
-            detect_cartesian_products(left, notifications);
-            detect_cartesian_products(right, notifications);
-        }
-        Operator::Create { child, .. } | Operator::Merge { child, .. } => {
-            if let Some(ch) = child {
-                detect_cartesian_products(ch, notifications);
-            }
-        }
-        Operator::Call { child, .. } => {
-            if let Some(ch) = child {
-                detect_cartesian_products(ch, notifications);
-            }
-        }
-        Operator::ProduceResults { child, .. } => {
-            detect_cartesian_products(child, notifications);
-        }
-        Operator::NodeScan { .. }
-        | Operator::IndexScan { .. }
-        | Operator::NodeByIdSeek { .. }
-        | Operator::SingleRow
-        | Operator::ShortestPath { .. } => {}
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::packstream::value::BoltMapExt;
-    use gql_core::ast::Identifier;
-    use gql_core::planner::Operator;
 
     // ── strip_cypher_prefix ─────────────────────────────────────────────
 
@@ -977,229 +814,5 @@ mod tests {
             detect_explain_profile("EXPLAIN PROFILE MATCH (n) RETURN n");
         assert!(is_explain);
         assert!(!is_profile);
-    }
-
-    // ── operator_to_plan_map ────────────────────────────────────────────
-
-    #[test]
-    fn operator_to_plan_map_single_row() {
-        let op = Operator::SingleRow;
-        let plan = operator_to_plan_map(&op, false, 0, None);
-        match plan {
-            BoltValue::Map(entries) => {
-                let op_type = entries.get_str("operatorType").unwrap();
-                assert_eq!(op_type, "SingleRow");
-                assert!(entries.get_value("children").is_some());
-                assert!(entries.get_value("args").is_some());
-                assert!(entries.get_value("identifiers").is_some());
-            }
-            _ => panic!("expected BoltValue::Map"),
-        }
-    }
-
-    #[test]
-    fn operator_to_plan_map_node_scan() {
-        let op = Operator::NodeScan {
-            label: None,
-            alias: Identifier::new("n"),
-        };
-        let plan = operator_to_plan_map(&op, false, 0, None);
-        match plan {
-            BoltValue::Map(entries) => {
-                let op_type = entries.get_str("operatorType").unwrap();
-                assert_eq!(op_type, "NodeScan");
-            }
-            _ => panic!("expected BoltValue::Map"),
-        }
-    }
-
-    #[test]
-    fn operator_to_plan_map_filter_wrapping_scan() {
-        let child = Operator::NodeScan {
-            label: None,
-            alias: Identifier::new("n"),
-        };
-        let op = Operator::Filter {
-            predicate: gql_core::ast::Expr::Bool(true),
-            child: Box::new(child),
-        };
-        let plan = operator_to_plan_map(&op, false, 0, None);
-        match plan {
-            BoltValue::Map(entries) => {
-                let op_type = entries.get_str("operatorType").unwrap();
-                assert_eq!(op_type, "Filter");
-                if let Some(BoltValue::List(children)) = entries.get_value("children") {
-                    assert_eq!(children.len(), 1, "Filter should have one child (NodeScan)");
-                    // Verify child is a NodeScan
-                    if let BoltValue::Map(child_entries) = &children[0] {
-                        let child_type = child_entries.get_str("operatorType").unwrap();
-                        assert_eq!(child_type, "NodeScan");
-                    } else {
-                        panic!("expected child to be a Map");
-                    }
-                }
-            }
-            _ => panic!("expected BoltValue::Map"),
-        }
-    }
-
-    #[test]
-    fn operator_to_plan_map_has_runtime_in_args() {
-        let op = Operator::SingleRow;
-        let plan = operator_to_plan_map(&op, true, 0, None);
-        match plan {
-            BoltValue::Map(entries) => {
-                if let Some(BoltValue::Map(args)) = entries.get_value("args") {
-                    let runtime = args.get_str("runtime").unwrap();
-                    assert_eq!(runtime, "INTERPRETED");
-                } else {
-                    panic!("expected args to be a Map");
-                }
-            }
-            _ => panic!("expected BoltValue::Map"),
-        }
-    }
-
-    // ── detect_notifications / detect_cartesian_products ────────────────
-
-    #[test]
-    fn detect_notifications_empty_for_single_scan() {
-        let op = Operator::NodeScan {
-            label: None,
-            alias: Identifier::new("n"),
-        };
-        let notes = detect_notifications(&op);
-        assert!(notes.is_empty());
-    }
-
-    #[test]
-    fn detect_cartesian_product_on_disjoint_apply() {
-        let outer = Operator::NodeScan {
-            label: None,
-            alias: Identifier::new("a"),
-        };
-        let inner = Operator::NodeScan {
-            label: None,
-            alias: Identifier::new("b"),
-        };
-        let op = Operator::Apply {
-            outer: Box::new(outer),
-            inner: Box::new(inner),
-        };
-        let notes = detect_notifications(&op);
-        assert_eq!(notes.len(), 1);
-        if let BoltValue::Map(entries) = &notes[0] {
-            let code = entries.get_str("code").unwrap();
-            assert!(code.contains("CartesianProduct"));
-            let severity = entries.get_str("severity").unwrap();
-            assert_eq!(severity, "WARNING");
-            let category = entries.get_str("category").unwrap();
-            assert_eq!(category, "PERFORMANCE");
-        } else {
-            panic!("expected Map notification");
-        }
-    }
-
-    #[test]
-    fn detect_no_cartesian_product_on_shared_alias() {
-        let outer = Operator::NodeScan {
-            label: None,
-            alias: Identifier::new("n"),
-        };
-        let inner = Operator::NodeScan {
-            label: None,
-            alias: Identifier::new("n"),
-        };
-        let op = Operator::Apply {
-            outer: Box::new(outer),
-            inner: Box::new(inner),
-        };
-        let notes = detect_notifications(&op);
-        assert!(
-            notes.is_empty(),
-            "shared alias should not trigger cartesian warning"
-        );
-    }
-
-    #[test]
-    fn detect_cartesian_products_recurses_through_filter() {
-        let outer = Operator::NodeScan {
-            label: None,
-            alias: Identifier::new("a"),
-        };
-        let inner = Operator::NodeScan {
-            label: None,
-            alias: Identifier::new("b"),
-        };
-        let apply = Operator::Apply {
-            outer: Box::new(outer),
-            inner: Box::new(inner),
-        };
-        let filter = Operator::Filter {
-            predicate: gql_core::ast::Expr::Bool(true),
-            child: Box::new(apply),
-        };
-        let notes = detect_notifications(&filter);
-        assert_eq!(notes.len(), 1);
-    }
-
-    #[test]
-    fn detect_cartesian_notification_has_position() {
-        let outer = Operator::NodeScan {
-            label: None,
-            alias: Identifier::new("x"),
-        };
-        let inner = Operator::NodeScan {
-            label: None,
-            alias: Identifier::new("y"),
-        };
-        let op = Operator::Apply {
-            outer: Box::new(outer),
-            inner: Box::new(inner),
-        };
-        let notes = detect_notifications(&op);
-        if let BoltValue::Map(entries) = &notes[0] {
-            if let Some(BoltValue::Map(pos)) = entries.get_value("position") {
-                assert_eq!(pos.get_int("offset"), Some(0));
-                assert_eq!(pos.get_int("line"), Some(1));
-                assert_eq!(pos.get_int("column"), Some(1));
-            } else {
-                panic!("expected position map");
-            }
-        }
-    }
-
-    #[test]
-    fn detect_notifications_on_leaf_operators() {
-        let single_row = Operator::SingleRow;
-        assert!(detect_notifications(&single_row).is_empty());
-    }
-
-    #[test]
-    fn detect_cartesian_products_union() {
-        let outer = Operator::NodeScan {
-            label: None,
-            alias: Identifier::new("a"),
-        };
-        let inner = Operator::NodeScan {
-            label: None,
-            alias: Identifier::new("b"),
-        };
-        let apply = Operator::Apply {
-            outer: Box::new(outer),
-            inner: Box::new(inner),
-        };
-        let right = Operator::SingleRow;
-        let union_op = Operator::Union {
-            left: Box::new(apply),
-            right: Box::new(right),
-            all: true,
-        };
-        let notes = detect_notifications(&union_op);
-        assert_eq!(
-            notes.len(),
-            1,
-            "should find cartesian product in left branch of union"
-        );
     }
 }

@@ -19,6 +19,15 @@ pub struct PoolStats {
     pub active: u32,
 }
 
+/// Configurable stats reporting interval, read from `GQL_REDIS_STATS_INTERVAL_SECS`
+/// env var (default 15, minimum 1, maximum 3600).
+fn stats_interval_secs() -> u64 {
+    static INTERVAL: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    *INTERVAL.get_or_init(|| {
+        gql_core::config::parse_env_range("GQL_REDIS_STATS_INTERVAL_SECS", 15u64, 1, 3600)
+    })
+}
+
 /// Default connection pool size. Set high enough for concurrent bulk writes
 /// (each Bolt session may hold a pool connection during query execution).
 pub(crate) const DEFAULT_POOL_SIZE: u32 = 64;
@@ -156,13 +165,22 @@ impl RedisPool {
     /// Spawn a background tokio task that periodically records pool utilization
     /// gauges: `redis_pool_size`, `redis_pool_idle`, `redis_pool_active`.
     ///
-    /// The task runs every 15 seconds and stops when the pool is dropped
-    /// (the internal `r2d2::Pool` is `Arc`-backed, so the task keeps a
-    /// cheap clone alive until the last reference is gone).
+    /// The reporting interval is configurable via `GQL_REDIS_STATS_INTERVAL_SECS`
+    /// (default 15, minimum 1, maximum 3600).
+    ///
+    /// **Lifetime**: This task runs for the entire process lifetime. The internal
+    /// `r2d2::Pool` is `Arc`-backed, so the task keeps a cheap clone alive.
+    /// There is no graceful shutdown mechanism; the task terminates when the
+    /// tokio runtime is dropped (i.e., at process exit). This is intentional:
+    /// pool metrics are only useful while the process is running, and adding a
+    /// cancellation channel would require propagating a shutdown signal through
+    /// the `RedisGraphStore` constructor, which is not warranted for a
+    /// lightweight periodic gauge reporter.
     pub(crate) fn spawn_stats_reporter(&self) {
         let pool = self.clone();
+        let interval_secs = stats_interval_secs();
         tokio::spawn(async move {
-            let mut interval = tokio::time::interval(Duration::from_secs(15));
+            let mut interval = tokio::time::interval(Duration::from_secs(interval_secs));
             loop {
                 interval.tick().await;
                 let stats = pool.stats();
@@ -230,6 +248,15 @@ impl ReplicaPool {
     ///
     /// Sends `READONLY` on the connection so Redis replicas accept read
     /// commands even when `slave-read-only` is enabled on the server.
+    ///
+    /// **Why READONLY is issued on every checkout (not just once at connection
+    /// creation):** After a Redis failover, a former replica may be promoted to
+    /// primary and a former primary demoted to replica. The `r2d2` pool may
+    /// return a recycled connection that was established before the topology
+    /// change. Issuing `READONLY` on every checkout ensures the connection is
+    /// in the correct mode regardless of whether a failover occurred while the
+    /// connection was idle in the pool. The `READONLY` command is idempotent
+    /// and has negligible overhead (~0.01ms round-trip).
     pub(crate) fn get(&self) -> Result<RedisConn, StorageError> {
         let idx = self.next.fetch_add(1, Ordering::Relaxed) % self.pools.len();
         let mut conn = self.pools[idx]

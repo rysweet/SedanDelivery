@@ -416,11 +416,27 @@ impl RedisGraphStore {
         let reltype_pattern = format!("{}G:{{{graph}}}:reltype:*", self.key_prefix);
         let label_count = scan_key_count(conn.as_mut(), &label_pattern)?;
         let rel_type_count = scan_key_count(conn.as_mut(), &reltype_pattern)?;
+        let label_count_u32 = u32::try_from(label_count).unwrap_or_else(|_| {
+            tracing::warn!(
+                graph,
+                label_count,
+                "label_count exceeds u32::MAX, clamping to u32::MAX"
+            );
+            u32::MAX
+        });
+        let rel_type_count_u32 = u32::try_from(rel_type_count).unwrap_or_else(|_| {
+            tracing::warn!(
+                graph,
+                rel_type_count,
+                "rel_type_count exceeds u32::MAX, clamping to u32::MAX"
+            );
+            u32::MAX
+        });
         Ok(GraphStats {
             node_count,
             edge_count,
-            label_count: label_count as u32,
-            rel_type_count: rel_type_count as u32,
+            label_count: label_count_u32,
+            rel_type_count: rel_type_count_u32,
         })
     }
 }

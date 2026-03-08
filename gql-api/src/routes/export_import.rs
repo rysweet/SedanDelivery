@@ -77,6 +77,30 @@ fn import_element_limit() -> &'static usize {
     })
 }
 
+/// Maximum number of elements (nodes + edges) allowed for export. Default 1 000 000.
+/// Override via `GQL_API_MAX_EXPORT_ELEMENTS`.
+///
+/// Before loading all nodes and edges into memory, the export handler checks the
+/// graph's total element count via `graph_stats()`. If the count exceeds this
+/// limit, the request is rejected with HTTP 413 to prevent out-of-memory crashes.
+fn max_export_elements() -> u64 {
+    static LIMIT: OnceLock<u64> = OnceLock::new();
+    *LIMIT.get_or_init(|| {
+        std::env::var("GQL_API_MAX_EXPORT_ELEMENTS")
+            .ok()
+            .and_then(|v| match v.parse() {
+                Ok(val) if val > 0 => Some(val),
+                _ => {
+                    tracing::warn!(
+                        "invalid value for GQL_API_MAX_EXPORT_ELEMENTS, using default 1000000"
+                    );
+                    None
+                }
+            })
+            .unwrap_or(1_000_000)
+    })
+}
+
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/graphs/{name}/export", get(export_handler))
@@ -100,6 +124,22 @@ async fn export_handler(
     require_graph(&state, &name)?;
 
     let store = &state.store;
+
+    // Guard: check total element count before loading everything into memory.
+    // This uses graph_stats() which returns counts without fetching full data.
+    let stats = store.graph_stats(&name).map_err(ApiError::from)?;
+    let total_elements = stats.node_count.saturating_add(stats.edge_count);
+    let limit = max_export_elements();
+    if total_elements > limit {
+        return Err(ApiError::new(
+            axum::http::StatusCode::PAYLOAD_TOO_LARGE,
+            format!(
+                "graph '{name}' has {total_elements} elements (nodes + edges), \
+                 which exceeds the export limit of {limit}. \
+                 Set GQL_API_MAX_EXPORT_ELEMENTS to raise the limit."
+            ),
+        ));
+    }
 
     // Export all nodes.
     let all_node_ids = store.all_node_ids(&name).map_err(ApiError::from)?;

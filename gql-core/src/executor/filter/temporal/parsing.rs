@@ -169,7 +169,7 @@ pub(crate) fn days_in_month(year: i64, month: i32) -> i32 {
                 28
             }
         }
-        _ => 30,
+        _ => unreachable!("invalid month: {month}"),
     }
 }
 

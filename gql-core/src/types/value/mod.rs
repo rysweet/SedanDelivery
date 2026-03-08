@@ -1,4 +1,8 @@
-use std::fmt;
+mod compare;
+mod convert;
+mod display;
+
+pub use display::format_cypher_duration;
 
 use indexmap::IndexMap;
 use jiff::{civil, Zoned};
@@ -121,52 +125,6 @@ pub enum Crs {
     Cartesian3d,
 }
 
-impl PartialEq for Value {
-    fn eq(&self, other: &Self) -> bool {
-        match (self, other) {
-            (Self::Null, Self::Null) => true,
-            (Self::Bool(a), Self::Bool(b)) => a == b,
-            (Self::Int(a), Self::Int(b)) => a == b,
-            (Self::Float(a), Self::Float(b)) => a == b,
-            // Int/Float cross-type: use safe comparison to avoid precision
-            // loss for integers beyond 2^53.
-            (Self::Int(a), Self::Float(b)) => {
-                let af = *a as f64;
-                af as i64 == *a && af == *b
-            }
-            (Self::Float(a), Self::Int(b)) => {
-                let bf = *b as f64;
-                bf as i64 == *b && *a == bf
-            }
-            (Self::Str(a), Self::Str(b)) => a == b,
-            (Self::Date(a), Self::Date(b)) => a == b,
-            (Self::LocalTime(a), Self::LocalTime(b)) => a == b,
-            (Self::Time(at, ao), Self::Time(bt, bo)) => at == bt && ao == bo,
-            (Self::LocalDateTime(a), Self::LocalDateTime(b)) => a == b,
-            (Self::DateTime(a), Self::DateTime(b)) => a == b,
-            // CypherDuration: structural field equality
-            (Self::Duration(a), Self::Duration(b)) => a == b,
-            (Self::Point(a), Self::Point(b)) => a == b,
-            (Self::Bytes(a), Self::Bytes(b)) => a == b,
-            (Self::List(a), Self::List(b)) => a == b,
-            (Self::Map(a), Self::Map(b)) => a == b,
-            (Self::Node(a), Self::Node(b)) => a == b,
-            (Self::Edge(a), Self::Edge(b)) => a == b,
-            (
-                Self::Path {
-                    nodes: n1,
-                    edges: e1,
-                },
-                Self::Path {
-                    nodes: n2,
-                    edges: e2,
-                },
-            ) => n1 == n2 && e1 == e2,
-            _ => false,
-        }
-    }
-}
-
 impl Value {
     /// Returns a static string naming the Cypher type of this value.
     #[inline]
@@ -197,41 +155,6 @@ impl Value {
     #[inline]
     pub fn is_null(&self) -> bool {
         matches!(self, Self::Null)
-    }
-
-    /// If this is a `Time(t, offset)`, convert to a `DateTime` at epoch date
-    /// (1970-01-01) so that code expecting DateTime can process it uniformly.
-    /// Returns `self` unchanged for all other variants.
-    pub fn time_to_datetime(self) -> Self {
-        match self {
-            Self::Time(t, offset_secs) => {
-                let offset = match jiff::tz::Offset::from_seconds(offset_secs) {
-                    Ok(o) => o,
-                    Err(_) => {
-                        tracing::warn!(
-                            offset_secs = offset_secs,
-                            "timezone offset out of range, falling back to UTC"
-                        );
-                        jiff::tz::Offset::UTC
-                    }
-                };
-                let tz = jiff::tz::TimeZone::fixed(offset);
-                // safe: constant epoch date 1970-01-01 is always valid
-                let epoch = civil::Date::new(1970, 1, 1).expect("valid epoch");
-                let dt = epoch.to_datetime(t);
-                match dt.to_zoned(tz) {
-                    Ok(zoned) => Self::DateTime(Box::new(zoned)),
-                    Err(e) => {
-                        tracing::warn!(
-                            error = %e,
-                            "failed to convert Time to zoned DateTime, returning Null"
-                        );
-                        Self::Null
-                    }
-                }
-            }
-            other => other,
-        }
     }
 
     /// Coerce to `f64` for arithmetic. Returns `None` for non-numeric types.
@@ -508,230 +431,6 @@ impl Value {
     }
 }
 
-impl fmt::Display for Value {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Null => write!(f, "null"),
-            Self::Bool(b) => write!(f, "{b}"),
-            Self::Int(i) => write!(f, "{i}"),
-            Self::Float(v) => write!(f, "{v}"),
-            Self::Str(s) => write!(f, "{s:?}"),
-            Self::Date(d) => write!(f, "{d}"),
-            Self::LocalTime(t) => write!(f, "{t}"),
-            Self::Time(t, offset_secs) => {
-                let h_off = offset_secs / 3600;
-                let m_off = (offset_secs.abs() % 3600) / 60;
-                let offset_str = format!("{:+03}:{:02}", h_off, m_off);
-                let ns = t.subsec_nanosecond();
-                if ns != 0 {
-                    let ns_str = format!("{:09}", ns);
-                    let ns_trimmed = ns_str.trim_end_matches('0');
-                    write!(
-                        f,
-                        "{:02}:{:02}:{:02}.{}{}",
-                        t.hour(),
-                        t.minute(),
-                        t.second(),
-                        ns_trimmed,
-                        offset_str
-                    )
-                } else {
-                    write!(
-                        f,
-                        "{:02}:{:02}:{:02}{}",
-                        t.hour(),
-                        t.minute(),
-                        t.second(),
-                        offset_str
-                    )
-                }
-            }
-            Self::LocalDateTime(dt) => write!(f, "{dt}"),
-            Self::DateTime(dt) => {
-                let civil_dt = jiff::civil::DateTime::from(dt.as_ref());
-                // safe: constant epoch date 1970-01-01 is always valid
-                let is_epoch_date =
-                    civil_dt.date() == jiff::civil::Date::new(1970, 1, 1).expect("epoch");
-                let tz = dt.time_zone();
-                let has_named_tz = tz.iana_name().is_some();
-                if is_epoch_date {
-                    // Time-only value: display as HH:MM:SS[.nanos]+offset
-                    let t = civil_dt.time();
-                    let off = dt.offset();
-                    let total_secs_off = off.seconds();
-                    let h_off = total_secs_off / 3600;
-                    let m_off = (total_secs_off.abs() % 3600) / 60;
-                    let offset_str = format!("{:+03}:{:02}", h_off, m_off);
-                    // Format nanoseconds
-                    let ns = t.subsec_nanosecond();
-                    if ns != 0 {
-                        let ns_str = format!("{:09}", ns);
-                        let ns_trimmed = ns_str.trim_end_matches('0');
-                        write!(
-                            f,
-                            "{:02}:{:02}:{:02}.{}{}",
-                            t.hour(),
-                            t.minute(),
-                            t.second(),
-                            ns_trimmed,
-                            offset_str
-                        )
-                    } else {
-                        write!(
-                            f,
-                            "{:02}:{:02}:{:02}{}",
-                            t.hour(),
-                            t.minute(),
-                            t.second(),
-                            offset_str
-                        )
-                    }
-                } else if has_named_tz {
-                    // Named timezone: display full datetime with tz name
-                    write!(f, "{dt}")
-                } else {
-                    // Fixed offset: display datetime without [tz] bracket
-                    let civil = jiff::civil::DateTime::from(dt.as_ref());
-                    let off = dt.offset();
-                    let total_secs_off = off.seconds();
-                    let h_off = total_secs_off / 3600;
-                    let m_off = (total_secs_off.abs() % 3600) / 60;
-                    let offset_str = format!("{:+03}:{:02}", h_off, m_off);
-                    let ns = civil.subsec_nanosecond();
-                    if ns != 0 {
-                        let ns_str = format!("{:09}", ns);
-                        let ns_trimmed = ns_str.trim_end_matches('0');
-                        write!(
-                            f,
-                            "{}-{:02}-{:02}T{:02}:{:02}:{:02}.{}{}",
-                            civil.year(),
-                            civil.month(),
-                            civil.day(),
-                            civil.hour(),
-                            civil.minute(),
-                            civil.second(),
-                            ns_trimmed,
-                            offset_str
-                        )
-                    } else {
-                        write!(
-                            f,
-                            "{}-{:02}-{:02}T{:02}:{:02}:{:02}{}",
-                            civil.year(),
-                            civil.month(),
-                            civil.day(),
-                            civil.hour(),
-                            civil.minute(),
-                            civil.second(),
-                            offset_str
-                        )
-                    }
-                }
-            }
-            Self::Duration(d) => write!(f, "{}", format_cypher_duration(d)),
-            Self::Bytes(b) => {
-                write!(f, "0x")?;
-                for byte in b {
-                    write!(f, "{:02X}", byte)?;
-                }
-                Ok(())
-            }
-            Self::Point(p) => write!(f, "point({{x: {}, y: {}}})", p.x, p.y),
-            Self::List(items) => {
-                write!(f, "[")?;
-                for (i, v) in items.iter().enumerate() {
-                    if i > 0 {
-                        write!(f, ", ")?;
-                    }
-                    write!(f, "{v}")?;
-                }
-                write!(f, "]")
-            }
-            Self::Map(m) => {
-                write!(f, "{{")?;
-                for (i, (k, v)) in m.iter().enumerate() {
-                    if i > 0 {
-                        write!(f, ", ")?;
-                    }
-                    write!(f, "{k}: {v}")?;
-                }
-                write!(f, "}}")
-            }
-            Self::Node(id) => write!(f, "(node#{})", id.0), // id.0 is u64
-            Self::Edge(id) => write!(f, "[edge#{}]", id.0), // id.0 is u64
-            Self::Path { nodes, edges } => {
-                write!(f, "<path: {} nodes, {} edges>", nodes.len(), edges.len())
-            }
-        }
-    }
-}
-
-/// Format a CypherDuration as an ISO 8601-compatible duration string.
-/// Cypher allows different signs for months, days, and time parts.
-pub fn format_cypher_duration(d: &CypherDuration) -> String {
-    let years = d.months / 12;
-    let months = d.months % 12;
-    let days = d.days;
-
-    // Decompose nanos into hours, minutes, seconds, sub-nanos (all with same sign as nanos)
-    let (time_sign, abs_nanos) = if d.nanos < 0 {
-        (-1i128, -d.nanos)
-    } else {
-        (1i128, d.nanos)
-    };
-    let h_abs = abs_nanos / 3_600_000_000_000i128;
-    let rem = abs_nanos % 3_600_000_000_000i128;
-    let m_abs = rem / 60_000_000_000i128;
-    let rem = rem % 60_000_000_000i128;
-    let s_abs = rem / 1_000_000_000i128;
-    let ns_abs = rem % 1_000_000_000i128;
-
-    let norm_h = time_sign * h_abs;
-    let norm_m = time_sign * m_abs;
-    let norm_s = time_sign * s_abs;
-    let norm_ns = time_sign * ns_abs;
-
-    let has_date = years != 0 || months != 0 || days != 0;
-    let has_time = norm_h != 0 || norm_m != 0 || norm_s != 0 || norm_ns != 0;
-
-    let mut s = String::from("P");
-    if years != 0 {
-        s.push_str(&format!("{years}Y"));
-    }
-    if months != 0 {
-        s.push_str(&format!("{months}M"));
-    }
-    if days != 0 {
-        s.push_str(&format!("{days}D"));
-    }
-    if has_time {
-        s.push('T');
-        if norm_h != 0 {
-            s.push_str(&format!("{norm_h}H"));
-        }
-        if norm_m != 0 {
-            s.push_str(&format!("{norm_m}M"));
-        }
-        if norm_ns != 0 {
-            let ns_u = norm_ns.unsigned_abs();
-            let ns_str = format!("{ns_u:09}");
-            let ns_trimmed = ns_str.trim_end_matches('0');
-            // Handle -0.NNNs case: norm_s=0 but time is negative
-            if norm_s == 0 && time_sign < 0 {
-                s.push_str(&format!("-0.{ns_trimmed}S"));
-            } else {
-                s.push_str(&format!("{norm_s}.{ns_trimmed}S"));
-            }
-        } else if norm_s != 0 {
-            s.push_str(&format!("{norm_s}S"));
-        }
-    }
-    if !has_date && !has_time {
-        s.push_str("T0S");
-    }
-    s
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -759,19 +458,6 @@ mod tests {
     }
 
     #[test]
-    fn null_equality_returns_none() {
-        assert_eq!(Value::Null.cypher_eq(&Value::Int(1)), None);
-        assert_eq!(Value::Int(1).cypher_eq(&Value::Null), None);
-        assert_eq!(Value::Null.cypher_eq(&Value::Null), None);
-    }
-
-    #[test]
-    fn int_equality() {
-        assert_eq!(Value::Int(42).cypher_eq(&Value::Int(42)), Some(true));
-        assert_eq!(Value::Int(42).cypher_eq(&Value::Int(43)), Some(false));
-    }
-
-    #[test]
     fn type_names_correct() {
         assert_eq!(Value::Null.type_name(), "Null");
         assert_eq!(Value::Bool(true).type_name(), "Boolean");
@@ -785,17 +471,6 @@ mod tests {
         assert_eq!(Value::Int(3).as_float(), Some(3.0));
         assert_eq!(Value::Float(1.23456).as_float(), Some(1.23456));
         assert_eq!(Value::Null.as_float(), None);
-    }
-
-    #[test]
-    fn display_list() {
-        let v = Value::List(vec![Value::Int(1), Value::Int(2)]);
-        assert_eq!(v.to_string(), "[1, 2]");
-    }
-
-    #[test]
-    fn display_null() {
-        assert_eq!(Value::Null.to_string(), "null");
     }
 
     // ── canonical_key tests ──────────────────────────────────────────────────
@@ -993,33 +668,5 @@ mod tests {
         assert_ne!(hash_value(&Value::Int(0)), hash_value(&Value::Bool(false)));
         // Int(1) vs Float(1.0) should produce different hashes (different types)
         assert_ne!(hash_value(&Value::Int(1)), hash_value(&Value::Float(1.0)));
-    }
-    // ── time_to_datetime: valid offset still works ─────────────────────────
-
-    #[test]
-    fn time_to_datetime_valid_offset() {
-        let t = civil::Time::new(10, 30, 0, 0).expect("valid time");
-        let val = Value::Time(t, 19800);
-        match val.time_to_datetime() {
-            Value::DateTime(zdt) => {
-                assert_eq!(zdt.hour(), 10);
-                assert_eq!(zdt.minute(), 30);
-            }
-            other => panic!("expected DateTime, got {other:?}"),
-        }
-    }
-
-    // ── time_to_datetime: out-of-range offset warns and falls back to UTC ──
-
-    #[test]
-    fn time_to_datetime_invalid_offset_falls_back_to_utc() {
-        let t = civil::Time::new(12, 0, 0, 0).expect("valid time");
-        let val = Value::Time(t, 200_000);
-        match val.time_to_datetime() {
-            Value::DateTime(zdt) => {
-                assert_eq!(zdt.offset().seconds(), 0, "should fall back to UTC");
-            }
-            other => panic!("expected DateTime with UTC fallback, got {other:?}"),
-        }
     }
 }

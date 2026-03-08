@@ -12,6 +12,15 @@ use gql_core::types::Value;
 use crate::keys::{key_indexes, key_label, key_node, key_propidx, value_to_index_key, IDX_SEP};
 use crate::RedisGraphStore;
 
+/// Configurable index-building batch size, read from `GQL_REDIS_INDEX_BATCH_SIZE`
+/// env var (default 500, minimum 1).
+fn index_batch_size() -> usize {
+    static SIZE: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *SIZE.get_or_init(|| {
+        gql_core::config::parse_env_min("GQL_REDIS_INDEX_BATCH_SIZE", 500usize, 1)
+    })
+}
+
 impl RedisGraphStore {
     /// Check which indexes exist for a given graph (returns set of "label\x00property" strings).
     pub(crate) fn active_indexes(
@@ -148,8 +157,8 @@ impl RedisGraphStore {
             .map_err(|e| StorageError::Backend { msg: e.to_string() })?;
 
         // Pipeline in batches for efficiency.
-        const BATCH_SIZE: usize = 500;
-        for chunk in node_ids.chunks(BATCH_SIZE) {
+        let batch_size = index_batch_size();
+        for chunk in node_ids.chunks(batch_size) {
             // First, pipeline-read all nodes in this batch.
             let mut read_pipe = redis::pipe();
             for id_str in chunk {
@@ -221,7 +230,7 @@ impl RedisGraphStore {
                 .arg("MATCH")
                 .arg(&pattern)
                 .arg("COUNT")
-                .arg(100u64)
+                .arg(crate::range::scan_count())
                 .query(conn.as_mut())
                 .map_err(|e| StorageError::Backend { msg: e.to_string() })?;
             if !keys.is_empty() {

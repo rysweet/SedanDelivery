@@ -339,7 +339,7 @@ pub(super) fn eval_binary<'r>(
                                 actual: e.to_string(),
                             })
                         })?;
-                        if map.len() >= 512 {
+                        if map.len() >= crate::config::global().regex_cache_capacity {
                             // Evict the oldest half instead of clearing everything.
                             // This avoids a "cache cliff" where all compiled regexes
                             // are dropped simultaneously, causing a spike of recompilation.

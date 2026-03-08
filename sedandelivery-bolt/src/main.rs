@@ -338,10 +338,20 @@ async fn main() {
     // Stop handing out new permits.
     semaphore.close();
 
-    let drain_timeout = Duration::from_secs(30);
+    let drain_timeout_secs: u64 = std::env::var("BOLT_DRAIN_TIMEOUT_SECS")
+        .ok()
+        .and_then(|v| match v.parse::<u64>() {
+            Ok(val) if val > 0 => Some(val),
+            _ => {
+                tracing::warn!("invalid BOLT_DRAIN_TIMEOUT_SECS value, using default 30");
+                None
+            }
+        })
+        .unwrap_or(30);
+    let drain_timeout = Duration::from_secs(drain_timeout_secs);
     tracing::info!(
         active_connections = active_connections.load(Ordering::Relaxed),
-        drain_timeout_secs = 30,
+        drain_timeout_secs,
         "draining active connections"
     );
 

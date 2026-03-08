@@ -102,89 +102,96 @@ pub fn edge_to_json(edge: &EdgeData) -> Json {
 ///
 /// Resolved nodes become `{"type":"node","id":...,"labels":[...],"properties":{...}}`.
 /// Resolved edges become `{"type":"edge","id":...,"type":...,source,target,properties}`.
-/// If the store cannot resolve an id (race condition), a reference object is
-/// emitted instead of returning an error.
+///
+/// Returns an error if any referenced node or edge cannot be resolved from the store.
 pub fn row_to_json(
     row: &HashMap<String, Value>,
     columns: &[String],
     store: &dyn GraphStore,
     graph: &str,
-) -> Json {
+) -> Result<Json, String> {
     let mut obj = Map::new();
     for col in columns {
         let v = row.get(col).unwrap_or(&Value::Null);
-        obj.insert(col.clone(), resolve_value(v, store, graph));
+        obj.insert(col.clone(), resolve_value(v, store, graph)?);
     }
-    Json::Object(obj)
+    Ok(Json::Object(obj))
 }
 
 /// Recursively resolve a `Value` against the store.
-fn resolve_value(v: &Value, store: &dyn GraphStore, graph: &str) -> Json {
+fn resolve_value(v: &Value, store: &dyn GraphStore, graph: &str) -> Result<Json, String> {
     match v {
         Value::Node(id) => resolve_node(*id, store, graph),
         Value::Edge(id) => resolve_edge(*id, store, graph),
-        Value::List(items) => Json::Array(
-            items
+        Value::List(items) => {
+            let resolved: Result<Vec<Json>, String> = items
                 .iter()
                 .map(|i| resolve_value(i, store, graph))
-                .collect(),
-        ),
-        Value::Map(m) => {
-            let obj: Map<String, Json> = m
-                .iter()
-                .map(|(k, val)| (k.to_string(), resolve_value(val, store, graph)))
                 .collect();
-            Json::Object(obj)
+            Ok(Json::Array(resolved?))
+        }
+        Value::Map(m) => {
+            let mut obj = Map::new();
+            for (k, val) in m {
+                obj.insert(k.to_string(), resolve_value(val, store, graph)?);
+            }
+            Ok(Json::Object(obj))
         }
         Value::Path { nodes, edges } => {
-            let resolved_nodes: Vec<Json> = nodes
+            let resolved_nodes: Result<Vec<Json>, String> = nodes
                 .iter()
                 .map(|nid| resolve_node(*nid, store, graph))
                 .collect();
-            let resolved_edges: Vec<Json> = edges
+            let resolved_edges: Result<Vec<Json>, String> = edges
                 .iter()
                 .map(|eid| resolve_edge(*eid, store, graph))
                 .collect();
-            json!({
+            Ok(json!({
                 "type":  "path",
-                "nodes": resolved_nodes,
-                "edges": resolved_edges,
-            })
+                "nodes": resolved_nodes?,
+                "edges": resolved_edges?,
+            }))
         }
-        other => value_to_json(other),
+        other => Ok(value_to_json(other)),
     }
 }
 
-fn resolve_node(id: NodeId, store: &dyn GraphStore, graph: &str) -> Json {
+fn resolve_node(id: NodeId, store: &dyn GraphStore, graph: &str) -> Result<Json, String> {
     match store.get_node(graph, id) {
-        Ok(Some(node)) => json!({
+        Ok(Some(node)) => Ok(json!({
             "type":       "node",
             "id":         node.id.0.to_string(),
             "labels":     node.labels,
             "properties": props_to_json(&node.properties),
-        }),
+        })),
         Err(e) => {
-            tracing::warn!(node_id = id.0, error = %e, "failed to resolve node from store");
-            json!({ "$type": "node", "id": id.0 })
+            tracing::error!(node_id = id.0, error = %e, "failed to resolve node from store");
+            Err(format!("failed to resolve node {}: {e}", id.0))
         }
-        Ok(None) => json!({ "$type": "node", "id": id.0 }),
+        Ok(None) => {
+            tracing::error!(node_id = id.0, "node not found in store during serialization");
+            Err(format!("node {} not found in store", id.0))
+        }
     }
 }
 
-fn resolve_edge(id: EdgeId, store: &dyn GraphStore, graph: &str) -> Json {
+fn resolve_edge(id: EdgeId, store: &dyn GraphStore, graph: &str) -> Result<Json, String> {
     match store.get_edge(graph, id) {
-        Ok(Some(edge)) => json!({
+        Ok(Some(edge)) => Ok(json!({
             "type":       edge.rel_type,
             "id":         edge.id.0.to_string(),
             "source":     edge.src.0.to_string(),
             "target":     edge.dst.0.to_string(),
             "properties": props_to_json(&edge.properties),
-        }),
+        })),
         Err(e) => {
-            tracing::warn!(edge_id = id.0, error = %e, "failed to resolve edge from store");
-            json!({ "$type": "edge", "id": id.0 })
+            tracing::error!(edge_id = id.0, error = %e, "failed to resolve edge from store");
+            Err(format!("failed to resolve edge {}: {e}", id.0))
         }
-        Ok(None) => json!({ "$type": "edge", "id": id.0 }),
+        Ok(None) => {
+            tracing::error!(edge_id = id.0, "edge not found in store during serialization");
+            Err(format!("edge {} not found in store", id.0))
+        }
     }
 }
 
@@ -523,7 +530,7 @@ mod tests {
         row.insert("y".to_string(), Value::Str("hello".into()));
 
         let columns = vec!["x".to_string(), "y".to_string()];
-        let result = row_to_json(&row, &columns, &store, "g");
+        let result = row_to_json(&row, &columns, &store, "g").unwrap();
 
         assert_eq!(result["x"], json!(1));
         assert_eq!(result["y"], json!("hello"));
@@ -536,7 +543,7 @@ mod tests {
 
         let row = HashMap::new();
         let columns = vec!["missing".to_string()];
-        let result = row_to_json(&row, &columns, &store, "g");
+        let result = row_to_json(&row, &columns, &store, "g").unwrap();
 
         assert_eq!(result["missing"], Json::Null);
     }
@@ -557,7 +564,7 @@ mod tests {
         row.insert("n".to_string(), Value::Node(node_id));
 
         let columns = vec!["n".to_string()];
-        let result = row_to_json(&row, &columns, &store, "g");
+        let result = row_to_json(&row, &columns, &store, "g").unwrap();
 
         assert_eq!(result["n"]["type"], json!("node"));
         assert_eq!(result["n"]["labels"], json!(["Person"]));
@@ -578,13 +585,13 @@ mod tests {
         row.insert("r".to_string(), Value::Edge(edge_id));
 
         let columns = vec!["r".to_string()];
-        let result = row_to_json(&row, &columns, &store, "g");
+        let result = row_to_json(&row, &columns, &store, "g").unwrap();
 
         assert_eq!(result["r"]["type"], json!("KNOWS"));
     }
 
     #[test]
-    fn row_to_json_unresolvable_node_emits_reference() {
+    fn row_to_json_unresolvable_node_returns_error() {
         let store = InMemoryGraphStore::new();
         store.create_graph("g").unwrap();
 
@@ -594,8 +601,9 @@ mod tests {
         let columns = vec!["n".to_string()];
         let result = row_to_json(&row, &columns, &store, "g");
 
-        assert_eq!(result["n"]["$type"], json!("node"));
-        assert_eq!(result["n"]["id"], json!(9999));
+        assert!(result.is_err(), "unresolvable node must return an error");
+        let err = result.unwrap_err();
+        assert!(err.contains("9999"), "error should mention the node id: {err}");
     }
 
     #[test]
@@ -622,7 +630,7 @@ mod tests {
         );
 
         let columns = vec!["p".to_string()];
-        let result = row_to_json(&row, &columns, &store, "g");
+        let result = row_to_json(&row, &columns, &store, "g").unwrap();
 
         assert_eq!(result["p"]["type"], json!("path"));
         assert!(result["p"]["nodes"].is_array());
@@ -644,7 +652,7 @@ mod tests {
         );
 
         let columns = vec!["items".to_string()];
-        let result = row_to_json(&row, &columns, &store, "g");
+        let result = row_to_json(&row, &columns, &store, "g").unwrap();
 
         let arr = result["items"].as_array().unwrap();
         assert_eq!(arr.len(), 2);

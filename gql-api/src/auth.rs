@@ -78,7 +78,15 @@ fn env_duration_secs(name: &str, default: u64) -> Duration {
     Duration::from_secs(
         std::env::var(name)
             .ok()
-            .and_then(|v| v.parse().ok())
+            .and_then(|v| match v.parse::<u64>() {
+                Ok(val) => Some(val),
+                Err(_) => {
+                    tracing::warn!(
+                        "invalid non-numeric value for {name}: {v:?}, using default {default}"
+                    );
+                    None
+                }
+            })
             .unwrap_or(default),
     )
 }
@@ -93,21 +101,33 @@ impl JwksCache {
     }
 }
 
-fn fetch_jwks(tenant_id: &str) -> Result<Vec<JwksKey>, String> {
+/// Fetch JWKS keys from the Entra ID discovery endpoint.
+///
+/// The underlying HTTP call uses `ureq` (synchronous), so we offload it to
+/// `tokio::task::spawn_blocking` to avoid stalling an async worker thread.
+async fn fetch_jwks(tenant_id: &str) -> Result<Vec<JwksKey>, String> {
     let url = format!("https://login.microsoftonline.com/{tenant_id}/discovery/v2.0/keys");
     tracing::info!("fetching Entra ID JWKS from {url}");
-    let mut resp = ureq::get(&url)
-        .call()
-        .map_err(|e| format!("failed to fetch JWKS from {url}: {e}"))?;
-    let jwks: JwksResponse = resp
-        .body_mut()
-        .read_json()
-        .map_err(|e| format!("failed to parse JWKS response from {url}: {e}"))?;
-    if jwks.keys.is_empty() {
+
+    let url_clone = url.clone();
+    let keys = tokio::task::spawn_blocking(move || {
+        let mut resp = ureq::get(&url_clone)
+            .call()
+            .map_err(|e| format!("failed to fetch JWKS from {url_clone}: {e}"))?;
+        let jwks: JwksResponse = resp
+            .body_mut()
+            .read_json()
+            .map_err(|e| format!("failed to parse JWKS response from {url_clone}: {e}"))?;
+        Ok::<Vec<JwksKey>, String>(jwks.keys)
+    })
+    .await
+    .map_err(|e| format!("JWKS fetch task panicked: {e}"))??;
+
+    if keys.is_empty() {
         return Err(format!("JWKS response from {url} contains no keys"));
     }
-    tracing::info!("loaded {} JWKS keys", jwks.keys.len());
-    Ok(jwks.keys)
+    tracing::info!("loaded {} JWKS keys", keys.len());
+    Ok(keys)
 }
 
 static JWKS_CACHE: OnceLock<JwksCache> = OnceLock::new();
@@ -119,7 +139,7 @@ fn jwks_cache() -> &'static JwksCache {
 /// Look up a key by `kid`, refreshing the cache when needed.
 ///
 /// Returns `Err(String)` if the key cannot be found after a refresh attempt.
-fn find_jwks_key(tenant_id: &str, kid: &str) -> Result<JwksKey, String> {
+async fn find_jwks_key(tenant_id: &str, kid: &str) -> Result<JwksKey, String> {
     let cache = jwks_cache();
     let now = Instant::now();
 
@@ -138,36 +158,45 @@ fn find_jwks_key(tenant_id: &str, kid: &str) -> Result<JwksKey, String> {
         }
     }
 
-    // Slow path: write lock — refresh keys.
-    let mut guard = cache
-        .inner
-        .write()
-        .map_err(|_| "JWKS cache lock poisoned".to_string())?;
+    // Slow path: write lock — check again, then decide whether to fetch.
+    {
+        let guard = cache
+            .inner
+            .write()
+            .map_err(|_| "JWKS cache lock poisoned".to_string())?;
 
-    // Double-check: another thread may have refreshed while we waited.
-    if let Some(ref inner) = *guard {
-        if now.duration_since(inner.fetched_at) < cache.refresh_ttl {
-            if let Some(key) = inner.keys.iter().find(|k| k.kid == kid && k.kty == "RSA") {
-                return Ok(key.clone());
-            }
-            // Key not found — check retry cooldown before re-fetching.
-            if let Some(last) = inner.last_retry_at {
-                if now.duration_since(last) < cache.retry_cooldown {
-                    return Err(format!(
-                        "no matching JWKS key for kid={kid} (retry cooldown)"
-                    ));
+        // Double-check: another thread may have refreshed while we waited.
+        if let Some(ref inner) = *guard {
+            if now.duration_since(inner.fetched_at) < cache.refresh_ttl {
+                if let Some(key) = inner.keys.iter().find(|k| k.kid == kid && k.kty == "RSA") {
+                    return Ok(key.clone());
+                }
+                // Key not found — check retry cooldown before re-fetching.
+                if let Some(last) = inner.last_retry_at {
+                    if now.duration_since(last) < cache.retry_cooldown {
+                        return Err(format!(
+                            "no matching JWKS key for kid={kid} (retry cooldown)"
+                        ));
+                    }
                 }
             }
         }
+        // Drop the write lock before the async fetch so we don't hold a
+        // std::sync::RwLockWriteGuard (which is !Send) across an .await point.
     }
 
-    // Fetch fresh keys.
-    match fetch_jwks(tenant_id) {
+    // Fetch fresh keys outside any lock.
+    match fetch_jwks(tenant_id).await {
         Ok(keys) => {
             let result = keys
                 .iter()
                 .find(|k| k.kid == kid && k.kty == "RSA")
                 .cloned();
+            // Re-acquire write lock to store the fetched keys.
+            let mut guard = cache
+                .inner
+                .write()
+                .map_err(|_| "JWKS cache lock poisoned".to_string())?;
             *guard = Some(JwksCacheInner {
                 keys,
                 fetched_at: now,
@@ -178,6 +207,10 @@ fn find_jwks_key(tenant_id: &str, kid: &str) -> Result<JwksKey, String> {
         Err(e) => {
             crate::metrics::jwks_refresh_failure();
             // If we have stale keys, update the retry timestamp and try them.
+            let mut guard = cache
+                .inner
+                .write()
+                .map_err(|_| "JWKS cache lock poisoned".to_string())?;
             if let Some(ref mut inner) = *guard {
                 inner.last_retry_at = Some(now);
                 if let Some(key) = inner.keys.iter().find(|k| k.kid == kid && k.kty == "RSA") {
@@ -209,7 +242,7 @@ pub struct EntraClaims {
     pub iat: usize,
 }
 
-fn validate_entra_token(
+async fn validate_entra_token(
     token: &str,
     config: &EntraConfig,
 ) -> Result<TokenData<EntraClaims>, (StatusCode, String)> {
@@ -223,7 +256,7 @@ fn validate_entra_token(
         )
     })?;
 
-    let jwk = find_jwks_key(&config.tenant_id, kid).map_err(|e| {
+    let jwk = find_jwks_key(&config.tenant_id, kid).await.map_err(|e| {
         if e.contains("JWKS fetch failed") || e.contains("lock poisoned") {
             (StatusCode::SERVICE_UNAVAILABLE, e)
         } else {
@@ -294,7 +327,7 @@ pub async fn require_entra_auth(request: Request, next: Next) -> Response {
         }
     };
 
-    match validate_entra_token(token, config) {
+    match validate_entra_token(token, config).await {
         Ok(_claims) => next.run(request).await,
         Err((status, e)) => {
             tracing::warn!("auth rejected: {e}");
@@ -335,16 +368,6 @@ mod tests {
     }
 
     #[test]
-    fn validate_entra_token_rejects_garbage() {
-        let config = EntraConfig {
-            tenant_id: "fake-tenant".to_string(),
-            client_id: "fake-client".to_string(),
-        };
-        let result = validate_entra_token("not.a.jwt", &config);
-        assert!(result.is_err());
-    }
-
-    #[test]
     fn env_duration_secs_uses_default() {
         let d = env_duration_secs("__NONEXISTENT_ENV_VAR__", 42);
         assert_eq!(d, Duration::from_secs(42));
@@ -357,16 +380,21 @@ mod tests {
         assert!(guard.is_none(), "fresh cache should be empty");
     }
 
-    #[test]
-    fn test_validate_token_rejects_garbage() {
+    #[tokio::test]
+    async fn test_validate_token_rejects_garbage() {
         let config = EntraConfig {
             tenant_id: "test-tenant".to_string(),
             client_id: "test-client".to_string(),
         };
-        let result = validate_entra_token("not.a.jwt", &config);
+        let result = validate_entra_token("not.a.jwt", &config).await;
         assert!(result.is_err(), "garbage token must be rejected");
     }
 
+    // WARNING: This test mutates process-wide environment variables without
+    // synchronization. It is NOT safe to run in parallel with other tests that
+    // read GQL_API_ENTRA_TENANT_ID or GQL_API_ENTRA_CLIENT_ID. If flaky
+    // failures appear, gate this with `#[serial_test::serial]` (add
+    // `serial_test` to dev-dependencies).
     #[test]
     fn test_entra_config_none_without_env_vars() {
         // Save current values so we can restore them.

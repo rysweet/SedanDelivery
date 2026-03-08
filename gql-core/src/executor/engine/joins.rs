@@ -29,7 +29,8 @@ impl<'a> QueryExecutor<'a> {
             optional_pattern,
         } = op
         else {
-            unreachable!()
+            debug_assert!(false, "expected LeftOuterApply operator");
+            return Err(GqlError::Execution(crate::error::ExecutionError::UnsupportedFeature { feature: "internal: expected LeftOuterApply operator".into() }));
         };
         let left_rows = self.exec_operator(cx, preserved)?;
         let mut out = Vec::with_capacity(left_rows.len());
@@ -87,7 +88,8 @@ impl<'a> QueryExecutor<'a> {
         op: &Operator,
     ) -> Result<Vec<Row>, GqlError> {
         let Operator::Apply { outer, inner } = op else {
-            unreachable!()
+            debug_assert!(false, "expected Apply operator");
+            return Err(GqlError::Execution(crate::error::ExecutionError::UnsupportedFeature { feature: "internal: expected Apply operator".into() }));
         };
         let outer_rows = self.exec_operator(cx, outer)?;
         let mut out = Vec::with_capacity(outer_rows.len());

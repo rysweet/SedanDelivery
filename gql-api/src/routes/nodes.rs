@@ -125,12 +125,6 @@ async fn update_node(
 
     let store = &state.store;
 
-    // Ensure the node exists before updating.
-    store
-        .get_node(&name, id)
-        .map_err(ApiError::from)?
-        .ok_or_else(|| ApiError::not_found(format!("node {id_str} not found")))?;
-
     let props = json_map_to_props(body.properties)?;
     store
         .set_node_properties(&name, id, props)

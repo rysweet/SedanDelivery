@@ -125,8 +125,6 @@ fn parse_timezone(tz_str: &str) -> Result<jiff::tz::TimeZone, String> {
     Err(format!("unknown timezone: {tz_str}"))
 }
 
-use super::builtins;
-use super::get_query_now;
 
 #[cfg(test)]
 mod tests {

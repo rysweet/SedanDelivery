@@ -185,6 +185,8 @@ pub(super) fn builtin_toboolean(vals: Vec<Value>) -> Result<Value, GqlError> {
         Value::Str(s) => match s.to_ascii_lowercase().as_str() {
             "true" => Ok(Value::Bool(true)),
             "false" => Ok(Value::Bool(false)),
+            // Per Cypher spec: toBoolean() on an unrecognized string returns null,
+            // not an error. This is intentional Cypher-compliant behavior.
             _ => Ok(Value::Null),
         },
         other => type_error("toBoolean", other),

@@ -23,7 +23,24 @@ pub enum DecodeError {
 
 /// Maximum nesting depth for recursive structures (lists, maps, structures).
 /// Prevents stack overflow from maliciously crafted deeply-nested messages.
-const MAX_DECODE_DEPTH: usize = 128;
+/// Configurable via `BOLT_MAX_DECODE_DEPTH` env var (default 128).
+fn max_decode_depth() -> usize {
+    static DEPTH: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *DEPTH.get_or_init(|| {
+        std::env::var("BOLT_MAX_DECODE_DEPTH")
+            .ok()
+            .and_then(|v| match v.parse::<usize>() {
+                Ok(val) if val > 0 => Some(val),
+                _ => {
+                    tracing::warn!(
+                        "invalid BOLT_MAX_DECODE_DEPTH value, using default 128"
+                    );
+                    None
+                }
+            })
+            .unwrap_or(128)
+    })
+}
 
 /// Decode one `BoltValue` from the front of `buf`.
 ///
@@ -33,8 +50,9 @@ pub fn decode(buf: &[u8]) -> Result<(BoltValue, usize), DecodeError> {
 }
 
 fn decode_inner(buf: &[u8], depth: usize) -> Result<(BoltValue, usize), DecodeError> {
-    if depth > MAX_DECODE_DEPTH {
-        return Err(DecodeError::MaxDepthExceeded(MAX_DECODE_DEPTH));
+    let max_depth = max_decode_depth();
+    if depth > max_depth {
+        return Err(DecodeError::MaxDepthExceeded(max_depth));
     }
     if buf.is_empty() {
         return Err(DecodeError::UnexpectedEof {
@@ -244,10 +262,16 @@ fn need(buf: &[u8], offset: usize, needed: usize) -> Result<(), DecodeError> {
     }
 }
 
-/// Maximum pre-allocation for list/map capacity from untrusted wire data.
+/// Maximum pre-allocation for list/map capacity from untrusted wire data,
+/// measured in **elements** (not bytes).
+///
 /// The actual element count is still honoured; this only caps the initial
-/// allocation to prevent a single malicious List32/Map32 header from
-/// triggering a multi-GB `Vec::with_capacity` (CVE-class OOM DoS).
+/// `Vec::with_capacity` call to prevent a single malicious List32/Map32 header
+/// from triggering a multi-GB allocation (CVE-class OOM DoS).
+///
+/// 4096 elements is a reasonable upper bound for typical Bolt messages (result
+/// sets, parameter maps) while being small enough that the worst-case
+/// allocation (4096 * size_of::<BoltValue>()) stays well under 1 MiB.
 const MAX_PREALLOC: usize = 4096;
 
 /// Decode `count` list items starting at `offset` in `buf`.

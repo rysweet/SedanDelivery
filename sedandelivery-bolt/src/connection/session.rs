@@ -70,6 +70,7 @@ where
         write_semaphore,
         write_permit: None,
         saved_graph: None,
+        peer_ip: None,
     };
 
     // Message loop

@@ -1010,3 +1010,203 @@ async fn create_edge_empty_rel_type_returns_400() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
 }
+
+// ===========================================================================
+// Quality Audit Fixes — Outside-In Regression Tests
+// ===========================================================================
+
+#[tokio::test]
+async fn c2_duplicate_graph_create_returns_409() {
+    let graph = "c2_dup_409";
+    let router = app();
+    let r1 = router.clone().oneshot(json_post("/graphs", json!({"name": graph}))).await.unwrap();
+    assert_eq!(r1.status(), StatusCode::CREATED);
+    let r2 = router.oneshot(json_post("/graphs", json!({"name": graph}))).await.unwrap();
+    assert_eq!(r2.status(), StatusCode::CONFLICT);
+}
+
+#[tokio::test]
+async fn c2_delete_nonexistent_graph_returns_404() {
+    let router = app();
+    let resp = router.oneshot(
+        Request::builder().method(Method::DELETE).uri("/graphs/no_such_c2").body(Body::empty()).unwrap()
+    ).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn c6_update_nonexistent_node_returns_404() {
+    let graph = "c6_noexist_node";
+    let router = app_with_graph(graph);
+    let resp = router.oneshot(json_put(
+        &format!("/graphs/{graph}/nodes/999999"),
+        json!({"properties": {"x": 1}}),
+    )).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn c6_update_nonexistent_edge_returns_404() {
+    let graph = "c6_noexist_edge";
+    let router = app_with_graph(graph);
+    let resp = router.oneshot(json_put(
+        &format!("/graphs/{graph}/edges/999999"),
+        json!({"properties": {"w": 1.0}}),
+    )).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn m4_neighbor_limit_over_max_returns_400() {
+    let graph = "m4_neighbor_limit";
+    let router = app_with_graph(graph);
+    let nr = router.clone().oneshot(json_post(
+        &format!("/graphs/{graph}/nodes"), json!({"labels": ["A"]}),
+    )).await.unwrap();
+    let node = body_json(nr.into_body()).await;
+    let nid = node["id"].to_string().trim_matches('"').to_string();
+    let resp = router.oneshot(
+        Request::builder().uri(&format!("/graphs/{graph}/neighbors/{nid}?limit=999999"))
+            .body(Body::empty()).unwrap()
+    ).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn h4_order_by_mixed_types_is_deterministic() {
+    let graph = "h4_mixed_order";
+    let router = app_with_graph(graph);
+    router.clone().oneshot(json_post(
+        &format!("/graphs/{graph}/mutate"),
+        json!({"cypher": "CREATE (:T {v: 42}), (:T {v: 'hello'}), (:T {v: true})"}),
+    )).await.unwrap();
+    let resp = router.oneshot(json_post(
+        &format!("/graphs/{graph}/query"),
+        json!({"cypher": "MATCH (n:T) RETURN n.v ORDER BY n.v"}),
+    )).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp.into_body()).await;
+    assert_eq!(body["rows"].as_array().unwrap().len(), 3);
+}
+
+#[tokio::test]
+async fn h2_export_small_graph_passes_guard() {
+    let graph = "h2_export_ok";
+    let router = app_with_graph(graph);
+    router.clone().oneshot(json_post(
+        &format!("/graphs/{graph}/nodes"), json!({"labels": ["X"], "properties": {"k": "v"}}),
+    )).await.unwrap();
+    let resp = router.oneshot(
+        Request::builder().uri(&format!("/graphs/{graph}/export")).body(Body::empty()).unwrap()
+    ).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp.into_body()).await;
+    assert!(!body["nodes"].as_array().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn h3_schema_small_graph_passes_guard() {
+    let graph = "h3_schema_ok";
+    let router = app_with_graph(graph);
+    router.clone().oneshot(json_post(
+        &format!("/graphs/{graph}/nodes"), json!({"labels": ["Person"], "properties": {"name": "Bob"}}),
+    )).await.unwrap();
+    let resp = router.oneshot(
+        Request::builder().uri(&format!("/graphs/{graph}/schema")).body(Body::empty()).unwrap()
+    ).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn explain_endpoint_returns_plan() {
+    let graph = "explain_oit";
+    let router = app_with_graph(graph);
+    let resp = router.oneshot(json_post(
+        &format!("/graphs/{graph}/explain"), json!({"cypher": "MATCH (n) RETURN n"}),
+    )).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn mutate_returns_stats_with_nodes_created() {
+    let graph = "mutate_oit";
+    let router = app_with_graph(graph);
+    let resp = router.oneshot(json_post(
+        &format!("/graphs/{graph}/mutate"), json!({"cypher": "CREATE (:Foo {bar: 'baz'})"}),
+    )).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp.into_body()).await;
+    assert_eq!(body["nodesCreated"], 1);
+}
+
+#[tokio::test]
+async fn invalid_cypher_returns_400_not_500() {
+    let graph = "invalid_cypher_oit";
+    let router = app_with_graph(graph);
+    let resp = router.oneshot(json_post(
+        &format!("/graphs/{graph}/query"), json!({"cypher": "NOT CYPHER AT ALL"}),
+    )).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn full_crud_roundtrip_validates_decomposition() {
+    let graph = "crud_oit";
+    let router = app_with_graph(graph);
+
+    // Create nodes.
+    let r1 = router.clone().oneshot(json_post(
+        &format!("/graphs/{graph}/nodes"), json!({"labels": ["A"], "properties": {"val": 1}}),
+    )).await.unwrap();
+    assert_eq!(r1.status(), StatusCode::CREATED);
+    let n1 = body_json(r1.into_body()).await;
+    let n1_id = n1["id"].to_string().trim_matches('"').to_string();
+
+    let r2 = router.clone().oneshot(json_post(
+        &format!("/graphs/{graph}/nodes"), json!({"labels": ["B"], "properties": {"val": 2}}),
+    )).await.unwrap();
+    let n2 = body_json(r2.into_body()).await;
+    let n2_id = n2["id"].to_string().trim_matches('"').to_string();
+
+    // Create edge.
+    let re = router.clone().oneshot(json_post(
+        &format!("/graphs/{graph}/edges"),
+        json!({"source": n1_id, "target": n2_id, "type": "KNOWS", "properties": {"since": 2024}}),
+    )).await.unwrap();
+    assert_eq!(re.status(), StatusCode::CREATED);
+
+    // Query relationship.
+    let rq = router.clone().oneshot(json_post(
+        &format!("/graphs/{graph}/query"),
+        json!({"cypher": "MATCH (a:A)-[r:KNOWS]->(b:B) RETURN a.val, r.since, b.val"}),
+    )).await.unwrap();
+    assert_eq!(rq.status(), StatusCode::OK);
+    let qbody = body_json(rq.into_body()).await;
+    assert_eq!(qbody["rows"].as_array().unwrap().len(), 1);
+
+    // Update node.
+    let ru = router.clone().oneshot(json_put(
+        &format!("/graphs/{graph}/nodes/{n1_id}"), json!({"properties": {"val": 99}}),
+    )).await.unwrap();
+    assert_eq!(ru.status(), StatusCode::OK);
+
+    // Verify updated value via query.
+    let rv = router.clone().oneshot(json_post(
+        &format!("/graphs/{graph}/query"), json!({"cypher": "MATCH (a:A) RETURN a.val"}),
+    )).await.unwrap();
+    assert_eq!(rv.status(), StatusCode::OK);
+    let vbody = body_json(rv.into_body()).await;
+    let rows = vbody["rows"].as_array().expect("rows array");
+    assert_eq!(rows.len(), 1, "expected 1 row after update");
+    // The value 99 should appear somewhere in the first row.
+    let row_str = rows[0].to_string();
+    assert!(row_str.contains("99"), "expected 99 in row, got: {row_str}");
+
+    // Delete node (should require detach since edge exists).
+    let rd = router.clone().oneshot(
+        Request::builder().method(Method::DELETE)
+            .uri(&format!("/graphs/{graph}/nodes/{n1_id}?detach=true"))
+            .body(Body::empty()).unwrap()
+    ).await.unwrap();
+    assert_eq!(rd.status(), StatusCode::NO_CONTENT);
+}

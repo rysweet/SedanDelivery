@@ -13,6 +13,13 @@ pub fn router() -> Router<AppState> {
     Router::new().route("/health", get(health_handler))
 }
 
+/// Health check handler.
+///
+/// Uses `"__health_probe"` as a sentinel graph name to verify that the backing
+/// store is reachable and responsive.  The name is deliberately invalid for
+/// user-created graphs (leading underscores are reserved) so it will never
+/// collide with real data.  We only care whether `graph_exists` succeeds or
+/// returns an error — the boolean result itself is ignored.
 async fn health_handler(State(state): State<AppState>) -> impl IntoResponse {
     let entra_enabled = crate::auth::entra_config().is_some();
     match state.store.graph_exists("__health_probe") {

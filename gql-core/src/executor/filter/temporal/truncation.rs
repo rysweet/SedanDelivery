@@ -3,7 +3,7 @@
 use crate::error::{ExecutionError, GqlError};
 use crate::types::Value;
 
-use super::builtins::type_error;
+use super::super::builtins::type_error;
 use super::{map_get_str, parse_timezone, temporal_parse_error};
 
 /// Extract a date (year, month, day) from any temporal value.

@@ -35,7 +35,22 @@ impl SedanValue {
             SedanValue::Int(i) => i.to_string(),
             SedanValue::Float(f) => f.to_string(),
             SedanValue::Str(s) => {
-                let escaped = s.replace('\\', "\\\\").replace('\'', "\\'");
+                let mut escaped = String::with_capacity(s.len() + 2);
+                for ch in s.chars() {
+                    match ch {
+                        '\\' => escaped.push_str("\\\\"),
+                        '\'' => escaped.push_str("\\'"),
+                        '\n' => escaped.push_str("\\n"),
+                        '\r' => escaped.push_str("\\r"),
+                        '\t' => escaped.push_str("\\t"),
+                        '\0' => escaped.push_str("\\0"),
+                        c if c.is_control() => {
+                            // Remaining control characters (0x01-0x1F excl. already matched)
+                            escaped.push_str(&format!("\\u{:04X}", c as u32));
+                        }
+                        c => escaped.push(c),
+                    }
+                }
                 format!("'{}'", escaped)
             }
             SedanValue::List(items) => {
@@ -93,8 +108,12 @@ pub fn substitute_params(cypher: &str, params: &[(&str, SedanValue)]) -> String 
                 i += 1;
             }
         } else {
-            result.push(cypher[i..].chars().next().unwrap());
-            i += cypher[i..].chars().next().unwrap().len_utf8();
+            let ch = cypher[i..]
+                .chars()
+                .next()
+                .expect("byte index is at valid UTF-8 boundary");
+            result.push(ch);
+            i += ch.len_utf8();
         }
     }
     result
@@ -256,6 +275,48 @@ mod tests {
     #[test]
     fn test_sedan_value_str_escape_backslash() {
         assert_eq!(SedanValue::Str("a\\b".into()).to_cypher(), "'a\\\\b'");
+    }
+
+    #[test]
+    fn test_sedan_value_str_escape_newline() {
+        assert_eq!(
+            SedanValue::Str("line1\nline2".into()).to_cypher(),
+            "'line1\\nline2'"
+        );
+    }
+
+    #[test]
+    fn test_sedan_value_str_escape_carriage_return() {
+        assert_eq!(SedanValue::Str("a\rb".into()).to_cypher(), "'a\\rb'");
+    }
+
+    #[test]
+    fn test_sedan_value_str_escape_tab() {
+        assert_eq!(
+            SedanValue::Str("col1\tcol2".into()).to_cypher(),
+            "'col1\\tcol2'"
+        );
+    }
+
+    #[test]
+    fn test_sedan_value_str_escape_null_byte() {
+        assert_eq!(SedanValue::Str("a\0b".into()).to_cypher(), "'a\\0b'");
+    }
+
+    #[test]
+    fn test_sedan_value_str_escape_control_char() {
+        // BEL (0x07) should be escaped as \u0007
+        let s = String::from("a\x07b");
+        assert_eq!(SedanValue::Str(s).to_cypher(), "'a\\u0007b'");
+    }
+
+    #[test]
+    fn test_sedan_value_str_escape_multiple_specials() {
+        let s = String::from("O'Brien\tnewline\nback\\slash");
+        assert_eq!(
+            SedanValue::Str(s).to_cypher(),
+            "'O\\'Brien\\tnewline\\nback\\\\slash'"
+        );
     }
 
     #[test]

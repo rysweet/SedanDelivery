@@ -133,12 +133,6 @@ async fn update_edge(
 
     let store = &state.store;
 
-    // Verify the edge exists.
-    store
-        .get_edge(&name, id)
-        .map_err(ApiError::from)?
-        .ok_or_else(|| ApiError::not_found(format!("edge {id_str} not found")))?;
-
     let props = json_map_to_props(body.properties)?;
     store
         .set_edge_properties(&name, id, props)

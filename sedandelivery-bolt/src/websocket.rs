@@ -12,6 +12,7 @@
 
 use std::io;
 use std::pin::Pin;
+use std::sync::OnceLock;
 use std::task::{Context, Poll};
 
 use futures_util::stream::Stream;
@@ -21,18 +22,41 @@ use tokio::net::TcpStream;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::WebSocketStream;
 
-/// Peek at the first byte of a TCP stream to determine if the client is
+/// Default maximum WebSocket write buffer size (16 MiB).
+const DEFAULT_WS_MAX_WRITE_BUF: usize = 16_777_216;
+
+fn ws_max_write_buf() -> usize {
+    static SIZE: OnceLock<usize> = OnceLock::new();
+    *SIZE.get_or_init(|| {
+        std::env::var("BOLT_WS_MAX_WRITE_BUF")
+            .ok()
+            .and_then(|v| match v.parse::<usize>() {
+                Ok(val) if val > 0 => Some(val),
+                _ => {
+                    tracing::warn!(
+                        "invalid BOLT_WS_MAX_WRITE_BUF value, using default {DEFAULT_WS_MAX_WRITE_BUF}"
+                    );
+                    None
+                }
+            })
+            .unwrap_or(DEFAULT_WS_MAX_WRITE_BUF)
+    })
+}
+
+/// Peek at the first four bytes of a TCP stream to determine if the client is
 /// sending a raw Bolt handshake (first byte 0x60) or an HTTP WebSocket
-/// upgrade request (first byte 'G' for GET).
+/// upgrade request (starts with "GET ").
 pub async fn is_websocket_upgrade(stream: &TcpStream) -> io::Result<bool> {
-    let mut buf = [0u8; 1];
+    let mut buf = [0u8; 4];
     // peek() reads without consuming
     let n = stream.peek(&mut buf).await?;
-    if n == 0 {
+    if n < 4 {
+        // Not enough data for "GET "; check single byte for backwards compat
+        // but only match the full prefix when available.
         return Ok(false);
     }
-    // Bolt magic preamble starts with 0x60; HTTP starts with 'G' (GET)
-    Ok(buf[0] == b'G')
+    // Bolt magic preamble starts with 0x60; HTTP starts with "GET "
+    Ok(&buf[..4] == b"GET ")
 }
 
 /// Perform the WebSocket upgrade handshake and return the WebSocket stream.
@@ -142,6 +166,17 @@ impl AsyncWrite for WsStreamAdapter {
         _cx: &mut Context<'_>,
         buf: &[u8],
     ) -> Poll<io::Result<usize>> {
+        let max = ws_max_write_buf();
+        if self.write_buf.len().saturating_add(buf.len()) > max {
+            return Poll::Ready(Err(io::Error::new(
+                io::ErrorKind::OutOfMemory,
+                format!(
+                    "WebSocket write buffer size {} would exceed maximum {}",
+                    self.write_buf.len() + buf.len(),
+                    max
+                ),
+            )));
+        }
         // Buffer the bytes; they'll be sent as a WebSocket frame on flush.
         self.write_buf.extend_from_slice(buf);
         Poll::Ready(Ok(buf.len()))
@@ -218,13 +253,13 @@ mod tests {
     #[tokio::test]
     async fn is_websocket_upgrade_detects_http_get() {
         let (mut client, server) = tcp_pair().await;
-        tokio::io::AsyncWriteExt::write_all(&mut client, b"G")
+        tokio::io::AsyncWriteExt::write_all(&mut client, b"GET /")
             .await
             .unwrap();
         let result = is_websocket_upgrade(&server).await.unwrap();
         assert!(
             result,
-            "first byte 'G' should be detected as websocket upgrade"
+            "'GET ' prefix should be detected as websocket upgrade"
         );
     }
 

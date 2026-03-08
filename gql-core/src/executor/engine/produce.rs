@@ -22,7 +22,8 @@ impl<'a> QueryExecutor<'a> {
             child,
         } = op
         else {
-            unreachable!()
+            debug_assert!(false, "expected AssemblePath operator");
+            return Err(GqlError::Execution(ExecutionError::UnsupportedFeature { feature: "internal: expected AssemblePath operator".into() }));
         };
         let input = self.exec_operator(cx, child)?;
         let mut out = Vec::with_capacity(input.len());
@@ -111,7 +112,8 @@ impl<'a> QueryExecutor<'a> {
             child,
         } = op
         else {
-            unreachable!()
+            debug_assert!(false, "expected Call operator");
+            return Err(GqlError::Execution(ExecutionError::UnsupportedFeature { feature: "internal: expected Call operator".into() }));
         };
         let proc_def = self.registry.get(procedure).ok_or_else(|| {
             GqlError::Execution(ExecutionError::unsupported(format!(
@@ -176,7 +178,8 @@ impl<'a> QueryExecutor<'a> {
         op: &Operator,
     ) -> Result<Vec<Row>, GqlError> {
         let Operator::ProduceResults { columns, child } = op else {
-            unreachable!()
+            debug_assert!(false, "expected ProduceResults operator");
+            return Err(GqlError::Execution(ExecutionError::UnsupportedFeature { feature: "internal: expected ProduceResults operator".into() }));
         };
         let input = self.exec_operator(cx, child)?;
 
@@ -248,7 +251,8 @@ impl<'a> QueryExecutor<'a> {
             child,
         } = op
         else {
-            unreachable!()
+            debug_assert!(false, "expected Unwind operator");
+            return Err(GqlError::Execution(ExecutionError::UnsupportedFeature { feature: "internal: expected Unwind operator".into() }));
         };
         let input = self.exec_operator(cx, child)?;
         let mut out = Vec::with_capacity(input.len());
@@ -287,7 +291,8 @@ impl<'a> QueryExecutor<'a> {
         op: &Operator,
     ) -> Result<Vec<Row>, GqlError> {
         let Operator::Union { left, right, all } = op else {
-            unreachable!()
+            debug_assert!(false, "expected Union operator");
+            return Err(GqlError::Execution(ExecutionError::UnsupportedFeature { feature: "internal: expected Union operator".into() }));
         };
         let left_rows = self.exec_operator(cx, left)?;
         let right_rows = self.exec_operator(cx, right)?;

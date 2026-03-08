@@ -308,17 +308,11 @@ fn handle_create_constraint(
     _graph: &str,
     _query: &str,
 ) -> Result<AdminResult, GqlError> {
-    tracing::error!("Constraints are accepted for compatibility but not enforced");
-    // We don't actually enforce constraints, but we accept the command
-    // and report the stat for testkit compliance.
-    Ok(AdminResult {
-        query_result: empty_result(),
-        indexes_added: 0,
-        indexes_removed: 0,
-        constraints_added: 1,
-        constraints_removed: 0,
-        system_updates: 0,
-    })
+    Err(GqlError::Execution(
+        gql_core::error::ExecutionError::UnsupportedFeature {
+            feature: "CREATE CONSTRAINT".to_string(),
+        },
+    ))
 }
 
 fn handle_drop_constraint(
@@ -326,15 +320,11 @@ fn handle_drop_constraint(
     _graph: &str,
     _query: &str,
 ) -> Result<AdminResult, GqlError> {
-    tracing::error!("Constraints are accepted for compatibility but not enforced");
-    Ok(AdminResult {
-        query_result: empty_result(),
-        indexes_added: 0,
-        indexes_removed: 0,
-        constraints_added: 0,
-        constraints_removed: 1,
-        system_updates: 0,
-    })
+    Err(GqlError::Execution(
+        gql_core::error::ExecutionError::UnsupportedFeature {
+            feature: "DROP CONSTRAINT".to_string(),
+        },
+    ))
 }
 
 // ── Parsing helpers ─────────────────────────────────────────────────────────

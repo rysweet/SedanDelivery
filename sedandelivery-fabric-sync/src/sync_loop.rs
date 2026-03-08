@@ -14,7 +14,9 @@ use crate::apply::apply_event;
 use crate::parse_reply::{extract_entries, StreamEntry};
 use crate::{connect_with_retry, GROUP_NAME, SHUTDOWN};
 
-const DLQ_STREAM: &str = "__sd2:changelog:dlq";
+fn dlq_stream() -> String {
+    std::env::var("SYNC_DLQ_STREAM").unwrap_or_else(|_| "__sd2:changelog:dlq".to_string())
+}
 const PERMANENT_FAILURES_TOTAL: &str = "fabric_sync_permanent_failures_total";
 
 pub(crate) fn run_sync_loop(
@@ -57,7 +59,11 @@ pub(crate) fn run_sync_loop(
             Err(e) => {
                 error!("XREADGROUP error: {e} — reconnecting");
                 match connect_with_retry(client) {
-                    Some(c) => *conn = c,
+                    Some(Ok(c)) => *conn = c,
+                    Some(Err(e)) => {
+                        error!("Giving up reconnection: {e}");
+                        break;
+                    }
                     None => break, // SHUTDOWN signalled
                 }
             }
@@ -173,8 +179,9 @@ fn process_entries(
 /// On failure, logs an error but does not panic — the caller will still ACK
 /// the original event to prevent infinite retry loops.
 fn send_to_dlq(conn: &mut Connection, entry_id: &str, event_json: &str, error_msg: &str) {
+    let dlq = dlq_stream();
     let result: RedisResult<String> = redis::cmd("XADD")
-        .arg(DLQ_STREAM)
+        .arg(&dlq)
         .arg("*")
         .arg("original_id")
         .arg(entry_id)

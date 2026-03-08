@@ -40,17 +40,6 @@ async fn create_graph(
 ) -> Result<(StatusCode, Json<serde_json::Value>), ApiError> {
     validate_graph_name(&body.name).map_err(ApiError::from)?;
 
-    if state
-        .store
-        .graph_exists(&body.name)
-        .map_err(ApiError::from)?
-    {
-        return Err(ApiError::conflict(format!(
-            "graph '{}' already exists",
-            body.name
-        )));
-    }
-
     state
         .store
         .create_graph(&body.name)
@@ -72,10 +61,6 @@ async fn delete_graph(
     Path(name): Path<String>,
 ) -> Result<StatusCode, ApiError> {
     validate_graph_name(&name).map_err(ApiError::from)?;
-
-    if !state.store.graph_exists(&name).map_err(ApiError::from)? {
-        return Err(ApiError::not_found(format!("graph '{name}' not found")));
-    }
 
     state.store.delete_graph(&name).map_err(ApiError::from)?;
     if let Ok(graphs) = state.store.list_graphs() {

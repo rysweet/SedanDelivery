@@ -88,7 +88,11 @@ fn main() {
     };
 
     let mut conn = match connect_with_retry(&client) {
-        Some(c) => c,
+        Some(Ok(c)) => c,
+        Some(Err(e)) => {
+            error!("{e}");
+            std::process::exit(1);
+        }
         None => {
             info!("Shutdown during initial connection — exiting");
             return;
@@ -147,19 +151,23 @@ fn env_usize(key: &str, default: usize) -> usize {
 
 /// Connect to Redis, retrying with exponential back-off.
 /// Returns `None` if SHUTDOWN is signalled during the retry loop.
-fn connect_with_retry(client: &Client) -> Option<Connection> {
+/// Returns `Some(Err(...))` if max retries are exhausted.
+fn connect_with_retry(client: &Client) -> Option<Result<Connection, String>> {
+    let max_attempts: usize = env_usize("SYNC_MAX_CONNECT_RETRIES", 100);
     let mut delay = Duration::from_millis(500);
-    loop {
+    for attempt in 1..=max_attempts {
         if SHUTDOWN.load(Ordering::Relaxed) {
             return None;
         }
         match client.get_connection() {
             Ok(c) => {
                 info!("Connected to Valkey");
-                return Some(c);
+                return Some(Ok(c));
             }
             Err(e) => {
                 warn!(
+                    attempt,
+                    max_attempts,
                     "Redis connection failed: {e} — retrying in {}ms",
                     delay.as_millis()
                 );
@@ -168,6 +176,9 @@ fn connect_with_retry(client: &Client) -> Option<Connection> {
             }
         }
     }
+    Some(Err(format!(
+        "failed to connect to Redis after {max_attempts} attempts"
+    )))
 }
 
 #[cfg(test)]
@@ -180,19 +191,27 @@ mod tests {
         assert_eq!(val, 42);
     }
 
+    // NOTE: std::env::set_var / remove_var are not thread-safe. In Rust >=1.66
+    // they are marked unsafe on some targets. These tests mutate the process
+    // environment, which can race with other tests running in parallel. Run
+    // with `cargo test -- --test-threads=1` or use a serial test harness
+    // (e.g., `serial_test` crate) if flakiness is observed.
+
     #[test]
     fn env_usize_parses_valid_value() {
-        std::env::set_var("__FABRIC_SYNC_TEST_VALID", "99");
+        // SAFETY: env::set_var is not thread-safe; see note above.
+        unsafe { std::env::set_var("__FABRIC_SYNC_TEST_VALID", "99") };
         let val = env_usize("__FABRIC_SYNC_TEST_VALID", 0);
         assert_eq!(val, 99);
-        std::env::remove_var("__FABRIC_SYNC_TEST_VALID");
+        unsafe { std::env::remove_var("__FABRIC_SYNC_TEST_VALID") };
     }
 
     #[test]
     fn env_usize_invalid_returns_default() {
-        std::env::set_var("__FABRIC_SYNC_TEST_INVALID", "not_a_number");
+        // SAFETY: env::set_var is not thread-safe; see note above.
+        unsafe { std::env::set_var("__FABRIC_SYNC_TEST_INVALID", "not_a_number") };
         let val = env_usize("__FABRIC_SYNC_TEST_INVALID", 77);
         assert_eq!(val, 77);
-        std::env::remove_var("__FABRIC_SYNC_TEST_INVALID");
+        unsafe { std::env::remove_var("__FABRIC_SYNC_TEST_INVALID") };
     }
 }

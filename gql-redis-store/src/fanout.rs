@@ -5,8 +5,6 @@
 
 use std::collections::HashMap;
 
-use tracing;
-
 use gql_core::error::StorageError;
 use gql_core::storage::{
     AdjEntry, EdgeData, EdgeId, GraphStats, GraphStore, IndexDescriptor, NodeData, NodeId,
@@ -162,7 +160,15 @@ impl GraphStore for FanoutStore {
         props_with_id.insert("_sd2_id".to_string(), Value::Int(id_i64));
         for store in &self.stores[1..] {
             if let Err(e) = store.create_node(graph, labels.clone(), props_with_id.clone()) {
-                tracing::error!(node_id = %id.0, error = %e, "secondary store failed to create node");
+                tracing::error!(node_id = %id.0, error = %e, "secondary store failed to create node, attempting rollback on primary");
+                // Attempt to delete the node from the primary to maintain consistency.
+                if let Err(rollback_err) = self.stores[0].delete_node(graph, id, true) {
+                    tracing::error!(
+                        node_id = %id.0,
+                        error = %rollback_err,
+                        "rollback failed: could not delete node from primary after secondary write failure"
+                    );
+                }
                 return Err(e);
             }
         }
@@ -188,7 +194,15 @@ impl GraphStore for FanoutStore {
             if let Err(e) =
                 store.create_edge(graph, src, dst, rel_type.clone(), props_with_id.clone())
             {
-                tracing::error!(edge_id = %id.0, error = %e, "secondary store failed to create edge");
+                tracing::error!(edge_id = %id.0, error = %e, "secondary store failed to create edge, attempting rollback on primary");
+                // Attempt to delete the edge from the primary to maintain consistency.
+                if let Err(rollback_err) = self.stores[0].delete_edge(graph, id) {
+                    tracing::error!(
+                        edge_id = %id.0,
+                        error = %rollback_err,
+                        "rollback failed: could not delete edge from primary after secondary write failure"
+                    );
+                }
                 return Err(e);
             }
         }

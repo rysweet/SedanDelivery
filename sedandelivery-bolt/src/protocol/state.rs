@@ -3,7 +3,6 @@ use crate::message::types::ClientMessage;
 /// Bolt server connection state (Bolt 4.1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ServerState {
-    Negotiation,
     Authentication,
     Ready,
     Streaming,

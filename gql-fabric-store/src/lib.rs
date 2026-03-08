@@ -1,7 +1,7 @@
 // gql-fabric-store: Microsoft Fabric Graph Database-backed GraphStore.
 //
 // Architecture
-// ─────────────
+// -------------
 // Microsoft Fabric exposes a Graph Database REST API that speaks openCypher.
 // We implement the GraphStore trait by translating every method into one or
 // more openCypher queries POSTed to the Fabric endpoint.
@@ -12,14 +12,14 @@
 // the `_sd2_id` property.
 //
 // Configuration (environment variables)
-// ──────────────────────────────────────
+// --------------------------------------
 //   GQL_FABRIC_ENDPOINT   https://api.fabric.microsoft.com/v1/workspaces/{ws}/graphDatabases/{db}
 //   GQL_FABRIC_TENANT_ID  Azure AD tenant ID for token acquisition
 //   GQL_FABRIC_CLIENT_ID  Service-principal app ID
 //   GQL_FABRIC_CLIENT_SECRET  Service-principal client secret
 //
 // ID generation (standalone mode)
-// ─────────────────────────────────
+// ---------------------------------
 // When used as the primary store, node/edge IDs are assigned via a Fabric-
 // stored counter node (__SD2Seq).  When used as a FanoutStore secondary, the
 // primary (Redis) already assigned the ID; FanoutStore injects it as a
@@ -34,10 +34,7 @@ mod store;
 
 use std::sync::Mutex;
 
-use serde_json::json;
-
 use gql_core::error::StorageError;
-use gql_core::storage::{EdgeId, NodeId};
 
 use auth::TokenCache;
 
@@ -58,10 +55,33 @@ pub struct FabricGraphStore {
     pub(crate) endpoint: String,
     pub(crate) tenant_id: String,
     pub(crate) client_id: String,
-    pub(crate) client_secret: String,
+    pub(crate) client_secret: RedactedSecret,
     pub(crate) token: Mutex<Option<TokenCache>>,
+    /// Serialises token refresh: only one thread performs the HTTP call while
+    /// others wait and re-use the result.
+    pub(crate) refresh_lock: Mutex<()>,
     /// Cached HTTP agent with timeout — avoids per-call TLS churn.
     pub(crate) agent: ureq::Agent,
+}
+
+/// Newtype wrapper around `String` whose `Debug` impl redacts the value,
+/// preventing accidental secret leakage in logs or debug output.
+pub(crate) struct RedactedSecret(String);
+
+impl RedactedSecret {
+    pub(crate) fn new(s: String) -> Self {
+        Self(s)
+    }
+
+    pub(crate) fn expose_secret(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Debug for RedactedSecret {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("[REDACTED]")
+    }
 }
 
 impl FabricGraphStore {
@@ -76,8 +96,9 @@ impl FabricGraphStore {
             endpoint: endpoint.trim_end_matches('/').to_string(),
             tenant_id,
             client_id,
-            client_secret,
+            client_secret: RedactedSecret::new(client_secret),
             token: Mutex::new(None),
+            refresh_lock: Mutex::new(()),
             agent: ureq::Agent::config_builder()
                 .timeout_global(Some(std::time::Duration::from_secs(
                     std::env::var("GQL_FABRIC_TIMEOUT_SECS")
@@ -111,47 +132,5 @@ impl FabricGraphStore {
             get("GQL_FABRIC_CLIENT_ID")?,
             get("GQL_FABRIC_CLIENT_SECRET")?,
         ))
-    }
-
-    // ── ID generation ─────────────────────────────────────────────────────────
-
-    fn next_node_id(&self, graph: &str) -> Result<NodeId, StorageError> {
-        let rows = self.statement(
-            &format!(
-                "MERGE (c:{SEQ_LABEL} {{_graph: $graph}}) \
-                 ON CREATE SET c.node_seq = 0 \
-                 SET c.node_seq = coalesce(c.node_seq, 0) + 1 \
-                 RETURN c.node_seq AS id"
-            ),
-            json!({ "graph": graph }),
-        )?;
-        let raw = rows
-            .first()
-            .and_then(|r| r.first())
-            .and_then(|v| v.as_u64())
-            .ok_or_else(|| StorageError::Backend {
-                msg: "no node_seq returned".into(),
-            })?;
-        Ok(NodeId(raw))
-    }
-
-    fn next_edge_id(&self, graph: &str) -> Result<EdgeId, StorageError> {
-        let rows = self.statement(
-            &format!(
-                "MERGE (c:{SEQ_LABEL} {{_graph: $graph}}) \
-                 ON CREATE SET c.edge_seq = 0 \
-                 SET c.edge_seq = coalesce(c.edge_seq, 0) + 1 \
-                 RETURN c.edge_seq AS id"
-            ),
-            json!({ "graph": graph }),
-        )?;
-        let raw = rows
-            .first()
-            .and_then(|r| r.first())
-            .and_then(|v| v.as_u64())
-            .ok_or_else(|| StorageError::Backend {
-                msg: "no edge_seq returned".into(),
-            })?;
-        Ok(EdgeId(raw))
     }
 }

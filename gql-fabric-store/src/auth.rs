@@ -16,25 +16,41 @@ pub(crate) struct TokenCache {
 
 impl FabricGraphStore {
     pub(crate) fn bearer_token(&self) -> Result<String, StorageError> {
-        // Phase 1: Check the cache under the lock.  If the token is still
-        // valid, clone it and return immediately -- no HTTP call needed.
+        // Fast path: check the cache. If the token is still valid, return it.
         {
             let cache = self.token.lock().unwrap_or_else(|e| {
                 tracing::warn!("token cache mutex was poisoned, recovering");
                 e.into_inner()
             });
             if let Some(ref c) = *cache {
-                // Safe comparison: avoids Instant subtraction panic when
-                // expires_at is in the past.
                 if c.expires_at > Instant::now() + Duration::from_secs(60) {
                     return Ok(c.token.clone());
                 }
             }
-            // Lock is dropped here before the (potentially slow) HTTP call,
-            // so other threads are NOT blocked during a network partition.
         }
 
-        // Phase 2: Fetch a new token WITHOUT holding the Mutex.
+        // Single-flight: acquire the refresh lock so only one thread performs
+        // the HTTP call. Other threads block here and will find a fresh token
+        // in the cache when they proceed.
+        let _refresh_guard = self.refresh_lock.lock().unwrap_or_else(|e| {
+            tracing::warn!("refresh_lock mutex was poisoned, recovering");
+            e.into_inner()
+        });
+
+        // Re-check the cache: another thread may have refreshed while we waited.
+        {
+            let cache = self.token.lock().unwrap_or_else(|e| {
+                tracing::warn!("token cache mutex was poisoned, recovering");
+                e.into_inner()
+            });
+            if let Some(ref c) = *cache {
+                if c.expires_at > Instant::now() + Duration::from_secs(60) {
+                    return Ok(c.token.clone());
+                }
+            }
+        }
+
+        // Fetch a new token (only one thread reaches here at a time).
         let url = format!(
             "https://login.microsoftonline.com/{}/oauth2/v2.0/token",
             self.tenant_id
@@ -42,7 +58,7 @@ impl FabricGraphStore {
         let body = format!(
             "grant_type=client_credentials&client_id={}&client_secret={}&scope=https%3A%2F%2Fapi.fabric.microsoft.com%2F.default",
             urlenc(&self.client_id),
-            urlenc(&self.client_secret),
+            urlenc(self.client_secret.expose_secret()),
         );
         let resp: JValue = self
             .agent
@@ -69,9 +85,7 @@ impl FabricGraphStore {
             3600
         });
 
-        // Phase 3: Re-acquire the lock and update the cache.  Another thread
-        // may have raced us and already written a fresh token -- that is fine;
-        // we overwrite with our equally-fresh one.
+        // Update the cache so waiting threads (and future callers) use this token.
         {
             let mut cache = self.token.lock().unwrap_or_else(|e| {
                 tracing::warn!("token cache mutex was poisoned, recovering");

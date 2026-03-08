@@ -101,9 +101,15 @@ async fn neighbors_handler(
         }
     };
 
-    // Apply limit, clamped to the configured max page limit.
-    let limit = params.limit.min(max_page_limit());
-    let limited: Vec<_> = adj_entries.into_iter().take(limit).collect();
+    // Reject limit values that exceed the configured max page limit.
+    let max = max_page_limit();
+    if params.limit > max {
+        return Err(ApiError::bad_request(format!(
+            "limit {} exceeds maximum allowed value of {max}",
+            params.limit
+        )));
+    }
+    let limited: Vec<_> = adj_entries.into_iter().take(params.limit).collect();
 
     // Collect unique neighbor node IDs and unique edge IDs.
     let mut neighbor_ids: Vec<NodeId> = Vec::new();

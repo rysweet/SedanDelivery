@@ -53,6 +53,13 @@ pub struct EngineConfig {
     /// Maximum number of entries in the query plan cache.
     /// Env: `GQL_PLAN_CACHE_SIZE` (default `1024`)
     pub plan_cache_size: usize,
+    /// Maximum number of compiled regexes cached per thread.
+    /// Env: `GQL_REGEX_CACHE_CAPACITY` (default `512`)
+    pub regex_cache_capacity: usize,
+    /// How often the budget checks the wall-clock deadline (every N calls).
+    /// Env: `GQL_BUDGET_CHECK_INTERVAL` (default `1024`)
+    /// Must be a power of two.
+    pub budget_check_interval: u64,
 }
 
 impl Default for EngineConfig {
@@ -68,6 +75,8 @@ impl Default for EngineConfig {
             max_regex_pattern_len: 1_024,
             graph_name_max_len: 64,
             plan_cache_size: 1024,
+            regex_cache_capacity: 512,
+            budget_check_interval: 1024,
         }
     }
 }
@@ -98,6 +107,20 @@ impl EngineConfig {
                 1,
             ),
             plan_cache_size: parse_env_min("GQL_PLAN_CACHE_SIZE", defaults.plan_cache_size, 0),
+            regex_cache_capacity: parse_env_min(
+                "GQL_REGEX_CACHE_CAPACITY",
+                defaults.regex_cache_capacity,
+                1,
+            ),
+            budget_check_interval: {
+                let raw = parse_env_min(
+                    "GQL_BUDGET_CHECK_INTERVAL",
+                    defaults.budget_check_interval,
+                    1,
+                );
+                // Round up to the next power of two (required for bitmask check).
+                raw.next_power_of_two()
+            },
         }
     }
 }
@@ -193,6 +216,8 @@ mod tests {
         assert_eq!(cfg.max_regex_pattern_len, 1_024);
         assert_eq!(cfg.graph_name_max_len, 64);
         assert_eq!(cfg.plan_cache_size, 1024);
+        assert_eq!(cfg.regex_cache_capacity, 512);
+        assert_eq!(cfg.budget_check_interval, 1024);
     }
 
     #[test]

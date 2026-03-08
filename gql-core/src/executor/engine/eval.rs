@@ -142,6 +142,9 @@ impl<'a> QueryExecutor<'a> {
                         }
                         None => Ok(Value::Bool(false)),
                     },
+                    // Per Cypher semantics: a non-node, non-edge value (e.g. a
+                    // wildcard pattern result or a scalar) does not have labels, so
+                    // the label check evaluates to false rather than raising an error.
                     _ => Ok(Value::Bool(false)),
                 }
             }

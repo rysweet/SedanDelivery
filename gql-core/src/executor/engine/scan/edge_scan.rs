@@ -1,110 +1,17 @@
-//! Graph traversal operators: node scan, expand, variable-length expand,
-//! index scan, node-by-id seek, and shortest path.
+//! Edge traversal operators: Expand, VarLenExpand, ShortestPath.
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashSet, VecDeque};
 
 use crate::ast::Direction;
 use crate::error::{ExecutionError, GqlError};
-use crate::executor::filter::eval_expr;
-use crate::executor::filter::Row as FilterRow;
 use crate::planner::Operator;
-use crate::storage::{EdgeId, NodeId, RangeQuery};
+use crate::storage::{EdgeId, NodeId};
 use crate::types::Value;
 
-use super::helpers::{extract_node_id, get_adj_entries, inject_parameters, undefined_var};
-use super::{BfsArena, ExecContext, QueryExecutor, Row};
+use crate::executor::engine::helpers::{extract_node_id, get_adj_entries, undefined_var};
+use crate::executor::engine::{BfsArena, ExecContext, QueryExecutor, Row};
 
 impl<'a> QueryExecutor<'a> {
-    pub(crate) fn exec_node_scan(
-        &self,
-        cx: &mut ExecContext<'_>,
-        op: &Operator,
-    ) -> Result<Vec<Row>, GqlError> {
-        let Operator::NodeScan { label, alias } = op else {
-            unreachable!()
-        };
-        let node_ids = if let Some(lbl) = label {
-            self.store.find_nodes_by_label(cx.graph, lbl.as_str())?
-        } else {
-            self.store.all_node_ids(cx.graph)?
-        };
-
-        // When used as the inner side of Apply/LeftOuterApply,
-        // outer_rows carries context variables that inner operators
-        // (e.g., Filter) may reference. Merge them into each produced row.
-        // Exclude internal anonymous edge aliases (__anon_rel_*) — these are
-        // per-pattern tracking variables and must not leak into inner patterns.
-        let base_rows: &[Row] = if cx.outer_rows.is_empty() {
-            &[]
-        } else {
-            cx.outer_rows
-        };
-
-        let mut rows = Vec::with_capacity(node_ids.len());
-        for id in &node_ids {
-            if cx.budget.reached_row_cap() {
-                break;
-            }
-            cx.budget.check_or_err()?;
-            if base_rows.is_empty() {
-                let mut row = Row::new();
-                row.insert(alias.0.clone(), Value::Node(*id));
-                inject_parameters(&mut row, &self.parameters);
-                cx.budget.record_row();
-                cx.budget.record_leaf_row();
-                rows.push(row);
-            } else {
-                for outer_row in base_rows {
-                    if cx.budget.reached_row_cap() {
-                        break;
-                    }
-                    cx.budget.check_or_err()?;
-                    // If the alias is already pre-bound in outer_row to a specific node,
-                    // only produce a row when the scanned node matches that bound node.
-                    // This correctly handles correlated subqueries and repeated MATCH clauses.
-                    // Only apply for non-anonymous variables (anonymous vars like __anon*
-                    // should always scan all nodes independently).
-                    if !alias.0.starts_with("__anon") {
-                        if let Some(Value::Node(pre_bound_id)) = outer_row.get(alias.0.as_str()) {
-                            if *pre_bound_id != *id {
-                                continue; // Skip: doesn't match the pre-bound value
-                            }
-                        }
-                    }
-                    let mut row: Row = outer_row
-                        .iter()
-                        .filter(|(k, _)| !k.starts_with("__anon_rel_"))
-                        .map(|(k, v)| (k.clone(), v.clone()))
-                        .collect();
-                    row.insert(alias.0.clone(), Value::Node(*id));
-                    // Track outer-scope edge variable names so Expand's isomorphism
-                    // check doesn't block edges from previous MATCH clauses.
-                    let outer_edge_keys: Vec<Value> = outer_row
-                        .iter()
-                        .filter(|(k, v)| {
-                            !k.starts_with("__anon_rel_")
-                                && !k.starts_with("__outer_edge_vars__")
-                                && matches!(v, Value::Edge(_))
-                        })
-                        .map(|(k, _)| Value::Str(k.clone().into_boxed_str()))
-                        .collect();
-                    if !outer_edge_keys.is_empty() {
-                        let mut existing: Vec<Value> = match row.get("__outer_edge_vars__") {
-                            Some(Value::List(vs)) => vs.clone(),
-                            _ => vec![],
-                        };
-                        existing.extend(outer_edge_keys);
-                        row.insert("__outer_edge_vars__".to_string(), Value::List(existing));
-                    }
-                    cx.budget.record_row();
-                    cx.budget.record_leaf_row();
-                    rows.push(row);
-                }
-            }
-        }
-        Ok(rows)
-    }
-
     pub(crate) fn exec_expand(
         &self,
         cx: &mut ExecContext<'_>,
@@ -119,7 +26,8 @@ impl<'a> QueryExecutor<'a> {
             child,
         } = op
         else {
-            unreachable!()
+            debug_assert!(false, "expected Expand operator");
+            return Err(GqlError::Execution(ExecutionError::UnsupportedFeature { feature: "internal: expected Expand operator".into() }));
         };
         let input = self.exec_operator(cx, child)?;
         let type_strs: Vec<&str> = rel_types.iter().map(|r| r.as_str()).collect();
@@ -261,7 +169,8 @@ impl<'a> QueryExecutor<'a> {
             rel_props,
         } = op
         else {
-            unreachable!()
+            debug_assert!(false, "expected VarLenExpand operator");
+            return Err(GqlError::Execution(ExecutionError::UnsupportedFeature { feature: "internal: expected VarLenExpand operator".into() }));
         };
         let input = self.exec_operator(cx, child)?;
         let type_strs: Vec<&str> = rel_types.iter().map(|r| r.as_str()).collect();
@@ -394,99 +303,6 @@ impl<'a> QueryExecutor<'a> {
         Ok(out)
     }
 
-    pub(crate) fn exec_index_scan(
-        &self,
-        cx: &mut ExecContext<'_>,
-        op: &Operator,
-    ) -> Result<Vec<Row>, GqlError> {
-        let Operator::IndexScan {
-            label,
-            property,
-            alias,
-        } = op
-        else {
-            unreachable!()
-        };
-        // Use the property index to find matching nodes.
-        // For a bare IndexScan (no specific value predicate), we scan all nodes
-        // with the label that have the property defined (using Gte on lowest value).
-        // In practice, the planner pairs this with a Filter for the predicate.
-        let node_ids = self.store.find_nodes_by_label_and_property(
-            cx.graph,
-            label.as_str(),
-            property,
-            RangeQuery::Gte(&Value::Null),
-        )?;
-
-        // Fallback: if the range query returns empty (Null comparison issue),
-        // fall back to label scan with property existence check.
-        let effective_ids = if node_ids.is_empty() {
-            let all_label = self.store.find_nodes_by_label(cx.graph, label.as_str())?;
-            let mut with_prop = Vec::new();
-            for id in all_label {
-                if let Some(node) = self.store.get_node(cx.graph, id)? {
-                    if node.properties.contains_key(property.as_str()) {
-                        with_prop.push(id);
-                    }
-                }
-            }
-            with_prop
-        } else {
-            node_ids
-        };
-
-        let mut rows = Vec::with_capacity(effective_ids.len());
-        for id in effective_ids {
-            if cx.budget.reached_row_cap() {
-                break;
-            }
-            cx.budget.check_or_err()?;
-            let mut row = Row::new();
-            row.insert(alias.0.clone(), Value::Node(id));
-            cx.budget.record_row();
-            cx.budget.record_leaf_row();
-            rows.push(row);
-        }
-        Ok(rows)
-    }
-
-    pub(crate) fn exec_node_by_id_seek(
-        &self,
-        cx: &mut ExecContext<'_>,
-        op: &Operator,
-    ) -> Result<Vec<Row>, GqlError> {
-        let Operator::NodeByIdSeek { id_expr, alias } = op else {
-            unreachable!()
-        };
-        let ctx: FilterRow<'_> = HashMap::new();
-        let id_val = eval_expr(id_expr, &ctx)?;
-        let raw_id = match id_val {
-            Value::Int(n) if n >= 0 => n as u64,
-            Value::Int(n) => {
-                return Err(GqlError::Execution(ExecutionError::TypeMismatch {
-                    expected: "non-negative integer for node ID".to_string(),
-                    actual: n.to_string(),
-                }));
-            }
-            other => {
-                return Err(GqlError::Execution(ExecutionError::TypeMismatch {
-                    expected: "integer for node ID".to_string(),
-                    actual: other.type_name().to_string(),
-                }));
-            }
-        };
-
-        let node_id = NodeId(raw_id);
-        let mut rows = Vec::with_capacity(1);
-        if let Some(_node_data) = self.store.get_node(cx.graph, node_id)? {
-            let mut row = Row::new();
-            row.insert(alias.0.clone(), Value::Node(node_id));
-            cx.budget.record_row();
-            rows.push(row);
-        }
-        Ok(rows)
-    }
-
     pub(crate) fn exec_shortest_path(
         &self,
         cx: &mut ExecContext<'_>,
@@ -503,7 +319,8 @@ impl<'a> QueryExecutor<'a> {
             all_paths,
         } = op
         else {
-            unreachable!()
+            debug_assert!(false, "expected ShortestPath operator");
+            return Err(GqlError::Execution(ExecutionError::UnsupportedFeature { feature: "internal: expected ShortestPath operator".into() }));
         };
         // ShortestPath requires both src and dst to be bound in outer context.
         // For now, work from outer_rows or require them to be bound.
@@ -609,14 +426,14 @@ impl<'a> QueryExecutor<'a> {
     }
 }
 
-// ── Tests ─────────────────────────────────────────────────────────────────────
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
     use crate::ast::{Direction, Identifier, Label, RelType};
     use crate::executor::budget::ExecutionBudget;
     use crate::executor::engine::MutationStats;
+    use crate::planner::Operator;
     use crate::storage::{GraphStore, InMemoryGraphStore};
 
     fn make_store() -> InMemoryGraphStore {
@@ -625,42 +442,13 @@ mod tests {
         store
     }
 
-    #[test]
-    fn node_scan_all_nodes() {
-        let store = make_store();
-        store
-            .create_node("g", vec!["A".to_string()], HashMap::new())
-            .unwrap();
-        store
-            .create_node("g", vec!["B".to_string()], HashMap::new())
-            .unwrap();
-        let executor = QueryExecutor::new(&store);
-        let plan = Operator::NodeScan {
-            label: None,
-            alias: Identifier::new("n"),
-        };
-        let mut budget = ExecutionBudget::unlimited();
-        let result = executor.execute("g", &plan, &mut budget).unwrap();
-        assert_eq!(result.rows.len(), 2);
-    }
-
-    #[test]
-    fn node_scan_with_label_filter() {
-        let store = make_store();
-        store
-            .create_node("g", vec!["Person".to_string()], HashMap::new())
-            .unwrap();
-        store
-            .create_node("g", vec!["Movie".to_string()], HashMap::new())
-            .unwrap();
-        let executor = QueryExecutor::new(&store);
-        let plan = Operator::NodeScan {
-            label: Some(Label::new("Person")),
-            alias: Identifier::new("n"),
-        };
-        let mut budget = ExecutionBudget::unlimited();
-        let result = executor.execute("g", &plan, &mut budget).unwrap();
-        assert_eq!(result.rows.len(), 1);
+    fn executor_result(
+        store: &InMemoryGraphStore,
+        plan: &Operator,
+        budget: &mut ExecutionBudget,
+    ) -> Vec<Row> {
+        let executor = QueryExecutor::new(store);
+        executor.execute("g", plan, budget).unwrap().rows
     }
 
     #[test]
@@ -690,6 +478,163 @@ mod tests {
         let mut budget = ExecutionBudget::unlimited();
         let result = executor.execute("g", &plan, &mut budget).unwrap();
         assert_eq!(result.rows.len(), 1);
+    }
+
+    #[test]
+    fn expand_incoming() {
+        let store = make_store();
+        let a = store
+            .create_node("g", vec!["N".to_string()], HashMap::new())
+            .unwrap();
+        let b = store
+            .create_node("g", vec!["N".to_string()], HashMap::new())
+            .unwrap();
+        store
+            .create_edge("g", a, b, "R".to_string(), HashMap::new())
+            .unwrap();
+        let plan = Operator::Expand {
+            direction: Direction::Incoming,
+            rel_types: vec![RelType::new("R")],
+            src_alias: Identifier::new("b"),
+            rel_alias: Some(Identifier::new("r")),
+            dst_alias: Identifier::new("a"),
+            child: Box::new(Operator::NodeScan {
+                label: Some(Label::new("N")),
+                alias: Identifier::new("b"),
+            }),
+        };
+        let mut budget = ExecutionBudget::unlimited();
+        let result = executor_result(&store, &plan, &mut budget);
+        // Only b has an incoming edge, so we get 1 result
+        assert_eq!(result.len(), 1);
+    }
+
+    #[test]
+    fn expand_no_matching_type() {
+        let store = make_store();
+        let a = store
+            .create_node("g", vec!["N".to_string()], HashMap::new())
+            .unwrap();
+        let b = store
+            .create_node("g", vec!["N".to_string()], HashMap::new())
+            .unwrap();
+        store
+            .create_edge("g", a, b, "R".to_string(), HashMap::new())
+            .unwrap();
+        let plan = Operator::Expand {
+            direction: Direction::Outgoing,
+            rel_types: vec![RelType::new("NONEXISTENT")],
+            src_alias: Identifier::new("a"),
+            rel_alias: Some(Identifier::new("r")),
+            dst_alias: Identifier::new("b"),
+            child: Box::new(Operator::NodeScan {
+                label: Some(Label::new("N")),
+                alias: Identifier::new("a"),
+            }),
+        };
+        let mut budget = ExecutionBudget::unlimited();
+        let result = executor_result(&store, &plan, &mut budget);
+        assert_eq!(result.len(), 0);
+    }
+
+    #[test]
+    fn expand_isomorphism_prevents_edge_reuse() {
+        let store = make_store();
+        let a = store
+            .create_node("g", vec!["N".to_string()], HashMap::new())
+            .unwrap();
+        let b = store
+            .create_node("g", vec!["N".to_string()], HashMap::new())
+            .unwrap();
+        let c = store
+            .create_node("g", vec!["N".to_string()], HashMap::new())
+            .unwrap();
+        let e1 = store
+            .create_edge("g", a, b, "R".to_string(), HashMap::new())
+            .unwrap();
+        let _e2 = store
+            .create_edge("g", b, c, "R".to_string(), HashMap::new())
+            .unwrap();
+
+        let plan = Operator::Expand {
+            direction: Direction::Outgoing,
+            rel_types: vec![RelType::new("R")],
+            src_alias: Identifier::new("b"),
+            rel_alias: Some(Identifier::new("r2")),
+            dst_alias: Identifier::new("c"),
+            child: Box::new(Operator::Expand {
+                direction: Direction::Outgoing,
+                rel_types: vec![RelType::new("R")],
+                src_alias: Identifier::new("a"),
+                rel_alias: Some(Identifier::new("r1")),
+                dst_alias: Identifier::new("b"),
+                child: Box::new(Operator::NodeScan {
+                    label: Some(Label::new("N")),
+                    alias: Identifier::new("a"),
+                }),
+            }),
+        };
+        let mut budget = ExecutionBudget::unlimited();
+        let result = executor_result(&store, &plan, &mut budget);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].get("r1"), Some(&Value::Edge(e1)));
+    }
+
+    #[test]
+    fn expand_outer_edge_vars_allows_reuse_across_scopes() {
+        let store = make_store();
+        let a = store
+            .create_node("g", vec!["N".to_string()], HashMap::new())
+            .unwrap();
+        let b = store
+            .create_node("g", vec!["N".to_string()], HashMap::new())
+            .unwrap();
+        let e1 = store
+            .create_edge("g", a, b, "R".to_string(), HashMap::new())
+            .unwrap();
+
+        let mut input_row = Row::new();
+        input_row.insert("a".to_string(), Value::Node(a));
+        input_row.insert("r1".to_string(), Value::Edge(e1));
+        input_row.insert("b2".to_string(), Value::Node(a));
+        input_row.insert(
+            "__outer_edge_vars__".to_string(),
+            Value::List(vec![Value::Str("r1".to_string().into_boxed_str())]),
+        );
+
+        let executor = QueryExecutor::new(&store);
+        let plan = Operator::Expand {
+            direction: Direction::Outgoing,
+            rel_types: vec![RelType::new("R")],
+            src_alias: Identifier::new("b2"),
+            rel_alias: Some(Identifier::new("r2")),
+            dst_alias: Identifier::new("c"),
+            child: Box::new(Operator::NodeScan {
+                label: Some(Label::new("N")),
+                alias: Identifier::new("b2"),
+            }),
+        };
+        let mut budget = ExecutionBudget::unlimited();
+        let mut stats = MutationStats::default();
+        let rows = executor
+            .exec_operator(
+                &mut ExecContext {
+                    graph: "g",
+                    budget: &mut budget,
+                    outer_rows: &[input_row],
+                    stats: &mut stats,
+                },
+                &plan,
+            )
+            .unwrap();
+        let matching: Vec<_> = rows
+            .iter()
+            .filter(|r| r.get("r2") == Some(&Value::Edge(e1)))
+            .collect();
+        assert!(
+            !matching.is_empty(),
+            "outer edge var r1 should not block r2 from using the same edge"
+        );
     }
 
     #[test]
@@ -732,41 +677,180 @@ mod tests {
     }
 
     #[test]
-    fn index_scan_finds_nodes() {
+    fn varlen_expand_deep_chain() {
         let store = make_store();
-        let mut p1 = HashMap::new();
-        p1.insert("age".to_string(), Value::Int(30));
-        store
-            .create_node("g", vec!["Person".to_string()], p1)
-            .unwrap();
-        store
-            .create_node("g", vec!["Person".to_string()], HashMap::new())
-            .unwrap();
+        let mut nodes = Vec::new();
+        for _ in 0..6 {
+            nodes.push(
+                store
+                    .create_node("g", vec!["N".to_string()], HashMap::new())
+                    .unwrap(),
+            );
+        }
+        for i in 0..5 {
+            store
+                .create_edge("g", nodes[i], nodes[i + 1], "R".to_string(), HashMap::new())
+                .unwrap();
+        }
         let executor = QueryExecutor::new(&store);
-        let plan = Operator::IndexScan {
-            label: Label::new("Person"),
-            property: "age".to_string(),
-            alias: Identifier::new("n"),
+        let plan = Operator::VarLenExpand {
+            direction: Direction::Outgoing,
+            rel_types: vec![RelType::new("R")],
+            min: 1,
+            max: 5,
+            src_alias: Identifier::new("a"),
+            path_alias: Some(Identifier::new("p")),
+            path_mode: true,
+            dst_alias: Identifier::new("b"),
+            child: Box::new(Operator::NodeScan {
+                label: Some(Label::new("N")),
+                alias: Identifier::new("a"),
+            }),
+            rel_props: None,
         };
         let mut budget = ExecutionBudget::unlimited();
         let result = executor.execute("g", &plan, &mut budget).unwrap();
-        assert_eq!(result.rows.len(), 1);
+        // 5+4+3+2+1 = 15
+        assert_eq!(result.rows.len(), 15);
+
+        let depth5_rows: Vec<_> = result
+            .rows
+            .iter()
+            .filter(|r| {
+                if let Some(Value::Path { nodes: pn, .. }) = r.get("p") {
+                    pn.len() == 6
+                } else {
+                    false
+                }
+            })
+            .collect();
+        assert_eq!(depth5_rows.len(), 1);
+        if let Some(Value::Path {
+            nodes: pn,
+            edges: pe,
+        }) = depth5_rows[0].get("p")
+        {
+            assert_eq!(pn.len(), 6);
+            assert_eq!(pe.len(), 5);
+            for i in 0..6 {
+                assert_eq!(pn[i], nodes[i]);
+            }
+        }
     }
 
     #[test]
-    fn node_by_id_seek_found() {
+    fn varlen_expand_rel_variable_mode() {
         let store = make_store();
-        let node_id = store
-            .create_node("g", vec!["Person".to_string()], HashMap::new())
+        let a = store
+            .create_node("g", vec!["N".to_string()], HashMap::new())
+            .unwrap();
+        let b = store
+            .create_node("g", vec!["N".to_string()], HashMap::new())
+            .unwrap();
+        let c = store
+            .create_node("g", vec!["N".to_string()], HashMap::new())
+            .unwrap();
+        let e1 = store
+            .create_edge("g", a, b, "R".to_string(), HashMap::new())
+            .unwrap();
+        let e2 = store
+            .create_edge("g", b, c, "R".to_string(), HashMap::new())
             .unwrap();
         let executor = QueryExecutor::new(&store);
-        let plan = Operator::NodeByIdSeek {
-            id_expr: crate::ast::Expr::Integer(node_id.0 as i64),
-            alias: Identifier::new("n"),
+        let plan = Operator::VarLenExpand {
+            direction: Direction::Outgoing,
+            rel_types: vec![RelType::new("R")],
+            min: 2,
+            max: 2,
+            src_alias: Identifier::new("a"),
+            path_alias: Some(Identifier::new("rs")),
+            path_mode: false,
+            dst_alias: Identifier::new("b"),
+            child: Box::new(Operator::NodeScan {
+                label: Some(Label::new("N")),
+                alias: Identifier::new("a"),
+            }),
+            rel_props: None,
         };
         let mut budget = ExecutionBudget::unlimited();
         let result = executor.execute("g", &plan, &mut budget).unwrap();
         assert_eq!(result.rows.len(), 1);
+        if let Some(Value::List(edges)) = result.rows[0].get("rs") {
+            assert_eq!(edges.len(), 2);
+            assert_eq!(edges[0], Value::Edge(e1));
+            assert_eq!(edges[1], Value::Edge(e2));
+        } else {
+            panic!("expected list of edges for relationship variable mode");
+        }
+    }
+
+    #[test]
+    fn varlen_expand_min_zero() {
+        let store = make_store();
+        let a = store
+            .create_node("g", vec!["N".to_string()], HashMap::new())
+            .unwrap();
+        let b = store
+            .create_node("g", vec!["N".to_string()], HashMap::new())
+            .unwrap();
+        store
+            .create_edge("g", a, b, "R".to_string(), HashMap::new())
+            .unwrap();
+        let executor = QueryExecutor::new(&store);
+        let plan = Operator::VarLenExpand {
+            direction: Direction::Outgoing,
+            rel_types: vec![RelType::new("R")],
+            min: 0,
+            max: 1,
+            src_alias: Identifier::new("a"),
+            path_alias: Some(Identifier::new("p")),
+            path_mode: true,
+            dst_alias: Identifier::new("b"),
+            child: Box::new(Operator::NodeScan {
+                label: Some(Label::new("N")),
+                alias: Identifier::new("a"),
+            }),
+            rel_props: None,
+        };
+        let mut budget = ExecutionBudget::unlimited();
+        let result = executor.execute("g", &plan, &mut budget).unwrap();
+        assert_eq!(result.rows.len(), 3);
+    }
+
+    #[test]
+    fn varlen_expand_cycle_edge_isomorphism() {
+        let store = make_store();
+        let a = store
+            .create_node("g", vec!["N".to_string()], HashMap::new())
+            .unwrap();
+        let b = store
+            .create_node("g", vec!["N".to_string()], HashMap::new())
+            .unwrap();
+        store
+            .create_edge("g", a, b, "R".to_string(), HashMap::new())
+            .unwrap();
+        store
+            .create_edge("g", b, a, "R".to_string(), HashMap::new())
+            .unwrap();
+        let executor = QueryExecutor::new(&store);
+        let plan = Operator::VarLenExpand {
+            direction: Direction::Outgoing,
+            rel_types: vec![RelType::new("R")],
+            min: 1,
+            max: 3,
+            src_alias: Identifier::new("a"),
+            path_alias: Some(Identifier::new("p")),
+            path_mode: true,
+            dst_alias: Identifier::new("b"),
+            child: Box::new(Operator::NodeScan {
+                label: Some(Label::new("N")),
+                alias: Identifier::new("a"),
+            }),
+            rel_props: None,
+        };
+        let mut budget = ExecutionBudget::unlimited();
+        let result = executor.execute("g", &plan, &mut budget).unwrap();
+        assert_eq!(result.rows.len(), 4);
     }
 
     #[test]
@@ -811,307 +895,9 @@ mod tests {
         assert_eq!(rows.len(), 1);
     }
 
-    /// Verify that edge isomorphism works correctly in exec_expand after hoisting
-    /// the outer_edge_vars HashSet to the per-row level. In a triangle graph
-    /// (a)-[r1]->(b)-[r2]->(c), expanding from (b) with r1 already bound should
-    /// not re-use r1 for r2 (isomorphism), but should allow r2.
-    #[test]
-    fn expand_isomorphism_prevents_edge_reuse() {
-        let store = make_store();
-        let a = store
-            .create_node("g", vec!["N".to_string()], HashMap::new())
-            .unwrap();
-        let b = store
-            .create_node("g", vec!["N".to_string()], HashMap::new())
-            .unwrap();
-        let c = store
-            .create_node("g", vec!["N".to_string()], HashMap::new())
-            .unwrap();
-        let e1 = store
-            .create_edge("g", a, b, "R".to_string(), HashMap::new())
-            .unwrap();
-        let _e2 = store
-            .create_edge("g", b, c, "R".to_string(), HashMap::new())
-            .unwrap();
-
-        // Build a plan: NodeScan(a) -> Expand(a-[r1]->b) -> Expand(b-[r2]->c)
-        // The second Expand should NOT reuse the same edge as r1.
-        let plan = Operator::Expand {
-            direction: Direction::Outgoing,
-            rel_types: vec![RelType::new("R")],
-            src_alias: Identifier::new("b"),
-            rel_alias: Some(Identifier::new("r2")),
-            dst_alias: Identifier::new("c"),
-            child: Box::new(Operator::Expand {
-                direction: Direction::Outgoing,
-                rel_types: vec![RelType::new("R")],
-                src_alias: Identifier::new("a"),
-                rel_alias: Some(Identifier::new("r1")),
-                dst_alias: Identifier::new("b"),
-                child: Box::new(Operator::NodeScan {
-                    label: Some(Label::new("N")),
-                    alias: Identifier::new("a"),
-                }),
-            }),
-        };
-        let mut budget = ExecutionBudget::unlimited();
-        let result = executor_result(&store, &plan, &mut budget);
-        // Only one valid path: a-[e1]->b-[e2]->c
-        // The path a-[e1]->b would NOT have b-[e1]->? because e1 goes a->b not b->anything
-        // But we check that the result is correct (1 row: a->b->c)
-        assert_eq!(result.len(), 1);
-        assert_eq!(result[0].get("r1"), Some(&Value::Edge(e1)));
-    }
-
-    /// Verify that outer_edge_vars correctly excludes edges from previous MATCH
-    /// scopes, allowing them to be traversed again in the current pattern.
-    #[test]
-    fn expand_outer_edge_vars_allows_reuse_across_scopes() {
-        let store = make_store();
-        let a = store
-            .create_node("g", vec!["N".to_string()], HashMap::new())
-            .unwrap();
-        let b = store
-            .create_node("g", vec!["N".to_string()], HashMap::new())
-            .unwrap();
-        let e1 = store
-            .create_edge("g", a, b, "R".to_string(), HashMap::new())
-            .unwrap();
-
-        // Simulate a second MATCH clause that re-traverses the same edge.
-        // Input row: {a: Node(a), r1: Edge(e1), b: Node(b), __outer_edge_vars__: ["r1"]}
-        // Expand from a -[r2]-> b should still find e1 because r1 is an outer edge var.
-        let mut input_row = Row::new();
-        input_row.insert("a".to_string(), Value::Node(a));
-        input_row.insert("r1".to_string(), Value::Edge(e1));
-        input_row.insert("b2".to_string(), Value::Node(a)); // src for new expand
-        input_row.insert(
-            "__outer_edge_vars__".to_string(),
-            Value::List(vec![Value::Str("r1".to_string().into_boxed_str())]),
-        );
-
-        let executor = QueryExecutor::new(&store);
-        let plan = Operator::Expand {
-            direction: Direction::Outgoing,
-            rel_types: vec![RelType::new("R")],
-            src_alias: Identifier::new("b2"),
-            rel_alias: Some(Identifier::new("r2")),
-            dst_alias: Identifier::new("c"),
-            child: Box::new(Operator::NodeScan {
-                label: Some(Label::new("N")),
-                alias: Identifier::new("b2"),
-            }),
-        };
-        let mut budget = ExecutionBudget::unlimited();
-        let mut stats = MutationStats::default();
-        // Execute with the pre-built input row as outer context
-        let rows = executor
-            .exec_operator(
-                &mut ExecContext {
-                    graph: "g",
-                    budget: &mut budget,
-                    outer_rows: &[input_row],
-                    stats: &mut stats,
-                },
-                &plan,
-            )
-            .unwrap();
-        // The expand should find a->b via e1, even though e1 is in the row as r1,
-        // because r1 is listed in __outer_edge_vars__ (from a previous MATCH scope).
-        let matching: Vec<_> = rows
-            .iter()
-            .filter(|r| r.get("r2") == Some(&Value::Edge(e1)))
-            .collect();
-        assert!(
-            !matching.is_empty(),
-            "outer edge var r1 should not block r2 from using the same edge"
-        );
-    }
-
-    /// Helper: execute a plan and return the resulting rows.
-    fn executor_result(
-        store: &InMemoryGraphStore,
-        plan: &Operator,
-        budget: &mut ExecutionBudget,
-    ) -> Vec<Row> {
-        let executor = QueryExecutor::new(store);
-        executor.execute("g", plan, budget).unwrap().rows
-    }
-
-    /// Verify that the budget check fires inside the inner loop
-    /// (node * outer_row Cartesian product) of exec_node_scan.
-    #[test]
-    fn node_scan_budget_enforced_in_inner_loop() {
-        use std::time::Duration;
-
-        let store = make_store();
-        // Create a few nodes.
-        for _ in 0..3 {
-            store
-                .create_node("g", vec!["N".to_string()], HashMap::new())
-                .unwrap();
-        }
-
-        // Build outer_rows with 3 rows so the Cartesian product is 3 nodes * 3 rows = 9.
-        let outer_rows: Vec<Row> = (0..3)
-            .map(|_| {
-                let mut r = Row::new();
-                r.insert("__dummy__".to_string(), Value::Int(0));
-                r
-            })
-            .collect();
-
-        let executor = QueryExecutor::new(&store);
-        let plan = Operator::NodeScan {
-            label: Some(Label::new("N")),
-            alias: Identifier::new("x"),
-        };
-
-        // Budget that allows only 2 rows -- the inner loop should hit the limit
-        // before completing all 9 combinations.
-        let mut budget = ExecutionBudget::new(Duration::from_secs(60), 2);
-        let mut stats = MutationStats::default();
-        let mut cx = ExecContext {
-            graph: "g",
-            budget: &mut budget,
-            outer_rows: &outer_rows,
-            stats: &mut stats,
-        };
-        let result = executor.exec_node_scan(&mut cx, &plan);
-        assert!(
-            result.is_err(),
-            "expected budget error for Cartesian product exceeding row limit"
-        );
-    }
-
-    // -- Arena-based BFS path tests ------------------------------------------
-
-    /// Test VarLenExpand with a longer chain (depth 5) to verify arena
-    /// reconstruction produces the correct path at each depth.
-    #[test]
-    fn varlen_expand_deep_chain() {
-        let store = make_store();
-        // Build a chain: n0 -> n1 -> n2 -> n3 -> n4 -> n5
-        let mut nodes = Vec::new();
-        for _ in 0..6 {
-            nodes.push(
-                store
-                    .create_node("g", vec!["N".to_string()], HashMap::new())
-                    .unwrap(),
-            );
-        }
-        for i in 0..5 {
-            store
-                .create_edge("g", nodes[i], nodes[i + 1], "R".to_string(), HashMap::new())
-                .unwrap();
-        }
-        let executor = QueryExecutor::new(&store);
-        let plan = Operator::VarLenExpand {
-            direction: Direction::Outgoing,
-            rel_types: vec![RelType::new("R")],
-            min: 1,
-            max: 5,
-            src_alias: Identifier::new("a"),
-            path_alias: Some(Identifier::new("p")),
-            path_mode: true,
-            dst_alias: Identifier::new("b"),
-            child: Box::new(Operator::NodeScan {
-                label: Some(Label::new("N")),
-                alias: Identifier::new("a"),
-            }),
-            rel_props: None,
-        };
-        let mut budget = ExecutionBudget::unlimited();
-        let result = executor.execute("g", &plan, &mut budget).unwrap();
-        // For a 6-node chain, from each starting node we get paths:
-        // n0: depth 1..5 -> 5 paths  (to n1, n2, n3, n4, n5)
-        // n1: depth 1..4 -> 4 paths  (to n2, n3, n4, n5)
-        // n2: depth 1..3 -> 3 paths  (to n3, n4, n5)
-        // n3: depth 1..2 -> 2 paths  (to n4, n5)
-        // n4: depth 1    -> 1 path   (to n5)
-        // n5: no outgoing edges -> 0
-        // Total: 5+4+3+2+1 = 15
-        assert_eq!(result.rows.len(), 15);
-
-        // Verify that path_nodes for the longest path (depth=5) from n0 is correct
-        let depth5_rows: Vec<_> = result
-            .rows
-            .iter()
-            .filter(|r| {
-                if let Some(Value::Path { nodes: pn, .. }) = r.get("p") {
-                    pn.len() == 6 // 6 nodes = depth 5
-                } else {
-                    false
-                }
-            })
-            .collect();
-        assert_eq!(depth5_rows.len(), 1);
-        if let Some(Value::Path {
-            nodes: pn,
-            edges: pe,
-        }) = depth5_rows[0].get("p")
-        {
-            assert_eq!(pn.len(), 6);
-            assert_eq!(pe.len(), 5);
-            for i in 0..6 {
-                assert_eq!(pn[i], nodes[i]);
-            }
-        }
-    }
-
-    /// Test VarLenExpand with relationship variable mode (path_mode=false).
-    #[test]
-    fn varlen_expand_rel_variable_mode() {
-        let store = make_store();
-        let a = store
-            .create_node("g", vec!["N".to_string()], HashMap::new())
-            .unwrap();
-        let b = store
-            .create_node("g", vec!["N".to_string()], HashMap::new())
-            .unwrap();
-        let c = store
-            .create_node("g", vec!["N".to_string()], HashMap::new())
-            .unwrap();
-        let e1 = store
-            .create_edge("g", a, b, "R".to_string(), HashMap::new())
-            .unwrap();
-        let e2 = store
-            .create_edge("g", b, c, "R".to_string(), HashMap::new())
-            .unwrap();
-        let executor = QueryExecutor::new(&store);
-        let plan = Operator::VarLenExpand {
-            direction: Direction::Outgoing,
-            rel_types: vec![RelType::new("R")],
-            min: 2,
-            max: 2,
-            src_alias: Identifier::new("a"),
-            path_alias: Some(Identifier::new("rs")),
-            path_mode: false, // relationship variable mode
-            dst_alias: Identifier::new("b"),
-            child: Box::new(Operator::NodeScan {
-                label: Some(Label::new("N")),
-                alias: Identifier::new("a"),
-            }),
-            rel_props: None,
-        };
-        let mut budget = ExecutionBudget::unlimited();
-        let result = executor.execute("g", &plan, &mut budget).unwrap();
-        // Only 1 result: a-[e1]->b-[e2]->c with min=max=2
-        assert_eq!(result.rows.len(), 1);
-        if let Some(Value::List(edges)) = result.rows[0].get("rs") {
-            assert_eq!(edges.len(), 2);
-            assert_eq!(edges[0], Value::Edge(e1));
-            assert_eq!(edges[1], Value::Edge(e2));
-        } else {
-            panic!("expected list of edges for relationship variable mode");
-        }
-    }
-
-    /// Test ShortestPath with a longer chain to verify arena reconstruction.
     #[test]
     fn shortest_path_deep_chain() {
         let store = make_store();
-        // Build: n0 -> n1 -> n2 -> n3
         let mut nodes = Vec::new();
         for _ in 0..4 {
             nodes.push(
@@ -1168,9 +954,8 @@ mod tests {
         }
     }
 
-    /// Test VarLenExpand with min=0 (includes zero-length paths).
     #[test]
-    fn varlen_expand_min_zero() {
+    fn shortest_path_no_path_returns_empty() {
         let store = make_store();
         let a = store
             .create_node("g", vec!["N".to_string()], HashMap::new())
@@ -1178,72 +963,61 @@ mod tests {
         let b = store
             .create_node("g", vec!["N".to_string()], HashMap::new())
             .unwrap();
-        store
-            .create_edge("g", a, b, "R".to_string(), HashMap::new())
-            .unwrap();
+        // No edge between a and b
+        let mut start_row = Row::new();
+        start_row.insert("src".to_string(), Value::Node(a));
+        start_row.insert("dst".to_string(), Value::Node(b));
         let executor = QueryExecutor::new(&store);
-        let plan = Operator::VarLenExpand {
+        let plan = Operator::ShortestPath {
+            src_alias: Identifier::new("src"),
+            dst_alias: Identifier::new("dst"),
+            rel_types: vec![],
             direction: Direction::Outgoing,
-            rel_types: vec![RelType::new("R")],
-            min: 0,
-            max: 1,
-            src_alias: Identifier::new("a"),
-            path_alias: Some(Identifier::new("p")),
-            path_mode: true,
-            dst_alias: Identifier::new("b"),
-            child: Box::new(Operator::NodeScan {
-                label: Some(Label::new("N")),
-                alias: Identifier::new("a"),
-            }),
-            rel_props: None,
+            min: 1,
+            max: 10,
+            path_alias: Identifier::new("p"),
+            all_paths: false,
         };
         let mut budget = ExecutionBudget::unlimited();
-        let result = executor.execute("g", &plan, &mut budget).unwrap();
-        // n=a: depth 0 -> itself, depth 1 -> b (2 paths)
-        // n=b: depth 0 -> itself (1 path, no outgoing R)
-        // Total: 3
-        assert_eq!(result.rows.len(), 3);
+        let mut stats = MutationStats::default();
+        let rows = executor
+            .exec_operator(
+                &mut ExecContext {
+                    graph: "g",
+                    budget: &mut budget,
+                    outer_rows: &[start_row],
+                    stats: &mut stats,
+                },
+                &plan,
+            )
+            .unwrap();
+        assert_eq!(rows.len(), 0, "no path should yield no rows");
     }
 
-    /// Test edge isomorphism in VarLenExpand: a cycle a->b->a should not
-    /// reuse the same edge.
     #[test]
-    fn varlen_expand_cycle_edge_isomorphism() {
+    fn expand_self_loop() {
         let store = make_store();
         let a = store
             .create_node("g", vec!["N".to_string()], HashMap::new())
             .unwrap();
-        let b = store
-            .create_node("g", vec!["N".to_string()], HashMap::new())
-            .unwrap();
-        // a->b and b->a (two distinct edges)
         store
-            .create_edge("g", a, b, "R".to_string(), HashMap::new())
+            .create_edge("g", a, a, "R".to_string(), HashMap::new())
             .unwrap();
-        store
-            .create_edge("g", b, a, "R".to_string(), HashMap::new())
-            .unwrap();
-        let executor = QueryExecutor::new(&store);
-        let plan = Operator::VarLenExpand {
+        let plan = Operator::Expand {
             direction: Direction::Outgoing,
             rel_types: vec![RelType::new("R")],
-            min: 1,
-            max: 3,
             src_alias: Identifier::new("a"),
-            path_alias: Some(Identifier::new("p")),
-            path_mode: true,
+            rel_alias: Some(Identifier::new("r")),
             dst_alias: Identifier::new("b"),
             child: Box::new(Operator::NodeScan {
                 label: Some(Label::new("N")),
                 alias: Identifier::new("a"),
             }),
-            rel_props: None,
         };
         let mut budget = ExecutionBudget::unlimited();
-        let result = executor.execute("g", &plan, &mut budget).unwrap();
-        // From a: a->b (d=1), a->b->a (d=2). d=3 would need reusing e(a->b). STOP.
-        // From b: b->a (d=1), b->a->b (d=2). d=3 would need reusing e(b->a). STOP.
-        // Total = 4
-        assert_eq!(result.rows.len(), 4);
+        let result = executor_result(&store, &plan, &mut budget);
+        // Self-loop: a -> a, so expand from a finds 1 edge back to a
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].get("b"), Some(&Value::Node(a)));
     }
 }

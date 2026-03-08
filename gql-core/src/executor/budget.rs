@@ -72,6 +72,12 @@ pub struct ExecutionBudget {
 
 /// Only call `Instant::now()` once every this many `check_or_err()` invocations.
 /// Row-budget checks are always performed (they are a simple integer comparison).
+/// Configurable via `GQL_BUDGET_CHECK_INTERVAL` env var (default `1024`).
+pub fn check_interval() -> u64 {
+    crate::config::global().budget_check_interval
+}
+
+/// Compile-time default used when the global config is not yet available (tests, etc.).
 pub const CHECK_INTERVAL: u64 = 1024;
 
 impl ExecutionBudget {
@@ -130,9 +136,9 @@ impl ExecutionBudget {
             }));
         }
         // Amortize the Instant::now() syscall: only check deadline every
-        // CHECK_INTERVAL invocations.
+        // check_interval() invocations.
         self.check_counter += 1;
-        if self.check_counter & (CHECK_INTERVAL - 1) == 0 {
+        if self.check_counter & (check_interval() - 1) == 0 {
             let now = Instant::now();
             if now > self.deadline {
                 let elapsed = now.duration_since(self.deadline - self.timeout);
