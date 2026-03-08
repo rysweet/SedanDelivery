@@ -1,4 +1,4 @@
-//! sedandelivery-bolt: Neo4j Bolt v4.1 protocol server for SedanDelivery.
+//! sedandelivery-bolt: Neo4j Bolt v4.4 protocol server for SedanDelivery.
 //!
 //! A standalone binary that embeds gql-core directly.  Runs alongside Valkey
 //! in the same container as a background process.
