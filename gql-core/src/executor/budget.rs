@@ -133,8 +133,8 @@ impl ExecutionBudget {
             if now > self.deadline {
                 let elapsed = now.duration_since(self.deadline - self.timeout);
                 return Err(GqlError::Execution(ExecutionError::Timeout {
-                    elapsed_ms: elapsed.as_millis() as u64,
-                    limit_ms: self.timeout.as_millis() as u64,
+                    elapsed_ms: u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX),
+                    limit_ms: u64::try_from(self.timeout.as_millis()).unwrap_or(u64::MAX),
                 }));
             }
         }

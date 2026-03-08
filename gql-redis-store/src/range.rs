@@ -6,6 +6,13 @@ use gql_core::error::StorageError;
 use gql_core::storage::RangeQuery;
 use gql_core::types::Value;
 
+// ── SCAN COUNT configuration ────────────────────────────────────────────────
+
+pub(crate) fn scan_count() -> u64 {
+    static COUNT: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    *COUNT.get_or_init(|| gql_core::config::parse_env_min("GQL_REDIS_SCAN_COUNT", 100u64, 1))
+}
+
 // ── Range predicate evaluation ──────────────────────────────────────────────
 
 pub(crate) fn range_matches(val: &Value, range: &RangeQuery<'_>) -> bool {
@@ -81,7 +88,7 @@ pub(crate) fn scan_key_count(
             .arg("MATCH")
             .arg(pattern)
             .arg("COUNT")
-            .arg(100u64)
+            .arg(scan_count())
             .query(conn)
             .map_err(|e| StorageError::Backend { msg: e.to_string() })?;
         count += keys.len();

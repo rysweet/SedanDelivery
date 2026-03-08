@@ -46,7 +46,10 @@ fn max_pending_results() -> usize {
 /// that keyword. Otherwise returns the trimmed input unchanged.
 fn strip_cypher_prefix(query: &str) -> &str {
     let trimmed = query.trim();
-    if trimmed.len() > 7 && trimmed[..7].eq_ignore_ascii_case("CYPHER ") {
+    if trimmed
+        .get(..7)
+        .map_or(false, |s| s.eq_ignore_ascii_case("CYPHER "))
+    {
         let cypher_keywords = [
             "MATCH ",
             "RETURN ",
@@ -84,8 +87,13 @@ fn strip_cypher_prefix(query: &str) -> &str {
 /// Returns `(is_explain, is_profile, actual_query)` where `actual_query` is
 /// the query text with the prefix stripped.
 fn detect_explain_profile(query: &str) -> (bool, bool, String) {
-    let is_explain = query.len() >= 8 && query[..8].eq_ignore_ascii_case("EXPLAIN ");
-    let is_profile = !is_explain && query.len() >= 8 && query[..8].eq_ignore_ascii_case("PROFILE ");
+    let is_explain = query
+        .get(..8)
+        .map_or(false, |s| s.eq_ignore_ascii_case("EXPLAIN "));
+    let is_profile = !is_explain
+        && query
+            .get(..8)
+            .map_or(false, |s| s.eq_ignore_ascii_case("PROFILE "));
     let actual_query = if is_explain || is_profile {
         query[8..].to_string()
     } else {
@@ -271,6 +279,12 @@ async fn acquire_write_semaphore(
     query: &str,
     extra: &BoltMap,
 ) -> Option<Vec<ServerMessage>> {
+    // NOTE: This is a string-heuristic for write detection. It can produce
+    // false positives (e.g. a property value containing "CREATE ") and false
+    // negatives (e.g. dynamically constructed write queries). A proper solution
+    // would require parsing the query AST, but this is acceptable for
+    // semaphore-based contention management where the worst case is an
+    // unnecessary lock acquisition or a missed lock on rare edge cases.
     let is_write_query = {
         let upper = query.to_uppercase();
         upper.contains("CREATE ")

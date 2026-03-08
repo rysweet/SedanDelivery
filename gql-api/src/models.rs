@@ -10,7 +10,8 @@ use serde_json::Value as Json;
 pub struct HealthResponse {
     pub status: &'static str,
     pub version: &'static str,
-    pub demo_graph_exists: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub demo_graph_exists: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }
@@ -262,7 +263,7 @@ mod tests {
         let resp = HealthResponse {
             status: "ok",
             version: "0.1.0",
-            demo_graph_exists: true,
+            demo_graph_exists: Some(true),
             error: None,
         };
         let json = serde_json::to_value(&resp).unwrap();

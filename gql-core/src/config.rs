@@ -136,7 +136,7 @@ where
 }
 
 /// Like [`parse_env`] but clamps the result to at least `min`.
-fn parse_env_min<T>(var: &str, default: T, min: T) -> T
+pub fn parse_env_min<T>(var: &str, default: T, min: T) -> T
 where
     T: std::str::FromStr + std::fmt::Display + PartialOrd + Copy,
 {

@@ -8,7 +8,7 @@ use crate::keys::{
     key_edge, key_edges_set, key_in, key_label, key_node, key_nodes_set, key_out, key_propidx,
     key_reltype, value_to_index_key,
 };
-use crate::range::{range_matches, scan_key_count};
+use crate::range::{range_matches, scan_count, scan_key_count};
 use crate::RedisGraphStore;
 
 impl RedisGraphStore {
@@ -365,7 +365,7 @@ impl RedisGraphStore {
                 .arg("MATCH")
                 .arg(&pattern)
                 .arg("COUNT")
-                .arg(100u64)
+                .arg(scan_count())
                 .query(conn.as_mut())
                 .map_err(|e| StorageError::Backend { msg: e.to_string() })?;
             for key in keys {
