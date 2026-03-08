@@ -696,7 +696,9 @@ pub(crate) fn parse_decimal_iso_duration(s: &str) -> Result<CypherDuration, GqlE
             'M' => months += v,
             'W' => weeks += v,
             'D' => days += v,
-            _ => {}
+            _ => {
+                tracing::debug!("unknown duration designator: {}", d);
+            }
         }
     }
 
@@ -708,7 +710,9 @@ pub(crate) fn parse_decimal_iso_duration(s: &str) -> Result<CypherDuration, GqlE
             'H' => hours += v,
             'M' => minutes += v,
             'S' => seconds += v,
-            _ => {}
+            _ => {
+                tracing::debug!("unknown duration designator: {}", d);
+            }
         }
     }
 

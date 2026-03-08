@@ -746,7 +746,9 @@ impl<'a> QueryExecutor<'a> {
                         Value::Edge(edge_id) => {
                             self.store.remove_edge_property(graph, *edge_id, key)?;
                         }
-                        _ => {}
+                        _ => {
+                            tracing::debug!("SET property on non-node/non-edge value, ignoring");
+                        }
                     }
                     return Ok(());
                 }

@@ -68,7 +68,9 @@ impl<'a> QueryExecutor<'a> {
                             }
                         }
                     }
-                    _ => {}
+                    _ => {
+                        tracing::debug!("unexpected value type in path edge list, skipping");
+                    }
                 }
             }
 

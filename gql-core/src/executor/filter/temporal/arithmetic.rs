@@ -407,6 +407,8 @@ pub(crate) fn eval_duration_between(vals: &[Value]) -> Result<Value, GqlError> {
             let sp = build_duration_span(0, 0, secs, subsec);
             return Ok(Value::Duration(sp));
         }
+        // Intentional fallthrough: non-ZonedDateTime pairs fall through to generic
+        // civil-datetime handling below.
         _ => {}
     }
 

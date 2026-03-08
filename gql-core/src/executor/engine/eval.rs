@@ -223,6 +223,7 @@ impl<'a> QueryExecutor<'a> {
                                 );
                             }
                         }
+                        debug_assert!(false, "__patterncomp: malformed arguments");
                         return Ok(Value::List(vec![]));
                     }
                     _ => {}
