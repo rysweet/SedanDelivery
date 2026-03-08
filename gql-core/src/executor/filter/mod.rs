@@ -13,7 +13,7 @@
 mod builtins;
 mod collections;
 mod geo;
-mod operators;
+pub(crate) mod operators;
 mod temporal;
 
 use std::cell::RefCell;
