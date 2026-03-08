@@ -128,9 +128,16 @@ impl PartialEq for Value {
             (Self::Bool(a), Self::Bool(b)) => a == b,
             (Self::Int(a), Self::Int(b)) => a == b,
             (Self::Float(a), Self::Float(b)) => a == b,
-            // Int/Float cross-type: coerce to f64
-            (Self::Int(a), Self::Float(b)) => (*a as f64) == *b,
-            (Self::Float(a), Self::Int(b)) => *a == (*b as f64),
+            // Int/Float cross-type: use safe comparison to avoid precision
+            // loss for integers beyond 2^53.
+            (Self::Int(a), Self::Float(b)) => {
+                let af = *a as f64;
+                af as i64 == *a && af == *b
+            }
+            (Self::Float(a), Self::Int(b)) => {
+                let bf = *b as f64;
+                bf as i64 == *b && *a == bf
+            }
             (Self::Str(a), Self::Str(b)) => a == b,
             (Self::Date(a), Self::Date(b)) => a == b,
             (Self::LocalTime(a), Self::LocalTime(b)) => a == b,
@@ -287,9 +294,16 @@ impl Value {
             // NULL = anything is NULL
             (Self::Null, _) | (_, Self::Null) => None,
 
-            // Int/Float cross-type coercion
-            (Self::Int(a), Self::Float(b)) => Some(*a as f64 == *b),
-            (Self::Float(a), Self::Int(b)) => Some(*a == *b as f64),
+            // Int/Float cross-type coercion: use safe comparison to avoid
+            // precision loss for integers beyond 2^53.
+            (Self::Int(a), Self::Float(b)) => {
+                let af = *a as f64;
+                Some(af as i64 == *a && af == *b)
+            }
+            (Self::Float(a), Self::Int(b)) => {
+                let bf = *b as f64;
+                Some(*a == bf && bf as i64 == *b)
+            }
 
             // List equality with null propagation
             (Self::List(a), Self::List(b)) => {

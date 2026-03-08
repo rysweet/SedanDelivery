@@ -132,7 +132,13 @@ impl<'a> QueryExecutor<'a> {
                     },
                     Value::Edge(edge_id) => match self.cached_get_edge(graph, edge_id)? {
                         Some(edge_data) => {
-                            Ok(Value::Bool(edge_data.rel_type.as_str() == label.as_str()))
+                            // An edge has exactly one type, so ALL labels must
+                            // equal that type; multiple different labels always
+                            // returns false.
+                            let has = labels_to_check
+                                .iter()
+                                .all(|l| edge_data.rel_type.as_str() == l.as_str());
+                            Ok(Value::Bool(has))
                         }
                         None => Ok(Value::Bool(false)),
                     },

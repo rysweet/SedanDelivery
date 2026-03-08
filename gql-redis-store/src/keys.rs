@@ -73,10 +73,18 @@ pub(crate) fn key_indexes(g: &str) -> String {
     format!("G:{{{g}}}:indexes")
 }
 
+/// Separator for label/property in index metadata and propidx keys.
+/// Using a null byte avoids collisions when label or property names
+/// themselves contain colons.
+pub(crate) const IDX_SEP: char = '\x00';
+
 /// Property index key: maps (label, property, value) -> SET of node IDs.
 /// Enables O(1) MERGE lookups instead of O(N) full-label scans.
 pub(crate) fn key_propidx(g: &str, label: &str, property: &str, value_key: &str) -> String {
-    format!("G:{{{g}}}:propidx:{label}:{property}:{value_key}")
+    format!(
+        "G:{{{g}}}:propidx:{label}{}{property}{}{value_key}",
+        IDX_SEP, IDX_SEP
+    )
 }
 
 /// Convert a Value to a canonical string for use as a Redis key component.
@@ -214,7 +222,7 @@ mod tests {
     fn key_propidx_format() {
         assert_eq!(
             key_propidx("db", "Person", "name", "s:Alice"),
-            "G:{db}:propidx:Person:name:s:Alice"
+            "G:{db}:propidx:Person\x00name\x00s:Alice"
         );
     }
 

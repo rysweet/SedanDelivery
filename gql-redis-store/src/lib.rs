@@ -11,7 +11,7 @@
 //   In-adjacency:    G:{g}:in:{node_id}     — SADD "{edge_id}:{neighbor_id}:{rel_type}"
 //   All nodes set:   G:{g}:nodes            — SADD node id (string)
 //   All edges set:   G:{g}:edges            — SADD edge id (string)
-//   Index set:       G:{g}:indexes          — SADD "{label}:{property}"
+//   Index set:       G:{g}:indexes          — SADD "{label}\x00{property}"
 //   Graph registry:  __sd2_registry:graphs   — SADD graph name
 
 pub mod create_store;

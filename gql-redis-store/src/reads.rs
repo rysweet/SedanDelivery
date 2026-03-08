@@ -6,7 +6,7 @@ use gql_core::storage::{AdjEntry, EdgeData, EdgeId, GraphStats, NodeData, NodeId
 
 use crate::keys::{
     key_edge, key_edges_set, key_in, key_label, key_node, key_nodes_set, key_out, key_propidx,
-    key_reltype, value_to_index_key,
+    key_reltype, value_to_index_key, IDX_SEP,
 };
 use crate::range::{range_matches, scan_count, scan_key_count};
 use crate::RedisGraphStore;
@@ -176,7 +176,7 @@ impl RedisGraphStore {
         // Fast path: use property index for exact-match queries when an index exists.
         if let RangeQuery::Eq(val) = &range {
             let indexes = self.active_indexes(conn.as_mut(), graph)?;
-            if indexes.contains(&format!("{label}:{property}")) {
+            if indexes.contains(&format!("{label}{IDX_SEP}{property}")) {
                 let vkey = value_to_index_key(val);
                 let members: Vec<String> = redis::cmd("SMEMBERS")
                     .arg(self.kp(key_propidx(graph, label, property, &vkey)))

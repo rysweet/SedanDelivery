@@ -9,11 +9,11 @@ use gql_core::serde_value::json_to_props;
 use gql_core::storage::IndexDescriptor;
 use gql_core::types::Value;
 
-use crate::keys::{key_indexes, key_label, key_node, key_propidx, value_to_index_key};
+use crate::keys::{key_indexes, key_label, key_node, key_propidx, value_to_index_key, IDX_SEP};
 use crate::RedisGraphStore;
 
 impl RedisGraphStore {
-    /// Check which indexes exist for a given graph (returns set of "label:property" strings).
+    /// Check which indexes exist for a given graph (returns set of "label\x00property" strings).
     pub(crate) fn active_indexes(
         &self,
         conn: &mut dyn ConnectionLike,
@@ -42,7 +42,7 @@ impl RedisGraphStore {
         let mut pipe = redis::pipe();
         let mut has_cmds = false;
         for idx_spec in &indexes {
-            if let Some((idx_label, idx_prop)) = idx_spec.split_once(':') {
+            if let Some((idx_label, idx_prop)) = idx_spec.split_once(IDX_SEP) {
                 if labels.contains(&idx_label.to_string()) {
                     if let Some(val) = properties.get(idx_prop) {
                         if !val.is_null() {
@@ -80,7 +80,7 @@ impl RedisGraphStore {
         let mut pipe = redis::pipe();
         let mut has_cmds = false;
         for idx_spec in &indexes {
-            if let Some((idx_label, idx_prop)) = idx_spec.split_once(':') {
+            if let Some((idx_label, idx_prop)) = idx_spec.split_once(IDX_SEP) {
                 if labels.contains(&idx_label.to_string()) {
                     if let Some(val) = properties.get(idx_prop) {
                         if !val.is_null() {
@@ -115,7 +115,7 @@ impl RedisGraphStore {
             .map_err(|e| StorageError::Backend { msg: e.to_string() })?;
         let mut result = Vec::new();
         for m in members {
-            if let Some((label, property)) = m.split_once(':') {
+            if let Some((label, property)) = m.split_once(IDX_SEP) {
                 result.push(IndexDescriptor {
                     label: label.to_string(),
                     property: property.to_string(),
@@ -136,7 +136,7 @@ impl RedisGraphStore {
         // Record the index metadata.
         redis::cmd("SADD")
             .arg(self.kp(key_indexes(graph)))
-            .arg(format!("{label}:{property}"))
+            .arg(format!("{label}{IDX_SEP}{property}"))
             .query::<()>(conn.as_mut())
             .map_err(|e| StorageError::Backend { msg: e.to_string() })?;
 
@@ -204,14 +204,15 @@ impl RedisGraphStore {
         // Remove the metadata entry from the indexes set.
         redis::cmd("SREM")
             .arg(self.kp(key_indexes(graph)))
-            .arg(format!("{label}:{property}"))
+            .arg(format!("{label}{IDX_SEP}{property}"))
             .query::<()>(conn.as_mut())
             .map_err(|e| StorageError::Backend { msg: e.to_string() })?;
 
         // Clean up orphaned propidx keys via SCAN+DEL.
         let pattern = format!(
-            "{}G:{{{graph}}}:propidx:{label}:{property}:*",
-            self.key_prefix
+            "{}G:{{{graph}}}:propidx:{label}{sep}{property}{sep}*",
+            self.key_prefix,
+            sep = IDX_SEP
         );
         let mut cursor: u64 = 0;
         loop {
