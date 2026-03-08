@@ -815,8 +815,14 @@ pub fn cmp_values(a: &Value, b: &Value) -> std::cmp::Ordering {
             // If same rank, they're the same category; NaN == NaN, regular == regular.
             x.partial_cmp(y).unwrap_or(Equal)
         }
-        (Value::Int(x), Value::Float(y)) => (*x as f64).partial_cmp(y).unwrap_or(Equal),
-        (Value::Float(x), Value::Int(y)) => x.partial_cmp(&(*y as f64)).unwrap_or(Equal),
+        (Value::Int(x), Value::Float(y)) => {
+            crate::executor::filter::operators::safe_int_float_cmp(*x, *y).unwrap_or(Equal)
+        }
+        (Value::Float(x), Value::Int(y)) => {
+            crate::executor::filter::operators::safe_int_float_cmp(*y, *x)
+                .map(|o| o.reverse())
+                .unwrap_or(Equal)
+        }
         (Value::Str(x), Value::Str(y)) => x.cmp(y),
         (Value::Date(x), Value::Date(y)) => x.cmp(y),
         (Value::LocalTime(x), Value::LocalTime(y)) => x.cmp(y),

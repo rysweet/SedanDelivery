@@ -444,7 +444,7 @@ fn compare_values(
 /// A plain `i as f64` cast silently rounds integers beyond 2^53, which can
 /// produce incorrect comparison results.  This function detects the rounding
 /// case and falls back to integer-based bounds checking.
-fn safe_int_float_cmp(i: i64, f: f64) -> Option<std::cmp::Ordering> {
+pub(crate) fn safe_int_float_cmp(i: i64, f: f64) -> Option<std::cmp::Ordering> {
     if f.is_nan() {
         return None;
     }
