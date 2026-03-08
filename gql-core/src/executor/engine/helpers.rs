@@ -45,7 +45,13 @@ pub(crate) fn get_adj_entries(
         Direction::Undirected => {
             let mut out = store.out_edges_by_type(graph, node_id, type_strs)?;
             let in_ = store.in_edges_by_type(graph, node_id, type_strs)?;
-            out.extend(in_);
+            // Safety: deduplicate self-loop edges that appear in both out and in lists.
+            let out_edge_ids: std::collections::HashSet<u64> =
+                out.iter().map(|e| e.edge_id.0).collect();
+            out.extend(
+                in_.into_iter()
+                    .filter(|e| !out_edge_ids.contains(&e.edge_id.0)),
+            );
             out
         }
     };
@@ -1138,5 +1144,37 @@ mod tests {
         r2.insert("b".to_string(), Value::Str("h".into()));
         r2.insert("a".to_string(), Value::Int(1));
         assert_eq!(row_hash(&r1), row_hash(&r2));
+    }
+
+    #[test]
+    fn get_adj_entries_undirected_dedup_self_loop() {
+        use crate::storage::InMemoryGraphStore;
+
+        let store = InMemoryGraphStore::new();
+        store.create_graph("g").unwrap();
+        let n = store
+            .create_node("g", vec!["A".to_string()], std::collections::HashMap::new())
+            .unwrap();
+        // Create a self-loop: (n)-[:SELF]->(n)
+        let eid = store
+            .create_edge(
+                "g",
+                n,
+                n,
+                "SELF".to_string(),
+                std::collections::HashMap::new(),
+            )
+            .unwrap();
+
+        let entries = get_adj_entries(&store, "g", n, &Direction::Undirected, &[]).unwrap();
+
+        // The self-loop edge should appear exactly once, not twice.
+        let matching: Vec<_> = entries.iter().filter(|e| e.edge_id == eid).collect();
+        assert_eq!(
+            matching.len(),
+            1,
+            "self-loop should appear once in undirected expand, got {}",
+            matching.len()
+        );
     }
 }
