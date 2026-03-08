@@ -1150,6 +1150,94 @@ mod tests {
 
     // -- Notification detection tests ----------------------------------------
 
+    // -- Parameterized query tests -------------------------------------------
+
+    #[tokio::test]
+    async fn run_with_params_resolves_parameter_in_return() {
+        let mut session = make_ready_session();
+        let params: BoltMap = vec![("x".to_string(), BoltValue::Int(42))];
+        let result = run::handle_run(&mut session, "RETURN $x AS val".to_string(), params, vec![])
+            .await
+            .unwrap();
+        assert!(matches!(&result[0], ServerMessage::Success(_)));
+
+        let pull_result =
+            pull::handle_pull(&mut session, bolt_map! { "n" => BoltValue::Int(-1) }).unwrap();
+        let record = pull_result
+            .iter()
+            .find(|m| matches!(m, ServerMessage::Record(_)));
+        assert!(
+            record.is_some(),
+            "expected a record from parameterized query"
+        );
+        if let ServerMessage::Record(fields) = record.unwrap() {
+            assert_eq!(
+                fields[0],
+                BoltValue::Int(42),
+                "parameter $x should resolve to 42"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn run_with_string_param_resolves() {
+        let mut session = make_ready_session();
+        let params: BoltMap = vec![("name".to_string(), BoltValue::String("Alice".to_string()))];
+        let result = run::handle_run(
+            &mut session,
+            "RETURN $name AS who".to_string(),
+            params,
+            vec![],
+        )
+        .await
+        .unwrap();
+        assert!(matches!(&result[0], ServerMessage::Success(_)));
+
+        let pull_result =
+            pull::handle_pull(&mut session, bolt_map! { "n" => BoltValue::Int(-1) }).unwrap();
+        let record = pull_result
+            .iter()
+            .find(|m| matches!(m, ServerMessage::Record(_)));
+        assert!(record.is_some(), "expected a record");
+        if let ServerMessage::Record(fields) = record.unwrap() {
+            assert_eq!(
+                fields[0],
+                BoltValue::String("Alice".to_string()),
+                "parameter $name should resolve to 'Alice'"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn run_with_multiple_params() {
+        let mut session = make_ready_session();
+        let params: BoltMap = vec![
+            ("a".to_string(), BoltValue::Int(10)),
+            ("b".to_string(), BoltValue::Int(20)),
+        ];
+        let result = run::handle_run(
+            &mut session,
+            "RETURN $a + $b AS sum".to_string(),
+            params,
+            vec![],
+        )
+        .await
+        .unwrap();
+        assert!(matches!(&result[0], ServerMessage::Success(_)));
+
+        let pull_result =
+            pull::handle_pull(&mut session, bolt_map! { "n" => BoltValue::Int(-1) }).unwrap();
+        let record = pull_result
+            .iter()
+            .find(|m| matches!(m, ServerMessage::Record(_)));
+        assert!(record.is_some(), "expected a record");
+        if let ServerMessage::Record(fields) = record.unwrap() {
+            assert_eq!(fields[0], BoltValue::Int(30), "$a + $b should be 30");
+        }
+    }
+
+    // -- Notification detection tests ----------------------------------------
+
     #[tokio::test]
     async fn explain_cartesian_product_generates_notification() {
         let mut session = make_ready_session();
