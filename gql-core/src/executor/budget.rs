@@ -65,6 +65,9 @@ pub struct ExecutionBudget {
     /// is separate from `rows_produced` (which counts all intermediate rows)
     /// so that the cap is not inflated by intermediate operators like Project.
     leaf_rows_produced: usize,
+    /// Optional request ID for distributed trace context propagation.
+    /// When set, links executor spans to the originating request trace.
+    request_id: Option<String>,
 }
 
 /// Only call `Instant::now()` once every this many `check_or_err()` invocations.
@@ -82,6 +85,7 @@ impl ExecutionBudget {
             check_counter: 0,
             row_cap: None,
             leaf_rows_produced: 0,
+            request_id: None,
         }
     }
 
@@ -216,6 +220,18 @@ impl ExecutionBudget {
             Some(cap) => self.leaf_rows_produced >= cap,
             None => false,
         }
+    }
+
+    /// Set the request ID for trace context propagation.
+    #[inline]
+    pub fn set_request_id(&mut self, id: String) {
+        self.request_id = Some(id);
+    }
+
+    /// Returns the request ID, if set.
+    #[inline]
+    pub fn request_id(&self) -> Option<&str> {
+        self.request_id.as_deref()
     }
 }
 

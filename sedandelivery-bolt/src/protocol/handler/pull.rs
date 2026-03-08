@@ -14,6 +14,7 @@ use super::{bolt_map, next_bookmark, ProtocolError, Session};
 /// Streams up to `n` records from the pending query identified by `qid`
 /// (defaulting to the most recent query). Emits `RECORD` messages followed
 /// by a `SUCCESS` (with `has_more`) or `FAILURE` (for trailing errors).
+#[tracing::instrument(name = "bolt.pull", skip_all)]
 pub(crate) fn handle_pull(
     session: &mut Session,
     extra: BoltMap,

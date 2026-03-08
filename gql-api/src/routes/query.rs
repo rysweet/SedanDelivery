@@ -52,6 +52,7 @@ fn convert_params(
 
 // ── POST /graphs/{name}/query ─────────────────────────────────────────────────
 
+#[tracing::instrument(name = "gql.query", skip_all, fields(graph = %name))]
 async fn query_handler(
     State(state): State<AppState>,
     Path(name): Path<String>,
@@ -80,6 +81,11 @@ async fn query_handler(
 
     let params = convert_params(body.params.as_ref())?;
 
+    // Propagate the current trace span ID as request_id into the executor budget.
+    let request_id = tracing::Span::current()
+        .id()
+        .map(|id| format!("{:x}", id.into_u64()));
+
     // Move the Arc and the plan into spawn_blocking so CPU-bound execution
     // does not block the Tokio async thread pool.
     let store_for_exec = Arc::clone(&store);
@@ -88,6 +94,9 @@ async fn query_handler(
         static EMPTY_REG: std::sync::OnceLock<ProcedureRegistry> = std::sync::OnceLock::new();
         let registry = EMPTY_REG.get_or_init(ProcedureRegistry::new);
         let mut budget = ExecutionBudget::default_budget();
+        if let Some(rid) = request_id {
+            budget.set_request_id(rid);
+        }
         QueryExecutor::with_context(store_for_exec.as_ref(), registry, params).execute(
             &name_for_exec,
             &plan,
@@ -169,6 +178,7 @@ fn operator_to_json(
 
 // ── POST /graphs/{name}/mutate ────────────────────────────────────────────────
 
+#[tracing::instrument(name = "gql.mutate", skip_all, fields(graph = %name))]
 async fn mutate_handler(
     State(state): State<AppState>,
     Path(name): Path<String>,
@@ -196,6 +206,11 @@ async fn mutate_handler(
 
     let params = convert_params(body.params.as_ref())?;
 
+    // Propagate the current trace span ID as request_id into the executor budget.
+    let request_id = tracing::Span::current()
+        .id()
+        .map(|id| format!("{:x}", id.into_u64()));
+
     // Move the Arc and plan into spawn_blocking so CPU-bound execution
     // does not block the Tokio async thread pool.
     let store_for_exec = Arc::clone(&store);
@@ -204,6 +219,9 @@ async fn mutate_handler(
         static EMPTY_REG: std::sync::OnceLock<ProcedureRegistry> = std::sync::OnceLock::new();
         let registry = EMPTY_REG.get_or_init(ProcedureRegistry::new);
         let mut budget = ExecutionBudget::default_budget();
+        if let Some(rid) = request_id {
+            budget.set_request_id(rid);
+        }
         QueryExecutor::with_context(store_for_exec.as_ref(), registry, params).execute(
             &name_for_exec,
             &plan,

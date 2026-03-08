@@ -24,6 +24,7 @@ use axum::{middleware, Router};
 use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::trace::TraceLayer;
 use tracing::info;
+use tracing_subscriber::prelude::*;
 use tracing_subscriber::EnvFilter;
 
 use gql_api::auth;
@@ -58,11 +59,29 @@ async fn shutdown_signal() {
 #[tokio::main]
 async fn main() {
     // Initialise structured logging.  RUST_LOG=info is the default.
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
-        )
-        .init();
+    // When OTEL_EXPORTER_OTLP_ENDPOINT is set, traces are also exported via OTLP.
+    let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+
+    if std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT").is_ok() {
+        let exporter = opentelemetry_otlp::SpanExporter::builder()
+            .with_tonic()
+            .build()
+            .expect("failed to create OTLP span exporter");
+        let provider = opentelemetry_sdk::trace::TracerProvider::builder()
+            .with_batch_exporter(exporter, opentelemetry_sdk::runtime::Tokio)
+            .build();
+        let tracer = opentelemetry::trace::TracerProvider::tracer(&provider, "gql-api");
+        let otel_layer = tracing_opentelemetry::layer().with_tracer(tracer);
+
+        tracing_subscriber::registry()
+            .with(env_filter)
+            .with(tracing_subscriber::fmt::layer())
+            .with(otel_layer)
+            .init();
+        info!("OpenTelemetry OTLP tracing enabled");
+    } else {
+        tracing_subscriber::fmt().with_env_filter(env_filter).init();
+    };
 
     // In production mode, require explicit values for security-sensitive variables.
     if std::env::var("ENVIRONMENT").as_deref() == Ok("production") {

@@ -91,6 +91,7 @@ pub fn router() -> Router<AppState> {
 
 // ── GET /graphs/{name}/export ─────────────────────────────────────────────────
 
+#[tracing::instrument(name = "gql.export", skip_all, fields(graph = %name))]
 async fn export_handler(
     State(state): State<AppState>,
     Path(name): Path<String>,
@@ -158,6 +159,7 @@ async fn export_handler(
 //
 // An explicit 2 MB body size limit is applied via DefaultBodyLimit on the route.
 
+#[tracing::instrument(name = "gql.import", skip_all, fields(graph = %name))]
 async fn import_handler(
     State(state): State<AppState>,
     Path(name): Path<String>,

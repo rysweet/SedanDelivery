@@ -16,7 +16,11 @@ tokio-rustls  = "0.26"
 rustls         = { version = "0.23", features = ["ring"] }
 rustls-pemfile = "2"
 tracing       = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json", "registry"] }
+tracing-opentelemetry = { workspace = true }
+opentelemetry = { workspace = true }
+opentelemetry_sdk = { workspace = true }
+opentelemetry-otlp = { workspace = true }
 bytes         = "1.5"
 indexmap       = { workspace = true }
 jiff           = { workspace = true }

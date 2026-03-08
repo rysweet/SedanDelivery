@@ -454,6 +454,7 @@ fn build_success_response(
 /// Parses the query, resolves the target graph and parameters, executes the
 /// query (or plans it for EXPLAIN/PROFILE), and stores the result as a
 /// `PendingQuery` for subsequent PULL.
+#[tracing::instrument(name = "bolt.run", skip_all, fields(query = %query))]
 pub(crate) async fn handle_run(
     session: &mut Session,
     query: String,
