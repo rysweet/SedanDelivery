@@ -17,10 +17,6 @@ SedanDelivery is a Cypher-compatible graph database engine written in Rust. It p
 
 The workspace contains 8 crates. Arrows point from dependent to dependency.
 
-![Crate Map](images/crate-map.svg)
-
-<details><summary>Mermaid source</summary>
-
 ```mermaid
 graph TD
     gql-core["gql-core<br/><i>Parser, planner, executor, storage trait</i>"]
@@ -47,15 +43,9 @@ graph TD
     sedandelivery-fabric-sync --> gql-fabric-store
 ```
 
-</details>
-
 ## Request Flow -- REST API
 
 The REST API is an axum HTTP server on port 3001 (default). It exposes CRUD endpoints for nodes, edges, graphs, Cypher queries, schema inspection, neighbor traversal, and export/import.
-
-![REST API Flow](images/rest-api-flow.svg)
-
-<details><summary>Mermaid source</summary>
 
 ```mermaid
 sequenceDiagram
@@ -76,8 +66,6 @@ sequenceDiagram
     Handler-->>Client: JSON response
 ```
 
-</details>
-
 Middleware stack (applied bottom-up):
 1. `TraceLayer` -- structured request/response logging
 2. `CorsLayer` -- origin allowlist from `GQL_API_ALLOWED_ORIGINS`
@@ -88,10 +76,6 @@ Middleware stack (applied bottom-up):
 ## Request Flow -- Bolt Protocol
 
 The Bolt server listens on port 7687 (default) and speaks Neo4j Bolt v4.4. Any standard Neo4j driver (Python, .NET, Java, Go, JavaScript, Rust) connects directly.
-
-![Bolt Protocol Flow](images/bolt-protocol-flow.svg)
-
-<details><summary>Mermaid source</summary>
 
 ```mermaid
 sequenceDiagram
@@ -124,8 +108,6 @@ sequenceDiagram
     Session-->>TCP: connection closed
 ```
 
-</details>
-
 Connection lifecycle:
 - Semaphore-gated concurrency (`BOLT_MAX_CONNECTIONS`, default 1024)
 - Idle timeout reaping (`BOLT_IDLE_TIMEOUT_SECS`, default 3600)
@@ -135,10 +117,6 @@ Connection lifecycle:
 ## Query Pipeline
 
 Every Cypher query passes through the same pipeline regardless of entry point (REST API, Bolt, Redis module, or CLI).
-
-![Query Pipeline](images/query-pipeline.svg)
-
-<details><summary>Mermaid source</summary>
 
 ```mermaid
 flowchart LR
@@ -153,8 +131,6 @@ flowchart LR
     I --> J["Result rows<br/><code>QueryResult</code>"]
 ```
 
-</details>
-
 Key pipeline components:
 
 - **Lexer** -- hand-written tokenizer; strict mode (`lex_query`) and lenient mode (`tokenize`) for IDE tooling.
@@ -167,10 +143,6 @@ Key pipeline components:
 ## Storage Layer
 
 All storage access goes through the `GraphStore` trait defined in `gql-core::storage`. This is the core abstraction boundary -- the engine never talks to Redis, Fabric, or memory directly.
-
-![Storage Layer](images/storage-layer.svg)
-
-<details><summary>Mermaid source</summary>
 
 ```mermaid
 classDiagram
@@ -219,8 +191,6 @@ classDiagram
     FanoutStore o-- GraphStore : wraps 1..N
 ```
 
-</details>
-
 Backend selection at startup (`gql-redis-store::create_store`):
 1. `GQL_REDIS_CLUSTER_NODES` set -- `RedisGraphStore` in cluster mode
 2. `GQL_REDIS_URL` set -- `RedisGraphStore` in standalone mode
@@ -238,10 +208,6 @@ G:{graph}:in:{node_id}   -- SADD (reverse adjacency)
 ## Deployment Topology
 
 SedanDelivery deploys as 2-4 containers in an Azure Container Apps environment. Each component is independently scalable.
-
-![Deployment Topology](images/deployment-topology.svg)
-
-<details><summary>Mermaid source</summary>
 
 ```mermaid
 graph TD
@@ -291,8 +257,6 @@ graph TD
     SYNC -- "HTTPS<br/>openCypher" --> FABRIC
     API_SRV -. "JWKS fetch" .-> ENTRA
 ```
-
-</details>
 
 **Components:**
 
