@@ -67,6 +67,29 @@ pub struct IndexDescriptor {
     pub property: String,
 }
 
+/// The type of a constraint.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum ConstraintType {
+    /// Property values must be unique across all nodes with the given label.
+    Unique,
+}
+
+impl std::fmt::Display for ConstraintType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ConstraintType::Unique => write!(f, "UNIQUE"),
+        }
+    }
+}
+
+/// Describes a constraint for use by the admin layer.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ConstraintDescriptor {
+    pub label: String,
+    pub property: String,
+    pub constraint_type: ConstraintType,
+}
+
 /// A range predicate for property index lookups.
 #[derive(Debug, Clone, PartialEq)]
 pub enum RangeQuery<'a> {
@@ -260,6 +283,39 @@ pub trait GraphStore: Send + Sync {
     fn create_index(&self, graph: &str, label: &str, property: &str) -> Result<(), StorageError>;
 
     fn drop_index(&self, graph: &str, label: &str, property: &str) -> Result<(), StorageError>;
+
+    // ── Constraint management ────────────────────────────────────────────────
+
+    /// Returns all constraints defined for this graph.
+    fn list_constraints(&self, _graph: &str) -> Result<Vec<ConstraintDescriptor>, StorageError> {
+        Ok(vec![])
+    }
+
+    /// Create a constraint on nodes with the given label and property.
+    /// Validates that existing data does not violate the constraint.
+    fn create_constraint(
+        &self,
+        _graph: &str,
+        _label: &str,
+        _property: &str,
+        _constraint_type: ConstraintType,
+    ) -> Result<(), StorageError> {
+        Err(StorageError::Backend {
+            msg: "constraints not supported by this storage backend".to_string(),
+        })
+    }
+
+    /// Drop a constraint identified by label and property.
+    fn drop_constraint(
+        &self,
+        _graph: &str,
+        _label: &str,
+        _property: &str,
+    ) -> Result<(), StorageError> {
+        Err(StorageError::Backend {
+            msg: "constraints not supported by this storage backend".to_string(),
+        })
+    }
 
     // ── Graph administration ──────────────────────────────────────────────────
 

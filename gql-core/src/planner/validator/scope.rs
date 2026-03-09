@@ -235,6 +235,27 @@ impl ValidationContext {
                 }
                 inner_ctx.check_vars_defined_in_where(map)
             }
+            Expr::Reduce {
+                accumulator,
+                initial,
+                variable,
+                list,
+                expression,
+            } => {
+                self.check_vars_defined_in_where(initial)?;
+                self.check_vars_defined_in_where(list)?;
+                // Both accumulator and variable are in scope for the expression
+                let mut inner_vars = self.vars.clone();
+                inner_vars.insert(accumulator.0.clone(), VarKind::Value);
+                inner_vars.insert(variable.0.clone(), VarKind::Value);
+                let inner_ctx = ValidationContext {
+                    vars: inner_vars,
+                    has_read: self.has_read,
+                    has_write: self.has_write,
+                    return_count: self.return_count,
+                };
+                inner_ctx.check_vars_defined_in_where(expression)
+            }
             Expr::List(items) => {
                 for item in items {
                     self.check_vars_defined_in_where(item)?;

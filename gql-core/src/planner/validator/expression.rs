@@ -81,6 +81,16 @@ pub(super) fn contains_aggregation(expr: &Expr) -> bool {
                 || filter.as_ref().is_some_and(|f| contains_aggregation(f))
                 || contains_aggregation(map)
         }
+        Expr::Reduce {
+            initial,
+            list,
+            expression,
+            ..
+        } => {
+            contains_aggregation(initial)
+                || contains_aggregation(list)
+                || contains_aggregation(expression)
+        }
         _ => false,
     }
 }
@@ -579,6 +589,21 @@ impl ValidationContext {
                     }
                 }
                 self.validate_expr_general(map)?;
+            }
+            Expr::Reduce {
+                initial,
+                list,
+                expression,
+                ..
+            } => {
+                self.validate_expr_general(initial)?;
+                self.validate_expr_general(list)?;
+                if contains_aggregation(expression) {
+                    return Err(plan_error_semantic(
+                        "aggregation functions are not allowed inside reduce expression",
+                    ));
+                }
+                self.validate_expr_general(expression)?;
             }
             _ => {}
         }

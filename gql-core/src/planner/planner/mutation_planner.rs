@@ -1,7 +1,8 @@
-//! Mutation planning — CREATE, DELETE, SET, REMOVE, MERGE.
+//! Mutation planning — CREATE, DELETE, SET, REMOVE, MERGE, FOREACH.
 
 use crate::ast::{
-    CreateClause, DeleteClause, Identifier, MergeClause, PathStep, RemoveClause, SetClause,
+    Clause, CreateClause, DeleteClause, ForeachClause, Identifier, MergeClause, PathStep,
+    RemoveClause, SetClause,
 };
 use crate::error::{GqlError, PlanError};
 use crate::planner::{CreatePattern, Operator, RemoveItem, SetItem};
@@ -316,5 +317,68 @@ impl<'s> QueryPlanner<'s> {
         } else {
             Ok(merge_op)
         }
+    }
+
+    // ── FOREACH planning ─────────────────────────────────────────────────────
+
+    pub(crate) fn plan_foreach(
+        &self,
+        fc: &ForeachClause,
+        child: Option<Operator>,
+    ) -> Result<Operator, GqlError> {
+        // The child pipeline feeds input rows into FOREACH.
+        // If there's no preceding pipeline, we produce a single empty row.
+        let child_op = child.unwrap_or(Operator::SingleRow);
+
+        // Build a sub-plan for the body clauses. The body starts with a
+        // SingleRow leaf (the per-element input row is injected at execution
+        // time by binding the loop variable).
+        let mut body_pipeline: Option<Operator> = Some(Operator::SingleRow);
+
+        for body_clause in &fc.clauses {
+            match body_clause {
+                Clause::Create(cc) => {
+                    let op = self.plan_create(cc, body_pipeline.take())?;
+                    body_pipeline = Some(op);
+                }
+                Clause::Set(sc) => {
+                    let op = self.plan_set(sc, body_pipeline.take())?;
+                    body_pipeline = Some(op);
+                }
+                Clause::Remove(rc) => {
+                    let op = self.plan_remove(rc, body_pipeline.take())?;
+                    body_pipeline = Some(op);
+                }
+                Clause::Delete(dc) => {
+                    let op = self.plan_delete(dc, body_pipeline.take())?;
+                    body_pipeline = Some(op);
+                }
+                Clause::Merge(mc) => {
+                    let op = self.plan_merge(mc, body_pipeline.take())?;
+                    body_pipeline = Some(op);
+                }
+                Clause::Foreach(nested_fc) => {
+                    let op = self.plan_foreach(nested_fc, body_pipeline.take())?;
+                    body_pipeline = Some(op);
+                }
+                _ => {
+                    return Err(GqlError::Plan(PlanError::SemanticError {
+                        message: format!(
+                            "FOREACH body may only contain mutating clauses (CREATE, SET, REMOVE, DELETE, MERGE, FOREACH), found {:?}",
+                            std::mem::discriminant(body_clause)
+                        ),
+                    }));
+                }
+            }
+        }
+
+        let body_op = body_pipeline.unwrap_or(Operator::SingleRow);
+
+        Ok(Operator::ForEach {
+            variable: fc.variable.clone(),
+            list_expr: fc.list.clone(),
+            body: Box::new(body_op),
+            child: Box::new(child_op),
+        })
     }
 }

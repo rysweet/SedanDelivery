@@ -167,6 +167,16 @@ pub enum Operator {
         standalone: bool,
         child: Option<Box<Operator>>,
     },
+    /// FOREACH (variable IN list | body_clauses) — iterate a list and execute
+    /// mutation clauses for each element. The loop variable is scoped: it is NOT
+    /// visible after the FOREACH block.
+    ForEach {
+        variable: Identifier,
+        list_expr: Expr,
+        /// Sub-plan built from the body clauses (mutations only).
+        body: Box<Operator>,
+        child: Box<Operator>,
+    },
     /// Root of every plan tree. Explicit result boundary.
     ProduceResults {
         columns: Vec<(String, Expr)>,
@@ -200,6 +210,8 @@ impl Operator {
             | Operator::VarLenExpand { child, .. }
             | Operator::AssemblePath { child, .. }
             | Operator::MergeRelationship { child, .. } => vec![child],
+
+            Operator::ForEach { body, child, .. } => vec![child, body],
 
             Operator::Apply { outer, inner }
             | Operator::LeftOuterApply {
@@ -420,6 +432,13 @@ fn estimate_recursive(
         | Operator::ProduceResults { child, .. }
         | Operator::AssemblePath { child, .. }
         | Operator::MergeRelationship { child, .. } => estimate_recursive(child, stats, estimates),
+
+        Operator::ForEach { child, body, .. } => {
+            let child_est = estimate_recursive(child, stats, estimates);
+            // Body is executed for side effects; estimate it but don't use it for row count.
+            let _ = estimate_recursive(body, stats, estimates);
+            child_est
+        }
 
         Operator::Distinct { child } => {
             let child_est = estimate_recursive(child, stats, estimates);
@@ -713,6 +732,11 @@ fn collect_all_aliases(op: &Operator) -> Vec<String> {
             aliases.push(path_alias.0.clone());
             aliases.push(src_alias.0.clone());
             aliases.push(dst_alias.0.clone());
+        }
+        Operator::ForEach { child, .. } => {
+            // FOREACH variable is scoped — not visible after the block.
+            // Only propagate aliases from the child pipeline.
+            aliases.extend(collect_all_aliases(child));
         }
         // SingleRow and ProduceResults have no aliases of their own
         // (ProduceResults aliases come from its columns, already surfaced via child).

@@ -54,6 +54,7 @@ fn simple_match_return(label: &str, alias: &str) -> Query {
                         where_clause: None,
                     },
                     steps: vec![],
+                    shortest_path: None,
                 }],
                 where_clause: None,
             }),
@@ -104,6 +105,7 @@ fn test_create_and_match() {
                         where_clause: None,
                     },
                     steps: vec![],
+                    shortest_path: None,
                 }],
                 where_clause: None,
             }),
@@ -206,6 +208,7 @@ fn test_match_relationship() {
                             where_clause: None,
                         },
                     }],
+                    shortest_path: None,
                 }],
                 where_clause: None,
             }),
@@ -328,6 +331,7 @@ fn test_where_filter() {
                         where_clause: None,
                     },
                     steps: vec![],
+                    shortest_path: None,
                 }],
                 where_clause: Some(Expr::BinaryOp {
                     op: BinaryOp::Gte,
@@ -418,6 +422,7 @@ fn test_limit_skip() {
                         where_clause: None,
                     },
                     steps: vec![],
+                    shortest_path: None,
                 }],
                 where_clause: None,
             }),
@@ -488,6 +493,7 @@ fn test_aggregate_count() {
                         where_clause: None,
                     },
                     steps: vec![],
+                    shortest_path: None,
                 }],
                 where_clause: None,
             }),
@@ -553,6 +559,7 @@ fn test_distinct() {
                         where_clause: None,
                     },
                     steps: vec![],
+                    shortest_path: None,
                 }],
                 where_clause: None,
             }),
@@ -654,6 +661,7 @@ fn test_create_and_traverse() {
                             where_clause: None,
                         },
                     }],
+                    shortest_path: None,
                 }],
                 where_clause: None,
             }),
@@ -1939,5 +1947,481 @@ fn test_merge_with_parameter_map() {
     assert_eq!(
         result2.rows[0].get("n.name"),
         Some(&Value::Str("Bob".into()))
+    );
+}
+
+// ── Built-in CALL procedure tests ────────────────────────────────────────────
+
+/// Helper: execute a query using the built-in procedure registry (empty registry,
+/// built-ins are handled dynamically by the executor).
+fn exec_builtin(store: &InMemoryGraphStore, query: &str) -> gql_core::executor::QueryResult {
+    let registry = ProcedureRegistry::new();
+    let params: HashMap<String, Value> = HashMap::new();
+    let q = parse_query(query).unwrap();
+    let planner = QueryPlanner::with_context(store, "test", &registry, &params);
+    let plan = planner.plan(&q).unwrap();
+    let executor = QueryExecutor::with_context(store, &registry, params);
+    let mut budget = unlimited();
+    executor.execute("test", &plan, &mut budget).unwrap()
+}
+
+#[test]
+fn test_call_db_labels_returns_labels() {
+    let store = make_store();
+
+    // Initially no labels.
+    let result = exec_builtin(&store, "CALL db.labels()");
+    assert_eq!(result.rows.len(), 0, "no labels in empty graph");
+
+    // Create nodes with labels.
+    let mut props = HashMap::new();
+    props.insert("name".to_string(), Value::Str("Alice".into()));
+    store
+        .create_node("test", vec!["Person".to_string()], props)
+        .unwrap();
+    store
+        .create_node(
+            "test",
+            vec!["Company".to_string()],
+            HashMap::from([("name".to_string(), Value::Str("Acme".into()))]),
+        )
+        .unwrap();
+    store
+        .create_node(
+            "test",
+            vec!["Person".to_string()],
+            HashMap::from([("name".to_string(), Value::Str("Bob".into()))]),
+        )
+        .unwrap();
+
+    let result = exec_builtin(&store, "CALL db.labels()");
+    assert_eq!(result.rows.len(), 2, "two distinct labels");
+    let labels: Vec<&str> = result
+        .rows
+        .iter()
+        .map(|r| r["label"].as_str().unwrap())
+        .collect();
+    // BTreeSet ensures sorted order.
+    assert_eq!(labels, vec!["Company", "Person"]);
+}
+
+#[test]
+fn test_call_db_labels_with_yield() {
+    let store = make_store();
+    store
+        .create_node(
+            "test",
+            vec!["Animal".to_string()],
+            HashMap::from([("type".to_string(), Value::Str("Dog".into()))]),
+        )
+        .unwrap();
+
+    let result = exec_builtin(&store, "CALL db.labels() YIELD label RETURN label");
+    assert_eq!(result.rows.len(), 1);
+    assert_eq!(
+        result.rows[0].get("label"),
+        Some(&Value::Str("Animal".into()))
+    );
+}
+
+#[test]
+fn test_call_db_relationship_types() {
+    let store = make_store();
+
+    // No edges initially.
+    let result = exec_builtin(&store, "CALL db.relationshipTypes()");
+    assert_eq!(result.rows.len(), 0);
+
+    // Create nodes and edges.
+    let n1 = store
+        .create_node("test", vec!["Person".to_string()], HashMap::new())
+        .unwrap();
+    let n2 = store
+        .create_node("test", vec!["Person".to_string()], HashMap::new())
+        .unwrap();
+    let n3 = store
+        .create_node("test", vec!["Company".to_string()], HashMap::new())
+        .unwrap();
+    store
+        .create_edge("test", n1, n2, "KNOWS".to_string(), HashMap::new())
+        .unwrap();
+    store
+        .create_edge("test", n1, n3, "WORKS_AT".to_string(), HashMap::new())
+        .unwrap();
+    store
+        .create_edge("test", n2, n3, "WORKS_AT".to_string(), HashMap::new())
+        .unwrap();
+
+    let result = exec_builtin(&store, "CALL db.relationshipTypes()");
+    assert_eq!(result.rows.len(), 2, "two distinct relationship types");
+    let types: Vec<&str> = result
+        .rows
+        .iter()
+        .map(|r| r["relationshipType"].as_str().unwrap())
+        .collect();
+    assert_eq!(types, vec!["KNOWS", "WORKS_AT"]);
+}
+
+#[test]
+fn test_call_db_property_keys() {
+    let store = make_store();
+
+    let result = exec_builtin(&store, "CALL db.propertyKeys()");
+    assert_eq!(result.rows.len(), 0);
+
+    let n1 = store
+        .create_node(
+            "test",
+            vec!["Person".to_string()],
+            HashMap::from([
+                ("name".to_string(), Value::Str("Alice".into())),
+                ("age".to_string(), Value::Int(30)),
+            ]),
+        )
+        .unwrap();
+    let n2 = store
+        .create_node(
+            "test",
+            vec!["Person".to_string()],
+            HashMap::from([("name".to_string(), Value::Str("Bob".into()))]),
+        )
+        .unwrap();
+    store
+        .create_edge(
+            "test",
+            n1,
+            n2,
+            "KNOWS".to_string(),
+            HashMap::from([("since".to_string(), Value::Int(2020))]),
+        )
+        .unwrap();
+
+    let result = exec_builtin(&store, "CALL db.propertyKeys()");
+    let keys: Vec<&str> = result
+        .rows
+        .iter()
+        .map(|r| r["propertyKey"].as_str().unwrap())
+        .collect();
+    assert_eq!(keys, vec!["age", "name", "since"]);
+}
+
+#[test]
+fn test_call_dbms_components() {
+    let store = make_store();
+
+    let result = exec_builtin(&store, "CALL dbms.components()");
+    assert_eq!(result.rows.len(), 1);
+    assert_eq!(
+        result.rows[0].get("name"),
+        Some(&Value::Str("SedanDelivery".into()))
+    );
+    assert_eq!(
+        result.rows[0].get("editions"),
+        None,
+    );
+    assert_eq!(
+        result.rows[0].get("edition"),
+        Some(&Value::Str("community".into()))
+    );
+    // versions is a list
+    match result.rows[0].get("versions") {
+        Some(Value::List(v)) => {
+            assert_eq!(v.len(), 1);
+            assert_eq!(v[0], Value::Str("1.0.0".into()));
+        }
+        other => panic!("expected versions list, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_call_dbms_components_with_yield() {
+    let store = make_store();
+
+    let result = exec_builtin(
+        &store,
+        "CALL dbms.components() YIELD name, versions RETURN name, versions",
+    );
+    assert_eq!(result.rows.len(), 1);
+    assert_eq!(
+        result.rows[0].get("name"),
+        Some(&Value::Str("SedanDelivery".into()))
+    );
+}
+
+#[test]
+fn test_call_unknown_procedure_returns_error() {
+    let store = make_store();
+    let registry = ProcedureRegistry::new();
+    let params: HashMap<String, Value> = HashMap::new();
+    let q = parse_query("CALL db.nonexistent()").unwrap();
+    let planner = QueryPlanner::with_context(&store, "test", &registry, &params);
+    let result = planner.plan(&q);
+    assert!(result.is_err(), "unknown procedure should fail at plan time");
+    let err_msg = format!("{}", result.unwrap_err());
+    assert!(
+        err_msg.contains("ProcedureNotFound"),
+        "error should mention ProcedureNotFound: {}",
+        err_msg
+    );
+}
+
+#[test]
+fn test_call_db_labels_yield_filters_columns() {
+    let store = make_store();
+    store
+        .create_node(
+            "test",
+            vec!["Fruit".to_string()],
+            HashMap::from([("color".to_string(), Value::Str("red".into()))]),
+        )
+        .unwrap();
+
+    // YIELD label should only expose "label" column, not anything else.
+    let result = exec_builtin(
+        &store,
+        "CALL db.labels() YIELD label RETURN label",
+    );
+    assert_eq!(result.columns, vec!["label"]);
+    assert_eq!(result.rows.len(), 1);
+    assert_eq!(
+        result.rows[0].get("label"),
+        Some(&Value::Str("Fruit".into()))
+    );
+}
+
+#[test]
+fn test_call_db_schema_visualization() {
+    let store = make_store();
+
+    let n1 = store
+        .create_node("test", vec!["Person".to_string()], HashMap::new())
+        .unwrap();
+    let n2 = store
+        .create_node("test", vec!["Company".to_string()], HashMap::new())
+        .unwrap();
+    store
+        .create_edge("test", n1, n2, "WORKS_AT".to_string(), HashMap::new())
+        .unwrap();
+
+    let result = exec_builtin(&store, "CALL db.schema.visualization()");
+    assert_eq!(result.rows.len(), 1);
+
+    let nodes = result.rows[0].get("nodes").unwrap();
+    match nodes {
+        Value::List(v) => {
+            assert!(v.len() >= 2, "should have at least 2 label nodes");
+        }
+        _ => panic!("expected nodes list"),
+    }
+
+    let rels = result.rows[0].get("relationships").unwrap();
+    match rels {
+        Value::List(v) => {
+            assert_eq!(v.len(), 1, "should have 1 relationship type");
+            assert_eq!(v[0], Value::Str("WORKS_AT".into()));
+        }
+        _ => panic!("expected relationships list"),
+    }
+}
+
+// ── shortestPath / allShortestPaths via query syntax ─────────────────────────
+
+fn build_shortest_path_graph() -> InMemoryGraphStore {
+    let store = make_store();
+
+    // Build a diamond graph:
+    //   A -[R]-> B -[R]-> D
+    //   A -[R]-> C -[R]-> D
+    //   A -[R]-> D  (direct, 1 hop)
+    let mut a_props = HashMap::new();
+    a_props.insert("name".to_string(), Value::Str("A".into()));
+    let _a = store
+        .create_node("test", vec!["N".to_string()], a_props)
+        .unwrap();
+
+    let mut b_props = HashMap::new();
+    b_props.insert("name".to_string(), Value::Str("B".into()));
+    let _b = store
+        .create_node("test", vec!["N".to_string()], b_props)
+        .unwrap();
+
+    let mut c_props = HashMap::new();
+    c_props.insert("name".to_string(), Value::Str("C".into()));
+    let _c = store
+        .create_node("test", vec!["N".to_string()], c_props)
+        .unwrap();
+
+    let mut d_props = HashMap::new();
+    d_props.insert("name".to_string(), Value::Str("D".into()));
+    let _d = store
+        .create_node("test", vec!["N".to_string()], d_props)
+        .unwrap();
+
+    // A->B, B->D, A->C, C->D, A->D
+    store
+        .create_edge("test", _a, _b, "R".to_string(), HashMap::new())
+        .unwrap();
+    store
+        .create_edge("test", _b, _d, "R".to_string(), HashMap::new())
+        .unwrap();
+    store
+        .create_edge("test", _a, _c, "R".to_string(), HashMap::new())
+        .unwrap();
+    store
+        .create_edge("test", _c, _d, "R".to_string(), HashMap::new())
+        .unwrap();
+    store
+        .create_edge("test", _a, _d, "R".to_string(), HashMap::new())
+        .unwrap();
+
+    store
+}
+
+fn exec_query(store: &InMemoryGraphStore, query: &str) -> Vec<HashMap<String, Value>> {
+    let q = parse_query(query).unwrap();
+    let planner = QueryPlanner::new(store, "test");
+    let plan = planner.plan(&q).unwrap();
+    let executor = QueryExecutor::new(store);
+    let mut budget = unlimited();
+    let result = executor.execute("test", &plan, &mut budget).unwrap();
+    result
+        .rows
+        .into_iter()
+        .map(|row| row.into_iter().collect())
+        .collect()
+}
+
+#[test]
+fn test_shortest_path_returns_shortest() {
+    let store = build_shortest_path_graph();
+    let rows = exec_query(
+        &store,
+        "MATCH p = shortestPath((a:N)-[*]->(b:N)) WHERE a.name = 'A' AND b.name = 'D' RETURN length(p) AS len",
+    );
+    assert_eq!(rows.len(), 1, "shortestPath should return exactly one path");
+    assert_eq!(
+        rows[0].get("len"),
+        Some(&Value::Int(1)),
+        "shortest A->D path is 1 hop (direct edge)"
+    );
+}
+
+#[test]
+fn test_shortest_path_with_depth_limit() {
+    let store = build_shortest_path_graph();
+    // Limit to max 5 hops, should still find shortest (1 hop)
+    let rows = exec_query(
+        &store,
+        "MATCH p = shortestPath((a:N)-[*..5]->(b:N)) WHERE a.name = 'A' AND b.name = 'D' RETURN length(p) AS len",
+    );
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].get("len"), Some(&Value::Int(1)));
+}
+
+#[test]
+fn test_all_shortest_paths_returns_multiple() {
+    // Build a graph where all shortest paths have the same length:
+    //   X -[R]-> M1 -[R]-> Y
+    //   X -[R]-> M2 -[R]-> Y
+    // Both paths have length 2.
+    let store = make_store();
+    let mut x_props = HashMap::new();
+    x_props.insert("name".to_string(), Value::Str("X".into()));
+    let x = store
+        .create_node("test", vec!["N".to_string()], x_props)
+        .unwrap();
+    let mut m1_props = HashMap::new();
+    m1_props.insert("name".to_string(), Value::Str("M1".into()));
+    let m1 = store
+        .create_node("test", vec!["N".to_string()], m1_props)
+        .unwrap();
+    let mut m2_props = HashMap::new();
+    m2_props.insert("name".to_string(), Value::Str("M2".into()));
+    let m2 = store
+        .create_node("test", vec!["N".to_string()], m2_props)
+        .unwrap();
+    let mut y_props = HashMap::new();
+    y_props.insert("name".to_string(), Value::Str("Y".into()));
+    let y = store
+        .create_node("test", vec!["N".to_string()], y_props)
+        .unwrap();
+
+    store
+        .create_edge("test", x, m1, "R".to_string(), HashMap::new())
+        .unwrap();
+    store
+        .create_edge("test", m1, y, "R".to_string(), HashMap::new())
+        .unwrap();
+    store
+        .create_edge("test", x, m2, "R".to_string(), HashMap::new())
+        .unwrap();
+    store
+        .create_edge("test", m2, y, "R".to_string(), HashMap::new())
+        .unwrap();
+
+    let rows = exec_query(
+        &store,
+        "MATCH p = allShortestPaths((a:N)-[*]->(b:N)) WHERE a.name = 'X' AND b.name = 'Y' RETURN p",
+    );
+    assert_eq!(
+        rows.len(),
+        2,
+        "allShortestPaths should return both 2-hop paths"
+    );
+    // Both paths have length 2
+    for row in &rows {
+        if let Some(Value::Path { nodes, edges }) = row.get("p") {
+            assert_eq!(edges.len(), 2, "each path should have 2 edges");
+            assert_eq!(nodes.len(), 3, "each path should have 3 nodes");
+        } else {
+            panic!("expected path value in p");
+        }
+    }
+}
+
+#[test]
+fn test_shortest_path_no_path_exists() {
+    let store = make_store();
+    // Two disconnected nodes
+    let mut a_props = HashMap::new();
+    a_props.insert("name".to_string(), Value::Str("Alone1".into()));
+    store
+        .create_node("test", vec!["N".to_string()], a_props)
+        .unwrap();
+    let mut b_props = HashMap::new();
+    b_props.insert("name".to_string(), Value::Str("Alone2".into()));
+    store
+        .create_node("test", vec!["N".to_string()], b_props)
+        .unwrap();
+
+    let rows = exec_query(
+        &store,
+        "MATCH p = shortestPath((a:N)-[*]->(b:N)) WHERE a.name = 'Alone1' AND b.name = 'Alone2' RETURN p",
+    );
+    assert_eq!(rows.len(), 0, "no path should yield no results");
+}
+
+#[test]
+fn test_shortest_path_self_loop() {
+    let store = make_store();
+    let mut a_props = HashMap::new();
+    a_props.insert("name".to_string(), Value::Str("Loop".into()));
+    let a = store
+        .create_node("test", vec!["N".to_string()], a_props)
+        .unwrap();
+    store
+        .create_edge("test", a, a, "R".to_string(), HashMap::new())
+        .unwrap();
+
+    // shortestPath from a to a: the BFS requires depth > 0, so the self-loop edge counts as 1 hop.
+    let rows = exec_query(
+        &store,
+        "MATCH p = shortestPath((a:N)-[*]->(b:N)) WHERE a.name = 'Loop' AND b.name = 'Loop' RETURN length(p) AS len",
+    );
+    assert_eq!(rows.len(), 1, "self-loop should yield one path");
+    assert_eq!(
+        rows[0].get("len"),
+        Some(&Value::Int(1)),
+        "self-loop path has length 1"
     );
 }

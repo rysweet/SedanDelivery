@@ -22,8 +22,8 @@ use std::sync::{Arc, RwLock};
 
 use crate::error::StorageError;
 use crate::storage::{
-    validate_graph_name, AdjEntry, EdgeData, EdgeId, GraphStats, GraphStore, IndexDescriptor,
-    NodeData, NodeId, RangeQuery,
+    validate_graph_name, AdjEntry, ConstraintDescriptor, ConstraintType, EdgeData, EdgeId,
+    GraphStats, GraphStore, IndexDescriptor, NodeData, NodeId, RangeQuery,
 };
 use crate::types::Value;
 
@@ -113,6 +113,7 @@ pub(crate) struct GraphInner {
     pub(crate) reltype_index: HashMap<String, HashSet<u64>>,
     pub(crate) indexes: Vec<IndexDescriptor>,
     pub(crate) prop_index: PropIndex,
+    pub(crate) constraints: HashSet<ConstraintDescriptor>,
     pub(crate) node_seq: u64,
     pub(crate) edge_seq: u64,
 }
@@ -128,6 +129,7 @@ impl GraphInner {
             reltype_index: HashMap::new(),
             indexes: Vec::new(),
             prop_index: BTreeMap::new(),
+            constraints: HashSet::new(),
             node_seq: 0,
             edge_seq: 0,
         }
@@ -190,6 +192,50 @@ impl GraphInner {
                 }
             }
         }
+    }
+
+    /// Check uniqueness constraints for a node being created or updated.
+    /// `exclude_node_id` is the node's own ID (to exclude self when checking
+    /// updates); pass `None` for new node creation.
+    pub(crate) fn check_uniqueness_constraints(
+        &self,
+        labels: &[String],
+        properties: &HashMap<String, Value>,
+        exclude_node_id: Option<u64>,
+    ) -> Result<(), StorageError> {
+        for constraint in &self.constraints {
+            if constraint.constraint_type != ConstraintType::Unique {
+                continue;
+            }
+            if !labels.contains(&constraint.label) {
+                continue;
+            }
+            let prop_val = match properties.get(&constraint.property) {
+                Some(v) => v,
+                None => continue,
+            };
+            // Check all existing nodes with the same label for a duplicate value.
+            if let Some(label_nodes) = self.label_index.get(&constraint.label) {
+                for &raw_id in label_nodes {
+                    if exclude_node_id == Some(raw_id) {
+                        continue;
+                    }
+                    if let Some(node) = self.nodes.get(&raw_id) {
+                        if let Some(existing_val) = node.properties.get(&constraint.property) {
+                            if existing_val == prop_val {
+                                return Err(StorageError::ConstraintViolation {
+                                    msg: format!(
+                                        "Node(:{}) already exists with property `{}` = {:?}",
+                                        constraint.label, constraint.property, prop_val
+                                    ),
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
     }
 
     pub(crate) fn next_edge_id(&mut self, graph_name: &str) -> Result<u64, StorageError> {
@@ -602,6 +648,91 @@ impl GraphStore for InMemoryGraphStore {
         indexing::drop_index_impl(self, graph, label, property)
     }
 
+    fn list_constraints(&self, graph: &str) -> Result<Vec<ConstraintDescriptor>, StorageError> {
+        let snap = self.read_snapshot()?;
+        let g = Self::require_graph(&snap, graph)?;
+        Ok(g.constraints.iter().cloned().collect())
+    }
+
+    fn create_constraint(
+        &self,
+        graph: &str,
+        label: &str,
+        property: &str,
+        constraint_type: ConstraintType,
+    ) -> Result<(), StorageError> {
+        let mut guard = self.write()?;
+        let map = Arc::make_mut(&mut guard);
+        let g = InMemoryGraphStore::require_graph_mut(map, graph)?;
+
+        let descriptor = ConstraintDescriptor {
+            label: label.to_string(),
+            property: property.to_string(),
+            constraint_type: constraint_type.clone(),
+        };
+
+        if g.constraints.contains(&descriptor) {
+            return Err(StorageError::Backend {
+                msg: format!(
+                    "Constraint already exists for :{}.{} ({})",
+                    label, property, constraint_type
+                ),
+            });
+        }
+
+        // Validate existing data does not violate the constraint.
+        if constraint_type == ConstraintType::Unique {
+            if let Some(label_nodes) = g.label_index.get(label) {
+                // Collect (value_debug_string, raw_id) pairs for duplicate detection.
+                // We use the Debug representation as a surrogate key since Value
+                // does not implement Hash/Eq.
+                let mut seen: HashMap<String, u64> = HashMap::new();
+                for &raw_id in label_nodes {
+                    if let Some(node) = g.nodes.get(&raw_id) {
+                        if let Some(val) = node.properties.get(property) {
+                            let key = format!("{:?}", val);
+                            if let Some(&first_id) = seen.get(&key) {
+                                return Err(StorageError::ConstraintViolation {
+                                    msg: format!(
+                                        "Cannot create UNIQUE constraint on :{}.{} — \
+                                         nodes #{} and #{} both have value {:?}",
+                                        label, property, first_id, raw_id, val
+                                    ),
+                                });
+                            }
+                            seen.insert(key, raw_id);
+                        }
+                    }
+                }
+            }
+        }
+
+        g.constraints.insert(descriptor);
+        Ok(())
+    }
+
+    fn drop_constraint(
+        &self,
+        graph: &str,
+        label: &str,
+        property: &str,
+    ) -> Result<(), StorageError> {
+        let mut guard = self.write()?;
+        let map = Arc::make_mut(&mut guard);
+        let g = InMemoryGraphStore::require_graph_mut(map, graph)?;
+
+        // Remove any constraint matching label+property (regardless of type).
+        let before = g.constraints.len();
+        g.constraints
+            .retain(|c| !(c.label == label && c.property == property));
+        if g.constraints.len() == before {
+            return Err(StorageError::Backend {
+                msg: format!("No constraint found for :{}.{}", label, property),
+            });
+        }
+        Ok(())
+    }
+
     fn create_graph(&self, name: &str) -> Result<(), StorageError> {
         validate_graph_name(name)?;
         let mut guard = self.write()?;
@@ -820,5 +951,183 @@ mod tests {
         store.merge_from(&other).unwrap();
         assert!(store.graph_exists("new_graph").unwrap());
         assert_eq!(store.graph_stats("new_graph").unwrap().node_count, 1);
+    }
+
+    // ── Constraint tests ─────────────────────────────────────────────────
+
+    #[test]
+    fn create_uniqueness_constraint() {
+        let store = make_store();
+        store
+            .create_constraint("test", "Person", "email", ConstraintType::Unique)
+            .unwrap();
+        let constraints = store.list_constraints("test").unwrap();
+        assert_eq!(constraints.len(), 1);
+        assert_eq!(constraints[0].label, "Person");
+        assert_eq!(constraints[0].property, "email");
+    }
+
+    #[test]
+    fn constraint_blocks_duplicate_on_create() {
+        let store = make_store();
+        store
+            .create_constraint("test", "Person", "email", ConstraintType::Unique)
+            .unwrap();
+
+        let mut props = HashMap::new();
+        props.insert(
+            "email".to_string(),
+            Value::Str("alice@example.com".into()),
+        );
+        store
+            .create_node("test", vec!["Person".to_string()], props.clone())
+            .unwrap();
+
+        // Second node with the same email should fail.
+        let result = store.create_node("test", vec!["Person".to_string()], props);
+        assert!(
+            matches!(result, Err(StorageError::ConstraintViolation { .. })),
+            "Expected ConstraintViolation, got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn constraint_allows_different_values() {
+        let store = make_store();
+        store
+            .create_constraint("test", "Person", "email", ConstraintType::Unique)
+            .unwrap();
+
+        let mut props1 = HashMap::new();
+        props1.insert(
+            "email".to_string(),
+            Value::Str("alice@example.com".into()),
+        );
+        store
+            .create_node("test", vec!["Person".to_string()], props1)
+            .unwrap();
+
+        let mut props2 = HashMap::new();
+        props2.insert("email".to_string(), Value::Str("bob@example.com".into()));
+        store
+            .create_node("test", vec!["Person".to_string()], props2)
+            .unwrap();
+    }
+
+    #[test]
+    fn constraint_blocks_duplicate_on_set_properties() {
+        let store = make_store();
+        store
+            .create_constraint("test", "Person", "email", ConstraintType::Unique)
+            .unwrap();
+
+        let mut props1 = HashMap::new();
+        props1.insert(
+            "email".to_string(),
+            Value::Str("alice@example.com".into()),
+        );
+        store
+            .create_node("test", vec!["Person".to_string()], props1)
+            .unwrap();
+
+        let mut props2 = HashMap::new();
+        props2.insert("email".to_string(), Value::Str("bob@example.com".into()));
+        let id2 = store
+            .create_node("test", vec!["Person".to_string()], props2)
+            .unwrap();
+
+        // Try to update id2's email to alice's email.
+        let mut update = HashMap::new();
+        update.insert(
+            "email".to_string(),
+            Value::Str("alice@example.com".into()),
+        );
+        let result = store.set_node_properties("test", id2, update);
+        assert!(matches!(
+            result,
+            Err(StorageError::ConstraintViolation { .. })
+        ));
+    }
+
+    #[test]
+    fn constraint_creation_fails_with_existing_duplicates() {
+        let store = make_store();
+        let mut props = HashMap::new();
+        props.insert(
+            "email".to_string(),
+            Value::Str("alice@example.com".into()),
+        );
+        store
+            .create_node("test", vec!["Person".to_string()], props.clone())
+            .unwrap();
+        store
+            .create_node("test", vec!["Person".to_string()], props)
+            .unwrap();
+
+        let result =
+            store.create_constraint("test", "Person", "email", ConstraintType::Unique);
+        assert!(matches!(
+            result,
+            Err(StorageError::ConstraintViolation { .. })
+        ));
+    }
+
+    #[test]
+    fn drop_constraint_removes_it() {
+        let store = make_store();
+        store
+            .create_constraint("test", "Person", "email", ConstraintType::Unique)
+            .unwrap();
+        assert_eq!(store.list_constraints("test").unwrap().len(), 1);
+
+        store.drop_constraint("test", "Person", "email").unwrap();
+        assert_eq!(store.list_constraints("test").unwrap().len(), 0);
+    }
+
+    #[test]
+    fn drop_constraint_allows_duplicate_after() {
+        let store = make_store();
+        store
+            .create_constraint("test", "Person", "email", ConstraintType::Unique)
+            .unwrap();
+
+        let mut props = HashMap::new();
+        props.insert(
+            "email".to_string(),
+            Value::Str("alice@example.com".into()),
+        );
+        store
+            .create_node("test", vec!["Person".to_string()], props.clone())
+            .unwrap();
+
+        store.drop_constraint("test", "Person", "email").unwrap();
+
+        // Now duplicate should succeed.
+        store
+            .create_node("test", vec!["Person".to_string()], props)
+            .unwrap();
+    }
+
+    #[test]
+    fn constraint_does_not_apply_to_different_labels() {
+        let store = make_store();
+        store
+            .create_constraint("test", "Person", "email", ConstraintType::Unique)
+            .unwrap();
+
+        let mut props = HashMap::new();
+        props.insert(
+            "email".to_string(),
+            Value::Str("alice@example.com".into()),
+        );
+        store
+            .create_node("test", vec!["Person".to_string()], props.clone())
+            .unwrap();
+
+        // Creating a Company node with the same email should succeed.
+        store
+            .create_node("test", vec!["Company".to_string()], props)
+            .unwrap();
     }
 }

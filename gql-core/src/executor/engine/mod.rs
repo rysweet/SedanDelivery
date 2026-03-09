@@ -129,6 +129,9 @@ pub struct QueryExecutor<'a> {
     pub(crate) node_cache: std::cell::RefCell<HashMap<NodeId, NodeData>>,
     /// Property access cache for edges. Same rationale as `node_cache`.
     pub(crate) edge_cache: std::cell::RefCell<HashMap<EdgeId, EdgeData>>,
+    /// When set, `exec_single_row` returns these rows instead of `[{}]`.
+    /// Used by FOREACH to inject the loop variable binding into the body sub-plan.
+    pub(crate) foreach_seed: std::cell::RefCell<Option<Vec<Row>>>,
 }
 
 impl<'a> QueryExecutor<'a> {
@@ -143,6 +146,7 @@ impl<'a> QueryExecutor<'a> {
             streaming_error: std::cell::RefCell::new(None),
             node_cache: std::cell::RefCell::new(HashMap::new()),
             edge_cache: std::cell::RefCell::new(HashMap::new()),
+            foreach_seed: std::cell::RefCell::new(None),
         }
     }
 
@@ -172,6 +176,7 @@ impl<'a> QueryExecutor<'a> {
             streaming_error: std::cell::RefCell::new(None),
             node_cache: std::cell::RefCell::new(HashMap::new()),
             edge_cache: std::cell::RefCell::new(HashMap::new()),
+            foreach_seed: std::cell::RefCell::new(None),
         }
     }
 
@@ -318,6 +323,7 @@ impl<'a> QueryExecutor<'a> {
             Operator::IndexScan { .. } => self.exec_index_scan(cx, op),
             Operator::NodeByIdSeek { .. } => self.exec_node_by_id_seek(cx, op),
             Operator::ShortestPath { .. } => self.exec_shortest_path(cx, op),
+            Operator::ForEach { .. } => self.exec_foreach(cx, op),
         }
     }
 }

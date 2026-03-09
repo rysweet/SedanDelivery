@@ -40,6 +40,9 @@ pub(crate) fn create_node_impl(
     clean_props.remove("_sd2_id");
     clean_props.remove("_sd2_eid");
 
+    // Check uniqueness constraints before inserting.
+    g.check_uniqueness_constraints(&labels, &clean_props, None)?;
+
     let node = NodeData {
         id: node_id,
         labels: labels.clone(),
@@ -67,6 +70,20 @@ pub(crate) fn set_node_properties_impl(
     let mut guard = store.write()?;
     let map = Arc::make_mut(&mut guard);
     let g = InMemoryGraphStore::require_graph_mut(map, graph)?;
+
+    // Check uniqueness constraints before mutating.
+    {
+        let node = g
+            .nodes
+            .get(&id.0)
+            .ok_or(StorageError::NodeNotFound { id: id.0 })?;
+        let mut merged = node.properties.clone();
+        for (k, v) in &properties {
+            merged.insert(k.clone(), v.clone());
+        }
+        g.check_uniqueness_constraints(&node.labels, &merged, Some(id.0))?;
+    }
+
     let node = g
         .nodes
         .get_mut(&id.0)
@@ -100,11 +117,22 @@ pub(crate) fn replace_node_properties_impl(
     let mut guard = store.write()?;
     let map = Arc::make_mut(&mut guard);
     let g = InMemoryGraphStore::require_graph_mut(map, graph)?;
+
+    // Check uniqueness constraints before mutating.
+    let labels = {
+        let node = g
+            .nodes
+            .get(&id.0)
+            .ok_or(StorageError::NodeNotFound { id: id.0 })?;
+        let labels = node.labels.clone();
+        g.check_uniqueness_constraints(&labels, &properties, Some(id.0))?;
+        labels
+    };
+
     let node = g
         .nodes
         .get_mut(&id.0)
         .ok_or(StorageError::NodeNotFound { id: id.0 })?;
-    let labels = node.labels.clone();
     let old_props = node.properties.clone();
     g.index_remove(id.0, &labels, &old_props);
     let node = g

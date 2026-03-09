@@ -205,6 +205,10 @@ pub(crate) fn discover_operator_aliases(op: &Operator) -> Vec<String> {
                 aliases.push(col_name.0.clone());
             }
         }
+        Operator::ForEach { child, .. } => {
+            // FOREACH variable is scoped — not visible after the block.
+            aliases.extend(discover_operator_aliases(child));
+        }
         Operator::SingleRow | Operator::ProduceResults { .. } => {}
     }
     aliases

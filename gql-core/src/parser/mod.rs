@@ -78,4 +78,84 @@ mod tests {
         let q = parse_query("MATCH (n) RETURN n").unwrap();
         assert_eq!(q.clauses.len(), 2);
     }
+
+    #[test]
+    fn parse_reduce_expression() {
+        let q = parse_query("RETURN reduce(total = 0, x IN [1,2,3] | total + x)").unwrap();
+        assert_eq!(q.clauses.len(), 1);
+        match &q.clauses[0] {
+            crate::ast::Clause::Return(ret) => {
+                assert_eq!(ret.items.len(), 1);
+                match &ret.items[0].expr {
+                    crate::ast::Expr::Reduce {
+                        accumulator,
+                        initial,
+                        variable,
+                        list,
+                        expression,
+                    } => {
+                        assert_eq!(accumulator.0, "total");
+                        assert!(matches!(**initial, crate::ast::Expr::Integer(0)));
+                        assert_eq!(variable.0, "x");
+                        assert!(matches!(**list, crate::ast::Expr::List(_)));
+                        assert!(matches!(
+                            **expression,
+                            crate::ast::Expr::BinaryOp { .. }
+                        ));
+                    }
+                    other => panic!("expected Reduce, got {:?}", other),
+                }
+            }
+            other => panic!("expected Return, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_extract_as_list_comp() {
+        let q = parse_query("RETURN extract(x IN [1,2,3] | x * 2)").unwrap();
+        assert_eq!(q.clauses.len(), 1);
+        match &q.clauses[0] {
+            crate::ast::Clause::Return(ret) => {
+                assert_eq!(ret.items.len(), 1);
+                match &ret.items[0].expr {
+                    crate::ast::Expr::ListComp {
+                        variable,
+                        filter,
+                        ..
+                    } => {
+                        assert_eq!(variable.0, "x");
+                        assert!(filter.is_none());
+                    }
+                    other => panic!("expected ListComp, got {:?}", other),
+                }
+            }
+            other => panic!("expected Return, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_filter_as_list_comp() {
+        let q = parse_query("RETURN filter(x IN [1,2,3,4,5] WHERE x > 3)").unwrap();
+        assert_eq!(q.clauses.len(), 1);
+        match &q.clauses[0] {
+            crate::ast::Clause::Return(ret) => {
+                assert_eq!(ret.items.len(), 1);
+                match &ret.items[0].expr {
+                    crate::ast::Expr::ListComp {
+                        variable,
+                        filter,
+                        map,
+                        ..
+                    } => {
+                        assert_eq!(variable.0, "x");
+                        assert!(filter.is_some());
+                        // map should be just the variable (identity)
+                        assert!(matches!(**map, crate::ast::Expr::Variable(_)));
+                    }
+                    other => panic!("expected ListComp, got {:?}", other),
+                }
+            }
+            other => panic!("expected Return, got {:?}", other),
+        }
+    }
 }

@@ -116,6 +116,7 @@ async fn query_handler(
     Path(name): Path<String>,
     Json(body): Json<CypherBody>,
 ) -> Result<Json<QueryResponse>, ApiError> {
+    let name = body.database.as_ref().unwrap_or(&name);
     validate_graph_name(&name).map_err(ApiError::from)?;
     reject_oversized_query(&body.cypher)?;
     require_graph(&state, &name)?;
@@ -188,6 +189,7 @@ async fn explain_handler(
     Path(name): Path<String>,
     Json(body): Json<CypherBody>,
 ) -> Result<Json<ExplainResponse>, ApiError> {
+    let name = body.database.as_ref().unwrap_or(&name);
     validate_graph_name(&name).map_err(ApiError::from)?;
     reject_oversized_query(&body.cypher)?;
     require_graph(&state, &name)?;
@@ -245,6 +247,7 @@ async fn mutate_handler(
     Path(name): Path<String>,
     Json(body): Json<CypherBody>,
 ) -> Result<Json<MutateResponse>, ApiError> {
+    let name = body.database.as_ref().unwrap_or(&name);
     validate_graph_name(&name).map_err(ApiError::from)?;
     reject_oversized_query(&body.cypher)?;
     require_graph(&state, &name)?;

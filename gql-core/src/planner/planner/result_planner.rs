@@ -38,16 +38,39 @@ impl<'s> QueryPlanner<'s> {
             )));
         }
 
-        // Look up the procedure.
-        let proc_def = match self.registry.get(&cc.procedure) {
-            Some(p) => p,
-            None => {
-                return Err(GqlError::Execution(ExecutionError::unsupported(format!(
-                    "ProcedureNotFound: {}",
-                    cc.procedure
-                ))));
+        // Check if this is a built-in procedure handled dynamically by the executor.
+        let is_builtin = crate::procedure::is_builtin_procedure(&cc.procedure);
+
+        // Look up the procedure (skip registry lookup for built-ins).
+        let proc_def;
+        let builtin_def;
+        let proc_ref: Option<&crate::procedure::ProcedureDefinition> = if is_builtin {
+            // Built-in procedures have no input params; create a temporary definition
+            // for validation purposes only. The executor handles them dynamically.
+            let output_columns =
+                crate::procedure::builtin_output_columns(&cc.procedure).unwrap_or_default();
+            builtin_def = crate::procedure::ProcedureDefinition {
+                name: cc.procedure.clone(),
+                input_params: vec![],
+                output_columns,
+                data: vec![],
+            };
+            Some(&builtin_def)
+        } else {
+            match self.registry.get(&cc.procedure) {
+                Some(p) => {
+                    proc_def = p;
+                    Some(proc_def)
+                }
+                None => {
+                    return Err(GqlError::Execution(ExecutionError::unsupported(format!(
+                        "ProcedureNotFound: {}",
+                        cc.procedure
+                    ))));
+                }
             }
         };
+        let proc_ref = proc_ref.unwrap();
 
         // Implicit arguments (no parens) are not allowed in in-query CALL with YIELD.
         if !cc.explicit_args && !cc.yield_items.is_empty() {
@@ -60,17 +83,17 @@ impl<'s> QueryPlanner<'s> {
         // Resolve arguments.
         let args = if cc.explicit_args {
             // Explicit arguments: validate count.
-            if cc.args.len() != proc_def.input_params.len() {
+            if cc.args.len() != proc_ref.input_params.len() {
                 return Err(GqlError::Execution(ExecutionError::unsupported(format!(
                     "InvalidNumberOfArguments: expected {}, got {}",
-                    proc_def.input_params.len(),
+                    proc_ref.input_params.len(),
                     cc.args.len()
                 ))));
             }
             // Basic type checking for literal arguments.
             for (i, arg) in cc.args.iter().enumerate() {
                 if let Some(val) = expr_to_literal_value(arg) {
-                    if !proc_def.check_arg_type(i, &val) {
+                    if !proc_ref.check_arg_type(i, &val) {
                         return Err(GqlError::Execution(ExecutionError::unsupported(
                             "InvalidArgumentType".to_string(),
                         )));
@@ -81,7 +104,7 @@ impl<'s> QueryPlanner<'s> {
         } else {
             // Implicit arguments from query parameters.
             let mut args = Vec::new();
-            for param in &proc_def.input_params {
+            for param in &proc_ref.input_params {
                 if self.parameters.contains_key(&param.name) {
                     args.push(Expr::Parameter(param.name.clone()));
                 } else {
@@ -97,7 +120,7 @@ impl<'s> QueryPlanner<'s> {
         // In-query CALL without YIELD: output columns are not exposed.
         // Check if subsequent RETURN references procedure output columns -> UndefinedVariable.
         if is_in_query && cc.yield_items.is_empty() && !cc.yield_star && cc.explicit_args {
-            let output_names: std::collections::HashSet<&str> = proc_def
+            let output_names: std::collections::HashSet<&str> = proc_ref
                 .output_columns
                 .iter()
                 .map(|c| c.name.as_str())
@@ -178,10 +201,22 @@ impl<'s> QueryPlanner<'s> {
                         })
                         .collect()
                 } else if let Some(proc_def) = self.registry.get(procedure) {
-                    // Standalone or YIELD * -> output all columns.
+                    // Standalone or YIELD * -> output all columns from registry.
                     proc_def
                         .output_columns
                         .iter()
+                        .map(|col| {
+                            (
+                                col.name.clone(),
+                                Expr::Variable(Identifier::new(col.name.clone())),
+                            )
+                        })
+                        .collect()
+                } else if let Some(cols) =
+                    crate::procedure::builtin_output_columns(procedure)
+                {
+                    // Built-in procedure: derive columns from static metadata.
+                    cols.iter()
                         .map(|col| {
                             (
                                 col.name.clone(),

@@ -235,7 +235,8 @@ impl<'a> QueryExecutor<'a> {
             | Operator::Remove { .. }
             | Operator::Merge { .. }
             | Operator::MergeRelationship { .. }
-            | Operator::Call { .. } => false,
+            | Operator::Call { .. }
+            | Operator::ForEach { .. } => false,
         }
     }
 

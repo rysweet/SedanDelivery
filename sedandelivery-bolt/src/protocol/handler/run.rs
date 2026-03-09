@@ -103,6 +103,55 @@ fn detect_explain_profile(query: &str) -> (bool, bool, String) {
     (is_explain, is_profile, actual_query)
 }
 
+// -- USE database parsing ----------------------------------------------------
+
+/// Parse `USE <database>` from a query string. Returns the database name
+/// if the query is a USE statement, `None` otherwise.
+fn parse_use_database(query: &str) -> Option<String> {
+    let trimmed = query.trim();
+    let upper = trimmed.to_uppercase();
+    if !upper.starts_with("USE ") {
+        return None;
+    }
+    // Also reject if it looks like a longer keyword (USE is not a prefix of something else
+    // in Cypher, but be safe).
+    let rest = trimmed["USE ".len()..].trim();
+    if rest.is_empty() {
+        return None;
+    }
+    // Extract the database name. Handle backtick-quoted and simple identifiers.
+    let name = if rest.starts_with('`') {
+        // Backtick-quoted: scan for closing backtick.
+        let bytes = rest.as_bytes();
+        let mut i = 1;
+        let mut result = String::new();
+        while i < bytes.len() {
+            if bytes[i] == b'`' {
+                if i + 1 < bytes.len() && bytes[i + 1] == b'`' {
+                    result.push('`');
+                    i += 2;
+                } else {
+                    return Some(result);
+                }
+            } else {
+                result.push(bytes[i] as char);
+                i += 1;
+            }
+        }
+        result
+    } else {
+        // Simple identifier: alphanumeric + underscore + hyphen + dot
+        rest.chars()
+            .take_while(|c| c.is_alphanumeric() || *c == '_' || *c == '-' || *c == '.')
+            .collect()
+    };
+    if name.is_empty() {
+        None
+    } else {
+        Some(name)
+    }
+}
+
 // -- Store resolution --------------------------------------------------------
 
 /// Resolve the effective store for query execution.
@@ -488,6 +537,48 @@ pub(crate) async fn handle_run(
     let trimmed = strip_cypher_prefix(&query);
 
     tracing::debug!(query = %trimmed, "handle_run query");
+
+    // Handle `USE <database>` — switches the session's active graph.
+    if let Some(db_name) = parse_use_database(trimmed) {
+        session.current_graph = db_name.clone();
+        let qid = session.allocate_qid()?;
+        session.pending_results.insert(
+            qid,
+            PendingQuery {
+                records: vec![],
+                query_type: "s".to_string(),
+                stats: vec![],
+                cursor: 0,
+                start_time: std::time::Instant::now(),
+                metadata: vec![],
+                explain_plan: None,
+                profile_plan: None,
+                graph: db_name,
+                notifications: vec![],
+                trailing_error: None,
+                admin_stats: Some(AdminStats {
+                    indexes_added: 0,
+                    indexes_removed: 0,
+                    constraints_added: 0,
+                    constraints_removed: 0,
+                    system_updates: 1,
+                }),
+            },
+        );
+        session.state = match session.state {
+            ServerState::TxReady | ServerState::TxStreaming => ServerState::TxStreaming,
+            _ => {
+                session.write_permit = None;
+                ServerState::Streaming
+            }
+        };
+        return Ok(vec![ServerMessage::Success(bolt_map! {
+            "fields" => BoltValue::List(vec![]),
+            "t_first" => BoltValue::Int(0),
+            "qid" => BoltValue::Int(qid)
+        })]);
+    }
+
     let (is_explain, is_profile, actual_query) = detect_explain_profile(trimmed);
 
     let graph = extra
@@ -814,5 +905,57 @@ mod tests {
             detect_explain_profile("EXPLAIN PROFILE MATCH (n) RETURN n");
         assert!(is_explain);
         assert!(!is_profile);
+    }
+
+    // ── parse_use_database ──────────────────────────────────────────────
+
+    #[test]
+    fn parse_use_simple_database() {
+        assert_eq!(
+            parse_use_database("USE mydb"),
+            Some("mydb".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_use_database_case_insensitive() {
+        assert_eq!(
+            parse_use_database("use neo4j"),
+            Some("neo4j".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_use_database_backtick_quoted() {
+        assert_eq!(
+            parse_use_database("USE `my-database`"),
+            Some("my-database".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_use_database_with_trailing_whitespace() {
+        assert_eq!(
+            parse_use_database("USE testdb  "),
+            Some("testdb".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_use_database_returns_none_for_non_use() {
+        assert_eq!(parse_use_database("MATCH (n) RETURN n"), None);
+    }
+
+    #[test]
+    fn parse_use_database_returns_none_for_empty_name() {
+        assert_eq!(parse_use_database("USE "), None);
+    }
+
+    #[test]
+    fn parse_use_database_with_hyphen() {
+        assert_eq!(
+            parse_use_database("USE test-db"),
+            Some("test-db".to_string())
+        );
     }
 }

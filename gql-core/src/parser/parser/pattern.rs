@@ -4,7 +4,7 @@ use smol_str::SmolStr;
 
 use crate::ast::{
     Direction, Identifier, Label, MapLiteral, NodePattern, PathPattern, PathStep, Properties,
-    RangeQuantifier, RelPattern, RelType,
+    RangeQuantifier, RelPattern, RelType, ShortestPathMode,
 };
 use crate::error::ParseError;
 use crate::parser::lexer::TokenKind;
@@ -15,20 +15,82 @@ use super::Parser;
 impl<'src> Parser<'src> {
     // ── Path patterns ─────────────────────────────────────────────────────────
 
+    /// Detect whether the current position starts a `shortestPath(` or `allShortestPaths(` call.
+    /// Returns the mode and does NOT advance — the caller is responsible for consuming tokens.
+    fn peek_shortest_path_function(&self) -> Option<ShortestPathMode> {
+        if !matches!(self.peek(), TokenKind::Identifier) {
+            return None;
+        }
+        let text = self.tokens[self.pos].text;
+        if text.eq_ignore_ascii_case("shortestPath") {
+            // Next token must be LParen
+            if self.peek2() == &TokenKind::LParen {
+                return Some(ShortestPathMode::Single);
+            }
+        } else if text.eq_ignore_ascii_case("allShortestPaths") {
+            if self.peek2() == &TokenKind::LParen {
+                return Some(ShortestPathMode::All);
+            }
+        }
+        None
+    }
+
     pub(super) fn parse_path_pattern(&mut self) -> Result<PathPattern, ParseError> {
         // Optional path variable assignment: `p = (a)...`
-        // Look for `Identifier =` where the next-next token starts a path.
+        // Look for `Identifier =` where the next-next token starts a path or shortest path call.
         let variable = if (matches!(self.peek(), TokenKind::Identifier)
             || is_keyword_usable_as_ident(self.peek()))
             && self.peek2() == &TokenKind::Eq
-            && matches!(self.peek3(), TokenKind::LParen)
         {
-            let name = self.expect_identifier()?;
-            self.advance(); // consume `=`
-            Some(Identifier::new(name))
+            // After `=`, we accept either `(` (direct path) or an identifier
+            // that is shortestPath/allShortestPaths followed by `(`.
+            let peek3 = self.peek3();
+            let is_path_start = matches!(peek3, TokenKind::LParen);
+            let is_shortest_path_start = if matches!(peek3, TokenKind::Identifier) {
+                // peek3 is the identifier, peek at pos+3 for LParen
+                let idx4 = (self.pos + 3).min(self.tokens.len() - 1);
+                matches!(self.tokens[idx4].kind, TokenKind::LParen) && {
+                    let t = self.tokens[self.pos + 2].text;
+                    t.eq_ignore_ascii_case("shortestPath")
+                        || t.eq_ignore_ascii_case("allShortestPaths")
+                }
+            } else {
+                false
+            };
+            if is_path_start || is_shortest_path_start {
+                let name = self.expect_identifier()?;
+                self.advance(); // consume `=`
+                Some(Identifier::new(name))
+            } else {
+                None
+            }
         } else {
             None
         };
+
+        // Check for shortestPath(...) or allShortestPaths(...) wrapper.
+        let shortest_path_mode = self.peek_shortest_path_function();
+        if let Some(mode) = shortest_path_mode {
+            self.advance(); // consume `shortestPath` or `allShortestPaths`
+            self.expect(&TokenKind::LParen)?; // consume `(`
+
+            // Parse the inner path pattern (which starts with a node pattern `(...)`)
+            let start = self.parse_node_pattern()?;
+            let mut steps = Vec::new();
+            while matches!(self.peek(), TokenKind::Dash | TokenKind::LeftArrow) {
+                let (rel, node) = self.parse_rel_pattern()?;
+                steps.push(PathStep { rel, node });
+            }
+
+            self.expect(&TokenKind::RParen)?; // consume closing `)` of shortestPath(...)
+
+            return Ok(PathPattern {
+                variable,
+                start,
+                steps,
+                shortest_path: Some(mode),
+            });
+        }
 
         let start = self.parse_node_pattern()?;
         let mut steps = Vec::new();
@@ -43,6 +105,7 @@ impl<'src> Parser<'src> {
             variable,
             start,
             steps,
+            shortest_path: None,
         })
     }
 

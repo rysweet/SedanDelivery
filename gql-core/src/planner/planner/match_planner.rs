@@ -1,7 +1,9 @@
 //! MATCH and OPTIONAL MATCH planning — pattern compilation and edge expansion.
 
-use crate::ast::{Expr, Identifier, Label, MatchClause, PathPattern, PathStep, Properties};
-use crate::error::GqlError;
+use crate::ast::{
+    Expr, Identifier, Label, MatchClause, PathPattern, PathStep, Properties, ShortestPathMode,
+};
+use crate::error::{GqlError, PlanError};
 use crate::planner::Operator;
 
 use super::helpers::{label_filter_expr, param_props_filter_expr, props_to_filter_expr};
@@ -81,7 +83,14 @@ impl<'s> QueryPlanner<'s> {
     /// When the pattern has a named path variable (e.g. `p = (a)-[r]->(b)`),
     /// wraps the result with an `AssemblePath` operator that collects node and
     /// edge IDs into a `Value::Path`.
+    ///
+    /// When `shortest_path` is set, generates a `ShortestPath` operator instead.
     fn plan_path_pattern(&self, pattern: &PathPattern) -> Result<Operator, GqlError> {
+        // Handle shortestPath / allShortestPaths pattern functions.
+        if let Some(sp_mode) = &pattern.shortest_path {
+            return self.plan_shortest_path_pattern(pattern, *sp_mode);
+        }
+
         let has_path_var = pattern.variable.is_some();
         let start = &pattern.start;
         let start_alias = start
@@ -196,15 +205,14 @@ impl<'s> QueryPlanner<'s> {
             if let Some(range) = &rel.range {
                 let (min, max) =
                     crate::planner::validate_varlen_bounds(range.min.unwrap_or(1), range.max)?;
-                let path_alias =
-                    if has_path_var {
-                        // Ensure a path alias exists for VarLenExpand when tracking a named path.
-                        Some(rel.variable.clone().unwrap_or_else(|| {
-                            Identifier::new(format!("__path_rel_{}__", step_idx))
-                        }))
-                    } else {
-                        rel.variable.clone()
-                    };
+                let path_alias = if has_path_var {
+                    // Ensure a path alias exists for VarLenExpand when tracking a named path.
+                    Some(rel.variable.clone().unwrap_or_else(|| {
+                        Identifier::new(format!("__path_rel_{}__", step_idx))
+                    }))
+                } else {
+                    rel.variable.clone()
+                };
                 // For VarLenExpand with a named path, the VarLenExpand itself
                 // produces a Path value; the AssemblePath wrapper will merge it.
                 if has_path_var {
@@ -240,11 +248,6 @@ impl<'s> QueryPlanner<'s> {
                 };
             } else {
                 // Single-hop expand.
-                // Always assign a rel_alias so that the edge ID is stored in the
-                // row, which enables edge isomorphism checking across multi-hop
-                // patterns (openCypher spec: each relationship can only be bound
-                // once per path traversal). For named paths and inline properties
-                // we also need the alias for path assembly / filtering.
                 let rel_alias = Some(
                     rel.variable
                         .clone()
@@ -267,11 +270,8 @@ impl<'s> QueryPlanner<'s> {
             }
 
             // If the relationship has inline property constraints, add a property filter.
-            // For variable-length patterns, this is handled inside VarLenExpand via
-            // rel_props (each traversed edge is checked during BFS), so skip the Filter.
             match &rel.properties {
                 Some(Properties::Map(props)) if !props.is_empty() && rel.range.is_none() => {
-                    // rel_alias is guaranteed to exist because we always assign one above.
                     let filter_alias = rel
                         .variable
                         .clone()
@@ -304,8 +304,7 @@ impl<'s> QueryPlanner<'s> {
                 };
             }
 
-            // If the destination node has label constraints, add label filters for ALL labels.
-            // Cypher semantics: (n:A:B:C) matches nodes with ALL of labels A, B, C.
+            // If the destination node has label constraints, add label filters.
             for dst_label in &node.labels {
                 let pred = label_filter_expr(&dst_alias, dst_label);
                 op = Operator::Filter {
@@ -360,5 +359,148 @@ impl<'s> QueryPlanner<'s> {
 
     pub(crate) fn plan_node_scan(&self, alias: Identifier, label: Option<Label>) -> Operator {
         Operator::NodeScan { label, alias }
+    }
+
+    /// Plan a `shortestPath(...)` or `allShortestPaths(...)` pattern.
+    ///
+    /// The pattern must have exactly one step with a variable-length relationship.
+    /// Generates:
+    /// ```text
+    /// Apply {
+    ///   outer: NodeScan(start) + filters,
+    ///   inner: Apply {
+    ///     outer: NodeScan(end) + filters,
+    ///     inner: ShortestPath { src, dst, ... }
+    ///   }
+    /// }
+    /// ```
+    fn plan_shortest_path_pattern(
+        &self,
+        pattern: &PathPattern,
+        mode: ShortestPathMode,
+    ) -> Result<Operator, GqlError> {
+        if pattern.steps.len() != 1 {
+            return Err(GqlError::Plan(PlanError::SemanticError {
+                message: "shortestPath requires exactly one relationship step".to_string(),
+            }));
+        }
+        let step = &pattern.steps[0];
+        let range = step.rel.range.as_ref().ok_or_else(|| {
+            GqlError::Plan(PlanError::SemanticError {
+                message:
+                    "shortestPath requires a variable-length relationship (use [*] or [*..N])"
+                        .to_string(),
+            })
+        })?;
+
+        let (min, max) =
+            crate::planner::validate_varlen_bounds(range.min.unwrap_or(1), range.max)?;
+
+        let start = &pattern.start;
+        let src_alias = start
+            .variable
+            .clone()
+            .unwrap_or_else(|| Identifier::new("__sp_src__"));
+        let start_label = start.labels.first().cloned();
+
+        let end = &step.node;
+        let dst_alias = end
+            .variable
+            .clone()
+            .unwrap_or_else(|| Identifier::new("__sp_dst__"));
+        let end_label = end.labels.first().cloned();
+
+        let path_alias = pattern
+            .variable
+            .clone()
+            .unwrap_or_else(|| Identifier::new("__sp_path__"));
+
+        // Build start node scan + filters.
+        let mut src_op = self.plan_node_scan(src_alias.clone(), start_label);
+        if let Some(Properties::Map(props)) = &start.properties {
+            if !props.is_empty() {
+                let pred = props_to_filter_expr(&src_alias, props);
+                src_op = Operator::Filter {
+                    predicate: pred,
+                    child: Box::new(src_op),
+                };
+            }
+        } else if let Some(Properties::Parameter(name)) = &start.properties {
+            let pred = param_props_filter_expr(&src_alias, name);
+            src_op = Operator::Filter {
+                predicate: pred,
+                child: Box::new(src_op),
+            };
+        }
+        if start.labels.len() > 1 {
+            for extra_label in &start.labels[1..] {
+                let pred = label_filter_expr(&src_alias, extra_label);
+                src_op = Operator::Filter {
+                    predicate: pred,
+                    child: Box::new(src_op),
+                };
+            }
+        }
+        if let Some(pred) = &start.where_clause {
+            src_op = Operator::Filter {
+                predicate: pred.clone(),
+                child: Box::new(src_op),
+            };
+        }
+
+        // Build end node scan + filters.
+        let mut dst_op = self.plan_node_scan(dst_alias.clone(), end_label);
+        if let Some(Properties::Map(props)) = &end.properties {
+            if !props.is_empty() {
+                let pred = props_to_filter_expr(&dst_alias, props);
+                dst_op = Operator::Filter {
+                    predicate: pred,
+                    child: Box::new(dst_op),
+                };
+            }
+        } else if let Some(Properties::Parameter(name)) = &end.properties {
+            let pred = param_props_filter_expr(&dst_alias, name);
+            dst_op = Operator::Filter {
+                predicate: pred,
+                child: Box::new(dst_op),
+            };
+        }
+        if end.labels.len() > 1 {
+            for extra_label in &end.labels[1..] {
+                let pred = label_filter_expr(&dst_alias, extra_label);
+                dst_op = Operator::Filter {
+                    predicate: pred,
+                    child: Box::new(dst_op),
+                };
+            }
+        }
+        if let Some(pred) = &end.where_clause {
+            dst_op = Operator::Filter {
+                predicate: pred.clone(),
+                child: Box::new(dst_op),
+            };
+        }
+
+        // Build ShortestPath operator.
+        let sp_op = Operator::ShortestPath {
+            src_alias,
+            dst_alias,
+            rel_types: step.rel.rel_types.clone(),
+            direction: step.rel.direction,
+            min,
+            max,
+            path_alias,
+            all_paths: mode == ShortestPathMode::All,
+        };
+
+        // Apply(outer=src_scan, inner=Apply(outer=dst_scan, inner=shortest_path))
+        let inner_apply = Operator::Apply {
+            outer: Box::new(dst_op),
+            inner: Box::new(sp_op),
+        };
+        Ok(Operator::Apply {
+            outer: Box::new(src_op),
+            inner: Box::new(inner_apply),
+        })
     }
 }

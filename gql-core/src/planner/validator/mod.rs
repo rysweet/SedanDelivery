@@ -58,6 +58,7 @@ pub fn validate_query(query: &Query) -> Result<(), GqlError> {
     ctx.validate(query)
 }
 
+#[derive(Clone)]
 struct ValidationContext {
     /// Variables currently in scope with their kind.
     vars: HashMap<String, VarKind>,
@@ -145,8 +146,34 @@ impl ValidationContext {
                         self.vars.insert(var_name, VarKind::Untyped);
                     }
                 }
+                Clause::CallSubquery { inner } => {
+                    // Validate the inner subquery with a fresh context that inherits
+                    // the outer scope variables (for correlated subqueries via WITH import).
+                    let mut inner_ctx = ValidationContext::new();
+                    inner_ctx.vars = self.vars.clone();
+                    let inner_query = crate::ast::Query::new(inner.clone());
+                    inner_ctx.validate(&inner_query)?;
+                    // After the subquery, variables from the inner RETURN are in scope.
+                    // Register them as Untyped since their actual types depend on runtime.
+                    for clause in inner {
+                        if let Clause::Return(rc) = clause {
+                            for item in &rc.items {
+                                if let Some(ref alias) = item.alias {
+                                    self.vars.insert(alias.0.clone(), VarKind::Untyped);
+                                } else if let crate::ast::Expr::Variable(ref id) = item.expr {
+                                    self.vars.insert(id.0.clone(), VarKind::Untyped);
+                                }
+                            }
+                        }
+                    }
+                }
                 Clause::Foreach(_) => {
                     // FOREACH clauses — validated at the planner level.
+                }
+                Clause::LoadCsv(lc) => {
+                    self.has_read = true;
+                    // Register the alias variable so subsequent clauses can reference it.
+                    self.vars.insert(lc.alias.0.clone(), VarKind::Untyped);
                 }
             }
         }
@@ -206,6 +233,21 @@ impl ValidationContext {
                     self.check_vars_defined(f, &inner_extra)?;
                 }
                 self.check_vars_defined(map, &inner_extra)
+            }
+            Expr::Reduce {
+                accumulator,
+                initial,
+                variable,
+                list,
+                expression,
+            } => {
+                self.check_vars_defined(initial, extra_vars)?;
+                self.check_vars_defined(list, extra_vars)?;
+                // Both accumulator and variable are in scope for the expression
+                let mut inner_extra = extra_vars.clone();
+                inner_extra.insert(accumulator.0.clone());
+                inner_extra.insert(variable.0.clone());
+                self.check_vars_defined(expression, &inner_extra)
             }
             Expr::List(items) => {
                 for item in items {

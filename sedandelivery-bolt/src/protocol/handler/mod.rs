@@ -908,6 +908,193 @@ mod tests {
         }
     }
 
+    // -- Nested BEGIN rejection tests ----------------------------------------
+
+    #[tokio::test]
+    async fn nested_begin_returns_failure() {
+        let mut session = make_ready_session();
+
+        // First BEGIN succeeds.
+        let result = handle_message(&mut session, ClientMessage::Begin(vec![]))
+            .await
+            .unwrap();
+        assert!(matches!(&result[0], ServerMessage::Success(_)));
+        assert_eq!(session.state, ServerState::TxReady);
+
+        // Second BEGIN while already in TxReady should fail.
+        let result = handle_message(&mut session, ClientMessage::Begin(vec![]))
+            .await
+            .unwrap();
+        assert_eq!(result.len(), 1);
+        match &result[0] {
+            ServerMessage::Failure(meta) => {
+                let code = meta.get_str("code").unwrap();
+                assert_eq!(code, "Neo.ClientError.Request.Invalid");
+                let msg = meta.get_str("message").unwrap();
+                assert!(
+                    msg.contains("TxReady"),
+                    "error message should mention TxReady state, got: {}",
+                    msg
+                );
+            }
+            other => panic!("expected Failure for nested BEGIN, got {:?}", other),
+        }
+        assert_eq!(session.state, ServerState::Failed);
+    }
+
+    #[tokio::test]
+    async fn nested_begin_in_tx_streaming_returns_failure() {
+        let mut session = make_ready_session();
+
+        // BEGIN, then RUN to move to TxStreaming.
+        handle_message(&mut session, ClientMessage::Begin(vec![]))
+            .await
+            .unwrap();
+        handle_message(
+            &mut session,
+            ClientMessage::Run {
+                query: "RETURN 1 AS n".to_string(),
+                params: vec![],
+                extra: vec![],
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(session.state, ServerState::TxStreaming);
+
+        // BEGIN while in TxStreaming should fail.
+        let result = handle_message(&mut session, ClientMessage::Begin(vec![]))
+            .await
+            .unwrap();
+        assert_eq!(result.len(), 1);
+        match &result[0] {
+            ServerMessage::Failure(meta) => {
+                let code = meta.get_str("code").unwrap();
+                assert_eq!(code, "Neo.ClientError.Request.Invalid");
+            }
+            other => panic!("expected Failure for nested BEGIN, got {:?}", other),
+        }
+        assert_eq!(session.state, ServerState::Failed);
+    }
+
+    // -- RUN after ROLLBACK tests --------------------------------------------
+
+    #[tokio::test]
+    async fn run_succeeds_after_rollback() {
+        let mut session = make_ready_session();
+
+        // BEGIN -> CREATE -> ROLLBACK
+        transaction::handle_begin(&mut session, vec![]).unwrap();
+        run_and_pull(&mut session, "CREATE (:Temp {val: 1})").await;
+        transaction::handle_rollback(&mut session).unwrap();
+        assert_eq!(session.state, ServerState::Ready);
+
+        // RUN after ROLLBACK should work normally (auto-commit mode).
+        let result = run::handle_run(
+            &mut session,
+            "RETURN 42 AS answer".to_string(),
+            vec![],
+            vec![],
+        )
+        .await
+        .unwrap();
+        assert!(
+            matches!(&result[0], ServerMessage::Success(_)),
+            "RUN after ROLLBACK should succeed, got {:?}",
+            result
+        );
+
+        let pull_msgs =
+            pull::handle_pull(&mut session, bolt_map! { "n" => BoltValue::Int(-1) }).unwrap();
+        let record = pull_msgs
+            .iter()
+            .find(|m| matches!(m, ServerMessage::Record(_)));
+        assert!(record.is_some(), "expected a record after ROLLBACK + RUN");
+        if let ServerMessage::Record(fields) = record.unwrap() {
+            assert_eq!(fields[0], BoltValue::Int(42));
+        }
+    }
+
+    #[tokio::test]
+    async fn run_after_rollback_does_not_see_rolled_back_data() {
+        let mut session = make_ready_session();
+
+        // BEGIN -> CREATE -> ROLLBACK
+        transaction::handle_begin(&mut session, vec![]).unwrap();
+        run_and_pull(&mut session, "CREATE (:Ghost {val: 99})").await;
+        transaction::handle_rollback(&mut session).unwrap();
+
+        // Query for the rolled-back node in auto-commit mode -- should not exist.
+        let pull_msgs = run_and_pull(&mut session, "MATCH (n:Ghost) RETURN count(n) AS c").await;
+        let record = pull_msgs
+            .iter()
+            .find(|m| matches!(m, ServerMessage::Record(_)));
+        assert!(record.is_some(), "expected a record");
+        if let ServerMessage::Record(fields) = record.unwrap() {
+            assert_eq!(
+                fields[0],
+                BoltValue::Int(0),
+                "rolled-back data should not be visible after ROLLBACK"
+            );
+        }
+    }
+
+    // -- Full transaction lifecycle test -------------------------------------
+
+    #[tokio::test]
+    async fn full_transaction_lifecycle() {
+        let mut session = make_ready_session();
+
+        // 1. BEGIN
+        let begin_result = handle_message(&mut session, ClientMessage::Begin(vec![]))
+            .await
+            .unwrap();
+        assert!(matches!(&begin_result[0], ServerMessage::Success(_)));
+        assert_eq!(session.state, ServerState::TxReady);
+
+        // 2. RUN inside TX
+        let run_result = handle_message(
+            &mut session,
+            ClientMessage::Run {
+                query: "CREATE (:LifecycleNode {step: 1})".to_string(),
+                params: vec![],
+                extra: vec![],
+            },
+        )
+        .await
+        .unwrap();
+        assert!(matches!(&run_result[0], ServerMessage::Success(_)));
+        assert_eq!(session.state, ServerState::TxStreaming);
+
+        // 3. PULL
+        let pull_result = handle_message(
+            &mut session,
+            ClientMessage::Pull(bolt_map! { "n" => BoltValue::Int(-1) }),
+        )
+        .await
+        .unwrap();
+        let last = pull_result.last().unwrap();
+        assert!(matches!(last, ServerMessage::Success(_)));
+        assert_eq!(session.state, ServerState::TxReady);
+
+        // 4. COMMIT
+        let commit_result = handle_message(&mut session, ClientMessage::Commit)
+            .await
+            .unwrap();
+        assert!(matches!(&commit_result[0], ServerMessage::Success(_)));
+        assert_eq!(session.state, ServerState::Ready);
+
+        // 5. Verify the committed data is visible
+        let pull_msgs =
+            run_and_pull(&mut session, "MATCH (n:LifecycleNode) RETURN count(n) AS c").await;
+        let record = pull_msgs
+            .iter()
+            .find(|m| matches!(m, ServerMessage::Record(_)));
+        if let ServerMessage::Record(fields) = record.unwrap() {
+            assert_eq!(fields[0], BoltValue::Int(1));
+        }
+    }
+
     // -- Notification detection tests ----------------------------------------
 
     #[tokio::test]

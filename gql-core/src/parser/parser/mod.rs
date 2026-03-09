@@ -1016,4 +1016,38 @@ mod tests {
             other => panic!("expected ListComp, got {other:?}"),
         }
     }
+
+    // ── UNION / UNION ALL parsing ────────────────────────────────────────────
+
+    #[test]
+    fn union_basic() {
+        let q = parse("RETURN 1 AS x UNION RETURN 2 AS x");
+        assert_eq!(q.unions.len(), 1);
+        assert!(!q.unions[0].0, "should be UNION (not ALL)");
+        assert!(matches!(&q.clauses[0], Clause::Return(_)));
+        assert!(matches!(&q.unions[0].1[0], Clause::Return(_)));
+    }
+
+    #[test]
+    fn union_all() {
+        let q = parse("RETURN 1 AS x UNION ALL RETURN 1 AS x");
+        assert_eq!(q.unions.len(), 1);
+        assert!(q.unions[0].0, "should be UNION ALL");
+    }
+
+    #[test]
+    fn union_multiple_parts() {
+        let q = parse("RETURN 1 AS x UNION RETURN 2 AS x UNION RETURN 3 AS x");
+        assert_eq!(q.unions.len(), 2);
+        assert!(!q.unions[0].0);
+        assert!(!q.unions[1].0);
+    }
+
+    #[test]
+    fn union_with_match() {
+        let q = parse("MATCH (n:A) RETURN n.name AS name UNION MATCH (n:B) RETURN n.name AS name");
+        assert_eq!(q.clauses.len(), 2); // MATCH + RETURN
+        assert_eq!(q.unions.len(), 1);
+        assert_eq!(q.unions[0].1.len(), 2); // MATCH + RETURN
+    }
 }

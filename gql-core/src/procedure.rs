@@ -109,6 +109,67 @@ fn values_match_for_lookup(arg: &Value, data: &Value) -> bool {
     }
 }
 
+// ── Built-in procedure support ────────────────────────────────────────────────
+
+/// Names of procedures that are handled dynamically by the executor
+/// (they query the store at runtime rather than using static registry data).
+pub const BUILTIN_PROCEDURES: &[&str] = &[
+    "db.labels",
+    "db.relationshipTypes",
+    "db.propertyKeys",
+    "dbms.components",
+    "db.schema.visualization",
+];
+
+/// Check whether a procedure name is a built-in that the executor handles dynamically.
+pub fn is_builtin_procedure(name: &str) -> bool {
+    BUILTIN_PROCEDURES.contains(&name)
+}
+
+/// Metadata for built-in procedures: output column definitions.
+/// These have no input parameters.
+pub fn builtin_output_columns(name: &str) -> Option<Vec<ProcedureParam>> {
+    match name {
+        "db.labels" => Some(vec![ProcedureParam {
+            name: "label".to_string(),
+            type_name: "STRING?".to_string(),
+        }]),
+        "db.relationshipTypes" => Some(vec![ProcedureParam {
+            name: "relationshipType".to_string(),
+            type_name: "STRING?".to_string(),
+        }]),
+        "db.propertyKeys" => Some(vec![ProcedureParam {
+            name: "propertyKey".to_string(),
+            type_name: "STRING?".to_string(),
+        }]),
+        "dbms.components" => Some(vec![
+            ProcedureParam {
+                name: "name".to_string(),
+                type_name: "STRING?".to_string(),
+            },
+            ProcedureParam {
+                name: "versions".to_string(),
+                type_name: "ANY?".to_string(),
+            },
+            ProcedureParam {
+                name: "edition".to_string(),
+                type_name: "STRING?".to_string(),
+            },
+        ]),
+        "db.schema.visualization" => Some(vec![
+            ProcedureParam {
+                name: "nodes".to_string(),
+                type_name: "ANY?".to_string(),
+            },
+            ProcedureParam {
+                name: "relationships".to_string(),
+                type_name: "ANY?".to_string(),
+            },
+        ]),
+        _ => None,
+    }
+}
+
 /// Check if a value is compatible with a declared type.
 fn is_type_compatible(type_name: &str, value: &Value) -> bool {
     if value.is_null() {

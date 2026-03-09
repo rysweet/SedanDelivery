@@ -26,7 +26,7 @@ mod result_planner;
 use std::collections::HashMap;
 
 use crate::ast::{Clause, Query, ReturnClause};
-use crate::error::{ExecutionError, GqlError, PlanError};
+use crate::error::{GqlError, PlanError};
 use crate::planner::Operator;
 use crate::procedure::ProcedureRegistry;
 use crate::storage::GraphStore;
@@ -170,10 +170,44 @@ impl<'s> QueryPlanner<'s> {
                     pipeline = Some(call_op);
                 }
 
-                Clause::Foreach(_) => {
-                    return Err(GqlError::Execution(ExecutionError::unsupported(
-                        "FOREACH clause",
-                    )));
+                Clause::Foreach(fc) => {
+                    let foreach_op = self.plan_foreach(fc, pipeline.take())?;
+                    pipeline = Some(foreach_op);
+                }
+
+                Clause::CallSubquery { inner } => {
+                    // Build a sub-query from the inner clauses and plan it.
+                    let sub_query = crate::ast::Query {
+                        clauses: inner.clone(),
+                        unions: vec![],
+                    };
+                    let sub_op = self.plan_unchecked(&sub_query)?;
+                    pipeline = Some(match pipeline {
+                        None => sub_op,
+                        Some(prev) => Operator::Apply {
+                            outer: Box::new(prev),
+                            inner: Box::new(sub_op),
+                        },
+                    });
+                }
+
+                Clause::LoadCsv(lc) => {
+                    // LOAD CSV is planned as an Unwind over a function call that
+                    // loads the CSV rows at execution time.
+                    let load_expr = crate::ast::Expr::FunctionCall {
+                        name: smol_str::SmolStr::new("loadcsv"),
+                        args: vec![
+                            lc.source.clone(),
+                            crate::ast::Expr::Bool(lc.with_headers),
+                        ],
+                        distinct: false,
+                    };
+                    let child_op = pipeline.take().unwrap_or(Operator::SingleRow);
+                    pipeline = Some(Operator::Unwind {
+                        list_expr: load_expr,
+                        alias: lc.alias.clone(),
+                        child: Box::new(child_op),
+                    });
                 }
             }
         }
@@ -249,6 +283,7 @@ mod tests {
                             where_clause: None,
                         },
                         steps: vec![],
+                            shortest_path: None,
                     }],
                     where_clause: None,
                 }),
@@ -278,6 +313,7 @@ mod tests {
                     where_clause: None,
                 },
                 steps: vec![],
+                    shortest_path: None,
             }],
             where_clause: None,
         })
@@ -310,6 +346,7 @@ mod tests {
                             where_clause: None,
                         },
                         steps: vec![],
+                            shortest_path: None,
                     }],
                     where_clause: Some(Expr::BinaryOp {
                         op: crate::ast::BinaryOp::Gt,
@@ -354,6 +391,7 @@ mod tests {
                             where_clause: None,
                         },
                         steps: vec![],
+                            shortest_path: None,
                     }],
                     where_clause: None,
                 }),
@@ -391,6 +429,7 @@ mod tests {
                             where_clause: None,
                         },
                         steps: vec![],
+                            shortest_path: None,
                     }],
                     where_clause: None,
                 }),
@@ -928,6 +967,7 @@ mod tests {
                         where_clause: None,
                     },
                     steps: vec![],
+                        shortest_path: None,
                 },
                 on_create: vec![],
                 on_match: vec![],
@@ -956,6 +996,7 @@ mod tests {
                         where_clause: None,
                     },
                     steps: vec![],
+                        shortest_path: None,
                 },
                 on_create: vec![SetClauseItem::SetProperty {
                     alias: Identifier::new("n"),
@@ -994,6 +1035,7 @@ mod tests {
                             where_clause: None,
                         },
                         steps: vec![],
+                            shortest_path: None,
                     },
                     on_create: vec![],
                     on_match: vec![],
@@ -1040,6 +1082,7 @@ mod tests {
                                 where_clause: None,
                             },
                         }],
+                            shortest_path: None,
                     }],
                     where_clause: None,
                 }),
@@ -1083,6 +1126,7 @@ mod tests {
                             where_clause: None,
                         },
                         steps: vec![],
+                            shortest_path: None,
                     }],
                     where_clause: None,
                 }),
@@ -1124,6 +1168,7 @@ mod tests {
                                 where_clause: None,
                             },
                             steps: vec![],
+                                shortest_path: None,
                         },
                         PathPattern {
                             variable: None,
@@ -1134,6 +1179,7 @@ mod tests {
                                 where_clause: None,
                             },
                             steps: vec![],
+                                shortest_path: None,
                         },
                     ],
                     where_clause: None,
@@ -1180,6 +1226,7 @@ mod tests {
                                 where_clause: None,
                             },
                             steps: vec![],
+                                shortest_path: None,
                         },
                         PathPattern {
                             variable: None,
@@ -1190,6 +1237,7 @@ mod tests {
                                 where_clause: None,
                             },
                             steps: vec![],
+                                shortest_path: None,
                         },
                     ],
                     where_clause: Some(Expr::BinaryOp {
@@ -1251,6 +1299,7 @@ mod tests {
                             where_clause: None,
                         },
                         steps: vec![],
+                            shortest_path: None,
                     }],
                     where_clause: None,
                 }),
@@ -1294,6 +1343,7 @@ mod tests {
                             where_clause: None,
                         },
                         steps: vec![],
+                            shortest_path: None,
                     }],
                     where_clause: None,
                 }),
@@ -1496,6 +1546,7 @@ mod tests {
                 None => vec![],
             },
             Operator::MergeRelationship { child, .. } => vec![child],
+            Operator::ForEach { body, child, .. } => vec![child, body],
         }
     }
 }

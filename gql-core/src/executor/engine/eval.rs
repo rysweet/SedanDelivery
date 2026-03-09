@@ -614,6 +614,39 @@ impl<'a> QueryExecutor<'a> {
                     })),
                 }
             }
+            Expr::Reduce {
+                accumulator,
+                initial,
+                variable,
+                list,
+                expression,
+            } => {
+                let init_val = self.eval_with_storage(graph, initial, row, ctx)?;
+                let list_val = self.eval_with_storage(graph, list, row, ctx)?;
+                match list_val {
+                    Value::Null => Ok(Value::Null),
+                    Value::List(items) => {
+                        let mut acc = init_val;
+                        for item in &items {
+                            let mut extended_row = row.clone();
+                            extended_row.insert(accumulator.0.clone(), acc);
+                            extended_row.insert(variable.0.clone(), item.clone());
+                            let ext_ctx = self.build_filter_ctx(graph, &extended_row)?;
+                            acc = self.eval_with_storage(
+                                graph,
+                                expression,
+                                &extended_row,
+                                &ext_ctx,
+                            )?;
+                        }
+                        Ok(acc)
+                    }
+                    other => Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                        expected: "List".to_string(),
+                        actual: other.type_name().to_string(),
+                    })),
+                }
+            }
             Expr::ExistsSubquery {
                 patterns,
                 where_clause,
@@ -1350,6 +1383,143 @@ mod tests {
         };
         let result = executor.eval_with_storage("g", &expr, &row, &ctx).unwrap();
         assert_eq!(result, Value::List(vec![Value::Int(20), Value::Int(30)]));
+    }
+
+    #[test]
+    fn eval_function_id_null_returns_null() {
+        let store = make_store();
+        let executor = QueryExecutor::new(&store);
+        let mut row = Row::new();
+        row.insert("x".to_string(), Value::Null);
+
+        let ctx = executor.build_filter_ctx("g", &row).unwrap();
+        let expr = Expr::FunctionCall {
+            name: "id".into(),
+            args: vec![Expr::Variable(Identifier::new("x"))],
+            distinct: false,
+        };
+        let result = executor.eval_with_storage("g", &expr, &row, &ctx).unwrap();
+        assert_eq!(result, Value::Null);
+    }
+
+    #[test]
+    fn eval_function_labels_null_returns_null() {
+        let store = make_store();
+        let executor = QueryExecutor::new(&store);
+        let mut row = Row::new();
+        row.insert("x".to_string(), Value::Null);
+
+        let ctx = executor.build_filter_ctx("g", &row).unwrap();
+        let expr = Expr::FunctionCall {
+            name: "labels".into(),
+            args: vec![Expr::Variable(Identifier::new("x"))],
+            distinct: false,
+        };
+        let result = executor.eval_with_storage("g", &expr, &row, &ctx).unwrap();
+        assert_eq!(result, Value::Null);
+    }
+
+    #[test]
+    fn eval_function_type_null_returns_null() {
+        let store = make_store();
+        let executor = QueryExecutor::new(&store);
+        let mut row = Row::new();
+        row.insert("x".to_string(), Value::Null);
+
+        let ctx = executor.build_filter_ctx("g", &row).unwrap();
+        let expr = Expr::FunctionCall {
+            name: "type".into(),
+            args: vec![Expr::Variable(Identifier::new("x"))],
+            distinct: false,
+        };
+        let result = executor.eval_with_storage("g", &expr, &row, &ctx).unwrap();
+        assert_eq!(result, Value::Null);
+    }
+
+    #[test]
+    fn eval_function_nodes_null_returns_null() {
+        let store = make_store();
+        let executor = QueryExecutor::new(&store);
+        let mut row = Row::new();
+        row.insert("x".to_string(), Value::Null);
+
+        let ctx = executor.build_filter_ctx("g", &row).unwrap();
+        let expr = Expr::FunctionCall {
+            name: "nodes".into(),
+            args: vec![Expr::Variable(Identifier::new("x"))],
+            distinct: false,
+        };
+        let result = executor.eval_with_storage("g", &expr, &row, &ctx).unwrap();
+        assert_eq!(result, Value::Null);
+    }
+
+    #[test]
+    fn eval_function_relationships_null_returns_null() {
+        let store = make_store();
+        let executor = QueryExecutor::new(&store);
+        let mut row = Row::new();
+        row.insert("x".to_string(), Value::Null);
+
+        let ctx = executor.build_filter_ctx("g", &row).unwrap();
+        let expr = Expr::FunctionCall {
+            name: "relationships".into(),
+            args: vec![Expr::Variable(Identifier::new("x"))],
+            distinct: false,
+        };
+        let result = executor.eval_with_storage("g", &expr, &row, &ctx).unwrap();
+        assert_eq!(result, Value::Null);
+    }
+
+    #[test]
+    fn eval_function_id_on_edge() {
+        let store = make_store();
+        let a = store.create_node("g", vec![], HashMap::new()).unwrap();
+        let b = store.create_node("g", vec![], HashMap::new()).unwrap();
+        let eid = store
+            .create_edge("g", a, b, "KNOWS".to_string(), HashMap::new())
+            .unwrap();
+
+        let executor = QueryExecutor::new(&store);
+        let mut row = Row::new();
+        row.insert("r".to_string(), Value::Edge(eid));
+
+        let ctx = executor.build_filter_ctx("g", &row).unwrap();
+        let expr = Expr::FunctionCall {
+            name: "id".into(),
+            args: vec![Expr::Variable(Identifier::new("r"))],
+            distinct: false,
+        };
+        let result = executor.eval_with_storage("g", &expr, &row, &ctx).unwrap();
+        assert_eq!(result, Value::Int(eid.0 as i64));
+    }
+
+    #[test]
+    fn eval_function_labels_multi() {
+        let store = make_store();
+        let nid = store
+            .create_node("g", vec!["A".to_string(), "B".to_string()], HashMap::new())
+            .unwrap();
+
+        let executor = QueryExecutor::new(&store);
+        let mut row = Row::new();
+        row.insert("n".to_string(), Value::Node(nid));
+
+        let ctx = executor.build_filter_ctx("g", &row).unwrap();
+        let expr = Expr::FunctionCall {
+            name: "labels".into(),
+            args: vec![Expr::Variable(Identifier::new("n"))],
+            distinct: false,
+        };
+        let result = executor.eval_with_storage("g", &expr, &row, &ctx).unwrap();
+        match result {
+            Value::List(items) => {
+                let strs: Vec<&str> = items.iter().map(|v| v.as_str().unwrap()).collect();
+                assert!(strs.contains(&"A"));
+                assert!(strs.contains(&"B"));
+                assert_eq!(strs.len(), 2);
+            }
+            other => panic!("expected List, got {:?}", other),
+        }
     }
 
     #[test]

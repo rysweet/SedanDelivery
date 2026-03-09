@@ -45,6 +45,10 @@ pub enum TokenKind {
     Contains,
     Count,
     Yield,
+    Load,
+    Csv,
+    Headers,
+    From,
 
     // ── Punctuation ───────────────────────────────────────────────────────────
     LParen,   // (
@@ -185,6 +189,12 @@ pub(crate) fn keyword(lower: &str) -> Option<TokenKind> {
         "contains" => Some(TokenKind::Contains),
         "count" => Some(TokenKind::Count),
         "yield" => Some(TokenKind::Yield),
+        "load" => Some(TokenKind::Load),
+        "csv" => Some(TokenKind::Csv),
+        "headers" => Some(TokenKind::Headers),
+        // "from" is NOT a reserved keyword — it's only contextual in LOAD CSV.
+        // Reserving it breaks $from as a parameter name (TCK tests use this).
+        // The LOAD CSV parser matches it as an Identifier instead.
         _ => None,
     }
 }

@@ -111,6 +111,154 @@ pub(super) fn builtin_sign(vals: Vec<Value>) -> Result<Value, GqlError> {
     }
 }
 
+pub(super) fn builtin_log(vals: Vec<Value>) -> Result<Value, GqlError> {
+    require_arity("log", 1, &vals)?;
+    match &vals[0] {
+        Value::Null => Ok(Value::Null),
+        Value::Int(n) => Ok(Value::Float((*n as f64).ln())),
+        Value::Float(f) => Ok(Value::Float(f.ln())),
+        other => type_error("log", other),
+    }
+}
+
+pub(super) fn builtin_log10(vals: Vec<Value>) -> Result<Value, GqlError> {
+    require_arity("log10", 1, &vals)?;
+    match &vals[0] {
+        Value::Null => Ok(Value::Null),
+        Value::Int(n) => Ok(Value::Float((*n as f64).log10())),
+        Value::Float(f) => Ok(Value::Float(f.log10())),
+        other => type_error("log10", other),
+    }
+}
+
+pub(super) fn builtin_exp(vals: Vec<Value>) -> Result<Value, GqlError> {
+    require_arity("exp", 1, &vals)?;
+    match &vals[0] {
+        Value::Null => Ok(Value::Null),
+        Value::Int(n) => Ok(Value::Float((*n as f64).exp())),
+        Value::Float(f) => Ok(Value::Float(f.exp())),
+        other => type_error("exp", other),
+    }
+}
+
+pub(super) fn builtin_sin(vals: Vec<Value>) -> Result<Value, GqlError> {
+    require_arity("sin", 1, &vals)?;
+    match &vals[0] {
+        Value::Null => Ok(Value::Null),
+        Value::Int(n) => Ok(Value::Float((*n as f64).sin())),
+        Value::Float(f) => Ok(Value::Float(f.sin())),
+        other => type_error("sin", other),
+    }
+}
+
+pub(super) fn builtin_cos(vals: Vec<Value>) -> Result<Value, GqlError> {
+    require_arity("cos", 1, &vals)?;
+    match &vals[0] {
+        Value::Null => Ok(Value::Null),
+        Value::Int(n) => Ok(Value::Float((*n as f64).cos())),
+        Value::Float(f) => Ok(Value::Float(f.cos())),
+        other => type_error("cos", other),
+    }
+}
+
+pub(super) fn builtin_tan(vals: Vec<Value>) -> Result<Value, GqlError> {
+    require_arity("tan", 1, &vals)?;
+    match &vals[0] {
+        Value::Null => Ok(Value::Null),
+        Value::Int(n) => Ok(Value::Float((*n as f64).tan())),
+        Value::Float(f) => Ok(Value::Float(f.tan())),
+        other => type_error("tan", other),
+    }
+}
+
+pub(super) fn builtin_asin(vals: Vec<Value>) -> Result<Value, GqlError> {
+    require_arity("asin", 1, &vals)?;
+    match &vals[0] {
+        Value::Null => Ok(Value::Null),
+        Value::Int(n) => Ok(Value::Float((*n as f64).asin())),
+        Value::Float(f) => Ok(Value::Float(f.asin())),
+        other => type_error("asin", other),
+    }
+}
+
+pub(super) fn builtin_acos(vals: Vec<Value>) -> Result<Value, GqlError> {
+    require_arity("acos", 1, &vals)?;
+    match &vals[0] {
+        Value::Null => Ok(Value::Null),
+        Value::Int(n) => Ok(Value::Float((*n as f64).acos())),
+        Value::Float(f) => Ok(Value::Float(f.acos())),
+        other => type_error("acos", other),
+    }
+}
+
+pub(super) fn builtin_atan(vals: Vec<Value>) -> Result<Value, GqlError> {
+    require_arity("atan", 1, &vals)?;
+    match &vals[0] {
+        Value::Null => Ok(Value::Null),
+        Value::Int(n) => Ok(Value::Float((*n as f64).atan())),
+        Value::Float(f) => Ok(Value::Float(f.atan())),
+        other => type_error("atan", other),
+    }
+}
+
+pub(super) fn builtin_atan2(vals: Vec<Value>) -> Result<Value, GqlError> {
+    require_arity("atan2", 2, &vals)?;
+    match (&vals[0], &vals[1]) {
+        (Value::Null, _) | (_, Value::Null) => Ok(Value::Null),
+        (Value::Int(y), Value::Int(x)) => Ok(Value::Float((*y as f64).atan2(*x as f64))),
+        (Value::Float(y), Value::Float(x)) => Ok(Value::Float(y.atan2(*x))),
+        (Value::Int(y), Value::Float(x)) => Ok(Value::Float((*y as f64).atan2(*x))),
+        (Value::Float(y), Value::Int(x)) => Ok(Value::Float(y.atan2(*x as f64))),
+        _ => Err(GqlError::Execution(ExecutionError::TypeMismatch {
+            expected: "Numeric, Numeric".to_string(),
+            actual: format!("{}, {}", vals[0].type_name(), vals[1].type_name()),
+        })),
+    }
+}
+
+pub(super) fn builtin_degrees(vals: Vec<Value>) -> Result<Value, GqlError> {
+    require_arity("degrees", 1, &vals)?;
+    match &vals[0] {
+        Value::Null => Ok(Value::Null),
+        Value::Int(n) => Ok(Value::Float((*n as f64).to_degrees())),
+        Value::Float(f) => Ok(Value::Float(f.to_degrees())),
+        other => type_error("degrees", other),
+    }
+}
+
+pub(super) fn builtin_radians(vals: Vec<Value>) -> Result<Value, GqlError> {
+    require_arity("radians", 1, &vals)?;
+    match &vals[0] {
+        Value::Null => Ok(Value::Null),
+        Value::Int(n) => Ok(Value::Float((*n as f64).to_radians())),
+        Value::Float(f) => Ok(Value::Float(f.to_radians())),
+        other => type_error("radians", other),
+    }
+}
+
+pub(super) fn builtin_haversin(vals: Vec<Value>) -> Result<Value, GqlError> {
+    require_arity("haversin", 1, &vals)?;
+    match &vals[0] {
+        Value::Null => Ok(Value::Null),
+        Value::Int(n) => {
+            let x = *n as f64;
+            Ok(Value::Float((1.0 - x.cos()) / 2.0))
+        }
+        Value::Float(f) => Ok(Value::Float((1.0 - f.cos()) / 2.0)),
+        other => type_error("haversin", other),
+    }
+}
+
+pub(super) fn builtin_pi(vals: Vec<Value>) -> Result<Value, GqlError> {
+    require_arity("pi", 0, &vals)?;
+    Ok(Value::Float(std::f64::consts::PI))
+}
+
+pub(super) fn builtin_e(vals: Vec<Value>) -> Result<Value, GqlError> {
+    require_arity("e", 0, &vals)?;
+    Ok(Value::Float(std::f64::consts::E))
+}
+
 // ── Type conversion functions ─────────────────────────────────────────────────
 
 pub(super) fn builtin_tostring(vals: Vec<Value>) -> Result<Value, GqlError> {
@@ -577,5 +725,189 @@ mod tests {
     fn tointeger_int_returns_same() {
         let result = builtin_tointeger(vec![Value::Int(42)]).unwrap();
         assert_eq!(result, Value::Int(42));
+    }
+
+    // ── Math function tests ─────────────────────────────────────────────────
+
+    #[test]
+    fn log_of_1_returns_0() {
+        let result = builtin_log(vec![Value::Int(1)]).unwrap();
+        assert_eq!(result, Value::Float(0.0));
+    }
+
+    #[test]
+    fn log_of_e_returns_1() {
+        let result = builtin_log(vec![Value::Float(std::f64::consts::E)]).unwrap();
+        match result {
+            Value::Float(f) => assert!((f - 1.0).abs() < 1e-10),
+            _ => panic!("expected Float"),
+        }
+    }
+
+    #[test]
+    fn log_null_returns_null() {
+        let result = builtin_log(vec![Value::Null]).unwrap();
+        assert_eq!(result, Value::Null);
+    }
+
+    #[test]
+    fn log10_of_100_returns_2() {
+        let result = builtin_log10(vec![Value::Int(100)]).unwrap();
+        match result {
+            Value::Float(f) => assert!((f - 2.0).abs() < 1e-10),
+            _ => panic!("expected Float"),
+        }
+    }
+
+    #[test]
+    fn exp_of_0_returns_1() {
+        let result = builtin_exp(vec![Value::Int(0)]).unwrap();
+        assert_eq!(result, Value::Float(1.0));
+    }
+
+    #[test]
+    fn exp_of_1_returns_e() {
+        let result = builtin_exp(vec![Value::Int(1)]).unwrap();
+        match result {
+            Value::Float(f) => assert!((f - std::f64::consts::E).abs() < 1e-10),
+            _ => panic!("expected Float"),
+        }
+    }
+
+    #[test]
+    fn sin_of_0_returns_0() {
+        let result = builtin_sin(vec![Value::Int(0)]).unwrap();
+        assert_eq!(result, Value::Float(0.0));
+    }
+
+    #[test]
+    fn cos_of_0_returns_1() {
+        let result = builtin_cos(vec![Value::Int(0)]).unwrap();
+        assert_eq!(result, Value::Float(1.0));
+    }
+
+    #[test]
+    fn tan_of_0_returns_0() {
+        let result = builtin_tan(vec![Value::Int(0)]).unwrap();
+        assert_eq!(result, Value::Float(0.0));
+    }
+
+    #[test]
+    fn asin_of_0_returns_0() {
+        let result = builtin_asin(vec![Value::Int(0)]).unwrap();
+        assert_eq!(result, Value::Float(0.0));
+    }
+
+    #[test]
+    fn acos_of_1_returns_0() {
+        let result = builtin_acos(vec![Value::Int(1)]).unwrap();
+        assert_eq!(result, Value::Float(0.0));
+    }
+
+    #[test]
+    fn atan_of_0_returns_0() {
+        let result = builtin_atan(vec![Value::Int(0)]).unwrap();
+        assert_eq!(result, Value::Float(0.0));
+    }
+
+    #[test]
+    fn atan2_of_0_1_returns_0() {
+        let result = builtin_atan2(vec![Value::Int(0), Value::Int(1)]).unwrap();
+        assert_eq!(result, Value::Float(0.0));
+    }
+
+    #[test]
+    fn atan2_of_1_0_returns_pi_over_2() {
+        let result = builtin_atan2(vec![Value::Float(1.0), Value::Float(0.0)]).unwrap();
+        match result {
+            Value::Float(f) => assert!((f - std::f64::consts::FRAC_PI_2).abs() < 1e-10),
+            _ => panic!("expected Float"),
+        }
+    }
+
+    #[test]
+    fn atan2_mixed_types() {
+        let result = builtin_atan2(vec![Value::Int(1), Value::Float(0.0)]).unwrap();
+        match result {
+            Value::Float(f) => assert!((f - std::f64::consts::FRAC_PI_2).abs() < 1e-10),
+            _ => panic!("expected Float"),
+        }
+    }
+
+    #[test]
+    fn atan2_null_returns_null() {
+        let result = builtin_atan2(vec![Value::Null, Value::Int(1)]).unwrap();
+        assert_eq!(result, Value::Null);
+    }
+
+    #[test]
+    fn pi_returns_pi() {
+        let result = builtin_pi(vec![]).unwrap();
+        assert_eq!(result, Value::Float(std::f64::consts::PI));
+    }
+
+    #[test]
+    fn e_returns_e() {
+        let result = builtin_e(vec![]).unwrap();
+        assert_eq!(result, Value::Float(std::f64::consts::E));
+    }
+
+    #[test]
+    fn degrees_of_pi_returns_180() {
+        let result = builtin_degrees(vec![Value::Float(std::f64::consts::PI)]).unwrap();
+        match result {
+            Value::Float(f) => assert!((f - 180.0).abs() < 1e-10),
+            _ => panic!("expected Float"),
+        }
+    }
+
+    #[test]
+    fn radians_of_180_returns_pi() {
+        let result = builtin_radians(vec![Value::Int(180)]).unwrap();
+        match result {
+            Value::Float(f) => assert!((f - std::f64::consts::PI).abs() < 1e-10),
+            _ => panic!("expected Float"),
+        }
+    }
+
+    #[test]
+    fn haversin_of_0_returns_0() {
+        let result = builtin_haversin(vec![Value::Int(0)]).unwrap();
+        assert_eq!(result, Value::Float(0.0));
+    }
+
+    #[test]
+    fn haversin_of_pi_returns_1() {
+        let result = builtin_haversin(vec![Value::Float(std::f64::consts::PI)]).unwrap();
+        match result {
+            Value::Float(f) => assert!((f - 1.0).abs() < 1e-10),
+            _ => panic!("expected Float"),
+        }
+    }
+
+    #[test]
+    fn haversin_null_returns_null() {
+        let result = builtin_haversin(vec![Value::Null]).unwrap();
+        assert_eq!(result, Value::Null);
+    }
+
+    #[test]
+    fn math_functions_reject_string() {
+        assert!(builtin_log(vec![Value::Str("x".into())]).is_err());
+        assert!(builtin_exp(vec![Value::Str("x".into())]).is_err());
+        assert!(builtin_sin(vec![Value::Str("x".into())]).is_err());
+        assert!(builtin_degrees(vec![Value::Str("x".into())]).is_err());
+        assert!(builtin_radians(vec![Value::Str("x".into())]).is_err());
+        assert!(builtin_haversin(vec![Value::Str("x".into())]).is_err());
+    }
+
+    #[test]
+    fn pi_rejects_args() {
+        assert!(builtin_pi(vec![Value::Int(1)]).is_err());
+    }
+
+    #[test]
+    fn e_rejects_args() {
+        assert!(builtin_e(vec![Value::Int(1)]).is_err());
     }
 }

@@ -145,6 +145,22 @@ pub(crate) fn expr_to_column_name(expr: &Expr) -> String {
                 expr_to_column_name(idx)
             )
         }
+        Expr::Reduce {
+            accumulator,
+            initial,
+            variable,
+            list,
+            expression,
+        } => {
+            format!(
+                "reduce({} = {}, {} IN {} | {})",
+                accumulator.0,
+                expr_to_column_name(initial),
+                variable.0,
+                expr_to_column_name(list),
+                expr_to_column_name(expression)
+            )
+        }
         _ => format!("{:?}", expr),
     }
 }

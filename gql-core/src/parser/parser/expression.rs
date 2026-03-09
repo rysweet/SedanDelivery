@@ -578,7 +578,21 @@ impl<'src> Parser<'src> {
     /// the current token is `(`.
     ///
     /// Also handles the quantifier pattern: `all(x IN list WHERE pred)`.
+    /// Also handles special syntax for `reduce`, `extract`, and `filter`.
     fn parse_func_call(&mut self, name_text: String) -> Result<Expr, ParseError> {
+        // Handle reduce(accumulator = initial, x IN list | expression)
+        if name_text.eq_ignore_ascii_case("reduce") {
+            return self.parse_reduce_call();
+        }
+        // Handle extract(x IN list | expression) — desugar to ListComp
+        if name_text.eq_ignore_ascii_case("extract") {
+            return self.parse_extract_call();
+        }
+        // Handle filter(x IN list WHERE predicate) — desugar to ListComp
+        if name_text.eq_ignore_ascii_case("filter") {
+            return self.parse_filter_call();
+        }
+
         self.advance(); // consume (
         let distinct = self.eat(&TokenKind::Distinct);
         let mut args = Vec::new();
@@ -601,6 +615,66 @@ impl<'src> Parser<'src> {
             name: SmolStr::new(name_text),
             args,
             distinct,
+        })
+    }
+
+    /// Parse `reduce(accumulator = initial, variable IN list | expression)`.
+    /// Current token is `(`.
+    fn parse_reduce_call(&mut self) -> Result<Expr, ParseError> {
+        self.advance(); // consume (
+        let acc_name = self.expect_identifier()?;
+        self.expect(&TokenKind::Eq)?;
+        let initial = self.parse_expr()?;
+        self.expect(&TokenKind::Comma)?;
+        let var_name = self.expect_identifier()?;
+        self.expect(&TokenKind::In)?;
+        let list = self.parse_expr()?;
+        self.expect(&TokenKind::Pipe)?;
+        let expression = self.parse_expr()?;
+        self.expect(&TokenKind::RParen)?;
+        Ok(Expr::Reduce {
+            accumulator: Identifier::new(acc_name),
+            initial: Box::new(initial),
+            variable: Identifier::new(var_name),
+            list: Box::new(list),
+            expression: Box::new(expression),
+        })
+    }
+
+    /// Parse `extract(x IN list | expression)` — desugar to ListComp.
+    /// Current token is `(`.
+    fn parse_extract_call(&mut self) -> Result<Expr, ParseError> {
+        self.advance(); // consume (
+        let var_name = self.expect_identifier()?;
+        self.expect(&TokenKind::In)?;
+        let list = self.parse_expr()?;
+        self.expect(&TokenKind::Pipe)?;
+        let map_expr = self.parse_expr()?;
+        self.expect(&TokenKind::RParen)?;
+        Ok(Expr::ListComp {
+            variable: Identifier::new(var_name),
+            list: Box::new(list),
+            filter: None,
+            map: Box::new(map_expr),
+        })
+    }
+
+    /// Parse `filter(x IN list WHERE predicate)` — desugar to ListComp.
+    /// Current token is `(`.
+    fn parse_filter_call(&mut self) -> Result<Expr, ParseError> {
+        self.advance(); // consume (
+        let var_name = self.expect_identifier()?;
+        self.expect(&TokenKind::In)?;
+        let list = self.parse_expr()?;
+        self.expect(&TokenKind::Where)?;
+        let predicate = self.parse_expr()?;
+        self.expect(&TokenKind::RParen)?;
+        let variable = Identifier::new(var_name);
+        Ok(Expr::ListComp {
+            variable: variable.clone(),
+            list: Box::new(list),
+            filter: Some(Box::new(predicate)),
+            map: Box::new(Expr::Variable(variable)),
         })
     }
 

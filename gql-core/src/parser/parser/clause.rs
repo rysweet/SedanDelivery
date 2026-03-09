@@ -4,8 +4,8 @@
 use smol_str::SmolStr;
 
 use crate::ast::{
-    CallClause, Clause, CreateClause, DeleteClause, Expr, ForeachClause, Identifier, MatchClause,
-    MergeClause, RemoveClause, RemoveClauseItem, ReturnClause, ReturnItem, SetClause,
+    CallClause, Clause, CreateClause, DeleteClause, Expr, ForeachClause, Identifier, LoadCsvClause,
+    MatchClause, MergeClause, RemoveClause, RemoveClauseItem, ReturnClause, ReturnItem, SetClause,
     SetClauseItem, SortItem, UnwindClause, WithClause,
 };
 use crate::error::ParseError;
@@ -82,17 +82,56 @@ impl<'src> Parser<'src> {
             }
             TokenKind::Call => {
                 self.advance();
-                let cc = self.parse_call()?;
-                Ok(Some(Clause::Call(cc)))
+                // Distinguish CALL { subquery } from CALL procedure.name(...)
+                if self.at(&TokenKind::LBrace) {
+                    let inner = self.parse_call_subquery()?;
+                    Ok(Some(Clause::CallSubquery { inner }))
+                } else {
+                    let cc = self.parse_call()?;
+                    Ok(Some(Clause::Call(cc)))
+                }
             }
             TokenKind::Foreach => {
                 self.advance();
                 let fc = self.parse_foreach()?;
                 Ok(Some(Clause::Foreach(fc)))
             }
+            TokenKind::Load => {
+                self.advance();
+                let lc = self.parse_load_csv()?;
+                Ok(Some(Clause::LoadCsv(lc)))
+            }
             TokenKind::Eof | TokenKind::Semicolon => Ok(None),
             _ => Err(self.syntax_err("clause keyword (MATCH, RETURN, CREATE, ...)")),
         }
+    }
+
+    // ── LOAD CSV ──────────────────────────────────────────────────────────────
+
+    fn parse_load_csv(&mut self) -> Result<LoadCsvClause, ParseError> {
+        self.expect(&TokenKind::Csv)?;
+        let with_headers = if self.eat(&TokenKind::With) {
+            self.expect(&TokenKind::Headers)?;
+            true
+        } else {
+            false
+        };
+        // FROM is a contextual keyword (not reserved) to avoid breaking $from params.
+        if *self.peek() == TokenKind::Identifier
+            && self.tokens[self.pos].text.eq_ignore_ascii_case("from")
+        {
+            self.advance();
+        } else {
+            return Err(self.syntax_err("FROM"));
+        }
+        let source = self.parse_expr()?;
+        self.expect(&TokenKind::As)?;
+        let alias = Identifier::new(self.expect_identifier()?);
+        Ok(LoadCsvClause {
+            with_headers,
+            source,
+            alias,
+        })
     }
 
     // ── MATCH ─────────────────────────────────────────────────────────────────
@@ -459,6 +498,27 @@ impl<'src> Parser<'src> {
             explicit_args,
             yield_star,
         })
+    }
+
+    // ── CALL { subquery } ──────────────────────────────────────────────────────
+
+    fn parse_call_subquery(&mut self) -> Result<Vec<Clause>, ParseError> {
+        self.expect(&TokenKind::LBrace)?;
+        let mut clauses = Vec::new();
+        loop {
+            if self.at(&TokenKind::RBrace) {
+                break;
+            }
+            match self.parse_clause()? {
+                Some(clause) => clauses.push(clause),
+                None => break,
+            }
+        }
+        self.expect(&TokenKind::RBrace)?;
+        if clauses.is_empty() {
+            return Err(self.syntax_err("at least one clause inside CALL { }"));
+        }
+        Ok(clauses)
     }
 
     // ── FOREACH ────────────────────────────────────────────────────────────────

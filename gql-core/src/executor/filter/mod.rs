@@ -260,6 +260,15 @@ pub fn eval_expr<'r>(expr: &Expr, row: &Row<'r>) -> Result<Value, GqlError> {
             map,
         } => collections::eval_list_comp(variable, list, filter, map, row),
 
+        // ── Reduce expression ────────────────────────────────────────────────
+        Expr::Reduce {
+            accumulator,
+            initial,
+            variable,
+            list,
+            expression,
+        } => collections::eval_reduce(accumulator, initial, variable, list, expression, row),
+
         // ── Existential subquery / pattern expression ─────────────────────────
         Expr::ExistsSubquery { .. } | Expr::PatternExpr(_) => Err(GqlError::Execution(
             ExecutionError::unsupported("existential subquery / pattern expression"),
@@ -304,6 +313,21 @@ pub fn eval_function_with_vals(name: &str, vals: Vec<Value>) -> Result<Value, Gq
         "round" => builtins::builtin_round(vals),
         "sqrt" => builtins::builtin_sqrt(vals),
         "sign" => builtins::builtin_sign(vals),
+        "log" => builtins::builtin_log(vals),
+        "log10" => builtins::builtin_log10(vals),
+        "exp" => builtins::builtin_exp(vals),
+        "sin" => builtins::builtin_sin(vals),
+        "cos" => builtins::builtin_cos(vals),
+        "tan" => builtins::builtin_tan(vals),
+        "asin" => builtins::builtin_asin(vals),
+        "acos" => builtins::builtin_acos(vals),
+        "atan" => builtins::builtin_atan(vals),
+        "atan2" => builtins::builtin_atan2(vals),
+        "degrees" => builtins::builtin_degrees(vals),
+        "radians" => builtins::builtin_radians(vals),
+        "haversin" => builtins::builtin_haversin(vals),
+        "pi" => builtins::builtin_pi(vals),
+        "e" => builtins::builtin_e(vals),
 
         // ── Type conversion functions ─────────────────────────────────────────
         "tostring" => builtins::builtin_tostring(vals),

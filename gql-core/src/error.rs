@@ -152,6 +152,9 @@ pub enum StorageError {
 
     #[error("transaction conflict: concurrent write detected, retry the operation")]
     TransactionConflict,
+
+    #[error("constraint violation: {msg}")]
+    ConstraintViolation { msg: String },
 }
 
 // ── Type errors ───────────────────────────────────────────────────────────────

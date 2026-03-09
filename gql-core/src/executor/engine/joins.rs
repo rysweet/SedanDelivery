@@ -13,6 +13,13 @@ impl<'a> QueryExecutor<'a> {
         cx: &mut ExecContext<'_>,
         _op: &Operator,
     ) -> Result<Vec<Row>, GqlError> {
+        // If a FOREACH body injected a seed, return it instead of an empty row.
+        if let Some(seed) = self.foreach_seed.borrow_mut().take() {
+            for _ in &seed {
+                cx.budget.record_row();
+            }
+            return Ok(seed);
+        }
         cx.budget.record_row();
         let mut row = Row::new();
         inject_parameters(&mut row, &self.parameters);

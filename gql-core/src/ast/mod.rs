@@ -352,6 +352,23 @@ pub enum Expr {
         map: Box<Expr>,
     },
 
+    // ── Reduce expression ─────────────────────────────────────────────────────
+    /// `reduce(accumulator = initial, variable IN list | expression)`
+    ///
+    /// Folds over a list:
+    /// 1. Binds `accumulator` to `initial`.
+    /// 2. For each element in `list`, binds `variable` to the element and
+    ///    evaluates `expression` (which may reference both `accumulator` and
+    ///    `variable`). The result replaces the accumulator value.
+    /// 3. Returns the final accumulator value.
+    Reduce {
+        accumulator: Identifier,
+        initial: Box<Expr>,
+        variable: Identifier,
+        list: Box<Expr>,
+        expression: Box<Expr>,
+    },
+
     // ── Existential subquery ─────────────────────────────────────────────────
     /// `exists { pattern [WHERE predicate] }` — existential subquery.
     /// When `full_query` is Some, the EXISTS contains a full inner query (with WITH/RETURN).
@@ -420,7 +437,21 @@ pub enum Clause {
     Remove(RemoveClause),
     Merge(MergeClause),
     Call(CallClause),
+    /// `CALL { ... }` — inline subquery block.
+    CallSubquery { inner: Vec<Clause> },
     Foreach(ForeachClause),
+    LoadCsv(LoadCsvClause),
+}
+
+/// A LOAD CSV clause: `LOAD CSV [WITH HEADERS] FROM 'file:///path.csv' AS row`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LoadCsvClause {
+    /// Whether `WITH HEADERS` was specified.
+    pub with_headers: bool,
+    /// The source expression (must evaluate to a string URI).
+    pub source: Expr,
+    /// The alias for each row.
+    pub alias: Identifier,
 }
 
 /// A MATCH or OPTIONAL MATCH clause.
@@ -454,6 +485,15 @@ pub struct SortItem {
     pub ascending: bool,
 }
 
+/// Shortest-path mode for a pattern wrapped in `shortestPath()` or `allShortestPaths()`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ShortestPathMode {
+    /// `shortestPath((a)-[*]->(b))` — return one shortest path.
+    Single,
+    /// `allShortestPaths((a)-[*]->(b))` — return all paths of minimum length.
+    All,
+}
+
 /// A path pattern such as `p = (a)-[r:KNOWS]->(b)`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PathPattern {
@@ -463,6 +503,8 @@ pub struct PathPattern {
     pub start: NodePattern,
     /// Zero or more alternating relationship + node steps.
     pub steps: Vec<PathStep>,
+    /// When `Some`, this pattern was wrapped in `shortestPath()` or `allShortestPaths()`.
+    pub shortest_path: Option<ShortestPathMode>,
 }
 
 /// A single step in a path: relationship followed by the next node.

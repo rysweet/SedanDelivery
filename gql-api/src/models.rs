@@ -90,6 +90,19 @@ pub struct CypherBody {
     pub cypher: String,
     #[serde(default)]
     pub params: Option<serde_json::Map<String, Json>>,
+    /// Optional page size for cursor-based pagination. When set, the response
+    /// will contain at most `page_size` rows and a `cursor` token if more rows
+    /// are available.
+    #[serde(default)]
+    pub page_size: Option<usize>,
+    /// Opaque cursor token returned from a previous paginated query. Pass this
+    /// to fetch the next page of results.
+    #[serde(default)]
+    pub cursor: Option<String>,
+    /// Optional override for the target database. When set, the query will
+    /// execute against this database instead of the one in the URL path.
+    #[serde(default)]
+    pub database: Option<String>,
 }
 
 #[derive(Serialize)]

@@ -60,6 +60,10 @@ pub struct EngineConfig {
     /// Env: `GQL_BUDGET_CHECK_INTERVAL` (default `1024`)
     /// Must be a power of two.
     pub budget_check_interval: u64,
+    /// Base directory for LOAD CSV `file:///` URIs.
+    /// Env: `GQL_CSV_IMPORT_DIR` (default: current working directory).
+    /// Only files under this directory can be accessed via LOAD CSV.
+    pub csv_import_dir: String,
 }
 
 impl Default for EngineConfig {
@@ -77,6 +81,9 @@ impl Default for EngineConfig {
             plan_cache_size: 1024,
             regex_cache_capacity: 512,
             budget_check_interval: 1024,
+            csv_import_dir: std::env::current_dir()
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or_else(|_| ".".to_string()),
         }
     }
 }
@@ -121,6 +128,8 @@ impl EngineConfig {
                 // Round up to the next power of two (required for bitmask check).
                 raw.next_power_of_two()
             },
+            csv_import_dir: std::env::var("GQL_CSV_IMPORT_DIR")
+                .unwrap_or_else(|_| defaults.csv_import_dir.clone()),
         }
     }
 }
