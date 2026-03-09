@@ -21,32 +21,26 @@ pub fn router() -> Router<AppState> {
 /// collide with real data.  We only care whether `graph_exists` succeeds or
 /// returns an error — the boolean result itself is ignored.
 async fn health_handler(State(state): State<AppState>) -> impl IntoResponse {
-    let entra_enabled = crate::auth::entra_config().is_some();
     match state.store.graph_exists("__health_probe") {
-        Ok(_) => {
-            let demo_graph_exists = if entra_enabled {
-                Some(state.store.graph_exists("demo").unwrap_or(false))
-            } else {
-                None
-            };
+        Ok(_) => (
+            StatusCode::OK,
+            Json(HealthResponse {
+                status: "ok",
+                error: None,
+            }),
+        ),
+        Err(_e) => {
+            // Do NOT expose the backend error message — it may contain
+            // connection strings, internal paths, or store implementation
+            // details.  Log it server-side for operators instead.
+            tracing::error!("health probe failed: {_e}");
             (
-                StatusCode::OK,
+                StatusCode::SERVICE_UNAVAILABLE,
                 Json(HealthResponse {
-                    status: "ok",
-                    version: env!("CARGO_PKG_VERSION"),
-                    demo_graph_exists,
-                    error: None,
+                    status: "degraded",
+                    error: Some("backend unreachable".to_string()),
                 }),
             )
         }
-        Err(e) => (
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(HealthResponse {
-                status: "degraded",
-                version: env!("CARGO_PKG_VERSION"),
-                demo_graph_exists: None,
-                error: Some(e.to_string()),
-            }),
-        ),
     }
 }

@@ -9,9 +9,6 @@ use serde_json::Value as Json;
 #[serde(rename_all = "camelCase")]
 pub struct HealthResponse {
     pub status: &'static str,
-    pub version: &'static str,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub demo_graph_exists: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }
@@ -298,18 +295,16 @@ mod tests {
     // ── HealthResponse serialization ─────────────────────────────────────────
 
     #[test]
-    fn health_response_serializes_camel_case() {
+    fn health_response_serializes_minimal() {
         let resp = HealthResponse {
             status: "ok",
-            version: "0.1.0",
-            demo_graph_exists: Some(true),
             error: None,
         };
         let json = serde_json::to_value(&resp).unwrap();
         assert_eq!(json["status"], "ok");
-        assert_eq!(json["version"], "0.1.0");
-        assert_eq!(json["demoGraphExists"], true);
-        assert!(json.get("demo_graph_exists").is_none());
+        // Version and demo_graph_exists removed to prevent info disclosure.
+        assert!(json.get("version").is_none());
+        assert!(json.get("error").is_none()); // None is skipped
     }
 
     // ── GraphStatsResponse serialization ─────────────────────────────────────
