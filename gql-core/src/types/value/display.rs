@@ -13,9 +13,7 @@ impl fmt::Display for Value {
             Self::Date(d) => write!(f, "{d}"),
             Self::LocalTime(t) => write!(f, "{t}"),
             Self::Time(t, offset_secs) => {
-                let h_off = offset_secs / 3600;
-                let m_off = (offset_secs.abs() % 3600) / 60;
-                let offset_str = format!("{:+03}:{:02}", h_off, m_off);
+                let offset_str = format_offset_str(*offset_secs);
                 let ns = t.subsec_nanosecond();
                 if ns != 0 {
                     let ns_str = format!("{:09}", ns);
@@ -51,11 +49,8 @@ impl fmt::Display for Value {
                 if is_epoch_date {
                     // Time-only value: display as HH:MM:SS[.nanos]+offset
                     let t = civil_dt.time();
-                    let off = dt.offset();
-                    let total_secs_off = off.seconds();
-                    let h_off = total_secs_off / 3600;
-                    let m_off = (total_secs_off.abs() % 3600) / 60;
-                    let offset_str = format!("{:+03}:{:02}", h_off, m_off);
+                    let total_secs_off = dt.offset().seconds();
+                    let offset_str = format_offset_str(total_secs_off);
                     // Format nanoseconds
                     let ns = t.subsec_nanosecond();
                     if ns != 0 {
@@ -86,11 +81,8 @@ impl fmt::Display for Value {
                 } else {
                     // Fixed offset: display datetime without [tz] bracket
                     let civil = jiff::civil::DateTime::from(dt.as_ref());
-                    let off = dt.offset();
-                    let total_secs_off = off.seconds();
-                    let h_off = total_secs_off / 3600;
-                    let m_off = (total_secs_off.abs() % 3600) / 60;
-                    let offset_str = format!("{:+03}:{:02}", h_off, m_off);
+                    let total_secs_off = dt.offset().seconds();
+                    let offset_str = format_offset_str(total_secs_off);
                     let ns = civil.subsec_nanosecond();
                     if ns != 0 {
                         let ns_str = format!("{:09}", ns);
@@ -158,6 +150,19 @@ impl fmt::Display for Value {
             }
         }
     }
+}
+
+/// Format a UTC offset (in total seconds) as `+HH:MM` or `-HH:MM`.
+///
+/// A plain `secs / 3600` truncates toward zero, so negative offsets whose
+/// magnitude is less than one hour (e.g. -1800 for -00:30) would lose the
+/// sign.  We decompose using the absolute value instead.
+pub fn format_offset_str(total_secs: i32) -> String {
+    let sign = if total_secs < 0 { '-' } else { '+' };
+    let abs = total_secs.unsigned_abs();
+    let h = abs / 3600;
+    let m = (abs % 3600) / 60;
+    format!("{sign}{h:02}:{m:02}")
 }
 
 /// Format a CypherDuration as an ISO 8601-compatible duration string.
@@ -239,5 +244,48 @@ mod tests {
     #[test]
     fn display_null() {
         assert_eq!(Value::Null.to_string(), "null");
+    }
+
+    // ── C7 regression: negative sub-hour offsets must keep their sign ────────
+
+    #[test]
+    fn format_offset_str_negative_sub_hour() {
+        // -00:30 is -1800 seconds; the sign must be preserved even though hours == 0
+        assert_eq!(super::format_offset_str(-1800), "-00:30");
+    }
+
+    #[test]
+    fn format_offset_str_negative_full_hour() {
+        assert_eq!(super::format_offset_str(-3600), "-01:00");
+    }
+
+    #[test]
+    fn format_offset_str_positive_sub_hour() {
+        assert_eq!(super::format_offset_str(1800), "+00:30");
+    }
+
+    #[test]
+    fn format_offset_str_zero() {
+        assert_eq!(super::format_offset_str(0), "+00:00");
+    }
+
+    #[test]
+    fn format_offset_str_negative_45_min() {
+        // -00:45 is -2700 seconds
+        assert_eq!(super::format_offset_str(-2700), "-00:45");
+    }
+
+    #[test]
+    fn format_offset_str_negative_5h30m() {
+        // -05:30 is -19800 seconds
+        assert_eq!(super::format_offset_str(-19800), "-05:30");
+    }
+
+    #[test]
+    fn display_time_with_negative_sub_hour_offset() {
+        let t = jiff::civil::Time::new(12, 0, 0, 0).unwrap();
+        let v = Value::Time(t, -1800); // -00:30
+        let s = v.to_string();
+        assert!(s.ends_with("-00:30"), "expected -00:30 suffix, got: {s}");
     }
 }

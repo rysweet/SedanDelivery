@@ -3,6 +3,7 @@ mod convert;
 mod display;
 
 pub use display::format_cypher_duration;
+pub use display::format_offset_str;
 
 use indexmap::IndexMap;
 use jiff::{civil, Zoned};

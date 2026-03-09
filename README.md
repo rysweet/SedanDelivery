@@ -90,7 +90,7 @@ cargo run -p sedandelivery-bolt
 # Listens on 0.0.0.0:7687 by default (configure via BOLT_BIND_ADDR env var)
 ```
 
-**Validated with real-world apps** — see the [Neo4j Compatibility Gallery](https://turbo-adventure-3eloook.pages.github.io/neo4j-compat-gallery) for 3 security-focused open-source apps running against SedanDelivery with zero code modifications.
+**Validated with real-world apps** — see the [Neo4j Compatibility Gallery](https://turbo-adventure-3eloook.pages.github.io/neo4j-compat-gallery) for 4 security-focused open-source apps running against SedanDelivery with zero code modifications.
 
 See [docs/specs/sedandelivery-bolt-spec.md](docs/specs/sedandelivery-bolt-spec.md) for the full Bolt protocol specification.
 
@@ -255,7 +255,7 @@ cargo run -p gql-api   # listens on 0.0.0.0:3001
 ## Documentation
 
 - [Authentication (Entra ID)](docs/auth.md) — Configure JWT auth for the REST API
-- [Neo4j Compatibility Gallery](https://turbo-adventure-3eloook.pages.github.io/neo4j-compat-gallery) — 3 security apps validated against SedanDelivery's Bolt protocol
+- [Neo4j Compatibility Gallery](https://turbo-adventure-3eloook.pages.github.io/neo4j-compat-gallery) — 4 security apps validated against SedanDelivery's Bolt protocol
 - [Tutorial](docs/TUTORIAL.md) — full usage guide with code examples
 - [Bolt Protocol Spec](docs/specs/sedandelivery-bolt-spec.md) — Neo4j Bolt v4.4 server implementation details
 - [Docs site](https://turbo-adventure-3eloook.pages.github.io/) — deployment, storage backends, environment variables

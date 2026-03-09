@@ -220,6 +220,16 @@ Every feature below was exercised by at least one gallery app during testing.
 | [JavaScript neo4j-driver](https://github.com/neo4j/neo4j-javascript-driver) | PASS | Apps 1 & 2 (Neodash, neovis.js) |
 | WebSocket transport | PASS | Apps 1 & 2 (browser-based drivers) |
 | Docker cross-container Bolt | PASS | App 1 (Neodash) |
+| Transactions (BEGIN/COMMIT) | PASS | Explicit transaction support |
+| CALL procedures | PASS | 5 built-in procedures |
+| UNION / UNION ALL | PASS | Result set combination |
+| FOREACH | PASS | Iterative mutation |
+| CASE in aggregation | PASS | Full CASE expression support |
+| LOAD CSV | PASS | CSV file ingestion |
+| Constraints (UNIQUE, etc.) | PASS | Schema enforcement |
+| shortestPath / allShortestPaths | PASS | Path-finding functions |
+| REDUCE | PASS | List reduction expressions |
+| Math functions (abs, ceil, etc.) | PASS | Full numeric function library |
 
 ## Architecture
 

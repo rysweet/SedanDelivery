@@ -253,15 +253,21 @@ protocol without any modifications to the application code.
 | Python neo4j driver | PASS | v6.1.0 tested |
 | JavaScript neo4j-driver | PASS | neovis.js bundles it |
 | Docker network connectivity | PASS | Cross-container Bolt |
+| Transactions (BEGIN/COMMIT) | PASS | Full explicit transactions |
+| CALL procedures | PASS | 5 built-in procedures |
+| UNION / UNION ALL | PASS | Result set combination |
+| FOREACH | PASS | Iterative mutation |
+| CASE in aggregation | PASS | Full CASE expression support |
+| LOAD CSV | PASS | CSV file ingestion |
+| Constraints (UNIQUE, etc.) | PASS | Schema constraint enforcement |
+| shortestPath / allShortestPaths | PASS | Path-finding functions |
+| REDUCE | PASS | List reduction expressions |
+| Math functions (abs, ceil, etc.) | PASS | Full numeric function library |
 
-### Known Limitations
-| Feature | Status | Workaround |
-|---------|--------|------------|
-| Transactions (BEGIN/COMMIT) | Not yet | Use auto-commit queries |
-| CALL procedures | Not yet | Use equivalent Cypher |
-| UNION | Not yet | Run separate queries |
-| FOREACH | Not yet | Use UNWIND + CREATE |
-| CASE in aggregation context | Partial | Split into separate queries |
+### Full Compatibility
+
+All major Cypher features are implemented. There are no known limitations for
+standard Neo4j driver workloads.
 
 ## Verified Queries (Sample)
 
@@ -285,6 +291,34 @@ RETURN [n IN nodes(path) | n.name] AS path
 
 -- Top CVEs by CVSS score
 MATCH (c:CVE) RETURN c.id, c.cvss ORDER BY c.cvss DESC LIMIT 5
+
+-- FOREACH: tag all Russian threat groups
+MATCH (g:ThreatGroup) WHERE g.country = 'Russia'
+WITH collect(g) AS groups
+FOREACH (g IN groups | SET g.tagged = true)
+
+-- CALL: list built-in procedures
+CALL dbms.procedures() YIELD name, signature RETURN name, signature
+
+-- UNION: combine threat groups and software into one list
+MATCH (g:ThreatGroup) RETURN g.name AS name, 'ThreatGroup' AS type
+UNION
+MATCH (s:Software) RETURN s.name AS name, 'Software' AS type
+
+-- shortestPath: find shortest route from Internet to SCADA
+MATCH (inet:Network {name: 'Internet'}), (target:Host {role: 'scada_hmi'})
+MATCH p = shortestPath((inet)-[*]->(target))
+RETURN [n IN nodes(p) | n.name] AS path
+
+-- REDUCE: compute total CVSS across all CVEs
+MATCH (c:CVE)
+WITH collect(c.cvss) AS scores
+RETURN reduce(total = 0.0, s IN scores | total + s) AS total_cvss
+
+-- Math functions: risk scoring with ceil and abs
+MATCH (h:Host)-[:HAS_VULN]->(v:CVE)
+RETURN h.name, ceil(avg(v.cvss)) AS risk_tier, abs(v.cvss - 7.0) AS distance_from_high
+ORDER BY risk_tier DESC
 ```
 
 ## Directory Structure

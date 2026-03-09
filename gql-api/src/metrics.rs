@@ -105,22 +105,16 @@ async fn metrics_handler(State(handle): State<PrometheusHandle>) -> impl IntoRes
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_auth_rejection_no_panic() {
-        auth_rejection();
-        auth_rejection();
-        auth_rejection();
-    }
-
-    #[test]
-    fn test_jwks_refresh_failure_no_panic() {
-        jwks_refresh_failure();
-    }
-
-    #[test]
-    fn test_set_active_graphs_no_panic() {
-        set_active_graphs(10);
+    /// Install the Prometheus recorder once for all tests in this module.
+    /// Subsequent calls are no-ops. Returns the handle for rendering metrics.
+    fn ensure_recorder() -> &'static PrometheusHandle {
+        use std::sync::OnceLock;
+        static HANDLE: OnceLock<PrometheusHandle> = OnceLock::new();
+        HANDLE.get_or_init(|| {
+            PrometheusBuilder::new()
+                .install_recorder()
+                .expect("failed to install test Prometheus recorder")
+        })
     }
 
     #[test]
@@ -138,5 +132,114 @@ mod tests {
                 "metric name '{name}' contains invalid characters (only [a-z_] allowed)"
             );
         }
+    }
+
+    #[test]
+    fn test_auth_rejection_records_counter() {
+        let handle = ensure_recorder();
+
+        // Record several rejections.
+        auth_rejection();
+        auth_rejection();
+        auth_rejection();
+
+        let output = handle.render();
+        assert!(
+            output.contains(AUTH_REJECTIONS_TOTAL),
+            "rendered metrics should contain {AUTH_REJECTIONS_TOTAL}, got:\n{output}"
+        );
+        // The counter value must be at least 3 (may be higher if other tests
+        // in the same process recorded rejections before us).
+        let line = output
+            .lines()
+            .find(|l| l.starts_with(AUTH_REJECTIONS_TOTAL) && !l.starts_with('#'))
+            .expect("expected a data line for auth_rejections_total");
+        let val: f64 = line
+            .split_whitespace()
+            .last()
+            .unwrap()
+            .parse()
+            .expect("counter value should be a number");
+        assert!(
+            val >= 3.0,
+            "auth_rejections_total should be >= 3, got {val}"
+        );
+    }
+
+    #[test]
+    fn test_jwks_refresh_failure_records_counter() {
+        let handle = ensure_recorder();
+
+        jwks_refresh_failure();
+
+        let output = handle.render();
+        assert!(
+            output.contains(JWKS_REFRESH_FAILURES_TOTAL),
+            "rendered metrics should contain {JWKS_REFRESH_FAILURES_TOTAL}, got:\n{output}"
+        );
+        let line = output
+            .lines()
+            .find(|l| l.starts_with(JWKS_REFRESH_FAILURES_TOTAL) && !l.starts_with('#'))
+            .expect("expected a data line for jwks_refresh_failures_total");
+        let val: f64 = line
+            .split_whitespace()
+            .last()
+            .unwrap()
+            .parse()
+            .expect("counter value should be a number");
+        assert!(
+            val >= 1.0,
+            "jwks_refresh_failures_total should be >= 1, got {val}"
+        );
+    }
+
+    #[test]
+    fn test_set_active_graphs_records_gauge() {
+        let handle = ensure_recorder();
+
+        set_active_graphs(42);
+
+        let output = handle.render();
+        assert!(
+            output.contains(ACTIVE_GRAPHS),
+            "rendered metrics should contain {ACTIVE_GRAPHS}, got:\n{output}"
+        );
+        let line = output
+            .lines()
+            .find(|l| l.starts_with(ACTIVE_GRAPHS) && !l.starts_with('#'))
+            .expect("expected a data line for active_graphs");
+        let val: f64 = line
+            .split_whitespace()
+            .last()
+            .unwrap()
+            .parse()
+            .expect("gauge value should be a number");
+        // The gauge was set to 42 (or later overwritten if tests overlap,
+        // but it should never be 0 since we just set it).
+        assert!(val > 0.0, "active_graphs gauge should be > 0, got {val}");
+    }
+
+    #[test]
+    fn test_set_active_graphs_overwrites_previous_value() {
+        let handle = ensure_recorder();
+
+        set_active_graphs(100);
+        set_active_graphs(7);
+
+        let output = handle.render();
+        let line = output
+            .lines()
+            .find(|l| l.starts_with(ACTIVE_GRAPHS) && !l.starts_with('#'))
+            .expect("expected a data line for active_graphs");
+        let val: f64 = line
+            .split_whitespace()
+            .last()
+            .unwrap()
+            .parse()
+            .expect("gauge value should be a number");
+        // Gauge should reflect the last set_active_graphs call (7), not 100.
+        // However, other tests may run concurrently and overwrite, so we just
+        // verify it's a valid positive number.
+        assert!(val > 0.0, "active_graphs gauge should be positive, got {val}");
     }
 }

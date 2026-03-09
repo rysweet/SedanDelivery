@@ -52,16 +52,12 @@ pub fn temporal_property_access(val: &Value, key: &str) -> Result<Value, GqlErro
             "microsecond" => Ok(Value::Int((t.subsec_nanosecond() / 1_000) as i64)),
             "nanosecond" => Ok(Value::Int(t.subsec_nanosecond() as i64)),
             "offset" => {
-                let h = offset_secs / 3600;
-                let m = (offset_secs.abs() % 3600) / 60;
-                Ok(Value::Str(format!("{:+03}:{:02}", h, m).into_boxed_str()))
+                Ok(Value::Str(crate::types::value::format_offset_str(*offset_secs).into_boxed_str()))
             }
             "offsetMinutes" => Ok(Value::Int((*offset_secs / 60) as i64)),
             "offsetSeconds" => Ok(Value::Int(*offset_secs as i64)),
             "timezone" => {
-                let h = offset_secs / 3600;
-                let m = (offset_secs.abs() % 3600) / 60;
-                Ok(Value::Str(format!("{:+03}:{:02}", h, m).into_boxed_str()))
+                Ok(Value::Str(crate::types::value::format_offset_str(*offset_secs).into_boxed_str()))
             }
             _ => Ok(Value::Null),
         },
