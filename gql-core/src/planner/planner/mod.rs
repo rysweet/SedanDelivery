@@ -1498,6 +1498,81 @@ mod tests {
         }
     }
 
+    #[test]
+    fn index_scan_end_to_end_plan_and_execute() {
+        use crate::executor::budget::ExecutionBudget;
+        use crate::executor::engine::QueryExecutor;
+        use crate::types::Value;
+        use std::collections::HashMap;
+
+        // Set up store with an index and data.
+        let store = InMemoryGraphStore::new();
+        store.create_graph("g").unwrap();
+        store.create_index("g", "Person", "name").unwrap();
+
+        let p1 = HashMap::from([("name".to_string(), Value::Str("Alice".into()))]);
+        let alice = store
+            .create_node("g", vec!["Person".to_string()], p1)
+            .unwrap();
+        let p2 = HashMap::from([("name".to_string(), Value::Str("Bob".into()))]);
+        let _bob = store
+            .create_node("g", vec!["Person".to_string()], p2)
+            .unwrap();
+
+        // Plan: MATCH (n:Person {name: 'Alice'}) RETURN n
+        let planner = QueryPlanner::new(&store, "g");
+        let query = Query {
+            unions: Vec::new(),
+            clauses: vec![
+                Clause::Match(MatchClause {
+                    patterns: vec![PathPattern {
+                        variable: None,
+                        start: NodePattern {
+                            variable: Some(Identifier::new("n")),
+                            labels: vec![Label::new("Person")],
+                            properties: Some(Properties::Map(vec![(
+                                smol_str::SmolStr::new("name"),
+                                Expr::Str("Alice".into()),
+                            )])),
+                            where_clause: None,
+                        },
+                        steps: vec![],
+                        shortest_path: None,
+                    }],
+                    where_clause: None,
+                }),
+                Clause::Return(ReturnClause {
+                    distinct: false,
+                    items: vec![ReturnItem {
+                        expr: Expr::Variable(Identifier::new("n")),
+                        alias: None,
+                    }],
+                    order_by: vec![],
+                    skip: None,
+                    limit: None,
+                }),
+            ],
+        };
+        let plan = planner.plan(&query).unwrap();
+
+        // Verify planner chose IndexScan.
+        assert!(
+            plan_contains_index_scan(&plan),
+            "Planner should choose IndexScan when index exists, got: {plan:?}"
+        );
+
+        // Execute the plan and verify correct results.
+        let executor = QueryExecutor::new(&store);
+        let mut budget = ExecutionBudget::unlimited();
+        let result = executor.execute("g", &plan, &mut budget).unwrap();
+        assert_eq!(result.rows.len(), 1, "Should find exactly one Alice");
+        assert_eq!(
+            result.rows[0].get("n"),
+            Some(&Value::Node(alice)),
+            "Should return Alice's node"
+        );
+    }
+
     /// Extract all child operators from an operator for recursive tree searches.
     fn children_of(op: &Operator) -> Vec<&Operator> {
         match op {

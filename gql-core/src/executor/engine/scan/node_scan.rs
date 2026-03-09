@@ -112,26 +112,39 @@ impl<'a> QueryExecutor<'a> {
         let Operator::IndexScan {
             label,
             property,
+            value,
             alias,
         } = op
         else {
             debug_assert!(false, "expected IndexScan operator");
             return Err(GqlError::Execution(ExecutionError::UnsupportedFeature { feature: "internal: expected IndexScan operator".into() }));
         };
-        // Use the property index to find matching nodes.
-        // For a bare IndexScan (no specific value predicate), we scan all nodes
-        // with the label that have the property defined (using Gte on lowest value).
-        // In practice, the planner pairs this with a Filter for the predicate.
+
+        // When a concrete value expression is present, evaluate it and use
+        // RangeQuery::Eq for a precise index lookup. Otherwise fall back to
+        // scanning all nodes that have the property defined.
+        let evaluated_value: Option<Value> = if let Some(val_expr) = value {
+            let ctx: FilterRow<'_> = HashMap::new();
+            Some(eval_expr(val_expr, &ctx)?)
+        } else {
+            None
+        };
+
+        let range_query = match &evaluated_value {
+            Some(v) => RangeQuery::Eq(v),
+            None => RangeQuery::Gte(&Value::Null),
+        };
+
         let node_ids = self.store.find_nodes_by_label_and_property(
             cx.graph,
             label.as_str(),
             property,
-            RangeQuery::Gte(&Value::Null),
+            range_query,
         )?;
 
-        // Fallback: if the range query returns empty (Null comparison issue),
-        // fall back to label scan with property existence check.
-        let effective_ids = if node_ids.is_empty() {
+        // Fallback: if the range query returns empty (Null comparison issue for
+        // existence scans), fall back to label scan with property existence check.
+        let effective_ids = if node_ids.is_empty() && evaluated_value.is_none() {
             let all_label = self.store.find_nodes_by_label(cx.graph, label.as_str())?;
             let mut with_prop = Vec::new();
             for id in all_label {
@@ -354,6 +367,7 @@ mod tests {
         let plan = Operator::IndexScan {
             label: Label::new("Person"),
             property: "age".to_string(),
+            value: None,
             alias: Identifier::new("n"),
         };
         let mut budget = ExecutionBudget::unlimited();
@@ -371,6 +385,7 @@ mod tests {
         let plan = Operator::IndexScan {
             label: Label::new("P"),
             property: "nonexistent".to_string(),
+            value: None,
             alias: Identifier::new("n"),
         };
         let mut budget = ExecutionBudget::unlimited();

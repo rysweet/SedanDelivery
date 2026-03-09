@@ -124,11 +124,12 @@ impl<'s> QueryPlanner<'s> {
                     .iter()
                     .any(|idx| idx.label == label.as_str() && idx.property == prop_key.as_str())
             });
-            if let Some((prop_key, _)) = indexed_prop {
+            if let Some((prop_key, prop_val)) = indexed_prop {
                 index_consumed_prop = Some(prop_key.clone());
                 Operator::IndexScan {
                     label: label.clone(),
                     property: prop_key.to_string(),
+                    value: Some(prop_val.clone()),
                     alias: start_alias.clone(),
                 }
             } else {

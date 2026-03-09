@@ -934,4 +934,76 @@ mod tests {
             err
         );
     }
+
+    // ── MAX_PREALLOC tests ────────────────────────────────────────────
+
+    /// Verify that `MAX_PREALLOC` caps the initial allocation for lists.
+    /// A List32 header claiming 1 million elements must not allocate
+    /// 1M `BoltValue` slots up-front; the `with_capacity` call should
+    /// be capped at `MAX_PREALLOC` (4096). The decode will fail with
+    /// UnexpectedEof because the buffer only provides a few elements,
+    /// but the key assertion is that the decoder does not OOM.
+    #[test]
+    fn test_max_prealloc_caps_list_capacity() {
+        let claimed_count: u32 = 1_000_000;
+        let actual_elements: usize = 10;
+
+        let mut buf = Vec::new();
+        buf.push(0xD6); // List32 marker
+        buf.extend_from_slice(&claimed_count.to_be_bytes());
+        for _ in 0..actual_elements {
+            buf.push(0xC0); // Null
+        }
+
+        let err = decode(&buf).unwrap_err();
+        assert!(
+            matches!(err, DecodeError::UnexpectedEof { .. }),
+            "expected UnexpectedEof (not OOM) for over-claimed List32, got: {:?}",
+            err
+        );
+    }
+
+    /// Same test for Map32 -- claimed count is huge, but MAX_PREALLOC
+    /// prevents excessive pre-allocation.
+    #[test]
+    fn test_max_prealloc_caps_map_capacity() {
+        let claimed_count: u32 = 1_000_000;
+        let actual_entries: usize = 5;
+
+        let mut buf = Vec::new();
+        buf.push(0xDA); // Map32 marker
+        buf.extend_from_slice(&claimed_count.to_be_bytes());
+        for _ in 0..actual_entries {
+            buf.push(0x80); // TinyString("")
+            buf.push(0xC0); // Null
+        }
+
+        let err = decode(&buf).unwrap_err();
+        assert!(
+            matches!(err, DecodeError::UnexpectedEof { .. }),
+            "expected UnexpectedEof (not OOM) for over-claimed Map32, got: {:?}",
+            err
+        );
+    }
+
+    /// Verify that a list with exactly MAX_PREALLOC elements decodes
+    /// correctly -- the capacity cap must not truncate the result.
+    #[test]
+    fn test_list_at_max_prealloc_boundary_succeeds() {
+        let count = super::MAX_PREALLOC; // 4096
+
+        let mut buf = Vec::new();
+        buf.push(0xD5); // List16 marker
+        buf.extend_from_slice(&(count as u16).to_be_bytes());
+        for _ in 0..count {
+            buf.push(0xC0); // Null
+        }
+
+        let (val, consumed) = decode(&buf).expect("decode should succeed for MAX_PREALLOC elements");
+        assert_eq!(consumed, buf.len());
+        match val {
+            BoltValue::List(items) => assert_eq!(items.len(), count),
+            _ => panic!("expected List"),
+        }
+    }
 }

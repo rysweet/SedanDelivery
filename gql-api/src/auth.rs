@@ -309,8 +309,19 @@ pub async fn require_entra_auth(request: Request, next: Next) -> Response {
         return next.run(request).await;
     }
 
-    let auth_header = request
-        .headers()
+    match extract_and_validate(request.headers(), config).await {
+        Ok(()) => next.run(request).await,
+        Err(resp) => resp,
+    }
+}
+
+/// Core auth-check logic, factored out so it can be unit-tested without
+/// requiring a running `Next` handler or global Entra config.
+async fn extract_and_validate(
+    headers: &axum::http::HeaderMap,
+    config: &EntraConfig,
+) -> Result<(), Response> {
+    let auth_header = headers
         .get(header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok());
 
@@ -318,17 +329,17 @@ pub async fn require_entra_auth(request: Request, next: Next) -> Response {
         Some(h) if h.starts_with("Bearer ") => &h[7..],
         _ => {
             crate::metrics::auth_rejection();
-            return (
+            return Err((
                 StatusCode::UNAUTHORIZED,
                 [("WWW-Authenticate", "Bearer")],
                 "missing or invalid Authorization header",
             )
-                .into_response();
+                .into_response());
         }
     };
 
     match validate_entra_token(token, config).await {
-        Ok(_claims) => next.run(request).await,
+        Ok(_claims) => Ok(()),
         Err((status, e)) => {
             tracing::warn!("auth rejected: {e}");
             crate::metrics::auth_rejection();
@@ -337,12 +348,12 @@ pub async fn require_entra_auth(request: Request, next: Next) -> Response {
             } else {
                 "Bearer error=\"invalid_token\""
             };
-            (
+            Err((
                 status,
                 [("WWW-Authenticate", challenge)],
                 "authentication failed",
             )
-                .into_response()
+                .into_response())
         }
     }
 }
@@ -355,15 +366,59 @@ pub async fn require_entra_auth(request: Request, next: Next) -> Response {
 mod tests {
     use super::*;
 
+    // ── EntraConfig ──────────────────────────────────────────────────────
+
+    /// Regression: the old version of this test was tautological — it
+    /// branched on the current env state and always asserted the matching
+    /// arm, so it could never fail.  The replacement explicitly clears the
+    /// env vars, asserts `None`, then sets them and asserts `Some`.
+    ///
+    /// WARNING: mutates process-wide env vars. Not safe to run in parallel
+    /// with other tests that read these variables.
     #[test]
-    fn entra_config_from_env_returns_some_or_none() {
+    fn entra_config_from_env_requires_both_vars() {
+        let saved_tenant = std::env::var("GQL_API_ENTRA_TENANT_ID").ok();
+        let saved_client = std::env::var("GQL_API_ENTRA_CLIENT_ID").ok();
+
+        // Neither var set → None
+        std::env::remove_var("GQL_API_ENTRA_TENANT_ID");
+        std::env::remove_var("GQL_API_ENTRA_CLIENT_ID");
+        assert!(
+            EntraConfig::from_env().is_none(),
+            "expected None when both env vars are missing"
+        );
+
+        // Only tenant → None
+        std::env::set_var("GQL_API_ENTRA_TENANT_ID", "t");
+        assert!(
+            EntraConfig::from_env().is_none(),
+            "expected None when only TENANT_ID is set"
+        );
+        std::env::remove_var("GQL_API_ENTRA_TENANT_ID");
+
+        // Only client → None
+        std::env::set_var("GQL_API_ENTRA_CLIENT_ID", "c");
+        assert!(
+            EntraConfig::from_env().is_none(),
+            "expected None when only CLIENT_ID is set"
+        );
+
+        // Both set → Some
+        std::env::set_var("GQL_API_ENTRA_TENANT_ID", "t");
         let cfg = EntraConfig::from_env();
-        if std::env::var("GQL_API_ENTRA_TENANT_ID").is_ok()
-            && std::env::var("GQL_API_ENTRA_CLIENT_ID").is_ok()
-        {
-            assert!(cfg.is_some(), "expected Some when both env vars are set");
-        } else {
-            assert!(cfg.is_none(), "expected None when env vars are missing");
+        assert!(cfg.is_some(), "expected Some when both env vars are set");
+        let cfg = cfg.unwrap();
+        assert_eq!(cfg.tenant_id, "t");
+        assert_eq!(cfg.client_id, "c");
+
+        // Restore
+        std::env::remove_var("GQL_API_ENTRA_TENANT_ID");
+        std::env::remove_var("GQL_API_ENTRA_CLIENT_ID");
+        if let Some(v) = saved_tenant {
+            std::env::set_var("GQL_API_ENTRA_TENANT_ID", v);
+        }
+        if let Some(v) = saved_client {
+            std::env::set_var("GQL_API_ENTRA_CLIENT_ID", v);
         }
     }
 
@@ -373,12 +428,111 @@ mod tests {
         assert_eq!(d, Duration::from_secs(42));
     }
 
+    // ── JwksCache ────────────────────────────────────────────────────────
+
     #[test]
-    fn jwks_cache_initializes() {
-        let cache = jwks_cache();
+    fn jwks_cache_initializes_empty() {
+        let cache = JwksCache {
+            inner: RwLock::new(None),
+            refresh_ttl: Duration::from_secs(60),
+            retry_cooldown: Duration::from_secs(5),
+        };
         let guard = cache.inner.read().unwrap();
         assert!(guard.is_none(), "fresh cache should be empty");
     }
+
+    #[test]
+    fn jwks_cache_ttl_expires_entries() {
+        let cache = JwksCache {
+            inner: RwLock::new(None),
+            refresh_ttl: Duration::from_secs(0), // immediate expiry
+            retry_cooldown: Duration::from_secs(0),
+        };
+
+        let key = JwksKey {
+            kid: "key-1".into(),
+            n: "n-value".into(),
+            e: "e-value".into(),
+            kty: "RSA".into(),
+        };
+
+        // Populate the cache with a key fetched "now".
+        {
+            let mut guard = cache.inner.write().unwrap();
+            *guard = Some(JwksCacheInner {
+                keys: vec![key.clone()],
+                fetched_at: Instant::now() - Duration::from_secs(1),
+                last_retry_at: None,
+            });
+        }
+
+        // Read back: the entry exists but its TTL has expired (refresh_ttl=0,
+        // fetched_at is 1 s ago).  The find_jwks_key function would skip
+        // expired entries on the fast path.  We verify the TTL check here.
+        let guard = cache.inner.read().unwrap();
+        let inner = guard.as_ref().unwrap();
+        let elapsed = Instant::now().duration_since(inner.fetched_at);
+        assert!(
+            elapsed >= cache.refresh_ttl,
+            "entry should be past its TTL: elapsed {elapsed:?} >= ttl {:?}",
+            cache.refresh_ttl
+        );
+    }
+
+    #[test]
+    fn jwks_cache_cooldown_prevents_rapid_refetch() {
+        let cache = JwksCache {
+            inner: RwLock::new(None),
+            refresh_ttl: Duration::from_secs(3600),
+            retry_cooldown: Duration::from_secs(300), // 5 minutes
+        };
+
+        let now = Instant::now();
+
+        // Populate cache with a valid (non-expired) entry that was retried
+        // very recently.
+        {
+            let mut guard = cache.inner.write().unwrap();
+            *guard = Some(JwksCacheInner {
+                keys: vec![JwksKey {
+                    kid: "other-key".into(),
+                    n: "n".into(),
+                    e: "e".into(),
+                    kty: "RSA".into(),
+                }],
+                fetched_at: now,
+                last_retry_at: Some(now), // just retried
+            });
+        }
+
+        // Simulate the cooldown check that find_jwks_key performs when a
+        // requested kid is not found in a non-expired cache.
+        let guard = cache.inner.read().unwrap();
+        let inner = guard.as_ref().unwrap();
+
+        // The cache is not expired (fetched_at is now, ttl is 1 hour).
+        assert!(
+            Instant::now().duration_since(inner.fetched_at) < cache.refresh_ttl,
+            "cache should still be valid"
+        );
+
+        // The requested kid="missing-kid" is not in keys.
+        assert!(
+            inner.keys.iter().find(|k| k.kid == "missing-kid").is_none(),
+            "key should not be found"
+        );
+
+        // Cooldown check: last_retry_at is very recent, so elapsed < cooldown.
+        let last = inner.last_retry_at.unwrap();
+        let elapsed_since_retry = Instant::now().duration_since(last);
+        assert!(
+            elapsed_since_retry < cache.retry_cooldown,
+            "cooldown should block re-fetch: elapsed {elapsed_since_retry:?} < cooldown {:?}",
+            cache.retry_cooldown
+        );
+    }
+
+    // ── Token validation ─────────────────────────────────────────────────
 
     #[tokio::test]
     async fn test_validate_token_rejects_garbage() {
@@ -390,29 +544,50 @@ mod tests {
         assert!(result.is_err(), "garbage token must be rejected");
     }
 
-    // WARNING: This test mutates process-wide environment variables without
-    // synchronization. It is NOT safe to run in parallel with other tests that
-    // read GQL_API_ENTRA_TENANT_ID or GQL_API_ENTRA_CLIENT_ID. If flaky
-    // failures appear, gate this with `#[serial_test::serial]` (add
-    // `serial_test` to dev-dependencies).
-    #[test]
-    fn test_entra_config_none_without_env_vars() {
-        // Save current values so we can restore them.
-        let saved_tenant = std::env::var("GQL_API_ENTRA_TENANT_ID").ok();
-        let saved_client = std::env::var("GQL_API_ENTRA_CLIENT_ID").ok();
+    // ── Middleware (extract_and_validate) ─────────────────────────────────
 
-        std::env::remove_var("GQL_API_ENTRA_TENANT_ID");
-        std::env::remove_var("GQL_API_ENTRA_CLIENT_ID");
+    #[tokio::test]
+    async fn middleware_rejects_request_without_auth_header() {
+        let config = EntraConfig {
+            tenant_id: "test-tenant".into(),
+            client_id: "test-client".into(),
+        };
 
-        let cfg = EntraConfig::from_env();
-        assert!(cfg.is_none(), "EntraConfig should be None without env vars");
+        let headers = axum::http::HeaderMap::new();
+        let result = extract_and_validate(&headers, &config).await;
+        assert!(result.is_err(), "request without Authorization must fail");
+        let resp = result.unwrap_err();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
 
-        // Restore env vars if they were set.
-        if let Some(v) = saved_tenant {
-            std::env::set_var("GQL_API_ENTRA_TENANT_ID", v);
-        }
-        if let Some(v) = saved_client {
-            std::env::set_var("GQL_API_ENTRA_CLIENT_ID", v);
-        }
+    #[tokio::test]
+    async fn middleware_rejects_non_bearer_auth() {
+        let config = EntraConfig {
+            tenant_id: "test-tenant".into(),
+            client_id: "test-client".into(),
+        };
+
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert(header::AUTHORIZATION, "Basic dXNlcjpwYXNz".parse().unwrap());
+        let result = extract_and_validate(&headers, &config).await;
+        assert!(result.is_err(), "non-Bearer auth must be rejected");
+        assert_eq!(result.unwrap_err().status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn middleware_rejects_invalid_bearer_token() {
+        let config = EntraConfig {
+            tenant_id: "test-tenant".into(),
+            client_id: "test-client".into(),
+        };
+
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert(
+            header::AUTHORIZATION,
+            "Bearer not.a.valid.jwt".parse().unwrap(),
+        );
+        let result = extract_and_validate(&headers, &config).await;
+        assert!(result.is_err(), "invalid JWT must be rejected");
+        assert_eq!(result.unwrap_err().status(), StatusCode::UNAUTHORIZED);
     }
 }

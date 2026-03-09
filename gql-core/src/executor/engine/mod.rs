@@ -1173,6 +1173,7 @@ mod tests {
         let plan = Operator::IndexScan {
             label: Label::new("Person"),
             property: "age".to_string(),
+            value: None,
             alias: Identifier::new("n"),
         };
         let mut budget = ExecutionBudget::unlimited();
@@ -1191,6 +1192,7 @@ mod tests {
         let plan = Operator::IndexScan {
             label: Label::new("Person"),
             property: "nonexistent".to_string(),
+            value: None,
             alias: Identifier::new("n"),
         };
         let mut budget = ExecutionBudget::unlimited();

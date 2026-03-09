@@ -226,6 +226,121 @@ impl RedisGraphStore {
         let mut conn = self.conn()?;
         self.delete_edge_inner(conn.as_mut(), graph, id)
     }
+
+    /// Batch-create multiple edges in a single Redis pipeline round-trip.
+    ///
+    /// For each edge: verifies that src and dst nodes exist, allocates a
+    /// contiguous block of edge IDs via a single INCRBY, then stores all
+    /// edge hashes, reltype indexes, adjacency sets, and the all-edges set
+    /// in one pipeline.
+    ///
+    /// Returns the newly created `EdgeId`s in the same order as the input.
+    pub fn batch_create_edges(
+        &self,
+        graph: &str,
+        edges: Vec<(NodeId, NodeId, String, HashMap<String, Value>)>,
+    ) -> Result<Vec<EdgeId>, StorageError> {
+        if edges.is_empty() {
+            return Ok(Vec::new());
+        }
+        self.require_graph(graph)?;
+        let mut conn = self.conn()?;
+
+        // Verify all src and dst nodes exist before allocating IDs.
+        // Collect unique node IDs to minimize reads.
+        let mut unique_node_ids: std::collections::HashSet<u64> = std::collections::HashSet::new();
+        for (src, dst, _, _) in &edges {
+            unique_node_ids.insert(src.0);
+            unique_node_ids.insert(dst.0);
+        }
+        for &nid in &unique_node_ids {
+            if self.read_node(conn.as_mut(), graph, nid)?.is_none() {
+                return Err(StorageError::NodeNotFound { id: nid });
+            }
+        }
+
+        let count = i64::try_from(edges.len()).map_err(|_| StorageError::Backend {
+            msg: format!(
+                "batch size {} exceeds i64::MAX, cannot allocate IDs",
+                edges.len()
+            ),
+        })?;
+
+        // Allocate a contiguous block of IDs with a single INCRBY.
+        let end_id: i64 = redis::cmd("INCRBY")
+            .arg(self.kp(key_edge_seq(graph)))
+            .arg(count)
+            .query(conn.as_mut())
+            .map_err(|e| StorageError::Backend { msg: e.to_string() })?;
+        if end_id <= 0 || end_id < count {
+            return Err(StorageError::IdOverflow {
+                graph: graph.to_string(),
+            });
+        }
+        let start_id = (end_id - count + 1) as u64;
+
+        // Pre-serialize all edges and build the pipeline.
+        let mut pipe = redis::pipe();
+        let mut created_ids: Vec<EdgeId> = Vec::with_capacity(edges.len());
+
+        for (i, (src, dst, rel_type, properties)) in edges.into_iter().enumerate() {
+            let id = start_id + i as u64;
+            let eid = EdgeId(id);
+
+            // Strip internal FanoutStore keys before storing.
+            let clean_props = clean_fanout_props(properties);
+
+            let edge_key = self.kp(key_edge(graph, id));
+            let props_json = props_to_json(&clean_props)?;
+
+            // HSET edge hash.
+            pipe.cmd("HSET")
+                .arg(&edge_key)
+                .arg("src")
+                .arg(src.0.to_string())
+                .arg("dst")
+                .arg(dst.0.to_string())
+                .arg("rel_type")
+                .arg(&rel_type)
+                .arg("props")
+                .arg(&props_json)
+                .ignore();
+
+            // SADD to reltype index.
+            pipe.cmd("SADD")
+                .arg(self.kp(key_reltype(graph, &rel_type)))
+                .arg(id.to_string())
+                .ignore();
+
+            // SADD to out-adjacency on src.
+            let out_member = encode_adj(eid, dst, &rel_type);
+            pipe.cmd("SADD")
+                .arg(self.kp(key_out(graph, src.0)))
+                .arg(out_member)
+                .ignore();
+
+            // SADD to in-adjacency on dst.
+            let in_member = encode_adj(eid, src, &rel_type);
+            pipe.cmd("SADD")
+                .arg(self.kp(key_in(graph, dst.0)))
+                .arg(in_member)
+                .ignore();
+
+            // SADD to all-edges set.
+            pipe.cmd("SADD")
+                .arg(self.kp(key_edges_set(graph)))
+                .arg(id.to_string())
+                .ignore();
+
+            created_ids.push(eid);
+        }
+
+        // Execute the entire pipeline in one round-trip.
+        pipe.query::<()>(conn.as_mut())
+            .map_err(|e| StorageError::Backend { msg: e.to_string() })?;
+
+        Ok(created_ids)
+    }
 }
 
 #[cfg(test)]

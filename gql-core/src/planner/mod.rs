@@ -20,6 +20,10 @@ pub enum Operator {
     IndexScan {
         label: Label,
         property: String,
+        /// When `Some`, the executor uses `RangeQuery::Eq(value)` for a precise
+        /// index lookup. When `None`, all nodes with the property are returned
+        /// (existence scan) and a downstream Filter handles the predicate.
+        value: Option<Expr>,
         alias: Identifier,
     },
     NodeByIdSeek {

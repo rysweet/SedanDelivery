@@ -37,6 +37,9 @@ futures-util   = "0.3"
 criterion     = { version = "0.8", features = ["html_reports"] }
 tokio-test    = "0.4"
 rcgen          = "0.14"
+tower          = { version = "0.5", features = ["util"] }
+http           = "1"
+http-body-util = "0.1"
 
 [[bench]]
 name = "bolt_benchmarks"

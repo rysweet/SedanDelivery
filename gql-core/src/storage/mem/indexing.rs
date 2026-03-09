@@ -539,4 +539,108 @@ mod tests {
             .unwrap();
         assert_eq!(result.len(), 1);
     }
+
+    #[test]
+    fn index_maintained_on_add_label() {
+        // Create a node without the indexed label, then add it.
+        // The property index should pick up the node.
+        let store = make_indexed_store(); // has index on Person.age and Person.name
+        let p = HashMap::from([("age".to_string(), Value::Int(42))]);
+        let a = store
+            .create_node("test", vec!["Animal".to_string()], p)
+            .unwrap();
+
+        // Before adding label: index lookup should not find it.
+        let bound = Value::Int(42);
+        let result = store
+            .find_nodes_by_label_and_property("test", "Person", "age", RangeQuery::Eq(&bound))
+            .unwrap();
+        assert!(result.is_empty());
+
+        // Add the Person label.
+        store
+            .add_node_labels("test", a, &["Person".to_string()])
+            .unwrap();
+
+        // Now the index should find it.
+        let result = store
+            .find_nodes_by_label_and_property("test", "Person", "age", RangeQuery::Eq(&bound))
+            .unwrap();
+        assert_eq!(result, vec![a]);
+    }
+
+    #[test]
+    fn index_maintained_on_remove_label() {
+        // Create a node with the indexed label, then remove it.
+        // The property index should no longer find the node.
+        let store = make_indexed_store();
+        let p = HashMap::from([("age".to_string(), Value::Int(55))]);
+        let a = store
+            .create_node("test", vec!["Person".to_string()], p)
+            .unwrap();
+
+        // Before removing label: index lookup should find it.
+        let bound = Value::Int(55);
+        let result = store
+            .find_nodes_by_label_and_property("test", "Person", "age", RangeQuery::Eq(&bound))
+            .unwrap();
+        assert_eq!(result, vec![a]);
+
+        // Remove the Person label.
+        store
+            .remove_node_labels("test", a, &["Person".to_string()])
+            .unwrap();
+
+        // Now the index should no longer find it.
+        let result = store
+            .find_nodes_by_label_and_property("test", "Person", "age", RangeQuery::Eq(&bound))
+            .unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn index_scan_returns_correct_results_end_to_end() {
+        // End-to-end: create index, insert nodes, verify that
+        // find_nodes_by_label_and_property returns only matching nodes
+        // and uses the index (not a fallback scan).
+        let store = make_store();
+        // Insert nodes BEFORE creating the index to test backfill.
+        let p1 = HashMap::from([("name".to_string(), Value::Str("Alice".into()))]);
+        let alice = store
+            .create_node("test", vec!["Person".to_string()], p1)
+            .unwrap();
+        let p2 = HashMap::from([("name".to_string(), Value::Str("Bob".into()))]);
+        let _bob = store
+            .create_node("test", vec!["Person".to_string()], p2)
+            .unwrap();
+        let p3 = HashMap::from([("name".to_string(), Value::Str("Alice".into()))]);
+        let _other = store
+            .create_node("test", vec!["Company".to_string()], p3)
+            .unwrap();
+
+        // Create index — should backfill existing Person nodes.
+        store.create_index("test", "Person", "name").unwrap();
+
+        // Exact match: only Alice with label Person.
+        let bound = Value::Str("Alice".into());
+        let result = store
+            .find_nodes_by_label_and_property("test", "Person", "name", RangeQuery::Eq(&bound))
+            .unwrap();
+        assert_eq!(result, vec![alice]);
+
+        // Insert another node AFTER creating the index.
+        let p4 = HashMap::from([("name".to_string(), Value::Str("Alice".into()))]);
+        let alice2 = store
+            .create_node("test", vec!["Person".to_string()], p4)
+            .unwrap();
+
+        // Now should find both Alices.
+        let mut result = store
+            .find_nodes_by_label_and_property("test", "Person", "name", RangeQuery::Eq(&bound))
+            .unwrap();
+        result.sort();
+        let mut expected = vec![alice, alice2];
+        expected.sort();
+        assert_eq!(result, expected);
+    }
 }
