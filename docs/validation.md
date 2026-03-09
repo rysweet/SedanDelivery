@@ -281,4 +281,4 @@ bash scripts/validate.sh
 - [benchmarks.md](benchmarks.md) — how to run and interpret performance benchmarks
 - [ADR-001](ADR-001-storage-model.md) — storage model decisions
 - [ADR-002](ADR-002-full-gql-compliance.md) — GQL compliance strategy
-- [RESEARCH.md](RESEARCH.md) — security analysis and DoS mitigations
+- [Architecture Overview](architecture.md) — crate map, request flows, storage layer

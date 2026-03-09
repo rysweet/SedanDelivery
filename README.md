@@ -259,7 +259,7 @@ cargo run -p gql-api   # listens on 0.0.0.0:3001
 - [Tutorial](docs/TUTORIAL.md) — full usage guide with code examples
 - [Bolt Protocol Spec](docs/specs/sedandelivery-bolt-spec.md) — Neo4j Bolt v4.4 server implementation details
 - [Docs site](https://turbo-adventure-3eloook.pages.github.io/) — deployment, storage backends, environment variables
-- [Research](docs/RESEARCH.md) — security analysis
+- [Architecture Overview](docs/architecture.md) — crate map, request flows, query pipeline, storage layer
 
 ## Tests
 

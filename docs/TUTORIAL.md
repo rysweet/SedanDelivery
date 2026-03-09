@@ -267,9 +267,7 @@ OPTIONAL MATCH (n)-[:KNOWS]->(m:Person)
 RETURN n.name, m.name
 ```
 
-## Phase 1 Preview: Full Query Execution
-
-Phase 1 (in progress) will enable:
+## Full Query Execution (Parse, Plan, Execute)
 
 ```rust
 // Parse → Plan → Execute
@@ -420,4 +418,4 @@ type mapping tables.
 
 ## Architecture Reference
 
-See [PLAN.md](../PLAN.md) for the full architecture and [docs/](.) for ADRs and research notes.
+See [Architecture Overview](architecture.md) for the full architecture and [docs/](.) for ADRs and research notes.

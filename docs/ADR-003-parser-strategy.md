@@ -1,7 +1,13 @@
-# ADR-003: Parser Strategy — Hand-Written Lexer + lalrpop LALR(1) Grammar
+# ADR-003: Parser Strategy — Hand-Written Recursive Descent Parser
 
-**Status**: Accepted
+**Status**: Superseded
 **Date**: 2026-02-26
+
+> **Note**: The original decision selected a lalrpop LALR(1) grammar combined with
+> a hand-written lexer. During implementation, a hand-written recursive descent
+> parser proved simpler to maintain, produced better error messages, and handled
+> Cypher's syntax (including quantified path patterns) without requiring a build-step
+> code generator. The lalrpop approach was never shipped.
 
 ## Context
 
@@ -14,13 +20,13 @@ Options evaluated:
 
 ## Decision
 
-Hand-written lexer (zero-copy, `&'src str` token slices) combined with a `lalrpop` LALR(1) grammar.
+Hand-written lexer (zero-copy, `&'src str` token slices) combined with a hand-written recursive descent parser.
 
 ## Rationale
 
-**Why lalrpop**: Cypher has operator precedence (requiring precedence climbing or LALR), left-recursive expressions (`n.a.b.c`), and complex pattern syntax. LALR(1) handles all of this correctly by construction. The grammar file is formal documentation. lalrpop generates typed Rust code directly from grammar actions.
+**Why recursive descent**: Cypher has operator precedence, left-recursive expressions (`n.a.b.c`), and complex pattern syntax. A hand-written Pratt parser handles precedence climbing naturally, produces precise error messages with span information, and requires no build-step code generation. The parser is straightforward to extend for GQL ISO 20030 features such as quantified path patterns.
 
-**Why hand-written lexer**: lalrpop's built-in regex lexer allocates; a hand-written lexer returns `&'src str` slices from the original query string, enabling zero-copy token representation during parsing. This matters for query latency in a Redis module hot path.
+**Why hand-written lexer**: A hand-written lexer returns `&'src str` slices from the original query string, enabling zero-copy token representation during parsing. This matters for query latency in a Redis module hot path.
 
 **Why not nom**: Parser becomes unreadable at Cypher's scale; no native left-recursion support; error messages require significant extra work.
 
@@ -28,8 +34,8 @@ Hand-written lexer (zero-copy, `&'src str` token slices) combined with a `lalrpo
 
 **Why not tree-sitter**: Runtime parsing library designed for editor integration, not embedded library use. Too large a dependency for a Redis module `.so`.
 
-**Reserve**: If lalrpop proves insufficient for GQL ISO 20030 extensions (particularly quantified path patterns which may require GLR), fall back to a hand-written Pratt parser for expressions + recursive descent for clauses.
+**Why not lalrpop**: Originally planned, but the build-step code generation added complexity, error messages were less precise than hand-written alternatives, and extending the grammar for GQL ISO 20030 quantified path patterns would have required GLR support that lalrpop does not provide.
 
 ## Consequences
 
-Build step runs lalrpop code generation. Grammar file in `gql-core/src/parser/cypher.lalrpop` serves as the canonical language specification. Lexer lifetime `'src` must be threaded carefully through parser actions.
+No build-step code generation is required. The parser lives in `gql-core/src/parser/` as plain Rust. Lexer lifetime `'src` must be threaded carefully through parser functions.

@@ -170,7 +170,7 @@ Set these in your Container App or `deploy.yml` to customize behavior:
 | `BOLT_BIND_ADDR` | `0.0.0.0:7687` | Bolt TCP listen address |
 | `BOLT_PASSWORD` | (none) | Optional password for Bolt auth |
 | `BOLT_MAX_CONNECTIONS` | `1024` | Max concurrent Bolt connections |
-| `BOLT_IDLE_TIMEOUT_SECS` | `300` | Close idle connections after N seconds |
+| `BOLT_IDLE_TIMEOUT_SECS` | `3600` | Close idle connections after N seconds |
 | **Redis Backend** | | |
 | `GQL_REDIS_URL` | (none) | Redis/Valkey connection URL |
 | `GQL_REDIS_CLUSTER_NODES` | (none) | Cluster seed URLs (overrides GQL_REDIS_URL) |
@@ -180,6 +180,7 @@ Set these in your Container App or `deploy.yml` to customize behavior:
 | **REST API (gql-api)** | | |
 | `GQL_API_BIND_ADDR` | `0.0.0.0:3001` | HTTP listen address |
 | `GQL_API_ALLOWED_ORIGINS` | localhost:5000,5173 | Comma-separated CORS origins |
+| `GQL_API_RATE_LIMIT_RPS` | `100` | Max requests per second per client (rate limiting) |
 | `ENVIRONMENT` | (none) | Set to `production` to require `GQL_REDIS_URL` and `GQL_API_ALLOWED_ORIGINS` |
 | **Query Engine** | | |
 | `GQL_QUERY_TIMEOUT_MS` | `30000` | Max query execution time |

@@ -17,7 +17,7 @@ A Rust GQL/Cypher query engine — a clean-room, MIT/Apache-2.0-licensed replace
 - [Authentication (Entra ID)](auth) — Configure JWT auth for the REST API
 - [Secrets Configuration](secrets) — Repository secrets inventory, creation, rotation, and monitoring
 - [Benchmarks](benchmarks) — How to run and interpret performance benchmarks
-- [Research Notes](RESEARCH) — Security analysis and design rationale
+- [Architecture Overview](architecture) — Crate map, request flows, query pipeline, storage layer
 
 ## Neo4j Compatibility
 
@@ -81,6 +81,9 @@ See [ADR-004](ADR-004-distributed-redis) for the full architecture decision reco
 | `BOLT_BIND_ADDR` | `0.0.0.0:7687` | Bolt TCP listen address |
 | `BOLT_PASSWORD` | — | Optional password for Bolt connections |
 | `BOLT_ENABLED` | `true` | Enable/disable Bolt server in container |
+| `BOLT_MAX_CONNECTIONS` | `1024` | Max concurrent Bolt connections |
+| `BOLT_IDLE_TIMEOUT_SECS` | `3600` | Close idle connections after N seconds |
+| `BOLT_WRITE_CONCURRENCY` | `64` | Max concurrent write transactions |
 | `GQL_REDIS_URL` | — | Redis/Valkey URL; when set, bolt uses Redis-backed store |
 | `GQL_REDIS_POOL_SIZE` | `16` | r2d2 connection pool max size |
 | `GQL_REDIS_POOL_TIMEOUT_SECS` | `5` | Pool checkout timeout in seconds |
@@ -101,6 +104,7 @@ See [ADR-004](ADR-004-distributed-redis) for the full architecture decision reco
 | `GQL_API_ALLOWED_ORIGINS` | `localhost:5000,5173` | Comma-separated CORS origins |
 | `GQL_API_ENTRA_TENANT_ID` | — | Entra ID tenant for JWT auth (required in production) |
 | `GQL_API_ENTRA_CLIENT_ID` | — | App registration client ID for JWT audience validation |
+| `GQL_API_RATE_LIMIT_RPS` | `100` | Max requests per second per client (rate limiting) |
 | `GQL_API_IMPORT_BODY_LIMIT_BYTES` | `2097152` | Max import request body size (bytes) |
 | `ENVIRONMENT` | — | Set to `production` to enforce auth and CORS config |
 

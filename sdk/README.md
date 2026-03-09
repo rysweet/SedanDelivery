@@ -434,7 +434,7 @@ sdk/
       QueryResult.cs           # QueryResult, Record, MutationStats
       TypeDecoder.cs           # Point, SedanPath, tagged-value decoding
   rust/
-    sedan-client/              # (planned)
+    sedan-client/
       Cargo.toml
       src/lib.rs
 ```

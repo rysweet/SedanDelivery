@@ -21,7 +21,7 @@ A query engine implementing an idiosyncratic subset:
 
 The grammar is cheap — a lalrpop LALR(1) grammar for the full Cypher language is ~1,500 lines, comparable to a subset grammar. Execution of rare clauses is deferred with a structured `UnsupportedFeature { feature: String }` error, not a parse error. This is far better DX than "syntax error: unexpected token CALL".
 
-The openCypher TCK provides ~800 Gherkin scenarios covering the full language. Adopting the full grammar from day one means we can run all 800 and track our pass rate as a first-class metric.
+The openCypher TCK provides ~3,900 Gherkin scenarios covering the full language. Adopting the full grammar from day one means we can run all 3,900 and track our pass rate as a first-class metric.
 
 ## Consequences
 
