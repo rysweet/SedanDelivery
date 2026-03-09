@@ -127,6 +127,17 @@ pub struct ExplainResponse {
     pub plan: serde_json::Value,
 }
 
+// ── Profile ──────────────────────────────────────────────────────────────────
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProfileResponse {
+    pub columns: Vec<String>,
+    pub rows: Vec<serde_json::Value>,
+    pub plan: serde_json::Value,
+    pub elapsed_ms: u64,
+}
+
 // ── Pagination query params ───────────────────────────────────────────────────
 
 /// Return the maximum number of items that may be requested in a single page.

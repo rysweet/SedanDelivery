@@ -194,49 +194,97 @@ async fn main() {
         .layer(TraceLayer::new_for_http())
         .with_state(state);
 
-    // Bind address: read from GQL_API_BIND_ADDR, default 0.0.0.0:3001.
-    let addr: SocketAddr = std::env::var("GQL_API_BIND_ADDR")
-        .unwrap_or_else(|_| "0.0.0.0:3001".to_string())
-        .parse()
-        .expect("GQL_API_BIND_ADDR must be a valid socket address (e.g. 0.0.0.0:3001)");
-    info!("gql-api listening on {addr}");
-
-    let listener = tokio::net::TcpListener::bind(addr)
-        .await
-        .expect("failed to bind TCP listener");
+    // Load TLS configuration (returns None if GQL_API_TLS_CERT / GQL_API_TLS_KEY are unset).
+    let tls_acceptor = gql_api::tls::load_tls_config();
 
     let drain_timeout_secs: u64 = std::env::var("GQL_API_DRAIN_TIMEOUT_SECS")
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(30);
 
-    let shutdown_notify = Arc::new(tokio::sync::Notify::new());
-    let shutdown_notify2 = Arc::clone(&shutdown_notify);
+    if let Some(acceptor) = tls_acceptor {
+        // TLS mode — use GQL_API_TLS_PORT (default 3443) for the bind address.
+        let tls_port = gql_api::tls::tls_port();
+        let addr: SocketAddr = std::env::var("GQL_API_BIND_ADDR")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or_else(|| SocketAddr::from(([0, 0, 0, 0], tls_port)));
+        info!("gql-api listening on {addr} (HTTPS)");
 
-    let server = axum::serve(
-        listener,
-        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
-    )
-    .with_graceful_shutdown(async move {
-        shutdown_signal().await;
-        shutdown_notify2.notify_one();
-    });
+        let tcp_listener = tokio::net::TcpListener::bind(addr)
+            .await
+            .expect("failed to bind TCP listener for TLS");
+        let tls_listener = gql_api::tls::TlsListener::new(tcp_listener, acceptor);
 
-    tokio::select! {
-        result = server => {
-            if let Err(e) = result {
-                tracing::error!("server error: {e}");
+        let shutdown_notify = Arc::new(tokio::sync::Notify::new());
+        let shutdown_notify2 = Arc::clone(&shutdown_notify);
+
+        let server = axum::serve(
+            tls_listener,
+            app.into_make_service_with_connect_info::<gql_api::tls::TlsConnectInfo>(),
+        )
+        .with_graceful_shutdown(async move {
+            shutdown_signal().await;
+            shutdown_notify2.notify_one();
+        });
+
+        tokio::select! {
+            result = server => {
+                if let Err(e) = result {
+                    tracing::error!("server error: {e}");
+                }
+            }
+            _ = async {
+                shutdown_notify.notified().await;
+                info!(drain_timeout_secs, "draining connections");
+                tokio::time::sleep(Duration::from_secs(drain_timeout_secs)).await;
+            } => {
+                tracing::warn!(
+                    drain_timeout_secs,
+                    "drain timeout exceeded, shutting down with in-flight connections"
+                );
             }
         }
-        _ = async {
-            shutdown_notify.notified().await;
-            info!(drain_timeout_secs, "draining connections");
-            tokio::time::sleep(Duration::from_secs(drain_timeout_secs)).await;
-        } => {
-            tracing::warn!(
-                drain_timeout_secs,
-                "drain timeout exceeded, shutting down with in-flight connections"
-            );
+    } else {
+        // Plaintext HTTP mode (backward compatible).
+        let addr: SocketAddr = std::env::var("GQL_API_BIND_ADDR")
+            .unwrap_or_else(|_| "0.0.0.0:3001".to_string())
+            .parse()
+            .expect("GQL_API_BIND_ADDR must be a valid socket address (e.g. 0.0.0.0:3001)");
+        info!("gql-api listening on {addr} (HTTP)");
+
+        let listener = tokio::net::TcpListener::bind(addr)
+            .await
+            .expect("failed to bind TCP listener");
+
+        let shutdown_notify = Arc::new(tokio::sync::Notify::new());
+        let shutdown_notify2 = Arc::clone(&shutdown_notify);
+
+        let server = axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        )
+        .with_graceful_shutdown(async move {
+            shutdown_signal().await;
+            shutdown_notify2.notify_one();
+        });
+
+        tokio::select! {
+            result = server => {
+                if let Err(e) = result {
+                    tracing::error!("server error: {e}");
+                }
+            }
+            _ = async {
+                shutdown_notify.notified().await;
+                info!(drain_timeout_secs, "draining connections");
+                tokio::time::sleep(Duration::from_secs(drain_timeout_secs)).await;
+            } => {
+                tracing::warn!(
+                    drain_timeout_secs,
+                    "drain timeout exceeded, shutting down with in-flight connections"
+                );
+            }
         }
     }
 

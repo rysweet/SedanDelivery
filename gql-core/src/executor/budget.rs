@@ -18,6 +18,7 @@
 /// - `DEFAULT_TIMEOUT_MS = 30_000` (30 seconds)
 /// - `DEFAULT_MAX_ROWS = 10_000_000` (10 million intermediate rows)
 /// - `DEFAULT_VARLEN_MAX_DEPTH = 30` (default max for unbounded `[*]` patterns)
+use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use crate::error::{ExecutionError, GqlError};
@@ -68,6 +69,19 @@ pub struct ExecutionBudget {
     /// Optional request ID for distributed trace context propagation.
     /// When set, links executor spans to the originating request trace.
     request_id: Option<String>,
+    /// When profiling is enabled, accumulates per-operator statistics.
+    /// Keys are operator pointer addresses (as `usize`), values are
+    /// `(rows_produced, db_hits)` pairs.
+    profile_stats: Option<HashMap<usize, OperatorProfileStats>>,
+}
+
+/// Per-operator profiling statistics collected during PROFILE execution.
+#[derive(Debug, Clone, Default)]
+pub struct OperatorProfileStats {
+    /// Number of rows produced by this operator.
+    pub rows: usize,
+    /// Number of store accesses (db hits) performed by this operator.
+    pub db_hits: usize,
 }
 
 /// Only call `Instant::now()` once every this many `check_or_err()` invocations.
@@ -92,6 +106,7 @@ impl ExecutionBudget {
             row_cap: None,
             leaf_rows_produced: 0,
             request_id: None,
+            profile_stats: None,
         }
     }
 
@@ -238,6 +253,54 @@ impl ExecutionBudget {
     #[inline]
     pub fn request_id(&self) -> Option<&str> {
         self.request_id.as_deref()
+    }
+
+    // ── Profiling support ─────────────────────────────────────────────
+
+    /// Enable per-operator profiling. Call this before execution to collect
+    /// per-operator row counts and db_hits.
+    #[inline]
+    pub fn enable_profiling(&mut self) {
+        self.profile_stats = Some(HashMap::new());
+    }
+
+    /// Returns `true` if profiling is enabled.
+    #[inline]
+    pub fn is_profiling(&self) -> bool {
+        self.profile_stats.is_some()
+    }
+
+    /// Record rows produced by the operator at the given pointer address.
+    /// No-op if profiling is not enabled.
+    #[inline]
+    pub fn record_operator_rows(&mut self, op_addr: usize, rows: usize) {
+        if let Some(ref mut stats) = self.profile_stats {
+            let entry = stats.entry(op_addr).or_default();
+            entry.rows += rows;
+        }
+    }
+
+    /// Record a db hit for the operator at the given pointer address.
+    /// No-op if profiling is not enabled.
+    #[inline]
+    pub fn record_operator_db_hits(&mut self, op_addr: usize, hits: usize) {
+        if let Some(ref mut stats) = self.profile_stats {
+            let entry = stats.entry(op_addr).or_default();
+            entry.db_hits += hits;
+        }
+    }
+
+    /// Take the accumulated profile stats, leaving `None` behind.
+    /// Returns `None` if profiling was not enabled.
+    #[inline]
+    pub fn take_profile_stats(&mut self) -> Option<HashMap<usize, OperatorProfileStats>> {
+        self.profile_stats.take()
+    }
+
+    /// Borrow the accumulated profile stats.
+    #[inline]
+    pub fn profile_stats(&self) -> Option<&HashMap<usize, OperatorProfileStats>> {
+        self.profile_stats.as_ref()
     }
 }
 
@@ -412,5 +475,64 @@ mod tests {
             !budget.reached_row_cap(),
             "without a row cap, reached_row_cap should always be false"
         );
+    }
+
+    // ── Profile stats tests ──────────────────────────────────────────
+
+    #[test]
+    fn profiling_disabled_by_default() {
+        let budget = ExecutionBudget::unlimited();
+        assert!(!budget.is_profiling());
+        assert!(budget.profile_stats().is_none());
+    }
+
+    #[test]
+    fn profiling_enabled_records_operator_rows() {
+        let mut budget = ExecutionBudget::unlimited();
+        budget.enable_profiling();
+        assert!(budget.is_profiling());
+
+        budget.record_operator_rows(0x1000, 5);
+        budget.record_operator_rows(0x2000, 3);
+        budget.record_operator_rows(0x1000, 2); // accumulates
+
+        let stats = budget.profile_stats().unwrap();
+        assert_eq!(stats[&0x1000].rows, 7);
+        assert_eq!(stats[&0x2000].rows, 3);
+    }
+
+    #[test]
+    fn profiling_records_db_hits() {
+        let mut budget = ExecutionBudget::unlimited();
+        budget.enable_profiling();
+
+        budget.record_operator_db_hits(0x1000, 10);
+        budget.record_operator_db_hits(0x1000, 5);
+
+        let stats = budget.profile_stats().unwrap();
+        assert_eq!(stats[&0x1000].db_hits, 15);
+    }
+
+    #[test]
+    fn profiling_noop_when_disabled() {
+        let mut budget = ExecutionBudget::unlimited();
+        // Profiling not enabled — these should be no-ops
+        budget.record_operator_rows(0x1000, 5);
+        budget.record_operator_db_hits(0x1000, 10);
+        assert!(budget.take_profile_stats().is_none());
+    }
+
+    #[test]
+    fn take_profile_stats_clears_state() {
+        let mut budget = ExecutionBudget::unlimited();
+        budget.enable_profiling();
+        budget.record_operator_rows(0x1000, 1);
+
+        let stats = budget.take_profile_stats();
+        assert!(stats.is_some());
+        assert_eq!(stats.unwrap()[&0x1000].rows, 1);
+
+        // After take, profiling state is cleared
+        assert!(budget.take_profile_stats().is_none());
     }
 }

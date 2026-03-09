@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use gql_core::error::GqlError;
-use gql_core::executor::budget::DEFAULT_MAX_ROWS;
+use gql_core::executor::budget::{DEFAULT_MAX_ROWS, OperatorProfileStats};
 use gql_core::executor::{ExecutionBudget, MutationStats, QueryExecutor, QueryResult};
 use gql_core::parser::parse_query;
 use gql_core::plan_cache;
@@ -84,6 +84,74 @@ pub fn execute_query(
         None => ExecutionBudget::default_budget(),
     };
     executor.execute(graph, &plan, &mut budget)
+}
+
+/// Execute a Cypher query with profiling enabled, returning the result
+/// and per-operator profile statistics.
+///
+/// The caller must also pass a `plan_annotator` closure that receives the
+/// plan and profile stats while the plan is still at the same memory address
+/// used during execution (important because stats are keyed by pointer address).
+///
+/// Returns `(QueryResult, T)` where `T` is the annotator's return value.
+pub fn execute_query_with_profiling<T>(
+    store: &dyn GraphStore,
+    graph: &str,
+    query: &str,
+    params: HashMap<String, Value>,
+    timeout_ms: Option<u64>,
+    plan_annotator: impl FnOnce(
+        &gql_core::planner::Operator,
+        Option<&HashMap<usize, OperatorProfileStats>>,
+    ) -> T,
+) -> Result<(QueryResult, T), GqlError> {
+    let exists = store.graph_exists(graph).map_err(GqlError::from)?;
+    if !exists {
+        store.create_graph(graph).map_err(GqlError::from)?;
+    }
+
+    let mut registry = ProcedureRegistry::default();
+
+    let tx_meta = params
+        .get("__tx_metadata__")
+        .cloned()
+        .unwrap_or(Value::Map(IndexMap::new()));
+    registry.register(ProcedureDefinition {
+        name: "tx.getMetaData".to_string(),
+        input_params: vec![],
+        output_columns: vec![ProcedureParam {
+            name: "metadata".to_string(),
+            type_name: "ANY?".to_string(),
+        }],
+        data: vec![vec![tx_meta]],
+    });
+
+    let cache = plan_cache::global();
+    let plan = if let Some((_cached_ast, cached_plan)) = cache.get(query) {
+        metrics::counter!("plan_cache_hits_total").increment(1);
+        cached_plan
+    } else {
+        metrics::counter!("plan_cache_misses_total").increment(1);
+        let ast = parse_query(query)?;
+        let planner = QueryPlanner::with_context(store, graph, &registry, &params);
+        let plan = planner.plan(&ast)?;
+        cache.insert(query, ast, plan.clone());
+        plan
+    };
+
+    let executor = QueryExecutor::with_context(store, &registry, params);
+    let mut budget = match timeout_ms {
+        Some(ms) => ExecutionBudget::new(Duration::from_millis(ms), DEFAULT_MAX_ROWS),
+        None => ExecutionBudget::default_budget(),
+    };
+    budget.enable_profiling();
+    let result = executor.execute(graph, &plan, &mut budget)?;
+    let profile_stats = budget.take_profile_stats();
+
+    // Annotate the plan while it's still at the same address used during execution.
+    let annotation = plan_annotator(&plan, profile_stats.as_ref());
+
+    Ok((result, annotation))
 }
 
 /// Parse and plan a Cypher query without executing it. Returns the Operator tree.

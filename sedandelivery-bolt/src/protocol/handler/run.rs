@@ -9,7 +9,7 @@ use crate::packstream::value::{BoltMap, BoltMapExt, BoltValue};
 use crate::protocol::state::ServerState;
 use gql_core::storage::GraphStore;
 
-use super::explain::{detect_notifications, operator_to_plan_map};
+use super::explain::{detect_notifications, operator_to_plan_map, operator_to_profile_plan_map};
 use super::{
     bolt_map, extract_tx_metadata, validate_bookmarks, AdminStats, PendingQuery, ProtocolError,
     Session,
@@ -453,14 +453,9 @@ fn build_success_response(
         run_metadata
     };
 
-    // For PROFILE, patch rows into plan
-    let patched_profile = profile_plan.map(|mut plan| {
-        if let BoltValue::Map(ref mut entries) = plan {
-            entries.push(("rows".to_string(), BoltValue::Int(qr.rows.len() as i64)));
-            entries.push(("dbHits".to_string(), BoltValue::Int(qr.rows.len() as i64)));
-        }
-        plan
-    });
+    // PROFILE plan is already annotated with per-operator rows and dbHits
+    // by operator_to_profile_plan_map, so no patching is needed.
+    let patched_profile = profile_plan;
 
     let qid = session.allocate_qid()?;
     session.pending_results.insert(
@@ -653,63 +648,90 @@ pub(crate) async fn handle_run(
     let graph_clone = graph.clone();
     let query_clone = actual_query.clone();
 
-    // For PROFILE, also get the plan
-    let profile_plan = if is_profile {
-        let store2 = Arc::clone(&effective_store);
-        let g2 = graph.clone();
-        let q2 = actual_query.clone();
-        let p2 = value_params.clone();
-        let plan = tokio::task::spawn_blocking(move || {
-            bridge::executor::plan_query(&*store2, &g2, &q2, p2)
+    if is_profile {
+        // PROFILE: execute with profiling enabled, then build annotated plan.
+        // The plan annotation closure runs inside execute_query_with_profiling
+        // while the plan's pointer addresses still match the profile stats keys.
+        let store_for_profile = Arc::clone(&effective_store);
+        let graph_for_profile = graph.clone();
+        let query_for_profile = actual_query.clone();
+        let params_for_profile = value_params;
+
+        let result = tokio::task::spawn_blocking(move || {
+            let store_ref = &*store_for_profile;
+            let graph_ref = &graph_for_profile;
+            bridge::executor::execute_query_with_profiling(
+                store_ref,
+                graph_ref,
+                &query_for_profile,
+                params_for_profile,
+                timeout_ms,
+                |plan, profile_stats| {
+                    let est = gql_core::planner::collect_graph_statistics(store_ref, graph_ref)
+                        .ok()
+                        .map(|gs| gql_core::planner::estimate_cardinality(plan, &gs));
+                    operator_to_profile_plan_map(plan, 0, est.as_ref(), profile_stats)
+                },
+            )
         })
         .await
-        .map_err(|e| ProtocolError::Internal(e.to_string()))?;
-        plan.map_err(|e| {
-            tracing::debug!(error = %e, "PROFILE plan_query failed");
-            e
-        })
-        .ok()
-        .map(|op| {
-            let est = gql_core::planner::collect_graph_statistics(effective_store.as_ref(), &graph)
-                .ok()
-                .map(|gs| gql_core::planner::estimate_cardinality(&op, &gs));
-            operator_to_plan_map(&op, true, 0, est.as_ref())
-        })
+        .map_err(|e| ProtocolError::Internal(format!("spawn_blocking join error: {}", e)))?;
+
+        match result {
+            Ok((qr, profile_plan)) => {
+                build_success_response(
+                    session,
+                    qr,
+                    &effective_store,
+                    &graph,
+                    run_metadata,
+                    Some(profile_plan),
+                )
+            }
+            Err(gql_err) => {
+                let (code, message) = bridge::errors::gql_error_to_bolt(&gql_err);
+                bolt_metrics::error_recorded(&code);
+                session.write_permit = None;
+                session.state = ServerState::Failed;
+                Ok(vec![ServerMessage::Failure(bolt_map! {
+                    "code" => BoltValue::String(code),
+                    "message" => BoltValue::String(message)
+                })])
+            }
+        }
     } else {
-        None
-    };
+        // Normal (non-PROFILE) execution
+        let result = tokio::task::spawn_blocking(move || {
+            bridge::executor::execute_query(
+                &*store,
+                &graph_clone,
+                &query_clone,
+                value_params,
+                timeout_ms,
+            )
+        })
+        .await
+        .map_err(|e| ProtocolError::Internal(format!("spawn_blocking join error: {}", e)))?;
 
-    let result = tokio::task::spawn_blocking(move || {
-        bridge::executor::execute_query(
-            &*store,
-            &graph_clone,
-            &query_clone,
-            value_params,
-            timeout_ms,
-        )
-    })
-    .await
-    .map_err(|e| ProtocolError::Internal(format!("spawn_blocking join error: {}", e)))?;
-
-    match result {
-        Ok(qr) => build_success_response(
-            session,
-            qr,
-            &effective_store,
-            &graph,
-            run_metadata,
-            profile_plan,
-        ),
-        Err(gql_err) => {
-            let (code, message) = bridge::errors::gql_error_to_bolt(&gql_err);
-            bolt_metrics::error_recorded(&code);
-            // Release write lock on error
-            session.write_permit = None;
-            session.state = ServerState::Failed;
-            Ok(vec![ServerMessage::Failure(bolt_map! {
-                "code" => BoltValue::String(code),
-                "message" => BoltValue::String(message)
-            })])
+        match result {
+            Ok(qr) => build_success_response(
+                session,
+                qr,
+                &effective_store,
+                &graph,
+                run_metadata,
+                None,
+            ),
+            Err(gql_err) => {
+                let (code, message) = bridge::errors::gql_error_to_bolt(&gql_err);
+                bolt_metrics::error_recorded(&code);
+                session.write_permit = None;
+                session.state = ServerState::Failed;
+                Ok(vec![ServerMessage::Failure(bolt_map! {
+                    "code" => BoltValue::String(code),
+                    "message" => BoltValue::String(message)
+                })])
+            }
         }
     }
 }

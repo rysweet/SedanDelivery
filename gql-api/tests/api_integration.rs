@@ -1210,3 +1210,140 @@ async fn full_crud_roundtrip_validates_decomposition() {
     ).await.unwrap();
     assert_eq!(rd.status(), StatusCode::NO_CONTENT);
 }
+
+// ===========================================================================
+// PROFILE endpoint
+// ===========================================================================
+
+#[tokio::test]
+async fn profile_returns_results_and_plan_with_row_counts() {
+    let graph = "profile_basic";
+    let router = app_with_graph(graph);
+
+    // Create some nodes first.
+    let mutate_resp = router
+        .clone()
+        .oneshot(json_post(
+            &format!("/graphs/{graph}/mutate"),
+            json!({"cypher": "CREATE (:Person {name: 'Alice'}), (:Person {name: 'Bob'}), (:Person {name: 'Charlie'})"}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(mutate_resp.status(), StatusCode::OK);
+
+    // Now PROFILE a MATCH query.
+    let resp = router
+        .clone()
+        .oneshot(json_post(
+            &format!("/graphs/{graph}/profile"),
+            json!({"cypher": "MATCH (n:Person) RETURN n.name AS name"}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let body = body_json(resp.into_body()).await;
+
+    // Should have columns
+    let columns = body["columns"].as_array().unwrap();
+    assert_eq!(columns.len(), 1);
+    assert_eq!(columns[0], "name");
+
+    // Should have 3 result rows
+    let rows = body["rows"].as_array().unwrap();
+    assert_eq!(rows.len(), 3);
+
+    // Should have a plan with row counts
+    let plan = &body["plan"];
+    assert!(plan.is_object(), "plan should be an object");
+    assert!(plan["operatorType"].is_string());
+
+    // Root operator should have rows field with non-zero value
+    let root_rows = plan["rows"].as_u64().unwrap();
+    assert_eq!(root_rows, 3, "root operator should have 3 rows");
+
+    // Should have dbHits field
+    assert!(plan.get("dbHits").is_some(), "plan should have dbHits field");
+
+    // Should have estimatedRows
+    assert!(
+        plan.get("estimatedRows").is_some(),
+        "plan should have estimatedRows"
+    );
+
+    // Should have elapsed_ms
+    assert!(body["elapsedMs"].is_number());
+}
+
+#[tokio::test]
+async fn profile_plan_has_children_with_row_counts() {
+    let graph = "profile_children";
+    let router = app_with_graph(graph);
+
+    // Create nodes.
+    router
+        .clone()
+        .oneshot(json_post(
+            &format!("/graphs/{graph}/mutate"),
+            json!({"cypher": "CREATE (:Item {val: 1}), (:Item {val: 2})"}),
+        ))
+        .await
+        .unwrap();
+
+    let resp = router
+        .clone()
+        .oneshot(json_post(
+            &format!("/graphs/{graph}/profile"),
+            json!({"cypher": "MATCH (n:Item) RETURN n"}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let body = body_json(resp.into_body()).await;
+    let plan = &body["plan"];
+
+    // Plan should have children
+    let children = plan["children"].as_array().unwrap();
+    assert!(
+        !children.is_empty(),
+        "root plan node should have at least one child"
+    );
+
+    // Each child should have rows field
+    for child in children {
+        assert!(
+            child.get("rows").is_some(),
+            "child operator should have rows field"
+        );
+        assert!(
+            child.get("dbHits").is_some(),
+            "child operator should have dbHits field"
+        );
+    }
+}
+
+#[tokio::test]
+async fn profile_nonexistent_graph_returns_error() {
+    let resp = app()
+        .oneshot(json_post(
+            "/graphs/no_such_graph/profile",
+            json!({"cypher": "MATCH (n) RETURN n"}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn profile_invalid_query_returns_400() {
+    let graph = "profile_invalid";
+    let resp = app_with_graph(graph)
+        .oneshot(json_post(
+            &format!("/graphs/{graph}/profile"),
+            json!({"cypher": "NOT VALID CYPHER !!!"}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+}

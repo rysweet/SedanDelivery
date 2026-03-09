@@ -287,6 +287,9 @@ impl<'a> QueryExecutor<'a> {
     // ── Internal dispatch ─────────────────────────────────────────────────────
 
     /// Recursively execute an operator, returning its output rows.
+    ///
+    /// When profiling is enabled on the budget, records the number of rows
+    /// produced by each operator keyed by operator pointer address.
     #[allow(clippy::only_used_in_recursion)]
     pub(crate) fn exec_operator(
         &self,
@@ -295,7 +298,7 @@ impl<'a> QueryExecutor<'a> {
     ) -> Result<Vec<Row>, GqlError> {
         cx.budget.check_or_err()?;
 
-        match op {
+        let rows = match op {
             Operator::SingleRow => self.exec_single_row(cx, op),
             Operator::NodeScan { .. } => self.exec_node_scan(cx, op),
             Operator::Filter { .. } => self.exec_filter(cx, op),
@@ -324,7 +327,15 @@ impl<'a> QueryExecutor<'a> {
             Operator::NodeByIdSeek { .. } => self.exec_node_by_id_seek(cx, op),
             Operator::ShortestPath { .. } => self.exec_shortest_path(cx, op),
             Operator::ForEach { .. } => self.exec_foreach(cx, op),
+        }?;
+
+        // Record per-operator row counts when profiling is enabled.
+        if cx.budget.is_profiling() {
+            let op_addr = op as *const Operator as usize;
+            cx.budget.record_operator_rows(op_addr, rows.len());
         }
+
+        Ok(rows)
     }
 }
 
@@ -1535,5 +1546,139 @@ mod tests {
             }
             other => panic!("expected Value::Path, got {:?}", other),
         }
+    }
+
+    // ── PROFILE tests ─────────────────────────────────────────────────
+
+    #[test]
+    fn profiling_records_per_operator_row_counts() {
+        let store = make_store();
+        store
+            .create_node("g", vec!["Person".to_string()], HashMap::new())
+            .unwrap();
+        store
+            .create_node("g", vec!["Person".to_string()], HashMap::new())
+            .unwrap();
+
+        let executor = QueryExecutor::new(&store);
+        let plan = Operator::ProduceResults {
+            columns: vec![("n".to_string(), Expr::Variable(Identifier::new("n")))],
+            child: Box::new(Operator::NodeScan {
+                label: Some(Label::new("Person")),
+                alias: Identifier::new("n"),
+            }),
+        };
+
+        let mut budget = ExecutionBudget::unlimited();
+        budget.enable_profiling();
+        let result = executor.execute("g", &plan, &mut budget).unwrap();
+        assert_eq!(result.rows.len(), 2);
+
+        let stats = budget.take_profile_stats().expect("profiling was enabled");
+        // ProduceResults operator should have 2 rows
+        let root_addr = &plan as *const Operator as usize;
+        assert_eq!(
+            stats[&root_addr].rows, 2,
+            "ProduceResults should have produced 2 rows"
+        );
+
+        // NodeScan child should also have 2 rows
+        if let Operator::ProduceResults { child, .. } = &plan {
+            let child_addr = child.as_ref() as *const Operator as usize;
+            assert_eq!(
+                stats[&child_addr].rows, 2,
+                "NodeScan should have produced 2 rows"
+            );
+        }
+    }
+
+    #[test]
+    fn profiling_disabled_produces_no_stats() {
+        let store = make_store();
+        let executor = QueryExecutor::new(&store);
+        let plan = Operator::ProduceResults {
+            columns: vec![("x".to_string(), Expr::Integer(1))],
+            child: Box::new(Operator::SingleRow),
+        };
+
+        let mut budget = ExecutionBudget::unlimited();
+        // profiling NOT enabled
+        let _result = executor.execute("g", &plan, &mut budget).unwrap();
+        assert!(
+            budget.take_profile_stats().is_none(),
+            "no stats when profiling is disabled"
+        );
+    }
+
+    #[test]
+    fn profiling_with_filter_records_both_operators() {
+        use crate::ast::BinaryOp;
+
+        let store = make_store();
+        store
+            .create_node(
+                "g",
+                vec!["Item".to_string()],
+                HashMap::from([("val".to_string(), Value::Int(1))]),
+            )
+            .unwrap();
+        store
+            .create_node(
+                "g",
+                vec!["Item".to_string()],
+                HashMap::from([("val".to_string(), Value::Int(2))]),
+            )
+            .unwrap();
+        store
+            .create_node(
+                "g",
+                vec!["Item".to_string()],
+                HashMap::from([("val".to_string(), Value::Int(3))]),
+            )
+            .unwrap();
+
+        let executor = QueryExecutor::new(&store);
+        // MATCH (n:Item) WHERE n.val > 1 RETURN n
+        let scan = Operator::NodeScan {
+            label: Some(Label::new("Item")),
+            alias: Identifier::new("n"),
+        };
+        let filter = Operator::Filter {
+            predicate: Expr::BinaryOp {
+                op: BinaryOp::Gt,
+                left: Box::new(Expr::Property(
+                    Box::new(Expr::Variable(Identifier::new("n"))),
+                    "val".into(),
+                )),
+                right: Box::new(Expr::Integer(1)),
+            },
+            child: Box::new(scan),
+        };
+        let plan = Operator::ProduceResults {
+            columns: vec![("n".to_string(), Expr::Variable(Identifier::new("n")))],
+            child: Box::new(filter),
+        };
+
+        let mut budget = ExecutionBudget::unlimited();
+        budget.enable_profiling();
+        let result = executor.execute("g", &plan, &mut budget).unwrap();
+        assert_eq!(result.rows.len(), 2, "only items with val > 1");
+
+        let stats = budget.take_profile_stats().unwrap();
+
+        // NodeScan produces 3 rows (all items)
+        if let Operator::ProduceResults { child, .. } = &plan {
+            if let Operator::Filter { child: scan, .. } = child.as_ref() {
+                let scan_addr = scan.as_ref() as *const Operator as usize;
+                assert_eq!(stats[&scan_addr].rows, 3, "NodeScan should produce 3 rows");
+            }
+            // Filter produces 2 rows (only val > 1)
+            let filter_addr = child.as_ref() as *const Operator as usize;
+            assert_eq!(stats[&filter_addr].rows, 2, "Filter should produce 2 rows");
+        }
+
+        // ProduceResults also produces 2 rows
+        let root_addr = &plan as *const Operator as usize;
+        assert_eq!(stats[&root_addr].rows, 2);
     }
 }

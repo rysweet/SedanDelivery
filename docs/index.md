@@ -9,6 +9,7 @@ A Rust GQL/Cypher query engine — a clean-room, MIT/Apache-2.0-licensed replace
 
 ## Guides
 
+- [**Architecture Overview**](architecture) — Crate map, request flows, query pipeline, storage layer, and key design decisions
 - [**Deploy Your Own Instance**](DEPLOY) — Full production deployment guide: prerequisites, Azure setup, scaling, HA, troubleshooting
 - [Tutorial](TUTORIAL) — Getting started with SedanDelivery
 - [Fabric Graph Tutorial](FABRIC_TUTORIAL) — Deploy, write data, query in Fabric portal, REST API, and monitoring
