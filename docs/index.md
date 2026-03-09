@@ -17,7 +17,6 @@ A Rust GQL/Cypher query engine — a clean-room, MIT/Apache-2.0-licensed replace
 - [Authentication (Entra ID)](auth) — Configure JWT auth for the REST API
 - [Secrets Configuration](secrets) — Repository secrets inventory, creation, rotation, and monitoring
 - [Benchmarks](benchmarks) — How to run and interpret performance benchmarks
-- [Architecture Overview](architecture) — Crate map, request flows, query pipeline, storage layer
 
 ## Neo4j Compatibility
 

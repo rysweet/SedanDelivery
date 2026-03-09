@@ -16,6 +16,10 @@ SedanDelivery is a Cypher-compatible graph database engine written in Rust. It p
 
 The workspace contains 8 crates. Arrows point from dependent to dependency.
 
+![Crate Map](images/crate-map.svg)
+
+<details><summary>Mermaid source</summary>
+
 ```mermaid
 graph TD
     gql-core["gql-core<br/><i>Parser, planner, executor, storage trait</i>"]
@@ -42,9 +46,15 @@ graph TD
     sedandelivery-fabric-sync --> gql-fabric-store
 ```
 
+</details>
+
 ## Request Flow -- REST API
 
 The REST API is an axum HTTP server on port 3001 (default). It exposes CRUD endpoints for nodes, edges, graphs, Cypher queries, schema inspection, neighbor traversal, and export/import.
+
+![REST API Flow](images/rest-api-flow.svg)
+
+<details><summary>Mermaid source</summary>
 
 ```mermaid
 sequenceDiagram
@@ -65,6 +75,8 @@ sequenceDiagram
     Handler-->>Client: JSON response
 ```
 
+</details>
+
 Middleware stack (applied bottom-up):
 1. `TraceLayer` -- structured request/response logging
 2. `CorsLayer` -- origin allowlist from `GQL_API_ALLOWED_ORIGINS`
@@ -75,6 +87,10 @@ Middleware stack (applied bottom-up):
 ## Request Flow -- Bolt Protocol
 
 The Bolt server listens on port 7687 (default) and speaks Neo4j Bolt v4.4. Any standard Neo4j driver (Python, .NET, Java, Go, JavaScript, Rust) connects directly.
+
+![Bolt Protocol Flow](images/bolt-protocol-flow.svg)
+
+<details><summary>Mermaid source</summary>
 
 ```mermaid
 sequenceDiagram
@@ -107,6 +123,8 @@ sequenceDiagram
     Session-->>TCP: connection closed
 ```
 
+</details>
+
 Connection lifecycle:
 - Semaphore-gated concurrency (`BOLT_MAX_CONNECTIONS`, default 1024)
 - Idle timeout reaping (`BOLT_IDLE_TIMEOUT_SECS`, default 3600)
@@ -116,6 +134,10 @@ Connection lifecycle:
 ## Query Pipeline
 
 Every Cypher query passes through the same pipeline regardless of entry point (REST API, Bolt, Redis module, or CLI).
+
+![Query Pipeline](images/query-pipeline.svg)
+
+<details><summary>Mermaid source</summary>
 
 ```mermaid
 flowchart LR
@@ -130,6 +152,8 @@ flowchart LR
     I --> J["Result rows<br/><code>QueryResult</code>"]
 ```
 
+</details>
+
 Key pipeline components:
 
 - **Lexer** -- hand-written tokenizer; strict mode (`lex_query`) and lenient mode (`tokenize`) for IDE tooling.
@@ -142,6 +166,10 @@ Key pipeline components:
 ## Storage Layer
 
 All storage access goes through the `GraphStore` trait defined in `gql-core::storage`. This is the core abstraction boundary -- the engine never talks to Redis, Fabric, or memory directly.
+
+![Storage Layer](images/storage-layer.svg)
+
+<details><summary>Mermaid source</summary>
 
 ```mermaid
 classDiagram
@@ -161,6 +189,7 @@ classDiagram
     class InMemoryGraphStore {
         Arc-based snapshot isolation
         Copy-on-write for transactions
+        Optional WAL durability
     }
 
     class RedisGraphStore {
@@ -179,6 +208,7 @@ classDiagram
     class FanoutStore {
         Write to all backends
         Read from first
+        Rollback on failure
     }
 
     GraphStore <|.. InMemoryGraphStore
@@ -187,6 +217,8 @@ classDiagram
     GraphStore <|.. FanoutStore
     FanoutStore o-- GraphStore : wraps 1..N
 ```
+
+</details>
 
 Backend selection at startup (`gql-redis-store::create_store`):
 1. `GQL_REDIS_CLUSTER_NODES` set -- `RedisGraphStore` in cluster mode
@@ -206,7 +238,7 @@ G:{graph}:in:{node_id}   -- SADD (reverse adjacency)
 
 - **Hand-written parser, not lalrpop.** Cypher's `|` is context-dependent (label disjunction vs. rel-type disjunction vs. list comprehension pipe). A generated parser cannot resolve this without semantic context. See ADR-003.
 
-- **InMemory + WAL, not an embedded database.** The Redis module runs inside the Redis/Valkey process. The `InMemoryGraphStore` keeps graph data in-process with zero serialization overhead. Persistence comes from Redis RDB/AOF or the Fabric sync sidecar, not from an embedded storage engine.
+- **InMemory + WAL, not an embedded database.** The Redis module runs inside the Redis/Valkey process. The `InMemoryGraphStore` keeps graph data in-process with zero serialization overhead. Persistence comes from Redis RDB/AOF, the optional WAL (`GQL_WAL_PATH`), or the Fabric sync sidecar.
 
 - **Bolt v4.4 for Neo4j driver compatibility.** v4.4 is the most widely supported version across Neo4j drivers (Python, .NET, Java, Go, JavaScript, Rust). It supports multi-database, bookmarks, explicit transactions, EXPLAIN/PROFILE, and streaming PULL with qid-based multiplexing.
 
@@ -224,63 +256,92 @@ SedanDelivery/
     src/
       ast/                       Cypher AST types
       parser/
-        lexer.rs                 Hand-written tokenizer
-        parser.rs                Recursive-descent parser
+        lexer/                   Hand-written tokenizer (tokens, scan)
+        parser/                  Recursive-descent parser (clauses, expressions, patterns)
       planner/
-        planner.rs               AST-to-operator-tree translation
-        validator.rs             Semantic validation
-        mod.rs                   28 physical operator definitions
+        planner/                 AST-to-operator-tree (match, mutation, result planners)
+        validator/               Semantic validation (expression, scope, semantic checks)
+        mod.rs                   28+ physical operator definitions
       executor/
-        engine/                  Operator evaluation (scan, expand, join, etc.)
-        filter/                  Predicate evaluation, built-in functions
-        traversal/               Graph traversal (BFS, shortest path)
-        budget.rs                Timeout and row-limit enforcement
+        engine/
+          scan/                  Node scan, edge scan, index scan
+          mutations/             Create, delete, set, merge, foreach
+          helpers/               Comparison, arithmetic, dedup, expression naming
+          eval.rs                Expression evaluation
+          produce.rs             Result production, CALL procedures, UNION
+          shaping.rs             Sort, limit, skip, distinct
+          joins.rs               Apply, left-outer-apply, subquery call
+          aggregation.rs         GROUP BY, count, sum, avg, collect
+        filter/
+          builtins.rs            60+ built-in functions (math, string, temporal, type)
+          operators.rs           Comparison, regex, arithmetic operators
+          temporal/              Date/time constructors, arithmetic, parsing
+          collections.rs         List operations, reduce
+        traversal.rs             BFS, shortest path
+        budget.rs                Timeout, row-limit, profiling stats
       storage/
-        mod.rs                   GraphStore trait + InMemoryGraphStore
+        mem/                     InMemoryGraphStore (nodes, edges, indexing, query)
+        wal.rs                   Write-ahead log for durability
+        mod.rs                   GraphStore trait
+      config.rs                  Environment variable configuration
       plan_cache.rs              LRU query plan cache
-      types/                     Value type system (Bool, Int, Float, String, List, Map, etc.)
+      types/value/               Value type system (display, convert, compare)
 
   gql-redis-store/             Redis/Valkey storage backend
     src/
       lib.rs                     RedisGraphStore implementation
-      fanout.rs                  FanoutStore (multi-backend writes)
+      fanout.rs                  FanoutStore (multi-backend writes with rollback)
       create_store.rs            Backend selection from env vars
-      connection.rs              r2d2 pool, replica routing
-      reads.rs / writes.rs       Redis command implementations
+      connection.rs              r2d2 pool, replica routing, stats reporter
+      reads.rs                   Redis read commands
+      writes/                    Redis write commands (nodes, edges, graphs, helpers)
+      indexing.rs                Property index management
+      range.rs                   Range query support
 
   gql-fabric-store/            Microsoft Fabric storage backend
     src/
-      lib.rs                     FabricGraphStore
-      store.rs                   GraphStore trait implementation
-      auth.rs                    Azure AD token acquisition
+      lib.rs                     FabricGraphStore + connection pooling
+      store/                     GraphStore impl (nodes, edges, admin)
+      auth.rs                    Azure AD token acquisition (single-flight refresh)
       parsing.rs                 Fabric JSON response parsing
+      sanitize.rs                Cypher injection prevention
 
   gql-module/                  Valkey/Redis loadable module (.so)
     src/lib.rs                   GQL.QUERY, GQL.MUTATE, GQL.CREATE-GRAPH, etc.
 
   gql-api/                     HTTP REST API
     src/
-      main.rs                    axum server setup
-      routes/                    Endpoint handlers (nodes, edges, query, etc.)
-      auth.rs                    Entra ID JWT validation
-      rate_limit.rs              Per-IP rate limiting
-      metrics.rs                 Prometheus metrics
+      main.rs                    axum server setup (HTTP or TLS)
+      routes/                    Endpoint handlers (nodes, edges, query, indexes, etc.)
+      auth.rs                    Entra ID JWT validation + JWKS cache
+      rate_limit.rs              Per-IP sliding window rate limiting
+      metrics.rs                 Prometheus metrics + slow query log
+      tls.rs                     TLS configuration
+      serialize.rs               Value-to-JSON conversion
 
   sedandelivery-bolt/          Bolt v4.4 protocol server
     src/
       main.rs                    TCP accept loop, TLS, WebSocket
-      connection/session.rs      Per-connection session lifecycle
-      protocol/handler/          Message dispatch (HELLO, RUN, PULL, BEGIN, etc.)
-      protocol/state.rs          Session state machine
+      connection/                Per-connection session lifecycle
+      protocol/
+        handler/                 Message dispatch (hello, run, pull, transaction, explain)
+        state.rs                 Session state machine
+      bridge/                    Bolt-to-GQL translation (executor, types, temporal, spatial)
       message/codec.rs           Bolt binary framing
-      packstream/                PackStream v1 serialization
+      packstream/                PackStream v1 serialization (encoder, decoder, value)
+      health.rs                  Health + metrics HTTP endpoint
+      metrics.rs                 Bolt-level Prometheus metrics
 
   sedandelivery-fabric-sync/   Changelog replication sidecar
-    src/main.rs                  Polls Redis changelog stream, pushes to Fabric
+    src/
+      main.rs                    Polls Redis changelog stream, pushes to Fabric
+      sync_loop.rs               Event processing with DLQ
 
   gql-cli/                     Interactive CLI demo
     src/main.rs                  REPL for local testing
 
   sdk/                         Client SDKs (Python, .NET, Rust)
-  docs/                        Documentation
+  neo4j-compat-gallery/        4 open-source apps validating Bolt compatibility
+  docs/                        Documentation + architecture diagrams
+  tests/                       E2E integration tests + gadugi scenarios
 ```
