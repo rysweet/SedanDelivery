@@ -9,6 +9,7 @@ SedanDelivery is a Cypher-compatible graph database engine written in Rust. It p
 - [Request Flow -- Bolt Protocol](#request-flow----bolt-protocol)
 - [Query Pipeline](#query-pipeline)
 - [Storage Layer](#storage-layer)
+- [Deployment Topology](#deployment-topology)
 - [Key Design Decisions](#key-design-decisions)
 - [Directory Structure](#directory-structure)
 
@@ -233,6 +234,83 @@ G:{graph}:label:{label}  -- SADD of node IDs with that label
 G:{graph}:out:{node_id}  -- SADD of "edge_id:neighbor_id:rel_type"
 G:{graph}:in:{node_id}   -- SADD (reverse adjacency)
 ```
+
+## Deployment Topology
+
+SedanDelivery deploys as 2-4 containers in an Azure Container Apps environment. Each component is independently scalable.
+
+![Deployment Topology](images/deployment-topology.svg)
+
+<details><summary>Mermaid source</summary>
+
+```mermaid
+graph TD
+    subgraph Clients["Client Applications"]
+        PY["Python App<br/><i>neo4j driver</i>"]
+        NET[".NET App<br/><i>Neo4j.Driver</i>"]
+        JS["Browser / Node.js<br/><i>neo4j-driver</i>"]
+        REST_CLIENT["REST Client<br/><i>curl / fetch</i>"]
+    end
+
+    subgraph Azure["Azure Container Apps Environment"]
+        subgraph BoltContainer["sd2-main-bolt"]
+            BOLT_SRV["sedandelivery-bolt<br/><b>Bolt v4.4 Server</b><br/>TCP :7687 / TLS / WebSocket"]
+        end
+
+        subgraph APIContainer["sd2-main-api"]
+            API_SRV["gql-api<br/><b>REST API Server</b><br/>HTTP :3001 / HTTPS :3443"]
+        end
+
+        subgraph RedisContainer["sd2-main-redis"]
+            VALKEY["Valkey 8.1<br/>+ gql-module (.so)<br/><b>Graph Storage</b><br/>Redis :6379"]
+        end
+
+        subgraph SyncContainer["sd2-main-fabric-sync<br/><i>(optional)</i>"]
+            SYNC["sedandelivery-fabric-sync<br/><b>Changelog Consumer</b>"]
+        end
+    end
+
+    subgraph Storage["Persistent Storage"]
+        AFILES["Azure Files<br/>RDB + AOF snapshots"]
+    end
+
+    subgraph External["External Services"]
+        FABRIC["Microsoft Fabric<br/>Graph Database"]
+        ENTRA["Microsoft Entra ID<br/>JWT Issuer"]
+    end
+
+    PY -- "bolt://" --> BOLT_SRV
+    NET -- "bolt://" --> BOLT_SRV
+    JS -- "bolt+wss://" --> BOLT_SRV
+    REST_CLIENT -- "https://" --> API_SRV
+
+    BOLT_SRV -- "GQL_REDIS_URL<br/>r2d2 pool" --> VALKEY
+    API_SRV -- "GQL_REDIS_URL<br/>r2d2 pool" --> VALKEY
+    VALKEY -- "RDB + AOF" --> AFILES
+    VALKEY -- "__sd2:changelog<br/>Redis Stream" --> SYNC
+    SYNC -- "HTTPS<br/>openCypher" --> FABRIC
+    API_SRV -. "JWKS fetch" .-> ENTRA
+```
+
+</details>
+
+**Components:**
+
+| Container | Image | Purpose | Scalable |
+|-----------|-------|---------|----------|
+| `sd2-main-bolt` | `sedandelivery-bolt` | Bolt v4.4 protocol server. Neo4j drivers connect here. | Yes (stateless) |
+| `sd2-main-api` | `gql-api` | REST API with auth, rate limiting, metrics. | Yes (stateless) |
+| `sd2-main-redis` | `sedandelivery` (Valkey + gql-module) | Graph storage engine. All data lives here. | No (single primary) |
+| `sd2-main-fabric-sync` | `sedandelivery-fabric-sync` | Replicates changes to Microsoft Fabric. | No (single consumer) |
+
+**Connection patterns:**
+- **Bolt clients** connect to the Bolt server via TCP, TLS, or WebSocket on port 7687
+- **REST clients** connect to gql-api via HTTP/HTTPS on port 3001/3443
+- Both servers connect to Valkey via `GQL_REDIS_URL` using an r2d2 connection pool
+- The Fabric sync sidecar reads from a Redis Stream (`__sd2:changelog`) and pushes to Fabric via HTTPS
+- Entra ID JWT validation uses a cached JWKS endpoint (async, non-blocking)
+
+See [Deploy Your Own Instance](DEPLOY) for full setup instructions and cost estimates (~$36/mo standalone).
 
 ## Key Design Decisions
 
