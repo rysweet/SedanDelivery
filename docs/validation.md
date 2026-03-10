@@ -16,16 +16,36 @@ bash scripts/validate.sh
 
 # Individual layers
 cargo test -p gql-core --lib                       # unit tests
+cargo test -p gql-core --lib plan_cache            # plan cache semantics + eviction contract
 cargo test -p gql-core --test end_to_end           # query pipeline
 cargo test -p gql-core --test data_integrity       # mutation correctness
 cargo test -p gql-core --test adversarial          # DoS / malformed inputs
 cargo test -p gql-core --test stress               # scale + budget enforcement
 cargo test -p gql-core --test ldbc                 # LDBC SNB benchmark queries
+cargo test -p gql-api --test api_integration explain_endpoint_returns_plan -- --exact
+cargo test -p gql-api --test api_integration profile_returns_results_and_plan_with_row_counts -- --exact
 cargo test -p gql-module --test integration        # module command pipeline
 cargo test -p gql-module --test compatibility      # wire format / serialization
 cargo test -p gql-core --test tck                  # openCypher TCK (3903 scenarios)
 cargo bench -p gql-core -- --test                  # compile + smoke-run benchmarks
 ```
+
+---
+
+## Targeted plan-cache checks
+
+Use these focused checks when changing cache semantics, cache docs, or query
+entry points:
+
+```bash
+cargo test -p gql-core --lib plan_cache
+cargo test -p gql-api --test api_integration explain_endpoint_returns_plan -- --exact
+cargo test -p gql-api --test api_integration profile_returns_results_and_plan_with_row_counts -- --exact
+```
+
+`/query` and `/mutate` use the process-local plan cache. `/explain` and
+`/profile` intentionally re-plan so their responses reflect current operator and
+estimate state directly.
 
 ---
 

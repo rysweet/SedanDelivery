@@ -146,7 +146,7 @@ Key pipeline components:
 - **Validator** -- checks semantic correctness (undefined variables, invalid aggregation scoping).
 - **Planner** -- translates AST clauses into a tree of 28 physical operators (NodeScan, IndexScan, Expand, VarLenExpand, Filter, Aggregate, ShortestPath, Create, Merge, etc.). Uses cardinality estimation from graph statistics for EXPLAIN output.
 - **Executor** -- walks the operator tree, calls `GraphStore` methods, enforces budget limits (`GQL_QUERY_TIMEOUT_MS`, `GQL_QUERY_MAX_ROWS`).
-- **Plan cache** -- LRU cache keyed by query text, avoids re-parsing and re-planning identical queries.
+- **Plan cache** -- process-local cache keyed by query text, avoids re-parsing and re-planning identical queries for `/query` and `/mutate`. It uses clear-on-capacity eviction (not LRU), exposes hit/miss metrics, and is explicitly invalidated after schema-changing DDL such as index/constraint changes.
 
 ## Storage Layer
 
@@ -347,7 +347,7 @@ SedanDelivery/
         wal.rs                   Write-ahead log for durability
         mod.rs                   GraphStore trait
       config.rs                  Environment variable configuration
-      plan_cache.rs              LRU query plan cache
+      plan_cache.rs              Query plan cache (hash map + clear-on-capacity eviction)
       types/value/               Value type system (display, convert, compare)
 
   gql-redis-store/             Redis/Valkey storage backend

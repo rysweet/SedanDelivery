@@ -302,6 +302,7 @@ Set these in your Container App or `deploy.yml` to customize behavior:
 | `GQL_QUERY_TIMEOUT_MS` | `30000` | Max query execution time |
 | `GQL_QUERY_MAX_ROWS` | `10000000` | Max intermediate rows |
 | `GQL_VARLEN_MAX_DEPTH` | `30` | Max variable-length path depth |
+| `GQL_PLAN_CACHE_SIZE` | `1024` | Process-local plan cache capacity; when full, it clears all entries before adding the next plan |
 | **Valkey** | | |
 | `VALKEY_PASSWORD` | (generated) | Authentication password (auto-generated on first deploy) |
 

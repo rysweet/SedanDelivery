@@ -1,14 +1,15 @@
-//! Thread-safe LRU query plan cache.
+//! Thread-safe query plan cache with clear-on-capacity eviction.
 //!
 //! Caches parsed AST + planned operator trees keyed by a hash of the Cypher
 //! query string. On cache hit the plan is cloned (both `Query` and `Operator`
 //! derive `Clone`), avoiding the cost of re-parsing and re-planning.
+//! The process-wide cache capacity comes from `GQL_PLAN_CACHE_SIZE`.
 //!
 //! # Invalidation
 //!
-//! Call [`PlanCache::clear`] after DDL operations that change the schema
-//! (e.g. `CREATE INDEX`, `DROP INDEX`) since plans may reference index scans
-//! that are no longer valid.
+//! Call [`PlanCache::clear`] after schema-changing DDL operations
+//! (e.g. `CREATE INDEX`, `DROP INDEX`, `CREATE CONSTRAINT`, `DROP CONSTRAINT`)
+//! since cached plans may reference schema state that is no longer valid.
 
 use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
@@ -17,12 +18,13 @@ use std::sync::Mutex;
 use crate::ast::Query;
 use crate::planner::Operator;
 
-/// A thread-safe LRU cache mapping query string hashes to parsed + planned results.
+/// A thread-safe cache mapping query string hashes to parsed + planned results.
 ///
 /// Uses a `Mutex<HashMap>` with a simple capacity eviction strategy: when the
 /// cache exceeds `capacity`, the entire map is cleared (epoch-based eviction).
-/// This is simpler and faster than a full LRU linked-list for a query cache
-/// where mass eviction on schema change is already required.
+/// This intentionally is not LRU: the whole cache is flushed once it reaches
+/// capacity, which keeps the implementation simple for a cache that must also
+/// support full invalidation after schema changes.
 pub struct PlanCache {
     cache: Mutex<HashMap<u64, (Query, Operator)>>,
     capacity: usize,
@@ -162,6 +164,9 @@ mod tests {
         // Third insert should trigger eviction (clear + insert)
         cache.insert("q3", ast, plan);
         assert_eq!(cache.len(), 1);
+        assert!(cache.get("q1").is_none());
+        assert!(cache.get("q2").is_none());
+        assert!(cache.get("q3").is_some());
     }
 
     #[test]
