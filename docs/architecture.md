@@ -191,7 +191,8 @@ classDiagram
     class FanoutStore {
         Write to all backends
         Read from first
-        Rollback on failure
+        Create paths attempt rollback
+        Other writes may diverge on error
     }
 
     GraphStore <|.. InMemoryGraphStore
@@ -307,7 +308,7 @@ See [Deploy Your Own Instance](DEPLOY) for full setup instructions and cost esti
 
 - **Synchronous `GraphStore` trait.** All trait methods are synchronous because the Redis module runs on Redis's single-threaded event loop. Async I/O happens at the network layer (Bolt/API servers), not at the storage layer.
 
-- **`FanoutStore` for multi-backend writes.** Rather than coupling backends, writes fan out through a simple wrapper. This enables patterns like Redis (fast reads) + Fabric (durable analytics) without modifying either backend.
+- **`FanoutStore` for multi-backend writes.** Rather than coupling backends, writes fan out through a simple wrapper. This enables patterns like Redis (fast reads) + Fabric (durable analytics) without modifying either backend. `create_node` and `create_edge` attempt primary rollback if a later backend fails, but the broader `write_all` mutation path returns the first error and may leave earlier stores ahead of later ones.
 
 - **u64 node/edge IDs.** Chosen over u32 to avoid silent overflow at 4.29B entities. Redis INCR returns i64; the storage layer rejects values <= 0 as overflow. See ADR-001.
 
@@ -353,7 +354,7 @@ SedanDelivery/
   gql-redis-store/             Redis/Valkey storage backend
     src/
       lib.rs                     RedisGraphStore implementation
-      fanout.rs                  FanoutStore (multi-backend writes with rollback)
+      fanout.rs                  FanoutStore (create rollback only; other writes may diverge)
       create_store.rs            Backend selection from env vars
       connection.rs              r2d2 pool, replica routing, stats reporter
       reads.rs                   Redis read commands

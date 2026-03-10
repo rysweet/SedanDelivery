@@ -1019,12 +1019,67 @@ mod tests {
         let pn = primary_ref.get_node("g", node_id).unwrap().unwrap();
         assert_eq!(pn.properties.get("age"), Some(&Value::Int(30)));
 
-        // Secondary also received the write_all call. The secondary's node
-        // has the primary's NodeId passed through set_node_properties, which
-        // may or may not match. If the secondary used the same ID (which
-        // happens when both start from 0), it will have the property.
-        // We verify the secondary got the graph at minimum.
-        assert!(secondary_ref.graph_exists("g").unwrap());
+        // Secondary also received the write_all call at the same NodeId.
+        let sn = secondary_ref.get_node("g", node_id).unwrap().unwrap();
+        assert_eq!(sn.properties.get("age"), Some(&Value::Int(30)));
+    }
+
+    #[test]
+    fn test_set_node_properties_failure_leaves_primary_ahead_of_secondary() {
+        let (primary_ref, primary_box) = shared_store();
+        let (secondary_ref, secondary_box) = shared_store();
+        let fanout = FanoutStore::new(vec![primary_box, secondary_box]);
+
+        fanout.create_graph("g").unwrap();
+        let node_id = fanout
+            .create_node("g", vec!["Person".into()], HashMap::new())
+            .unwrap();
+
+        // Force the secondary out of sync first so write_all will mutate the
+        // primary and then fail on the secondary.
+        secondary_ref.delete_node("g", node_id, true).unwrap();
+
+        let mut props = HashMap::new();
+        props.insert("age".to_string(), Value::Int(30));
+        let result = fanout.set_node_properties("g", node_id, props);
+        assert!(result.is_err(), "secondary mismatch should surface as an error");
+
+        let primary_node = primary_ref.get_node("g", node_id).unwrap().unwrap();
+        assert_eq!(primary_node.properties.get("age"), Some(&Value::Int(30)));
+        assert!(
+            secondary_ref.get_node("g", node_id).unwrap().is_none(),
+            "secondary should remain behind after the failed write_all mutation"
+        );
+    }
+
+    #[test]
+    fn test_add_node_labels_failure_leaves_primary_ahead_of_secondary() {
+        let (primary_ref, primary_box) = shared_store();
+        let (secondary_ref, secondary_box) = shared_store();
+        let fanout = FanoutStore::new(vec![primary_box, secondary_box]);
+
+        fanout.create_graph("g").unwrap();
+        let node_id = fanout
+            .create_node("g", vec!["Person".into()], HashMap::new())
+            .unwrap();
+
+        // Force the secondary out of sync first so write_all will mutate the
+        // primary and then fail on the secondary.
+        secondary_ref.delete_node("g", node_id, true).unwrap();
+
+        let labels = vec!["VIP".to_string()];
+        let result = fanout.add_node_labels("g", node_id, &labels);
+        assert!(result.is_err(), "secondary mismatch should surface as an error");
+
+        let primary_node = primary_ref.get_node("g", node_id).unwrap().unwrap();
+        assert!(
+            primary_node.labels.contains(&"VIP".to_string()),
+            "primary should keep the label added before the secondary failed"
+        );
+        assert!(
+            secondary_ref.get_node("g", node_id).unwrap().is_none(),
+            "secondary should remain behind after the failed write_all mutation"
+        );
     }
 
     // ── Read operations route to primary ────────────────────────────────────
