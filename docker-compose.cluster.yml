@@ -1,0 +1,222 @@
+# docker-compose.cluster.yml — Redis Cluster (3 masters + 3 replicas)
+#
+# Usage:
+#   docker compose -f docker-compose.cluster.yml up -d
+#   docker compose -f docker-compose.cluster.yml down -v
+#
+# Creates a 6-node Redis Cluster with automatic slot assignment.
+# An init container waits for all nodes, then runs `redis-cli --cluster create`.
+
+services:
+  # ── Redis Cluster Nodes ────────────────────────────────────────────────────
+  redis-node-1:
+    image: redis:7-bookworm
+    command: >
+      redis-server
+      --port 6379
+      --cluster-enabled yes
+      --cluster-config-file nodes.conf
+      --cluster-node-timeout 5000
+      --appendonly yes
+      --maxmemory 128mb
+      --maxmemory-policy noeviction
+    volumes:
+      - redis-node-1-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-p", "6379", "ping"]
+      interval: 3s
+      timeout: 2s
+      retries: 10
+
+  redis-node-2:
+    image: redis:7-bookworm
+    command: >
+      redis-server
+      --port 6379
+      --cluster-enabled yes
+      --cluster-config-file nodes.conf
+      --cluster-node-timeout 5000
+      --appendonly yes
+      --maxmemory 128mb
+      --maxmemory-policy noeviction
+    volumes:
+      - redis-node-2-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-p", "6379", "ping"]
+      interval: 3s
+      timeout: 2s
+      retries: 10
+
+  redis-node-3:
+    image: redis:7-bookworm
+    command: >
+      redis-server
+      --port 6379
+      --cluster-enabled yes
+      --cluster-config-file nodes.conf
+      --cluster-node-timeout 5000
+      --appendonly yes
+      --maxmemory 128mb
+      --maxmemory-policy noeviction
+    volumes:
+      - redis-node-3-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-p", "6379", "ping"]
+      interval: 3s
+      timeout: 2s
+      retries: 10
+
+  redis-node-4:
+    image: redis:7-bookworm
+    command: >
+      redis-server
+      --port 6379
+      --cluster-enabled yes
+      --cluster-config-file nodes.conf
+      --cluster-node-timeout 5000
+      --appendonly yes
+      --maxmemory 128mb
+      --maxmemory-policy noeviction
+    volumes:
+      - redis-node-4-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-p", "6379", "ping"]
+      interval: 3s
+      timeout: 2s
+      retries: 10
+
+  redis-node-5:
+    image: redis:7-bookworm
+    command: >
+      redis-server
+      --port 6379
+      --cluster-enabled yes
+      --cluster-config-file nodes.conf
+      --cluster-node-timeout 5000
+      --appendonly yes
+      --maxmemory 128mb
+      --maxmemory-policy noeviction
+    volumes:
+      - redis-node-5-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-p", "6379", "ping"]
+      interval: 3s
+      timeout: 2s
+      retries: 10
+
+  redis-node-6:
+    image: redis:7-bookworm
+    command: >
+      redis-server
+      --port 6379
+      --cluster-enabled yes
+      --cluster-config-file nodes.conf
+      --cluster-node-timeout 5000
+      --appendonly yes
+      --maxmemory 128mb
+      --maxmemory-policy noeviction
+    volumes:
+      - redis-node-6-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-p", "6379", "ping"]
+      interval: 3s
+      timeout: 2s
+      retries: 10
+
+  # ── Cluster Init ───────────────────────────────────────────────────────────
+  # Waits for all 6 nodes to be healthy, then forms the cluster.
+  # Exits 0 on success; the cluster persists in nodes.conf across restarts.
+  cluster-init:
+    image: redis:7-bookworm
+    depends_on:
+      redis-node-1:
+        condition: service_healthy
+      redis-node-2:
+        condition: service_healthy
+      redis-node-3:
+        condition: service_healthy
+      redis-node-4:
+        condition: service_healthy
+      redis-node-5:
+        condition: service_healthy
+      redis-node-6:
+        condition: service_healthy
+    restart: "no"
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        echo "Waiting for all nodes to accept connections..."
+        for host in redis-node-1 redis-node-2 redis-node-3 redis-node-4 redis-node-5 redis-node-6; do
+          until redis-cli -h "$$host" -p 6379 ping | grep -q PONG; do
+            sleep 1
+          done
+          echo "  $$host ready"
+        done
+
+        echo "Checking if cluster is already formed..."
+        CLUSTER_INFO=$$(redis-cli -h redis-node-1 -p 6379 cluster info 2>/dev/null)
+        if echo "$$CLUSTER_INFO" | grep -q "cluster_state:ok"; then
+          echo "Cluster already formed, skipping creation."
+          exit 0
+        fi
+
+        echo "Creating cluster with 3 masters and 3 replicas..."
+        redis-cli --cluster create \
+          redis-node-1:6379 \
+          redis-node-2:6379 \
+          redis-node-3:6379 \
+          redis-node-4:6379 \
+          redis-node-5:6379 \
+          redis-node-6:6379 \
+          --cluster-replicas 1 \
+          --cluster-yes
+
+        echo "Verifying cluster state..."
+        for i in 1 2 3 4 5 6 7 8 9 10; do
+          STATE=$$(redis-cli -h redis-node-1 -p 6379 cluster info | grep cluster_state)
+          if echo "$$STATE" | grep -q "cluster_state:ok"; then
+            echo "Cluster is ready: $$STATE"
+            exit 0
+          fi
+          echo "  Waiting for cluster convergence (attempt $$i/10)..."
+          sleep 2
+        done
+        echo "ERROR: Cluster did not converge in time"
+        exit 1
+    healthcheck:
+      test: ["CMD", "redis-cli", "-h", "redis-node-1", "-p", "6379", "cluster", "info"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 30s
+
+  # ── SedanDelivery Bolt Server ──────────────────────────────────────────────
+  sedandelivery-bolt:
+    build:
+      context: .
+      dockerfile: Dockerfile.bolt
+    ports:
+      - "7687:7687"
+      - "7688:7688"
+    environment:
+      - RUST_LOG=info
+      - GQL_REDIS_CLUSTER_NODES=redis://redis-node-1:6379,redis://redis-node-2:6379,redis://redis-node-3:6379,redis://redis-node-4:6379,redis://redis-node-5:6379,redis://redis-node-6:6379
+      - BOLT_IDLE_TIMEOUT_SECS=3600
+      - BOLT_MAX_CONNECTIONS=1024
+    depends_on:
+      cluster-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:7688/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 15s
+
+volumes:
+  redis-node-1-data:
+  redis-node-2-data:
+  redis-node-3-data:
+  redis-node-4-data:
+  redis-node-5-data:
+  redis-node-6-data:

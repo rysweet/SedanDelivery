@@ -83,10 +83,13 @@ See [ADR-004](ADR-004-distributed-redis) for the full architecture decision reco
 | `BOLT_MAX_CONNECTIONS` | `1024` | Max concurrent Bolt connections |
 | `BOLT_IDLE_TIMEOUT_SECS` | `3600` | Close idle connections after N seconds |
 | `BOLT_WRITE_CONCURRENCY` | `64` | Max concurrent write transactions |
-| `GQL_REDIS_URL` | — | Redis/Valkey URL; when set, bolt uses Redis-backed store |
-| `GQL_REDIS_POOL_SIZE` | `16` | r2d2 connection pool max size |
+| `GQL_REDIS_URL` | — | Redis/Valkey URL; when set, bolt uses Redis-backed store (use `rediss://` for TLS with Azure Cache) |
+| `GQL_REDIS_CLUSTER_NODES` | — | Comma-separated cluster seed URLs (enables Redis Cluster mode, overrides `GQL_REDIS_URL`) |
+| `GQL_REDIS_REPLICA_URL` | — | Comma-separated replica URLs for read-only query routing (round-robin) |
+| `GQL_REDIS_POOL_SIZE` | `64` | r2d2 connection pool max size |
 | `GQL_REDIS_POOL_TIMEOUT_SECS` | `5` | Pool checkout timeout in seconds |
-| `GQL_REDIS_CLUSTER_NODES` | — | Comma-separated cluster seed URLs (enables Redis Cluster mode) |
+| `GQL_REDIS_IDLE_TIMEOUT_SECS` | `300` | Idle connection reap timeout in seconds |
+| `GQL_REDIS_MIN_IDLE` | `1` | Minimum warm connections kept in pool |
 | `GQL_REDIS_KEY_PREFIX` | — | Key prefix for multi-tenant isolation |
 | `GQL_FABRIC_ENDPOINT` | — | Fabric Graph Database REST API URL |
 | `GQL_FABRIC_TENANT_ID` | — | Azure AD tenant for Fabric auth |

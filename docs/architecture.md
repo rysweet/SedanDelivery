@@ -202,9 +202,11 @@ classDiagram
 ```
 
 Backend selection at startup (`gql-redis-store::create_store`):
-1. `GQL_REDIS_CLUSTER_NODES` set -- `RedisGraphStore` in cluster mode
-2. `GQL_REDIS_URL` set -- `RedisGraphStore` in standalone mode
+1. `GQL_REDIS_CLUSTER_NODES` set -- `RedisGraphStore` in cluster mode (auto-discovers topology from seed nodes)
+2. `GQL_REDIS_URL` set -- `RedisGraphStore` in standalone mode (also used for Azure Cache for Redis with `rediss://` TLS URLs)
 3. Neither set -- `InMemoryGraphStore` (volatile, for local dev/tests)
+
+When `GQL_REDIS_REPLICA_URL` is also set, read methods are routed to a separate replica pool (round-robin across replicas with `READONLY` command). Writes always go to the primary pool. This provides eventual-consistency read scaling for read-heavy workloads.
 
 Redis key schema uses `{graphname}` hash tags for cluster slot affinity:
 ```
@@ -268,6 +270,12 @@ graph TD
     VALKEY -- "__sd2:changelog<br/>Redis Stream" --> SYNC
     SYNC -- "HTTPS<br/>openCypher" --> FABRIC
     API_SRV -. "JWKS fetch" .-> ENTRA
+
+    subgraph AltBackends["Alternative Redis Backends (swap for RedisContainer)"]
+        AZURE_CACHE["Azure Cache for Redis<br/><b>Standard C1</b><br/>TLS, HA failover<br/>rediss://:key@host:6380"]
+        CLUSTER["Redis Cluster<br/><b>3+ nodes</b><br/>Hash-tag slot routing<br/>GQL_REDIS_CLUSTER_NODES"]
+        REPLICAS["Read Replicas<br/><b>1+ replicas</b><br/>Round-robin routing<br/>GQL_REDIS_REPLICA_URL"]
+    end
 ```
 
 **Components:**
@@ -282,7 +290,8 @@ graph TD
 **Connection patterns:**
 - **Bolt clients** connect to the Bolt server via TCP, TLS, or WebSocket on port 7687
 - **REST clients** connect to gql-api via HTTP/HTTPS on port 3001/3443
-- Both servers connect to Valkey via `GQL_REDIS_URL` using an r2d2 connection pool
+- Both servers connect to Valkey via `GQL_REDIS_URL` using an r2d2 connection pool (or via `GQL_REDIS_CLUSTER_NODES` for cluster mode, or `rediss://` for Azure Cache with TLS)
+- When `GQL_REDIS_REPLICA_URL` is set, read-only operations are routed to a separate replica pool (round-robin), while writes go to the primary
 - The Fabric sync sidecar reads from a Redis Stream (`__sd2:changelog`) and pushes to Fabric via HTTPS
 - Entra ID JWT validation uses a cached JWKS endpoint (async, non-blocking)
 

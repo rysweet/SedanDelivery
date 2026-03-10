@@ -214,7 +214,9 @@ Each environment gets its own resource group (`rg-sd2-{name}`) with:
 - Valkey 8.1 container with GQL module (Redis :6379)
 - Standalone Bolt server container (Bolt :7687, scalable)
 - Azure Files persistent volume for RDB/AOF
-- Optional: Azure Cache for Redis (managed HA with automatic failover)
+- Optional: Azure Cache for Redis (managed HA with TLS and automatic failover)
+- Optional: Redis Cluster mode (horizontal data sharding via `GQL_REDIS_CLUSTER_NODES`)
+- Optional: Read-replica routing (offload reads via `GQL_REDIS_REPLICA_URL`, round-robin with eventual consistency)
 - Optional: Fabric sync sidecar (replication to Microsoft Fabric)
 
 **Full deployment guide**: [docs/DEPLOY.md](docs/DEPLOY.md) — prerequisites, step-by-step setup, scaling, HA configuration, troubleshooting.

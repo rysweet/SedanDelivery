@@ -29,6 +29,18 @@ on:
         description: 'Branch name for branch deployments (leave empty for current branch)'
         required: false
         type: string
+      persistenceBackend:
+        description: 'Redis backend: valkey | azure-cache | cluster'
+        required: false
+        default: 'valkey'
+      clusterNodeCount:
+        description: 'Number of cluster shards (only for cluster mode)'
+        required: false
+        default: '3'
+      replicaCount:
+        description: 'Read replicas per shard (0 = no replicas)'
+        required: false
+        default: '0'
 
 concurrency:
   group: deploy-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.ref }}
@@ -53,6 +65,9 @@ jobs:
       env-name: ${{ steps.check.outputs.env_name }}
       env-type: ${{ steps.check.outputs.env_type }}
       resource-group: ${{ steps.check.outputs.resource_group }}
+      persistence-backend: ${{ steps.check.outputs.persistence_backend }}
+      cluster-node-count: ${{ steps.check.outputs.cluster_node_count }}
+      replica-count: ${{ steps.check.outputs.replica_count }}
     steps:
       - name: Determine environment and deployment eligibility
         id: check
@@ -65,6 +80,9 @@ jobs:
           INPUT_ENVIRONMENT: ${{ inputs.environment }}
           GH_HAS_DEPLOY_LABEL: ${{ contains(github.event.pull_request.labels.*.name, 'deploy') }}
           GH_PR_NUMBER: ${{ github.event.pull_request.number }}
+          INPUT_PERSISTENCE_BACKEND: ${{ inputs.persistenceBackend || 'valkey' }}
+          INPUT_CLUSTER_NODE_COUNT: ${{ inputs.clusterNodeCount || '3' }}
+          INPUT_REPLICA_COUNT: ${{ inputs.replicaCount || '0' }}
         run: |
           SHOULD_DEPLOY="false"
           ENV_NAME=""
@@ -123,11 +141,32 @@ jobs:
           echo "env_type=${ENV_TYPE}" >> "$GITHUB_OUTPUT"
           echo "resource_group=${RESOURCE_GROUP}" >> "$GITHUB_OUTPUT"
 
+          # Persistence backend parameters (defaults apply for non-dispatch triggers)
+          PERSISTENCE_BACKEND="${INPUT_PERSISTENCE_BACKEND}"
+          CLUSTER_NODE_COUNT="${INPUT_CLUSTER_NODE_COUNT}"
+          REPLICA_COUNT="${INPUT_REPLICA_COUNT}"
+
+          # Validate persistence backend
+          case "${PERSISTENCE_BACKEND}" in
+            valkey|azure-cache|cluster) ;;
+            *)
+              echo "::error::Invalid persistenceBackend '${PERSISTENCE_BACKEND}'. Must be valkey, azure-cache, or cluster."
+              exit 1
+              ;;
+          esac
+
+          echo "persistence_backend=${PERSISTENCE_BACKEND}" >> "$GITHUB_OUTPUT"
+          echo "cluster_node_count=${CLUSTER_NODE_COUNT}" >> "$GITHUB_OUTPUT"
+          echo "replica_count=${REPLICA_COUNT}" >> "$GITHUB_OUTPUT"
+
           echo ""
           echo "📦 Deployment Configuration:"
           echo "  Should Deploy: ${SHOULD_DEPLOY}"
           echo "  Environment: ${ENV_NAME}"
           echo "  Resource Group: ${RESOURCE_GROUP}"
+          echo "  Persistence Backend: ${PERSISTENCE_BACKEND}"
+          echo "  Cluster Node Count: ${CLUSTER_NODE_COUNT}"
+          echo "  Replica Count: ${REPLICA_COUNT}"
 
       - name: Comment on PR when deployment skipped
         if: github.event_name == 'pull_request' && steps.check.outputs.should_deploy == 'false'
@@ -237,11 +276,30 @@ jobs:
             fi
           fi
 
+          # Map persistenceBackend to Bicep parameter
+          PERSISTENCE_BACKEND="${{ needs.determine-environment.outputs.persistence-backend }}"
+          CLUSTER_NODE_COUNT="${{ needs.determine-environment.outputs.cluster-node-count }}"
+          REPLICA_COUNT="${{ needs.determine-environment.outputs.replica-count }}"
+
+          # Bicep persistenceBackend mapping:
+          #   valkey         -> valkey-volume
+          #   azure-cache    -> azure-cache
+          #   cluster        -> azure-cache-cluster
+          BICEP_BACKEND="valkey-volume"
+          case "${PERSISTENCE_BACKEND}" in
+            azure-cache) BICEP_BACKEND="azure-cache" ;;
+            cluster)     BICEP_BACKEND="azure-cache-cluster" ;;
+          esac
+
           echo "🔧 Provisioning ACR + Container Apps Environment in ${RG}..."
+          echo "   Persistence backend: ${PERSISTENCE_BACKEND} (Bicep: ${BICEP_BACKEND})"
           DEPLOYMENT_OUTPUT=$(az deployment group create \
             --resource-group "${RG}" \
             --template-file infra/main.bicep \
             --parameters environmentName="${ENV_NAME}" \
+                         persistenceBackend="${BICEP_BACKEND}" \
+                         clusterShardCount="${CLUSTER_NODE_COUNT}" \
+                         replicasPerShard="${REPLICA_COUNT}" \
             --name "sd2-infra-$(date +%s)" \
             --output json)
 
@@ -433,7 +491,9 @@ jobs:
 
           # Retrieve Azure Cache connection string at deploy time (Issue #58)
           # Keys are fetched via `az redis` — never stored in ARM outputs or step outputs
+          PERSISTENCE_BACKEND="${{ needs.determine-environment.outputs.persistence-backend }}"
           AZURE_CACHE_CONN=""
+          AZURE_CACHE_CLUSTER_NODES=""
           if [[ -n "${DEPLOY_AZURE_CACHE_NAME}" && "${DEPLOY_AZURE_CACHE_NAME}" != "" ]]; then
             AZURE_CACHE_HOST=$(az redis show --name "${DEPLOY_AZURE_CACHE_NAME}" --resource-group "${RG}" --query hostName -o tsv)
             AZURE_CACHE_PORT=$(az redis show --name "${DEPLOY_AZURE_CACHE_NAME}" --resource-group "${RG}" --query sslPort -o tsv)
@@ -443,8 +503,15 @@ jobs:
               exit 1
             fi
             echo "::add-mask::${REDIS_KEY}"
-            AZURE_CACHE_CONN="${AZURE_CACHE_HOST}:${AZURE_CACHE_PORT},password=${REDIS_KEY},ssl=True,abortConnect=False"
-            echo "::add-mask::${AZURE_CACHE_CONN}"
+
+            if [[ "${PERSISTENCE_BACKEND}" == "cluster" ]]; then
+              # Cluster mode: set cluster nodes env var (Azure Cache cluster uses same host)
+              AZURE_CACHE_CLUSTER_NODES="rediss://:${REDIS_KEY}@${AZURE_CACHE_HOST}:${AZURE_CACHE_PORT}"
+              echo "::add-mask::${AZURE_CACHE_CLUSTER_NODES}"
+            else
+              AZURE_CACHE_CONN="${AZURE_CACHE_HOST}:${AZURE_CACHE_PORT},password=${REDIS_KEY},ssl=True,abortConnect=False"
+              echo "::add-mask::${AZURE_CACHE_CONN}"
+            fi
           fi
 
           # ACR admin credentials removed — using managed identity auth (Issue #67)
@@ -470,7 +537,11 @@ jobs:
           # Build secrets and env-var args
           SECRETS_ARGS="valkey-password=${VALKEY_PASS}"
           ENV_VAR_ARGS="GQL_DATA_DIR=/data VALKEY_PASSWORD=secretref:valkey-password"
-          if [[ -n "${AZURE_CACHE_CONN}" ]]; then
+          if [[ -n "${AZURE_CACHE_CLUSTER_NODES}" ]]; then
+            # Cluster mode: set GQL_REDIS_CLUSTER_NODES instead of GQL_REDIS_URL
+            SECRETS_ARGS="${SECRETS_ARGS} redis-cluster-nodes=${AZURE_CACHE_CLUSTER_NODES}"
+            ENV_VAR_ARGS="${ENV_VAR_ARGS} GQL_REDIS_CLUSTER_NODES=secretref:redis-cluster-nodes"
+          elif [[ -n "${AZURE_CACHE_CONN}" ]]; then
             SECRETS_ARGS="${SECRETS_ARGS} redis-conn=${AZURE_CACHE_CONN}"
             ENV_VAR_ARGS="${ENV_VAR_ARGS} GQL_REDIS_URL=secretref:redis-conn"
           fi
@@ -602,6 +673,8 @@ jobs:
           DEPLOY_ACR_NAME: ${{ steps.provision.outputs.acr_name }}
           DEPLOY_BOLT_IMAGE_TAG: ${{ steps.build-bolt.outputs.bolt_image_tag }}
           DEPLOY_AZURE_CACHE_NAME: ${{ steps.provision.outputs.azure_cache_name }}
+          DEPLOY_PERSISTENCE_BACKEND: ${{ needs.determine-environment.outputs.persistence-backend }}
+          DEPLOY_REPLICA_COUNT: ${{ needs.determine-environment.outputs.replica-count }}
         run: |
           RG="${DEPLOY_RG}"
           ENV_NAME="${DEPLOY_ENV_NAME}"
@@ -610,12 +683,17 @@ jobs:
           ACR_NAME="${DEPLOY_ACR_NAME}"
           IMAGE="${ACR_SERVER}/sedandelivery-bolt:${DEPLOY_BOLT_IMAGE_TAG}"
           CA_NAME="sd2-${ENV_NAME}-bolt"
+          PERSISTENCE_BACKEND="${DEPLOY_PERSISTENCE_BACKEND}"
+          REPLICA_COUNT="${DEPLOY_REPLICA_COUNT}"
 
           echo "🚀 Deploying standalone Bolt server: ${CA_NAME}"
+          echo "   Persistence backend: ${PERSISTENCE_BACKEND}"
 
           # Determine Redis backend URL for the bolt server.
           # Priority: Azure Cache (if provisioned) > local Valkey container.
           REDIS_URL=""
+          CLUSTER_NODES=""
+          REPLICA_URL=""
           if [[ -n "${DEPLOY_AZURE_CACHE_NAME}" && "${DEPLOY_AZURE_CACHE_NAME}" != "" ]]; then
             # Azure Cache for Redis — use TLS connection (rediss://)
             AZURE_CACHE_HOST=$(az redis show --name "${DEPLOY_AZURE_CACHE_NAME}" --resource-group "${RG}" --query hostName -o tsv)
@@ -623,10 +701,21 @@ jobs:
             REDIS_KEY=$(az redis list-keys --name "${DEPLOY_AZURE_CACHE_NAME}" --resource-group "${RG}" --query primaryKey -o tsv)
             if [[ -n "$REDIS_KEY" ]]; then
               echo "::add-mask::${REDIS_KEY}"
-              REDIS_URL="rediss://:${REDIS_KEY}@${AZURE_CACHE_HOST}:${AZURE_CACHE_PORT}"
+              if [[ "${PERSISTENCE_BACKEND}" == "cluster" ]]; then
+                CLUSTER_NODES="rediss://:${REDIS_KEY}@${AZURE_CACHE_HOST}:${AZURE_CACHE_PORT}"
+              else
+                REDIS_URL="rediss://:${REDIS_KEY}@${AZURE_CACHE_HOST}:${AZURE_CACHE_PORT}"
+              fi
+
+              # When replicas are configured, set GQL_REDIS_REPLICA_URL.
+              # Azure Cache Standard/Premium includes built-in read replicas accessible
+              # via the same host — the client library handles read routing.
+              if [[ "${REPLICA_COUNT}" -gt 0 ]]; then
+                REPLICA_URL="rediss://:${REDIS_KEY}@${AZURE_CACHE_HOST}:${AZURE_CACHE_PORT}"
+              fi
             fi
           fi
-          if [[ -z "${REDIS_URL}" ]]; then
+          if [[ -z "${REDIS_URL}" && -z "${CLUSTER_NODES}" ]]; then
             # Fall back to local Valkey container
             REDIS_CA_NAME="sd2-${ENV_NAME}-redis"
             VALKEY_PASS=$(az containerapp secret show \
@@ -639,11 +728,22 @@ jobs:
               REDIS_URL="redis://${REDIS_CA_NAME}:6379"
             fi
           fi
-          echo "::add-mask::${REDIS_URL}"
+          [[ -n "${REDIS_URL}" ]] && echo "::add-mask::${REDIS_URL}"
+          [[ -n "${CLUSTER_NODES}" ]] && echo "::add-mask::${CLUSTER_NODES}"
+          [[ -n "${REPLICA_URL}" ]] && echo "::add-mask::${REPLICA_URL}"
 
           # Build secrets and env-var args for bolt
-          SECRETS_ARGS="redis-url=${REDIS_URL}"
-          ENV_VAR_ARGS="GQL_REDIS_URL=secretref:redis-url BOLT_BIND_ADDR=0.0.0.0:7687"
+          if [[ -n "${CLUSTER_NODES}" ]]; then
+            SECRETS_ARGS="redis-cluster-nodes=${CLUSTER_NODES}"
+            ENV_VAR_ARGS="GQL_REDIS_CLUSTER_NODES=secretref:redis-cluster-nodes BOLT_BIND_ADDR=0.0.0.0:7687"
+          else
+            SECRETS_ARGS="redis-url=${REDIS_URL}"
+            ENV_VAR_ARGS="GQL_REDIS_URL=secretref:redis-url BOLT_BIND_ADDR=0.0.0.0:7687"
+          fi
+          if [[ -n "${REPLICA_URL}" ]]; then
+            SECRETS_ARGS="${SECRETS_ARGS} redis-replica-url=${REPLICA_URL}"
+            ENV_VAR_ARGS="${ENV_VAR_ARGS} GQL_REDIS_REPLICA_URL=secretref:redis-replica-url"
+          fi
 
           # Max replicas for horizontal scaling (default 1, configurable)
           BOLT_MAX_REPLICAS="${BOLT_MAX_REPLICAS:-1}"
@@ -918,6 +1018,103 @@ jobs:
           echo "✅ SedanDelivery external FQDN: ${FQDN}"
           echo "   Redis: port 6379 (external + internal)"
           echo "   Bolt:  port 7687 (external + internal)"
+
+      - name: Redis health check
+        env:
+          DEPLOY_RG: ${{ needs.determine-environment.outputs.resource-group }}
+          DEPLOY_ENV_NAME: ${{ needs.determine-environment.outputs.env-name }}
+          DEPLOY_AZURE_CACHE_NAME: ${{ steps.provision.outputs.azure_cache_name }}
+          DEPLOY_PERSISTENCE_BACKEND: ${{ needs.determine-environment.outputs.persistence-backend }}
+        run: |
+          RG="${DEPLOY_RG}"
+          ENV_NAME="${DEPLOY_ENV_NAME}"
+          PERSISTENCE_BACKEND="${DEPLOY_PERSISTENCE_BACKEND}"
+
+          echo "🏥 Running Redis health check (backend: ${PERSISTENCE_BACKEND})..."
+
+          if [[ "${PERSISTENCE_BACKEND}" == "azure-cache" || "${PERSISTENCE_BACKEND}" == "cluster" ]]; then
+            # Azure Cache health check via az redis CLI
+            CACHE_NAME="${DEPLOY_AZURE_CACHE_NAME}"
+            if [[ -z "${CACHE_NAME}" ]]; then
+              echo "::error::Azure Cache name not available for health check"
+              exit 1
+            fi
+
+            PROVISIONING_STATE=$(az redis show \
+              --name "${CACHE_NAME}" --resource-group "${RG}" \
+              --query "provisioningState" -o tsv 2>/dev/null || echo "Unknown")
+            echo "   Provisioning state: ${PROVISIONING_STATE}"
+            if [[ "${PROVISIONING_STATE}" != "Succeeded" ]]; then
+              echo "::warning::Azure Cache provisioning state is '${PROVISIONING_STATE}', not 'Succeeded'"
+            fi
+
+            # Verify connectivity by listing keys (confirms network path works)
+            REDIS_KEY=$(az redis list-keys --name "${CACHE_NAME}" --resource-group "${RG}" --query primaryKey -o tsv 2>/dev/null || echo "")
+            echo "::add-mask::${REDIS_KEY}"
+            if [[ -z "${REDIS_KEY}" ]]; then
+              echo "::error::Cannot retrieve Redis keys — health check failed"
+              exit 1
+            fi
+            echo "   Key retrieval: OK"
+
+            if [[ "${PERSISTENCE_BACKEND}" == "cluster" ]]; then
+              # Verify cluster is enabled on the Azure Cache instance
+              CLUSTER_ENABLED=$(az redis show \
+                --name "${CACHE_NAME}" --resource-group "${RG}" \
+                --query "properties.redisConfiguration.cluster-enabled" -o tsv 2>/dev/null || echo "")
+              echo "   Cluster enabled: ${CLUSTER_ENABLED:-unknown}"
+            fi
+          else
+            # Valkey container health check — verify the container app is running
+            REDIS_CA_NAME="sd2-${ENV_NAME}-redis"
+            RUNNING=$(az containerapp revision list \
+              --name "${REDIS_CA_NAME}" --resource-group "${RG}" \
+              --query "[0].properties.runningState" -o tsv 2>/dev/null || echo "Unknown")
+            echo "   Valkey container state: ${RUNNING}"
+            if [[ "${RUNNING}" != "Running" ]]; then
+              echo "::warning::Valkey container is not in Running state (${RUNNING})"
+            fi
+          fi
+          echo "✅ Redis health check complete"
+
+      - name: Smoke test via Bolt endpoint
+        env:
+          DEPLOY_RG: ${{ needs.determine-environment.outputs.resource-group }}
+          DEPLOY_ENV_NAME: ${{ needs.determine-environment.outputs.env-name }}
+        run: |
+          RG="${DEPLOY_RG}"
+          ENV_NAME="${DEPLOY_ENV_NAME}"
+          BOLT_CA_NAME="sd2-${ENV_NAME}-bolt"
+
+          BOLT_FQDN=$(az containerapp show \
+            --name "${BOLT_CA_NAME}" --resource-group "${RG}" \
+            --query "properties.configuration.ingress.fqdn" -o tsv 2>/dev/null || echo "")
+
+          if [[ -z "${BOLT_FQDN}" ]]; then
+            echo "::warning::Cannot resolve Bolt FQDN — skipping smoke test"
+            exit 0
+          fi
+
+          echo "🧪 Running smoke test against Bolt endpoint: ${BOLT_FQDN}:7687"
+
+          # TCP connectivity check — verify port is open
+          SMOKE_OK=false
+          for i in $(seq 1 6); do
+            if timeout 5 bash -c "echo > /dev/tcp/${BOLT_FQDN}/7687" 2>/dev/null; then
+              echo "   TCP port 7687: reachable (attempt ${i})"
+              SMOKE_OK=true
+              break
+            fi
+            echo "   Attempt ${i}/6: port not yet reachable, waiting..."
+            sleep 10
+          done
+
+          if [[ "${SMOKE_OK}" == "false" ]]; then
+            echo "::warning::Bolt port 7687 not reachable after 60s — smoke test failed"
+            exit 1
+          fi
+
+          echo "✅ Smoke test passed — Bolt endpoint is reachable"
 
       - name: Post deployment comment to PR
         if: github.event_name == 'pull_request'

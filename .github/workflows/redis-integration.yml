@@ -1,0 +1,347 @@
+name: Redis Integration Tests
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+    paths:
+      - "gql-redis-store/**"
+      - "gql-module/**"
+      - "docker-compose*.yml"
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  # ── Job 1: Standalone Redis (quick baseline) ──────────────────────────────
+  standalone:
+    name: Standalone Redis
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+
+      - name: Cache cargo registry
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-redis-standalone-${{ hashFiles('**/Cargo.toml') }}
+          restore-keys: ${{ runner.os }}-cargo-redis-standalone-
+
+      - name: Install Redis server + libclang
+        run: |
+          sudo apt-get update -q && sudo apt-get install -y -q redis-server redis-tools libclang-dev
+          sudo systemctl stop redis-server || true
+
+      - name: Run redis-store and module tests
+        env:
+          GQL_REDIS_URL: redis://localhost:6379
+        run: cargo test -p gql-redis-store
+
+      - name: Build sedandelivery-bolt (release)
+        run: cargo build --release -p sedandelivery-bolt
+
+      - name: Install Python dependencies
+        run: pip install neo4j
+
+      - name: Run gallery compatibility tests
+        env:
+          GQL_REDIS_URL: redis://localhost:6379
+          RUST_LOG: warn
+        run: |
+          ./target/release/sedandelivery-bolt &
+          BOLT_PID=$!
+          # Wait for Bolt server to accept connections
+          for i in $(seq 1 30); do
+            if nc -z localhost 7687 2>/dev/null; then break; fi
+            sleep 0.5
+          done
+          python3 neo4j-compat-gallery/test_compatibility.py --uri bolt://localhost:7687
+          EXIT_CODE=$?
+          kill $BOLT_PID 2>/dev/null || true
+          wait $BOLT_PID 2>/dev/null || true
+          exit $EXIT_CODE
+
+  # ── Job 2: Redis Cluster (3 masters) ──────────────────────────────────────
+  cluster:
+    name: Redis Cluster
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+
+      - name: Cache cargo registry
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-redis-cluster-${{ hashFiles('**/Cargo.toml') }}
+          restore-keys: ${{ runner.os }}-cargo-redis-cluster-
+
+      - name: Install Redis server + libclang
+        run: |
+          sudo apt-get update -q && sudo apt-get install -y -q redis-server redis-tools libclang-dev
+          sudo systemctl stop redis-server || true
+
+      - name: Start Redis Cluster (3 masters)
+        run: |
+          # Start 3 Redis instances in cluster mode
+          for port in 7000 7001 7002; do
+            mkdir -p /tmp/redis-cluster/$port
+            printf "port %s\ncluster-enabled yes\ncluster-config-file /tmp/redis-cluster/%s/nodes.conf\ncluster-node-timeout 5000\nappendonly no\nbind 0.0.0.0\nprotected-mode no\n" \
+              "$port" "$port" > /tmp/redis-cluster/$port/redis.conf
+            redis-server /tmp/redis-cluster/$port/redis.conf --daemonize yes
+          done
+
+          # Wait for all instances to be ready
+          for port in 7000 7001 7002; do
+            for i in $(seq 1 20); do
+              if redis-cli -p $port ping 2>/dev/null | grep -q PONG; then break; fi
+              sleep 0.5
+            done
+          done
+
+          # Create the cluster
+          echo "yes" | redis-cli --cluster create \
+            127.0.0.1:7000 127.0.0.1:7001 127.0.0.1:7002 \
+            --cluster-replicas 0
+
+          # Wait for cluster to be ready
+          for i in $(seq 1 30); do
+            if redis-cli -p 7000 cluster info 2>/dev/null | grep -q "cluster_state:ok"; then
+              echo "Cluster is ready"
+              break
+            fi
+            sleep 1
+          done
+          redis-cli -p 7000 cluster info
+
+      - name: Run redis-store tests (cluster mode)
+        env:
+          GQL_REDIS_CLUSTER_NODES: redis://127.0.0.1:7000,redis://127.0.0.1:7001,redis://127.0.0.1:7002
+        run: cargo test -p gql-redis-store
+
+      - name: Build sedandelivery-bolt (release)
+        run: cargo build --release -p sedandelivery-bolt
+
+      - name: Install Python dependencies
+        run: pip install neo4j
+
+      - name: Run gallery compatibility tests (cluster mode)
+        continue-on-error: true
+        env:
+          GQL_REDIS_CLUSTER_NODES: redis://127.0.0.1:7000,redis://127.0.0.1:7001,redis://127.0.0.1:7002
+          RUST_LOG: warn
+        run: |
+          ./target/release/sedandelivery-bolt &
+          BOLT_PID=$!
+          for i in $(seq 1 30); do
+            if nc -z localhost 7687 2>/dev/null; then break; fi
+            sleep 0.5
+          done
+          python3 neo4j-compat-gallery/test_compatibility.py --uri bolt://localhost:7687
+          EXIT_CODE=$?
+          kill $BOLT_PID 2>/dev/null || true
+          wait $BOLT_PID 2>/dev/null || true
+          exit $EXIT_CODE
+
+  # ── Job 3: Master + Replicas ──────────────────────────────────────────────
+  replicas:
+    name: Master + Replicas
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      redis-master:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+
+      - name: Cache cargo registry
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-redis-replicas-${{ hashFiles('**/Cargo.toml') }}
+          restore-keys: ${{ runner.os }}-cargo-redis-replicas-
+
+      - name: Install Redis server + libclang
+        run: |
+          sudo apt-get update -q && sudo apt-get install -y -q redis-server redis-tools libclang-dev
+          sudo systemctl stop redis-server || true
+
+      - name: Start Redis replicas
+        run: |
+          # Start 2 Redis replicas pointed at the master service
+          redis-server --port 6380 --replicaof 127.0.0.1 6379 --daemonize yes
+          redis-server --port 6381 --replicaof 127.0.0.1 6379 --daemonize yes
+
+          # Wait for replicas to be connected and synced
+          for port in 6380 6381; do
+            for i in $(seq 1 30); do
+              if redis-cli -p $port ping 2>/dev/null | grep -q PONG; then
+                # Verify replication link is up
+                if redis-cli -p $port info replication 2>/dev/null | grep -q "master_link_status:up"; then
+                  echo "Replica on port $port is synced"
+                  break
+                fi
+              fi
+              sleep 0.5
+            done
+          done
+
+      - name: Run redis-store tests (replica routing)
+        env:
+          GQL_REDIS_URL: redis://localhost:6379
+          GQL_REDIS_REPLICA_URL: redis://localhost:6380,redis://localhost:6381
+        run: cargo test -p gql-redis-store
+
+      - name: Build sedandelivery-bolt (release)
+        run: cargo build --release -p sedandelivery-bolt
+
+      - name: Install Python dependencies
+        run: pip install neo4j
+
+      - name: Run gallery compatibility tests (replica routing)
+        continue-on-error: true
+        env:
+          GQL_REDIS_URL: redis://localhost:6379
+          GQL_REDIS_REPLICA_URL: redis://localhost:6380,redis://localhost:6381
+          RUST_LOG: warn
+        run: |
+          ./target/release/sedandelivery-bolt &
+          BOLT_PID=$!
+          for i in $(seq 1 30); do
+            if nc -z localhost 7687 2>/dev/null; then break; fi
+            sleep 0.5
+          done
+          python3 neo4j-compat-gallery/test_compatibility.py --uri bolt://localhost:7687
+          EXIT_CODE=$?
+          kill $BOLT_PID 2>/dev/null || true
+          wait $BOLT_PID 2>/dev/null || true
+          exit $EXIT_CODE
+
+  # ── Job 4: TLS (simulating Azure Cache for Redis) ─────────────────────────
+  tls:
+    name: Redis TLS
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+
+      - name: Cache cargo registry
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-redis-tls-${{ hashFiles('**/Cargo.toml') }}
+          restore-keys: ${{ runner.os }}-cargo-redis-tls-
+
+      - name: Install Redis server + libclang
+        run: |
+          sudo apt-get update -q && sudo apt-get install -y -q redis-server redis-tools libclang-dev
+          sudo systemctl stop redis-server || true
+
+      - name: Generate self-signed TLS certificates
+        run: |
+          mkdir -p /tmp/redis-tls
+          # Generate CA key and certificate
+          openssl genrsa -out /tmp/redis-tls/ca.key 4096
+          openssl req -x509 -new -nodes -key /tmp/redis-tls/ca.key \
+            -sha256 -days 1 -out /tmp/redis-tls/ca.crt \
+            -subj "/CN=Redis-Test-CA"
+
+          # Generate server key and certificate
+          openssl genrsa -out /tmp/redis-tls/redis.key 2048
+          openssl req -new -key /tmp/redis-tls/redis.key \
+            -out /tmp/redis-tls/redis.csr \
+            -subj "/CN=localhost"
+          openssl x509 -req -in /tmp/redis-tls/redis.csr \
+            -CA /tmp/redis-tls/ca.crt -CAkey /tmp/redis-tls/ca.key \
+            -CAcreateserial -out /tmp/redis-tls/redis.crt \
+            -days 1 -sha256
+
+          # Make key readable by redis
+          chmod 644 /tmp/redis-tls/redis.key
+
+      - name: Start Redis with TLS
+        run: |
+          redis-server \
+            --port 0 \
+            --tls-port 6380 \
+            --tls-cert-file /tmp/redis-tls/redis.crt \
+            --tls-key-file /tmp/redis-tls/redis.key \
+            --tls-ca-cert-file /tmp/redis-tls/ca.crt \
+            --tls-auth-clients no \
+            --daemonize yes
+
+          # Wait for TLS Redis to be ready
+          for i in $(seq 1 30); do
+            if redis-cli --tls \
+              --cert /tmp/redis-tls/redis.crt \
+              --key /tmp/redis-tls/redis.key \
+              --cacert /tmp/redis-tls/ca.crt \
+              -p 6380 ping 2>/dev/null | grep -q PONG; then
+              echo "Redis TLS is ready"
+              break
+            fi
+            sleep 0.5
+          done
+
+      - name: Build redis-store tests
+        run: cargo test -p gql-redis-store --no-run
+
+      - name: Run redis-store tests (TLS)
+        env:
+          GQL_REDIS_URL: rediss://localhost:6380
+          SSL_CERT_FILE: /tmp/redis-tls/ca.crt
+        run: cargo test -p gql-redis-store

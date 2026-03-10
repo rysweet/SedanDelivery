@@ -1,0 +1,107 @@
+# docker-compose.replica.yml — Redis master + 2 read replicas
+#
+# Usage:
+#   docker compose -f docker-compose.replica.yml up -d
+#   docker compose -f docker-compose.replica.yml down -v
+#
+# Tests the read-replica routing feature (GQL_REDIS_REPLICA_URL).
+# Writes go to master; reads are distributed across replica1 and replica2.
+
+services:
+  # ── Redis Master ───────────────────────────────────────────────────────────
+  master:
+    image: redis:7-bookworm
+    ports:
+      - "6379:6379"
+    command: >
+      redis-server
+      --port 6379
+      --save 60 1
+      --loglevel notice
+      --maxmemory 256mb
+      --maxmemory-policy noeviction
+    volumes:
+      - master-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-p", "6379", "ping"]
+      interval: 3s
+      timeout: 2s
+      retries: 10
+      start_period: 5s
+
+  # ── Read Replica 1 ────────────────────────────────────────────────────────
+  replica1:
+    image: redis:7-bookworm
+    ports:
+      - "6380:6379"
+    command: >
+      redis-server
+      --port 6379
+      --replicaof master 6379
+      --replica-read-only yes
+      --loglevel notice
+      --maxmemory 256mb
+      --maxmemory-policy noeviction
+    depends_on:
+      master:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "redis-cli", "-p", "6379", "ping"]
+      interval: 3s
+      timeout: 2s
+      retries: 10
+      start_period: 5s
+
+  # ── Read Replica 2 ────────────────────────────────────────────────────────
+  replica2:
+    image: redis:7-bookworm
+    ports:
+      - "6381:6379"
+    command: >
+      redis-server
+      --port 6379
+      --replicaof master 6379
+      --replica-read-only yes
+      --loglevel notice
+      --maxmemory 256mb
+      --maxmemory-policy noeviction
+    depends_on:
+      master:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "redis-cli", "-p", "6379", "ping"]
+      interval: 3s
+      timeout: 2s
+      retries: 10
+      start_period: 5s
+
+  # ── SedanDelivery Bolt Server ──────────────────────────────────────────────
+  sedandelivery-bolt:
+    build:
+      context: .
+      dockerfile: Dockerfile.bolt
+    ports:
+      - "7687:7687"
+      - "7688:7688"
+    environment:
+      - RUST_LOG=info
+      - GQL_REDIS_URL=redis://master:6379
+      - GQL_REDIS_REPLICA_URL=redis://replica1:6379,redis://replica2:6379
+      - BOLT_IDLE_TIMEOUT_SECS=3600
+      - BOLT_MAX_CONNECTIONS=1024
+    depends_on:
+      master:
+        condition: service_healthy
+      replica1:
+        condition: service_healthy
+      replica2:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:7688/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 15s
+
+volumes:
+  master-data:

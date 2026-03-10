@@ -10,9 +10,19 @@ param environmentName string
 @description('Location for all resources')
 param location string = resourceGroup().location
 
-@description('Persistence backend: valkey-volume (Azure Files mount) or azure-cache (Azure Cache for Redis)')
-@allowed(['valkey-volume', 'azure-cache'])
+@description('Persistence backend: valkey-volume (Azure Files mount), azure-cache (Azure Cache for Redis), or azure-cache-cluster (Azure Cache with clustering)')
+@allowed(['valkey-volume', 'azure-cache', 'azure-cache-cluster'])
 param persistenceBackend string = 'valkey-volume'
+
+@description('Number of shards for Azure Cache cluster mode (only when persistenceBackend == azure-cache-cluster)')
+@minValue(1)
+@maxValue(10)
+param clusterShardCount int = 3
+
+@description('Read replicas per shard (0 = no replicas). Applies to azure-cache and azure-cache-cluster modes.')
+@minValue(0)
+@maxValue(3)
+param replicasPerShard int = 0
 
 @description('Allowed source CIDR for database ports. Default is open for dev; restrict in production.')
 param allowedDatabaseSourceCidr string = '*'
@@ -31,6 +41,8 @@ var nsgName = '${prefix}-${environmentName}-cae-nsg'
 var storageAccountName = take('sd2${take(replace(environmentName, '-', ''), 7)}${uniqueString(environmentName)}', 24)
 // Azure Cache for Redis name: max 63 chars
 var redisCacheName = take('sd2-${environmentName}-cache', 63)
+// Whether any Azure Cache mode is selected
+var deployAzureCache = persistenceBackend == 'azure-cache' || persistenceBackend == 'azure-cache-cluster'
 
 // ── Log Analytics ──────────────────────────────────────────────────────────────
 resource logAnalytics 'Microsoft.OperationalInsights/workspaces@2022-10-01' = {
@@ -211,8 +223,10 @@ resource caeStorage 'Microsoft.App/managedEnvironments/storages@2024-03-01' = {
   dependsOn: [valkeyFileShare]
 }
 
-// ── Azure Cache for Redis (only when persistenceBackend == 'azure-cache') ──────
-resource redisCache 'Microsoft.Cache/redis@2023-08-01' = if (persistenceBackend == 'azure-cache') {
+// ── Azure Cache for Redis (when persistenceBackend is azure-cache or azure-cache-cluster) ──
+// Standard SKU: standalone with optional replicas (via Premium upgrade).
+// Cluster SKU: Premium with sharding and optional per-shard replicas.
+resource redisCacheStandard 'Microsoft.Cache/redis@2023-08-01' = if (deployAzureCache && persistenceBackend != 'azure-cache-cluster' && replicasPerShard == 0) {
   name: redisCacheName
   location: location
   properties: {
@@ -226,6 +240,40 @@ resource redisCache 'Microsoft.Cache/redis@2023-08-01' = if (persistenceBackend 
   }
 }
 
+resource redisCacheWithReplicas 'Microsoft.Cache/redis@2023-08-01' = if (deployAzureCache && persistenceBackend != 'azure-cache-cluster' && replicasPerShard > 0) {
+  name: redisCacheName
+  location: location
+  properties: {
+    sku: {
+      name: 'Premium'
+      family: 'P'
+      capacity: 1
+    }
+    enableNonSslPort: false
+    minimumTlsVersion: '1.2'
+    replicasPerMaster: replicasPerShard
+  }
+}
+
+resource redisCacheCluster 'Microsoft.Cache/redis@2023-08-01' = if (deployAzureCache && persistenceBackend == 'azure-cache-cluster') {
+  name: redisCacheName
+  location: location
+  properties: {
+    sku: {
+      name: 'Premium'
+      family: 'P'
+      capacity: 1
+    }
+    enableNonSslPort: false
+    minimumTlsVersion: '1.2'
+    shardCount: clusterShardCount
+    replicasPerMaster: replicasPerShard > 0 ? replicasPerShard : 1
+    redisConfiguration: {
+      'cluster-enabled': 'true'
+    }
+  }
+}
+
 // ── Outputs ───────────────────────────────────────────────────────────────────
 output acrLoginServer string = acr.properties.loginServer
 output acrName string = acr.name
@@ -236,4 +284,5 @@ output storageAccountName string = storageAccount.name
 output fileShareName string = 'valkey-data'
 // Azure Cache resource name only — keys are retrieved at deploy time via
 // `az redis list-keys` so they never appear in ARM deployment history (Issue #58).
-output azureCacheName string = persistenceBackend == 'azure-cache' ? redisCache.name : ''
+// Only one of the three conditional Redis resources will be deployed.
+output azureCacheName string = (deployAzureCache && persistenceBackend == 'azure-cache-cluster') ? redisCacheCluster.name : (deployAzureCache && replicasPerShard > 0) ? redisCacheWithReplicas.name : deployAzureCache ? redisCacheStandard.name : ''

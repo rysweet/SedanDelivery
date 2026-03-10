@@ -1,0 +1,53 @@
+# docker-compose.yml — Standalone Valkey for local development
+#
+# Usage:
+#   docker compose up -d
+#   docker compose down -v
+#
+# Connects sedandelivery-bolt to a single Valkey 8 instance.
+# No external dependencies beyond Docker.
+
+services:
+  valkey:
+    image: valkey/valkey:8-bookworm
+    ports:
+      - "6379:6379"
+    volumes:
+      - valkey-data:/data
+    command: >
+      valkey-server
+      --save 60 1
+      --loglevel notice
+      --maxmemory 256mb
+      --maxmemory-policy noeviction
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
+  sedandelivery-bolt:
+    build:
+      context: .
+      dockerfile: Dockerfile.bolt
+    ports:
+      - "7687:7687"
+      - "7688:7688"
+    environment:
+      - RUST_LOG=info
+      - GQL_REDIS_URL=redis://valkey:6379
+      - BOLT_IDLE_TIMEOUT_SECS=3600
+      - BOLT_MAX_CONNECTIONS=1024
+    depends_on:
+      valkey:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:7688/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 15s
+
+volumes:
+  valkey-data:
