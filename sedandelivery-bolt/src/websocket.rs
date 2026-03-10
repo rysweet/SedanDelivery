@@ -19,6 +19,9 @@ use futures_util::stream::Stream;
 use futures_util::Sink;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::net::TcpStream;
+use tokio_tungstenite::accept_hdr_async;
+use tokio_tungstenite::tungstenite::handshake::server::{ErrorResponse, Request, Response};
+use tokio_tungstenite::tungstenite::http::StatusCode;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::WebSocketStream;
 
@@ -43,27 +46,122 @@ fn ws_max_write_buf() -> usize {
     })
 }
 
+#[derive(Clone, Debug)]
+enum OriginPolicy {
+    RejectPresentedOrigins,
+    AllowAll,
+    Allowlist(Vec<Box<str>>),
+}
+
+impl OriginPolicy {
+    fn from_env() -> Self {
+        match std::env::var("BOLT_WS_ALLOWED_ORIGINS") {
+            Ok(value) => {
+                let trimmed = value.trim();
+                if trimmed == "*" {
+                    Self::AllowAll
+                } else {
+                    let allowlist = trimmed
+                        .split(',')
+                        .map(str::trim)
+                        .filter(|origin| !origin.is_empty())
+                        .map(Box::<str>::from)
+                        .collect::<Vec<_>>();
+                    if allowlist.is_empty() {
+                        tracing::warn!(
+                            "BOLT_WS_ALLOWED_ORIGINS is empty; rejecting WebSocket upgrades with Origin headers"
+                        );
+                        Self::RejectPresentedOrigins
+                    } else {
+                        Self::Allowlist(allowlist)
+                    }
+                }
+            }
+            Err(_) => Self::RejectPresentedOrigins,
+        }
+    }
+
+    fn allows(&self, origin: &str) -> bool {
+        match self {
+            Self::RejectPresentedOrigins => false,
+            Self::AllowAll => true,
+            Self::Allowlist(allowlist) => {
+                allowlist.iter().any(|allowed| allowed.as_ref() == origin)
+            }
+        }
+    }
+}
+
+fn origin_policy_from_env() -> &'static OriginPolicy {
+    static POLICY: OnceLock<OriginPolicy> = OnceLock::new();
+    POLICY.get_or_init(OriginPolicy::from_env)
+}
+
+fn forbidden_origin(message: &str) -> ErrorResponse {
+    Response::builder()
+        .status(StatusCode::FORBIDDEN)
+        .body(Some(message.to_string()))
+        .expect("forbidden websocket response should be buildable")
+}
+
+fn validate_origin(request: &Request, policy: &OriginPolicy) -> Result<(), ErrorResponse> {
+    let Some(origin) = request.headers().get("Origin") else {
+        return match policy {
+            OriginPolicy::RejectPresentedOrigins | OriginPolicy::AllowAll => Ok(()),
+            OriginPolicy::Allowlist(_) => Err(forbidden_origin(
+                "WebSocket Origin header is required when BOLT_WS_ALLOWED_ORIGINS is configured",
+            )),
+        };
+    };
+
+    let origin = origin
+        .to_str()
+        .map_err(|_| forbidden_origin("WebSocket Origin must be valid UTF-8"))?;
+
+    if policy.allows(origin) {
+        Ok(())
+    } else {
+        Err(forbidden_origin(
+            "WebSocket Origin is not allowed; configure BOLT_WS_ALLOWED_ORIGINS",
+        ))
+    }
+}
+
 /// Peek at the first four bytes of a TCP stream to determine if the client is
 /// sending a raw Bolt handshake (first byte 0x60) or an HTTP WebSocket
 /// upgrade request (starts with "GET ").
 pub async fn is_websocket_upgrade(stream: &TcpStream) -> io::Result<bool> {
     let mut buf = [0u8; 4];
-    // peek() reads without consuming
-    let n = stream.peek(&mut buf).await?;
-    if n < 4 {
-        // Not enough data for "GET "; check single byte for backwards compat
-        // but only match the full prefix when available.
-        return Ok(false);
+    loop {
+        let n = stream.peek(&mut buf).await?;
+        if n == 0 {
+            return Ok(false);
+        }
+        if n >= 4 {
+            return Ok(&buf[..4] == b"GET ");
+        }
+        if !b"GET ".starts_with(&buf[..n]) {
+            return Ok(false);
+        }
+        stream.readable().await?;
     }
-    // Bolt magic preamble starts with 0x60; HTTP starts with "GET "
-    Ok(&buf[..4] == b"GET ")
 }
 
 /// Perform the WebSocket upgrade handshake and return the WebSocket stream.
 pub async fn accept(stream: TcpStream) -> Result<WebSocketStream<TcpStream>, WsError> {
-    let ws_stream = tokio_tungstenite::accept_async(stream)
-        .await
-        .map_err(WsError::Handshake)?;
+    accept_with_policy(stream, origin_policy_from_env().clone()).await
+}
+
+async fn accept_with_policy(
+    stream: TcpStream,
+    policy: OriginPolicy,
+) -> Result<WebSocketStream<TcpStream>, WsError> {
+    let ws_stream = accept_hdr_async(stream, move |request: &Request, response: Response| {
+        validate_origin(request, &policy)?;
+        Ok(response)
+    })
+    .await
+    .map_err(WsError::Handshake)?;
     Ok(ws_stream)
 }
 
@@ -239,6 +337,7 @@ impl AsyncWrite for WsStreamAdapter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::io::AsyncWriteExt;
     use tokio::net::TcpListener;
 
     /// Helper: creates a connected TCP pair (client, server) for testing.
@@ -248,6 +347,22 @@ mod tests {
         let client = TcpStream::connect(addr).await.unwrap();
         let (server, _) = listener.accept().await.unwrap();
         (client, server)
+    }
+
+    fn websocket_upgrade_request(origin: Option<&str>) -> String {
+        let origin_header = origin
+            .map(|origin| format!("Origin: {origin}\r\n"))
+            .unwrap_or_default();
+        format!(
+            "GET /bolt HTTP/1.1\r\n\
+             Host: localhost\r\n\
+             Upgrade: websocket\r\n\
+             Connection: Upgrade\r\n\
+             Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\
+             Sec-WebSocket-Version: 13\r\n\
+             {origin_header}\
+             \r\n"
+        )
     }
 
     #[tokio::test]
@@ -297,6 +412,22 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn is_websocket_upgrade_waits_for_fragmented_http_prefix() {
+        let (mut client, server) = tcp_pair().await;
+        let detect = tokio::spawn(async move { is_websocket_upgrade(&server).await.unwrap() });
+
+        client.write_all(b"G").await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        client.write_all(b"ET /").await.unwrap();
+
+        let result = detect.await.unwrap();
+        assert!(
+            result,
+            "fragmented GET prefix should still be detected as websocket"
+        );
+    }
+
     #[test]
     fn ws_error_display_format() {
         let err = WsError::Handshake(tokio_tungstenite::tungstenite::Error::ConnectionClosed);
@@ -309,5 +440,92 @@ mod tests {
         let err = WsError::Handshake(tokio_tungstenite::tungstenite::Error::ConnectionClosed);
         let dbg = format!("{:?}", err);
         assert!(dbg.contains("Handshake"));
+    }
+
+    #[tokio::test]
+    async fn accept_rejects_disallowed_origin() {
+        let (mut client, server) = tcp_pair().await;
+        let accept_task = tokio::spawn(async move {
+            accept_with_policy(
+                server,
+                OriginPolicy::Allowlist(vec![Box::<str>::from("https://app.example")]),
+            )
+            .await
+        });
+
+        client
+            .write_all(websocket_upgrade_request(Some("https://evil.example")).as_bytes())
+            .await
+            .unwrap();
+
+        let result = accept_task.await.unwrap();
+        assert!(
+            result.is_err(),
+            "websocket upgrade should reject disallowed Origin values"
+        );
+    }
+
+    #[tokio::test]
+    async fn accept_allows_configured_origin() {
+        let (mut client, server) = tcp_pair().await;
+        let accept_task = tokio::spawn(async move {
+            accept_with_policy(
+                server,
+                OriginPolicy::Allowlist(vec![Box::<str>::from("https://app.example")]),
+            )
+            .await
+        });
+
+        client
+            .write_all(websocket_upgrade_request(Some("https://app.example")).as_bytes())
+            .await
+            .unwrap();
+
+        let result = accept_task.await.unwrap();
+        assert!(
+            result.is_ok(),
+            "websocket upgrade should accept allowed Origin values"
+        );
+    }
+
+    #[tokio::test]
+    async fn accept_rejects_missing_origin_when_allowlist_configured() {
+        let (mut client, server) = tcp_pair().await;
+        let accept_task = tokio::spawn(async move {
+            accept_with_policy(
+                server,
+                OriginPolicy::Allowlist(vec![Box::<str>::from("https://app.example")]),
+            )
+            .await
+        });
+
+        client
+            .write_all(websocket_upgrade_request(None).as_bytes())
+            .await
+            .unwrap();
+
+        let result = accept_task.await.unwrap();
+        assert!(
+            result.is_err(),
+            "websocket upgrade should reject missing Origin when an allowlist is configured"
+        );
+    }
+
+    #[tokio::test]
+    async fn accept_allows_missing_origin_when_policy_is_wildcard() {
+        let (mut client, server) = tcp_pair().await;
+        let accept_task =
+            tokio::spawn(async move { accept_with_policy(server, OriginPolicy::AllowAll).await });
+
+        client
+            .write_all(websocket_upgrade_request(None).as_bytes())
+            .await
+            .unwrap();
+
+        let result = accept_task.await.unwrap();
+        assert!(
+            result.is_ok(),
+            "wildcard origin policy should allow websocket clients without an Origin header"
+        );
     }
 }
