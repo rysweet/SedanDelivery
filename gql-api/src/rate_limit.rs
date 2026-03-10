@@ -15,6 +15,8 @@ use governor::clock::DefaultClock;
 use governor::state::keyed::DashMapStateStore;
 use governor::{Quota, RateLimiter};
 
+use crate::tls::TlsConnectInfo;
+
 pub type KeyedRateLimiter = RateLimiter<IpAddr, DashMapStateStore<IpAddr>, DefaultClock>;
 
 /// Read the configured rate limit from the environment.
@@ -59,15 +61,24 @@ pub async fn rate_limit_middleware(
 
     // Extract client IP from ConnectInfo. If absent, rate limiting cannot function
     // correctly so we fail with 500 rather than silently allowing all traffic through.
-    let ip = match request
+    let ip = request
         .extensions()
         .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
-    {
-        Some(ci) => ci.0.ip(),
-        None => {
-            tracing::error!("ConnectInfo missing — cannot identify client for rate limiting");
-            return (StatusCode::INTERNAL_SERVER_ERROR, "server misconfiguration: unable to identify client").into_response();
-        }
+        .map(|ci| ci.0.ip())
+        .or_else(|| {
+            request
+                .extensions()
+                .get::<axum::extract::ConnectInfo<TlsConnectInfo>>()
+                .map(|ci| (ci.0).0.ip())
+        });
+
+    let Some(ip) = ip else {
+        tracing::error!("ConnectInfo missing — cannot identify client for rate limiting");
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "server misconfiguration: unable to identify client",
+        )
+            .into_response();
     };
 
     match limiter.check_key(&ip) {
@@ -79,6 +90,7 @@ pub async fn rate_limit_middleware(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tls::TlsConnectInfo;
     use axum::routing::get;
     use axum::{middleware, Router};
     use http_body_util::BodyExt;
@@ -97,12 +109,18 @@ mod tests {
     /// Build a request with ConnectInfo set (required by the middleware).
     fn req_with_connect_info(uri: &str) -> Request<Body> {
         let addr: std::net::SocketAddr = "127.0.0.1:12345".parse().unwrap();
-        let mut req = Request::builder()
-            .uri(uri)
-            .body(Body::empty())
-            .unwrap();
+        let mut req = Request::builder().uri(uri).body(Body::empty()).unwrap();
         req.extensions_mut()
             .insert(axum::extract::ConnectInfo(addr));
+        req
+    }
+
+    /// Build a request with TLS-mode ConnectInfo set.
+    fn req_with_tls_connect_info(uri: &str) -> Request<Body> {
+        let addr: std::net::SocketAddr = "127.0.0.1:12345".parse().unwrap();
+        let mut req = Request::builder().uri(uri).body(Body::empty()).unwrap();
+        req.extensions_mut()
+            .insert(axum::extract::ConnectInfo(TlsConnectInfo(addr)));
         req
     }
 
@@ -159,5 +177,23 @@ mod tests {
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    #[tokio::test]
+    async fn tls_connect_info_requests_are_rate_limited_instead_of_500ing() {
+        let app = test_app(1);
+
+        let resp = app
+            .clone()
+            .oneshot(req_with_tls_connect_info("/graphql"))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let resp = app
+            .oneshot(req_with_tls_connect_info("/graphql"))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
     }
 }
