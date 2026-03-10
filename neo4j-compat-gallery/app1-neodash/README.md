@@ -12,21 +12,25 @@ it to SedanDelivery's Bolt v4.4 server to visualize the MITRE ATT&CK dataset.
 ## Quick Start
 
 ```bash
-# 1. Start Neodash
+# 1. Export Bolt credentials for the local helper path
+export BOLT_USERNAME=neo4j
+export BOLT_PASSWORD=change-me
+
+# 2. Start Neodash
 ./run.sh
 
-# 2. Open in browser
+# 3. Open in browser
 open http://localhost:5005
 
-# 3. Connect to SedanDelivery
+# 4. Connect to SedanDelivery
 #    In the Neodash connection screen:
 #      Protocol: bolt
 #      Host:     localhost
 #      Port:     7687
 #      Username: neo4j
-#      Password: neo4j
+#      Password: change-me
 
-# 4. Import the pre-built dashboard
+# 5. Import the pre-built dashboard
 #    Click the settings/load icon > Load Dashboard > paste dashboard.json contents
 ```
 
@@ -36,6 +40,9 @@ If `docker compose` is not available, the `run.sh` script uses `docker run`
 directly. You can also run it manually:
 
 ```bash
+export BOLT_USERNAME=neo4j
+export BOLT_PASSWORD=change-me
+
 docker run -d \
   --name neodash-sedandelivery \
   -p 5005:5005 \
@@ -45,8 +52,8 @@ docker run -d \
   -e standaloneHost="172.17.0.1" \
   -e standalonePort="7687" \
   -e standaloneDatabase="" \
-  -e standaloneUsername="neo4j" \
-  -e standalonePassword="neo4j" \
+  -e standaloneUsername="${BOLT_USERNAME}" \
+  -e standalonePassword="${BOLT_PASSWORD}" \
   --restart unless-stopped \
   neo4jlabs/neodash:latest
 ```
@@ -56,8 +63,14 @@ On macOS or WSL, replace `172.17.0.1` with `host.docker.internal`.
 ## Alternative: Docker Compose
 
 ```bash
+export BOLT_USERNAME=neo4j
+export BOLT_PASSWORD=change-me
 docker compose up -d
 ```
+
+Both `./run.sh` and `docker compose up -d` now fail closed when `BOLT_PASSWORD`
+is missing so the standalone Neodash path does not silently rely on a trivial
+default secret.
 
 ## Files
 
@@ -123,6 +136,7 @@ docker compose down
 - Verify Bolt server is running: `nc -z localhost 7687`
 - Check container can reach host: `docker exec neodash-sedandelivery wget -qO- http://172.17.0.1:7687 || echo "unreachable"`
 - On Linux, ensure `--add-host=host.docker.internal:host-gateway` is set
+- If your Bolt server enforces auth, confirm the credentials entered in Neodash match it
 
 **Dashboard shows empty cards**
 - Verify the MITRE ATT&CK data is loaded: connect via `cypher-shell` or the Bolt
@@ -139,10 +153,12 @@ docker compose down
 | Protocol   | bolt            |
 | Host       | localhost       |
 | Port       | 7687            |
-| Username   | neo4j           |
-| Password   | neo4j           |
-| Auth       | None (any creds work) |
+| Username   | `BOLT_USERNAME` (default `neo4j`) |
+| Password   | `BOLT_PASSWORD` |
+| Auth       | Credentials supplied by the helper path |
 
-SedanDelivery's Bolt server accepts any username/password — there is no
-authentication. Neodash requires these fields to be filled, so use the
-placeholder values above.
+The standalone helper paths in this directory now require `BOLT_PASSWORD` before
+starting Neodash so they do not silently rely on a trivial default secret. That
+requirement is enforced by `./run.sh` and `docker compose up -d`; it does not by
+itself change how the Bolt server authenticates. Enter the same configured
+credentials into the Neodash connection UI.

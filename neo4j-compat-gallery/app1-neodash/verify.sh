@@ -39,7 +39,7 @@ if docker ps --format '{{.Names}}' 2>/dev/null | grep -q "^${CONTAINER_NAME}$"; 
     pass "Container '$CONTAINER_NAME' is $STATUS"
 else
     fail "Container '$CONTAINER_NAME' is not running"
-    echo "       Start it with: ./run.sh"
+    echo "       Start it with: export BOLT_PASSWORD=change-me && ./run.sh"
 fi
 
 # ── Check 2: Neodash HTTP endpoint ───────────────────────────────────────────

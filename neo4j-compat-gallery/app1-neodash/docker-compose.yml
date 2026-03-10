@@ -28,8 +28,8 @@ services:
       standaloneHost: "172.17.0.1"
       standalonePort: "7687"
       standaloneDatabase: ""
-      standaloneUsername: "neo4j"
-      standalonePassword: "${BOLT_PASSWORD:-neo4j}"
+      standaloneUsername: "${BOLT_USERNAME:-neo4j}"
+      standalonePassword: "${BOLT_PASSWORD:?Set BOLT_PASSWORD for neo4j-compat-gallery/app1-neodash/docker-compose.yml}"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     restart: unless-stopped
