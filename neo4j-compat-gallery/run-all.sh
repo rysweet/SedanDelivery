@@ -4,7 +4,7 @@
 # Prerequisites:
 #   - SedanDelivery Bolt server built: cargo build --release -p sedandelivery-bolt
 #   - Python 3.11+ with neo4j driver: pip install neo4j flask requests
-#   - Node.js 18+ with npx available
+#   - Docker available if you want to launch Neodash from this script
 #
 # Usage: ./run-all.sh [--stop]
 set -euo pipefail
@@ -13,6 +13,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 BOLT_BIN="$REPO_ROOT/target/release/sedandelivery-bolt"
 PID_DIR="$SCRIPT_DIR/.pids"
+BOLT_URI="${BOLT_URI:-bolt://localhost:7687}"
+BOLT_USERNAME="${BOLT_USERNAME:-neo4j}"
+BOLT_PASSWORD="${BOLT_PASSWORD:-}"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -40,11 +43,24 @@ fi
 
 mkdir -p "$PID_DIR"
 
+if [[ -z "$BOLT_PASSWORD" ]]; then
+    echo -e "${RED}BOLT_PASSWORD is required for ./neo4j-compat-gallery/run-all.sh${NC}"
+    echo "Export BOLT_PASSWORD (and optionally BOLT_USERNAME) before starting the full gallery."
+    echo "Use the per-app scripts directly only if you intentionally want a no-auth local demo."
+    exit 1
+fi
+
 echo -e "${CYAN}╔══════════════════════════════════════════════════════════╗${NC}"
 echo -e "${CYAN}║     Neo4j Compatibility Gallery — SedanDelivery         ║${NC}"
 echo -e "${CYAN}║     Validating Bolt v4.4 protocol with 4 OSS apps       ║${NC}"
 echo -e "${CYAN}╚══════════════════════════════════════════════════════════╝${NC}"
 echo ""
+echo -e "${GREEN}Bolt auth enabled${NC} for user ${BOLT_USERNAME}"
+echo ""
+
+export BOLT_URI
+export BOLT_USERNAME
+export BOLT_PASSWORD
 
 # ── 1. Start SedanDelivery Bolt server ───────────────────────────────────
 echo -e "${BLUE}[1/6]${NC} Starting SedanDelivery Bolt server..."
@@ -81,8 +97,8 @@ if command -v docker &>/dev/null; then
         -e standaloneProtocol=bolt \
         -e standaloneHost=172.17.0.1 \
         -e standalonePort=7687 \
-        -e standaloneUsername="" \
-        -e standalonePassword="" \
+        -e standaloneUsername="${BOLT_USERNAME}" \
+        -e standalonePassword="${BOLT_PASSWORD}" \
         neo4jlabs/neodash:latest >/dev/null 2>&1 && \
     echo -e "  ${GREEN}Neodash running at http://localhost:5005${NC}" || \
     echo -e "  ${YELLOW}Neodash Docker failed — run manually: docker run -p 5005:5005 neo4jlabs/neodash:latest${NC}"
@@ -92,13 +108,15 @@ fi
 
 # ── 4. Start App 2: neovis.js ───────────────────────────────────────────
 echo -e "${BLUE}[4/6]${NC} Starting neovis.js visualization (port 8080)..."
-if command -v npx &>/dev/null; then
-    (cd "$SCRIPT_DIR/app2-neovis" && npx -y serve -l 8080 -s > /tmp/neovis-server.log 2>&1 &)
+if command -v python3 &>/dev/null; then
+    (cd "$SCRIPT_DIR/app2-neovis" && \
+        python3 -m pip install -q neo4j 2>/dev/null && \
+        PORT=8080 nohup python3 server.py > /tmp/neovis-server.log 2>&1 &)
     echo $! > "$PID_DIR/neovis.pid"
     sleep 1
     echo -e "  ${GREEN}neovis.js running at http://localhost:8080${NC}"
 else
-    echo -e "  ${YELLOW}npx not available — install Node.js. See app2-neovis/README.md${NC}"
+    echo -e "  ${YELLOW}python3 not available — install Python 3. See app2-neovis/README.md${NC}"
 fi
 
 # ── 5. Start App 3: GraphKer CVE Explorer ────────────────────────────────
@@ -106,7 +124,7 @@ echo -e "${BLUE}[5/6]${NC} Starting GraphKer CVE Explorer (port 5001)..."
 (cd "$SCRIPT_DIR/app3-graphker" && \
     python3 -m pip install -q neo4j flask requests 2>/dev/null && \
     python3 sample_cves.py 2>&1 | tail -1 && \
-    FLASK_ENV=development nohup python3 app.py > /tmp/graphker.log 2>&1 &)
+    FLASK_ENV=development PORT=5001 nohup python3 app.py > /tmp/graphker.log 2>&1 &)
 echo $! > "$PID_DIR/graphker.pid"
 sleep 2
 echo -e "  ${GREEN}GraphKer running at http://localhost:5001${NC}"
@@ -116,7 +134,7 @@ echo -e "${BLUE}[6/6]${NC} Starting Network Security Analyzer (port 5002)..."
 (cd "$SCRIPT_DIR/app4-network-security" && \
     python3 -m pip install -q neo4j flask 2>/dev/null && \
     python3 network_data.py 2>&1 | tail -1 && \
-    FLASK_ENV=development nohup python3 app.py > /tmp/network-security.log 2>&1 &)
+    FLASK_ENV=development PORT=5002 nohup python3 app.py > /tmp/network-security.log 2>&1 &)
 echo $! > "$PID_DIR/network-security.pid"
 sleep 2
 echo -e "  ${GREEN}Network Security Analyzer running at http://localhost:5002${NC}"

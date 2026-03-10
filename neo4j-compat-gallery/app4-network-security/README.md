@@ -37,6 +37,8 @@ A Python Flask application that models an enterprise network as a graph and perf
 ## Running
 
 ```bash
+export BOLT_USERNAME=neo4j
+export BOLT_PASSWORD=change-me   # optional; omit for intentional no-auth runs
 chmod +x run.sh
 ./run.sh
 ```
@@ -59,8 +61,16 @@ templates/
 
 ## Connection
 
-Uses the neo4j Python driver with no authentication:
+Uses the neo4j Python driver with env-driven authentication:
 
 ```python
-driver = GraphDatabase.driver("bolt://localhost:7687", auth=None)
+import os
+from neo4j import GraphDatabase
+
+password = os.environ.get("BOLT_PASSWORD", "")
+auth = None if password == "" else (os.environ.get("BOLT_USERNAME", "neo4j"), password)
+driver = GraphDatabase.driver("bolt://localhost:7687", auth=auth)
 ```
+
+If `BOLT_PASSWORD` is unset, the app intentionally falls back to `auth=None`
+for local demos against a no-auth Bolt server.

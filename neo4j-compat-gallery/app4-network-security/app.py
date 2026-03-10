@@ -23,7 +23,23 @@ from analyzer import (
 app = Flask(__name__)
 
 BOLT_URI = os.environ.get("BOLT_URI", "bolt://localhost:7687")
-driver = GraphDatabase.driver(BOLT_URI, auth=None)
+
+
+def resolve_bolt_auth(default_username: str = "neo4j") -> tuple[str, str] | None:
+    password = os.environ.get("BOLT_PASSWORD", "")
+    if password == "":
+        return None
+
+    username = os.environ.get("BOLT_USERNAME", default_username) or default_username
+    return (username, password)
+
+
+def describe_bolt_auth(auth: tuple[str, str] | None) -> str:
+    if auth is None:
+        return "disabled (BOLT_PASSWORD unset)"
+    return f"enabled for user '{auth[0]}'"
+
+driver = GraphDatabase.driver(BOLT_URI, auth=resolve_bolt_auth())
 
 
 def get_session():
@@ -134,9 +150,12 @@ def api_attack_paths():
 
 
 if __name__ == '__main__':
+    auth = resolve_bolt_auth()
+    port = int(os.environ.get("PORT", "5002"))
     print("=" * 60)
     print("  Network Security Graph Analyzer")
     print("  Connecting to SedanDelivery Bolt: " + BOLT_URI)
+    print("  Bolt auth: " + describe_bolt_auth(auth))
     print("=" * 60)
 
     # Load data on startup
@@ -145,6 +164,6 @@ if __name__ == '__main__':
         summary = load_network_data(session)
     print(f"[+] Loaded: {summary}")
 
-    print("\n[*] Starting Flask on http://localhost:5002")
+    print(f"\n[*] Starting Flask on http://localhost:{port}")
     print("=" * 60)
-    app.run(host='0.0.0.0', port=5002, debug=False)
+    app.run(host='0.0.0.0', port=port, debug=False)

@@ -43,6 +43,10 @@ The offline sample includes well-known critical vulnerabilities:
 ## Quick Start
 
 ```bash
+# Optional: enable Bolt auth
+export BOLT_USERNAME=neo4j
+export BOLT_PASSWORD=change-me
+
 # Make run script executable
 chmod +x run.sh
 
@@ -88,6 +92,8 @@ python3 app.py
 | Environment Variable | Default | Description |
 |---------------------|---------|-------------|
 | `BOLT_URI` | `bolt://localhost:7687` | SedanDelivery Bolt endpoint |
+| `BOLT_USERNAME` | `neo4j` | Username used when `BOLT_PASSWORD` is set |
+| `BOLT_PASSWORD` | unset | When set, the app and loader use Bolt basic auth |
 | `PORT` | `5001` | Flask web server port |
 
 ## File Structure
@@ -130,11 +136,18 @@ LIMIT 20
 
 ## Neo4j Driver Compatibility
 
-This application demonstrates SedanDelivery's compatibility with the official neo4j Python driver. The connection uses `auth=None` since SedanDelivery's Bolt server does not require authentication:
+This application demonstrates SedanDelivery's compatibility with the official
+neo4j Python driver. The runtime derives auth from environment variables:
 
 ```python
+import os
 from neo4j import GraphDatabase
-driver = GraphDatabase.driver("bolt://localhost:7687", auth=None)
+password = os.environ.get("BOLT_PASSWORD", "")
+auth = None if password == "" else (os.environ.get("BOLT_USERNAME", "neo4j"), password)
+driver = GraphDatabase.driver("bolt://localhost:7687", auth=auth)
 ```
 
-All standard Cypher operations (CREATE, MATCH, MERGE, DETACH DELETE, ORDER BY, LIMIT, aggregation functions) work through the Bolt v4.4 protocol.
+If `BOLT_PASSWORD` is unset or empty, the gallery intentionally falls back to
+`auth=None` for local no-auth demos. All standard Cypher operations (CREATE,
+MATCH, MERGE, DETACH DELETE, ORDER BY, LIMIT, aggregation functions) work
+through the Bolt v4.4 protocol.
