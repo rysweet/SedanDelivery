@@ -17,6 +17,8 @@ SedanDelivery is a Cypher-compatible graph database engine written in Rust. It p
 
 The workspace contains 8 crates. Arrows point from dependent to dependency.
 
+![Crate Map](images/crate-map.svg)
+
 ```mermaid
 graph TD
     gql-core["gql-core<br/><i>Parser, planner, executor, storage trait</i>"]
@@ -47,6 +49,8 @@ graph TD
 
 The REST API is an axum HTTP server on port 3001 (default). It exposes CRUD endpoints for nodes, edges, graphs, Cypher queries, schema inspection, neighbor traversal, and export/import.
 
+![Request Flow -- REST API](images/rest-api-flow.svg)
+
 ```mermaid
 sequenceDiagram
     participant Client
@@ -76,6 +80,8 @@ Middleware stack (applied bottom-up):
 ## Request Flow -- Bolt Protocol
 
 The Bolt server listens on port 7687 (default) and speaks Neo4j Bolt v4.4. Any standard Neo4j driver (Python, .NET, Java, Go, JavaScript, Rust) connects directly.
+
+![Request Flow -- Bolt Protocol](images/bolt-protocol-flow.svg)
 
 ```mermaid
 sequenceDiagram
@@ -118,6 +124,8 @@ Connection lifecycle:
 
 Every Cypher query passes through the same pipeline regardless of entry point (REST API, Bolt, Redis module, or CLI).
 
+![Query Pipeline](images/query-pipeline.svg)
+
 ```mermaid
 flowchart LR
     A["Cypher text"] --> B["Lexer<br/><code>parser::lexer</code>"]
@@ -143,6 +151,8 @@ Key pipeline components:
 ## Storage Layer
 
 All storage access goes through the `GraphStore` trait defined in `gql-core::storage`. This is the core abstraction boundary -- the engine never talks to Redis, Fabric, or memory directly.
+
+![Storage Layer](images/storage-layer.svg)
 
 ```mermaid
 classDiagram
@@ -208,6 +218,8 @@ G:{graph}:in:{node_id}   -- SADD (reverse adjacency)
 ## Deployment Topology
 
 SedanDelivery deploys as 2-4 containers in an Azure Container Apps environment. Each component is independently scalable.
+
+![Deployment Topology](images/deployment-topology.svg)
 
 ```mermaid
 graph TD
