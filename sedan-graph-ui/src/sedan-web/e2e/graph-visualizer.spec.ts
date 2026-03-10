@@ -58,6 +58,12 @@ async function selectGraph(page: import('@playwright/test').Page) {
   await page.waitForTimeout(3000)
 }
 
+async function waitForCypherEditor(page: import('@playwright/test').Page) {
+  const textarea = page.locator('.monaco-editor textarea').first()
+  await expect(textarea).toBeVisible({ timeout: 10000 })
+  return textarea
+}
+
 test.describe('Graph Visualizer E2E', () => {
   test('01 - App loads and renders', async ({ page }) => {
     await page.goto('/')
@@ -151,7 +157,7 @@ test.describe('Graph Visualizer E2E', () => {
     const queryBtn = page.locator('[aria-label*="Query"], [aria-label*="Cypher"], [title*="Query"]').first()
     if (await queryBtn.isVisible()) {
       await queryBtn.click()
-      await page.waitForTimeout(1000)
+      await waitForCypherEditor(page)
     } else {
       // Try clicking buttons that might open the editor
       const buttons = page.locator('button')
@@ -160,7 +166,7 @@ test.describe('Graph Visualizer E2E', () => {
         const ariaLabel = await btn.getAttribute('aria-label').catch(() => '')
         if (ariaLabel && (ariaLabel.includes('Query') || ariaLabel.includes('Terminal') || ariaLabel.includes('Cypher'))) {
           await btn.click()
-          await page.waitForTimeout(1000)
+          await waitForCypherEditor(page)
           break
         }
       }
@@ -170,8 +176,8 @@ test.describe('Graph Visualizer E2E', () => {
 
     // Check if Monaco editor appeared
     const monaco = page.locator('.monaco-editor')
-    if (await monaco.isVisible()) {
-      const textarea = page.locator('.monaco-editor textarea').first()
+    if (await monaco.isVisible({ timeout: 10000 }).catch(() => false)) {
+      const textarea = await waitForCypherEditor(page)
       await textarea.click({ force: true })
       await page.keyboard.press('Control+a')
       await page.keyboard.type('MATCH (w:Warehouse)-[:DELIVERS_TO]->(s:Store) RETURN w.name, s.name', { delay: 15 })

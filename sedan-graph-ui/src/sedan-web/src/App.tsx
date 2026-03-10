@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef, useState } from 'react'
+import { Suspense, lazy, useCallback, useMemo, useRef, useState } from 'react'
 import Graph from 'graphology'
 import { useGraphStore } from './store/graph'
 import { useDeleteNode, useDeleteEdge } from './hooks/useGraphData'
@@ -11,7 +11,6 @@ import { SchemaPanel } from './components/panels/SchemaPanel'
 import { GraphContainer } from './components/graph/GraphContainer'
 import { GraphErrorBoundary } from './components/graph/GraphErrorBoundary'
 import { SearchBar } from './components/search/SearchBar'
-import { CypherEditor } from './components/editor/CypherEditor'
 import { CreateNodeDialog } from './components/dialogs/CreateNodeDialog'
 import { CreateEdgeDialog } from './components/dialogs/CreateEdgeDialog'
 import { ExportDialog } from './components/dialogs/ExportDialog'
@@ -19,6 +18,26 @@ import { ImportDialog } from './components/dialogs/ImportDialog'
 import { Toast } from './components/ui/Toast'
 import type { GraphNode, GraphEdge } from './types/graph'
 import { mergeGraphData, computeLabelCounts } from './utils/graphology'
+
+const LazyCypherEditor = lazy(async () => {
+  const module = await import('./components/editor/CypherEditor')
+  return { default: module.CypherEditor }
+})
+
+function CypherEditorFallback() {
+  return (
+    <div className="flex h-full flex-col bg-surface-DEFAULT">
+      <div className="border-b border-surface-300 bg-surface-50 px-3 py-1.5">
+        <span className="text-xs font-semibold uppercase tracking-wide text-gray-400">
+          Cypher
+        </span>
+      </div>
+      <div className="flex flex-1 items-center justify-center px-4 text-sm text-gray-500">
+        Loading Cypher editor...
+      </div>
+    </div>
+  )
+}
 
 interface DialogState {
   createNode: boolean
@@ -150,7 +169,9 @@ export default function App() {
 
   const bottomSheet =
     queryPanelOpen ? (
-      <CypherEditor />
+      <Suspense fallback={<CypherEditorFallback />}>
+        <LazyCypherEditor />
+      </Suspense>
     ) : schemaPanelOpen ? (
       <SchemaPanel />
     ) : null

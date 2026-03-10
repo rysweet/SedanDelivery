@@ -52,6 +52,12 @@ async function selectGraph(page: import('@playwright/test').Page) {
   await page.waitForTimeout(3000)
 }
 
+async function waitForCypherEditor(page: import('@playwright/test').Page) {
+  const textarea = page.locator('.monaco-editor textarea').first()
+  await expect(textarea).toBeVisible({ timeout: 10000 })
+  return textarea
+}
+
 test.describe('Detailed Flow Tests', () => {
 
   test('17 - Cypher CREATE mutation increases node count', async ({ page }) => {
@@ -65,8 +71,7 @@ test.describe('Detailed Flow Tests', () => {
     const queryBtn = page.locator('[aria-label="Cypher Query Editor"]').first()
     if (await queryBtn.isVisible()) {
       await queryBtn.click()
-      await page.waitForTimeout(1000)
-      const textarea = page.locator('.monaco-editor textarea').first()
+      const textarea = await waitForCypherEditor(page)
       await textarea.click({ force: true })
       await page.keyboard.press('Control+a')
       await page.keyboard.type("CREATE (:Product {name: 'Test Widget'})", { delay: 10 })
@@ -88,11 +93,9 @@ test.describe('Detailed Flow Tests', () => {
     // Open Cypher editor
     const queryBtn = page.locator('[aria-label*="Cypher"], [aria-label*="Query"]').first()
     if (await queryBtn.isVisible()) await queryBtn.click()
-    await page.waitForTimeout(1000)
-
     const monaco = page.locator('.monaco-editor')
-    if (await monaco.isVisible()) {
-      const textarea = page.locator('.monaco-editor textarea').first()
+    if (await monaco.isVisible({ timeout: 10000 }).catch(() => false)) {
+      const textarea = await waitForCypherEditor(page)
       await textarea.click({ force: true })
       await page.keyboard.press('Control+a')
       await page.keyboard.type('THIS IS NOT VALID CYPHER AT ALL', { delay: 10 })
@@ -405,9 +408,7 @@ test.describe('Detailed Flow Tests', () => {
     const queryBtn = page.locator('[aria-label*="Cypher"], [aria-label*="Query"]').first()
     if (await queryBtn.isVisible()) {
       await queryBtn.click()
-      await page.waitForTimeout(1000)
-
-      const textarea = page.locator('.monaco-editor textarea').first()
+      const textarea = await waitForCypherEditor(page)
       await textarea.click({ force: true })
       await page.keyboard.press('Control+a')
       await page.keyboard.type("MATCH (n:Person {name: 'CRUD Test User'}) RETURN n.name, n.age", { delay: 10 })
