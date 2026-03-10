@@ -53,8 +53,7 @@ test.describe('Exhaustive Coverage Tests', () => {
     await selectGraph(page)
 
     // Get initial node count
-    const initialText = await page.getByText('nodes', { exact: false }).first().textContent().catch(() => '0')
-    const initialCount = parseInt(initialText?.match(/(\d+)/)?.[1] ?? '0')
+    await page.getByText('nodes', { exact: false }).first().textContent().catch(() => '0')
 
     // Click Add Node
     const addBtn = page.locator('[aria-label="Add Node (N)"]').first()
@@ -252,7 +251,7 @@ test.describe('Exhaustive Coverage Tests', () => {
     await page.waitForTimeout(2000)
 
     // Tab through toolbar buttons
-    let focusedLabels: string[] = []
+    const focusedLabels: string[] = []
     for (let i = 0; i < 15; i++) {
       await page.keyboard.press('Tab')
       const focused = await page.evaluate(() => {

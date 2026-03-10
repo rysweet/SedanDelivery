@@ -129,7 +129,7 @@ test.describe('Detailed Flow Tests', () => {
       }
     }
 
-    const hasGraph = await page.getByText('e2e-detail').isVisible().catch(() => false)
+    await page.getByText('e2e-detail').isVisible().catch(() => false)
     await page.screenshot({ path: 'e2e/screenshots/19-graph-before-delete.png', fullPage: true })
 
     // Delete via API
@@ -170,7 +170,7 @@ test.describe('Detailed Flow Tests', () => {
     }
 
     // Should find nodes with "seattle" in properties
-    const hasFound = await page.getByText('found', { exact: false }).isVisible().catch(() => false)
+    await page.getByText('found', { exact: false }).isVisible().catch(() => false)
     await page.screenshot({ path: 'e2e/screenshots/20-property-search-seattle.png', fullPage: true })
 
     // Search executed without crash
@@ -398,7 +398,7 @@ test.describe('Detailed Flow Tests', () => {
     await page.waitForTimeout(3000)
 
     // Step 4: Verify node exists (status bar shows 1 node)
-    const hasOneNode = await page.getByText('1 node', { exact: false }).isVisible().catch(() => false)
+    await page.getByText('1 node', { exact: false }).isVisible().catch(() => false)
     await page.screenshot({ path: 'e2e/screenshots/30-crud-node-created.png', fullPage: true })
 
     // Step 5: Query via Cypher editor

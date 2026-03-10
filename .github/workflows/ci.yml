@@ -82,6 +82,34 @@ jobs:
       - name: Check all crates compile
         run: cargo check --workspace
 
+  sedan-web-validation:
+    name: Sedan Web Validation
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: sedan-graph-ui/src/sedan-web
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.1.5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: sedan-graph-ui/src/sedan-web/package-lock.json
+
+      - name: Install sedan-web dependencies
+        run: npm ci
+
+      - name: Lint sedan-web
+        run: npm run lint
+
+      - name: Test sedan-web
+        run: npm run test:run
+
+      - name: Build sedan-web
+        run: npm run build
+
   # ── Tier 3: Full suite — only on push to main (< 30 min) ──────────────────
   full-suite:
     name: Full Test Suite

@@ -55,9 +55,9 @@ export interface NeighborsResponse {
   edges: GraphEdge[]
 }
 
-export interface SchemaResponse extends GraphSchema {}
+export type SchemaResponse = GraphSchema
 
-export interface QueryResponse extends QueryResult {}
+export type QueryResponse = QueryResult
 
 export interface MutateResponse {
   nodesCreated: number
