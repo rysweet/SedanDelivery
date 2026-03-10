@@ -268,8 +268,8 @@ cargo run -p gql-api   # listens on 0.0.0.0:3001
 **100% openCypher TCK compliance — 3903/3903 scenarios.**
 
 ```bash
-bash scripts/validate.sh           # full validation suite (all tiers, ~5 min)
-bash scripts/validate.sh --fast    # Tier 1+2 only (fmt + clippy + 80 integration tests, ~2 min)
+bash scripts/validate.sh           # full validation suite, including sedan-web lint/test/build
+bash scripts/validate.sh --fast    # PR-path validation, including sedan-web + Rust fast tiers
 bash scripts/validate.sh --tck     # include TCK 3903 scenarios (~3 min extra)
 ```
 

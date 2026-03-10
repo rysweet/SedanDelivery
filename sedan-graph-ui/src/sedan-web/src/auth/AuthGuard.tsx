@@ -16,11 +16,11 @@ function LoadingSpinner({ message = 'Signing in...' }: { message?: string }) {
 }
 
 export function AuthGuard({ children }: { children: React.ReactNode }) {
-  // In E2E test mode, skip MSAL entirely — the API client sends X-Test-Auth header
-  if (isTestAuth) return <>{children}</>
-
   const isAuthenticated = useIsAuthenticated()
   const { instance, inProgress } = useMsal()
+
+  // In E2E test mode, skip MSAL sign-in flow — the API client sends X-Test-Auth header
+  if (isTestAuth) return <>{children}</>
 
   if (inProgress !== InteractionStatus.None) {
     return <LoadingSpinner />

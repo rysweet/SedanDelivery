@@ -15,6 +15,7 @@ set -euo pipefail
 FAST=false
 WITH_TCK=false
 WITH_BENCH=false
+SEDAN_WEB_DIR="sedan-graph-ui/src/sedan-web"
 
 for arg in "$@"; do
   case "$arg" in
@@ -41,6 +42,34 @@ pass "clippy"
 step "Tier 1: unit tests (385 tests)"
 cargo test -p gql-core --lib
 pass "unit tests"
+
+step "Tier 1: sedan-web dependencies"
+(
+  cd "$SEDAN_WEB_DIR"
+  npm ci
+)
+pass "sedan-web npm ci"
+
+step "Tier 1: sedan-web lint"
+(
+  cd "$SEDAN_WEB_DIR"
+  npm run lint
+)
+pass "sedan-web lint"
+
+step "Tier 1: sedan-web tests"
+(
+  cd "$SEDAN_WEB_DIR"
+  npm run test:run
+)
+pass "sedan-web tests"
+
+step "Tier 1: sedan-web build"
+(
+  cd "$SEDAN_WEB_DIR"
+  npm run build
+)
+pass "sedan-web build"
 
 # ── Tier 2: integration tests ─────────────────────────────────────────────────
 
