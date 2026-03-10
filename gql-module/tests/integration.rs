@@ -288,8 +288,8 @@ fn test_stats_string_contains_all_fields() {
 // ── §5.3 Persistence model note ───────────────────────────────────────────────
 
 /// Verifies that graph state persists across multiple operations on the same
-/// store instance (in-process lifetime).  RDB/AOF persistence across restarts
-/// is a future feature tracked separately.
+/// store instance (in-process lifetime only). Restart durability is not yet
+/// implemented for the module-backed InMemoryGraphStore.
 #[test]
 fn test_in_process_persistence_across_operations() {
     let store = InMemoryGraphStore::default();
@@ -304,7 +304,7 @@ fn test_in_process_persistence_across_operations() {
     assert_eq!(
         json["c"],
         serde_json::json!(3),
-        "all 3 nodes must persist across calls"
+        "all 3 nodes must persist across calls on the same store instance"
     );
 }
 

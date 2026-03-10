@@ -172,7 +172,7 @@ classDiagram
     class InMemoryGraphStore {
         Arc-based snapshot isolation
         Copy-on-write for transactions
-        Optional WAL durability
+        In-process only (not restart-persistent)
     }
 
     class RedisGraphStore {
@@ -302,7 +302,7 @@ See [Deploy Your Own Instance](DEPLOY) for full setup instructions and cost esti
 
 - **Hand-written parser, not lalrpop.** Cypher's `|` is context-dependent (label disjunction vs. rel-type disjunction vs. list comprehension pipe). A generated parser cannot resolve this without semantic context. See ADR-003.
 
-- **InMemory + WAL, not an embedded database.** The Redis module runs inside the Redis/Valkey process. The `InMemoryGraphStore` keeps graph data in-process with zero serialization overhead. Persistence comes from Redis RDB/AOF, the optional WAL (`GQL_WAL_PATH`), or the Fabric sync sidecar.
+- **InMemory today, not restart-persistent yet.** The Redis module runs inside the Redis/Valkey process. The `InMemoryGraphStore` keeps graph data in-process with zero serialization overhead, but that heap state is not yet serialised via Redis module save/load hooks. Redis RDB/AOF does not currently persist module graph state, and the Fabric changelog sidecar is for external replication rather than local restart recovery.
 
 - **Bolt v4.4 for Neo4j driver compatibility.** v4.4 is the most widely supported version across Neo4j drivers (Python, .NET, Java, Go, JavaScript, Rust). It supports multi-database, bookmarks, explicit transactions, EXPLAIN/PROFILE, and streaming PULL with qid-based multiplexing.
 
