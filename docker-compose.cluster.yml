@@ -2,6 +2,7 @@
 #
 # Usage:
 #   export VALKEY_PASSWORD='change-me-for-local-dev'
+#   export BOLT_PASSWORD='different-secret-if-you-do-not-want-bolt-to-reuse-valkey'  # optional
 #   docker compose -f docker-compose.cluster.yml up -d
 #   docker compose -f docker-compose.cluster.yml down -v
 #
@@ -254,12 +255,24 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.bolt
+    entrypoint:
+      - /bin/sh
+      - -ec
+      - |
+        export BOLT_PASSWORD="${BOLT_PASSWORD:-$VALKEY_PASSWORD}"
+        test -n "$BOLT_PASSWORD" || {
+          echo "BOLT_PASSWORD or VALKEY_PASSWORD is required" >&2
+          exit 1
+        }
+        exec sedandelivery-bolt
     ports:
       - "7687:7687"
       - "7688:7688"
     environment:
       - RUST_LOG=info
+      - VALKEY_PASSWORD=${VALKEY_PASSWORD}
       - GQL_REDIS_CLUSTER_NODES=redis://:${VALKEY_PASSWORD}@redis-node-1:6379,redis://:${VALKEY_PASSWORD}@redis-node-2:6379,redis://:${VALKEY_PASSWORD}@redis-node-3:6379,redis://:${VALKEY_PASSWORD}@redis-node-4:6379,redis://:${VALKEY_PASSWORD}@redis-node-5:6379,redis://:${VALKEY_PASSWORD}@redis-node-6:6379
+      - BOLT_PASSWORD=${BOLT_PASSWORD}
       - BOLT_IDLE_TIMEOUT_SECS=3600
       - BOLT_MAX_CONNECTIONS=1024
     depends_on:

@@ -78,7 +78,7 @@ See [ADR-004](ADR-004-distributed-redis) for the full architecture decision reco
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `BOLT_BIND_ADDR` | `0.0.0.0:7687` | Bolt TCP listen address |
-| `BOLT_PASSWORD` | — | Optional password for Bolt connections |
+| `BOLT_PASSWORD` | — | Optional for direct bolt runs; local Compose profiles default it from `VALKEY_PASSWORD` unless overridden |
 | `BOLT_ENABLED` | `true` | Enable/disable Bolt server in container |
 | `BOLT_MAX_CONNECTIONS` | `1024` | Max concurrent Bolt connections |
 | `BOLT_IDLE_TIMEOUT_SECS` | `3600` | Close idle connections after N seconds |
@@ -193,7 +193,7 @@ Any Neo4j driver that supports Bolt 4.2-4.4 works. See the [Neo4j Driver Manual]
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `BOLT_BIND_ADDR` | `0.0.0.0:7687` | Bolt TCP listen address |
-| `BOLT_PASSWORD` | (none) | Optional password for Bolt auth |
+| `BOLT_PASSWORD` | (none) | Optional for direct bolt runs; local Compose profiles default it from `VALKEY_PASSWORD` unless overridden |
 | `BOLT_ENABLED` | `true` | Enable/disable Bolt server in container |
 
 See [Bolt Protocol Spec](specs/sedandelivery-bolt-spec) for implementation details.
