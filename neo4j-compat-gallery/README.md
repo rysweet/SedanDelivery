@@ -42,6 +42,9 @@ proving drop-in compatibility.
 ### Option A: Run everything locally (recommended for testing)
 
 ```bash
+export BOLT_USERNAME=neo4j
+export BOLT_PASSWORD=change-me
+
 # 1. Build the Bolt server (one time)
 cargo build --release -p sedandelivery-bolt
 
@@ -59,8 +62,14 @@ python3 neo4j-compat-gallery/data/load_data.py --clear
 
 ```bash
 cd neo4j-compat-gallery
+export BOLT_USERNAME=neo4j
+export BOLT_PASSWORD=change-me
 docker compose up -d
 ```
+
+`docker compose` now fails closed when `BOLT_PASSWORD` is missing so the gallery
+does not accidentally start `sedandelivery-bolt` in no-auth mode. `./run-all.sh`
+now follows the same contract for the full local gallery path.
 
 ### Option C: Individual apps
 
@@ -97,11 +106,11 @@ dialog used for a real Neo4j instance. No modifications required.*
 ### App 2: neovis.js — Threat Intelligence Visualization
 **Port: 8080** | [Setup Instructions](app2-neovis/README.md)
 
-A standalone HTML page using the neovis.js library (neo4j-contrib/neovis.js) that
-connects directly to SedanDelivery's Bolt endpoint from the browser.
+A standalone HTML page using neovis.js in the browser plus a tiny Python proxy
+(`server.py`) that connects to SedanDelivery's Bolt endpoint.
 
 **What it demonstrates:**
-- Browser-based JavaScript neo4j-driver connectivity
+- Browser visualization with a Python Bolt proxy that can honor env-driven auth
 - Zero-dependency web visualization (CDN-loaded)
 - Custom Cypher queries with interactive graph rendering
 
@@ -229,14 +238,15 @@ OT subnet shows highest risk (avg CVSS 9.9) with SCADA systems affected.*
 ## Compatibility Verification Results
 
 All four applications connect to SedanDelivery via the standard Neo4j Bolt v4.4
-protocol without any modifications to the application code.
+protocol. The gallery supports both no-auth local demos and auth-enabled runs
+driven by `BOLT_USERNAME`/`BOLT_PASSWORD`.
 
 | Feature | Status | Notes |
 |---------|--------|-------|
 | Bolt v4.4 handshake | PASS | Standard negotiation works |
 | PackStream encoding | PASS | All data types supported |
-| `auth=None` connections | PASS | No-auth mode works |
-| `auth=("neo4j","pass")` | PASS | Basic auth when BOLT_PASSWORD set |
+| `auth=None` connections | PASS | Used intentionally only when `BOLT_PASSWORD` is unset |
+| `auth=("neo4j","pass")` | PASS | Basic auth when `BOLT_PASSWORD` is set |
 | CREATE nodes/edges | PASS | Full property support |
 | MATCH with WHERE | PASS | Pattern matching + filtering |
 | MERGE (upsert) | PASS | ON CREATE SET / ON MATCH SET |

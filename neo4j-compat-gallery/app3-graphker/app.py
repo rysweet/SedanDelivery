@@ -24,9 +24,24 @@ from neo4j import GraphDatabase
 BOLT_URI = os.environ.get("BOLT_URI", "bolt://localhost:7687")
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 
+
+def resolve_bolt_auth(default_username: str = "neo4j") -> tuple[str, str] | None:
+    password = os.environ.get("BOLT_PASSWORD", "")
+    if password == "":
+        return None
+
+    username = os.environ.get("BOLT_USERNAME", default_username) or default_username
+    return (username, password)
+
+
+def describe_bolt_auth(auth: tuple[str, str] | None) -> str:
+    if auth is None:
+        return "disabled (BOLT_PASSWORD unset)"
+    return f"enabled for user '{auth[0]}'"
+
 app = Flask(__name__, static_folder=os.path.join(APP_DIR, "static"))
 
-driver = GraphDatabase.driver(BOLT_URI, auth=None)
+driver = GraphDatabase.driver(BOLT_URI, auth=resolve_bolt_auth())
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -277,6 +292,8 @@ def query_page():
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5001))
+    auth = resolve_bolt_auth()
     print(f"[*] CVE Knowledge Graph Explorer starting on port {port}")
     print(f"[*] Bolt connection: {BOLT_URI}")
+    print(f"[*] Bolt auth: {describe_bolt_auth(auth)}")
     app.run(host="0.0.0.0", port=port, debug=False)

@@ -5,10 +5,24 @@ Usage:
     python3 load_data.py [--uri bolt://localhost:7687] [--clear]
 """
 import argparse
-import sys
+import os
 from pathlib import Path
 
 from neo4j import GraphDatabase
+
+def resolve_bolt_auth(default_username: str = "neo4j") -> tuple[str, str] | None:
+    password = os.environ.get("BOLT_PASSWORD", "")
+    if password == "":
+        return None
+
+    username = os.environ.get("BOLT_USERNAME", default_username) or default_username
+    return (username, password)
+
+
+def describe_bolt_auth(auth: tuple[str, str] | None) -> str:
+    if auth is None:
+        return "disabled (BOLT_PASSWORD unset)"
+    return f"enabled for user '{auth[0]}'"
 
 
 def load_cypher_file(session, filepath: Path) -> dict:
@@ -77,7 +91,9 @@ def main():
     args = parser.parse_args()
 
     print(f"Connecting to {args.uri}...")
-    driver = GraphDatabase.driver(args.uri, auth=None)
+    auth = resolve_bolt_auth()
+    print(f"Auth mode: {describe_bolt_auth(auth)}")
+    driver = GraphDatabase.driver(args.uri, auth=auth)
 
     with driver.session() as session:
         if args.clear:

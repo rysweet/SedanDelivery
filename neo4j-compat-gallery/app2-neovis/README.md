@@ -1,6 +1,8 @@
 # App 2: neovis.js — MITRE ATT&CK Threat Intelligence Dashboard
 
-Interactive graph visualization of the MITRE ATT&CK dataset using [neovis.js](https://github.com/neo4j-contrib/neovis.js) connected to SedanDelivery's Bolt v4.4 server.
+Interactive graph visualization of the MITRE ATT&CK dataset using
+[neovis.js](https://github.com/neo4j-contrib/neovis.js) in the browser and a
+small Python Bolt proxy (`server.py`) behind it.
 
 ## What is neovis.js?
 
@@ -10,13 +12,15 @@ neovis.js combines the [neo4j-javascript-driver](https://github.com/neo4j/neo4j-
 
 - **SedanDelivery Bolt** running on `localhost:7687` (no auth)
 - **MITRE ATT&CK dataset** loaded (86 nodes, 142 relationships)
-- **Node.js** 18+ with npx
+- **Python** 3.11+ with pip
 
 ## Quick Start
 
 ```bash
 # 1. Ensure SedanDelivery Bolt is running
 cd /home/azureuser/src/SedanDelivery
+export BOLT_USERNAME=neo4j
+export BOLT_PASSWORD=change-me   # optional; omit for intentional no-auth mode
 cargo run --release --bin sedandelivery-bolt
 
 # 2. Load the MITRE ATT&CK dataset (if not already loaded)
@@ -67,15 +71,15 @@ Open <http://localhost:8080> in your browser.
 ```
 index.html          Single-page application (no build step required)
   |
-  +-- neovis.js     CDN: unpkg.com/neovis.js@2.1.0
+  +-- server.py     Tiny Python proxy using neo4j-driver
   |     |
-  |     +-- neo4j-driver   (bundled inside neovis.js)
-  |     +-- vis-network     CDN: unpkg.com/vis-network@9.1.6
+  |     +-- bolt://localhost:7687   SedanDelivery Bolt v4.4 server
   |
-  +-- bolt://localhost:7687   SedanDelivery Bolt v4.4 server
+  +-- vis-network / neovis.js loaded from CDN
 ```
 
-All dependencies load from CDN. No `npm install` or build step needed. The `package.json` is provided only for the `npx serve` dev server convenience.
+All UI dependencies load from CDN. The only local runtime dependency is the
+Python `neo4j` package used by the proxy server.
 
 ## Custom Queries
 
@@ -102,7 +106,9 @@ RETURN s, t, tac
 
 ## Compatibility Notes
 
-neovis.js uses the official neo4j-javascript-driver internally. SedanDelivery's Bolt v4.4 implementation is compatible with the driver's connection handshake and query protocol. The empty string credentials (`serverUser: '', serverPassword: ''`) work with SedanDelivery's no-auth mode.
+The gallery proxy uses the official Python `neo4j` driver and derives auth from
+`BOLT_USERNAME` / `BOLT_PASSWORD`. If `BOLT_PASSWORD` is unset, it
+intentionally falls back to `auth=None` for no-auth demos.
 
 ## Troubleshooting
 
@@ -111,4 +117,4 @@ neovis.js uses the official neo4j-javascript-driver internally. SedanDelivery's 
 | "Connecting..." never resolves | Verify SedanDelivery Bolt is running: `nc -z localhost 7687` |
 | Empty graph on a view | Ensure the MITRE ATT&CK dataset is loaded |
 | Port 8080 in use | Change `HTTP_PORT` in `run.sh` or stop the other process |
-| Console shows CORS errors | Use `npx serve --cors` (the default `run.sh` does this) |
+| Proxy cannot connect to Bolt | Export `BOLT_PASSWORD`/`BOLT_USERNAME` to match the Bolt server |

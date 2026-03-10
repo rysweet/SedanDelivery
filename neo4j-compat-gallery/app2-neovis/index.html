@@ -753,9 +753,9 @@
       return {
         containerId: 'viz',
         neo4j: {
-          serverUrl:      'bolt://localhost:7687',
-          serverUser:     '',
-          serverPassword: '',
+          serverUrl:      'proxy-managed',
+          serverUser:     'proxy-managed',
+          serverPassword: 'proxy-managed',
         },
         labels:        labelsConfig,
         relationships: relsConfig,
@@ -859,7 +859,7 @@
         });
 
         currentViz = {_network: network};
-        statusEl.textContent = 'Connected — bolt://localhost:7687 (via proxy)';
+        statusEl.textContent = 'Connected — Bolt via gallery proxy';
         document.getElementById('stat-nodes').textContent = data.nodes.length;
         document.getElementById('stat-edges').textContent = data.edges.length;
 

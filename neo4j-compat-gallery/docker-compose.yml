@@ -18,6 +18,7 @@ services:
       - "7688:7688"   # Health/metrics
     environment:
       - RUST_LOG=info
+      - BOLT_PASSWORD=${BOLT_PASSWORD:?Set BOLT_PASSWORD for neo4j-compat-gallery/docker-compose.yml}
       - BOLT_IDLE_TIMEOUT_SECS=3600
       - BOLT_MAX_CONNECTIONS=1024
       - BOLT_WRITE_CONCURRENCY=128
@@ -42,8 +43,8 @@ services:
       - standaloneDatabase=
       - standaloneDashboardName=MITRE ATT&CK Security Dashboard
       - standaloneDashboardDatabase=
-      - standaloneUsername=
-      - standalonePassword=
+      - standaloneUsername=${BOLT_USERNAME:-neo4j}
+      - standalonePassword=${BOLT_PASSWORD:?Set BOLT_PASSWORD for neo4j-compat-gallery/docker-compose.yml}
       - standaloneAllowLoad=true
     depends_on:
       sedandelivery-bolt:
@@ -51,11 +52,19 @@ services:
 
   # ── App 2: neovis.js Threat Visualization ──────────────────────────────
   neovis:
-    image: nginx:alpine
+    image: python:3.11-slim
     ports:
-      - "8080:80"
+      - "8080:8080"
+    working_dir: /app
+    command: >
+      sh -c "pip install --no-cache-dir neo4j && python server.py"
     volumes:
-      - ./app2-neovis:/usr/share/nginx/html:ro
+      - ./app2-neovis:/app:ro
+    environment:
+      - BOLT_URI=bolt://sedandelivery-bolt:7687
+      - BOLT_USERNAME=${BOLT_USERNAME:-neo4j}
+      - BOLT_PASSWORD=${BOLT_PASSWORD:?Set BOLT_PASSWORD for neo4j-compat-gallery/docker-compose.yml}
+      - PORT=8080
     depends_on:
       sedandelivery-bolt:
         condition: service_healthy
@@ -69,6 +78,8 @@ services:
       - "5001:5001"
     environment:
       - BOLT_URI=bolt://sedandelivery-bolt:7687
+      - BOLT_USERNAME=${BOLT_USERNAME:-neo4j}
+      - BOLT_PASSWORD=${BOLT_PASSWORD:?Set BOLT_PASSWORD for neo4j-compat-gallery/docker-compose.yml}
       - FLASK_ENV=production
     depends_on:
       sedandelivery-bolt:
@@ -83,6 +94,8 @@ services:
       - "5002:5002"
     environment:
       - BOLT_URI=bolt://sedandelivery-bolt:7687
+      - BOLT_USERNAME=${BOLT_USERNAME:-neo4j}
+      - BOLT_PASSWORD=${BOLT_PASSWORD:?Set BOLT_PASSWORD for neo4j-compat-gallery/docker-compose.yml}
       - FLASK_ENV=production
     depends_on:
       sedandelivery-bolt:

@@ -12,13 +12,28 @@ Usage:
 """
 
 import argparse
-import sys
+import os
 import time
 
 import requests
 from neo4j import GraphDatabase
 
 from sample_cves import get_sample_cypher_statements
+
+
+def resolve_bolt_auth(default_username: str = "neo4j") -> tuple[str, str] | None:
+    password = os.environ.get("BOLT_PASSWORD", "")
+    if password == "":
+        return None
+
+    username = os.environ.get("BOLT_USERNAME", default_username) or default_username
+    return (username, password)
+
+
+def describe_bolt_auth(auth: tuple[str, str] | None) -> str:
+    if auth is None:
+        return "disabled (BOLT_PASSWORD unset)"
+    return f"enabled for user '{auth[0]}'"
 
 # ── Configuration ────────────────────────────────────────────────────────────
 
@@ -284,7 +299,9 @@ def main():
 
     # Connect and load
     print(f"[*] Connecting to SedanDelivery at {args.bolt_uri}")
-    driver = GraphDatabase.driver(args.bolt_uri, auth=None)
+    auth = resolve_bolt_auth()
+    print(f"[*] Bolt auth: {describe_bolt_auth(auth)}")
+    driver = GraphDatabase.driver(args.bolt_uri, auth=auth)
 
     try:
         driver.verify_connectivity()
