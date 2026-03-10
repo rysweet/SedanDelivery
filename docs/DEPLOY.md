@@ -281,7 +281,7 @@ Set these in your Container App or `deploy.yml` to customize behavior:
 |----------|---------|-------------|
 | **Bolt Server** | | |
 | `BOLT_BIND_ADDR` | `0.0.0.0:7687` | Bolt TCP listen address |
-| `BOLT_PASSWORD` | (none) | Optional password for Bolt auth |
+| `BOLT_PASSWORD` | (none) | Optional for direct bolt runs; local Compose profiles inherit `VALKEY_PASSWORD` unless overridden |
 | `BOLT_WS_ALLOWED_ORIGINS` | (none) | Comma-separated browser origins allowed to upgrade Bolt over WebSocket; when set, requests must send a matching `Origin` header and `*` allows any origin |
 | `BOLT_MAX_CONNECTIONS` | `1024` | Max concurrent Bolt connections |
 | `BOLT_IDLE_TIMEOUT_SECS` | `3600` | Close idle connections after N seconds |
@@ -368,23 +368,30 @@ Three docker-compose configurations are provided for testing each Redis backend 
 Single Valkey 8 instance. Best for local development and most use cases.
 
 ```bash
+export VALKEY_PASSWORD='change-me-for-local-dev'
+export BOLT_PASSWORD='different-secret-if-you-do-not-want-bolt-to-reuse-valkey'  # optional
+
 # Start
 docker compose up -d
 
-# Connect via any Neo4j driver at bolt://localhost:7687
+# Connect via any Neo4j driver at bolt://localhost:7687 using username neo4j
+# and the password from BOLT_PASSWORD (or VALKEY_PASSWORD if BOLT_PASSWORD is unset)
 # Health check: curl http://localhost:7688/health
 
 # Stop and remove data
 docker compose down -v
 ```
 
-Environment: `GQL_REDIS_URL=redis://valkey:6379`
+Environment: `VALKEY_PASSWORD=<required>`, `BOLT_PASSWORD=<optional, defaults to VALKEY_PASSWORD in local Compose>`, `GQL_REDIS_URL=redis://:password@valkey:6379`
 
 ### Redis Cluster (3 masters + 3 replicas)
 
 Tests cluster mode with automatic hash-slot distribution. Uses 6 Redis 7 nodes and an init container that forms the cluster.
 
 ```bash
+export VALKEY_PASSWORD='change-me-for-local-dev'
+export BOLT_PASSWORD='different-secret-if-you-do-not-want-bolt-to-reuse-valkey'  # optional
+
 # Start
 docker compose -f docker-compose.cluster.yml up -d
 
@@ -395,13 +402,16 @@ docker compose -f docker-compose.cluster.yml up -d
 docker compose -f docker-compose.cluster.yml down -v
 ```
 
-Environment: `GQL_REDIS_CLUSTER_NODES=redis://redis-node-1:6379,...,redis://redis-node-6:6379`
+Environment: `VALKEY_PASSWORD=<required>`, `BOLT_PASSWORD=<optional, defaults to VALKEY_PASSWORD in local Compose>`, `GQL_REDIS_CLUSTER_NODES=redis://:password@redis-node-1:6379,...,redis://:password@redis-node-6:6379`
 
 ### Master + 2 Read Replicas
 
 Tests read-replica routing. Writes go to the master; reads are distributed across two replicas via round-robin.
 
 ```bash
+export VALKEY_PASSWORD='change-me-for-local-dev'
+export BOLT_PASSWORD='different-secret-if-you-do-not-want-bolt-to-reuse-valkey'  # optional
+
 # Start
 docker compose -f docker-compose.replica.yml up -d
 
@@ -415,13 +425,15 @@ docker compose -f docker-compose.replica.yml up -d
 docker compose -f docker-compose.replica.yml down -v
 ```
 
-Environment: `GQL_REDIS_URL=redis://master:6379`, `GQL_REDIS_REPLICA_URL=redis://replica1:6379,redis://replica2:6379`
+Environment: `VALKEY_PASSWORD=<required>`, `BOLT_PASSWORD=<optional, defaults to VALKEY_PASSWORD in local Compose>`, `GQL_REDIS_URL=redis://:password@master:6379`, `GQL_REDIS_REPLICA_URL=redis://:password@replica1:6379,redis://:password@replica2:6379`
 
 ### Automated Smoke Tests
 
 A script tests all three modes sequentially. It starts each configuration, runs a basic Bolt smoke test (create graph, create node, query, delete), and reports pass/fail.
 
 ```bash
+export VALKEY_PASSWORD='change-me-for-local-dev'
+export BOLT_PASSWORD='different-secret-if-you-do-not-want-bolt-to-reuse-valkey'  # optional
 ./scripts/test-redis-modes.sh
 ```
 

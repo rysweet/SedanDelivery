@@ -20,7 +20,7 @@ Once the demo finishes, the engine is ready. Here's what it looks like from a Re
 
 ```bash
 # Connect to a running SedanDelivery instance (local or deployed)
-redis-cli -h localhost -p 6379
+REDISCLI_AUTH="${VALKEY_PASSWORD:?set VALKEY_PASSWORD first}" redis-cli -h localhost -p 6379  # local compose defaults require auth
 
 # Create a graph and add data
 GQL.CREATE-GRAPH social

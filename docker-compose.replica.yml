@@ -1,6 +1,8 @@
 # docker-compose.replica.yml — Redis master + 2 read replicas
 #
 # Usage:
+#   export VALKEY_PASSWORD='change-me-for-local-dev'
+#   export BOLT_PASSWORD='different-secret-if-you-do-not-want-bolt-to-reuse-valkey'  # optional
 #   docker compose -f docker-compose.replica.yml up -d
 #   docker compose -f docker-compose.replica.yml down -v
 #
@@ -13,17 +15,25 @@ services:
     image: redis:7-bookworm
     ports:
       - "6379:6379"
-    command: >
-      redis-server
-      --port 6379
-      --save 60 1
-      --loglevel notice
-      --maxmemory 256mb
-      --maxmemory-policy noeviction
+    environment:
+      VALKEY_PASSWORD: ${VALKEY_PASSWORD}
+    command: |
+      sh -ec '
+        test -n "$$VALKEY_PASSWORD" || { echo "VALKEY_PASSWORD is required" >&2; exit 1; }
+        printf "%s\n" \
+          "port 6379" \
+          "requirepass $$VALKEY_PASSWORD" \
+          "save 60 1" \
+          "loglevel notice" \
+          "maxmemory 256mb" \
+          "maxmemory-policy noeviction" \
+          >/tmp/redis.conf
+        exec redis-server /tmp/redis.conf
+      '
     volumes:
       - master-data:/data
     healthcheck:
-      test: ["CMD", "redis-cli", "-p", "6379", "ping"]
+      test: ["CMD-SHELL", "test -n \"$$VALKEY_PASSWORD\" && REDISCLI_AUTH=\"$$VALKEY_PASSWORD\" redis-cli -p 6379 ping"]
       interval: 3s
       timeout: 2s
       retries: 10
@@ -34,19 +44,28 @@ services:
     image: redis:7-bookworm
     ports:
       - "6380:6379"
-    command: >
-      redis-server
-      --port 6379
-      --replicaof master 6379
-      --replica-read-only yes
-      --loglevel notice
-      --maxmemory 256mb
-      --maxmemory-policy noeviction
+    environment:
+      VALKEY_PASSWORD: ${VALKEY_PASSWORD}
+    command: |
+      sh -ec '
+        test -n "$$VALKEY_PASSWORD" || { echo "VALKEY_PASSWORD is required" >&2; exit 1; }
+        printf "%s\n" \
+          "port 6379" \
+          "replicaof master 6379" \
+          "masterauth $$VALKEY_PASSWORD" \
+          "requirepass $$VALKEY_PASSWORD" \
+          "replica-read-only yes" \
+          "loglevel notice" \
+          "maxmemory 256mb" \
+          "maxmemory-policy noeviction" \
+          >/tmp/redis.conf
+        exec redis-server /tmp/redis.conf
+      '
     depends_on:
       master:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "redis-cli", "-p", "6379", "ping"]
+      test: ["CMD-SHELL", "test -n \"$$VALKEY_PASSWORD\" && REDISCLI_AUTH=\"$$VALKEY_PASSWORD\" redis-cli -p 6379 ping"]
       interval: 3s
       timeout: 2s
       retries: 10
@@ -57,19 +76,28 @@ services:
     image: redis:7-bookworm
     ports:
       - "6381:6379"
-    command: >
-      redis-server
-      --port 6379
-      --replicaof master 6379
-      --replica-read-only yes
-      --loglevel notice
-      --maxmemory 256mb
-      --maxmemory-policy noeviction
+    environment:
+      VALKEY_PASSWORD: ${VALKEY_PASSWORD}
+    command: |
+      sh -ec '
+        test -n "$$VALKEY_PASSWORD" || { echo "VALKEY_PASSWORD is required" >&2; exit 1; }
+        printf "%s\n" \
+          "port 6379" \
+          "replicaof master 6379" \
+          "masterauth $$VALKEY_PASSWORD" \
+          "requirepass $$VALKEY_PASSWORD" \
+          "replica-read-only yes" \
+          "loglevel notice" \
+          "maxmemory 256mb" \
+          "maxmemory-policy noeviction" \
+          >/tmp/redis.conf
+        exec redis-server /tmp/redis.conf
+      '
     depends_on:
       master:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "redis-cli", "-p", "6379", "ping"]
+      test: ["CMD-SHELL", "test -n \"$$VALKEY_PASSWORD\" && REDISCLI_AUTH=\"$$VALKEY_PASSWORD\" redis-cli -p 6379 ping"]
       interval: 3s
       timeout: 2s
       retries: 10
@@ -80,13 +108,25 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.bolt
+    entrypoint:
+      - /bin/sh
+      - -ec
+      - |
+        export BOLT_PASSWORD="${BOLT_PASSWORD:-$VALKEY_PASSWORD}"
+        test -n "$BOLT_PASSWORD" || {
+          echo "BOLT_PASSWORD or VALKEY_PASSWORD is required" >&2
+          exit 1
+        }
+        exec sedandelivery-bolt
     ports:
       - "7687:7687"
       - "7688:7688"
     environment:
       - RUST_LOG=info
-      - GQL_REDIS_URL=redis://master:6379
-      - GQL_REDIS_REPLICA_URL=redis://replica1:6379,redis://replica2:6379
+      - VALKEY_PASSWORD=${VALKEY_PASSWORD}
+      - GQL_REDIS_URL=redis://:${VALKEY_PASSWORD}@master:6379
+      - GQL_REDIS_REPLICA_URL=redis://:${VALKEY_PASSWORD}@replica1:6379,redis://:${VALKEY_PASSWORD}@replica2:6379
+      - BOLT_PASSWORD=${BOLT_PASSWORD}
       - BOLT_IDLE_TIMEOUT_SECS=3600
       - BOLT_MAX_CONNECTIONS=1024
     depends_on:

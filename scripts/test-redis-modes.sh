@@ -34,6 +34,14 @@ PASSED=0
 FAILED=0
 SKIPPED=0
 
+if [ -z "${VALKEY_PASSWORD:-}" ]; then
+    echo "ERROR: VALKEY_PASSWORD must be set before running compose-backed Redis/Valkey smoke tests."
+    echo "Example: export VALKEY_PASSWORD='change-me-for-local-dev'"
+    exit 1
+fi
+export VALKEY_PASSWORD
+export BOLT_PASSWORD="${BOLT_PASSWORD:-$VALKEY_PASSWORD}"
+
 log_info()  { echo -e "${YELLOW}[INFO]${NC}  $*"; }
 log_pass()  { echo -e "${GREEN}[PASS]${NC}  $*"; }
 log_fail()  { echo -e "${RED}[FAIL]${NC}  $*"; }
@@ -48,20 +56,26 @@ bolt_query() {
     local bolt_url="${2:-bolt://localhost:7687}"
 
     if command -v cypher-shell &>/dev/null; then
-        echo "$query" | cypher-shell -a "$bolt_url" -u neo4j -p password --format plain 2>&1
+        echo "$query" | cypher-shell -a "$bolt_url" -u neo4j -p "$BOLT_PASSWORD" --format plain 2>&1
         return $?
     fi
 
     if command -v python3 &>/dev/null && python3 -c "import neo4j" 2>/dev/null; then
-        python3 -c "
+        BOLT_QUERY="$query" BOLT_URL="$bolt_url" BOLT_PASSWORD="$BOLT_PASSWORD" python3 - <<'PY' 2>&1
+import os
+
 from neo4j import GraphDatabase
-driver = GraphDatabase.driver('$bolt_url', auth=('neo4j', 'password'))
-with driver.session() as s:
-    result = s.run('''$query''')
+
+driver = GraphDatabase.driver(
+    os.environ["BOLT_URL"],
+    auth=("neo4j", os.environ["BOLT_PASSWORD"]),
+)
+with driver.session() as session:
+    result = session.run(os.environ["BOLT_QUERY"])
     for record in result:
         print(dict(record))
 driver.close()
-" 2>&1
+PY
         return $?
     fi
 
@@ -151,7 +165,7 @@ run_smoke_test() {
 cleanup() {
     local compose_file="$1"
     log_info "Cleaning up: $compose_file"
-    docker compose -f "$compose_file" down -v --remove-orphans --timeout 10 2>/dev/null || true
+    VALKEY_PASSWORD="$VALKEY_PASSWORD" BOLT_PASSWORD="$BOLT_PASSWORD" docker compose -f "$compose_file" down -v --remove-orphans --timeout 10 2>/dev/null || true
 }
 
 # ── Test a single mode ────────────────────────────────────────────────────────
@@ -164,6 +178,7 @@ test_mode() {
     echo "================================================================"
     log_info "Testing mode: $mode_name"
     log_info "Compose file: $compose_file"
+    log_info "Using VALKEY_PASSWORD for Redis/Valkey auth and BOLT_PASSWORD (defaulting to VALKEY_PASSWORD) for Bolt auth"
     echo "================================================================"
 
     if [ ! -f "$compose_file" ]; then
@@ -177,7 +192,7 @@ test_mode() {
 
     # Start services
     log_info "Starting services..."
-    if ! docker compose -f "$compose_file" up -d --build 2>&1; then
+    if ! VALKEY_PASSWORD="$VALKEY_PASSWORD" BOLT_PASSWORD="$BOLT_PASSWORD" docker compose -f "$compose_file" up -d --build 2>&1; then
         log_fail "$mode_name — docker compose up failed"
         FAILED=$((FAILED + 1))
         cleanup "$compose_file"
@@ -188,7 +203,7 @@ test_mode() {
     if ! wait_for_bolt "$wait_time"; then
         log_fail "$mode_name — timeout waiting for Bolt server"
         log_info "Container logs:"
-        docker compose -f "$compose_file" logs --tail=30 sedandelivery-bolt 2>/dev/null || true
+        VALKEY_PASSWORD="$VALKEY_PASSWORD" BOLT_PASSWORD="$BOLT_PASSWORD" docker compose -f "$compose_file" logs --tail=30 sedandelivery-bolt 2>/dev/null || true
         FAILED=$((FAILED + 1))
         cleanup "$compose_file"
         return 1
