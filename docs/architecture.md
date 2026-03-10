@@ -146,7 +146,7 @@ Key pipeline components:
 - **Validator** -- checks semantic correctness (undefined variables, invalid aggregation scoping).
 - **Planner** -- translates AST clauses into a tree of 28 physical operators (NodeScan, IndexScan, Expand, VarLenExpand, Filter, Aggregate, ShortestPath, Create, Merge, etc.). Uses cardinality estimation from graph statistics for EXPLAIN output.
 - **Executor** -- walks the operator tree, calls `GraphStore` methods, enforces budget limits (`GQL_QUERY_TIMEOUT_MS`, `GQL_QUERY_MAX_ROWS`).
-- **Plan cache** -- LRU cache keyed by query text, avoids re-parsing and re-planning identical queries.
+- **Plan cache** -- process-local cache keyed by query text, avoids re-parsing and re-planning identical queries for `/query` and `/mutate`. It uses clear-on-capacity eviction (not LRU), exposes hit/miss metrics, and is explicitly invalidated after schema-changing DDL such as index/constraint changes.
 
 ## Storage Layer
 
@@ -172,7 +172,7 @@ classDiagram
     class InMemoryGraphStore {
         Arc-based snapshot isolation
         Copy-on-write for transactions
-        Optional WAL durability
+        In-process only (not restart-persistent)
     }
 
     class RedisGraphStore {
@@ -191,7 +191,8 @@ classDiagram
     class FanoutStore {
         Write to all backends
         Read from first
-        Rollback on failure
+        Create paths attempt rollback
+        Other writes may diverge on error
     }
 
     GraphStore <|.. InMemoryGraphStore
@@ -301,13 +302,13 @@ See [Deploy Your Own Instance](DEPLOY) for full setup instructions and cost esti
 
 - **Hand-written parser, not lalrpop.** Cypher's `|` is context-dependent (label disjunction vs. rel-type disjunction vs. list comprehension pipe). A generated parser cannot resolve this without semantic context. See ADR-003.
 
-- **InMemory + WAL, not an embedded database.** The Redis module runs inside the Redis/Valkey process. The `InMemoryGraphStore` keeps graph data in-process with zero serialization overhead. Persistence comes from Redis RDB/AOF, the optional WAL (`GQL_WAL_PATH`), or the Fabric sync sidecar.
+- **InMemory today, not restart-persistent yet.** The Redis module runs inside the Redis/Valkey process. The `InMemoryGraphStore` keeps graph data in-process with zero serialization overhead, but that heap state is not yet serialised via Redis module save/load hooks. Redis RDB/AOF does not currently persist module graph state, and the Fabric changelog sidecar is for external replication rather than local restart recovery.
 
 - **Bolt v4.4 for Neo4j driver compatibility.** v4.4 is the most widely supported version across Neo4j drivers (Python, .NET, Java, Go, JavaScript, Rust). It supports multi-database, bookmarks, explicit transactions, EXPLAIN/PROFILE, and streaming PULL with qid-based multiplexing.
 
 - **Synchronous `GraphStore` trait.** All trait methods are synchronous because the Redis module runs on Redis's single-threaded event loop. Async I/O happens at the network layer (Bolt/API servers), not at the storage layer.
 
-- **`FanoutStore` for multi-backend writes.** Rather than coupling backends, writes fan out through a simple wrapper. This enables patterns like Redis (fast reads) + Fabric (durable analytics) without modifying either backend.
+- **`FanoutStore` for multi-backend writes.** Rather than coupling backends, writes fan out through a simple wrapper. This enables patterns like Redis (fast reads) + Fabric (durable analytics) without modifying either backend. `create_node` and `create_edge` attempt primary rollback if a later backend fails, but the broader `write_all` mutation path returns the first error and may leave earlier stores ahead of later ones.
 
 - **u64 node/edge IDs.** Chosen over u32 to avoid silent overflow at 4.29B entities. Redis INCR returns i64; the storage layer rejects values <= 0 as overflow. See ADR-001.
 
@@ -347,13 +348,13 @@ SedanDelivery/
         wal.rs                   Write-ahead log for durability
         mod.rs                   GraphStore trait
       config.rs                  Environment variable configuration
-      plan_cache.rs              LRU query plan cache
+      plan_cache.rs              Query plan cache (hash map + clear-on-capacity eviction)
       types/value/               Value type system (display, convert, compare)
 
   gql-redis-store/             Redis/Valkey storage backend
     src/
       lib.rs                     RedisGraphStore implementation
-      fanout.rs                  FanoutStore (multi-backend writes with rollback)
+      fanout.rs                  FanoutStore (create rollback only; other writes may diverge)
       create_store.rs            Backend selection from env vars
       connection.rs              r2d2 pool, replica routing, stats reporter
       reads.rs                   Redis read commands

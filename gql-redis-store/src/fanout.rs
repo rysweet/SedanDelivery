@@ -158,9 +158,26 @@ impl GraphStore for FanoutStore {
             msg: format!("node ID {} exceeds i64::MAX", id.0),
         })?;
         props_with_id.insert("_sd2_id".to_string(), Value::Int(id_i64));
-        for store in &self.stores[1..] {
+        let mut successful_secondaries: Vec<usize> = Vec::new();
+        for (offset, store) in self.stores[1..].iter().enumerate() {
             if let Err(e) = store.create_node(graph, labels.clone(), props_with_id.clone()) {
-                tracing::error!(node_id = %id.0, error = %e, "secondary store failed to create node, attempting rollback on primary");
+                let failed_store_index = offset + 1;
+                tracing::error!(
+                    node_id = %id.0,
+                    failed_store_index,
+                    error = %e,
+                    "secondary store failed to create node, attempting rollback on successful stores"
+                );
+                for secondary_index in successful_secondaries.iter().copied().rev() {
+                    if let Err(rollback_err) = self.stores[secondary_index].delete_node(graph, id, true) {
+                        tracing::error!(
+                            node_id = %id.0,
+                            secondary_index,
+                            error = %rollback_err,
+                            "rollback failed: could not delete node from a previously successful secondary"
+                        );
+                    }
+                }
                 // Attempt to delete the node from the primary to maintain consistency.
                 if let Err(rollback_err) = self.stores[0].delete_node(graph, id, true) {
                     tracing::error!(
@@ -171,6 +188,7 @@ impl GraphStore for FanoutStore {
                 }
                 return Err(e);
             }
+            successful_secondaries.push(offset + 1);
         }
         Ok(id)
     }
@@ -190,11 +208,28 @@ impl GraphStore for FanoutStore {
             msg: format!("edge ID {} exceeds i64::MAX", id.0),
         })?;
         props_with_id.insert("_sd2_eid".to_string(), Value::Int(id_i64));
-        for store in &self.stores[1..] {
+        let mut successful_secondaries: Vec<usize> = Vec::new();
+        for (offset, store) in self.stores[1..].iter().enumerate() {
             if let Err(e) =
                 store.create_edge(graph, src, dst, rel_type.clone(), props_with_id.clone())
             {
-                tracing::error!(edge_id = %id.0, error = %e, "secondary store failed to create edge, attempting rollback on primary");
+                let failed_store_index = offset + 1;
+                tracing::error!(
+                    edge_id = %id.0,
+                    failed_store_index,
+                    error = %e,
+                    "secondary store failed to create edge, attempting rollback on successful stores"
+                );
+                for secondary_index in successful_secondaries.iter().copied().rev() {
+                    if let Err(rollback_err) = self.stores[secondary_index].delete_edge(graph, id) {
+                        tracing::error!(
+                            edge_id = %id.0,
+                            secondary_index,
+                            error = %rollback_err,
+                            "rollback failed: could not delete edge from a previously successful secondary"
+                        );
+                    }
+                }
                 // Attempt to delete the edge from the primary to maintain consistency.
                 if let Err(rollback_err) = self.stores[0].delete_edge(graph, id) {
                     tracing::error!(
@@ -205,6 +240,7 @@ impl GraphStore for FanoutStore {
                 }
                 return Err(e);
             }
+            successful_secondaries.push(offset + 1);
         }
         Ok(id)
     }
@@ -1019,12 +1055,67 @@ mod tests {
         let pn = primary_ref.get_node("g", node_id).unwrap().unwrap();
         assert_eq!(pn.properties.get("age"), Some(&Value::Int(30)));
 
-        // Secondary also received the write_all call. The secondary's node
-        // has the primary's NodeId passed through set_node_properties, which
-        // may or may not match. If the secondary used the same ID (which
-        // happens when both start from 0), it will have the property.
-        // We verify the secondary got the graph at minimum.
-        assert!(secondary_ref.graph_exists("g").unwrap());
+        // Secondary also received the write_all call at the same NodeId.
+        let sn = secondary_ref.get_node("g", node_id).unwrap().unwrap();
+        assert_eq!(sn.properties.get("age"), Some(&Value::Int(30)));
+    }
+
+    #[test]
+    fn test_set_node_properties_failure_leaves_primary_ahead_of_secondary() {
+        let (primary_ref, primary_box) = shared_store();
+        let (secondary_ref, secondary_box) = shared_store();
+        let fanout = FanoutStore::new(vec![primary_box, secondary_box]);
+
+        fanout.create_graph("g").unwrap();
+        let node_id = fanout
+            .create_node("g", vec!["Person".into()], HashMap::new())
+            .unwrap();
+
+        // Force the secondary out of sync first so write_all will mutate the
+        // primary and then fail on the secondary.
+        secondary_ref.delete_node("g", node_id, true).unwrap();
+
+        let mut props = HashMap::new();
+        props.insert("age".to_string(), Value::Int(30));
+        let result = fanout.set_node_properties("g", node_id, props);
+        assert!(result.is_err(), "secondary mismatch should surface as an error");
+
+        let primary_node = primary_ref.get_node("g", node_id).unwrap().unwrap();
+        assert_eq!(primary_node.properties.get("age"), Some(&Value::Int(30)));
+        assert!(
+            secondary_ref.get_node("g", node_id).unwrap().is_none(),
+            "secondary should remain behind after the failed write_all mutation"
+        );
+    }
+
+    #[test]
+    fn test_add_node_labels_failure_leaves_primary_ahead_of_secondary() {
+        let (primary_ref, primary_box) = shared_store();
+        let (secondary_ref, secondary_box) = shared_store();
+        let fanout = FanoutStore::new(vec![primary_box, secondary_box]);
+
+        fanout.create_graph("g").unwrap();
+        let node_id = fanout
+            .create_node("g", vec!["Person".into()], HashMap::new())
+            .unwrap();
+
+        // Force the secondary out of sync first so write_all will mutate the
+        // primary and then fail on the secondary.
+        secondary_ref.delete_node("g", node_id, true).unwrap();
+
+        let labels = vec!["VIP".to_string()];
+        let result = fanout.add_node_labels("g", node_id, &labels);
+        assert!(result.is_err(), "secondary mismatch should surface as an error");
+
+        let primary_node = primary_ref.get_node("g", node_id).unwrap().unwrap();
+        assert!(
+            primary_node.labels.contains(&"VIP".to_string()),
+            "primary should keep the label added before the secondary failed"
+        );
+        assert!(
+            secondary_ref.get_node("g", node_id).unwrap().is_none(),
+            "secondary should remain behind after the failed write_all mutation"
+        );
     }
 
     // ── Read operations route to primary ────────────────────────────────────
@@ -1478,6 +1569,83 @@ mod tests {
             primary_nodes.len(),
             2,
             "nodes created before failure should still exist"
+        );
+    }
+
+    #[test]
+    fn test_late_secondary_failure_rollback_create_node_cleans_earlier_secondary() {
+        let (primary_ref, primary_box) = shared_store();
+        let (middle_ref, middle_box) = shared_store();
+        let (late_ref, late_box) = shared_store();
+        let fanout = FanoutStore::new(vec![primary_box, middle_box, late_box]);
+
+        fanout.create_graph("g").unwrap();
+        late_ref.delete_graph("g").unwrap();
+
+        let result = fanout.create_node("g", vec!["Person".into()], HashMap::new());
+        assert!(
+            result.is_err(),
+            "create_node should fail when a later secondary is out of sync"
+        );
+
+        assert!(
+            primary_ref.all_node_ids("g").unwrap().is_empty(),
+            "primary should be rolled back after the late secondary failure"
+        );
+        assert!(
+            middle_ref.all_node_ids("g").unwrap().is_empty(),
+            "earlier successful secondaries should also be rolled back"
+        );
+        assert!(
+            !late_ref.graph_exists("g").unwrap(),
+            "the failing late secondary should remain in its pre-failure state"
+        );
+    }
+
+    #[test]
+    fn test_late_secondary_failure_rollback_create_edge_cleans_earlier_secondary() {
+        let (primary_ref, primary_box) = shared_store();
+        let (middle_ref, middle_box) = shared_store();
+        let (late_ref, late_box) = shared_store();
+        let fanout = FanoutStore::new(vec![primary_box, middle_box, late_box]);
+
+        fanout.create_graph("g").unwrap();
+        let a = fanout
+            .create_node("g", vec!["Person".into()], HashMap::new())
+            .unwrap();
+        let b = fanout
+            .create_node("g", vec!["Person".into()], HashMap::new())
+            .unwrap();
+
+        late_ref.delete_graph("g").unwrap();
+
+        let result = fanout.create_edge("g", a, b, "KNOWS".to_string(), HashMap::new());
+        assert!(
+            result.is_err(),
+            "create_edge should fail when a later secondary is out of sync"
+        );
+
+        assert!(
+            primary_ref.all_edge_ids("g").unwrap().is_empty(),
+            "primary edge should be rolled back after the late secondary failure"
+        );
+        assert!(
+            middle_ref.all_edge_ids("g").unwrap().is_empty(),
+            "earlier successful secondaries should also have the edge rolled back"
+        );
+        assert_eq!(
+            primary_ref.all_node_ids("g").unwrap().len(),
+            2,
+            "nodes created before the failed edge write should remain on primary"
+        );
+        assert_eq!(
+            middle_ref.all_node_ids("g").unwrap().len(),
+            2,
+            "nodes created before the failed edge write should remain on earlier secondaries"
+        );
+        assert!(
+            !late_ref.graph_exists("g").unwrap(),
+            "the failing late secondary should remain in its pre-failure state"
         );
     }
 

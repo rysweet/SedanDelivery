@@ -52,6 +52,12 @@ async function selectGraph(page: import('@playwright/test').Page) {
   await page.waitForTimeout(3000)
 }
 
+async function waitForCypherEditor(page: import('@playwright/test').Page) {
+  const textarea = page.locator('.monaco-editor textarea').first()
+  await expect(textarea).toBeVisible({ timeout: 10000 })
+  return textarea
+}
+
 test.describe('Detailed Flow Tests', () => {
 
   test('17 - Cypher CREATE mutation increases node count', async ({ page }) => {
@@ -65,8 +71,7 @@ test.describe('Detailed Flow Tests', () => {
     const queryBtn = page.locator('[aria-label="Cypher Query Editor"]').first()
     if (await queryBtn.isVisible()) {
       await queryBtn.click()
-      await page.waitForTimeout(1000)
-      const textarea = page.locator('.monaco-editor textarea').first()
+      const textarea = await waitForCypherEditor(page)
       await textarea.click({ force: true })
       await page.keyboard.press('Control+a')
       await page.keyboard.type("CREATE (:Product {name: 'Test Widget'})", { delay: 10 })
@@ -88,11 +93,9 @@ test.describe('Detailed Flow Tests', () => {
     // Open Cypher editor
     const queryBtn = page.locator('[aria-label*="Cypher"], [aria-label*="Query"]').first()
     if (await queryBtn.isVisible()) await queryBtn.click()
-    await page.waitForTimeout(1000)
-
     const monaco = page.locator('.monaco-editor')
-    if (await monaco.isVisible()) {
-      const textarea = page.locator('.monaco-editor textarea').first()
+    if (await monaco.isVisible({ timeout: 10000 }).catch(() => false)) {
+      const textarea = await waitForCypherEditor(page)
       await textarea.click({ force: true })
       await page.keyboard.press('Control+a')
       await page.keyboard.type('THIS IS NOT VALID CYPHER AT ALL', { delay: 10 })
@@ -129,7 +132,7 @@ test.describe('Detailed Flow Tests', () => {
       }
     }
 
-    const hasGraph = await page.getByText('e2e-detail').isVisible().catch(() => false)
+    await page.getByText('e2e-detail').isVisible().catch(() => false)
     await page.screenshot({ path: 'e2e/screenshots/19-graph-before-delete.png', fullPage: true })
 
     // Delete via API
@@ -170,7 +173,7 @@ test.describe('Detailed Flow Tests', () => {
     }
 
     // Should find nodes with "seattle" in properties
-    const hasFound = await page.getByText('found', { exact: false }).isVisible().catch(() => false)
+    await page.getByText('found', { exact: false }).isVisible().catch(() => false)
     await page.screenshot({ path: 'e2e/screenshots/20-property-search-seattle.png', fullPage: true })
 
     // Search executed without crash
@@ -398,16 +401,14 @@ test.describe('Detailed Flow Tests', () => {
     await page.waitForTimeout(3000)
 
     // Step 4: Verify node exists (status bar shows 1 node)
-    const hasOneNode = await page.getByText('1 node', { exact: false }).isVisible().catch(() => false)
+    await page.getByText('1 node', { exact: false }).isVisible().catch(() => false)
     await page.screenshot({ path: 'e2e/screenshots/30-crud-node-created.png', fullPage: true })
 
     // Step 5: Query via Cypher editor
     const queryBtn = page.locator('[aria-label*="Cypher"], [aria-label*="Query"]').first()
     if (await queryBtn.isVisible()) {
       await queryBtn.click()
-      await page.waitForTimeout(1000)
-
-      const textarea = page.locator('.monaco-editor textarea').first()
+      const textarea = await waitForCypherEditor(page)
       await textarea.click({ force: true })
       await page.keyboard.press('Control+a')
       await page.keyboard.type("MATCH (n:Person {name: 'CRUD Test User'}) RETURN n.name, n.age", { delay: 10 })

@@ -252,7 +252,12 @@ async fn main() {
                         Ok(tls_stream) => {
                             tracing::debug!(conn_id, "TLS handshake complete");
                             sedandelivery_bolt::connection::session::run(
-                                tls_stream, store, conn_id, bookmark, wl,
+                                tls_stream,
+                                store,
+                                conn_id,
+                                bookmark,
+                                wl,
+                                Some(peer_addr.ip()),
                             )
                             .await
                         }
@@ -275,7 +280,12 @@ async fn main() {
                                     sedandelivery_bolt::websocket::WsStreamAdapter::new(ws_stream);
                                 tracing::info!(conn_id, "WebSocket connection established");
                                 sedandelivery_bolt::connection::session::run(
-                                    adapter, store, conn_id, bookmark, wl,
+                                    adapter,
+                                    store,
+                                    conn_id,
+                                    bookmark,
+                                    wl,
+                                    Some(peer_addr.ip()),
                                 )
                                 .await
                             }
@@ -289,7 +299,12 @@ async fn main() {
                         }
                     } else {
                         sedandelivery_bolt::connection::session::run(
-                            stream, store, conn_id, bookmark, wl,
+                            stream,
+                            store,
+                            conn_id,
+                            bookmark,
+                            wl,
+                            Some(peer_addr.ip()),
                         )
                         .await
                     }

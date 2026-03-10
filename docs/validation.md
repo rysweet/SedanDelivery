@@ -3,6 +3,10 @@
 This document explains every layer of automated validation for SedanDelivery,
 what each layer proves, and how to run it — both locally and in CI.
 
+In addition to the Rust and module suites, CI and `scripts/validate.sh` also
+run validation for the React/Vite web app in
+`sedan-graph-ui/src/sedan-web`.
+
 The work described here was established in
 [issue #189](https://github.com/cloud-ecosystem-security/SedanDelivery/issues/189).
 
@@ -15,17 +19,40 @@ The work described here was established in
 bash scripts/validate.sh
 
 # Individual layers
+cd sedan-graph-ui/src/sedan-web && npm run lint     # sedan-web lint
+cd sedan-graph-ui/src/sedan-web && npm run test:run # sedan-web unit tests
+cd sedan-graph-ui/src/sedan-web && npm run build    # sedan-web production build
 cargo test -p gql-core --lib                       # unit tests
+cargo test -p gql-core --lib plan_cache            # plan cache semantics + eviction contract
 cargo test -p gql-core --test end_to_end           # query pipeline
 cargo test -p gql-core --test data_integrity       # mutation correctness
 cargo test -p gql-core --test adversarial          # DoS / malformed inputs
 cargo test -p gql-core --test stress               # scale + budget enforcement
 cargo test -p gql-core --test ldbc                 # LDBC SNB benchmark queries
+cargo test -p gql-api --test api_integration explain_endpoint_returns_plan -- --exact
+cargo test -p gql-api --test api_integration profile_returns_results_and_plan_with_row_counts -- --exact
 cargo test -p gql-module --test integration        # module command pipeline
 cargo test -p gql-module --test compatibility      # wire format / serialization
 cargo test -p gql-core --test tck                  # openCypher TCK (3903 scenarios)
 cargo bench -p gql-core -- --test                  # compile + smoke-run benchmarks
 ```
+
+---
+
+## Targeted plan-cache checks
+
+Use these focused checks when changing cache semantics, cache docs, or query
+entry points:
+
+```bash
+cargo test -p gql-core --lib plan_cache
+cargo test -p gql-api --test api_integration explain_endpoint_returns_plan -- --exact
+cargo test -p gql-api --test api_integration profile_returns_results_and_plan_with_row_counts -- --exact
+```
+
+`/query` and `/mutate` use the process-local plan cache. `/explain` and
+`/profile` intentionally re-plan so their responses reflect current operator and
+estimate state directly.
 
 ---
 
@@ -58,7 +85,19 @@ Bold entries were added by issue #189.
 
 ## CI tiers
 
-The `.github/workflows/ci.yml` runs these tiers automatically:
+The `.github/workflows/ci.yml` runs these tiers automatically, plus a dedicated
+`Sedan Web Validation` job for the frontend:
+
+### Sedan Web Validation — every PR and push
+```bash
+cd sedan-graph-ui/src/sedan-web
+npm ci
+npm run lint
+npm run test:run
+npm run build
+```
+Confirms the React/TypeScript/Vite app installs cleanly, lints, passes its
+Vitest suite, and produces a production build.
 
 ### Tier 1 — every PR (< 2 min)
 ```
@@ -265,6 +304,8 @@ cd SedanDelivery
 # Install Rust if needed
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 rustup default stable
+
+# Node.js 22+ is also required for sedan-web validation
 
 # Install libclang (required by redis-module bindgen)
 # macOS:  brew install llvm

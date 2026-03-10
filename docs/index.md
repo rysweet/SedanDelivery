@@ -79,6 +79,7 @@ See [ADR-004](ADR-004-distributed-redis) for the full architecture decision reco
 |----------|---------|-------------|
 | `BOLT_BIND_ADDR` | `0.0.0.0:7687` | Bolt TCP listen address |
 | `BOLT_PASSWORD` | — | Optional for direct bolt runs; local Compose profiles default it from `VALKEY_PASSWORD` unless overridden |
+| `BOLT_WS_ALLOWED_ORIGINS` | — | Comma-separated browser origins allowed to use Bolt over WebSocket; when set, a matching `Origin` header is required and `*` allows any origin |
 | `BOLT_ENABLED` | `true` | Enable/disable Bolt server in container |
 | `BOLT_MAX_CONNECTIONS` | `1024` | Max concurrent Bolt connections |
 | `BOLT_IDLE_TIMEOUT_SECS` | `3600` | Close idle connections after N seconds |
@@ -188,12 +189,15 @@ while let Some(row) = result.next().await? {
 ### Java, Go, JavaScript
 Any Neo4j driver that supports Bolt 4.2-4.4 works. See the [Neo4j Driver Manual](https://neo4j.com/docs/create-applications/) for your language.
 
+Browser clients that connect over WebSocket must set `BOLT_WS_ALLOWED_ORIGINS` to an explicit allowlist such as `https://app.example.com`; otherwise SedanDelivery rejects requests carrying an `Origin` header.
+
 ### Configuration
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `BOLT_BIND_ADDR` | `0.0.0.0:7687` | Bolt TCP listen address |
 | `BOLT_PASSWORD` | (none) | Optional for direct bolt runs; local Compose profiles default it from `VALKEY_PASSWORD` unless overridden |
+| `BOLT_WS_ALLOWED_ORIGINS` | (none) | Comma-separated WebSocket origin allowlist; when set, requests must send a matching `Origin` header |
 | `BOLT_ENABLED` | `true` | Enable/disable Bolt server in container |
 
 See [Bolt Protocol Spec](specs/sedandelivery-bolt-spec) for implementation details.

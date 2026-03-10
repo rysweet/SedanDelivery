@@ -13,14 +13,28 @@ Routes:
 import json
 import os
 from http.server import HTTPServer, SimpleHTTPRequestHandler
-from urllib.parse import parse_qs
 
 from neo4j import GraphDatabase
 
 BOLT_URI = os.environ.get("BOLT_URI", "bolt://localhost:7687")
 PORT = int(os.environ.get("PORT", "8080"))
 
-driver = GraphDatabase.driver(BOLT_URI, auth=None)
+
+def resolve_bolt_auth(default_username: str = "neo4j") -> tuple[str, str] | None:
+    password = os.environ.get("BOLT_PASSWORD", "")
+    if password == "":
+        return None
+
+    username = os.environ.get("BOLT_USERNAME", default_username) or default_username
+    return (username, password)
+
+
+def describe_bolt_auth(auth: tuple[str, str] | None) -> str:
+    if auth is None:
+        return "disabled (BOLT_PASSWORD unset)"
+    return f"enabled for user '{auth[0]}'"
+
+driver = GraphDatabase.driver(BOLT_URI, auth=resolve_bolt_auth())
 
 
 def run_cypher(cypher):
@@ -99,5 +113,6 @@ class GalleryHandler(SimpleHTTPRequestHandler):
 if __name__ == "__main__":
     print(f"[*] neovis.js gallery server on http://localhost:{PORT}")
     print(f"[*] Bolt backend: {BOLT_URI}")
+    print(f"[*] Bolt auth: {describe_bolt_auth(resolve_bolt_auth())}")
     httpd = HTTPServer(("0.0.0.0", PORT), GalleryHandler)
     httpd.serve_forever()

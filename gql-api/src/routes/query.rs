@@ -125,6 +125,9 @@ async fn query_handler(
     let store = Arc::clone(&state.store);
     let start = Instant::now();
 
+    // Query/mutate endpoints reuse the process-local plan cache; EXPLAIN and
+    // PROFILE intentionally re-plan so they reflect current operator/estimate
+    // state directly in their responses.
     let cache = plan_cache::global();
     let plan = if let Some((_cached_ast, cached_plan)) = cache.get(&body.cypher) {
         metrics::counter!("plan_cache_hits_total").increment(1);
@@ -289,10 +292,8 @@ async fn profile_handler(
 
         // Build the annotated plan JSON while the plan is still in place
         // (pointer addresses match the profile stats keys).
-        let graph_stats = gql_core::planner::collect_graph_statistics(
-            store_for_exec.as_ref(),
-            &name_for_exec,
-        )?;
+        let graph_stats =
+            gql_core::planner::collect_graph_statistics(store_for_exec.as_ref(), &name_for_exec)?;
         let estimates = gql_core::planner::estimate_cardinality(&plan, &graph_stats);
         let plan_json = operator_to_profile_json(&plan, &estimates, &profile_stats);
 

@@ -282,6 +282,7 @@ Set these in your Container App or `deploy.yml` to customize behavior:
 | **Bolt Server** | | |
 | `BOLT_BIND_ADDR` | `0.0.0.0:7687` | Bolt TCP listen address |
 | `BOLT_PASSWORD` | (none) | Optional for direct bolt runs; local Compose profiles inherit `VALKEY_PASSWORD` unless overridden |
+| `BOLT_WS_ALLOWED_ORIGINS` | (none) | Comma-separated browser origins allowed to upgrade Bolt over WebSocket; when set, requests must send a matching `Origin` header and `*` allows any origin |
 | `BOLT_MAX_CONNECTIONS` | `1024` | Max concurrent Bolt connections |
 | `BOLT_IDLE_TIMEOUT_SECS` | `3600` | Close idle connections after N seconds |
 | **Redis Backend** | | |
@@ -302,6 +303,7 @@ Set these in your Container App or `deploy.yml` to customize behavior:
 | `GQL_QUERY_TIMEOUT_MS` | `30000` | Max query execution time |
 | `GQL_QUERY_MAX_ROWS` | `10000000` | Max intermediate rows |
 | `GQL_VARLEN_MAX_DEPTH` | `30` | Max variable-length path depth |
+| `GQL_PLAN_CACHE_SIZE` | `1024` | Process-local plan cache capacity; when full, it clears all entries before adding the next plan |
 | **Valkey** | | |
 | `VALKEY_PASSWORD` | (generated) | Authentication password (auto-generated on first deploy) |
 

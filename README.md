@@ -90,6 +90,8 @@ cargo run -p sedandelivery-bolt
 # Listens on 0.0.0.0:7687 by default (configure via BOLT_BIND_ADDR env var)
 ```
 
+Browser WebSocket clients must set `BOLT_WS_ALLOWED_ORIGINS` to an explicit allowlist; when it is set, SedanDelivery requires a matching `Origin` header on the WebSocket upgrade.
+
 **Validated with real-world apps** — see the [Neo4j Compatibility Gallery](https://turbo-adventure-3eloook.pages.github.io/neo4j-compat-gallery) for 4 security-focused open-source apps running against SedanDelivery with zero code modifications.
 
 See [docs/specs/sedandelivery-bolt-spec.md](docs/specs/sedandelivery-bolt-spec.md) for the full Bolt protocol specification.
@@ -268,8 +270,8 @@ cargo run -p gql-api   # listens on 0.0.0.0:3001
 **100% openCypher TCK compliance — 3903/3903 scenarios.**
 
 ```bash
-bash scripts/validate.sh           # full validation suite (all tiers, ~5 min)
-bash scripts/validate.sh --fast    # Tier 1+2 only (fmt + clippy + 80 integration tests, ~2 min)
+bash scripts/validate.sh           # full validation suite, including sedan-web lint/test/build
+bash scripts/validate.sh --fast    # PR-path validation, including sedan-web + Rust fast tiers
 bash scripts/validate.sh --tck     # include TCK 3903 scenarios (~3 min extra)
 ```
 

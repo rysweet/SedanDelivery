@@ -18,6 +18,8 @@ use crate::protocol::state::ServerState;
 
 // Re-export public types from sub-modules.
 pub(crate) use bookmarks::{next_bookmark, validate_bookmarks};
+#[cfg(test)]
+pub(crate) use hello::with_required_password_override_for_tests;
 pub(crate) use session::constant_time_eq;
 pub use session::{AdminStats, PendingQuery, Session};
 
@@ -1169,7 +1171,10 @@ mod tests {
         match success {
             ServerMessage::Success(meta) => {
                 let profile = meta.get_value("profile");
-                assert!(profile.is_some(), "PULL SUCCESS must include 'profile' field");
+                assert!(
+                    profile.is_some(),
+                    "PULL SUCCESS must include 'profile' field"
+                );
                 if let Some(BoltValue::Map(plan_entries)) = profile {
                     // Plan should have operatorType
                     let op_type = plan_entries.get_str("operatorType");
@@ -1178,10 +1183,7 @@ mod tests {
                     // Plan should have rows field with actual count
                     let rows = plan_entries.get_int("rows");
                     assert!(rows.is_some(), "plan should have rows field");
-                    assert!(
-                        rows.unwrap() > 0,
-                        "root operator rows should be non-zero"
-                    );
+                    assert!(rows.unwrap() > 0, "root operator rows should be non-zero");
 
                     // Plan should have dbHits field
                     let db_hits = plan_entries.get_int("dbHits");

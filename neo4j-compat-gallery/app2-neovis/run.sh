@@ -5,13 +5,16 @@
 # Prerequisites:
 #   - SedanDelivery Bolt server running on localhost:7687
 #   - MITRE ATT&CK dataset loaded
-#   - Node.js / npx available
+#   - Python 3.11+ with pip
 # ─────────────────────────────────────────────────────────────
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-BOLT_PORT=7687
-HTTP_PORT=8080
+BOLT_URI="${BOLT_URI:-bolt://localhost:7687}"
+BOLT_PORT="${BOLT_URI##*:}"
+BOLT_USERNAME="${BOLT_USERNAME:-neo4j}"
+BOLT_PASSWORD="${BOLT_PASSWORD:-}"
+HTTP_PORT="${PORT:-8080}"
 
 # ── Colors ──────────────────────────────────────────────────
 RED='\033[0;31m'
@@ -46,23 +49,13 @@ else
     exit 1
 fi
 
-# ── Check Node.js ───────────────────────────────────────────
-echo -n "Checking Node.js... "
-if command -v node &>/dev/null; then
-    echo -e "${GREEN}$(node --version)${NC}"
+# ── Check Python ─────────────────────────────────────────────
+echo -n "Checking Python... "
+if command -v python3 &>/dev/null; then
+    echo -e "${GREEN}$(python3 --version)${NC}"
 else
     echo -e "${RED}NOT FOUND${NC}"
-    echo "Node.js is required. Install it from https://nodejs.org/"
-    exit 1
-fi
-
-# ── Check npx ───────────────────────────────────────────────
-echo -n "Checking npx... "
-if command -v npx &>/dev/null; then
-    echo -e "${GREEN}available${NC}"
-else
-    echo -e "${RED}NOT FOUND${NC}"
-    echo "npx is required (comes with npm 5.2+)."
+    echo "Python 3 is required."
     exit 1
 fi
 
@@ -78,6 +71,13 @@ fi
 
 # ── Start HTTP server ──────────────────────────────────────
 echo ""
+if [[ -n "${BOLT_PASSWORD}" ]]; then
+    echo -e "Bolt auth: ${GREEN}enabled${NC} for user ${CYAN}${BOLT_USERNAME}${NC}"
+else
+    echo -e "Bolt auth: ${YELLOW}disabled${NC} (BOLT_PASSWORD unset)"
+fi
+echo -e "Installing Python dependency: ${CYAN}neo4j${NC}"
+python3 -m pip install -q neo4j
 echo -e "Starting HTTP server on port ${CYAN}${HTTP_PORT}${NC}..."
 echo -e "Dashboard URL: ${GREEN}http://localhost:${HTTP_PORT}${NC}"
 echo ""
@@ -85,4 +85,8 @@ echo "Press Ctrl+C to stop."
 echo ""
 
 cd "${SCRIPT_DIR}"
-npx serve -l "${HTTP_PORT}" -s . --cors
+export BOLT_URI
+export BOLT_USERNAME
+export BOLT_PASSWORD
+export PORT="${HTTP_PORT}"
+exec python3 server.py

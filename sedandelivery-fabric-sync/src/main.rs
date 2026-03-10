@@ -76,13 +76,14 @@ fn main() {
         }
         "redis://127.0.0.1:6379".to_string()
     });
+    let redacted_redis_url = redact_url_credentials(&redis_url);
 
-    info!(redis_url = %redis_url, "Connecting to Redis");
+    info!(redis_url = %redacted_redis_url, "Connecting to Redis");
 
     let client = match Client::open(redis_url.as_str()) {
         Ok(c) => c,
         Err(e) => {
-            error!("Failed to open Redis client ({redis_url}): {e}");
+            error!("Failed to open Redis client ({redacted_redis_url}): {e}");
             std::process::exit(1);
         }
     };
@@ -149,6 +150,26 @@ fn env_usize(key: &str, default: usize) -> usize {
     }
 }
 
+fn redact_url_credentials(url: &str) -> String {
+    let Some((scheme, remainder)) = url.split_once("://") else {
+        return url.to_string();
+    };
+
+    let authority_end = remainder.find(['/', '?', '#']).unwrap_or(remainder.len());
+    let authority = &remainder[..authority_end];
+    let suffix = &remainder[authority_end..];
+
+    let Some((userinfo, host)) = authority.rsplit_once('@') else {
+        return url.to_string();
+    };
+
+    if userinfo.is_empty() {
+        return url.to_string();
+    }
+
+    format!("{scheme}://***@{host}{suffix}")
+}
+
 /// Connect to Redis, retrying with exponential back-off.
 /// Returns `None` if SHUTDOWN is signalled during the retry loop.
 /// Returns `Some(Err(...))` if max retries are exhausted.
@@ -213,5 +234,23 @@ mod tests {
         let val = env_usize("__FABRIC_SYNC_TEST_INVALID", 77);
         assert_eq!(val, 77);
         unsafe { std::env::remove_var("__FABRIC_SYNC_TEST_INVALID") };
+    }
+
+    #[test]
+    fn redact_url_credentials_preserves_host_and_path() {
+        let redacted = redact_url_credentials("redis://user:secret@127.0.0.1:6379/0");
+        assert_eq!(redacted, "redis://***@127.0.0.1:6379/0");
+    }
+
+    #[test]
+    fn redact_url_credentials_handles_password_only_urls() {
+        let redacted = redact_url_credentials("rediss://:secret@example.com:6380?tls=true");
+        assert_eq!(redacted, "rediss://***@example.com:6380?tls=true");
+    }
+
+    #[test]
+    fn redact_url_credentials_leaves_credential_free_urls_unchanged() {
+        let redacted = redact_url_credentials("redis://127.0.0.1:6379");
+        assert_eq!(redacted, "redis://127.0.0.1:6379");
     }
 }

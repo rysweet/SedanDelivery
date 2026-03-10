@@ -20,9 +20,11 @@
 // RedisGraphStore from within the module.  The XADD calls to __sd2:changelog
 // go through the module's Context (internal dispatch), not a TCP socket.
 //
-// Persistence: InMemoryGraphStore data lives in heap memory.  Valkey's RDB/AOF
-// persistence saves server state, but InMemoryGraphStore is not yet serialised
-// via RDB save/load hooks (tracked as a follow-up).
+// Persistence: InMemoryGraphStore data lives in heap memory for the lifetime of
+// the module process. Valkey's RDB/AOF does not currently serialise that graph
+// state because the module has not implemented Redis save/load hooks yet
+// (tracked as a follow-up). The changelog stream is for external replication,
+// not local restart recovery.
 //
 // Changelog: set GQL_FABRIC_CHANGELOG=1 (or GQL_FABRIC_ENDPOINT=<url>) at
 // module load time to enable async replication to Microsoft Fabric via the
