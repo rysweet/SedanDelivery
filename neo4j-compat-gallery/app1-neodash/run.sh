@@ -16,7 +16,8 @@ NEODASH_PORT=5005
 BOLT_PORT=7687
 IMAGE="neo4jlabs/neodash:latest"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-BOLT_PASSWORD="${BOLT_PASSWORD:-neo4j}"
+BOLT_USERNAME="${BOLT_USERNAME:-neo4j}"
+BOLT_PASSWORD="${BOLT_PASSWORD:-}"
 
 # Colors for output
 RED='\033[0;31m'
@@ -36,6 +37,16 @@ if [[ "${1:-}" == "--stop" ]]; then
     docker stop "$CONTAINER_NAME" 2>/dev/null && ok "Container stopped." || warn "Container was not running."
     docker rm "$CONTAINER_NAME" 2>/dev/null && ok "Container removed." || true
     exit 0
+fi
+
+if [[ -z "$BOLT_PASSWORD" ]]; then
+    error "BOLT_PASSWORD is required for ./run.sh"
+    echo "  Export BOLT_PASSWORD (and optionally BOLT_USERNAME) before starting Neodash."
+    echo "  Example:"
+    echo "    export BOLT_USERNAME=neo4j"
+    echo "    export BOLT_PASSWORD=change-me"
+    echo "    ./run.sh"
+    exit 1
 fi
 
 # ── Step 1: Check that SedanDelivery Bolt is running ─────────────────────────
@@ -88,6 +99,7 @@ if [[ "$(uname -s)" == "Darwin" ]] || grep -qi microsoft /proc/version 2>/dev/nu
     BOLT_HOST="host.docker.internal"
 fi
 info "Container will connect to Bolt at bolt://${BOLT_HOST}:${BOLT_PORT}"
+info "Passing configured Bolt credentials to Neodash for user ${BOLT_USERNAME}"
 
 # ── Step 6: Start Neodash ────────────────────────────────────────────────────
 info "Starting Neodash container..."
@@ -100,7 +112,7 @@ docker run -d \
     -e standaloneHost="${BOLT_HOST}" \
     -e standalonePort="${BOLT_PORT}" \
     -e standaloneDatabase="" \
-    -e standaloneUsername="neo4j" \
+    -e standaloneUsername="${BOLT_USERNAME}" \
     -e standalonePassword="${BOLT_PASSWORD}" \
     --restart unless-stopped \
     "$IMAGE"
@@ -133,7 +145,7 @@ echo -e "  Connection settings in Neodash UI:"
 echo -e "    Protocol:  bolt"
 echo -e "    Host:      localhost"
 echo -e "    Port:      7687"
-echo -e "    Username:  neo4j"
+echo -e "    Username:  ${BOLT_USERNAME}"
 echo -e "    Password:  (from \$BOLT_PASSWORD env var)"
 echo ""
 echo -e "  Pre-built dashboard:"
