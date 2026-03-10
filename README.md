@@ -90,6 +90,8 @@ cargo run -p sedandelivery-bolt
 # Listens on 0.0.0.0:7687 by default (configure via BOLT_BIND_ADDR env var)
 ```
 
+Browser WebSocket clients must set `BOLT_WS_ALLOWED_ORIGINS` to an explicit allowlist; when it is set, SedanDelivery requires a matching `Origin` header on the WebSocket upgrade.
+
 **Validated with real-world apps** — see the [Neo4j Compatibility Gallery](https://turbo-adventure-3eloook.pages.github.io/neo4j-compat-gallery) for 4 security-focused open-source apps running against SedanDelivery with zero code modifications.
 
 See [docs/specs/sedandelivery-bolt-spec.md](docs/specs/sedandelivery-bolt-spec.md) for the full Bolt protocol specification.

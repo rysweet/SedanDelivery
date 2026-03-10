@@ -43,8 +43,7 @@ async fn start_test_server() -> (JoinHandle<()>, u16) {
         .expect("failed to bind test listener");
     let port = listener.local_addr().unwrap().port();
 
-    let store: Arc<dyn gql_core::storage::GraphStore> =
-        Arc::new(InMemoryGraphStore::new());
+    let store: Arc<dyn gql_core::storage::GraphStore> = Arc::new(InMemoryGraphStore::new());
     store
         .create_graph("neo4j")
         .expect("failed to create default database");
@@ -55,7 +54,7 @@ async fn start_test_server() -> (JoinHandle<()>, u16) {
     let handle = tokio::spawn(async move {
         // Accept connections until the listener is dropped or an error occurs.
         loop {
-            let (stream, _) = match listener.accept().await {
+            let (stream, peer_addr) = match listener.accept().await {
                 Ok(pair) => pair,
                 Err(_) => break,
             };
@@ -64,7 +63,12 @@ async fn start_test_server() -> (JoinHandle<()>, u16) {
             let ws = Arc::clone(&write_semaphore);
             tokio::spawn(async move {
                 let _ = sedandelivery_bolt::connection::session::run(
-                    stream, store, 0, bookmark, ws,
+                    stream,
+                    store,
+                    0,
+                    bookmark,
+                    ws,
+                    Some(peer_addr.ip()),
                 )
                 .await;
             });
@@ -150,10 +154,7 @@ async fn send_hello(stream: &mut TcpStream) {
             "user_agent".to_string(),
             BoltValue::String("bolt-integration-test/1.0".to_string()),
         ),
-        (
-            "scheme".to_string(),
-            BoltValue::String("none".to_string()),
-        ),
+        ("scheme".to_string(), BoltValue::String("none".to_string())),
     ]);
     let wire = encode_message(TAG_HELLO, &[extra]);
     stream.write_all(&wire).await.unwrap();
