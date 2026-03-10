@@ -34,6 +34,13 @@ PASSED=0
 FAILED=0
 SKIPPED=0
 
+if [ -z "${VALKEY_PASSWORD:-}" ]; then
+    echo "ERROR: VALKEY_PASSWORD must be set before running compose-backed Redis/Valkey smoke tests."
+    echo "Example: export VALKEY_PASSWORD='change-me-for-local-dev'"
+    exit 1
+fi
+export VALKEY_PASSWORD
+
 log_info()  { echo -e "${YELLOW}[INFO]${NC}  $*"; }
 log_pass()  { echo -e "${GREEN}[PASS]${NC}  $*"; }
 log_fail()  { echo -e "${RED}[FAIL]${NC}  $*"; }
@@ -151,7 +158,7 @@ run_smoke_test() {
 cleanup() {
     local compose_file="$1"
     log_info "Cleaning up: $compose_file"
-    docker compose -f "$compose_file" down -v --remove-orphans --timeout 10 2>/dev/null || true
+    VALKEY_PASSWORD="$VALKEY_PASSWORD" docker compose -f "$compose_file" down -v --remove-orphans --timeout 10 2>/dev/null || true
 }
 
 # ── Test a single mode ────────────────────────────────────────────────────────
@@ -164,6 +171,7 @@ test_mode() {
     echo "================================================================"
     log_info "Testing mode: $mode_name"
     log_info "Compose file: $compose_file"
+    log_info "Using caller-provided VALKEY_PASSWORD for compose-backed Redis/Valkey auth"
     echo "================================================================"
 
     if [ ! -f "$compose_file" ]; then
@@ -177,7 +185,7 @@ test_mode() {
 
     # Start services
     log_info "Starting services..."
-    if ! docker compose -f "$compose_file" up -d --build 2>&1; then
+    if ! VALKEY_PASSWORD="$VALKEY_PASSWORD" docker compose -f "$compose_file" up -d --build 2>&1; then
         log_fail "$mode_name — docker compose up failed"
         FAILED=$((FAILED + 1))
         cleanup "$compose_file"
@@ -188,7 +196,7 @@ test_mode() {
     if ! wait_for_bolt "$wait_time"; then
         log_fail "$mode_name — timeout waiting for Bolt server"
         log_info "Container logs:"
-        docker compose -f "$compose_file" logs --tail=30 sedandelivery-bolt 2>/dev/null || true
+        VALKEY_PASSWORD="$VALKEY_PASSWORD" docker compose -f "$compose_file" logs --tail=30 sedandelivery-bolt 2>/dev/null || true
         FAILED=$((FAILED + 1))
         cleanup "$compose_file"
         return 1

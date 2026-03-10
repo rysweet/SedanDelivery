@@ -1,6 +1,7 @@
 # docker-compose.yml — Standalone Valkey for local development
 #
 # Usage:
+#   export VALKEY_PASSWORD='change-me-for-local-dev'
 #   docker compose up -d
 #   docker compose down -v
 #
@@ -12,16 +13,24 @@ services:
     image: valkey/valkey:8-bookworm
     ports:
       - "6379:6379"
+    environment:
+      VALKEY_PASSWORD: ${VALKEY_PASSWORD}
     volumes:
       - valkey-data:/data
-    command: >
-      valkey-server
-      --save 60 1
-      --loglevel notice
-      --maxmemory 256mb
-      --maxmemory-policy noeviction
+    command: |
+      sh -ec '
+        test -n "$$VALKEY_PASSWORD" || { echo "VALKEY_PASSWORD is required" >&2; exit 1; }
+        printf "%s\n" \
+          "requirepass $$VALKEY_PASSWORD" \
+          "save 60 1" \
+          "loglevel notice" \
+          "maxmemory 256mb" \
+          "maxmemory-policy noeviction" \
+          >/tmp/valkey.conf
+        exec valkey-server /tmp/valkey.conf
+      '
     healthcheck:
-      test: ["CMD", "valkey-cli", "ping"]
+      test: ["CMD-SHELL", "test -n \"$$VALKEY_PASSWORD\" && REDISCLI_AUTH=\"$$VALKEY_PASSWORD\" valkey-cli ping"]
       interval: 5s
       timeout: 3s
       retries: 10
@@ -36,7 +45,7 @@ services:
       - "7688:7688"
     environment:
       - RUST_LOG=info
-      - GQL_REDIS_URL=redis://valkey:6379
+      - GQL_REDIS_URL=redis://:${VALKEY_PASSWORD}@valkey:6379
       - BOLT_IDLE_TIMEOUT_SECS=3600
       - BOLT_MAX_CONNECTIONS=1024
     depends_on:

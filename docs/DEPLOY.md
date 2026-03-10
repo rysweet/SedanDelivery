@@ -366,6 +366,8 @@ Three docker-compose configurations are provided for testing each Redis backend 
 Single Valkey 8 instance. Best for local development and most use cases.
 
 ```bash
+export VALKEY_PASSWORD='change-me-for-local-dev'
+
 # Start
 docker compose up -d
 
@@ -376,13 +378,15 @@ docker compose up -d
 docker compose down -v
 ```
 
-Environment: `GQL_REDIS_URL=redis://valkey:6379`
+Environment: `VALKEY_PASSWORD=<required>`, `GQL_REDIS_URL=redis://:password@valkey:6379`
 
 ### Redis Cluster (3 masters + 3 replicas)
 
 Tests cluster mode with automatic hash-slot distribution. Uses 6 Redis 7 nodes and an init container that forms the cluster.
 
 ```bash
+export VALKEY_PASSWORD='change-me-for-local-dev'
+
 # Start
 docker compose -f docker-compose.cluster.yml up -d
 
@@ -393,13 +397,15 @@ docker compose -f docker-compose.cluster.yml up -d
 docker compose -f docker-compose.cluster.yml down -v
 ```
 
-Environment: `GQL_REDIS_CLUSTER_NODES=redis://redis-node-1:6379,...,redis://redis-node-6:6379`
+Environment: `VALKEY_PASSWORD=<required>`, `GQL_REDIS_CLUSTER_NODES=redis://:password@redis-node-1:6379,...,redis://:password@redis-node-6:6379`
 
 ### Master + 2 Read Replicas
 
 Tests read-replica routing. Writes go to the master; reads are distributed across two replicas via round-robin.
 
 ```bash
+export VALKEY_PASSWORD='change-me-for-local-dev'
+
 # Start
 docker compose -f docker-compose.replica.yml up -d
 
@@ -413,13 +419,14 @@ docker compose -f docker-compose.replica.yml up -d
 docker compose -f docker-compose.replica.yml down -v
 ```
 
-Environment: `GQL_REDIS_URL=redis://master:6379`, `GQL_REDIS_REPLICA_URL=redis://replica1:6379,redis://replica2:6379`
+Environment: `VALKEY_PASSWORD=<required>`, `GQL_REDIS_URL=redis://:password@master:6379`, `GQL_REDIS_REPLICA_URL=redis://:password@replica1:6379,redis://:password@replica2:6379`
 
 ### Automated Smoke Tests
 
 A script tests all three modes sequentially. It starts each configuration, runs a basic Bolt smoke test (create graph, create node, query, delete), and reports pass/fail.
 
 ```bash
+export VALKEY_PASSWORD='change-me-for-local-dev'
 ./scripts/test-redis-modes.sh
 ```
 
