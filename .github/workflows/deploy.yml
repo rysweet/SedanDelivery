@@ -300,6 +300,7 @@ jobs:
                          persistenceBackend="${BICEP_BACKEND}" \
                          clusterShardCount="${CLUSTER_NODE_COUNT}" \
                          replicasPerShard="${REPLICA_COUNT}" \
+                         allowedDatabaseSourceCidr="10.0.0.0/16" \
             --name "sd2-infra-$(date +%s)" \
             --output json)
 
@@ -735,10 +736,10 @@ jobs:
           # Build secrets and env-var args for bolt
           if [[ -n "${CLUSTER_NODES}" ]]; then
             SECRETS_ARGS="redis-cluster-nodes=${CLUSTER_NODES}"
-            ENV_VAR_ARGS="GQL_REDIS_CLUSTER_NODES=secretref:redis-cluster-nodes BOLT_BIND_ADDR=0.0.0.0:7687"
+            ENV_VAR_ARGS="ENVIRONMENT=production GQL_REDIS_CLUSTER_NODES=secretref:redis-cluster-nodes BOLT_BIND_ADDR=0.0.0.0:7687"
           else
             SECRETS_ARGS="redis-url=${REDIS_URL}"
-            ENV_VAR_ARGS="GQL_REDIS_URL=secretref:redis-url BOLT_BIND_ADDR=0.0.0.0:7687"
+            ENV_VAR_ARGS="ENVIRONMENT=production GQL_REDIS_URL=secretref:redis-url BOLT_BIND_ADDR=0.0.0.0:7687"
           fi
           if [[ -n "${REPLICA_URL}" ]]; then
             SECRETS_ARGS="${SECRETS_ARGS} redis-replica-url=${REPLICA_URL}"

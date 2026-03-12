@@ -24,8 +24,8 @@ param clusterShardCount int = 3
 @maxValue(3)
 param replicasPerShard int = 0
 
-@description('Allowed source CIDR for database ports. Default is open for dev; restrict in production.')
-param allowedDatabaseSourceCidr string = '*'
+@description('Allowed source CIDR for database ports (e.g. VNet CIDR or specific IP range). Must be explicitly set — never use \'*\' in production as it exposes Redis and Bolt to the public internet.')
+param allowedDatabaseSourceCidr string
 
 // ── Variables ─────────────────────────────────────────────────────────────────
 var prefix = 'sd2'
