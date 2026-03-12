@@ -82,7 +82,8 @@ See [ADR-004](ADR-004-distributed-redis) for the full architecture decision reco
 | `BOLT_WS_ALLOWED_ORIGINS` | — | Comma-separated browser origins allowed to use Bolt over WebSocket; when set, a matching `Origin` header is required and `*` allows any origin |
 | `BOLT_ENABLED` | `true` | Enable/disable Bolt server in container |
 | `BOLT_MAX_CONNECTIONS` | `1024` | Max concurrent Bolt connections |
-| `BOLT_IDLE_TIMEOUT_SECS` | `3600` | Close idle connections after N seconds |
+| `BOLT_IDLE_TIMEOUT_SECS` | `300` | Close idle connections after N seconds (short default aids L4 load-balancer rebalancing) |
+| `BOLT_MAX_CONNECTION_LIFETIME_SECS` | `1800` | Force-close connections after N seconds regardless of activity (0 = disabled); periodic reconnection aids L4 load balancing |
 | `BOLT_WRITE_CONCURRENCY` | `64` | Max concurrent write transactions |
 | `GQL_REDIS_URL` | — | Redis/Valkey URL; when set, bolt uses Redis-backed store (use `rediss://` for TLS with Azure Cache) |
 | `GQL_REDIS_CLUSTER_NODES` | — | Comma-separated cluster seed URLs (enables Redis Cluster mode, overrides `GQL_REDIS_URL`) |

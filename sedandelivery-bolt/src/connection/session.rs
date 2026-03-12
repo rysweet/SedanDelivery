@@ -1,6 +1,7 @@
 use std::net::IpAddr;
 use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
+use std::time::Duration;
 
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
 
@@ -27,6 +28,15 @@ pub enum SessionError {
     /// The protocol handler rejected the message.
     #[error("protocol error: {0}")]
     Protocol(#[from] handler::ProtocolError),
+    /// The connection was closed because it exceeded the idle timeout
+    /// (no messages received within the configured window).
+    #[error("idle timeout ({0:?})")]
+    IdleTimeout(Duration),
+    /// The connection was closed because it exceeded the maximum connection
+    /// lifetime, which forces periodic reconnection for L4 load-balancer
+    /// rebalancing after scale-out events.
+    #[error("max connection lifetime exceeded ({0:?})")]
+    MaxLifetimeExceeded(Duration),
 }
 
 /// Run a complete Bolt session on the given stream.
@@ -34,7 +44,21 @@ pub enum SessionError {
 /// Performs the version-negotiation handshake, then enters the message loop:
 /// reads chunked messages from the client, dispatches them through the
 /// protocol handler, and writes back the encoded responses.  The loop
-/// terminates on GOODBYE, connection close, or a Defunct state transition.
+/// terminates on GOODBYE, connection close, a Defunct state transition,
+/// idle timeout, or max connection lifetime expiry.
+///
+/// ## Timeout behaviour
+///
+/// * **`idle_timeout`** -- maximum time to wait for the *next* client message.
+///   The timer resets after every successfully received message so active
+///   sessions are not killed.  Default 300 s.
+///
+/// * **`max_connection_lifetime`** -- hard wall-clock cap on the entire
+///   connection measured from session start (after handshake).  When set, the
+///   connection is closed regardless of activity.  This is critical for L4
+///   load balancers (e.g. Envoy) which pin connections to a backend at
+///   connect-time: without a lifetime cap, new replicas added during
+///   scale-out never receive traffic from long-lived connections.
 ///
 /// The stream is generic over any type implementing `AsyncRead + AsyncWrite`,
 /// which allows it to work with both plaintext TCP streams and TLS-wrapped
@@ -46,6 +70,8 @@ pub async fn run<S>(
     global_bookmark: Arc<AtomicU64>,
     write_semaphore: Arc<tokio::sync::Semaphore>,
     peer_ip: Option<IpAddr>,
+    idle_timeout: Duration,
+    max_connection_lifetime: Option<Duration>,
 ) -> Result<(), SessionError>
 where
     S: AsyncRead + AsyncWrite + Unpin,
@@ -54,7 +80,8 @@ where
     let mut reader = BufReader::new(read_half);
     let mut writer = write_half;
 
-    // Handshake
+    // Handshake (not subject to idle timeout -- handshake has its own timeout
+    // semantics and we don't want to penalise slow TLS negotiation).
     let version = handshake::perform(&mut reader, &mut writer).await?;
     tracing::info!(conn_id, ?version, "handshake complete");
 
@@ -75,13 +102,63 @@ where
         peer_ip,
     };
 
-    // Message loop
+    // Absolute deadline for the connection lifetime (if configured).
+    let lifetime_deadline = max_connection_lifetime.map(|d| tokio::time::Instant::now() + d);
+
+    // Message loop -- each iteration waits for the next message with an idle
+    // timeout, and also checks the absolute lifetime deadline.
     loop {
         if session.state == ServerState::Defunct {
             break;
         }
 
-        let msg_bytes = match codec::chunk_decode(&mut reader).await {
+        // Build the future that reads the next chunked message.
+        let read_fut = codec::chunk_decode(&mut reader);
+
+        // Apply idle timeout, then lifetime deadline on top.
+        let msg_bytes = if let Some(deadline) = lifetime_deadline {
+            match tokio::time::timeout_at(deadline, tokio::time::timeout(idle_timeout, read_fut))
+                .await
+            {
+                // Lifetime expired.
+                Err(_) => {
+                    let lifetime = max_connection_lifetime.unwrap();
+                    tracing::info!(
+                        conn_id,
+                        lifetime_secs = lifetime.as_secs(),
+                        "closing connection: max lifetime exceeded \
+                         (forces reconnect for L4 load-balancer rebalancing)"
+                    );
+                    return Err(SessionError::MaxLifetimeExceeded(lifetime));
+                }
+                // Idle timeout expired (but lifetime not yet).
+                Ok(Err(_)) => {
+                    tracing::info!(
+                        conn_id,
+                        idle_secs = idle_timeout.as_secs(),
+                        "closing connection: idle timeout"
+                    );
+                    return Err(SessionError::IdleTimeout(idle_timeout));
+                }
+                // Got bytes (or IO error).
+                Ok(Ok(result)) => result,
+            }
+        } else {
+            // No lifetime cap -- just apply idle timeout.
+            match tokio::time::timeout(idle_timeout, read_fut).await {
+                Err(_) => {
+                    tracing::info!(
+                        conn_id,
+                        idle_secs = idle_timeout.as_secs(),
+                        "closing connection: idle timeout"
+                    );
+                    return Err(SessionError::IdleTimeout(idle_timeout));
+                }
+                Ok(result) => result,
+            }
+        };
+
+        let msg_bytes = match msg_bytes {
             Ok(b) if b.is_empty() => break,
             Ok(b) => b,
             Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => break,
@@ -249,6 +326,8 @@ mod tests {
                     Arc::new(AtomicU64::new(0)),
                     Arc::new(tokio::sync::Semaphore::new(128)),
                     Some(ip),
+                    Duration::from_secs(300),
+                    None,
                 )
                 .await
             })

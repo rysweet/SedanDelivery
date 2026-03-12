@@ -69,6 +69,8 @@ async fn start_test_server() -> (JoinHandle<()>, u16) {
                     bookmark,
                     ws,
                     Some(peer_addr.ip()),
+                    std::time::Duration::from_secs(300),
+                    None,
                 )
                 .await;
             });

@@ -116,7 +116,8 @@ sequenceDiagram
 
 Connection lifecycle:
 - Semaphore-gated concurrency (`BOLT_MAX_CONNECTIONS`, default 1024)
-- Idle timeout reaping (`BOLT_IDLE_TIMEOUT_SECS`, default 3600)
+- Per-message idle timeout reaping (`BOLT_IDLE_TIMEOUT_SECS`, default 300) -- resets on each message
+- Max connection lifetime (`BOLT_MAX_CONNECTION_LIFETIME_SECS`, default 1800) -- hard wall-clock cap that forces periodic reconnection, critical for L4 load-balancer rebalancing after scale-out
 - Explicit transactions via BEGIN/COMMIT/ROLLBACK with snapshot isolation
 - Write concurrency semaphore for transaction contention (`BOLT_WRITE_CONCURRENCY`)
 

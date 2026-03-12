@@ -273,7 +273,8 @@ services:
       - VALKEY_PASSWORD=${VALKEY_PASSWORD}
       - GQL_REDIS_CLUSTER_NODES=redis://:${VALKEY_PASSWORD}@redis-node-1:6379,redis://:${VALKEY_PASSWORD}@redis-node-2:6379,redis://:${VALKEY_PASSWORD}@redis-node-3:6379,redis://:${VALKEY_PASSWORD}@redis-node-4:6379,redis://:${VALKEY_PASSWORD}@redis-node-5:6379,redis://:${VALKEY_PASSWORD}@redis-node-6:6379
       - BOLT_PASSWORD=${BOLT_PASSWORD}
-      - BOLT_IDLE_TIMEOUT_SECS=3600
+      - BOLT_IDLE_TIMEOUT_SECS=300
+      - BOLT_MAX_CONNECTION_LIFETIME_SECS=1800
       - BOLT_MAX_CONNECTIONS=1024
     depends_on:
       cluster-init:

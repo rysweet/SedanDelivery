@@ -4,7 +4,7 @@ Outside-in integration test: concurrent bulk writes at scale.
 Verifies the fixes from GitHub issue cloud-ecosystem-security/cybergym#542:
   1. Concurrent writes are NOT serialized by a global lock (semaphore model).
   2. Property indexes make MERGE O(1) instead of O(N).
-  3. Session timeout (3600s default) does not kill bulk write sessions.
+  3. Session idle timeout (300s default) does not kill bulk write sessions.
 
 This test drives the bolt server purely from the outside via the neo4j Python
 driver — no internal APIs, no mocking. If these tests pass against a running

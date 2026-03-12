@@ -19,7 +19,8 @@ services:
     environment:
       - RUST_LOG=info
       - BOLT_PASSWORD=${BOLT_PASSWORD:?Set BOLT_PASSWORD for neo4j-compat-gallery/docker-compose.yml}
-      - BOLT_IDLE_TIMEOUT_SECS=3600
+      - BOLT_IDLE_TIMEOUT_SECS=300
+      - BOLT_MAX_CONNECTION_LIFETIME_SECS=1800
       - BOLT_MAX_CONNECTIONS=1024
       - BOLT_WRITE_CONCURRENCY=128
     healthcheck:

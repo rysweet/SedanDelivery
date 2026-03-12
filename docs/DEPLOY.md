@@ -284,7 +284,8 @@ Set these in your Container App or `deploy.yml` to customize behavior:
 | `BOLT_PASSWORD` | (none) | Optional for direct bolt runs; local Compose profiles inherit `VALKEY_PASSWORD` unless overridden |
 | `BOLT_WS_ALLOWED_ORIGINS` | (none) | Comma-separated browser origins allowed to upgrade Bolt over WebSocket; when set, requests must send a matching `Origin` header and `*` allows any origin |
 | `BOLT_MAX_CONNECTIONS` | `1024` | Max concurrent Bolt connections |
-| `BOLT_IDLE_TIMEOUT_SECS` | `3600` | Close idle connections after N seconds |
+| `BOLT_IDLE_TIMEOUT_SECS` | `300` | Close idle connections after N seconds (short default aids L4 load-balancer rebalancing) |
+| `BOLT_MAX_CONNECTION_LIFETIME_SECS` | `1800` | Force-close connections after N seconds regardless of activity (0 = disabled); ensures periodic reconnection for L4 load balancing |
 | **Redis Backend** | | |
 | `GQL_REDIS_URL` | (none) | Redis/Valkey connection URL |
 | `GQL_REDIS_CLUSTER_NODES` | (none) | Cluster seed URLs (overrides `GQL_REDIS_URL`) |

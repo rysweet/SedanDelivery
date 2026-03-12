@@ -90,13 +90,30 @@ async fn main() {
     let bind_addr = std::env::var("BOLT_BIND_ADDR").unwrap_or_else(|_| "0.0.0.0:7687".to_string());
 
     // --- Connection lifecycle configuration ---
+    //
+    // Short idle timeouts and bounded connection lifetimes are critical for
+    // L4 (TCP-level) load balancing such as Envoy in Container Apps.  L4
+    // balancers assign a connection to a backend at connect-time and never
+    // move it.  Long-lived connections therefore "pin" to the original
+    // replica, starving new replicas after a scale-out event.  By capping
+    // idle time (300 s) and absolute lifetime (1800 s) we force clients to
+    // reconnect periodically, giving the load balancer a chance to spread
+    // traffic across all healthy replicas.
 
     let max_connections: usize =
         gql_core::config::parse_env_range("BOLT_MAX_CONNECTIONS", 1024, 1, 65535);
 
     let idle_timeout_secs: u64 =
-        gql_core::config::parse_env_range("BOLT_IDLE_TIMEOUT_SECS", 3600, 1, 86400);
+        gql_core::config::parse_env_range("BOLT_IDLE_TIMEOUT_SECS", 300, 1, 86400);
     let idle_timeout = Duration::from_secs(idle_timeout_secs);
+
+    let max_connection_lifetime_secs: u64 =
+        gql_core::config::parse_env_range("BOLT_MAX_CONNECTION_LIFETIME_SECS", 1800, 0, 86400);
+    let max_connection_lifetime = if max_connection_lifetime_secs == 0 {
+        None
+    } else {
+        Some(Duration::from_secs(max_connection_lifetime_secs))
+    };
 
     let write_concurrency: u32 =
         gql_core::config::parse_env_range("BOLT_WRITE_CONCURRENCY", 128, 1, 10000);
@@ -181,10 +198,11 @@ async fn main() {
         .await
         .expect("failed to bind Bolt TCP listener");
     tracing::info!(
-        "sedandelivery-bolt listening on {} (max_connections={}, idle_timeout={}s, write_concurrency={})",
+        "sedandelivery-bolt listening on {} (max_connections={}, idle_timeout={}s, max_connection_lifetime={}s, write_concurrency={})",
         bind_addr,
         max_connections,
         idle_timeout_secs,
+        max_connection_lifetime_secs,
         write_concurrency
     );
 
@@ -270,87 +288,93 @@ async fn main() {
             // It also records disconnect metrics via connection_closed().
             let _guard = ConnectionGuard { active };
 
-            // Wrap TLS handshake + session::run in a timeout so idle connections are reaped.
-            let result = tokio::time::timeout(idle_timeout, async {
-                if let Some(acceptor) = tls {
-                    match acceptor.accept(stream).await {
-                        Ok(tls_stream) => {
-                            tracing::debug!(conn_id, "TLS handshake complete");
-                            sedandelivery_bolt::connection::session::run(
-                                tls_stream,
-                                store,
-                                conn_id,
-                                bookmark,
-                                wl,
-                                Some(peer_addr.ip()),
-                            )
-                            .await
-                        }
-                        Err(e) => {
-                            tracing::warn!(%peer_addr, conn_id, "TLS handshake failed: {e}");
-                            Ok(())
-                        }
-                    }
-                } else {
-                    // Detect WebSocket upgrade vs raw Bolt TCP.
-                    let is_ws = sedandelivery_bolt::websocket::is_websocket_upgrade(&stream)
-                        .await
-                        .unwrap_or(false);
-
-                    if is_ws {
-                        tracing::info!(conn_id, "WebSocket upgrade detected");
-                        match sedandelivery_bolt::websocket::accept(stream).await {
-                            Ok(ws_stream) => {
-                                let adapter =
-                                    sedandelivery_bolt::websocket::WsStreamAdapter::new(ws_stream);
-                                tracing::info!(conn_id, "WebSocket connection established");
-                                sedandelivery_bolt::connection::session::run(
-                                    adapter,
-                                    store,
-                                    conn_id,
-                                    bookmark,
-                                    wl,
-                                    Some(peer_addr.ip()),
-                                )
-                                .await
-                            }
-                            Err(e) => {
-                                tracing::warn!(
-                                    %peer_addr, conn_id,
-                                    "WebSocket upgrade failed: {e}"
-                                );
-                                Ok(())
-                            }
-                        }
-                    } else {
+            // Idle timeout and max connection lifetime are now enforced
+            // inside session::run per-message, so we no longer wrap the
+            // entire session in a single tokio::time::timeout.
+            let result = if let Some(acceptor) = tls {
+                match acceptor.accept(stream).await {
+                    Ok(tls_stream) => {
+                        tracing::debug!(conn_id, "TLS handshake complete");
                         sedandelivery_bolt::connection::session::run(
-                            stream,
+                            tls_stream,
                             store,
                             conn_id,
                             bookmark,
                             wl,
                             Some(peer_addr.ip()),
+                            idle_timeout,
+                            max_connection_lifetime,
                         )
                         .await
                     }
+                    Err(e) => {
+                        tracing::warn!(%peer_addr, conn_id, "TLS handshake failed: {e}");
+                        Ok(())
+                    }
                 }
-            })
-            .await;
+            } else {
+                // Detect WebSocket upgrade vs raw Bolt TCP.
+                let is_ws = sedandelivery_bolt::websocket::is_websocket_upgrade(&stream)
+                    .await
+                    .unwrap_or(false);
+
+                if is_ws {
+                    tracing::info!(conn_id, "WebSocket upgrade detected");
+                    match sedandelivery_bolt::websocket::accept(stream).await {
+                        Ok(ws_stream) => {
+                            let adapter =
+                                sedandelivery_bolt::websocket::WsStreamAdapter::new(ws_stream);
+                            tracing::info!(conn_id, "WebSocket connection established");
+                            sedandelivery_bolt::connection::session::run(
+                                adapter,
+                                store,
+                                conn_id,
+                                bookmark,
+                                wl,
+                                Some(peer_addr.ip()),
+                                idle_timeout,
+                                max_connection_lifetime,
+                            )
+                            .await
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                %peer_addr, conn_id,
+                                "WebSocket upgrade failed: {e}"
+                            );
+                            Ok(())
+                        }
+                    }
+                } else {
+                    sedandelivery_bolt::connection::session::run(
+                        stream,
+                        store,
+                        conn_id,
+                        bookmark,
+                        wl,
+                        Some(peer_addr.ip()),
+                        idle_timeout,
+                        max_connection_lifetime,
+                    )
+                    .await
+                }
+            };
 
             match result {
-                Ok(Ok(())) => {
+                Ok(()) => {
                     tracing::info!(%peer_addr, conn_id, "connection closed normally");
                 }
-                Ok(Err(e)) => {
-                    tracing::warn!(%peer_addr, conn_id, "session error: {}", e);
-                }
-                Err(_elapsed) => {
-                    tracing::info!(
-                        %peer_addr,
-                        conn_id,
-                        timeout_secs = idle_timeout_secs,
-                        "connection closed: idle timeout"
-                    );
+                Err(e) => {
+                    // Idle timeout and max lifetime are expected closures, not warnings.
+                    use sedandelivery_bolt::connection::session::SessionError;
+                    match &e {
+                        SessionError::IdleTimeout(_) | SessionError::MaxLifetimeExceeded(_) => {
+                            tracing::info!(%peer_addr, conn_id, "{e}");
+                        }
+                        _ => {
+                            tracing::warn!(%peer_addr, conn_id, "session error: {e}");
+                        }
+                    }
                 }
             }
 
