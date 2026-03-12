@@ -1,0 +1,111 @@
+# docker-compose.scale-test.yml — Two Bolt instances sharing one Valkey backend
+#
+# Usage:
+#   export VALKEY_PASSWORD='change-me-for-local-dev'
+#   docker compose -f docker-compose.scale-test.yml up -d --build
+#   python3 tests/test_multi_instance.py
+#   docker compose -f docker-compose.scale-test.yml down -v
+#
+# Validates that 2 concurrent sedandelivery-bolt instances can safely share
+# a single Valkey/Redis backend without data corruption.
+
+services:
+  valkey:
+    image: valkey/valkey:8-bookworm
+    ports:
+      - "6379:6379"
+    environment:
+      VALKEY_PASSWORD: ${VALKEY_PASSWORD}
+    volumes:
+      - valkey-data:/data
+    command: |
+      sh -ec '
+        test -n "$$VALKEY_PASSWORD" || { echo "VALKEY_PASSWORD is required" >&2; exit 1; }
+        printf "%s\n" \
+          "requirepass $$VALKEY_PASSWORD" \
+          "save 60 1" \
+          "loglevel notice" \
+          "maxmemory 256mb" \
+          "maxmemory-policy noeviction" \
+          >/tmp/valkey.conf
+        exec valkey-server /tmp/valkey.conf
+      '
+    healthcheck:
+      test: ["CMD-SHELL", "test -n \"$$VALKEY_PASSWORD\" && REDISCLI_AUTH=\"$$VALKEY_PASSWORD\" valkey-cli ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
+  # ── Bolt Instance 1 (port 7687) ───────────────────────────────────────────
+  bolt-1:
+    build:
+      context: .
+      dockerfile: Dockerfile.bolt
+    entrypoint:
+      - /bin/sh
+      - -ec
+      - |
+        export BOLT_PASSWORD="${BOLT_PASSWORD:-$VALKEY_PASSWORD}"
+        test -n "$BOLT_PASSWORD" || {
+          echo "BOLT_PASSWORD or VALKEY_PASSWORD is required" >&2
+          exit 1
+        }
+        exec sedandelivery-bolt
+    ports:
+      - "7687:7687"
+      - "7688:7688"
+    environment:
+      - RUST_LOG=info
+      - VALKEY_PASSWORD=${VALKEY_PASSWORD}
+      - GQL_REDIS_URL=redis://:${VALKEY_PASSWORD}@valkey:6379
+      - BOLT_PASSWORD=${BOLT_PASSWORD}
+      - BOLT_IDLE_TIMEOUT_SECS=3600
+      - BOLT_MAX_CONNECTIONS=1024
+    depends_on:
+      valkey:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:7688/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 15s
+
+  # ── Bolt Instance 2 (port 7689) ───────────────────────────────────────────
+  bolt-2:
+    build:
+      context: .
+      dockerfile: Dockerfile.bolt
+    entrypoint:
+      - /bin/sh
+      - -ec
+      - |
+        export BOLT_PASSWORD="${BOLT_PASSWORD:-$VALKEY_PASSWORD}"
+        test -n "$BOLT_PASSWORD" || {
+          echo "BOLT_PASSWORD or VALKEY_PASSWORD is required" >&2
+          exit 1
+        }
+        exec sedandelivery-bolt
+    ports:
+      - "7689:7687"
+      - "7690:7688"
+    environment:
+      - RUST_LOG=info
+      - VALKEY_PASSWORD=${VALKEY_PASSWORD}
+      - GQL_REDIS_URL=redis://:${VALKEY_PASSWORD}@valkey:6379
+      - BOLT_PASSWORD=${BOLT_PASSWORD}
+      - BOLT_IDLE_TIMEOUT_SECS=3600
+      - BOLT_MAX_CONNECTIONS=1024
+    depends_on:
+      valkey:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:7688/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 15s
+
+volumes:
+  valkey-data:

@@ -1,0 +1,105 @@
+name: Multi-Instance Bolt Test
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+    paths:
+      - "gql-redis-store/**"
+      - "sedandelivery-bolt/**"
+      - "gql-core/**"
+      - "docker-compose.scale-test.yml"
+      - "tests/test_multi_instance.py"
+      - "scripts/test-multi-instance.sh"
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  multi-instance:
+    name: Two Bolt instances + shared Redis
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+
+      - name: Cache cargo registry
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-multi-instance-${{ hashFiles('**/Cargo.toml') }}
+          restore-keys: ${{ runner.os }}-cargo-multi-instance-
+
+      - name: Build sedandelivery-bolt (release)
+        run: cargo build --release -p sedandelivery-bolt
+
+      - name: Install Python neo4j driver
+        run: pip install neo4j
+
+      - name: Start two Bolt instances
+        env:
+          GQL_REDIS_URL: redis://localhost:6379
+          RUST_LOG: warn
+        run: |
+          # Instance 1: explicit ports (7687 bolt, 7688 health)
+          BOLT_BIND_ADDR=0.0.0.0:7687 BOLT_HEALTH_BIND_ADDR=0.0.0.0 BOLT_HEALTH_PORT=7688 \
+            ./target/release/sedandelivery-bolt &
+          BOLT1_PID=$!
+          echo "BOLT1_PID=$BOLT1_PID" >> "$GITHUB_ENV"
+
+          # Instance 2: offset ports (7689 bolt, 7690 health)
+          BOLT_BIND_ADDR=0.0.0.0:7689 BOLT_HEALTH_BIND_ADDR=0.0.0.0 BOLT_HEALTH_PORT=7690 \
+            ./target/release/sedandelivery-bolt &
+          BOLT2_PID=$!
+          echo "BOLT2_PID=$BOLT2_PID" >> "$GITHUB_ENV"
+
+          # Wait for both to accept connections
+          for port in 7687 7689; do
+            for i in $(seq 1 60); do
+              if nc -z localhost $port 2>/dev/null; then
+                echo "Bolt on port $port is ready"
+                break
+              fi
+              sleep 0.5
+            done
+          done
+
+      - name: Run multi-instance correctness test
+        env:
+          BOLT_PASSWORD: ""
+        run: |
+          python3 tests/test_multi_instance.py \
+            --bolt1 bolt://localhost:7687 \
+            --bolt2 bolt://localhost:7689 \
+            --password "${BOLT_PASSWORD:-neo4j}" \
+            --nodes-per-instance 100
+
+      - name: Stop Bolt instances
+        if: always()
+        run: |
+          kill $BOLT1_PID 2>/dev/null || true
+          kill $BOLT2_PID 2>/dev/null || true
+          wait $BOLT1_PID 2>/dev/null || true
+          wait $BOLT2_PID 2>/dev/null || true
