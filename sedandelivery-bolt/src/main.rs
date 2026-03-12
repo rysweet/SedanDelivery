@@ -2,6 +2,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use socket2::SockRef;
 use tokio::net::TcpListener;
 use tokio::sync::Semaphore;
 
@@ -99,6 +100,24 @@ async fn main() {
 
     let write_concurrency: u32 =
         gql_core::config::parse_env_range("BOLT_WRITE_CONCURRENCY", 128, 1, 10000);
+
+    // --- TCP keepalive configuration ---
+    //
+    // Azure Load Balancer has a 4-minute (240s) TCP idle timeout. Connections
+    // that sit idle longer than this are silently dropped, causing clients to
+    // see unexpected `ConnectionResetError` with no server-side indication.
+    //
+    // To prevent this, we enable TCP keepalive on every accepted connection
+    // with a probe interval well under Azure's 240s threshold (default 120s).
+    // The kernel sends probes at TCP_KEEPINTVL (30s) intervals up to
+    // TCP_KEEPCNT (3) times before declaring the connection dead.
+    let keepalive_secs: u64 =
+        gql_core::config::parse_env_range("BOLT_TCP_KEEPALIVE_SECS", 120, 10, 300);
+    let tcp_keepalive = socket2::TcpKeepalive::new()
+        .with_time(Duration::from_secs(keepalive_secs))
+        .with_interval(Duration::from_secs(30))
+        .with_retries(3);
+    tracing::info!(keepalive_secs, "TCP keepalive enabled (Azure LB idle timeout mitigation)");
 
     // Semaphore gates new connections once max_connections is reached.
     let semaphore = Arc::new(Semaphore::new(max_connections));
@@ -211,6 +230,12 @@ async fn main() {
                 continue;
             }
         };
+
+        // Set TCP keepalive on the accepted socket to prevent Azure Load
+        // Balancer from silently dropping idle connections.
+        if let Err(e) = SockRef::from(&stream).set_tcp_keepalive(&tcp_keepalive) {
+            tracing::warn!(%peer_addr, "failed to set TCP keepalive: {e}");
+        }
 
         // Acquire a semaphore permit (blocks if at max_connections).
         let permit = match Arc::clone(&semaphore).acquire_owned().await {
