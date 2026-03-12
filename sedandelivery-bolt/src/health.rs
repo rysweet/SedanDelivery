@@ -39,7 +39,7 @@ struct HealthResponse {
 /// Spawn the health/metrics HTTP server as a background tokio task.
 ///
 /// The server binds to `{bind_addr}:{port}` where bind_addr defaults to
-/// `127.0.0.1` (override with `BOLT_HEALTH_BIND_ADDR`) and port defaults
+/// `0.0.0.0` (override with `BOLT_HEALTH_BIND_ADDR`) and port defaults
 /// to 7688 (override with `BOLT_HEALTH_PORT`).
 pub fn spawn_health_server(state: HealthState) {
     let port = std::env::var("BOLT_HEALTH_PORT")
@@ -54,7 +54,7 @@ pub fn spawn_health_server(state: HealthState) {
         .unwrap_or(7688);
 
     let bind_addr =
-        std::env::var("BOLT_HEALTH_BIND_ADDR").unwrap_or_else(|_| "127.0.0.1".to_string());
+        std::env::var("BOLT_HEALTH_BIND_ADDR").unwrap_or_else(|_| "0.0.0.0".to_string());
 
     // Pre-validate the full socket address to catch typos early.
     let sock_addr_str = format!("{bind_addr}:{port}");
@@ -63,9 +63,9 @@ pub fn spawn_health_server(state: HealthState) {
         Err(_) => {
             tracing::warn!(
                 "BOLT_HEALTH_BIND_ADDR={bind_addr:?} with port={port} does not form a valid SocketAddr, \
-                 falling back to 127.0.0.1:{port}"
+                 falling back to 0.0.0.0:{port}"
             );
-            format!("127.0.0.1:{port}")
+            format!("0.0.0.0:{port}")
                 .parse()
                 .expect("fallback addr must parse")
         }
@@ -326,6 +326,40 @@ mod tests {
         let parsed: HealthResponseTest = serde_json::from_slice(&body).unwrap();
         // Uptime should be 0 or very small since we just created the state.
         assert!(parsed.uptime_seconds <= 2);
+    }
+
+    #[tokio::test]
+    async fn health_server_binds_to_all_interfaces_by_default() {
+        // Spawn the health server without setting BOLT_HEALTH_BIND_ADDR.
+        // It should bind to 0.0.0.0 (all interfaces), which means we can
+        // connect via 127.0.0.1.
+        let state = test_state();
+
+        // Pick a random available port to avoid conflicts.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+
+        // Temporarily set the env vars for this test.
+        // SAFETY: test runs are single-threaded per test function; no other
+        // thread is reading these env vars concurrently within this test.
+        unsafe {
+            std::env::set_var("BOLT_HEALTH_PORT", port.to_string());
+            std::env::remove_var("BOLT_HEALTH_BIND_ADDR");
+        }
+        spawn_health_server(state);
+        unsafe {
+            std::env::remove_var("BOLT_HEALTH_PORT");
+        }
+
+        // Give the server a moment to start.
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        // Connect via 127.0.0.1 -- this works because the server binds 0.0.0.0.
+        let stream = tokio::net::TcpStream::connect(format!("127.0.0.1:{port}"))
+            .await
+            .expect("should connect to health server bound on 0.0.0.0 via 127.0.0.1");
+        drop(stream);
     }
 
     #[tokio::test]
