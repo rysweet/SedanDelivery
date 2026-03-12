@@ -24,8 +24,20 @@ param clusterShardCount int = 3
 @maxValue(3)
 param replicasPerShard int = 0
 
+@description('Maximum replicas for Bolt container app')
+@minValue(1)
+@maxValue(10)
+param boltMaxReplicas int = 1
+
 @description('Allowed source CIDR for database ports (e.g. VNet CIDR or specific IP range). Must be explicitly set — never use \'*\' in production as it exposes Redis and Bolt to the public internet.')
 param allowedDatabaseSourceCidr string
+
+// ── Safety guard: valkey-volume is single-writer (Azure Files) ──────────────
+// Azure Files mounted via ReadWrite is NOT safe for concurrent writes from
+// multiple Valkey instances. Deploying boltMaxReplicas > 1 with valkey-volume
+// will cause data corruption. Use azure-cache or azure-cache-cluster for
+// multi-replica deployments.
+assert valkeyVolumeNoMultiReplica = !(persistenceBackend == 'valkey-volume' && boltMaxReplicas > 1)  /* valkey-volume uses Azure Files (single-writer); multi-replica is unsafe — use azure-cache or azure-cache-cluster instead */
 
 // ── Variables ─────────────────────────────────────────────────────────────────
 var prefix = 'sd2'
@@ -286,3 +298,5 @@ output fileShareName string = 'valkey-data'
 // `az redis list-keys` so they never appear in ARM deployment history (Issue #58).
 // Only one of the three conditional Redis resources will be deployed.
 output azureCacheName string = (deployAzureCache && persistenceBackend == 'azure-cache-cluster') ? redisCacheCluster.name : (deployAzureCache && replicasPerShard > 0) ? redisCacheWithReplicas.name : deployAzureCache ? redisCacheStandard.name : ''
+// Replica config passed through to Container App deployment
+output boltMaxReplicas int = boltMaxReplicas

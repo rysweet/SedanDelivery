@@ -324,6 +324,13 @@ az containerapp update \
 
 Container Apps automatically load-balances across replicas.
 
+> **valkey-volume scaling guard:** The Bicep template includes a `boltMaxReplicas`
+> parameter (default `1`). When `persistenceBackend` is `valkey-volume`, the
+> deployment will fail if `boltMaxReplicas > 1`. This is intentional -- Azure
+> Files is single-writer, so running multiple Valkey instances against the same
+> file share would corrupt data. To scale beyond one replica, switch to
+> `azure-cache` or `azure-cache-cluster` as the persistence backend.
+
 ### Vertical: More CPU/Memory
 
 ```bash
