@@ -4,7 +4,6 @@
 //! with a raw `TcpStream` and exercises the handshake, HELLO, RUN+PULL, and
 //! GOODBYE flows using the crate's own PackStream encoder/decoder.
 
-use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -12,6 +11,8 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::task::JoinHandle;
 
 use gql_core::storage::InMemoryGraphStore;
+use sedandelivery_bolt::bookmark::BookmarkCounter;
+use sedandelivery_bolt::connection::session::SessionConfig;
 use sedandelivery_bolt::packstream::decoder;
 use sedandelivery_bolt::packstream::encoder;
 use sedandelivery_bolt::packstream::value::{BoltMap, BoltMapExt, BoltValue};
@@ -48,7 +49,7 @@ async fn start_test_server() -> (JoinHandle<()>, u16) {
         .create_graph("neo4j")
         .expect("failed to create default database");
 
-    let global_bookmark = Arc::new(AtomicU64::new(0));
+    let global_bookmark = Arc::new(BookmarkCounter::from_env());
     let write_semaphore = Arc::new(tokio::sync::Semaphore::new(128));
 
     let handle = tokio::spawn(async move {
@@ -64,13 +65,15 @@ async fn start_test_server() -> (JoinHandle<()>, u16) {
             tokio::spawn(async move {
                 let _ = sedandelivery_bolt::connection::session::run(
                     stream,
-                    store,
-                    0,
-                    bookmark,
-                    ws,
-                    Some(peer_addr.ip()),
-                    std::time::Duration::from_secs(300),
-                    None,
+                    SessionConfig {
+                        store,
+                        conn_id: 0,
+                        peer_ip: Some(peer_addr.ip()),
+                        global_bookmark: bookmark,
+                        write_semaphore: ws,
+                        idle_timeout: std::time::Duration::from_secs(300),
+                        max_connection_lifetime: None,
+                    },
                 )
                 .await;
             });

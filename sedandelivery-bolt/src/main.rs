@@ -350,13 +350,15 @@ async fn main() {
                             tracing::debug!(conn_id, "TLS handshake complete");
                             sedandelivery_bolt::connection::session::run(
                                 tls_stream,
-                                store,
-                                conn_id,
-                                bookmark,
-                                wl,
-                                Some(peer_addr.ip()),
-                                idle_timeout,
-                                max_connection_lifetime,
+                                sedandelivery_bolt::connection::session::SessionConfig {
+                                    store,
+                                    conn_id,
+                                    peer_ip: Some(peer_addr.ip()),
+                                    global_bookmark: bookmark,
+                                    write_semaphore: wl,
+                                    idle_timeout,
+                                    max_connection_lifetime,
+                                },
                             )
                             .await
                         }
@@ -390,13 +392,15 @@ async fn main() {
                             tracing::info!(conn_id, "WebSocket connection established");
                             sedandelivery_bolt::connection::session::run(
                                 adapter,
-                                store,
-                                conn_id,
-                                bookmark,
-                                wl,
-                                Some(peer_addr.ip()),
-                                idle_timeout,
-                                max_connection_lifetime,
+                                sedandelivery_bolt::connection::session::SessionConfig {
+                                    store,
+                                    conn_id,
+                                    peer_ip: Some(peer_addr.ip()),
+                                    global_bookmark: bookmark,
+                                    write_semaphore: wl,
+                                    idle_timeout,
+                                    max_connection_lifetime,
+                                },
                             )
                             .await
                         }
@@ -411,13 +415,15 @@ async fn main() {
                 } else {
                     sedandelivery_bolt::connection::session::run(
                         stream,
-                        store,
-                        conn_id,
-                        bookmark,
-                        wl,
-                        Some(peer_addr.ip()),
-                        idle_timeout,
-                        max_connection_lifetime,
+                        sedandelivery_bolt::connection::session::SessionConfig {
+                            store,
+                            conn_id,
+                            peer_ip: Some(peer_addr.ip()),
+                            global_bookmark: bookmark,
+                            write_semaphore: wl,
+                            idle_timeout,
+                            max_connection_lifetime,
+                        },
                     )
                     .await
                 }

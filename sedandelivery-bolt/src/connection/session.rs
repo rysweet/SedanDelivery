@@ -40,6 +40,36 @@ pub enum SessionError {
     MaxLifetimeExceeded(Duration),
 }
 
+/// Configuration for a single Bolt session.
+///
+/// Groups the parameters needed by [`run()`] into a single struct so that
+/// adding new options does not require changing every call site.
+pub struct SessionConfig {
+    // -- Identity --
+    /// Shared graph store backing this session.
+    pub store: Arc<dyn GraphStore>,
+    /// Unique connection identifier for logging and metrics.
+    pub conn_id: u64,
+    /// Peer IP address used for auth rate limiting and logging.
+    pub peer_ip: Option<IpAddr>,
+
+    // -- Shared state --
+    /// Global bookmark counter shared across all sessions connected to the
+    /// same store so bookmarks produced by one session are meaningful when
+    /// passed to another.
+    pub global_bookmark: Arc<BookmarkCounter>,
+    /// Write concurrency semaphore for transaction timeout contention.
+    pub write_semaphore: Arc<tokio::sync::Semaphore>,
+
+    // -- Timeouts --
+    /// Maximum time to wait for the next client message before closing the
+    /// connection.  The timer resets after every received message.
+    pub idle_timeout: Duration,
+    /// Hard wall-clock cap on the entire connection measured from session
+    /// start (after handshake).  `None` disables the limit.
+    pub max_connection_lifetime: Option<Duration>,
+}
+
 /// Run a complete Bolt session on the given stream.
 ///
 /// Performs the version-negotiation handshake, then enters the message loop:
@@ -66,17 +96,20 @@ pub enum SessionError {
 /// connections.
 pub async fn run<S>(
     stream: S,
-    store: Arc<dyn GraphStore>,
-    conn_id: u64,
-    global_bookmark: Arc<BookmarkCounter>,
-    write_semaphore: Arc<tokio::sync::Semaphore>,
-    peer_ip: Option<IpAddr>,
-    idle_timeout: Duration,
-    max_connection_lifetime: Option<Duration>,
+    config: SessionConfig,
 ) -> Result<(), SessionError>
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
+    let SessionConfig {
+        store,
+        conn_id,
+        peer_ip,
+        global_bookmark,
+        write_semaphore,
+        idle_timeout,
+        max_connection_lifetime,
+    } = config;
     let (read_half, write_half) = tokio::io::split(stream);
     let mut reader = BufReader::new(read_half);
     let mut writer = write_half;
@@ -322,13 +355,15 @@ mod tests {
             handler::with_required_password_override_for_tests(Some("secret"), async move {
                 run(
                     server,
-                    Arc::new(InMemoryGraphStore::new()),
-                    7,
-                    Arc::new(BookmarkCounter::from_env()),
-                    Arc::new(tokio::sync::Semaphore::new(128)),
-                    Some(ip),
-                    Duration::from_secs(300),
-                    None,
+                    SessionConfig {
+                        store: Arc::new(InMemoryGraphStore::new()),
+                        conn_id: 7,
+                        peer_ip: Some(ip),
+                        global_bookmark: Arc::new(BookmarkCounter::from_env()),
+                        write_semaphore: Arc::new(tokio::sync::Semaphore::new(128)),
+                        idle_timeout: Duration::from_secs(300),
+                        max_connection_lifetime: None,
+                    },
                 )
                 .await
             })

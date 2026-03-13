@@ -552,6 +552,18 @@ Rate limit entries are automatically cleaned up:
 
 After a successful authentication, the rate limit counter for that IP is cleared.
 
+> **Per-replica limitation:** The auth rate limiter is per-process. Each Bolt
+> replica maintains its own independent failure counter. With **N replicas**
+> behind an L4 load balancer, an attacker can make up to **N x max-attempts**
+> total requests before being throttled on every replica. For typical
+> deployments (1-3 replicas) and the default limit of 10, this means a
+> worst-case of 30 attempts -- acceptable for most threat models.
+>
+> To fully close this gap, the rate limiter would need to move to
+> Redis-backed counters (`INCR` with `EXPIRE` keyed by IP). This adds a
+> Redis round-trip per auth attempt and is deferred until a deployment
+> requires tighter guarantees.
+
 ## Architecture Decisions
 
 - [ADR-001: Storage Model](ADR-001-storage-model) — Why Redis-native data structures

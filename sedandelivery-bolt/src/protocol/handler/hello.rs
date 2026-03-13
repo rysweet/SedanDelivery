@@ -15,6 +15,19 @@ use crate::protocol::state::ServerState;
 use super::{bolt_map, constant_time_eq, ProtocolError, Session};
 
 // -- Auth rate limiting ------------------------------------------------------
+//
+// LIMITATION: Per-process rate limiter.
+//
+// The auth rate limiter uses an in-process DashMap, meaning each Bolt
+// replica maintains its own independent counter. With N replicas behind
+// an L4 load balancer, an attacker can make up to N x MAX_FAILURES_PER_IP
+// attempts before being throttled on all replicas.
+//
+// For most deployments (1-3 replicas) this is acceptable. To close the
+// gap, replace the DashMap with Redis-backed counters (INCR + EXPIRE)
+// keyed by IP. This is tracked as a future improvement.
+//
+// See also: docs/DEPLOY.md "Authentication Rate Limiting" section.
 
 /// Maximum number of distinct IPs tracked simultaneously.
 /// Prevents unbounded memory growth under a flood of source IPs.
