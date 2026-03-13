@@ -292,6 +292,16 @@ secret stored as a Container App secret (`secretref:fabric-client-secret`).
 See the [Fabric Graph Tutorial](FABRIC_TUTORIAL) for a complete walkthrough: deploying,
 writing data, viewing in the Fabric portal, REST API access, and monitoring replication.
 
+## Testing
+
+- [**Load Test Tool**](../tests/loadtest/README.md) — Rust binary for scale validation (node creation, connection ramp, mixed read/write)
+- [**QA Scenario Runner**](../tests/qa/) — QA scenarios and gadugi YAML definitions (`b1-write-safety.yaml`, `b2-advanced-scaling.yaml`, `b3-data-layer.yaml`, `b4-observability.yaml`)
+- `docker-compose.chaos-test.yml` — Chaos testing with toxiproxy (network partition, latency injection)
+- `docker-compose.scale-test.yml` — Multi-instance testing (2+ Bolt replicas sharing Redis)
+- `scripts/test-network-partition.sh` — Network partition resilience test via toxiproxy
+- `scripts/test-scale-down-drain.sh` — Graceful scale-down drain test (3 to 1 replicas under load)
+- `scripts/test-resharding-resilience.sh` — Redis Cluster resharding resilience test under write load
+
 ## Source Code
 
 - [GitHub Repository](https://github.com/cloud-ecosystem-security/SedanDelivery)

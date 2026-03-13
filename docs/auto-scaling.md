@@ -323,6 +323,61 @@ The Bicep template provisions a Network Security Group on the Container Apps sub
 
 ## Testing
 
+### Known Cypher limitations
+
+`timestamp()` is not implemented in SedanDelivery. The load test uses plain integer IDs and batch counters instead of `timestamp()`. Do not use `timestamp()` in load tests or production queries — use application-generated timestamps or Redis-side counters.
+
+### Running the load tests
+
+```bash
+# Build
+cargo build --release -p loadtest
+
+# Node creation (10K nodes, 50 concurrent)
+./target/release/loadtest --bolt-uri bolt://localhost:7687 --scenario nodes --count 10000 --concurrency 50
+
+# Connection ramp (to 1024)
+./target/release/loadtest --bolt-uri bolt://localhost:7687 --scenario ramp --max-connections 1024 --duration 60
+
+# Mixed read/write (80/20 ratio, 30s)
+./target/release/loadtest --bolt-uri bolt://localhost:7687 --scenario mixed --concurrency 20 --duration 30 --ratio 80
+```
+
+### Running chaos tests
+
+```bash
+# Prerequisites
+sudo apt-get install docker-compose-v2  # if not installed
+export VALKEY_PASSWORD='your-password'
+
+# Network partition test (toxiproxy)
+bash scripts/test-network-partition.sh
+
+# Scale-down drain test
+bash scripts/test-scale-down-drain.sh
+
+# Resharding resilience (requires Redis Cluster compose)
+bash scripts/test-resharding-resilience.sh
+```
+
+### Running QA scenarios
+
+```bash
+# Start 2 Bolt instances + Redis, then:
+python3 tests/qa/run_qa_scenarios.py --bolt1 bolt://localhost:7687 --bolt2 bolt://localhost:7689
+```
+
+### Baseline results
+
+Results from live testing on the development environment:
+
+| Test | Result |
+|------|--------|
+| Node creation (10K nodes, 50 concurrent) | 9,814 nodes/sec, p50 latency 512ms |
+| Connection ramp to 1024 | Zero failures at all levels |
+| Network partition (toxiproxy) | 5/5 phases pass |
+| Scale-down drain | 6/6 checks pass |
+
 ### Multi-instance correctness test
 
 Validates that two Bolt replicas sharing one Redis backend handle concurrent writes without data corruption:

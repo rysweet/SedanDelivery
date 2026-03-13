@@ -104,6 +104,11 @@ Results are printed to stdout as JSON (default) or a human-readable table. Examp
 }
 ```
 
+## Known Limitations
+
+- **`timestamp()` is not implemented in SedanDelivery.** The load test uses plain integer IDs and batch counters instead. Do not use `timestamp()` in load test queries or production Cypher queries.
+- **Auth defaults to neo4j/neo4j** when `--user` and `--password` are omitted. If the Bolt server requires authentication, pass credentials explicitly.
+
 ## Logging
 
 Set the `RUST_LOG` environment variable to control log verbosity:
