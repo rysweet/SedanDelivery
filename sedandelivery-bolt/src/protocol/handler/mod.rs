@@ -21,7 +21,6 @@ pub(crate) use bookmarks::{next_bookmark, validate_bookmarks};
 pub use hello::spawn_auth_rate_limiter_sweep;
 #[cfg(test)]
 pub(crate) use hello::with_required_password_override_for_tests;
-pub use hello::spawn_auth_rate_limit_sweep;
 pub(crate) use session::constant_time_eq;
 pub use session::{AdminStats, PendingQuery, Session};
 

@@ -220,9 +220,6 @@ async fn main() {
         store: Arc::clone(&store),
     });
 
-    // Spawn background task that periodically sweeps stale per-IP auth rate-limit
-    // entries and enforces the 100K entry cap to prevent unbounded memory growth.
-    sedandelivery_bolt::protocol::handler::spawn_auth_rate_limit_sweep();
 
     let listener = TcpListener::bind(&bind_addr)
         .await

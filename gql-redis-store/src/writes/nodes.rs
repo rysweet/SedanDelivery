@@ -237,7 +237,7 @@ impl RedisGraphStore {
                         .ignore();
                 }
                 pipe.query::<()>(conn.as_mut())
-                    .map_err(|e| StorageError::Backend { msg: e.to_string() })?;
+                    .map_err(|e| { crate::record_backend_error(); StorageError::Backend { msg: e.to_string() } })?;
             }
             let new_labels: Vec<String> = node
                 .labels
@@ -252,20 +252,10 @@ impl RedisGraphStore {
                 .arg(&labels_json)
                 .query::<()>(conn.as_mut())
                 .map_err(|e| { crate::record_backend_error(); StorageError::Backend { msg: e.to_string() } })?;
-        }
-        let new_labels: Vec<String> = node
-            .labels
-            .into_iter()
-            .filter(|l| !to_remove.contains(l))
-            .collect();
-        let labels_json = serde_json::to_string(&new_labels)
-            .map_err(|e| StorageError::Serialization { msg: e.to_string() })?;
-        redis::cmd("HSET")
-            .arg(self.kp(key_node(graph, id.0)))
-            .arg("labels")
-            .arg(&labels_json)
-            .query::<()>(conn.as_mut())
-            .map_err(|e| { crate::record_backend_error(); StorageError::Backend { msg: e.to_string() } })
+            Ok(())
+        })();
+        let _ = lock::release(conn.as_mut(), &lock_key, &token);
+        result
     }
 
     /// Delete a node and optionally detach (delete) all its edges first.
@@ -320,49 +310,27 @@ impl RedisGraphStore {
                     edge_ids.push(adj.edge_id);
                 }
             }
-            if detach {
-                // Delete all adjacent edges first, keeping the lock held throughout
-                // to prevent new edges from arriving during the operation.
-                let out_members: Vec<String> = redis::cmd("SMEMBERS")
-                    .arg(self.kp(key_out(graph, id.0)))
-                    .query(conn.as_mut())
-                    .map_err(|e| StorageError::Backend { msg: e.to_string() })?;
-                let in_members: Vec<String> = redis::cmd("SMEMBERS")
-                    .arg(self.kp(key_in(graph, id.0)))
-                    .query(conn.as_mut())
-                    .map_err(|e| StorageError::Backend { msg: e.to_string() })?;
-                let mut edge_ids: Vec<gql_core::storage::EdgeId> = Vec::new();
-                for m in out_members.iter().chain(in_members.iter()) {
-                    if let Some(adj) = crate::keys::decode_adj(m) {
-                        edge_ids.push(adj.edge_id);
-                    }
-                }
-                // Deduplicate and delete each edge while holding the lock.
-                edge_ids.sort_unstable();
-                edge_ids.dedup();
-                for eid in edge_ids {
-                    self.delete_edge_inner(conn.as_mut(), graph, eid)?;
-                }
+            // Deduplicate and delete each edge while holding the lock.
+            edge_ids.sort_unstable();
+            edge_ids.dedup();
+            for eid in edge_ids {
+                self.delete_edge_inner(conn.as_mut(), graph, eid)?;
             }
-            // Remove property indexes (requires reads, so must stay outside transaction).
-            self.deindex_node_properties(conn.as_mut(), graph, id.0, &node.labels, &node.properties)?;
-            // Remove label indexes, all-nodes set, adjacency keys, and node hash atomically.
-            let id_str = id.0.to_string();
-            let mut pipe = redis::pipe();
-            for label in &node.labels {
-                pipe.cmd("SREM")
-                    .arg(self.kp(key_label(graph, label)))
-                    .arg(&id_str)
-                    .ignore();
-            }
+        }
+        // Remove property indexes (requires reads, so must stay outside transaction).
+        self.deindex_node_properties(conn.as_mut(), graph, id.0, &node.labels, &node.properties)?;
+        // Remove label indexes, all-nodes set, adjacency keys, and node hash atomically.
+        let id_str = id.0.to_string();
+        let mut pipe = redis::pipe();
+        for label in &node.labels {
             pipe.cmd("SREM")
-                .arg(self.kp(key_nodes_set(graph)))
+                .arg(self.kp(key_label(graph, label)))
                 .arg(&id_str)
                 .ignore();
         }
         pipe.cmd("SREM")
             .arg(self.kp(key_nodes_set(graph)))
-            .arg(id.0.to_string())
+            .arg(&id_str)
             .ignore()
             .cmd("DEL")
             .arg(self.kp(key_out(graph, id.0)))

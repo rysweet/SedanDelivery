@@ -31,6 +31,11 @@ pub fn connection_accepted() {
     counter!(CONNECTIONS_TOTAL).increment(1);
 }
 
+/// Record a rejected connection (per-IP limit or other policy rejection).
+pub fn connection_rejected() {
+    counter!("sedandelivery_bolt_connections_rejected_total").increment(1);
+}
+
 /// Record a connection close (decrement active gauge).
 pub fn connection_closed() {
     gauge!(CONNECTIONS_ACTIVE).decrement(1.0);
@@ -53,6 +58,26 @@ pub fn query_duration(seconds: f64) {
 /// Record an error with a Neo4j-style status code.
 pub fn error_recorded(code: &str) {
     counter!(ERRORS_TOTAL, "code" => code.to_string()).increment(1);
+}
+
+/// Metric name constants for Redis memory reporting.
+pub const REDIS_USED_MEMORY: &str = "sedandelivery_bolt_redis_used_memory_bytes";
+pub const REDIS_MAXMEMORY: &str = "sedandelivery_bolt_redis_maxmemory_bytes";
+pub const REDIS_EVICTIONS: &str = "sedandelivery_bolt_redis_evicted_keys_total";
+
+/// Record Redis `used_memory` gauge.
+pub fn record_redis_used_memory(bytes: u64) {
+    gauge!(REDIS_USED_MEMORY).set(bytes as f64);
+}
+
+/// Record Redis `maxmemory` gauge.
+pub fn record_redis_maxmemory(bytes: u64) {
+    gauge!(REDIS_MAXMEMORY).set(bytes as f64);
+}
+
+/// Record Redis `evicted_keys` gauge.
+pub fn record_redis_evictions(total: u64) {
+    gauge!(REDIS_EVICTIONS).set(total as f64);
 }
 
 /// Sync the `gql_redis_store::backend_error_count()` atomic counter into
