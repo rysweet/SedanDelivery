@@ -8,6 +8,7 @@ members = [
     "gql-api",
     "sedandelivery-bolt",
     "sedandelivery-fabric-sync",
+    "tests/loadtest",
 ]
 resolver = "2"
 
