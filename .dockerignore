@@ -4,6 +4,7 @@ target
 docs
 scripts
 tests
+!tests/loadtest/Cargo.toml
 neo4j-compat-gallery
 *.md
 coverage

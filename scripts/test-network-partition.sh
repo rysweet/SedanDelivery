@@ -294,8 +294,8 @@ print(f'  Enabled: {proxy[\"enabled\"]}')
     # ── Phase 1: Verify baseline works ──────────────────────────────────
     echo ""
     log_info "=== Phase 1: Baseline connectivity ==="
-    bolt_query_with_timeout "$BOLT1_URI" "RETURN 1 AS n" 10
-    PHASE1_EXIT=$?
+    PHASE1_EXIT=0
+    bolt_query_with_timeout "$BOLT1_URI" "RETURN 1 AS n" 10 || PHASE1_EXIT=$?
     if [ $PHASE1_EXIT -eq 0 ]; then
         log_pass "Baseline query succeeds"
         passed=$((passed + 1))
@@ -310,8 +310,8 @@ print(f'  Enabled: {proxy[\"enabled\"]}')
     toxi_add_toxic "high_latency" "latency" '{"latency": 500, "jitter": 100}'
     sleep 2
 
-    bolt_query_with_timeout "$BOLT1_URI" "RETURN 1 AS n" 15
-    PHASE2_EXIT=$?
+    PHASE2_EXIT=0
+    bolt_query_with_timeout "$BOLT1_URI" "RETURN 1 AS n" 15 || PHASE2_EXIT=$?
     if [ $PHASE2_EXIT -eq 0 ]; then
         log_pass "Query succeeds under 500ms latency"
         passed=$((passed + 1))
@@ -344,8 +344,8 @@ print(f'  Enabled: {proxy[\"enabled\"]}')
     sleep 10
 
     # Verify queries fail with errors (not hangs)
-    bolt_query_with_timeout "$BOLT1_URI" "RETURN 1 AS n" 10
-    PHASE3_EXIT=$?
+    PHASE3_EXIT=0
+    bolt_query_with_timeout "$BOLT1_URI" "RETURN 1 AS n" 10 || PHASE3_EXIT=$?
     if [ $PHASE3_EXIT -eq 1 ]; then
         log_pass "Query returned error during partition (correct behavior)"
         passed=$((passed + 1))
@@ -384,8 +384,9 @@ print(f'  Enabled: {proxy[\"enabled\"]}')
     sleep 5
     RECOVERY_OK=false
     for i in $(seq 1 30); do
-        bolt_query_with_timeout "$BOLT1_URI" "RETURN 1 AS n" 10
-        if [ $? -eq 0 ]; then
+        RECOVERY_EXIT=0
+        bolt_query_with_timeout "$BOLT1_URI" "RETURN 1 AS n" 10 || RECOVERY_EXIT=$?
+        if [ $RECOVERY_EXIT -eq 0 ]; then
             log_pass "Recovery: query succeeded after partition healed (after ${i}s)"
             RECOVERY_OK=true
             passed=$((passed + 1))
@@ -403,8 +404,9 @@ print(f'  Enabled: {proxy[\"enabled\"]}')
     log_info "=== Phase 5: Second instance recovery ==="
     BOLT2_OK=false
     for i in $(seq 1 15); do
-        bolt_query_with_timeout "$BOLT2_URI" "RETURN 1 AS n" 10
-        if [ $? -eq 0 ]; then
+        BOLT2_EXIT=0
+        bolt_query_with_timeout "$BOLT2_URI" "RETURN 1 AS n" 10 || BOLT2_EXIT=$?
+        if [ $BOLT2_EXIT -eq 0 ]; then
             log_pass "bolt-2 recovered after partition healed (after ${i}s)"
             BOLT2_OK=true
             passed=$((passed + 1))
