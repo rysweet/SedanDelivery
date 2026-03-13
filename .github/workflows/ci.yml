@@ -136,6 +136,9 @@ jobs:
       - name: Install libclang
         run: sudo apt-get update -q && sudo apt-get install -y -q libclang-dev
 
+      - name: Build entire workspace (release)
+        run: cargo build --workspace --release
+
       - name: Run TCK compliance suite (3903 scenarios)
         # All 3903 openCypher TCK scenarios pass with zero parse errors.
         # Feature files were fixed to eliminate Gherkin template/parse issues.

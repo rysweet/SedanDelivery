@@ -11,6 +11,7 @@ on:
       - "docker-compose.scale-test.yml"
       - "tests/test_multi_instance.py"
       - "scripts/test-multi-instance.sh"
+      - "tests/qa/**"
 
 permissions:
   contents: read
@@ -95,6 +96,17 @@ jobs:
             --bolt2 bolt://localhost:7689 \
             --password "${BOLT_PASSWORD:-neo4j}" \
             --nodes-per-instance 100
+
+      - name: Run QA scenarios (B1 + B2 + B4)
+        env:
+          BOLT_PASSWORD: ""
+        run: |
+          python3 tests/qa/run_qa_scenarios.py \
+            --bolt1 bolt://localhost:7687 \
+            --bolt2 bolt://localhost:7689 \
+            --health-port1 7688 \
+            --health-port2 7690 \
+            --password "${BOLT_PASSWORD:-neo4j}"
 
       - name: Stop Bolt instances
         if: always()
