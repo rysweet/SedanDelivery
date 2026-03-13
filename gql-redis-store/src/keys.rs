@@ -100,6 +100,12 @@ pub(crate) fn value_to_index_key(val: &Value) -> String {
     }
 }
 
+/// Distributed write-lock key for a graph.  Used with CAS-release Lua to
+/// coordinate concurrent write operations on the same graph.
+pub(crate) fn key_graph_lock(g: &str) -> String {
+    format!("G:{{{g}}}:write_lock")
+}
+
 /// Registry key for graph names.  Uses a `__sd2_registry:` prefix that cannot
 /// collide with per-graph data keys (which all start with `G:`).  The key has
 /// no Redis Cluster hash tag, so it routes to its own slot; this is fine because

@@ -10,8 +10,9 @@ use gql_core::storage::{EdgeId, NodeId};
 use gql_core::types::Value;
 
 use crate::keys::{
-    encode_adj, key_edge, key_edge_seq, key_edges_set, key_in, key_out, key_reltype,
+    encode_adj, key_edge, key_edge_seq, key_edges_set, key_in, key_out, key_reltype, key_graph_lock,
 };
+use crate::lock::{self, WRITE_LOCK_TTL_MS};
 use crate::RedisGraphStore;
 
 use super::helpers::{clean_fanout_props, extract_injected_id};
@@ -159,18 +160,24 @@ impl RedisGraphStore {
         properties: HashMap<String, Value>,
     ) -> Result<(), StorageError> {
         let mut conn = self.conn()?;
-        let edge = self
-            .read_edge(conn.as_mut(), graph, id.0)?
-            .ok_or(StorageError::EdgeNotFound { id: id.0 })?;
-        let mut merged = edge.properties;
-        merged.extend(properties);
-        let props_json = props_to_json(&merged)?;
-        redis::cmd("HSET")
-            .arg(self.kp(key_edge(graph, id.0)))
-            .arg("props")
-            .arg(&props_json)
-            .query::<()>(conn.as_mut())
-            .map_err(|e| StorageError::Backend { msg: e.to_string() })
+        let lock_key = self.kp(key_graph_lock(graph));
+        let token = lock::acquire_blocking(conn.as_mut(), &lock_key, WRITE_LOCK_TTL_MS, 3, 50)?;
+        let result = (|| -> Result<(), StorageError> {
+            let edge = self
+                .read_edge(conn.as_mut(), graph, id.0)?
+                .ok_or(StorageError::EdgeNotFound { id: id.0 })?;
+            let mut merged = edge.properties;
+            merged.extend(properties);
+            let props_json = props_to_json(&merged)?;
+            redis::cmd("HSET")
+                .arg(self.kp(key_edge(graph, id.0)))
+                .arg("props")
+                .arg(&props_json)
+                .query::<()>(conn.as_mut())
+                .map_err(|e| StorageError::Backend { msg: e.to_string() })
+        })();
+        let _ = lock::release(conn.as_mut(), &lock_key, &token);
+        result
     }
 
     /// Replace all properties on an existing edge (REPLACE semantics).
@@ -184,16 +191,22 @@ impl RedisGraphStore {
         properties: HashMap<String, Value>,
     ) -> Result<(), StorageError> {
         let mut conn = self.conn()?;
-        if self.read_edge(conn.as_mut(), graph, id.0)?.is_none() {
-            return Err(StorageError::EdgeNotFound { id: id.0 });
-        }
-        let props_json = props_to_json(&properties)?;
-        redis::cmd("HSET")
-            .arg(self.kp(key_edge(graph, id.0)))
-            .arg("props")
-            .arg(&props_json)
-            .query::<()>(conn.as_mut())
-            .map_err(|e| StorageError::Backend { msg: e.to_string() })
+        let lock_key = self.kp(key_graph_lock(graph));
+        let token = lock::acquire_blocking(conn.as_mut(), &lock_key, WRITE_LOCK_TTL_MS, 3, 50)?;
+        let result = (|| -> Result<(), StorageError> {
+            if self.read_edge(conn.as_mut(), graph, id.0)?.is_none() {
+                return Err(StorageError::EdgeNotFound { id: id.0 });
+            }
+            let props_json = props_to_json(&properties)?;
+            redis::cmd("HSET")
+                .arg(self.kp(key_edge(graph, id.0)))
+                .arg("props")
+                .arg(&props_json)
+                .query::<()>(conn.as_mut())
+                .map_err(|e| StorageError::Backend { msg: e.to_string() })
+        })();
+        let _ = lock::release(conn.as_mut(), &lock_key, &token);
+        result
     }
 
     /// Remove a single property key from an edge.
@@ -207,24 +220,34 @@ impl RedisGraphStore {
         key: &str,
     ) -> Result<(), StorageError> {
         let mut conn = self.conn()?;
-        let edge = self
-            .read_edge(conn.as_mut(), graph, id.0)?
-            .ok_or(StorageError::EdgeNotFound { id: id.0 })?;
-        let mut props = edge.properties;
-        props.remove(key);
-        let props_json = props_to_json(&props)?;
-        redis::cmd("HSET")
-            .arg(self.kp(key_edge(graph, id.0)))
-            .arg("props")
-            .arg(&props_json)
-            .query::<()>(conn.as_mut())
-            .map_err(|e| StorageError::Backend { msg: e.to_string() })
+        let lock_key = self.kp(key_graph_lock(graph));
+        let token = lock::acquire_blocking(conn.as_mut(), &lock_key, WRITE_LOCK_TTL_MS, 3, 50)?;
+        let result = (|| -> Result<(), StorageError> {
+            let edge = self
+                .read_edge(conn.as_mut(), graph, id.0)?
+                .ok_or(StorageError::EdgeNotFound { id: id.0 })?;
+            let mut props = edge.properties;
+            props.remove(key);
+            let props_json = props_to_json(&props)?;
+            redis::cmd("HSET")
+                .arg(self.kp(key_edge(graph, id.0)))
+                .arg("props")
+                .arg(&props_json)
+                .query::<()>(conn.as_mut())
+                .map_err(|e| StorageError::Backend { msg: e.to_string() })
+        })();
+        let _ = lock::release(conn.as_mut(), &lock_key, &token);
+        result
     }
 
     /// Delete an edge by ID (public entry point that acquires its own connection).
     pub(crate) fn delete_edge_impl(&self, graph: &str, id: EdgeId) -> Result<(), StorageError> {
         let mut conn = self.conn()?;
-        self.delete_edge_inner(conn.as_mut(), graph, id)
+        let lock_key = self.kp(key_graph_lock(graph));
+        let token = lock::acquire_blocking(conn.as_mut(), &lock_key, WRITE_LOCK_TTL_MS, 3, 50)?;
+        let result = self.delete_edge_inner(conn.as_mut(), graph, id);
+        let _ = lock::release(conn.as_mut(), &lock_key, &token);
+        result
     }
 
     /// Batch-create multiple edges in a single Redis pipeline round-trip.

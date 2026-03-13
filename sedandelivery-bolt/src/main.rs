@@ -150,9 +150,15 @@ async fn main() {
         .graph_exists("neo4j")
         .expect("failed to check default database")
     {
-        store
-            .create_graph("neo4j")
-            .expect("failed to create default 'neo4j' database");
+        // Handle race: two replicas may both see graph_exists==false and race to create.
+        // GraphAlreadyExists from a peer replica is not an error.
+        match store.create_graph("neo4j") {
+            Ok(()) => {}
+            Err(gql_core::error::StorageError::GraphAlreadyExists { .. }) => {
+                tracing::info!("default 'neo4j' graph already created by peer replica");
+            }
+            Err(e) => panic!("failed to create default 'neo4j' database: {e}"),
+        }
     }
 
     // Load TLS configuration (returns None if BOLT_TLS_CERT / BOLT_TLS_KEY are not set)
@@ -180,6 +186,9 @@ async fn main() {
              (set BOLT_TLS_CERT and BOLT_TLS_KEY)"
         );
     }
+
+    // Spawn periodic auth rate limiter sweep (removes stale per-conn entries).
+    sedandelivery_bolt::protocol::handler::spawn_auth_rate_limiter_sweep();
 
     // Initialize Prometheus metrics recorder.
     let prometheus_handle = sedandelivery_bolt::metrics::init_recorder();
@@ -210,7 +219,7 @@ async fn main() {
     let connection_counter = Arc::new(AtomicU64::new(0));
     // Single global bookmark counter shared across all sessions so that
     // bookmarks produced by one session are meaningful when passed to another.
-    let global_bookmark = Arc::new(AtomicU64::new(0));
+    let global_bookmark = Arc::new(sedandelivery_bolt::bookmark::BookmarkCounter::from_env());
     // Write concurrency semaphore for transaction timeout contention.
     // Controls how many write queries can execute concurrently. Autocommit
     // writes without tx_timeout bypass this semaphore entirely (safe because

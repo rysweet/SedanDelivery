@@ -1,10 +1,12 @@
 //! HELLO and LOGON message handlers.
 
 use std::borrow::Cow;
-use std::collections::HashMap;
 use std::net::IpAddr;
-use std::sync::{Mutex, OnceLock};
-use std::time::{Duration, Instant};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::OnceLock;
+use std::time::Duration;
+
+use dashmap::DashMap;
 
 use crate::message::types::ServerMessage;
 use crate::packstream::value::{BoltMap, BoltMapExt, BoltValue};
@@ -14,81 +16,89 @@ use super::{bolt_map, constant_time_eq, ProtocolError, Session};
 
 // -- Auth rate limiting ------------------------------------------------------
 
-struct RateLimitEntry {
-    count: u64,
-    window_start: Instant,
+/// Maximum number of distinct IPs tracked simultaneously.
+/// Prevents unbounded memory growth under a flood of source IPs.
+const MAX_TRACKED_IPS: usize = 100_000;
+
+/// Maximum failed auth attempts per IP before returning RateLimit.
+const MAX_FAILURES_PER_IP: u32 = 10;
+
+/// Seconds after which an entry is considered stale and eligible for sweep.
+const STALE_AFTER_SECS: u64 = 3600;
+
+/// Per-IP entry: (failure_count, last_failure_unix_secs).
+struct AuthRateLimiter {
+    map: DashMap<String, (AtomicU32, AtomicU64)>,
 }
 
-/// Per-IP authentication attempt tracker.
-static AUTH_RATE_LIMITER: OnceLock<Mutex<HashMap<IpAddr, RateLimitEntry>>> = OnceLock::new();
+impl AuthRateLimiter {
+    fn new() -> Self {
+        Self {
+            map: DashMap::new(),
+        }
+    }
 
-fn auth_rate_limiter() -> &'static Mutex<HashMap<IpAddr, RateLimitEntry>> {
-    AUTH_RATE_LIMITER.get_or_init(|| Mutex::new(HashMap::new()))
-}
+    /// Record a failed auth attempt for `key` (IP string).
+    /// Returns `true` if the IP is now rate-limited (exceeded MAX_FAILURES_PER_IP).
+    fn record_failure(&self, key: &str) -> bool {
+        let now_secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
 
-fn auth_max_attempts() -> u64 {
-    static VAL: OnceLock<u64> = OnceLock::new();
-    *VAL.get_or_init(|| {
-        std::env::var("BOLT_AUTH_MAX_ATTEMPTS")
-            .ok()
-            .and_then(|v| match v.parse::<u64>() {
-                Ok(val) if val > 0 => Some(val),
-                _ => {
-                    tracing::warn!("invalid BOLT_AUTH_MAX_ATTEMPTS value, using default 10");
-                    None
-                }
-            })
-            .unwrap_or(10)
-    })
-}
+        if let Some(entry) = self.map.get(key) {
+            entry.1.store(now_secs, Ordering::Relaxed);
+            let prev = entry.0.fetch_add(1, Ordering::Relaxed);
+            return prev + 1 > MAX_FAILURES_PER_IP;
+        }
 
-fn auth_window_secs() -> u64 {
-    static VAL: OnceLock<u64> = OnceLock::new();
-    *VAL.get_or_init(|| {
-        std::env::var("BOLT_AUTH_WINDOW_SECS")
-            .ok()
-            .and_then(|v| match v.parse::<u64>() {
-                Ok(val) if val > 0 => Some(val),
-                _ => {
-                    tracing::warn!("invalid BOLT_AUTH_WINDOW_SECS value, using default 60");
-                    None
-                }
-            })
-            .unwrap_or(60)
-    })
-}
-
-/// Check whether the given IP has exceeded the failed-auth rate limit.
-/// Returns `true` if the request should be rejected (rate limited).
-/// Increments the counter for the IP on every failed-auth attempt.
-pub(crate) fn check_auth_rate_limit(ip: IpAddr) -> bool {
-    let max = auth_max_attempts();
-    let window = Duration::from_secs(auth_window_secs());
-    let mut map = auth_rate_limiter()
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
-    let now = Instant::now();
-    map.retain(|_, entry| now.duration_since(entry.window_start) < window);
-    let entry = map.entry(ip).or_insert(RateLimitEntry {
-        count: 0,
-        window_start: now,
-    });
-    if now.duration_since(entry.window_start) >= window {
-        // Reset the window.
-        entry.count = 1;
-        entry.window_start = now;
+        // Only insert if we have room.
+        if self.map.len() < MAX_TRACKED_IPS {
+            self.map
+                .entry(key.to_string())
+                .or_insert_with(|| (AtomicU32::new(0), AtomicU64::new(now_secs)))
+                .0
+                .fetch_add(1, Ordering::Relaxed);
+        }
         false
-    } else {
-        entry.count += 1;
-        entry.count > max
+    }
+
+    /// Clear the failure counter for `key` (after a successful auth).
+    fn record_success(&self, key: &str) {
+        self.map.remove(key);
+    }
+
+    /// Remove entries that have been stale for longer than STALE_AFTER_SECS.
+    fn sweep(&self) {
+        let now_secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        self.map
+            .retain(|_, v| now_secs.saturating_sub(v.1.load(Ordering::Relaxed)) < STALE_AFTER_SECS);
     }
 }
 
+fn auth_rate_limiter() -> &'static AuthRateLimiter {
+    static LIMITER: OnceLock<AuthRateLimiter> = OnceLock::new();
+    LIMITER.get_or_init(AuthRateLimiter::new)
+}
+
+/// Spawn a background task that periodically sweeps stale rate-limiter entries.
+pub fn spawn_auth_rate_limiter_sweep() {
+    tokio::spawn(async {
+        let mut interval = tokio::time::interval(Duration::from_secs(300));
+        loop {
+            interval.tick().await;
+            auth_rate_limiter().sweep();
+        }
+    });
+}
+
+// Keep the old public API used by tests so they still compile.
+#[cfg(test)]
 pub(crate) fn clear_auth_rate_limit(ip: IpAddr) {
-    let mut map = auth_rate_limiter()
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
-    map.remove(&ip);
+    auth_rate_limiter().record_success(&ip.to_string());
 }
 
 #[cfg(test)]
@@ -145,7 +155,8 @@ fn unauthorized_failure(session: &mut Session, message: &str) -> Vec<ServerMessa
 
 fn register_failed_auth_attempt(session: &mut Session) -> Option<Vec<ServerMessage>> {
     let ip = session.peer_ip?;
-    if check_auth_rate_limit(ip) {
+    let key = ip.to_string();
+    if auth_rate_limiter().record_failure(&key) {
         Some(auth_rate_limit_failure(session, ip))
     } else {
         None
@@ -178,7 +189,7 @@ fn validate_basic_auth(
     }
 
     if let Some(ip) = session.peer_ip {
-        clear_auth_rate_limit(ip);
+        auth_rate_limiter().record_success(&ip.to_string());
     }
 
     None
@@ -252,7 +263,7 @@ pub(crate) async fn handle_logon(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::AtomicU64;
+    use std::collections::HashMap;
     use std::sync::Arc;
 
     use gql_core::storage::InMemoryGraphStore;
@@ -265,7 +276,7 @@ mod tests {
             current_graph: "neo4j".to_string(),
             pending_results: HashMap::new(),
             next_qid: 0,
-            global_bookmark: Arc::new(AtomicU64::new(0)),
+            global_bookmark: Arc::new(crate::bookmark::BookmarkCounter::from_env()),
             tx_metadata: Vec::new(),
             tx_timeout: None,
             tx_store: None,
@@ -374,29 +385,21 @@ mod tests {
 
     #[test]
     fn stale_rate_limit_entries_are_evicted() {
-        let stale_ip = "10.0.0.21".parse().unwrap();
-        let fresh_ip = "10.0.0.22".parse().unwrap();
-        let window = Duration::from_secs(auth_window_secs());
-        {
-            let mut map = auth_rate_limiter()
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
-            map.insert(
-                stale_ip,
-                RateLimitEntry {
-                    count: 99,
-                    window_start: Instant::now() - window - Duration::from_secs(1),
-                },
-            );
-        }
-
-        let _ = check_auth_rate_limit(fresh_ip);
-
-        let map = auth_rate_limiter()
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+        // Insert a stale entry directly into the DashMap to verify sweep removes it.
+        let stale_ip: IpAddr = "10.0.0.21".parse().unwrap();
+        let stale_key = stale_ip.to_string();
+        let limiter = auth_rate_limiter();
+        // Simulate a stale entry by inserting with a very old timestamp.
+        limiter.map.insert(
+            stale_key.clone(),
+            (
+                AtomicU32::new(99),
+                AtomicU64::new(0), // epoch = maximally stale
+            ),
+        );
+        limiter.sweep();
         assert!(
-            !map.contains_key(&stale_ip),
+            !limiter.map.contains_key(&stale_key),
             "expired auth-failure entries should be pruned"
         );
     }

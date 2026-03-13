@@ -13,6 +13,9 @@ pub const CONNECTIONS_TOTAL: &str = "sedandelivery_bolt_connections_total";
 pub const QUERIES_TOTAL: &str = "sedandelivery_bolt_queries_total";
 pub const QUERY_DURATION_SECONDS: &str = "sedandelivery_bolt_query_duration_seconds";
 pub const ERRORS_TOTAL: &str = "sedandelivery_bolt_errors_total";
+pub const REDIS_USED_MEMORY_BYTES: &str = "redis_used_memory_bytes";
+pub const REDIS_MAXMEMORY_BYTES: &str = "redis_maxmemory_bytes";
+pub const REDIS_EVICTED_KEYS_TOTAL: &str = "redis_evicted_keys_total";
 
 /// Install the Prometheus recorder and return a handle for scraping.
 ///
@@ -52,6 +55,27 @@ pub fn query_duration(seconds: f64) {
 /// Record an error with a Neo4j-style status code.
 pub fn error_recorded(code: &str) {
     counter!(ERRORS_TOTAL, "code" => code.to_string()).increment(1);
+}
+
+/// Set the Redis used_memory gauge (bytes).
+pub fn record_redis_used_memory(bytes: u64) {
+    gauge!(REDIS_USED_MEMORY_BYTES).set(bytes as f64);
+}
+
+/// Set the Redis maxmemory gauge (bytes; 0 = unlimited).
+pub fn record_redis_maxmemory(bytes: u64) {
+    gauge!(REDIS_MAXMEMORY_BYTES).set(bytes as f64);
+}
+
+/// Set the absolute evicted_keys gauge (cumulative value from INFO stats).
+pub fn record_redis_evictions(total: u64) {
+    gauge!(REDIS_EVICTED_KEYS_TOTAL).set(total as f64);
+}
+
+/// Record a rejected connection (per-IP or semaphore limit).
+pub fn connection_rejected() {
+    // No dedicated counter currently; rejection is logged via tracing.
+    // This function is a hook for future metric expansion.
 }
 
 #[cfg(test)]

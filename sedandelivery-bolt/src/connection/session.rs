@@ -1,6 +1,7 @@
 use std::net::IpAddr;
-use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
+
+use crate::bookmark::BookmarkCounter;
 use std::time::Duration;
 
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
@@ -67,7 +68,7 @@ pub async fn run<S>(
     stream: S,
     store: Arc<dyn GraphStore>,
     conn_id: u64,
-    global_bookmark: Arc<AtomicU64>,
+    global_bookmark: Arc<BookmarkCounter>,
     write_semaphore: Arc<tokio::sync::Semaphore>,
     peer_ip: Option<IpAddr>,
     idle_timeout: Duration,
@@ -258,7 +259,7 @@ mod tests {
             current_graph: "neo4j".to_string(),
             pending_results: HashMap::new(),
             next_qid: 0,
-            global_bookmark: Arc::new(AtomicU64::new(0)),
+            global_bookmark: Arc::new(BookmarkCounter::from_env()),
             tx_metadata: Vec::new(),
             tx_timeout: None,
             tx_store: None,
@@ -323,7 +324,7 @@ mod tests {
                     server,
                     Arc::new(InMemoryGraphStore::new()),
                     7,
-                    Arc::new(AtomicU64::new(0)),
+                    Arc::new(BookmarkCounter::from_env()),
                     Arc::new(tokio::sync::Semaphore::new(128)),
                     Some(ip),
                     Duration::from_secs(300),

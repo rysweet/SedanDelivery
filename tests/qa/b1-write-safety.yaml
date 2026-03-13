@@ -1,0 +1,260 @@
+name: "B1 Write Safety -- Distributed Locks, Atomic delete_graph, Bookmark Consistency"
+description: >
+  Outside-in test scenarios verifying write safety from an external user
+  perspective. These scenarios target the three core B1 features:
+  distributed write locks preventing lost updates, atomic graph deletion
+  via Lua SCAN+DEL, and cross-replica bookmark consistency via Redis INCR.
+
+  Prerequisites:
+    - sedandelivery-bolt running on bolt://localhost:7687
+    - Redis/Valkey backend configured (GQL_REDIS_URL set)
+    - For scenario 3, two Bolt replicas sharing the same Redis backend
+
+app_url: "bolt://localhost:7687"
+
+# ---------------------------------------------------------------------------
+# Scenario 1: Concurrent property writes -- no lost updates
+# ---------------------------------------------------------------------------
+# Two Bolt clients write to the same node's properties concurrently.
+# The distributed write lock (SET NX PX + CAS release) serialises the
+# read-modify-write cycles so no SET is lost.
+
+scenarios:
+  - scenario: 1
+    name: "Concurrent Bolt clients writing to the same node -- no lost updates"
+    description: >
+      Two clients connect independently and both SET properties on the same
+      node. Because gql-redis-store acquires a per-graph distributed lock
+      before every property mutation (read-node, merge, write-back), the
+      writes are serialised. After both complete, the node must have ALL
+      properties from both clients -- nothing is silently overwritten.
+    setup:
+      - action: bolt_query
+        client: A
+        query: "CREATE DATABASE concurrent_test IF NOT EXISTS"
+      - action: bolt_query
+        client: A
+        query: "CREATE (:Target {id: 1})"
+        database: concurrent_test
+    steps:
+      - step: 1
+        description: "Client A sets property 'color' to 'red' on the Target node"
+        action: bolt_query
+        client: A
+        query: "MATCH (n:Target {id: 1}) SET n.color = 'red'"
+        database: concurrent_test
+        expected: "Query succeeds with stats showing 1 property set"
+
+      - step: 2
+        description: "Client B sets property 'size' to 'large' on the same Target node concurrently"
+        action: bolt_query
+        client: B
+        query: "MATCH (n:Target {id: 1}) SET n.size = 'large'"
+        database: concurrent_test
+        expected: "Query succeeds with stats showing 1 property set"
+        note: >
+          Steps 1 and 2 should be issued as close to simultaneously as
+          possible (e.g. from two threads or two driver sessions). The
+          distributed lock ensures both mutations are applied sequentially.
+
+      - step: 3
+        description: "Read back the node and verify both properties are present"
+        action: bolt_query
+        client: A
+        query: "MATCH (n:Target {id: 1}) RETURN n.color AS color, n.size AS size, n.id AS id"
+        database: concurrent_test
+        expected: >
+          Single record returned with:
+            color = 'red'
+            size  = 'large'
+            id    = 1
+          Neither property is missing. If the lock were absent, one SET
+          could read stale state and overwrite the other's property.
+
+    teardown:
+      - action: bolt_query
+        client: A
+        query: "DROP DATABASE concurrent_test IF EXISTS"
+
+  # ---------------------------------------------------------------------------
+  # Scenario 2: delete_graph while another client creates nodes -- atomic cleanup
+  # ---------------------------------------------------------------------------
+  # One client is creating nodes in a graph while another client deletes the
+  # graph. The Lua SCAN+DEL script runs atomically on the Redis server, so
+  # the deletion either removes ALL keys or fails cleanly -- no partial state.
+
+  - scenario: 2
+    name: "delete_graph during concurrent node creation -- atomic cleanup"
+    description: >
+      Client A rapidly creates nodes in a graph. Client B issues DROP DATABASE
+      (which calls delete_graph_impl). The Lua SCAN+DEL script is atomic within
+      Redis, so after deletion completes, no orphaned keys remain. The graph
+      registry entry is removed first (SREM), so new queries immediately get
+      GraphNotFound, then the Lua script cleans up all G:{name}:* keys.
+    setup:
+      - action: bolt_query
+        client: A
+        query: "CREATE DATABASE delete_test IF NOT EXISTS"
+      - action: bolt_query
+        client: A
+        query: "UNWIND range(1, 100) AS i CREATE (:Bulk {seq: i})"
+        database: delete_test
+    steps:
+      - step: 1
+        description: "Client A starts creating more nodes in the background"
+        action: bolt_query_async
+        client: A
+        query: "UNWIND range(101, 200) AS i CREATE (:Bulk {seq: i})"
+        database: delete_test
+        expected: "Query starts executing (may succeed or fail with GraphNotFound)"
+
+      - step: 2
+        description: "Client B drops the database while Client A is still writing"
+        action: bolt_query
+        client: B
+        query: "DROP DATABASE delete_test IF EXISTS"
+        expected: >
+          DROP succeeds. The implementation first does SREM to remove the graph
+          from the registry (so new operations immediately fail with
+          GraphNotFound), then runs the Lua SCAN+DEL script to clean up all
+          G:{delete_test}:* keys atomically.
+
+      - step: 3
+        description: "Verify the graph no longer exists"
+        action: bolt_query
+        client: A
+        query: "SHOW DATABASES"
+        expected: >
+          The database list does NOT contain 'delete_test'. The graph has been
+          fully removed from the registry.
+
+      - step: 4
+        description: "Verify no orphaned Redis keys remain for the deleted graph"
+        action: redis_command
+        command: "KEYS G:{delete_test}:*"
+        expected: >
+          Empty list. The Lua SCAN+DEL script cleaned up ALL keys matching
+          the G:{delete_test}:* pattern. No node hashes, edge hashes, label
+          indexes, adjacency sets, or sequence counters remain.
+
+      - step: 5
+        description: "Verify re-creating the graph starts clean"
+        action: bolt_query
+        client: A
+        query: "CREATE DATABASE delete_test IF NOT EXISTS"
+        expected: "Graph creation succeeds"
+
+      - step: 6
+        description: "New graph has zero nodes (no leaked data from before)"
+        action: bolt_query
+        client: A
+        query: "MATCH (n) RETURN count(n) AS cnt"
+        database: delete_test
+        expected: "cnt = 0"
+
+    teardown:
+      - action: bolt_query
+        client: A
+        query: "DROP DATABASE delete_test IF EXISTS"
+
+  # ---------------------------------------------------------------------------
+  # Scenario 3: Cross-replica bookmark consistency
+  # ---------------------------------------------------------------------------
+  # A write on instance A produces a bookmark. Reading that bookmark on
+  # instance B must see the write. This works because the BookmarkCounter
+  # uses Redis INCR on __sd2_bookmark, so all replicas share a single
+  # monotonically increasing counter.
+
+  - scenario: 3
+    name: "Write on instance A, read bookmark on instance B -- cross-replica consistency"
+    description: >
+      Two Bolt server replicas (A and B) share the same Redis backend. Client
+      writes data through replica A and receives a bookmark. Client then
+      connects to replica B and passes the bookmark. Since the bookmark counter
+      is backed by Redis INCR on __sd2_bookmark, replica B's counter is at
+      least as high, so the bookmark is accepted and the data is visible.
+
+      This scenario requires two Bolt instances (e.g. via docker-compose with
+      replicas or two separate processes with different BOLT_BIND_ADDR values
+      but the same GQL_REDIS_URL).
+    prerequisites:
+      - "Two sedandelivery-bolt instances sharing the same Redis backend"
+      - "Instance A on bolt://localhost:7687"
+      - "Instance B on bolt://localhost:7688"
+    setup:
+      - action: bolt_query
+        client: A
+        endpoint: "bolt://localhost:7687"
+        query: "CREATE DATABASE bookmark_test IF NOT EXISTS"
+    steps:
+      - step: 1
+        description: "Client writes a node through instance A and captures the bookmark"
+        action: bolt_transaction
+        client: A
+        endpoint: "bolt://localhost:7687"
+        database: bookmark_test
+        queries:
+          - "CREATE (:BookmarkNode {key: 'cross-replica-test', value: 42})"
+        expected: >
+          Transaction commits successfully. The SUCCESS response for COMMIT
+          includes a bookmark in the format 'neo4j:bookmark:v1:txN' where N
+          is the Redis-backed counter value.
+        capture:
+          bookmark: "response.bookmark"
+
+      - step: 2
+        description: "Client reads through instance B using the bookmark from step 1"
+        action: bolt_transaction
+        client: B
+        endpoint: "bolt://localhost:7688"
+        database: bookmark_test
+        bookmarks:
+          - "{captured.bookmark}"
+        queries:
+          - "MATCH (n:BookmarkNode {key: 'cross-replica-test'}) RETURN n.value AS val"
+        expected: >
+          The query returns val = 42. Since both instances share the same
+          Redis backend, the data written by instance A is immediately
+          visible to instance B. The bookmark is accepted because instance
+          B's BookmarkCounter (also backed by the same Redis INCR key)
+          produces values from the same monotonic sequence.
+
+      - step: 3
+        description: "Verify the bookmark format is the standard Neo4j convention"
+        action: verify
+        value: "{captured.bookmark}"
+        pattern: "^neo4j:bookmark:v1:tx\\d+$"
+        expected: >
+          The bookmark matches the Neo4j bookmark format. This ensures
+          compatibility with all standard Neo4j drivers that validate
+          bookmark format.
+
+      - step: 4
+        description: "Instance B produces a higher bookmark than instance A's"
+        action: bolt_transaction
+        client: B
+        endpoint: "bolt://localhost:7688"
+        database: bookmark_test
+        queries:
+          - "CREATE (:BookmarkNode {key: 'from-B', value: 99})"
+        expected: >
+          Transaction commits with a new bookmark whose tx number is
+          strictly greater than the one captured in step 1. This confirms
+          the shared Redis counter is monotonically increasing across
+          both instances.
+        capture:
+          bookmark_b: "response.bookmark"
+
+      - step: 5
+        description: "Verify monotonic ordering of bookmarks across replicas"
+        action: verify
+        assertion: "parse_int(captured.bookmark_b.split('tx')[1]) > parse_int(captured.bookmark.split('tx')[1])"
+        expected: >
+          The bookmark number from instance B is strictly greater than the
+          one from instance A, confirming cross-replica monotonicity.
+
+    teardown:
+      - action: bolt_query
+        client: A
+        endpoint: "bolt://localhost:7687"
+        query: "DROP DATABASE bookmark_test IF EXISTS"

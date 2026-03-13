@@ -286,6 +286,8 @@ Set these in your Container App or `deploy.yml` to customize behavior:
 | `BOLT_MAX_CONNECTIONS` | `1024` | Max concurrent Bolt connections |
 | `BOLT_IDLE_TIMEOUT_SECS` | `300` | Close idle connections after N seconds (short default aids L4 load-balancer rebalancing) |
 | `BOLT_MAX_CONNECTION_LIFETIME_SECS` | `1800` | Force-close connections after N seconds regardless of activity (0 = disabled); ensures periodic reconnection for L4 load balancing |
+| `BOLT_WRITE_CONCURRENCY` | `128` | Max concurrent write transactions via semaphore (autocommit writes without `tx_timeout` bypass this for maximum throughput) |
+| `BOLT_TCP_KEEPALIVE_SECS` | `120` | TCP keepalive probe interval (seconds); must be below Azure LB 240 s idle timeout |
 | **Redis Backend** | | |
 | `GQL_REDIS_URL` | (none) | Redis/Valkey connection URL |
 | `GQL_REDIS_CLUSTER_NODES` | (none) | Cluster seed URLs (overrides `GQL_REDIS_URL`) |

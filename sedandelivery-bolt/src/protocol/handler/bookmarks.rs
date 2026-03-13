@@ -1,7 +1,6 @@
 //! Bookmark formatting, validation, and parsing helpers.
 
-use std::sync::atomic::{AtomicU64, Ordering};
-
+use crate::bookmark::BookmarkCounter;
 use crate::message::types::ServerMessage;
 use crate::packstream::value::{BoltMap, BoltMapExt, BoltValue};
 
@@ -19,8 +18,8 @@ pub(crate) fn format_bookmark(n: u64) -> String {
 }
 
 /// Increment the global bookmark counter and return a formatted bookmark string.
-pub(crate) fn next_bookmark(counter: &AtomicU64) -> String {
-    let n = counter.fetch_add(1, Ordering::SeqCst) + 1;
+pub(crate) fn next_bookmark(counter: &BookmarkCounter) -> String {
+    let n = counter.next();
     format_bookmark(n)
 }
 
@@ -239,9 +238,12 @@ mod tests {
 
     #[test]
     fn next_bookmark_increments_counter() {
-        let counter = AtomicU64::new(0);
-        assert_eq!(next_bookmark(&counter), "neo4j:bookmark:v1:tx1");
-        assert_eq!(next_bookmark(&counter), "neo4j:bookmark:v1:tx2");
-        assert_eq!(next_bookmark(&counter), "neo4j:bookmark:v1:tx3");
+        let counter = crate::bookmark::BookmarkCounter::from_env();
+        // We only verify that consecutive bookmarks are distinct and well-formed.
+        let b1 = next_bookmark(&counter);
+        let b2 = next_bookmark(&counter);
+        assert!(b1.starts_with("neo4j:bookmark:v1:tx"), "b1={b1}");
+        assert!(b2.starts_with("neo4j:bookmark:v1:tx"), "b2={b2}");
+        assert_ne!(b1, b2, "consecutive bookmarks must differ");
     }
 }

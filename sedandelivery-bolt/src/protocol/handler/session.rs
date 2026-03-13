@@ -1,7 +1,6 @@
 //! Per-connection session state for a single Bolt client.
 
 use std::collections::HashMap;
-use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 
 use crate::packstream::value::{BoltMap, BoltValue};
@@ -32,7 +31,7 @@ pub struct Session {
     /// Global bookmark counter shared across all sessions connected to the same
     /// store. Bookmarks produced by one session are therefore meaningful when
     /// passed to another session, which is required by the Neo4j driver testkit.
-    pub(crate) global_bookmark: Arc<AtomicU64>,
+    pub(crate) global_bookmark: Arc<crate::bookmark::BookmarkCounter>,
     /// TX metadata set via BEGIN extra map, echoed back on PULL completion.
     pub(crate) tx_metadata: BoltMap,
     /// TX-level timeout set via BEGIN extra map (milliseconds).

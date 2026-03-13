@@ -18,6 +18,7 @@ use crate::protocol::state::ServerState;
 
 // Re-export public types from sub-modules.
 pub(crate) use bookmarks::{next_bookmark, validate_bookmarks};
+pub use hello::spawn_auth_rate_limiter_sweep;
 #[cfg(test)]
 pub(crate) use hello::with_required_password_override_for_tests;
 pub(crate) use session::constant_time_eq;
@@ -131,7 +132,6 @@ mod tests {
     use super::*;
     use gql_core::storage::{GraphStore, InMemoryGraphStore};
     use std::collections::HashMap;
-    use std::sync::atomic::AtomicU64;
     use std::sync::Arc;
 
     // -- Handler integration tests -------------------------------------------
@@ -144,7 +144,7 @@ mod tests {
             current_graph: "neo4j".to_string(),
             pending_results: HashMap::new(),
             next_qid: 0,
-            global_bookmark: Arc::new(AtomicU64::new(0)),
+            global_bookmark: Arc::new(crate::bookmark::BookmarkCounter::from_env()),
             tx_metadata: Vec::new(),
             tx_timeout: None,
             tx_store: None,
@@ -159,7 +159,7 @@ mod tests {
     /// simulating two connections to the same server.
     fn make_shared_sessions() -> (Session, Session) {
         let store: Arc<dyn GraphStore> = Arc::new(InMemoryGraphStore::new());
-        let bookmark = Arc::new(AtomicU64::new(0));
+        let bookmark = Arc::new(crate::bookmark::BookmarkCounter::from_env());
         let s1 = Session {
             state: ServerState::Ready,
             store: Arc::clone(&store),

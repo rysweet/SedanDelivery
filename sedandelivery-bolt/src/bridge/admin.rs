@@ -50,6 +50,18 @@ pub fn try_handle_admin(
         return Some(handle_show_databases(store));
     }
 
+    // CREATE GRAPH <name> — GQL named-graph DDL; treated as CREATE DATABASE.
+    if upper.starts_with("CREATE GRAPH ") {
+        let rewritten = format!("CREATE DATABASE {}", &trimmed["CREATE GRAPH ".len()..]);
+        return Some(handle_create_database(store, &rewritten));
+    }
+
+    // DROP GRAPH <name> — GQL named-graph DDL; treated as DROP DATABASE.
+    if upper.starts_with("DROP GRAPH ") {
+        let rewritten = format!("DROP DATABASE {}", &trimmed["DROP GRAPH ".len()..]);
+        return Some(handle_drop_database(store, &rewritten));
+    }
+
     // CREATE INDEX <name> FOR (n:<Label>) ON (n.<prop>)
     if upper.starts_with("CREATE INDEX ") {
         return Some(handle_create_index(store, graph, trimmed));

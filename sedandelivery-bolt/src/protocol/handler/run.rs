@@ -105,22 +105,23 @@ fn detect_explain_profile(query: &str) -> (bool, bool, String) {
 
 // -- USE database parsing ----------------------------------------------------
 
-/// Parse `USE <database>` from a query string. Returns the database name
-/// if the query is a USE statement, `None` otherwise.
-fn parse_use_database(query: &str) -> Option<String> {
+/// Parse a `USE <database>` prefix from a query string.
+///
+/// Returns `(db_name, rest)` where `rest` is the remaining query after the
+/// USE clause (trimmed), or an empty string if the USE is the entire query.
+/// Returns `None` if the query does not start with `USE `.
+fn parse_use_prefix(query: &str) -> Option<(String, &str)> {
     let trimmed = query.trim();
     let upper = trimmed.to_uppercase();
     if !upper.starts_with("USE ") {
         return None;
     }
-    // Also reject if it looks like a longer keyword (USE is not a prefix of something else
-    // in Cypher, but be safe).
     let rest = trimmed["USE ".len()..].trim();
     if rest.is_empty() {
         return None;
     }
     // Extract the database name. Handle backtick-quoted and simple identifiers.
-    let name = if rest.starts_with('`') {
+    let (name, name_end): (String, usize) = if rest.starts_with('`') {
         // Backtick-quoted: scan for closing backtick.
         let bytes = rest.as_bytes();
         let mut i = 1;
@@ -131,25 +132,41 @@ fn parse_use_database(query: &str) -> Option<String> {
                     result.push('`');
                     i += 2;
                 } else {
-                    return Some(result);
+                    return Some((result, rest[i + 1..].trim()));
                 }
             } else {
                 result.push(bytes[i] as char);
                 i += 1;
             }
         }
-        result
+        (result, rest.len())
     } else {
         // Simple identifier: alphanumeric + underscore + hyphen + dot
-        rest.chars()
+        let name: String = rest
+            .chars()
             .take_while(|c| c.is_alphanumeric() || *c == '_' || *c == '-' || *c == '.')
-            .collect()
+            .collect();
+        let end = name.len();
+        (name, end)
     };
     if name.is_empty() {
         None
     } else {
-        Some(name)
+        let after_name = rest[name_end..].trim();
+        Some((name, after_name))
     }
+}
+
+/// Parse `USE <database>` standalone command. Returns the database name if
+/// the query is purely a USE switch (no trailing content), `None` otherwise.
+fn parse_use_database(query: &str) -> Option<String> {
+    parse_use_prefix(query).and_then(|(name, rest)| {
+        if rest.is_empty() {
+            Some(name)
+        } else {
+            None
+        }
+    })
 }
 
 // -- Store resolution --------------------------------------------------------
@@ -533,7 +550,19 @@ pub(crate) async fn handle_run(
 
     tracing::debug!(query = %trimmed, "handle_run query");
 
-    // Handle `USE <database>` — switches the session's active graph.
+    // Handle compound `USE <database> <rest>` — switch graph then run rest.
+    // e.g. "USE mygraph MATCH (n) RETURN n" — set mygraph, run the MATCH.
+    if let Some((db_name, rest_query)) = parse_use_prefix(trimmed) {
+        if !rest_query.is_empty() {
+            // Switch the session graph for this request.
+            session.current_graph = db_name;
+            // Rewrite the query to be just the rest (without the USE prefix) and
+            // fall through to the normal execution path below.
+            return Box::pin(handle_run(session, rest_query.to_string(), params, extra)).await;
+        }
+    }
+
+    // Handle `USE <database>` — standalone switch of the session's active graph.
     if let Some(db_name) = parse_use_database(trimmed) {
         session.current_graph = db_name.clone();
         let qid = session.allocate_qid()?;

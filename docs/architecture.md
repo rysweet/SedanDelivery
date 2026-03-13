@@ -119,7 +119,10 @@ Connection lifecycle:
 - Per-message idle timeout reaping (`BOLT_IDLE_TIMEOUT_SECS`, default 300) -- resets on each message
 - Max connection lifetime (`BOLT_MAX_CONNECTION_LIFETIME_SECS`, default 1800) -- hard wall-clock cap that forces periodic reconnection, critical for L4 load-balancer rebalancing after scale-out
 - Explicit transactions via BEGIN/COMMIT/ROLLBACK with snapshot isolation
-- Write concurrency semaphore for transaction contention (`BOLT_WRITE_CONCURRENCY`)
+- Write concurrency semaphore for transaction contention (`BOLT_WRITE_CONCURRENCY`, default 128)
+- Distributed write locks on property mutations (per-graph `SET NX PX` + CAS Lua release, 5 s TTL)
+- Atomic graph deletion via Lua `SCAN`+`DEL` script (no partial-delete windows)
+- Cross-replica bookmark counter via Redis `INCR __sd2_bookmark` (falls back to in-process `AtomicU64` when Redis is unavailable)
 
 ## Query Pipeline
 

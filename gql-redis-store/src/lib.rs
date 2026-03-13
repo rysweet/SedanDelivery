@@ -16,6 +16,8 @@
 
 pub mod create_store;
 pub mod fanout;
+pub mod redis_memory_metrics;
+pub(crate) mod lock;
 
 mod connection;
 mod indexing;
@@ -29,6 +31,22 @@ pub use fanout::FanoutStore;
 
 use std::collections::HashMap;
 use std::env;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+// ── Backend-error counter ────────────────────────────────────────────────────
+
+/// Global count of `StorageError::Backend` occurrences.
+static BACKEND_ERROR_COUNT: AtomicU64 = AtomicU64::new(0);
+
+/// Increment the `StorageError::Backend` counter by one.
+pub fn record_backend_error() {
+    BACKEND_ERROR_COUNT.fetch_add(1, Ordering::Relaxed);
+}
+
+/// Return the current `StorageError::Backend` count.
+pub fn backend_error_count() -> u64 {
+    BACKEND_ERROR_COUNT.load(Ordering::Relaxed)
+}
 
 use redis::ConnectionLike;
 
