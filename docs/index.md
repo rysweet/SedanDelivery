@@ -86,7 +86,9 @@ See [ADR-004](ADR-004-distributed-redis) for the full architecture decision reco
 | `BOLT_HANDSHAKE_TIMEOUT_MS` | `5000` | Max time (ms) to complete TLS handshake before slot is reclaimed |
 | `BOLT_IDLE_TIMEOUT_SECS` | `300` | Close idle connections after N seconds (short default aids L4 load-balancer rebalancing) |
 | `BOLT_MAX_CONNECTION_LIFETIME_SECS` | `1800` | Force-close connections after N seconds regardless of activity (0 = disabled); periodic reconnection aids L4 load balancing |
-| `BOLT_WRITE_CONCURRENCY` | `128` | Max concurrent write transactions (semaphore for tx_timeout contention) |
+| `BOLT_WRITE_CONCURRENCY` | `64` | Max concurrent write transactions |
+| `BOLT_AUTH_MAX_ATTEMPTS` | `10` | Max failed auth attempts per IP per window before rate limiting |
+| `BOLT_AUTH_WINDOW_SECS` | `60` | Auth rate limit sliding window duration (seconds) |
 | `GQL_REDIS_URL` | — | Redis/Valkey URL; when set, bolt uses Redis-backed store (use `rediss://` for TLS with Azure Cache) |
 | `GQL_REDIS_CLUSTER_NODES` | — | Comma-separated cluster seed URLs (enables Redis Cluster mode, overrides `GQL_REDIS_URL`) |
 | `GQL_REDIS_REPLICA_URL` | — | Comma-separated replica URLs for read-only query routing (round-robin) |

@@ -18,6 +18,7 @@ pub(crate) fn extract_injected_id(
 ) -> Result<Option<u64>, StorageError> {
     if let Some(Value::Int(i)) = properties.get(key) {
         if *i < 0 {
+            crate::record_backend_error();
             return Err(StorageError::Backend {
                 msg: format!("{key} must be non-negative, got {i}"),
             });

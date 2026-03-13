@@ -83,18 +83,18 @@ impl RedisPool {
         idle_timeout_secs: u64,
         min_idle: u32,
     ) -> Result<Self, StorageError> {
-        let client = Client::open(url).map_err(|e| StorageError::Backend {
+        let client = Client::open(url).map_err(|e| { crate::record_backend_error(); StorageError::Backend {
             msg: format!("redis client error: {e}"),
-        })?;
+        }})?;
         let pool = r2d2::Pool::builder()
             .max_size(pool_size)
             .connection_timeout(Duration::from_secs(pool_timeout_secs))
             .idle_timeout(Some(Duration::from_secs(idle_timeout_secs)))
             .min_idle(Some(min_idle))
             .build(client)
-            .map_err(|e| StorageError::Backend {
+            .map_err(|e| { crate::record_backend_error(); StorageError::Backend {
                 msg: format!("redis pool error: {e}"),
-            })?;
+            }})?;
         Ok(RedisPool::Standalone(pool))
     }
 
@@ -107,18 +107,18 @@ impl RedisPool {
         min_idle: u32,
     ) -> Result<Self, StorageError> {
         let client = ClusterClient::new(nodes.iter().map(|s| s.to_string()).collect::<Vec<_>>())
-            .map_err(|e| StorageError::Backend {
+            .map_err(|e| { crate::record_backend_error(); StorageError::Backend {
                 msg: format!("redis cluster client error: {e}"),
-            })?;
+            }})?;
         let pool = r2d2::Pool::builder()
             .max_size(pool_size)
             .connection_timeout(Duration::from_secs(pool_timeout_secs))
             .idle_timeout(Some(Duration::from_secs(idle_timeout_secs)))
             .min_idle(Some(min_idle))
             .build(client)
-            .map_err(|e| StorageError::Backend {
+            .map_err(|e| { crate::record_backend_error(); StorageError::Backend {
                 msg: format!("redis cluster pool error: {e}"),
-            })?;
+            }})?;
         Ok(RedisPool::Cluster(pool))
     }
 
@@ -131,16 +131,16 @@ impl RedisPool {
             RedisPool::Standalone(pool) => {
                 pool.get()
                     .map(RedisConn::Standalone)
-                    .map_err(|e| StorageError::Backend {
+                    .map_err(|e| { crate::record_backend_error(); StorageError::Backend {
                         msg: format!("redis pool checkout error: {e}"),
-                    })
+                    }})
             }
             RedisPool::Cluster(pool) => pool
                 .get()
                 .map(|c| RedisConn::Cluster(Box::new(c)))
-                .map_err(|e| StorageError::Backend {
+                .map_err(|e| { crate::record_backend_error(); StorageError::Backend {
                     msg: format!("redis cluster pool checkout error: {e}"),
-                }),
+                }}),
         };
         match &result {
             Ok(_) => metrics::counter!("redis_pool_checkouts_total").increment(1),
@@ -216,6 +216,7 @@ impl ReplicaPool {
         min_idle: u32,
     ) -> Result<Self, StorageError> {
         if urls.is_empty() {
+            crate::record_backend_error();
             return Err(StorageError::Backend {
                 msg: "replica pool requires at least one URL".into(),
             });
@@ -224,18 +225,18 @@ impl ReplicaPool {
         let per_replica = (pool_size / urls.len() as u32).max(1);
         let mut pools = Vec::with_capacity(urls.len());
         for url in urls {
-            let client = Client::open(*url).map_err(|e| StorageError::Backend {
+            let client = Client::open(*url).map_err(|e| { crate::record_backend_error(); StorageError::Backend {
                 msg: format!("redis replica client error: {e}"),
-            })?;
+            }})?;
             let pool = r2d2::Pool::builder()
                 .max_size(per_replica)
                 .connection_timeout(Duration::from_secs(pool_timeout_secs))
                 .idle_timeout(Some(Duration::from_secs(idle_timeout_secs)))
                 .min_idle(Some(min_idle.min(per_replica)))
                 .build(client)
-                .map_err(|e| StorageError::Backend {
+                .map_err(|e| { crate::record_backend_error(); StorageError::Backend {
                     msg: format!("redis replica pool error: {e}"),
-                })?;
+                }})?;
             pools.push(pool);
         }
         Ok(Self {
@@ -262,15 +263,15 @@ impl ReplicaPool {
         let mut conn = self.pools[idx]
             .get()
             .map(RedisConn::Standalone)
-            .map_err(|e| StorageError::Backend {
+            .map_err(|e| { crate::record_backend_error(); StorageError::Backend {
                 msg: format!("redis replica pool checkout error: {e}"),
-            })?;
+            }})?;
         // Issue READONLY so replica accepts read commands.
         redis::cmd("READONLY")
             .query::<String>(conn.as_mut())
-            .map_err(|e| StorageError::Backend {
+            .map_err(|e| { crate::record_backend_error(); StorageError::Backend {
                 msg: format!("redis READONLY command failed: {e}"),
-            })?;
+            }})?;
         Ok(conn)
     }
 }

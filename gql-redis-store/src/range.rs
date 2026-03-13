@@ -90,7 +90,7 @@ pub(crate) fn scan_key_count(
             .arg("COUNT")
             .arg(scan_count())
             .query(conn)
-            .map_err(|e| StorageError::Backend { msg: e.to_string() })?;
+            .map_err(|e| { crate::record_backend_error(); StorageError::Backend { msg: e.to_string() } })?;
         count += keys.len();
         cursor = next;
         if cursor == 0 {

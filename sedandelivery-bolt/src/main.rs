@@ -169,7 +169,6 @@ async fn main() {
         .expect("failed to check default database")
     {
         // Handle race: two replicas may both see graph_exists==false and race to create.
-        // GraphAlreadyExists from a peer replica is not an error.
         match store.create_graph("neo4j") {
             Ok(()) => {}
             Err(gql_core::error::StorageError::GraphAlreadyExists { .. }) => {
@@ -220,6 +219,10 @@ async fn main() {
         start_time,
         store: Arc::clone(&store),
     });
+
+    // Spawn background task that periodically sweeps stale per-IP auth rate-limit
+    // entries and enforces the 100K entry cap to prevent unbounded memory growth.
+    sedandelivery_bolt::protocol::handler::spawn_auth_rate_limit_sweep();
 
     let listener = TcpListener::bind(&bind_addr)
         .await

@@ -17,7 +17,7 @@ impl RedisGraphStore {
             .arg(self.key_graphs())
             .arg(name)
             .query(conn.as_mut())
-            .map_err(|e| StorageError::Backend { msg: e.to_string() })?;
+            .map_err(|e| { crate::record_backend_error(); StorageError::Backend { msg: e.to_string() } })?;
         if added == 0 {
             return Err(StorageError::GraphAlreadyExists {
                 name: name.to_string(),
@@ -42,33 +42,38 @@ impl RedisGraphStore {
             });
         }
         let mut conn = self.conn()?;
-        // Remove from registry first.
+        // Delete all keys with pattern G:{name}:* using SCAN first.
+        let pattern = format!("{}G:{{{name}}}:*", self.key_prefix);
+        let mut cursor: u64 = 0;
+        loop {
+            let (next_cursor, keys): (u64, Vec<String>) = redis::cmd("SCAN")
+                .arg(cursor)
+                .arg("MATCH")
+                .arg(&pattern)
+                .arg("COUNT")
+                .arg(crate::range::scan_count())
+                .query(conn.as_mut())
+                .map_err(|e| { crate::record_backend_error(); StorageError::Backend { msg: e.to_string() } })?;
+            if !keys.is_empty() {
+                let mut del_cmd = redis::cmd("DEL");
+                for k in &keys {
+                    del_cmd.arg(k);
+                }
+                del_cmd
+                    .query::<()>(conn.as_mut())
+                    .map_err(|e| { crate::record_backend_error(); StorageError::Backend { msg: e.to_string() } })?;
+            }
+            cursor = next_cursor;
+            if cursor == 0 {
+                break;
+            }
+        }
+        // Remove from registry AFTER all keys are deleted.
         redis::cmd("SREM")
             .arg(self.key_graphs())
             .arg(name)
             .query::<()>(conn.as_mut())
-            .map_err(|e| StorageError::Backend { msg: e.to_string() })?;
-        // Atomic SCAN+DEL via Lua to prevent partial-delete windows.
-        // All G:{name}: keys share the same hash tag -> same Redis Cluster slot,
-        // so the Lua script can safely SCAN and DEL them on one node.
-        const DELETE_GRAPH_LUA: &str = r#"
-local cursor = '0'
-local pattern = ARGV[1]
-repeat
-    local result = redis.call('SCAN', cursor, 'MATCH', pattern, 'COUNT', 1000)
-    cursor = result[1]
-    local keys = result[2]
-    if #keys > 0 then
-        redis.call('DEL', unpack(keys))
-    end
-until cursor == '0'
-return 1
-"#;
-        let pattern = format!("{}G:{{{name}}}:*", self.key_prefix);
-        redis::Script::new(DELETE_GRAPH_LUA)
-            .arg(&pattern)
-            .invoke::<i64>(conn.as_mut())
-            .map_err(|e| StorageError::Backend { msg: e.to_string() })?;
+            .map_err(|e| { crate::record_backend_error(); StorageError::Backend { msg: e.to_string() } })?;
         Ok(())
     }
 }

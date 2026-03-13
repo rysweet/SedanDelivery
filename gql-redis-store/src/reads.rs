@@ -54,7 +54,7 @@ impl RedisGraphStore {
         }
         let raw: Vec<Vec<Option<String>>> = pipe
             .query(conn.as_mut())
-            .map_err(|e| StorageError::Backend { msg: e.to_string() })?;
+            .map_err(|e| { crate::record_backend_error(); StorageError::Backend { msg: e.to_string() } })?;
         for (idx, fields) in raw.into_iter().enumerate() {
             let id = ids[idx];
             match (
@@ -100,7 +100,7 @@ impl RedisGraphStore {
         }
         let raw: Vec<Vec<Option<String>>> = pipe
             .query(conn.as_mut())
-            .map_err(|e| StorageError::Backend { msg: e.to_string() })?;
+            .map_err(|e| { crate::record_backend_error(); StorageError::Backend { msg: e.to_string() } })?;
         let mut results = Vec::with_capacity(ids.len());
         for (idx, fields) in raw.into_iter().enumerate() {
             let id = ids[idx];
@@ -151,7 +151,7 @@ impl RedisGraphStore {
         let members: Vec<String> = redis::cmd("SMEMBERS")
             .arg(self.kp(key_label(graph, label)))
             .query(conn.as_mut())
-            .map_err(|e| StorageError::Backend { msg: e.to_string() })?;
+            .map_err(|e| { crate::record_backend_error(); StorageError::Backend { msg: e.to_string() } })?;
         members
             .into_iter()
             .map(|s| {
@@ -181,7 +181,7 @@ impl RedisGraphStore {
                 let members: Vec<String> = redis::cmd("SMEMBERS")
                     .arg(self.kp(key_propidx(graph, label, property, &vkey)))
                     .query(conn.as_mut())
-                    .map_err(|e| StorageError::Backend { msg: e.to_string() })?;
+                    .map_err(|e| { crate::record_backend_error(); StorageError::Backend { msg: e.to_string() } })?;
                 return members
                     .into_iter()
                     .map(|s| {
@@ -220,7 +220,7 @@ impl RedisGraphStore {
         let members: Vec<String> = redis::cmd("SMEMBERS")
             .arg(self.kp(key_reltype(graph, rel_type)))
             .query(conn.as_mut())
-            .map_err(|e| StorageError::Backend { msg: e.to_string() })?;
+            .map_err(|e| { crate::record_backend_error(); StorageError::Backend { msg: e.to_string() } })?;
         members
             .into_iter()
             .map(|s| {
@@ -244,7 +244,7 @@ impl RedisGraphStore {
         let members: Vec<String> = redis::cmd("SMEMBERS")
             .arg(self.kp(key_out(graph, node_id.0)))
             .query(conn.as_mut())
-            .map_err(|e| StorageError::Backend { msg: e.to_string() })?;
+            .map_err(|e| { crate::record_backend_error(); StorageError::Backend { msg: e.to_string() } })?;
         Ok(Self::parse_adj_members(members))
     }
 
@@ -257,7 +257,7 @@ impl RedisGraphStore {
         let members: Vec<String> = redis::cmd("SMEMBERS")
             .arg(self.kp(key_in(graph, node_id.0)))
             .query(conn.as_mut())
-            .map_err(|e| StorageError::Backend { msg: e.to_string() })?;
+            .map_err(|e| { crate::record_backend_error(); StorageError::Backend { msg: e.to_string() } })?;
         Ok(Self::parse_adj_members(members))
     }
 
@@ -322,7 +322,7 @@ impl RedisGraphStore {
         let members: Vec<String> = redis::cmd("SMEMBERS")
             .arg(self.kp(key_nodes_set(graph)))
             .query(conn.as_mut())
-            .map_err(|e| StorageError::Backend { msg: e.to_string() })?;
+            .map_err(|e| { crate::record_backend_error(); StorageError::Backend { msg: e.to_string() } })?;
         members
             .into_iter()
             .map(|s| {
@@ -340,7 +340,7 @@ impl RedisGraphStore {
         let members: Vec<String> = redis::cmd("SMEMBERS")
             .arg(self.kp(key_edges_set(graph)))
             .query(conn.as_mut())
-            .map_err(|e| StorageError::Backend { msg: e.to_string() })?;
+            .map_err(|e| { crate::record_backend_error(); StorageError::Backend { msg: e.to_string() } })?;
         members
             .into_iter()
             .map(|s| {
@@ -367,7 +367,7 @@ impl RedisGraphStore {
                 .arg("COUNT")
                 .arg(scan_count())
                 .query(conn.as_mut())
-                .map_err(|e| StorageError::Backend { msg: e.to_string() })?;
+                .map_err(|e| { crate::record_backend_error(); StorageError::Backend { msg: e.to_string() } })?;
             for key in keys {
                 if let Some(label) = key.strip_prefix(&prefix) {
                     labels.push(label.to_string());
@@ -389,7 +389,7 @@ impl RedisGraphStore {
             .arg(self.key_graphs())
             .arg(name)
             .query(conn.as_mut())
-            .map_err(|e| StorageError::Backend { msg: e.to_string() })
+            .map_err(|e| { crate::record_backend_error(); StorageError::Backend { msg: e.to_string() } })
     }
 
     pub(crate) fn list_graphs_impl(&self) -> Result<Vec<String>, StorageError> {
@@ -397,7 +397,7 @@ impl RedisGraphStore {
         redis::cmd("SMEMBERS")
             .arg(self.key_graphs())
             .query(conn.as_mut())
-            .map_err(|e| StorageError::Backend { msg: e.to_string() })
+            .map_err(|e| { crate::record_backend_error(); StorageError::Backend { msg: e.to_string() } })
     }
 
     pub(crate) fn graph_stats_impl(&self, graph: &str) -> Result<GraphStats, StorageError> {
@@ -406,11 +406,11 @@ impl RedisGraphStore {
         let node_count: u64 = redis::cmd("SCARD")
             .arg(self.kp(key_nodes_set(graph)))
             .query(conn.as_mut())
-            .map_err(|e| StorageError::Backend { msg: e.to_string() })?;
+            .map_err(|e| { crate::record_backend_error(); StorageError::Backend { msg: e.to_string() } })?;
         let edge_count: u64 = redis::cmd("SCARD")
             .arg(self.kp(key_edges_set(graph)))
             .query(conn.as_mut())
-            .map_err(|e| StorageError::Backend { msg: e.to_string() })?;
+            .map_err(|e| { crate::record_backend_error(); StorageError::Backend { msg: e.to_string() } })?;
         // Count distinct labels and rel-types by scanning index keys.
         let label_pattern = format!("{}G:{{{graph}}}:label:*", self.key_prefix);
         let reltype_pattern = format!("{}G:{{{graph}}}:reltype:*", self.key_prefix);

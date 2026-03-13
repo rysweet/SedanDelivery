@@ -13,9 +13,7 @@ pub const CONNECTIONS_TOTAL: &str = "sedandelivery_bolt_connections_total";
 pub const QUERIES_TOTAL: &str = "sedandelivery_bolt_queries_total";
 pub const QUERY_DURATION_SECONDS: &str = "sedandelivery_bolt_query_duration_seconds";
 pub const ERRORS_TOTAL: &str = "sedandelivery_bolt_errors_total";
-pub const REDIS_USED_MEMORY_BYTES: &str = "redis_used_memory_bytes";
-pub const REDIS_MAXMEMORY_BYTES: &str = "redis_maxmemory_bytes";
-pub const REDIS_EVICTED_KEYS_TOTAL: &str = "redis_evicted_keys_total";
+pub const BACKEND_ERRORS_TOTAL: &str = "sedandelivery_bolt_backend_errors_total";
 
 /// Install the Prometheus recorder and return a handle for scraping.
 ///
@@ -57,24 +55,13 @@ pub fn error_recorded(code: &str) {
     counter!(ERRORS_TOTAL, "code" => code.to_string()).increment(1);
 }
 
-/// Set the Redis used_memory gauge (bytes).
-pub fn record_redis_used_memory(bytes: u64) {
-    gauge!(REDIS_USED_MEMORY_BYTES).set(bytes as f64);
-}
-
-/// Set the Redis maxmemory gauge (bytes; 0 = unlimited).
-pub fn record_redis_maxmemory(bytes: u64) {
-    gauge!(REDIS_MAXMEMORY_BYTES).set(bytes as f64);
-}
-
-/// Set the absolute evicted_keys gauge (cumulative value from INFO stats).
-pub fn record_redis_evictions(total: u64) {
-    gauge!(REDIS_EVICTED_KEYS_TOTAL).set(total as f64);
-}
-
-/// Record a rejected connection (per-IP limit or semaphore limit reached).
-pub fn connection_rejected() {
-    counter!("sedandelivery_bolt_connections_rejected_total").increment(1);
+/// Sync the `gql_redis_store::backend_error_count()` atomic counter into
+/// the Prometheus gauge so `/metrics` exposes the current total.
+///
+/// Called periodically by the pool stats reporter or on each scrape.
+pub fn sync_backend_error_gauge() {
+    let count = gql_redis_store::backend_error_count();
+    gauge!(BACKEND_ERRORS_TOTAL).set(count as f64);
 }
 
 #[cfg(test)]
@@ -99,6 +86,7 @@ mod tests {
             QUERIES_TOTAL,
             QUERY_DURATION_SECONDS,
             ERRORS_TOTAL,
+            BACKEND_ERRORS_TOTAL,
         ] {
             assert!(!name.is_empty(), "metric name must not be empty");
             assert!(

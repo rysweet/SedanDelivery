@@ -288,8 +288,8 @@ Set these in your Container App or `deploy.yml` to customize behavior:
 | `BOLT_HANDSHAKE_TIMEOUT_MS` | `5000` | Max time (ms) to complete TLS handshake before the connection slot is reclaimed |
 | `BOLT_IDLE_TIMEOUT_SECS` | `300` | Close idle connections after N seconds (short default aids L4 load-balancer rebalancing) |
 | `BOLT_MAX_CONNECTION_LIFETIME_SECS` | `1800` | Force-close connections after N seconds regardless of activity (0 = disabled); ensures periodic reconnection for L4 load balancing |
-| `BOLT_WRITE_CONCURRENCY` | `128` | Max concurrent write transactions via semaphore (autocommit writes without `tx_timeout` bypass this for maximum throughput) |
-| `BOLT_TCP_KEEPALIVE_SECS` | `120` | TCP keepalive probe interval (seconds); must be below Azure LB 240 s idle timeout |
+| `BOLT_AUTH_MAX_ATTEMPTS` | `10` | Max failed auth attempts per IP per window before rate limiting |
+| `BOLT_AUTH_WINDOW_SECS` | `60` | Auth rate limit sliding window duration (seconds) |
 | **Redis Backend** | | |
 | `GQL_REDIS_URL` | (none) | Redis/Valkey connection URL |
 | `GQL_REDIS_CLUSTER_NODES` | (none) | Cluster seed URLs (overrides `GQL_REDIS_URL`) |
@@ -502,6 +502,55 @@ az containerapp show --name sd2-main-redis --resource-group rg-sd2-main \
 ```
 
 If empty, the volume mount may have been skipped. Re-deploy to fix.
+
+## Observability
+
+### Prometheus Metrics
+
+The Bolt server exposes a `/metrics` endpoint on the health port (default 7688) in Prometheus text format. Available metrics:
+
+| Metric | Type | Description |
+|--------|------|-------------|
+| `sedandelivery_bolt_connections_active` | Gauge | Currently active Bolt connections |
+| `sedandelivery_bolt_connections_total` | Counter | Total connections accepted since startup |
+| `sedandelivery_bolt_queries_total` | Counter | Total queries executed (labels: `type=read\|write`) |
+| `sedandelivery_bolt_query_duration_seconds` | Histogram | Query execution duration |
+| `sedandelivery_bolt_errors_total` | Counter | Protocol errors (labels: `code=Neo.ClientError.*`) |
+| `sedandelivery_bolt_backend_errors_total` | Gauge | Total `StorageError::Backend` occurrences (Redis failures) |
+| `redis_pool_size` | Gauge | Total connections in the Redis connection pool |
+| `redis_pool_idle` | Gauge | Idle connections in the Redis pool |
+| `redis_pool_active` | Gauge | Active (checked-out) connections in the Redis pool |
+| `redis_pool_checkouts_total` | Counter | Successful pool checkouts |
+| `redis_pool_timeout_total` | Counter | Pool checkout timeouts |
+| `redis_used_memory_bytes` | Gauge | Redis `used_memory` from INFO (when memory reporter is active) |
+| `redis_maxmemory_bytes` | Gauge | Redis `maxmemory` limit (0 = unlimited) |
+| `redis_evicted_keys_total` | Counter | Cumulative evicted keys from Redis INFO stats |
+
+### Alerting
+
+Prometheus alert rules are provided in `infra/prometheus-alert-rules.yaml` for Redis memory pressure:
+
+- **RedisEvictionOccurred** (warning) -- fires when Redis evicts keys in a 5-minute window
+- **RedisMemoryPressureHigh** (warning) -- fires when memory usage exceeds 90% of maxmemory for 5 minutes
+- **RedisMemoryPressureCritical** (critical) -- fires when memory exceeds 95% for 2 minutes
+
+Deploy these as a `PrometheusRule` CRD (Prometheus Operator) or load into Azure Monitor Managed Prometheus.
+
+### Authentication Rate Limiting
+
+The Bolt server includes per-IP authentication rate limiting to mitigate brute-force attacks:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `BOLT_AUTH_MAX_ATTEMPTS` | `10` | Max failed auth attempts per IP per window |
+| `BOLT_AUTH_WINDOW_SECS` | `60` | Sliding window duration in seconds |
+
+Rate limit entries are automatically cleaned up:
+- **Inline pruning**: On each auth attempt, expired windows (older than `BOLT_AUTH_WINDOW_SECS`) are removed
+- **Periodic sweep**: A background task runs every 300 seconds, removing entries idle for over 3600 seconds
+- **Hard cap**: Maximum 100,000 tracked IPs; new IPs are rejected when at capacity to prevent memory exhaustion
+
+After a successful authentication, the rate limit counter for that IP is cleared.
 
 ## Architecture Decisions
 

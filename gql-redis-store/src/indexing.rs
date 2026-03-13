@@ -31,7 +31,7 @@ impl RedisGraphStore {
         let members: Vec<String> = redis::cmd("SMEMBERS")
             .arg(self.kp(key_indexes(graph)))
             .query(conn)
-            .map_err(|e| StorageError::Backend { msg: e.to_string() })?;
+            .map_err(|e| { crate::record_backend_error(); StorageError::Backend { msg: e.to_string() } })?;
         Ok(members.into_iter().collect())
     }
 
@@ -68,7 +68,7 @@ impl RedisGraphStore {
         }
         if has_cmds {
             pipe.query::<()>(conn)
-                .map_err(|e| StorageError::Backend { msg: e.to_string() })?;
+                .map_err(|e| { crate::record_backend_error(); StorageError::Backend { msg: e.to_string() } })?;
         }
         Ok(())
     }
@@ -106,7 +106,7 @@ impl RedisGraphStore {
         }
         if has_cmds {
             pipe.query::<()>(conn)
-                .map_err(|e| StorageError::Backend { msg: e.to_string() })?;
+                .map_err(|e| { crate::record_backend_error(); StorageError::Backend { msg: e.to_string() } })?;
         }
         Ok(())
     }
@@ -121,7 +121,7 @@ impl RedisGraphStore {
         let members: Vec<String> = redis::cmd("SMEMBERS")
             .arg(self.kp(key_indexes(graph)))
             .query(conn.as_mut())
-            .map_err(|e| StorageError::Backend { msg: e.to_string() })?;
+            .map_err(|e| { crate::record_backend_error(); StorageError::Backend { msg: e.to_string() } })?;
         let mut result = Vec::new();
         for m in members {
             if let Some((label, property)) = m.split_once(IDX_SEP) {
@@ -147,14 +147,14 @@ impl RedisGraphStore {
             .arg(self.kp(key_indexes(graph)))
             .arg(format!("{label}{IDX_SEP}{property}"))
             .query::<()>(conn.as_mut())
-            .map_err(|e| StorageError::Backend { msg: e.to_string() })?;
+            .map_err(|e| { crate::record_backend_error(); StorageError::Backend { msg: e.to_string() } })?;
 
         // Build the index from existing nodes: scan all nodes with this label
         // and add entries for those that have the indexed property.
         let node_ids: Vec<String> = redis::cmd("SMEMBERS")
             .arg(self.kp(key_label(graph, label)))
             .query(conn.as_mut())
-            .map_err(|e| StorageError::Backend { msg: e.to_string() })?;
+            .map_err(|e| { crate::record_backend_error(); StorageError::Backend { msg: e.to_string() } })?;
 
         // Pipeline in batches for efficiency.
         let batch_size = index_batch_size();
@@ -172,7 +172,7 @@ impl RedisGraphStore {
             }
             let raw: Vec<Vec<Option<String>>> = read_pipe
                 .query(conn.as_mut())
-                .map_err(|e| StorageError::Backend { msg: e.to_string() })?;
+                .map_err(|e| { crate::record_backend_error(); StorageError::Backend { msg: e.to_string() } })?;
 
             // Then pipeline-write all index entries.
             let mut write_pipe = redis::pipe();
@@ -197,7 +197,7 @@ impl RedisGraphStore {
             if has_cmds {
                 write_pipe
                     .query::<()>(conn.as_mut())
-                    .map_err(|e| StorageError::Backend { msg: e.to_string() })?;
+                    .map_err(|e| { crate::record_backend_error(); StorageError::Backend { msg: e.to_string() } })?;
             }
         }
         Ok(())
@@ -215,7 +215,7 @@ impl RedisGraphStore {
             .arg(self.kp(key_indexes(graph)))
             .arg(format!("{label}{IDX_SEP}{property}"))
             .query::<()>(conn.as_mut())
-            .map_err(|e| StorageError::Backend { msg: e.to_string() })?;
+            .map_err(|e| { crate::record_backend_error(); StorageError::Backend { msg: e.to_string() } })?;
 
         // Clean up orphaned propidx keys via SCAN+DEL.
         let pattern = format!(
@@ -232,14 +232,14 @@ impl RedisGraphStore {
                 .arg("COUNT")
                 .arg(crate::range::scan_count())
                 .query(conn.as_mut())
-                .map_err(|e| StorageError::Backend { msg: e.to_string() })?;
+                .map_err(|e| { crate::record_backend_error(); StorageError::Backend { msg: e.to_string() } })?;
             if !keys.is_empty() {
                 let mut del = redis::cmd("DEL");
                 for key in &keys {
                     del.arg(key);
                 }
                 del.query::<()>(conn.as_mut())
-                    .map_err(|e| StorageError::Backend { msg: e.to_string() })?;
+                    .map_err(|e| { crate::record_backend_error(); StorageError::Backend { msg: e.to_string() } })?;
             }
             cursor = next_cursor;
             if cursor == 0 {

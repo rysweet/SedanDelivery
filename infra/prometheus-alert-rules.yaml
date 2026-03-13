@@ -1,0 +1,79 @@
+# Prometheus alerting rules for SedanDelivery
+#
+# Deploy as a PrometheusRule CRD (Prometheus Operator) or load directly into
+# an Azure Monitor Managed Prometheus rule group.
+#
+# Metrics are emitted by the sedandelivery-bolt redis_memory_reporter task:
+#   redis_used_memory_bytes   — bytes currently allocated (used_memory)
+#   redis_maxmemory_bytes     — configured memory limit (0 = unlimited)
+#   redis_evicted_keys_total  — cumulative evicted_keys counter from INFO stats
+
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: sedandelivery-redis-alerts
+  namespace: sedandelivery
+  labels:
+    app: sedandelivery
+    role: alert-rules
+spec:
+  groups:
+    - name: redis.memory
+      interval: 60s
+      rules:
+        # Alert when Redis has evicted any keys since the last scrape interval.
+        # This fires on every scrape where the delta is positive, giving an
+        # early warning that the working set exceeds the configured maxmemory.
+        - alert: RedisEvictionOccurred
+          expr: |
+            increase(redis_evicted_keys_total[5m]) > 0
+          for: 0m
+          labels:
+            severity: warning
+            team: platform
+          annotations:
+            summary: "Redis is evicting keys"
+            description: >
+              Redis shard {{ $labels.instance }} evicted
+              {{ $value | humanize }} key(s) in the last 5 minutes.
+              This indicates that used_memory is exceeding maxmemory.
+              Check the redis_used_memory_bytes / redis_maxmemory_bytes ratio
+              and consider scaling up Redis memory or reducing the working set.
+
+        # Alert when Redis memory usage reaches 90 % of the configured limit.
+        # maxmemory == 0 means unlimited; the expression guards against
+        # division-by-zero by only evaluating when maxmemory > 0.
+        - alert: RedisMemoryPressureHigh
+          expr: |
+            (
+              redis_used_memory_bytes / redis_maxmemory_bytes > 0.90
+            ) and (redis_maxmemory_bytes > 0)
+          for: 5m
+          labels:
+            severity: warning
+            team: platform
+          annotations:
+            summary: "Redis memory usage >= 90 %"
+            description: >
+              Redis shard {{ $labels.instance }} is using
+              {{ $value | humanizePercentage }} of its configured maxmemory.
+              Evictions may occur soon.  Consider raising maxmemory or
+              reducing the dataset size.
+
+        # Critical alert at 95 % — imminent eviction storm.
+        - alert: RedisMemoryPressureCritical
+          expr: |
+            (
+              redis_used_memory_bytes / redis_maxmemory_bytes > 0.95
+            ) and (redis_maxmemory_bytes > 0)
+          for: 2m
+          labels:
+            severity: critical
+            team: platform
+          annotations:
+            summary: "Redis memory usage >= 95 % — evictions imminent"
+            description: >
+              Redis shard {{ $labels.instance }} is at
+              {{ $value | humanizePercentage }} of maxmemory.
+              Evictions are likely already occurring.  Immediate action
+              required: scale Redis memory, flush stale keys, or reduce load.

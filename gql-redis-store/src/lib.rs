@@ -344,7 +344,7 @@ impl RedisGraphStore {
             .arg("labels")
             .arg("props")
             .query(conn)
-            .map_err(|e| StorageError::Backend { msg: e.to_string() })?;
+            .map_err(|e| { record_backend_error(); StorageError::Backend { msg: e.to_string() } })?;
         match (&fields[0], &fields[1]) {
             (None, None) => Ok(None),
             (Some(labels_json), Some(props_json)) => {
@@ -367,6 +367,7 @@ impl RedisGraphStore {
                     props = ?fields[1],
                     "partial node data detected — possible data corruption"
                 );
+                record_backend_error();
                 Err(StorageError::Backend {
                     msg: format!(
                         "corrupted node data: node {id} in graph '{g}' has partial fields"
@@ -391,7 +392,7 @@ impl RedisGraphStore {
             .arg("rel_type")
             .arg("props")
             .query(conn)
-            .map_err(|e| StorageError::Backend { msg: e.to_string() })?;
+            .map_err(|e| { record_backend_error(); StorageError::Backend { msg: e.to_string() } })?;
         match (&fields[0], &fields[1], &fields[2], &fields[3]) {
             (Some(src_s), Some(dst_s), Some(rel_type), Some(props_json)) => {
                 let src =
@@ -430,6 +431,7 @@ impl RedisGraphStore {
                     props = ?fields[3],
                     "partial edge data detected — possible data corruption"
                 );
+                record_backend_error();
                 Err(StorageError::Backend {
                     msg: format!(
                         "corrupted edge data: edge {id} in graph '{g}' has partial fields"
@@ -809,5 +811,27 @@ mod tests {
         assert!(DEFAULT_MIN_IDLE > 0);
         // Pool size should be reasonable (not absurdly large).
         assert!(DEFAULT_POOL_SIZE <= 256);
+    }
+}
+
+// ── Backend error counter tests ──────────────────────────────────────────────
+
+#[cfg(test)]
+mod backend_error_counter_tests {
+    use super::*;
+
+    #[test]
+    fn backend_error_count_starts_at_zero_or_valid() {
+        // Note: counter may be > 0 if other tests ran first.
+        // Just verify it's a valid u64.
+        let _ = backend_error_count();
+    }
+
+    #[test]
+    fn record_backend_error_increments_counter() {
+        let before = backend_error_count();
+        record_backend_error();
+        let after = backend_error_count();
+        assert_eq!(after, before + 1, "counter should increment by 1");
     }
 }

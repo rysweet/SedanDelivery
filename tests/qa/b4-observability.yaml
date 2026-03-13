@@ -1,0 +1,144 @@
+name: "B4 Observability — Backend Error Counter & Metrics"
+description: >
+  Outside-in test scenarios verifying that backend errors are observable via
+  Prometheus metrics at /metrics, and that the auth rate limiter correctly
+  sweeps stale entries.
+
+prerequisites:
+  - "sedandelivery-bolt running with Redis backend (docker compose up)"
+  - "Bolt endpoint at bolt://localhost:7687"
+  - "Health/metrics endpoint at http://localhost:7688"
+
+# ---------------------------------------------------------------------------
+# Scenario 1: Backend error counter increments on Redis failure
+# ---------------------------------------------------------------------------
+scenarios:
+  - scenario: 1
+    name: "Backend error metric increments when Redis is unreachable"
+    description: >
+      Stop the Redis backend, issue a Bolt query that triggers a
+      StorageError::Backend, then verify the Prometheus metric
+      sedandelivery_bolt_backend_errors_total has increased.
+    steps:
+      - step: 1
+        action: http_get
+        url: "http://localhost:7688/metrics"
+        description: "Record baseline backend_errors_total value"
+        expected: >
+          Response is 200 OK with text/plain content-type.
+          Body contains 'sedandelivery_bolt_backend_errors_total' line.
+          Record the numeric value as BASELINE.
+        timeout_ms: 5000
+
+      - step: 2
+        action: shell
+        command: "docker compose stop valkey"
+        description: "Stop the Redis/Valkey container to simulate backend failure"
+        timeout_ms: 10000
+
+      - step: 3
+        action: bolt_query
+        url: "bolt://localhost:7687"
+        query: "MATCH (n) RETURN n LIMIT 1"
+        description: "Issue a read query that will fail because Redis is down"
+        expected: >
+          The query returns a FAILURE response with a backend error code
+          (e.g., Neo.DatabaseError.General.UnknownError or similar).
+        timeout_ms: 10000
+
+      - step: 4
+        action: http_get
+        url: "http://localhost:7688/metrics"
+        description: "Verify backend_errors_total has incremented"
+        expected: >
+          Response is 200 OK.
+          The 'sedandelivery_bolt_backend_errors_total' value is strictly
+          greater than BASELINE recorded in step 1.
+        timeout_ms: 5000
+
+      - step: 5
+        action: shell
+        command: "docker compose start valkey"
+        description: "Restart Redis to restore service"
+        timeout_ms: 30000
+
+  # ---------------------------------------------------------------------------
+  # Scenario 2: /metrics endpoint includes backend_error counter
+  # ---------------------------------------------------------------------------
+  - scenario: 2
+    name: "/metrics endpoint exposes backend_errors_total gauge"
+    description: >
+      Verify that the Prometheus /metrics endpoint includes the
+      sedandelivery_bolt_backend_errors_total metric even when no
+      errors have occurred (value should be 0 or a valid number).
+    steps:
+      - step: 1
+        action: http_get
+        url: "http://localhost:7688/metrics"
+        description: "Scrape the /metrics endpoint"
+        expected: >
+          Response status is 200.
+          Content-Type header starts with 'text/plain'.
+          Body contains a line matching:
+            sedandelivery_bolt_backend_errors_total <number>
+          where <number> is a non-negative float or integer.
+        timeout_ms: 5000
+
+      - step: 2
+        action: http_get
+        url: "http://localhost:7688/metrics"
+        description: "Verify other expected metrics are present"
+        expected: >
+          Body also contains these metric families:
+            - sedandelivery_bolt_connections_active
+            - sedandelivery_bolt_connections_total
+            - sedandelivery_bolt_queries_total
+            - sedandelivery_bolt_errors_total
+            - redis_pool_size (from the pool stats reporter)
+        timeout_ms: 5000
+
+  # ---------------------------------------------------------------------------
+  # Scenario 3: Auth rate limiter sweep removes stale entries
+  # ---------------------------------------------------------------------------
+  - scenario: 3
+    name: "Auth rate limiter sweeps stale entries after window expires"
+    description: >
+      Generate failed auth attempts from a test IP, wait for the auth
+      window to expire, then verify the rate limiter allows new attempts
+      from that IP (proving stale entries were swept).
+    prerequisites:
+      - "BOLT_PASSWORD set to a known value (e.g., 'test-secret')"
+      - "BOLT_AUTH_WINDOW_SECS set to a short value for testing (e.g., 5)"
+      - "BOLT_AUTH_MAX_ATTEMPTS set to 3"
+    steps:
+      - step: 1
+        action: bolt_connect
+        url: "bolt://localhost:7687"
+        auth:
+          scheme: basic
+          credentials: "wrong-password"
+        repeat: 4
+        description: "Exhaust the rate limit budget with wrong credentials"
+        expected: >
+          First 3 attempts return Unauthorized failure.
+          4th attempt returns AuthenticationRateLimit failure.
+        timeout_ms: 10000
+
+      - step: 2
+        action: wait
+        duration_ms: 6000
+        description: >
+          Wait for BOLT_AUTH_WINDOW_SECS (5s) + 1s buffer so the rate
+          limit window expires and the inline prune removes the entry.
+
+      - step: 3
+        action: bolt_connect
+        url: "bolt://localhost:7687"
+        auth:
+          scheme: basic
+          credentials: "wrong-password"
+        description: "Attempt auth again after window expiry"
+        expected: >
+          Returns Unauthorized (not AuthenticationRateLimit), proving
+          the stale entry was pruned and the counter reset.
+        timeout_ms: 5000

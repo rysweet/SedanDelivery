@@ -16,19 +16,20 @@ use super::{bolt_map, constant_time_eq, ProtocolError, Session};
 
 // -- Auth rate limiting ------------------------------------------------------
 
-/// Maximum number of distinct IPs tracked simultaneously.
-/// Prevents unbounded memory growth under a flood of source IPs.
+/// Maximum number of per-IP entries tracked at once.  Entries that push the
+/// map beyond this limit are dropped (oldest insertion order) to prevent
+/// unbounded memory growth from adversarial IP churn.
 const MAX_TRACKED_IPS: usize = 100_000;
 
-/// Maximum failed auth attempts per IP before returning RateLimit.
-const MAX_FAILURES_PER_IP: u32 = 10;
-
-/// Seconds after which an entry is considered stale and eligible for sweep.
+/// How long an entry must be inactive before the periodic sweep removes it.
 const STALE_AFTER_SECS: u64 = 3600;
 
-/// Per-IP entry: (failure_count, last_failure_unix_secs).
-struct AuthRateLimiter {
-    map: DashMap<String, (AtomicU32, AtomicU64)>,
+/// How often the background sweep runs (seconds).
+const SWEEP_INTERVAL_SECS: u64 = 300;
+
+struct RateLimitEntry {
+    count: u64,
+    window_start: Instant,
 }
 
 impl AuthRateLimiter {
@@ -46,20 +47,107 @@ impl AuthRateLimiter {
             .unwrap_or_default()
             .as_secs();
 
-        if let Some(entry) = self.map.get(key) {
-            entry.1.store(now_secs, Ordering::Relaxed);
-            let prev = entry.0.fetch_add(1, Ordering::Relaxed);
-            return prev + 1 > MAX_FAILURES_PER_IP;
+/// Spawn a background task that periodically removes stale per-IP entries and
+/// enforces the [`MAX_TRACKED_IPS`] cap.  Call once from `main` after the
+/// Tokio runtime is started.
+pub fn spawn_auth_rate_limit_sweep() -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let interval = tokio::time::Duration::from_secs(SWEEP_INTERVAL_SECS);
+        let stale_threshold = std::time::Duration::from_secs(STALE_AFTER_SECS);
+        loop {
+            tokio::time::sleep(interval).await;
+            let mut map = auth_rate_limiter()
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            let before = map.len();
+            let now = std::time::Instant::now();
+            // Remove entries that have been idle longer than STALE_AFTER_SECS.
+            map.retain(|_, entry| now.duration_since(entry.window_start) < stale_threshold);
+            // If still over cap, drop arbitrary excess entries.
+            if map.len() > MAX_TRACKED_IPS {
+                let excess = map.len() - MAX_TRACKED_IPS;
+                let to_remove: Vec<IpAddr> = map.keys().take(excess).copied().collect();
+                for ip in to_remove {
+                    map.remove(&ip);
+                }
+            }
+            let after = map.len();
+            if before != after {
+                tracing::debug!(
+                    removed = before - after,
+                    remaining = after,
+                    "auth rate-limit sweep complete"
+                );
+            }
         }
+    })
+}
 
-        // Only insert if we have room.
-        if self.map.len() < MAX_TRACKED_IPS {
-            self.map
-                .entry(key.to_string())
-                .or_insert_with(|| (AtomicU32::new(0), AtomicU64::new(now_secs)))
-                .0
-                .fetch_add(1, Ordering::Relaxed);
-        }
+fn auth_max_attempts() -> u64 {
+    static VAL: OnceLock<u64> = OnceLock::new();
+    *VAL.get_or_init(|| {
+        std::env::var("BOLT_AUTH_MAX_ATTEMPTS")
+            .ok()
+            .and_then(|v| match v.parse::<u64>() {
+                Ok(val) if val > 0 => Some(val),
+                _ => {
+                    tracing::warn!("invalid BOLT_AUTH_MAX_ATTEMPTS value, using default 10");
+                    None
+                }
+            })
+            .unwrap_or(10)
+    })
+}
+
+fn auth_window_secs() -> u64 {
+    static VAL: OnceLock<u64> = OnceLock::new();
+    *VAL.get_or_init(|| {
+        std::env::var("BOLT_AUTH_WINDOW_SECS")
+            .ok()
+            .and_then(|v| match v.parse::<u64>() {
+                Ok(val) if val > 0 => Some(val),
+                _ => {
+                    tracing::warn!("invalid BOLT_AUTH_WINDOW_SECS value, using default 60");
+                    None
+                }
+            })
+            .unwrap_or(60)
+    })
+}
+
+/// Check whether the given IP has exceeded the failed-auth rate limit.
+/// Returns `true` if the request should be rejected (rate limited).
+/// Increments the counter for the IP on every failed-auth attempt.
+///
+/// Inline stale-entry pruning keeps memory bounded between periodic sweeps.
+/// New IPs are silently dropped (rate-limited) when the map is at capacity.
+pub(crate) fn check_auth_rate_limit(ip: IpAddr) -> bool {
+    let max = auth_max_attempts();
+    let window = Duration::from_secs(auth_window_secs());
+    let mut map = auth_rate_limiter()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let now = Instant::now();
+    // Inline prune of expired windows (defence-in-depth; the background sweep
+    // handles bulk cleanup every SWEEP_INTERVAL_SECS seconds).
+    map.retain(|_, entry| now.duration_since(entry.window_start) < window);
+    // Enforce hard cap: if already at MAX_TRACKED_IPS and this is a new IP,
+    // reject the connection to prevent memory exhaustion.
+    if map.len() >= MAX_TRACKED_IPS && !map.contains_key(&ip) {
+        tracing::warn!(
+            cap = MAX_TRACKED_IPS,
+            "auth rate-limit table at capacity; rejecting new IP"
+        );
+        return true;
+    }
+    let entry = map.entry(ip).or_insert(RateLimitEntry {
+        count: 0,
+        window_start: now,
+    });
+    if now.duration_since(entry.window_start) >= window {
+        // Reset the window.
+        entry.count = 1;
+        entry.window_start = now;
         false
     }
 
