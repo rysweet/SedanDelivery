@@ -168,13 +168,14 @@ fn compute_latency(mut samples: Vec<f64>) -> LatencyStats {
 }
 
 async fn connect(uri: &str, user: &str, password: &str) -> Result<Graph, neo4rs::Error> {
-    let mut builder = ConfigBuilder::default()
+    let u = if user.is_empty() { "neo4j" } else { user };
+    let p = if password.is_empty() { "neo4j" } else { password };
+    let builder = ConfigBuilder::default()
         .uri(uri)
+        .user(u)
+        .password(p)
         .fetch_size(1)
         .max_connections(1);
-    if !user.is_empty() {
-        builder = builder.user(user).password(password);
-    }
     Graph::connect(builder.build()?).await
 }
 
@@ -184,13 +185,14 @@ async fn connect_pool(
     password: &str,
     pool_size: usize,
 ) -> Result<Graph, neo4rs::Error> {
-    let mut builder = ConfigBuilder::default()
+    let u = if user.is_empty() { "neo4j" } else { user };
+    let p = if password.is_empty() { "neo4j" } else { password };
+    let builder = ConfigBuilder::default()
         .uri(uri)
+        .user(u)
+        .password(p)
         .fetch_size(256)
         .max_connections(pool_size);
-    if !user.is_empty() {
-        builder = builder.user(user).password(password);
-    }
     Graph::connect(builder.build()?).await
 }
 
@@ -275,7 +277,7 @@ async fn run_nodes(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
         set.spawn(async move {
             let _permit = sem.acquire().await.unwrap();
             let q = format!(
-                "UNWIND range(1, {}) AS i CREATE (:LoadTest {{batch: {}, idx: i, ts: timestamp()}})",
+                "UNWIND range(1, {}) AS i CREATE (:LoadTest {{batch: {}, idx: i}})",
                 nodes_in_batch, batch_idx
             );
             let t0 = Instant::now();
