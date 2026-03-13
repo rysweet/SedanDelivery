@@ -1,0 +1,252 @@
+name: "B2 Advanced Scaling — Outside-In Verification"
+description: >
+  Validates the B2 advanced scaling features from an external user perspective:
+  per-IP connection limiting, pre-handshake timeout, HTTP concurrency limiting,
+  and Bicep template correctness for /21 subnet and KEDA parameters.
+
+# Bolt endpoint under test (standalone or docker-compose)
+bolt_endpoint: "bolt://localhost:7687"
+api_endpoint: "http://localhost:3001"
+
+---
+
+# Scenario 1: Per-IP Connection Limit
+# Verifies that opening more than BOLT_MAX_CONN_PER_IP connections from a single
+# IP results in rejection of subsequent connections.
+name: "Per-IP Connection Limit Enforcement"
+description: >
+  A single client opens connections rapidly from the same source IP until the
+  per-IP limit (BOLT_MAX_CONN_PER_IP, default 50) is reached. The server must
+  reject the 51st connection and increment the connections_rejected_total metric.
+  Earlier connections must continue to function normally.
+
+env:
+  BOLT_MAX_CONN_PER_IP: "5"   # Low limit for test speed
+
+setup:
+  - action: start_server
+    binary: sedandelivery-bolt
+    env:
+      BOLT_MAX_CONN_PER_IP: "5"
+      BOLT_BIND_ADDR: "0.0.0.0:7687"
+
+steps:
+  - step: 1
+    description: "Open 5 Bolt TCP connections from the same IP (within limit)"
+    action: open_tcp_connections
+    target: "localhost:7687"
+    count: 5
+    expected: "All 5 connections are accepted and remain open"
+    timeout_ms: 10000
+
+  - step: 2
+    description: "Attempt a 6th connection from the same IP"
+    action: open_tcp_connection
+    target: "localhost:7687"
+    expected: "Connection is immediately closed/rejected by the server"
+    timeout_ms: 5000
+
+  - step: 3
+    description: "Verify the rejection counter incremented via /metrics"
+    action: http_get
+    url: "http://localhost:7688/metrics"
+    expected: "Response body contains 'sedandelivery_bolt_connections_rejected_total' with value >= 1"
+    timeout_ms: 5000
+
+  - step: 4
+    description: "Close one of the original 5 connections"
+    action: close_tcp_connection
+    index: 0
+    expected: "Connection closes cleanly"
+    timeout_ms: 3000
+
+  - step: 5
+    description: "Now a new connection should be accepted (slot freed)"
+    action: open_tcp_connection
+    target: "localhost:7687"
+    expected: "Connection is accepted successfully"
+    timeout_ms: 5000
+
+teardown:
+  - action: close_all_connections
+  - action: stop_server
+
+---
+
+# Scenario 2: Pre-Handshake Timeout
+# Verifies that a client that connects but never sends the Bolt handshake is
+# disconnected after BOLT_HANDSHAKE_TIMEOUT_MS.
+name: "Pre-Handshake Timeout (TLS Slot Exhaustion Prevention)"
+description: >
+  A client opens a TCP connection to the Bolt TLS port but never sends the
+  ClientHello or Bolt magic bytes. The server must close the connection after
+  BOLT_HANDSHAKE_TIMEOUT_MS (default 5000ms) to prevent connection slot
+  exhaustion from slow or malicious clients.
+
+env:
+  BOLT_HANDSHAKE_TIMEOUT_MS: "2000"   # 2s for faster test
+  BOLT_TLS_CERT: "/tmp/test-cert.pem"
+  BOLT_TLS_KEY: "/tmp/test-key.pem"
+
+setup:
+  - action: generate_self_signed_cert
+    cert_path: "/tmp/test-cert.pem"
+    key_path: "/tmp/test-key.pem"
+  - action: start_server
+    binary: sedandelivery-bolt
+    env:
+      BOLT_HANDSHAKE_TIMEOUT_MS: "2000"
+      BOLT_TLS_CERT: "/tmp/test-cert.pem"
+      BOLT_TLS_KEY: "/tmp/test-key.pem"
+
+steps:
+  - step: 1
+    description: "Open a raw TCP connection to the Bolt port (no TLS ClientHello)"
+    action: open_tcp_connection
+    target: "localhost:7687"
+    expected: "TCP connection is established (SYN-ACK received)"
+    timeout_ms: 5000
+
+  - step: 2
+    description: "Wait without sending any data — server should close after timeout"
+    action: wait_for_disconnect
+    timeout_ms: 4000
+    expected: "Connection is closed by server within ~2000ms (the BOLT_HANDSHAKE_TIMEOUT_MS value)"
+
+  - step: 3
+    description: "Verify server logged the pre-handshake timeout"
+    action: check_server_logs
+    pattern: "pre-handshake timeout"
+    expected: "Server log contains 'pre-handshake timeout: slow client dropped'"
+    timeout_ms: 3000
+
+  - step: 4
+    description: "Verify legitimate TLS connections still succeed after timeout eviction"
+    action: bolt_connect
+    target: "bolt+s://localhost:7687"
+    tls_verify: false
+    expected: "Bolt handshake completes successfully; HELLO/LOGON exchange works"
+    timeout_ms: 10000
+
+teardown:
+  - action: close_all_connections
+  - action: stop_server
+
+---
+
+# Scenario 3: HTTP API Concurrency Limiting
+# Verifies gql-api respects GQL_API_MAX_CONCURRENCY and returns 503 when exceeded.
+name: "GQL-API Concurrent Request Limiting (ConcurrencyLimitLayer)"
+description: >
+  Send more concurrent HTTP requests than GQL_API_MAX_CONCURRENCY allows.
+  Requests beyond the limit must receive HTTP 503 Service Unavailable.
+  Requests within the limit must complete normally.
+
+env:
+  GQL_API_MAX_CONCURRENCY: "3"
+
+setup:
+  - action: start_server
+    binary: gql-api
+    env:
+      GQL_API_MAX_CONCURRENCY: "3"
+      GQL_API_BIND_ADDR: "0.0.0.0:3001"
+
+steps:
+  - step: 1
+    description: "Send 3 slow concurrent requests (within limit)"
+    action: http_concurrent_requests
+    method: POST
+    url: "http://localhost:3001/api/graphs/test/query"
+    body: '{"query": "UNWIND range(1,100000) AS i RETURN count(i)"}'
+    concurrency: 3
+    expected: "All 3 requests are accepted (HTTP 200 or processing)"
+    timeout_ms: 30000
+
+  - step: 2
+    description: "While 3 are in-flight, send 2 more requests"
+    action: http_concurrent_requests
+    method: GET
+    url: "http://localhost:3001/api/graphs"
+    concurrency: 2
+    expected: "At least 1 of these receives HTTP 503 (Service Unavailable) due to concurrency limit"
+    timeout_ms: 10000
+
+  - step: 3
+    description: "After in-flight requests complete, new requests succeed"
+    action: http_get
+    url: "http://localhost:3001/health"
+    expected: "HTTP 200 with healthy response"
+    timeout_ms: 5000
+
+teardown:
+  - action: stop_server
+
+---
+
+# Scenario 4: Bicep Template Validation
+# Verifies the infra/main.bicep template validates with the new /21 subnet and
+# KEDA ScaledObject parameters.
+name: "Bicep Template Validates (/21 Subnet + KEDA Parameters)"
+description: >
+  Run `az bicep build` on infra/main.bicep to ensure the template compiles
+  without errors. Verify the subnet CIDR is /21 (2048 IPs for KEDA scale-out).
+  Verify the KEDA ScaledObjects YAML is well-formed and references correct
+  metric names matching those emitted by the Rust services.
+
+steps:
+  - step: 1
+    description: "Bicep template compiles without errors"
+    action: shell
+    command: "az bicep build --file infra/main.bicep --stdout > /dev/null"
+    expected: "Exit code 0 — template is syntactically valid"
+    timeout_ms: 30000
+
+  - step: 2
+    description: "Subnet CIDR is /21 (2048 addresses for KEDA headroom)"
+    action: grep_file
+    file: "infra/main.bicep"
+    pattern: "addressPrefix: '10.0.0.0/21'"
+    expected: "Exactly one match — container-apps subnet uses /21"
+
+  - step: 3
+    description: "KEDA ScaledObject for bolt references correct metric"
+    action: grep_file
+    file: "infra/keda-scaledobjects.yaml"
+    pattern: "sedandelivery_bolt_connections_active"
+    expected: "Metric name matches the constant in sedandelivery-bolt/src/metrics.rs"
+
+  - step: 4
+    description: "KEDA ScaledObject for gql-api references a valid metric"
+    action: grep_file
+    file: "infra/keda-scaledobjects.yaml"
+    pattern: "gql_api_http_concurrent_requests"
+    expected: "Metric name is present for the gql-api scaler trigger"
+
+  - step: 5
+    description: "Bolt scaler maxReplicaCount matches Bicep boltMaxReplicas upper bound"
+    action: grep_file
+    file: "infra/keda-scaledobjects.yaml"
+    pattern: "maxReplicaCount: 10"
+    expected: "Max replicas = 10, matching Bicep @maxValue(10) on boltMaxReplicas"
+
+  - step: 6
+    description: "KEDA YAML is valid Kubernetes multi-document YAML"
+    action: shell
+    command: "python3 -c \"import yaml; list(yaml.safe_load_all(open('infra/keda-scaledobjects.yaml')))\""
+    expected: "Exit code 0 — YAML parses without errors"
+    timeout_ms: 10000
+
+  - step: 7
+    description: "Bolt ScaledObject targets the correct deployment name"
+    action: grep_file
+    file: "infra/keda-scaledobjects.yaml"
+    pattern: "name: sedandelivery-bolt"
+    expected: "scaleTargetRef.name matches the bolt deployment"
+
+  - step: 8
+    description: "GQL-API ScaledObject targets the correct deployment name"
+    action: grep_file
+    file: "infra/keda-scaledobjects.yaml"
+    pattern: "name: gql-api"
+    expected: "scaleTargetRef.name matches the gql-api deployment"

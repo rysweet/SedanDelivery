@@ -82,6 +82,8 @@ See [ADR-004](ADR-004-distributed-redis) for the full architecture decision reco
 | `BOLT_WS_ALLOWED_ORIGINS` | — | Comma-separated browser origins allowed to use Bolt over WebSocket; when set, a matching `Origin` header is required and `*` allows any origin |
 | `BOLT_ENABLED` | `true` | Enable/disable Bolt server in container |
 | `BOLT_MAX_CONNECTIONS` | `1024` | Max concurrent Bolt connections |
+| `BOLT_MAX_CONN_PER_IP` | `50` | Max concurrent connections from a single IP (DoS protection) |
+| `BOLT_HANDSHAKE_TIMEOUT_MS` | `5000` | Max time (ms) to complete TLS handshake before slot is reclaimed |
 | `BOLT_IDLE_TIMEOUT_SECS` | `300` | Close idle connections after N seconds (short default aids L4 load-balancer rebalancing) |
 | `BOLT_MAX_CONNECTION_LIFETIME_SECS` | `1800` | Force-close connections after N seconds regardless of activity (0 = disabled); periodic reconnection aids L4 load balancing |
 | `BOLT_WRITE_CONCURRENCY` | `128` | Max concurrent write transactions (semaphore for tx_timeout contention) |
@@ -109,6 +111,7 @@ See [ADR-004](ADR-004-distributed-redis) for the full architecture decision reco
 | `GQL_API_ENTRA_TENANT_ID` | — | Entra ID tenant for JWT auth (required in production) |
 | `GQL_API_ENTRA_CLIENT_ID` | — | App registration client ID for JWT audience validation |
 | `GQL_API_RATE_LIMIT_RPS` | `100` | Max requests per second per client (rate limiting) |
+| `GQL_API_MAX_CONCURRENCY` | `100` | Max concurrent HTTP requests per replica; excess requests receive HTTP 503 |
 | `GQL_API_IMPORT_BODY_LIMIT_BYTES` | `2097152` | Max import request body size (bytes) |
 | `ENVIRONMENT` | — | Set to `production` to enforce auth and CORS config |
 

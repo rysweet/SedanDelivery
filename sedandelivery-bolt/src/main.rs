@@ -1,7 +1,9 @@
+use std::net::IpAddr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use dashmap::DashMap;
 use socket2::SockRef;
 use tokio::net::TcpListener;
 use tokio::sync::Semaphore;
@@ -118,6 +120,22 @@ async fn main() {
     let write_concurrency: u32 =
         gql_core::config::parse_env_range("BOLT_WRITE_CONCURRENCY", 128, 1, 10000);
 
+    // Pre-handshake timeout: max time to complete TLS/WebSocket handshake
+    // before the slot is reclaimed. Prevents slot exhaustion from slow clients.
+    let handshake_timeout_ms: u64 = std::env::var("BOLT_HANDSHAKE_TIMEOUT_MS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(5_000); // 5 second default
+    let handshake_timeout = Duration::from_millis(handshake_timeout_ms);
+
+    // Per-IP connection limit (economic DoS protection).
+    let max_conns_per_ip: usize = std::env::var("BOLT_MAX_CONN_PER_IP")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(50);
+
+    let per_ip_conns: Arc<DashMap<IpAddr, usize>> = Arc::new(DashMap::new());
+
     // --- TCP keepalive configuration ---
     //
     // Azure Load Balancer has a 4-minute (240s) TCP idle timeout. Connections
@@ -207,12 +225,13 @@ async fn main() {
         .await
         .expect("failed to bind Bolt TCP listener");
     tracing::info!(
-        "sedandelivery-bolt listening on {} (max_connections={}, idle_timeout={}s, max_connection_lifetime={}s, write_concurrency={})",
+        "sedandelivery-bolt listening on {} (max_connections={}, idle_timeout={}s, max_connection_lifetime={}s, write_concurrency={}, handshake_timeout_ms={})",
         bind_addr,
         max_connections,
         idle_timeout_secs,
         max_connection_lifetime_secs,
-        write_concurrency
+        write_concurrency,
+        handshake_timeout_ms
     );
 
     // Monotonic connection ID (not the same as active count).
@@ -264,6 +283,27 @@ async fn main() {
             tracing::warn!(%peer_addr, "failed to set TCP keepalive: {e}");
         }
 
+        // Per-IP connection limit check.
+        let per_ip_guard = {
+            let ip = peer_addr.ip();
+            match sedandelivery_bolt::connection::per_ip_guard::PerIpGuard::try_new(
+                Arc::clone(&per_ip_conns),
+                ip,
+                max_conns_per_ip,
+            ) {
+                Some(guard) => guard,
+                None => {
+                    tracing::warn!(
+                        %peer_addr,
+                        max_conns_per_ip,
+                        "per-IP connection limit reached, dropping connection"
+                    );
+                    sedandelivery_bolt::metrics::connection_rejected();
+                    continue;
+                }
+            }
+        };
+
         // Acquire a semaphore permit (blocks if at max_connections).
         let permit = match Arc::clone(&semaphore).acquire_owned().await {
             Ok(permit) => permit,
@@ -292,6 +332,9 @@ async fn main() {
             // _permit is held for the lifetime of this task; when dropped it
             // returns the permit to the semaphore, allowing a new connection.
             let _permit = permit;
+            // _per_ip_guard is held for the lifetime of this task; when dropped
+            // it decrements the per-IP connection count.
+            let _per_ip_guard = per_ip_guard;
 
             // ConnectionGuard ensures active count is decremented even on panic.
             // It also records disconnect metrics via connection_closed().
@@ -301,23 +344,34 @@ async fn main() {
             // inside session::run per-message, so we no longer wrap the
             // entire session in a single tokio::time::timeout.
             let result = if let Some(acceptor) = tls {
-                match acceptor.accept(stream).await {
-                    Ok(tls_stream) => {
-                        tracing::debug!(conn_id, "TLS handshake complete");
-                        sedandelivery_bolt::connection::session::run(
-                            tls_stream,
-                            store,
+                match tokio::time::timeout(handshake_timeout, acceptor.accept(stream)).await {
+                    Ok(tls_result) => match tls_result {
+                        Ok(tls_stream) => {
+                            tracing::debug!(conn_id, "TLS handshake complete");
+                            sedandelivery_bolt::connection::session::run(
+                                tls_stream,
+                                store,
+                                conn_id,
+                                bookmark,
+                                wl,
+                                Some(peer_addr.ip()),
+                                idle_timeout,
+                                max_connection_lifetime,
+                            )
+                            .await
+                        }
+                        Err(e) => {
+                            tracing::warn!(%peer_addr, conn_id, "TLS handshake failed: {e}");
+                            Ok(())
+                        }
+                    },
+                    Err(_elapsed) => {
+                        tracing::warn!(
+                            %peer_addr,
                             conn_id,
-                            bookmark,
-                            wl,
-                            Some(peer_addr.ip()),
-                            idle_timeout,
-                            max_connection_lifetime,
-                        )
-                        .await
-                    }
-                    Err(e) => {
-                        tracing::warn!(%peer_addr, conn_id, "TLS handshake failed: {e}");
+                            handshake_timeout_ms,
+                            "pre-handshake timeout: slow client dropped"
+                        );
                         Ok(())
                     }
                 }

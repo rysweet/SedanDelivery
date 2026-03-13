@@ -174,7 +174,7 @@ resource vnet 'Microsoft.Network/virtualNetworks@2023-04-01' = {
       {
         name: 'container-apps'
         properties: {
-          addressPrefix: '10.0.0.0/23'
+          addressPrefix: '10.0.0.0/21'
           networkSecurityGroup: {
             id: nsg.id
           }

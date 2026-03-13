@@ -21,6 +21,7 @@ use std::time::Duration;
 
 use axum::http::HeaderValue;
 use axum::{middleware, Router};
+use tower::limit::ConcurrencyLimitLayer;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::trace::TraceLayer;
 use tracing::info;
@@ -176,6 +177,15 @@ async fn main() {
     let limiter = rate_limit::build_limiter(rps);
     info!("Per-IP rate limit: {rps} requests/second");
 
+    // 100 concurrent requests per replica. KEDA scales min 1 → max 3 replicas,
+    // giving 100–300 total concurrent requests across the deployment.
+    // Applied BEFORE auth/trace layers so it rejects at the outermost boundary.
+    let max_concurrency: usize = std::env::var("GQL_API_MAX_CONCURRENCY")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .filter(|&v: &usize| v >= 1)
+        .unwrap_or(100);
+
     let app = Router::new()
         .merge(routes::health::router())
         .merge(routes::graphs::router())
@@ -192,6 +202,7 @@ async fn main() {
         .layer(middleware::from_fn(metrics::track_http_metrics))
         .layer(cors)
         .layer(TraceLayer::new_for_http())
+        .layer(ConcurrencyLimitLayer::new(max_concurrency))
         .with_state(state);
 
     // Load TLS configuration (returns None if GQL_API_TLS_CERT / GQL_API_TLS_KEY are unset).

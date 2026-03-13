@@ -284,6 +284,8 @@ Set these in your Container App or `deploy.yml` to customize behavior:
 | `BOLT_PASSWORD` | (none) | Optional for direct bolt runs; local Compose profiles inherit `VALKEY_PASSWORD` unless overridden |
 | `BOLT_WS_ALLOWED_ORIGINS` | (none) | Comma-separated browser origins allowed to upgrade Bolt over WebSocket; when set, requests must send a matching `Origin` header and `*` allows any origin |
 | `BOLT_MAX_CONNECTIONS` | `1024` | Max concurrent Bolt connections |
+| `BOLT_MAX_CONN_PER_IP` | `50` | Max concurrent connections from a single IP address (DoS protection) |
+| `BOLT_HANDSHAKE_TIMEOUT_MS` | `5000` | Max time (ms) to complete TLS handshake before the connection slot is reclaimed |
 | `BOLT_IDLE_TIMEOUT_SECS` | `300` | Close idle connections after N seconds (short default aids L4 load-balancer rebalancing) |
 | `BOLT_MAX_CONNECTION_LIFETIME_SECS` | `1800` | Force-close connections after N seconds regardless of activity (0 = disabled); ensures periodic reconnection for L4 load balancing |
 | `BOLT_WRITE_CONCURRENCY` | `128` | Max concurrent write transactions via semaphore (autocommit writes without `tx_timeout` bypass this for maximum throughput) |
@@ -301,6 +303,7 @@ Set these in your Container App or `deploy.yml` to customize behavior:
 | `GQL_API_BIND_ADDR` | `0.0.0.0:3001` | HTTP listen address |
 | `GQL_API_ALLOWED_ORIGINS` | localhost:5000,5173 | Comma-separated CORS origins |
 | `GQL_API_RATE_LIMIT_RPS` | `100` | Max requests per second per client (rate limiting) |
+| `GQL_API_MAX_CONCURRENCY` | `100` | Max concurrent HTTP requests per replica (tower ConcurrencyLimitLayer); excess requests receive HTTP 503 |
 | `ENVIRONMENT` | (none) | Set to `production` to require `GQL_REDIS_URL` and `GQL_API_ALLOWED_ORIGINS` |
 | **Query Engine** | | |
 | `GQL_QUERY_TIMEOUT_MS` | `30000` | Max query execution time |
@@ -326,6 +329,23 @@ az containerapp update \
 ```
 
 Container Apps automatically load-balances across replicas.
+
+### KEDA Auto-Scaling
+
+When KEDA 2.13+ is installed in the cluster, `infra/keda-scaledobjects.yaml` provides automatic scaling based on Prometheus metrics:
+
+- **Bolt server** scales 1-10 replicas on active connection count (target: 100/replica) and p95 query latency (target: 500ms).
+- **gql-api** scales 1-3 replicas on concurrent HTTP requests (target: 100/replica).
+
+Both scalers read from Azure Monitor Managed Prometheus via workload identity. Apply with:
+
+```bash
+kubectl apply -f infra/keda-scaledobjects.yaml
+```
+
+> **Subnet sizing:** The container-apps subnet uses `/21` (2048 addresses) to provide
+> headroom for KEDA scale-out. If upgrading from `/23`, existing deployments must
+> recreate the VNet or expand the subnet before applying the new Bicep template.
 
 > **valkey-volume scaling guard:** The Bicep template includes a `boltMaxReplicas`
 > parameter (default `1`). When `persistenceBackend` is `valkey-volume`, the

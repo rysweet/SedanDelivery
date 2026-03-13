@@ -4,4 +4,5 @@
 //! and running the per-connection message loop ([`session`]).
 
 pub mod handshake;
+pub mod per_ip_guard;
 pub mod session;

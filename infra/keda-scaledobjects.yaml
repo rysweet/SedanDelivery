@@ -1,0 +1,83 @@
+# KEDA ScaledObjects for SedanDelivery auto-scaling
+# Uses Azure Monitor Managed Prometheus for custom metrics:
+#   - sedandelivery_bolt_connections_active
+#   - sedandelivery_bolt_query_duration_seconds (p95)
+#
+# Requirements:
+#   - KEDA 2.13+ installed in the cluster
+#   - Azure Monitor Managed Prometheus workspace configured
+#   - TriggerAuthentication with Azure Workload Identity
+
+apiVersion: keda.sh/v1alpha1
+kind: TriggerAuthentication
+metadata:
+  name: azure-managed-prometheus-auth
+  namespace: sedandelivery
+spec:
+  podIdentity:
+    provider: azure-workload
+---
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: sedandelivery-bolt-scaler
+  namespace: sedandelivery
+  annotations:
+    scaledobject.keda.sh/transfer-hpa-ownership: "true"
+spec:
+  scaleTargetRef:
+    name: sedandelivery-bolt
+  minReplicaCount: 1
+  maxReplicaCount: 10
+  cooldownPeriod: 60
+  pollingInterval: 30
+  triggers:
+    # Scale on active Bolt connections (target: 100 connections per replica)
+    - type: prometheus
+      metricType: AverageValue
+      metadata:
+        serverAddress: https://$(AZURE_MONITOR_PROMETHEUS_ENDPOINT)
+        metricName: sedandelivery_bolt_connections_active
+        threshold: "100"
+        query: avg(sedandelivery_bolt_connections_active)
+        authModes: "workloadIdentity"
+      authenticationRef:
+        name: azure-managed-prometheus-auth
+    # Scale on p95 query latency (target: 500ms)
+    - type: prometheus
+      metricType: AverageValue
+      metadata:
+        serverAddress: https://$(AZURE_MONITOR_PROMETHEUS_ENDPOINT)
+        metricName: sedandelivery_bolt_query_duration_p95
+        threshold: "0.5"
+        query: histogram_quantile(0.95, rate(sedandelivery_bolt_query_duration_seconds_bucket[2m]))
+        authModes: "workloadIdentity"
+      authenticationRef:
+        name: azure-managed-prometheus-auth
+---
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: gql-api-scaler
+  namespace: sedandelivery
+  annotations:
+    scaledobject.keda.sh/transfer-hpa-ownership: "true"
+spec:
+  scaleTargetRef:
+    name: gql-api
+  minReplicaCount: 1
+  maxReplicaCount: 3
+  cooldownPeriod: 30
+  pollingInterval: 15
+  triggers:
+    # Scale on HTTP concurrent requests (target: 100/replica)
+    - type: prometheus
+      metricType: AverageValue
+      metadata:
+        serverAddress: https://$(AZURE_MONITOR_PROMETHEUS_ENDPOINT)
+        metricName: gql_api_http_concurrent_requests
+        threshold: "100"
+        query: avg(gql_api_http_concurrent_requests)
+        authModes: "workloadIdentity"
+      authenticationRef:
+        name: azure-managed-prometheus-auth

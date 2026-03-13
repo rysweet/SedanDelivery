@@ -72,10 +72,9 @@ pub fn record_redis_evictions(total: u64) {
     gauge!(REDIS_EVICTED_KEYS_TOTAL).set(total as f64);
 }
 
-/// Record a rejected connection (per-IP or semaphore limit).
+/// Record a rejected connection (per-IP limit or semaphore limit reached).
 pub fn connection_rejected() {
-    // No dedicated counter currently; rejection is logged via tracing.
-    // This function is a hook for future metric expansion.
+    counter!("sedandelivery_bolt_connections_rejected_total").increment(1);
 }
 
 #[cfg(test)]

@@ -35,6 +35,7 @@ serde_json     = { workspace = true }
 socket2        = "0.5"
 tokio-tungstenite = "0.28"
 futures-util   = "0.3"
+dashmap        = "6"
 
 [dev-dependencies]
 criterion     = { version = "0.8", features = ["html_reports"] }

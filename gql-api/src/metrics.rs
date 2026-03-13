@@ -19,6 +19,7 @@ use crate::state::AppState;
 /// Metric name constants.
 pub const HTTP_REQUESTS_TOTAL: &str = "http_requests_total";
 pub const HTTP_REQUEST_DURATION_SECONDS: &str = "http_request_duration_seconds";
+pub const HTTP_CONCURRENT_REQUESTS: &str = "gql_api_http_concurrent_requests";
 pub const AUTH_REJECTIONS_TOTAL: &str = "auth_rejections_total";
 pub const ACTIVE_GRAPHS: &str = "active_graphs";
 pub const JWKS_REFRESH_FAILURES_TOTAL: &str = "jwks_refresh_failures_total";
@@ -58,7 +59,9 @@ pub async fn track_http_metrics(request: Request, next: Next) -> Response {
         .unwrap_or_else(|| request.uri().path().to_string());
 
     let start = Instant::now();
+    gauge!(HTTP_CONCURRENT_REQUESTS).increment(1.0);
     let response = next.run(request).await;
+    gauge!(HTTP_CONCURRENT_REQUESTS).decrement(1.0);
     let duration = start.elapsed().as_secs_f64();
 
     let status = response.status().as_u16().to_string();
@@ -122,6 +125,7 @@ mod tests {
         for name in [
             HTTP_REQUESTS_TOTAL,
             HTTP_REQUEST_DURATION_SECONDS,
+            HTTP_CONCURRENT_REQUESTS,
             AUTH_REJECTIONS_TOTAL,
             ACTIVE_GRAPHS,
             JWKS_REFRESH_FAILURES_TOTAL,
