@@ -1,0 +1,163 @@
+# docker-compose.chaos-test.yml — Chaos testing with toxiproxy between Bolt and Redis
+#
+# Usage:
+#   export VALKEY_PASSWORD='change-me-for-local-dev'
+#   docker compose -f docker-compose.chaos-test.yml up -d --build
+#   docker compose -f docker-compose.chaos-test.yml down -v
+#
+# Architecture:
+#   bolt-1 (7687) ──┐
+#                    ├── toxiproxy (6380) ──── valkey (6379)
+#   bolt-2 (7689) ──┘
+#
+# Toxiproxy admin API is exposed on port 8474.
+# The "redis" proxy forwards port 6380 -> valkey:6379.
+
+services:
+  # ── Valkey Backend ──────────────────────────────────────────────────────
+  valkey:
+    image: valkey/valkey:8-bookworm
+    environment:
+      VALKEY_PASSWORD: ${VALKEY_PASSWORD}
+    volumes:
+      - valkey-data:/data
+    command: |
+      sh -ec '
+        test -n "$$VALKEY_PASSWORD" || { echo "VALKEY_PASSWORD is required" >&2; exit 1; }
+        printf "%s\n" \
+          "requirepass $$VALKEY_PASSWORD" \
+          "save 60 1" \
+          "loglevel notice" \
+          "maxmemory 256mb" \
+          "maxmemory-policy noeviction" \
+          >/tmp/valkey.conf
+        exec valkey-server /tmp/valkey.conf
+      '
+    healthcheck:
+      test: ["CMD-SHELL", "test -n \"$$VALKEY_PASSWORD\" && REDISCLI_AUTH=\"$$VALKEY_PASSWORD\" valkey-cli ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
+  # ── Toxiproxy ───────────────────────────────────────────────────────────
+  # Sits between Bolt instances and Valkey. Allows injecting latency,
+  # timeouts, and connection resets via the admin API on port 8474.
+  toxiproxy:
+    image: ghcr.io/shopify/toxiproxy:2.12.0
+    ports:
+      - "8474:8474"
+      - "6380:6380"
+    depends_on:
+      valkey:
+        condition: service_healthy
+
+  # ── Toxiproxy Config Init ───────────────────────────────────────────────
+  # Creates the "redis" proxy once toxiproxy is listening.
+  toxiproxy-init:
+    image: curlimages/curl:8.12.1
+    depends_on:
+      - toxiproxy
+    restart: "no"
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        echo "Waiting for toxiproxy admin API..."
+        for i in $(seq 1 30); do
+          if curl -sf http://toxiproxy:8474/version >/dev/null 2>&1; then
+            break
+          fi
+          sleep 1
+        done
+
+        echo "Creating redis proxy (6380 -> valkey:6379)..."
+        curl -sf -X POST http://toxiproxy:8474/proxies \
+          -H 'Content-Type: application/json' \
+          -d '{
+            "name": "redis",
+            "listen": "0.0.0.0:6380",
+            "upstream": "valkey:6379",
+            "enabled": true
+          }'
+        echo ""
+        echo "Verifying proxy..."
+        curl -sf http://toxiproxy:8474/proxies/redis | head -c 200
+        echo ""
+        echo "Toxiproxy redis proxy is ready."
+
+  # ── Bolt Instance 1 (port 7687) ────────────────────────────────────────
+  bolt-1:
+    build:
+      context: .
+      dockerfile: Dockerfile.bolt
+    entrypoint:
+      - /bin/sh
+      - -ec
+      - |
+        export BOLT_PASSWORD="${BOLT_PASSWORD:-$VALKEY_PASSWORD}"
+        test -n "$BOLT_PASSWORD" || {
+          echo "BOLT_PASSWORD or VALKEY_PASSWORD is required" >&2
+          exit 1
+        }
+        exec sedandelivery-bolt
+    ports:
+      - "7687:7687"
+      - "7688:7688"
+    environment:
+      - RUST_LOG=info
+      - VALKEY_PASSWORD=${VALKEY_PASSWORD}
+      - GQL_REDIS_URL=redis://:${VALKEY_PASSWORD}@toxiproxy:6380
+      - BOLT_PASSWORD=${BOLT_PASSWORD}
+      - BOLT_IDLE_TIMEOUT_SECS=300
+      - BOLT_MAX_CONNECTIONS=1024
+    depends_on:
+      valkey:
+        condition: service_healthy
+      toxiproxy-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:7688/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 15s
+
+  # ── Bolt Instance 2 (port 7689) ────────────────────────────────────────
+  bolt-2:
+    build:
+      context: .
+      dockerfile: Dockerfile.bolt
+    entrypoint:
+      - /bin/sh
+      - -ec
+      - |
+        export BOLT_PASSWORD="${BOLT_PASSWORD:-$VALKEY_PASSWORD}"
+        test -n "$BOLT_PASSWORD" || {
+          echo "BOLT_PASSWORD or VALKEY_PASSWORD is required" >&2
+          exit 1
+        }
+        exec sedandelivery-bolt
+    ports:
+      - "7689:7687"
+      - "7690:7688"
+    environment:
+      - RUST_LOG=info
+      - VALKEY_PASSWORD=${VALKEY_PASSWORD}
+      - GQL_REDIS_URL=redis://:${VALKEY_PASSWORD}@toxiproxy:6380
+      - BOLT_PASSWORD=${BOLT_PASSWORD}
+      - BOLT_IDLE_TIMEOUT_SECS=300
+      - BOLT_MAX_CONNECTIONS=1024
+    depends_on:
+      valkey:
+        condition: service_healthy
+      toxiproxy-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:7688/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 15s
+
+volumes:
+  valkey-data:

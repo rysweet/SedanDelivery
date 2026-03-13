@@ -564,6 +564,44 @@ After a successful authentication, the rate limit counter for that IP is cleared
 > Redis round-trip per auth attempt and is deferred until a deployment
 > requires tighter guarantees.
 
+## Chaos Testing
+
+Three chaos test scripts validate Bolt resilience under adverse conditions. All require Docker Compose v2, Python 3 with the `neo4j` driver, and `VALKEY_PASSWORD` set in the environment.
+
+```bash
+export VALKEY_PASSWORD='change-me-for-local-dev'
+```
+
+### Network Partition Test
+
+Injects latency and full disconnects between Bolt and Valkey via toxiproxy, then verifies recovery.
+
+```bash
+./scripts/test-network-partition.sh
+```
+
+Uses `docker-compose.chaos-test.yml` (2 Bolt instances + toxiproxy + Valkey). Phases: baseline connectivity, 500ms latency, full proxy disable, partition heal and recovery verification.
+
+### Resharding Resilience Test
+
+Runs background write load while resharding Redis Cluster slots between masters.
+
+```bash
+./scripts/test-resharding-resilience.sh
+```
+
+Uses `docker-compose.cluster.yml` (6-node Redis Cluster + Bolt). Checks `/metrics` for `StorageError::Backend` errors to detect data loss during slot migration.
+
+### Scale-Down Drain Test
+
+Starts 3 Bolt instances, sends SIGTERM to one under load, and verifies graceful shutdown.
+
+```bash
+./scripts/test-scale-down-drain.sh
+```
+
+Generates a temporary `docker-compose.drain-test.yml` with 3 Bolt instances + Valkey. Verifies: no connection resets on the terminated instance, zero errors on surviving instances, and that survivors absorb the full load.
+
 ## Architecture Decisions
 
 - [ADR-001: Storage Model](ADR-001-storage-model) — Why Redis-native data structures
