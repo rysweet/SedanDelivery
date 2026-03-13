@@ -51,8 +51,19 @@ use crate::types::Value;
 
 // ── Stream key ────────────────────────────────────────────────────────────────
 
-/// Valkey stream key where change events are published.
+/// Legacy constant kept for backward compatibility (e.g. tests, DLQ stream).
 pub const CHANGELOG_STREAM: &str = "__sd2:changelog";
+
+/// Return the per-graph changelog stream key.
+///
+/// The `{graphname}` hash tag ensures the stream lands on the same Redis
+/// Cluster slot as the graph data, avoiding cross-slot issues.
+///
+/// For graph-level operations without a specific graph (e.g. list_graphs),
+/// use [`CHANGELOG_STREAM`] directly.
+pub fn changelog_stream_for_graph(graph: &str) -> String {
+    format!("__sd2:changelog:{{{graph}}}")
+}
 
 // ── Property map helpers ──────────────────────────────────────────────────────
 
@@ -187,6 +198,30 @@ pub enum ChangeEvent {
         label: String,
         property: String,
     },
+}
+
+impl ChangeEvent {
+    /// Return the graph name associated with this event, used to determine
+    /// which per-graph changelog stream (`__sd2:changelog:{graph}`) to write to.
+    pub fn graph_name(&self) -> &str {
+        match self {
+            ChangeEvent::CreateGraph { name } | ChangeEvent::DeleteGraph { name } => name,
+            ChangeEvent::CreateNode { graph, .. }
+            | ChangeEvent::SetNodeProperties { graph, .. }
+            | ChangeEvent::ReplaceNodeProperties { graph, .. }
+            | ChangeEvent::RemoveNodeProperty { graph, .. }
+            | ChangeEvent::AddNodeLabels { graph, .. }
+            | ChangeEvent::RemoveNodeLabels { graph, .. }
+            | ChangeEvent::DeleteNode { graph, .. }
+            | ChangeEvent::CreateEdge { graph, .. }
+            | ChangeEvent::SetEdgeProperties { graph, .. }
+            | ChangeEvent::ReplaceEdgeProperties { graph, .. }
+            | ChangeEvent::RemoveEdgeProperty { graph, .. }
+            | ChangeEvent::DeleteEdge { graph, .. }
+            | ChangeEvent::CreateIndex { graph, .. }
+            | ChangeEvent::DropIndex { graph, .. } => graph,
+        }
+    }
 }
 
 // ── ChangeLogStore ────────────────────────────────────────────────────────────
@@ -671,6 +706,41 @@ mod tests {
         match back {
             ChangeEvent::CreateNode { id, .. } => assert_eq!(id, 42),
             other => panic!("unexpected: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn changelog_stream_for_graph_includes_hash_tag() {
+        assert_eq!(
+            super::changelog_stream_for_graph("mydb"),
+            "__sd2:changelog:{mydb}"
+        );
+    }
+
+    #[test]
+    fn graph_name_returns_correct_graph_for_all_variants() {
+        let cases: Vec<(ChangeEvent, &str)> = vec![
+            (ChangeEvent::CreateGraph { name: "g1".into() }, "g1"),
+            (ChangeEvent::DeleteGraph { name: "g2".into() }, "g2"),
+            (
+                ChangeEvent::CreateNode {
+                    graph: "g3".into(),
+                    id: 1,
+                    labels: vec![],
+                    properties: JsonMap::new(),
+                },
+                "g3",
+            ),
+            (
+                ChangeEvent::DeleteEdge {
+                    graph: "g4".into(),
+                    id: 1,
+                },
+                "g4",
+            ),
+        ];
+        for (event, expected) in cases {
+            assert_eq!(event.graph_name(), expected);
         }
     }
 }

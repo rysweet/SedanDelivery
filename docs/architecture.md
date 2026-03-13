@@ -272,7 +272,7 @@ graph TD
     BOLT_SRV -- "GQL_REDIS_URL<br/>r2d2 pool" --> VALKEY
     API_SRV -- "GQL_REDIS_URL<br/>r2d2 pool" --> VALKEY
     VALKEY -- "RDB + AOF" --> AFILES
-    VALKEY -- "__sd2:changelog<br/>Redis Stream" --> SYNC
+    VALKEY -- "__sd2:changelog:{graph}<br/>per-graph Redis Streams" --> SYNC
     SYNC -- "HTTPS<br/>openCypher" --> FABRIC
     API_SRV -. "JWKS fetch" .-> ENTRA
 
@@ -297,7 +297,9 @@ graph TD
 - **REST clients** connect to gql-api via HTTP/HTTPS on port 3001/3443
 - Both servers connect to Valkey via `GQL_REDIS_URL` using an r2d2 connection pool (or via `GQL_REDIS_CLUSTER_NODES` for cluster mode, or `rediss://` for Azure Cache with TLS)
 - When `GQL_REDIS_REPLICA_URL` is set, read-only operations are routed to a separate replica pool (round-robin), while writes go to the primary
-- The Fabric sync sidecar reads from a Redis Stream (`__sd2:changelog`) and pushes to Fabric via HTTPS
+- The Fabric sync sidecar reads from per-graph Redis Streams (`__sd2:changelog:{graph}`) and the legacy `__sd2:changelog` stream, and pushes to Fabric via HTTPS
+- Read-after-write session pinning: Bolt sessions route reads to the primary for 5 seconds after a write to ensure consistency with replicas
+- Large-set reads use SSCAN (configurable via `GQL_REDIS_SMEMBERS_THRESHOLD`, default 10,000) to avoid blocking the Redis event loop
 - Entra ID JWT validation uses a cached JWKS endpoint (async, non-blocking)
 
 See [Deploy Your Own Instance](DEPLOY) for full setup instructions and cost estimates (~$36/mo standalone).

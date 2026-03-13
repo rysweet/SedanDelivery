@@ -297,6 +297,7 @@ mod tests {
             write_permit: None,
             saved_graph: None,
             peer_ip: Some(ip),
+            last_write_at: None,
         }
     }
 

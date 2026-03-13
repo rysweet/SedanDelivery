@@ -10,6 +10,7 @@ use gql_core::storage::IndexDescriptor;
 use gql_core::types::Value;
 
 use crate::keys::{key_indexes, key_label, key_node, key_propidx, value_to_index_key, IDX_SEP};
+use crate::reads::{smembers_or_scan, smembers_threshold};
 use crate::RedisGraphStore;
 
 /// Configurable index-building batch size, read from `GQL_REDIS_INDEX_BATCH_SIZE`
@@ -151,10 +152,11 @@ impl RedisGraphStore {
 
         // Build the index from existing nodes: scan all nodes with this label
         // and add entries for those that have the indexed property.
-        let node_ids: Vec<String> = redis::cmd("SMEMBERS")
-            .arg(self.kp(key_label(graph, label)))
-            .query(conn.as_mut())
-            .map_err(|e| { crate::record_backend_error(); StorageError::Backend { msg: e.to_string() } })?;
+        let node_ids = smembers_or_scan(
+            conn.as_mut(),
+            &self.kp(key_label(graph, label)),
+            smembers_threshold(),
+        )?;
 
         // Pipeline in batches for efficiency.
         let batch_size = index_batch_size();

@@ -236,6 +236,12 @@ fn intercept_admin_query(
                 Ok(q) => q,
                 Err(e) => return Some(Err(e)),
             };
+
+            // Track writes for read-after-write session pinning.
+            if effective_type.contains('w') || effective_type == "s" {
+                session.last_write_at = Some(std::time::Instant::now());
+            }
+
             session.pending_results.insert(
                 qid,
                 PendingQuery {
@@ -475,6 +481,12 @@ fn build_success_response(
     let patched_profile = profile_plan;
 
     let qid = session.allocate_qid()?;
+
+    // Track writes for read-after-write session pinning.
+    if query_type.contains('w') {
+        session.last_write_at = Some(std::time::Instant::now());
+    }
+
     session.pending_results.insert(
         qid,
         PendingQuery {

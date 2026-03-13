@@ -356,12 +356,86 @@ SUCCESS: All 3 checks passed
 
 ## Changelog Stream
 
-The GQL module writes change events to the `__sd2:changelog` Redis
-stream when `GQL_FABRIC_CHANGELOG=1` is set:
+The GQL module writes change events to **per-graph** Redis streams
+when `GQL_FABRIC_CHANGELOG=1` is set. Each graph gets its own stream
+key: `__sd2:changelog:{graphname}` (the `{graphname}` hash tag
+ensures Redis Cluster slot affinity with the graph's data keys).
+
+```
+Stream key format:  __sd2:changelog:{<graphname>}
+Example:            __sd2:changelog:{mydb}
+```
+
+Event payload (JSON in the `e` field of each stream entry):
 
 ```json
-{"op":"create_node","graph":"default","id":10,"labels":["Person"],"properties":{"name":"Alice","age":30}}
+{"op":"create_node","graph":"mydb","id":10,"labels":["Person"],"properties":{"name":"Alice","age":30}}
 ```
+
+The legacy global stream `__sd2:changelog` is no longer written to
+by new code but is still consumed by the sidecar for backward
+compatibility during rolling upgrades.
+
+### Stream discovery
+
+The `sedandelivery-fabric-sync` sidecar discovers per-graph streams at
+startup by reading the graph registry (`SMEMBERS __sd2_registry:graphs`)
+and building stream keys via `changelog_stream_for_graph()`. It also
+subscribes to the legacy `__sd2:changelog` stream so events published
+before the per-graph migration are not lost.
+
+### Multi-stream XREADGROUP
+
+The sync loop issues a single `XREADGROUP` command that reads from
+all discovered streams simultaneously:
+
+```
+XREADGROUP GROUP sedandelivery-fabric-sync <consumer>
+  COUNT 100 BLOCK 1000
+  STREAMS __sd2:changelog __sd2:changelog:{graph_a} __sd2:changelog:{graph_b}
+  > > >
+```
+
+Stream keys are listed first, then the corresponding cursor IDs.
+
+### Read-after-write session pinning (5s window)
+
+When `GQL_REDIS_REPLICA_URL` is configured, the Bolt server routes
+read-only queries to read replicas for horizontal scaling. To prevent
+stale reads after a write, each Bolt session tracks a `last_write_at`
+timestamp. For **5 seconds** after any write (including DDL operations
+like CREATE INDEX), reads on the same session are forced to the
+primary via `route_read_with_pinning(force_primary=true)`. After the
+5-second window (`READ_AFTER_WRITE_WINDOW`), reads resume normal
+replica routing.
+
+Pinning is per-session, not global -- other sessions without recent
+writes continue using replicas normally.
+
+### SMEMBERS-to-SSCAN threshold behavior
+
+For Redis sets that grow large (label indexes, adjacency lists, node/edge
+registries), the `smembers_or_scan()` helper checks `SCARD` first. If
+the set has more members than the threshold, it iterates with
+`SSCAN COUNT 1000` instead of a blocking `SMEMBERS`. This prevents a
+single large-set read from stalling the Redis event loop.
+
+The threshold is configurable via `GQL_REDIS_SMEMBERS_THRESHOLD`
+(default: 10,000, minimum: 1).
+
+### New environment variables (B3)
+
+| Env var | Default | Description |
+|---------|---------|-------------|
+| `GQL_FABRIC_CHANGELOG` | `0` | Set to `1` or `true` to enable per-graph changelog streams |
+| `GQL_FABRIC_ENDPOINT` | (unset) | When set (non-empty), also enables the changelog |
+| `GQL_REDIS_SMEMBERS_THRESHOLD` | `10000` | Member count above which SSCAN replaces SMEMBERS |
+| `GQL_REDIS_REPLICA_URL` | (unset) | Comma-separated replica URLs for read routing |
+| `GQL_REDIS_INDEX_BATCH_SIZE` | `500` | Batch size when building property indexes |
+| `SD2_SYNC_BATCH` | `100` | Fabric-sync: entries per XREADGROUP batch |
+| `SD2_SYNC_BLOCK_MS` | `1000` | Fabric-sync: XREADGROUP block timeout (ms) |
+| `SD2_SYNC_MAX_RETRIES` | `3` | Fabric-sync: max retries per event before DLQ |
+| `SD2_SYNC_CONSUMER` | hostname | Fabric-sync: consumer name within the group |
 
 The `sedandelivery-fabric-sync` sidecar reads these events via
 XREADGROUP with a consumer group for reliable delivery. The sidecar

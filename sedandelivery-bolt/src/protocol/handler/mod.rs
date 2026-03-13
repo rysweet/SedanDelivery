@@ -152,6 +152,7 @@ mod tests {
             write_permit: None,
             saved_graph: None,
             peer_ip: None,
+            last_write_at: None,
         }
     }
 
@@ -175,6 +176,7 @@ mod tests {
             write_permit: None,
             saved_graph: None,
             peer_ip: None,
+            last_write_at: None,
         };
         let s2 = Session {
             state: ServerState::Ready,
@@ -191,6 +193,7 @@ mod tests {
             write_permit: None,
             saved_graph: None,
             peer_ip: None,
+            last_write_at: None,
         };
         (s1, s2)
     }

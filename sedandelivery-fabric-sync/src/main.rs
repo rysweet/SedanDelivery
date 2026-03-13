@@ -14,7 +14,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Duration;
 
-use gql_core::changelog::CHANGELOG_STREAM;
+use gql_core::changelog::{changelog_stream_for_graph, CHANGELOG_STREAM};
 use gql_fabric_store::FabricGraphStore;
 use redis::{Client, Connection};
 use tracing::{error, info, warn};
@@ -100,26 +100,16 @@ fn main() {
         }
     };
 
-    match redis::cmd("XGROUP")
-        .arg("CREATE")
-        .arg(CHANGELOG_STREAM)
-        .arg(GROUP_NAME)
-        .arg("0")
-        .arg("MKSTREAM")
-        .query::<()>(&mut conn)
-    {
-        Ok(()) => info!("Consumer group created"),
-        Err(e) if e.to_string().contains("BUSYGROUP") => {
-            info!("Consumer group already exists")
-        }
-        Err(e) => {
-            error!("Failed to create consumer group: {e}");
-            std::process::exit(1);
-        }
+    // Discover per-graph changelog streams.
+    // Also ensure the consumer group exists on the legacy global stream for
+    // backward compatibility during rolling upgrades.
+    let initial_streams = discover_changelog_streams(&mut conn);
+    for stream in &initial_streams {
+        ensure_consumer_group(&mut conn, stream);
     }
 
     info!(
-        stream = CHANGELOG_STREAM,
+        streams = ?initial_streams,
         group = GROUP_NAME,
         consumer = %consumer_name,
         "Consumer ready"
@@ -133,12 +123,64 @@ fn main() {
         batch_size,
         block_ms,
         max_retries,
+        initial_streams,
     );
 
     info!("sedandelivery-fabric-sync shutting down gracefully");
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
+
+/// Discover per-graph changelog streams by listing graphs from the registry
+/// and building `__sd2:changelog:{graph}` keys. Also includes the legacy
+/// global stream for backward compatibility during rolling upgrades.
+fn discover_changelog_streams(conn: &mut Connection) -> Vec<String> {
+    let mut streams = Vec::new();
+
+    // Always include the legacy global stream so events published before
+    // the per-graph migration are still consumed.
+    streams.push(CHANGELOG_STREAM.to_string());
+
+    // Discover graphs from the registry set.
+    let graphs: Vec<String> = redis::cmd("SMEMBERS")
+        .arg("__sd2_registry:graphs")
+        .query(conn)
+        .unwrap_or_else(|e| {
+            warn!("Failed to discover graphs from registry: {e} — using legacy stream only");
+            Vec::new()
+        });
+
+    for graph in graphs {
+        let stream = changelog_stream_for_graph(&graph);
+        if !streams.contains(&stream) {
+            streams.push(stream);
+        }
+    }
+
+    streams
+}
+
+/// Ensure the consumer group exists on a stream, creating it (and the stream
+/// itself via MKSTREAM) if needed.
+fn ensure_consumer_group(conn: &mut Connection, stream: &str) {
+    match redis::cmd("XGROUP")
+        .arg("CREATE")
+        .arg(stream)
+        .arg(GROUP_NAME)
+        .arg("0")
+        .arg("MKSTREAM")
+        .query::<()>(conn)
+    {
+        Ok(()) => info!(stream, "Consumer group created"),
+        Err(e) if e.to_string().contains("BUSYGROUP") => {
+            info!(stream, "Consumer group already exists")
+        }
+        Err(e) => {
+            error!(stream, "Failed to create consumer group: {e}");
+            std::process::exit(1);
+        }
+    }
+}
 
 fn env_usize(key: &str, default: usize) -> usize {
     match std::env::var(key) {

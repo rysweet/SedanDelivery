@@ -1,0 +1,339 @@
+name: "B3 Data Layer Hardening -- Per-Graph Changelog, SSCAN Migration, Read-After-Write Pinning"
+description: >
+  Outside-in test scenarios verifying the three core B3 data-layer hardening
+  features: per-graph changelog stream isolation, SMEMBERS-to-SSCAN migration
+  for large sets, and read-after-write session pinning for replica consistency.
+
+  Prerequisites:
+    - sedandelivery-bolt running on bolt://localhost:7687
+    - Redis/Valkey backend configured (GQL_REDIS_URL set)
+    - GQL_FABRIC_CHANGELOG=1 to enable changelog streams
+    - For scenario 3, GQL_REDIS_REPLICA_URL set to a read replica
+
+app_url: "bolt://localhost:7687"
+
+# ---------------------------------------------------------------------------
+# Scenario 1: SSCAN behavior on large sets -- verify no blocking
+# ---------------------------------------------------------------------------
+# When a label index set exceeds the SMEMBERS threshold (default 10,000),
+# reads must use SSCAN with COUNT 1000 instead of a blocking SMEMBERS.
+# This prevents a single large-set read from stalling the Redis event loop.
+
+scenarios:
+  - scenario: 1
+    name: "SSCAN fallback for large label index sets -- no blocking"
+    description: >
+      A graph is populated with more nodes than the SMEMBERS threshold
+      (configurable via GQL_REDIS_SMEMBERS_THRESHOLD, default 10,000).
+      When querying nodes by label, the system transparently switches from
+      SMEMBERS to iterative SSCAN with COUNT 1000. The query must complete
+      successfully and return all nodes -- none lost due to cursor iteration.
+      A concurrent simple query must not be starved or blocked.
+    prerequisites:
+      - "GQL_REDIS_SMEMBERS_THRESHOLD=100 (lowered for test feasibility)"
+    setup:
+      - action: bolt_query
+        client: A
+        query: "CREATE DATABASE sscan_test IF NOT EXISTS"
+      - action: bolt_query
+        client: A
+        query: "UNWIND range(1, 200) AS i CREATE (:Bulk {seq: i})"
+        database: sscan_test
+        note: >
+          Creates 200 nodes with label :Bulk. With SMEMBERS threshold set
+          to 100, the label index set for :Bulk will have 200 members,
+          triggering the SSCAN code path in smembers_or_scan().
+    steps:
+      - step: 1
+        description: "Query all :Bulk nodes by label -- triggers SSCAN path"
+        action: bolt_query
+        client: A
+        query: "MATCH (n:Bulk) RETURN count(n) AS cnt"
+        database: sscan_test
+        expected: >
+          cnt = 200. All nodes are returned despite the SSCAN cursor-based
+          iteration. The smembers_or_scan() function checks SCARD first;
+          since 200 > threshold (100), it uses SSCAN with COUNT 1000 and
+          loops until cursor returns to 0.
+
+      - step: 2
+        description: "Concurrent simple query is not blocked during SSCAN iteration"
+        action: bolt_query_async
+        client: B
+        query: "RETURN 1 AS alive"
+        database: sscan_test
+        expected: >
+          alive = 1. This query completes promptly even if Client A's SSCAN
+          iteration is in progress, because SSCAN yields between pages
+          (COUNT 1000 per iteration) rather than holding the Redis event loop.
+
+      - step: 3
+        description: "Verify SSCAN returns all members without duplicates or gaps"
+        action: bolt_query
+        client: A
+        query: "MATCH (n:Bulk) RETURN n.seq AS seq ORDER BY seq"
+        database: sscan_test
+        expected: >
+          Returns exactly 200 rows with seq values 1 through 200 in order.
+          SSCAN may return duplicates across cursor pages; the deduplicated
+          result must contain every node. Note: SSCAN guarantees all elements
+          present at start AND end of iteration are returned, but may include
+          duplicates. The storage layer tolerates this because NodeId sets
+          naturally deduplicate downstream.
+
+      - step: 4
+        description: "Adjacency set reads also use SSCAN for high-degree nodes"
+        action: bolt_query
+        client: A
+        query: >
+          MATCH (hub:Bulk {seq: 1})
+          WITH hub
+          UNWIND range(2, 150) AS i
+          MATCH (target:Bulk {seq: i})
+          CREATE (hub)-[:LINK]->(target)
+        database: sscan_test
+        note: "Creates 149 outgoing edges from node seq=1, exceeding threshold"
+      - step: 5
+        description: "Traverse high-degree node adjacency via SSCAN"
+        action: bolt_query
+        client: A
+        query: "MATCH (:Bulk {seq: 1})-[:LINK]->(t) RETURN count(t) AS neighbors"
+        database: sscan_test
+        expected: >
+          neighbors = 149. The out-adjacency set for node seq=1 has 149
+          members. With threshold=100, out_edges_impl() calls
+          smembers_or_scan() which uses SSCAN. All neighbors are returned.
+
+    teardown:
+      - action: bolt_query
+        client: A
+        query: "DROP DATABASE sscan_test IF EXISTS"
+
+  # ---------------------------------------------------------------------------
+  # Scenario 2: Read-after-write pinning -- write then immediately read
+  # ---------------------------------------------------------------------------
+  # When a session performs a write, subsequent reads within 5 seconds must
+  # be routed to the primary (not replicas) to ensure read-your-writes
+  # consistency. After the 5s window expires, reads resume replica routing.
+
+  - scenario: 2
+    name: "Read-after-write session pinning -- 5s primary routing window"
+    description: >
+      A Bolt session writes data and immediately reads it back. When read
+      replicas are configured (GQL_REDIS_REPLICA_URL), the session must route
+      the read to the primary for 5 seconds after the write to avoid stale
+      reads from a lagging replica. The session's last_write_at timestamp
+      tracks when the most recent write occurred; force_primary_read() returns
+      true while elapsed time < READ_AFTER_WRITE_WINDOW (5s).
+    prerequisites:
+      - "GQL_REDIS_REPLICA_URL set to at least one read replica"
+      - "Replica replication lag > 0ms (non-zero lag to demonstrate the need)"
+    setup:
+      - action: bolt_query
+        client: A
+        query: "CREATE DATABASE pinning_test IF NOT EXISTS"
+    steps:
+      - step: 1
+        description: "Write a node and immediately read it back in the same session"
+        action: bolt_transaction
+        client: A
+        database: pinning_test
+        queries:
+          - "CREATE (:PinTest {key: 'written-just-now', value: 42})"
+        expected: >
+          Transaction commits successfully. The session's last_write_at is
+          set to Instant::now() in build_success_response() because the
+          query_type contains 'w'.
+
+      - step: 2
+        description: "Immediate read sees the written data (primary-pinned)"
+        action: bolt_query
+        client: A
+        query: "MATCH (n:PinTest {key: 'written-just-now'}) RETURN n.value AS val"
+        database: pinning_test
+        expected: >
+          val = 42. Because less than 5 seconds have elapsed since the write,
+          force_primary_read() returns true. route_read_with_pinning(true)
+          bypasses the replica pool and uses the primary connection pool,
+          guaranteeing the write is visible.
+
+      - step: 3
+        description: "A second session without writes uses replica routing"
+        action: bolt_query
+        client: B
+        query: "MATCH (n:PinTest {key: 'written-just-now'}) RETURN n.value AS val"
+        database: pinning_test
+        expected: >
+          val = 42 (assuming replication has caught up) or empty result set
+          (if replica is lagging). The key point is that Client B has no
+          last_write_at set, so force_primary_read() returns false and reads
+          are routed to replicas. This verifies pinning is per-session, not
+          global.
+
+      - step: 4
+        description: "After 5+ seconds, the pinning window expires"
+        action: wait
+        duration_seconds: 6
+        note: "Wait for the READ_AFTER_WRITE_WINDOW (5s) to expire"
+      - step: 5
+        description: "Post-window read on Client A routes to replicas again"
+        action: bolt_query
+        client: A
+        query: "MATCH (n:PinTest {key: 'written-just-now'}) RETURN n.value AS val"
+        database: pinning_test
+        expected: >
+          val = 42 (replica should have caught up by now). The important
+          behavioral change is that force_primary_read() now returns false
+          because last_write_at.elapsed() >= 5s, so the read is eligible for
+          replica routing. This confirms the pinning window is time-bounded.
+
+      - step: 6
+        description: "Admin/DDL writes also trigger pinning"
+        action: bolt_query
+        client: A
+        query: "CREATE INDEX ON :PinTest(key)"
+        database: pinning_test
+        expected: >
+          Index creation succeeds. The intercept_admin_query handler sets
+          last_write_at when effective_type is "s" (system) or contains 'w'.
+          Subsequent reads within 5s will be primary-pinned.
+
+      - step: 7
+        description: "Immediate index-aware read is primary-pinned"
+        action: bolt_query
+        client: A
+        query: "MATCH (n:PinTest {key: 'written-just-now'}) RETURN n.value AS val"
+        database: pinning_test
+        expected: >
+          val = 42. The read uses the newly created index and is routed to
+          the primary because the DDL write refreshed last_write_at.
+
+    teardown:
+      - action: bolt_query
+        client: A
+        query: "DROP DATABASE pinning_test IF EXISTS"
+
+  # ---------------------------------------------------------------------------
+  # Scenario 3: Per-graph changelog stream isolation
+  # ---------------------------------------------------------------------------
+  # Each graph's change events are written to a dedicated stream key
+  # __sd2:changelog:{graph}, not the shared global __sd2:changelog.
+  # The fabric-sync sidecar discovers streams by listing the graph registry.
+
+  - scenario: 3
+    name: "Per-graph changelog stream isolation"
+    description: >
+      When GQL_FABRIC_CHANGELOG=1, the gql-module writes change events to
+      per-graph streams (__sd2:changelog:{graphname}) instead of a single
+      global stream. The hash tag {graphname} ensures the stream key lands
+      on the same Redis Cluster slot as the graph data, avoiding cross-slot
+      errors. The sedandelivery-fabric-sync sidecar discovers these streams
+      via SMEMBERS on the graph registry and subscribes to all of them plus
+      the legacy __sd2:changelog stream for backward compatibility.
+    prerequisites:
+      - "GQL_FABRIC_CHANGELOG=1 set on the gql-module (Redis server)"
+    setup:
+      - action: bolt_query
+        client: A
+        query: "CREATE DATABASE graph_a IF NOT EXISTS"
+      - action: bolt_query
+        client: A
+        query: "CREATE DATABASE graph_b IF NOT EXISTS"
+    steps:
+      - step: 1
+        description: "Write to graph_a and verify events land on graph_a's stream"
+        action: bolt_query
+        client: A
+        query: "CREATE (:StreamTest {source: 'graph_a'})"
+        database: graph_a
+        expected: "Node creation succeeds"
+      - step: 2
+        description: "Check the per-graph stream for graph_a"
+        action: redis_command
+        command: "XLEN __sd2:changelog:{graph_a}"
+        expected: >
+          At least 1 entry. The emit_changelog() function in gql-module
+          calls changelog_stream_for_graph(event.graph_name()), which returns
+          "__sd2:changelog:{graph_a}". The XADD goes to this per-graph key.
+
+      - step: 3
+        description: "Write to graph_b and verify events land on graph_b's stream"
+        action: bolt_query
+        client: A
+        query: "CREATE (:StreamTest {source: 'graph_b'})"
+        database: graph_b
+        expected: "Node creation succeeds"
+      - step: 4
+        description: "Check the per-graph stream for graph_b"
+        action: redis_command
+        command: "XLEN __sd2:changelog:{graph_b}"
+        expected: >
+          At least 1 entry. graph_b's events are on its own stream, completely
+          isolated from graph_a's events.
+
+      - step: 5
+        description: "Verify graph_a's stream does NOT contain graph_b's events"
+        action: redis_command
+        command: "XRANGE __sd2:changelog:{graph_a} - +"
+        expected: >
+          All entries in this stream have event JSON where "graph" == "graph_a".
+          No events from graph_b appear here. This isolation prevents a
+          high-throughput graph from starving the sync consumer for other graphs.
+
+      - step: 6
+        description: "Legacy global stream is empty (events go to per-graph streams)"
+        action: redis_command
+        command: "XLEN __sd2:changelog"
+        expected: >
+          0 entries (or only pre-existing entries from before the migration).
+          New events are written to per-graph streams exclusively. The legacy
+          stream constant CHANGELOG_STREAM is retained for backward
+          compatibility (DLQ, tests), but emit_changelog() now routes to
+          per-graph keys.
+
+      - step: 7
+        description: "Fabric-sync discovers both per-graph streams from registry"
+        action: redis_command
+        command: "SMEMBERS __sd2_registry:graphs"
+        expected: >
+          Contains at least "graph_a" and "graph_b". The discover_changelog_streams()
+          function in main.rs reads this registry, builds per-graph stream keys
+          via changelog_stream_for_graph(), and adds them to the XREADGROUP
+          subscription list alongside the legacy global stream.
+
+      - step: 8
+        description: "XREADGROUP multi-stream syntax is correct"
+        action: verify
+        assertion: >
+          The sync_loop XREADGROUP command lists all stream keys first
+          (legacy + per-graph), then all cursor IDs (">"). This is the
+          required Redis XREADGROUP multi-stream syntax:
+          XREADGROUP GROUP <group> <consumer> COUNT <n> BLOCK <ms> STREAMS
+          __sd2:changelog __sd2:changelog:{graph_a} __sd2:changelog:{graph_b}
+          > > >
+        expected: >
+          The sync_loop.rs code correctly appends all stream keys first,
+          then appends ">" for each stream. This is validated by the
+          run_sync_loop_reconnects_after_unresolved_new_message_batch test.
+
+      - step: 9
+        description: "Graph deletion events land on the deleted graph's stream"
+        action: bolt_query
+        client: A
+        query: "DROP DATABASE graph_b IF EXISTS"
+      - step: 10
+        description: "Verify the DeleteGraph event is on graph_b's stream"
+        action: redis_command
+        command: "XRANGE __sd2:changelog:{graph_b} - +"
+        expected: >
+          The last entry contains a DeleteGraph event with name "graph_b".
+          ChangeEvent::graph_name() returns the name field for DeleteGraph
+          variants, so the event routes to the correct per-graph stream.
+
+    teardown:
+      - action: bolt_query
+        client: A
+        query: "DROP DATABASE graph_a IF EXISTS"
+      - action: bolt_query
+        client: A
+        query: "DROP DATABASE graph_b IF EXISTS"

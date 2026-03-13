@@ -4,7 +4,7 @@ use std::sync::atomic::Ordering;
 use std::thread;
 use std::time::Duration;
 
-use gql_core::changelog::CHANGELOG_STREAM;
+// Per-graph stream keys are discovered in main.rs and passed as `streams` parameter.
 use gql_fabric_store::FabricGraphStore;
 use metrics::counter;
 use redis::{Client, Connection, RedisResult, Value as RV};
@@ -28,6 +28,7 @@ pub(crate) fn run_sync_loop(
     batch_size: usize,
     block_ms: usize,
     max_retries: usize,
+    streams: Vec<String>,
 ) {
     let mut consecutive_unresolved_batches = 0usize;
 
@@ -36,8 +37,15 @@ pub(crate) fn run_sync_loop(
             break;
         }
 
-        // Phase 1: drain any pending (unacknowledged) messages first.
-        if !process_pending(conn, consumer_name, fabric, batch_size, max_retries) {
+        // Phase 1: drain any pending (unacknowledged) messages from all streams.
+        let mut pending_ok = true;
+        for stream in &streams {
+            if !process_pending(conn, consumer_name, fabric, batch_size, max_retries, stream) {
+                pending_ok = false;
+                break;
+            }
+        }
+        if !pending_ok {
             consecutive_unresolved_batches += 1;
             if consecutive_unresolved_batches >= MAX_CONSECUTIVE_UNRESOLVED_BATCHES {
                 error!(
@@ -53,19 +61,24 @@ pub(crate) fn run_sync_loop(
         }
         consecutive_unresolved_batches = 0;
 
-        // Phase 2: block-read new messages.
-        let reply: RedisResult<RV> = redis::cmd("XREADGROUP")
-            .arg("GROUP")
+        // Phase 2: block-read new messages from all streams.
+        let mut cmd = redis::cmd("XREADGROUP");
+        cmd.arg("GROUP")
             .arg(GROUP_NAME)
             .arg(consumer_name)
             .arg("COUNT")
             .arg(batch_size)
             .arg("BLOCK")
             .arg(block_ms)
-            .arg("STREAMS")
-            .arg(CHANGELOG_STREAM)
-            .arg(">")
-            .query(conn);
+            .arg("STREAMS");
+        // XREADGROUP requires all stream keys first, then all IDs.
+        for stream in &streams {
+            cmd.arg(stream.as_str());
+        }
+        for _ in &streams {
+            cmd.arg(">");
+        }
+        let reply: RedisResult<RV> = cmd.query(conn);
 
         match reply {
             Ok(RV::Nil) => {}
@@ -130,6 +143,7 @@ fn process_pending(
     fabric: &FabricGraphStore,
     batch_size: usize,
     max_retries: usize,
+    stream: &str,
 ) -> bool {
     loop {
         if SHUTDOWN.load(Ordering::Relaxed) {
@@ -142,7 +156,7 @@ fn process_pending(
             .arg("COUNT")
             .arg(batch_size)
             .arg("STREAMS")
-            .arg(CHANGELOG_STREAM)
+            .arg(stream)
             .arg("0")
             .query(conn);
 
@@ -174,12 +188,12 @@ fn process_entries(
 ) -> bool {
     let attempt_budget = max_retries.max(1);
 
-    for (entry_id, fields) in entries {
+    for (stream_key, entry_id, fields) in entries {
         let event_json = match fields.get("e") {
             Some(j) => j,
             None => {
                 warn!(entry_id = %entry_id, "changelog entry missing 'e' field — skipping");
-                ack(conn, &entry_id);
+                ack(conn, &stream_key, &entry_id);
                 continue;
             }
         };
@@ -188,7 +202,7 @@ fn process_entries(
             Ok(e) => e,
             Err(err) => {
                 warn!(entry_id = %entry_id, "failed to deserialise ChangeEvent: {err} — skipping");
-                ack(conn, &entry_id);
+                ack(conn, &stream_key, &entry_id);
                 continue;
             }
         };
@@ -231,7 +245,7 @@ fn process_entries(
         };
 
         if should_ack {
-            ack(conn, &entry_id);
+            ack(conn, &stream_key, &entry_id);
         } else {
             return false;
         }
@@ -276,10 +290,10 @@ fn send_to_dlq(conn: &mut Connection, entry_id: &str, event_json: &str, error_ms
 }
 
 /// Acknowledge a processed stream entry, retrying once on failure.
-fn ack(conn: &mut Connection, entry_id: &str) {
+fn ack(conn: &mut Connection, stream_key: &str, entry_id: &str) {
     for attempt in 0..2 {
         let result: RedisResult<()> = redis::cmd("XACK")
-            .arg(CHANGELOG_STREAM)
+            .arg(stream_key)
             .arg(GROUP_NAME)
             .arg(entry_id)
             .query(conn);

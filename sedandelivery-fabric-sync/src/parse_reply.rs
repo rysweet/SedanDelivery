@@ -4,8 +4,8 @@ use std::collections::HashMap;
 
 use redis::Value as RV;
 
-/// A stream entry: (entry_id, field->value map).
-pub(crate) type StreamEntry = (String, HashMap<String, String>);
+/// A stream entry: (stream_key, entry_id, field->value map).
+pub(crate) type StreamEntry = (String, String, HashMap<String, String>);
 
 /// Extract `(entry_id, fields)` pairs from a raw XREADGROUP reply.
 ///
@@ -33,6 +33,11 @@ pub(crate) fn extract_entries(reply: RV) -> Vec<StreamEntry> {
         if parts.len() < 2 {
             continue;
         }
+        let stream_key = match &parts[0] {
+            RV::BulkString(b) => String::from_utf8_lossy(b).into_owned(),
+            RV::SimpleString(s) => s.clone(),
+            _ => continue,
+        };
         let entries_val = &parts[1];
         let entries = match entries_val {
             RV::Array(v) => v,
@@ -65,7 +70,7 @@ pub(crate) fn extract_entries(reply: RV) -> Vec<StreamEntry> {
                 }
                 i += 2;
             }
-            result.push((id, fields));
+            result.push((stream_key.clone(), id, fields));
         }
     }
     result
@@ -133,9 +138,10 @@ mod tests {
         ])]);
         let entries = extract_entries(reply);
         assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].0, "1-0");
+        assert_eq!(entries[0].0, "mystream");
+        assert_eq!(entries[0].1, "1-0");
         assert_eq!(
-            entries[0].1.get("e").unwrap(),
+            entries[0].2.get("e").unwrap(),
             "{\"CreateGraph\":{\"name\":\"g1\"}}"
         );
     }
@@ -163,8 +169,10 @@ mod tests {
         ])]);
         let entries = extract_entries(reply);
         assert_eq!(entries.len(), 2);
-        assert_eq!(entries[0].0, "1-0");
-        assert_eq!(entries[1].0, "2-0");
+        assert_eq!(entries[0].0, "s");
+        assert_eq!(entries[0].1, "1-0");
+        assert_eq!(entries[1].0, "s");
+        assert_eq!(entries[1].1, "2-0");
     }
 
     #[test]
@@ -217,7 +225,7 @@ mod tests {
         ])]);
         let entries = extract_entries(reply);
         assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].0, "3-0");
+        assert_eq!(entries[0].1, "3-0");
     }
 
     #[test]
@@ -236,8 +244,8 @@ mod tests {
         ])]);
         let entries = extract_entries(reply);
         assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].1.len(), 1);
-        assert_eq!(entries[0].1.get("good").unwrap(), "yes");
+        assert_eq!(entries[0].2.len(), 1);
+        assert_eq!(entries[0].2.get("good").unwrap(), "yes");
     }
 
     #[test]
@@ -255,7 +263,7 @@ mod tests {
         ])]);
         let entries = extract_entries(reply);
         assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].1.len(), 1);
-        assert_eq!(entries[0].1.get("k").unwrap(), "v");
+        assert_eq!(entries[0].2.len(), 1);
+        assert_eq!(entries[0].2.get("k").unwrap(), "v");
     }
 }

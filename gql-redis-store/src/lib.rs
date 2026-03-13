@@ -296,9 +296,24 @@ impl RedisGraphStore {
     /// If a replica pool is configured (`GQL_REDIS_REPLICA_URL`), returns a
     /// connection from the replica pool with round-robin selection. Otherwise
     /// falls back to the primary pool.
+    ///
+    /// When `force_primary` is `true`, always returns a connection from the
+    /// primary pool regardless of replica availability. This is used for
+    /// read-after-write session pinning to ensure read-your-writes consistency.
     pub(crate) fn route_read(&self) -> Result<RedisConn, StorageError> {
-        if let Some(ref rp) = self.replica_pool {
-            return rp.get();
+        self.route_read_with_pinning(false)
+    }
+
+    /// Like [`route_read`] but allows forcing reads to the primary for
+    /// read-after-write consistency.
+    pub(crate) fn route_read_with_pinning(
+        &self,
+        force_primary: bool,
+    ) -> Result<RedisConn, StorageError> {
+        if !force_primary {
+            if let Some(ref rp) = self.replica_pool {
+                return rp.get();
+            }
         }
         self.pool.get()
     }

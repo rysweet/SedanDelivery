@@ -134,6 +134,7 @@ where
         write_permit: None,
         saved_graph: None,
         peer_ip,
+        last_write_at: None,
     };
 
     // Absolute deadline for the connection lifetime (if configured).
@@ -300,6 +301,7 @@ mod tests {
             write_permit: None,
             saved_graph: None,
             peer_ip,
+            last_write_at: None,
         }
     }
 

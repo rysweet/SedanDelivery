@@ -4,7 +4,7 @@ use std::io::{BufRead, BufReader, Error, ErrorKind, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
-use gql_core::changelog::ChangeEvent;
+use gql_core::changelog::{ChangeEvent, CHANGELOG_STREAM};
 
 fn read_resp_array(reader: &mut BufReader<TcpStream>) -> std::io::Result<Vec<String>> {
     let mut header = String::new();
@@ -166,7 +166,7 @@ fn permanently_failing_entry() -> StreamEntry {
         "e".to_string(),
         serde_json::to_string(&event).expect("serialize change event"),
     );
-    ("1-0".to_string(), fields)
+    (CHANGELOG_STREAM.to_string(), "1-0".to_string(), fields)
 }
 
 fn resp_bulk_string(value: &str) -> String {
@@ -569,7 +569,7 @@ fn process_entries_stops_after_unresolved_dlq_failure_in_same_batch() {
         &fabric,
         vec![
             permanently_failing_entry(),
-            ("2-0".to_string(), HashMap::new()),
+            (CHANGELOG_STREAM.to_string(), "2-0".to_string(), HashMap::new()),
         ],
         1,
     );
@@ -602,14 +602,14 @@ fn process_entries_stops_after_unresolved_dlq_failure_in_same_batch() {
 fn process_pending_stops_after_unresolved_pending_batch() {
     let entry = permanently_failing_entry();
     let event_json = entry
-        .1
+        .2
         .get("e")
         .cloned()
         .expect("permanently failing entry should include event payload");
     let (mut conn, commands, handle) = spawn_poisoned_pending_mock_redis(event_json);
     let fabric = mock_fabric();
 
-    process_pending(&mut conn, "consumer-1", &fabric, 1, 1);
+    process_pending(&mut conn, "consumer-1", &fabric, 1, 1, CHANGELOG_STREAM);
 
     drop(conn);
     handle
@@ -650,14 +650,14 @@ fn run_sync_loop_reconnects_after_unresolved_new_message_batch() {
 
     let entry = permanently_failing_entry();
     let event_json = entry
-        .1
+        .2
         .get("e")
         .cloned()
         .expect("permanently failing entry should include event payload");
     let (client, mut conn, commands, handle) = spawn_poisoned_new_message_mock_redis(event_json);
     let fabric = mock_fabric();
 
-    run_sync_loop(&client, &mut conn, "consumer-1", &fabric, 1, 1, 1);
+    run_sync_loop(&client, &mut conn, "consumer-1", &fabric, 1, 1, 1, vec![CHANGELOG_STREAM.to_string()]);
 
     drop(conn);
     handle
@@ -706,7 +706,7 @@ fn run_sync_loop_stops_after_bounded_unresolved_reconnect_attempts() {
 
     let entry = permanently_failing_entry();
     let event_json = entry
-        .1
+        .2
         .get("e")
         .cloned()
         .expect("permanently failing entry should include event payload");
@@ -714,7 +714,7 @@ fn run_sync_loop_stops_after_bounded_unresolved_reconnect_attempts() {
         spawn_persistently_poisoned_new_message_mock_redis(event_json, 3);
     let fabric = mock_fabric();
 
-    run_sync_loop(&client, &mut conn, "consumer-1", &fabric, 1, 1, 1);
+    run_sync_loop(&client, &mut conn, "consumer-1", &fabric, 1, 1, 1, vec![CHANGELOG_STREAM.to_string()]);
 
     drop(conn);
     handle

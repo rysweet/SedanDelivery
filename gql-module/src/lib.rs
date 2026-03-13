@@ -36,7 +36,7 @@ use std::sync::OnceLock;
 use redis_module::{redis_module, Context, NextArg, RedisError, RedisResult, RedisValue};
 
 use gql_core::ast::Clause;
-use gql_core::changelog::{ChangeLogStore, CHANGELOG_STREAM};
+use gql_core::changelog::{changelog_stream_for_graph, ChangeLogStore, CHANGELOG_STREAM};
 use gql_core::executor::{ExecutionBudget, QueryExecutor};
 use gql_core::parser::parse_query;
 use gql_core::planner::QueryPlanner;
@@ -86,12 +86,13 @@ fn emit_changelog(ctx: &Context) {
         None => return,
     };
     for event in store.drain_events() {
+        let stream_key = changelog_stream_for_graph(event.graph_name());
         match serde_json::to_string(&event) {
             Ok(json) => {
-                if let Err(e) = ctx.call("XADD", &[CHANGELOG_STREAM, "*", "e", json.as_str()]) {
+                if let Err(e) = ctx.call("XADD", &[&stream_key, "*", "e", json.as_str()]) {
                     // Log warning but continue — changelog lag is preferable to
                     // rejecting the client's write after it already succeeded.
-                    tracing::warn!("changelog XADD failed: {e:?}");
+                    tracing::warn!(stream = %stream_key, "changelog XADD failed: {e:?}");
                 }
             }
             Err(e) => {
@@ -134,8 +135,7 @@ fn module_init(_ctx: &Context, _args: &[redis_module::RedisString]) -> redis_mod
 
     if enabled {
         tracing::info!(
-            "GQL module: changelog enabled — writing to {}",
-            CHANGELOG_STREAM
+            "GQL module: changelog enabled — writing to per-graph streams __sd2:changelog:{{<graph>}}"
         );
     }
 
