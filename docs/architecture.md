@@ -116,13 +116,10 @@ sequenceDiagram
 
 Connection lifecycle:
 - Semaphore-gated concurrency (`BOLT_MAX_CONNECTIONS`, default 1024)
-- Per-message idle timeout reaping (`BOLT_IDLE_TIMEOUT_SECS`, default 300) -- resets on each message
-- Max connection lifetime (`BOLT_MAX_CONNECTION_LIFETIME_SECS`, default 1800) -- hard wall-clock cap that forces periodic reconnection, critical for L4 load-balancer rebalancing after scale-out
+- Idle timeout reaping, max connection lifetime, and L4 load-balancer rebalancing -- see [Auto-Scaling Guide](auto-scaling) for details
 - Explicit transactions via BEGIN/COMMIT/ROLLBACK with snapshot isolation
-- Write concurrency semaphore for transaction contention (`BOLT_WRITE_CONCURRENCY`, default 128)
-- Distributed write locks on property mutations (per-graph `SET NX PX` + CAS Lua release, 5 s TTL)
-- Atomic graph deletion via Lua `SCAN`+`DEL` script (no partial-delete windows)
-- Cross-replica bookmark counter via Redis `INCR __sd2_bookmark` (falls back to in-process `AtomicU64` when Redis is unavailable)
+- Write concurrency semaphore (`BOLT_WRITE_CONCURRENCY`, default 128)
+- Distributed write locks, atomic graph deletion, and cross-replica bookmarks -- see [Auto-Scaling Guide](auto-scaling) for write safety details
 
 ## Query Pipeline
 
@@ -297,10 +294,10 @@ graph TD
 - **REST clients** connect to gql-api via HTTP/HTTPS on port 3001/3443
 - Both servers connect to Valkey via `GQL_REDIS_URL` using an r2d2 connection pool (or via `GQL_REDIS_CLUSTER_NODES` for cluster mode, or `rediss://` for Azure Cache with TLS)
 - When `GQL_REDIS_REPLICA_URL` is set, read-only operations are routed to a separate replica pool (round-robin), while writes go to the primary
-- The Fabric sync sidecar reads from per-graph Redis Streams (`__sd2:changelog:{graph}`) and the legacy `__sd2:changelog` stream, and pushes to Fabric via HTTPS
-- Read-after-write session pinning: Bolt sessions route reads to the primary for 5 seconds after a write to ensure consistency with replicas
-- Large-set reads use SSCAN (configurable via `GQL_REDIS_SMEMBERS_THRESHOLD`, default 10,000) to avoid blocking the Redis event loop
+- The Fabric sync sidecar reads from per-graph Redis Streams (`__sd2:changelog:{graph}`) and pushes to Fabric via HTTPS
 - Entra ID JWT validation uses a cached JWKS endpoint (async, non-blocking)
+
+For scaling-specific connection behavior (read-after-write session pinning, SSCAN thresholds, connection lifecycle tuning for L4 load balancers), see the [Auto-Scaling Guide](auto-scaling).
 
 See [Deploy Your Own Instance](DEPLOY) for full setup instructions and cost estimates (~$36/mo standalone).
 

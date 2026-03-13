@@ -315,44 +315,16 @@ Set these in your Container App or `deploy.yml` to customize behavior:
 
 ## Scaling
 
-### Horizontal: Multiple Bolt Replicas
-
-The Bolt server is stateless (all state is in Redis). Scale it independently:
+The Bolt server and REST API are stateless and scale horizontally. Quick reference:
 
 ```bash
-# Scale to 3 replicas
 az containerapp update \
   --name sd2-main-bolt \
   --resource-group rg-sd2-main \
-  --min-replicas 3 \
-  --max-replicas 10
+  --min-replicas 1 --max-replicas 10
 ```
 
-Container Apps automatically load-balances across replicas.
-
-### KEDA Auto-Scaling
-
-When KEDA 2.13+ is installed in the cluster, `infra/keda-scaledobjects.yaml` provides automatic scaling based on Prometheus metrics:
-
-- **Bolt server** scales 1-10 replicas on active connection count (target: 100/replica) and p95 query latency (target: 500ms).
-- **gql-api** scales 1-3 replicas on concurrent HTTP requests (target: 100/replica).
-
-Both scalers read from Azure Monitor Managed Prometheus via workload identity. Apply with:
-
-```bash
-kubectl apply -f infra/keda-scaledobjects.yaml
-```
-
-> **Subnet sizing:** The container-apps subnet uses `/21` (2048 addresses) to provide
-> headroom for KEDA scale-out. If upgrading from `/23`, existing deployments must
-> recreate the VNet or expand the subnet before applying the new Bicep template.
-
-> **valkey-volume scaling guard:** The Bicep template includes a `boltMaxReplicas`
-> parameter (default `1`). When `persistenceBackend` is `valkey-volume`, the
-> deployment will fail if `boltMaxReplicas > 1`. This is intentional -- Azure
-> Files is single-writer, so running multiple Valkey instances against the same
-> file share would corrupt data. To scale beyond one replica, switch to
-> `azure-cache` or `azure-cache-cluster` as the persistence backend.
+For comprehensive scaling documentation -- including KEDA auto-scaling, write safety under multi-replica, connection lifecycle tuning, observability, and chaos testing -- see the [Auto-Scaling Guide](auto-scaling).
 
 ### Vertical: More CPU/Memory
 
@@ -362,20 +334,6 @@ az containerapp update \
   --resource-group rg-sd2-main \
   --cpu 2 --memory 4Gi
 ```
-
-### High Availability: Azure Cache for Redis
-
-For automatic failover and replication, deploy with Azure Cache:
-
-```bash
-# Re-deploy with Azure Cache backend
-az deployment group create \
-  --resource-group rg-sd2-main \
-  --template-file infra/main.bicep \
-  --parameters environmentName=main persistenceBackend=azure-cache
-```
-
-This provisions a Standard C1 Azure Cache for Redis with active-passive replication. The deploy workflow automatically wires the connection string.
 
 ## Cleanup
 
@@ -552,55 +510,11 @@ Rate limit entries are automatically cleaned up:
 
 After a successful authentication, the rate limit counter for that IP is cleared.
 
-> **Per-replica limitation:** The auth rate limiter is per-process. Each Bolt
-> replica maintains its own independent failure counter. With **N replicas**
-> behind an L4 load balancer, an attacker can make up to **N x max-attempts**
-> total requests before being throttled on every replica. For typical
-> deployments (1-3 replicas) and the default limit of 10, this means a
-> worst-case of 30 attempts -- acceptable for most threat models.
->
-> To fully close this gap, the rate limiter would need to move to
-> Redis-backed counters (`INCR` with `EXPIRE` keyed by IP). This adds a
-> Redis round-trip per auth attempt and is deferred until a deployment
-> requires tighter guarantees.
+The rate limiter is per-replica. See the [Auto-Scaling Guide](auto-scaling) for multi-replica security implications.
 
 ## Chaos Testing
 
-Three chaos test scripts validate Bolt resilience under adverse conditions. All require Docker Compose v2, Python 3 with the `neo4j` driver, and `VALKEY_PASSWORD` set in the environment.
-
-```bash
-export VALKEY_PASSWORD='change-me-for-local-dev'
-```
-
-### Network Partition Test
-
-Injects latency and full disconnects between Bolt and Valkey via toxiproxy, then verifies recovery.
-
-```bash
-./scripts/test-network-partition.sh
-```
-
-Uses `docker-compose.chaos-test.yml` (2 Bolt instances + toxiproxy + Valkey). Phases: baseline connectivity, 500ms latency, full proxy disable, partition heal and recovery verification.
-
-### Resharding Resilience Test
-
-Runs background write load while resharding Redis Cluster slots between masters.
-
-```bash
-./scripts/test-resharding-resilience.sh
-```
-
-Uses `docker-compose.cluster.yml` (6-node Redis Cluster + Bolt). Checks `/metrics` for `StorageError::Backend` errors to detect data loss during slot migration.
-
-### Scale-Down Drain Test
-
-Starts 3 Bolt instances, sends SIGTERM to one under load, and verifies graceful shutdown.
-
-```bash
-./scripts/test-scale-down-drain.sh
-```
-
-Generates a temporary `docker-compose.drain-test.yml` with 3 Bolt instances + Valkey. Verifies: no connection resets on the terminated instance, zero errors on surviving instances, and that survivors absorb the full load.
+Three chaos test scripts validate Bolt resilience under adverse conditions (network partitions, resharding, and scale-down drain). See the [Auto-Scaling Guide](auto-scaling) for full details and usage instructions.
 
 ## Architecture Decisions
 
