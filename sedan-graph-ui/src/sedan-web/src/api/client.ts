@@ -94,10 +94,13 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
       const bodyMessage = typeof rawBody.message === 'string' ? rawBody.message : ''
       const bodyError = typeof rawBody.error === 'string' ? rawBody.error : ''
       const bodyDetail = typeof rawBody.detail === 'string' ? rawBody.detail : ''
+      // detail is sourced exclusively from the body's `detail` field so it
+      // remains supplementary text distinct from the primary message.
+      detail = bodyDetail || undefined
       // SEC-3: Use || (logical OR) rather than ?? (nullish coalescing) so that
       // empty strings are treated as absent, preventing a blank error display.
-      detail = bodyMessage || bodyDetail || undefined
-      errorMessage = bodyMessage || bodyDetail || bodyError || errorMessage
+      // Priority: explicit message > machine-readable error token > supplementary detail > HTTP sentinel
+      errorMessage = bodyMessage || bodyError || bodyDetail || errorMessage
     } catch {
       // ignore JSON parse error — errorMessage retains the "HTTP N" sentinel
     }
