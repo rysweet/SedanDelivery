@@ -15,6 +15,7 @@ what residual risks still remain.
 - [What Keeps Writes Correct](#what-keeps-writes-correct)
 - [Residual Risk](#residual-risk)
 - [The Write Lock](#the-write-lock)
+- [Delete Size Guard](#delete-size-guard)
 - [Verification](#verification)
 
 ---
@@ -222,6 +223,69 @@ end
 
 That keeps `create_index`, `drop_index`, `delete_graph`, and other large
 same-graph mutations from silently outliving their lease.
+
+---
+
+## Delete Size Guard
+
+`delete_graph` now uses `SCARD` to preflight both the node and edge manifests
+before it sets `G:{g}:_deleting` or removes the graph from
+`__sd2_registry:graphs`. If either set exceeds the built-in
+`MAX_NODES_FOR_DELETE` threshold, the operation is rejected immediately with
+`StorageError::DeleteGraphTooLarge`. Only graphs that pass that bound load the
+full manifests with `SMEMBERS` for cleanup enumeration.
+
+On this branch, the same compile-time limit is used for both node and edge
+manifests:
+
+| Guarded manifest | Limit source | Current value |
+|------------------|-------------|---------------|
+| Node IDs (`G:{g}:nodes`) | `gql_redis_store::MAX_NODES_FOR_DELETE` | `100_000` |
+| Edge IDs (`G:{g}:edges`) | `gql_redis_store::MAX_NODES_FOR_DELETE` | `100_000` |
+
+No `_deleting` marker is set and no graph metadata is removed when the size
+guard fires, so the graph remains fully intact and visible.
+
+### Why the guard exists
+
+`delete_graph` walks the full per-graph key space — nodes, edges, adjacency
+sets, label sets, and property-index keys — while holding the per-graph write
+lock. For very large graphs, that cleanup can outlive the lock TTL and turn a
+best-effort delete into a partially applied mutation.
+
+Rejecting oversized graphs before cleanup starts is safer than beginning the
+walk and losing the lease midway through. The typed error makes that refusal
+explicit to callers instead of disguising it as a generic backend failure.
+
+### HTTP and Bolt contract
+
+The REST API maps `StorageError::DeleteGraphTooLarge` to **HTTP 413 Payload Too
+Large** with a stable error token:
+
+```json
+{
+  "error": "graph_too_large_for_delete",
+  "message": "graph 'bigdata' is too large for atomic deletion; use selective deletion instead"
+}
+```
+
+The Bolt bridge maps the same condition to:
+
+```text
+Neo.ClientError.Database.DeleteGraphTooLarge
+```
+
+Both wire contracts intentionally omit the internal node/edge count and the
+configured threshold value. Those details remain available in the internal
+`StorageError::DeleteGraphTooLarge` variant for logs and tests, but they are not
+surfaced to clients.
+
+### Operator guidance
+
+If the size guard fires, delete the graph selectively in batches or use an
+offline cleanup tool. This branch does not expose a runtime environment
+variable for the delete threshold; the limit is the compile-time constant
+`MAX_NODES_FOR_DELETE`.
 
 ---
 

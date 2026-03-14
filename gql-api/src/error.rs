@@ -9,6 +9,8 @@ use serde::Serialize;
 #[derive(Debug, Serialize)]
 pub struct ErrorBody {
     pub error: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
 }
 
 /// A typed API error that knows its HTTP status code.
@@ -16,6 +18,7 @@ pub struct ErrorBody {
 pub struct ApiError {
     status: StatusCode,
     message: String,
+    pub detail: Option<String>,
 }
 
 impl ApiError {
@@ -23,6 +26,7 @@ impl ApiError {
         Self {
             status,
             message: msg.into(),
+            detail: None,
         }
     }
 
@@ -30,6 +34,7 @@ impl ApiError {
         Self {
             status: StatusCode::BAD_REQUEST,
             message: msg.into(),
+            detail: None,
         }
     }
 
@@ -37,6 +42,7 @@ impl ApiError {
         Self {
             status: StatusCode::NOT_FOUND,
             message: msg.into(),
+            detail: None,
         }
     }
 
@@ -44,6 +50,7 @@ impl ApiError {
         Self {
             status: StatusCode::CONFLICT,
             message: msg.into(),
+            detail: None,
         }
     }
 
@@ -51,6 +58,7 @@ impl ApiError {
         Self {
             status: StatusCode::INTERNAL_SERVER_ERROR,
             message: msg.into(),
+            detail: None,
         }
     }
 
@@ -58,6 +66,15 @@ impl ApiError {
         Self {
             status: StatusCode::UNPROCESSABLE_ENTITY,
             message: msg.into(),
+            detail: None,
+        }
+    }
+
+    pub fn payload_too_large(code: impl Into<String>, detail: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::PAYLOAD_TOO_LARGE,
+            message: code.into(),
+            detail: Some(detail.into()),
         }
     }
 }
@@ -68,6 +85,7 @@ impl IntoResponse for ApiError {
             self.status,
             Json(ErrorBody {
                 error: self.message,
+                message: self.detail,
             }),
         )
             .into_response()
@@ -93,6 +111,12 @@ impl From<gql_core::error::GqlError> for ApiError {
             }
             GqlError::Storage(StorageError::InvalidGraphName { .. }) => {
                 ApiError::bad_request(e.to_string())
+            }
+            GqlError::Storage(StorageError::DeleteGraphTooLarge { name, .. }) => {
+                ApiError::payload_too_large(
+                    "graph_too_large_for_delete",
+                    format!("graph '{name}' is too large for atomic deletion; use selective deletion instead"),
+                )
             }
             GqlError::Storage(StorageError::Backend { .. }) => {
                 // Sanitize the backend error message at the HTTP API boundary.
@@ -327,6 +351,112 @@ mod tests {
             api_err.message.contains(topology_detail),
             "debug build must preserve backend detail for diagnostics: {}",
             api_err.message
+        );
+    }
+}
+
+// ── WS-F (#755): DeleteGraphTooLarge → HTTP 413 ──────────────────────────────
+//
+// These tests will FAIL TO COMPILE until:
+//   (a) StorageError::DeleteGraphTooLarge is added to gql-core/src/error.rs
+//   (b) ApiError gains a `detail: Option<String>` field and a
+//       `payload_too_large(code, detail)` constructor
+//   (c) From<GqlError> gains a DeleteGraphTooLarge → HTTP 413 arm
+//   (d) ErrorBody gains an optional `message: Option<String>` field with
+//       #[serde(skip_serializing_if = "Option::is_none")]
+//
+// The two tests here close the "C" sub-scenario in
+// tests/qa/gadugi/issue-755-oversized-delete-error-contract.yaml.
+
+#[cfg(test)]
+mod ws_f_delete_graph_too_large_api_tests {
+    use super::*;
+    use axum::http::StatusCode;
+    use gql_core::error::{GqlError, StorageError};
+
+    /// Verify that StorageError::DeleteGraphTooLarge produces HTTP 413 PAYLOAD_TOO_LARGE.
+    ///
+    /// FAILS TO COMPILE until:
+    ///   - StorageError::DeleteGraphTooLarge variant exists in gql-core
+    ///   - From<GqlError> arm maps it to ApiError::payload_too_large(...)
+    #[test]
+    fn delete_graph_too_large_maps_to_payload_too_large() {
+        let e = GqlError::Storage(StorageError::DeleteGraphTooLarge {
+            name: "bigdb".to_string(),
+            resource: "nodes",
+            resource_count: 999_999,
+            limit: 100_000,
+        });
+        let api_err = ApiError::from(e);
+        assert_eq!(
+            api_err.status,
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "DeleteGraphTooLarge must map to HTTP 413 PAYLOAD_TOO_LARGE, got: {}",
+            api_err.status
+        );
+        assert_eq!(
+            api_err.message, "graph_too_large_for_delete",
+            "HTTP 413 error field must be the canonical token 'graph_too_large_for_delete', \
+             got: {}",
+            api_err.message
+        );
+    }
+
+    /// Verify the HTTP 413 response body does NOT leak resource_count or limit values.
+    ///
+    /// Information-disclosure prevention: counts and limits are internal housekeeping
+    /// values that must not be surfaced to API callers (SEC-6 / AC-3 from issue #755).
+    ///
+    /// FAILS TO COMPILE until:
+    ///   - StorageError::DeleteGraphTooLarge variant exists in gql-core
+    ///   - ApiError has a `detail: Option<String>` field
+    ///   - ErrorBody has a `message: Option<String>` field with skip_serializing_if
+    ///   - From<GqlError> arm populates detail with the human-readable message
+    #[test]
+    fn delete_graph_too_large_does_not_leak_resource_count_in_response() {
+        let e = GqlError::Storage(StorageError::DeleteGraphTooLarge {
+            name: "secretgraph".to_string(),
+            resource: "nodes",
+            resource_count: 999_999,
+            limit: 100_000,
+        });
+        let api_err = ApiError::from(e);
+
+        // The error token must be the fixed canonical string — not a formatted
+        // message that includes counts, limits, or internal constant names.
+        assert_eq!(
+            api_err.message, "graph_too_large_for_delete",
+            "message field must be canonical token, got: {}",
+            api_err.message
+        );
+
+        // Serialize the full ErrorBody to JSON and verify no sensitive values appear.
+        let body = serde_json::to_string(&ErrorBody {
+            error: api_err.message.clone(),
+            message: api_err.detail.clone(),
+        })
+        .expect("ErrorBody must be JSON-serializable");
+
+        assert!(
+            !body.contains("999999"),
+            "HTTP 413 response must NOT expose resource_count (999999), got: {body}"
+        );
+        assert!(
+            !body.contains("100000"),
+            "HTTP 413 response must NOT expose limit (100000), got: {body}"
+        );
+        assert!(
+            !body.contains("MAX_NODES"),
+            "HTTP 413 response must NOT reference the MAX_NODES constant name, got: {body}"
+        );
+        assert!(
+            body.contains("graph_too_large_for_delete"),
+            "HTTP 413 response must include canonical error token 'graph_too_large_for_delete', \
+             got: {body}"
+        );
+        assert!(
+            body.contains("secretgraph"),
+            "HTTP 413 detail message must include the graph name 'secretgraph', got: {body}"
         );
     }
 }

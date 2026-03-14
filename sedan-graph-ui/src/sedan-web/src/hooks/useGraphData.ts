@@ -76,7 +76,10 @@ export function useDeleteGraph() {
   const queryClient = useQueryClient()
   return useMutation({
     mutationFn: (name: string) => graphsApi.delete(name),
-    onSuccess: () => {
+    onError: (error: Error) => {
+      useGraphStore.getState().showToast(`Failed to delete graph: ${error.message}`, 'error')
+    },
+    onSettled: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.graphs })
     },
   })

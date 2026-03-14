@@ -59,6 +59,10 @@ pub fn gql_error_to_bolt(err: &GqlError) -> (String, String) {
                 "Neo.TransientError.Transaction.DeadlockDetected".to_string(),
                 e.to_string(),
             ),
+            StorageError::DeleteGraphTooLarge { name, .. } => (
+                "Neo.ClientError.Database.DeleteGraphTooLarge".to_string(),
+                format!("graph '{name}' is too large for atomic deletion; use selective deletion instead"),
+            ),
             _ => (
                 "Neo.DatabaseError.General.UnknownError".to_string(),
                 e.to_string(),
@@ -196,5 +200,80 @@ mod tests {
         let err = GqlError::Parse(ParseError::EmptyQuery);
         let (_code, msg) = gql_error_to_bolt(&err);
         assert!(msg.contains("empty query"));
+    }
+}
+
+// ── WS-F (#755): DeleteGraphTooLarge → Bolt client-error code ─────────────────
+//
+// These tests will FAIL TO COMPILE until:
+//   (a) StorageError::DeleteGraphTooLarge is added to gql-core/src/error.rs
+//   (b) gql_error_to_bolt() gains an explicit arm for DeleteGraphTooLarge
+//       before the _ catch-all in the GqlError::Storage(e) => match e { ... } block
+//
+// The test here closes the "D" sub-scenario in
+// tests/qa/gadugi/issue-755-oversized-delete-error-contract.yaml.
+
+#[cfg(test)]
+mod ws_f_delete_graph_too_large_bolt_tests {
+    use super::*;
+
+    /// Verify that StorageError::DeleteGraphTooLarge maps to the correct Bolt
+    /// client-error code and that the message includes the graph name but does
+    /// NOT expose resource_count or limit to Bolt clients.
+    ///
+    /// FAILS TO COMPILE until StorageError::DeleteGraphTooLarge variant exists
+    /// and gql_error_to_bolt() has an explicit arm for it.
+    #[test]
+    fn delete_graph_too_large_maps_to_client_error() {
+        let err = GqlError::Storage(StorageError::DeleteGraphTooLarge {
+            name: "bigdb".to_string(),
+            resource: "nodes",
+            resource_count: 500_000,
+            limit: 100_000,
+        });
+        let (code, msg) = gql_error_to_bolt(&err);
+        assert_eq!(
+            code, "Neo.ClientError.Database.DeleteGraphTooLarge",
+            "DeleteGraphTooLarge must produce Neo.ClientError.Database.DeleteGraphTooLarge \
+             (a client error, not a database/unknown error), got: {code}"
+        );
+        // The Bolt message must identify the graph to the operator.
+        assert!(
+            msg.contains("bigdb"),
+            "Bolt error message must include the graph name 'bigdb', got: {msg}"
+        );
+        // Resource counts and limits must not leak to Bolt clients.
+        assert!(
+            !msg.contains("500000"),
+            "Bolt error message must NOT expose resource_count (500000), got: {msg}"
+        );
+        assert!(
+            !msg.contains("100000"),
+            "Bolt error message must NOT expose limit (100000), got: {msg}"
+        );
+    }
+
+    /// Verify that DeleteGraphTooLarge does NOT fall through to the generic
+    /// Neo.DatabaseError.General.UnknownError catch-all in gql_error_to_bolt().
+    ///
+    /// The _ catch-all exists for truly unknown storage errors.  DeleteGraphTooLarge
+    /// is a defined client error and must have its own explicit arm so drivers can
+    /// distinguish it from infrastructure failures.
+    ///
+    /// FAILS TO COMPILE until StorageError::DeleteGraphTooLarge variant exists.
+    #[test]
+    fn delete_graph_too_large_is_not_unknown_error() {
+        let err = GqlError::Storage(StorageError::DeleteGraphTooLarge {
+            name: "g".to_string(),
+            resource: "edges",
+            resource_count: 200_001,
+            limit: 100_000,
+        });
+        let (code, _msg) = gql_error_to_bolt(&err);
+        assert_ne!(
+            code, "Neo.DatabaseError.General.UnknownError",
+            "DeleteGraphTooLarge must NOT fall through to the UnknownError catch-all; \
+             add an explicit arm before the _ wildcard in gql_error_to_bolt()"
+        );
     }
 }

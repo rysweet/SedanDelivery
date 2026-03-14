@@ -61,10 +61,14 @@ export function GraphSelector() {
       setConfirmDelete(name)
       return
     }
-    await deleteGraph.mutateAsync(name)
-    if (currentGraph === name) setCurrentGraph(null)
-    setConfirmDelete(null)
-    refetch()
+    try {
+      await deleteGraph.mutateAsync(name)
+      if (currentGraph === name) setCurrentGraph(null)
+    } catch {
+      // useDeleteGraph() already surfaces the error to the toast store.
+    } finally {
+      setConfirmDelete(null)
+    }
   }
 
   return (

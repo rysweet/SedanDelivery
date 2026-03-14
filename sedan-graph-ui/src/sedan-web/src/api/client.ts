@@ -87,11 +87,19 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     let errorMessage = `HTTP ${response.status}`
     let detail: string | undefined
     try {
-      const body = await response.json() as { error?: string; detail?: string }
-      errorMessage = body.error ?? errorMessage
-      detail = body.detail
+      // SEC-2: Use individual runtime typeof guards rather than a compile-time
+      // type cast so non-string values (numbers, objects, null) from untrusted
+      // JSON are never coerced to strings like "42" or "[object Object]".
+      const rawBody = await response.json() as Record<string, unknown>
+      const bodyMessage = typeof rawBody.message === 'string' ? rawBody.message : ''
+      const bodyError = typeof rawBody.error === 'string' ? rawBody.error : ''
+      const bodyDetail = typeof rawBody.detail === 'string' ? rawBody.detail : ''
+      // SEC-3: Use || (logical OR) rather than ?? (nullish coalescing) so that
+      // empty strings are treated as absent, preventing a blank error display.
+      detail = bodyMessage || bodyDetail || undefined
+      errorMessage = bodyMessage || bodyDetail || bodyError || errorMessage
     } catch {
-      // ignore JSON parse error
+      // ignore JSON parse error — errorMessage retains the "HTTP N" sentinel
     }
     if (response.status === 401) {
       // Token expired or invalid — MSAL will handle re-auth on next acquireTokenSilent
