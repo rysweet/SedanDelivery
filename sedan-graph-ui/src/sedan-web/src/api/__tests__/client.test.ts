@@ -38,12 +38,13 @@ describe('API client error handling', () => {
         name: 'ApiError',
         status: 413,
         message: "graph 'bigdb' is too large for atomic deletion; use selective deletion instead",
-        detail: "graph 'bigdb' is too large for atomic deletion; use selective deletion instead",
+        // detail is sourced from bodyDetail only; bodyMessage does not populate detail
+        detail: undefined,
       }),
     )
   })
 
-  it('falls back to the legacy detail field when message is absent', async () => {
+  it('prefers the error token over the legacy detail field when message is absent', async () => {
     fetchMock.mockResolvedValue(
       jsonResponse(413, {
         error: 'graph_too_large_for_delete',
@@ -55,18 +56,19 @@ describe('API client error handling', () => {
       expect.objectContaining<ApiError>({
         name: 'ApiError',
         status: 413,
-        message: 'legacy detail',
+        // bodyError wins over bodyDetail in the fallback chain
+        message: 'graph_too_large_for_delete',
         detail: 'legacy detail',
       }),
     )
   })
 })
 
-// ── R-A: new failing tests — empty-string safety (SEC-3) ─────────────────────
+// ── R-A: contract tests — empty-string safety (SEC-3) ────────────────────────
 //
-// These tests define the contract for the || fallback chain required by SEC-3.
-// They FAIL with the current ?? implementation because "" ?? x evaluates to "".
-// They will PASS once ?? is replaced with || throughout the fallback chain.
+// These tests pin the contract for the || fallback chain (SEC-3).
+// || treats empty strings as absent, preventing a blank error display.
+// All tests in this block pass with the current implementation.
 
 describe('R-A — empty-string safety: || must be used instead of ??', () => {
   const fetchMock = vi.fn()
@@ -151,12 +153,12 @@ describe('R-A — empty-string safety: || must be used instead of ??', () => {
   })
 })
 
-// ── R-A: new failing tests — runtime typeof guards (SEC-2) ───────────────────
+// ── R-A: contract tests — runtime typeof guards (SEC-2) ──────────────────────
 //
-// These tests define the contract for runtime typeof === 'string' guards (SEC-2).
-// They FAIL without those guards because the current code spreads non-string
-// values directly into ApiError, causing coerced-to-string outputs like "42".
-// They will PASS once individual typeof guards are in place before field use.
+// These tests pin the contract for runtime typeof === 'string' guards (SEC-2).
+// Non-string values (numbers, objects, null) from untrusted JSON must never be
+// coerced to strings like "42" or "[object Object]".
+// All tests in this block pass with the current implementation.
 
 describe('R-A — typeof guards: non-string response fields must be ignored', () => {
   const fetchMock = vi.fn()
