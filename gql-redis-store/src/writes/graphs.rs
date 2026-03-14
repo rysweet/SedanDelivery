@@ -42,11 +42,12 @@ impl RedisGraphStore {
     /// This implementation is cluster-safe: it never uses SCAN (which cannot
     /// cross slot boundaries).  Instead it:
     ///
-    /// 1. Reads the all-nodes set (`key_nodes_set`) and all-edges set
-    ///    (`key_edges_set`) via SMEMBERS — safe because both keys share the
-    ///    `{name}` hash tag and therefore live on the same slot.
-    /// 2. Rejects graphs whose node or edge manifests exceed
-    ///    `crate::MAX_NODES_FOR_DELETE`, keeping cleanup memory bounded.
+    /// 1. Uses `SCARD` on the all-nodes set (`key_nodes_set`) and all-edges set
+    ///    (`key_edges_set`) to reject oversized graphs before loading the full
+    ///    manifests.
+    /// 2. Only after both counts pass the size guard, reads the manifests via
+    ///    `SMEMBERS` — safe because both keys share the `{name}` hash tag and
+    ///    therefore live on the same slot.
     /// 3. Reconstructs every per-graph key that can exist for the graph,
     ///    including label/reltype registries and property-index keys.
     /// 4. Sets a per-graph `_deleting` marker so public reads stop treating the
@@ -69,39 +70,58 @@ impl RedisGraphStore {
                 self.require_graph_on(conn.as_mut(), name)?;
             }
 
-            // Enumerate all node IDs before deregistering the graph so an oversized
-            // graph cannot become unreachable if the size guard fires.
+            // Preflight the node manifest cardinality before loading all IDs so
+            // oversized graphs fail cheaply and remain fully reachable.
+            let node_count: usize = redis::cmd("SCARD")
+                .arg(self.kp(key_nodes_set(name)))
+                .query(conn.as_mut())
+                .map_err(crate::backend_storage_error)?;
+
+            if node_count > crate::MAX_NODES_FOR_DELETE {
+                tracing::warn!(
+                    graph = %name,
+                    node_count,
+                    limit = crate::MAX_NODES_FOR_DELETE,
+                    "delete_graph rejected: node count exceeds MAX_NODES_FOR_DELETE"
+                );
+                return Err(StorageError::DeleteGraphTooLarge {
+                    name: name.to_string(),
+                    resource: "nodes",
+                    resource_count: node_count,
+                    limit: crate::MAX_NODES_FOR_DELETE,
+                });
+            }
+
+            // Preflight the edge manifest cardinality before loading any
+            // manifest so both oversized branches stay cheap and side-effect free.
+            let edge_count: usize = redis::cmd("SCARD")
+                .arg(self.kp(key_edges_set(name)))
+                .query(conn.as_mut())
+                .map_err(crate::backend_storage_error)?;
+            if edge_count > crate::MAX_NODES_FOR_DELETE {
+                tracing::warn!(
+                    graph = %name,
+                    edge_count,
+                    limit = crate::MAX_NODES_FOR_DELETE,
+                    "delete_graph rejected: edge count exceeds MAX_NODES_FOR_DELETE"
+                );
+                return Err(StorageError::DeleteGraphTooLarge {
+                    name: name.to_string(),
+                    resource: "edges",
+                    resource_count: edge_count,
+                    limit: crate::MAX_NODES_FOR_DELETE,
+                });
+            }
+
             let node_ids: Vec<String> = redis::cmd("SMEMBERS")
                 .arg(self.kp(key_nodes_set(name)))
                 .query(conn.as_mut())
                 .map_err(crate::backend_storage_error)?;
 
-            if node_ids.len() > crate::MAX_NODES_FOR_DELETE {
-                return Err(StorageError::Backend {
-                    msg: format!(
-                        "graph '{name}' has {} nodes, exceeding MAX_NODES_FOR_DELETE ({}); \
-                         delete in parts or use an offline tool",
-                        node_ids.len(),
-                        crate::MAX_NODES_FOR_DELETE
-                    ),
-                });
-            }
-
-            // Enumerate all edge IDs from the all-edges set.
             let edge_ids: Vec<String> = redis::cmd("SMEMBERS")
                 .arg(self.kp(key_edges_set(name)))
                 .query(conn.as_mut())
                 .map_err(crate::backend_storage_error)?;
-            if edge_ids.len() > crate::MAX_NODES_FOR_DELETE {
-                return Err(StorageError::Backend {
-                    msg: format!(
-                        "graph '{name}' has {} edges, exceeding MAX_NODES_FOR_DELETE ({}); \
-                         delete in parts or use an offline tool",
-                        edge_ids.len(),
-                        crate::MAX_NODES_FOR_DELETE
-                    ),
-                });
-            }
 
             let index_specs: Vec<String> = redis::cmd("SMEMBERS")
                 .arg(self.kp(key_indexes(name)))
@@ -372,14 +392,36 @@ mod tests {
             .split("pub(crate) fn delete_graph_impl")
             .nth(1)
             .expect("delete_graph_impl should exist");
-        let size_guard = delete_impl
-            .find("if node_ids.len() > crate::MAX_NODES_FOR_DELETE")
-            .expect("size guard should exist");
+        let node_count_guard = delete_impl
+            .find("let node_count: usize = redis::cmd(\"SCARD\")")
+            .expect("node-count preflight should exist");
+        let edge_count_guard = delete_impl
+            .find("let edge_count: usize = redis::cmd(\"SCARD\")")
+            .expect("edge-count preflight should exist");
+        let first_manifest_fetch = delete_impl
+            .find("let node_ids: Vec<String> = redis::cmd(\"SMEMBERS\")")
+            .expect("manifest fetch should exist");
         let deregister = delete_impl
             .rfind("redis::cmd(\"SREM\")")
             .expect("graph deregistration should exist");
         assert!(
-            size_guard < deregister,
+            node_count_guard < first_manifest_fetch,
+            "delete_graph_impl must preflight node cardinality before loading manifests"
+        );
+        assert!(
+            edge_count_guard < first_manifest_fetch,
+            "delete_graph_impl must preflight edge cardinality before loading manifests"
+        );
+        assert!(
+            node_count_guard < edge_count_guard,
+            "node cardinality check should happen before edge cardinality check"
+        );
+        assert!(
+            node_count_guard < deregister,
+            "delete_graph_impl must reject oversized graphs before removing them from the registry"
+        );
+        assert!(
+            edge_count_guard < deregister,
             "delete_graph_impl must reject oversized graphs before removing them from the registry"
         );
     }
@@ -391,9 +433,140 @@ mod tests {
             .split("pub(crate) fn delete_graph_impl")
             .nth(1)
             .expect("delete_graph_impl should exist");
+        let edge_count_guard = delete_impl
+            .find("let edge_count: usize = redis::cmd(\"SCARD\")")
+            .expect("edge-count preflight should exist");
+        let node_manifest_fetch = delete_impl
+            .find("let node_ids: Vec<String> = redis::cmd(\"SMEMBERS\")")
+            .expect("node manifest fetch should exist");
+        let edge_manifest_fetch = delete_impl
+            .find("let edge_ids: Vec<String> = redis::cmd(\"SMEMBERS\")")
+            .expect("edge manifest fetch should exist");
         assert!(
-            delete_impl.contains("if edge_ids.len() > crate::MAX_NODES_FOR_DELETE"),
+            delete_impl.contains("if edge_count > crate::MAX_NODES_FOR_DELETE"),
             "delete_graph_impl must bound the edge manifest before building cleanup state"
+        );
+        assert!(
+            edge_count_guard < node_manifest_fetch,
+            "delete_graph_impl must preflight edge cardinality before loading the node manifest"
+        );
+        assert!(
+            edge_count_guard < edge_manifest_fetch,
+            "delete_graph_impl must preflight edge cardinality before loading the edge manifest"
+        );
+    }
+}
+
+// ── WS-F (#755): Typed error for oversized delete — contract tests ────────────
+//
+// These tests verify that delete_graph_impl emits StorageError::DeleteGraphTooLarge
+// (not the generic StorageError::Backend) when node/edge counts exceed the limit.
+//
+// FAILS TO COMPILE until StorageError::DeleteGraphTooLarge is added to
+// gql-core/src/error.rs AND delete_graph_impl is updated to use it.
+
+#[cfg(test)]
+mod ws_f_typed_error_source_contract_tests {
+    /// Verify delete_graph_impl source emits DeleteGraphTooLarge for node overflow.
+    ///
+    /// After WS-F implementation, the node-overflow arm must use the typed variant
+    /// instead of `StorageError::Backend { msg: format!(...) }`.
+    #[test]
+    fn delete_graph_node_overflow_uses_typed_error_not_backend() {
+        let source = include_str!("graphs.rs");
+        let delete_impl = source
+            .split("pub(crate) fn delete_graph_impl")
+            .nth(1)
+            .expect("delete_graph_impl must exist");
+
+        // After WS-F: the node-overflow branch must use DeleteGraphTooLarge,
+        // NOT the generic Backend error.
+        assert!(
+            delete_impl.contains("DeleteGraphTooLarge"),
+            "delete_graph_impl must emit DeleteGraphTooLarge (not Backend) for node overflow; \
+             got: {}",
+            &delete_impl[..delete_impl.find('\n').unwrap_or(200).min(200)]
+        );
+    }
+
+    /// Verify delete_graph_impl source emits DeleteGraphTooLarge for edge overflow.
+    #[test]
+    fn delete_graph_edge_overflow_uses_typed_error_not_backend() {
+        let source = include_str!("graphs.rs");
+        let delete_impl = source
+            .split("pub(crate) fn delete_graph_impl")
+            .nth(1)
+            .expect("delete_graph_impl must exist");
+
+        // Count occurrences of DeleteGraphTooLarge — should be at least 2
+        // (one for nodes, one for edges).
+        let count = delete_impl.matches("DeleteGraphTooLarge").count();
+        assert!(
+            count >= 2,
+            "delete_graph_impl must have at least 2 DeleteGraphTooLarge emissions \
+             (one for nodes, one for edges), found {count}"
+        );
+    }
+
+    /// Verify that the oversized-graph branches no longer use the generic Backend error
+    /// with the old hard-coded message format.
+    #[test]
+    fn delete_graph_overflow_does_not_use_legacy_backend_message() {
+        let source = include_str!("graphs.rs");
+        let delete_impl = source
+            .split("pub(crate) fn delete_graph_impl")
+            .nth(1)
+            .expect("delete_graph_impl must exist");
+
+        // The old message pattern must be removed after WS-F.
+        assert!(
+            !delete_impl.contains("exceeding MAX_NODES_FOR_DELETE"),
+            "delete_graph_impl must not use the old Backend error message format after WS-F; \
+             update both branches to use DeleteGraphTooLarge"
+        );
+    }
+
+    /// Verify that the `resource` field discriminates between "nodes" and "edges".
+    #[test]
+    fn delete_graph_overflow_sets_correct_resource_field() {
+        let source = include_str!("graphs.rs");
+        let delete_impl = source
+            .split("pub(crate) fn delete_graph_impl")
+            .nth(1)
+            .expect("delete_graph_impl must exist");
+
+        // After WS-F, both "nodes" and "edges" resource strings must appear.
+        assert!(
+            delete_impl.contains("\"nodes\""),
+            "delete_graph_impl must set resource: \"nodes\" for node overflow"
+        );
+        assert!(
+            delete_impl.contains("\"edges\""),
+            "delete_graph_impl must set resource: \"edges\" for edge overflow"
+        );
+    }
+
+    /// Verify that _deleting marker is set BEFORE the DEL of per-graph keys,
+    /// and AFTER lock acquisition — the orphan-safety placement requirement.
+    #[test]
+    fn delete_graph_sets_deleting_marker_before_per_graph_del() {
+        let source = include_str!("graphs.rs");
+        let delete_impl = source
+            .split("pub(crate) fn delete_graph_impl")
+            .nth(1)
+            .expect("delete_graph_impl must exist");
+
+        let deleting_set_pos = delete_impl
+            .find("redis::cmd(\"SET\")")
+            .expect("_deleting SET must be present in delete_graph_impl");
+
+        let keys_del_pos = delete_impl
+            .rfind("redis::cmd(\"DEL\")")
+            .expect("DEL of per-graph keys must be present in delete_graph_impl");
+
+        assert!(
+            deleting_set_pos < keys_del_pos,
+            "_deleting marker must be SET before the bulk per-graph DEL for crash-safety"
         );
     }
 }

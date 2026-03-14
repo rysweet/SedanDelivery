@@ -384,6 +384,85 @@ fn ci8_delete_graph_end_to_end() {
     assert_eq!(matches, vec![recreated]);
 }
 
+#[test]
+#[ignore = "requires a running Redis at REDIS_URL"]
+fn ci8_delete_graph_too_large_preserves_visibility_and_retry_state() {
+    let store = standalone_store();
+    let graph = unique_graph("delete-graph-too-large");
+    let prefix = std::env::var("GQL_REDIS_KEY_PREFIX").unwrap_or_default();
+    let client =
+        Client::open(standalone_redis_url().as_str()).expect("redis client should initialize");
+    let mut conn = client
+        .get_connection()
+        .expect("redis connection should initialize");
+
+    store.create_graph(&graph).expect("graph should be created");
+
+    let nodes_key = format!("{prefix}G:{{{graph}}}:nodes");
+    let edges_key = format!("{prefix}G:{{{graph}}}:edges");
+    let deleting_key = format!("{prefix}G:{{{graph}}}:_deleting");
+
+    redis::cmd("SADD")
+        .arg(&nodes_key)
+        .arg("1")
+        .query::<i64>(&mut conn)
+        .expect("seed node manifest should succeed");
+
+    let oversized_edges: Vec<String> = (0..=gql_redis_store::MAX_NODES_FOR_DELETE)
+        .map(|id| id.to_string())
+        .collect();
+    for chunk in oversized_edges.chunks(5_000) {
+        redis::cmd("SADD")
+            .arg(&edges_key)
+            .arg(chunk)
+            .query::<i64>(&mut conn)
+            .expect("seed edge manifest chunk should succeed");
+    }
+
+    let err = store
+        .delete_graph(&graph)
+        .expect_err("oversized edge manifest should refuse delete_graph");
+    match err {
+        StorageError::DeleteGraphTooLarge {
+            resource,
+            resource_count,
+            limit,
+            ..
+        } => {
+            assert_eq!(resource, "edges");
+            assert_eq!(resource_count, gql_redis_store::MAX_NODES_FOR_DELETE + 1);
+            assert_eq!(limit, gql_redis_store::MAX_NODES_FOR_DELETE);
+        }
+        other => panic!("expected DeleteGraphTooLarge for edges, got {other:?}"),
+    }
+
+    assert!(
+        store
+            .graph_exists(&graph)
+            .expect("graph_exists should succeed after oversized delete refusal"),
+        "oversized delete refusal must leave the graph visible"
+    );
+
+    let in_registry: bool = redis::cmd("SISMEMBER")
+        .arg(format!("{prefix}__sd2_registry:graphs"))
+        .arg(&graph)
+        .query(&mut conn)
+        .expect("registry membership check should succeed");
+    assert!(
+        in_registry,
+        "oversized delete refusal must keep the graph registered"
+    );
+
+    let deleting_exists: i64 = redis::cmd("EXISTS")
+        .arg(&deleting_key)
+        .query(&mut conn)
+        .expect("retry-state existence check should succeed");
+    assert_eq!(
+        deleting_exists, 0,
+        "oversized delete refusal must not set the _deleting retry marker"
+    );
+}
+
 // ── CI-9: write pipeline does not use MULTI/EXEC (cluster-incompatible) ──────
 
 #[test]

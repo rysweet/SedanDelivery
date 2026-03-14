@@ -155,6 +155,14 @@ pub enum StorageError {
 
     #[error("constraint violation: {msg}")]
     ConstraintViolation { msg: String },
+
+    #[error("graph '{name}' has {resource_count} {resource} exceeding the limit of {limit}")]
+    DeleteGraphTooLarge {
+        name: String,
+        resource: &'static str,
+        resource_count: usize,
+        limit: usize,
+    },
 }
 
 // ── Type errors ───────────────────────────────────────────────────────────────
@@ -273,5 +281,143 @@ mod tests {
             gql,
             GqlError::Storage(StorageError::EdgeNotFound { id: 42 })
         ));
+    }
+}
+
+// ── WS-F (#755): DeleteGraphTooLarge error variant ────────────────────────────
+//
+// These tests will FAIL TO COMPILE until StorageError::DeleteGraphTooLarge is
+// added to the StorageError enum in this file.  They define the contract for
+// the new error variant introduced to replace the generic Backend error when
+// delete_graph exceeds MAX_NODES_FOR_DELETE.
+
+#[cfg(test)]
+mod ws_f_delete_graph_too_large_tests {
+    use super::*;
+
+    /// Verify the new variant can be constructed with all required fields.
+    ///
+    /// FAILS TO COMPILE until `StorageError::DeleteGraphTooLarge` is added.
+    #[test]
+    fn delete_graph_too_large_constructs_with_node_resource() {
+        let err = StorageError::DeleteGraphTooLarge {
+            name: "bigdb".to_string(),
+            resource: "nodes",
+            resource_count: 150_000,
+            limit: 100_000,
+        };
+        assert!(
+            matches!(err, StorageError::DeleteGraphTooLarge { .. }),
+            "DeleteGraphTooLarge must be a StorageError variant"
+        );
+    }
+
+    /// Verify the variant also works for "edges" as the discriminating resource.
+    #[test]
+    fn delete_graph_too_large_constructs_with_edge_resource() {
+        let err = StorageError::DeleteGraphTooLarge {
+            name: "bigdb".to_string(),
+            resource: "edges",
+            resource_count: 200_001,
+            limit: 100_000,
+        };
+        assert!(
+            matches!(
+                err,
+                StorageError::DeleteGraphTooLarge {
+                    resource: "edges",
+                    ..
+                }
+            ),
+            "resource field must be accessible for matching"
+        );
+    }
+
+    /// Verify the error message is informative and includes graph name,
+    /// resource type, actual count, and the limit.
+    #[test]
+    fn delete_graph_too_large_message_is_informative() {
+        let err = StorageError::DeleteGraphTooLarge {
+            name: "hugegraph".to_string(),
+            resource: "nodes",
+            resource_count: 500_000,
+            limit: 100_000,
+        };
+        let msg = err.to_string();
+        assert!(
+            msg.contains("hugegraph"),
+            "error message must include graph name, got: {msg}"
+        );
+        assert!(
+            msg.contains("500000") || msg.contains("500_000"),
+            "error message must include resource count, got: {msg}"
+        );
+        assert!(
+            msg.contains("100000") || msg.contains("100_000"),
+            "error message must include the limit, got: {msg}"
+        );
+        assert!(
+            msg.contains("nodes"),
+            "error message must include the resource type, got: {msg}"
+        );
+    }
+
+    /// Verify the error wraps correctly into GqlError::Storage.
+    #[test]
+    fn delete_graph_too_large_wraps_into_gql_error() {
+        let storage_err = StorageError::DeleteGraphTooLarge {
+            name: "x".to_string(),
+            resource: "nodes",
+            resource_count: 1,
+            limit: 0,
+        };
+        let gql: GqlError = storage_err.into();
+        assert!(
+            matches!(
+                gql,
+                GqlError::Storage(StorageError::DeleteGraphTooLarge { .. })
+            ),
+            "StorageError::DeleteGraphTooLarge must become GqlError::Storage"
+        );
+    }
+
+    /// Verify that the `name` field carries the correct graph name.
+    #[test]
+    fn delete_graph_too_large_name_field_is_correct() {
+        let err = StorageError::DeleteGraphTooLarge {
+            name: "correct_graph".to_string(),
+            resource: "nodes",
+            resource_count: 200_000,
+            limit: 100_000,
+        };
+        if let StorageError::DeleteGraphTooLarge { name, .. } = err {
+            assert_eq!(name, "correct_graph");
+        } else {
+            panic!("expected DeleteGraphTooLarge variant");
+        }
+    }
+
+    /// Verify limits and counts are accessible via pattern matching.
+    #[test]
+    fn delete_graph_too_large_count_and_limit_accessible() {
+        let err = StorageError::DeleteGraphTooLarge {
+            name: "g".to_string(),
+            resource: "nodes",
+            resource_count: 150_001,
+            limit: 150_000,
+        };
+        if let StorageError::DeleteGraphTooLarge {
+            resource_count,
+            limit,
+            ..
+        } = err
+        {
+            assert!(
+                resource_count > limit,
+                "resource_count ({resource_count}) must exceed limit ({limit})"
+            );
+        } else {
+            panic!("expected DeleteGraphTooLarge variant");
+        }
     }
 }

@@ -71,4 +71,5 @@ export interface MutateResponse {
 export interface ErrorResponse {
   error: string
   detail?: string
+  message?: string
 }

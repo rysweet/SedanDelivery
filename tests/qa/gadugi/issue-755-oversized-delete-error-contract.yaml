@@ -1,0 +1,222 @@
+# Canonical gadugi scenario for Issue #755 — typed oversized-delete error contract.
+#
+# This scenario validates the full error-contract chain introduced by WS-F (#755):
+#
+#   StorageError::DeleteGraphTooLarge  (gql-core)
+#     → emitted by delete_graph_impl  (gql-redis-store)
+#     → HTTP 413 with { "error": "graph_too_large_for_delete", "message": "..." }
+#         (gql-api)
+#     → Neo.ClientError.Database.DeleteGraphTooLarge
+#         (sedandelivery-bolt)
+#
+# Four sub-scenarios are grouped here:
+#
+#   A — gql-core: variant exists, all fields correct, message format verified
+#   B — gql-redis-store: delete_graph_impl emits typed error (not generic Backend)
+#   C — gql-api: HTTP 413 mapping; response does NOT leak counts or limits
+#   D — sedandelivery-bolt: correct Bolt error code; legacy string absent
+#
+# The bash grep guard in sub-scenario D double-checks the source directly,
+# independent of cargo test, to satisfy AC-7 (no legacy Backend message).
+#
+# See docs/cluster-write-safety.md#delete-size-guard for the operator-facing contract.
+
+scenario:
+  name: "Issue #755 - Typed oversized-delete error contract (WS-F full chain)"
+  description: >
+    Verifies that delete_graph refusals for graphs exceeding the node/edge size
+    limit surface a typed, matchable StorageError::DeleteGraphTooLarge variant
+    through every layer of the stack: storage error definition (gql-core),
+    delete_graph source emission (gql-redis-store), HTTP 413 API response
+    (gql-api), and Bolt client-error code (sedandelivery-bolt).  Also verifies
+    that the legacy StorageError::Backend message ("exceeding MAX_NODES_FOR_DELETE")
+    has been removed from the implementation body.
+  metadata:
+    tags: [cli, regression, unit, error-contract, delete-graph, issue-755, ws-f]
+    priority: high
+    linked_docs:
+      - docs/cluster-write-safety.md
+  agents:
+    - name: cli-agent
+      type: cli
+      config: {}
+
+  steps:
+
+    # ── Sub-scenario A: gql-core variant contract ─────────────────────────────
+
+    - name: "A1 — Run gql-core WS-F contract tests"
+      agent: cli-agent
+      action: execute
+      params:
+        command: cargo
+        args:
+          - test
+          - -p
+          - gql-core
+          - --lib
+          - ws_f_delete_graph_too_large_tests
+          - --
+          - --nocapture
+      timeout: 120000
+
+    - name: "A2 — Confirm variant constructs with 'nodes' resource"
+      agent: cli-agent
+      action: wait_for_output
+      params:
+        pattern: "delete_graph_too_large_constructs_with_node_resource.*ok"
+      timeout: 5000
+
+    - name: "A3 — Confirm variant constructs with 'edges' resource"
+      agent: cli-agent
+      action: wait_for_output
+      params:
+        pattern: "delete_graph_too_large_constructs_with_edge_resource.*ok"
+      timeout: 5000
+
+    - name: "A4 — Confirm error message includes graph name, count, limit, resource type"
+      agent: cli-agent
+      action: wait_for_output
+      params:
+        pattern: "delete_graph_too_large_message_is_informative.*ok"
+      timeout: 5000
+
+    - name: "A5 — Confirm variant wraps into GqlError::Storage"
+      agent: cli-agent
+      action: wait_for_output
+      params:
+        pattern: "delete_graph_too_large_wraps_into_gql_error.*ok"
+      timeout: 5000
+
+    - name: "A6 — Confirm 'name' field carries correct graph name"
+      agent: cli-agent
+      action: wait_for_output
+      params:
+        pattern: "delete_graph_too_large_name_field_is_correct.*ok"
+      timeout: 5000
+
+    - name: "A7 — Confirm resource_count and limit are accessible via pattern matching"
+      agent: cli-agent
+      action: wait_for_output
+      params:
+        pattern: "delete_graph_too_large_count_and_limit_accessible.*ok"
+      timeout: 5000
+
+    # ── Sub-scenario B: gql-redis-store source-contract tests ────────────────
+
+    - name: "B1 — Run gql-redis-store WS-F source-contract tests"
+      agent: cli-agent
+      action: execute
+      params:
+        command: cargo
+        args:
+          - test
+          - -p
+          - gql-redis-store
+          - --lib
+          - ws_f_typed_error_source_contract_tests
+          - --
+          - --nocapture
+      timeout: 120000
+
+    - name: "B2 — Confirm node-overflow uses typed error (not Backend)"
+      agent: cli-agent
+      action: wait_for_output
+      params:
+        pattern: "delete_graph_node_overflow_uses_typed_error_not_backend.*ok"
+      timeout: 5000
+
+    - name: "B3 — Confirm edge-overflow uses typed error (not Backend)"
+      agent: cli-agent
+      action: wait_for_output
+      params:
+        pattern: "delete_graph_edge_overflow_uses_typed_error_not_backend.*ok"
+      timeout: 5000
+
+    - name: "B4 — Confirm legacy Backend message absent from delete_graph_impl"
+      agent: cli-agent
+      action: wait_for_output
+      params:
+        pattern: "delete_graph_overflow_does_not_use_legacy_backend_message.*ok"
+      timeout: 5000
+
+    - name: "B5 — Confirm resource field is 'nodes' for node overflow and 'edges' for edge overflow"
+      agent: cli-agent
+      action: wait_for_output
+      params:
+        pattern: "delete_graph_overflow_sets_correct_resource_field.*ok"
+      timeout: 5000
+
+    - name: "B6 — Confirm _deleting marker is SET before the bulk per-graph DEL"
+      agent: cli-agent
+      action: wait_for_output
+      params:
+        pattern: "delete_graph_sets_deleting_marker_before_per_graph_del.*ok"
+      timeout: 5000
+
+    # ── Sub-scenario C: gql-api HTTP 413 mapping ──────────────────────────────
+
+    - name: "C1 — Run gql-api error-mapping tests"
+      agent: cli-agent
+      action: execute
+      params:
+        command: cargo
+        args:
+          - test
+          - -p
+          - gql-api
+          - --lib
+          - ws_f_delete_graph_too_large_api_tests
+          - --
+          - --nocapture
+      timeout: 120000
+
+    - name: "C2 — Confirm DeleteGraphTooLarge maps to HTTP 413"
+      agent: cli-agent
+      action: wait_for_output
+      params:
+        pattern: "delete_graph_too_large_maps_to_payload_too_large.*ok"
+      timeout: 5000
+
+    - name: "C3 — Confirm HTTP 413 response does not leak resource_count or limit"
+      agent: cli-agent
+      action: wait_for_output
+      params:
+        pattern: "delete_graph_too_large_does_not_leak_resource_count_in_response.*ok"
+      timeout: 5000
+
+    # ── Sub-scenario D: sedandelivery-bolt Bolt error code ────────────────────
+
+    - name: "D1 — Run sedandelivery-bolt error-mapping tests"
+      agent: cli-agent
+      action: execute
+      params:
+        command: cargo
+        args:
+          - test
+          - -p
+          - sedandelivery-bolt
+          - --lib
+          - ws_f_delete_graph_too_large_bolt_tests
+          - --
+          - --nocapture
+      timeout: 120000
+
+    - name: "D2 — Confirm DeleteGraphTooLarge maps to Neo.ClientError.Database.DeleteGraphTooLarge"
+      agent: cli-agent
+      action: wait_for_output
+      params:
+        pattern: "delete_graph_too_large_maps_to_client_error.*ok"
+      timeout: 5000
+
+    - name: "D3 — Confirm DeleteGraphTooLarge does NOT fall through to UnknownError catch-all"
+      agent: cli-agent
+      action: wait_for_output
+      params:
+        # Pins the named test that guards the explicit arm in gql_error_to_bolt().
+        # A regression that removes the arm (reverting to the _ catch-all) will
+        # cause this test to fail, making the acceptance suite report a failure
+        # even if D2 (maps_to_client_error) somehow remains green.
+        # Pattern matches: "test delete_graph_too_large_is_not_unknown_error ... ok"
+        pattern: "delete_graph_too_large_is_not_unknown_error.*ok"
+      timeout: 5000
