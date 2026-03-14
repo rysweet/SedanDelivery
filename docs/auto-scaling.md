@@ -207,9 +207,10 @@ This ensures bookmark values are globally unique across replicas. When Redis is 
 
 When `GQL_REDIS_REPLICA_URL` is configured and reads are routed to replicas, a 5-second pinning window prevents stale reads after writes:
 
-- Each Bolt session tracks `last_write_at` (wall-clock timestamp).
-- For 5 seconds after any write (including DDL like CREATE INDEX), reads on that session are routed to the primary via `route_read_with_pinning(force_primary=true)`.
-- After the window expires, reads resume normal replica round-robin routing.
+- Each Bolt session tracks `last_write_at` and computes `Session::read_consistency()`.
+- For `READ_AFTER_WRITE_WINDOW` (5 seconds) after any write, `handle_run()` resolves a session-scoped store view with `ReadConsistency::SessionFreshPrimary`.
+- `RedisGraphStore` honors that view by routing `route_read()` and graph-scoped reads to the primary first while preserving the existing primary retry for false replica `GraphNotFound`.
+- After the window expires, the session returns to `ReadConsistency::TopologyDefault`, which resumes normal replica round-robin routing.
 - Pinning is per-session, not global. Other sessions without recent writes continue reading from replicas.
 
 ## Data Layer

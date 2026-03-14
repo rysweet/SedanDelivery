@@ -291,6 +291,15 @@ pub(crate) struct ReplicaPool {
     next: AtomicUsize,
 }
 
+impl Clone for ReplicaPool {
+    fn clone(&self) -> Self {
+        Self {
+            pools: self.pools.clone(),
+            next: AtomicUsize::new(self.next.load(Ordering::Relaxed)),
+        }
+    }
+}
+
 impl ReplicaPool {
     /// Build a replica pool from one or more Redis replica URLs.
     ///

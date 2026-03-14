@@ -296,6 +296,7 @@ mod tests {
             write_semaphore: Arc::new(tokio::sync::Semaphore::new(128)),
             write_permit: None,
             saved_graph: None,
+            tx_had_write: false,
             peer_ip: Some(ip),
             last_write_at: None,
         }

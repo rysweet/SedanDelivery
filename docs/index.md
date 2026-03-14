@@ -14,6 +14,8 @@ A Rust GQL/Cypher query engine — a clean-room, MIT/Apache-2.0-licensed replace
 - [**Auto-Scaling Guide**](auto-scaling) — Horizontal scaling: architecture, write safety, KEDA metrics, connection lifecycle, testing, and configuration reference
 - [**Redis Cluster Mode**](cluster-mode) — Deploy against Redis Cluster: setup, validation, slot-local routing, and resharding checks
 - [**Cluster Write Safety**](cluster-write-safety) — How cluster-safe pipeline dispatch, registry-backed metadata, and the delete size guard avoid routing failures and unsafe oversized graph deletion
+- [**Read-After-Write Routing**](read-after-write-routing) — 5-second freshness window that pins Bolt session reads to the primary after a write, including explicit-transaction behavior, non-default database routing, and the executed outside-in validator
+- [**Routing Context API**](routing-context-api) — `ReadConsistency`, `GraphStore::with_read_consistency(...)`, `route_read`, `route_read_for_graph`, and `READ_AFTER_WRITE_WINDOW` reference for store implementors and test authors
 - [**Redis Key Schema**](redis-key-schema) — Complete reference for Redis keys, hash-tag contract, adjacency encoding, and metadata registries
 - [Tutorial](TUTORIAL) — Getting started with SedanDelivery
 - [Fabric Graph Tutorial](FABRIC_TUTORIAL) — Deploy, write data, query in Fabric portal, REST API, and monitoring

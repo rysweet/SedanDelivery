@@ -1,0 +1,40 @@
+# Canonical gadugi scenario for Issue #737.
+
+scenario:
+  name: "Issue #737 - Replica read-after-write primary pinning"
+  description: >
+    Verify from an operator perspective that a same-session Bolt read can still
+    observe its own write on a non-default database while read replicas are
+    unavailable, that a fresh session cannot, that CREATE INDEX refreshes the
+    same-session pin, and that the 5-second window expires back to the default
+    replica-routed behavior.
+  environment:
+    VALKEY_PASSWORD: "local-replica-pass"
+    BOLT_PASSWORD: "local-bolt-pass"
+  metadata:
+    tags: [cli, bolt, replica, regression, issue-737]
+    priority: high
+  agents:
+    - name: cli-agent
+      type: cli
+      config: {}
+  steps:
+    - name: "Run the replica read-after-write validator"
+      agent: cli-agent
+      action: execute
+      params:
+        command: bash
+        args:
+          - ./scripts/test-replica-read-after-write.sh
+      timeout: 420000
+    - name: "Confirm success banner appears in output"
+      agent: cli-agent
+      action: wait_for_output
+      params:
+        pattern: "\\[PASS\\]\\s+replica read-after-write pinning passed"
+      timeout: 5000
+    - name: "Confirm validator exited with code 0"
+      agent: cli-agent
+      action: validate_exit_code
+      params:
+        text: "0"

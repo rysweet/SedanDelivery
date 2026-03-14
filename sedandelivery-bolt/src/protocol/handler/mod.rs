@@ -17,7 +17,7 @@ use crate::packstream::value::{BoltMap, BoltMapExt, BoltValue};
 use crate::protocol::state::ServerState;
 
 // Re-export public types from sub-modules.
-pub(crate) use bookmarks::{next_bookmark, validate_bookmarks};
+pub(crate) use bookmarks::{next_bookmark, recent_bookmark_age, validate_bookmarks};
 pub use hello::spawn_auth_rate_limiter_sweep;
 #[cfg(test)]
 pub(crate) use hello::with_required_password_override_for_tests;
@@ -151,6 +151,7 @@ mod tests {
             write_semaphore: Arc::new(tokio::sync::Semaphore::new(128)),
             write_permit: None,
             saved_graph: None,
+            tx_had_write: false,
             peer_ip: None,
             last_write_at: None,
         }
@@ -175,6 +176,7 @@ mod tests {
             write_semaphore: Arc::new(tokio::sync::Semaphore::new(128)),
             write_permit: None,
             saved_graph: None,
+            tx_had_write: false,
             peer_ip: None,
             last_write_at: None,
         };
@@ -192,6 +194,7 @@ mod tests {
             write_semaphore: Arc::new(tokio::sync::Semaphore::new(128)),
             write_permit: None,
             saved_graph: None,
+            tx_had_write: false,
             peer_ip: None,
             last_write_at: None,
         };
@@ -593,6 +596,48 @@ mod tests {
                 "commit should make mutations visible"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn commit_refreshes_last_write_at_for_snapshot_transactions() {
+        let mut session = make_ready_session();
+        transaction::handle_begin(&mut session, vec![]).unwrap();
+        session.last_write_at = Some(
+            std::time::Instant::now()
+                - crate::protocol::handler::session::READ_AFTER_WRITE_WINDOW
+                - std::time::Duration::from_secs(1),
+        );
+
+        run_and_pull(&mut session, "CREATE (:CommitRefreshNode {val: 1})").await;
+        assert_eq!(
+            session.read_consistency(),
+            gql_core::storage::ReadConsistency::TopologyDefault
+        );
+
+        transaction::handle_commit(&mut session).unwrap();
+        assert_eq!(
+            session.read_consistency(),
+            gql_core::storage::ReadConsistency::SessionFreshPrimary
+        );
+    }
+
+    #[tokio::test]
+    async fn create_index_marks_session_fresh_for_read_after_write() {
+        let mut session = make_ready_session();
+
+        run::handle_run(
+            &mut session,
+            "CREATE INDEX FOR (n:ReadAfterWriteIndexNode) ON (n.key)".to_string(),
+            vec![],
+            vec![],
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            session.read_consistency(),
+            gql_core::storage::ReadConsistency::SessionFreshPrimary
+        );
     }
 
     #[tokio::test]

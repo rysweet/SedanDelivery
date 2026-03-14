@@ -4,6 +4,7 @@ pub use mem::InMemoryGraphStore;
 
 use std::any::Any;
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use crate::error::StorageError;
 use crate::types::Value;
@@ -104,6 +105,17 @@ pub enum RangeQuery<'a> {
         inclusive: bool,
     },
     StartsWith(&'a str), // string prefix scan
+}
+
+/// Session-scoped read-routing contract passed from protocol/front-end layers
+/// into storage implementations that support topology-aware reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReadConsistency {
+    /// Use the backend's normal topology policy (for example replica-first).
+    TopologyDefault,
+    /// Route reads to the primary because the session has a recent write and
+    /// must observe read-your-writes behavior.
+    SessionFreshPrimary,
 }
 
 // ── The core abstraction boundary ─────────────────────────────────────────────
@@ -332,6 +344,16 @@ pub trait GraphStore: Send + Sync {
     /// Returns the names of all label types currently in the graph.
     /// Used to compute the diff of labels added by a query.
     fn all_label_names(&self, graph: &str) -> Result<Vec<String>, StorageError>;
+
+    /// Return an optional session-scoped view of this store with the requested
+    /// read-routing contract applied.
+    ///
+    /// Backends that do not distinguish between read topologies can ignore this
+    /// contract and return `None`; callers should then continue using the
+    /// original store.
+    fn with_read_consistency(&self, _consistency: ReadConsistency) -> Option<Arc<dyn GraphStore>> {
+        None
+    }
 
     // ── Transaction support ──────────────────────────────────────────────────
 

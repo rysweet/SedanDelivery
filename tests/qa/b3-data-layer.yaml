@@ -123,8 +123,9 @@ scenarios:
       replicas are configured (GQL_REDIS_REPLICA_URL), the session must route
       the read to the primary for 5 seconds after the write to avoid stale
       reads from a lagging replica. The session's last_write_at timestamp
-      tracks when the most recent write occurred; force_primary_read() returns
-      true while elapsed time < READ_AFTER_WRITE_WINDOW (5s).
+      tracks when the most recent write occurred; Session::read_consistency()
+      returns SessionFreshPrimary while elapsed time < READ_AFTER_WRITE_WINDOW
+      (5s).
     prerequisites:
       - "GQL_REDIS_REPLICA_URL set to at least one read replica"
       - "Replica replication lag > 0ms (non-zero lag to demonstrate the need)"
@@ -153,9 +154,10 @@ scenarios:
         database: pinning_test
         expected: >
           val = 42. Because less than 5 seconds have elapsed since the write,
-          force_primary_read() returns true. route_read_with_pinning(true)
-          bypasses the replica pool and uses the primary connection pool,
-          guaranteeing the write is visible.
+          Session::read_consistency() returns SessionFreshPrimary.
+          handle_run() resolves a session-scoped store view via
+          with_read_consistency(SessionFreshPrimary), so RedisGraphStore starts
+          the read on the primary connection pool and the write is visible.
 
       - step: 3
         description: "A second session without writes uses replica routing"
@@ -166,9 +168,9 @@ scenarios:
         expected: >
           val = 42 (assuming replication has caught up) or empty result set
           (if replica is lagging). The key point is that Client B has no
-          last_write_at set, so force_primary_read() returns false and reads
-          are routed to replicas. This verifies pinning is per-session, not
-          global.
+          last_write_at set, so Session::read_consistency() returns
+          TopologyDefault and reads are routed to replicas. This verifies
+          pinning is per-session, not global.
 
       - step: 4
         description: "After 5+ seconds, the pinning window expires"
@@ -183,15 +185,16 @@ scenarios:
         database: pinning_test
         expected: >
           val = 42 (replica should have caught up by now). The important
-          behavioral change is that force_primary_read() now returns false
-          because last_write_at.elapsed() >= 5s, so the read is eligible for
-          replica routing. This confirms the pinning window is time-bounded.
+          behavioral change is that Session::read_consistency() now returns
+          TopologyDefault because last_write_at.elapsed() >= 5s, so the read is
+          eligible for replica routing. This confirms the pinning window is
+          time-bounded.
 
       - step: 6
         description: "Admin/DDL writes also trigger pinning"
         action: bolt_query
         client: A
-        query: "CREATE INDEX ON :PinTest(key)"
+        query: "CREATE INDEX FOR (n:PinTest) ON (n.key)"
         database: pinning_test
         expected: >
           Index creation succeeds. The intercept_admin_query handler sets

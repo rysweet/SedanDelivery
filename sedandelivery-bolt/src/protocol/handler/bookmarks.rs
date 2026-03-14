@@ -5,6 +5,7 @@ use crate::message::types::ServerMessage;
 use crate::packstream::value::{BoltMap, BoltMapExt, BoltValue};
 
 use super::bolt_map;
+use super::session::READ_AFTER_WRITE_WINDOW;
 
 // -- Bookmark helpers --------------------------------------------------------
 
@@ -20,7 +21,52 @@ pub(crate) fn format_bookmark(n: u64) -> String {
 /// Increment the global bookmark counter and return a formatted bookmark string.
 pub(crate) fn next_bookmark(counter: &BookmarkCounter) -> String {
     let n = counter.next();
+    counter.record_issued_at(n);
     format_bookmark(n)
+}
+
+fn bookmark_strings(extra: &BoltMap) -> Option<Vec<&str>> {
+    let bookmarks_val = extra.get_value("bookmarks")?;
+
+    Some(match bookmarks_val {
+        BoltValue::List(items) => items
+            .iter()
+            .filter_map(|v| {
+                if let BoltValue::String(s) = v {
+                    Some(s.as_str())
+                } else {
+                    None
+                }
+            })
+            .collect(),
+        BoltValue::String(s) => vec![s.as_str()],
+        _ => return None,
+    })
+}
+
+fn bookmark_tx_id(bookmark: &str) -> Option<u64> {
+    if let Some(rest) = bookmark.strip_prefix("neo4j:bookmark:") {
+        let after_v = rest.strip_prefix('v')?;
+        let colon_pos = after_v.find(':')?;
+        let tx_part = &after_v[colon_pos + 1..];
+        return tx_part.strip_prefix("tx")?.parse().ok();
+    }
+
+    bookmark.strip_prefix("sedan:tx:")?.parse().ok()
+}
+
+pub(crate) fn recent_bookmark_age(
+    extra: &BoltMap,
+    counter: &BookmarkCounter,
+) -> Option<std::time::Duration> {
+    let freshest = bookmark_strings(extra)?
+        .into_iter()
+        .filter_map(bookmark_tx_id)
+        .filter_map(|tx_id| counter.issued_age(tx_id))
+        .filter(|age| *age < READ_AFTER_WRITE_WINDOW)
+        .min()?;
+
+    Some(freshest)
 }
 
 // -- Bookmark validation -----------------------------------------------------
@@ -60,23 +106,7 @@ pub(crate) fn is_valid_bookmark(bookmark: &str) -> bool {
 /// Returns `Some(ServerMessage::Failure(...))` if any bookmark is invalid,
 /// or `None` if all bookmarks are valid (or no bookmarks are present).
 pub(crate) fn validate_bookmarks(extra: &BoltMap) -> Option<ServerMessage> {
-    let bookmarks_val = extra.get_value("bookmarks")?;
-
-    // Collect bookmark strings: either from a List or a single String.
-    let bookmark_strings: Vec<&str> = match bookmarks_val {
-        BoltValue::List(items) => items
-            .iter()
-            .filter_map(|v| {
-                if let BoltValue::String(s) = v {
-                    Some(s.as_str())
-                } else {
-                    None
-                }
-            })
-            .collect(),
-        BoltValue::String(s) => vec![s.as_str()],
-        _ => return None, // Non-list/non-string bookmarks field is ignored.
-    };
+    let bookmark_strings = bookmark_strings(extra)?;
 
     for bm in bookmark_strings {
         if !is_valid_bookmark(bm) {
