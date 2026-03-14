@@ -1,0 +1,39 @@
+# Canonical gadugi scenario for Issue #745.
+
+scenario:
+  name: "Issue #745 - Cluster Bolt smoke"
+  description: >
+    Verify from an operator perspective that the local Redis Cluster +
+    sedandelivery-bolt deployment can create a graph, mutate node labels,
+    write nodes and edges through Bolt, and tear the graph down without any
+    cluster routing errors.
+  environment:
+    VALKEY_PASSWORD: "local-cluster-pass"
+    BOLT_PASSWORD: "local-bolt-pass"
+  metadata:
+    tags: [cli, smoke, cluster, bolt, regression, issue-745]
+    priority: high
+  agents:
+    - name: cli-agent
+      type: cli
+      config: {}
+  steps:
+    - name: "Run the cluster Bolt smoke validator"
+      agent: cli-agent
+      action: execute
+      params:
+        command: bash
+        args:
+          - ./scripts/test-cluster-bolt-smoke.sh
+      timeout: 300000
+    - name: "Confirm success banner appears in output"
+      agent: cli-agent
+      action: wait_for_output
+      params:
+        pattern: "\\[PASS\\]\\s+bolt cluster smoke passed"
+      timeout: 5000
+    - name: "Confirm validator exited with code 0"
+      agent: cli-agent
+      action: validate_exit_code
+      params:
+        text: "0"

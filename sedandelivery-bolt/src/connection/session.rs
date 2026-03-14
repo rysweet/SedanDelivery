@@ -94,10 +94,7 @@ pub struct SessionConfig {
 /// The stream is generic over any type implementing `AsyncRead + AsyncWrite`,
 /// which allows it to work with both plaintext TCP streams and TLS-wrapped
 /// connections.
-pub async fn run<S>(
-    stream: S,
-    config: SessionConfig,
-) -> Result<(), SessionError>
+pub async fn run<S>(stream: S, config: SessionConfig) -> Result<(), SessionError>
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {

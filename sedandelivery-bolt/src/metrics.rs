@@ -115,8 +115,7 @@ mod tests {
         ] {
             assert!(!name.is_empty(), "metric name must not be empty");
             assert!(
-                name.chars()
-                    .all(|c| c.is_ascii_lowercase() || c == '_'),
+                name.chars().all(|c| c.is_ascii_lowercase() || c == '_'),
                 "metric name '{name}' contains invalid characters (only [a-z_] allowed)"
             );
         }
@@ -149,10 +148,7 @@ mod tests {
             .unwrap()
             .parse()
             .expect("counter value should be a number");
-        assert!(
-            val >= 1.0,
-            "{CONNECTIONS_TOTAL} should be >= 1, got {val}"
-        );
+        assert!(val >= 1.0, "{CONNECTIONS_TOTAL} should be >= 1, got {val}");
     }
 
     #[test]

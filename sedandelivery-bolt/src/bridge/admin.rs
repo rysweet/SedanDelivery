@@ -12,6 +12,8 @@ use gql_core::plan_cache;
 use gql_core::storage::GraphStore;
 use gql_core::types::Value;
 
+use super::ensure_graph_exists;
+
 /// Result of an admin query, with additional stats that MutationStats doesn't track.
 pub struct AdminResult {
     pub query_result: QueryResult,
@@ -218,10 +220,7 @@ fn handle_create_index(
         .ok_or_else(|| syntax_error("FOR (n:<Label>) ON (n.<prop>) in CREATE INDEX"))?;
 
     // Ensure graph exists
-    let exists = store.graph_exists(graph).map_err(GqlError::from)?;
-    if !exists {
-        store.create_graph(graph).map_err(GqlError::from)?;
-    }
+    ensure_graph_exists(store, graph)?;
 
     store
         .create_index(graph, &label, &property)
@@ -246,10 +245,7 @@ fn handle_drop_index(
     query: &str,
 ) -> Result<AdminResult, GqlError> {
     // Ensure graph exists
-    let exists = store.graph_exists(graph).map_err(GqlError::from)?;
-    if !exists {
-        store.create_graph(graph).map_err(GqlError::from)?;
-    }
+    ensure_graph_exists(store, graph)?;
 
     // Parse the index name from "DROP INDEX <name> [IF EXISTS]"
     let rest = &query["DROP INDEX ".len()..];
@@ -321,10 +317,7 @@ fn handle_create_constraint(
     query: &str,
 ) -> Result<AdminResult, GqlError> {
     // Ensure graph exists
-    let exists = store.graph_exists(graph).map_err(GqlError::from)?;
-    if !exists {
-        store.create_graph(graph).map_err(GqlError::from)?;
-    }
+    ensure_graph_exists(store, graph)?;
 
     // Parse: CREATE CONSTRAINT <name> FOR (var:<Label>) REQUIRE var.<prop> IS UNIQUE
     // Also: CREATE CONSTRAINT ON (var:<Label>) ASSERT var.<prop> IS UNIQUE
@@ -357,10 +350,7 @@ fn handle_drop_constraint(
     query: &str,
 ) -> Result<AdminResult, GqlError> {
     // Ensure graph exists
-    let exists = store.graph_exists(graph).map_err(GqlError::from)?;
-    if !exists {
-        store.create_graph(graph).map_err(GqlError::from)?;
-    }
+    ensure_graph_exists(store, graph)?;
 
     let upper = query.to_uppercase();
     let if_exists = upper.contains("IF EXISTS");

@@ -394,7 +394,7 @@ fn bench_aggregate_many_groups(c: &mut Criterion) {
 
 // ── §4.4 Multi-Property Access ──────────────────────────────────────────────
 
-fn bench_multi_property_access(c: &mut Criterion) {
+fn bench_wide_multi_prop_access(c: &mut Criterion) {
     // 10K nodes with 5 properties each.
     let store = InMemoryGraphStore::default();
     store.create_graph("bench").unwrap();
@@ -459,6 +459,7 @@ criterion_group!(
     bench_varlen_paths,
     bench_aggregate_many_groups,
     bench_multi_property_access,
+    bench_wide_multi_prop_access,
     bench_merge,
 );
 criterion_main!(benches);

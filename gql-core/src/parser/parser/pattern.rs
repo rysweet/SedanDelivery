@@ -27,10 +27,10 @@ impl<'src> Parser<'src> {
             if self.peek2() == &TokenKind::LParen {
                 return Some(ShortestPathMode::Single);
             }
-        } else if text.eq_ignore_ascii_case("allShortestPaths") {
-            if self.peek2() == &TokenKind::LParen {
-                return Some(ShortestPathMode::All);
-            }
+        } else if text.eq_ignore_ascii_case("allShortestPaths")
+            && self.peek2() == &TokenKind::LParen
+        {
+            return Some(ShortestPathMode::All);
         }
         None
     }

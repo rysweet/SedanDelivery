@@ -152,7 +152,10 @@ async fn main() {
         .with_time(Duration::from_secs(keepalive_secs))
         .with_interval(Duration::from_secs(30))
         .with_retries(3);
-    tracing::info!(keepalive_secs, "TCP keepalive enabled (Azure LB idle timeout mitigation)");
+    tracing::info!(
+        keepalive_secs,
+        "TCP keepalive enabled (Azure LB idle timeout mitigation)"
+    );
 
     // Semaphore gates new connections once max_connections is reached.
     let semaphore = Arc::new(Semaphore::new(max_connections));
@@ -162,20 +165,17 @@ async fn main() {
 
     let store = create_store();
     // Pre-create the default "neo4j" database so it exists before any client
-    // connects. With Redis-backed stores the graph may already exist from a
-    // previous run (data is persistent), so check first to be idempotent.
-    if !store
-        .graph_exists("neo4j")
-        .expect("failed to check default database")
-    {
-        // Handle race: two replicas may both see graph_exists==false and race to create.
-        match store.create_graph("neo4j") {
-            Ok(()) => {}
-            Err(gql_core::error::StorageError::GraphAlreadyExists { .. }) => {
-                tracing::info!("default 'neo4j' graph already created by peer replica");
-            }
-            Err(e) => panic!("failed to create default 'neo4j' database: {e}"),
+    // connects. Always attempt creation rather than check-then-create: the
+    // check would route through `route_read()` which may use a replica that
+    // hasn't yet replicated the graph registration, causing a spurious
+    // create attempt or — if the replica errors — a startup panic.
+    // `GraphAlreadyExists` is idempotent and safe to ignore.
+    match store.create_graph("neo4j") {
+        Ok(()) => {}
+        Err(gql_core::error::StorageError::GraphAlreadyExists { .. }) => {
+            tracing::info!("default 'neo4j' graph already exists");
         }
+        Err(e) => panic!("failed to create default 'neo4j' database: {e}"),
     }
 
     // Load TLS configuration (returns None if BOLT_TLS_CERT / BOLT_TLS_KEY are not set)
@@ -219,7 +219,6 @@ async fn main() {
         start_time,
         store: Arc::clone(&store),
     });
-
 
     let listener = TcpListener::bind(&bind_addr)
         .await

@@ -244,6 +244,9 @@ mod tests {
         // Gauge should reflect the last set_active_graphs call (7), not 100.
         // However, other tests may run concurrently and overwrite, so we just
         // verify it's a valid positive number.
-        assert!(val > 0.0, "active_graphs gauge should be positive, got {val}");
+        assert!(
+            val > 0.0,
+            "active_graphs gauge should be positive, got {val}"
+        );
     }
 }

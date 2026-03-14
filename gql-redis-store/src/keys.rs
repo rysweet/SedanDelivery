@@ -73,6 +73,26 @@ pub(crate) fn key_indexes(g: &str) -> String {
     format!("G:{{{g}}}:indexes")
 }
 
+/// Temporary marker set while `delete_graph` cleanup is in progress.
+/// Public reads treat a graph with this marker as already deleted, but the
+/// marker keeps the name reserved so cleanup can be retried after partial
+/// failures.
+pub(crate) fn key_graph_deleting(g: &str) -> String {
+    format!("G:{{{g}}}:_deleting")
+}
+
+/// Registry of label names seen in a graph. Used for cluster-safe label
+/// enumeration without SCAN.
+pub(crate) fn key_label_names(g: &str) -> String {
+    format!("G:{{{g}}}:_labels")
+}
+
+/// Registry of relationship type names seen in a graph. Used for cluster-safe
+/// reltype enumeration without SCAN.
+pub(crate) fn key_reltype_names(g: &str) -> String {
+    format!("G:{{{g}}}:_reltypes")
+}
+
 /// Separator for label/property in index metadata and propidx keys.
 /// Using a null byte avoids collisions when label or property names
 /// themselves contain colons.
@@ -85,6 +105,15 @@ pub(crate) fn key_propidx(g: &str, label: &str, property: &str, value_key: &str)
         "G:{{{g}}}:propidx:{label}{}{property}{}{value_key}",
         IDX_SEP, IDX_SEP
     )
+}
+
+/// Manifest of propidx keys created for a graph.
+///
+/// Index backfill and indexed writes are intentionally non-atomic, so
+/// `delete_graph` needs a durable way to find propidx sets even if index
+/// metadata registration fails part-way through.
+pub(crate) fn key_propidx_manifest(g: &str) -> String {
+    format!("G:{{{g}}}:_propidx")
 }
 
 /// Convert a Value to a canonical string for use as a Redis key component.
@@ -225,11 +254,31 @@ mod tests {
     }
 
     #[test]
+    fn key_graph_deleting_format() {
+        assert_eq!(key_graph_deleting("db"), "G:{db}:_deleting");
+    }
+
+    #[test]
+    fn key_label_names_format() {
+        assert_eq!(key_label_names("db"), "G:{db}:_labels");
+    }
+
+    #[test]
+    fn key_reltype_names_format() {
+        assert_eq!(key_reltype_names("db"), "G:{db}:_reltypes");
+    }
+
+    #[test]
     fn key_propidx_format() {
         assert_eq!(
             key_propidx("db", "Person", "name", "s:Alice"),
             "G:{db}:propidx:Person\x00name\x00s:Alice"
         );
+    }
+
+    #[test]
+    fn key_propidx_manifest_format() {
+        assert_eq!(key_propidx_manifest("db"), "G:{db}:_propidx");
     }
 
     #[test]
@@ -257,7 +306,12 @@ mod tests {
         assert!(key_nodes_set(g).contains(&tag));
         assert!(key_edges_set(g).contains(&tag));
         assert!(key_indexes(g).contains(&tag));
+        assert!(key_graph_lock(g).contains(&tag));
+        assert!(key_graph_deleting(g).contains(&tag));
+        assert!(key_label_names(g).contains(&tag));
+        assert!(key_reltype_names(g).contains(&tag));
         assert!(key_propidx(g, "L", "p", "v").contains(&tag));
+        assert!(key_propidx_manifest(g).contains(&tag));
     }
 
     // ── value_to_index_key ──────────────────────────────────────────────────

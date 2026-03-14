@@ -256,6 +256,26 @@ cargo run -p gql-api   # listens on 0.0.0.0:3001
 
 **Authentication**: Set `GQL_API_ENTRA_TENANT_ID` and `GQL_API_ENTRA_CLIENT_ID` to enable Entra ID JWT auth. All requests (except `/health`) require a valid `Authorization: Bearer <token>` header. See [docs/auth.md](docs/auth.md) for setup.
 
+## Security Considerations
+
+### Redis Cluster mode requires TLS
+
+When `GQL_REDIS_CLUSTER_NODES` is set, all seed URLs **must** use the
+`rediss://` scheme (TLS). Plaintext `redis://` seed URLs are only permitted
+for loopback addresses in local development.
+
+```bash
+# Production cluster (TLS required)
+GQL_REDIS_CLUSTER_NODES="rediss://node1:6379,rediss://node2:6379,rediss://node3:6379"
+
+# Local development only (loopback)
+GQL_REDIS_CLUSTER_NODES="redis://127.0.0.1:7001,redis://127.0.0.1:7002,redis://127.0.0.1:7003"
+```
+
+Inter-node cluster traffic carries authentication credentials and graph data.
+Plaintext exposes both to network observers. See
+[docs/cluster-mode.md](docs/cluster-mode.md) for the full cluster setup guide.
+
 ## Documentation
 
 - [Authentication (Entra ID)](docs/auth.md) — Configure JWT auth for the REST API

@@ -50,19 +50,20 @@ impl BookmarkCounter {
         match self {
             BookmarkCounter::InMemory(counter) => counter.fetch_add(1, Ordering::SeqCst) + 1,
             BookmarkCounter::Redis(client) => match client.get_connection() {
-                Ok(mut conn) => match redis::cmd("INCR").arg(BOOKMARK_KEY).query::<i64>(&mut conn)
-                {
-                    Ok(n) => n as u64,
-                    Err(e) => {
-                        tracing::warn!("bookmark Redis INCR failed ({e}), using local fallback");
-                        static FALLBACK: AtomicU64 = AtomicU64::new(0);
-                        FALLBACK.fetch_add(1, Ordering::SeqCst) + 1
+                Ok(mut conn) => {
+                    match redis::cmd("INCR").arg(BOOKMARK_KEY).query::<i64>(&mut conn) {
+                        Ok(n) => n as u64,
+                        Err(e) => {
+                            tracing::warn!(
+                                "bookmark Redis INCR failed ({e}), using local fallback"
+                            );
+                            static FALLBACK: AtomicU64 = AtomicU64::new(0);
+                            FALLBACK.fetch_add(1, Ordering::SeqCst) + 1
+                        }
                     }
-                },
+                }
                 Err(e) => {
-                    tracing::warn!(
-                        "bookmark Redis connection failed ({e}), using local fallback"
-                    );
+                    tracing::warn!("bookmark Redis connection failed ({e}), using local fallback");
                     static FALLBACK: AtomicU64 = AtomicU64::new(0);
                     FALLBACK.fetch_add(1, Ordering::SeqCst) + 1
                 }

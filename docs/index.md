@@ -12,6 +12,9 @@ A Rust GQL/Cypher query engine — a clean-room, MIT/Apache-2.0-licensed replace
 - [**Architecture Overview**](architecture) — Crate map, request flows, query pipeline, storage layer, and key design decisions
 - [**Deploy Your Own Instance**](DEPLOY) — Full production deployment guide: prerequisites, Azure setup, scaling, HA, troubleshooting
 - [**Auto-Scaling Guide**](auto-scaling) — Horizontal scaling: architecture, write safety, KEDA metrics, connection lifecycle, testing, and configuration reference
+- [**Redis Cluster Mode**](cluster-mode) — Deploy against Redis Cluster: setup, validation, slot-local routing, and resharding checks
+- [**Cluster Write Safety**](cluster-write-safety) — How cluster-safe pipeline dispatch and registry-backed metadata avoid routing failures
+- [**Redis Key Schema**](redis-key-schema) — Complete reference for Redis keys, hash-tag contract, adjacency encoding, and metadata registries
 - [Tutorial](TUTORIAL) — Getting started with SedanDelivery
 - [Fabric Graph Tutorial](FABRIC_TUTORIAL) — Deploy, write data, query in Fabric portal, REST API, and monitoring
 - [Validation Guide](validation) — Full test suite: what was validated, how to re-run, CI tiers, benchmark baselines
@@ -309,3 +312,5 @@ writing data, viewing in the Fabric portal, REST API access, and monitoring repl
 ## Internal
 
 - [Design decisions](https://github.com/cloud-ecosystem-security/SedanDelivery/tree/main/docs) (ADRs)
+  - [ADR-004: Distributed Redis](ADR-004-distributed-redis)
+  - [ADR-005: Redis Cluster Routing Safety](ADR-005-cluster-pipeline-atomicity) — cluster-aware pipeline dispatch plus registry-backed metadata paths (Issue #745)

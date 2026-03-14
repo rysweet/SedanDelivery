@@ -76,12 +76,11 @@ impl FabricGraphStore {
                 .ok_or_else(|| StorageError::Serialization {
                     msg: "edge missing _sd2_dst".into(),
                 })?;
-        let rel_type = v["type"]
-            .as_str()
-            .map(|s| s.to_string())
-            .ok_or_else(|| StorageError::Serialization {
+        let rel_type = v["type"].as_str().map(|s| s.to_string()).ok_or_else(|| {
+            StorageError::Serialization {
                 msg: format!("edge #{id_raw} missing relationship type (corrupted data)"),
-            })?;
+            }
+        })?;
         let properties = extract_user_props(&v["properties"]);
         Ok(Some(EdgeData {
             id: EdgeId(id_raw),

@@ -71,10 +71,7 @@ pub(crate) fn create_edge_impl(
     });
 
     // Update rel-type index.
-    g.reltype_index
-        .entry(rel_type)
-        .or_default()
-        .insert(raw_id);
+    g.reltype_index.entry(rel_type).or_default().insert(raw_id);
     Ok(edge_id)
 }
 
@@ -181,12 +178,8 @@ mod tests {
     #[test]
     fn edge_create_read_delete_roundtrip() {
         let store = make_store();
-        let a = store
-            .create_node("test", vec![], HashMap::new())
-            .unwrap();
-        let b = store
-            .create_node("test", vec![], HashMap::new())
-            .unwrap();
+        let a = store.create_node("test", vec![], HashMap::new()).unwrap();
+        let b = store.create_node("test", vec![], HashMap::new()).unwrap();
         let mut props = HashMap::new();
         props.insert("weight".to_string(), Value::Float(1.5));
         let eid = store
@@ -209,12 +202,9 @@ mod tests {
     #[test]
     fn create_edge_requires_existing_nodes() {
         let store = make_store();
-        let a = store
-            .create_node("test", vec![], HashMap::new())
-            .unwrap();
+        let a = store.create_node("test", vec![], HashMap::new()).unwrap();
         let bad = NodeId(9999);
-        let result =
-            store.create_edge("test", a, bad, "R".to_string(), HashMap::new());
+        let result = store.create_edge("test", a, bad, "R".to_string(), HashMap::new());
         assert!(matches!(
             result,
             Err(crate::error::StorageError::NodeNotFound { .. })
@@ -224,12 +214,8 @@ mod tests {
     #[test]
     fn batch_fetch_edges() {
         let store = make_store();
-        let a = store
-            .create_node("test", vec![], HashMap::new())
-            .unwrap();
-        let b = store
-            .create_node("test", vec![], HashMap::new())
-            .unwrap();
+        let a = store.create_node("test", vec![], HashMap::new()).unwrap();
+        let b = store.create_node("test", vec![], HashMap::new()).unwrap();
         let eid = store
             .create_edge("test", a, b, "R".to_string(), HashMap::new())
             .unwrap();

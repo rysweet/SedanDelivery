@@ -27,9 +27,7 @@ use gql_core::types::Value;
 
 use crate::parsing::{rows_to_adj, user_props_to_json};
 use crate::sanitize::{range_to_cypher, sanitize_label};
-use crate::{
-    FabricGraphStore, PROP_GRAPH, PROP_LABELS, PROP_NODE_ID, SEQ_LABEL,
-};
+use crate::{FabricGraphStore, PROP_GRAPH, PROP_LABELS, PROP_NODE_ID, SEQ_LABEL};
 
 // ── Shared helpers on FabricGraphStore ──────────────────────────────────────
 
@@ -152,7 +150,10 @@ impl GraphStore for FabricGraphStore {
     // ── Node reads ──────────────────────────────────────────────────────────
 
     fn get_node(&self, graph: &str, id: NodeId) -> Result<Option<NodeData>, StorageError> {
-        let rows = self.query(&nodes::get_node_query(), json!({ "graph": graph, "id": id.0 }))?;
+        let rows = self.query(
+            &nodes::get_node_query(),
+            json!({ "graph": graph, "id": id.0 }),
+        )?;
         rows.first()
             .map(|r| self.row_to_node_data(r))
             .unwrap_or(Ok(None))
@@ -178,7 +179,10 @@ impl GraphStore for FabricGraphStore {
         let sanitized = sanitize_label(label);
         if sanitized.is_empty() {
             return Err(StorageError::Backend {
-                msg: format!("invalid label: sanitize_label produced empty string from {:?}", label),
+                msg: format!(
+                    "invalid label: sanitize_label produced empty string from {:?}",
+                    label
+                ),
             });
         }
         let rows = self.query(

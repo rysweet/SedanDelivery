@@ -152,11 +152,11 @@ mod tests {
     use std::any::Any;
     use std::collections::HashMap;
 
+    use gql_core::error::StorageError;
     use gql_core::storage::{
-        AdjEntry, EdgeData, EdgeId, GraphStats, IndexDescriptor, InMemoryGraphStore, NodeData,
+        AdjEntry, EdgeData, EdgeId, GraphStats, InMemoryGraphStore, IndexDescriptor, NodeData,
         NodeId, RangeQuery,
     };
-    use gql_core::error::StorageError;
     use gql_core::types::Value;
     use http_body_util::BodyExt;
     use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
@@ -210,40 +210,146 @@ mod tests {
 
         delegate!(get_node(&self, graph: &str, id: NodeId) -> Result<Option<NodeData>, StorageError>);
         delegate!(get_edge(&self, graph: &str, id: EdgeId) -> Result<Option<EdgeData>, StorageError>);
-        fn get_nodes_batch(&self, graph: &str, ids: &[NodeId]) -> Result<Vec<Option<NodeData>>, StorageError> { self.0.get_nodes_batch(graph, ids) }
-        fn get_edges_batch(&self, graph: &str, ids: &[EdgeId]) -> Result<Vec<Option<EdgeData>>, StorageError> { self.0.get_edges_batch(graph, ids) }
+        fn get_nodes_batch(
+            &self,
+            graph: &str,
+            ids: &[NodeId],
+        ) -> Result<Vec<Option<NodeData>>, StorageError> {
+            self.0.get_nodes_batch(graph, ids)
+        }
+        fn get_edges_batch(
+            &self,
+            graph: &str,
+            ids: &[EdgeId],
+        ) -> Result<Vec<Option<EdgeData>>, StorageError> {
+            self.0.get_edges_batch(graph, ids)
+        }
         delegate!(find_nodes_by_label(&self, graph: &str, label: &str) -> Result<Vec<NodeId>, StorageError>);
-        fn find_nodes_by_label_and_property(&self, graph: &str, label: &str, property: &str, range: RangeQuery<'_>) -> Result<Vec<NodeId>, StorageError> { self.0.find_nodes_by_label_and_property(graph, label, property, range) }
+        fn find_nodes_by_label_and_property(
+            &self,
+            graph: &str,
+            label: &str,
+            property: &str,
+            range: RangeQuery<'_>,
+        ) -> Result<Vec<NodeId>, StorageError> {
+            self.0
+                .find_nodes_by_label_and_property(graph, label, property, range)
+        }
         delegate!(find_edges_by_type(&self, graph: &str, rel_type: &str) -> Result<Vec<EdgeId>, StorageError>);
         delegate!(out_edges(&self, graph: &str, node_id: NodeId) -> Result<Vec<AdjEntry>, StorageError>);
         delegate!(in_edges(&self, graph: &str, node_id: NodeId) -> Result<Vec<AdjEntry>, StorageError>);
-        fn out_edges_by_type(&self, graph: &str, node_id: NodeId, rel_types: &[&str]) -> Result<Vec<AdjEntry>, StorageError> { self.0.out_edges_by_type(graph, node_id, rel_types) }
-        fn in_edges_by_type(&self, graph: &str, node_id: NodeId, rel_types: &[&str]) -> Result<Vec<AdjEntry>, StorageError> { self.0.in_edges_by_type(graph, node_id, rel_types) }
+        fn out_edges_by_type(
+            &self,
+            graph: &str,
+            node_id: NodeId,
+            rel_types: &[&str],
+        ) -> Result<Vec<AdjEntry>, StorageError> {
+            self.0.out_edges_by_type(graph, node_id, rel_types)
+        }
+        fn in_edges_by_type(
+            &self,
+            graph: &str,
+            node_id: NodeId,
+            rel_types: &[&str],
+        ) -> Result<Vec<AdjEntry>, StorageError> {
+            self.0.in_edges_by_type(graph, node_id, rel_types)
+        }
         delegate!(out_edge_ids(&self, graph: &str, node_id: NodeId) -> Result<Vec<EdgeId>, StorageError>);
         delegate!(in_edge_ids(&self, graph: &str, node_id: NodeId) -> Result<Vec<EdgeId>, StorageError>);
         delegate!(all_node_ids(&self, graph: &str) -> Result<Vec<NodeId>, StorageError>);
         delegate!(all_edge_ids(&self, graph: &str) -> Result<Vec<EdgeId>, StorageError>);
-        fn create_node(&self, graph: &str, labels: Vec<String>, properties: HashMap<String, Value>) -> Result<NodeId, StorageError> { self.0.create_node(graph, labels, properties) }
-        fn create_edge(&self, graph: &str, src: NodeId, dst: NodeId, rel_type: String, properties: HashMap<String, Value>) -> Result<EdgeId, StorageError> { self.0.create_edge(graph, src, dst, rel_type, properties) }
-        fn set_node_properties(&self, graph: &str, id: NodeId, properties: HashMap<String, Value>) -> Result<(), StorageError> { self.0.set_node_properties(graph, id, properties) }
-        fn replace_node_properties(&self, graph: &str, id: NodeId, properties: HashMap<String, Value>) -> Result<(), StorageError> { self.0.replace_node_properties(graph, id, properties) }
-        fn set_edge_properties(&self, graph: &str, id: EdgeId, properties: HashMap<String, Value>) -> Result<(), StorageError> { self.0.set_edge_properties(graph, id, properties) }
-        fn replace_edge_properties(&self, graph: &str, id: EdgeId, properties: HashMap<String, Value>) -> Result<(), StorageError> { self.0.replace_edge_properties(graph, id, properties) }
+        fn create_node(
+            &self,
+            graph: &str,
+            labels: Vec<String>,
+            properties: HashMap<String, Value>,
+        ) -> Result<NodeId, StorageError> {
+            self.0.create_node(graph, labels, properties)
+        }
+        fn create_edge(
+            &self,
+            graph: &str,
+            src: NodeId,
+            dst: NodeId,
+            rel_type: String,
+            properties: HashMap<String, Value>,
+        ) -> Result<EdgeId, StorageError> {
+            self.0.create_edge(graph, src, dst, rel_type, properties)
+        }
+        fn set_node_properties(
+            &self,
+            graph: &str,
+            id: NodeId,
+            properties: HashMap<String, Value>,
+        ) -> Result<(), StorageError> {
+            self.0.set_node_properties(graph, id, properties)
+        }
+        fn replace_node_properties(
+            &self,
+            graph: &str,
+            id: NodeId,
+            properties: HashMap<String, Value>,
+        ) -> Result<(), StorageError> {
+            self.0.replace_node_properties(graph, id, properties)
+        }
+        fn set_edge_properties(
+            &self,
+            graph: &str,
+            id: EdgeId,
+            properties: HashMap<String, Value>,
+        ) -> Result<(), StorageError> {
+            self.0.set_edge_properties(graph, id, properties)
+        }
+        fn replace_edge_properties(
+            &self,
+            graph: &str,
+            id: EdgeId,
+            properties: HashMap<String, Value>,
+        ) -> Result<(), StorageError> {
+            self.0.replace_edge_properties(graph, id, properties)
+        }
         delegate!(remove_node_property(&self, graph: &str, id: NodeId, key: &str) -> Result<(), StorageError>);
         delegate!(remove_edge_property(&self, graph: &str, id: EdgeId, key: &str) -> Result<(), StorageError>);
-        fn add_node_labels(&self, graph: &str, id: NodeId, labels: &[String]) -> Result<(), StorageError> { self.0.add_node_labels(graph, id, labels) }
-        fn remove_node_labels(&self, graph: &str, id: NodeId, labels: &[String]) -> Result<(), StorageError> { self.0.remove_node_labels(graph, id, labels) }
-        fn delete_node(&self, graph: &str, id: NodeId, detach: bool) -> Result<(), StorageError> { self.0.delete_node(graph, id, detach) }
+        fn add_node_labels(
+            &self,
+            graph: &str,
+            id: NodeId,
+            labels: &[String],
+        ) -> Result<(), StorageError> {
+            self.0.add_node_labels(graph, id, labels)
+        }
+        fn remove_node_labels(
+            &self,
+            graph: &str,
+            id: NodeId,
+            labels: &[String],
+        ) -> Result<(), StorageError> {
+            self.0.remove_node_labels(graph, id, labels)
+        }
+        fn delete_node(&self, graph: &str, id: NodeId, detach: bool) -> Result<(), StorageError> {
+            self.0.delete_node(graph, id, detach)
+        }
         delegate!(delete_edge(&self, graph: &str, id: EdgeId) -> Result<(), StorageError>);
         delegate!(list_indexes(&self, graph: &str) -> Result<Vec<IndexDescriptor>, StorageError>);
-        fn create_index(&self, graph: &str, label: &str, property: &str) -> Result<(), StorageError> { self.0.create_index(graph, label, property) }
-        fn drop_index(&self, graph: &str, label: &str, property: &str) -> Result<(), StorageError> { self.0.drop_index(graph, label, property) }
+        fn create_index(
+            &self,
+            graph: &str,
+            label: &str,
+            property: &str,
+        ) -> Result<(), StorageError> {
+            self.0.create_index(graph, label, property)
+        }
+        fn drop_index(&self, graph: &str, label: &str, property: &str) -> Result<(), StorageError> {
+            self.0.drop_index(graph, label, property)
+        }
         delegate!(create_graph(&self, name: &str) -> Result<(), StorageError>);
         delegate!(delete_graph(&self, name: &str) -> Result<(), StorageError>);
         delegate!(list_graphs(&self) -> Result<Vec<String>, StorageError>);
         delegate!(graph_stats(&self, graph: &str) -> Result<GraphStats, StorageError>);
         delegate!(all_label_names(&self, graph: &str) -> Result<Vec<String>, StorageError>);
-        fn as_any(&self) -> &dyn Any { self }
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
     }
 
     fn failing_state() -> HealthState {

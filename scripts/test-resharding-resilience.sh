@@ -6,8 +6,8 @@
 # Checks /metrics for StorageError::Backend errors to detect data loss or crashes.
 #
 # Usage:
-#   export VALKEY_PASSWORD='change-me-for-local-dev'
 #   ./scripts/test-resharding-resilience.sh
+#   VALKEY_PASSWORD='custom-pass' BOLT_PASSWORD='custom-pass' ./scripts/test-resharding-resilience.sh
 #
 # Requirements:
 #   - Docker with compose v2 plugin
@@ -35,12 +35,7 @@ log_pass()  { echo -e "${GREEN}[PASS]${NC}  $*"; }
 log_fail()  { echo -e "${RED}[FAIL]${NC}  $*"; }
 
 # ── Validate environment ───────────────────────────────────────────────
-if [ -z "${VALKEY_PASSWORD:-}" ]; then
-    echo "ERROR: VALKEY_PASSWORD must be set."
-    echo "Example: export VALKEY_PASSWORD='change-me-for-local-dev'"
-    exit 1
-fi
-export VALKEY_PASSWORD
+export VALKEY_PASSWORD="${VALKEY_PASSWORD:-local-cluster-pass}"
 export BOLT_PASSWORD="${BOLT_PASSWORD:-$VALKEY_PASSWORD}"
 
 if ! docker compose version &>/dev/null; then
@@ -55,11 +50,15 @@ fi
 
 # ── Cleanup ─────────────────────────────────────────────────────────────
 LOAD_PID=""
+LOAD_OUTPUT_FILE=""
 cleanup() {
     log_info "Cleaning up..."
     if [ -n "$LOAD_PID" ] && kill -0 "$LOAD_PID" 2>/dev/null; then
         kill "$LOAD_PID" 2>/dev/null || true
         wait "$LOAD_PID" 2>/dev/null || true
+    fi
+    if [ -n "$LOAD_OUTPUT_FILE" ] && [ -f "$LOAD_OUTPUT_FILE" ]; then
+        rm -f "$LOAD_OUTPUT_FILE"
     fi
     VALKEY_PASSWORD="$VALKEY_PASSWORD" BOLT_PASSWORD="$BOLT_PASSWORD" \
         docker compose -f "$COMPOSE_FILE" down -v --remove-orphans --timeout 10 2>/dev/null || true
@@ -89,20 +88,80 @@ with driver.session() as s:
     s.run(f"CREATE GRAPH {graph_name}").consume()
 
 writes = 0
-errors = 0
+write_errors = 0
+read_checks = 0
+read_errors = 0
+label_mutations = 0
+label_errors = 0
 deadline = time.time() + duration
 
 while time.time() < deadline:
     try:
-        with driver.session() as s:
-            s.run(f"USE {graph_name} CREATE (:Load {{ts: {time.time()}, seq: {writes}}})").consume()
+        with driver.session(database=graph_name) as s:
+            s.run(
+                "CREATE (:LoadNode {ts: $ts, seq: $seq})",
+                ts=time.time(),
+                seq=writes,
+            ).consume()
         writes += 1
     except Exception as e:
-        errors += 1
-        print(f"  [LOAD] Write error #{errors}: {e}", file=sys.stderr)
+        write_errors += 1
+        print(f"  [LOAD] Write error #{write_errors}: {e}", file=sys.stderr)
+
+    if writes > 0 and writes % 25 == 0:
+        try:
+            with driver.session(database=graph_name) as s:
+                s.run("MATCH (n:LoadNode) RETURN count(n) AS c").single()["c"]
+            read_checks += 1
+        except Exception as e:
+            read_errors += 1
+            print(f"  [READ] Read error #{read_errors}: {e}", file=sys.stderr)
+        try:
+            target_seq = writes - 1
+            with driver.session(database=graph_name) as s:
+                s.run(
+                    "MATCH (n:LoadNode {seq: $seq}) SET n:HotNode",
+                    seq=target_seq,
+                ).consume()
+                hot_count = s.run(
+                    "MATCH (n:HotNode {seq: $seq}) RETURN count(n) AS c",
+                    seq=target_seq,
+                ).single()["c"]
+                if hot_count != 1:
+                    raise RuntimeError(
+                        f"expected node seq={target_seq} to gain HotNode label, got {hot_count} matches"
+                    )
+                s.run(
+                    "MATCH (n:HotNode {seq: $seq}) REMOVE n:HotNode",
+                    seq=target_seq,
+                ).consume()
+                hot_count = s.run(
+                    "MATCH (n:HotNode {seq: $seq}) RETURN count(n) AS c",
+                    seq=target_seq,
+                ).single()["c"]
+                if hot_count != 0:
+                    raise RuntimeError(
+                        f"expected node seq={target_seq} to lose HotNode label, got {hot_count} matches"
+                    )
+            label_mutations += 1
+        except Exception as e:
+            label_errors += 1
+            print(f"  [LABEL] Label mutation error #{label_errors}: {e}", file=sys.stderr)
     time.sleep(0.05)
 
-print(f"[LOAD] Completed: {writes} writes, {errors} errors over {duration}s")
+print(f"[LOAD] Completed: {writes} writes, {write_errors} errors over {duration}s")
+print(f"[READ] Completed: {read_checks} checks, {read_errors} errors during load")
+print(f"[LABEL] Completed: {label_mutations} mutation cycles, {label_errors} errors during load")
+
+with driver.session(database=graph_name) as s:
+    visible = s.run("MATCH (n:LoadNode) RETURN count(n) AS c").single()["c"]
+print(f"[READBACK] Visible after resharding: {visible} nodes")
+if visible != writes:
+    print(
+        f"[READBACK] Expected {writes} nodes after resharding, found {visible}",
+        file=sys.stderr,
+    )
+    sys.exit(1)
 
 # Cleanup
 try:
@@ -168,7 +227,8 @@ main() {
     # Start background load (60 seconds of continuous writes)
     LOAD_DURATION=60
     log_info "Starting background write load for ${LOAD_DURATION}s..."
-    generate_load "$LOAD_DURATION" &
+    LOAD_OUTPUT_FILE="$(mktemp)"
+    generate_load "$LOAD_DURATION" > >(tee "$LOAD_OUTPUT_FILE") 2>&1 &
     LOAD_PID=$!
     sleep 5  # Let a few writes succeed before resharding
 
@@ -192,8 +252,81 @@ main() {
     }
 
     log_info "Resharding complete, waiting for load to finish..."
-    wait "$LOAD_PID" || true
+    set +e
+    wait "$LOAD_PID"
+    LOAD_EXIT=$?
+    set -e
     LOAD_PID=""
+
+    if [ "$LOAD_EXIT" -ne 0 ]; then
+        log_fail "Load generator exited with status $LOAD_EXIT"
+        exit 1
+    fi
+
+    LOAD_SUMMARY=$(grep '\[LOAD\] Completed:' "$LOAD_OUTPUT_FILE" | tail -n 1 || true)
+    if [ -z "$LOAD_SUMMARY" ]; then
+        log_fail "Load generator did not emit a completion summary"
+        exit 1
+    fi
+    WRITE_COUNT=$(printf '%s\n' "$LOAD_SUMMARY" | grep -oP '\[LOAD\] Completed: \K\d+(?= writes,)' || true)
+    LOAD_ERRORS=$(printf '%s\n' "$LOAD_SUMMARY" | grep -oP 'writes, \K\d+(?= errors)' || true)
+    WRITE_COUNT="${WRITE_COUNT:-0}"
+    LOAD_ERRORS="${LOAD_ERRORS:-0}"
+    READ_SUMMARY=$(grep '\[READ\] Completed:' "$LOAD_OUTPUT_FILE" | tail -n 1 || true)
+    if [ -z "$READ_SUMMARY" ]; then
+        log_fail "Load generator did not emit a read verification summary"
+        exit 1
+    fi
+    READ_CHECKS=$(printf '%s\n' "$READ_SUMMARY" | grep -oP '\[READ\] Completed: \K\d+(?= checks,)' || true)
+    READ_ERRORS=$(printf '%s\n' "$READ_SUMMARY" | grep -oP 'checks, \K\d+(?= errors during load)' || true)
+    READ_CHECKS="${READ_CHECKS:-0}"
+    READ_ERRORS="${READ_ERRORS:-0}"
+    LABEL_SUMMARY=$(grep '\[LABEL\] Completed:' "$LOAD_OUTPUT_FILE" | tail -n 1 || true)
+    if [ -z "$LABEL_SUMMARY" ]; then
+        log_fail "Load generator did not emit a label mutation summary"
+        exit 1
+    fi
+    LABEL_MUTATIONS=$(printf '%s\n' "$LABEL_SUMMARY" | grep -oP '\[LABEL\] Completed: \K\d+(?= mutation cycles,)' || true)
+    LABEL_ERRORS=$(printf '%s\n' "$LABEL_SUMMARY" | grep -oP 'mutation cycles, \K\d+(?= errors during load)' || true)
+    LABEL_MUTATIONS="${LABEL_MUTATIONS:-0}"
+    LABEL_ERRORS="${LABEL_ERRORS:-0}"
+    READBACK_SUMMARY=$(grep '\[READBACK\] Visible after resharding:' "$LOAD_OUTPUT_FILE" | tail -n 1 || true)
+    if [ -z "$READBACK_SUMMARY" ]; then
+        log_fail "Load generator did not emit a post-resharding read-back summary"
+        exit 1
+    fi
+    READBACK_COUNT=$(printf '%s\n' "$READBACK_SUMMARY" | grep -oP '\[READBACK\] Visible after resharding: \K\d+(?= nodes)' || true)
+    READBACK_COUNT="${READBACK_COUNT:-0}"
+
+    if [ "$WRITE_COUNT" -lt 10 ]; then
+        log_fail "Load generator produced only $WRITE_COUNT writes; expected at least 10"
+        exit 1
+    fi
+    if [ "$LOAD_ERRORS" -ne 0 ]; then
+        log_fail "Load generator saw $LOAD_ERRORS application-level write errors during resharding"
+        exit 1
+    fi
+    if [ "$READ_CHECKS" -lt 1 ]; then
+        log_fail "Load generator did not complete any read checks during resharding"
+        exit 1
+    fi
+    if [ "$READ_ERRORS" -ne 0 ]; then
+        log_fail "Load generator saw $READ_ERRORS read errors during resharding"
+        exit 1
+    fi
+    if [ "$LABEL_MUTATIONS" -lt 1 ]; then
+        log_fail "Load generator did not complete any label mutation cycles during resharding"
+        exit 1
+    fi
+    if [ "$LABEL_ERRORS" -ne 0 ]; then
+        log_fail "Load generator saw $LABEL_ERRORS label mutation errors during resharding"
+        exit 1
+    fi
+    if [ "$READBACK_COUNT" -ne "$WRITE_COUNT" ]; then
+        log_fail "Read-back after resharding found $READBACK_COUNT nodes; expected $WRITE_COUNT"
+        exit 1
+    fi
+    log_pass "Read-back after resharding matched load count ($READBACK_COUNT nodes)"
 
     # Wait a moment for metrics to settle
     sleep 2

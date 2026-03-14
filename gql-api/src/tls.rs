@@ -195,7 +195,10 @@ mod tests {
         std::env::remove_var("GQL_API_TLS_KEY");
 
         let result = load_tls_config();
-        assert!(result.is_none(), "expected None when TLS env vars are unset");
+        assert!(
+            result.is_none(),
+            "expected None when TLS env vars are unset"
+        );
 
         // Restore.
         if let Some(v) = prev_cert {

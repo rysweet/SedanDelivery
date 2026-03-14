@@ -212,9 +212,7 @@ impl<'s> QueryPlanner<'s> {
                             )
                         })
                         .collect()
-                } else if let Some(cols) =
-                    crate::procedure::builtin_output_columns(procedure)
-                {
+                } else if let Some(cols) = crate::procedure::builtin_output_columns(procedure) {
                     // Built-in procedure: derive columns from static metadata.
                     cols.iter()
                         .map(|col| {

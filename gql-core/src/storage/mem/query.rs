@@ -111,9 +111,7 @@ mod tests {
         let companies = store.find_nodes_by_label("test", "Company").unwrap();
         assert_eq!(companies.len(), 1);
 
-        let missing = store
-            .find_nodes_by_label("test", "DoesNotExist")
-            .unwrap();
+        let missing = store.find_nodes_by_label("test", "DoesNotExist").unwrap();
         assert!(missing.is_empty());
     }
 
@@ -206,12 +204,8 @@ mod tests {
     #[test]
     fn adjacency_out_and_in() {
         let store = make_store();
-        let a = store
-            .create_node("test", vec![], HashMap::new())
-            .unwrap();
-        let b = store
-            .create_node("test", vec![], HashMap::new())
-            .unwrap();
+        let a = store.create_node("test", vec![], HashMap::new()).unwrap();
+        let b = store.create_node("test", vec![], HashMap::new()).unwrap();
         let eid = store
             .create_edge("test", a, b, "KNOWS".to_string(), HashMap::new())
             .unwrap();
@@ -234,15 +228,9 @@ mod tests {
     #[test]
     fn out_edges_by_type_filters() {
         let store = make_store();
-        let a = store
-            .create_node("test", vec![], HashMap::new())
-            .unwrap();
-        let b = store
-            .create_node("test", vec![], HashMap::new())
-            .unwrap();
-        let c = store
-            .create_node("test", vec![], HashMap::new())
-            .unwrap();
+        let a = store.create_node("test", vec![], HashMap::new()).unwrap();
+        let b = store.create_node("test", vec![], HashMap::new()).unwrap();
+        let c = store.create_node("test", vec![], HashMap::new()).unwrap();
 
         store
             .create_edge("test", a, b, "KNOWS".to_string(), HashMap::new())
@@ -262,15 +250,9 @@ mod tests {
     #[test]
     fn in_edges_by_type_filters() {
         let store = make_store();
-        let a = store
-            .create_node("test", vec![], HashMap::new())
-            .unwrap();
-        let b = store
-            .create_node("test", vec![], HashMap::new())
-            .unwrap();
-        let c = store
-            .create_node("test", vec![], HashMap::new())
-            .unwrap();
+        let a = store.create_node("test", vec![], HashMap::new()).unwrap();
+        let b = store.create_node("test", vec![], HashMap::new()).unwrap();
+        let c = store.create_node("test", vec![], HashMap::new()).unwrap();
 
         store
             .create_edge("test", a, c, "KNOWS".to_string(), HashMap::new())
@@ -289,15 +271,9 @@ mod tests {
     #[test]
     fn find_edges_by_type_returns_correct_edges() {
         let store = make_store();
-        let a = store
-            .create_node("test", vec![], HashMap::new())
-            .unwrap();
-        let b = store
-            .create_node("test", vec![], HashMap::new())
-            .unwrap();
-        let c = store
-            .create_node("test", vec![], HashMap::new())
-            .unwrap();
+        let a = store.create_node("test", vec![], HashMap::new()).unwrap();
+        let b = store.create_node("test", vec![], HashMap::new()).unwrap();
+        let c = store.create_node("test", vec![], HashMap::new()).unwrap();
         let e1 = store
             .create_edge("test", a, b, "KNOWS".to_string(), HashMap::new())
             .unwrap();
@@ -314,12 +290,8 @@ mod tests {
     #[test]
     fn out_edge_ids_and_in_edge_ids() {
         let store = make_store();
-        let a = store
-            .create_node("test", vec![], HashMap::new())
-            .unwrap();
-        let b = store
-            .create_node("test", vec![], HashMap::new())
-            .unwrap();
+        let a = store.create_node("test", vec![], HashMap::new()).unwrap();
+        let b = store.create_node("test", vec![], HashMap::new()).unwrap();
         let eid = store
             .create_edge("test", a, b, "R".to_string(), HashMap::new())
             .unwrap();

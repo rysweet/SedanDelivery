@@ -72,7 +72,9 @@ pub(crate) fn operator_to_profile_plan_map(
     op: &gql_core::planner::Operator,
     depth: usize,
     estimates: Option<&std::collections::HashMap<*const gql_core::planner::Operator, f64>>,
-    profile_stats: Option<&std::collections::HashMap<usize, gql_core::executor::OperatorProfileStats>>,
+    profile_stats: Option<
+        &std::collections::HashMap<usize, gql_core::executor::OperatorProfileStats>,
+    >,
 ) -> BoltValue {
     use gql_core::planner::Operator;
 
@@ -141,10 +143,7 @@ pub(crate) fn detect_notifications(op: &gql_core::planner::Operator) -> Vec<Bolt
 ///
 /// Uses `Operator::children()` for recursive descent into non-Apply nodes,
 /// avoiding a duplicated match over every variant.
-fn detect_cartesian_products(
-    op: &gql_core::planner::Operator,
-    notifications: &mut Vec<BoltValue>,
-) {
+fn detect_cartesian_products(op: &gql_core::planner::Operator, notifications: &mut Vec<BoltValue>) {
     use gql_core::planner::Operator;
 
     if let Operator::Apply { outer, inner } = op {

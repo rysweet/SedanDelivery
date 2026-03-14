@@ -12,25 +12,37 @@
 //   All nodes set:   G:{g}:nodes            — SADD node id (string)
 //   All edges set:   G:{g}:edges            — SADD edge id (string)
 //   Index set:       G:{g}:indexes          — SADD "{label}\x00{property}"
-//   Graph registry:  __sd2_registry:graphs   — SADD graph name
+//   Delete marker:   G:{g}:_deleting        — SET while delete_graph cleanup is in progress
+//   Propidx manifest:G:{g}:_propidx         — SADD fully-qualified propidx keys for delete_graph
+//   Graph registry:  __sd2_registry:graphs  — SADD graph name
 
 pub mod create_store;
 pub mod fanout;
-pub mod redis_memory_metrics;
 pub(crate) mod lock;
+pub mod redis_memory_metrics;
 
 mod connection;
 mod indexing;
 mod keys;
 mod range;
 mod reads;
+mod validation;
 mod writes;
 
 pub use connection::PoolStats;
 pub use fanout::FanoutStore;
 
+/// Upper bound on nodes a graph may contain before `delete_graph` is refused.
+///
+/// Deletion enumerates the all-nodes and all-edges sets via SMEMBERS, then
+/// issues explicit DEL commands — safe on Redis Cluster because every key
+/// for the same graph hashes to the same slot.  Graphs larger than this
+/// limit must be deleted in parts or via an offline tool.
+pub const MAX_NODES_FOR_DELETE: usize = 100_000;
+
 use std::collections::HashMap;
 use std::env;
+use std::ops::{Deref, DerefMut};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 // ── Backend-error counter ────────────────────────────────────────────────────
@@ -48,6 +60,34 @@ pub fn backend_error_count() -> u64 {
     BACKEND_ERROR_COUNT.load(Ordering::Relaxed)
 }
 
+/// Sanitize a backend error message for inclusion in `StorageError::Backend`.
+///
+/// In debug builds the full message is returned so engineers can see the
+/// underlying Redis error detail.  In release builds the message is replaced
+/// with a fixed string so internal Redis topology information (e.g. MOVED
+/// redirects with cluster node IPs) is not leaked to callers (SEC-6).
+#[cfg(debug_assertions)]
+pub fn backend_error_msg(msg: &str) -> String {
+    msg.to_string()
+}
+
+/// Sanitize a backend error message for inclusion in `StorageError::Backend`.
+///
+/// In release builds the message is replaced with a fixed string so internal
+/// Redis topology information is not leaked to callers (SEC-6).
+#[cfg(not(debug_assertions))]
+pub fn backend_error_msg(_msg: &str) -> String {
+    "backend error".to_string()
+}
+
+pub(crate) fn backend_storage_error<E: std::fmt::Display>(e: E) -> StorageError {
+    record_backend_error();
+    let msg = e.to_string();
+    StorageError::Backend {
+        msg: backend_error_msg(&msg),
+    }
+}
+
 use redis::ConnectionLike;
 
 use gql_core::error::StorageError;
@@ -62,7 +102,93 @@ use connection::{
     RedisConn, RedisPool, ReplicaPool, DEFAULT_IDLE_TIMEOUT_SECS, DEFAULT_MIN_IDLE,
     DEFAULT_POOL_SIZE, DEFAULT_POOL_TIMEOUT_SECS,
 };
-use keys::{decode_adj, key_edge, key_node, KEY_GRAPHS};
+use keys::{decode_adj, key_edge, key_graph_deleting, key_graph_lock, key_node, KEY_GRAPHS};
+
+pub(crate) struct LockedRedisConn {
+    conn: RedisConn,
+    graph: Box<str>,
+    lock_key: Box<str>,
+    token: Box<str>,
+    ttl_ms: u64,
+}
+
+impl LockedRedisConn {
+    fn new(conn: RedisConn, graph: &str, lock_key: String, token: String, ttl_ms: u64) -> Self {
+        Self {
+            conn,
+            graph: graph.into(),
+            lock_key: lock_key.into_boxed_str(),
+            token: token.into_boxed_str(),
+            ttl_ms,
+        }
+    }
+
+    pub(crate) fn renew_lock(&mut self) -> Result<(), StorageError> {
+        match lock::renew(self.conn.as_mut(), &self.lock_key, &self.token, self.ttl_ms) {
+            Ok(true) => Ok(()),
+            Ok(false) => {
+                metrics::counter!("redis_write_lock_renew_failures_total").increment(1);
+                tracing::warn!(
+                    graph = %self.graph,
+                    "graph write lock expired or changed owner before renewal"
+                );
+                Err(StorageError::TransactionConflict)
+            }
+            Err(err) => {
+                metrics::counter!("redis_write_lock_renew_failures_total").increment(1);
+                tracing::warn!(
+                    graph = %self.graph,
+                    error = %err,
+                    "graph write lock renewal failed"
+                );
+                Err(err)
+            }
+        }
+    }
+
+    fn finish<T>(mut self, result: Result<T, StorageError>) -> Result<T, StorageError> {
+        match lock::release(self.conn.as_mut(), &self.lock_key, &self.token) {
+            Ok(true) => result,
+            Ok(false) => {
+                metrics::counter!("redis_write_lock_release_failures_total").increment(1);
+                tracing::warn!(
+                    graph = %self.graph,
+                    "graph write lock expired or changed owner before release"
+                );
+                match result {
+                    Ok(_) => Err(StorageError::TransactionConflict),
+                    Err(err) => Err(err),
+                }
+            }
+            Err(err) => {
+                metrics::counter!("redis_write_lock_release_failures_total").increment(1);
+                tracing::warn!(
+                    graph = %self.graph,
+                    error = %err,
+                    "graph write lock release failed"
+                );
+                match result {
+                    Ok(_) => Err(err),
+                    Err(work_err) => Err(work_err),
+                }
+            }
+        }
+    }
+}
+
+impl Deref for LockedRedisConn {
+    type Target = RedisConn;
+
+    fn deref(&self) -> &Self::Target {
+        &self.conn
+    }
+}
+
+impl DerefMut for LockedRedisConn {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.conn
+    }
+}
 
 // ── RedisGraphStore ─────────────────────────────────────────────────────────
 
@@ -318,9 +444,67 @@ impl RedisGraphStore {
         self.pool.get()
     }
 
-    /// Check that a graph exists; return error if not.
-    pub(crate) fn require_graph(&self, g: &str) -> Result<(), StorageError> {
-        if !self.graph_exists_impl(g)? {
+    /// Route a graph-scoped read, retrying on the primary when a replica lags.
+    ///
+    /// Replica reads are allowed to return stale graph contents, but they must
+    /// not surface a false `GraphNotFound` for a graph that is already
+    /// registered on the primary. When a replica misses the graph registry,
+    /// retry once against the primary before returning an error.
+    pub(crate) fn route_read_for_graph(&self, graph: &str) -> Result<RedisConn, StorageError> {
+        let mut conn = self.route_read()?;
+        match self.require_graph_on(conn.as_mut(), graph) {
+            Ok(()) => Ok(conn),
+            Err(StorageError::GraphNotFound { .. }) if self.replica_pool.is_some() => {
+                tracing::debug!(
+                    graph,
+                    "replica missed graph registration; retrying graph-scoped read on primary"
+                );
+                let mut primary = self.route_read_with_pinning(true)?;
+                self.require_graph_on(primary.as_mut(), graph)?;
+                Ok(primary)
+            }
+            Err(err) => Err(err),
+        }
+    }
+
+    /// Check graph existence against the provided connection.
+    pub(crate) fn graph_exists_on(
+        &self,
+        conn: &mut dyn ConnectionLike,
+        g: &str,
+    ) -> Result<bool, StorageError> {
+        let registered: bool = redis::cmd("SISMEMBER")
+            .arg(self.key_graphs())
+            .arg(g)
+            .query(conn)
+            .map_err(crate::backend_storage_error)?;
+        if !registered {
+            return Ok(false);
+        }
+        Ok(!self.graph_is_deleting_on(conn, g)?)
+    }
+
+    /// Return `true` while `delete_graph` cleanup is in progress for `g`.
+    pub(crate) fn graph_is_deleting_on(
+        &self,
+        conn: &mut dyn ConnectionLike,
+        g: &str,
+    ) -> Result<bool, StorageError> {
+        let deleting_key = self.kp(key_graph_deleting(g));
+        let exists: i64 = redis::cmd("EXISTS")
+            .arg(&deleting_key)
+            .query(conn)
+            .map_err(crate::backend_storage_error)?;
+        Ok(exists > 0)
+    }
+
+    /// Check that a graph exists on the provided connection; return error if not.
+    pub(crate) fn require_graph_on(
+        &self,
+        conn: &mut dyn ConnectionLike,
+        g: &str,
+    ) -> Result<(), StorageError> {
+        if !self.graph_exists_on(conn, g)? {
             return Err(StorageError::GraphNotFound {
                 name: g.to_string(),
             });
@@ -346,6 +530,44 @@ impl RedisGraphStore {
         self.kp(KEY_GRAPHS.to_string())
     }
 
+    /// Acquire the per-graph write lock, run `f`, then release the lock.
+    pub(crate) fn with_graph_write_lock<T, F>(
+        &self,
+        graph: &str,
+        ttl_ms: u64,
+        max_retries: u32,
+        retry_delay_ms: u64,
+        f: F,
+    ) -> Result<T, StorageError>
+    where
+        F: FnOnce(&mut LockedRedisConn) -> Result<T, StorageError>,
+    {
+        let lock_key = self.kp(key_graph_lock(graph));
+        let mut work = Some(f);
+        for attempt in 0..=max_retries {
+            let mut conn = self.conn()?;
+            if let Some(token) = lock::acquire(conn.as_mut(), &lock_key, ttl_ms)? {
+                let mut locked_conn =
+                    LockedRedisConn::new(conn, graph, lock_key.clone(), token, ttl_ms);
+                let result = work
+                    .take()
+                    .expect("write-lock closure must execute at most once")(
+                    &mut locked_conn
+                );
+                return locked_conn.finish(result);
+            }
+            if attempt < max_retries {
+                drop(conn);
+                std::thread::sleep(std::time::Duration::from_millis(retry_delay_ms));
+                continue;
+            }
+            return Err(StorageError::Backend {
+                msg: format!("write lock '{lock_key}' still contended after {max_retries} retries"),
+            });
+        }
+        unreachable!("write-lock retry loop must return or error");
+    }
+
     /// Read a node hash from Redis; returns `None` if the key is absent.
     pub(crate) fn read_node(
         &self,
@@ -359,7 +581,7 @@ impl RedisGraphStore {
             .arg("labels")
             .arg("props")
             .query(conn)
-            .map_err(|e| { record_backend_error(); StorageError::Backend { msg: e.to_string() } })?;
+            .map_err(crate::backend_storage_error)?;
         match (&fields[0], &fields[1]) {
             (None, None) => Ok(None),
             (Some(labels_json), Some(props_json)) => {
@@ -407,7 +629,7 @@ impl RedisGraphStore {
             .arg("rel_type")
             .arg("props")
             .query(conn)
-            .map_err(|e| { record_backend_error(); StorageError::Backend { msg: e.to_string() } })?;
+            .map_err(crate::backend_storage_error)?;
         match (&fields[0], &fields[1], &fields[2], &fields[3]) {
             (Some(src_s), Some(dst_s), Some(rel_type), Some(props_json)) => {
                 let src =

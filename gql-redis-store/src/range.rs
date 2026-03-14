@@ -1,17 +1,7 @@
-// range.rs — Range predicate evaluation and key-count scanning.
+// range.rs — Range predicate evaluation helpers.
 
-use redis::ConnectionLike;
-
-use gql_core::error::StorageError;
 use gql_core::storage::RangeQuery;
 use gql_core::types::Value;
-
-// ── SCAN COUNT configuration ────────────────────────────────────────────────
-
-pub(crate) fn scan_count() -> u64 {
-    static COUNT: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
-    *COUNT.get_or_init(|| gql_core::config::parse_env_min("GQL_REDIS_SCAN_COUNT", 100u64, 1))
-}
 
 // ── Range predicate evaluation ──────────────────────────────────────────────
 
@@ -70,34 +60,6 @@ pub(crate) fn cmp_values(a: &Value, b: &Value) -> Option<std::cmp::Ordering> {
         (Value::Str(x), Value::Str(y)) => Some(x.cmp(y)),
         _ => None,
     }
-}
-
-// NOTE: scan_key_count requires a live Redis connection and is tested via
-// integration tests. The pure functions above are tested in the `tests` module.
-
-/// Count the number of keys matching a pattern via SCAN.
-pub(crate) fn scan_key_count(
-    conn: &mut dyn ConnectionLike,
-    pattern: &str,
-) -> Result<usize, StorageError> {
-    let mut cursor: u64 = 0;
-    let mut count = 0usize;
-    loop {
-        let (next, keys): (u64, Vec<String>) = redis::cmd("SCAN")
-            .arg(cursor)
-            .arg("MATCH")
-            .arg(pattern)
-            .arg("COUNT")
-            .arg(scan_count())
-            .query(conn)
-            .map_err(|e| { crate::record_backend_error(); StorageError::Backend { msg: e.to_string() } })?;
-        count += keys.len();
-        cursor = next;
-        if cursor == 0 {
-            break;
-        }
-    }
-    Ok(count)
 }
 
 #[cfg(test)]

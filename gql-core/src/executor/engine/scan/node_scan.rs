@@ -20,7 +20,9 @@ impl<'a> QueryExecutor<'a> {
     ) -> Result<Vec<Row>, GqlError> {
         let Operator::NodeScan { label, alias } = op else {
             debug_assert!(false, "expected NodeScan operator");
-            return Err(GqlError::Execution(ExecutionError::UnsupportedFeature { feature: "internal: expected NodeScan operator".into() }));
+            return Err(GqlError::Execution(ExecutionError::UnsupportedFeature {
+                feature: "internal: expected NodeScan operator".into(),
+            }));
         };
         let node_ids = if let Some(lbl) = label {
             self.store.find_nodes_by_label(cx.graph, lbl.as_str())?
@@ -117,7 +119,9 @@ impl<'a> QueryExecutor<'a> {
         } = op
         else {
             debug_assert!(false, "expected IndexScan operator");
-            return Err(GqlError::Execution(ExecutionError::UnsupportedFeature { feature: "internal: expected IndexScan operator".into() }));
+            return Err(GqlError::Execution(ExecutionError::UnsupportedFeature {
+                feature: "internal: expected IndexScan operator".into(),
+            }));
         };
 
         // When a concrete value expression is present, evaluate it and use
@@ -181,7 +185,9 @@ impl<'a> QueryExecutor<'a> {
     ) -> Result<Vec<Row>, GqlError> {
         let Operator::NodeByIdSeek { id_expr, alias } = op else {
             debug_assert!(false, "expected NodeByIdSeek operator");
-            return Err(GqlError::Execution(ExecutionError::UnsupportedFeature { feature: "internal: expected NodeByIdSeek operator".into() }));
+            return Err(GqlError::Execution(ExecutionError::UnsupportedFeature {
+                feature: "internal: expected NodeByIdSeek operator".into(),
+            }));
         };
         let ctx: FilterRow<'_> = HashMap::new();
         let id_val = eval_expr(id_expr, &ctx)?;

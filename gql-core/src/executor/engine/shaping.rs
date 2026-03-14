@@ -17,7 +17,11 @@ impl<'a> QueryExecutor<'a> {
     ) -> Result<Vec<Row>, GqlError> {
         let Operator::Filter { predicate, child } = op else {
             debug_assert!(false, "expected Filter operator");
-            return Err(GqlError::Execution(crate::error::ExecutionError::UnsupportedFeature { feature: "internal: expected Filter operator".into() }));
+            return Err(GqlError::Execution(
+                crate::error::ExecutionError::UnsupportedFeature {
+                    feature: "internal: expected Filter operator".into(),
+                },
+            ));
         };
         let input = self.exec_operator(cx, child)?;
         let mut out = Vec::with_capacity(input.len());
@@ -41,7 +45,11 @@ impl<'a> QueryExecutor<'a> {
     ) -> Result<Vec<Row>, GqlError> {
         let Operator::Project { items, child } = op else {
             debug_assert!(false, "expected Project operator");
-            return Err(GqlError::Execution(crate::error::ExecutionError::UnsupportedFeature { feature: "internal: expected Project operator".into() }));
+            return Err(GqlError::Execution(
+                crate::error::ExecutionError::UnsupportedFeature {
+                    feature: "internal: expected Project operator".into(),
+                },
+            ));
         };
         let input = self.exec_operator(cx, child)?;
         let mut out = Vec::with_capacity(input.len());
@@ -88,7 +96,11 @@ impl<'a> QueryExecutor<'a> {
     ) -> Result<Vec<Row>, GqlError> {
         let Operator::Distinct { child } = op else {
             debug_assert!(false, "expected Distinct operator");
-            return Err(GqlError::Execution(crate::error::ExecutionError::UnsupportedFeature { feature: "internal: expected Distinct operator".into() }));
+            return Err(GqlError::Execution(
+                crate::error::ExecutionError::UnsupportedFeature {
+                    feature: "internal: expected Distinct operator".into(),
+                },
+            ));
         };
         let input = self.exec_operator(cx, child)?;
         let mut seen = RowDedupSet::new();
@@ -109,7 +121,11 @@ impl<'a> QueryExecutor<'a> {
     ) -> Result<Vec<Row>, GqlError> {
         let Operator::Sort { items, child } = op else {
             debug_assert!(false, "expected Sort operator");
-            return Err(GqlError::Execution(crate::error::ExecutionError::UnsupportedFeature { feature: "internal: expected Sort operator".into() }));
+            return Err(GqlError::Execution(
+                crate::error::ExecutionError::UnsupportedFeature {
+                    feature: "internal: expected Sort operator".into(),
+                },
+            ));
         };
         let input = self.exec_operator(cx, child)?;
         cx.budget.check_or_err()?;
@@ -150,7 +166,11 @@ impl<'a> QueryExecutor<'a> {
     ) -> Result<Vec<Row>, GqlError> {
         let Operator::Limit { count, child } = op else {
             debug_assert!(false, "expected Limit operator");
-            return Err(GqlError::Execution(crate::error::ExecutionError::UnsupportedFeature { feature: "internal: expected Limit operator".into() }));
+            return Err(GqlError::Execution(
+                crate::error::ExecutionError::UnsupportedFeature {
+                    feature: "internal: expected Limit operator".into(),
+                },
+            ));
         };
         let n = eval_count_expr(count, &self.parameters)?;
 
@@ -247,7 +267,11 @@ impl<'a> QueryExecutor<'a> {
     ) -> Result<Vec<Row>, GqlError> {
         let Operator::Skip { count, child } = op else {
             debug_assert!(false, "expected Skip operator");
-            return Err(GqlError::Execution(crate::error::ExecutionError::UnsupportedFeature { feature: "internal: expected Skip operator".into() }));
+            return Err(GqlError::Execution(
+                crate::error::ExecutionError::UnsupportedFeature {
+                    feature: "internal: expected Skip operator".into(),
+                },
+            ));
         };
         let input = self.exec_operator(cx, child)?;
         cx.budget.check_or_err()?;

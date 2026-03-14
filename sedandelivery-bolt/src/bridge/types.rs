@@ -136,7 +136,11 @@ pub fn path_to_bolt(
                     ],
                 },
                 Ok(None) => {
-                    tracing::warn!(edge_id = eid.0, graph = graph, "path_to_bolt: edge not found in store, using empty relationship");
+                    tracing::warn!(
+                        edge_id = eid.0,
+                        graph = graph,
+                        "path_to_bolt: edge not found in store, using empty relationship"
+                    );
                     BoltValue::Structure {
                         tag: tags::TAG_UNBOUND_RELATIONSHIP,
                         fields: vec![

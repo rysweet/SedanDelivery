@@ -107,7 +107,9 @@ mod tests {
 
     impl TestEnv {
         fn set(cert: Option<&str>, key: Option<&str>) -> Self {
-            let lock = ENV_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            let lock = ENV_LOCK
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             let prev_cert = std::env::var("BOLT_TLS_CERT").ok();
             let prev_key = std::env::var("BOLT_TLS_KEY").ok();
 

@@ -36,3 +36,7 @@ infra/*.json
 
 # Code coverage reports
 coverage/
+
+# Local agent/test runtime artifacts
+logs/
+outputs/sessions/

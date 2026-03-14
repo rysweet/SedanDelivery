@@ -23,7 +23,9 @@ impl<'a> QueryExecutor<'a> {
         } = op
         else {
             debug_assert!(false, "expected AssemblePath operator");
-            return Err(GqlError::Execution(ExecutionError::UnsupportedFeature { feature: "internal: expected AssemblePath operator".into() }));
+            return Err(GqlError::Execution(ExecutionError::UnsupportedFeature {
+                feature: "internal: expected AssemblePath operator".into(),
+            }));
         };
         let input = self.exec_operator(cx, child)?;
         let mut out = Vec::with_capacity(input.len());
@@ -113,11 +115,20 @@ impl<'a> QueryExecutor<'a> {
         } = op
         else {
             debug_assert!(false, "expected Call operator");
-            return Err(GqlError::Execution(ExecutionError::UnsupportedFeature { feature: "internal: expected Call operator".into() }));
+            return Err(GqlError::Execution(ExecutionError::UnsupportedFeature {
+                feature: "internal: expected Call operator".into(),
+            }));
         };
         // Handle built-in procedures that query the store dynamically.
         if crate::procedure::is_builtin_procedure(procedure) {
-            return self.exec_builtin_call(cx, procedure, yield_items, yield_star, standalone, child);
+            return self.exec_builtin_call(
+                cx,
+                procedure,
+                yield_items,
+                yield_star,
+                standalone,
+                child,
+            );
         }
 
         let proc_def = self.registry.get(procedure).ok_or_else(|| {
@@ -252,10 +263,8 @@ impl<'a> QueryExecutor<'a> {
                 let edge_ids = self.store.all_edge_ids(graph)?;
                 let edges = self.store.get_edges_batch(graph, &edge_ids)?;
                 let mut types = BTreeSet::new();
-                for edge_opt in edges {
-                    if let Some(edge) = edge_opt {
-                        types.insert(edge.rel_type);
-                    }
+                for edge in edges.into_iter().flatten() {
+                    types.insert(edge.rel_type);
                 }
                 Ok(types
                     .into_iter()
@@ -272,21 +281,17 @@ impl<'a> QueryExecutor<'a> {
 
                 let node_ids = self.store.all_node_ids(graph)?;
                 let nodes = self.store.get_nodes_batch(graph, &node_ids)?;
-                for node_opt in nodes {
-                    if let Some(node) = node_opt {
-                        for key in node.properties.keys() {
-                            keys.insert(key.clone());
-                        }
+                for node in nodes.into_iter().flatten() {
+                    for key in node.properties.keys() {
+                        keys.insert(key.clone());
                     }
                 }
 
                 let edge_ids = self.store.all_edge_ids(graph)?;
                 let edges = self.store.get_edges_batch(graph, &edge_ids)?;
-                for edge_opt in edges {
-                    if let Some(edge) = edge_opt {
-                        for key in edge.properties.keys() {
-                            keys.insert(key.clone());
-                        }
+                for edge in edges.into_iter().flatten() {
+                    for key in edge.properties.keys() {
+                        keys.insert(key.clone());
                     }
                 }
 
@@ -301,40 +306,28 @@ impl<'a> QueryExecutor<'a> {
             }
             "dbms.components" => {
                 let mut row = Row::new();
-                row.insert(
-                    "name".to_string(),
-                    Value::Str("SedanDelivery".into()),
-                );
+                row.insert("name".to_string(), Value::Str("SedanDelivery".into()));
                 row.insert(
                     "versions".to_string(),
                     Value::List(vec![Value::Str("1.0.0".into())]),
                 );
-                row.insert(
-                    "edition".to_string(),
-                    Value::Str("community".into()),
-                );
+                row.insert("edition".to_string(), Value::Str("community".into()));
                 Ok(vec![row])
             }
             "db.schema.visualization" => {
                 // Return a minimal schema visualization: list of labels and relationship types.
                 let labels = self.store.all_label_names(graph)?;
-                let nodes_list: Vec<Value> = labels
-                    .into_iter()
-                    .map(|l| Value::Str(l.into()))
-                    .collect();
+                let nodes_list: Vec<Value> =
+                    labels.into_iter().map(|l| Value::Str(l.into())).collect();
 
                 let edge_ids = self.store.all_edge_ids(graph)?;
                 let edges = self.store.get_edges_batch(graph, &edge_ids)?;
                 let mut types = BTreeSet::new();
-                for edge_opt in edges {
-                    if let Some(edge) = edge_opt {
-                        types.insert(edge.rel_type);
-                    }
+                for edge in edges.into_iter().flatten() {
+                    types.insert(edge.rel_type);
                 }
-                let rels_list: Vec<Value> = types
-                    .into_iter()
-                    .map(|t| Value::Str(t.into()))
-                    .collect();
+                let rels_list: Vec<Value> =
+                    types.into_iter().map(|t| Value::Str(t.into())).collect();
 
                 let mut row = Row::new();
                 row.insert("nodes".to_string(), Value::List(nodes_list));
@@ -354,7 +347,9 @@ impl<'a> QueryExecutor<'a> {
     ) -> Result<Vec<Row>, GqlError> {
         let Operator::ProduceResults { columns, child } = op else {
             debug_assert!(false, "expected ProduceResults operator");
-            return Err(GqlError::Execution(ExecutionError::UnsupportedFeature { feature: "internal: expected ProduceResults operator".into() }));
+            return Err(GqlError::Execution(ExecutionError::UnsupportedFeature {
+                feature: "internal: expected ProduceResults operator".into(),
+            }));
         };
         let input = self.exec_operator(cx, child)?;
 
@@ -427,7 +422,9 @@ impl<'a> QueryExecutor<'a> {
         } = op
         else {
             debug_assert!(false, "expected Unwind operator");
-            return Err(GqlError::Execution(ExecutionError::UnsupportedFeature { feature: "internal: expected Unwind operator".into() }));
+            return Err(GqlError::Execution(ExecutionError::UnsupportedFeature {
+                feature: "internal: expected Unwind operator".into(),
+            }));
         };
         let input = self.exec_operator(cx, child)?;
         let mut out = Vec::with_capacity(input.len());
@@ -467,7 +464,9 @@ impl<'a> QueryExecutor<'a> {
     ) -> Result<Vec<Row>, GqlError> {
         let Operator::Union { left, right, all } = op else {
             debug_assert!(false, "expected Union operator");
-            return Err(GqlError::Execution(ExecutionError::UnsupportedFeature { feature: "internal: expected Union operator".into() }));
+            return Err(GqlError::Execution(ExecutionError::UnsupportedFeature {
+                feature: "internal: expected Union operator".into(),
+            }));
         };
         let left_rows = self.exec_operator(cx, left)?;
         let right_rows = self.exec_operator(cx, right)?;

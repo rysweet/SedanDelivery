@@ -21,11 +21,7 @@ impl PerIpGuard {
     ///
     /// Returns `Some(guard)` when the current count is below `limit`,
     /// or `None` when the limit is already reached.
-    pub fn try_new(
-        map: Arc<DashMap<IpAddr, usize>>,
-        addr: IpAddr,
-        limit: usize,
-    ) -> Option<Self> {
+    pub fn try_new(map: Arc<DashMap<IpAddr, usize>>, addr: IpAddr, limit: usize) -> Option<Self> {
         {
             let mut entry = map.entry(addr).or_insert(0);
             if *entry >= limit {

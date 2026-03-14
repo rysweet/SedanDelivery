@@ -20,8 +20,8 @@ pub(crate) use self::datetime::{
 };
 pub(crate) use self::duration::eval_duration_constructor;
 pub(crate) use self::time::{
-    builtin_temporal_realtime_localtime, builtin_temporal_realtime_time, eval_localtime_constructor,
-    eval_time_constructor,
+    builtin_temporal_realtime_localtime, builtin_temporal_realtime_time,
+    eval_localtime_constructor, eval_time_constructor,
 };
 
 // Shared helpers used by multiple constructor submodules

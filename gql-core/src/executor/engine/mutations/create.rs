@@ -19,7 +19,9 @@ impl<'a> QueryExecutor<'a> {
     ) -> Result<Vec<Row>, GqlError> {
         let Operator::Create { patterns, child } = op else {
             debug_assert!(false, "expected Create operator");
-            return Err(GqlError::Execution(ExecutionError::UnsupportedFeature { feature: "internal: expected Create operator".into() }));
+            return Err(GqlError::Execution(ExecutionError::UnsupportedFeature {
+                feature: "internal: expected Create operator".into(),
+            }));
         };
         // Execute child first (for MATCH ... CREATE patterns).
         let input = if let Some(ch) = child {
@@ -235,8 +237,14 @@ mod tests {
         assert_eq!(result.stats.nodes_created, 1);
         let ids = store.find_nodes_by_label("g", "P").unwrap();
         let node = store.get_node("g", ids[0]).unwrap().unwrap();
-        assert_eq!(node.properties.get("name"), Some(&Value::Str("Alice".into())));
-        assert!(!node.properties.contains_key("age"), "null property should be filtered out");
+        assert_eq!(
+            node.properties.get("name"),
+            Some(&Value::Str("Alice".into()))
+        );
+        assert!(
+            !node.properties.contains_key("age"),
+            "null property should be filtered out"
+        );
     }
 
     #[test]
@@ -245,11 +253,7 @@ mod tests {
         let executor = QueryExecutor::new(&store);
         let plan = Operator::Create {
             patterns: vec![CreatePattern {
-                nodes: vec![(
-                    Some(Identifier::new("n")),
-                    vec![Label::new("P")],
-                    vec![],
-                )],
+                nodes: vec![(Some(Identifier::new("n")), vec![Label::new("P")], vec![])],
                 edges: vec![],
             }],
             child: None,
@@ -271,16 +275,8 @@ mod tests {
         let plan = Operator::Create {
             patterns: vec![CreatePattern {
                 nodes: vec![
-                    (
-                        Some(Identifier::new("a")),
-                        vec![Label::new("P")],
-                        vec![],
-                    ),
-                    (
-                        Some(Identifier::new("b")),
-                        vec![Label::new("P")],
-                        vec![],
-                    ),
+                    (Some(Identifier::new("a")), vec![Label::new("P")], vec![]),
+                    (Some(Identifier::new("b")), vec![Label::new("P")], vec![]),
                 ],
                 edges: vec![(
                     Some(Identifier::new("r")),
@@ -307,16 +303,8 @@ mod tests {
         let plan = Operator::Create {
             patterns: vec![CreatePattern {
                 nodes: vec![
-                    (
-                        Some(Identifier::new("a")),
-                        vec![Label::new("P")],
-                        vec![],
-                    ),
-                    (
-                        Some(Identifier::new("b")),
-                        vec![Label::new("P")],
-                        vec![],
-                    ),
+                    (Some(Identifier::new("a")), vec![Label::new("P")], vec![]),
+                    (Some(Identifier::new("b")), vec![Label::new("P")], vec![]),
                 ],
                 edges: vec![(
                     Some(Identifier::new("r")),
@@ -348,21 +336,9 @@ mod tests {
         let plan = Operator::Create {
             patterns: vec![CreatePattern {
                 nodes: vec![
-                    (
-                        Some(Identifier::new("a")),
-                        vec![Label::new("A")],
-                        vec![],
-                    ),
-                    (
-                        Some(Identifier::new("b")),
-                        vec![Label::new("B")],
-                        vec![],
-                    ),
-                    (
-                        Some(Identifier::new("c")),
-                        vec![Label::new("C")],
-                        vec![],
-                    ),
+                    (Some(Identifier::new("a")), vec![Label::new("A")], vec![]),
+                    (Some(Identifier::new("b")), vec![Label::new("B")], vec![]),
+                    (Some(Identifier::new("c")), vec![Label::new("C")], vec![]),
                 ],
                 edges: vec![],
             }],
@@ -385,23 +361,15 @@ mod tests {
         let plan = Operator::Create {
             patterns: vec![CreatePattern {
                 nodes: vec![
-                    (
-                        Some(Identifier::new("a")),
-                        vec![Label::new("P")],
-                        vec![],
-                    ),
-                    (
-                        Some(Identifier::new("b")),
-                        vec![Label::new("P")],
-                        vec![],
-                    ),
+                    (Some(Identifier::new("a")), vec![Label::new("P")], vec![]),
+                    (Some(Identifier::new("b")), vec![Label::new("P")], vec![]),
                 ],
                 edges: vec![(
                     Some(Identifier::new("r")),
                     Identifier::new("a"),
                     Identifier::new("b"),
                     RelType::new("R"),
-                    Direction::Incoming,  // a <-[:R]- b, stored as b -> a
+                    Direction::Incoming, // a <-[:R]- b, stored as b -> a
                     vec![],
                 )],
             }],
@@ -440,16 +408,8 @@ mod tests {
         let plan = Operator::Create {
             patterns: vec![CreatePattern {
                 nodes: vec![
-                    (
-                        Some(Identifier::new("n")),
-                        vec![Label::new("P")],
-                        vec![],
-                    ),
-                    (
-                        Some(Identifier::new("m")),
-                        vec![Label::new("Q")],
-                        vec![],
-                    ),
+                    (Some(Identifier::new("n")), vec![Label::new("P")], vec![]),
+                    (Some(Identifier::new("m")), vec![Label::new("Q")], vec![]),
                 ],
                 edges: vec![],
             }],

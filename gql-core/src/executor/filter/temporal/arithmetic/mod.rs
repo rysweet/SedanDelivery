@@ -8,8 +8,10 @@ mod time_ops;
 use crate::types::{CypherDuration, Value};
 
 // Re-export all public items
-pub use self::duration_ops::{duration_add, duration_div, duration_mul, duration_mul_f64, duration_sub};
 pub use self::date_ops::temporal_add_duration;
+pub use self::duration_ops::{
+    duration_add, duration_div, duration_mul, duration_mul_f64, duration_sub,
+};
 pub(crate) use self::time_ops::{
     eval_duration_between, eval_duration_in_days, eval_duration_in_months, eval_duration_in_seconds,
 };
@@ -20,16 +22,12 @@ pub(crate) use self::time_ops::{
 fn temporal_to_civil_datetime(val: &Value) -> Option<jiff::civil::DateTime> {
     match val {
         Value::Date(d) => Some(d.to_datetime(jiff::civil::Time::midnight())),
-        Value::LocalTime(t) => {
-            jiff::civil::Date::new(0, 1, 1)
-                .ok()
-                .map(|d| d.to_datetime(*t))
-        }
-        Value::Time(t, _) => {
-            jiff::civil::Date::new(1970, 1, 1)
-                .ok()
-                .map(|d| d.to_datetime(*t))
-        }
+        Value::LocalTime(t) => jiff::civil::Date::new(0, 1, 1)
+            .ok()
+            .map(|d| d.to_datetime(*t)),
+        Value::Time(t, _) => jiff::civil::Date::new(1970, 1, 1)
+            .ok()
+            .map(|d| d.to_datetime(*t)),
         Value::LocalDateTime(dt) => Some(*dt),
         Value::DateTime(zdt) => Some(jiff::civil::DateTime::from(&**zdt)),
         _ => None,

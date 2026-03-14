@@ -4,12 +4,15 @@ on:
   pull_request:
     branches: [ "main", "integration" ]
     paths:
-      - 'src/**'
-      - 'tests/**'
-      - 'infrastructure/**'
-      - '.github/workflows/e2e-tests.yml'
+      - 'src/CyberGym*/**'
+      - 'tests/CyberGym*/**'
+      - '**/CyberGym*.sln'
   push:
     branches: [ "main", "integration" ]
+    paths:
+      - 'src/CyberGym*/**'
+      - 'tests/CyberGym*/**'
+      - '**/CyberGym*.sln'
   workflow_dispatch:
 
 concurrency:
@@ -20,178 +23,11 @@ env:
   DOTNET_VERSION: '10.0.x'
 
 jobs:
-  e2e-tests:
-    # Disabled: this workflow references CyberGym.sln (.NET) which does not
-    # exist in this Rust/Valkey repo.  Kept for reference; remove once a
-    # Rust-native E2E workflow replaces it.
-    if: false
-    name: Run E2E Tests
+  archived:
+    name: Archived workflow
     runs-on: ubuntu-latest
-    timeout-minutes: 60
-
-    permissions:
-      contents: read
-      pull-requests: write
-      checks: write
-
     steps:
-      - name: Checkout code
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
-
-      - name: Setup .NET
-        uses: actions/setup-dotnet@c2fa09f4bde5ebb9d1777cf28262a3eb3db3ced7 # v4.3.1
-        with:
-          dotnet-version: ${{ env.DOTNET_VERSION }}
-
-      - name: Restore dependencies
-        run: dotnet restore
-
-      - name: Build solution
-        run: dotnet build CyberGym.sln --no-restore --configuration Release
-
-      - name: Run E2E tests
+      - name: Explain archival status
         run: |
-          dotnet test tests/CyberGym.GameboardTenant.Tests/CyberGym.GameboardTenant.Tests.csproj \
-            --no-build \
-            --configuration Release \
-            --filter "FullyQualifiedName~E2E" \
-            --verbosity normal \
-            --logger "trx;LogFileName=e2e-results.trx" \
-            --logger "console;verbosity=detailed" \
-            --collect:"XPlat Code Coverage" \
-            --results-directory ./test-results
-        timeout-minutes: 45
-
-      - name: Upload test results
-        if: always()
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
-        with:
-          name: e2e-test-results
-          path: |
-            test-results/
-          retention-days: 30
-
-      - name: Upload coverage to Codecov
-        if: always()
-        uses: codecov/codecov-action@671740ac38dd9b0130fbe1cec585b89eea48d3de # v5.5.2
-        with:
-          files: test-results/**/coverage.cobertura.xml
-          flags: e2e
-          name: e2e-coverage
-          fail_ci_if_error: false
-
-      - name: Publish test results
-        if: always()
-        uses: EnricoMi/publish-unit-test-result-action@c950f6fb443cb5af20a377fd0dfaa78838901040 # v2.23.0
-        with:
-          trx_files: test-results/**/*.trx
-          check_name: E2E Test Results
-          comment_mode: always
-
-      - name: Generate test summary
-        if: always()
-        run: |
-          echo "## E2E Test Results" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-
-          trx_file=$(find test-results -name "*.trx" -type f 2>/dev/null | head -1)
-
-          if [ -n "$trx_file" ] && [ -f "$trx_file" ]; then
-            total=$(grep -oP 'total="\K[^"]+' "$trx_file" 2>/dev/null || echo "0")
-            passed=$(grep -oP 'passed="\K[^"]+' "$trx_file" 2>/dev/null || echo "0")
-            failed=$(grep -oP 'failed="\K[^"]+' "$trx_file" 2>/dev/null || echo "0")
-
-            echo "- **Total Tests**: $total" >> $GITHUB_STEP_SUMMARY
-            echo "- **Passed**: ✅ $passed" >> $GITHUB_STEP_SUMMARY
-            echo "- **Failed**: ❌ $failed" >> $GITHUB_STEP_SUMMARY
-          else
-            echo "❌ Test results file not found" >> $GITHUB_STEP_SUMMARY
-          fi
-
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Test Environment" >> $GITHUB_STEP_SUMMARY
-          echo "- .NET 10.0" >> $GITHUB_STEP_SUMMARY
-          echo "- TestContainers (PostgreSQL 16 + Azurite)" >> $GITHUB_STEP_SUMMARY
-          echo "  - PostgreSQL version determined by TestContainerSetup.cs" >> $GITHUB_STEP_SUMMARY
-          echo "- Mocked Azure ARM & Graph APIs" >> $GITHUB_STEP_SUMMARY
-
-      - name: Comment PR with test results
-        if: always() && github.event_name == 'pull_request'
-        uses: actions/github-script@450193c5abd4cdb17ba9f3ffcfe8f635c4bb6c2a # v7.1.0
-        with:
-          script: |
-            const fs = require('fs');
-            const path = require('path');
-
-            let comment = '## 🧪 E2E Test Results\n\n';
-
-            try {
-              const resultsDir = 'test-results';
-              if (fs.existsSync(resultsDir)) {
-                const files = fs.readdirSync(resultsDir, { recursive: true });
-                const trxFile = files.find(f => f.endsWith('.trx'));
-
-                if (trxFile) {
-                  const resultsPath = path.join(resultsDir, trxFile);
-                  const results = fs.readFileSync(resultsPath, 'utf8');
-
-                  const totalMatch = results.match(/total="(\d+)"/);
-                  const passedMatch = results.match(/passed="(\d+)"/);
-                  const failedMatch = results.match(/failed="(\d+)"/);
-
-                  const total = totalMatch ? parseInt(totalMatch[1]) : 0;
-                  const passed = passedMatch ? parseInt(passedMatch[1]) : 0;
-                  const failed = failedMatch ? parseInt(failedMatch[1]) : 0;
-
-                  const status = failed === 0 ? '✅ **PASSED**' : '❌ **FAILED**';
-
-                  comment += `${status}\n\n`;
-                  comment += `| Metric | Count |\n`;
-                  comment += `|--------|-------|\n`;
-                  comment += `| Total Tests | ${total} |\n`;
-                  comment += `| Passed | ✅ ${passed} |\n`;
-                  comment += `| Failed | ❌ ${failed} |\n\n`;
-                  comment += `**Test Environment**: .NET 10.0, TestContainers (PostgreSQL 16 + Azurite), Mocked Azure APIs\n`;
-                } else {
-                  comment += '❌ Test results not found\n';
-                }
-              } else {
-                comment += '❌ Test results directory not found\n';
-              }
-            } catch (error) {
-              comment += `⚠️ Error parsing test results: ${error.message}\n`;
-            }
-
-            comment += `\n---\n*Workflow run: [${context.workflow} #${context.runNumber}](${context.payload.repository.html_url}/actions/runs/${context.runId})*`;
-
-            const { data: comments } = await github.rest.issues.listComments({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: context.issue.number,
-            });
-
-            const botComment = comments.find(c =>
-              c.user.type === 'Bot' && c.body.includes('E2E Test Results')
-            );
-
-            if (botComment) {
-              await github.rest.issues.updateComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                comment_id: botComment.id,
-                body: comment
-              });
-            } else {
-              await github.rest.issues.createComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: context.issue.number,
-                body: comment
-              });
-            }
-
-      - name: Fail workflow if tests failed
-        if: failure()
-        run: |
-          echo "❌ E2E tests failed. Check the test results above."
-          exit 1
+          echo "Legacy CyberGym E2E workflow archived."
+          echo "SedanDelivery outside-in validation now lives in tests/qa/gadugi and qa-playwright."

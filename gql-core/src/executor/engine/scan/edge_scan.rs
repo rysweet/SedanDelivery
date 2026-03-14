@@ -27,7 +27,9 @@ impl<'a> QueryExecutor<'a> {
         } = op
         else {
             debug_assert!(false, "expected Expand operator");
-            return Err(GqlError::Execution(ExecutionError::UnsupportedFeature { feature: "internal: expected Expand operator".into() }));
+            return Err(GqlError::Execution(ExecutionError::UnsupportedFeature {
+                feature: "internal: expected Expand operator".into(),
+            }));
         };
         let input = self.exec_operator(cx, child)?;
         let type_strs: Vec<&str> = rel_types.iter().map(|r| r.as_str()).collect();
@@ -170,7 +172,9 @@ impl<'a> QueryExecutor<'a> {
         } = op
         else {
             debug_assert!(false, "expected VarLenExpand operator");
-            return Err(GqlError::Execution(ExecutionError::UnsupportedFeature { feature: "internal: expected VarLenExpand operator".into() }));
+            return Err(GqlError::Execution(ExecutionError::UnsupportedFeature {
+                feature: "internal: expected VarLenExpand operator".into(),
+            }));
         };
         let input = self.exec_operator(cx, child)?;
         let type_strs: Vec<&str> = rel_types.iter().map(|r| r.as_str()).collect();
@@ -320,7 +324,9 @@ impl<'a> QueryExecutor<'a> {
         } = op
         else {
             debug_assert!(false, "expected ShortestPath operator");
-            return Err(GqlError::Execution(ExecutionError::UnsupportedFeature { feature: "internal: expected ShortestPath operator".into() }));
+            return Err(GqlError::Execution(ExecutionError::UnsupportedFeature {
+                feature: "internal: expected ShortestPath operator".into(),
+            }));
         };
         // ShortestPath requires both src and dst to be bound in outer context.
         // For now, work from outer_rows or require them to be bound.
@@ -429,12 +435,12 @@ impl<'a> QueryExecutor<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
     use crate::ast::{Direction, Identifier, Label, RelType};
     use crate::executor::budget::ExecutionBudget;
     use crate::executor::engine::MutationStats;
     use crate::planner::Operator;
     use crate::storage::{GraphStore, InMemoryGraphStore};
+    use std::collections::HashMap;
 
     fn make_store() -> InMemoryGraphStore {
         let store = InMemoryGraphStore::new();

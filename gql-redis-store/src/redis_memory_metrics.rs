@@ -27,7 +27,7 @@ pub fn poll_once(conn: &mut dyn ConnectionLike) -> Result<MemoryInfo, StorageErr
     let memory_raw: String = redis::cmd("INFO")
         .arg("memory")
         .query(conn)
-        .map_err(|e| StorageError::Backend { msg: e.to_string() })?;
+        .map_err(crate::backend_storage_error)?;
 
     let mut used_memory: u64 = 0;
     let mut maxmemory: u64 = 0;
@@ -60,7 +60,7 @@ fn poll_evicted_keys(conn: &mut dyn ConnectionLike) -> Result<u64, StorageError>
     let stats_raw: String = redis::cmd("INFO")
         .arg("stats")
         .query(conn)
-        .map_err(|e| StorageError::Backend { msg: e.to_string() })?;
+        .map_err(crate::backend_storage_error)?;
 
     for line in stats_raw.lines() {
         if let Some((key, val)) = line.split_once(':') {

@@ -82,7 +82,9 @@ impl<'a> QueryExecutor<'a> {
         } = op
         else {
             debug_assert!(false, "expected Merge operator");
-            return Err(GqlError::Execution(ExecutionError::UnsupportedFeature { feature: "internal: expected Merge operator".into() }));
+            return Err(GqlError::Execution(ExecutionError::UnsupportedFeature {
+                feature: "internal: expected Merge operator".into(),
+            }));
         };
         let input = if let Some(ch) = child {
             self.exec_operator(cx, ch)?
@@ -245,7 +247,9 @@ impl<'a> QueryExecutor<'a> {
         } = op
         else {
             debug_assert!(false, "expected MergeRelationship operator");
-            return Err(GqlError::Execution(ExecutionError::UnsupportedFeature { feature: "internal: expected MergeRelationship operator".into() }));
+            return Err(GqlError::Execution(ExecutionError::UnsupportedFeature {
+                feature: "internal: expected MergeRelationship operator".into(),
+            }));
         };
         let input = self.exec_operator(cx, child)?;
         let type_str = rel_type.as_str();
@@ -510,7 +514,10 @@ mod tests {
         assert_eq!(result.stats.nodes_created, 1);
         let ids = store.find_nodes_by_label("g", "P").unwrap();
         let node = store.get_node("g", ids[0]).unwrap().unwrap();
-        assert_eq!(node.properties.get("name"), Some(&Value::Str("Alice".into())));
+        assert_eq!(
+            node.properties.get("name"),
+            Some(&Value::Str("Alice".into()))
+        );
     }
 
     #[test]
@@ -550,7 +557,10 @@ mod tests {
         };
         let mut budget = ExecutionBudget::unlimited();
         let result = executor.execute("g", &plan, &mut budget);
-        assert!(result.is_err(), "MERGE with null property should be an error");
+        assert!(
+            result.is_err(),
+            "MERGE with null property should be an error"
+        );
     }
 
     #[test]
@@ -627,6 +637,9 @@ mod tests {
         };
         let mut budget = ExecutionBudget::unlimited();
         let result = executor.execute("g", &plan, &mut budget).unwrap();
-        assert_eq!(result.stats.edges_created, 0, "existing edge should be matched, not created");
+        assert_eq!(
+            result.stats.edges_created, 0,
+            "existing edge should be matched, not created"
+        );
     }
 }

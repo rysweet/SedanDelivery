@@ -4,12 +4,13 @@ use gql_core::error::StorageError;
 use gql_core::serde_value::json_to_props;
 use gql_core::storage::{AdjEntry, EdgeData, EdgeId, GraphStats, NodeData, NodeId, RangeQuery};
 
+use crate::connection::RedisConn;
 use crate::keys::{
-    key_edge, key_edges_set, key_in, key_label, key_node, key_nodes_set, key_out, key_propidx,
-    key_reltype, value_to_index_key, IDX_SEP,
+    key_edge, key_edges_set, key_in, key_label, key_label_names, key_node, key_nodes_set, key_out,
+    key_propidx, key_reltype, key_reltype_names, value_to_index_key, IDX_SEP,
 };
-use crate::range::{range_matches, scan_count, scan_key_count};
-use crate::RedisGraphStore;
+use crate::range::range_matches;
+use crate::{LockedRedisConn, RedisGraphStore};
 
 /// Default member count threshold above which SSCAN is used instead of SMEMBERS.
 /// Sets with fewer members than this use the faster SMEMBERS. Configurable via
@@ -37,19 +38,13 @@ pub(crate) fn smembers_or_scan(
     let card: u64 = redis::cmd("SCARD")
         .arg(key)
         .query(conn)
-        .map_err(|e| {
-            crate::record_backend_error();
-            StorageError::Backend { msg: e.to_string() }
-        })?;
+        .map_err(crate::backend_storage_error)?;
 
     if card <= threshold {
         let members: Vec<String> = redis::cmd("SMEMBERS")
             .arg(key)
             .query(conn)
-            .map_err(|e| {
-                crate::record_backend_error();
-                StorageError::Backend { msg: e.to_string() }
-            })?;
+            .map_err(crate::backend_storage_error)?;
         return Ok(members);
     }
 
@@ -63,10 +58,51 @@ pub(crate) fn smembers_or_scan(
             .arg("COUNT")
             .arg(SSCAN_COUNT)
             .query(conn)
-            .map_err(|e| {
-                crate::record_backend_error();
-                StorageError::Backend { msg: e.to_string() }
-            })?;
+            .map_err(crate::backend_storage_error)?;
+        members.extend(batch);
+        cursor = next_cursor;
+        if cursor == 0 {
+            break;
+        }
+    }
+    Ok(members)
+}
+
+/// `smembers_or_scan`, but renews the caller's write lock between SSCAN pages.
+///
+/// Long-running write operations like index build and drop-index hold the graph
+/// write lock while walking large same-slot sets. Renewing between SSCAN pages
+/// prevents lease expiry from creating a false-success window for concurrent
+/// writers.
+pub(crate) fn smembers_or_scan_locked(
+    conn: &mut LockedRedisConn,
+    key: &str,
+    threshold: u64,
+) -> Result<Vec<String>, StorageError> {
+    let card: u64 = redis::cmd("SCARD")
+        .arg(key)
+        .query(conn.as_mut())
+        .map_err(crate::backend_storage_error)?;
+
+    if card <= threshold {
+        let members: Vec<String> = redis::cmd("SMEMBERS")
+            .arg(key)
+            .query(conn.as_mut())
+            .map_err(crate::backend_storage_error)?;
+        return Ok(members);
+    }
+
+    let mut cursor: u64 = 0;
+    let mut members = Vec::with_capacity(card as usize);
+    loop {
+        conn.renew_lock()?;
+        let (next_cursor, batch): (u64, Vec<String>) = redis::cmd("SSCAN")
+            .arg(key)
+            .arg(cursor)
+            .arg("COUNT")
+            .arg(SSCAN_COUNT)
+            .query(conn.as_mut())
+            .map_err(crate::backend_storage_error)?;
         members.extend(batch);
         cursor = next_cursor;
         if cursor == 0 {
@@ -77,6 +113,124 @@ pub(crate) fn smembers_or_scan(
 }
 
 impl RedisGraphStore {
+    pub(crate) fn active_label_names(
+        &self,
+        conn: &mut RedisConn,
+        graph: &str,
+    ) -> Result<Vec<String>, StorageError> {
+        let registry_key = self.kp(key_label_names(graph));
+        let labels: Vec<String> = redis::cmd("SMEMBERS")
+            .arg(&registry_key)
+            .query(conn.as_mut())
+            .map_err(crate::backend_storage_error)?;
+        if !labels.is_empty() {
+            let mut pipe = conn.pipeline();
+            for label in &labels {
+                pipe.cmd("SCARD").arg(self.kp(key_label(graph, label)));
+            }
+            let counts: Vec<u64> = pipe.query(conn).map_err(crate::backend_storage_error)?;
+            let mut active: Vec<String> = labels
+                .into_iter()
+                .zip(counts)
+                .filter_map(|(label, count)| (count > 0).then_some(label))
+                .collect();
+            active.sort_unstable();
+            if !active.is_empty() {
+                return Ok(active);
+            }
+        }
+
+        let node_ids = smembers_or_scan(
+            conn.as_mut(),
+            &self.kp(key_nodes_set(graph)),
+            smembers_threshold(),
+        )?;
+        if node_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut discovered = std::collections::HashSet::new();
+        for chunk in node_ids.chunks(500) {
+            let mut pipe = conn.pipeline();
+            for nid_str in chunk {
+                if let Ok(nid) = nid_str.parse::<u64>() {
+                    pipe.cmd("HGET")
+                        .arg(self.kp(key_node(graph, nid)))
+                        .arg("labels");
+                }
+            }
+            let results: Vec<Option<String>> =
+                pipe.query(conn).map_err(crate::backend_storage_error)?;
+            for json in results.into_iter().flatten() {
+                let parsed: Vec<String> =
+                    serde_json::from_str(&json).map_err(|e| StorageError::Serialization {
+                        msg: format!("labels registry fallback: {e}"),
+                    })?;
+                discovered.extend(parsed);
+            }
+        }
+
+        let mut labels: Vec<String> = discovered.into_iter().collect();
+        labels.sort_unstable();
+        Ok(labels)
+    }
+
+    pub(crate) fn active_reltype_names(
+        &self,
+        conn: &mut RedisConn,
+        graph: &str,
+    ) -> Result<Vec<String>, StorageError> {
+        let registry_key = self.kp(key_reltype_names(graph));
+        let reltypes: Vec<String> = redis::cmd("SMEMBERS")
+            .arg(&registry_key)
+            .query(conn.as_mut())
+            .map_err(crate::backend_storage_error)?;
+        if !reltypes.is_empty() {
+            let mut pipe = conn.pipeline();
+            for reltype in &reltypes {
+                pipe.cmd("SCARD").arg(self.kp(key_reltype(graph, reltype)));
+            }
+            let counts: Vec<u64> = pipe.query(conn).map_err(crate::backend_storage_error)?;
+            let mut active: Vec<String> = reltypes
+                .into_iter()
+                .zip(counts)
+                .filter_map(|(reltype, count)| (count > 0).then_some(reltype))
+                .collect();
+            active.sort_unstable();
+            if !active.is_empty() {
+                return Ok(active);
+            }
+        }
+
+        let edge_ids = smembers_or_scan(
+            conn.as_mut(),
+            &self.kp(key_edges_set(graph)),
+            smembers_threshold(),
+        )?;
+        if edge_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut discovered = std::collections::HashSet::new();
+        for chunk in edge_ids.chunks(500) {
+            let mut pipe = conn.pipeline();
+            for eid_str in chunk {
+                if let Ok(eid) = eid_str.parse::<u64>() {
+                    pipe.cmd("HGET")
+                        .arg(self.kp(key_edge(graph, eid)))
+                        .arg("rel_type");
+                }
+            }
+            let results: Vec<Option<String>> =
+                pipe.query(conn).map_err(crate::backend_storage_error)?;
+            discovered.extend(results.into_iter().flatten());
+        }
+
+        let mut reltypes: Vec<String> = discovered.into_iter().collect();
+        reltypes.sort_unstable();
+        Ok(reltypes)
+    }
+
     // ── Single-item reads ────────────────────────────────────────────────────
 
     pub(crate) fn get_node_impl(
@@ -84,7 +238,7 @@ impl RedisGraphStore {
         graph: &str,
         id: NodeId,
     ) -> Result<Option<NodeData>, StorageError> {
-        let mut conn = self.route_read()?;
+        let mut conn = self.route_read_for_graph(graph)?;
         self.read_node(conn.as_mut(), graph, id.0)
     }
 
@@ -93,7 +247,7 @@ impl RedisGraphStore {
         graph: &str,
         id: EdgeId,
     ) -> Result<Option<EdgeData>, StorageError> {
-        let mut conn = self.route_read()?;
+        let mut conn = self.route_read_for_graph(graph)?;
         self.read_edge(conn.as_mut(), graph, id.0)
     }
 
@@ -104,13 +258,13 @@ impl RedisGraphStore {
         graph: &str,
         ids: &[NodeId],
     ) -> Result<Vec<Option<NodeData>>, StorageError> {
+        let mut conn = self.route_read_for_graph(graph)?;
         if ids.is_empty() {
             return Ok(vec![]);
         }
-        let mut conn = self.route_read()?;
         let mut results = Vec::with_capacity(ids.len());
         // Pipeline all HMGET commands.
-        let mut pipe = redis::pipe();
+        let mut pipe = conn.pipeline();
         for id in ids {
             pipe.cmd("HMGET")
                 .arg(self.kp(key_node(graph, id.0)))
@@ -118,8 +272,8 @@ impl RedisGraphStore {
                 .arg("props");
         }
         let raw: Vec<Vec<Option<String>>> = pipe
-            .query(conn.as_mut())
-            .map_err(|e| { crate::record_backend_error(); StorageError::Backend { msg: e.to_string() } })?;
+            .query(&mut conn)
+            .map_err(crate::backend_storage_error)?;
         for (idx, fields) in raw.into_iter().enumerate() {
             let id = ids[idx];
             match (
@@ -150,11 +304,11 @@ impl RedisGraphStore {
         graph: &str,
         ids: &[EdgeId],
     ) -> Result<Vec<Option<EdgeData>>, StorageError> {
+        let mut conn = self.route_read_for_graph(graph)?;
         if ids.is_empty() {
             return Ok(vec![]);
         }
-        let mut conn = self.route_read()?;
-        let mut pipe = redis::pipe();
+        let mut pipe = conn.pipeline();
         for id in ids {
             pipe.cmd("HMGET")
                 .arg(self.kp(key_edge(graph, id.0)))
@@ -164,8 +318,8 @@ impl RedisGraphStore {
                 .arg("props");
         }
         let raw: Vec<Vec<Option<String>>> = pipe
-            .query(conn.as_mut())
-            .map_err(|e| { crate::record_backend_error(); StorageError::Backend { msg: e.to_string() } })?;
+            .query(&mut conn)
+            .map_err(crate::backend_storage_error)?;
         let mut results = Vec::with_capacity(ids.len());
         for (idx, fields) in raw.into_iter().enumerate() {
             let id = ids[idx];
@@ -212,7 +366,7 @@ impl RedisGraphStore {
         graph: &str,
         label: &str,
     ) -> Result<Vec<NodeId>, StorageError> {
-        let mut conn = self.route_read()?;
+        let mut conn = self.route_read_for_graph(graph)?;
         let members = smembers_or_scan(
             conn.as_mut(),
             &self.kp(key_label(graph, label)),
@@ -237,7 +391,7 @@ impl RedisGraphStore {
         property: &str,
         range: RangeQuery<'_>,
     ) -> Result<Vec<NodeId>, StorageError> {
-        let mut conn = self.route_read()?;
+        let mut conn = self.route_read_for_graph(graph)?;
 
         // Fast path: use property index for exact-match queries when an index exists.
         if let RangeQuery::Eq(val) = &range {
@@ -283,7 +437,7 @@ impl RedisGraphStore {
         graph: &str,
         rel_type: &str,
     ) -> Result<Vec<EdgeId>, StorageError> {
-        let mut conn = self.route_read()?;
+        let mut conn = self.route_read_for_graph(graph)?;
         let members = smembers_or_scan(
             conn.as_mut(),
             &self.kp(key_reltype(graph, rel_type)),
@@ -308,7 +462,7 @@ impl RedisGraphStore {
         graph: &str,
         node_id: NodeId,
     ) -> Result<Vec<AdjEntry>, StorageError> {
-        let mut conn = self.route_read()?;
+        let mut conn = self.route_read_for_graph(graph)?;
         let members = smembers_or_scan(
             conn.as_mut(),
             &self.kp(key_out(graph, node_id.0)),
@@ -322,7 +476,7 @@ impl RedisGraphStore {
         graph: &str,
         node_id: NodeId,
     ) -> Result<Vec<AdjEntry>, StorageError> {
-        let mut conn = self.route_read()?;
+        let mut conn = self.route_read_for_graph(graph)?;
         let members = smembers_or_scan(
             conn.as_mut(),
             &self.kp(key_in(graph, node_id.0)),
@@ -388,7 +542,7 @@ impl RedisGraphStore {
     }
 
     pub(crate) fn all_node_ids_impl(&self, graph: &str) -> Result<Vec<NodeId>, StorageError> {
-        let mut conn = self.route_read()?;
+        let mut conn = self.route_read_for_graph(graph)?;
         let members = smembers_or_scan(
             conn.as_mut(),
             &self.kp(key_nodes_set(graph)),
@@ -407,7 +561,7 @@ impl RedisGraphStore {
     }
 
     pub(crate) fn all_edge_ids_impl(&self, graph: &str) -> Result<Vec<EdgeId>, StorageError> {
-        let mut conn = self.route_read()?;
+        let mut conn = self.route_read_for_graph(graph)?;
         let members = smembers_or_scan(
             conn.as_mut(),
             &self.kp(key_edges_set(graph)),
@@ -426,65 +580,47 @@ impl RedisGraphStore {
     }
 
     pub(crate) fn all_label_names_impl(&self, graph: &str) -> Result<Vec<String>, StorageError> {
-        let prefix = format!("{}G:{{{graph}}}:label:", self.key_prefix);
-        let pattern = format!("{prefix}*");
-        let mut conn = self.route_read()?;
-        let mut cursor: u64 = 0;
-        let mut labels = Vec::new();
-        loop {
-            let (next, keys): (u64, Vec<String>) = redis::cmd("SCAN")
-                .arg(cursor)
-                .arg("MATCH")
-                .arg(&pattern)
-                .arg("COUNT")
-                .arg(scan_count())
-                .query(conn.as_mut())
-                .map_err(|e| { crate::record_backend_error(); StorageError::Backend { msg: e.to_string() } })?;
-            for key in keys {
-                if let Some(label) = key.strip_prefix(&prefix) {
-                    labels.push(label.to_string());
-                }
-            }
-            cursor = next;
-            if cursor == 0 {
-                break;
-            }
-        }
-        Ok(labels)
+        let mut conn = self.route_read_for_graph(graph)?;
+        self.active_label_names(&mut conn, graph)
     }
 
     // ── Graph administration reads ──────────────────────────────────────────
 
     pub(crate) fn graph_exists_impl(&self, name: &str) -> Result<bool, StorageError> {
         let mut conn = self.route_read()?;
-        redis::cmd("SISMEMBER")
-            .arg(self.key_graphs())
-            .arg(name)
-            .query(conn.as_mut())
-            .map_err(|e| { crate::record_backend_error(); StorageError::Backend { msg: e.to_string() } })
+        let exists = self.graph_exists_on(conn.as_mut(), name)?;
+        if exists || self.replica_pool.is_none() {
+            return Ok(exists);
+        }
+
+        let mut primary = self.route_read_with_pinning(true)?;
+        self.graph_exists_on(primary.as_mut(), name)
     }
 
     pub(crate) fn list_graphs_impl(&self) -> Result<Vec<String>, StorageError> {
         let mut conn = self.route_read()?;
-        smembers_or_scan(conn.as_mut(), &self.key_graphs(), smembers_threshold())
+        let mut names = Vec::new();
+        for name in smembers_or_scan(conn.as_mut(), &self.key_graphs(), smembers_threshold())? {
+            if !self.graph_is_deleting_on(conn.as_mut(), &name)? {
+                names.push(name);
+            }
+        }
+        names.sort();
+        Ok(names)
     }
 
     pub(crate) fn graph_stats_impl(&self, graph: &str) -> Result<GraphStats, StorageError> {
-        self.require_graph(graph)?;
-        let mut conn = self.route_read()?;
+        let mut conn = self.route_read_for_graph(graph)?;
         let node_count: u64 = redis::cmd("SCARD")
             .arg(self.kp(key_nodes_set(graph)))
             .query(conn.as_mut())
-            .map_err(|e| { crate::record_backend_error(); StorageError::Backend { msg: e.to_string() } })?;
+            .map_err(crate::backend_storage_error)?;
         let edge_count: u64 = redis::cmd("SCARD")
             .arg(self.kp(key_edges_set(graph)))
             .query(conn.as_mut())
-            .map_err(|e| { crate::record_backend_error(); StorageError::Backend { msg: e.to_string() } })?;
-        // Count distinct labels and rel-types by scanning index keys.
-        let label_pattern = format!("{}G:{{{graph}}}:label:*", self.key_prefix);
-        let reltype_pattern = format!("{}G:{{{graph}}}:reltype:*", self.key_prefix);
-        let label_count = scan_key_count(conn.as_mut(), &label_pattern)?;
-        let rel_type_count = scan_key_count(conn.as_mut(), &reltype_pattern)?;
+            .map_err(crate::backend_storage_error)?;
+        let label_count = self.active_label_names(&mut conn, graph)?.len();
+        let rel_type_count = self.active_reltype_names(&mut conn, graph)?.len();
         let label_count_u32 = u32::try_from(label_count).unwrap_or_else(|_| {
             tracing::warn!(
                 graph,

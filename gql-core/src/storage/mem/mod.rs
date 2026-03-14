@@ -283,9 +283,7 @@ impl InMemoryGraphStore {
         }
     }
 
-    pub(crate) fn read_snapshot(
-        &self,
-    ) -> Result<Arc<HashMap<String, GraphInner>>, StorageError> {
+    pub(crate) fn read_snapshot(&self) -> Result<Arc<HashMap<String, GraphInner>>, StorageError> {
         let guard = self
             .inner
             .read()
@@ -433,11 +431,7 @@ impl GraphStore for InMemoryGraphStore {
         Ok(result)
     }
 
-    fn find_edges_by_type(
-        &self,
-        graph: &str,
-        rel_type: &str,
-    ) -> Result<Vec<EdgeId>, StorageError> {
+    fn find_edges_by_type(&self, graph: &str, rel_type: &str) -> Result<Vec<EdgeId>, StorageError> {
         let snap = self.read_snapshot()?;
         let g = Self::require_graph(&snap, graph)?;
         let ids = g
@@ -582,21 +576,11 @@ impl GraphStore for InMemoryGraphStore {
         edges::replace_edge_properties_impl(self, graph, id, properties)
     }
 
-    fn remove_node_property(
-        &self,
-        graph: &str,
-        id: NodeId,
-        key: &str,
-    ) -> Result<(), StorageError> {
+    fn remove_node_property(&self, graph: &str, id: NodeId, key: &str) -> Result<(), StorageError> {
         nodes::remove_node_property_impl(self, graph, id, key)
     }
 
-    fn remove_edge_property(
-        &self,
-        graph: &str,
-        id: EdgeId,
-        key: &str,
-    ) -> Result<(), StorageError> {
+    fn remove_edge_property(&self, graph: &str, id: EdgeId, key: &str) -> Result<(), StorageError> {
         edges::remove_edge_property_impl(self, graph, id, key)
     }
 
@@ -630,21 +614,11 @@ impl GraphStore for InMemoryGraphStore {
         indexing::list_indexes_impl(self, graph)
     }
 
-    fn create_index(
-        &self,
-        graph: &str,
-        label: &str,
-        property: &str,
-    ) -> Result<(), StorageError> {
+    fn create_index(&self, graph: &str, label: &str, property: &str) -> Result<(), StorageError> {
         indexing::create_index_impl(self, graph, label, property)
     }
 
-    fn drop_index(
-        &self,
-        graph: &str,
-        label: &str,
-        property: &str,
-    ) -> Result<(), StorageError> {
+    fn drop_index(&self, graph: &str, label: &str, property: &str) -> Result<(), StorageError> {
         indexing::drop_index_impl(self, graph, label, property)
     }
 
@@ -828,8 +802,8 @@ pub(crate) mod test_helpers {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::test_helpers::make_store;
+    use super::*;
 
     #[test]
     fn graph_not_found_errors() {
@@ -975,10 +949,7 @@ mod tests {
             .unwrap();
 
         let mut props = HashMap::new();
-        props.insert(
-            "email".to_string(),
-            Value::Str("alice@example.com".into()),
-        );
+        props.insert("email".to_string(), Value::Str("alice@example.com".into()));
         store
             .create_node("test", vec!["Person".to_string()], props.clone())
             .unwrap();
@@ -1000,10 +971,7 @@ mod tests {
             .unwrap();
 
         let mut props1 = HashMap::new();
-        props1.insert(
-            "email".to_string(),
-            Value::Str("alice@example.com".into()),
-        );
+        props1.insert("email".to_string(), Value::Str("alice@example.com".into()));
         store
             .create_node("test", vec!["Person".to_string()], props1)
             .unwrap();
@@ -1023,10 +991,7 @@ mod tests {
             .unwrap();
 
         let mut props1 = HashMap::new();
-        props1.insert(
-            "email".to_string(),
-            Value::Str("alice@example.com".into()),
-        );
+        props1.insert("email".to_string(), Value::Str("alice@example.com".into()));
         store
             .create_node("test", vec!["Person".to_string()], props1)
             .unwrap();
@@ -1039,10 +1004,7 @@ mod tests {
 
         // Try to update id2's email to alice's email.
         let mut update = HashMap::new();
-        update.insert(
-            "email".to_string(),
-            Value::Str("alice@example.com".into()),
-        );
+        update.insert("email".to_string(), Value::Str("alice@example.com".into()));
         let result = store.set_node_properties("test", id2, update);
         assert!(matches!(
             result,
@@ -1054,10 +1016,7 @@ mod tests {
     fn constraint_creation_fails_with_existing_duplicates() {
         let store = make_store();
         let mut props = HashMap::new();
-        props.insert(
-            "email".to_string(),
-            Value::Str("alice@example.com".into()),
-        );
+        props.insert("email".to_string(), Value::Str("alice@example.com".into()));
         store
             .create_node("test", vec!["Person".to_string()], props.clone())
             .unwrap();
@@ -1065,8 +1024,7 @@ mod tests {
             .create_node("test", vec!["Person".to_string()], props)
             .unwrap();
 
-        let result =
-            store.create_constraint("test", "Person", "email", ConstraintType::Unique);
+        let result = store.create_constraint("test", "Person", "email", ConstraintType::Unique);
         assert!(matches!(
             result,
             Err(StorageError::ConstraintViolation { .. })
@@ -1093,10 +1051,7 @@ mod tests {
             .unwrap();
 
         let mut props = HashMap::new();
-        props.insert(
-            "email".to_string(),
-            Value::Str("alice@example.com".into()),
-        );
+        props.insert("email".to_string(), Value::Str("alice@example.com".into()));
         store
             .create_node("test", vec!["Person".to_string()], props.clone())
             .unwrap();
@@ -1117,10 +1072,7 @@ mod tests {
             .unwrap();
 
         let mut props = HashMap::new();
-        props.insert(
-            "email".to_string(),
-            Value::Str("alice@example.com".into()),
-        );
+        props.insert("email".to_string(), Value::Str("alice@example.com".into()));
         store
             .create_node("test", vec!["Person".to_string()], props.clone())
             .unwrap();

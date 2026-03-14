@@ -7,8 +7,8 @@ mod expr_naming;
 
 // Re-export the full public API so that all existing `use super::helpers::X`
 // paths continue to work without modification.
-pub use self::comparison::cmp_values;
 pub(crate) use self::arithmetic::{eval_binary_values, value_to_expr};
+pub use self::comparison::cmp_values;
 pub(crate) use self::dedup::RowDedupSet;
 pub(crate) use self::expr_naming::expr_to_column_name;
 
@@ -16,8 +16,8 @@ use std::collections::HashMap;
 
 use crate::ast::{Direction, Expr};
 use crate::error::{ExecutionError, GqlError};
-use crate::executor::filter::Row as FilterRow;
 use crate::executor::filter::eval_expr;
+use crate::executor::filter::Row as FilterRow;
 use crate::planner::Operator;
 use crate::storage::{GraphStore, NodeId};
 use crate::types::Value;

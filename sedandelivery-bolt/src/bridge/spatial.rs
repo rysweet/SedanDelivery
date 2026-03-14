@@ -60,12 +60,7 @@ pub(crate) fn decode_point2d(fields: &[BoltValue]) -> Value {
         }
     };
 
-    Value::Point(GeoPoint {
-        x,
-        y,
-        z: None,
-        crs,
-    })
+    Value::Point(GeoPoint { x, y, z: None, crs })
 }
 
 /// Point3D (tag 0x59): 4 fields -- srid, x, y, z.
@@ -101,12 +96,7 @@ pub(crate) fn decode_point3d(fields: &[BoltValue]) -> Value {
         }
     };
 
-    Value::Point(GeoPoint {
-        x,
-        y,
-        z,
-        crs,
-    })
+    Value::Point(GeoPoint { x, y, z, crs })
 }
 
 #[cfg(test)]

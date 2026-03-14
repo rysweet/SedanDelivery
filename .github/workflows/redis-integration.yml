@@ -58,7 +58,9 @@ jobs:
       - name: Run redis-store and module tests
         env:
           GQL_REDIS_URL: redis://localhost:6379
-        run: cargo test -p gql-redis-store
+        run: |
+          cargo test -p gql-redis-store
+          cargo test -p gql-redis-store --test cluster_write_path -- --ignored ci8_delete_graph_end_to_end --nocapture
 
       - name: Build sedandelivery-bolt (release)
         run: cargo build --release -p sedandelivery-bolt
@@ -136,19 +138,28 @@ jobs:
             --cluster-replicas 0
 
           # Wait for cluster to be ready
+          CLUSTER_READY=0
           for i in $(seq 1 30); do
             if redis-cli -p 7000 cluster info 2>/dev/null | grep -q "cluster_state:ok"; then
               echo "Cluster is ready"
+              CLUSTER_READY=1
               break
             fi
             sleep 1
           done
+          if [ "$CLUSTER_READY" -ne 1 ]; then
+            echo "Redis Cluster did not reach cluster_state:ok" >&2
+            redis-cli -p 7000 cluster info || true
+            exit 1
+          fi
           redis-cli -p 7000 cluster info
 
       - name: Run redis-store tests (cluster mode)
         env:
           GQL_REDIS_CLUSTER_NODES: redis://127.0.0.1:7000,redis://127.0.0.1:7001,redis://127.0.0.1:7002
-        run: cargo test -p gql-redis-store
+        run: |
+          cargo test -p gql-redis-store
+          cargo test -p gql-redis-store --test cluster_pipeline -- --ignored --nocapture
 
       - name: Build sedandelivery-bolt (release)
         run: cargo build --release -p sedandelivery-bolt
@@ -157,7 +168,6 @@ jobs:
         run: pip install neo4j
 
       - name: Run gallery compatibility tests (cluster mode)
-        continue-on-error: true
         env:
           GQL_REDIS_CLUSTER_NODES: redis://127.0.0.1:7000,redis://127.0.0.1:7001,redis://127.0.0.1:7002
           RUST_LOG: warn
@@ -245,7 +255,6 @@ jobs:
         run: pip install neo4j
 
       - name: Run gallery compatibility tests (replica routing)
-        continue-on-error: true
         env:
           GQL_REDIS_URL: redis://localhost:6379
           GQL_REDIS_REPLICA_URL: redis://localhost:6380,redis://localhost:6381

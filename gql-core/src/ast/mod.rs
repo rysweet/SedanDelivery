@@ -438,7 +438,9 @@ pub enum Clause {
     Merge(MergeClause),
     Call(CallClause),
     /// `CALL { ... }` — inline subquery block.
-    CallSubquery { inner: Vec<Clause> },
+    CallSubquery {
+        inner: Vec<Clause>,
+    },
     Foreach(ForeachClause),
     LoadCsv(LoadCsvClause),
 }

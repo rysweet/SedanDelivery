@@ -191,10 +191,7 @@ pub(crate) fn add_node_labels_impl(
     }
     // Update label index.
     for label in &new_labels {
-        g.label_index
-            .entry(label.clone())
-            .or_default()
-            .insert(id.0);
+        g.label_index.entry(label.clone()).or_default().insert(id.0);
     }
     // Index new label+property combinations.
     g.index_insert(id.0, &new_labels, &props);
@@ -266,8 +263,7 @@ pub(crate) fn delete_node_impl(
         // Deduplicate to handle self-loops: a self-loop a->a appears in both
         // out_adj and in_adj; without dedup, g.edges.remove(eid) is called
         // twice and the second call skips reltype cleanup (returns None silently).
-        let mut all_edge_ids: std::collections::HashSet<u64> =
-            std::collections::HashSet::new();
+        let mut all_edge_ids: std::collections::HashSet<u64> = std::collections::HashSet::new();
         if let Some(adj) = g.out_adj.get(&id.0) {
             for e in adj {
                 all_edge_ids.insert(e.edge_id.0);
@@ -358,12 +354,8 @@ mod tests {
     #[test]
     fn delete_node_without_detach_fails_if_has_edges() {
         let store = make_store();
-        let a = store
-            .create_node("test", vec![], HashMap::new())
-            .unwrap();
-        let b = store
-            .create_node("test", vec![], HashMap::new())
-            .unwrap();
+        let a = store.create_node("test", vec![], HashMap::new()).unwrap();
+        let b = store.create_node("test", vec![], HashMap::new()).unwrap();
         store
             .create_edge("test", a, b, "R".to_string(), HashMap::new())
             .unwrap();
@@ -375,12 +367,8 @@ mod tests {
     #[test]
     fn delete_node_with_detach_removes_edges() {
         let store = make_store();
-        let a = store
-            .create_node("test", vec![], HashMap::new())
-            .unwrap();
-        let b = store
-            .create_node("test", vec![], HashMap::new())
-            .unwrap();
+        let a = store.create_node("test", vec![], HashMap::new()).unwrap();
+        let b = store.create_node("test", vec![], HashMap::new()).unwrap();
         let eid = store
             .create_edge("test", a, b, "R".to_string(), HashMap::new())
             .unwrap();
@@ -394,12 +382,8 @@ mod tests {
     #[test]
     fn detach_delete_cleans_both_directions() {
         let store = make_store();
-        let a = store
-            .create_node("test", vec![], HashMap::new())
-            .unwrap();
-        let b = store
-            .create_node("test", vec![], HashMap::new())
-            .unwrap();
+        let a = store.create_node("test", vec![], HashMap::new()).unwrap();
+        let b = store.create_node("test", vec![], HashMap::new()).unwrap();
         let e1 = store
             .create_edge("test", a, b, "A_TO_B".to_string(), HashMap::new())
             .unwrap();
@@ -418,9 +402,7 @@ mod tests {
     #[test]
     fn set_and_remove_node_properties() {
         let store = make_store();
-        let id = store
-            .create_node("test", vec![], HashMap::new())
-            .unwrap();
+        let id = store.create_node("test", vec![], HashMap::new()).unwrap();
 
         let mut props = HashMap::new();
         props.insert("x".to_string(), Value::Int(1));
@@ -462,12 +444,8 @@ mod tests {
     #[test]
     fn batch_fetch_nodes() {
         let store = make_store();
-        let a = store
-            .create_node("test", vec![], HashMap::new())
-            .unwrap();
-        let b = store
-            .create_node("test", vec![], HashMap::new())
-            .unwrap();
+        let a = store.create_node("test", vec![], HashMap::new()).unwrap();
+        let b = store.create_node("test", vec![], HashMap::new()).unwrap();
         let fake = NodeId(9999);
 
         let results = store.get_nodes_batch("test", &[a, fake, b]).unwrap();
@@ -480,12 +458,8 @@ mod tests {
     #[test]
     fn all_node_ids_returns_all() {
         let store = make_store();
-        let a = store
-            .create_node("test", vec![], HashMap::new())
-            .unwrap();
-        let b = store
-            .create_node("test", vec![], HashMap::new())
-            .unwrap();
+        let a = store.create_node("test", vec![], HashMap::new()).unwrap();
+        let b = store.create_node("test", vec![], HashMap::new()).unwrap();
         let mut ids = store.all_node_ids("test").unwrap();
         ids.sort();
         assert_eq!(ids, vec![a, b]);

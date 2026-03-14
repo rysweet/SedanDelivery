@@ -3,8 +3,8 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
-use redis::cluster::ClusterClient;
-use redis::{Client, ConnectionLike};
+use redis::cluster::{ClusterClient, ClusterPipeline};
+use redis::{Client, ConnectionLike, FromRedisValue, RedisResult, ToRedisArgs};
 
 use gql_core::error::StorageError;
 
@@ -59,6 +59,17 @@ pub(crate) enum RedisConn {
     Cluster(Box<r2d2::PooledConnection<ClusterClient>>),
 }
 
+/// Cluster-aware Redis pipeline wrapper.
+///
+/// `redis::Pipeline::query()` is invalid for `ClusterConnection`; cluster mode
+/// must use `redis::cluster::cluster_pipe()` instead. This wrapper preserves the
+/// current pipeline-building call pattern while dispatching execution to the
+/// correct redis-rs pipeline type for the checked-out connection.
+pub(crate) enum RedisPipeline {
+    Standalone(redis::Pipeline),
+    Cluster(ClusterPipeline),
+}
+
 impl RedisConn {
     /// Get a mutable reference to the underlying connection as `ConnectionLike`.
     ///
@@ -72,6 +83,76 @@ impl RedisConn {
             RedisConn::Cluster(c) => &mut **c,
         }
     }
+
+    /// Create a pipeline builder that matches this connection's concrete type.
+    pub(crate) fn pipeline(&self) -> RedisPipeline {
+        match self {
+            RedisConn::Standalone(_) => RedisPipeline::Standalone(redis::pipe()),
+            RedisConn::Cluster(_) => RedisPipeline::Cluster(redis::cluster::cluster_pipe()),
+        }
+    }
+
+    /// Return `true` if this is a standalone (non-cluster) connection.
+    ///
+    /// Used to emit a diagnostic warning when pipelines execute without the
+    /// atomicity guarantee that was formerly provided by `.atomic()` (MULTI/EXEC).
+    /// In cluster mode the absence of MULTI/EXEC is intentional and required;
+    /// in standalone mode it represents a deliberate atomicity trade-off that
+    /// should be visible in logs. See ADR-005.
+    #[inline]
+    pub(crate) fn is_standalone(&self) -> bool {
+        matches!(self, RedisConn::Standalone(_))
+    }
+}
+
+impl RedisPipeline {
+    #[inline]
+    pub(crate) fn cmd(&mut self, name: &str) -> &mut Self {
+        match self {
+            RedisPipeline::Standalone(pipe) => {
+                pipe.cmd(name);
+            }
+            RedisPipeline::Cluster(pipe) => {
+                pipe.cmd(name);
+            }
+        }
+        self
+    }
+
+    #[inline]
+    pub(crate) fn arg<T: ToRedisArgs>(&mut self, arg: T) -> &mut Self {
+        match self {
+            RedisPipeline::Standalone(pipe) => {
+                pipe.arg(arg);
+            }
+            RedisPipeline::Cluster(pipe) => {
+                pipe.arg(arg);
+            }
+        }
+        self
+    }
+
+    #[inline]
+    pub(crate) fn ignore(&mut self) -> &mut Self {
+        match self {
+            RedisPipeline::Standalone(pipe) => {
+                pipe.ignore();
+            }
+            RedisPipeline::Cluster(pipe) => {
+                pipe.ignore();
+            }
+        }
+        self
+    }
+
+    #[inline]
+    pub(crate) fn query<T: FromRedisValue>(&self, conn: &mut RedisConn) -> RedisResult<T> {
+        match (self, conn) {
+            (RedisPipeline::Standalone(pipe), RedisConn::Standalone(c)) => pipe.query(&mut **c),
+            (RedisPipeline::Cluster(pipe), RedisConn::Cluster(c)) => pipe.query(c),
+            _ => unreachable!("pipeline type must match connection type"),
+        }
+    }
 }
 
 impl RedisPool {
@@ -83,18 +164,14 @@ impl RedisPool {
         idle_timeout_secs: u64,
         min_idle: u32,
     ) -> Result<Self, StorageError> {
-        let client = Client::open(url).map_err(|e| { crate::record_backend_error(); StorageError::Backend {
-            msg: format!("redis client error: {e}"),
-        }})?;
+        let client = Client::open(url).map_err(crate::backend_storage_error)?;
         let pool = r2d2::Pool::builder()
             .max_size(pool_size)
             .connection_timeout(Duration::from_secs(pool_timeout_secs))
             .idle_timeout(Some(Duration::from_secs(idle_timeout_secs)))
             .min_idle(Some(min_idle))
             .build(client)
-            .map_err(|e| { crate::record_backend_error(); StorageError::Backend {
-                msg: format!("redis pool error: {e}"),
-            }})?;
+            .map_err(crate::backend_storage_error)?;
         Ok(RedisPool::Standalone(pool))
     }
 
@@ -107,18 +184,14 @@ impl RedisPool {
         min_idle: u32,
     ) -> Result<Self, StorageError> {
         let client = ClusterClient::new(nodes.iter().map(|s| s.to_string()).collect::<Vec<_>>())
-            .map_err(|e| { crate::record_backend_error(); StorageError::Backend {
-                msg: format!("redis cluster client error: {e}"),
-            }})?;
+            .map_err(crate::backend_storage_error)?;
         let pool = r2d2::Pool::builder()
             .max_size(pool_size)
             .connection_timeout(Duration::from_secs(pool_timeout_secs))
             .idle_timeout(Some(Duration::from_secs(idle_timeout_secs)))
             .min_idle(Some(min_idle))
             .build(client)
-            .map_err(|e| { crate::record_backend_error(); StorageError::Backend {
-                msg: format!("redis cluster pool error: {e}"),
-            }})?;
+            .map_err(crate::backend_storage_error)?;
         Ok(RedisPool::Cluster(pool))
     }
 
@@ -128,19 +201,14 @@ impl RedisPool {
     /// `redis_pool_timeout_total` on failure.
     pub(crate) fn get(&self) -> Result<RedisConn, StorageError> {
         let result = match self {
-            RedisPool::Standalone(pool) => {
-                pool.get()
-                    .map(RedisConn::Standalone)
-                    .map_err(|e| { crate::record_backend_error(); StorageError::Backend {
-                        msg: format!("redis pool checkout error: {e}"),
-                    }})
-            }
+            RedisPool::Standalone(pool) => pool
+                .get()
+                .map(RedisConn::Standalone)
+                .map_err(crate::backend_storage_error),
             RedisPool::Cluster(pool) => pool
                 .get()
                 .map(|c| RedisConn::Cluster(Box::new(c)))
-                .map_err(|e| { crate::record_backend_error(); StorageError::Backend {
-                    msg: format!("redis cluster pool checkout error: {e}"),
-                }}),
+                .map_err(crate::backend_storage_error),
         };
         match &result {
             Ok(_) => metrics::counter!("redis_pool_checkouts_total").increment(1),
@@ -160,6 +228,26 @@ impl RedisPool {
             idle: s.idle_connections,
             active: s.connections.saturating_sub(s.idle_connections),
         }
+    }
+
+    /// Return `true` if this pool is in Redis Cluster mode.
+    ///
+    /// Test-only helper used to validate the pool variant without checking out
+    /// a live connection.
+    ///
+    /// # Warning
+    ///
+    /// Do **not** use `is_cluster()` to gate `MULTI`/`EXEC` (`.atomic()`)
+    /// in pipelines.  The correct approach is to never use `.atomic()` in
+    /// any pipeline that touches per-graph keys: all such keys share the
+    /// `{graphname}` hash tag and are therefore co-located on a single cluster
+    /// slot, making non-atomic pipelining safe in both standalone and cluster
+    /// modes.  Branching on `is_cluster()` would re-introduce MULTI/EXEC in
+    /// standalone deployments and create a correctness gap between the two
+    /// code paths.  See ADR-005 for the full rationale.
+    #[cfg(test)]
+    pub(crate) fn is_cluster(&self) -> bool {
+        matches!(self, RedisPool::Cluster(_))
     }
 
     /// Spawn a background tokio task that periodically records pool utilization
@@ -225,18 +313,14 @@ impl ReplicaPool {
         let per_replica = (pool_size / urls.len() as u32).max(1);
         let mut pools = Vec::with_capacity(urls.len());
         for url in urls {
-            let client = Client::open(*url).map_err(|e| { crate::record_backend_error(); StorageError::Backend {
-                msg: format!("redis replica client error: {e}"),
-            }})?;
+            let client = Client::open(*url).map_err(crate::backend_storage_error)?;
             let pool = r2d2::Pool::builder()
                 .max_size(per_replica)
                 .connection_timeout(Duration::from_secs(pool_timeout_secs))
                 .idle_timeout(Some(Duration::from_secs(idle_timeout_secs)))
                 .min_idle(Some(min_idle.min(per_replica)))
                 .build(client)
-                .map_err(|e| { crate::record_backend_error(); StorageError::Backend {
-                    msg: format!("redis replica pool error: {e}"),
-                }})?;
+                .map_err(crate::backend_storage_error)?;
             pools.push(pool);
         }
         Ok(Self {
@@ -263,15 +347,67 @@ impl ReplicaPool {
         let mut conn = self.pools[idx]
             .get()
             .map(RedisConn::Standalone)
-            .map_err(|e| { crate::record_backend_error(); StorageError::Backend {
-                msg: format!("redis replica pool checkout error: {e}"),
-            }})?;
-        // Issue READONLY so replica accepts read commands.
-        redis::cmd("READONLY")
-            .query::<String>(conn.as_mut())
-            .map_err(|e| { crate::record_backend_error(); StorageError::Backend {
-                msg: format!("redis READONLY command failed: {e}"),
-            }})?;
+            .map_err(crate::backend_storage_error)?;
+        // Issue READONLY so cluster replicas accept read commands.
+        // Standalone replicas (configured with `replica-read-only yes`) do NOT
+        // support READONLY — it is a Redis Cluster-only command that returns
+        // "ERR This instance has cluster support disabled" on non-cluster nodes.
+        // Tolerate the error instead of failing so that master+replica topology
+        // (non-cluster) works correctly.
+        if let Err(e) = redis::cmd("READONLY").query::<String>(conn.as_mut()) {
+            tracing::debug!(
+                "READONLY command not supported on this replica (standalone mode): {e}"
+            );
+        }
         Ok(conn)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── RedisPool::is_cluster ────────────────────────────────────────────────
+
+    /// A standalone pool constructed from a Redis URL must NOT report itself
+    /// as a cluster pool.
+    ///
+    #[test]
+    fn standalone_pool_not_cluster() {
+        // Build a standalone pool. This does NOT connect to Redis — r2d2 with
+        // a URL-only Client does not open a connection until the first checkout.
+        // We only need the pool type discrimination, not a live connection.
+        let pool = RedisPool::standalone(
+            "redis://127.0.0.1:6379",
+            1,  // pool_size
+            1,  // pool_timeout_secs
+            60, // idle_timeout_secs
+            0,  // min_idle
+        )
+        .expect("standalone pool construction should not require a live Redis server");
+        assert!(
+            !pool.is_cluster(),
+            "standalone pool must return false for is_cluster()"
+        );
+    }
+
+    /// A pool constructed via `RedisPool::cluster()` must report itself as a
+    /// cluster pool.
+    ///
+    /// Note: ClusterClient construction succeeds without a live cluster.
+    #[test]
+    fn cluster_pool_is_cluster() {
+        let pool = RedisPool::cluster(
+            &["redis://127.0.0.1:7000"],
+            1,  // pool_size
+            1,  // pool_timeout_secs
+            60, // idle_timeout_secs
+            0,  // min_idle
+        )
+        .expect("cluster pool construction should not require a live cluster");
+        assert!(
+            pool.is_cluster(),
+            "cluster pool must return true for is_cluster()"
+        );
     }
 }

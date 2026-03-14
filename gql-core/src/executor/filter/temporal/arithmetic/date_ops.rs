@@ -143,7 +143,11 @@ mod tests {
     use crate::types::CypherDuration;
 
     fn dur(months: i64, days: i64, nanos: i128) -> CypherDuration {
-        CypherDuration { months, days, nanos }
+        CypherDuration {
+            months,
+            days,
+            nanos,
+        }
     }
 
     #[test]

@@ -154,9 +154,12 @@ impl GraphStore for FanoutStore {
         // IDs consistent across all backends (e.g. Redis primary + Fabric secondary).
         let id = self.stores[0].create_node(graph, labels.clone(), properties.clone())?;
         let mut props_with_id = properties.clone();
-        let id_i64 = i64::try_from(id.0).map_err(|_| { crate::record_backend_error(); StorageError::Backend {
-            msg: format!("node ID {} exceeds i64::MAX", id.0),
-        }})?;
+        let id_i64 = i64::try_from(id.0).map_err(|_| {
+            crate::record_backend_error();
+            StorageError::Backend {
+                msg: format!("node ID {} exceeds i64::MAX", id.0),
+            }
+        })?;
         props_with_id.insert("_sd2_id".to_string(), Value::Int(id_i64));
         let mut successful_secondaries: Vec<usize> = Vec::new();
         for (offset, store) in self.stores[1..].iter().enumerate() {
@@ -169,7 +172,9 @@ impl GraphStore for FanoutStore {
                     "secondary store failed to create node, attempting rollback on successful stores"
                 );
                 for secondary_index in successful_secondaries.iter().copied().rev() {
-                    if let Err(rollback_err) = self.stores[secondary_index].delete_node(graph, id, true) {
+                    if let Err(rollback_err) =
+                        self.stores[secondary_index].delete_node(graph, id, true)
+                    {
                         tracing::error!(
                             node_id = %id.0,
                             secondary_index,
@@ -204,9 +209,12 @@ impl GraphStore for FanoutStore {
         let id =
             self.stores[0].create_edge(graph, src, dst, rel_type.clone(), properties.clone())?;
         let mut props_with_id = properties.clone();
-        let id_i64 = i64::try_from(id.0).map_err(|_| { crate::record_backend_error(); StorageError::Backend {
-            msg: format!("edge ID {} exceeds i64::MAX", id.0),
-        }})?;
+        let id_i64 = i64::try_from(id.0).map_err(|_| {
+            crate::record_backend_error();
+            StorageError::Backend {
+                msg: format!("edge ID {} exceeds i64::MAX", id.0),
+            }
+        })?;
         props_with_id.insert("_sd2_eid".to_string(), Value::Int(id_i64));
         let mut successful_secondaries: Vec<usize> = Vec::new();
         for (offset, store) in self.stores[1..].iter().enumerate() {
@@ -405,11 +413,7 @@ mod tests {
             self.0
                 .find_nodes_by_label_and_property(g, label, property, range)
         }
-        fn find_edges_by_type(
-            &self,
-            g: &str,
-            rel_type: &str,
-        ) -> Result<Vec<EdgeId>, StorageError> {
+        fn find_edges_by_type(&self, g: &str, rel_type: &str) -> Result<Vec<EdgeId>, StorageError> {
             self.0.find_edges_by_type(g, rel_type)
         }
         fn out_edges(&self, g: &str, node_id: NodeId) -> Result<Vec<AdjEntry>, StorageError> {
@@ -499,20 +503,10 @@ mod tests {
         ) -> Result<(), StorageError> {
             self.0.replace_edge_properties(g, id, properties)
         }
-        fn remove_node_property(
-            &self,
-            g: &str,
-            id: NodeId,
-            key: &str,
-        ) -> Result<(), StorageError> {
+        fn remove_node_property(&self, g: &str, id: NodeId, key: &str) -> Result<(), StorageError> {
             self.0.remove_node_property(g, id, key)
         }
-        fn remove_edge_property(
-            &self,
-            g: &str,
-            id: EdgeId,
-            key: &str,
-        ) -> Result<(), StorageError> {
+        fn remove_edge_property(&self, g: &str, id: EdgeId, key: &str) -> Result<(), StorageError> {
             self.0.remove_edge_property(g, id, key)
         }
         fn add_node_labels(
@@ -590,10 +584,7 @@ mod tests {
         }
 
         fn should_fail(&self) -> Result<(), StorageError> {
-            if self
-                .fail_writes
-                .load(std::sync::atomic::Ordering::SeqCst)
-            {
+            if self.fail_writes.load(std::sync::atomic::Ordering::SeqCst) {
                 Err(StorageError::Backend {
                     msg: "simulated secondary failure".to_string(),
                 })
@@ -637,11 +628,7 @@ mod tests {
             self.inner
                 .find_nodes_by_label_and_property(g, label, property, range)
         }
-        fn find_edges_by_type(
-            &self,
-            g: &str,
-            rel_type: &str,
-        ) -> Result<Vec<EdgeId>, StorageError> {
+        fn find_edges_by_type(&self, g: &str, rel_type: &str) -> Result<Vec<EdgeId>, StorageError> {
             self.inner.find_edges_by_type(g, rel_type)
         }
         fn out_edges(&self, g: &str, node_id: NodeId) -> Result<Vec<AdjEntry>, StorageError> {
@@ -737,21 +724,11 @@ mod tests {
             self.should_fail()?;
             self.inner.replace_edge_properties(g, id, properties)
         }
-        fn remove_node_property(
-            &self,
-            g: &str,
-            id: NodeId,
-            key: &str,
-        ) -> Result<(), StorageError> {
+        fn remove_node_property(&self, g: &str, id: NodeId, key: &str) -> Result<(), StorageError> {
             self.should_fail()?;
             self.inner.remove_node_property(g, id, key)
         }
-        fn remove_edge_property(
-            &self,
-            g: &str,
-            id: EdgeId,
-            key: &str,
-        ) -> Result<(), StorageError> {
+        fn remove_edge_property(&self, g: &str, id: EdgeId, key: &str) -> Result<(), StorageError> {
             self.should_fail()?;
             self.inner.remove_edge_property(g, id, key)
         }
@@ -1078,7 +1055,10 @@ mod tests {
         let mut props = HashMap::new();
         props.insert("age".to_string(), Value::Int(30));
         let result = fanout.set_node_properties("g", node_id, props);
-        assert!(result.is_err(), "secondary mismatch should surface as an error");
+        assert!(
+            result.is_err(),
+            "secondary mismatch should surface as an error"
+        );
 
         let primary_node = primary_ref.get_node("g", node_id).unwrap().unwrap();
         assert_eq!(primary_node.properties.get("age"), Some(&Value::Int(30)));
@@ -1105,7 +1085,10 @@ mod tests {
 
         let labels = vec!["VIP".to_string()];
         let result = fanout.add_node_labels("g", node_id, &labels);
-        assert!(result.is_err(), "secondary mismatch should surface as an error");
+        assert!(
+            result.is_err(),
+            "secondary mismatch should surface as an error"
+        );
 
         let primary_node = primary_ref.get_node("g", node_id).unwrap().unwrap();
         assert!(
@@ -1191,9 +1174,7 @@ mod tests {
         assert_eq!(batch_nodes.len(), 2);
         assert!(batch_nodes.iter().all(|n| n.is_some()));
 
-        let batch_edges = fanout
-            .get_edges_batch("g", &edge_ids)
-            .unwrap();
+        let batch_edges = fanout.get_edges_batch("g", &edge_ids).unwrap();
         assert_eq!(batch_edges.len(), 1);
         assert!(batch_edges[0].is_some());
 
@@ -1209,25 +1190,16 @@ mod tests {
     fn test_secondary_failure_rollback_create_node() {
         // Use Arc<FailingStore> so we can toggle failures after setup.
         let primary_inner = Arc::new(InMemoryGraphStore::new());
-        let primary_box_final: Box<dyn GraphStore> =
-            Box::new(ArcStore(Arc::clone(&primary_inner)));
+        let primary_box_final: Box<dyn GraphStore> = Box::new(ArcStore(Arc::clone(&primary_inner)));
 
         let failing_inner = Arc::new(FailingStore::new());
         // We need a wrapper for Arc<FailingStore> too.
         struct ArcFailingStore(Arc<FailingStore>);
         impl GraphStore for ArcFailingStore {
-            fn get_node(
-                &self,
-                g: &str,
-                id: NodeId,
-            ) -> Result<Option<NodeData>, StorageError> {
+            fn get_node(&self, g: &str, id: NodeId) -> Result<Option<NodeData>, StorageError> {
                 self.0.get_node(g, id)
             }
-            fn get_edge(
-                &self,
-                g: &str,
-                id: EdgeId,
-            ) -> Result<Option<EdgeData>, StorageError> {
+            fn get_edge(&self, g: &str, id: EdgeId) -> Result<Option<EdgeData>, StorageError> {
                 self.0.get_edge(g, id)
             }
             fn get_nodes_batch(
@@ -1268,18 +1240,10 @@ mod tests {
             ) -> Result<Vec<EdgeId>, StorageError> {
                 self.0.find_edges_by_type(g, rel_type)
             }
-            fn out_edges(
-                &self,
-                g: &str,
-                node_id: NodeId,
-            ) -> Result<Vec<AdjEntry>, StorageError> {
+            fn out_edges(&self, g: &str, node_id: NodeId) -> Result<Vec<AdjEntry>, StorageError> {
                 self.0.out_edges(g, node_id)
             }
-            fn in_edges(
-                &self,
-                g: &str,
-                node_id: NodeId,
-            ) -> Result<Vec<AdjEntry>, StorageError> {
+            fn in_edges(&self, g: &str, node_id: NodeId) -> Result<Vec<AdjEntry>, StorageError> {
                 self.0.in_edges(g, node_id)
             }
             fn out_edges_by_type(
@@ -1298,18 +1262,10 @@ mod tests {
             ) -> Result<Vec<AdjEntry>, StorageError> {
                 self.0.in_edges_by_type(g, node_id, rel_types)
             }
-            fn out_edge_ids(
-                &self,
-                g: &str,
-                node_id: NodeId,
-            ) -> Result<Vec<EdgeId>, StorageError> {
+            fn out_edge_ids(&self, g: &str, node_id: NodeId) -> Result<Vec<EdgeId>, StorageError> {
                 self.0.out_edge_ids(g, node_id)
             }
-            fn in_edge_ids(
-                &self,
-                g: &str,
-                node_id: NodeId,
-            ) -> Result<Vec<EdgeId>, StorageError> {
+            fn in_edge_ids(&self, g: &str, node_id: NodeId) -> Result<Vec<EdgeId>, StorageError> {
                 self.0.in_edge_ids(g, node_id)
             }
             fn all_node_ids(&self, g: &str) -> Result<Vec<NodeId>, StorageError> {
@@ -1403,12 +1359,7 @@ mod tests {
             ) -> Result<(), StorageError> {
                 self.0.remove_node_labels(g, id, labels)
             }
-            fn delete_node(
-                &self,
-                g: &str,
-                id: NodeId,
-                detach: bool,
-            ) -> Result<(), StorageError> {
+            fn delete_node(&self, g: &str, id: NodeId, detach: bool) -> Result<(), StorageError> {
                 self.0.delete_node(g, id, detach)
             }
             fn delete_edge(&self, g: &str, id: EdgeId) -> Result<(), StorageError> {
@@ -1425,12 +1376,7 @@ mod tests {
             ) -> Result<(), StorageError> {
                 self.0.create_index(g, label, property)
             }
-            fn drop_index(
-                &self,
-                g: &str,
-                label: &str,
-                property: &str,
-            ) -> Result<(), StorageError> {
+            fn drop_index(&self, g: &str, label: &str, property: &str) -> Result<(), StorageError> {
                 self.0.drop_index(g, label, property)
             }
             fn create_graph(&self, name: &str) -> Result<(), StorageError> {
@@ -1464,7 +1410,10 @@ mod tests {
 
         // Attempt to create a node — should fail because secondary fails.
         let result = fanout.create_node("g", vec!["Person".into()], HashMap::new());
-        assert!(result.is_err(), "create_node should fail when secondary fails");
+        assert!(
+            result.is_err(),
+            "create_node should fail when secondary fails"
+        );
         let err_msg = format!("{}", result.unwrap_err());
         assert!(
             err_msg.contains("simulated secondary failure"),
@@ -1486,51 +1435,200 @@ mod tests {
     #[test]
     fn test_secondary_failure_rollback_create_edge() {
         let primary_inner = Arc::new(InMemoryGraphStore::new());
-        let primary_box: Box<dyn GraphStore> =
-            Box::new(ArcStore(Arc::clone(&primary_inner)));
+        let primary_box: Box<dyn GraphStore> = Box::new(ArcStore(Arc::clone(&primary_inner)));
 
         let failing_inner = Arc::new(FailingStore::new());
         // Reuse the ArcFailingStore pattern from above — but since it's
         // defined inside the other test, define a minimal inline wrapper.
         struct ArcFS(Arc<FailingStore>);
         impl GraphStore for ArcFS {
-            fn get_node(&self, g: &str, id: NodeId) -> Result<Option<NodeData>, StorageError> { self.0.get_node(g, id) }
-            fn get_edge(&self, g: &str, id: EdgeId) -> Result<Option<EdgeData>, StorageError> { self.0.get_edge(g, id) }
-            fn get_nodes_batch(&self, g: &str, ids: &[NodeId]) -> Result<Vec<Option<NodeData>>, StorageError> { self.0.get_nodes_batch(g, ids) }
-            fn get_edges_batch(&self, g: &str, ids: &[EdgeId]) -> Result<Vec<Option<EdgeData>>, StorageError> { self.0.get_edges_batch(g, ids) }
-            fn find_nodes_by_label(&self, g: &str, l: &str) -> Result<Vec<NodeId>, StorageError> { self.0.find_nodes_by_label(g, l) }
-            fn find_nodes_by_label_and_property(&self, g: &str, l: &str, p: &str, r: RangeQuery<'_>) -> Result<Vec<NodeId>, StorageError> { self.0.find_nodes_by_label_and_property(g, l, p, r) }
-            fn find_edges_by_type(&self, g: &str, t: &str) -> Result<Vec<EdgeId>, StorageError> { self.0.find_edges_by_type(g, t) }
-            fn out_edges(&self, g: &str, n: NodeId) -> Result<Vec<AdjEntry>, StorageError> { self.0.out_edges(g, n) }
-            fn in_edges(&self, g: &str, n: NodeId) -> Result<Vec<AdjEntry>, StorageError> { self.0.in_edges(g, n) }
-            fn out_edges_by_type(&self, g: &str, n: NodeId, t: &[&str]) -> Result<Vec<AdjEntry>, StorageError> { self.0.out_edges_by_type(g, n, t) }
-            fn in_edges_by_type(&self, g: &str, n: NodeId, t: &[&str]) -> Result<Vec<AdjEntry>, StorageError> { self.0.in_edges_by_type(g, n, t) }
-            fn out_edge_ids(&self, g: &str, n: NodeId) -> Result<Vec<EdgeId>, StorageError> { self.0.out_edge_ids(g, n) }
-            fn in_edge_ids(&self, g: &str, n: NodeId) -> Result<Vec<EdgeId>, StorageError> { self.0.in_edge_ids(g, n) }
-            fn all_node_ids(&self, g: &str) -> Result<Vec<NodeId>, StorageError> { self.0.all_node_ids(g) }
-            fn all_edge_ids(&self, g: &str) -> Result<Vec<EdgeId>, StorageError> { self.0.all_edge_ids(g) }
-            fn all_label_names(&self, g: &str) -> Result<Vec<String>, StorageError> { self.0.all_label_names(g) }
-            fn create_node(&self, g: &str, l: Vec<String>, p: HashMap<String, Value>) -> Result<NodeId, StorageError> { self.0.create_node(g, l, p) }
-            fn create_edge(&self, g: &str, s: NodeId, d: NodeId, t: String, p: HashMap<String, Value>) -> Result<EdgeId, StorageError> { self.0.create_edge(g, s, d, t, p) }
-            fn set_node_properties(&self, g: &str, id: NodeId, p: HashMap<String, Value>) -> Result<(), StorageError> { self.0.set_node_properties(g, id, p) }
-            fn replace_node_properties(&self, g: &str, id: NodeId, p: HashMap<String, Value>) -> Result<(), StorageError> { self.0.replace_node_properties(g, id, p) }
-            fn set_edge_properties(&self, g: &str, id: EdgeId, p: HashMap<String, Value>) -> Result<(), StorageError> { self.0.set_edge_properties(g, id, p) }
-            fn replace_edge_properties(&self, g: &str, id: EdgeId, p: HashMap<String, Value>) -> Result<(), StorageError> { self.0.replace_edge_properties(g, id, p) }
-            fn remove_node_property(&self, g: &str, id: NodeId, k: &str) -> Result<(), StorageError> { self.0.remove_node_property(g, id, k) }
-            fn remove_edge_property(&self, g: &str, id: EdgeId, k: &str) -> Result<(), StorageError> { self.0.remove_edge_property(g, id, k) }
-            fn add_node_labels(&self, g: &str, id: NodeId, l: &[String]) -> Result<(), StorageError> { self.0.add_node_labels(g, id, l) }
-            fn remove_node_labels(&self, g: &str, id: NodeId, l: &[String]) -> Result<(), StorageError> { self.0.remove_node_labels(g, id, l) }
-            fn delete_node(&self, g: &str, id: NodeId, d: bool) -> Result<(), StorageError> { self.0.delete_node(g, id, d) }
-            fn delete_edge(&self, g: &str, id: EdgeId) -> Result<(), StorageError> { self.0.delete_edge(g, id) }
-            fn list_indexes(&self, g: &str) -> Result<Vec<IndexDescriptor>, StorageError> { self.0.list_indexes(g) }
-            fn create_index(&self, g: &str, l: &str, p: &str) -> Result<(), StorageError> { self.0.create_index(g, l, p) }
-            fn drop_index(&self, g: &str, l: &str, p: &str) -> Result<(), StorageError> { self.0.drop_index(g, l, p) }
-            fn create_graph(&self, n: &str) -> Result<(), StorageError> { self.0.create_graph(n) }
-            fn delete_graph(&self, n: &str) -> Result<(), StorageError> { self.0.delete_graph(n) }
-            fn graph_exists(&self, n: &str) -> Result<bool, StorageError> { self.0.graph_exists(n) }
-            fn list_graphs(&self) -> Result<Vec<String>, StorageError> { self.0.list_graphs() }
-            fn graph_stats(&self, g: &str) -> Result<GraphStats, StorageError> { self.0.graph_stats(g) }
-            fn as_any(&self) -> &dyn std::any::Any { self }
+            fn get_node(&self, g: &str, id: NodeId) -> Result<Option<NodeData>, StorageError> {
+                self.0.get_node(g, id)
+            }
+            fn get_edge(&self, g: &str, id: EdgeId) -> Result<Option<EdgeData>, StorageError> {
+                self.0.get_edge(g, id)
+            }
+            fn get_nodes_batch(
+                &self,
+                g: &str,
+                ids: &[NodeId],
+            ) -> Result<Vec<Option<NodeData>>, StorageError> {
+                self.0.get_nodes_batch(g, ids)
+            }
+            fn get_edges_batch(
+                &self,
+                g: &str,
+                ids: &[EdgeId],
+            ) -> Result<Vec<Option<EdgeData>>, StorageError> {
+                self.0.get_edges_batch(g, ids)
+            }
+            fn find_nodes_by_label(&self, g: &str, l: &str) -> Result<Vec<NodeId>, StorageError> {
+                self.0.find_nodes_by_label(g, l)
+            }
+            fn find_nodes_by_label_and_property(
+                &self,
+                g: &str,
+                l: &str,
+                p: &str,
+                r: RangeQuery<'_>,
+            ) -> Result<Vec<NodeId>, StorageError> {
+                self.0.find_nodes_by_label_and_property(g, l, p, r)
+            }
+            fn find_edges_by_type(&self, g: &str, t: &str) -> Result<Vec<EdgeId>, StorageError> {
+                self.0.find_edges_by_type(g, t)
+            }
+            fn out_edges(&self, g: &str, n: NodeId) -> Result<Vec<AdjEntry>, StorageError> {
+                self.0.out_edges(g, n)
+            }
+            fn in_edges(&self, g: &str, n: NodeId) -> Result<Vec<AdjEntry>, StorageError> {
+                self.0.in_edges(g, n)
+            }
+            fn out_edges_by_type(
+                &self,
+                g: &str,
+                n: NodeId,
+                t: &[&str],
+            ) -> Result<Vec<AdjEntry>, StorageError> {
+                self.0.out_edges_by_type(g, n, t)
+            }
+            fn in_edges_by_type(
+                &self,
+                g: &str,
+                n: NodeId,
+                t: &[&str],
+            ) -> Result<Vec<AdjEntry>, StorageError> {
+                self.0.in_edges_by_type(g, n, t)
+            }
+            fn out_edge_ids(&self, g: &str, n: NodeId) -> Result<Vec<EdgeId>, StorageError> {
+                self.0.out_edge_ids(g, n)
+            }
+            fn in_edge_ids(&self, g: &str, n: NodeId) -> Result<Vec<EdgeId>, StorageError> {
+                self.0.in_edge_ids(g, n)
+            }
+            fn all_node_ids(&self, g: &str) -> Result<Vec<NodeId>, StorageError> {
+                self.0.all_node_ids(g)
+            }
+            fn all_edge_ids(&self, g: &str) -> Result<Vec<EdgeId>, StorageError> {
+                self.0.all_edge_ids(g)
+            }
+            fn all_label_names(&self, g: &str) -> Result<Vec<String>, StorageError> {
+                self.0.all_label_names(g)
+            }
+            fn create_node(
+                &self,
+                g: &str,
+                l: Vec<String>,
+                p: HashMap<String, Value>,
+            ) -> Result<NodeId, StorageError> {
+                self.0.create_node(g, l, p)
+            }
+            fn create_edge(
+                &self,
+                g: &str,
+                s: NodeId,
+                d: NodeId,
+                t: String,
+                p: HashMap<String, Value>,
+            ) -> Result<EdgeId, StorageError> {
+                self.0.create_edge(g, s, d, t, p)
+            }
+            fn set_node_properties(
+                &self,
+                g: &str,
+                id: NodeId,
+                p: HashMap<String, Value>,
+            ) -> Result<(), StorageError> {
+                self.0.set_node_properties(g, id, p)
+            }
+            fn replace_node_properties(
+                &self,
+                g: &str,
+                id: NodeId,
+                p: HashMap<String, Value>,
+            ) -> Result<(), StorageError> {
+                self.0.replace_node_properties(g, id, p)
+            }
+            fn set_edge_properties(
+                &self,
+                g: &str,
+                id: EdgeId,
+                p: HashMap<String, Value>,
+            ) -> Result<(), StorageError> {
+                self.0.set_edge_properties(g, id, p)
+            }
+            fn replace_edge_properties(
+                &self,
+                g: &str,
+                id: EdgeId,
+                p: HashMap<String, Value>,
+            ) -> Result<(), StorageError> {
+                self.0.replace_edge_properties(g, id, p)
+            }
+            fn remove_node_property(
+                &self,
+                g: &str,
+                id: NodeId,
+                k: &str,
+            ) -> Result<(), StorageError> {
+                self.0.remove_node_property(g, id, k)
+            }
+            fn remove_edge_property(
+                &self,
+                g: &str,
+                id: EdgeId,
+                k: &str,
+            ) -> Result<(), StorageError> {
+                self.0.remove_edge_property(g, id, k)
+            }
+            fn add_node_labels(
+                &self,
+                g: &str,
+                id: NodeId,
+                l: &[String],
+            ) -> Result<(), StorageError> {
+                self.0.add_node_labels(g, id, l)
+            }
+            fn remove_node_labels(
+                &self,
+                g: &str,
+                id: NodeId,
+                l: &[String],
+            ) -> Result<(), StorageError> {
+                self.0.remove_node_labels(g, id, l)
+            }
+            fn delete_node(&self, g: &str, id: NodeId, d: bool) -> Result<(), StorageError> {
+                self.0.delete_node(g, id, d)
+            }
+            fn delete_edge(&self, g: &str, id: EdgeId) -> Result<(), StorageError> {
+                self.0.delete_edge(g, id)
+            }
+            fn list_indexes(&self, g: &str) -> Result<Vec<IndexDescriptor>, StorageError> {
+                self.0.list_indexes(g)
+            }
+            fn create_index(&self, g: &str, l: &str, p: &str) -> Result<(), StorageError> {
+                self.0.create_index(g, l, p)
+            }
+            fn drop_index(&self, g: &str, l: &str, p: &str) -> Result<(), StorageError> {
+                self.0.drop_index(g, l, p)
+            }
+            fn create_graph(&self, n: &str) -> Result<(), StorageError> {
+                self.0.create_graph(n)
+            }
+            fn delete_graph(&self, n: &str) -> Result<(), StorageError> {
+                self.0.delete_graph(n)
+            }
+            fn graph_exists(&self, n: &str) -> Result<bool, StorageError> {
+                self.0.graph_exists(n)
+            }
+            fn list_graphs(&self) -> Result<Vec<String>, StorageError> {
+                self.0.list_graphs()
+            }
+            fn graph_stats(&self, g: &str) -> Result<GraphStats, StorageError> {
+                self.0.graph_stats(g)
+            }
+            fn as_any(&self) -> &dyn std::any::Any {
+                self
+            }
         }
 
         let failing_box: Box<dyn GraphStore> = Box::new(ArcFS(Arc::clone(&failing_inner)));

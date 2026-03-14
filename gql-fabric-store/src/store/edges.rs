@@ -33,9 +33,7 @@ pub(crate) fn get_edges_batch_query() -> String {
 
 /// Cypher: find edges by relationship type (sanitized), returning their IDs.
 pub(crate) fn find_edges_by_type_query(rt: &str) -> String {
-    format!(
-        "MATCH ()-[r:`{rt}` {{`{PROP_GRAPH}`: $graph}}]->() RETURN r.`{PROP_EDGE_ID}` AS id"
-    )
+    format!("MATCH ()-[r:`{rt}` {{`{PROP_GRAPH}`: $graph}}]->() RETURN r.`{PROP_EDGE_ID}` AS id")
 }
 
 /// Cypher: all edge IDs in a graph.
@@ -60,9 +58,7 @@ pub(crate) fn set_edge_properties_query() -> String {
 
 /// Cypher: SET r = $props (replace all edge properties).
 pub(crate) fn replace_edge_properties_query() -> String {
-    format!(
-        "MATCH ()-[r {{`{PROP_GRAPH}`: $graph, `{PROP_EDGE_ID}`: $id}}]->() SET r = $props"
-    )
+    format!("MATCH ()-[r {{`{PROP_GRAPH}`: $graph, `{PROP_EDGE_ID}`: $id}}]->() SET r = $props")
 }
 
 /// Cypher: REMOVE a single property from an edge.
@@ -82,10 +78,7 @@ pub(super) fn get_edge_impl(
     graph: &str,
     id: EdgeId,
 ) -> Result<Option<EdgeData>, StorageError> {
-    let rows = store.query(
-        &get_edge_query(),
-        json!({ "graph": graph, "id": id.0 }),
-    )?;
+    let rows = store.query(&get_edge_query(), json!({ "graph": graph, "id": id.0 }))?;
     rows.first()
         .map(|r| store.row_to_edge_data(r))
         .unwrap_or(Ok(None))
@@ -121,10 +114,7 @@ pub(super) fn find_edges_by_type_impl(
             ),
         });
     }
-    let rows = store.query(
-        &find_edges_by_type_query(&rt),
-        json!({ "graph": graph }),
-    )?;
+    let rows = store.query(&find_edges_by_type_query(&rt), json!({ "graph": graph }))?;
     Ok(rows
         .iter()
         .filter_map(|r| r.first()?.as_u64().map(EdgeId))
@@ -135,10 +125,7 @@ pub(super) fn all_edge_ids_impl(
     store: &FabricGraphStore,
     graph: &str,
 ) -> Result<Vec<EdgeId>, StorageError> {
-    let rows = store.query(
-        &all_edge_ids_query(),
-        json!({ "graph": graph }),
-    )?;
+    let rows = store.query(&all_edge_ids_query(), json!({ "graph": graph }))?;
     Ok(rows
         .iter()
         .filter_map(|r| r.first()?.as_u64().map(EdgeId))
@@ -178,9 +165,7 @@ pub(super) fn create_edge_impl(
 
     if rows.is_empty() {
         return Err(StorageError::Backend {
-            msg: format!(
-                "create_edge: src {src:?} or dst {dst:?} not found in graph '{graph}'"
-            ),
+            msg: format!("create_edge: src {src:?} or dst {dst:?} not found in graph '{graph}'"),
         });
     }
     Ok(id)
@@ -240,10 +225,7 @@ pub(super) fn delete_edge_impl(
     graph: &str,
     id: EdgeId,
 ) -> Result<(), StorageError> {
-    store.statement(
-        &delete_edge_query(),
-        json!({ "graph": graph, "id": id.0 }),
-    )?;
+    store.statement(&delete_edge_query(), json!({ "graph": graph, "id": id.0 }))?;
     Ok(())
 }
 
@@ -327,7 +309,10 @@ mod tests {
     fn delete_edge_query_structure() {
         let q = delete_edge_query();
         assert!(q.contains("DELETE r"), "missing DELETE: {q}");
-        assert!(!q.contains("DETACH"), "edges should not use DETACH DELETE: {q}");
+        assert!(
+            !q.contains("DETACH"),
+            "edges should not use DETACH DELETE: {q}"
+        );
     }
 
     // ── Edge query consistency ──────────────────────────────────────────────
@@ -344,10 +329,7 @@ mod tests {
             delete_edge_query(),
         ];
         for q in &queries {
-            assert!(
-                q.contains("->()"),
-                "edge query missing directed arrow: {q}"
-            );
+            assert!(q.contains("->()"), "edge query missing directed arrow: {q}");
         }
     }
 

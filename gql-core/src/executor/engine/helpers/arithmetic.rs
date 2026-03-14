@@ -2,8 +2,8 @@
 
 use crate::ast::Expr;
 use crate::error::GqlError;
-use crate::executor::filter::Row as FilterRow;
 use crate::executor::filter::eval_expr;
+use crate::executor::filter::Row as FilterRow;
 use crate::types::Value;
 
 /// Evaluate a binary operation directly on two already-evaluated `Value`s.
@@ -251,8 +251,8 @@ pub(crate) fn value_to_expr(val: &Value) -> Expr {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
     use crate::ast::BinaryOp;
+    use std::collections::HashMap;
 
     #[test]
     fn eval_binary_values_list_concat() {

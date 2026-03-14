@@ -32,9 +32,7 @@ fn max_decode_depth() -> usize {
             .and_then(|v| match v.parse::<usize>() {
                 Ok(val) if val > 0 => Some(val),
                 _ => {
-                    tracing::warn!(
-                        "invalid BOLT_MAX_DECODE_DEPTH value, using default 128"
-                    );
+                    tracing::warn!("invalid BOLT_MAX_DECODE_DEPTH value, using default 128");
                     None
                 }
             })
@@ -999,7 +997,8 @@ mod tests {
             buf.push(0xC0); // Null
         }
 
-        let (val, consumed) = decode(&buf).expect("decode should succeed for MAX_PREALLOC elements");
+        let (val, consumed) =
+            decode(&buf).expect("decode should succeed for MAX_PREALLOC elements");
         assert_eq!(consumed, buf.len());
         match val {
             BoltValue::List(items) => assert_eq!(items.len(), count),

@@ -169,7 +169,11 @@ fn compute_latency(mut samples: Vec<f64>) -> LatencyStats {
 
 async fn connect(uri: &str, user: &str, password: &str) -> Result<Graph, neo4rs::Error> {
     let u = if user.is_empty() { "neo4j" } else { user };
-    let p = if password.is_empty() { "neo4j" } else { password };
+    let p = if password.is_empty() {
+        "neo4j"
+    } else {
+        password
+    };
     let builder = ConfigBuilder::default()
         .uri(uri)
         .user(u)
@@ -186,7 +190,11 @@ async fn connect_pool(
     pool_size: usize,
 ) -> Result<Graph, neo4rs::Error> {
     let u = if user.is_empty() { "neo4j" } else { user };
-    let p = if password.is_empty() { "neo4j" } else { password };
+    let p = if password.is_empty() {
+        "neo4j"
+    } else {
+        password
+    };
     let builder = ConfigBuilder::default()
         .uri(uri)
         .user(u)
@@ -373,7 +381,8 @@ async fn run_ramp(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
             targets.push(lvl);
         }
     }
-    if !targets.contains(&cli.max_connections) && cli.max_connections > *targets.last().unwrap_or(&0)
+    if !targets.contains(&cli.max_connections)
+        && cli.max_connections > *targets.last().unwrap_or(&0)
     {
         targets.push(cli.max_connections);
     }

@@ -105,24 +105,33 @@ pub fn cmp_values(a: &Value, b: &Value) -> std::cmp::Ordering {
         (Value::Map(x), Value::Map(y)) => x.len().cmp(&y.len()),
         (Value::Node(x), Value::Node(y)) => x.cmp(y),
         (Value::Edge(x), Value::Edge(y)) => x.cmp(y),
-        (Value::Path { nodes: n1, edges: e1 }, Value::Path { nodes: n2, edges: e2 }) => {
-            n1.len().cmp(&n2.len()).then_with(|| n1.cmp(n2)).then_with(|| e1.cmp(e2))
-        }
-        (Value::Duration(d1), Value::Duration(d2)) => {
-            d1.months.cmp(&d2.months)
-                .then_with(|| d1.days.cmp(&d2.days))
-                .then_with(|| d1.nanos.cmp(&d2.nanos))
-        }
+        (
+            Value::Path {
+                nodes: n1,
+                edges: e1,
+            },
+            Value::Path {
+                nodes: n2,
+                edges: e2,
+            },
+        ) => n1
+            .len()
+            .cmp(&n2.len())
+            .then_with(|| n1.cmp(n2))
+            .then_with(|| e1.cmp(e2)),
+        (Value::Duration(d1), Value::Duration(d2)) => d1
+            .months
+            .cmp(&d2.months)
+            .then_with(|| d1.days.cmp(&d2.days))
+            .then_with(|| d1.nanos.cmp(&d2.nanos)),
         (Value::Point(p1), Value::Point(p2)) => {
             p1.x.total_cmp(&p2.x)
                 .then_with(|| p1.y.total_cmp(&p2.y))
-                .then_with(|| {
-                    match (p1.z, p2.z) {
-                        (Some(a), Some(b)) => a.total_cmp(&b),
-                        (None, Some(_)) => Less,
-                        (Some(_), None) => Greater,
-                        (None, None) => Equal,
-                    }
+                .then_with(|| match (p1.z, p2.z) {
+                    (Some(a), Some(b)) => a.total_cmp(&b),
+                    (None, Some(_)) => Less,
+                    (Some(_), None) => Greater,
+                    (None, None) => Equal,
                 })
         }
         (Value::Bytes(x), Value::Bytes(y)) => x.cmp(y),

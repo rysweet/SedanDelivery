@@ -1,0 +1,74 @@
+# Canonical gadugi scenario for Issue #745 — unit-level cluster-safety contract.
+#
+# Scenario 1 (SIMPLE): Verify the cluster-safe write path CI contract tests pass.
+# These tests run without a live Redis instance and confirm the public API
+# invariants described in ADR-005 hold.
+
+scenario:
+  name: "Issue #745 - Cluster write safety unit contract (Scenario 1: simple)"
+  description: >
+    Verify from a contributor perspective that the gql-redis-store crate exposes
+    the expected cluster-safety constants and functions (MAX_NODES_FOR_DELETE,
+    backend_error_msg), and that pipeline construction never injects MULTI/EXEC
+    into write paths.  This validates the direct code-level fixes for #745.
+  metadata:
+    tags: [cli, smoke, cluster, unit, regression, issue-745]
+    priority: high
+  agents:
+    - name: cli-agent
+      type: cli
+      config: {}
+  steps:
+    - name: "Run gql-redis-store unit test suite"
+      agent: cli-agent
+      action: execute
+      params:
+        command: cargo
+        args:
+          - test
+          - -p
+          - gql-redis-store
+          - --
+          - --nocapture
+      timeout: 120000
+
+    - name: "Confirm CI-1 MAX_NODES_FOR_DELETE sanity passes"
+      agent: cli-agent
+      action: wait_for_output
+      params:
+        pattern: "ci1_max_nodes_for_delete_is_positive_and_bounded.*ok"
+      timeout: 5000
+
+    - name: "Confirm CI-3 backend_error_msg non-empty passes"
+      agent: cli-agent
+      action: wait_for_output
+      params:
+        pattern: "ci3_backend_error_msg_nonempty.*ok"
+      timeout: 5000
+
+    - name: "Confirm CI-4 backend_error_msg build-mode contract passes"
+      agent: cli-agent
+      action: wait_for_output
+      params:
+        pattern: "ci4_backend_error_msg_build_mode_contract.*ok"
+      timeout: 5000
+
+    - name: "Confirm CI-9 node write pipeline has no MULTI/EXEC"
+      agent: cli-agent
+      action: wait_for_output
+      params:
+        pattern: "ci9_node_write_pipeline_no_multi_exec.*ok"
+      timeout: 5000
+
+    - name: "Confirm CI-10 pipeline keys all share graph hash tag"
+      agent: cli-agent
+      action: wait_for_output
+      params:
+        pattern: "ci10_pipeline_keys_all_share_graph_hash_tag.*ok"
+      timeout: 5000
+
+    - name: "Confirm cargo test exited with code 0"
+      agent: cli-agent
+      action: validate_exit_code
+      params:
+        text: "0"

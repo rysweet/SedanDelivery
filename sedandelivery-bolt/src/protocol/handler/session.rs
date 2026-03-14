@@ -100,20 +100,7 @@ pub struct AdminStats {
     pub(crate) system_updates: u64,
 }
 
-/// Duration after a write during which reads should be routed to the primary
-/// for read-after-write consistency.
-const READ_AFTER_WRITE_WINDOW: std::time::Duration = std::time::Duration::from_secs(5);
-
 impl Session {
-    /// Returns `true` if reads should be forced to the primary (not replicas)
-    /// because a write occurred recently on this session.
-    pub(crate) fn force_primary_read(&self) -> bool {
-        match self.last_write_at {
-            Some(t) => t.elapsed() < READ_AFTER_WRITE_WINDOW,
-            None => false,
-        }
-    }
-
     /// Allocate the next query ID, returning an error if the counter overflows.
     pub(crate) fn allocate_qid(&mut self) -> Result<i64, ProtocolError> {
         let qid = self.next_qid;

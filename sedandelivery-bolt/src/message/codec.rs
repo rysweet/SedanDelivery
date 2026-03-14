@@ -167,7 +167,9 @@ mod tests {
     #[test]
     fn multi_chunk_roundtrip() {
         // Create a message larger than max_chunk_size() so it spans multiple chunks.
-        let msg: Vec<u8> = (0..max_chunk_size() + 100).map(|i| (i % 256) as u8).collect();
+        let msg: Vec<u8> = (0..max_chunk_size() + 100)
+            .map(|i| (i % 256) as u8)
+            .collect();
         let mut wire = Vec::new();
         chunk_encode(&msg, &mut wire);
 

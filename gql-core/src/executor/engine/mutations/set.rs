@@ -17,7 +17,9 @@ impl<'a> QueryExecutor<'a> {
     ) -> Result<Vec<Row>, GqlError> {
         let Operator::Set { items, child } = op else {
             debug_assert!(false, "expected Set operator");
-            return Err(GqlError::Execution(ExecutionError::UnsupportedFeature { feature: "internal: expected Set operator".into() }));
+            return Err(GqlError::Execution(ExecutionError::UnsupportedFeature {
+                feature: "internal: expected Set operator".into(),
+            }));
         };
         let input = self.exec_operator(cx, child)?;
         let mut out = Vec::with_capacity(input.len());
@@ -42,7 +44,9 @@ impl<'a> QueryExecutor<'a> {
     ) -> Result<Vec<Row>, GqlError> {
         let Operator::Remove { items, child } = op else {
             debug_assert!(false, "expected Remove operator");
-            return Err(GqlError::Execution(ExecutionError::UnsupportedFeature { feature: "internal: expected Remove operator".into() }));
+            return Err(GqlError::Execution(ExecutionError::UnsupportedFeature {
+                feature: "internal: expected Remove operator".into(),
+            }));
         };
         let input = self.exec_operator(cx, child)?;
         let mut out = Vec::with_capacity(input.len());
@@ -503,7 +507,10 @@ mod tests {
         let mut budget = ExecutionBudget::unlimited();
         let _ = executor.execute("g", &plan, &mut budget).unwrap();
         let node = store.get_node("g", nid).unwrap().unwrap();
-        assert_eq!(node.properties.get("name"), Some(&Value::Str("Alice".into())));
+        assert_eq!(
+            node.properties.get("name"),
+            Some(&Value::Str("Alice".into()))
+        );
         assert_eq!(node.properties.get("age"), Some(&Value::Int(30)));
     }
 
@@ -520,7 +527,10 @@ mod tests {
         let plan = Operator::Set {
             items: vec![SetItem::Map {
                 alias: Identifier::new("n"),
-                map: Expr::MapLiteral(vec![(smol_str::SmolStr::new("title"), Expr::Str("Dr".into()))]),
+                map: Expr::MapLiteral(vec![(
+                    smol_str::SmolStr::new("title"),
+                    Expr::Str("Dr".into()),
+                )]),
                 merge: false,
             }],
             child: Box::new(Operator::NodeScan {
@@ -531,8 +541,14 @@ mod tests {
         let mut budget = ExecutionBudget::unlimited();
         let _ = executor.execute("g", &plan, &mut budget).unwrap();
         let node = store.get_node("g", nid).unwrap().unwrap();
-        assert!(!node.properties.contains_key("name"), "old properties should be replaced");
-        assert!(!node.properties.contains_key("age"), "old properties should be replaced");
+        assert!(
+            !node.properties.contains_key("name"),
+            "old properties should be replaced"
+        );
+        assert!(
+            !node.properties.contains_key("age"),
+            "old properties should be replaced"
+        );
         assert_eq!(node.properties.get("title"), Some(&Value::Str("Dr".into())));
     }
 
@@ -549,7 +565,9 @@ mod tests {
             value: Expr::Integer(1),
         };
         // Should succeed silently (no-op)
-        executor.apply_set_item("g", &row, &item, &mut stats).unwrap();
+        executor
+            .apply_set_item("g", &row, &item, &mut stats)
+            .unwrap();
         assert_eq!(stats.properties_set, 0);
     }
 }

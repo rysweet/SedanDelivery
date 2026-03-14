@@ -169,7 +169,10 @@ fn resolve_node(id: NodeId, store: &dyn GraphStore, graph: &str) -> Result<Json,
             Err(format!("failed to resolve node {}: {e}", id.0))
         }
         Ok(None) => {
-            tracing::error!(node_id = id.0, "node not found in store during serialization");
+            tracing::error!(
+                node_id = id.0,
+                "node not found in store during serialization"
+            );
             Err(format!("node {} not found in store", id.0))
         }
     }
@@ -189,7 +192,10 @@ fn resolve_edge(id: EdgeId, store: &dyn GraphStore, graph: &str) -> Result<Json,
             Err(format!("failed to resolve edge {}: {e}", id.0))
         }
         Ok(None) => {
-            tracing::error!(edge_id = id.0, "edge not found in store during serialization");
+            tracing::error!(
+                edge_id = id.0,
+                "edge not found in store during serialization"
+            );
             Err(format!("edge {} not found in store", id.0))
         }
     }
@@ -603,7 +609,10 @@ mod tests {
 
         assert!(result.is_err(), "unresolvable node must return an error");
         let err = result.unwrap_err();
-        assert!(err.contains("9999"), "error should mention the node id: {err}");
+        assert!(
+            err.contains("9999"),
+            "error should mention the node id: {err}"
+        );
     }
 
     #[test]

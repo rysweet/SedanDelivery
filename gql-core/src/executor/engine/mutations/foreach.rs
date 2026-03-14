@@ -47,9 +47,7 @@ impl<'a> QueryExecutor<'a> {
 
                         // Inject the seed row so that exec_single_row (the leaf of
                         // the body sub-plan) returns it instead of an empty row.
-                        self.foreach_seed
-                            .borrow_mut()
-                            .replace(vec![seed_row]);
+                        self.foreach_seed.borrow_mut().replace(vec![seed_row]);
 
                         // Execute the body sub-plan. The SingleRow leaf will pick
                         // up the seed via foreach_seed, making the loop variable
@@ -106,16 +104,15 @@ mod tests {
         let plan = planner.plan(&ast).expect("plan error");
         let executor = QueryExecutor::new(store);
         let mut budget = ExecutionBudget::unlimited();
-        executor.execute("g", &plan, &mut budget).expect("exec error")
+        executor
+            .execute("g", &plan, &mut budget)
+            .expect("exec error")
     }
 
     #[test]
     fn foreach_creates_nodes_from_integer_list() {
         let store = make_store();
-        let result = run_query(
-            &store,
-            "FOREACH (x IN [1,2,3] | CREATE (:N {val: x}))",
-        );
+        let result = run_query(&store, "FOREACH (x IN [1,2,3] | CREATE (:N {val: x}))");
         assert_eq!(result.stats.nodes_created, 3);
         let ids = store.find_nodes_by_label("g", "N").unwrap();
         assert_eq!(ids.len(), 3);
@@ -161,10 +158,7 @@ mod tests {
     #[test]
     fn foreach_with_empty_list_is_noop() {
         let store = make_store();
-        let result = run_query(
-            &store,
-            "FOREACH (x IN [] | CREATE (:N {val: x}))",
-        );
+        let result = run_query(&store, "FOREACH (x IN [] | CREATE (:N {val: x}))");
         assert_eq!(result.stats.nodes_created, 0);
         let ids = store.find_nodes_by_label("g", "N").unwrap();
         assert_eq!(ids.len(), 0);
@@ -264,11 +258,7 @@ mod tests {
             list_expr: Expr::Null,
             body: Box::new(Operator::Create {
                 patterns: vec![CreatePattern {
-                    nodes: vec![(
-                        Some(Identifier::new("n")),
-                        vec![Label::new("N")],
-                        vec![],
-                    )],
+                    nodes: vec![(Some(Identifier::new("n")), vec![Label::new("N")], vec![])],
                     edges: vec![],
                 }],
                 child: Some(Box::new(Operator::SingleRow)),

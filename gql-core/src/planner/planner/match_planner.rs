@@ -206,14 +206,15 @@ impl<'s> QueryPlanner<'s> {
             if let Some(range) = &rel.range {
                 let (min, max) =
                     crate::planner::validate_varlen_bounds(range.min.unwrap_or(1), range.max)?;
-                let path_alias = if has_path_var {
-                    // Ensure a path alias exists for VarLenExpand when tracking a named path.
-                    Some(rel.variable.clone().unwrap_or_else(|| {
-                        Identifier::new(format!("__path_rel_{}__", step_idx))
-                    }))
-                } else {
-                    rel.variable.clone()
-                };
+                let path_alias =
+                    if has_path_var {
+                        // Ensure a path alias exists for VarLenExpand when tracking a named path.
+                        Some(rel.variable.clone().unwrap_or_else(|| {
+                            Identifier::new(format!("__path_rel_{}__", step_idx))
+                        }))
+                    } else {
+                        rel.variable.clone()
+                    };
                 // For VarLenExpand with a named path, the VarLenExpand itself
                 // produces a Path value; the AssemblePath wrapper will merge it.
                 if has_path_var {
@@ -388,14 +389,12 @@ impl<'s> QueryPlanner<'s> {
         let step = &pattern.steps[0];
         let range = step.rel.range.as_ref().ok_or_else(|| {
             GqlError::Plan(PlanError::SemanticError {
-                message:
-                    "shortestPath requires a variable-length relationship (use [*] or [*..N])"
-                        .to_string(),
+                message: "shortestPath requires a variable-length relationship (use [*] or [*..N])"
+                    .to_string(),
             })
         })?;
 
-        let (min, max) =
-            crate::planner::validate_varlen_bounds(range.min.unwrap_or(1), range.max)?;
+        let (min, max) = crate::planner::validate_varlen_bounds(range.min.unwrap_or(1), range.max)?;
 
         let start = &pattern.start;
         let src_alias = start

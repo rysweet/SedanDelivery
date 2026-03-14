@@ -104,6 +104,15 @@ fn forbidden_origin(message: &str) -> ErrorResponse {
         .expect("forbidden websocket response should be buildable")
 }
 
+// `ErrorResponse` is `Response<Option<String>>` from tungstenite, which is
+// larger than Clippy's default threshold for `result_large_err`.  The large
+// type is unavoidable here: it is the exact error type required by the
+// `accept_hdr_async` callback signature in `tokio-tungstenite`.  We cannot
+// use a smaller wrapper because the callback must return `Result<_, ErrorResponse>`
+// — there is no conversion path that avoids materialising an `ErrorResponse`
+// at the call site.  Heap-boxing the error would add an allocation on every
+// rejected WebSocket handshake for no correctness benefit.
+#[allow(clippy::result_large_err)]
 fn validate_origin(request: &Request, policy: &OriginPolicy) -> Result<(), ErrorResponse> {
     let Some(origin) = request.headers().get("Origin") else {
         return match policy {
@@ -152,6 +161,7 @@ pub async fn accept(stream: TcpStream) -> Result<WebSocketStream<TcpStream>, WsE
     accept_with_policy(stream, origin_policy_from_env().clone()).await
 }
 
+#[allow(clippy::result_large_err)]
 async fn accept_with_policy(
     stream: TcpStream,
     policy: OriginPolicy,

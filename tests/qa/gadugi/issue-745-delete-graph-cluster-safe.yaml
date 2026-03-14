@@ -1,0 +1,129 @@
+# Canonical gadugi scenario for Issue #745 — delete_graph cluster-safety.
+#
+# Scenario 2 (COMPLEX): Verify delete_graph_impl cluster-safety properties:
+# - MAX_NODES_FOR_DELETE guard is enforced
+# - All keys built for DEL carry the {graph} hash tag (slot-local)
+# - No SCAN usage in the delete path (Makefile check + unit tests)
+# - Registry removal (SREM __sd2_registry:graphs) happens before data DEL
+
+scenario:
+  name: "Issue #745 - delete_graph cluster-safety and MAX_NODES_FOR_DELETE guard (Scenario 2: complex)"
+  description: >
+    Verify from an operator perspective that the simplified delete_graph_impl
+    is safe for Redis Cluster mode: all per-graph keys share the {graph} hash
+    tag (same slot), deletion never uses cluster-unsafe SCAN, and graphs larger
+    than MAX_NODES_FOR_DELETE are rejected before any data is touched.
+    Validates the delete path rewrite introduced to fix #745.
+  metadata:
+    tags: [cli, regression, cluster, delete-graph, issue-745]
+    priority: high
+  agents:
+    - name: cli-agent
+      type: cli
+      config: {}
+  steps:
+    - name: "Run graphs.rs unit tests"
+      agent: cli-agent
+      action: execute
+      params:
+        command: cargo
+        args:
+          - test
+          - -p
+          - gql-redis-store
+          - writes::graphs::tests
+          - --
+          - --nocapture
+      timeout: 60000
+
+    - name: "Confirm delete_graph fixed keys all carry hash tag"
+      agent: cli-agent
+      action: wait_for_output
+      params:
+        pattern: "delete_graph_fixed_keys_carry_hash_tag.*ok"
+      timeout: 5000
+
+    - name: "Confirm delete_graph per-node keys carry hash tag"
+      agent: cli-agent
+      action: wait_for_output
+      params:
+        pattern: "delete_graph_per_node_keys_carry_hash_tag.*ok"
+      timeout: 5000
+
+    - name: "Confirm MAX_NODES_FOR_DELETE constant is valid"
+      agent: cli-agent
+      action: wait_for_output
+      params:
+        pattern: "max_nodes_for_delete_constant.*ok"
+      timeout: 5000
+
+    - name: "Run cluster_write_path CI-6 and CI-7 to verify no SCAN in delete"
+      agent: cli-agent
+      action: execute
+      params:
+        command: cargo
+        args:
+          - test
+          - -p
+          - gql-redis-store
+          - --test
+          - cluster_write_path
+          - --
+          - ci6
+          - ci7
+          - --nocapture
+      timeout: 60000
+
+    - name: "Confirm CI-6 delete_graph keys carry hash tag"
+      agent: cli-agent
+      action: wait_for_output
+      params:
+        pattern: "ci6_delete_graph_keys_carry_hash_tag.*ok"
+      timeout: 5000
+
+    - name: "Confirm CI-7 no SCAN in delete_graph (Makefile enforced)"
+      agent: cli-agent
+      action: wait_for_output
+      params:
+        pattern: "ci7_scan_not_used_in_delete_graph_is_makefile_enforced.*ok"
+      timeout: 5000
+
+    - name: "Verify SCAN is not present in writes/graphs.rs source"
+      agent: cli-agent
+      action: execute
+      params:
+        command: bash
+        args:
+          - -c
+          - "! grep -q 'cmd(\"SCAN\")' gql-redis-store/src/writes/graphs.rs && echo 'PASS: No SCAN in delete_graph' || (echo 'FAIL: SCAN found in delete_graph' && exit 1)"
+      timeout: 10000
+
+    - name: "Confirm SCAN not present in source"
+      agent: cli-agent
+      action: wait_for_output
+      params:
+        pattern: "PASS: No SCAN in delete_graph"
+      timeout: 5000
+
+    - name: "Verify .atomic() is not present in write pipeline sources"
+      agent: cli-agent
+      action: execute
+      params:
+        command: bash
+        args:
+          - -c
+          - "! grep -rq 'pipe\\.atomic()\\|\\.atomic()' gql-redis-store/src/writes/nodes.rs gql-redis-store/src/writes/edges.rs gql-redis-store/src/writes/graphs.rs && echo 'PASS: No .atomic() in write pipelines' || (echo 'FAIL: .atomic() found' && exit 1)"
+      timeout: 10000
+
+    - name: "Confirm .atomic() not in write pipelines"
+      agent: cli-agent
+      action: wait_for_output
+      params:
+        pattern: "PASS: No .atomic\\(\\) in write pipelines"
+      timeout: 5000
+
+    - name: "Confirm all test steps exited with code 0"
+      agent: cli-agent
+      action: validate_exit_code
+      params:
+        text: "0"

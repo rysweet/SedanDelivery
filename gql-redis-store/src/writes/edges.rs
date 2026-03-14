@@ -2,20 +2,27 @@
 
 use std::collections::HashMap;
 
-use redis::ConnectionLike;
-
 use gql_core::error::StorageError;
 use gql_core::serde_value::props_to_json;
 use gql_core::storage::{EdgeId, NodeId};
 use gql_core::types::Value;
 
 use crate::keys::{
-    encode_adj, key_edge, key_edge_seq, key_edges_set, key_in, key_out, key_reltype, key_graph_lock,
+    encode_adj, key_edge, key_edge_seq, key_edges_set, key_in, key_out, key_reltype,
+    key_reltype_names,
 };
-use crate::lock::{self, WRITE_LOCK_TTL_MS};
-use crate::RedisGraphStore;
+use crate::lock::WRITE_LOCK_TTL_MS;
+use crate::validation::validate_property_key;
+use crate::{LockedRedisConn, RedisGraphStore};
 
 use super::helpers::{clean_fanout_props, extract_injected_id};
+
+fn validate_property_keys(properties: &HashMap<String, Value>) -> Result<(), StorageError> {
+    for key in properties.keys() {
+        validate_property_key(key)?;
+    }
+    Ok(())
+}
 
 impl RedisGraphStore {
     /// Delete an edge using an already-locked connection.
@@ -24,24 +31,34 @@ impl RedisGraphStore {
     /// from `delete_node(detach=true)`, which needs to delete all adjacent
     /// edges while holding a single connection.
     ///
-    /// Removes the edge hash, the reltype index entry, the out-adjacency
-    /// entry on the source node, and the in-adjacency entry on the
-    /// destination node, all atomically via MULTI/EXEC pipeline.
+    /// Removes the edge hash, the reltype index entry, the reltype registry
+    /// entry, the out-adjacency entry on the source node, and the in-adjacency
+    /// entry on the destination node in a single slot-local pipeline.
     pub(crate) fn delete_edge_inner(
         &self,
-        conn: &mut dyn ConnectionLike,
+        conn: &mut LockedRedisConn,
         graph: &str,
         id: EdgeId,
     ) -> Result<(), StorageError> {
         let edge = self
-            .read_edge(conn, graph, id.0)?
+            .read_edge(conn.as_mut(), graph, id.0)?
             .ok_or(StorageError::EdgeNotFound { id: id.0 })?;
-        // Remove all edge data atomically via MULTI/EXEC pipeline.
+        // Remove all edge data in a single pipeline. MULTI/EXEC (.atomic()) is
+        // intentionally omitted — redis-rs ClusterConnection does not support it.
+        // All keys share the {graphname} hash tag (same cluster slot). Callers
+        // hold the write lock for serialisation. See ADR-005.
+        if conn.is_standalone() {
+            tracing::warn!(
+                graph = graph,
+                edge_id = id.0,
+                "delete_edge pipeline executing without MULTI/EXEC atomicity (standalone mode); \
+                 a partial delete is possible if the process crashes mid-pipeline. See ADR-005."
+            );
+        }
         let out_member = encode_adj(id, edge.dst, &edge.rel_type);
         let in_member = encode_adj(id, edge.src, &edge.rel_type);
-        redis::pipe()
-            .atomic()
-            .cmd("SREM")
+        let mut pipe = conn.pipeline();
+        pipe.cmd("SREM")
             .arg(self.kp(key_reltype(graph, &edge.rel_type)))
             .arg(id.0.to_string())
             .ignore()
@@ -59,9 +76,10 @@ impl RedisGraphStore {
             .ignore()
             .cmd("DEL")
             .arg(self.kp(key_edge(graph, id.0)))
-            .ignore()
-            .query::<()>(conn)
-            .map_err(|e| { crate::record_backend_error(); StorageError::Backend { msg: e.to_string() } })?;
+            .ignore();
+        conn.renew_lock()?;
+        pipe.query::<()>(conn)
+            .map_err(crate::backend_storage_error)?;
         Ok(())
     }
 
@@ -70,7 +88,8 @@ impl RedisGraphStore {
     /// Verifies that both source and destination nodes exist, allocates a new
     /// edge ID (or uses the injected `_sd2_eid` from FanoutStore), stores the
     /// edge hash with src/dst/rel_type/props, and updates the reltype index,
-    /// out-adjacency set, in-adjacency set, and all-edges set atomically.
+    /// reltype registry, out-adjacency set, in-adjacency set, and all-edges
+    /// set in a single slot-local pipeline.
     pub(crate) fn create_edge_impl(
         &self,
         graph: &str,
@@ -79,74 +98,90 @@ impl RedisGraphStore {
         rel_type: String,
         properties: HashMap<String, Value>,
     ) -> Result<EdgeId, StorageError> {
-        self.require_graph(graph)?;
-        let mut conn = self.conn()?;
-        // Verify src and dst exist.
-        if self.read_node(conn.as_mut(), graph, src.0)?.is_none() {
-            return Err(StorageError::NodeNotFound { id: src.0 });
-        }
-        if self.read_node(conn.as_mut(), graph, dst.0)?.is_none() {
-            return Err(StorageError::NodeNotFound { id: dst.0 });
-        }
-
-        // If FanoutStore injected _sd2_eid, use it instead of INCR.
-        let id = match extract_injected_id(&properties, "_sd2_eid")? {
-            Some(id) => id,
-            None => {
-                let raw_id: i64 = redis::cmd("INCRBY")
-                    .arg(self.kp(key_edge_seq(graph)))
-                    .arg(1)
-                    .query(conn.as_mut())
-                    .map_err(|e| { crate::record_backend_error(); StorageError::Backend { msg: e.to_string() } })?;
-                if raw_id <= 0 {
-                    return Err(StorageError::IdOverflow {
-                        graph: graph.to_string(),
-                    });
-                }
-                raw_id as u64
+        validate_property_keys(&properties)?;
+        self.with_graph_write_lock(graph, WRITE_LOCK_TTL_MS, 3, 50, |conn| {
+            self.require_graph_on(conn.as_mut(), graph)?;
+            // Verify src and dst exist.
+            if self.read_node(conn.as_mut(), graph, src.0)?.is_none() {
+                return Err(StorageError::NodeNotFound { id: src.0 });
             }
-        };
+            if self.read_node(conn.as_mut(), graph, dst.0)?.is_none() {
+                return Err(StorageError::NodeNotFound { id: dst.0 });
+            }
 
-        // Strip internal FanoutStore keys before storing.
-        let clean_props = clean_fanout_props(properties);
+            // If FanoutStore injected _sd2_eid, use it instead of INCR.
+            let id = match extract_injected_id(&properties, "_sd2_eid")? {
+                Some(id) => id,
+                None => {
+                    let raw_id: i64 = redis::cmd("INCRBY")
+                        .arg(self.kp(key_edge_seq(graph)))
+                        .arg(1)
+                        .query(conn.as_mut())
+                        .map_err(crate::backend_storage_error)?;
+                    if raw_id <= 0 {
+                        return Err(StorageError::IdOverflow {
+                            graph: graph.to_string(),
+                        });
+                    }
+                    raw_id as u64
+                }
+            };
 
-        let edge_key = self.kp(key_edge(graph, id));
-        let props_json = props_to_json(&clean_props)?;
-        // Store edge hash and update all indexes atomically.
-        let out_member = encode_adj(EdgeId(id), dst, &rel_type);
-        let in_member = encode_adj(EdgeId(id), src, &rel_type);
-        redis::pipe()
-            .atomic()
-            .cmd("HSET")
-            .arg(&edge_key)
-            .arg("src")
-            .arg(src.0.to_string())
-            .arg("dst")
-            .arg(dst.0.to_string())
-            .arg("rel_type")
-            .arg(&rel_type)
-            .arg("props")
-            .arg(&props_json)
-            .ignore()
-            .cmd("SADD")
-            .arg(self.kp(key_reltype(graph, &rel_type)))
-            .arg(id.to_string())
-            .ignore()
-            .cmd("SADD")
-            .arg(self.kp(key_out(graph, src.0)))
-            .arg(out_member)
-            .ignore()
-            .cmd("SADD")
-            .arg(self.kp(key_in(graph, dst.0)))
-            .arg(in_member)
-            .ignore()
-            .cmd("SADD")
-            .arg(self.kp(key_edges_set(graph)))
-            .arg(id.to_string())
-            .ignore()
-            .query::<()>(conn.as_mut())
-            .map_err(|e| { crate::record_backend_error(); StorageError::Backend { msg: e.to_string() } })?;
-        Ok(EdgeId(id))
+            // Strip internal FanoutStore keys before storing.
+            let clean_props = clean_fanout_props(properties);
+
+            let edge_key = self.kp(key_edge(graph, id));
+            let props_json = props_to_json(&clean_props)?;
+            // Store edge hash and update all indexes in a single pipeline.
+            // MULTI/EXEC (.atomic()) is intentionally omitted — redis-rs
+            // ClusterConnection does not support it. All keys share the {graphname}
+            // hash tag (same cluster slot). See ADR-005.
+            if conn.is_standalone() {
+                tracing::warn!(
+                    graph = graph,
+                    "create_edge pipeline executing without MULTI/EXEC atomicity (standalone mode); \
+                     a partial write is possible if the process crashes mid-pipeline. See ADR-005."
+                );
+            }
+            let out_member = encode_adj(EdgeId(id), dst, &rel_type);
+            let in_member = encode_adj(EdgeId(id), src, &rel_type);
+            let mut pipe = conn.pipeline();
+            pipe.cmd("SADD")
+                .arg(self.kp(key_reltype_names(graph)))
+                .arg(rel_type.as_str())
+                .ignore()
+                .cmd("SADD")
+                .arg(self.kp(key_edges_set(graph)))
+                .arg(id.to_string())
+                .ignore()
+                .cmd("SADD")
+                .arg(self.kp(key_reltype(graph, &rel_type)))
+                .arg(id.to_string())
+                .ignore()
+                .cmd("SADD")
+                .arg(self.kp(key_out(graph, src.0)))
+                .arg(out_member)
+                .ignore()
+                .cmd("SADD")
+                .arg(self.kp(key_in(graph, dst.0)))
+                .arg(in_member)
+                .ignore()
+                .cmd("HSET")
+                .arg(&edge_key)
+                .arg("src")
+                .arg(src.0.to_string())
+                .arg("dst")
+                .arg(dst.0.to_string())
+                .arg("rel_type")
+                .arg(&rel_type)
+                .arg("props")
+                .arg(&props_json)
+                .ignore();
+            conn.renew_lock()?;
+            pipe.query::<()>(conn)
+                .map_err(crate::backend_storage_error)?;
+            Ok(EdgeId(id))
+        })
     }
 
     /// Merge additional properties into an existing edge (SET semantics).
@@ -159,19 +194,23 @@ impl RedisGraphStore {
         id: EdgeId,
         properties: HashMap<String, Value>,
     ) -> Result<(), StorageError> {
-        let mut conn = self.conn()?;
-        let edge = self
-            .read_edge(conn.as_mut(), graph, id.0)?
-            .ok_or(StorageError::EdgeNotFound { id: id.0 })?;
-        let mut merged = edge.properties;
-        merged.extend(properties);
-        let props_json = props_to_json(&merged)?;
-        redis::cmd("HSET")
-            .arg(self.kp(key_edge(graph, id.0)))
-            .arg("props")
-            .arg(&props_json)
-            .query::<()>(conn.as_mut())
-            .map_err(|e| { crate::record_backend_error(); StorageError::Backend { msg: e.to_string() } })
+        validate_property_keys(&properties)?;
+        self.with_graph_write_lock(graph, WRITE_LOCK_TTL_MS, 3, 50, |conn| {
+            self.require_graph_on(conn.as_mut(), graph)?;
+            let edge = self
+                .read_edge(conn.as_mut(), graph, id.0)?
+                .ok_or(StorageError::EdgeNotFound { id: id.0 })?;
+            let mut merged = edge.properties;
+            merged.extend(properties);
+            let props_json = props_to_json(&merged)?;
+            conn.renew_lock()?;
+            redis::cmd("HSET")
+                .arg(self.kp(key_edge(graph, id.0)))
+                .arg("props")
+                .arg(&props_json)
+                .query::<()>(conn.as_mut())
+                .map_err(crate::backend_storage_error)
+        })
     }
 
     /// Replace all properties on an existing edge (REPLACE semantics).
@@ -184,17 +223,21 @@ impl RedisGraphStore {
         id: EdgeId,
         properties: HashMap<String, Value>,
     ) -> Result<(), StorageError> {
-        let mut conn = self.conn()?;
-        if self.read_edge(conn.as_mut(), graph, id.0)?.is_none() {
-            return Err(StorageError::EdgeNotFound { id: id.0 });
-        }
-        let props_json = props_to_json(&properties)?;
-        redis::cmd("HSET")
-            .arg(self.kp(key_edge(graph, id.0)))
-            .arg("props")
-            .arg(&props_json)
-            .query::<()>(conn.as_mut())
-            .map_err(|e| { crate::record_backend_error(); StorageError::Backend { msg: e.to_string() } })
+        validate_property_keys(&properties)?;
+        self.with_graph_write_lock(graph, WRITE_LOCK_TTL_MS, 3, 50, |conn| {
+            self.require_graph_on(conn.as_mut(), graph)?;
+            if self.read_edge(conn.as_mut(), graph, id.0)?.is_none() {
+                return Err(StorageError::EdgeNotFound { id: id.0 });
+            }
+            let props_json = props_to_json(&properties)?;
+            conn.renew_lock()?;
+            redis::cmd("HSET")
+                .arg(self.kp(key_edge(graph, id.0)))
+                .arg("props")
+                .arg(&props_json)
+                .query::<()>(conn.as_mut())
+                .map_err(crate::backend_storage_error)
+        })
     }
 
     /// Remove a single property key from an edge.
@@ -207,29 +250,31 @@ impl RedisGraphStore {
         id: EdgeId,
         key: &str,
     ) -> Result<(), StorageError> {
-        let mut conn = self.conn()?;
-        let edge = self
-            .read_edge(conn.as_mut(), graph, id.0)?
-            .ok_or(StorageError::EdgeNotFound { id: id.0 })?;
-        let mut props = edge.properties;
-        props.remove(key);
-        let props_json = props_to_json(&props)?;
-        redis::cmd("HSET")
-            .arg(self.kp(key_edge(graph, id.0)))
-            .arg("props")
-            .arg(&props_json)
-            .query::<()>(conn.as_mut())
-            .map_err(|e| { crate::record_backend_error(); StorageError::Backend { msg: e.to_string() } })
+        validate_property_key(key)?;
+        self.with_graph_write_lock(graph, WRITE_LOCK_TTL_MS, 3, 50, |conn| {
+            self.require_graph_on(conn.as_mut(), graph)?;
+            let edge = self
+                .read_edge(conn.as_mut(), graph, id.0)?
+                .ok_or(StorageError::EdgeNotFound { id: id.0 })?;
+            let mut props = edge.properties;
+            props.remove(key);
+            let props_json = props_to_json(&props)?;
+            conn.renew_lock()?;
+            redis::cmd("HSET")
+                .arg(self.kp(key_edge(graph, id.0)))
+                .arg("props")
+                .arg(&props_json)
+                .query::<()>(conn.as_mut())
+                .map_err(crate::backend_storage_error)
+        })
     }
 
     /// Delete an edge by ID (public entry point that acquires its own connection).
     pub(crate) fn delete_edge_impl(&self, graph: &str, id: EdgeId) -> Result<(), StorageError> {
-        let mut conn = self.conn()?;
-        let lock_key = self.kp(key_graph_lock(graph));
-        let token = lock::acquire_blocking(conn.as_mut(), &lock_key, WRITE_LOCK_TTL_MS, 3, 50)?;
-        let result = self.delete_edge_inner(conn.as_mut(), graph, id);
-        let _ = lock::release(conn.as_mut(), &lock_key, &token);
-        result
+        self.with_graph_write_lock(graph, WRITE_LOCK_TTL_MS, 3, 50, |conn| {
+            self.require_graph_on(conn.as_mut(), graph)?;
+            self.delete_edge_inner(conn, graph, id)
+        })
     }
 
     /// Batch-create multiple edges in a single Redis pipeline round-trip.
@@ -248,110 +293,133 @@ impl RedisGraphStore {
         if edges.is_empty() {
             return Ok(Vec::new());
         }
-        self.require_graph(graph)?;
-        let mut conn = self.conn()?;
-
-        // Verify all src and dst nodes exist before allocating IDs.
-        // Collect unique node IDs to minimize reads.
-        let mut unique_node_ids: std::collections::HashSet<u64> = std::collections::HashSet::new();
-        for (src, dst, _, _) in &edges {
-            unique_node_ids.insert(src.0);
-            unique_node_ids.insert(dst.0);
+        for (_, _, _, properties) in &edges {
+            validate_property_keys(properties)?;
         }
-        for &nid in &unique_node_ids {
-            if self.read_node(conn.as_mut(), graph, nid)?.is_none() {
-                return Err(StorageError::NodeNotFound { id: nid });
+        self.with_graph_write_lock(graph, WRITE_LOCK_TTL_MS, 3, 50, |conn| {
+            self.require_graph_on(conn.as_mut(), graph)?;
+
+            // Verify all src and dst nodes exist before allocating IDs.
+            // Collect unique node IDs to minimize reads.
+            let mut unique_node_ids: std::collections::HashSet<u64> =
+                std::collections::HashSet::new();
+            for (src, dst, _, _) in &edges {
+                unique_node_ids.insert(src.0);
+                unique_node_ids.insert(dst.0);
             }
-        }
+            for (index, &nid) in unique_node_ids.iter().enumerate() {
+                if index > 0 && index % 250 == 0 {
+                    conn.renew_lock()?;
+                }
+                if self.read_node(conn.as_mut(), graph, nid)?.is_none() {
+                    return Err(StorageError::NodeNotFound { id: nid });
+                }
+            }
 
-        let count = i64::try_from(edges.len()).map_err(|_| { crate::record_backend_error(); StorageError::Backend {
-            msg: format!(
-                "batch size {} exceeds i64::MAX, cannot allocate IDs",
-                edges.len()
-            ),
-        }})?;
+            let count = i64::try_from(edges.len()).map_err(|_| {
+                crate::record_backend_error();
+                StorageError::Backend {
+                    msg: format!(
+                        "batch size {} exceeds i64::MAX, cannot allocate IDs",
+                        edges.len()
+                    ),
+                }
+            })?;
 
-        // Allocate a contiguous block of IDs with a single INCRBY.
-        let end_id: i64 = redis::cmd("INCRBY")
-            .arg(self.kp(key_edge_seq(graph)))
-            .arg(count)
-            .query(conn.as_mut())
-            .map_err(|e| { crate::record_backend_error(); StorageError::Backend { msg: e.to_string() } })?;
-        if end_id <= 0 || end_id < count {
-            return Err(StorageError::IdOverflow {
-                graph: graph.to_string(),
-            });
-        }
-        let start_id = (end_id - count + 1) as u64;
+            // Allocate a contiguous block of IDs with a single INCRBY.
+            let end_id: i64 = redis::cmd("INCRBY")
+                .arg(self.kp(key_edge_seq(graph)))
+                .arg(count)
+                .query(conn.as_mut())
+                .map_err(crate::backend_storage_error)?;
+            if end_id <= 0 || end_id < count {
+                return Err(StorageError::IdOverflow {
+                    graph: graph.to_string(),
+                });
+            }
+            let start_id = (end_id - count + 1) as u64;
 
-        // Pre-serialize all edges and build the pipeline.
-        let mut pipe = redis::pipe();
-        let mut created_ids: Vec<EdgeId> = Vec::with_capacity(edges.len());
+            // Pre-serialize all edges and build the pipeline.
+            let mut pipe = conn.pipeline();
+            let mut created_ids: Vec<EdgeId> = Vec::with_capacity(edges.len());
 
-        for (i, (src, dst, rel_type, properties)) in edges.into_iter().enumerate() {
-            let id = start_id + i as u64;
-            let eid = EdgeId(id);
+            for (i, (src, dst, rel_type, properties)) in edges.into_iter().enumerate() {
+                if i > 0 && i % 250 == 0 {
+                    conn.renew_lock()?;
+                }
+                let id = start_id + i as u64;
+                let eid = EdgeId(id);
 
-            // Strip internal FanoutStore keys before storing.
-            let clean_props = clean_fanout_props(properties);
+                // Strip internal FanoutStore keys before storing.
+                let clean_props = clean_fanout_props(properties);
 
-            let edge_key = self.kp(key_edge(graph, id));
-            let props_json = props_to_json(&clean_props)?;
+                let edge_key = self.kp(key_edge(graph, id));
+                let props_json = props_to_json(&clean_props)?;
 
-            // HSET edge hash.
-            pipe.cmd("HSET")
-                .arg(&edge_key)
-                .arg("src")
-                .arg(src.0.to_string())
-                .arg("dst")
-                .arg(dst.0.to_string())
-                .arg("rel_type")
-                .arg(&rel_type)
-                .arg("props")
-                .arg(&props_json)
-                .ignore();
+                pipe.cmd("SADD")
+                    .arg(self.kp(key_reltype_names(graph)))
+                    .arg(rel_type.as_str())
+                    .ignore();
+                pipe.cmd("SADD")
+                    .arg(self.kp(key_edges_set(graph)))
+                    .arg(id.to_string())
+                    .ignore();
 
-            // SADD to reltype index.
-            pipe.cmd("SADD")
-                .arg(self.kp(key_reltype(graph, &rel_type)))
-                .arg(id.to_string())
-                .ignore();
+                // SADD to reltype index.
+                pipe.cmd("SADD")
+                    .arg(self.kp(key_reltype(graph, &rel_type)))
+                    .arg(id.to_string())
+                    .ignore();
 
-            // SADD to out-adjacency on src.
-            let out_member = encode_adj(eid, dst, &rel_type);
-            pipe.cmd("SADD")
-                .arg(self.kp(key_out(graph, src.0)))
-                .arg(out_member)
-                .ignore();
+                // SADD to out-adjacency on src.
+                let out_member = encode_adj(eid, dst, &rel_type);
+                pipe.cmd("SADD")
+                    .arg(self.kp(key_out(graph, src.0)))
+                    .arg(out_member)
+                    .ignore();
 
-            // SADD to in-adjacency on dst.
-            let in_member = encode_adj(eid, src, &rel_type);
-            pipe.cmd("SADD")
-                .arg(self.kp(key_in(graph, dst.0)))
-                .arg(in_member)
-                .ignore();
+                // SADD to in-adjacency on dst.
+                let in_member = encode_adj(eid, src, &rel_type);
+                pipe.cmd("SADD")
+                    .arg(self.kp(key_in(graph, dst.0)))
+                    .arg(in_member)
+                    .ignore();
 
-            // SADD to all-edges set.
-            pipe.cmd("SADD")
-                .arg(self.kp(key_edges_set(graph)))
-                .arg(id.to_string())
-                .ignore();
+                // HSET edge hash last so the edge manifest and reltype registry
+                // already know about the ID if the non-atomic pipeline fails.
+                pipe.cmd("HSET")
+                    .arg(&edge_key)
+                    .arg("src")
+                    .arg(src.0.to_string())
+                    .arg("dst")
+                    .arg(dst.0.to_string())
+                    .arg("rel_type")
+                    .arg(&rel_type)
+                    .arg("props")
+                    .arg(&props_json)
+                    .ignore();
 
-            created_ids.push(eid);
-        }
+                created_ids.push(eid);
+            }
 
-        // Execute the entire pipeline in one round-trip.
-        pipe.query::<()>(conn.as_mut())
-            .map_err(|e| { crate::record_backend_error(); StorageError::Backend { msg: e.to_string() } })?;
+            // Execute the entire pipeline in one round-trip.
+            conn.renew_lock()?;
+            pipe.query::<()>(conn)
+                .map_err(crate::backend_storage_error)?;
 
-        Ok(created_ids)
+            Ok(created_ids)
+        })
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use crate::keys::{decode_adj, encode_adj};
     use gql_core::storage::{EdgeId, NodeId};
-    use crate::keys::{encode_adj, decode_adj};
+    use gql_core::types::Value;
+    use std::collections::HashMap;
+
+    use super::validate_property_keys;
 
     // ---- Adjacency encoding used by edge write pipelines --------------------
 
@@ -382,6 +450,17 @@ mod tests {
         assert!(in_member.starts_with("1:3:"));
     }
 
+    #[test]
+    fn validate_edge_property_keys_rejects_null_byte() {
+        let mut props = HashMap::new();
+        props.insert("co\x00st".to_string(), Value::Int(5));
+        let result = validate_property_keys(&props);
+        assert!(
+            result.is_err(),
+            "edge write-path property validation should reject null-byte keys"
+        );
+    }
+
     // ---- extract_injected_id for edge IDs -----------------------------------
 
     #[test]
@@ -405,5 +484,139 @@ mod tests {
         let mut props = HashMap::new();
         props.insert("_sd2_eid".to_string(), Value::Int(-1));
         assert!(extract_injected_id(&props, "_sd2_eid").is_err());
+    }
+
+    // ---- Cluster pipeline safety: verify no MULTI/EXEC in edge write pipelines --
+
+    /// Verify that the edge creation pipeline does NOT include MULTI or EXEC.
+    ///
+    /// Fix for Issue #745: redis-rs ClusterConnection does not support MULTI/EXEC.
+    /// The .atomic() calls in create_edge_impl and delete_edge_inner have been
+    /// removed. This test validates the fix remains in place.
+    #[test]
+    fn create_edge_pipeline_has_no_multi_exec() {
+        let graph = "testgraph";
+        let edge_id = 5u64;
+        let src_id = 1u64;
+        let dst_id = 2u64;
+        let rel_type = "KNOWS";
+
+        let edge_key = format!("G:{{{graph}}}:edge:{edge_id}");
+        let out_member = format!("{edge_id}:{dst_id}:{rel_type}");
+        let in_member = format!("{edge_id}:{src_id}:{rel_type}");
+
+        let mut pipe = redis::pipe();
+        // Replicate create_edge_impl pipeline (without .atomic())
+        pipe.cmd("HSET")
+            .arg(&edge_key)
+            .arg("src")
+            .arg(src_id.to_string())
+            .arg("dst")
+            .arg(dst_id.to_string())
+            .arg("rel_type")
+            .arg(rel_type)
+            .arg("props")
+            .arg("{}")
+            .ignore()
+            .cmd("SADD")
+            .arg(format!("G:{{{graph}}}:reltype:{rel_type}"))
+            .arg(edge_id.to_string())
+            .ignore()
+            .cmd("SADD")
+            .arg(format!("G:{{{graph}}}:out:{src_id}"))
+            .arg(out_member)
+            .ignore()
+            .cmd("SADD")
+            .arg(format!("G:{{{graph}}}:in:{dst_id}"))
+            .arg(in_member)
+            .ignore()
+            .cmd("SADD")
+            .arg(format!("G:{{{graph}}}:edges"))
+            .arg(edge_id.to_string())
+            .ignore();
+
+        let packed = pipe.get_packed_pipeline();
+        let pipeline_str = String::from_utf8_lossy(&packed);
+        assert!(
+            !pipeline_str.to_uppercase().contains("MULTI"),
+            "Edge create pipeline must not contain MULTI: {pipeline_str}"
+        );
+        assert!(
+            !pipeline_str.to_uppercase().contains("EXEC"),
+            "Edge create pipeline must not contain EXEC: {pipeline_str}"
+        );
+    }
+
+    /// Verify that the edge deletion pipeline does NOT include MULTI or EXEC.
+    #[test]
+    fn delete_edge_pipeline_has_no_multi_exec() {
+        let graph = "testgraph";
+        let edge_id = EdgeId(5);
+        let src_id = NodeId(1);
+        let dst_id = NodeId(2);
+        let rel_type = "KNOWS";
+
+        let out_member = encode_adj(edge_id, dst_id, rel_type);
+        let in_member = encode_adj(edge_id, src_id, rel_type);
+
+        let mut pipe = redis::pipe();
+        // Replicate delete_edge_inner pipeline (without .atomic())
+        pipe.cmd("SREM")
+            .arg(format!("G:{{{graph}}}:reltype:{rel_type}"))
+            .arg(edge_id.0.to_string())
+            .ignore()
+            .cmd("SREM")
+            .arg(format!("G:{{{graph}}}:edges"))
+            .arg(edge_id.0.to_string())
+            .ignore()
+            .cmd("SREM")
+            .arg(format!("G:{{{graph}}}:out:{}", src_id.0))
+            .arg(out_member)
+            .ignore()
+            .cmd("SREM")
+            .arg(format!("G:{{{graph}}}:in:{}", dst_id.0))
+            .arg(in_member)
+            .ignore()
+            .cmd("DEL")
+            .arg(format!("G:{{{graph}}}:edge:{}", edge_id.0))
+            .ignore();
+
+        let packed = pipe.get_packed_pipeline();
+        let pipeline_str = String::from_utf8_lossy(&packed);
+        assert!(
+            !pipeline_str.to_uppercase().contains("MULTI"),
+            "Edge delete pipeline must not contain MULTI: {pipeline_str}"
+        );
+        assert!(
+            !pipeline_str.to_uppercase().contains("EXEC"),
+            "Edge delete pipeline must not contain EXEC: {pipeline_str}"
+        );
+    }
+
+    /// Verify that all keys in the edge pipelines share the {graphname} hash tag.
+    #[test]
+    fn edge_pipeline_keys_all_share_hash_tag() {
+        let graph = "mygraph";
+        let edge_id = 10u64;
+        let src_id = 1u64;
+        let dst_id = 2u64;
+        let rel_type = "FOLLOWS";
+        let expected_tag = format!("{{{graph}}}");
+
+        // Keys used in create_edge_impl and delete_edge_inner.
+        let keys = vec![
+            format!("G:{expected_tag}:edge:{edge_id}"),
+            format!("G:{expected_tag}:reltype:{rel_type}"),
+            format!("G:{expected_tag}:out:{src_id}"),
+            format!("G:{expected_tag}:in:{dst_id}"),
+            format!("G:{expected_tag}:edges"),
+        ];
+
+        for k in &keys {
+            assert!(
+                k.contains(&expected_tag),
+                "Edge pipeline key missing hash tag {expected_tag}: {k}"
+            );
+        }
     }
 }

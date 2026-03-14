@@ -21,9 +21,7 @@ pub(crate) fn get_nodes_batch_query() -> String {
 
 /// Cypher: find nodes by label (sanitized), returning their IDs.
 pub(crate) fn find_nodes_by_label_query(label: &str) -> String {
-    format!(
-        "MATCH (n:`{label}` {{`{PROP_GRAPH}`: $graph}}) RETURN n.`{PROP_NODE_ID}` AS id"
-    )
+    format!("MATCH (n:`{label}` {{`{PROP_GRAPH}`: $graph}}) RETURN n.`{PROP_NODE_ID}` AS id")
 }
 
 /// Cypher: find nodes by label+property with a WHERE predicate.
@@ -67,23 +65,17 @@ pub(crate) fn replace_node_properties_query() -> String {
 
 /// Cypher: REMOVE a single property from a node.
 pub(crate) fn remove_node_property_query(key: &str) -> String {
-    format!(
-        "MATCH (n {{`{PROP_GRAPH}`: $graph, `{PROP_NODE_ID}`: $id}}) REMOVE n.`{key}`"
-    )
+    format!("MATCH (n {{`{PROP_GRAPH}`: $graph, `{PROP_NODE_ID}`: $id}}) REMOVE n.`{key}`")
 }
 
 /// Cypher: SET labels on a node (e.g. `SET n:\`Person\`:\`Employee\``).
 pub(crate) fn add_node_labels_query(label_str: &str) -> String {
-    format!(
-        "MATCH (n {{`{PROP_GRAPH}`: $graph, `{PROP_NODE_ID}`: $id}}) SET n:{label_str}"
-    )
+    format!("MATCH (n {{`{PROP_GRAPH}`: $graph, `{PROP_NODE_ID}`: $id}}) SET n:{label_str}")
 }
 
 /// Cypher: REMOVE labels from a node.
 pub(crate) fn remove_node_labels_query(label_str: &str) -> String {
-    format!(
-        "MATCH (n {{`{PROP_GRAPH}`: $graph, `{PROP_NODE_ID}`: $id}}) REMOVE n:{label_str}"
-    )
+    format!("MATCH (n {{`{PROP_GRAPH}`: $graph, `{PROP_NODE_ID}`: $id}}) REMOVE n:{label_str}")
 }
 
 /// Cypher: check relationship count before non-detach delete.
@@ -191,20 +183,29 @@ mod tests {
     fn find_nodes_by_label_and_property_query_interpolates() {
         let q = find_nodes_by_label_and_property_query("Person", "n.`age` = $rv");
         assert!(q.contains(":`Person`"), "missing label in: {q}");
-        assert!(q.contains("WHERE n.`age` = $rv"), "missing predicate in: {q}");
+        assert!(
+            q.contains("WHERE n.`age` = $rv"),
+            "missing predicate in: {q}"
+        );
     }
 
     #[test]
     fn all_node_ids_query_excludes_seq_label() {
         let q = all_node_ids_query();
-        assert!(q.contains("WHERE NOT n:__SD2Seq"), "missing seq filter: {q}");
+        assert!(
+            q.contains("WHERE NOT n:__SD2Seq"),
+            "missing seq filter: {q}"
+        );
     }
 
     #[test]
     fn all_label_names_query_returns_labels_prop() {
         let q = all_label_names_query();
         assert!(q.contains(PROP_LABELS), "missing labels prop: {q}");
-        assert!(q.contains("WHERE NOT n:__SD2Seq"), "missing seq filter: {q}");
+        assert!(
+            q.contains("WHERE NOT n:__SD2Seq"),
+            "missing seq filter: {q}"
+        );
     }
 
     // ── Node write queries ──────────────────────────────────────────────────
@@ -212,7 +213,10 @@ mod tests {
     #[test]
     fn create_node_query_with_labels() {
         let q = create_node_query(":`Person`:`Employee`");
-        assert!(q.contains("CREATE (n:`Person`:`Employee` $props)"), "got: {q}");
+        assert!(
+            q.contains("CREATE (n:`Person`:`Employee` $props)"),
+            "got: {q}"
+        );
         assert!(q.contains("RETURN"), "missing RETURN: {q}");
     }
 
@@ -288,14 +292,20 @@ mod tests {
     #[test]
     fn out_edges_by_type_query_has_type_filter() {
         let q = out_edges_by_type_query();
-        assert!(q.contains("WHERE type(r) IN $types"), "missing type filter: {q}");
+        assert!(
+            q.contains("WHERE type(r) IN $types"),
+            "missing type filter: {q}"
+        );
         assert!(q.contains("]->(m)"), "missing outbound arrow: {q}");
     }
 
     #[test]
     fn in_edges_by_type_query_has_type_filter() {
         let q = in_edges_by_type_query();
-        assert!(q.contains("WHERE type(r) IN $types"), "missing type filter: {q}");
+        assert!(
+            q.contains("WHERE type(r) IN $types"),
+            "missing type filter: {q}"
+        );
         assert!(q.contains("]-(m)"), "missing inbound pattern: {q}");
     }
 

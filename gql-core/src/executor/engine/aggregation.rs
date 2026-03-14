@@ -352,7 +352,11 @@ impl<'a> QueryExecutor<'a> {
         } = op
         else {
             debug_assert!(false, "expected Aggregate operator");
-            return Err(GqlError::Execution(crate::error::ExecutionError::UnsupportedFeature { feature: "internal: expected Aggregate operator".into() }));
+            return Err(GqlError::Execution(
+                crate::error::ExecutionError::UnsupportedFeature {
+                    feature: "internal: expected Aggregate operator".into(),
+                },
+            ));
         };
         let input = self.exec_operator(cx, child)?;
         cx.budget.check_or_err()?;

@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use gql_core::error::GqlError;
-use gql_core::executor::budget::{DEFAULT_MAX_ROWS, OperatorProfileStats};
+use gql_core::executor::budget::{OperatorProfileStats, DEFAULT_MAX_ROWS};
 use gql_core::executor::{ExecutionBudget, MutationStats, QueryExecutor, QueryResult};
 use gql_core::parser::parse_query;
 use gql_core::plan_cache;
@@ -12,6 +12,7 @@ use gql_core::storage::GraphStore;
 use gql_core::types::Value;
 use indexmap::IndexMap;
 
+use super::ensure_graph_exists;
 use crate::bridge::spatial::{decode_point2d, decode_point3d};
 use crate::bridge::temporal::{
     decode_date, decode_datetime_offset, decode_datetime_zone_id, decode_duration,
@@ -41,10 +42,7 @@ pub fn execute_query(
     // sedandelivery-bolt is a standalone server with its own InMemoryGraphStore,
     // so auto-creating graphs on first use is the expected behavior —
     // there is no external catalog to consult.
-    let exists = store.graph_exists(graph).map_err(GqlError::from)?;
-    if !exists {
-        store.create_graph(graph).map_err(GqlError::from)?;
-    }
+    ensure_graph_exists(store, graph)?;
 
     let mut registry = ProcedureRegistry::default();
 
@@ -105,10 +103,7 @@ pub fn execute_query_with_profiling<T>(
         Option<&HashMap<usize, OperatorProfileStats>>,
     ) -> T,
 ) -> Result<(QueryResult, T), GqlError> {
-    let exists = store.graph_exists(graph).map_err(GqlError::from)?;
-    if !exists {
-        store.create_graph(graph).map_err(GqlError::from)?;
-    }
+    ensure_graph_exists(store, graph)?;
 
     let mut registry = ProcedureRegistry::default();
 
@@ -163,10 +158,7 @@ pub fn plan_query(
     query: &str,
     params: HashMap<String, Value>,
 ) -> Result<gql_core::planner::Operator, GqlError> {
-    let exists = store.graph_exists(graph).map_err(GqlError::from)?;
-    if !exists {
-        store.create_graph(graph).map_err(GqlError::from)?;
-    }
+    ensure_graph_exists(store, graph)?;
 
     let ast = parse_query(query)?;
     let registry = ProcedureRegistry::default();

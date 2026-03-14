@@ -49,7 +49,7 @@ fn strip_cypher_prefix(query: &str) -> &str {
     let trimmed = query.trim();
     if trimmed
         .get(..7)
-        .map_or(false, |s| s.eq_ignore_ascii_case("CYPHER "))
+        .is_some_and(|s| s.eq_ignore_ascii_case("CYPHER "))
     {
         let cypher_keywords = [
             "MATCH ",
@@ -90,11 +90,11 @@ fn strip_cypher_prefix(query: &str) -> &str {
 fn detect_explain_profile(query: &str) -> (bool, bool, String) {
     let is_explain = query
         .get(..8)
-        .map_or(false, |s| s.eq_ignore_ascii_case("EXPLAIN "));
+        .is_some_and(|s| s.eq_ignore_ascii_case("EXPLAIN "));
     let is_profile = !is_explain
         && query
             .get(..8)
-            .map_or(false, |s| s.eq_ignore_ascii_case("PROFILE "));
+            .is_some_and(|s| s.eq_ignore_ascii_case("PROFILE "));
     let actual_query = if is_explain || is_profile {
         query[8..].to_string()
     } else {
@@ -160,13 +160,15 @@ fn parse_use_prefix(query: &str) -> Option<(String, &str)> {
 /// Parse `USE <database>` standalone command. Returns the database name if
 /// the query is purely a USE switch (no trailing content), `None` otherwise.
 fn parse_use_database(query: &str) -> Option<String> {
-    parse_use_prefix(query).and_then(|(name, rest)| {
-        if rest.is_empty() {
-            Some(name)
-        } else {
-            None
-        }
-    })
+    parse_use_prefix(query).and_then(
+        |(name, rest)| {
+            if rest.is_empty() {
+                Some(name)
+            } else {
+                None
+            }
+        },
+    )
 }
 
 // -- Store resolution --------------------------------------------------------
@@ -719,16 +721,14 @@ pub(crate) async fn handle_run(
         .map_err(|e| ProtocolError::Internal(format!("spawn_blocking join error: {}", e)))?;
 
         match result {
-            Ok((qr, profile_plan)) => {
-                build_success_response(
-                    session,
-                    qr,
-                    &effective_store,
-                    &graph,
-                    run_metadata,
-                    Some(profile_plan),
-                )
-            }
+            Ok((qr, profile_plan)) => build_success_response(
+                session,
+                qr,
+                &effective_store,
+                &graph,
+                run_metadata,
+                Some(profile_plan),
+            ),
             Err(gql_err) => {
                 let (code, message) = bridge::errors::gql_error_to_bolt(&gql_err);
                 bolt_metrics::error_recorded(&code);
@@ -755,14 +755,9 @@ pub(crate) async fn handle_run(
         .map_err(|e| ProtocolError::Internal(format!("spawn_blocking join error: {}", e)))?;
 
         match result {
-            Ok(qr) => build_success_response(
-                session,
-                qr,
-                &effective_store,
-                &graph,
-                run_metadata,
-                None,
-            ),
+            Ok(qr) => {
+                build_success_response(session, qr, &effective_store, &graph, run_metadata, None)
+            }
             Err(gql_err) => {
                 let (code, message) = bridge::errors::gql_error_to_bolt(&gql_err);
                 bolt_metrics::error_recorded(&code);
@@ -974,18 +969,12 @@ mod tests {
 
     #[test]
     fn parse_use_simple_database() {
-        assert_eq!(
-            parse_use_database("USE mydb"),
-            Some("mydb".to_string())
-        );
+        assert_eq!(parse_use_database("USE mydb"), Some("mydb".to_string()));
     }
 
     #[test]
     fn parse_use_database_case_insensitive() {
-        assert_eq!(
-            parse_use_database("use neo4j"),
-            Some("neo4j".to_string())
-        );
+        assert_eq!(parse_use_database("use neo4j"), Some("neo4j".to_string()));
     }
 
     #[test]

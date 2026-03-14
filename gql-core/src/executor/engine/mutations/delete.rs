@@ -1,6 +1,5 @@
 //! DELETE and DETACH DELETE operator implementations.
 
-
 use crate::error::{ExecutionError, GqlError, StorageError};
 use crate::planner::Operator;
 use crate::storage::{EdgeId, NodeId};
@@ -21,7 +20,9 @@ impl<'a> QueryExecutor<'a> {
         } = op
         else {
             debug_assert!(false, "expected Delete operator");
-            return Err(GqlError::Execution(ExecutionError::UnsupportedFeature { feature: "internal: expected Delete operator".into() }));
+            return Err(GqlError::Execution(ExecutionError::UnsupportedFeature {
+                feature: "internal: expected Delete operator".into(),
+            }));
         };
         let input = self.exec_operator(cx, child)?;
         let mut out = Vec::with_capacity(input.len());
@@ -144,11 +145,11 @@ impl<'a> QueryExecutor<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
     use crate::ast::{Direction, Expr, Identifier, Label, RelType};
     use crate::executor::budget::ExecutionBudget;
     use crate::planner::Operator;
     use crate::storage::{GraphStore, InMemoryGraphStore};
+    use std::collections::HashMap;
 
     fn make_store() -> InMemoryGraphStore {
         let store = InMemoryGraphStore::new();
@@ -345,6 +346,9 @@ mod tests {
         };
         let mut budget = ExecutionBudget::unlimited();
         let result = executor.execute("g", &plan, &mut budget);
-        assert!(result.is_err(), "deleting a node with edges without DETACH should fail");
+        assert!(
+            result.is_err(),
+            "deleting a node with edges without DETACH should fail"
+        );
     }
 }

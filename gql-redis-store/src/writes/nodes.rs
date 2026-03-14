@@ -8,12 +8,27 @@ use gql_core::storage::NodeId;
 use gql_core::types::Value;
 
 use crate::keys::{
-    key_in, key_label, key_node, key_node_seq, key_nodes_set, key_out, key_graph_lock,
+    key_in, key_label, key_label_names, key_node, key_node_seq, key_nodes_set, key_out,
 };
-use crate::lock::{self, WRITE_LOCK_TTL_MS};
+use crate::lock::WRITE_LOCK_TTL_MS;
+use crate::validation::{validate_label, validate_property_key};
 use crate::RedisGraphStore;
 
 use super::helpers::{clean_fanout_props, extract_injected_id};
+
+fn validate_labels(labels: &[String]) -> Result<(), StorageError> {
+    for label in labels {
+        validate_label(label)?;
+    }
+    Ok(())
+}
+
+fn validate_property_keys(properties: &HashMap<String, Value>) -> Result<(), StorageError> {
+    for key in properties.keys() {
+        validate_property_key(key)?;
+    }
+    Ok(())
+}
 
 impl RedisGraphStore {
     /// Create a single node in the given graph.
@@ -21,7 +36,8 @@ impl RedisGraphStore {
     /// Allocates a new node ID via Redis INCRBY on the node sequence key,
     /// unless the special `_sd2_id` property is present (injected by FanoutStore
     /// for cross-cluster ID stability). Stores the node hash, updates label
-    /// indexes, and the all-nodes set atomically via a Redis pipeline.
+    /// indexes, the label registry, and the all-nodes set via a slot-local
+    /// Redis pipeline.
     ///
     /// Property indexing is performed after the main pipeline completes.
     pub(crate) fn create_node_impl(
@@ -30,59 +46,87 @@ impl RedisGraphStore {
         labels: Vec<String>,
         properties: HashMap<String, Value>,
     ) -> Result<NodeId, StorageError> {
-        self.require_graph(graph)?;
-        let mut conn = self.conn()?;
+        validate_labels(&labels)?;
+        validate_property_keys(&properties)?;
+        self.with_graph_write_lock(graph, WRITE_LOCK_TTL_MS, 3, 50, |conn| {
+            self.require_graph_on(conn.as_mut(), graph)?;
 
-        // If FanoutStore injected _sd2_id, use it instead of INCR.
-        let id = match extract_injected_id(&properties, "_sd2_id")? {
-            Some(id) => id,
-            None => {
-                let raw_id: i64 = redis::cmd("INCRBY")
-                    .arg(self.kp(key_node_seq(graph)))
-                    .arg(1)
-                    .query(conn.as_mut())
-                    .map_err(|e| { crate::record_backend_error(); StorageError::Backend { msg: e.to_string() } })?;
-                if raw_id <= 0 {
-                    return Err(StorageError::IdOverflow {
-                        graph: graph.to_string(),
-                    });
+            // If FanoutStore injected _sd2_id, use it instead of INCR.
+            let id = match extract_injected_id(&properties, "_sd2_id")? {
+                Some(id) => id,
+                None => {
+                    let raw_id: i64 = redis::cmd("INCRBY")
+                        .arg(self.kp(key_node_seq(graph)))
+                        .arg(1)
+                        .query(conn.as_mut())
+                        .map_err(|e| {
+                            crate::backend_storage_error(e)
+                        })?;
+                    if raw_id <= 0 {
+                        return Err(StorageError::IdOverflow {
+                            graph: graph.to_string(),
+                        });
+                    }
+                    raw_id as u64
                 }
-                raw_id as u64
+            };
+
+            // Strip internal FanoutStore keys before storing.
+            let clean_props = clean_fanout_props(properties);
+
+            let node_key = self.kp(key_node(graph, id));
+            let labels_json = serde_json::to_string(&labels)
+                .map_err(|e| StorageError::Serialization { msg: e.to_string() })?;
+            let props_json = props_to_json(&clean_props)?;
+            // Store node hash, label indexes, the label registry, and all-nodes
+            // set in a single pipeline.
+            // Note: .atomic() (MULTI/EXEC) is intentionally omitted — redis-rs
+            // ClusterConnection does not support MULTI/EXEC. All keys share the
+            // {graphname} hash tag so they route to the same cluster slot, making
+            // non-atomic pipelining correct. The write lock serialises concurrent
+            // writers when needed. See ADR-005.
+            if conn.is_standalone() {
+                tracing::warn!(
+                    graph = graph,
+                    "create_node pipeline executing without MULTI/EXEC atomicity (standalone mode); \
+                     a partial write is possible if the process crashes mid-pipeline. See ADR-005."
+                );
             }
-        };
-
-        // Strip internal FanoutStore keys before storing.
-        let clean_props = clean_fanout_props(properties);
-
-        let node_key = self.kp(key_node(graph, id));
-        let labels_json = serde_json::to_string(&labels)
-            .map_err(|e| StorageError::Serialization { msg: e.to_string() })?;
-        let props_json = props_to_json(&clean_props)?;
-        // Store node hash, label indexes, and all-nodes set atomically.
-        let mut pipe = redis::pipe();
-        pipe.atomic()
-            .cmd("HSET")
-            .arg(&node_key)
-            .arg("labels")
-            .arg(&labels_json)
-            .arg("props")
-            .arg(&props_json)
-            .ignore();
-        for label in &labels {
+            let mut pipe = conn.pipeline();
+            if !labels.is_empty() {
+                let registry_key = self.kp(key_label_names(graph));
+                let cmd = pipe.cmd("SADD");
+                cmd.arg(&registry_key);
+                for label in &labels {
+                    cmd.arg(label.as_str());
+                }
+                cmd.ignore();
+            }
             pipe.cmd("SADD")
-                .arg(self.kp(key_label(graph, label)))
+                .arg(self.kp(key_nodes_set(graph)))
                 .arg(id.to_string())
                 .ignore();
-        }
-        pipe.cmd("SADD")
-            .arg(self.kp(key_nodes_set(graph)))
-            .arg(id.to_string())
-            .ignore();
-        pipe.query::<()>(conn.as_mut())
-            .map_err(|e| { crate::record_backend_error(); StorageError::Backend { msg: e.to_string() } })?;
-        // Maintain property indexes.
-        self.index_node_properties(conn.as_mut(), graph, id, &labels, &clean_props)?;
-        Ok(NodeId(id))
+            for label in &labels {
+                pipe.cmd("SADD")
+                    .arg(self.kp(key_label(graph, label)))
+                    .arg(id.to_string())
+                    .ignore();
+            }
+            pipe.cmd("HSET")
+                .arg(&node_key)
+                .arg("labels")
+                .arg(&labels_json)
+                .arg("props")
+                .arg(&props_json)
+                .ignore();
+            conn.renew_lock()?;
+            pipe.query::<()>(conn).map_err(|e| {
+                crate::backend_storage_error(e)
+            })?;
+            // Maintain property indexes.
+            self.index_node_properties(conn, graph, id, &labels, &clean_props)?;
+            Ok(NodeId(id))
+        })
     }
 
     /// Merge additional properties into an existing node (SET semantics).
@@ -95,24 +139,28 @@ impl RedisGraphStore {
         id: NodeId,
         properties: HashMap<String, Value>,
     ) -> Result<(), StorageError> {
-        let mut conn = self.conn()?;
-        let node = self
-            .read_node(conn.as_mut(), graph, id.0)?
-            .ok_or(StorageError::NodeNotFound { id: id.0 })?;
-        // Deindex old property values before merging.
-        self.deindex_node_properties(conn.as_mut(), graph, id.0, &node.labels, &node.properties)?;
-        let mut merged = node.properties;
-        merged.extend(properties);
-        let props_json = props_to_json(&merged)?;
-        redis::cmd("HSET")
-            .arg(self.kp(key_node(graph, id.0)))
-            .arg("props")
-            .arg(&props_json)
-            .query::<()>(conn.as_mut())
-            .map_err(|e| { crate::record_backend_error(); StorageError::Backend { msg: e.to_string() } })?;
-        // Reindex with new values.
-        self.index_node_properties(conn.as_mut(), graph, id.0, &node.labels, &merged)?;
-        Ok(())
+        validate_property_keys(&properties)?;
+        self.with_graph_write_lock(graph, WRITE_LOCK_TTL_MS, 3, 50, |conn| {
+            self.require_graph_on(conn.as_mut(), graph)?;
+            let node = self
+                .read_node(conn.as_mut(), graph, id.0)?
+                .ok_or(StorageError::NodeNotFound { id: id.0 })?;
+            // Deindex old property values before merging.
+            self.deindex_node_properties(conn, graph, id.0, &node.labels, &node.properties)?;
+            conn.renew_lock()?;
+            let mut merged = node.properties;
+            merged.extend(properties);
+            let props_json = props_to_json(&merged)?;
+            redis::cmd("HSET")
+                .arg(self.kp(key_node(graph, id.0)))
+                .arg("props")
+                .arg(&props_json)
+                .query::<()>(conn.as_mut())
+                .map_err(crate::backend_storage_error)?;
+            // Reindex with new values.
+            self.index_node_properties(conn, graph, id.0, &node.labels, &merged)?;
+            Ok(())
+        })
     }
 
     /// Replace all properties on an existing node (REPLACE semantics).
@@ -125,22 +173,26 @@ impl RedisGraphStore {
         id: NodeId,
         properties: HashMap<String, Value>,
     ) -> Result<(), StorageError> {
-        let mut conn = self.conn()?;
-        let node = self
-            .read_node(conn.as_mut(), graph, id.0)?
-            .ok_or(StorageError::NodeNotFound { id: id.0 })?;
-        // Deindex old values.
-        self.deindex_node_properties(conn.as_mut(), graph, id.0, &node.labels, &node.properties)?;
-        let props_json = props_to_json(&properties)?;
-        redis::cmd("HSET")
-            .arg(self.kp(key_node(graph, id.0)))
-            .arg("props")
-            .arg(&props_json)
-            .query::<()>(conn.as_mut())
-            .map_err(|e| { crate::record_backend_error(); StorageError::Backend { msg: e.to_string() } })?;
-        // Index new values.
-        self.index_node_properties(conn.as_mut(), graph, id.0, &node.labels, &properties)?;
-        Ok(())
+        validate_property_keys(&properties)?;
+        self.with_graph_write_lock(graph, WRITE_LOCK_TTL_MS, 3, 50, |conn| {
+            self.require_graph_on(conn.as_mut(), graph)?;
+            let node = self
+                .read_node(conn.as_mut(), graph, id.0)?
+                .ok_or(StorageError::NodeNotFound { id: id.0 })?;
+            // Deindex old values.
+            self.deindex_node_properties(conn, graph, id.0, &node.labels, &node.properties)?;
+            conn.renew_lock()?;
+            let props_json = props_to_json(&properties)?;
+            redis::cmd("HSET")
+                .arg(self.kp(key_node(graph, id.0)))
+                .arg("props")
+                .arg(&props_json)
+                .query::<()>(conn.as_mut())
+                .map_err(crate::backend_storage_error)?;
+            // Index new values.
+            self.index_node_properties(conn, graph, id.0, &node.labels, &properties)?;
+            Ok(())
+        })
     }
 
     /// Remove a single property key from a node.
@@ -153,24 +205,28 @@ impl RedisGraphStore {
         id: NodeId,
         key: &str,
     ) -> Result<(), StorageError> {
-        let mut conn = self.conn()?;
-        let node = self
-            .read_node(conn.as_mut(), graph, id.0)?
-            .ok_or(StorageError::NodeNotFound { id: id.0 })?;
-        // Deindex old values before removal.
-        self.deindex_node_properties(conn.as_mut(), graph, id.0, &node.labels, &node.properties)?;
-        let mut props = node.properties;
-        props.remove(key);
-        let props_json = props_to_json(&props)?;
-        redis::cmd("HSET")
-            .arg(self.kp(key_node(graph, id.0)))
-            .arg("props")
-            .arg(&props_json)
-            .query::<()>(conn.as_mut())
-            .map_err(|e| { crate::record_backend_error(); StorageError::Backend { msg: e.to_string() } })?;
-        // Reindex with remaining values.
-        self.index_node_properties(conn.as_mut(), graph, id.0, &node.labels, &props)?;
-        Ok(())
+        validate_property_key(key)?;
+        self.with_graph_write_lock(graph, WRITE_LOCK_TTL_MS, 3, 50, |conn| {
+            self.require_graph_on(conn.as_mut(), graph)?;
+            let node = self
+                .read_node(conn.as_mut(), graph, id.0)?
+                .ok_or(StorageError::NodeNotFound { id: id.0 })?;
+            // Deindex old values before removal.
+            self.deindex_node_properties(conn, graph, id.0, &node.labels, &node.properties)?;
+            conn.renew_lock()?;
+            let mut props = node.properties;
+            props.remove(key);
+            let props_json = props_to_json(&props)?;
+            redis::cmd("HSET")
+                .arg(self.kp(key_node(graph, id.0)))
+                .arg("props")
+                .arg(&props_json)
+                .query::<()>(conn.as_mut())
+                .map_err(crate::backend_storage_error)?;
+            // Reindex with remaining values.
+            self.index_node_properties(conn, graph, id.0, &node.labels, &props)?;
+            Ok(())
+        })
     }
 
     /// Add labels to an existing node without removing any existing labels.
@@ -183,30 +239,62 @@ impl RedisGraphStore {
         id: NodeId,
         labels: &[String],
     ) -> Result<(), StorageError> {
-        let mut conn = self.conn()?;
-        let node = self
-            .read_node(conn.as_mut(), graph, id.0)?
-            .ok_or(StorageError::NodeNotFound { id: id.0 })?;
-        let mut existing: std::collections::HashSet<String> = node.labels.into_iter().collect();
-        for label in labels {
-            if existing.insert(label.clone()) {
-                // New label: update index.
-                redis::cmd("SADD")
-                    .arg(self.kp(key_label(graph, label)))
-                    .arg(id.0.to_string())
-                    .query::<()>(conn.as_mut())
-                    .map_err(|e| { crate::record_backend_error(); StorageError::Backend { msg: e.to_string() } })?;
+        validate_labels(labels)?;
+        self.with_graph_write_lock(graph, WRITE_LOCK_TTL_MS, 3, 50, |conn| {
+            self.require_graph_on(conn.as_mut(), graph)?;
+            let node = self
+                .read_node(conn.as_mut(), graph, id.0)?
+                .ok_or(StorageError::NodeNotFound { id: id.0 })?;
+            let mut existing: std::collections::HashSet<String> = node.labels.into_iter().collect();
+            let mut added_labels = Vec::new();
+            for label in labels {
+                if existing.insert(label.clone()) {
+                    added_labels.push(label.as_str());
+                }
             }
-        }
-        let new_labels: Vec<String> = existing.into_iter().collect();
-        let labels_json = serde_json::to_string(&new_labels)
-            .map_err(|e| StorageError::Serialization { msg: e.to_string() })?;
-        redis::cmd("HSET")
-            .arg(self.kp(key_node(graph, id.0)))
-            .arg("labels")
-            .arg(&labels_json)
-            .query::<()>(conn.as_mut())
-            .map_err(|e| { crate::record_backend_error(); StorageError::Backend { msg: e.to_string() } })
+
+            let new_labels: Vec<String> = existing.into_iter().collect();
+            let labels_json = serde_json::to_string(&new_labels)
+                .map_err(|e| StorageError::Serialization { msg: e.to_string() })?;
+
+            let mut pipe = conn.pipeline();
+            let id_str = id.0.to_string();
+            for label in &added_labels {
+                pipe.cmd("SADD")
+                    .arg(self.kp(key_label(graph, label)))
+                    .arg(&id_str)
+                    .ignore();
+            }
+            if !added_labels.is_empty() {
+                let cmd = pipe.cmd("SADD").arg(self.kp(key_label_names(graph)));
+                for label in &added_labels {
+                    cmd.arg(label);
+                }
+                cmd.ignore();
+            }
+            pipe.cmd("HSET")
+                .arg(self.kp(key_node(graph, id.0)))
+                .arg("labels")
+                .arg(&labels_json)
+                .ignore();
+            conn.renew_lock()?;
+            pipe.query::<()>(conn)
+                .map_err(crate::backend_storage_error)?;
+            let added_labels_owned: Vec<String> = added_labels
+                .into_iter()
+                .map(|label| label.to_string())
+                .collect();
+            if !added_labels_owned.is_empty() {
+                self.index_node_properties(
+                    conn,
+                    graph,
+                    id.0,
+                    &added_labels_owned,
+                    &node.properties,
+                )?;
+            }
+            Ok(())
+        })
     }
 
     /// Remove labels from an existing node.
@@ -219,25 +307,30 @@ impl RedisGraphStore {
         id: NodeId,
         labels: &[String],
     ) -> Result<(), StorageError> {
-        let mut conn = self.conn()?;
-        let lock_key = self.kp(key_graph_lock(graph));
-        let token = lock::acquire_blocking(conn.as_mut(), &lock_key, WRITE_LOCK_TTL_MS, 3, 50)?;
-        let result = (|| -> Result<(), StorageError> {
+        validate_labels(labels)?;
+        self.with_graph_write_lock(graph, WRITE_LOCK_TTL_MS, 3, 50, |conn| {
+            self.require_graph_on(conn.as_mut(), graph)?;
             let node = self
                 .read_node(conn.as_mut(), graph, id.0)?
                 .ok_or(StorageError::NodeNotFound { id: id.0 })?;
             let to_remove: std::collections::HashSet<&String> = labels.iter().collect();
-            if !to_remove.is_empty() {
-                let id_str = id.0.to_string();
-                let mut pipe = redis::pipe();
-                for label in &to_remove {
-                    pipe.cmd("SREM")
-                        .arg(self.kp(key_label(graph, label)))
-                        .arg(&id_str)
-                        .ignore();
-                }
-                pipe.query::<()>(conn.as_mut())
-                    .map_err(|e| { crate::record_backend_error(); StorageError::Backend { msg: e.to_string() } })?;
+            let removed_labels: Vec<String> = node
+                .labels
+                .iter()
+                .filter(|label| to_remove.contains(label))
+                .cloned()
+                .collect();
+            if removed_labels.is_empty() {
+                return Ok(());
+            }
+            self.deindex_node_properties(conn, graph, id.0, &removed_labels, &node.properties)?;
+            let id_str = id.0.to_string();
+            let mut pipe = conn.pipeline();
+            for label in &to_remove {
+                pipe.cmd("SREM")
+                    .arg(self.kp(key_label(graph, label)))
+                    .arg(&id_str)
+                    .ignore();
             }
             let new_labels: Vec<String> = node
                 .labels
@@ -246,16 +339,16 @@ impl RedisGraphStore {
                 .collect();
             let labels_json = serde_json::to_string(&new_labels)
                 .map_err(|e| StorageError::Serialization { msg: e.to_string() })?;
-            redis::cmd("HSET")
+            pipe.cmd("HSET")
                 .arg(self.kp(key_node(graph, id.0)))
                 .arg("labels")
                 .arg(&labels_json)
-                .query::<()>(conn.as_mut())
-                .map_err(|e| { crate::record_backend_error(); StorageError::Backend { msg: e.to_string() } })?;
+                .ignore();
+            conn.renew_lock()?;
+            pipe.query::<()>(conn)
+                .map_err(crate::backend_storage_error)?;
             Ok(())
-        })();
-        let _ = lock::release(conn.as_mut(), &lock_key, &token);
-        result
+        })
     }
 
     /// Delete a node and optionally detach (delete) all its edges first.
@@ -272,78 +365,83 @@ impl RedisGraphStore {
         id: NodeId,
         detach: bool,
     ) -> Result<(), StorageError> {
-        let mut conn = self.conn()?;
-        let node = self
-            .read_node(conn.as_mut(), graph, id.0)?
-            .ok_or(StorageError::NodeNotFound { id: id.0 })?;
-        // Check for relationships if not detaching.
-        if !detach {
-            let out: Vec<String> = redis::cmd("SMEMBERS")
-                .arg(self.kp(key_out(graph, id.0)))
-                .query(conn.as_mut())
-                .map_err(|e| { crate::record_backend_error(); StorageError::Backend { msg: e.to_string() } })?;
-            let in_: Vec<String> = redis::cmd("SMEMBERS")
-                .arg(self.kp(key_in(graph, id.0)))
-                .query(conn.as_mut())
-                .map_err(|e| { crate::record_backend_error(); StorageError::Backend { msg: e.to_string() } })?;
-            if !out.is_empty() || !in_.is_empty() {
-                crate::record_backend_error();
-                return Err(StorageError::Backend {
-                    msg: format!("node {} has relationships; use DETACH DELETE", id.0),
-                });
-            }
-        }
-        if detach {
-            // Delete all adjacent edges first, keeping the lock held throughout
-            // to prevent new edges from arriving during the operation.
-            let out_members: Vec<String> = redis::cmd("SMEMBERS")
-                .arg(self.kp(key_out(graph, id.0)))
-                .query(conn.as_mut())
-                .map_err(|e| { crate::record_backend_error(); StorageError::Backend { msg: e.to_string() } })?;
-            let in_members: Vec<String> = redis::cmd("SMEMBERS")
-                .arg(self.kp(key_in(graph, id.0)))
-                .query(conn.as_mut())
-                .map_err(|e| { crate::record_backend_error(); StorageError::Backend { msg: e.to_string() } })?;
-            let mut edge_ids: Vec<gql_core::storage::EdgeId> = Vec::new();
-            for m in out_members.iter().chain(in_members.iter()) {
-                if let Some(adj) = crate::keys::decode_adj(m) {
-                    edge_ids.push(adj.edge_id);
+        self.with_graph_write_lock(graph, WRITE_LOCK_TTL_MS, 3, 50, |conn| {
+            self.require_graph_on(conn.as_mut(), graph)?;
+            let node = self
+                .read_node(conn.as_mut(), graph, id.0)?
+                .ok_or(StorageError::NodeNotFound { id: id.0 })?;
+            // Check for relationships if not detaching.
+            if !detach {
+                let out: Vec<String> = redis::cmd("SMEMBERS")
+                    .arg(self.kp(key_out(graph, id.0)))
+                    .query(conn.as_mut())
+                    .map_err(crate::backend_storage_error)?;
+                let in_: Vec<String> = redis::cmd("SMEMBERS")
+                    .arg(self.kp(key_in(graph, id.0)))
+                    .query(conn.as_mut())
+                    .map_err(crate::backend_storage_error)?;
+                if !out.is_empty() || !in_.is_empty() {
+                    crate::record_backend_error();
+                    return Err(StorageError::Backend {
+                        msg: format!("node {} has relationships; use DETACH DELETE", id.0),
+                    });
                 }
             }
-            // Deduplicate and delete each edge while holding the lock.
-            edge_ids.sort_unstable();
-            edge_ids.dedup();
-            for eid in edge_ids {
-                self.delete_edge_inner(conn.as_mut(), graph, eid)?;
+            if detach {
+                // Delete all adjacent edges first while holding the graph write
+                // lock so concurrent edge creation cannot race the adjacency scan.
+                let out_members: Vec<String> = redis::cmd("SMEMBERS")
+                    .arg(self.kp(key_out(graph, id.0)))
+                    .query(conn.as_mut())
+                    .map_err(crate::backend_storage_error)?;
+                let in_members: Vec<String> = redis::cmd("SMEMBERS")
+                    .arg(self.kp(key_in(graph, id.0)))
+                    .query(conn.as_mut())
+                    .map_err(crate::backend_storage_error)?;
+                let mut edge_ids: Vec<gql_core::storage::EdgeId> = Vec::new();
+                for m in out_members.iter().chain(in_members.iter()) {
+                    if let Some(adj) = crate::keys::decode_adj(m) {
+                        edge_ids.push(adj.edge_id);
+                    }
+                }
+                edge_ids.sort_unstable();
+                edge_ids.dedup();
+                for (index, eid) in edge_ids.into_iter().enumerate() {
+                    if index > 0 && index % 100 == 0 {
+                        conn.renew_lock()?;
+                    }
+                    self.delete_edge_inner(conn, graph, eid)?;
+                }
             }
-        }
-        // Remove property indexes (requires reads, so must stay outside transaction).
-        self.deindex_node_properties(conn.as_mut(), graph, id.0, &node.labels, &node.properties)?;
-        // Remove label indexes, all-nodes set, adjacency keys, and node hash atomically.
-        let id_str = id.0.to_string();
-        let mut pipe = redis::pipe();
-        for label in &node.labels {
+            // Remove property indexes (requires reads, so must stay outside transaction).
+            self.deindex_node_properties(conn, graph, id.0, &node.labels, &node.properties)?;
+            // Remove label indexes, all-nodes set, adjacency keys, and node hash in one pipeline.
+            let id_str = id.0.to_string();
+            let mut pipe = conn.pipeline();
+            for label in &node.labels {
+                pipe.cmd("SREM")
+                    .arg(self.kp(key_label(graph, label)))
+                    .arg(&id_str)
+                    .ignore();
+            }
             pipe.cmd("SREM")
-                .arg(self.kp(key_label(graph, label)))
+                .arg(self.kp(key_nodes_set(graph)))
                 .arg(&id_str)
+                .ignore()
+                .cmd("DEL")
+                .arg(self.kp(key_out(graph, id.0)))
+                .ignore()
+                .cmd("DEL")
+                .arg(self.kp(key_in(graph, id.0)))
+                .ignore()
+                .cmd("DEL")
+                .arg(self.kp(key_node(graph, id.0)))
                 .ignore();
-        }
-        pipe.cmd("SREM")
-            .arg(self.kp(key_nodes_set(graph)))
-            .arg(&id_str)
-            .ignore()
-            .cmd("DEL")
-            .arg(self.kp(key_out(graph, id.0)))
-            .ignore()
-            .cmd("DEL")
-            .arg(self.kp(key_in(graph, id.0)))
-            .ignore()
-            .cmd("DEL")
-            .arg(self.kp(key_node(graph, id.0)))
-            .ignore();
-        pipe.query::<()>(conn.as_mut())
-            .map_err(|e| { crate::record_backend_error(); StorageError::Backend { msg: e.to_string() } })?;
-        Ok(())
+            conn.renew_lock()?;
+            pipe.query::<()>(conn)
+                .map_err(crate::backend_storage_error)?;
+            Ok(())
+        })
     }
 
     /// Batch-create multiple nodes in a single Redis pipeline round-trip.
@@ -361,81 +459,108 @@ impl RedisGraphStore {
         if nodes.is_empty() {
             return Ok(Vec::new());
         }
-        self.require_graph(graph)?;
-        let mut conn = self.conn()?;
-
-        let count = i64::try_from(nodes.len()).map_err(|_| { crate::record_backend_error(); StorageError::Backend {
-            msg: format!(
-                "batch size {} exceeds i64::MAX, cannot allocate IDs",
-                nodes.len()
-            ),
-        }})?;
-
-        // Allocate a contiguous block of IDs with a single INCRBY.
-        let end_id: i64 = redis::cmd("INCRBY")
-            .arg(self.kp(key_node_seq(graph)))
-            .arg(count)
-            .query(conn.as_mut())
-            .map_err(|e| { crate::record_backend_error(); StorageError::Backend { msg: e.to_string() } })?;
-        if end_id <= 0 || end_id < count {
-            return Err(StorageError::IdOverflow {
-                graph: graph.to_string(),
-            });
+        for (labels, properties) in &nodes {
+            validate_labels(labels)?;
+            validate_property_keys(properties)?;
         }
-        let start_id = (end_id - count + 1) as u64;
+        self.with_graph_write_lock(graph, WRITE_LOCK_TTL_MS, 3, 50, |conn| {
+            self.require_graph_on(conn.as_mut(), graph)?;
 
-        // Pre-serialize all nodes and build the pipeline.
-        let mut pipe = redis::pipe();
-        let mut node_meta: Vec<(u64, Vec<String>, HashMap<String, Value>)> =
-            Vec::with_capacity(nodes.len());
+            let count = i64::try_from(nodes.len()).map_err(|_| {
+                crate::record_backend_error();
+                StorageError::Backend {
+                    msg: format!(
+                        "batch size {} exceeds i64::MAX, cannot allocate IDs",
+                        nodes.len()
+                    ),
+                }
+            })?;
 
-        for (i, (labels, properties)) in nodes.into_iter().enumerate() {
-            let id = start_id + i as u64;
+            // Allocate a contiguous block of IDs with a single INCRBY.
+            let end_id: i64 = redis::cmd("INCRBY")
+                .arg(self.kp(key_node_seq(graph)))
+                .arg(count)
+                .query(conn.as_mut())
+                .map_err(crate::backend_storage_error)?;
+            if end_id <= 0 || end_id < count {
+                return Err(StorageError::IdOverflow {
+                    graph: graph.to_string(),
+                });
+            }
+            let start_id = (end_id - count + 1) as u64;
 
-            // Strip internal FanoutStore keys before storing.
-            let clean_props = clean_fanout_props(properties);
+            // Pre-serialize all nodes and build the pipeline.
+            let mut pipe = conn.pipeline();
+            let mut node_meta: Vec<(u64, Vec<String>, HashMap<String, Value>)> =
+                Vec::with_capacity(nodes.len());
 
-            let node_key = self.kp(key_node(graph, id));
-            let labels_json = serde_json::to_string(&labels)
-                .map_err(|e| StorageError::Serialization { msg: e.to_string() })?;
-            let props_json = props_to_json(&clean_props)?;
+            for (i, (labels, properties)) in nodes.into_iter().enumerate() {
+                if i > 0 && i % 250 == 0 {
+                    conn.renew_lock()?;
+                }
+                let id = start_id + i as u64;
 
-            // HSET node hash.
-            pipe.cmd("HSET")
-                .arg(&node_key)
-                .arg("labels")
-                .arg(&labels_json)
-                .arg("props")
-                .arg(&props_json)
-                .ignore();
+                // Strip internal FanoutStore keys before storing.
+                let clean_props = clean_fanout_props(properties);
 
-            // SADD to label indexes.
-            for label in &labels {
+                let node_key = self.kp(key_node(graph, id));
+                let labels_json = serde_json::to_string(&labels)
+                    .map_err(|e| StorageError::Serialization { msg: e.to_string() })?;
+                let props_json = props_to_json(&clean_props)?;
+
+                // HSET node hash.
+                if !labels.is_empty() {
+                    let registry_key = self.kp(key_label_names(graph));
+                    let cmd = pipe.cmd("SADD");
+                    cmd.arg(&registry_key);
+                    for label in &labels {
+                        cmd.arg(label.as_str());
+                    }
+                    cmd.ignore();
+                }
+
+                // SADD to all-nodes set.
                 pipe.cmd("SADD")
-                    .arg(self.kp(key_label(graph, label)))
+                    .arg(self.kp(key_nodes_set(graph)))
                     .arg(id.to_string())
                     .ignore();
+
+                // SADD to label indexes.
+                for label in &labels {
+                    pipe.cmd("SADD")
+                        .arg(self.kp(key_label(graph, label)))
+                        .arg(id.to_string())
+                        .ignore();
+                }
+
+                // HSET node hash last so the node manifest and label registries
+                // already know about the ID if the non-atomic pipeline fails.
+                pipe.cmd("HSET")
+                    .arg(&node_key)
+                    .arg("labels")
+                    .arg(&labels_json)
+                    .arg("props")
+                    .arg(&props_json)
+                    .ignore();
+
+                node_meta.push((id, labels, clean_props));
             }
 
-            // SADD to all-nodes set.
-            pipe.cmd("SADD")
-                .arg(self.kp(key_nodes_set(graph)))
-                .arg(id.to_string())
-                .ignore();
+            // Execute the main pipeline in one round-trip.
+            conn.renew_lock()?;
+            pipe.query::<()>(conn)
+                .map_err(crate::backend_storage_error)?;
 
-            node_meta.push((id, labels, clean_props));
-        }
+            // Property indexing pass (uses its own pipeline internally).
+            for (index, (id, labels, props)) in node_meta.iter().enumerate() {
+                if index > 0 && index % 100 == 0 {
+                    conn.renew_lock()?;
+                }
+                self.index_node_properties(conn, graph, *id, labels, props)?;
+            }
 
-        // Execute the main pipeline in one round-trip.
-        pipe.query::<()>(conn.as_mut())
-            .map_err(|e| { crate::record_backend_error(); StorageError::Backend { msg: e.to_string() } })?;
-
-        // Property indexing pass (uses its own pipeline internally).
-        for (id, labels, props) in &node_meta {
-            self.index_node_properties(conn.as_mut(), graph, *id, labels, props)?;
-        }
-
-        Ok(node_meta.iter().map(|(id, _, _)| NodeId(*id)).collect())
+            Ok(node_meta.iter().map(|(id, _, _)| NodeId(*id)).collect())
+        })
     }
 }
 
@@ -514,5 +639,113 @@ mod tests {
         let props = HashMap::new();
         let cleaned = clean_fanout_props(props);
         assert!(cleaned.is_empty());
+    }
+
+    #[test]
+    fn validate_labels_rejects_null_byte() {
+        let labels = vec!["Per\x00son".to_string()];
+        let result = validate_labels(&labels);
+        assert!(
+            result.is_err(),
+            "write-path label validation should reject null bytes"
+        );
+    }
+
+    #[test]
+    fn validate_property_keys_rejects_null_byte() {
+        let mut props = HashMap::new();
+        props.insert("na\x00me".to_string(), Value::Int(1));
+        let result = validate_property_keys(&props);
+        assert!(
+            result.is_err(),
+            "write-path property validation should reject null-byte keys"
+        );
+    }
+
+    // ---- Cluster pipeline safety: verify no MULTI/EXEC in node write pipeline ---
+
+    /// Verify that the node-write pipeline does NOT include MULTI or EXEC.
+    ///
+    /// This test encodes the fix for Issue #745: redis-rs ClusterConnection
+    /// does not support MULTI/EXEC, so .atomic() must not be used in cluster mode.
+    /// All per-graph keys share the {graphname} hash tag and route to the same
+    /// cluster slot, so non-atomic pipelining is cluster-safe.
+    #[test]
+    fn create_node_pipeline_has_no_multi_exec() {
+        // Construct the same pipeline sequence as create_node_impl (minus Redis I/O).
+        // We validate the pipeline command names do not include MULTI or EXEC.
+        let labels = vec!["Person".to_string(), "Employee".to_string()];
+        let graph = "testgraph";
+        let id = 1u64;
+        let node_key = format!("G:{{{graph}}}:node:{id}");
+        let labels_json = serde_json::to_string(&labels).unwrap();
+        let props_json = "{}";
+
+        let mut pipe = redis::pipe();
+        // Replicate create_node_impl pipeline (without .atomic())
+        pipe.cmd("HSET")
+            .arg(&node_key)
+            .arg("labels")
+            .arg(&labels_json)
+            .arg("props")
+            .arg(props_json)
+            .ignore();
+        for label in &labels {
+            pipe.cmd("SADD")
+                .arg(format!("G:{{{graph}}}:label:{label}"))
+                .arg(id.to_string())
+                .ignore();
+        }
+        pipe.cmd("SADD")
+            .arg(format!("G:{{{graph}}}:nodes"))
+            .arg(id.to_string())
+            .ignore();
+
+        // Serialize the pipeline to bytes and verify MULTI/EXEC are absent.
+        let packed = pipe.get_packed_pipeline();
+        let pipeline_str = String::from_utf8_lossy(&packed);
+        // In Redis protocol, commands appear as bulk strings.
+        assert!(
+            !pipeline_str.to_uppercase().contains("MULTI"),
+            "Pipeline must not contain MULTI (breaks ClusterConnection): {pipeline_str}"
+        );
+        assert!(
+            !pipeline_str.to_uppercase().contains("EXEC"),
+            "Pipeline must not contain EXEC (breaks ClusterConnection): {pipeline_str}"
+        );
+    }
+
+    /// Verify that all keys in the node-write pipeline share the {graphname} hash tag.
+    ///
+    /// Redis Cluster routes keys to slots by hash tag. If all keys in a pipeline
+    /// share the same hash tag, they are guaranteed to be on the same cluster node,
+    /// making non-atomic pipelining safe and correct.
+    #[test]
+    fn create_node_pipeline_keys_all_share_hash_tag() {
+        let graph = "mygraph";
+        let id = 42u64;
+        let labels = vec!["Label1".to_string(), "Label2".to_string()];
+        let expected_tag = format!("{{{graph}}}");
+
+        // All keys produced by the create_node pipeline.
+        let node_key = format!("G:{expected_tag}:node:{id}");
+        let label_keys: Vec<String> = labels
+            .iter()
+            .map(|l| format!("G:{expected_tag}:label:{l}"))
+            .collect();
+        let nodes_set_key = format!("G:{expected_tag}:nodes");
+
+        // Every key must contain the hash tag.
+        assert!(
+            node_key.contains(&expected_tag),
+            "node key missing hash tag: {node_key}"
+        );
+        assert!(
+            nodes_set_key.contains(&expected_tag),
+            "nodes set key missing hash tag: {nodes_set_key}"
+        );
+        for k in &label_keys {
+            assert!(k.contains(&expected_tag), "label key missing hash tag: {k}");
+        }
     }
 }

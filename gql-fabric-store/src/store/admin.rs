@@ -20,14 +20,14 @@ pub(crate) fn list_indexes_query() -> String {
 
 /// Cypher: CREATE INDEX with a native Fabric/Neo4j index.
 pub(crate) fn create_index_native_query(label_s: &str, prop_s: &str) -> String {
-    format!("CREATE INDEX sd2_{label_s}_{prop_s} IF NOT EXISTS FOR (n:`{label_s}`) ON (n.`{prop_s}`)")
+    format!(
+        "CREATE INDEX sd2_{label_s}_{prop_s} IF NOT EXISTS FOR (n:`{label_s}`) ON (n.`{prop_s}`)"
+    )
 }
 
 /// Cypher: MERGE the __SD2Index metadata node for a created index.
 pub(crate) fn create_index_meta_query() -> String {
-    format!(
-        "MERGE (__i:__SD2Index {{`{PROP_GRAPH}`: $graph, _label: $lbl, _property: $prop}})"
-    )
+    format!("MERGE (__i:__SD2Index {{`{PROP_GRAPH}`: $graph, _label: $lbl, _property: $prop}})")
 }
 
 /// Cypher: DROP INDEX by name.
@@ -62,9 +62,7 @@ pub(crate) fn delete_graph_seq_query() -> String {
 
 /// Cypher: check if graph exists via its root sequence node.
 pub(crate) fn graph_exists_query() -> String {
-    format!(
-        "MATCH (c:{SEQ_LABEL} {{_graph: $graph, _is_root: true}}) RETURN count(c) AS n"
-    )
+    format!("MATCH (c:{SEQ_LABEL} {{_graph: $graph, _is_root: true}}) RETURN count(c) AS n")
 }
 
 /// Cypher: list all graph names.
@@ -91,10 +89,7 @@ pub(super) fn list_indexes_impl(
     store: &FabricGraphStore,
     graph: &str,
 ) -> Result<Vec<IndexDescriptor>, StorageError> {
-    let rows = store.query(
-        &list_indexes_query(),
-        json!({ "graph": graph }),
-    )?;
+    let rows = store.query(&list_indexes_query(), json!({ "graph": graph }))?;
     Ok(rows
         .iter()
         .filter_map(|r| {
@@ -124,10 +119,7 @@ pub(super) fn create_index_impl(
         tracing::warn!(property = %property, "skipping create_index: empty property after sanitization");
         return Ok(());
     }
-    store.statement(
-        &create_index_native_query(&label_s, &prop_s),
-        json!({}),
-    )?;
+    store.statement(&create_index_native_query(&label_s, &prop_s), json!({}))?;
     store.statement(
         &create_index_meta_query(),
         json!({ "graph": graph, "lbl": label, "prop": property }),
@@ -151,10 +143,7 @@ pub(super) fn drop_index_impl(
         tracing::warn!(property = %property, "skipping drop_index: empty property after sanitization");
         return Ok(());
     }
-    store.statement(
-        &drop_index_native_query(&label_s, &prop_s),
-        json!({}),
-    )?;
+    store.statement(&drop_index_native_query(&label_s, &prop_s), json!({}))?;
     store.statement(
         &drop_index_meta_query(),
         json!({ "graph": graph, "lbl": label, "prop": property }),
@@ -162,31 +151,16 @@ pub(super) fn drop_index_impl(
     Ok(())
 }
 
-pub(super) fn create_graph_impl(
-    store: &FabricGraphStore,
-    name: &str,
-) -> Result<(), StorageError> {
+pub(super) fn create_graph_impl(store: &FabricGraphStore, name: &str) -> Result<(), StorageError> {
     validate_graph_name(name)?;
-    store.statement(
-        &create_graph_query(),
-        json!({ "graph": name }),
-    )?;
+    store.statement(&create_graph_query(), json!({ "graph": name }))?;
     Ok(())
 }
 
-pub(super) fn delete_graph_impl(
-    store: &FabricGraphStore,
-    name: &str,
-) -> Result<(), StorageError> {
+pub(super) fn delete_graph_impl(store: &FabricGraphStore, name: &str) -> Result<(), StorageError> {
     validate_graph_name(name)?;
-    store.statement(
-        &delete_graph_data_query(),
-        json!({ "graph": name }),
-    )?;
-    store.statement(
-        &delete_graph_seq_query(),
-        json!({ "graph": name }),
-    )?;
+    store.statement(&delete_graph_data_query(), json!({ "graph": name }))?;
+    store.statement(&delete_graph_seq_query(), json!({ "graph": name }))?;
     Ok(())
 }
 
@@ -195,10 +169,7 @@ pub(super) fn graph_exists_impl(
     name: &str,
 ) -> Result<bool, StorageError> {
     validate_graph_name(name)?;
-    let rows = store.query(
-        &graph_exists_query(),
-        json!({ "graph": name }),
-    )?;
+    let rows = store.query(&graph_exists_query(), json!({ "graph": name }))?;
     Ok(rows
         .first()
         .and_then(|r| r.first())
@@ -207,13 +178,8 @@ pub(super) fn graph_exists_impl(
         > 0)
 }
 
-pub(super) fn list_graphs_impl(
-    store: &FabricGraphStore,
-) -> Result<Vec<String>, StorageError> {
-    let rows = store.query(
-        &list_graphs_query(),
-        json!({}),
-    )?;
+pub(super) fn list_graphs_impl(store: &FabricGraphStore) -> Result<Vec<String>, StorageError> {
+    let rows = store.query(&list_graphs_query(), json!({}))?;
     Ok(rows
         .iter()
         .filter_map(|r| r.first()?.as_str().map(|s| s.to_string()))
@@ -224,10 +190,7 @@ pub(super) fn graph_stats_impl(
     store: &FabricGraphStore,
     graph: &str,
 ) -> Result<GraphStats, StorageError> {
-    let rows = store.query(
-        &graph_stats_query(),
-        json!({ "graph": graph }),
-    )?;
+    let rows = store.query(&graph_stats_query(), json!({ "graph": graph }))?;
     let row = rows.first().ok_or_else(|| StorageError::Backend {
         msg: format!("graph_stats: Fabric returned no rows for graph '{graph}'"),
     })?;
@@ -271,7 +234,10 @@ mod tests {
     #[test]
     fn create_index_native_query_structure() {
         let q = create_index_native_query("Person", "name");
-        assert!(q.contains("CREATE INDEX sd2_Person_name IF NOT EXISTS"), "got: {q}");
+        assert!(
+            q.contains("CREATE INDEX sd2_Person_name IF NOT EXISTS"),
+            "got: {q}"
+        );
         assert!(q.contains("FOR (n:`Person`)"), "missing label: {q}");
         assert!(q.contains("ON (n.`name`)"), "missing property: {q}");
     }
@@ -289,7 +255,10 @@ mod tests {
     #[test]
     fn drop_index_native_query_structure() {
         let q = drop_index_native_query("Person", "name");
-        assert!(q.contains("DROP INDEX sd2_Person_name IF EXISTS"), "got: {q}");
+        assert!(
+            q.contains("DROP INDEX sd2_Person_name IF EXISTS"),
+            "got: {q}"
+        );
     }
 
     #[test]
@@ -356,9 +325,15 @@ mod tests {
     fn graph_stats_query_computes_four_metrics() {
         let q = graph_stats_query();
         assert!(q.contains("RETURN nc, ec, lc, rtc"), "missing metrics: {q}");
-        assert!(q.contains("count(DISTINCT n) AS nc"), "missing node count: {q}");
+        assert!(
+            q.contains("count(DISTINCT n) AS nc"),
+            "missing node count: {q}"
+        );
         assert!(q.contains("count(r) AS ec"), "missing edge count: {q}");
-        assert!(q.contains("WHERE NOT n:__SD2Seq"), "missing seq filter: {q}");
+        assert!(
+            q.contains("WHERE NOT n:__SD2Seq"),
+            "missing seq filter: {q}"
+        );
     }
 
     #[test]

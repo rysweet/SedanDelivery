@@ -31,8 +31,8 @@ pub fn spawn_redis_memory_reporter(url: String, interval: Duration) -> tokio::ta
                         Ok(info) => {
                             tracing::debug!(
                                 used_memory_bytes = info.used_memory,
-                                maxmemory_bytes   = info.maxmemory,
-                                evicted_keys      = info.evicted_keys,
+                                maxmemory_bytes = info.maxmemory,
+                                evicted_keys = info.evicted_keys,
                                 "redis memory snapshot"
                             );
 
@@ -47,8 +47,8 @@ pub fn spawn_redis_memory_reporter(url: String, interval: Duration) -> tokio::ta
                                 if pct >= 90.0 {
                                     tracing::warn!(
                                         used_memory_bytes = info.used_memory,
-                                        maxmemory_bytes   = info.maxmemory,
-                                        usage_pct         = format!("{pct:.1}"),
+                                        maxmemory_bytes = info.maxmemory,
+                                        usage_pct = format!("{pct:.1}"),
                                         "redis memory pressure: >= 90% of maxmemory used"
                                     );
                                 }

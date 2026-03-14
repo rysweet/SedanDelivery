@@ -5,7 +5,9 @@ use crate::types::Value;
 
 use super::super::super::builtins::type_error;
 use super::super::super::get_query_now;
-use super::super::parsing::{expand_compact_time, extract_offset_from_string, strip_tz_offset_from_time};
+use super::super::parsing::{
+    expand_compact_time, extract_offset_from_string, strip_tz_offset_from_time,
+};
 use super::super::{map_get_int, map_get_str, parse_timezone, temporal_parse_error};
 use super::{extract_base_time, zoned_to_time_value};
 

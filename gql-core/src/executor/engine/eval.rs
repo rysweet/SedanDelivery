@@ -632,12 +632,8 @@ impl<'a> QueryExecutor<'a> {
                             extended_row.insert(accumulator.0.clone(), acc);
                             extended_row.insert(variable.0.clone(), item.clone());
                             let ext_ctx = self.build_filter_ctx(graph, &extended_row)?;
-                            acc = self.eval_with_storage(
-                                graph,
-                                expression,
-                                &extended_row,
-                                &ext_ctx,
-                            )?;
+                            acc =
+                                self.eval_with_storage(graph, expression, &extended_row, &ext_ctx)?;
                         }
                         Ok(acc)
                     }

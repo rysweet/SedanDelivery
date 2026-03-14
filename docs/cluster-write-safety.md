@@ -1,0 +1,274 @@
+---
+layout: default
+title: Cluster Write Safety
+---
+
+# Cluster Write Safety
+
+Why SedanDelivery's Redis Cluster path is safe after `#745`, what changed, and
+what residual risks still remain.
+
+## Contents
+
+- [The Problem: Cluster-Unsafe Pipelines and Metadata Reads](#the-problem-cluster-unsafe-pipelines-and-metadata-reads)
+- [The Fix](#the-fix)
+- [What Keeps Writes Correct](#what-keeps-writes-correct)
+- [Residual Risk](#residual-risk)
+- [The Write Lock](#the-write-lock)
+- [Verification](#verification)
+
+---
+
+## The Problem: Cluster-Unsafe Pipelines and Metadata Reads
+
+Issue `#745` was not just a `MULTI/EXEC` problem. Two different cluster-unsafe
+behaviours were present:
+
+1. **Generic pipeline execution on cluster connections**
+
+   `redis-rs` 1.0.4 does not let a `ClusterConnection` execute a normal
+   `redis::Pipeline::query()` call. In cluster mode, slot-local batches must be
+   dispatched through `redis::cluster::cluster_pipe()`.
+
+2. **Planner and DDL paths still used keyspace `SCAN`**
+
+   Bolt queries eventually call metadata helpers such as `graph_stats` and
+   `all_label_names`. Those helpers, plus `DROP INDEX` and `DELETE GRAPH`,
+   previously depended on keyspace `SCAN`. In Redis Cluster, keyspace `SCAN`
+   does not carry a reliable slot hint, so the command may be routed to the
+   wrong shard or rejected.
+
+The externally visible symptom was the real Bolt error:
+
+```text
+This command cannot be safely routed in cluster mode - Client
+```
+
+That is why the first narrow fix ("remove `.atomic()`") was not sufficient on
+its own: store-level writes improved, but the real planner/Bolt path still
+failed until the metadata and cleanup paths were made cluster-safe too.
+
+---
+
+## The Fix
+
+`#745` landed three complementary changes:
+
+### 1. Cluster-aware pipeline dispatch
+
+`gql-redis-store/src/connection.rs` now exposes a `RedisPipeline` wrapper via
+`RedisConn::pipeline()`.
+
+- Standalone mode executes through `redis::pipe()`
+- Cluster mode executes through `redis::cluster::cluster_pipe()`
+
+This keeps batching fast without pretending generic pipeline execution works on
+cluster connections.
+
+### 2. Preserve the concrete connection type until execution
+
+The write/read/index call sites now keep a concrete `RedisConn` alive until the
+pipeline is actually executed. That matters because the final dispatch decision
+depends on whether the connection is standalone or cluster-backed.
+
+### 3. Replace cluster-unsafe `SCAN` metadata paths with registries and cleanup manifests
+
+Per-graph registries are now maintained alongside the existing label and
+relationship-type sets:
+
+- `G:{g}:_labels`
+- `G:{g}:_reltypes`
+- `G:{g}:_propidx`
+
+These registries let SedanDelivery enumerate graph metadata and reconstruct
+cleanup/index keys without global keyspace scans.
+
+The affected paths now use registries plus entity-set fallback instead of
+cluster-unsafe `SCAN`:
+
+- `all_label_names`
+- `graph_stats`
+- `drop_index`
+- `delete_graph`
+
+`G:{g}:_propidx` is a cleanup manifest rather than planner metadata. It lets
+`delete_graph` remove propidx sets even if non-atomic index creation or indexed
+writes fail after the propidx key was created but before index metadata was
+fully registered.
+
+See [Redis Key Schema](redis-key-schema) for the full key contract.
+
+---
+
+## What Keeps Writes Correct
+
+Three properties together make the cluster write path correct:
+
+### 1. Hash-tag slot affinity
+
+Every per-graph key uses the form `G:{g}:...`. Redis Cluster hashes only the
+content inside `{...}`, so all keys for graph `g` land on the same slot.
+
+That means a per-graph batch does **not** fan out across shards.
+
+### 2. Write-lock serialization
+
+Read-modify-write operations still take the per-graph lock:
+
+```text
+G:{g}:write_lock
+```
+
+The lock prevents competing writers from interleaving destructive operations on
+the same graph while a batch is in flight.
+
+Long-running same-graph write paths now renew that lease while they walk large
+sets or batch loops. A write only reports success if it still proves lock
+ownership at release time; if the lease was lost, the caller sees
+`TransactionConflict` instead of a false success.
+
+`delete_graph` also uses a temporary marker:
+
+```text
+G:{g}:_deleting
+```
+
+While `_deleting` exists, reads treat the graph as already gone and
+`create_graph(g)` is rejected, but `delete_graph(g)` itself can be retried. That
+closes the old hole where cleanup could fail after the graph name was already
+released for reuse.
+
+### 3. Registries are validated against backing sets
+
+`G:{g}:_labels` and `G:{g}:_reltypes` are membership registries, not blind
+truth. Readers validate registry members by checking the corresponding backing
+set cardinality (`SCARD G:{g}:label:{label}` / `SCARD G:{g}:reltype:{type}`).
+
+That means a stale registry entry does not become a false visible label or
+relationship type in query planning.
+
+---
+
+## Residual Risk
+
+### Partial write on TCP disconnect (LOW)
+
+Cluster-safe routing does **not** imply transaction atomicity. If the TCP
+connection drops after some pipeline commands have been delivered, partial state
+is still possible.
+
+Examples:
+
+- node hash written, but some label updates missing
+- edge hash written, but adjacency sets incomplete
+- some delete/index cleanup commands applied, but not all
+
+This is an accepted trade-off of slot-local pipelining without `MULTI/EXEC`.
+The write lock prevents cross-writer corruption, but it cannot prevent a single
+writer's transport failure mid-batch. Manifest-first node/edge writes plus the
+`_propidx` cleanup manifest are what make post-failure graph deletion recoverable
+without a cluster-unsafe keyspace scan.
+
+### Stale registry members (LOW)
+
+Label and relationship-type registries may retain names whose backing sets are
+now empty. This does not break planning because readers filter them against the
+real per-label / per-reltype sets before use.
+
+### Graph registry remains separate from per-graph slot-local keys
+
+`__sd2_registry:graphs` still has no graph hash tag and still lives in a
+different slot. That is fine because it is never co-pipelined with per-graph
+commands.
+
+---
+
+## The Write Lock
+
+`G:{g}:write_lock` remains a CAS-protected distributed lock implemented in
+`lock.rs`.
+
+### Acquire
+
+```text
+SET G:{g}:write_lock <uuid-v4-token> NX PX 5000
+```
+
+### Release
+
+```lua
+if redis.call("GET", KEYS[1]) == ARGV[1] then
+    return redis.call("DEL", KEYS[1])
+else
+    return 0
+end
+```
+
+The release path is still cluster-safe because the Lua script operates on a
+single slotted key.
+
+### Renew
+
+Long-running operations also renew the same lock token with a CAS-style TTL
+refresh:
+
+```lua
+if redis.call("GET", KEYS[1]) == ARGV[1] then
+    return redis.call("PEXPIRE", KEYS[1], ARGV[2])
+else
+    return 0
+end
+```
+
+That keeps `create_index`, `drop_index`, `delete_graph`, and other large
+same-graph mutations from silently outliving their lease.
+
+---
+
+## Verification
+
+The final `#745` fix was validated at three layers:
+
+### Store-level tests
+
+```bash
+cargo test -p gql-redis-store
+```
+
+### Real cluster regression tests
+
+Run `tests/cluster_pipeline.rs` against a real cluster exposed via
+`GQL_REDIS_CLUSTER_NODES`:
+
+```bash
+GQL_REDIS_CLUSTER_NODES="redis://127.0.0.1:7100,redis://127.0.0.1:7101,redis://127.0.0.1:7102" \
+  cargo test -p gql-redis-store --test cluster_pipeline -- --ignored --nocapture
+```
+
+These tests cover:
+
+- pipelined node/edge reads
+- batch write paths
+- graph metadata reads
+- `DROP INDEX`
+- `DELETE GRAPH`
+
+### Public Bolt path under resharding
+
+```bash
+VALKEY_PASSWORD='change-me' BOLT_PASSWORD='change-me' \
+  ./scripts/test-resharding-resilience.sh
+```
+
+The validated result for the final fix was:
+
+- `0` write errors from the live Bolt load generator
+- `0` backend errors reported via `/metrics`
+
+---
+
+## See Also
+
+- [ADR-005: Redis Cluster Routing Safety](ADR-005-cluster-pipeline-atomicity)
+- [Redis Cluster Mode](cluster-mode)
+- [Redis Key Schema](redis-key-schema)

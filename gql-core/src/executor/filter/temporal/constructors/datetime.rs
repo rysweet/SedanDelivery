@@ -21,9 +21,7 @@ pub(crate) fn builtin_temporal_realtime_datetime(vals: Vec<Value>) -> Result<Val
     Ok(Value::DateTime(Box::new(get_query_now())))
 }
 
-pub(crate) fn builtin_temporal_realtime_localdatetime(
-    vals: Vec<Value>,
-) -> Result<Value, GqlError> {
+pub(crate) fn builtin_temporal_realtime_localdatetime(vals: Vec<Value>) -> Result<Value, GqlError> {
     if vals.first().map(|v| v.is_null()).unwrap_or(false) {
         return Ok(Value::Null);
     }
@@ -299,46 +297,44 @@ pub(crate) fn eval_localdatetime_constructor(vals: &[Value]) -> Result<Value, Gq
     }
     match &vals[0] {
         Value::Null => Ok(Value::Null),
-        Value::Str(s) => {
-            match parse_localdatetime_str(s) {
-                Ok(dt) => Ok(Value::LocalDateTime(dt)),
-                Err(_) => {
-                    if let Some((y, m, d)) = parse_large_date_str(s) {
-                        Ok(large_ldt_value(y, m, d, 0, 0, 0, 0))
-                    } else if let Some(t_idx) = s.find(['T', 't']) {
-                        let date_part = &s[..t_idx];
-                        let time_part = &s[t_idx + 1..];
-                        if let Some((y, mo, d)) = parse_large_date_str(date_part) {
-                            let time_str = time_part.trim_end_matches(|c: char| {
-                                !c.is_ascii_digit() && c != '.' && c != ':'
-                            });
-                            let time = time_str
-                                .parse::<jiff::civil::Time>()
-                                .unwrap_or(jiff::civil::Time::midnight());
-                            Ok(large_ldt_value(
-                                y,
-                                mo,
-                                d,
-                                time.hour() as i32,
-                                time.minute() as i32,
-                                time.second() as i32,
-                                time.subsec_nanosecond(),
-                            ))
-                        } else {
-                            Err(temporal_parse_error(
-                                "localdatetime",
-                                format!("cannot parse datetime from '{s}'"),
-                            ))
-                        }
+        Value::Str(s) => match parse_localdatetime_str(s) {
+            Ok(dt) => Ok(Value::LocalDateTime(dt)),
+            Err(_) => {
+                if let Some((y, m, d)) = parse_large_date_str(s) {
+                    Ok(large_ldt_value(y, m, d, 0, 0, 0, 0))
+                } else if let Some(t_idx) = s.find(['T', 't']) {
+                    let date_part = &s[..t_idx];
+                    let time_part = &s[t_idx + 1..];
+                    if let Some((y, mo, d)) = parse_large_date_str(date_part) {
+                        let time_str = time_part.trim_end_matches(|c: char| {
+                            !c.is_ascii_digit() && c != '.' && c != ':'
+                        });
+                        let time = time_str
+                            .parse::<jiff::civil::Time>()
+                            .unwrap_or(jiff::civil::Time::midnight());
+                        Ok(large_ldt_value(
+                            y,
+                            mo,
+                            d,
+                            time.hour() as i32,
+                            time.minute() as i32,
+                            time.second() as i32,
+                            time.subsec_nanosecond(),
+                        ))
                     } else {
                         Err(temporal_parse_error(
                             "localdatetime",
                             format!("cannot parse datetime from '{s}'"),
                         ))
                     }
+                } else {
+                    Err(temporal_parse_error(
+                        "localdatetime",
+                        format!("cannot parse datetime from '{s}'"),
+                    ))
                 }
             }
-        }
+        },
         Value::LocalDateTime(dt) => Ok(Value::LocalDateTime(*dt)),
         Value::Date(d) => Ok(Value::LocalDateTime(
             d.to_datetime(jiff::civil::Time::midnight()),

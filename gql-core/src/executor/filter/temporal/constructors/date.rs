@@ -33,21 +33,19 @@ pub(crate) fn eval_date_constructor(vals: &[Value]) -> Result<Value, GqlError> {
     }
     match &vals[0] {
         Value::Null => Ok(Value::Null),
-        Value::Str(s) => {
-            match parse_date_str(s) {
-                Ok(d) => Ok(Value::Date(d)),
-                Err(_) => {
-                    if let Some((y, m, d)) = parse_large_date_str(s) {
-                        Ok(large_date_value(y, m, d))
-                    } else {
-                        Err(temporal_parse_error(
-                            "date",
-                            format!("cannot parse date from '{s}'"),
-                        ))
-                    }
+        Value::Str(s) => match parse_date_str(s) {
+            Ok(d) => Ok(Value::Date(d)),
+            Err(_) => {
+                if let Some((y, m, d)) = parse_large_date_str(s) {
+                    Ok(large_date_value(y, m, d))
+                } else {
+                    Err(temporal_parse_error(
+                        "date",
+                        format!("cannot parse date from '{s}'"),
+                    ))
                 }
             }
-        }
+        },
         Value::Date(d) => Ok(Value::Date(*d)),
         Value::LocalDateTime(dt) => Ok(Value::Date(
             jiff::civil::Date::new(dt.year(), dt.month(), dt.day())

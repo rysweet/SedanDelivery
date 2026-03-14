@@ -33,6 +33,18 @@ else
     return 0
 end"#;
 
+/// Lua script for atomic compare-and-renew.
+///
+/// Only refreshes the lock TTL if the stored value equals ARGV[1] (our token).
+/// Returns 1 if the TTL was refreshed, 0 if the token did not match or the key
+/// did not exist.
+const CAS_RENEW_SCRIPT: &str = r#"
+if redis.call("GET", KEYS[1]) == ARGV[1] then
+    return redis.call("PEXPIRE", KEYS[1], ARGV[2])
+else
+    return 0
+end"#;
+
 /// Try to acquire a distributed lock.
 ///
 /// Uses `SET key token NX PX ttl_ms` — atomic lock acquisition with TTL.
@@ -57,7 +69,7 @@ pub fn acquire(
         .arg("PX")
         .arg(ttl_ms)
         .query(conn)
-        .map_err(|e: redis::RedisError| StorageError::Backend { msg: e.to_string() })?;
+        .map_err(|e: redis::RedisError| crate::backend_storage_error(e))?;
     // SET with NX returns a bulk-string "OK" on success or nil (None) on contention.
     Ok(result.map(|_| token))
 }
@@ -79,34 +91,32 @@ pub fn release(
         .key(key)
         .arg(token)
         .invoke(conn)
-        .map_err(|e: redis::RedisError| StorageError::Backend { msg: e.to_string() })?;
+        .map_err(|e: redis::RedisError| crate::backend_storage_error(e))?;
     Ok(released == 1)
+}
+
+/// Renew a distributed lock using CAS (compare-and-renew).
+///
+/// Only refreshes the TTL if the stored token matches `token`. This prevents a
+/// slow or expired lock holder from extending a lock that another writer has
+/// already acquired after TTL expiry.
+///
+/// Returns `true` if the TTL was refreshed, `false` if the token did not
+/// match (the lock was already expired and re-acquired by someone else).
+pub fn renew(
+    conn: &mut dyn ConnectionLike,
+    key: &str,
+    token: &str,
+    ttl_ms: u64,
+) -> Result<bool, StorageError> {
+    let renewed: i64 = redis::Script::new(CAS_RENEW_SCRIPT)
+        .key(key)
+        .arg(token)
+        .arg(ttl_ms)
+        .invoke(conn)
+        .map_err(|e: redis::RedisError| crate::backend_storage_error(e))?;
+    Ok(renewed == 1)
 }
 
 /// Write-lock TTL used by all read-modify-write operations (milliseconds).
 pub const WRITE_LOCK_TTL_MS: u64 = 5_000;
-
-/// Acquire a distributed lock, retrying up to `max_retries` times with
-/// `retry_delay_ms` milliseconds between attempts.
-///
-/// Returns `Ok(token)` if acquired, or `Err(StorageError::Backend)` if still
-/// contended after all retries.
-pub(crate) fn acquire_blocking(
-    conn: &mut dyn ConnectionLike,
-    key: &str,
-    ttl_ms: u64,
-    max_retries: u32,
-    retry_delay_ms: u64,
-) -> Result<String, StorageError> {
-    for attempt in 0..=max_retries {
-        if let Some(token) = acquire(conn, key, ttl_ms)? {
-            return Ok(token);
-        }
-        if attempt < max_retries {
-            std::thread::sleep(std::time::Duration::from_millis(retry_delay_ms));
-        }
-    }
-    Err(StorageError::Backend {
-        msg: format!("write lock '{key}' still contended after {max_retries} retries"),
-    })
-}

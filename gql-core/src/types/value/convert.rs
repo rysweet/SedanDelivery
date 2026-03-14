@@ -9,16 +9,15 @@ impl Value {
     pub fn time_to_datetime(self) -> Result<Self, String> {
         match self {
             Self::Time(t, offset_secs) => {
-                let offset = jiff::tz::Offset::from_seconds(offset_secs).map_err(|e| {
-                    format!("timezone offset {offset_secs}s out of range: {e}")
-                })?;
+                let offset = jiff::tz::Offset::from_seconds(offset_secs)
+                    .map_err(|e| format!("timezone offset {offset_secs}s out of range: {e}"))?;
                 let tz = jiff::tz::TimeZone::fixed(offset);
                 // safe: constant epoch date 1970-01-01 is always valid
                 let epoch = jiff::civil::Date::new(1970, 1, 1).expect("valid epoch");
                 let dt = epoch.to_datetime(t);
-                let zoned = dt.to_zoned(tz).map_err(|e| {
-                    format!("failed to convert Time to zoned DateTime: {e}")
-                })?;
+                let zoned = dt
+                    .to_zoned(tz)
+                    .map_err(|e| format!("failed to convert Time to zoned DateTime: {e}"))?;
                 Ok(Self::DateTime(Box::new(zoned)))
             }
             other => Ok(other),
@@ -54,7 +53,10 @@ mod tests {
         let t = civil::Time::new(12, 0, 0, 0).expect("valid time");
         let val = Value::Time(t, 200_000);
         let result = val.time_to_datetime();
-        assert!(result.is_err(), "out-of-range offset should return an error");
+        assert!(
+            result.is_err(),
+            "out-of-range offset should return an error"
+        );
         let err_msg = result.unwrap_err();
         assert!(
             err_msg.contains("out of range"),

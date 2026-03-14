@@ -51,14 +51,14 @@ pub fn temporal_property_access(val: &Value, key: &str) -> Result<Value, GqlErro
             "millisecond" => Ok(Value::Int((t.subsec_nanosecond() / 1_000_000) as i64)),
             "microsecond" => Ok(Value::Int((t.subsec_nanosecond() / 1_000) as i64)),
             "nanosecond" => Ok(Value::Int(t.subsec_nanosecond() as i64)),
-            "offset" => {
-                Ok(Value::Str(crate::types::value::format_offset_str(*offset_secs).into_boxed_str()))
-            }
+            "offset" => Ok(Value::Str(
+                crate::types::value::format_offset_str(*offset_secs).into_boxed_str(),
+            )),
             "offsetMinutes" => Ok(Value::Int((*offset_secs / 60) as i64)),
             "offsetSeconds" => Ok(Value::Int(*offset_secs as i64)),
-            "timezone" => {
-                Ok(Value::Str(crate::types::value::format_offset_str(*offset_secs).into_boxed_str()))
-            }
+            "timezone" => Ok(Value::Str(
+                crate::types::value::format_offset_str(*offset_secs).into_boxed_str(),
+            )),
             _ => Ok(Value::Null),
         },
         Value::LocalDateTime(dt) => match key {

@@ -2115,10 +2115,7 @@ fn test_call_dbms_components() {
         result.rows[0].get("name"),
         Some(&Value::Str("SedanDelivery".into()))
     );
-    assert_eq!(
-        result.rows[0].get("editions"),
-        None,
-    );
+    assert_eq!(result.rows[0].get("editions"), None,);
     assert_eq!(
         result.rows[0].get("edition"),
         Some(&Value::Str("community".into()))
@@ -2156,7 +2153,10 @@ fn test_call_unknown_procedure_returns_error() {
     let q = parse_query("CALL db.nonexistent()").unwrap();
     let planner = QueryPlanner::with_context(&store, "test", &registry, &params);
     let result = planner.plan(&q);
-    assert!(result.is_err(), "unknown procedure should fail at plan time");
+    assert!(
+        result.is_err(),
+        "unknown procedure should fail at plan time"
+    );
     let err_msg = format!("{}", result.unwrap_err());
     assert!(
         err_msg.contains("ProcedureNotFound"),
@@ -2177,10 +2177,7 @@ fn test_call_db_labels_yield_filters_columns() {
         .unwrap();
 
     // YIELD label should only expose "label" column, not anything else.
-    let result = exec_builtin(
-        &store,
-        "CALL db.labels() YIELD label RETURN label",
-    );
+    let result = exec_builtin(&store, "CALL db.labels() YIELD label RETURN label");
     assert_eq!(result.columns, vec!["label"]);
     assert_eq!(result.rows.len(), 1);
     assert_eq!(

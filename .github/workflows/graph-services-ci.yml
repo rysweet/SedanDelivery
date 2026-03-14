@@ -10,9 +10,8 @@ on:
       - 'src/CyberGym.Resource*/**'
       - 'src/CyberGym.Relationship*/**'
       - 'src/CyberGym.AppHost/**'
-      - 'tests/**'
-      - '*.sln'
-      - '.github/workflows/graph-services-ci.yml'
+      - 'tests/CyberGym*/**'
+      - '**/CyberGym*.sln'
   pull_request:
     branches:
       - main
@@ -22,8 +21,8 @@ on:
       - 'src/CyberGym.Resource*/**'
       - 'src/CyberGym.Relationship*/**'
       - 'src/CyberGym.AppHost/**'
-      - 'tests/**'
-      - '*.sln'
+      - 'tests/CyberGym*/**'
+      - '**/CyberGym*.sln'
 
 env:
   DOTNET_VERSION: '10.0.x'
@@ -98,7 +97,7 @@ jobs:
         if: github.event_name == 'pull_request' && always()
         run: |
           if [ -f ./TestResults/coverage-report/SummaryGithub.md ]; then
-            cat ./TestResults/coverage-report/SummaryGithub.md >> $GITHUB_STEP_SUMMARY
+            cat ./TestResults/coverage-report/SummaryGithub.md >> "$GITHUB_STEP_SUMMARY"
           fi
 
       - name: Upload coverage to Codecov

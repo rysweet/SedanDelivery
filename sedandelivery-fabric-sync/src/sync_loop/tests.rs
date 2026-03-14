@@ -569,7 +569,11 @@ fn process_entries_stops_after_unresolved_dlq_failure_in_same_batch() {
         &fabric,
         vec![
             permanently_failing_entry(),
-            (CHANGELOG_STREAM.to_string(), "2-0".to_string(), HashMap::new()),
+            (
+                CHANGELOG_STREAM.to_string(),
+                "2-0".to_string(),
+                HashMap::new(),
+            ),
         ],
         1,
     );
@@ -657,7 +661,16 @@ fn run_sync_loop_reconnects_after_unresolved_new_message_batch() {
     let (client, mut conn, commands, handle) = spawn_poisoned_new_message_mock_redis(event_json);
     let fabric = mock_fabric();
 
-    run_sync_loop(&client, &mut conn, "consumer-1", &fabric, 1, 1, 1, vec![CHANGELOG_STREAM.to_string()]);
+    run_sync_loop(
+        &client,
+        &mut conn,
+        "consumer-1",
+        &fabric,
+        1,
+        1,
+        1,
+        vec![CHANGELOG_STREAM.to_string()],
+    );
 
     drop(conn);
     handle
@@ -714,7 +727,16 @@ fn run_sync_loop_stops_after_bounded_unresolved_reconnect_attempts() {
         spawn_persistently_poisoned_new_message_mock_redis(event_json, 3);
     let fabric = mock_fabric();
 
-    run_sync_loop(&client, &mut conn, "consumer-1", &fabric, 1, 1, 1, vec![CHANGELOG_STREAM.to_string()]);
+    run_sync_loop(
+        &client,
+        &mut conn,
+        "consumer-1",
+        &fabric,
+        1,
+        1,
+        1,
+        vec![CHANGELOG_STREAM.to_string()],
+    );
 
     drop(conn);
     handle

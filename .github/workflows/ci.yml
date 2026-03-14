@@ -16,7 +16,7 @@ env:
 jobs:
   # ── Tier 1 + 2: Run on every PR and push ────────────────────────────────────
   test:
-    name: Test (stable)
+    name: Tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.1.5
@@ -281,17 +281,33 @@ jobs:
       # ── Regression detection ────────────────────────────────────────────
       - name: Download baseline artifact
         if: github.event_name == 'pull_request'
-        uses: dawidd6/action-download-artifact@v6
-        with:
-          name: benchmark-baseline
-          workflow: ci.yml
-          branch: main
-          path: baseline/
-          if_no_artifact_found: warn
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p baseline
+          run_id="$(
+            gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs?branch=main&status=success&per_page=20" \
+              --jq '.workflow_runs[] | select(.conclusion == "success") | .id' \
+              | head -n 1
+          )"
+
+          if [ -z "$run_id" ]; then
+            echo "No successful CI baseline run found on main; skipping baseline download"
+            exit 0
+          fi
+
+          if ! gh run download "$run_id" -n benchmark-baseline -D baseline; then
+            echo "No benchmark-baseline artifact found on run $run_id; skipping baseline comparison"
+          fi
 
       - name: Compare against baseline
         if: github.event_name == 'pull_request'
         run: |
+          if [ ! -f baseline/baseline.txt ]; then
+            echo "No baseline artifact available; skipping regression comparison"
+            exit 0
+          fi
           bash scripts/bench-compare.sh baseline/baseline.txt new.txt "$PERF_REGRESSION_THRESHOLD"
 
       # ── Store baseline on main pushes ───────────────────────────────────

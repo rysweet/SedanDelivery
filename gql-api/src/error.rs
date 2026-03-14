@@ -94,7 +94,19 @@ impl From<gql_core::error::GqlError> for ApiError {
             GqlError::Storage(StorageError::InvalidGraphName { .. }) => {
                 ApiError::bad_request(e.to_string())
             }
-            GqlError::Storage(StorageError::Backend { .. }) => ApiError::internal(e.to_string()),
+            GqlError::Storage(StorageError::Backend { .. }) => {
+                // Sanitize the backend error message at the HTTP API boundary.
+                // In release builds the raw Redis error string (which may contain
+                // cluster topology such as "MOVED 1234 10.0.0.1:6379") is replaced
+                // with an opaque message so internal infrastructure details are never
+                // exposed in HTTP 500 responses (SEC-6). Debug builds retain the full
+                // message for local diagnostics.
+                #[cfg(not(debug_assertions))]
+                let msg = "internal storage error".to_string();
+                #[cfg(debug_assertions)]
+                let msg = e.to_string();
+                ApiError::internal(msg)
+            }
             GqlError::Parse(_) => ApiError::bad_request(e.to_string()),
             GqlError::Plan(_) => ApiError::bad_request(e.to_string()),
             GqlError::Execution(exec_err) => {
@@ -288,5 +300,33 @@ mod tests {
         };
         let api_err = ApiError::from(e);
         assert_eq!(api_err.status, StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    #[test]
+    fn backend_error_message_sanitized_in_release() {
+        // In release builds the raw backend message (which may contain Redis
+        // cluster topology such as "MOVED 1234 10.0.0.1:6379") must not appear
+        // in the HTTP response body (SEC-6).  In debug builds the full message
+        // is preserved so engineers can diagnose issues locally.
+        let topology_detail = "MOVED 1234 10.0.0.1:6379";
+        let e = StorageError::Backend {
+            msg: topology_detail.to_string(),
+        };
+        let api_err = ApiError::from(e);
+        assert_eq!(api_err.status, StatusCode::INTERNAL_SERVER_ERROR);
+
+        #[cfg(not(debug_assertions))]
+        assert!(
+            !api_err.message.contains(topology_detail),
+            "release build must not expose Redis topology in HTTP 500: {}",
+            api_err.message
+        );
+
+        #[cfg(debug_assertions)]
+        assert!(
+            api_err.message.contains(topology_detail),
+            "debug build must preserve backend detail for diagnostics: {}",
+            api_err.message
+        );
     }
 }

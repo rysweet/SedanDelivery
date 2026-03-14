@@ -98,10 +98,7 @@ mod tests {
                         assert!(matches!(**initial, crate::ast::Expr::Integer(0)));
                         assert_eq!(variable.0, "x");
                         assert!(matches!(**list, crate::ast::Expr::List(_)));
-                        assert!(matches!(
-                            **expression,
-                            crate::ast::Expr::BinaryOp { .. }
-                        ));
+                        assert!(matches!(**expression, crate::ast::Expr::BinaryOp { .. }));
                     }
                     other => panic!("expected Reduce, got {:?}", other),
                 }
@@ -119,9 +116,7 @@ mod tests {
                 assert_eq!(ret.items.len(), 1);
                 match &ret.items[0].expr {
                     crate::ast::Expr::ListComp {
-                        variable,
-                        filter,
-                        ..
+                        variable, filter, ..
                     } => {
                         assert_eq!(variable.0, "x");
                         assert!(filter.is_none());

@@ -7,7 +7,7 @@ use std::sync::Arc;
 use crate::error::StorageError;
 use crate::storage::{IndexDescriptor, NodeId, RangeQuery};
 
-use super::{IndexableValue, InMemoryGraphStore, PropIndex};
+use super::{InMemoryGraphStore, IndexableValue, PropIndex};
 
 // ── Indexed range query helpers ───────────────────────────────────────────────
 
@@ -478,12 +478,7 @@ mod tests {
         let bound50 = Value::Int(50);
         assert_eq!(
             store
-                .find_nodes_by_label_and_property(
-                    "test",
-                    "Person",
-                    "age",
-                    RangeQuery::Eq(&bound50)
-                )
+                .find_nodes_by_label_and_property("test", "Person", "age", RangeQuery::Eq(&bound50))
                 .unwrap(),
             vec![a]
         );
