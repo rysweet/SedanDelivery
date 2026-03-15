@@ -21,8 +21,13 @@ pub(crate) fn format_bookmark(n: u64) -> String {
 /// Increment the global bookmark counter and return a formatted bookmark string.
 pub(crate) fn next_bookmark(counter: &BookmarkCounter) -> String {
     let n = counter.next();
-    counter.record_issued_at(n);
     format_bookmark(n)
+}
+
+pub(crate) fn record_write_bookmark(counter: &BookmarkCounter, bookmark: &str) {
+    if let Some(tx_id) = bookmark_tx_id(bookmark) {
+        counter.record_issued_at(tx_id);
+    }
 }
 
 fn bookmark_strings(extra: &BoltMap) -> Option<Vec<&str>> {

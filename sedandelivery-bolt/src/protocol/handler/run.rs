@@ -270,6 +270,7 @@ fn intercept_admin_query(
                     graph: graph.to_string(),
                     notifications: vec![],
                     trailing_error: None,
+                    write_backed_bookmark: admin_wrote,
                     admin_stats: Some(AdminStats {
                         indexes_added: ar.indexes_added,
                         indexes_removed: ar.indexes_removed,
@@ -465,6 +466,22 @@ fn build_success_response(
 ) -> Result<Vec<ServerMessage>, ProtocolError> {
     let (records, query_type, stats, trailing_err) =
         bridge::executor::result_to_records(&qr, &**effective_store, graph);
+    let write_backed_bookmark = stats.iter().any(|(k, _)| {
+        matches!(
+            k.as_str(),
+            "nodes-created"
+                | "nodes-deleted"
+                | "relationships-created"
+                | "relationships-deleted"
+                | "properties-set"
+                | "labels-added"
+                | "labels-removed"
+                | "indexes-added"
+                | "indexes-removed"
+                | "constraints-added"
+                | "constraints-removed"
+        )
+    });
 
     // Convert the trailing GqlError (if any) to a (code, message) pair
     // for deferred FAILURE emission during PULL.
@@ -507,6 +524,7 @@ fn build_success_response(
             graph: graph.to_string(),
             notifications: vec![],
             trailing_error,
+            write_backed_bookmark,
             admin_stats: None,
         },
     );
@@ -547,7 +565,13 @@ pub(crate) async fn handle_run(
         return Ok(vec![failure]);
     }
     if let Some(age) = recent_bookmark_age(&extra, &session.global_bookmark) {
+        tracing::debug!(
+            age_ms = age.as_millis(),
+            "rehydrated session freshness from recent bookmark"
+        );
         session.apply_recent_bookmark_age(age);
+    } else if extra.get_value("bookmarks").is_some() {
+        tracing::debug!("received bookmarks but none mapped to recent freshness");
     }
 
     // Reject if too many pending results (prevents OOM from misbehaving clients).
@@ -601,6 +625,7 @@ pub(crate) async fn handle_run(
                 graph: db_name,
                 notifications: vec![],
                 trailing_error: None,
+                write_backed_bookmark: false,
                 admin_stats: Some(AdminStats {
                     indexes_added: 0,
                     indexes_removed: 0,
@@ -832,6 +857,7 @@ async fn handle_explain(
                     graph: graph.to_string(),
                     notifications: plan_notifications,
                     trailing_error: None,
+                    write_backed_bookmark: false,
                     admin_stats: None,
                 },
             );
@@ -1153,6 +1179,7 @@ mod tests {
             0,
         )));
         let bookmark = crate::protocol::handler::next_bookmark(global_bookmark.as_ref());
+        crate::protocol::handler::record_write_bookmark(global_bookmark.as_ref(), &bookmark);
         let mut session = ready_session_with_store_and_bookmark(store, global_bookmark);
 
         let _ = handle_run(

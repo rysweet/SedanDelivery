@@ -79,9 +79,9 @@ It maps `last_write_at` to one of the two consistency modes:
 - recent write -> `SessionFreshPrimary`
 - no recent write -> `TopologyDefault`
 
-When a client sends a recent bookmark on a fresh Bolt connection, the handler
-rehydrates `last_write_at` before routing so the same causal session still
-starts on the primary.
+When a client sends a recent **write-backed** bookmark on a fresh Bolt
+connection, the handler rehydrates `last_write_at` before routing so the same
+causal session still starts on the primary.
 
 ### `Session::record_successful_write()`
 
@@ -105,9 +105,21 @@ Finalizes transaction-local write tracking.
 **Location:** `sedandelivery-bolt/src/bookmark.rs`
 
 `BookmarkCounter` now records a short-lived timestamp for each emitted
-bookmark. `RUN` and `BEGIN` use those timestamps to restore session freshness
-when the client presents a bookmark that is still inside
+write-backed bookmark. `RUN` and `BEGIN` use those timestamps to restore
+session freshness when the client presents a bookmark that is still inside
 `READ_AFTER_WRITE_WINDOW`.
+
+Read-only bookmarks are still accepted and forwarded by drivers, but they do
+not count as evidence of a recent write and therefore do not rehydrate
+`SessionFreshPrimary`.
+
+Likewise, standalone `USE <database>` updates the session's active graph but is
+not treated as a write-backed bookmark for fresh-session routing.
+
+The timestamp cache is best-effort: SedanDelivery keeps it locally and mirrors
+it into short-lived Redis keys when Redis is available. If that timestamp
+metadata is unavailable on the receiving Bolt process, routing falls back to
+`TopologyDefault` even though the bookmark itself is still syntactically valid.
 
 ## Store-side API
 

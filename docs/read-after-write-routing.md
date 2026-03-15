@@ -47,9 +47,9 @@ pub(crate) const READ_AFTER_WRITE_WINDOW: Duration = Duration::from_secs(5);
 
 This window is **not operator-configurable today**.
 
-When a Neo4j driver reconnects and forwards a recent bookmark, SedanDelivery
-also rehydrates `last_write_at` from that bookmark so the primary pin survives
-connection reuse instead of only same-socket reuse.
+When a Neo4j driver reconnects and forwards a recent **write-backed** bookmark,
+SedanDelivery can also rehydrate `last_write_at` from that bookmark so the
+primary pin survives connection reuse instead of only same-socket reuse.
 
 ### 2. Bolt applies the policy at the storage boundary
 
@@ -118,8 +118,23 @@ have made the write visible.
 ### Bookmark-assisted across fresh connections
 
 The primary pin is still driven by session freshness, but a fresh Bolt
-connection can restore that freshness if the client supplies a recent bookmark.
-Unrelated sessions without bookmarks do not inherit the pin.
+connection can restore that freshness if the client supplies a recent
+**write-backed** bookmark. Unrelated sessions without bookmarks do not inherit
+the pin.
+
+Read-only bookmarks remain valid for causal chaining, but they do **not**
+create a new read-after-write window on a fresh session.
+
+Standalone `USE <database>` is also session-local only: it returns a bookmark
+for protocol continuity, but that bookmark is not treated as write-backed
+freshness.
+
+Bookmark freshness metadata is kept in-process and, when Redis is available,
+mirrored into short-lived Redis keys. Rehydration across fresh connections
+works only while that timestamp metadata is still available. If the metadata is
+missing (for example after expiry or a Redis-side timestamp write failure),
+SedanDelivery falls back to the normal topology-default routing policy even if
+the bookmark string itself is still valid.
 
 ### Time-bounded, not acknowledgement-based
 

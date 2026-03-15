@@ -7,8 +7,8 @@ use crate::packstream::value::{BoltMap, BoltMapExt, BoltValue};
 use crate::protocol::state::ServerState;
 
 use super::{
-    bolt_map, extract_tx_metadata, next_bookmark, recent_bookmark_age, validate_bookmarks,
-    ProtocolError, Session,
+    bolt_map, extract_tx_metadata, next_bookmark, recent_bookmark_age, record_write_bookmark,
+    validate_bookmarks, ProtocolError, Session,
 };
 
 // -- BEGIN -------------------------------------------------------------------
@@ -78,11 +78,15 @@ pub(crate) fn handle_commit(session: &mut Session) -> Result<Vec<ServerMessage>,
             .map_err(|e| ProtocolError::Internal(e.to_string()))?;
     }
     session.tx_store = None;
+    let committed_write = session.tx_had_write;
     session.finish_explicit_transaction(true);
     // Release the write lock if held.
     session.write_permit = None;
 
     let bookmark = next_bookmark(&session.global_bookmark);
+    if committed_write {
+        record_write_bookmark(&session.global_bookmark, &bookmark);
+    }
     session.state = ServerState::Ready;
     session.tx_metadata = Vec::new();
     session.tx_timeout = None;
@@ -222,5 +226,37 @@ mod tests {
 
         assert!(session.last_write_at.is_none());
         assert_eq!(session.read_consistency(), ReadConsistency::TopologyDefault);
+    }
+
+    #[test]
+    fn read_only_commit_bookmark_does_not_rehydrate_freshness() {
+        let global_bookmark = Arc::new(crate::bookmark::BookmarkCounter::InMemory(AtomicU64::new(
+            9_100_000_000_000,
+        )));
+        let mut writer = ready_session();
+        writer.global_bookmark = Arc::clone(&global_bookmark);
+        writer.state = ServerState::TxReady;
+
+        let commit_messages = handle_commit(&mut writer).unwrap();
+        let bookmark = match &commit_messages[0] {
+            ServerMessage::Success(meta) => meta
+                .get_str("bookmark")
+                .expect("commit should emit bookmark")
+                .to_string(),
+            other => panic!("expected success, got {:?}", other),
+        };
+
+        let mut reader = ready_session();
+        reader.global_bookmark = global_bookmark;
+
+        handle_begin(
+            &mut reader,
+            bolt_map! {
+                "bookmarks" => BoltValue::List(vec![BoltValue::String(bookmark)])
+            },
+        )
+        .unwrap();
+
+        assert_eq!(reader.read_consistency(), ReadConsistency::TopologyDefault);
     }
 }

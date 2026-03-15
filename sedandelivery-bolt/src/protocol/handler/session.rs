@@ -89,6 +89,9 @@ pub struct PendingQuery {
     /// handle_pull will emit all buffered records and then send FAILURE
     /// with this error rather than SUCCESS.
     pub(crate) trailing_error: Option<(String, String)>,
+    /// Whether the completion bookmark should count as evidence of a durable
+    /// write for fresh-session read-after-write rehydration.
+    pub(crate) write_backed_bookmark: bool,
     /// Extended stats for admin/DDL operations (indexes, constraints, system updates).
     /// These are merged into the stats map when emitting PULL SUCCESS.
     pub(crate) admin_stats: Option<AdminStats>,

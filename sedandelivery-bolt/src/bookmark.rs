@@ -22,6 +22,7 @@ pub enum BookmarkCounter {
 const BOOKMARK_KEY: &str = "__sd2_bookmark";
 const BOOKMARK_TS_KEY_PREFIX: &str = "__sd2_bookmark_ts:";
 const RECENT_BOOKMARK_TTL_SECS: u64 = 30;
+const FALLBACK_BOOKMARK_START: u64 = 1 << 63;
 
 fn local_bookmark_timestamps() -> &'static Mutex<HashMap<u64, Instant>> {
     static BOOKMARK_TIMESTAMPS: OnceLock<Mutex<HashMap<u64, Instant>>> = OnceLock::new();
@@ -37,6 +38,11 @@ fn now_unix_millis() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as u64
+}
+
+fn next_fallback_bookmark_id() -> u64 {
+    static FALLBACK: AtomicU64 = AtomicU64::new(FALLBACK_BOOKMARK_START - 1);
+    FALLBACK.fetch_add(1, Ordering::SeqCst) + 1
 }
 
 impl BookmarkCounter {
@@ -78,15 +84,13 @@ impl BookmarkCounter {
                             tracing::warn!(
                                 "bookmark Redis INCR failed ({e}), using local fallback"
                             );
-                            static FALLBACK: AtomicU64 = AtomicU64::new(0);
-                            FALLBACK.fetch_add(1, Ordering::SeqCst) + 1
+                            next_fallback_bookmark_id()
                         }
                     }
                 }
                 Err(e) => {
                     tracing::warn!("bookmark Redis connection failed ({e}), using local fallback");
-                    static FALLBACK: AtomicU64 = AtomicU64::new(0);
-                    FALLBACK.fetch_add(1, Ordering::SeqCst) + 1
+                    next_fallback_bookmark_id()
                 }
             },
         }
