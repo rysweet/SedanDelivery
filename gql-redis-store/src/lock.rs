@@ -266,7 +266,10 @@ mod tests {
             .expect("lock should be acquired");
 
         let released = release(&mut conn, "G:{graph}:lock", &token).unwrap();
-        assert!(released, "release should succeed while the token still owns the lock");
+        assert!(
+            released,
+            "release should succeed while the token still owns the lock"
+        );
 
         let reacquired = acquire(&mut conn, "G:{graph}:lock", WRITE_LOCK_TTL_MS)
             .unwrap()
