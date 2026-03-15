@@ -178,7 +178,7 @@ else
 end
 ```
 
-Write concurrency within a single replica is further bounded by `BOLT_WRITE_CONCURRENCY` (default 64), limiting the number of concurrent write transactions that can compete for locks.
+Write concurrency within a single replica is further bounded by `BOLT_WRITE_CONCURRENCY` (default 128), limiting the number of concurrent write transactions that can compete for locks.
 
 ### 2. Atomic delete_graph
 
@@ -269,7 +269,7 @@ The Bolt server exposes metrics on the health port (default 7688) at `/metrics`:
 | `sedandelivery_bolt_queries_total` | Counter | Labels: `type=read\|write`. Useful for read/write ratio analysis. |
 | `sedandelivery_bolt_query_duration_seconds` | Histogram | p95 is a KEDA trigger. Sustained high latency signals CPU saturation. |
 | `sedandelivery_bolt_errors_total` | Counter | Protocol errors by code. |
-| `sedandelivery_bolt_backend_errors_total` | Gauge | `StorageError::Backend` count (Redis failures). Non-zero means the data tier is unhealthy. |
+| `sedandelivery_bolt_backend_errors_total` | Gauge | `StorageError::Backend` count synced from a cumulative process-local total. Alert on increase/rate, not absolute non-zero, because a restarted-healthy instance can still expose historical failures since process start. |
 | `redis_pool_size` | Gauge | Total connections in the r2d2 pool. |
 | `redis_pool_idle` | Gauge | Idle pool connections. Consistently zero means the pool is exhausted. |
 | `redis_pool_active` | Gauge | Active (checked-out) pool connections. |
@@ -278,6 +278,17 @@ The Bolt server exposes metrics on the health port (default 7688) at `/metrics`:
 | `redis_used_memory_bytes` | Gauge | Redis `used_memory` from INFO. |
 | `redis_maxmemory_bytes` | Gauge | Configured memory limit (0 = unlimited). |
 | `redis_evicted_keys_total` | Counter | Cumulative evicted keys. Any increase is a warning. |
+
+Redis-backed deployments also emit graph write-lock coordination telemetry on the same endpoint. These are not primary KEDA triggers today, but they are useful when scale-out looks healthy and same-graph writes are still stalling:
+
+| Metric | Scaling relevance |
+|--------|-------------------|
+| `redis_write_lock_acquire_contention_total` | Rising faster than write throughput means replicas are receiving more same-graph write pressure than the serialized coordination path can drain. |
+| `redis_write_lock_acquire_wait_seconds` | Growing wait histograms indicate queued writers even before user-visible request latency becomes catastrophic. |
+| `redis_write_lock_hold_seconds` | Long hold times usually mean one mutation type is monopolizing the per-graph critical section. |
+| `redis_write_lock_contention_failures_total` | Non-zero means retries are being exhausted; this is the strongest signal that hot-graph write traffic needs operational attention. |
+
+See [Cluster Write Safety](cluster-write-safety) for the full lifecycle metric list and failure classification guidance.
 
 ### Per-shard memory monitoring
 
@@ -487,7 +498,7 @@ All environment variables relevant to scaling behavior, in one table.
 | `BOLT_HANDSHAKE_TIMEOUT_MS` | `5000` | Max time to complete handshake before reclaiming slot |
 | `BOLT_IDLE_TIMEOUT_SECS` | `300` | Close idle connections after N seconds |
 | `BOLT_MAX_CONNECTION_LIFETIME_SECS` | `1800` | Force-close connections after N seconds (0 = disabled) |
-| `BOLT_WRITE_CONCURRENCY` | `64` | Max concurrent write transactions per replica |
+| `BOLT_WRITE_CONCURRENCY` | `128` | Max concurrent write transactions per replica |
 | `BOLT_AUTH_MAX_ATTEMPTS` | `10` | Max failed auth attempts per IP per window |
 | `BOLT_AUTH_WINDOW_SECS` | `60` | Auth rate limit sliding window (seconds) |
 

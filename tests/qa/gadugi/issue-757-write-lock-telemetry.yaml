@@ -1,0 +1,57 @@
+# Canonical gadugi scenario for Issue #757.
+
+scenario:
+  name: "Issue #757 - Write-lock telemetry and coordination metrics"
+  description: >
+    Verify from an operator perspective that Bolt /metrics exposes transient
+    write-lock contention, sustained contention timeouts, and genuine
+    acquire-stage backend failures as distinct coordination signals.
+  metadata:
+    tags: [cli, bolt, metrics, observability, regression, issue-757]
+    priority: high
+    linked_docs:
+      - docs/DEPLOY.md
+      - docs/auto-scaling.md
+      - docs/cluster-write-safety.md
+  agents:
+    - name: cli-agent
+      type: cli
+      config: {}
+  steps:
+    - name: "Run the write-lock telemetry validator"
+      agent: cli-agent
+      action: execute
+      params:
+        command: bash
+        args:
+          - ./scripts/test-write-lock-metrics.sh
+      timeout: 420000
+    - name: "Confirm transient contention metrics moved"
+      agent: cli-agent
+      action: wait_for_output
+      params:
+        pattern: "\\[PASS\\]\\s+Transient contention surfaced acquire, wait, hold, and release metrics"
+      timeout: 5000
+    - name: "Confirm contention timeout was classified without backend-failure noise"
+      agent: cli-agent
+      action: wait_for_output
+      params:
+        pattern: "\\[PASS\\]\\s+Sustained contention incremented contention-specific metrics without backend-failure noise"
+      timeout: 5000
+    - name: "Confirm Redis outage was classified as an acquire-stage backend failure"
+      agent: cli-agent
+      action: wait_for_output
+      params:
+        pattern: "\\[PASS\\]\\s+Redis outage incremented acquire-stage backend failure metrics separately from contention failures"
+      timeout: 5000
+    - name: "Confirm validator finished successfully"
+      agent: cli-agent
+      action: wait_for_output
+      params:
+        pattern: "\\[PASS\\]\\s+Write-lock telemetry validator passed"
+      timeout: 5000
+    - name: "Confirm validator exited with code 0"
+      agent: cli-agent
+      action: validate_exit_code
+      params:
+        text: "0"

@@ -484,6 +484,30 @@ The Bolt server exposes a `/metrics` endpoint on the health port (default 7688) 
 | `redis_maxmemory_bytes` | Gauge | Redis `maxmemory` limit (0 = unlimited) |
 | `redis_evicted_keys_total` | Counter | Cumulative evicted keys from Redis INFO stats |
 
+When Bolt runs against `RedisGraphStore` (`GQL_REDIS_URL` or `REDIS_URL` set), the same `/metrics` endpoint also exposes write-lock coordination telemetry from the store. The gql-api `/metrics` endpoint surfaces the same store metrics when the API is Redis-backed.
+
+| Metric | Type | Description |
+|--------|------|-------------|
+| `redis_write_lock_acquire_attempts_total` | Counter | Write operations that entered the graph write-lock acquire path. |
+| `redis_write_lock_acquire_successes_total` | Counter | Write operations that acquired the graph write lock and entered the mutation body. |
+| `redis_write_lock_acquire_contention_total` | Counter | Write operations that observed at least one contended acquire attempt before they either succeeded or failed. |
+| `redis_write_lock_contention_failures_total` | Counter | Write operations that exhausted lock retries because the graph stayed contended. |
+| `redis_write_lock_acquire_wait_seconds` | Histogram | End-to-end time spent waiting for lock acquisition, recorded for both successful and failed acquire attempts. |
+| `redis_write_lock_renew_successes_total` | Counter | Successful lease renewals during long-running writes. |
+| `redis_write_lock_renew_failures_total` | Counter | Failed lease renewals. Use `redis_write_lock_conflict_outcomes_total{stage="renew"}` versus `redis_write_lock_backend_failures_total{stage="renew"}` to classify the reason. |
+| `redis_write_lock_release_successes_total` | Counter | Successful lock releases after a write completes. |
+| `redis_write_lock_release_failures_total` | Counter | Failed lock releases. Use `redis_write_lock_conflict_outcomes_total{stage="release"}` versus `redis_write_lock_backend_failures_total{stage="release"}` to classify the reason. If the write body had already failed before release, this counter still increments even though no extra conflict outcome is emitted. |
+| `redis_write_lock_hold_seconds` | Histogram | Total time a write held the graph lock before its release attempt. |
+| `redis_write_lock_conflict_outcomes_total{stage="renew"\| "release"}` | Counter | Lease-loss outcomes that were surfaced as `TransactionConflict` instead of a false success. |
+| `redis_write_lock_backend_failures_total{stage="acquire"\| "renew"\| "release"}` | Counter | Redis/pool/backend failures on the write-lock path, broken down by lifecycle stage. |
+
+Interpret these metrics together rather than in isolation:
+
+- Rising `redis_write_lock_acquire_contention_total` and `redis_write_lock_acquire_wait_seconds` with flat `redis_write_lock_backend_failures_total` usually means a hot graph is saturated by legitimate same-graph writes, not that Redis is unhealthy.
+- Rising `redis_write_lock_contention_failures_total` means retries are no longer enough for that workload; operators should expect write failures until the hot-graph pressure or lock hold time drops.
+- Rising `redis_write_lock_backend_failures_total{stage="acquire"}` indicates a real coordination-path backend problem (Redis availability, routing, or pool checkout), not just write contention.
+- Rising `redis_write_lock_conflict_outcomes_total` indicates the service lost lock ownership mid-write and intentionally failed closed rather than reporting a false success.
+
 ### Alerting
 
 Prometheus alert rules are provided in `infra/prometheus-alert-rules.yaml` for Redis memory pressure:
