@@ -7,12 +7,12 @@ use crate::message::types::ServerMessage;
 use crate::metrics as bolt_metrics;
 use crate::packstream::value::{BoltMap, BoltMapExt, BoltValue};
 use crate::protocol::state::ServerState;
-use gql_core::storage::GraphStore;
+use gql_core::storage::{GraphStore, ReadConsistency};
 
 use super::explain::{detect_notifications, operator_to_plan_map, operator_to_profile_plan_map};
 use super::{
-    bolt_map, extract_tx_metadata, validate_bookmarks, AdminStats, PendingQuery, ProtocolError,
-    Session,
+    bolt_map, extract_tx_metadata, recent_bookmark_age, validate_bookmarks, AdminStats,
+    PendingQuery, ProtocolError, Session,
 };
 
 // -- Pending-results cap -----------------------------------------------------
@@ -178,8 +178,14 @@ fn parse_use_database(query: &str) -> Option<String> {
 /// When inside an explicit transaction (`TxReady`/`TxStreaming`), returns the
 /// snapshot store so that mutations are isolated until COMMIT. Otherwise
 /// returns the main session store.
+fn apply_read_consistency(session: &Session, store: Arc<dyn GraphStore>) -> Arc<dyn GraphStore> {
+    store
+        .with_read_consistency(session.read_consistency())
+        .unwrap_or(store)
+}
+
 fn resolve_effective_store(session: &Session) -> Arc<dyn GraphStore> {
-    match &session.tx_store {
+    let base_store = match &session.tx_store {
         Some(ts)
             if matches!(
                 session.state,
@@ -189,7 +195,8 @@ fn resolve_effective_store(session: &Session) -> Arc<dyn GraphStore> {
             Arc::clone(ts)
         }
         _ => Arc::clone(&session.store),
-    }
+    };
+    apply_read_consistency(session, base_store)
 }
 
 // -- Admin query interception ------------------------------------------------
@@ -233,6 +240,11 @@ fn intercept_admin_query(
             } else {
                 query_type
             };
+            let admin_wrote = ar.system_updates > 0
+                || ar.indexes_added > 0
+                || ar.indexes_removed > 0
+                || ar.constraints_added > 0
+                || ar.constraints_removed > 0;
 
             let qid = match session.allocate_qid() {
                 Ok(q) => q,
@@ -240,8 +252,8 @@ fn intercept_admin_query(
             };
 
             // Track writes for read-after-write session pinning.
-            if effective_type.contains('w') || effective_type == "s" {
-                session.last_write_at = Some(std::time::Instant::now());
+            if effective_type.contains('w') || admin_wrote {
+                session.record_successful_write();
             }
 
             session.pending_results.insert(
@@ -258,6 +270,7 @@ fn intercept_admin_query(
                     graph: graph.to_string(),
                     notifications: vec![],
                     trailing_error: None,
+                    write_backed_bookmark: admin_wrote,
                     admin_stats: Some(AdminStats {
                         indexes_added: ar.indexes_added,
                         indexes_removed: ar.indexes_removed,
@@ -310,22 +323,14 @@ fn check_database_exists(
         return None;
     }
 
-    let main_store_has_neo4j = session.store.graph_exists("neo4j").unwrap_or(false);
+    let main_store_has_neo4j = apply_read_consistency(session, Arc::clone(&session.store))
+        .graph_exists("neo4j")
+        .unwrap_or(false);
     if !main_store_has_neo4j {
         return None;
     }
 
-    let check_store: &dyn GraphStore = match &session.tx_store {
-        Some(ts)
-            if matches!(
-                session.state,
-                ServerState::TxReady | ServerState::TxStreaming
-            ) =>
-        {
-            &**ts
-        }
-        _ => &*session.store,
-    };
+    let check_store = resolve_effective_store(session);
     let exists = check_store.graph_exists(graph).unwrap_or(false);
     if exists {
         return None;
@@ -461,6 +466,22 @@ fn build_success_response(
 ) -> Result<Vec<ServerMessage>, ProtocolError> {
     let (records, query_type, stats, trailing_err) =
         bridge::executor::result_to_records(&qr, &**effective_store, graph);
+    let write_backed_bookmark = stats.iter().any(|(k, _)| {
+        matches!(
+            k.as_str(),
+            "nodes-created"
+                | "nodes-deleted"
+                | "relationships-created"
+                | "relationships-deleted"
+                | "properties-set"
+                | "labels-added"
+                | "labels-removed"
+                | "indexes-added"
+                | "indexes-removed"
+                | "constraints-added"
+                | "constraints-removed"
+        )
+    });
 
     // Convert the trailing GqlError (if any) to a (code, message) pair
     // for deferred FAILURE emission during PULL.
@@ -486,7 +507,7 @@ fn build_success_response(
 
     // Track writes for read-after-write session pinning.
     if query_type.contains('w') {
-        session.last_write_at = Some(std::time::Instant::now());
+        session.record_successful_write();
     }
 
     session.pending_results.insert(
@@ -503,6 +524,7 @@ fn build_success_response(
             graph: graph.to_string(),
             notifications: vec![],
             trailing_error,
+            write_backed_bookmark,
             admin_stats: None,
         },
     );
@@ -541,6 +563,15 @@ pub(crate) async fn handle_run(
     if let Some(failure) = validate_bookmarks(&extra) {
         session.state = ServerState::Failed;
         return Ok(vec![failure]);
+    }
+    if let Some(age) = recent_bookmark_age(&extra, &session.global_bookmark) {
+        tracing::debug!(
+            age_ms = age.as_millis(),
+            "rehydrated session freshness from recent bookmark"
+        );
+        session.apply_recent_bookmark_age(age);
+    } else if extra.get_value("bookmarks").is_some() {
+        tracing::debug!("received bookmarks but none mapped to recent freshness");
     }
 
     // Reject if too many pending results (prevents OOM from misbehaving clients).
@@ -594,6 +625,7 @@ pub(crate) async fn handle_run(
                 graph: db_name,
                 notifications: vec![],
                 trailing_error: None,
+                write_backed_bookmark: false,
                 admin_stats: Some(AdminStats {
                     indexes_added: 0,
                     indexes_removed: 0,
@@ -669,6 +701,16 @@ pub(crate) async fn handle_run(
     // but we need a fresh Arc for the execution closures below).
     let effective_store = resolve_effective_store(session);
 
+    if matches!(
+        session.read_consistency(),
+        ReadConsistency::SessionFreshPrimary
+    ) {
+        tracing::debug!(
+            graph = %graph,
+            "routing reads to primary (session freshness window active)"
+        );
+    }
+
     // EXPLAIN: plan only, no execution
     if is_explain {
         return handle_explain(
@@ -718,7 +760,7 @@ pub(crate) async fn handle_run(
             )
         })
         .await
-        .map_err(|e| ProtocolError::Internal(format!("spawn_blocking join error: {}", e)))?;
+        .map_err(|e| ProtocolError::Internal(format!("blocking task join error: {}", e)))?;
 
         match result {
             Ok((qr, profile_plan)) => build_success_response(
@@ -752,7 +794,7 @@ pub(crate) async fn handle_run(
             )
         })
         .await
-        .map_err(|e| ProtocolError::Internal(format!("spawn_blocking join error: {}", e)))?;
+        .map_err(|e| ProtocolError::Internal(format!("blocking task join error: {}", e)))?;
 
         match result {
             Ok(qr) => {
@@ -815,6 +857,7 @@ async fn handle_explain(
                     graph: graph.to_string(),
                     notifications: plan_notifications,
                     trailing_error: None,
+                    write_backed_bookmark: false,
                     admin_stats: None,
                 },
             );
@@ -843,6 +886,330 @@ async fn handle_explain(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use std::any::Any;
+    use std::collections::HashMap;
+    use std::sync::atomic::AtomicU64;
+
+    use gql_core::storage::{
+        AdjEntry, EdgeData, EdgeId, GraphStats, GraphStore, InMemoryGraphStore, IndexDescriptor,
+        NodeData, NodeId, RangeQuery, ReadConsistency,
+    };
+    use gql_core::types::Value;
+
+    struct TrackingStore {
+        inner: Arc<InMemoryGraphStore>,
+        applied_consistency: Option<ReadConsistency>,
+    }
+
+    impl TrackingStore {
+        fn new() -> Self {
+            Self {
+                inner: Arc::new(InMemoryGraphStore::new()),
+                applied_consistency: None,
+            }
+        }
+    }
+
+    macro_rules! delegate {
+        ($name:ident(&self) -> $ret:ty) => {
+            fn $name(&self) -> $ret {
+                self.inner.$name()
+            }
+        };
+        ($name:ident(&self, $($arg:ident : $ty:ty),+) -> $ret:ty) => {
+            fn $name(&self, $($arg: $ty),+) -> $ret {
+                self.inner.$name($($arg),+)
+            }
+        };
+    }
+
+    impl GraphStore for TrackingStore {
+        delegate!(get_node(&self, graph: &str, id: NodeId) -> Result<Option<NodeData>, gql_core::error::StorageError>);
+        delegate!(get_edge(&self, graph: &str, id: EdgeId) -> Result<Option<EdgeData>, gql_core::error::StorageError>);
+
+        fn get_nodes_batch(
+            &self,
+            graph: &str,
+            ids: &[NodeId],
+        ) -> Result<Vec<Option<NodeData>>, gql_core::error::StorageError> {
+            self.inner.get_nodes_batch(graph, ids)
+        }
+
+        fn get_edges_batch(
+            &self,
+            graph: &str,
+            ids: &[EdgeId],
+        ) -> Result<Vec<Option<EdgeData>>, gql_core::error::StorageError> {
+            self.inner.get_edges_batch(graph, ids)
+        }
+
+        delegate!(find_nodes_by_label(&self, graph: &str, label: &str) -> Result<Vec<NodeId>, gql_core::error::StorageError>);
+
+        fn find_nodes_by_label_and_property(
+            &self,
+            graph: &str,
+            label: &str,
+            property: &str,
+            range: RangeQuery<'_>,
+        ) -> Result<Vec<NodeId>, gql_core::error::StorageError> {
+            self.inner
+                .find_nodes_by_label_and_property(graph, label, property, range)
+        }
+
+        delegate!(find_edges_by_type(&self, graph: &str, rel_type: &str) -> Result<Vec<EdgeId>, gql_core::error::StorageError>);
+        delegate!(out_edges(&self, graph: &str, node_id: NodeId) -> Result<Vec<AdjEntry>, gql_core::error::StorageError>);
+        delegate!(in_edges(&self, graph: &str, node_id: NodeId) -> Result<Vec<AdjEntry>, gql_core::error::StorageError>);
+
+        fn out_edges_by_type(
+            &self,
+            graph: &str,
+            node_id: NodeId,
+            rel_types: &[&str],
+        ) -> Result<Vec<AdjEntry>, gql_core::error::StorageError> {
+            self.inner.out_edges_by_type(graph, node_id, rel_types)
+        }
+
+        fn in_edges_by_type(
+            &self,
+            graph: &str,
+            node_id: NodeId,
+            rel_types: &[&str],
+        ) -> Result<Vec<AdjEntry>, gql_core::error::StorageError> {
+            self.inner.in_edges_by_type(graph, node_id, rel_types)
+        }
+
+        delegate!(out_edge_ids(&self, graph: &str, node_id: NodeId) -> Result<Vec<EdgeId>, gql_core::error::StorageError>);
+        delegate!(in_edge_ids(&self, graph: &str, node_id: NodeId) -> Result<Vec<EdgeId>, gql_core::error::StorageError>);
+        delegate!(all_node_ids(&self, graph: &str) -> Result<Vec<NodeId>, gql_core::error::StorageError>);
+        delegate!(all_edge_ids(&self, graph: &str) -> Result<Vec<EdgeId>, gql_core::error::StorageError>);
+
+        fn create_node(
+            &self,
+            graph: &str,
+            labels: Vec<String>,
+            properties: HashMap<String, Value>,
+        ) -> Result<NodeId, gql_core::error::StorageError> {
+            self.inner.create_node(graph, labels, properties)
+        }
+
+        fn create_edge(
+            &self,
+            graph: &str,
+            src: NodeId,
+            dst: NodeId,
+            rel_type: String,
+            properties: HashMap<String, Value>,
+        ) -> Result<EdgeId, gql_core::error::StorageError> {
+            self.inner
+                .create_edge(graph, src, dst, rel_type, properties)
+        }
+
+        fn set_node_properties(
+            &self,
+            graph: &str,
+            id: NodeId,
+            properties: HashMap<String, Value>,
+        ) -> Result<(), gql_core::error::StorageError> {
+            self.inner.set_node_properties(graph, id, properties)
+        }
+
+        fn replace_node_properties(
+            &self,
+            graph: &str,
+            id: NodeId,
+            properties: HashMap<String, Value>,
+        ) -> Result<(), gql_core::error::StorageError> {
+            self.inner.replace_node_properties(graph, id, properties)
+        }
+
+        fn set_edge_properties(
+            &self,
+            graph: &str,
+            id: EdgeId,
+            properties: HashMap<String, Value>,
+        ) -> Result<(), gql_core::error::StorageError> {
+            self.inner.set_edge_properties(graph, id, properties)
+        }
+
+        fn replace_edge_properties(
+            &self,
+            graph: &str,
+            id: EdgeId,
+            properties: HashMap<String, Value>,
+        ) -> Result<(), gql_core::error::StorageError> {
+            self.inner.replace_edge_properties(graph, id, properties)
+        }
+
+        delegate!(remove_node_property(&self, graph: &str, id: NodeId, key: &str) -> Result<(), gql_core::error::StorageError>);
+        delegate!(remove_edge_property(&self, graph: &str, id: EdgeId, key: &str) -> Result<(), gql_core::error::StorageError>);
+
+        fn add_node_labels(
+            &self,
+            graph: &str,
+            id: NodeId,
+            labels: &[String],
+        ) -> Result<(), gql_core::error::StorageError> {
+            self.inner.add_node_labels(graph, id, labels)
+        }
+
+        fn remove_node_labels(
+            &self,
+            graph: &str,
+            id: NodeId,
+            labels: &[String],
+        ) -> Result<(), gql_core::error::StorageError> {
+            self.inner.remove_node_labels(graph, id, labels)
+        }
+
+        delegate!(delete_node(&self, graph: &str, id: NodeId, detach: bool) -> Result<(), gql_core::error::StorageError>);
+        delegate!(delete_edge(&self, graph: &str, id: EdgeId) -> Result<(), gql_core::error::StorageError>);
+        delegate!(list_indexes(&self, graph: &str) -> Result<Vec<IndexDescriptor>, gql_core::error::StorageError>);
+
+        fn create_index(
+            &self,
+            graph: &str,
+            label: &str,
+            property: &str,
+        ) -> Result<(), gql_core::error::StorageError> {
+            self.inner.create_index(graph, label, property)
+        }
+
+        fn drop_index(
+            &self,
+            graph: &str,
+            label: &str,
+            property: &str,
+        ) -> Result<(), gql_core::error::StorageError> {
+            self.inner.drop_index(graph, label, property)
+        }
+
+        delegate!(create_graph(&self, name: &str) -> Result<(), gql_core::error::StorageError>);
+        delegate!(delete_graph(&self, name: &str) -> Result<(), gql_core::error::StorageError>);
+        delegate!(graph_exists(&self, name: &str) -> Result<bool, gql_core::error::StorageError>);
+        delegate!(list_graphs(&self) -> Result<Vec<String>, gql_core::error::StorageError>);
+        delegate!(graph_stats(&self, graph: &str) -> Result<GraphStats, gql_core::error::StorageError>);
+        delegate!(all_label_names(&self, graph: &str) -> Result<Vec<String>, gql_core::error::StorageError>);
+
+        fn with_read_consistency(
+            &self,
+            consistency: ReadConsistency,
+        ) -> Option<Arc<dyn GraphStore>> {
+            Some(Arc::new(Self {
+                inner: Arc::clone(&self.inner),
+                applied_consistency: Some(consistency),
+            }))
+        }
+
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
+    }
+
+    fn ready_session_with_store(store: Arc<dyn GraphStore>) -> Session {
+        ready_session_with_store_and_bookmark(
+            store,
+            Arc::new(crate::bookmark::BookmarkCounter::InMemory(AtomicU64::new(
+                0,
+            ))),
+        )
+    }
+
+    fn ready_session_with_store_and_bookmark(
+        store: Arc<dyn GraphStore>,
+        global_bookmark: Arc<crate::bookmark::BookmarkCounter>,
+    ) -> Session {
+        Session {
+            state: ServerState::Ready,
+            store,
+            conn_id: 1,
+            current_graph: "neo4j".to_string(),
+            pending_results: HashMap::new(),
+            next_qid: 0,
+            global_bookmark,
+            tx_metadata: Vec::new(),
+            tx_timeout: None,
+            tx_store: None,
+            write_semaphore: Arc::new(tokio::sync::Semaphore::new(128)),
+            write_permit: None,
+            saved_graph: None,
+            tx_had_write: false,
+            peer_ip: None,
+            last_write_at: None,
+        }
+    }
+
+    #[test]
+    fn resolve_effective_store_uses_topology_default_view_without_recent_write() {
+        let store: Arc<dyn GraphStore> = Arc::new(TrackingStore::new());
+        let session = ready_session_with_store(store);
+
+        let effective_store = resolve_effective_store(&session);
+        let tracking_store = effective_store
+            .as_any()
+            .downcast_ref::<TrackingStore>()
+            .expect("tracking store view should be returned");
+        assert_eq!(
+            tracking_store.applied_consistency,
+            Some(ReadConsistency::TopologyDefault)
+        );
+    }
+
+    #[test]
+    fn resolve_effective_store_uses_session_fresh_primary_view_with_recent_write() {
+        let store: Arc<dyn GraphStore> = Arc::new(TrackingStore::new());
+        let mut session = ready_session_with_store(store);
+        session.last_write_at = Some(std::time::Instant::now() - std::time::Duration::from_secs(1));
+
+        let effective_store = resolve_effective_store(&session);
+        let tracking_store = effective_store
+            .as_any()
+            .downcast_ref::<TrackingStore>()
+            .expect("tracking store view should be returned");
+        assert_eq!(
+            tracking_store.applied_consistency,
+            Some(ReadConsistency::SessionFreshPrimary)
+        );
+    }
+
+    #[tokio::test]
+    async fn handle_run_rehydrates_primary_pin_from_recent_bookmark() {
+        let store: Arc<dyn GraphStore> = Arc::new(TrackingStore::new());
+        let global_bookmark = Arc::new(crate::bookmark::BookmarkCounter::InMemory(AtomicU64::new(
+            0,
+        )));
+        let bookmark = crate::protocol::handler::next_bookmark(global_bookmark.as_ref());
+        crate::protocol::handler::record_write_bookmark(global_bookmark.as_ref(), &bookmark);
+        let mut session = ready_session_with_store_and_bookmark(store, global_bookmark);
+
+        let _ = handle_run(
+            &mut session,
+            "RETURN 1 AS n".to_string(),
+            vec![],
+            bolt_map! {
+                "bookmarks" => BoltValue::List(vec![BoltValue::String(bookmark)])
+            },
+        )
+        .await
+        .expect("RUN should succeed");
+
+        assert_eq!(
+            session.read_consistency(),
+            ReadConsistency::SessionFreshPrimary
+        );
+    }
+
+    #[test]
+    fn resolve_effective_store_falls_back_for_stores_without_read_views() {
+        let store: Arc<dyn GraphStore> = Arc::new(InMemoryGraphStore::new());
+        let session = ready_session_with_store(Arc::clone(&store));
+
+        let effective_store = resolve_effective_store(&session);
+        assert!(
+            Arc::ptr_eq(&store, &effective_store),
+            "stores without read-view support should be reused directly"
+        );
+    }
 
     // ── strip_cypher_prefix ─────────────────────────────────────────────
 
