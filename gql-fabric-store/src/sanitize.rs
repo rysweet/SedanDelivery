@@ -191,10 +191,10 @@ mod tests {
 
     #[test]
     fn range_lte() {
-        let v = Value::Float(3.14);
+        let v = Value::Float(std::f64::consts::PI);
         let (pred, params) = range_to_cypher("val", RangeQuery::Lte(&v));
         assert_eq!(pred, "n.`val` <= $rv");
-        assert!(params["rv"].as_f64().unwrap() - 3.14 < f64::EPSILON);
+        assert!((params["rv"].as_f64().unwrap() - std::f64::consts::PI).abs() < f64::EPSILON);
     }
 
     #[test]

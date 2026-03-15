@@ -334,10 +334,10 @@ mod tests {
 
     #[test]
     fn value_to_index_key_float() {
-        let k = value_to_index_key(&Value::Float(3.14));
+        let k = value_to_index_key(&Value::Float(std::f64::consts::PI));
         assert!(k.starts_with("f:"));
         // Determinism: same float produces same key.
-        assert_eq!(k, value_to_index_key(&Value::Float(3.14)));
+        assert_eq!(k, value_to_index_key(&Value::Float(std::f64::consts::PI)));
     }
 
     #[test]

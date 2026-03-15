@@ -323,7 +323,7 @@ async fn list_nodes_returns_created_node() {
     let resp = router
         .oneshot(
             Request::builder()
-                .uri(&format!("/graphs/{graph}/nodes"))
+                .uri(format!("/graphs/{graph}/nodes"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -349,7 +349,7 @@ async fn list_nodes_excessive_limit_returns_400() {
     let resp = router
         .oneshot(
             Request::builder()
-                .uri(&format!("/graphs/{graph}/nodes?limit=99999"))
+                .uri(format!("/graphs/{graph}/nodes?limit=99999"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -372,7 +372,7 @@ async fn list_nodes_zero_limit_returns_400() {
     let resp = router
         .oneshot(
             Request::builder()
-                .uri(&format!("/graphs/{graph}/nodes?limit=0"))
+                .uri(format!("/graphs/{graph}/nodes?limit=0"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -477,7 +477,7 @@ async fn schema_contains_labels() {
     let resp = router
         .oneshot(
             Request::builder()
-                .uri(&format!("/graphs/{graph}/schema"))
+                .uri(format!("/graphs/{graph}/schema"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -516,7 +516,7 @@ async fn export_contains_nodes_and_edges() {
     let resp = router
         .oneshot(
             Request::builder()
-                .uri(&format!("/graphs/{graph}/export"))
+                .uri(format!("/graphs/{graph}/export"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -588,7 +588,7 @@ async fn get_node_by_id_returns_200() {
     let resp = router
         .oneshot(
             Request::builder()
-                .uri(&format!("/graphs/{graph}/nodes/{node_id}"))
+                .uri(format!("/graphs/{graph}/nodes/{node_id}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -607,7 +607,7 @@ async fn get_nonexistent_node_returns_404() {
     let resp = router
         .oneshot(
             Request::builder()
-                .uri(&format!("/graphs/{graph}/nodes/999999"))
+                .uri(format!("/graphs/{graph}/nodes/999999"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -670,7 +670,7 @@ async fn delete_node_returns_204() {
         .oneshot(
             Request::builder()
                 .method(Method::DELETE)
-                .uri(&format!("/graphs/{graph}/nodes/{node_id}"))
+                .uri(format!("/graphs/{graph}/nodes/{node_id}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -768,7 +768,7 @@ async fn list_edges_returns_200() {
     let resp = router
         .oneshot(
             Request::builder()
-                .uri(&format!("/graphs/{graph}/edges"))
+                .uri(format!("/graphs/{graph}/edges"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -788,7 +788,7 @@ async fn list_edges_excessive_limit_returns_400() {
     let resp = router
         .oneshot(
             Request::builder()
-                .uri(&format!("/graphs/{graph}/edges?limit=99999"))
+                .uri(format!("/graphs/{graph}/edges?limit=99999"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -839,7 +839,7 @@ async fn neighbors_returns_adjacent_nodes() {
     let resp = router
         .oneshot(
             Request::builder()
-                .uri(&format!("/graphs/{graph}/neighbors/{n1_id}?direction=out"))
+                .uri(format!("/graphs/{graph}/neighbors/{n1_id}?direction=out"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -874,7 +874,7 @@ async fn neighbors_invalid_direction_returns_400() {
     let resp = router
         .oneshot(
             Request::builder()
-                .uri(&format!(
+                .uri(format!(
                     "/graphs/{graph}/neighbors/{node_id}?direction=sideways"
                 ))
                 .body(Body::empty())
@@ -924,7 +924,7 @@ async fn export_empty_graph_returns_empty_arrays() {
     let resp = router
         .oneshot(
             Request::builder()
-                .uri(&format!("/graphs/{graph}/export"))
+                .uri(format!("/graphs/{graph}/export"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -947,7 +947,7 @@ async fn schema_empty_graph_returns_empty_labels() {
     let resp = router
         .oneshot(
             Request::builder()
-                .uri(&format!("/graphs/{graph}/schema"))
+                .uri(format!("/graphs/{graph}/schema"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -994,7 +994,7 @@ async fn invalid_node_id_in_path_returns_400() {
     let resp = router
         .oneshot(
             Request::builder()
-                .uri(&format!("/graphs/{graph}/nodes/not-a-number"))
+                .uri(format!("/graphs/{graph}/nodes/not-a-number"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -1124,7 +1124,7 @@ async fn m4_neighbor_limit_over_max_returns_400() {
     let resp = router
         .oneshot(
             Request::builder()
-                .uri(&format!("/graphs/{graph}/neighbors/{nid}?limit=999999"))
+                .uri(format!("/graphs/{graph}/neighbors/{nid}?limit=999999"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -1172,7 +1172,7 @@ async fn h2_export_small_graph_passes_guard() {
     let resp = router
         .oneshot(
             Request::builder()
-                .uri(&format!("/graphs/{graph}/export"))
+                .uri(format!("/graphs/{graph}/export"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -1198,7 +1198,7 @@ async fn h3_schema_small_graph_passes_guard() {
     let resp = router
         .oneshot(
             Request::builder()
-                .uri(&format!("/graphs/{graph}/schema"))
+                .uri(format!("/graphs/{graph}/schema"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -1334,7 +1334,7 @@ async fn full_crud_roundtrip_validates_decomposition() {
         .oneshot(
             Request::builder()
                 .method(Method::DELETE)
-                .uri(&format!("/graphs/{graph}/nodes/{n1_id}?detach=true"))
+                .uri(format!("/graphs/{graph}/nodes/{n1_id}?detach=true"))
                 .body(Body::empty())
                 .unwrap(),
         )

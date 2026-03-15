@@ -518,7 +518,7 @@ mod tests {
 
         // The requested kid="missing-kid" is not in keys.
         assert!(
-            inner.keys.iter().find(|k| k.kid == "missing-kid").is_none(),
+            !inner.keys.iter().any(|k| k.kid == "missing-kid"),
             "key should not be found"
         );
 

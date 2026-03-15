@@ -36,7 +36,7 @@ use std::sync::OnceLock;
 use redis_module::{redis_module, Context, NextArg, RedisError, RedisResult, RedisValue};
 
 use gql_core::ast::Clause;
-use gql_core::changelog::{changelog_stream_for_graph, ChangeLogStore, CHANGELOG_STREAM};
+use gql_core::changelog::{changelog_stream_for_graph, ChangeLogStore};
 use gql_core::executor::{ExecutionBudget, QueryExecutor};
 use gql_core::parser::parse_query;
 use gql_core::planner::QueryPlanner;

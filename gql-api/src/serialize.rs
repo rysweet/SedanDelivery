@@ -245,7 +245,10 @@ mod tests {
 
     #[test]
     fn value_to_json_float() {
-        assert_eq!(value_to_json(&Value::Float(3.14)), json!(3.14));
+        assert_eq!(
+            value_to_json(&Value::Float(std::f64::consts::PI)),
+            json!(std::f64::consts::PI)
+        );
     }
 
     #[test]

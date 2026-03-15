@@ -271,8 +271,8 @@ mod tests {
 
     #[test]
     fn json_to_value_float() {
-        let result = json_to_value(json!(3.14)).unwrap();
-        assert_eq!(result, Value::Float(3.14));
+        let result = json_to_value(json!(std::f64::consts::PI)).unwrap();
+        assert_eq!(result, Value::Float(std::f64::consts::PI));
     }
 
     #[test]
