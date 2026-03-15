@@ -60,7 +60,7 @@ stores honor session freshness.
 **Location:** `sedandelivery-bolt/src/protocol/handler/session.rs`
 
 ```rust
-pub(crate) const READ_AFTER_WRITE_WINDOW: Duration = Duration::from_secs(5);
+pub const READ_AFTER_WRITE_WINDOW: Duration = Duration::from_secs(5);
 ```
 
 This is the fixed freshness window used to decide whether a session should keep
@@ -82,6 +82,18 @@ It maps `last_write_at` to one of the two consistency modes:
 When a client sends a recent **write-backed** bookmark on a fresh Bolt
 connection, the handler rehydrates `last_write_at` before routing so the same
 causal session still starts on the primary.
+
+### `Session::read_consistency_for_age(...)`
+
+**Location:** `sedandelivery-bolt/src/protocol/handler/session.rs`
+
+```rust
+pub fn read_consistency_for_age(age: Option<Duration>) -> ReadConsistency
+```
+
+This is the pure helper behind `Session::read_consistency()`. Benchmarks and
+tests use it to evaluate the routing policy for an explicit age without
+constructing a live session or mutating session state.
 
 ### `Session::record_successful_write()`
 

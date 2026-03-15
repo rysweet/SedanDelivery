@@ -1,0 +1,94 @@
+# Canonical gadugi scenario for Issue #758.
+
+scenario:
+  name: "Issue #758 - safety-tax benchmark and load harness validation"
+  description: >
+    Verify from an operator perspective that representative Redis store safety
+    benchmark IDs run in standalone and cluster mode, that the Bolt routing
+    microbench is present, and that the public loadtest CLI reports throughput
+    split fields with zero errors across both topologies.
+  metadata:
+    tags: [cli, benchmarking, loadtest, regression, issue-758]
+    priority: high
+    linked_docs:
+      - docs/benchmarks.md
+      - docs/benchmarks/README.md
+      - tests/loadtest/README.md
+  agents:
+    - name: cli-agent
+      type: cli
+      config: {}
+  steps:
+    - name: "Run the safety benchmarking validator"
+      agent: cli-agent
+      action: execute
+      params:
+        command: bash
+        args:
+          - ./scripts/test-safety-benchmarking.sh
+      timeout: 900000
+    - name: "Confirm Bolt routing microbench is present"
+      agent: cli-agent
+      action: wait_for_output
+      params:
+        pattern: "\\[PASS\\]\\s+Bolt routing benchmark reported read_consistency_recent_write"
+      timeout: 5000
+    - name: "Confirm representative standalone store benchmarks ran"
+      agent: cli-agent
+      action: wait_for_output
+      params:
+        pattern: "\\[PASS\\]\\s+Standalone store benchmark emitted create_graph/standalone \\(median .+\\)"
+      timeout: 5000
+    - name: "Confirm standalone index benchmark ran"
+      agent: cli-agent
+      action: wait_for_output
+      params:
+        pattern: "\\[PASS\\]\\s+Standalone store benchmark emitted index/standalone/1000 \\(median .+\\)"
+      timeout: 5000
+    - name: "Confirm standalone nodes loadtest stayed healthy"
+      agent: cli-agent
+      action: wait_for_output
+      params:
+        pattern: "\\[PASS\\]\\s+Standalone nodes loadtest reported count integrity and positive throughput"
+      timeout: 5000
+    - name: "Confirm standalone mixed loadtest stayed healthy"
+      agent: cli-agent
+      action: wait_for_output
+      params:
+        pattern: "\\[PASS\\]\\s+Standalone mixed loadtest reported throughput split with zero errors"
+      timeout: 5000
+    - name: "Confirm representative cluster store benchmarks ran"
+      agent: cli-agent
+      action: wait_for_output
+      params:
+        pattern: "\\[PASS\\]\\s+Cluster store benchmark emitted create_graph/cluster \\(median .+\\)"
+      timeout: 5000
+    - name: "Confirm cluster index benchmark ran"
+      agent: cli-agent
+      action: wait_for_output
+      params:
+        pattern: "\\[PASS\\]\\s+Cluster store benchmark emitted index/cluster/1000 \\(median .+\\)"
+      timeout: 5000
+    - name: "Confirm cluster nodes loadtest stayed healthy"
+      agent: cli-agent
+      action: wait_for_output
+      params:
+        pattern: "\\[PASS\\]\\s+Cluster nodes loadtest reported count integrity and positive throughput"
+      timeout: 5000
+    - name: "Confirm cluster mixed loadtest stayed healthy"
+      agent: cli-agent
+      action: wait_for_output
+      params:
+        pattern: "\\[PASS\\]\\s+Cluster mixed loadtest reported throughput split with zero errors"
+      timeout: 5000
+    - name: "Confirm validator finished successfully"
+      agent: cli-agent
+      action: wait_for_output
+      params:
+        pattern: "\\[PASS\\]\\s+Safety benchmarking validator passed"
+      timeout: 5000
+    - name: "Confirm validator exited with code 0"
+      agent: cli-agent
+      action: validate_exit_code
+      params:
+        text: "0"

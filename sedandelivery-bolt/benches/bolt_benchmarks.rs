@@ -1,8 +1,12 @@
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use criterion::{criterion_group, criterion_main, Criterion};
 use sedandelivery_bolt::message::types::{encode_server_message, ServerMessage};
 use sedandelivery_bolt::packstream::decoder;
 use sedandelivery_bolt::packstream::encoder;
 use sedandelivery_bolt::packstream::value::BoltValue;
+use sedandelivery_bolt::protocol::handler::Session;
+use sedandelivery_bolt::protocol::handler::READ_AFTER_WRITE_WINDOW;
+use std::hint::black_box;
+use std::time::Duration;
 
 // ---------------------------------------------------------------------------
 // PackStream encode benchmarks
@@ -230,6 +234,32 @@ fn bench_message_construction(c: &mut Criterion) {
 }
 
 // ---------------------------------------------------------------------------
+// Read-routing decision benchmarks
+// ---------------------------------------------------------------------------
+
+fn bench_read_routing_decision(c: &mut Criterion) {
+    c.bench_function("read_consistency_no_recent_write", |b| {
+        b.iter(|| black_box(Session::read_consistency_for_age(black_box(None))))
+    });
+
+    c.bench_function("read_consistency_recent_write", |b| {
+        b.iter(|| {
+            black_box(Session::read_consistency_for_age(black_box(Some(
+                Duration::from_secs(1),
+            ))))
+        })
+    });
+
+    c.bench_function("read_consistency_window_expired", |b| {
+        b.iter(|| {
+            black_box(Session::read_consistency_for_age(black_box(Some(
+                READ_AFTER_WRITE_WINDOW + Duration::from_secs(1),
+            ))))
+        })
+    });
+}
+
+// ---------------------------------------------------------------------------
 // Group and main
 // ---------------------------------------------------------------------------
 
@@ -245,5 +275,6 @@ criterion_group!(
     bench_decode_map,
     bench_roundtrip,
     bench_message_construction,
+    bench_read_routing_decision,
 );
 criterion_main!(benches);

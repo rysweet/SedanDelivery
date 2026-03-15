@@ -66,6 +66,10 @@ struct Cli {
     #[arg(long, default_value = "json")]
     format: OutputFormat,
 
+    /// Skip dropping the test graph after printing results.
+    #[arg(long)]
+    skip_cleanup: bool,
+
     /// Minimum required throughput in nodes/sec for the nodes scenario.
     #[arg(long)]
     min_throughput: Option<f64>,
@@ -146,6 +150,10 @@ struct MixedResult {
     read_ratio: u8,
     total_reads: u64,
     total_writes: u64,
+    total_ops: u64,
+    total_ops_per_sec: f64,
+    reads_per_sec: f64,
+    writes_per_sec: f64,
     read_errors: u64,
     write_errors: u64,
     backend_errors: u64,
@@ -244,6 +252,15 @@ async fn cleanup_graph(graph: &Graph, name: &str) {
             quoted_identifier(name)
         )))
         .await;
+}
+
+async fn maybe_cleanup_graph(cli: &Cli, graph: &Graph) {
+    if cli.skip_cleanup {
+        tracing::info!(graph = %cli.graph, "Skipping graph cleanup");
+        return;
+    }
+
+    cleanup_graph(graph, &cli.graph).await;
 }
 
 fn print_result<T: Serialize>(result: &T, format: &OutputFormat) {
@@ -397,7 +414,7 @@ async fn run_nodes(cli: &Cli) -> Result<NodesResult, Box<dyn std::error::Error>>
 
     print_result(&result, &cli.format);
 
-    cleanup_graph(&graph, &cli.graph).await;
+    maybe_cleanup_graph(cli, &graph).await;
 
     Ok(result)
 }
@@ -569,6 +586,7 @@ async fn run_mixed(cli: &Cli) -> Result<MixedResult, Box<dyn std::error::Error>>
     let read_errors = Arc::new(AtomicU64::new(0));
     let write_errors = Arc::new(AtomicU64::new(0));
     let backend_errors = Arc::new(AtomicU64::new(0));
+    let global_op_counter = Arc::new(AtomicU64::new(0));
 
     let (read_lat_tx, mut read_lat_rx) = tokio::sync::mpsc::unbounded_channel::<f64>();
     let (write_lat_tx, mut write_lat_rx) = tokio::sync::mpsc::unbounded_channel::<f64>();
@@ -587,20 +605,20 @@ async fn run_mixed(cli: &Cli) -> Result<MixedResult, Box<dyn std::error::Error>>
         let read_errors = read_errors.clone();
         let write_errors = write_errors.clone();
         let backend_errors = backend_errors.clone();
+        let global_op_counter = global_op_counter.clone();
         let read_lat_tx = read_lat_tx.clone();
         let write_lat_tx = write_lat_tx.clone();
         let graph_name = cli.graph.clone();
 
         set.spawn(async move {
-            let mut op_counter: u64 = 0;
             while start.elapsed() < duration {
                 let _permit = sem.acquire().await.unwrap();
-                let is_read = (op_counter % 100) < read_ratio as u64;
-                op_counter += 1;
+                let op_id = global_op_counter.fetch_add(1, Ordering::Relaxed);
+                let is_read = (op_id % 100) < read_ratio as u64;
 
                 let t0 = Instant::now();
                 if is_read {
-                    let id = (op_counter % 1000) + 1;
+                    let id = (op_id % 1000) + 1;
                     let q = format!("MATCH (n:MixSeed {{id: {id}}}) RETURN n.id");
                     match graph.run_on(&graph_name, neo4rs::query(&q)).await {
                         Ok(_) => {
@@ -617,7 +635,7 @@ async fn run_mixed(cli: &Cli) -> Result<MixedResult, Box<dyn std::error::Error>>
                 } else {
                     let q = format!(
                         "CREATE (:MixWrite {{worker: {}, seq: {}}})",
-                        worker_id, op_counter
+                        worker_id, op_id
                     );
                     match graph.run_on(&graph_name, neo4rs::query(&q)).await {
                         Ok(_) => {
@@ -659,13 +677,21 @@ async fn run_mixed(cli: &Cli) -> Result<MixedResult, Box<dyn std::error::Error>>
     let read_latencies = read_lat_handle.await?;
     let write_latencies = write_lat_handle.await?;
 
+    let duration_secs = start.elapsed().as_secs_f64();
+    let total_reads = total_reads.load(Ordering::Relaxed);
+    let total_writes = total_writes.load(Ordering::Relaxed);
+    let total_ops = total_reads + total_writes;
     let result = MixedResult {
         scenario: "mixed".to_string(),
-        duration_secs: start.elapsed().as_secs_f64(),
+        duration_secs,
         concurrency: cli.concurrency,
         read_ratio: cli.ratio,
-        total_reads: total_reads.load(Ordering::Relaxed),
-        total_writes: total_writes.load(Ordering::Relaxed),
+        total_reads,
+        total_writes,
+        total_ops,
+        total_ops_per_sec: total_ops as f64 / duration_secs,
+        reads_per_sec: total_reads as f64 / duration_secs,
+        writes_per_sec: total_writes as f64 / duration_secs,
         read_errors: read_errors.load(Ordering::Relaxed),
         write_errors: write_errors.load(Ordering::Relaxed),
         backend_errors: backend_errors.load(Ordering::Relaxed),
@@ -675,7 +701,7 @@ async fn run_mixed(cli: &Cli) -> Result<MixedResult, Box<dyn std::error::Error>>
 
     print_result(&result, &cli.format);
 
-    cleanup_graph(&graph, &cli.graph).await;
+    maybe_cleanup_graph(cli, &graph).await;
 
     Ok(result)
 }
