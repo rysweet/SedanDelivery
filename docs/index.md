@@ -42,7 +42,7 @@ SedanDelivery deploys to Azure Container Apps via GitHub Actions.
    - Azure Container Registry (ACR) for the Docker image
    - Container Apps Environment with persistent storage (Azure Files)
    - Valkey container with the GQL module loaded
-4. A bot comment posts the Redis endpoint when deployment completes
+4. A bot comment posts the Redis and Bolt endpoints plus the Bolt password retrieval command when deployment completes
 5. Remove the `deploy` label or run the **Undeploy** workflow to clean up
 
 ### Infrastructure
@@ -86,7 +86,10 @@ See [ADR-004](ADR-004-distributed-redis) for the full architecture decision reco
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `BOLT_BIND_ADDR` | `0.0.0.0:7687` | Bolt TCP listen address |
-| `BOLT_PASSWORD` | — | Optional for direct bolt runs; local Compose profiles default it from `VALKEY_PASSWORD` unless overridden |
+| `BOLT_PASSWORD` | — | Bolt auth password. Required in `ENVIRONMENT=production`; Azure Container Apps deploys auto-generate and reuse the `bolt-password` Container App secret |
+| `BOLT_TLS_CERT` | — | PEM certificate chain file for in-process Bolt TLS; must be set together with `BOLT_TLS_KEY`; Azure Container Apps deploys mount this as `/mnt/secrets/bolt-tls-cert` |
+| `BOLT_TLS_KEY` | — | PEM private key file for in-process Bolt TLS; must be set together with `BOLT_TLS_CERT`; Azure Container Apps deploys mount this as `/mnt/secrets/bolt-tls-key` |
+| `BOLT_REQUIRE_TLS` | `false` | Refuse startup unless in-process Bolt TLS is configured; Azure Container Apps deploys set this to `true` for the public Bolt endpoint |
 | `BOLT_WS_ALLOWED_ORIGINS` | — | Comma-separated browser origins allowed to use Bolt over WebSocket; when set, a matching `Origin` header is required and `*` allows any origin |
 | `BOLT_ENABLED` | `true` | Enable/disable Bolt server in container |
 | `BOLT_MAX_CONNECTIONS` | `1024` | Max concurrent Bolt connections |

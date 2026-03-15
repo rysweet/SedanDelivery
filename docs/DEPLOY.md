@@ -68,7 +68,23 @@ gh secret set AZURE_CLIENT_ID       --body "$(echo $SP | jq -r .appId)"
 gh secret set AZURE_CLIENT_SECRET   --body "$(echo $SP | jq -r .password)"
 gh secret set AZURE_TENANT_ID       --body "$(echo $SP | jq -r .tenant)"
 gh secret set AZURE_SUBSCRIPTION_ID --body "${SUBSCRIPTION_ID}"
+
+# Public Bolt deployments also require a TLS certificate and private key.
+# Production deploys read GitHub environment `main`.
+gh secret set DEPLOY_BOLT_TLS_CERT_PEM --env main < bolt-cert.pem
+gh secret set DEPLOY_BOLT_TLS_KEY_PEM  --env main < bolt-key.pem
+
+# Branch / PR deploys read the same sanitized GitHub environment name that
+# deploy.yml derives from the branch:
+BRANCH_NAME="$(git rev-parse --abbrev-ref HEAD)"
+BRANCH_ENV="$(printf '%s' "$BRANCH_NAME" | sed 's/[^a-zA-Z0-9-]/-/g' | tr '[:upper:]' '[:lower:]' | cut -c1-20 | sed 's/^-*//;s/-*$//')"
+gh secret set DEPLOY_BOLT_TLS_CERT_PEM --env "${BRANCH_ENV:-manual-deploy}" < bolt-cert.pem
+gh secret set DEPLOY_BOLT_TLS_KEY_PEM  --env "${BRANCH_ENV:-manual-deploy}" < bolt-key.pem
 ```
+
+For manual branch deploys, an empty sanitized name falls back to GitHub
+environment `manual-deploy`. For PR deploys, the same empty-name case falls back
+to `pr-<number>`.
 
 ### 4. Deploy
 
@@ -86,7 +102,8 @@ gh pr edit --add-label deploy
 
 ### 5. Connect
 
-The deployment takes ~8 minutes. When complete, get your endpoint:
+The deployment takes ~8 minutes. When complete, get your endpoint and Bolt
+password:
 
 ```bash
 # Get the Bolt endpoint
@@ -94,16 +111,25 @@ az containerapp show \
   --name sd2-main-bolt \
   --resource-group rg-sd2-main \
   --query "properties.configuration.ingress.fqdn" -o tsv
+
+# Get the generated/reused Bolt password
+az containerapp secret show \
+  --name sd2-main-bolt \
+  --resource-group rg-sd2-main \
+  --secret-name bolt-password \
+  --query value -o tsv
 ```
 
 Then connect from any Neo4j driver:
 
 ```python
+import os
+
 from neo4j import GraphDatabase
 
 driver = GraphDatabase.driver(
-    "bolt://sd2-main-bolt.<your-cae-id>.eastus2.azurecontainerapps.io:7687",
-    auth=("neo4j", "password")
+    "bolt+ssc://sd2-main-bolt.<your-cae-id>.eastus2.azurecontainerapps.io:7687",
+    auth=("neo4j", os.environ["BOLT_PASSWORD"]),
 )
 with driver.session() as session:
     session.run("CREATE (:Person {name: 'Alice', age: 30})")
@@ -112,6 +138,12 @@ with driver.session() as session:
         print(record["p.name"], record["p.age"])
 driver.close()
 ```
+
+The default ACA-generated hostname uses the certificate you supply, but this
+workflow does not bind a custom domain or managed public certificate for that
+hostname. Use `bolt+ssc://...` (or the equivalent trust override in your
+driver) for the generated ACA FQDN. If you later bind a custom domain with a
+matching CA-issued certificate, switch to `bolt+s://...`.
 
 Works with Python, .NET, Java, Go, Rust, JavaScript — any driver supporting Bolt v4.2+.
 
@@ -190,7 +222,7 @@ gh workflow run deploy.yml -f environment=production -f persistenceBackend=azure
 After every deployment, the workflow runs two checks regardless of backend:
 
 1. **Redis health check** -- Verifies the backend is reachable (Azure Cache provisioning state or Valkey container running state). For cluster mode, confirms clustering is enabled on the Azure Cache instance.
-2. **Bolt smoke test** -- TCP connectivity check against the Bolt endpoint on port 7687 to verify end-to-end connectivity from the public internet.
+2. **Bolt smoke test** -- Certificate-based TLS probe against the Bolt endpoint on port 7687 to verify the public listener is serving TLS, not just accepting raw TCP connections.
 
 ## Configuration
 
@@ -281,7 +313,10 @@ Set these in your Container App or `deploy.yml` to customize behavior:
 |----------|---------|-------------|
 | **Bolt Server** | | |
 | `BOLT_BIND_ADDR` | `0.0.0.0:7687` | Bolt TCP listen address |
-| `BOLT_PASSWORD` | (none) | Optional for direct bolt runs; local Compose profiles inherit `VALKEY_PASSWORD` unless overridden |
+| `BOLT_PASSWORD` | (none) | Bolt authentication password. Required when `ENVIRONMENT=production`; the deploy workflow auto-generates and stores it as the Container App secret `bolt-password`, while local Compose defaults it from `VALKEY_PASSWORD` unless overridden |
+| `BOLT_TLS_CERT` | (none) | Path to the PEM certificate chain file for in-process Bolt TLS. Must be set together with `BOLT_TLS_KEY`; Azure Container Apps deploys mount this as `/mnt/secrets/bolt-tls-cert` |
+| `BOLT_TLS_KEY` | (none) | Path to the PEM private key for in-process Bolt TLS. Must be set together with `BOLT_TLS_CERT`; Azure Container Apps deploys mount this as `/mnt/secrets/bolt-tls-key` |
+| `BOLT_REQUIRE_TLS` | `false` | Refuse startup unless in-process TLS is configured. Azure Container Apps deploys set this to `true` for the public Bolt endpoint |
 | `BOLT_WS_ALLOWED_ORIGINS` | (none) | Comma-separated browser origins allowed to upgrade Bolt over WebSocket; when set, requests must send a matching `Origin` header and `*` allows any origin |
 | `BOLT_MAX_CONNECTIONS` | `1024` | Max concurrent Bolt connections |
 | `BOLT_MAX_CONN_PER_IP` | `50` | Max concurrent connections from a single IP address (DoS protection) |
@@ -312,6 +347,53 @@ Set these in your Container App or `deploy.yml` to customize behavior:
 | `GQL_PLAN_CACHE_SIZE` | `1024` | Process-local plan cache capacity; when full, it clears all entries before adding the next plan |
 | **Valkey** | | |
 | `VALKEY_PASSWORD` | (generated) | Authentication password (auto-generated on first deploy) |
+
+### Bolt authentication and TLS in Container Apps
+
+`deploy.yml` provisions a dedicated Container App secret named
+`bolt-password` for the Bolt container. On the first deploy it generates a
+random value; on later updates it reuses the existing secret so clients do not
+lose access unexpectedly after a routine rollout.
+
+If an environment was deployed before `bolt-password` existed, the first
+post-#736 rollout generates a one-time migration password and stores it as the
+new `bolt-password` secret. Retrieve and redistribute that password before
+reconnecting clients.
+
+Public Bolt runs over Azure Container Apps **TCP** ingress on port `7687`.
+Azure documents TLS termination for HTTP ingress, not raw TCP ingress, so the
+public Bolt endpoint must terminate TLS inside the Bolt process itself. The
+deploy workflow therefore requires two operator-managed GitHub **environment**
+secrets:
+
+- `DEPLOY_BOLT_TLS_CERT_PEM`
+- `DEPLOY_BOLT_TLS_KEY_PEM`
+
+On deploy, the workflow stores them as Container App secrets
+`bolt-tls-cert` / `bolt-tls-key`, mounts `/mnt/secrets`, and sets:
+
+- `BOLT_TLS_CERT=/mnt/secrets/bolt-tls-cert`
+- `BOLT_TLS_KEY=/mnt/secrets/bolt-tls-key`
+- `BOLT_REQUIRE_TLS=true`
+
+If either TLS secret is missing, the deploy fails closed instead of exposing a
+public plaintext Bolt endpoint. In production mode (`ENVIRONMENT=production`),
+the Bolt process also refuses to start unless `BOLT_PASSWORD`, `BOLT_TLS_CERT`,
+and `BOLT_TLS_KEY` are all present.
+
+Retrieve the current Bolt password after deploy with:
+
+```bash
+az containerapp secret show \
+  --name sd2-main-bolt \
+  --resource-group rg-sd2-main \
+  --secret-name bolt-password \
+  --query value -o tsv
+```
+
+For the generated ACA FQDN, use `bolt+ssc://` or the equivalent trust override
+in your driver. If you later bind a custom domain with a matching CA-issued
+certificate outside this workflow, use `bolt+s://` instead.
 
 ## Scaling
 

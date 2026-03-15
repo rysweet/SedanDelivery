@@ -55,16 +55,21 @@ gh secret set AZURE_CLIENT_ID     --body "$(echo $SP | jq -r .appId)"
 gh secret set AZURE_CLIENT_SECRET --body "$(echo $SP | jq -r .password)"
 gh secret set AZURE_TENANT_ID     --body "$(echo $SP | jq -r .tenant)"
 gh secret set AZURE_SUBSCRIPTION_ID --body "${SUBSCRIPTION_ID}"
+BRANCH_NAME="$(git rev-parse --abbrev-ref HEAD)"
+BRANCH_ENV="$(printf '%s' "$BRANCH_NAME" | sed 's/[^a-zA-Z0-9-]/-/g' | tr '[:upper:]' '[:lower:]' | cut -c1-20 | sed 's/^-*//;s/-*$//')"
+gh secret set DEPLOY_BOLT_TLS_CERT_PEM --env "${BRANCH_ENV}" < bolt-cert.pem
+gh secret set DEPLOY_BOLT_TLS_KEY_PEM  --env "${BRANCH_ENV}" < bolt-key.pem
 
 # 4. Deploy (triggers the workflow manually)
-gh workflow run deploy.yml -f environment=branch
+gh workflow run deploy.yml --ref "${BRANCH_NAME}" -f environment=branch -f branch_name="${BRANCH_NAME}"
 
 # 5. Or: create a PR and add the 'deploy' label
 gh pr create --title "my feature" --body "test deploy"
 gh pr edit --add-label deploy
 ```
 
-A bot comment will post your Redis endpoint when the deployment completes (~8 minutes).
+A bot comment will post the Redis/Bolt endpoints plus the Bolt password retrieval
+command when the deployment completes (~8 minutes).
 
 ## Connect via Bolt protocol (recommended)
 

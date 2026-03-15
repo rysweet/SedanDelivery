@@ -213,6 +213,7 @@ jobs:
     needs: determine-environment
     if: needs.determine-environment.outputs.should-deploy == 'true'
     runs-on: ubuntu-latest
+    environment: ${{ needs.determine-environment.outputs.env-name }}
     permissions:
       id-token: write
       contents: read
@@ -676,6 +677,8 @@ jobs:
           DEPLOY_AZURE_CACHE_NAME: ${{ steps.provision.outputs.azure_cache_name }}
           DEPLOY_PERSISTENCE_BACKEND: ${{ needs.determine-environment.outputs.persistence-backend }}
           DEPLOY_REPLICA_COUNT: ${{ needs.determine-environment.outputs.replica-count }}
+          DEPLOY_BOLT_TLS_CERT_PEM: ${{ secrets.DEPLOY_BOLT_TLS_CERT_PEM }}
+          DEPLOY_BOLT_TLS_KEY_PEM: ${{ secrets.DEPLOY_BOLT_TLS_KEY_PEM }}
         run: |
           RG="${DEPLOY_RG}"
           ENV_NAME="${DEPLOY_ENV_NAME}"
@@ -686,6 +689,9 @@ jobs:
           CA_NAME="sd2-${ENV_NAME}-bolt"
           PERSISTENCE_BACKEND="${DEPLOY_PERSISTENCE_BACKEND}"
           REPLICA_COUNT="${DEPLOY_REPLICA_COUNT}"
+          BOLT_SECRET_MOUNT_PATH="/mnt/secrets"
+          BOLT_TLS_CERT_PATH="${BOLT_SECRET_MOUNT_PATH}/bolt-tls-cert"
+          BOLT_TLS_KEY_PATH="${BOLT_SECRET_MOUNT_PATH}/bolt-tls-key"
 
           echo "🚀 Deploying standalone Bolt server: ${CA_NAME}"
           echo "   Persistence backend: ${PERSISTENCE_BACKEND}"
@@ -733,17 +739,67 @@ jobs:
           [[ -n "${CLUSTER_NODES}" ]] && echo "::add-mask::${CLUSTER_NODES}"
           [[ -n "${REPLICA_URL}" ]] && echo "::add-mask::${REPLICA_URL}"
 
-          # Build secrets and env-var args for bolt
-          if [[ -n "${CLUSTER_NODES}" ]]; then
-            SECRETS_ARGS="redis-cluster-nodes=${CLUSTER_NODES}"
-            ENV_VAR_ARGS="ENVIRONMENT=production GQL_REDIS_CLUSTER_NODES=secretref:redis-cluster-nodes BOLT_BIND_ADDR=0.0.0.0:7687"
-          else
-            SECRETS_ARGS="redis-url=${REDIS_URL}"
-            ENV_VAR_ARGS="ENVIRONMENT=production GQL_REDIS_URL=secretref:redis-url BOLT_BIND_ADDR=0.0.0.0:7687"
+          if [[ -z "${DEPLOY_BOLT_TLS_CERT_PEM}" || -z "${DEPLOY_BOLT_TLS_KEY_PEM}" ]]; then
+            echo "::error::DEPLOY_BOLT_TLS_CERT_PEM and DEPLOY_BOLT_TLS_KEY_PEM GitHub secrets are required for external Bolt TCP deploys"
+            exit 1
           fi
+
+          # Reuse the existing Bolt password on updates to avoid credential churn.
+          APP_EXISTS=false
+          BOLT_PASS=""
+          if az containerapp show --name "${CA_NAME}" --resource-group "${RG}" >/dev/null 2>&1; then
+            APP_EXISTS=true
+            EXISTING_BOLT_SECRET_NAMES=$(az containerapp show --name "${CA_NAME}" --resource-group "${RG}" --query "properties.configuration.secrets[].name" -o tsv 2>/dev/null || true)
+            if printf '%s\n' "${EXISTING_BOLT_SECRET_NAMES}" | grep -Fxq "bolt-password"; then
+              BOLT_PASS=$(az containerapp secret show --name "${CA_NAME}" --resource-group "${RG}" --secret-name bolt-password --query value -o tsv 2>/dev/null || true)
+              if [[ -z "${BOLT_PASS}" ]]; then
+                echo "::error::Existing Bolt app has bolt-password configured but secret lookup failed — refusing to rotate credentials"
+                exit 1
+              fi
+            else
+              echo "::warning::Existing Bolt app has no bolt-password secret; generating one-time migration password"
+              BOLT_PASS=$(openssl rand -base64 32 | tr -d '/+=\n')
+            fi
+          else
+            BOLT_PASS=$(openssl rand -base64 32 | tr -d '/+=\n')
+          fi
+          if [[ -z "${BOLT_PASS}" ]]; then
+            echo "::error::Failed to generate or retrieve BOLT_PASSWORD"
+            exit 1
+          fi
+          echo "::add-mask::${BOLT_PASS}"
+
+          # Build secrets and env-var args for bolt
+          declare -a SECRETS_ARGS
+          declare -a ENV_VAR_ARGS
+          if [[ -n "${CLUSTER_NODES}" ]]; then
+            SECRETS_ARGS=("redis-cluster-nodes=${CLUSTER_NODES}")
+            ENV_VAR_ARGS=(
+              "ENVIRONMENT=production"
+              "GQL_REDIS_CLUSTER_NODES=secretref:redis-cluster-nodes"
+            )
+          else
+            SECRETS_ARGS=("redis-url=${REDIS_URL}")
+            ENV_VAR_ARGS=(
+              "ENVIRONMENT=production"
+              "GQL_REDIS_URL=secretref:redis-url"
+            )
+          fi
+          SECRETS_ARGS+=(
+            "bolt-password=${BOLT_PASS}"
+            "bolt-tls-cert=${DEPLOY_BOLT_TLS_CERT_PEM}"
+            "bolt-tls-key=${DEPLOY_BOLT_TLS_KEY_PEM}"
+          )
+          ENV_VAR_ARGS+=(
+            "BOLT_BIND_ADDR=0.0.0.0:7687"
+            "BOLT_PASSWORD=secretref:bolt-password"
+            "BOLT_TLS_CERT=${BOLT_TLS_CERT_PATH}"
+            "BOLT_TLS_KEY=${BOLT_TLS_KEY_PATH}"
+            "BOLT_REQUIRE_TLS=true"
+          )
           if [[ -n "${REPLICA_URL}" ]]; then
-            SECRETS_ARGS="${SECRETS_ARGS} redis-replica-url=${REPLICA_URL}"
-            ENV_VAR_ARGS="${ENV_VAR_ARGS} GQL_REDIS_REPLICA_URL=secretref:redis-replica-url"
+            SECRETS_ARGS+=("redis-replica-url=${REPLICA_URL}")
+            ENV_VAR_ARGS+=("GQL_REDIS_REPLICA_URL=secretref:redis-replica-url")
           fi
 
           # Max replicas for horizontal scaling (default 1, configurable)
@@ -767,26 +823,31 @@ jobs:
               --target-port 7687 \
               --transport tcp \
               --exposed-port 7687 \
-              --secrets ${SECRETS_ARGS} \
-              --env-vars ${ENV_VAR_ARGS} \
+              --secrets "${SECRETS_ARGS[@]}" \
+              --env-vars "${ENV_VAR_ARGS[@]}" \
+              --secret-volume-mount "${BOLT_SECRET_MOUNT_PATH}" \
               --output none
           }
 
           # Idempotent create-or-update
-          if az containerapp show --name "${CA_NAME}" --resource-group "${RG}" >/dev/null 2>&1; then
+          if [[ "${APP_EXISTS}" == "true" ]]; then
             echo "🔄 Updating existing bolt container app..."
             UPDATE_OK=true
-            az containerapp secret set \
+            if ! az containerapp secret set \
               --name "${CA_NAME}" \
               --resource-group "${RG}" \
-              --secrets ${SECRETS_ARGS} \
-              --output none 2>/dev/null || true
+              --secrets "${SECRETS_ARGS[@]}" \
+              --output none; then
+              echo "::error::Failed to update Bolt Container App secrets"
+              exit 1
+            fi
             az containerapp update \
               --name "${CA_NAME}" \
               --resource-group "${RG}" \
               --image "${IMAGE}" \
-              --set-env-vars ${ENV_VAR_ARGS} \
+              --set-env-vars "${ENV_VAR_ARGS[@]}" \
               --max-replicas "${BOLT_MAX_REPLICAS}" \
+              --secret-volume-mount "${BOLT_SECRET_MOUNT_PATH}" \
               --output none 2>&1 || UPDATE_OK=false
 
             if [[ "${UPDATE_OK}" == "false" ]]; then
@@ -1006,19 +1067,25 @@ jobs:
         id: outputs
         run: |
           RG="${{ needs.determine-environment.outputs.resource-group }}"
-          CA_NAME="${{ steps.deploy-app.outputs.ca_name }}"
+          REDIS_CA_NAME="${{ steps.deploy-app.outputs.ca_name }}"
+          BOLT_CA_NAME="${{ steps.deploy-bolt.outputs.bolt_ca_name }}"
 
-          FQDN=$(az containerapp show \
-            --name "${CA_NAME}" \
+          REDIS_FQDN=$(az containerapp show \
+            --name "${REDIS_CA_NAME}" \
+            --resource-group "${RG}" \
+            --query "properties.configuration.ingress.fqdn" \
+            --output tsv 2>/dev/null || echo "")
+          BOLT_FQDN=$(az containerapp show \
+            --name "${BOLT_CA_NAME}" \
             --resource-group "${RG}" \
             --query "properties.configuration.ingress.fqdn" \
             --output tsv 2>/dev/null || echo "")
 
-          echo "redis_fqdn=${FQDN}" >> "$GITHUB_OUTPUT"
-          echo "bolt_fqdn=${FQDN}" >> "$GITHUB_OUTPUT"
-          echo "✅ SedanDelivery external FQDN: ${FQDN}"
-          echo "   Redis: port 6379 (external + internal)"
-          echo "   Bolt:  port 7687 (external + internal)"
+          echo "redis_fqdn=${REDIS_FQDN}" >> "$GITHUB_OUTPUT"
+          echo "bolt_fqdn=${BOLT_FQDN}" >> "$GITHUB_OUTPUT"
+          echo "✅ SedanDelivery external endpoints:"
+          echo "   Redis: ${REDIS_FQDN}:6379"
+          echo "   Bolt:  ${BOLT_FQDN}:7687"
 
       - name: Redis health check
         env:
@@ -1092,41 +1159,46 @@ jobs:
             --query "properties.configuration.ingress.fqdn" -o tsv 2>/dev/null || echo "")
 
           if [[ -z "${BOLT_FQDN}" ]]; then
-            echo "::warning::Cannot resolve Bolt FQDN — skipping smoke test"
-            exit 0
+            echo "::error::Cannot resolve Bolt FQDN"
+            exit 1
           fi
 
           echo "🧪 Running smoke test against Bolt endpoint: ${BOLT_FQDN}:7687"
 
-          # TCP connectivity check — verify port is open
+          # TLS handshake check — verify the public endpoint is actually serving TLS.
           SMOKE_OK=false
+          SMOKE_LOG="${RUNNER_TEMP}/bolt-smoke.log"
           for i in $(seq 1 6); do
-            if timeout 5 bash -c "echo > /dev/tcp/${BOLT_FQDN}/7687" 2>/dev/null; then
-              echo "   TCP port 7687: reachable (attempt ${i})"
+            timeout 10 bash -c "printf '' | openssl s_client -showcerts -connect '${BOLT_FQDN}:7687' -servername '${BOLT_FQDN}' >'${SMOKE_LOG}' 2>&1" || true
+            if grep -Fq 'BEGIN CERTIFICATE' "${SMOKE_LOG}" && ! grep -Eq 'no peer certificate available|Cipher is \(NONE\)|wrong version number|unexpected eof while reading' "${SMOKE_LOG}"; then
+              echo "   TLS handshake reached Bolt endpoint (attempt ${i})"
               SMOKE_OK=true
               break
             fi
-            echo "   Attempt ${i}/6: port not yet reachable, waiting..."
+            echo "   Attempt ${i}/6: TLS handshake not yet ready, waiting..."
             sleep 10
           done
 
           if [[ "${SMOKE_OK}" == "false" ]]; then
-            echo "::warning::Bolt port 7687 not reachable after 60s — smoke test failed"
+            echo "::error::Bolt TLS handshake did not complete after 60s"
+            cat "${SMOKE_LOG}" || true
             exit 1
           fi
 
-          echo "✅ Smoke test passed — Bolt endpoint is reachable"
+          echo "✅ Smoke test passed — Bolt endpoint completed a TLS handshake"
 
       - name: Post deployment comment to PR
         if: github.event_name == 'pull_request'
         uses: actions/github-script@450193c5abd4cdb17ba9f3ffcfe8f635c4bb6c2a # v7.0.1
         with:
           script: |
-            const fqdn = '${{ steps.outputs.outputs.redis_fqdn }}';
+            const redisFqdn = '${{ steps.outputs.outputs.redis_fqdn }}';
+            const boltFqdn = '${{ steps.outputs.outputs.bolt_fqdn }}';
             const envName = '${{ needs.determine-environment.outputs.env-name }}';
             const imageTag = '${{ steps.build.outputs.image_tag }}'.substring(0, 7);
             const rg = '${{ needs.determine-environment.outputs.resource-group }}';
-            const caName = '${{ steps.deploy-app.outputs.ca_name }}';
+            const redisCaName = '${{ steps.deploy-app.outputs.ca_name }}';
+            const boltCaName = '${{ steps.deploy-bolt.outputs.bolt_ca_name }}';
 
             const body = `## ✅ SedanDelivery Deployed
 
@@ -1134,22 +1206,38 @@ jobs:
             |-------|-------|
             | Environment | \`${envName}\` |
             | Resource Group | \`${rg}\` |
-            | Container App | \`${caName}\` |
-            | FQDN | \`${fqdn}\` |
-            | Redis | \`${fqdn}:6379\` (external TCP) |
-            | Bolt | \`${fqdn}:7687\` (external TCP) |
+            | Redis Container App | \`${redisCaName}\` |
+            | Bolt Container App | \`${boltCaName}\` |
+            | Redis FQDN | \`${redisFqdn}\` |
+            | Bolt FQDN | \`${boltFqdn}\` |
+            | Redis | \`${redisFqdn}:6379\` (external TCP) |
+            | Bolt | \`${boltFqdn}:7687\` (external TCP + TLS) |
             | Image Tag | \`${imageTag}\` |
 
             **Connect via Redis:**
             \`\`\`bash
-            redis-cli -h ${fqdn} -p 6379 PING
-            redis-cli -h ${fqdn} -p 6379 MODULE LIST
+            redis-cli -h ${redisFqdn} -p 6379 PING
+            redis-cli -h ${redisFqdn} -p 6379 MODULE LIST
+            \`\`\`
+
+            **Retrieve the Bolt password:**
+            \`\`\`bash
+            az containerapp secret show \\
+              --name ${boltCaName} \\
+              --resource-group ${rg} \\
+              --secret-name bolt-password \\
+              --query value -o tsv
             \`\`\`
 
             **Connect via Bolt (Neo4j driver):**
             \`\`\`python
             from neo4j import GraphDatabase
-            driver = GraphDatabase.driver("bolt://${fqdn}:7687", auth=None)
+            driver = GraphDatabase.driver(
+                "bolt+ssc://${boltFqdn}:7687",
+                auth=("neo4j", "<retrieve-bolt-password>"),
+            )
+            # If you later bind a custom domain with a matching CA-issued
+            # certificate, switch to bolt+s://.
             \`\`\`
 
             To clean up: run **Undeploy** workflow with resource group \`${rg}\`.`;
