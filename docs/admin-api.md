@@ -34,6 +34,8 @@ There is no separate per-route scope or rate-limit framework for this route.
 When Entra auth is enabled, the route uses the API's existing bearer-token
 middleware. If deployments need narrower access control, that must be enforced
 at the front door (gateway, ingress, or service principal assignment).
+When Entra auth is disabled, `/admin/*` is not a separate security boundary;
+it follows the same API-wide no-Entra posture as the rest of the HTTP surface.
 
 ### What the audit checks
 

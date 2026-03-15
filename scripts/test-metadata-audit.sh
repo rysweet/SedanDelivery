@@ -78,6 +78,81 @@ wait_for_redis() {
     return 1
 }
 
+load_redis_pid() {
+    local max_attempts="${1:-1}"
+    local attempt=0
+    REDIS_PID=""
+    while [ "$attempt" -lt "$max_attempts" ]; do
+        if [ -f "$REDIS_PID_FILE" ]; then
+            REDIS_PID="$(tr -d '[:space:]' <"$REDIS_PID_FILE")"
+            if [ -n "$REDIS_PID" ]; then
+                return 0
+            fi
+        fi
+        attempt=$((attempt + 1))
+        if [ "$attempt" -lt "$max_attempts" ]; then
+            sleep 1
+        fi
+    done
+    return 1
+}
+
+redis_instance_matches_port() {
+    local dir
+    dir="$(redis-cli -p "$REDIS_PORT" --raw CONFIG GET dir 2>/dev/null | tail -n1 || true)"
+    [ "$dir" = "$WORK_DIR" ]
+}
+
+redis_instance_matches_pid() {
+    local pid="$1"
+    local exe_path
+    local cwd_path
+    local cmdline
+
+    case "$pid" in
+        ''|*[!0-9]*)
+            return 1
+            ;;
+    esac
+
+    if [ ! -e "/proc/$pid" ]; then
+        return 1
+    fi
+
+    exe_path="$(readlink -f "/proc/$pid/exe" 2>/dev/null || true)"
+    if [ "$(basename "$exe_path")" != "redis-server" ]; then
+        return 1
+    fi
+
+    cwd_path="$(readlink -f "/proc/$pid/cwd" 2>/dev/null || true)"
+    if [ "$cwd_path" = "$WORK_DIR" ]; then
+        return 0
+    fi
+
+    cmdline="$(tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null || true)"
+    case "$cmdline" in
+        *":$REDIS_PORT"*|*"--port $REDIS_PORT "*)
+            return 0
+            ;;
+    esac
+
+    return 1
+}
+
+wait_for_process_exit() {
+    local pid="$1"
+    local max_attempts="${2:-10}"
+    local attempt=0
+    while [ "$attempt" -lt "$max_attempts" ]; do
+        if ! kill -0 "$pid" 2>/dev/null; then
+            return 0
+        fi
+        attempt=$((attempt + 1))
+        sleep 1
+    done
+    return 1
+}
+
 post_json() {
     local url="$1"
     local body_file="$2"
@@ -120,6 +195,7 @@ REDIS_URL="redis://127.0.0.1:${REDIS_PORT}/"
 REDIS_API_BASE="http://127.0.0.1:${REDIS_API_PORT}"
 MEMORY_API_BASE="http://127.0.0.1:${MEMORY_API_PORT}"
 
+REDIS_PID=""
 REDIS_API_PID=""
 MEMORY_API_PID=""
 
@@ -132,7 +208,17 @@ cleanup() {
         kill "$MEMORY_API_PID" 2>/dev/null || true
         wait "$MEMORY_API_PID" 2>/dev/null || true
     fi
-    redis-cli -p "$REDIS_PORT" shutdown nosave >/dev/null 2>&1 || true
+    load_redis_pid 3 || true
+    if redis_instance_matches_port; then
+        redis-cli -p "$REDIS_PORT" shutdown nosave >/dev/null 2>&1 || true
+    fi
+    load_redis_pid 1 || true
+    if [ -n "$REDIS_PID" ] \
+        && kill -0 "$REDIS_PID" 2>/dev/null \
+        && redis_instance_matches_pid "$REDIS_PID"; then
+        kill "$REDIS_PID" 2>/dev/null || true
+        wait_for_process_exit "$REDIS_PID" 5 || true
+    fi
     rm -rf "$WORK_DIR"
 }
 
@@ -187,10 +273,13 @@ redis-server \
     --pidfile "$REDIS_PID_FILE" \
     --dir "$WORK_DIR" >/dev/null
 
+load_redis_pid 5 || true
+
 if ! wait_for_redis "$REDIS_PORT" 30; then
     log_fail "Redis did not become ready on port $REDIS_PORT"
     exit 1
 fi
+load_redis_pid 1 || true
 
 log_info "Starting Redis-backed gql-api on port $REDIS_API_PORT"
 GQL_API_BIND_ADDR="127.0.0.1:${REDIS_API_PORT}" \
@@ -201,6 +290,7 @@ REDIS_API_PID=$!
 
 if ! wait_for_http "$REDIS_API_BASE/health" 60; then
     log_fail "Redis-backed gql-api did not become healthy"
+    tail -50 "$REDIS_API_LOG" >&2 || true
     exit 1
 fi
 
@@ -212,6 +302,7 @@ MEMORY_API_PID=$!
 
 if ! wait_for_http "$MEMORY_API_BASE/health" 60; then
     log_fail "In-memory gql-api did not become healthy"
+    tail -50 "$MEMORY_API_LOG" >&2 || true
     exit 1
 fi
 

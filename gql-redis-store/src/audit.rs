@@ -51,21 +51,22 @@ impl RedisGraphStore {
         let propidx_members =
             self.read_set_members(conn.as_mut(), &self.kp(key_propidx_manifest(graph)))?;
 
-        let stale_labels = self.collect_stale_labels_on(conn.as_mut(), graph, &label_members)?;
-        let stale_reltypes =
+        let mut stale_labels =
+            self.collect_stale_labels_on(conn.as_mut(), graph, &label_members)?;
+        let mut stale_reltypes =
             self.collect_stale_reltypes_on(conn.as_mut(), graph, &reltype_members)?;
-        let stale_propidx =
+        let mut stale_propidx =
             self.collect_stale_propidx_on(conn.as_mut(), graph, &propidx_members)?;
+        stale_labels.sort();
+        stale_reltypes.sort();
+        stale_propidx.sort();
         let deleting_orphaned =
             deleting && self.graph_cleanup_roots_absent_on(conn.as_mut(), graph)?;
 
         drop(conn);
 
         if !repair
-            || (stale_labels.is_empty()
-                && stale_reltypes.is_empty()
-                && stale_propidx.is_empty()
-                && !deleting_orphaned)
+            || (stale_labels.is_empty() && stale_reltypes.is_empty() && stale_propidx.is_empty())
         {
             return Ok(GraphMetadataAuditReport {
                 graph: graph.to_string(),
@@ -89,12 +90,15 @@ impl RedisGraphStore {
                 });
             }
 
-            let stale_labels =
+            let mut stale_labels =
                 self.recheck_stale_labels_under_lock(conn, graph, &candidate_labels)?;
-            let stale_reltypes =
+            let mut stale_reltypes =
                 self.recheck_stale_reltypes_under_lock(conn, graph, &candidate_reltypes)?;
-            let stale_propidx =
+            let mut stale_propidx =
                 self.recheck_stale_propidx_under_lock(conn, graph, &candidate_propidx)?;
+            stale_labels.sort();
+            stale_reltypes.sort();
+            stale_propidx.sort();
 
             if !stale_labels.is_empty() {
                 conn.renew_lock()?;
