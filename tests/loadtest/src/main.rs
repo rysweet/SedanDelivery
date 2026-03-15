@@ -5,6 +5,7 @@
 //! - `ramp`: Connection ramp from 10 to max with failure tracking
 //! - `mixed`: Configurable read/write mix under sustained load
 
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -25,6 +26,10 @@ struct Cli {
     /// Bolt URI of the SedanDelivery server
     #[arg(long, default_value = "bolt://localhost:7687")]
     bolt_uri: String,
+
+    /// Optional PEM CA certificate to trust for Bolt TLS
+    #[arg(long)]
+    ca_cert: Option<PathBuf>,
 
     /// Database user (Bolt auth)
     #[arg(long, default_value = "")]
@@ -189,19 +194,27 @@ fn compute_latency(mut samples: Vec<f64>) -> LatencyStats {
     }
 }
 
-async fn connect(uri: &str, user: &str, password: &str) -> Result<Graph, neo4rs::Error> {
+async fn connect(
+    uri: &str,
+    user: &str,
+    password: &str,
+    ca_cert: Option<&PathBuf>,
+) -> Result<Graph, neo4rs::Error> {
     let u = if user.is_empty() { "neo4j" } else { user };
     let p = if password.is_empty() {
         "neo4j"
     } else {
         password
     };
-    let builder = ConfigBuilder::default()
+    let mut builder = ConfigBuilder::default()
         .uri(uri)
         .user(u)
         .password(p)
         .fetch_size(1)
         .max_connections(1);
+    if let Some(ca_cert) = ca_cert {
+        builder = builder.with_client_certificate(ca_cert);
+    }
     Graph::connect(builder.build()?).await
 }
 
@@ -209,6 +222,7 @@ async fn connect_pool(
     uri: &str,
     user: &str,
     password: &str,
+    ca_cert: Option<&PathBuf>,
     pool_size: usize,
 ) -> Result<Graph, neo4rs::Error> {
     let u = if user.is_empty() { "neo4j" } else { user };
@@ -217,12 +231,15 @@ async fn connect_pool(
     } else {
         password
     };
-    let builder = ConfigBuilder::default()
+    let mut builder = ConfigBuilder::default()
         .uri(uri)
         .user(u)
         .password(p)
         .fetch_size(256)
         .max_connections(pool_size);
+    if let Some(ca_cert) = ca_cert {
+        builder = builder.with_client_certificate(ca_cert);
+    }
     Graph::connect(builder.build()?).await
 }
 
@@ -317,7 +334,14 @@ async fn run_nodes(cli: &Cli) -> Result<NodesResult, Box<dyn std::error::Error>>
         );
     }
 
-    let graph = connect_pool(&cli.bolt_uri, &cli.user, &cli.password, cli.concurrency).await?;
+    let graph = connect_pool(
+        &cli.bolt_uri,
+        &cli.user,
+        &cli.password,
+        cli.ca_cert.as_ref(),
+        cli.concurrency,
+    )
+    .await?;
     recreate_graph(&graph, &cli.graph).await?;
 
     let total = cli.count;
@@ -470,9 +494,10 @@ async fn run_ramp(cli: &Cli) -> Result<RampResult, Box<dyn std::error::Error>> {
             let uri = cli.bolt_uri.clone();
             let user = cli.user.clone();
             let password = cli.password.clone();
+            let ca_cert = cli.ca_cert.clone();
             set.spawn(async move {
                 let t0 = Instant::now();
-                let result = connect(&uri, &user, &password).await;
+                let result = connect(&uri, &user, &password, ca_cert.as_ref()).await;
                 let lat = t0.elapsed().as_secs_f64() * 1000.0;
                 match result {
                     Ok(g) => {
@@ -567,7 +592,14 @@ async fn run_mixed(cli: &Cli) -> Result<MixedResult, Box<dyn std::error::Error>>
         "Starting mixed workload scenario"
     );
 
-    let graph = connect_pool(&cli.bolt_uri, &cli.user, &cli.password, cli.concurrency).await?;
+    let graph = connect_pool(
+        &cli.bolt_uri,
+        &cli.user,
+        &cli.password,
+        cli.ca_cert.as_ref(),
+        cli.concurrency,
+    )
+    .await?;
     recreate_graph(&graph, &cli.graph).await?;
 
     // Seed some data for reads

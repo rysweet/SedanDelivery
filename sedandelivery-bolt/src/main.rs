@@ -17,6 +17,38 @@ fn create_store() -> Arc<dyn GraphStore> {
     gql_redis_store::create_store::create_store()
 }
 
+fn validate_bolt_password_env(require_password: bool) {
+    match read_non_empty_env_var("BOLT_PASSWORD") {
+        Some(_) => {}
+        None if require_password => panic!("BOLT_PASSWORD is required when ENVIRONMENT=production"),
+        None => {}
+    }
+}
+
+fn validate_bolt_tls_env(require_tls: bool) {
+    match (
+        read_non_empty_env_var("BOLT_TLS_CERT"),
+        read_non_empty_env_var("BOLT_TLS_KEY"),
+    ) {
+        (Some(_), Some(_)) => {}
+        (None, None) if require_tls => {
+            panic!("BOLT_TLS_CERT and BOLT_TLS_KEY are required when ENVIRONMENT=production");
+        }
+        (None, None) => {}
+        (Some(_), None) => panic!("BOLT_TLS_CERT is set but BOLT_TLS_KEY is missing"),
+        (None, Some(_)) => panic!("BOLT_TLS_KEY is set but BOLT_TLS_CERT is missing"),
+    }
+}
+
+fn read_non_empty_env_var(name: &str) -> Option<String> {
+    match std::env::var(name) {
+        Ok(value) if value.is_empty() => panic!("{name} is set but empty"),
+        Ok(value) => Some(value),
+        Err(std::env::VarError::NotPresent) => None,
+        Err(std::env::VarError::NotUnicode(_)) => panic!("{name} is not valid unicode"),
+    }
+}
+
 /// RAII guard that decrements the active-connection gauge on drop.
 /// This ensures the counter is accurate even when a session task panics.
 struct ConnectionGuard {
@@ -79,15 +111,12 @@ async fn main() {
         tracing_subscriber::fmt().with_env_filter(env_filter).init();
     }
 
-    // In production mode, require security-sensitive variables.
-    if std::env::var("ENVIRONMENT").as_deref() == Ok("production") {
-        if std::env::var("BOLT_PASSWORD").is_err() {
-            panic!("BOLT_PASSWORD is required when ENVIRONMENT=production");
-        }
-        if std::env::var("BOLT_TLS_CERT").is_err() || std::env::var("BOLT_TLS_KEY").is_err() {
-            panic!("BOLT_TLS_CERT and BOLT_TLS_KEY are required when ENVIRONMENT=production");
-        }
-    }
+    // In production mode, require both password auth and in-process Bolt TLS.
+    // Azure Container Apps documents TLS termination for HTTP ingress, not the
+    // raw TCP ingress used by Bolt on port 7687.
+    let production_mode = std::env::var("ENVIRONMENT").as_deref() == Ok("production");
+    validate_bolt_password_env(production_mode);
+    validate_bolt_tls_env(production_mode);
 
     let bind_addr = std::env::var("BOLT_BIND_ADDR").unwrap_or_else(|_| "0.0.0.0:7687".to_string());
 
@@ -500,4 +529,141 @@ async fn main() {
     }
 
     tracing::info!("sedandelivery-bolt shutdown complete");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{validate_bolt_password_env, validate_bolt_tls_env};
+    use std::sync::{Mutex, MutexGuard};
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    struct TestEnv {
+        prev_password: Option<String>,
+        prev_cert: Option<String>,
+        prev_key: Option<String>,
+        _lock: MutexGuard<'static, ()>,
+    }
+
+    impl TestEnv {
+        fn set(password: Option<&str>, cert: Option<&str>, key: Option<&str>) -> Self {
+            let lock = ENV_LOCK
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let prev_password = std::env::var("BOLT_PASSWORD").ok();
+            let prev_cert = std::env::var("BOLT_TLS_CERT").ok();
+            let prev_key = std::env::var("BOLT_TLS_KEY").ok();
+
+            match password {
+                Some(value) => std::env::set_var("BOLT_PASSWORD", value),
+                None => std::env::remove_var("BOLT_PASSWORD"),
+            }
+            match cert {
+                Some(value) => std::env::set_var("BOLT_TLS_CERT", value),
+                None => std::env::remove_var("BOLT_TLS_CERT"),
+            }
+            match key {
+                Some(value) => std::env::set_var("BOLT_TLS_KEY", value),
+                None => std::env::remove_var("BOLT_TLS_KEY"),
+            }
+
+            Self {
+                prev_password,
+                prev_cert,
+                prev_key,
+                _lock: lock,
+            }
+        }
+    }
+
+    impl Drop for TestEnv {
+        fn drop(&mut self) {
+            match &self.prev_password {
+                Some(value) => std::env::set_var("BOLT_PASSWORD", value),
+                None => std::env::remove_var("BOLT_PASSWORD"),
+            }
+            match &self.prev_cert {
+                Some(value) => std::env::set_var("BOLT_TLS_CERT", value),
+                None => std::env::remove_var("BOLT_TLS_CERT"),
+            }
+            match &self.prev_key {
+                Some(value) => std::env::set_var("BOLT_TLS_KEY", value),
+                None => std::env::remove_var("BOLT_TLS_KEY"),
+            }
+        }
+    }
+
+    #[test]
+    fn missing_password_is_allowed_outside_production() {
+        let _env = TestEnv::set(None, None, None);
+
+        validate_bolt_password_env(false);
+    }
+
+    #[test]
+    #[should_panic(expected = "BOLT_PASSWORD is required when ENVIRONMENT=production")]
+    fn missing_password_is_rejected_in_production() {
+        let _env = TestEnv::set(None, None, None);
+
+        validate_bolt_password_env(true);
+    }
+
+    #[test]
+    fn non_empty_password_is_allowed_in_production() {
+        let _env = TestEnv::set(Some("non-empty-secret"), None, None);
+
+        validate_bolt_password_env(true);
+    }
+
+    #[test]
+    #[should_panic(expected = "BOLT_PASSWORD is set but empty")]
+    fn empty_password_is_rejected() {
+        let _env = TestEnv::set(Some(""), None, None);
+
+        validate_bolt_password_env(false);
+    }
+
+    #[test]
+    fn missing_tls_is_allowed_outside_production() {
+        let _env = TestEnv::set(None, None, None);
+
+        validate_bolt_tls_env(false);
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "BOLT_TLS_CERT and BOLT_TLS_KEY are required when ENVIRONMENT=production"
+    )]
+    fn missing_tls_is_rejected_in_production() {
+        let _env = TestEnv::set(None, None, None);
+
+        validate_bolt_tls_env(true);
+    }
+
+    #[test]
+    fn non_empty_tls_paths_are_allowed_in_production() {
+        let _env = TestEnv::set(
+            None,
+            Some("/mnt/secrets/bolt-tls-cert"),
+            Some("/mnt/secrets/bolt-tls-key"),
+        );
+
+        validate_bolt_tls_env(true);
+    }
+
+    #[test]
+    #[should_panic(expected = "BOLT_TLS_CERT is set but BOLT_TLS_KEY is missing")]
+    fn missing_key_is_rejected_when_cert_is_present() {
+        let _env = TestEnv::set(None, Some("/mnt/secrets/bolt-tls-cert"), None);
+
+        validate_bolt_tls_env(false);
+    }
+
+    #[test]
+    #[should_panic(expected = "BOLT_TLS_KEY is set but BOLT_TLS_CERT is missing")]
+    fn missing_cert_is_rejected_when_key_is_present() {
+        let _env = TestEnv::set(None, None, Some("/mnt/secrets/bolt-tls-key"));
+
+        validate_bolt_tls_env(false);
+    }
 }

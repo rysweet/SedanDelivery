@@ -29,6 +29,8 @@ gh api repos/cloud-ecosystem-security/SedanDelivery/actions/secrets \
 | `AZURE_CLIENT_SECRET` | Azure Service Principal password | `deploy.yml`, `secret-validation.lock.yml`, Fabric sync sidecar | **Every 90 days** (Azure default expiry) |
 | `AZURE_TENANT_ID` | Azure AD tenant ID | `deploy.yml`, `secret-validation.lock.yml`, Fabric provisioning | Never (stable identifier) |
 | `AZURE_SUBSCRIPTION_ID` | Azure subscription for resource deployment | `deploy.yml` | Never (stable identifier) |
+| `DEPLOY_BOLT_TLS_CERT_PEM` | PEM certificate chain for the public Bolt endpoint | `deploy.yml` → Container App secret `bolt-tls-cert` | On certificate renewal or chain change |
+| `DEPLOY_BOLT_TLS_KEY_PEM` | PEM private key for the public Bolt endpoint | `deploy.yml` → Container App secret `bolt-tls-key` | On private key rotation or certificate renewal |
 
 ---
 
@@ -139,6 +141,44 @@ gh secret set AZURE_SUBSCRIPTION_ID --body "$SUBSCRIPTION_ID"
 
 ---
 
+### Bolt TLS certificate secrets (2 secrets)
+
+**What**: The PEM certificate chain and private key used by the public Bolt
+Container App. `deploy.yml` copies these GitHub environment secrets into Container App
+secrets (`bolt-tls-cert` / `bolt-tls-key`), mounts them at `/mnt/secrets`, and
+sets `BOLT_REQUIRE_TLS=true` so public TCP Bolt never runs plaintext.
+
+**Set**:
+```bash
+# Production deploys read GitHub environment `main`.
+gh secret set DEPLOY_BOLT_TLS_CERT_PEM --env main < bolt-cert.pem
+gh secret set DEPLOY_BOLT_TLS_KEY_PEM  --env main < bolt-key.pem
+
+# Branch / PR deploys read the same sanitized GitHub environment name that
+# deploy.yml derives from the branch:
+BRANCH_NAME="$(git rev-parse --abbrev-ref HEAD)"
+BRANCH_ENV="$(printf '%s' "$BRANCH_NAME" | sed 's/[^a-zA-Z0-9-]/-/g' | tr '[:upper:]' '[:lower:]' | cut -c1-20 | sed 's/^-*//;s/-*$//')"
+gh secret set DEPLOY_BOLT_TLS_CERT_PEM --env "${BRANCH_ENV:-manual-deploy}" < bolt-cert.pem
+gh secret set DEPLOY_BOLT_TLS_KEY_PEM  --env "${BRANCH_ENV:-manual-deploy}" < bolt-key.pem
+```
+
+Production always reads GitHub environment `main`. Manual branch deploys fall
+back to `manual-deploy` when the sanitized branch name is empty, and PR deploys
+fall back to `pr-<number>`.
+
+**Rotation**:
+- `DEPLOY_BOLT_TLS_CERT_PEM`: Update whenever the certificate renews or the
+  intermediate chain changes.
+- `DEPLOY_BOLT_TLS_KEY_PEM`: Update whenever the private key rotates. Rotate
+  the certificate secret at the same time if the key pair changes.
+
+For the default ACA-generated hostname, use `bolt+ssc://` (or the equivalent
+trust override) unless you separately bind a custom domain with a matching
+CA-issued certificate. If you do add a custom domain, clients can switch to
+`bolt+s://`.
+
+---
+
 ### Fabric Graph Replication (uses existing Azure secrets)
 
 Fabric Graph replication is **enabled by default** (`ENABLE_FABRIC: 'true'` in
@@ -159,11 +199,36 @@ Graph Databases. If your SP was created with `Contributor` role on the subscript
 
 | Container App env var | Source | Container |
 |-----------------------|--------|-----------|
+| `BOLT_PASSWORD` | Generated on first deploy or reused from existing `bolt-password` Container App secret | `sd2-{env}-bolt` |
+| `BOLT_TLS_CERT` | Mounted from Container App secret `bolt-tls-cert`, populated from GitHub secret `DEPLOY_BOLT_TLS_CERT_PEM` | `sd2-{env}-bolt` |
+| `BOLT_TLS_KEY` | Mounted from Container App secret `bolt-tls-key`, populated from GitHub secret `DEPLOY_BOLT_TLS_KEY_PEM` | `sd2-{env}-bolt` |
 | `GQL_FABRIC_CHANGELOG` | Set to `1` when Fabric is enabled | `sd2-{env}-redis` (main) |
 | `GQL_FABRIC_ENDPOINT` | Output of `provision-fabric.sh` | `sd2-{env}-fabric-sync` (sidecar) |
 | `GQL_FABRIC_TENANT_ID` | `AZURE_TENANT_ID` secret | `sd2-{env}-fabric-sync` (sidecar) |
 | `GQL_FABRIC_CLIENT_ID` | `AZURE_CLIENT_ID` secret | `sd2-{env}-fabric-sync` (sidecar) |
 | `GQL_FABRIC_CLIENT_SECRET` | `secretref:fabric-client-secret` | `sd2-{env}-fabric-sync` (sidecar) |
+
+The deploy workflow reuses `bolt-password` on updates so routine image rollouts
+do not silently rotate client credentials. Delete the Container App secret only
+when you intentionally want to force a new Bolt password on the next deploy.
+
+For environments that predate `bolt-password`, the first post-#736 deploy
+generates a one-time migration password and stores it as the new secret. After
+that bootstrap deploy, subsequent rollouts reuse the stored value unless you
+delete the secret intentionally.
+
+`DEPLOY_BOLT_TLS_CERT_PEM` and `DEPLOY_BOLT_TLS_KEY_PEM` are required for
+public Bolt deploys. The workflow fails closed if either secret is missing
+instead of exposing a public plaintext Bolt endpoint. Retrieve the generated or
+reused Bolt password after deploy with:
+
+```bash
+az containerapp secret show \
+  --name sd2-<env>-bolt \
+  --resource-group rg-sd2-<env> \
+  --secret-name bolt-password \
+  --query value -o tsv
+```
 
 When `AZURE_CLIENT_SECRET` is rotated (every 90 days), the Fabric sync sidecar
 must be redeployed to pick up the new secret. Re-running the deploy workflow
