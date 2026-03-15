@@ -186,13 +186,14 @@ fn map_lock_release_result<T>(
                 graph = %graph,
                 "graph write lock expired or changed owner before release"
             );
-            match result {
-                Ok(_) => {
-                    record_write_lock_conflict_outcome("release");
-                    Err(StorageError::TransactionConflict)
-                }
+            let result = match result {
+                Ok(_) => Err(StorageError::TransactionConflict),
                 Err(err) => Err(err),
+            };
+            if matches!(&result, Err(StorageError::TransactionConflict)) {
+                record_write_lock_conflict_outcome("release");
             }
+            result
         }
         Err(err) => {
             metrics::counter!(REDIS_WRITE_LOCK_RELEASE_FAILURES_TOTAL).increment(1);
