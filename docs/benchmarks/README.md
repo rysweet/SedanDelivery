@@ -52,7 +52,40 @@ HTML reports are generated in `target/criterion/` after each run.
 | `msg_encode_record` | Encode a RECORD server message with 4 fields |
 | `msg_encode_failure` | Encode a FAILURE server message with error details |
 
-## Baseline (to be filled after first run)
+### Read-routing decision
+
+| Benchmark | Description |
+|-----------|-------------|
+| `read_consistency_no_recent_write` | Session has no recent write; use topology-default routing |
+| `read_consistency_recent_write` | Session is still inside the primary-pinned freshness window — representative inside-window probe at `1s` age |
+| `read_consistency_window_expired` | Freshness window expired; return to topology-default routing — probe at `READ_AFTER_WRITE_WINDOW + 1s` |
+
+These microbenchmarks import the public
+`sedandelivery_bolt::protocol::handler::READ_AFTER_WRITE_WINDOW` constant for
+the expired-window probe instead of hard-coding that boundary. The inside-window
+probe remains a fixed `1s` representative age.
+
+To run only the routing benchmarks:
+
+```bash
+cargo bench -p sedandelivery-bolt --bench bolt_benchmarks -- read_consistency
+```
+
+See [read-after-write-routing.md](../read-after-write-routing.md#read_after_write_window-and-the-routing-benchmark)
+for the full design rationale.
+
+## Routing baseline snapshot
+
+| Benchmark | Median |
+|-----------|--------|
+| `read_consistency_no_recent_write` | `10.613 ns` |
+| `read_consistency_recent_write` | `2.7804 ns` |
+| `read_consistency_window_expired` | `2.7863 ns` |
+
+These numbers are intentionally tiny: the routing policy check is nanoseconds,
+so the real user-visible overhead shows up in `tests/loadtest`, not here.
+
+## PackStream/message baseline (to be filled separately)
 
 | Benchmark | Target | Measured |
 |-----------|--------|----------|

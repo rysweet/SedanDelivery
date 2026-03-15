@@ -25,6 +25,7 @@ pub use hello::spawn_auth_rate_limiter_sweep;
 pub(crate) use hello::with_required_password_override_for_tests;
 pub(crate) use session::constant_time_eq;
 pub use session::{AdminStats, PendingQuery, Session};
+pub use session::READ_AFTER_WRITE_WINDOW;
 
 // -- Error type --------------------------------------------------------------
 

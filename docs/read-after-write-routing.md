@@ -42,8 +42,16 @@ policy from it:
 The current implementation uses a fixed constant:
 
 ```rust
-pub(crate) const READ_AFTER_WRITE_WINDOW: Duration = Duration::from_secs(5);
+/// The read-after-write freshness window.
+///
+/// Reads within this duration of a write are routed to the primary instead of
+/// a replica. Exported so benchmarks and external routing-contract tests can
+/// reference the authoritative value directly.
+pub const READ_AFTER_WRITE_WINDOW: Duration = Duration::from_secs(5);
 ```
+
+The constant is exported at
+`sedandelivery_bolt::protocol::handler::READ_AFTER_WRITE_WINDOW`.
 
 This window is **not operator-configurable today**.
 
@@ -145,6 +153,41 @@ session can still fall back to replica routing before replication catches up.
 
 When `GQL_REDIS_REPLICA_URL` is unset, all reads already go to the primary and
 the policy has no visible effect.
+
+## `READ_AFTER_WRITE_WINDOW` and the routing benchmark
+
+`sedandelivery-bolt/benches/bolt_benchmarks.rs` includes dedicated routing
+microbenchmarks:
+
+```rust
+fn bench_read_routing_decision(c: &mut Criterion) {
+    c.bench_function("read_consistency_recent_write", |b| {
+        b.iter(|| Session::read_consistency_for_age(Some(Duration::from_secs(1))))
+    });
+
+    c.bench_function("read_consistency_window_expired", |b| {
+        b.iter(|| {
+            Session::read_consistency_for_age(Some(
+                READ_AFTER_WRITE_WINDOW + Duration::from_secs(1),
+            ))
+        })
+    });
+}
+```
+
+The benchmark uses a fixed `1s` representative age for the inside-window path
+and `READ_AFTER_WRITE_WINDOW + 1s` for the expired-window path. That keeps the
+expired-path probe compiler-coupled to the exported constant while leaving the
+inside-window probe as an obvious, stable representative case.
+
+Run the routing microbench:
+
+```bash
+cargo bench -p sedandelivery-bolt --bench bolt_benchmarks -- read_consistency
+```
+
+See [benchmarks](benchmarks.md#sedandelivery-boltbenchesbolt_benchmarksrs----routing-decision-cost)
+for the full suite description and baseline snapshot.
 
 ## How to validate it
 

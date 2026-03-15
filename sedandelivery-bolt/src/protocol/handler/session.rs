@@ -108,7 +108,13 @@ pub struct AdminStats {
     pub(crate) system_updates: u64,
 }
 
-pub(crate) const READ_AFTER_WRITE_WINDOW: Duration = Duration::from_secs(5);
+/// The read-after-write consistency window.
+///
+/// Reads issued within this duration after the most recent write in a session
+/// are pinned to the primary to guarantee that the write is visible.
+/// Promoted to `pub` so benchmark crates can import the authoritative constant
+/// directly rather than hard-coding a sentinel value.
+pub const READ_AFTER_WRITE_WINDOW: Duration = Duration::from_secs(5);
 
 impl Session {
     /// Allocate the next query ID, returning an error if the counter overflows.
@@ -121,13 +127,20 @@ impl Session {
         Ok(qid)
     }
 
-    pub(crate) fn read_consistency(&self) -> ReadConsistency {
-        match self.last_write_at {
-            Some(last_write_at) if last_write_at.elapsed() < READ_AFTER_WRITE_WINDOW => {
-                ReadConsistency::SessionFreshPrimary
-            }
+    /// Exposes the routing decision as a pure function so benchmarks and tests
+    /// can measure the policy cost without constructing a live session.
+    pub fn read_consistency_for_age(age: Option<Duration>) -> ReadConsistency {
+        match age {
+            Some(age) if age < READ_AFTER_WRITE_WINDOW => ReadConsistency::SessionFreshPrimary,
             _ => ReadConsistency::TopologyDefault,
         }
+    }
+
+    pub(crate) fn read_consistency(&self) -> ReadConsistency {
+        Self::read_consistency_for_age(
+            self.last_write_at
+                .map(|last_write_at| last_write_at.elapsed()),
+        )
     }
 
     pub(crate) fn apply_recent_bookmark_age(&mut self, age: Duration) {
