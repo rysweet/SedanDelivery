@@ -107,6 +107,10 @@ pub(crate) fn key_propidx(g: &str, label: &str, property: &str, value_key: &str)
     )
 }
 
+pub(crate) fn key_propidx_prefix(g: &str) -> String {
+    format!("G:{{{g}}}:propidx:")
+}
+
 /// Manifest of propidx keys created for a graph.
 ///
 /// Index backfill and indexed writes are intentionally non-atomic, so
@@ -274,6 +278,11 @@ mod tests {
             key_propidx("db", "Person", "name", "s:Alice"),
             "G:{db}:propidx:Person\x00name\x00s:Alice"
         );
+    }
+
+    #[test]
+    fn key_propidx_prefix_format() {
+        assert_eq!(key_propidx_prefix("db"), "G:{db}:propidx:");
     }
 
     #[test]

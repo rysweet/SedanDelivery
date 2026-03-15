@@ -249,6 +249,37 @@ async fn stats_existing_graph_returns_200() {
     assert_eq!(body["edgeCount"], 0);
 }
 
+#[tokio::test]
+async fn admin_audit_route_returns_not_implemented_for_non_redis_store() {
+    let graph = "admin_audit_route_returns_not_implemented_for_non_redis_store";
+    let router = app_with_graph(graph);
+
+    let resp = router
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri(format!("/admin/graphs/{graph}/audit?repair=true"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        resp.status(),
+        StatusCode::NOT_IMPLEMENTED,
+        "the thin admin audit route should exist and reject non-Redis backends explicitly instead of falling through to 404"
+    );
+
+    let body = body_json(resp.into_body()).await;
+    assert!(
+        body["error"]
+            .as_str()
+            .is_some_and(|msg| msg.contains("Redis") || msg.contains("unsupported")),
+        "non-Redis audit requests should explain why the route is unavailable: {body:?}"
+    );
+}
+
 // ===========================================================================
 // 7-8. Nodes CRUD
 // ===========================================================================
