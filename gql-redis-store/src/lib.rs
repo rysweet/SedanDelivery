@@ -471,7 +471,8 @@ impl RedisGraphStore {
         let mut conn = self.route_read_with_pinning(force_primary)?;
         match self.require_graph_on(conn.as_mut(), graph) {
             Ok(()) => Ok(conn),
-            Err(StorageError::GraphNotFound { .. }) if self.replica_pool.is_some() && !force_primary =>
+            Err(StorageError::GraphNotFound { .. })
+                if self.replica_pool.is_some() && !force_primary =>
             {
                 tracing::debug!(
                     graph,

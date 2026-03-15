@@ -920,8 +920,9 @@ fn ci26_replica_graph_misses_retry_on_primary() {
         route_body.contains("route_read_with_pinning(true)?"),
         "route_read_for_graph must retry graph-scoped reads on the primary after a replica miss"
     );
+    let route_body_normalized = route_body.split_whitespace().collect::<Vec<_>>().join(" ");
     assert!(
-        route_body
+        route_body_normalized
             .contains("Err(StorageError::GraphNotFound { .. }) if self.replica_pool.is_some()"),
         "route_read_for_graph must only fall back on false GraphNotFound misses from replica reads"
     );
