@@ -120,3 +120,160 @@ pub fn renew(
 
 /// Write-lock TTL used by all read-modify-write operations (milliseconds).
 pub const WRITE_LOCK_TTL_MS: u64 = 5_000;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use redis::{Arg, Cmd, RedisResult, Value};
+
+    #[derive(Debug, Default)]
+    struct MockConnection {
+        owner: Option<String>,
+        open: bool,
+    }
+
+    impl MockConnection {
+        fn force_owner(&mut self, owner: &str) {
+            self.owner = Some(owner.to_string());
+        }
+
+        fn command_args(cmd: &Cmd) -> Vec<String> {
+            cmd.args_iter()
+                .map(|arg| match arg {
+                    Arg::Simple(bytes) => String::from_utf8(bytes.to_vec()).unwrap(),
+                    Arg::Cursor => "<cursor>".to_string(),
+                    _ => unreachable!("redis::Arg only exposes simple and cursor variants here"),
+                })
+                .collect()
+        }
+
+        fn handle_set(&mut self, args: &[String]) -> RedisResult<Value> {
+            assert_eq!(args[0], "SET");
+            assert_eq!(args[3], "NX");
+            assert_eq!(args[4], "PX");
+            let token = args[2].clone();
+            if self.owner.is_none() {
+                self.owner = Some(token);
+                Ok(Value::Okay)
+            } else {
+                Ok(Value::Nil)
+            }
+        }
+
+        fn handle_evalsha(&mut self, args: &[String]) -> RedisResult<Value> {
+            assert_eq!(args[0], "EVALSHA");
+            match args.len() {
+                5 => {
+                    let token = &args[4];
+                    let matches = self.owner.as_deref() == Some(token);
+                    if matches {
+                        self.owner = None;
+                    }
+                    Ok(Value::Int(i64::from(matches)))
+                }
+                6 => {
+                    let token = &args[4];
+                    Ok(Value::Int(i64::from(self.owner.as_deref() == Some(token))))
+                }
+                _ => panic!("unexpected script args: {args:?}"),
+            }
+        }
+    }
+
+    impl ConnectionLike for MockConnection {
+        fn req_packed_command(&mut self, _cmd: &[u8]) -> RedisResult<Value> {
+            panic!("packed command path should not be used in lock tests")
+        }
+
+        fn req_packed_commands(
+            &mut self,
+            _cmd: &[u8],
+            _offset: usize,
+            _count: usize,
+        ) -> RedisResult<Vec<Value>> {
+            panic!("pipeline path should not be used in lock tests")
+        }
+
+        fn req_command(&mut self, cmd: &Cmd) -> RedisResult<Value> {
+            let args = Self::command_args(cmd);
+            match args.first().map(String::as_str) {
+                Some("SET") => self.handle_set(&args),
+                Some("EVALSHA") => self.handle_evalsha(&args),
+                Some("SCRIPT") if args.get(1).map(String::as_str) == Some("LOAD") => {
+                    Ok(Value::BulkString(b"mock-sha".to_vec()))
+                }
+                other => panic!("unexpected redis command in test: {other:?} ({args:?})"),
+            }
+        }
+
+        fn get_db(&self) -> i64 {
+            0
+        }
+
+        fn check_connection(&mut self) -> bool {
+            self.open
+        }
+
+        fn is_open(&self) -> bool {
+            self.open
+        }
+    }
+
+    #[test]
+    fn renew_returns_false_after_lock_owner_changes() {
+        let mut conn = MockConnection {
+            owner: None,
+            open: true,
+        };
+        let token = acquire(&mut conn, "G:{graph}:lock", WRITE_LOCK_TTL_MS)
+            .unwrap()
+            .expect("lock should be acquired");
+        conn.force_owner("someone-else");
+
+        let renewed = renew(&mut conn, "G:{graph}:lock", &token, WRITE_LOCK_TTL_MS).unwrap();
+
+        assert!(!renewed, "renew must fail closed after ownership changes");
+    }
+
+    #[test]
+    fn release_returns_false_after_lock_owner_changes() {
+        let mut conn = MockConnection {
+            owner: None,
+            open: true,
+        };
+        let token = acquire(&mut conn, "G:{graph}:lock", WRITE_LOCK_TTL_MS)
+            .unwrap()
+            .expect("lock should be acquired");
+        conn.force_owner("someone-else");
+
+        let released = release(&mut conn, "G:{graph}:lock", &token).unwrap();
+
+        assert!(
+            !released,
+            "release must fail closed after ownership changes"
+        );
+    }
+
+    #[test]
+    fn release_clears_owner_for_reacquire() {
+        let mut conn = MockConnection {
+            owner: None,
+            open: true,
+        };
+        let token = acquire(&mut conn, "G:{graph}:lock", WRITE_LOCK_TTL_MS)
+            .unwrap()
+            .expect("lock should be acquired");
+
+        let released = release(&mut conn, "G:{graph}:lock", &token).unwrap();
+        assert!(released, "release should succeed while the token still owns the lock");
+
+        let reacquired = acquire(&mut conn, "G:{graph}:lock", WRITE_LOCK_TTL_MS)
+            .unwrap()
+            .expect("lock should be reacquirable after a successful release");
+        assert!(
+            !reacquired.is_empty(),
+            "reacquire should return a fresh owner token"
+        );
+    }
+}

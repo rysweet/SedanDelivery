@@ -1,0 +1,18 @@
+# CI overlay for docker-compose.cluster.yml.
+#
+# Combine via:
+#   export COMPOSE_FILE=docker-compose.cluster.yml:docker-compose.cluster.ci.yml
+#   export CI_PREBUILD_BOLT=1
+#   docker compose up -d
+#
+# The image must already exist locally:
+#   cargo build --release -p sedandelivery-bolt
+#   ./scripts/build-prebuilt-bolt-image.sh
+
+services:
+  sedandelivery-bolt:
+    build:
+      context: .
+      dockerfile: Dockerfile.bolt.prebuilt
+    image: sedan-bolt-ci:latest
+    pull_policy: never

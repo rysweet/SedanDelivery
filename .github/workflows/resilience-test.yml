@@ -1,0 +1,86 @@
+name: Resharding Resilience Test
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+    paths:
+      - "gql-core/**"
+      - "gql-redis-store/**"
+      - "sedandelivery-bolt/**"
+      - "tests/loadtest/**"
+      - "scripts/build-prebuilt-bolt-image.sh"
+      - "scripts/test-resharding-resilience.sh"
+      - "docker-compose.cluster.yml"
+      - "docker-compose.cluster.ci.yml"
+      - "Dockerfile.bolt.prebuilt"
+      - "Dockerfile.bolt.prebuilt.dockerignore"
+      - ".github/workflows/resilience-test.yml"
+  push:
+    branches: [main]
+    paths:
+      - "gql-core/**"
+      - "gql-redis-store/**"
+      - "sedandelivery-bolt/**"
+      - "tests/loadtest/**"
+      - "scripts/build-prebuilt-bolt-image.sh"
+      - "scripts/test-resharding-resilience.sh"
+      - "docker-compose.cluster.yml"
+      - "docker-compose.cluster.ci.yml"
+      - "Dockerfile.bolt.prebuilt"
+      - "Dockerfile.bolt.prebuilt.dockerignore"
+      - ".github/workflows/resilience-test.yml"
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+concurrency:
+  group: resilience-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  resharding-resilience:
+    name: Redis Cluster Resharding Resilience
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust stable and native build dependencies
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          sudo apt-get update -q
+          sudo apt-get install -y -q libssl-dev pkg-config libclang-dev
+
+      - name: Cache cargo registry
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-resharding-${{ hashFiles('**/Cargo.toml', 'Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-resharding-
+
+      - name: Build release binaries
+        run: cargo build --release -p sedandelivery-bolt
+
+      - name: Install Python neo4j driver
+        run: pip install neo4j
+
+      - name: Build prebuilt Bolt image
+        run: ./scripts/build-prebuilt-bolt-image.sh
+
+      - name: Run resharding resilience validator
+        env:
+          VALKEY_PASSWORD: local-cluster-pass
+          BOLT_PASSWORD: local-bolt-pass
+          CI_PREBUILD_BOLT: "1"
+          COMPOSE_FILE: docker-compose.cluster.yml:docker-compose.cluster.ci.yml
+        run: ./scripts/test-resharding-resilience.sh

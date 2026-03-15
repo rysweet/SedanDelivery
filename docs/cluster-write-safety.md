@@ -324,9 +324,18 @@ VALKEY_PASSWORD='change-me' BOLT_PASSWORD='change-me' \
   ./scripts/test-resharding-resilience.sh
 ```
 
+The script defaults to `docker-compose.cluster.yml`, but CI can override
+`COMPOSE_FILE` and set `CI_PREBUILD_BOLT=1` to reuse a host-built Bolt image.
+Build that image with `./scripts/build-prebuilt-bolt-image.sh` and combine
+`docker-compose.cluster.yml:docker-compose.cluster.ci.yml`.
+
 The validated result for the final fix was:
 
+- slot ownership changed from the source master to the destination master
 - `0` write errors from the live Bolt load generator
+- `0` read-check errors during the reshard window
+- `0` label-mutation errors during the reshard window
+- post-reshard read-back matched the write count
 - `0` backend errors reported via `/metrics`
 
 ---
