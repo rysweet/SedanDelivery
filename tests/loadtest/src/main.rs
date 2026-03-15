@@ -65,6 +65,18 @@ struct Cli {
     /// Output format
     #[arg(long, default_value = "json")]
     format: OutputFormat,
+
+    /// Minimum required throughput in nodes/sec for the nodes scenario.
+    #[arg(long)]
+    min_throughput: Option<f64>,
+
+    /// Maximum allowed p99 latency in milliseconds.
+    #[arg(long)]
+    max_p99_ms: Option<f64>,
+
+    /// Maximum allowed error rate as a fraction in [0, 1].
+    #[arg(long)]
+    max_error_rate: Option<f64>,
 }
 
 #[derive(Debug, Clone, ValueEnum)]
@@ -98,6 +110,7 @@ struct LatencyStats {
 struct NodesResult {
     scenario: String,
     total_nodes: u64,
+    created_nodes: u64,
     verified_count: u64,
     count_matches: bool,
     elapsed_secs: f64,
@@ -112,7 +125,8 @@ struct RampLevel {
     target_connections: usize,
     established: usize,
     failures: usize,
-    accept_latency_ms: f64,
+    accept_latency_mean_ms: f64,
+    accept_latency_p99_ms: f64,
 }
 
 #[derive(Debug, Serialize)]
@@ -204,6 +218,34 @@ async fn connect_pool(
     Graph::connect(builder.build()?).await
 }
 
+fn quoted_identifier(identifier: &str) -> String {
+    format!("`{}`", identifier.replace('`', "``"))
+}
+
+async fn recreate_graph(graph: &Graph, name: &str) -> Result<(), neo4rs::Error> {
+    let _ = graph
+        .run(neo4rs::query(&format!(
+            "DROP GRAPH {}",
+            quoted_identifier(name)
+        )))
+        .await;
+    graph
+        .run(neo4rs::query(&format!(
+            "CREATE GRAPH {}",
+            quoted_identifier(name)
+        )))
+        .await
+}
+
+async fn cleanup_graph(graph: &Graph, name: &str) {
+    let _ = graph
+        .run(neo4rs::query(&format!(
+            "DROP GRAPH {}",
+            quoted_identifier(name)
+        )))
+        .await;
+}
+
 fn print_result<T: Serialize>(result: &T, format: &OutputFormat) {
     match format {
         OutputFormat::Json => {
@@ -245,19 +287,21 @@ fn print_table_value(val: &serde_json::Value, indent: usize) {
 // Scenario 1: Node Creation Scale
 // ---------------------------------------------------------------------------
 
-async fn run_nodes(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
+async fn run_nodes(cli: &Cli) -> Result<NodesResult, Box<dyn std::error::Error>> {
     tracing::info!(
         count = cli.count,
         concurrency = cli.concurrency,
         "Starting node creation scenario"
     );
+    if cli.concurrency > 1 {
+        tracing::warn!(
+            concurrency = cli.concurrency,
+            "nodes scenario targets one graph, so writes serialize on the graph write lock; higher concurrency measures contention rather than steady-state throughput"
+        );
+    }
 
     let graph = connect_pool(&cli.bolt_uri, &cli.user, &cli.password, cli.concurrency).await?;
-
-    // Ensure graph is clean
-    let _ = graph
-        .run(neo4rs::query("MATCH (n:LoadTest) DETACH DELETE n"))
-        .await;
+    recreate_graph(&graph, &cli.graph).await?;
 
     let total = cli.count;
     let sem = Arc::new(Semaphore::new(cli.concurrency));
@@ -280,6 +324,7 @@ async fn run_nodes(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
         let errors = errors.clone();
         let completed = completed.clone();
         let lat_tx = lat_tx.clone();
+        let graph_name = cli.graph.clone();
         let nodes_in_batch = std::cmp::min(batch_size, total - batch_idx * batch_size);
 
         set.spawn(async move {
@@ -289,7 +334,7 @@ async fn run_nodes(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
                 nodes_in_batch, batch_idx
             );
             let t0 = Instant::now();
-            match graph.run(neo4rs::query(&q)).await {
+            match graph.run_on(&graph_name, neo4rs::query(&q)).await {
                 Ok(_) => {
                     let lat = t0.elapsed().as_secs_f64() * 1000.0;
                     let _ = lat_tx.send(lat);
@@ -323,7 +368,10 @@ async fn run_nodes(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
 
     // Verify count
     let mut result_stream = graph
-        .execute(neo4rs::query("MATCH (n:LoadTest) RETURN count(n) AS cnt"))
+        .execute_on(
+            &cli.graph,
+            neo4rs::query("MATCH (n:LoadTest) RETURN count(n) AS cnt"),
+        )
         .await?;
     let verified_count = if let Some(row) = result_stream.next().await? {
         row.get::<i64>("cnt").unwrap_or(0) as u64
@@ -337,6 +385,7 @@ async fn run_nodes(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
     let result = NodesResult {
         scenario: "nodes".to_string(),
         total_nodes: total,
+        created_nodes: created,
         verified_count,
         count_matches: verified_count == created,
         elapsed_secs: elapsed.as_secs_f64(),
@@ -348,19 +397,16 @@ async fn run_nodes(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
 
     print_result(&result, &cli.format);
 
-    // Cleanup
-    let _ = graph
-        .run(neo4rs::query("MATCH (n:LoadTest) DETACH DELETE n"))
-        .await;
+    cleanup_graph(&graph, &cli.graph).await;
 
-    Ok(())
+    Ok(result)
 }
 
 // ---------------------------------------------------------------------------
 // Scenario 2: Connection Ramp
 // ---------------------------------------------------------------------------
 
-async fn run_ramp(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
+async fn run_ramp(cli: &Cli) -> Result<RampResult, Box<dyn std::error::Error>> {
     tracing::info!(
         max_connections = cli.max_connections,
         duration = cli.duration,
@@ -445,12 +491,14 @@ async fn run_ramp(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
         } else {
             accept_latencies.iter().sum::<f64>() / accept_latencies.len() as f64
         };
+        let accept_latency = compute_latency(accept_latencies);
 
         tracing::info!(
             target,
             established,
             failures,
             avg_latency_ms = format!("{:.1}", avg_latency),
+            p99_latency_ms = format!("{:.1}", accept_latency.p99_ms),
             "Ramp level complete"
         );
 
@@ -458,7 +506,8 @@ async fn run_ramp(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
             target_connections: target,
             established,
             failures,
-            accept_latency_ms: avg_latency,
+            accept_latency_mean_ms: avg_latency,
+            accept_latency_p99_ms: accept_latency.p99_ms,
         });
 
         // Pace to match the requested duration spread
@@ -486,14 +535,14 @@ async fn run_ramp(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
 
     print_result(&result, &cli.format);
 
-    Ok(())
+    Ok(result)
 }
 
 // ---------------------------------------------------------------------------
 // Scenario 3: Read/Write Mix
 // ---------------------------------------------------------------------------
 
-async fn run_mixed(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
+async fn run_mixed(cli: &Cli) -> Result<MixedResult, Box<dyn std::error::Error>> {
     tracing::info!(
         ratio = cli.ratio,
         concurrency = cli.concurrency,
@@ -502,12 +551,14 @@ async fn run_mixed(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
     );
 
     let graph = connect_pool(&cli.bolt_uri, &cli.user, &cli.password, cli.concurrency).await?;
+    recreate_graph(&graph, &cli.graph).await?;
 
     // Seed some data for reads
     graph
-        .run(neo4rs::query(
-            "UNWIND range(1, 1000) AS i CREATE (:MixSeed {id: i})",
-        ))
+        .run_on(
+            &cli.graph,
+            neo4rs::query("UNWIND range(1, 1000) AS i CREATE (:MixSeed {id: i})"),
+        )
         .await?;
 
     let duration = Duration::from_secs(cli.duration);
@@ -538,6 +589,7 @@ async fn run_mixed(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
         let backend_errors = backend_errors.clone();
         let read_lat_tx = read_lat_tx.clone();
         let write_lat_tx = write_lat_tx.clone();
+        let graph_name = cli.graph.clone();
 
         set.spawn(async move {
             let mut op_counter: u64 = 0;
@@ -549,8 +601,8 @@ async fn run_mixed(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
                 let t0 = Instant::now();
                 if is_read {
                     let id = (op_counter % 1000) + 1;
-                    let q = format!("MATCH (n:MixSeed {{id: {}}}) RETURN n.id", id);
-                    match graph.run(neo4rs::query(&q)).await {
+                    let q = format!("MATCH (n:MixSeed {{id: {id}}}) RETURN n.id");
+                    match graph.run_on(&graph_name, neo4rs::query(&q)).await {
                         Ok(_) => {
                             total_reads.fetch_add(1, Ordering::Relaxed);
                             let _ = read_lat_tx.send(t0.elapsed().as_secs_f64() * 1000.0);
@@ -564,10 +616,10 @@ async fn run_mixed(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
                     }
                 } else {
                     let q = format!(
-                        "CREATE (:MixWrite {{worker: {}, ts: timestamp()}})",
-                        worker_id
+                        "CREATE (:MixWrite {{worker: {}, seq: {}}})",
+                        worker_id, op_counter
                     );
-                    match graph.run(neo4rs::query(&q)).await {
+                    match graph.run_on(&graph_name, neo4rs::query(&q)).await {
                         Ok(_) => {
                             total_writes.fetch_add(1, Ordering::Relaxed);
                             let _ = write_lat_tx.send(t0.elapsed().as_secs_f64() * 1000.0);
@@ -623,15 +675,9 @@ async fn run_mixed(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
 
     print_result(&result, &cli.format);
 
-    // Cleanup
-    let _ = graph
-        .run(neo4rs::query("MATCH (n:MixSeed) DETACH DELETE n"))
-        .await;
-    let _ = graph
-        .run(neo4rs::query("MATCH (n:MixWrite) DETACH DELETE n"))
-        .await;
+    cleanup_graph(&graph, &cli.graph).await;
 
-    Ok(())
+    Ok(result)
 }
 
 /// Heuristic: check if a neo4rs error looks like a StorageError::Backend.
@@ -643,6 +689,168 @@ fn is_backend_error(e: &neo4rs::Error) -> bool {
         || msg.contains("StorageError")
         || msg.contains("storage backend")
         || msg.contains("Redis")
+}
+
+struct ThresholdViolation {
+    metric: String,
+    limit: f64,
+    actual: f64,
+}
+
+impl ThresholdViolation {
+    fn new(metric: &str, limit: f64, actual: f64) -> Self {
+        Self {
+            metric: metric.to_string(),
+            limit,
+            actual,
+        }
+    }
+}
+
+fn check_nodes_thresholds(result: &NodesResult, cli: &Cli) -> Vec<ThresholdViolation> {
+    let mut violations = Vec::new();
+
+    if let Some(min_throughput) = cli.min_throughput {
+        if result.throughput_nodes_per_sec < min_throughput {
+            violations.push(ThresholdViolation::new(
+                "throughput_nodes_per_sec",
+                min_throughput,
+                result.throughput_nodes_per_sec,
+            ));
+        }
+    }
+
+    if let Some(max_p99_ms) = cli.max_p99_ms {
+        if result.latency.p99_ms > max_p99_ms {
+            violations.push(ThresholdViolation::new(
+                "latency.p99_ms",
+                max_p99_ms,
+                result.latency.p99_ms,
+            ));
+        }
+    }
+
+    if let Some(max_error_rate) = cli.max_error_rate {
+        if result.total_nodes > 0 {
+            let error_rate = result.errors as f64 / result.total_nodes as f64;
+            if error_rate > max_error_rate {
+                violations.push(ThresholdViolation::new(
+                    "error_rate",
+                    max_error_rate,
+                    error_rate,
+                ));
+            }
+        }
+    }
+
+    if !result.count_matches {
+        violations.push(ThresholdViolation::new(
+            "count_integrity",
+            result.created_nodes as f64,
+            result.verified_count as f64,
+        ));
+    }
+
+    violations
+}
+
+fn check_ramp_thresholds(result: &RampResult, cli: &Cli) -> Vec<ThresholdViolation> {
+    let mut violations = Vec::new();
+
+    if !result.zero_failures_below_max {
+        let failures_below_max: usize = result
+            .levels
+            .iter()
+            .filter(|level| level.target_connections <= result.bolt_max_connections)
+            .map(|level| level.failures)
+            .sum();
+        violations.push(ThresholdViolation::new(
+            "zero_failures_below_bolt_max",
+            0.0,
+            failures_below_max as f64,
+        ));
+    }
+
+    if let Some(max_p99_ms) = cli.max_p99_ms {
+        for level in result
+            .levels
+            .iter()
+            .filter(|level| level.target_connections <= result.bolt_max_connections)
+        {
+            if level.accept_latency_p99_ms > max_p99_ms {
+                violations.push(ThresholdViolation::new(
+                    &format!("ramp.accept_latency_p99_ms[{}]", level.target_connections),
+                    max_p99_ms,
+                    level.accept_latency_p99_ms,
+                ));
+            }
+        }
+    }
+
+    violations
+}
+
+fn check_mixed_thresholds(result: &MixedResult, cli: &Cli) -> Vec<ThresholdViolation> {
+    let mut violations = Vec::new();
+
+    if let Some(max_p99_ms) = cli.max_p99_ms {
+        if result.read_latency.p99_ms > max_p99_ms {
+            violations.push(ThresholdViolation::new(
+                "read_latency.p99_ms",
+                max_p99_ms,
+                result.read_latency.p99_ms,
+            ));
+        }
+        if result.write_latency.p99_ms > max_p99_ms {
+            violations.push(ThresholdViolation::new(
+                "write_latency.p99_ms",
+                max_p99_ms,
+                result.write_latency.p99_ms,
+            ));
+        }
+    }
+
+    if let Some(max_error_rate) = cli.max_error_rate {
+        let total_ops =
+            result.total_reads + result.total_writes + result.read_errors + result.write_errors;
+        if total_ops > 0 {
+            let backend_error_rate = result.backend_errors as f64 / total_ops as f64;
+            if backend_error_rate > max_error_rate {
+                violations.push(ThresholdViolation::new(
+                    "backend_error_rate",
+                    max_error_rate,
+                    backend_error_rate,
+                ));
+            }
+        }
+    }
+
+    violations
+}
+
+fn report_violations(violations: &[ThresholdViolation]) -> bool {
+    if violations.is_empty() {
+        tracing::info!("All threshold assertions passed");
+        return true;
+    }
+
+    for violation in violations {
+        tracing::error!(
+            metric = %violation.metric,
+            limit = violation.limit,
+            actual = violation.actual,
+            "THRESHOLD VIOLATION: {} exceeded limit {:.4} (actual: {:.4})",
+            violation.metric,
+            violation.limit,
+            violation.actual
+        );
+        eprintln!(
+            "THRESHOLD VIOLATION: {} limit={:.4} actual={:.4}",
+            violation.metric, violation.limit, violation.actual
+        );
+    }
+
+    false
 }
 
 // ---------------------------------------------------------------------------
@@ -668,13 +876,37 @@ async fn main() {
     );
 
     let result = match cli.scenario {
-        Scenario::Nodes => run_nodes(&cli).await,
-        Scenario::Ramp => run_ramp(&cli).await,
-        Scenario::Mixed => run_mixed(&cli).await,
+        Scenario::Nodes => run_nodes_with_assertions(&cli).await,
+        Scenario::Ramp => run_ramp_with_assertions(&cli).await,
+        Scenario::Mixed => run_mixed_with_assertions(&cli).await,
     };
 
     if let Err(e) = result {
         tracing::error!(error = %e, "Scenario failed");
         std::process::exit(1);
     }
+}
+
+async fn run_nodes_with_assertions(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
+    let result = run_nodes(cli).await?;
+    if !report_violations(&check_nodes_thresholds(&result, cli)) {
+        std::process::exit(2);
+    }
+    Ok(())
+}
+
+async fn run_ramp_with_assertions(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
+    let result = run_ramp(cli).await?;
+    if !report_violations(&check_ramp_thresholds(&result, cli)) {
+        std::process::exit(2);
+    }
+    Ok(())
+}
+
+async fn run_mixed_with_assertions(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
+    let result = run_mixed(cli).await?;
+    if !report_violations(&check_mixed_thresholds(&result, cli)) {
+        std::process::exit(2);
+    }
+    Ok(())
 }

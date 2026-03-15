@@ -1,0 +1,78 @@
+# Canonical gadugi scenario for Issue #738.
+
+scenario:
+  name: "Issue #738 - Redis resharding resilience evidence"
+  description: >
+    Verify from an operator perspective that the public resharding validator
+    survives live slot movement with zero write, read, and label-mutation
+    errors, that the post-reshard read-back matches the loaded node count, and
+    that the final backend-error delta remains zero.
+  environment:
+    VALKEY_PASSWORD: "local-cluster-pass"
+    BOLT_PASSWORD: "local-bolt-pass"
+  metadata:
+    tags: [cli, cluster, resilience, resharding, regression, issue-738]
+    priority: critical
+    linked_docs:
+      - docs/cluster-mode.md
+      - docs/cluster-write-safety.md
+  agents:
+    - name: cli-agent
+      type: cli
+      config: {}
+  steps:
+    - name: "Run the resharding resilience validator"
+      agent: cli-agent
+      action: execute
+      params:
+        command: bash
+        args:
+          - ./scripts/test-resharding-resilience.sh
+      timeout: 420000
+    - name: "Confirm slot ownership changed during resharding"
+      agent: cli-agent
+      action: wait_for_output
+      params:
+        pattern: "\\[PASS\\]\\s+Slot ownership changed during resharding \\(node-1: \\d+->\\d+, node-2: \\d+->\\d+, moved \\d+ slots\\)"
+      timeout: 5000
+    - name: "Confirm live Bolt writes stayed error-free"
+      agent: cli-agent
+      action: wait_for_output
+      params:
+        pattern: "\\[LOAD\\] Completed: [1-9]\\d+ writes, 0 errors over \\d+s"
+      timeout: 5000
+    - name: "Confirm read checks stayed error-free"
+      agent: cli-agent
+      action: wait_for_output
+      params:
+        pattern: "\\[READ\\] Completed: [1-9]\\d* checks, 0 errors during load"
+      timeout: 5000
+    - name: "Confirm label mutations stayed error-free"
+      agent: cli-agent
+      action: wait_for_output
+      params:
+        pattern: "\\[LABEL\\] Completed: [1-9]\\d* mutation cycles, 0 errors during load"
+      timeout: 5000
+    - name: "Confirm post-reshard read-back matched the write count"
+      agent: cli-agent
+      action: wait_for_output
+      params:
+        pattern: "\\[PASS\\]\\s+Read-back after resharding matched load count \\([1-9]\\d+ nodes\\)"
+      timeout: 5000
+    - name: "Confirm backend-error delta stayed at zero"
+      agent: cli-agent
+      action: wait_for_output
+      params:
+        pattern: "New errors during test:\\s+0"
+      timeout: 5000
+    - name: "Confirm operator summary reports success"
+      agent: cli-agent
+      action: wait_for_output
+      params:
+        pattern: "\\[PASS\\]\\s+No StorageError::Backend errors during resharding"
+      timeout: 5000
+    - name: "Confirm validator exited with code 0"
+      agent: cli-agent
+      action: validate_exit_code
+      params:
+        text: "0"

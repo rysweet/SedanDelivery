@@ -25,14 +25,18 @@ Creates a configurable number of nodes across concurrent connections, verifies t
 cargo run -p loadtest -- \
   --bolt-uri bolt://localhost:7687 \
   --scenario nodes \
+  --graph loadtest_nodes \
   --count 100000 \
-  --concurrency 50
+  --concurrency 1 \
+  --min-throughput 100 \
+  --max-p99-ms 30000 \
+  --max-error-rate 0.01
 ```
 
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--count` | `100000` | Total nodes to create |
-| `--concurrency` | `50` | Parallel connections |
+| `--concurrency` | `50` | Parallel connections (use `1` for same-graph bulk-write throughput evidence) |
 
 ### 2. Connection Ramp (`--scenario ramp`)
 
@@ -59,6 +63,7 @@ Runs a configurable read/write mix for a fixed duration, tracking errors (includ
 cargo run -p loadtest -- \
   --bolt-uri bolt://localhost:7687 \
   --scenario mixed \
+  --graph loadtest_mixed \
   --ratio 80 \
   --concurrency 100 \
   --duration 60
@@ -77,7 +82,11 @@ cargo run -p loadtest -- \
 | `--bolt-uri` | `bolt://localhost:7687` | Bolt endpoint URL |
 | `--user` | (empty) | Bolt auth username |
 | `--password` | (empty) | Bolt auth password |
+| `--graph` | `loadtest` | Named graph created for the scenario and dropped on cleanup |
 | `--format` | `json` | Output format: `json` or `table` |
+| `--min-throughput` | unset | Fail with exit code `2` if nodes/sec is below this value |
+| `--max-p99-ms` | unset | Fail with exit code `2` if p99 latency exceeds this value |
+| `--max-error-rate` | unset | Fail with exit code `2` if the scenario error rate exceeds this value |
 
 ## Output
 
@@ -87,6 +96,7 @@ Results are printed to stdout as JSON (default) or a human-readable table. Examp
 {
   "scenario": "nodes",
   "total_nodes": 100000,
+  "created_nodes": 100000,
   "verified_count": 100000,
   "count_matches": true,
   "elapsed_secs": 12.34,
@@ -103,6 +113,16 @@ Results are printed to stdout as JSON (default) or a human-readable table. Examp
   "errors": 0
 }
 ```
+
+When threshold flags are provided, the binary still prints the JSON/table
+result first and then exits with status `2` if any assertion fails. That makes
+it usable both for ad hoc evidence collection and for local or custom scripted
+regression gates.
+
+For the `nodes` scenario, all writes target one graph and therefore serialize
+on the graph write lock. Use `--concurrency 1` for clean 100K evidence runs;
+higher values are still allowed, but they measure lock contention more than
+steady-state bulk-write throughput.
 
 ## Known Limitations
 

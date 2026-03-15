@@ -113,6 +113,65 @@ pub(crate) struct LockedRedisConn {
     ttl_ms: u64,
 }
 
+fn map_lock_renewal_result(
+    graph: &str,
+    renewal: Result<bool, StorageError>,
+) -> Result<(), StorageError> {
+    match renewal {
+        Ok(true) => Ok(()),
+        Ok(false) => {
+            metrics::counter!("redis_write_lock_renew_failures_total").increment(1);
+            tracing::warn!(
+                graph = %graph,
+                "graph write lock expired or changed owner before renewal"
+            );
+            Err(StorageError::TransactionConflict)
+        }
+        Err(err) => {
+            metrics::counter!("redis_write_lock_renew_failures_total").increment(1);
+            tracing::warn!(
+                graph = %graph,
+                error = %err,
+                "graph write lock renewal failed"
+            );
+            Err(err)
+        }
+    }
+}
+
+fn map_lock_release_result<T>(
+    graph: &str,
+    release: Result<bool, StorageError>,
+    result: Result<T, StorageError>,
+) -> Result<T, StorageError> {
+    match release {
+        Ok(true) => result,
+        Ok(false) => {
+            metrics::counter!("redis_write_lock_release_failures_total").increment(1);
+            tracing::warn!(
+                graph = %graph,
+                "graph write lock expired or changed owner before release"
+            );
+            match result {
+                Ok(_) => Err(StorageError::TransactionConflict),
+                Err(err) => Err(err),
+            }
+        }
+        Err(err) => {
+            metrics::counter!("redis_write_lock_release_failures_total").increment(1);
+            tracing::warn!(
+                graph = %graph,
+                error = %err,
+                "graph write lock release failed"
+            );
+            match result {
+                Ok(_) => Err(err),
+                Err(work_err) => Err(work_err),
+            }
+        }
+    }
+}
+
 impl LockedRedisConn {
     fn new(conn: RedisConn, graph: &str, lock_key: String, token: String, ttl_ms: u64) -> Self {
         Self {
@@ -125,55 +184,18 @@ impl LockedRedisConn {
     }
 
     pub(crate) fn renew_lock(&mut self) -> Result<(), StorageError> {
-        match lock::renew(self.conn.as_mut(), &self.lock_key, &self.token, self.ttl_ms) {
-            Ok(true) => Ok(()),
-            Ok(false) => {
-                metrics::counter!("redis_write_lock_renew_failures_total").increment(1);
-                tracing::warn!(
-                    graph = %self.graph,
-                    "graph write lock expired or changed owner before renewal"
-                );
-                Err(StorageError::TransactionConflict)
-            }
-            Err(err) => {
-                metrics::counter!("redis_write_lock_renew_failures_total").increment(1);
-                tracing::warn!(
-                    graph = %self.graph,
-                    error = %err,
-                    "graph write lock renewal failed"
-                );
-                Err(err)
-            }
-        }
+        map_lock_renewal_result(
+            self.graph.as_ref(),
+            lock::renew(self.conn.as_mut(), &self.lock_key, &self.token, self.ttl_ms),
+        )
     }
 
     fn finish<T>(mut self, result: Result<T, StorageError>) -> Result<T, StorageError> {
-        match lock::release(self.conn.as_mut(), &self.lock_key, &self.token) {
-            Ok(true) => result,
-            Ok(false) => {
-                metrics::counter!("redis_write_lock_release_failures_total").increment(1);
-                tracing::warn!(
-                    graph = %self.graph,
-                    "graph write lock expired or changed owner before release"
-                );
-                match result {
-                    Ok(_) => Err(StorageError::TransactionConflict),
-                    Err(err) => Err(err),
-                }
-            }
-            Err(err) => {
-                metrics::counter!("redis_write_lock_release_failures_total").increment(1);
-                tracing::warn!(
-                    graph = %self.graph,
-                    error = %err,
-                    "graph write lock release failed"
-                );
-                match result {
-                    Ok(_) => Err(err),
-                    Err(work_err) => Err(work_err),
-                }
-            }
-        }
+        map_lock_release_result(
+            self.graph.as_ref(),
+            lock::release(self.conn.as_mut(), &self.lock_key, &self.token),
+            result,
+        )
     }
 }
 
@@ -1095,5 +1117,63 @@ mod backend_error_counter_tests {
         record_backend_error();
         let after = backend_error_count();
         assert_eq!(after, before + 1, "counter should increment by 1");
+    }
+}
+
+#[cfg(test)]
+mod write_lock_outcome_tests {
+    use super::*;
+
+    #[test]
+    fn lost_lock_renewal_maps_to_transaction_conflict() {
+        let result = map_lock_renewal_result("lease-loss", Ok(false));
+        assert!(matches!(result, Err(StorageError::TransactionConflict)));
+    }
+
+    #[test]
+    fn lost_lock_release_turns_successful_write_into_transaction_conflict() {
+        let result = map_lock_release_result("lease-loss", Ok(false), Ok(()));
+        assert!(matches!(result, Err(StorageError::TransactionConflict)));
+    }
+
+    #[test]
+    fn lost_lock_release_preserves_underlying_write_error() {
+        let result: Result<(), StorageError> = map_lock_release_result(
+            "lease-loss",
+            Ok(false),
+            Err(StorageError::GraphNotFound {
+                name: "missing".into(),
+            }),
+        );
+        assert!(matches!(result, Err(StorageError::GraphNotFound { .. })));
+    }
+
+    #[test]
+    fn release_error_after_successful_write_surfaces_release_error() {
+        let result: Result<(), StorageError> = map_lock_release_result(
+            "lease-loss",
+            Err(StorageError::Backend {
+                msg: "redis release failed".into(),
+            }),
+            Ok(()),
+        );
+        assert!(matches!(
+            result,
+            Err(StorageError::Backend { msg }) if msg == "redis release failed"
+        ));
+    }
+
+    #[test]
+    fn release_error_preserves_underlying_write_error() {
+        let result: Result<(), StorageError> = map_lock_release_result(
+            "lease-loss",
+            Err(StorageError::Backend {
+                msg: "redis release failed".into(),
+            }),
+            Err(StorageError::GraphNotFound {
+                name: "missing".into(),
+            }),
+        );
+        assert!(matches!(result, Err(StorageError::GraphNotFound { .. })));
     }
 }

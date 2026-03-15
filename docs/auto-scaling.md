@@ -162,12 +162,13 @@ When multiple Bolt replicas share the same Redis backend, concurrent writes to t
 Every write transaction acquires a distributed lock scoped to the target graph:
 
 ```
-SET __sd2:lock:{graphname} <owner_id> NX PX 5000
+SET G:{graphname}:write_lock <owner_id> NX PX 5000
 ```
 
 - `NX` — only set if the key does not exist (mutex semantics).
 - `PX 5000` — 5-second TTL auto-expires the lock if the holder crashes.
 - **CAS release** — the lock is released with a Lua script that checks the owner value before deleting, preventing a replica from releasing another replica's lock.
+- **CAS renew** — long-running same-graph writes renew that same lock token while they walk large manifests or batched mutations, and the write only reports success if it still proves ownership at release time.
 
 ```lua
 if redis.call("GET", KEYS[1]) == ARGV[1] then
@@ -181,17 +182,19 @@ Write concurrency within a single replica is further bounded by `BOLT_WRITE_CONC
 
 ### 2. Atomic delete_graph
 
-Graph deletion uses a Lua script that atomically scans and deletes all keys matching the graph's key pattern. This prevents a window where a partially-deleted graph could be read by another replica:
+Graph deletion is cluster-safe, but it does **not** use `SCAN` or a Lua wildcard
+delete. Instead, `delete_graph`:
 
-```lua
--- Pseudocode: SCAN for G:{graph}:* keys and DEL them atomically
-local cursor = "0"
-repeat
-  local result = redis.call("SCAN", cursor, "MATCH", KEYS[1], "COUNT", 1000)
-  cursor = result[1]
-  if #result[2] > 0 then redis.call("DEL", unpack(result[2])) end
-until cursor == "0"
-```
+- acquires the same per-graph write lock with a longer TTL budget,
+- preflights the node and edge manifests with `SCARD`,
+- rejects oversized graphs before cleanup starts,
+- sets `G:{graphname}:_deleting` so reads stop treating the graph as live while
+  cleanup is in flight,
+- loads the manifest-backed IDs with `SMEMBERS`, and
+- issues explicit `DEL` commands for the reconstructed per-graph key set.
+
+That design keeps cleanup slot-local for Redis Cluster, avoids cluster-unsafe
+keyspace scans, and makes partial-failure retry behavior explicit.
 
 ### 3. Redis-backed bookmark counter
 
@@ -244,7 +247,7 @@ The `smembers_or_scan()` helper checks `SCARD` before reading a set. If the memb
 Redis Cluster is supported for horizontal data sharding, but resharding is a manual operational procedure. There is no auto-scaling trigger for the data tier. This is documented in ADR-004. The reasons:
 
 - All keys for a graph share a hash tag (`{graphname}`), so slot migration moves an entire graph at once.
-- Slot migration under write load can cause transient `MOVED`/`ASK` redirections that the client handles transparently, but error rates spike during migration (validated by the resharding resilience chaos test).
+- Slot migration under write load can cause transient `MOVED`/`ASK` redirections, but the current public resharding resilience validator expects those to stay transparent to callers: zero write, read, and label-mutation errors, matching post-reshard read-back, and zero backend-error delta.
 - Automated resharding without operator oversight risks data availability issues.
 
 To reshard manually:
@@ -334,15 +337,19 @@ The Bicep template provisions a Network Security Group on the Container Apps sub
 # Build
 cargo build --release -p loadtest
 
-# Node creation (10K nodes, 50 concurrent)
-./target/release/loadtest --bolt-uri bolt://localhost:7687 --scenario nodes --count 10000 --concurrency 50
+# Node creation (10K nodes, single-writer local throughput check)
+./target/release/loadtest --bolt-uri bolt://localhost:7687 --scenario nodes --graph scale_nodes --count 10000 --concurrency 1 --min-throughput 100 --max-p99-ms 30000 --max-error-rate 0.01
 
 # Connection ramp (to 1024)
 ./target/release/loadtest --bolt-uri bolt://localhost:7687 --scenario ramp --max-connections 1024 --duration 60
 
 # Mixed read/write (80/20 ratio, 30s)
-./target/release/loadtest --bolt-uri bolt://localhost:7687 --scenario mixed --concurrency 20 --duration 30 --ratio 80
+./target/release/loadtest --bolt-uri bolt://localhost:7687 --scenario mixed --graph scale_mixed --concurrency 20 --duration 30 --ratio 80 --max-p99-ms 30000 --max-error-rate 0.01
 ```
+
+These `loadtest` commands are operator-facing/manual evidence paths. The
+repo's automated `#738` QA and CI coverage runs the resharding validator, not
+the `loadtest` binary.
 
 ### Running chaos tests
 
@@ -419,7 +426,7 @@ Three scenarios:
 
 | Scenario | Command | What it tests |
 |----------|---------|--------------|
-| `nodes` | `--scenario nodes --count 100000 --concurrency 50` | Bulk node creation throughput and p50/p95/p99 latency |
+| `nodes` | `--scenario nodes --count 100000 --concurrency 1` | Bulk node creation throughput and p50/p95/p99 latency on one graph (same-graph writes serialize on the write lock) |
 | `ramp` | `--scenario ramp --max-connections 2000 --duration 60` | Connection ramp from 10 to max; asserts zero failures below `BOLT_MAX_CONNECTIONS` |
 | `mixed` | `--scenario mixed --ratio 80 --concurrency 100 --duration 60` | Read/write mix (80/20 default) tracking errors and per-operation latency |
 
@@ -436,7 +443,7 @@ export VALKEY_PASSWORD='test-password'
 | Script | What it does |
 |--------|-------------|
 | `scripts/test-network-partition.sh` | Injects latency (500ms) and full disconnects between Bolt and Valkey via toxiproxy, then verifies recovery. Uses `docker-compose.chaos-test.yml`. |
-| `scripts/test-resharding-resilience.sh` | Runs background write load while resharding Redis Cluster slots between masters. Checks `/metrics` for `StorageError::Backend` errors to detect data loss. Uses `docker-compose.cluster.yml`. |
+| `scripts/test-resharding-resilience.sh` | Runs background write load while resharding Redis Cluster slots between masters. Confirms slot ownership actually changed, zero write/read/label errors, matching post-reshard read-back, and zero `/metrics` backend-error delta. Defaults to `docker-compose.cluster.yml` and also honors `COMPOSE_FILE` / `CI_PREBUILD_BOLT=1`; build the prebuilt image with `./scripts/build-prebuilt-bolt-image.sh` for CI overlays. |
 | `scripts/test-scale-down-drain.sh` | Starts 3 Bolt instances, sends SIGTERM to one under load, verifies graceful shutdown with no connection resets and zero errors on survivors. |
 
 ## Rollback
