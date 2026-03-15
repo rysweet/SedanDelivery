@@ -47,11 +47,26 @@ use std::env;
 use std::ops::{Deref, DerefMut};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::Instant;
 
 // ── Backend-error counter ────────────────────────────────────────────────────
 
 /// Global count of `StorageError::Backend` occurrences.
 static BACKEND_ERROR_COUNT: AtomicU64 = AtomicU64::new(0);
+
+const REDIS_WRITE_LOCK_ACQUIRE_ATTEMPTS_TOTAL: &str = "redis_write_lock_acquire_attempts_total";
+const REDIS_WRITE_LOCK_ACQUIRE_SUCCESSES_TOTAL: &str = "redis_write_lock_acquire_successes_total";
+const REDIS_WRITE_LOCK_ACQUIRE_CONTENTION_TOTAL: &str = "redis_write_lock_acquire_contention_total";
+const REDIS_WRITE_LOCK_CONTENTION_FAILURES_TOTAL: &str =
+    "redis_write_lock_contention_failures_total";
+const REDIS_WRITE_LOCK_ACQUIRE_WAIT_SECONDS: &str = "redis_write_lock_acquire_wait_seconds";
+const REDIS_WRITE_LOCK_RENEW_SUCCESSES_TOTAL: &str = "redis_write_lock_renew_successes_total";
+const REDIS_WRITE_LOCK_RENEW_FAILURES_TOTAL: &str = "redis_write_lock_renew_failures_total";
+const REDIS_WRITE_LOCK_RELEASE_SUCCESSES_TOTAL: &str = "redis_write_lock_release_successes_total";
+const REDIS_WRITE_LOCK_RELEASE_FAILURES_TOTAL: &str = "redis_write_lock_release_failures_total";
+const REDIS_WRITE_LOCK_HOLD_SECONDS: &str = "redis_write_lock_hold_seconds";
+const REDIS_WRITE_LOCK_CONFLICT_OUTCOMES_TOTAL: &str = "redis_write_lock_conflict_outcomes_total";
+const REDIS_WRITE_LOCK_BACKEND_FAILURES_TOTAL: &str = "redis_write_lock_backend_failures_total";
 
 /// Increment the `StorageError::Backend` counter by one.
 pub fn record_backend_error() {
@@ -61,6 +76,14 @@ pub fn record_backend_error() {
 /// Return the current `StorageError::Backend` count.
 pub fn backend_error_count() -> u64 {
     BACKEND_ERROR_COUNT.load(Ordering::Relaxed)
+}
+
+fn record_write_lock_conflict_outcome(stage: &'static str) {
+    metrics::counter!(REDIS_WRITE_LOCK_CONFLICT_OUTCOMES_TOTAL, "stage" => stage).increment(1);
+}
+
+fn record_write_lock_backend_failure(stage: &'static str) {
+    metrics::counter!(REDIS_WRITE_LOCK_BACKEND_FAILURES_TOTAL, "stage" => stage).increment(1);
 }
 
 /// Sanitize a backend error message for inclusion in `StorageError::Backend`.
@@ -113,6 +136,7 @@ pub(crate) struct LockedRedisConn {
     lock_key: Box<str>,
     token: Box<str>,
     ttl_ms: u64,
+    acquired_at: Instant,
 }
 
 fn map_lock_renewal_result(
@@ -120,9 +144,13 @@ fn map_lock_renewal_result(
     renewal: Result<bool, StorageError>,
 ) -> Result<(), StorageError> {
     match renewal {
-        Ok(true) => Ok(()),
+        Ok(true) => {
+            metrics::counter!(REDIS_WRITE_LOCK_RENEW_SUCCESSES_TOTAL).increment(1);
+            Ok(())
+        }
         Ok(false) => {
-            metrics::counter!("redis_write_lock_renew_failures_total").increment(1);
+            metrics::counter!(REDIS_WRITE_LOCK_RENEW_FAILURES_TOTAL).increment(1);
+            record_write_lock_conflict_outcome("renew");
             tracing::warn!(
                 graph = %graph,
                 "graph write lock expired or changed owner before renewal"
@@ -130,7 +158,8 @@ fn map_lock_renewal_result(
             Err(StorageError::TransactionConflict)
         }
         Err(err) => {
-            metrics::counter!("redis_write_lock_renew_failures_total").increment(1);
+            metrics::counter!(REDIS_WRITE_LOCK_RENEW_FAILURES_TOTAL).increment(1);
+            record_write_lock_backend_failure("renew");
             tracing::warn!(
                 graph = %graph,
                 error = %err,
@@ -147,20 +176,27 @@ fn map_lock_release_result<T>(
     result: Result<T, StorageError>,
 ) -> Result<T, StorageError> {
     match release {
-        Ok(true) => result,
+        Ok(true) => {
+            metrics::counter!(REDIS_WRITE_LOCK_RELEASE_SUCCESSES_TOTAL).increment(1);
+            result
+        }
         Ok(false) => {
-            metrics::counter!("redis_write_lock_release_failures_total").increment(1);
+            metrics::counter!(REDIS_WRITE_LOCK_RELEASE_FAILURES_TOTAL).increment(1);
             tracing::warn!(
                 graph = %graph,
                 "graph write lock expired or changed owner before release"
             );
             match result {
-                Ok(_) => Err(StorageError::TransactionConflict),
+                Ok(_) => {
+                    record_write_lock_conflict_outcome("release");
+                    Err(StorageError::TransactionConflict)
+                }
                 Err(err) => Err(err),
             }
         }
         Err(err) => {
-            metrics::counter!("redis_write_lock_release_failures_total").increment(1);
+            metrics::counter!(REDIS_WRITE_LOCK_RELEASE_FAILURES_TOTAL).increment(1);
+            record_write_lock_backend_failure("release");
             tracing::warn!(
                 graph = %graph,
                 error = %err,
@@ -182,6 +218,7 @@ impl LockedRedisConn {
             lock_key: lock_key.into_boxed_str(),
             token: token.into_boxed_str(),
             ttl_ms,
+            acquired_at: Instant::now(),
         }
     }
 
@@ -193,6 +230,8 @@ impl LockedRedisConn {
     }
 
     fn finish<T>(mut self, result: Result<T, StorageError>) -> Result<T, StorageError> {
+        metrics::histogram!(REDIS_WRITE_LOCK_HOLD_SECONDS)
+            .record(self.acquired_at.elapsed().as_secs_f64());
         map_lock_release_result(
             self.graph.as_ref(),
             lock::release(self.conn.as_mut(), &self.lock_key, &self.token),
@@ -587,23 +626,61 @@ impl RedisGraphStore {
     {
         let lock_key = self.kp(key_graph_lock(graph));
         let mut work = Some(f);
+        let lock_started_at = Instant::now();
+        let mut saw_contention = false;
+        metrics::counter!(REDIS_WRITE_LOCK_ACQUIRE_ATTEMPTS_TOTAL).increment(1);
         for attempt in 0..=max_retries {
-            let mut conn = self.conn()?;
-            if let Some(token) = lock::acquire(conn.as_mut(), &lock_key, ttl_ms)? {
-                let mut locked_conn =
-                    LockedRedisConn::new(conn, graph, lock_key.clone(), token, ttl_ms);
-                let result = work
-                    .take()
-                    .expect("write-lock closure must execute at most once")(
-                    &mut locked_conn
-                );
-                return locked_conn.finish(result);
+            let mut conn = match self.conn() {
+                Ok(conn) => conn,
+                Err(err) => {
+                    if saw_contention {
+                        metrics::counter!(REDIS_WRITE_LOCK_ACQUIRE_CONTENTION_TOTAL).increment(1);
+                    }
+                    metrics::histogram!(REDIS_WRITE_LOCK_ACQUIRE_WAIT_SECONDS)
+                        .record(lock_started_at.elapsed().as_secs_f64());
+                    record_write_lock_backend_failure("acquire");
+                    return Err(err);
+                }
+            };
+            match lock::acquire(conn.as_mut(), &lock_key, ttl_ms) {
+                Ok(Some(token)) => {
+                    if saw_contention {
+                        metrics::counter!(REDIS_WRITE_LOCK_ACQUIRE_CONTENTION_TOTAL).increment(1);
+                    }
+                    metrics::counter!(REDIS_WRITE_LOCK_ACQUIRE_SUCCESSES_TOTAL).increment(1);
+                    metrics::histogram!(REDIS_WRITE_LOCK_ACQUIRE_WAIT_SECONDS)
+                        .record(lock_started_at.elapsed().as_secs_f64());
+                    let mut locked_conn =
+                        LockedRedisConn::new(conn, graph, lock_key.clone(), token, ttl_ms);
+                    let result = work
+                        .take()
+                        .expect("write-lock closure must execute at most once")(
+                        &mut locked_conn
+                    );
+                    return locked_conn.finish(result);
+                }
+                Ok(None) => {
+                    saw_contention = true;
+                }
+                Err(err) => {
+                    if saw_contention {
+                        metrics::counter!(REDIS_WRITE_LOCK_ACQUIRE_CONTENTION_TOTAL).increment(1);
+                    }
+                    metrics::histogram!(REDIS_WRITE_LOCK_ACQUIRE_WAIT_SECONDS)
+                        .record(lock_started_at.elapsed().as_secs_f64());
+                    record_write_lock_backend_failure("acquire");
+                    return Err(err);
+                }
             }
             if attempt < max_retries {
                 drop(conn);
                 std::thread::sleep(std::time::Duration::from_millis(retry_delay_ms));
                 continue;
             }
+            metrics::counter!(REDIS_WRITE_LOCK_ACQUIRE_CONTENTION_TOTAL).increment(1);
+            metrics::counter!(REDIS_WRITE_LOCK_CONTENTION_FAILURES_TOTAL).increment(1);
+            metrics::histogram!(REDIS_WRITE_LOCK_ACQUIRE_WAIT_SECONDS)
+                .record(lock_started_at.elapsed().as_secs_f64());
             return Err(StorageError::Backend {
                 msg: format!("write lock '{lock_key}' still contended after {max_retries} retries"),
             });
@@ -1125,21 +1202,77 @@ mod backend_error_counter_tests {
 #[cfg(test)]
 mod write_lock_outcome_tests {
     use super::*;
+    use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
+    use std::sync::{Mutex, OnceLock};
+
+    fn metrics_handle() -> &'static PrometheusHandle {
+        static HANDLE: OnceLock<PrometheusHandle> = OnceLock::new();
+        HANDLE.get_or_init(|| {
+            PrometheusBuilder::new()
+                .install_recorder()
+                .expect("failed to install test Prometheus recorder")
+        })
+    }
+
+    fn metrics_guard() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: Mutex<()> = Mutex::new(());
+        LOCK.lock()
+            .expect("metrics test lock should not be poisoned")
+    }
+
+    fn metric_value(handle: &PrometheusHandle, metric: &str, labels: &[(&str, &str)]) -> f64 {
+        let output = handle.render();
+        output
+            .lines()
+            .find_map(|line| {
+                if line.starts_with('#') {
+                    return None;
+                }
+                let rest = line.strip_prefix(metric)?;
+                if !matches!(rest.chars().next(), Some(' ') | Some('{')) {
+                    return None;
+                }
+                if labels.is_empty() && rest.starts_with('{') {
+                    return None;
+                }
+                if !labels
+                    .iter()
+                    .all(|(key, value)| label_matches(line, key, value))
+                {
+                    return None;
+                }
+                line.split_whitespace().last()?.parse::<f64>().ok()
+            })
+            .unwrap_or(0.0)
+    }
+
+    fn label_matches(line: &str, key: &str, value: &str) -> bool {
+        let expected = format!(r#"{key}="{value}""#);
+        line.find(&expected).is_some_and(|index| {
+            let bytes = line.as_bytes();
+            let leading_ok = index == 0 || matches!(bytes.get(index - 1), Some(b'{') | Some(b','));
+            let trailing_ok = matches!(bytes.get(index + expected.len()), Some(b',') | Some(b'}'));
+            leading_ok && trailing_ok
+        })
+    }
 
     #[test]
     fn lost_lock_renewal_maps_to_transaction_conflict() {
+        let _guard = metrics_guard();
         let result = map_lock_renewal_result("lease-loss", Ok(false));
         assert!(matches!(result, Err(StorageError::TransactionConflict)));
     }
 
     #[test]
     fn lost_lock_release_turns_successful_write_into_transaction_conflict() {
+        let _guard = metrics_guard();
         let result = map_lock_release_result("lease-loss", Ok(false), Ok(()));
         assert!(matches!(result, Err(StorageError::TransactionConflict)));
     }
 
     #[test]
     fn lost_lock_release_preserves_underlying_write_error() {
+        let _guard = metrics_guard();
         let result: Result<(), StorageError> = map_lock_release_result(
             "lease-loss",
             Ok(false),
@@ -1152,6 +1285,7 @@ mod write_lock_outcome_tests {
 
     #[test]
     fn release_error_after_successful_write_surfaces_release_error() {
+        let _guard = metrics_guard();
         let result: Result<(), StorageError> = map_lock_release_result(
             "lease-loss",
             Err(StorageError::Backend {
@@ -1167,6 +1301,7 @@ mod write_lock_outcome_tests {
 
     #[test]
     fn release_error_preserves_underlying_write_error() {
+        let _guard = metrics_guard();
         let result: Result<(), StorageError> = map_lock_release_result(
             "lease-loss",
             Err(StorageError::Backend {
@@ -1177,5 +1312,193 @@ mod write_lock_outcome_tests {
             }),
         );
         assert!(matches!(result, Err(StorageError::GraphNotFound { .. })));
+    }
+
+    #[test]
+    fn renew_success_records_metric() {
+        let _guard = metrics_guard();
+        let handle = metrics_handle();
+        let before = metric_value(handle, REDIS_WRITE_LOCK_RENEW_SUCCESSES_TOTAL, &[]);
+
+        let result = map_lock_renewal_result("lease-loss", Ok(true));
+
+        assert!(result.is_ok());
+        let after = metric_value(handle, REDIS_WRITE_LOCK_RENEW_SUCCESSES_TOTAL, &[]);
+        assert!(
+            after >= before + 1.0,
+            "renew success counter should increase (before={before}, after={after})"
+        );
+    }
+
+    #[test]
+    fn renew_conflict_records_failure_and_conflict_metrics() {
+        let _guard = metrics_guard();
+        let handle = metrics_handle();
+        let before_failures = metric_value(handle, REDIS_WRITE_LOCK_RENEW_FAILURES_TOTAL, &[]);
+        let before_conflicts = metric_value(
+            handle,
+            REDIS_WRITE_LOCK_CONFLICT_OUTCOMES_TOTAL,
+            &[("stage", "renew")],
+        );
+
+        let result = map_lock_renewal_result("lease-loss", Ok(false));
+
+        assert!(matches!(result, Err(StorageError::TransactionConflict)));
+        let after_failures = metric_value(handle, REDIS_WRITE_LOCK_RENEW_FAILURES_TOTAL, &[]);
+        let after_conflicts = metric_value(
+            handle,
+            REDIS_WRITE_LOCK_CONFLICT_OUTCOMES_TOTAL,
+            &[("stage", "renew")],
+        );
+        assert!(after_failures >= before_failures + 1.0);
+        assert!(after_conflicts >= before_conflicts + 1.0);
+    }
+
+    #[test]
+    fn renew_backend_error_records_failure_and_backend_metric() {
+        let _guard = metrics_guard();
+        let handle = metrics_handle();
+        let before_failures = metric_value(handle, REDIS_WRITE_LOCK_RENEW_FAILURES_TOTAL, &[]);
+        let before_backend = metric_value(
+            handle,
+            REDIS_WRITE_LOCK_BACKEND_FAILURES_TOTAL,
+            &[("stage", "renew")],
+        );
+        let before_conflicts = metric_value(
+            handle,
+            REDIS_WRITE_LOCK_CONFLICT_OUTCOMES_TOTAL,
+            &[("stage", "renew")],
+        );
+
+        let result = map_lock_renewal_result(
+            "lease-loss",
+            Err(StorageError::Backend {
+                msg: "redis renew failed".into(),
+            }),
+        );
+
+        assert!(matches!(result, Err(StorageError::Backend { .. })));
+        let after_failures = metric_value(handle, REDIS_WRITE_LOCK_RENEW_FAILURES_TOTAL, &[]);
+        let after_backend = metric_value(
+            handle,
+            REDIS_WRITE_LOCK_BACKEND_FAILURES_TOTAL,
+            &[("stage", "renew")],
+        );
+        let after_conflicts = metric_value(
+            handle,
+            REDIS_WRITE_LOCK_CONFLICT_OUTCOMES_TOTAL,
+            &[("stage", "renew")],
+        );
+        assert!(after_failures >= before_failures + 1.0);
+        assert!(after_backend >= before_backend + 1.0);
+        assert_eq!(
+            after_conflicts, before_conflicts,
+            "backend errors during renew must not emit conflict outcomes"
+        );
+    }
+
+    #[test]
+    fn release_success_records_metric() {
+        let _guard = metrics_guard();
+        let handle = metrics_handle();
+        let before = metric_value(handle, REDIS_WRITE_LOCK_RELEASE_SUCCESSES_TOTAL, &[]);
+
+        let result: Result<(), StorageError> =
+            map_lock_release_result("lease-loss", Ok(true), Ok(()));
+
+        assert!(result.is_ok());
+        let after = metric_value(handle, REDIS_WRITE_LOCK_RELEASE_SUCCESSES_TOTAL, &[]);
+        assert!(
+            after >= before + 1.0,
+            "release success counter should increase (before={before}, after={after})"
+        );
+    }
+
+    #[test]
+    fn release_conflict_records_failure_and_conflict_metrics() {
+        let _guard = metrics_guard();
+        let handle = metrics_handle();
+        let before_failures = metric_value(handle, REDIS_WRITE_LOCK_RELEASE_FAILURES_TOTAL, &[]);
+        let before_conflicts = metric_value(
+            handle,
+            REDIS_WRITE_LOCK_CONFLICT_OUTCOMES_TOTAL,
+            &[("stage", "release")],
+        );
+
+        let result: Result<(), StorageError> =
+            map_lock_release_result("lease-loss", Ok(false), Ok(()));
+
+        assert!(matches!(result, Err(StorageError::TransactionConflict)));
+        let after_failures = metric_value(handle, REDIS_WRITE_LOCK_RELEASE_FAILURES_TOTAL, &[]);
+        let after_conflicts = metric_value(
+            handle,
+            REDIS_WRITE_LOCK_CONFLICT_OUTCOMES_TOTAL,
+            &[("stage", "release")],
+        );
+        assert!(after_failures >= before_failures + 1.0);
+        assert!(after_conflicts >= before_conflicts + 1.0);
+    }
+
+    #[test]
+    fn release_backend_error_records_backend_failure_metric() {
+        let _guard = metrics_guard();
+        let handle = metrics_handle();
+        let before_failures = metric_value(handle, REDIS_WRITE_LOCK_RELEASE_FAILURES_TOTAL, &[]);
+        let before_backend = metric_value(
+            handle,
+            REDIS_WRITE_LOCK_BACKEND_FAILURES_TOTAL,
+            &[("stage", "release")],
+        );
+
+        let result: Result<(), StorageError> = map_lock_release_result(
+            "lease-loss",
+            Err(StorageError::Backend {
+                msg: "redis release failed".into(),
+            }),
+            Ok(()),
+        );
+
+        assert!(matches!(result, Err(StorageError::Backend { .. })));
+        let after_failures = metric_value(handle, REDIS_WRITE_LOCK_RELEASE_FAILURES_TOTAL, &[]);
+        let after_backend = metric_value(
+            handle,
+            REDIS_WRITE_LOCK_BACKEND_FAILURES_TOTAL,
+            &[("stage", "release")],
+        );
+        assert!(after_failures >= before_failures + 1.0);
+        assert!(after_backend >= before_backend + 1.0);
+    }
+
+    #[test]
+    fn release_conflict_with_failed_write_does_not_record_conflict_outcome() {
+        let _guard = metrics_guard();
+        let handle = metrics_handle();
+        let before_failures = metric_value(handle, REDIS_WRITE_LOCK_RELEASE_FAILURES_TOTAL, &[]);
+        let before_conflicts = metric_value(
+            handle,
+            REDIS_WRITE_LOCK_CONFLICT_OUTCOMES_TOTAL,
+            &[("stage", "release")],
+        );
+
+        let result: Result<(), StorageError> = map_lock_release_result(
+            "lease-loss",
+            Ok(false),
+            Err(StorageError::GraphNotFound {
+                name: "missing".into(),
+            }),
+        );
+
+        assert!(matches!(result, Err(StorageError::GraphNotFound { .. })));
+        let after_failures = metric_value(handle, REDIS_WRITE_LOCK_RELEASE_FAILURES_TOTAL, &[]);
+        let after_conflicts = metric_value(
+            handle,
+            REDIS_WRITE_LOCK_CONFLICT_OUTCOMES_TOTAL,
+            &[("stage", "release")],
+        );
+        assert!(after_failures >= before_failures + 1.0);
+        assert_eq!(
+            after_conflicts, before_conflicts,
+            "release conflict outcomes should not increment when the write had already failed"
+        );
     }
 }

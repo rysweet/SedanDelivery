@@ -9,12 +9,14 @@
 
 use std::collections::HashMap;
 use std::sync::mpsc;
+use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 use gql_core::error::StorageError;
 use gql_core::storage::{GraphStore, RangeQuery};
 use gql_core::types::Value;
 use gql_redis_store::RedisGraphStore;
+use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
 use redis::Client;
 use uuid::Uuid;
 
@@ -66,9 +68,7 @@ fn standalone_store() -> RedisGraphStore {
 fn standalone_redis_url() -> String {
     std::env::var("GQL_REDIS_URL")
         .or_else(|_| std::env::var("REDIS_URL"))
-        .expect(
-            "GQL_REDIS_URL or REDIS_URL must be set; run with `cargo test -p gql-redis-store --test cluster_write_path -- --ignored ci8`",
-        )
+        .expect("GQL_REDIS_URL or REDIS_URL must be set for ignored live Redis tests")
 }
 
 fn unique_graph(prefix: &str) -> String {
@@ -80,6 +80,78 @@ fn props(entries: &[(&str, Value)]) -> HashMap<String, Value> {
         .iter()
         .map(|(key, value)| ((*key).to_string(), value.clone()))
         .collect()
+}
+
+fn metrics_handle() -> &'static PrometheusHandle {
+    static HANDLE: OnceLock<PrometheusHandle> = OnceLock::new();
+    HANDLE.get_or_init(|| {
+        PrometheusBuilder::new()
+            .install_recorder()
+            .expect("failed to install cluster_write_path Prometheus recorder")
+    })
+}
+
+fn metrics_guard() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: Mutex<()> = Mutex::new(());
+    LOCK.lock()
+        .expect("cluster_write_path metrics lock should not be poisoned")
+}
+
+fn metric_value(handle: &PrometheusHandle, metric: &str, labels: &[(&str, &str)]) -> f64 {
+    let output = handle.render();
+    output
+        .lines()
+        .find_map(|line| {
+            if line.starts_with('#') {
+                return None;
+            }
+            let rest = line.strip_prefix(metric)?;
+            if !matches!(rest.chars().next(), Some(' ') | Some('{')) {
+                return None;
+            }
+            if labels.is_empty() && rest.starts_with('{') {
+                return None;
+            }
+            if !labels
+                .iter()
+                .all(|(key, value)| label_matches(line, key, value))
+            {
+                return None;
+            }
+            line.split_whitespace().last()?.parse::<f64>().ok()
+        })
+        .unwrap_or(0.0)
+}
+
+fn label_matches(line: &str, key: &str, value: &str) -> bool {
+    let expected = format!(r#"{key}="{value}""#);
+    line.find(&expected).is_some_and(|index| {
+        let bytes = line.as_bytes();
+        let leading_ok = index == 0 || matches!(bytes.get(index - 1), Some(b'{') | Some(b','));
+        let trailing_ok = matches!(bytes.get(index + expected.len()), Some(b',') | Some(b'}'));
+        leading_ok && trailing_ok
+    })
+}
+
+fn histogram_count(handle: &PrometheusHandle, metric: &str, labels: &[(&str, &str)]) -> f64 {
+    metric_value(handle, &format!("{metric}_count"), labels)
+}
+
+fn wait_for_metric_at_least(
+    handle: &PrometheusHandle,
+    metric: &str,
+    labels: &[(&str, &str)],
+    minimum: f64,
+) -> f64 {
+    for _ in 0..100 {
+        let current = metric_value(handle, metric, labels);
+        if current >= minimum {
+            return current;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let current = metric_value(handle, metric, labels);
+    panic!("metric {metric} stayed below {minimum}, last={current}");
 }
 
 // ── CI-1: MAX_NODES_FOR_DELETE constant sanity ───────────────────────────────
@@ -461,6 +533,119 @@ fn ci8_delete_graph_too_large_preserves_visibility_and_retry_state() {
         deleting_exists, 0,
         "oversized delete refusal must not set the _deleting retry marker"
     );
+}
+
+#[test]
+#[ignore = "requires a running Redis at REDIS_URL"]
+fn ci27_write_lock_metrics_move_under_contention_then_success() {
+    let _guard = metrics_guard();
+    let handle = metrics_handle();
+    let store = standalone_store();
+    let graph = unique_graph("write-lock-metrics");
+    let prefix = std::env::var("GQL_REDIS_KEY_PREFIX").unwrap_or_default();
+    let client =
+        Client::open(standalone_redis_url().as_str()).expect("redis client should initialize");
+    let mut conn = client
+        .get_connection()
+        .expect("redis connection should initialize");
+    let lock_key = format!("{prefix}G:{{{graph}}}:write_lock");
+
+    store.create_graph(&graph).expect("graph should be created");
+    store
+        .create_node(
+            &graph,
+            vec!["MetricProbe".to_string()],
+            props(&[("name", Value::Str("Seed".into()))]),
+        )
+        .expect("seed node should be created before contended index build");
+
+    let before_acquire_attempts =
+        metric_value(handle, "redis_write_lock_acquire_attempts_total", &[]);
+    let before_acquire_successes =
+        metric_value(handle, "redis_write_lock_acquire_successes_total", &[]);
+    let before_contention = metric_value(handle, "redis_write_lock_acquire_contention_total", &[]);
+    let before_contention_failures =
+        metric_value(handle, "redis_write_lock_contention_failures_total", &[]);
+    let before_release_successes =
+        metric_value(handle, "redis_write_lock_release_successes_total", &[]);
+    let before_wait_histogram =
+        histogram_count(handle, "redis_write_lock_acquire_wait_seconds", &[]);
+    let before_hold_histogram = histogram_count(handle, "redis_write_lock_hold_seconds", &[]);
+
+    let lock_token = format!("hold-{}", Uuid::new_v4().simple());
+    let acquired: Option<String> = redis::cmd("SET")
+        .arg(&lock_key)
+        .arg(&lock_token)
+        .arg("NX")
+        .arg("PX")
+        .arg(5_000u64)
+        .query(&mut conn)
+        .expect("test should seed the graph write lock");
+    assert!(
+        acquired.is_some(),
+        "test should acquire the graph write lock before starting the write"
+    );
+
+    let (started_tx, started_rx) = mpsc::channel();
+    let store_for_thread = store.clone();
+    let graph_for_thread = graph.clone();
+    let writer = std::thread::spawn(move || {
+        started_tx
+            .send(())
+            .expect("writer thread should signal startup");
+        store_for_thread.create_index(&graph_for_thread, "MetricProbe", "name")
+    });
+    started_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("writer thread should start promptly");
+
+    wait_for_metric_at_least(
+        handle,
+        "redis_write_lock_acquire_attempts_total",
+        &[],
+        before_acquire_attempts + 1.0,
+    );
+    std::thread::sleep(Duration::from_millis(250));
+
+    let released: i64 = redis::cmd("DEL")
+        .arg(&lock_key)
+        .query(&mut conn)
+        .expect("test should release the seeded write lock");
+    assert_eq!(released, 1, "seeded lock should still be present");
+
+    let created = writer
+        .join()
+        .expect("writer thread should complete")
+        .expect("writer should succeed after lock contention clears");
+    assert_eq!(created, (), "writer should build the index successfully");
+
+    let after_acquire_attempts =
+        metric_value(handle, "redis_write_lock_acquire_attempts_total", &[]);
+    let after_acquire_successes =
+        metric_value(handle, "redis_write_lock_acquire_successes_total", &[]);
+    let after_contention = metric_value(handle, "redis_write_lock_acquire_contention_total", &[]);
+    let after_contention_failures =
+        metric_value(handle, "redis_write_lock_contention_failures_total", &[]);
+    let after_release_successes =
+        metric_value(handle, "redis_write_lock_release_successes_total", &[]);
+    let after_wait_histogram =
+        histogram_count(handle, "redis_write_lock_acquire_wait_seconds", &[]);
+    let after_hold_histogram = histogram_count(handle, "redis_write_lock_hold_seconds", &[]);
+
+    assert!(after_acquire_attempts >= before_acquire_attempts + 1.0);
+    assert!(after_acquire_successes >= before_acquire_successes + 1.0);
+    assert!(after_contention >= before_contention + 1.0);
+    assert_eq!(
+        after_contention_failures, before_contention_failures,
+        "transient contention that eventually succeeds must not record contention failures"
+    );
+    assert!(after_release_successes >= before_release_successes + 1.0);
+    assert!(after_wait_histogram >= before_wait_histogram + 1.0);
+    assert!(after_hold_histogram >= before_hold_histogram + 1.0);
+
+    store
+        .delete_graph(&graph)
+        .expect("cleanup delete_graph should succeed");
 }
 
 // ── CI-9: write pipeline does not use MULTI/EXEC (cluster-incompatible) ──────

@@ -15,6 +15,7 @@ what residual risks still remain.
 - [What Keeps Writes Correct](#what-keeps-writes-correct)
 - [Residual Risk](#residual-risk)
 - [The Write Lock](#the-write-lock)
+- [Write-Lock Observability](#write-lock-observability)
 - [Delete Size Guard](#delete-size-guard)
 - [Verification](#verification)
 
@@ -239,6 +240,54 @@ same-graph mutations from silently outliving their lease.
 
 ---
 
+## Write-Lock Observability
+
+Redis-backed deployments now emit write-lock lifecycle telemetry on the
+existing `/metrics` surfaces:
+
+- Bolt: `http://<host>:<BOLT_HEALTH_PORT>/metrics`
+- gql-api: `http://<host>:<GQL_API_PORT>/metrics`
+
+The metrics intentionally use only low-cardinality labels. There is no graph
+name, tenant, or user label on any of these series.
+
+| Metric | Type | Meaning |
+|--------|------|---------|
+| `redis_write_lock_acquire_attempts_total` | Counter | Writes that entered lock acquisition. |
+| `redis_write_lock_acquire_successes_total` | Counter | Writes that acquired the lock and entered the mutation body. |
+| `redis_write_lock_acquire_contention_total` | Counter | Writes that saw at least one contended acquire attempt before eventual success or failure. |
+| `redis_write_lock_contention_failures_total` | Counter | Writes that exhausted retries because the lock stayed contended. |
+| `redis_write_lock_acquire_wait_seconds` | Histogram | Time spent waiting for acquisition, recorded for both successful and failed lock attempts. |
+| `redis_write_lock_renew_successes_total` | Counter | Successful lease renewals during long-running writes. |
+| `redis_write_lock_renew_failures_total` | Counter | Failed renewals. |
+| `redis_write_lock_release_successes_total` | Counter | Successful releases after write completion. |
+| `redis_write_lock_release_failures_total` | Counter | Failed releases after write completion. If the write body had already failed before release, this counter still increments even though no extra conflict outcome is emitted. |
+| `redis_write_lock_hold_seconds` | Histogram | Time the write actually held the lock before release. |
+| `redis_write_lock_conflict_outcomes_total{stage="renew"\| "release"}` | Counter | Lease-loss outcomes that were intentionally surfaced as `TransactionConflict`. |
+| `redis_write_lock_backend_failures_total{stage="acquire"\| "renew"\| "release"}` | Counter | Redis/pool/backend failures on the coordination path, split by lifecycle stage. |
+
+### How to interpret them
+
+- If `redis_write_lock_acquire_contention_total` and
+  `redis_write_lock_acquire_wait_seconds` rise while
+  `redis_write_lock_backend_failures_total` stays flat, the coordination path is
+  busy but Redis is probably healthy. The hot graph is the bottleneck.
+- If `redis_write_lock_contention_failures_total` rises, writers are timing out
+  under contention rather than merely waiting longer.
+- If `redis_write_lock_backend_failures_total{stage="acquire"}` rises, that is a
+  real coordination-path backend problem such as Redis unavailability, routing
+  trouble, or pool failure.
+- If `redis_write_lock_conflict_outcomes_total` rises, SedanDelivery lost lock
+  ownership mid-write and deliberately failed closed instead of returning a
+  false success.
+
+This distinction matters because the public Bolt error surface still keeps the
+broader storage error model. A write-lock timeout and a real Redis failure can
+both produce a generic storage/backend-looking client error, but `/metrics`
+separates them into contention, conflict, and backend categories.
+
+---
+
 ## Delete Size Guard
 
 `delete_graph` now uses `SCARD` to preflight both the node and edge manifests
@@ -350,6 +399,17 @@ The validated result for the final fix was:
 - `0` label-mutation errors during the reshard window
 - post-reshard read-back matched the write count
 - `0` backend errors reported via `/metrics`
+
+### External write-lock telemetry check
+
+```bash
+./scripts/test-write-lock-metrics.sh
+```
+
+This validator starts a local Redis-backed Bolt instance, forces both transient
+and sustained write-lock contention through Bolt, and confirms `/metrics`
+classifies successful lock acquisition, contention timeouts, and genuine
+acquire-stage backend failures separately.
 
 ---
 
