@@ -633,21 +633,27 @@ jobs:
           CA_NAME="${{ steps.deploy-app.outputs.ca_name }}"
 
           echo "⏳ Waiting for container app to reach Running state..."
-          for i in $(seq 1 24); do
+          # Poll at 200ms intervals; timeout_s controls total wait time.
+          # max_iters = timeout_s * 5  (5 polls per second at 200ms each)
+          timeout_s=120
+          max_iters=$((timeout_s * 5))
+          iter=0
+          while [[ $iter -lt $max_iters ]]; do
             RUNNING=$(az containerapp revision list \
               --name "${CA_NAME}" \
               --resource-group "${RG}" \
               --query "[0].properties.runningState" \
               --output tsv 2>/dev/null || echo "Unknown")
-            echo "   Attempt ${i}/24: runningState=${RUNNING}"
             if [[ "$RUNNING" == "Running" ]]; then
-              echo "✅ Container app is running"
+              echo "✅ Container app is running (after $((iter * 200))ms)"
               break
             fi
-            if [[ $i -eq 24 ]]; then
-              echo "⚠️  Timeout waiting — check logs in Azure portal"
+            iter=$((iter + 1))
+            if [[ $iter -ge $max_iters ]]; then
+              echo "⚠️  Timeout after ${timeout_s}s — check logs in Azure portal"
+              break
             fi
-            sleep 10
+            sleep 0.2
           done
 
       - name: Remove Bolt port 7687 from Valkey container (bolt is now separate)
@@ -795,7 +801,7 @@ jobs:
             "BOLT_PASSWORD=secretref:bolt-password"
             "BOLT_TLS_CERT=${BOLT_TLS_CERT_PATH}"
             "BOLT_TLS_KEY=${BOLT_TLS_KEY_PATH}"
-            "BOLT_REQUIRE_TLS=true"
+            "BOLT_REQUIRE_TLS=1"
           )
           if [[ -n "${REPLICA_URL}" ]]; then
             SECRETS_ARGS+=("redis-replica-url=${REPLICA_URL}")

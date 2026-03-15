@@ -282,7 +282,7 @@ required_snippets = {
     "secret volume mount": '--secret-volume-mount "${BOLT_SECRET_MOUNT_PATH}"',
     "mounted cert path": 'BOLT_TLS_CERT=${BOLT_TLS_CERT_PATH}',
     "mounted key path": 'BOLT_TLS_KEY=${BOLT_TLS_KEY_PATH}',
-    "strict TLS env": 'BOLT_REQUIRE_TLS=true',
+    "strict TLS env": 'BOLT_REQUIRE_TLS=1',
     "bolt fqdn output": 'echo "bolt_fqdn=${BOLT_FQDN}" >> "$GITHUB_OUTPUT"',
     "TLS driver example": '"bolt+ssc://${boltFqdn}:7687"',
 }
@@ -405,7 +405,7 @@ log_info "Starting production Bolt with in-process TLS..."
     export BOLT_PASSWORD="$BOLT_PASSWORD"
     export BOLT_TLS_CERT="$TLS_CERT_FILE"
     export BOLT_TLS_KEY="$TLS_KEY_FILE"
-    export BOLT_REQUIRE_TLS=true
+    export BOLT_REQUIRE_TLS=1
     export RUST_LOG="${RUST_LOG:-info}"
     "$BOLT_BIN"
 ) >"$BOLT_LOG" 2>&1 &
