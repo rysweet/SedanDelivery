@@ -176,6 +176,19 @@ Label and relationship-type registries may retain names whose backing sets are
 now empty. This does not break planning because readers filter them against the
 real per-label / per-reltype sets before use.
 
+Explicit cleanup is available through the Redis-only
+`POST /admin/graphs/{name}/audit` route and the underlying
+`RedisGraphStore::audit_graph_metadata(..., repair=true)` API. That repair path
+stays graph-scoped, uses the graph write lock for mutations, and re-checks
+candidate `_labels`, `_reltypes`, and `_propidx` members under the lock before
+pruning them.
+
+`_deleting` is treated more conservatively than the other registries: audit does
+not resume deletion and does not clear an active marker while graph-owned
+cleanup roots still exist. Even when those roots are already gone, audit only
+reports `deletingOrphaned=true`; it does not auto-finalize delete state or
+release the graph name for reuse.
+
 ### Graph registry remains separate from per-graph slot-local keys
 
 `__sd2_registry:graphs` still has no graph hash tag and still lives in a
@@ -235,7 +248,7 @@ before it sets `G:{g}:_deleting` or removes the graph from
 `StorageError::DeleteGraphTooLarge`. Only graphs that pass that bound load the
 full manifests with `SMEMBERS` for cleanup enumeration.
 
-On this branch, the same compile-time limit is used for both node and edge
+The same compile-time limit is used for both node and edge
 manifests:
 
 | Guarded manifest | Limit source | Current value |

@@ -1,0 +1,72 @@
+# Canonical gadugi scenario for Issue #756.
+
+scenario:
+  name: "Issue #756 - Redis metadata audit and repair"
+  description: >
+    Verify from an operator perspective that the admin metadata-audit route
+    reports stale `_labels`, `_reltypes`, and `_propidx` entries on a
+    Redis-backed API instance, that `repair=true` prunes only the stale
+    metadata, that orphan-like `_deleting` state remains report-only across
+    repeated audits, and that non-Redis API instances reject the route with
+    HTTP 501.
+  metadata:
+    tags: [cli, api, redis, regression, issue-756]
+    priority: high
+    linked_docs:
+      - docs/admin-api.md
+      - docs/graph-metadata-audit.md
+      - docs/redis-key-schema.md
+  agents:
+    - name: cli-agent
+      type: cli
+      config: {}
+  steps:
+    - name: "Run the metadata audit validator"
+      agent: cli-agent
+      action: execute
+      params:
+        command: bash
+        args:
+          - ./scripts/test-metadata-audit.sh
+      timeout: 420000
+    - name: "Confirm dry run reported stale metadata"
+      agent: cli-agent
+      action: wait_for_output
+      params:
+        pattern: "\\[PASS\\]\\s+Dry run reported stale label, reltype, and propidx entries"
+      timeout: 5000
+    - name: "Confirm repair pruned stale metadata"
+      agent: cli-agent
+      action: wait_for_output
+      params:
+        pattern: "\\[PASS\\]\\s+Repair run revalidated and pruned stale metadata"
+      timeout: 5000
+    - name: "Confirm follow-up dry run is clean"
+      agent: cli-agent
+      action: wait_for_output
+      params:
+        pattern: "\\[PASS\\]\\s+Follow-up dry run reported clean metadata"
+      timeout: 5000
+    - name: "Confirm deleting marker stays report-only"
+      agent: cli-agent
+      action: wait_for_output
+      params:
+        pattern: "\\[PASS\\]\\s+Orphan-like deleting marker remained report-only across repeated audits"
+      timeout: 5000
+    - name: "Confirm non-Redis backends return 501"
+      agent: cli-agent
+      action: wait_for_output
+      params:
+        pattern: "\\[PASS\\]\\s+Non-Redis backend rejected the audit route with 501"
+      timeout: 5000
+    - name: "Confirm validator finished successfully"
+      agent: cli-agent
+      action: wait_for_output
+      params:
+        pattern: "\\[PASS\\]\\s+Metadata audit validator passed"
+      timeout: 5000
+    - name: "Confirm validator exited with code 0"
+      agent: cli-agent
+      action: validate_exit_code
+      params:
+        text: "0"

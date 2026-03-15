@@ -168,6 +168,11 @@ relationship type in query planning.
 This design trades eager cleanup for cluster-safe enumeration and simpler write
 paths.
 
+`POST /admin/graphs/{g}/audit` is the explicit Redis-only repair path for these
+registries. With `repair=true`, it re-checks candidate `_labels`, `_reltypes`,
+and `_propidx` members under the graph write lock before pruning them. It stays
+graph-scoped and does not attempt any global scan or speculative rebuild.
+
 ## Write-Lock Semantics
 
 `G:{g}:write_lock` is a CAS-style lease:
@@ -268,6 +273,14 @@ While `_deleting` exists:
 
 This makes graph deletion retryable after partial backend failures without
 allowing the same graph name to be reused over leftover keys.
+
+The metadata audit path treats `_deleting` conservatively:
+
+- it does **not** resume deletion
+- it does **not** clear an active marker while delete-time graph roots still exist
+- when those delete-time roots are already absent, audit reports
+  `deletingOrphaned=true` but still leaves `_deleting` in place for operator
+  intervention or an explicit `delete_graph` retry
 
 ### Security: null-byte separator is an injection boundary
 

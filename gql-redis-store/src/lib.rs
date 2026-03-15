@@ -21,6 +21,7 @@ pub mod fanout;
 pub(crate) mod lock;
 pub mod redis_memory_metrics;
 
+mod audit;
 mod connection;
 mod indexing;
 mod keys;
@@ -29,6 +30,7 @@ mod reads;
 mod validation;
 mod writes;
 
+pub use audit::GraphMetadataAuditReport;
 pub use connection::PoolStats;
 pub use fanout::FanoutStore;
 
