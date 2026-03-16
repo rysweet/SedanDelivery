@@ -558,13 +558,20 @@ jobs:
           # Helper: create container app from scratch (used for new deploys and recovery)
           create_container_app() {
             echo "🆕 Creating container app ${CA_NAME}..."
+            ACR_ACCESS_TOKEN=$(az acr login --name "${ACR_NAME}" --expose-token --query accessToken -o tsv)
+            if [[ -z "${ACR_ACCESS_TOKEN}" ]]; then
+              echo "::error::Failed to obtain ACR access token for ${ACR_NAME}"
+              exit 1
+            fi
+            echo "::add-mask::${ACR_ACCESS_TOKEN}"
             az containerapp create \
               --name "${CA_NAME}" \
               --resource-group "${RG}" \
               --environment "${CAE_NAME}" \
               --image "${IMAGE}" \
               --registry-server "${ACR_SERVER}" \
-              --registry-identity system \
+              --registry-username "00000000-0000-0000-0000-000000000000" \
+              --registry-password "${ACR_ACCESS_TOKEN}" \
               --system-assigned \
               --cpu 0.5 \
               --memory 1Gi \
@@ -580,12 +587,40 @@ jobs:
               --output none
           }
 
+          ensure_registry_identity_auth() {
+            CA_PRINCIPAL_ID=$(az containerapp show \
+              --name "${CA_NAME}" \
+              --resource-group "${RG}" \
+              --query "identity.principalId" \
+              -o tsv 2>/dev/null || echo "")
+            if [[ -z "${CA_PRINCIPAL_ID}" || "${CA_PRINCIPAL_ID}" == "None" ]]; then
+              echo "::error::Container App managed identity is not available for ${CA_NAME}"
+              exit 1
+            fi
+            ACR_RESOURCE_ID=$(az acr show --name "${ACR_NAME}" --query id -o tsv)
+            az role assignment create \
+              --assignee-object-id "${CA_PRINCIPAL_ID}" \
+              --assignee-principal-type ServicePrincipal \
+              --role "AcrPull" \
+              --scope "${ACR_RESOURCE_ID}" \
+              --output none 2>/dev/null || true
+            sleep 10
+            az containerapp registry set \
+              --name "${CA_NAME}" \
+              --resource-group "${RG}" \
+              --server "${ACR_SERVER}" \
+              --identity system \
+              --output none
+            echo "   AcrPull role assigned to ${CA_PRINCIPAL_ID}"
+          }
+
           # Check if container app already exists
           if az containerapp show --name "${CA_NAME}" --resource-group "${RG}" >/dev/null 2>&1; then
             echo "🔄 Updating existing container app (Issue #68)..."
             # Try update; if it fails (broken revision, registry auth issues),
             # delete and recreate for idempotent recovery.
             UPDATE_OK=true
+            ensure_registry_identity_auth
             az containerapp secret set \
               --name "${CA_NAME}" \
               --resource-group "${RG}" \
@@ -602,26 +637,11 @@ jobs:
               echo "⚠️  Update failed — deleting and recreating for recovery..."
               az containerapp delete --name "${CA_NAME}" --resource-group "${RG}" --yes --output none 2>/dev/null || true
               create_container_app
+              ensure_registry_identity_auth
             fi
           else
             create_container_app
-          fi
-
-          # Ensure AcrPull role is assigned (SP has User Access Administrator).
-          CA_PRINCIPAL_ID=$(az containerapp show \
-            --name "${CA_NAME}" \
-            --resource-group "${RG}" \
-            --query "identity.principalId" \
-            -o tsv 2>/dev/null || echo "")
-          if [[ -n "${CA_PRINCIPAL_ID}" && "${CA_PRINCIPAL_ID}" != "None" ]]; then
-            ACR_RESOURCE_ID=$(az acr show --name "${ACR_NAME}" --query id -o tsv)
-            az role assignment create \
-              --assignee-object-id "${CA_PRINCIPAL_ID}" \
-              --assignee-principal-type ServicePrincipal \
-              --role "AcrPull" \
-              --scope "${ACR_RESOURCE_ID}" \
-              --output none 2>/dev/null || true
-            echo "   AcrPull role assigned to ${CA_PRINCIPAL_ID}"
+            ensure_registry_identity_auth
           fi
 
           echo "ca_name=${CA_NAME}" >> "$GITHUB_OUTPUT"
@@ -812,13 +832,20 @@ jobs:
 
           # Helper: create bolt container app
           create_bolt_app() {
+            ACR_ACCESS_TOKEN=$(az acr login --name "${ACR_NAME}" --expose-token --query accessToken -o tsv)
+            if [[ -z "${ACR_ACCESS_TOKEN}" ]]; then
+              echo "::error::Failed to obtain ACR access token for ${ACR_NAME}"
+              exit 1
+            fi
+            echo "::add-mask::${ACR_ACCESS_TOKEN}"
             az containerapp create \
               --name "${CA_NAME}" \
               --resource-group "${RG}" \
               --environment "${CAE_NAME}" \
               --image "${IMAGE}" \
               --registry-server "${ACR_SERVER}" \
-              --registry-identity system \
+              --registry-username "00000000-0000-0000-0000-000000000000" \
+              --registry-password "${ACR_ACCESS_TOKEN}" \
               --system-assigned \
               --cpu 0.5 \
               --memory 1Gi \
@@ -834,10 +861,35 @@ jobs:
               --output none
           }
 
+          ensure_bolt_registry_identity_auth() {
+            CA_PRINCIPAL_ID=$(az containerapp show \
+              --name "${CA_NAME}" --resource-group "${RG}" \
+              --query "identity.principalId" -o tsv 2>/dev/null || echo "")
+            if [[ -z "${CA_PRINCIPAL_ID}" || "${CA_PRINCIPAL_ID}" == "None" ]]; then
+              echo "::error::Bolt Container App managed identity is not available for ${CA_NAME}"
+              exit 1
+            fi
+            ACR_RESOURCE_ID=$(az acr show --name "${ACR_NAME}" --query id -o tsv)
+            az role assignment create \
+              --assignee-object-id "${CA_PRINCIPAL_ID}" \
+              --assignee-principal-type ServicePrincipal \
+              --role "AcrPull" \
+              --scope "${ACR_RESOURCE_ID}" \
+              --output none 2>/dev/null || true
+            sleep 10
+            az containerapp registry set \
+              --name "${CA_NAME}" \
+              --resource-group "${RG}" \
+              --server "${ACR_SERVER}" \
+              --identity system \
+              --output none
+          }
+
           # Idempotent create-or-update
           if [[ "${APP_EXISTS}" == "true" ]]; then
             echo "🔄 Updating existing bolt container app..."
             UPDATE_OK=true
+            ensure_bolt_registry_identity_auth
             if ! az containerapp secret set \
               --name "${CA_NAME}" \
               --resource-group "${RG}" \
@@ -859,23 +911,11 @@ jobs:
               echo "⚠️  Update failed — deleting and recreating..."
               az containerapp delete --name "${CA_NAME}" --resource-group "${RG}" --yes --output none 2>/dev/null || true
               create_bolt_app
+              ensure_bolt_registry_identity_auth
             fi
           else
             create_bolt_app
-          fi
-
-          # Ensure AcrPull role
-          CA_PRINCIPAL_ID=$(az containerapp show \
-            --name "${CA_NAME}" --resource-group "${RG}" \
-            --query "identity.principalId" -o tsv 2>/dev/null || echo "")
-          if [[ -n "${CA_PRINCIPAL_ID}" && "${CA_PRINCIPAL_ID}" != "None" ]]; then
-            ACR_RESOURCE_ID=$(az acr show --name "${ACR_NAME}" --query id -o tsv)
-            az role assignment create \
-              --assignee-object-id "${CA_PRINCIPAL_ID}" \
-              --assignee-principal-type ServicePrincipal \
-              --role "AcrPull" \
-              --scope "${ACR_RESOURCE_ID}" \
-              --output none 2>/dev/null || true
+            ensure_bolt_registry_identity_auth
           fi
 
           echo "bolt_ca_name=${CA_NAME}" >> "$GITHUB_OUTPUT"
@@ -910,24 +950,22 @@ jobs:
           ENV_VAR_ARGS="${ENV_VAR_ARGS} GQL_API_BIND_ADDR=0.0.0.0:3001"
           ENV_VAR_ARGS="${ENV_VAR_ARGS} GQL_API_ALLOWED_ORIGINS=*"
 
-          # Idempotent create-or-update
-          if az containerapp show --name "${CA_NAME}" --resource-group "${RG}" >/dev/null 2>&1; then
-            echo "🔄 Updating existing gql-api container app..."
-            az containerapp update \
-              --name "${CA_NAME}" \
-              --resource-group "${RG}" \
-              --image "${IMAGE}" \
-              --set-env-vars ${ENV_VAR_ARGS} \
-              --output none
-          else
+          create_api_app() {
             echo "🆕 Creating gql-api container app..."
+            ACR_ACCESS_TOKEN=$(az acr login --name "${ACR_NAME}" --expose-token --query accessToken -o tsv)
+            if [[ -z "${ACR_ACCESS_TOKEN}" ]]; then
+              echo "::error::Failed to obtain ACR access token for ${ACR_NAME}"
+              exit 1
+            fi
+            echo "::add-mask::${ACR_ACCESS_TOKEN}"
             az containerapp create \
               --name "${CA_NAME}" \
               --resource-group "${RG}" \
               --environment "${CAE_NAME}" \
               --image "${IMAGE}" \
               --registry-server "${ACR_SERVER}" \
-              --registry-identity system \
+              --registry-username "00000000-0000-0000-0000-000000000000" \
+              --registry-password "${ACR_ACCESS_TOKEN}" \
               --system-assigned \
               --cpu 0.25 \
               --memory 0.5Gi \
@@ -938,13 +976,16 @@ jobs:
               --transport http \
               --env-vars ${ENV_VAR_ARGS} \
               --output none
-          fi
+          }
 
-          # Ensure AcrPull role
-          CA_PRINCIPAL_ID=$(az containerapp show \
-            --name "${CA_NAME}" --resource-group "${RG}" \
-            --query "identity.principalId" -o tsv 2>/dev/null || echo "")
-          if [[ -n "${CA_PRINCIPAL_ID}" && "${CA_PRINCIPAL_ID}" != "None" ]]; then
+          ensure_api_registry_identity_auth() {
+            CA_PRINCIPAL_ID=$(az containerapp show \
+              --name "${CA_NAME}" --resource-group "${RG}" \
+              --query "identity.principalId" -o tsv 2>/dev/null || echo "")
+            if [[ -z "${CA_PRINCIPAL_ID}" || "${CA_PRINCIPAL_ID}" == "None" ]]; then
+              echo "::error::API Container App managed identity is not available for ${CA_NAME}"
+              exit 1
+            fi
             ACR_RESOURCE_ID=$(az acr show --name "${ACR_NAME}" --query id -o tsv)
             az role assignment create \
               --assignee-object-id "${CA_PRINCIPAL_ID}" \
@@ -952,6 +993,35 @@ jobs:
               --role "AcrPull" \
               --scope "${ACR_RESOURCE_ID}" \
               --output none 2>/dev/null || true
+            sleep 10
+            az containerapp registry set \
+              --name "${CA_NAME}" \
+              --resource-group "${RG}" \
+              --server "${ACR_SERVER}" \
+              --identity system \
+              --output none
+          }
+
+          # Idempotent create-or-update
+          if az containerapp show --name "${CA_NAME}" --resource-group "${RG}" >/dev/null 2>&1; then
+            echo "🔄 Updating existing gql-api container app..."
+            ensure_api_registry_identity_auth
+            UPDATE_OK=true
+            az containerapp update \
+              --name "${CA_NAME}" \
+              --resource-group "${RG}" \
+              --image "${IMAGE}" \
+              --set-env-vars ${ENV_VAR_ARGS} \
+              --output none || UPDATE_OK=false
+            if [[ "${UPDATE_OK}" == "false" ]]; then
+              echo "⚠️  Update failed — deleting and recreating gql-api..."
+              az containerapp delete --name "${CA_NAME}" --resource-group "${RG}" --yes --output none 2>/dev/null || true
+              create_api_app
+              ensure_api_registry_identity_auth
+            fi
+          else
+            create_api_app
+            ensure_api_registry_identity_auth
           fi
 
           API_FQDN=$(az containerapp show \
@@ -1013,31 +1083,22 @@ jobs:
           echo "   Image: ${IMAGE}"
           echo "   Redis: [masked]"
 
-          if az containerapp show --name "${CA_NAME}" --resource-group "${RG}" >/dev/null 2>&1; then
-            echo "🔄 Updating existing sync container app..."
-            az containerapp secret set \
-              --name "${CA_NAME}" --resource-group "${RG}" \
-              --secrets "fabric-client-secret=${DEPLOY_AZURE_CLIENT_SECRET}" \
-              --output none
-            az containerapp update \
-              --name "${CA_NAME}" --resource-group "${RG}" \
-              --image "${IMAGE}" \
-              --set-env-vars \
-                "GQL_REDIS_URL=${REDIS_URL}" \
-                "GQL_FABRIC_ENDPOINT=${DEPLOY_FABRIC_ENDPOINT}" \
-                "GQL_FABRIC_TENANT_ID=${DEPLOY_AZURE_TENANT_ID}" \
-                "GQL_FABRIC_CLIENT_ID=${DEPLOY_AZURE_CLIENT_ID}" \
-                "GQL_FABRIC_CLIENT_SECRET=secretref:fabric-client-secret" \
-              --output none
-          else
+          create_sync_app() {
             echo "🆕 Creating sync container app..."
+            ACR_ACCESS_TOKEN=$(az acr login --name "${ACR_NAME}" --expose-token --query accessToken -o tsv)
+            if [[ -z "${ACR_ACCESS_TOKEN}" ]]; then
+              echo "::error::Failed to obtain ACR access token for ${ACR_NAME}"
+              exit 1
+            fi
+            echo "::add-mask::${ACR_ACCESS_TOKEN}"
             az containerapp create \
               --name "${CA_NAME}" \
               --resource-group "${RG}" \
               --environment "${CAE_NAME}" \
               --image "${IMAGE}" \
               --registry-server "${ACR_SERVER}" \
-              --registry-identity system \
+              --registry-username "00000000-0000-0000-0000-000000000000" \
+              --registry-password "${ACR_ACCESS_TOKEN}" \
               --system-assigned \
               --cpu 0.25 \
               --memory 0.5Gi \
@@ -1051,19 +1112,58 @@ jobs:
                 "GQL_FABRIC_CLIENT_ID=${DEPLOY_AZURE_CLIENT_ID}" \
                 "GQL_FABRIC_CLIENT_SECRET=secretref:fabric-client-secret" \
               --output none
-          fi
+          }
 
-          # Grant AcrPull to the sync app's managed identity
-          SYNC_PRINCIPAL_ID=$(az containerapp show \
-            --name "${CA_NAME}" --resource-group "${RG}" \
-            --query "identity.principalId" -o tsv 2>/dev/null || echo "")
-          if [[ -n "${SYNC_PRINCIPAL_ID}" && "${SYNC_PRINCIPAL_ID}" != "None" ]]; then
+          ensure_sync_registry_identity_auth() {
+            SYNC_PRINCIPAL_ID=$(az containerapp show \
+              --name "${CA_NAME}" --resource-group "${RG}" \
+              --query "identity.principalId" -o tsv 2>/dev/null || echo "")
+            if [[ -z "${SYNC_PRINCIPAL_ID}" || "${SYNC_PRINCIPAL_ID}" == "None" ]]; then
+              echo "::error::Fabric sync Container App managed identity is not available for ${CA_NAME}"
+              exit 1
+            fi
             ACR_RESOURCE_ID=$(az acr show --name "${ACR_NAME}" --query id -o tsv)
             az role assignment create \
               --assignee-object-id "${SYNC_PRINCIPAL_ID}" \
               --assignee-principal-type ServicePrincipal \
               --role "AcrPull" --scope "${ACR_RESOURCE_ID}" \
               --output none 2>/dev/null || true
+            sleep 10
+            az containerapp registry set \
+              --name "${CA_NAME}" \
+              --resource-group "${RG}" \
+              --server "${ACR_SERVER}" \
+              --identity system \
+              --output none
+          }
+
+          if az containerapp show --name "${CA_NAME}" --resource-group "${RG}" >/dev/null 2>&1; then
+            echo "🔄 Updating existing sync container app..."
+            ensure_sync_registry_identity_auth
+            az containerapp secret set \
+              --name "${CA_NAME}" --resource-group "${RG}" \
+              --secrets "fabric-client-secret=${DEPLOY_AZURE_CLIENT_SECRET}" \
+              --output none
+            UPDATE_OK=true
+            az containerapp update \
+              --name "${CA_NAME}" --resource-group "${RG}" \
+              --image "${IMAGE}" \
+              --set-env-vars \
+                "GQL_REDIS_URL=${REDIS_URL}" \
+                "GQL_FABRIC_ENDPOINT=${DEPLOY_FABRIC_ENDPOINT}" \
+                "GQL_FABRIC_TENANT_ID=${DEPLOY_AZURE_TENANT_ID}" \
+                "GQL_FABRIC_CLIENT_ID=${DEPLOY_AZURE_CLIENT_ID}" \
+                "GQL_FABRIC_CLIENT_SECRET=secretref:fabric-client-secret" \
+              --output none || UPDATE_OK=false
+            if [[ "${UPDATE_OK}" == "false" ]]; then
+              echo "⚠️  Update failed — deleting and recreating sync container app..."
+              az containerapp delete --name "${CA_NAME}" --resource-group "${RG}" --yes --output none 2>/dev/null || true
+              create_sync_app
+              ensure_sync_registry_identity_auth
+            fi
+          else
+            create_sync_app
+            ensure_sync_registry_identity_auth
           fi
 
           echo "✅ sedandelivery-fabric-sync deployed: ${CA_NAME}"
