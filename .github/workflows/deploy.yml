@@ -108,7 +108,7 @@ jobs:
               if [[ -z "$BRANCH_NAME" ]]; then
                 BRANCH_NAME="${GH_REF_NAME}"
               fi
-               SANITIZED=$(echo "$BRANCH_NAME" | sed 's/[^a-zA-Z0-9-]/-/g' | tr '[:upper:]' '[:lower:]' | sed 's/-\\{2,\\}/-/g' | cut -c1-20 | sed 's/^-*//;s/-*$//')
+               SANITIZED=$(echo "$BRANCH_NAME" | sed 's/[^a-zA-Z0-9-]/-/g' | tr '[:upper:]' '[:lower:]' | sed 's/--*/-/g' | cut -c1-20 | sed 's/^-*//;s/-*$//')
               if [ -z "$SANITIZED" ]; then
                 SANITIZED="manual-deploy"
               fi
@@ -123,7 +123,7 @@ jobs:
               SHOULD_DEPLOY="true"
               # Use env var instead of direct expression interpolation (shell injection fix)
               BRANCH_NAME="${GH_HEAD_REF}"
-               SANITIZED=$(echo "$BRANCH_NAME" | sed 's/[^a-zA-Z0-9-]/-/g' | tr '[:upper:]' '[:lower:]' | sed 's/-\\{2,\\}/-/g' | cut -c1-20 | sed 's/^-*//;s/-*$//')
+               SANITIZED=$(echo "$BRANCH_NAME" | sed 's/[^a-zA-Z0-9-]/-/g' | tr '[:upper:]' '[:lower:]' | sed 's/--*/-/g' | cut -c1-20 | sed 's/^-*//;s/-*$//')
               if [ -z "$SANITIZED" ]; then
                 SANITIZED="pr-${GH_PR_NUMBER}"
               fi
