@@ -633,19 +633,18 @@ jobs:
           CA_NAME="${{ steps.deploy-app.outputs.ca_name }}"
 
           echo "⏳ Waiting for container app to reach Running state..."
-          # Poll at 200ms intervals; timeout_s controls total wait time.
-          # max_iters = timeout_s * 5  (5 polls per second at 200ms each)
           timeout_s=120
-          max_iters=$((timeout_s * 5))
+          poll_interval_s=5
+          max_iters=$((timeout_s / poll_interval_s))
           iter=0
           while [[ $iter -lt $max_iters ]]; do
-            RUNNING=$(az containerapp revision list \
+            RUNNING=$(timeout 10s az containerapp show \
               --name "${CA_NAME}" \
               --resource-group "${RG}" \
-              --query "[0].properties.runningState" \
+              --query "properties.runningStatus" \
               --output tsv 2>/dev/null || echo "Unknown")
             if [[ "$RUNNING" == "Running" ]]; then
-              echo "✅ Container app is running (after $((iter * 200))ms)"
+              echo "✅ Container app is running (after $((iter * poll_interval_s))s)"
               break
             fi
             iter=$((iter + 1))
@@ -653,7 +652,7 @@ jobs:
               echo "⚠️  Timeout after ${timeout_s}s — check logs in Azure portal"
               break
             fi
-            sleep 0.2
+            sleep "${poll_interval_s}"
           done
 
       - name: Remove Bolt port 7687 from Valkey container (bolt is now separate)
@@ -1141,9 +1140,9 @@ jobs:
           else
             # Valkey container health check — verify the container app is running
             REDIS_CA_NAME="sd2-${ENV_NAME}-redis"
-            RUNNING=$(az containerapp revision list \
+            RUNNING=$(timeout 10s az containerapp show \
               --name "${REDIS_CA_NAME}" --resource-group "${RG}" \
-              --query "[0].properties.runningState" -o tsv 2>/dev/null || echo "Unknown")
+              --query "properties.runningStatus" -o tsv 2>/dev/null || echo "Unknown")
             echo "   Valkey container state: ${RUNNING}"
             if [[ "${RUNNING}" != "Running" ]]; then
               echo "::warning::Valkey container is not in Running state (${RUNNING})"
