@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { ApiError, graphsApi } from '../client'
+import { ApiError, graphsApi, queryApi } from '../client'
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -295,5 +295,65 @@ describe('API client — success and non-error paths', () => {
     expect(thrown).toBeInstanceOf(ApiError)
     expect((thrown as ApiError).status).toBe(401)
     expect((thrown as ApiError).message).toBe('Authentication required')
+  })
+})
+
+describe('API client request bodies', () => {
+  const fetchMock = vi.fn()
+
+  beforeEach(() => {
+    fetchMock.mockReset()
+    vi.stubGlobal('fetch', fetchMock)
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('serializes query requests using gql-api field names', async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse(200, {
+        columns: [],
+        rows: [],
+        elapsedMs: 3,
+      }),
+    )
+
+    await queryApi.query('demo', {
+      query: 'MATCH (n) WHERE n.name = $name RETURN n',
+      parameters: { name: 'alice' },
+    })
+
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit]
+    expect(init.body).toBe(JSON.stringify({
+      cypher: 'MATCH (n) WHERE n.name = $name RETURN n',
+      params: { name: 'alice' },
+    }))
+  })
+
+  it('serializes mutation requests using gql-api field names', async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse(200, {
+        nodesCreated: 1,
+        nodesDeleted: 0,
+        edgesCreated: 0,
+        edgesDeleted: 0,
+        propertiesSet: 1,
+        elapsedMs: 5,
+      }),
+    )
+
+    await queryApi.mutate('demo', {
+      statement: "CREATE (:Person {name: 'Alice'})",
+      parameters: { name: 'Alice' },
+    })
+
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit]
+    expect(init.body).toBe(JSON.stringify({
+      cypher: "CREATE (:Person {name: 'Alice'})",
+      params: { name: 'Alice' },
+    }))
   })
 })

@@ -4,6 +4,9 @@ export default defineConfig({
   testDir: './e2e',
   timeout: 60_000,
   retries: 0,
+  // These suites share fixed graph names against a single local backend.
+  // Keep one worker to avoid cross-file state interference.
+  workers: 1,
   use: {
     baseURL: 'http://localhost:5175',
     headless: true,

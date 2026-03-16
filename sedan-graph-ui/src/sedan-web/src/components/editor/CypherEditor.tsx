@@ -8,6 +8,18 @@ import { Button } from '../ui/Button'
 import type { QueryResult } from '../../types/graph'
 import type { MutateResponse } from '../../types/api'
 
+const isE2ETest = import.meta.env.VITE_E2E_TEST_AUTH === 'true'
+
+declare global {
+  interface Window {
+    __SEDAN_TEST_HOOKS__?: {
+      setCypherEditorValue?: (value: string) => void
+      getCypherEditorValue?: () => string
+      executeCypher?: () => Promise<void>
+    }
+  }
+}
+
 const CYPHER_KEYWORDS = [
   'MATCH', 'WHERE', 'RETURN', 'CREATE', 'MERGE', 'DELETE', 'DETACH',
   'SET', 'REMOVE', 'WITH', 'UNWIND', 'UNION', 'ORDER', 'BY', 'LIMIT',
@@ -112,6 +124,7 @@ export function CypherEditor() {
   const [mutateResult, setMutateResult] = useState<MutateResponse | null>(null)
   const [execError, setExecError] = useState<string | null>(null)
   const editorRef = useRef<editor.IStandaloneCodeEditor | null>(null)
+  const queryValueRef = useRef(queryValue)
   const handleExecuteRef = useRef<() => Promise<void>>(() => Promise.resolve())
   const queryMutation = useCypherQuery(currentGraph)
   const mutateMutation = useMutate(currentGraph)
@@ -144,6 +157,35 @@ export function CypherEditor() {
   useEffect(() => {
     handleExecuteRef.current = handleExecute
   }, [handleExecute])
+
+  useEffect(() => {
+    queryValueRef.current = queryValue
+  }, [queryValue])
+
+  useEffect(() => {
+    if (!isE2ETest || typeof window === 'undefined') {
+      return
+    }
+
+    const hooks = window.__SEDAN_TEST_HOOKS__ ?? {}
+    hooks.setCypherEditorValue = (value: string) => {
+      editorRef.current?.setValue(value)
+      editorRef.current?.focus()
+      queryValueRef.current = value
+      setQueryValue(value)
+    }
+    hooks.getCypherEditorValue = () => editorRef.current?.getValue() ?? queryValueRef.current
+    hooks.executeCypher = () => handleExecuteRef.current()
+    window.__SEDAN_TEST_HOOKS__ = hooks
+
+    return () => {
+      if (window.__SEDAN_TEST_HOOKS__ === hooks) {
+        delete hooks.setCypherEditorValue
+        delete hooks.getCypherEditorValue
+        delete hooks.executeCypher
+      }
+    }
+  }, [])
 
   const handleEditorMount: OnMount = (editorInstance, monaco) => {
     editorRef.current = editorInstance
@@ -208,6 +250,7 @@ export function CypherEditor() {
 
   const handleClear = () => {
     editorRef.current?.setValue('')
+    queryValueRef.current = ''
     setQueryValue('')
     setQueryResult(null)
     setMutateResult(null)
