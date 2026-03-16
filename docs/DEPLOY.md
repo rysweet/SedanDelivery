@@ -139,11 +139,13 @@ with driver.session() as session:
 driver.close()
 ```
 
-The default ACA-generated hostname uses the certificate you supply, but this
-workflow does not bind a custom domain or managed public certificate for that
-hostname. Use `bolt+ssc://...` (or the equivalent trust override in your
-driver) for the generated ACA FQDN. If you later bind a custom domain with a
-matching CA-issued certificate, switch to `bolt+s://...`.
+The default ACA-generated hostname presents the certificate you supply, but this
+workflow does not bind a custom domain or managed public certificate that
+authenticates that hostname. Treat `bolt+ssc://...` (or the equivalent trust
+override in your driver) as a temporary bootstrap or trusted-network validation
+path only. Before treating the public endpoint as production-ready for
+untrusted clients, bind a custom domain with a matching CA-issued certificate
+and switch to `bolt+s://...`.
 
 Works with Python, .NET, Java, Go, Rust, JavaScript — any driver supporting Bolt v4.2+.
 
@@ -391,9 +393,10 @@ az containerapp secret show \
   --query value -o tsv
 ```
 
-For the generated ACA FQDN, use `bolt+ssc://` or the equivalent trust override
-in your driver. If you later bind a custom domain with a matching CA-issued
-certificate outside this workflow, use `bolt+s://` instead.
+For the generated ACA FQDN, use `bolt+ssc://` only for temporary bootstrap or
+trusted-network validation where you explicitly accept the trust override. For
+production clients on untrusted networks, bind a custom domain with a matching
+CA-issued certificate outside this workflow and use `bolt+s://` instead.
 
 ## Scaling
 

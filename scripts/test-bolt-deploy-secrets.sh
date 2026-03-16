@@ -273,7 +273,7 @@ text = Path(sys.argv[1]).read_text()
 required_snippets = {
     "TLS cert GitHub secret": 'DEPLOY_BOLT_TLS_CERT_PEM: ${{ secrets.DEPLOY_BOLT_TLS_CERT_PEM }}',
     "TLS key GitHub secret": 'DEPLOY_BOLT_TLS_KEY_PEM: ${{ secrets.DEPLOY_BOLT_TLS_KEY_PEM }}',
-    "password reuse lookup": '--secret-name bolt-password --query value -o tsv',
+    "password reuse lookup": '--secret-name bolt-password',
     "password migration inventory check": 'properties.configuration.secrets[].name',
     "one-time password migration": 'Existing Bolt app has no bolt-password secret; generating one-time migration password',
     "fail closed on password lookup": 'Existing Bolt app has bolt-password configured but secret lookup failed',
@@ -284,7 +284,10 @@ required_snippets = {
     "mounted key path": 'BOLT_TLS_KEY=${BOLT_TLS_KEY_PATH}',
     "strict TLS env": 'BOLT_REQUIRE_TLS=1',
     "bolt fqdn output": 'echo "bolt_fqdn=${BOLT_FQDN}" >> "$GITHUB_OUTPUT"',
+    "mask multiline cert": 'mask_multiline_secret "${DEPLOY_BOLT_TLS_CERT_PEM}"',
+    "mask multiline key": 'mask_multiline_secret "${DEPLOY_BOLT_TLS_KEY_PEM}"',
     "TLS driver example": '"bolt+ssc://${boltFqdn}:7687"',
+    "trust override warning": 'This ACA-generated hostname does **not** provide production-authenticated',
 }
 
 missing = [name for name, snippet in required_snippets.items() if snippet not in text]

@@ -598,13 +598,46 @@ jobs:
               exit 1
             fi
             ACR_RESOURCE_ID=$(az acr show --name "${ACR_NAME}" --query id -o tsv)
-            az role assignment create \
+            ROLE_ASSIGNMENT_OUTPUT=""
+            if ! ROLE_ASSIGNMENT_OUTPUT=$(az role assignment create \
               --assignee-object-id "${CA_PRINCIPAL_ID}" \
               --assignee-principal-type ServicePrincipal \
               --role "AcrPull" \
               --scope "${ACR_RESOURCE_ID}" \
-              --output none 2>/dev/null || true
-            sleep 10
+              --output none 2>&1); then
+              if [[ "${ROLE_ASSIGNMENT_OUTPUT}" != *"RoleAssignmentExists"* && \
+                    "${ROLE_ASSIGNMENT_OUTPUT}" != *"role assignment already exists"* && \
+                    "${ROLE_ASSIGNMENT_OUTPUT}" != *"The role assignment already exists"* ]]; then
+                echo "::error::Failed to assign AcrPull role to ${CA_PRINCIPAL_ID}: ${ROLE_ASSIGNMENT_OUTPUT}"
+                exit 1
+              fi
+              echo "   AcrPull role assignment already exists for ${CA_PRINCIPAL_ID}"
+            fi
+            ACR_PULL_VISIBLE=false
+            for attempt in $(seq 1 12); do
+              ASSIGNMENT_ERROR_FILE="$(mktemp)"
+              if ! ASSIGNMENT_COUNT=$(az role assignment list \
+                --assignee-object-id "${CA_PRINCIPAL_ID}" \
+                --scope "${ACR_RESOURCE_ID}" \
+                --query "[?roleDefinitionName=='AcrPull'] | length(@)" \
+                -o tsv 2>"${ASSIGNMENT_ERROR_FILE}"); then
+                ASSIGNMENT_ERROR="$(cat "${ASSIGNMENT_ERROR_FILE}")"
+                rm -f "${ASSIGNMENT_ERROR_FILE}"
+                echo "::error::Failed to verify AcrPull role assignment for ${CA_PRINCIPAL_ID}: ${ASSIGNMENT_ERROR}"
+                exit 1
+              fi
+              rm -f "${ASSIGNMENT_ERROR_FILE}"
+              if [[ "${ASSIGNMENT_COUNT}" =~ ^[1-9][0-9]*$ ]]; then
+                ACR_PULL_VISIBLE=true
+                break
+              fi
+              echo "   Waiting for AcrPull role assignment to propagate (attempt ${attempt}/12)..."
+              sleep 10
+            done
+            if [[ "${ACR_PULL_VISIBLE}" != "true" ]]; then
+              echo "::error::AcrPull role assignment for ${CA_PRINCIPAL_ID} was not visible before switching registry auth"
+              exit 1
+            fi
             az containerapp registry set \
               --name "${CA_NAME}" \
               --resource-group "${RG}" \
@@ -718,6 +751,14 @@ jobs:
           BOLT_TLS_CERT_PATH="${BOLT_SECRET_MOUNT_PATH}/bolt-tls-cert"
           BOLT_TLS_KEY_PATH="${BOLT_SECRET_MOUNT_PATH}/bolt-tls-key"
 
+          mask_multiline_secret() {
+            local value="$1"
+            local escaped="${value//'%'/'%25'}"
+            escaped="${escaped//$'\r'/'%0D'}"
+            escaped="${escaped//$'\n'/'%0A'}"
+            echo "::add-mask::${escaped}"
+          }
+
           echo "🚀 Deploying standalone Bolt server: ${CA_NAME}"
           echo "   Persistence backend: ${PERSISTENCE_BACKEND}"
 
@@ -768,15 +809,38 @@ jobs:
             echo "::error::DEPLOY_BOLT_TLS_CERT_PEM and DEPLOY_BOLT_TLS_KEY_PEM GitHub secrets are required for external Bolt TCP deploys"
             exit 1
           fi
+          mask_multiline_secret "${DEPLOY_BOLT_TLS_CERT_PEM}"
+          mask_multiline_secret "${DEPLOY_BOLT_TLS_KEY_PEM}"
 
           # Reuse the existing Bolt password on updates to avoid credential churn.
           APP_EXISTS=false
           BOLT_PASS=""
           if az containerapp show --name "${CA_NAME}" --resource-group "${RG}" >/dev/null 2>&1; then
             APP_EXISTS=true
-            EXISTING_BOLT_SECRET_NAMES=$(az containerapp show --name "${CA_NAME}" --resource-group "${RG}" --query "properties.configuration.secrets[].name" -o tsv 2>/dev/null || true)
+            if ! EXISTING_BOLT_SECRET_NAMES=$(az containerapp show \
+              --name "${CA_NAME}" \
+              --resource-group "${RG}" \
+              --query "properties.configuration.secrets[].name" \
+              -o tsv 2>&1); then
+              echo "::error::Failed to inspect existing Bolt secrets for ${CA_NAME}: ${EXISTING_BOLT_SECRET_NAMES}"
+              exit 1
+            fi
             if printf '%s\n' "${EXISTING_BOLT_SECRET_NAMES}" | grep -Fxq "bolt-password"; then
-              BOLT_PASS=$(az containerapp secret show --name "${CA_NAME}" --resource-group "${RG}" --secret-name bolt-password --query value -o tsv 2>/dev/null || true)
+              BOLT_PASS_VALUE_FILE="$(mktemp)"
+              BOLT_PASS_ERROR_FILE="$(mktemp)"
+              if ! az containerapp secret show \
+                --name "${CA_NAME}" \
+                --resource-group "${RG}" \
+                --secret-name bolt-password \
+                --query value \
+                -o tsv >"${BOLT_PASS_VALUE_FILE}" 2>"${BOLT_PASS_ERROR_FILE}"; then
+                BOLT_PASS_ERROR="$(cat "${BOLT_PASS_ERROR_FILE}")"
+                rm -f "${BOLT_PASS_VALUE_FILE}" "${BOLT_PASS_ERROR_FILE}"
+                echo "::error::Existing Bolt app has bolt-password configured but secret lookup failed: ${BOLT_PASS_ERROR}"
+                exit 1
+              fi
+              BOLT_PASS="$(tr -d '\r' < "${BOLT_PASS_VALUE_FILE}")"
+              rm -f "${BOLT_PASS_VALUE_FILE}" "${BOLT_PASS_ERROR_FILE}"
               if [[ -z "${BOLT_PASS}" ]]; then
                 echo "::error::Existing Bolt app has bolt-password configured but secret lookup failed — refusing to rotate credentials"
                 exit 1
@@ -870,13 +934,46 @@ jobs:
               exit 1
             fi
             ACR_RESOURCE_ID=$(az acr show --name "${ACR_NAME}" --query id -o tsv)
-            az role assignment create \
+            ROLE_ASSIGNMENT_OUTPUT=""
+            if ! ROLE_ASSIGNMENT_OUTPUT=$(az role assignment create \
               --assignee-object-id "${CA_PRINCIPAL_ID}" \
               --assignee-principal-type ServicePrincipal \
               --role "AcrPull" \
               --scope "${ACR_RESOURCE_ID}" \
-              --output none 2>/dev/null || true
-            sleep 10
+              --output none 2>&1); then
+              if [[ "${ROLE_ASSIGNMENT_OUTPUT}" != *"RoleAssignmentExists"* && \
+                    "${ROLE_ASSIGNMENT_OUTPUT}" != *"role assignment already exists"* && \
+                    "${ROLE_ASSIGNMENT_OUTPUT}" != *"The role assignment already exists"* ]]; then
+                echo "::error::Failed to assign AcrPull role to ${CA_PRINCIPAL_ID}: ${ROLE_ASSIGNMENT_OUTPUT}"
+                exit 1
+              fi
+              echo "   AcrPull role assignment already exists for ${CA_PRINCIPAL_ID}"
+            fi
+            ACR_PULL_VISIBLE=false
+            for attempt in $(seq 1 12); do
+              ASSIGNMENT_ERROR_FILE="$(mktemp)"
+              if ! ASSIGNMENT_COUNT=$(az role assignment list \
+                --assignee-object-id "${CA_PRINCIPAL_ID}" \
+                --scope "${ACR_RESOURCE_ID}" \
+                --query "[?roleDefinitionName=='AcrPull'] | length(@)" \
+                -o tsv 2>"${ASSIGNMENT_ERROR_FILE}"); then
+                ASSIGNMENT_ERROR="$(cat "${ASSIGNMENT_ERROR_FILE}")"
+                rm -f "${ASSIGNMENT_ERROR_FILE}"
+                echo "::error::Failed to verify AcrPull role assignment for ${CA_PRINCIPAL_ID}: ${ASSIGNMENT_ERROR}"
+                exit 1
+              fi
+              rm -f "${ASSIGNMENT_ERROR_FILE}"
+              if [[ "${ASSIGNMENT_COUNT}" =~ ^[1-9][0-9]*$ ]]; then
+                ACR_PULL_VISIBLE=true
+                break
+              fi
+              echo "   Waiting for AcrPull role assignment to propagate (attempt ${attempt}/12)..."
+              sleep 10
+            done
+            if [[ "${ACR_PULL_VISIBLE}" != "true" ]]; then
+              echo "::error::AcrPull role assignment for ${CA_PRINCIPAL_ID} was not visible before switching registry auth"
+              exit 1
+            fi
             az containerapp registry set \
               --name "${CA_NAME}" \
               --resource-group "${RG}" \
@@ -987,13 +1084,46 @@ jobs:
               exit 1
             fi
             ACR_RESOURCE_ID=$(az acr show --name "${ACR_NAME}" --query id -o tsv)
-            az role assignment create \
+            ROLE_ASSIGNMENT_OUTPUT=""
+            if ! ROLE_ASSIGNMENT_OUTPUT=$(az role assignment create \
               --assignee-object-id "${CA_PRINCIPAL_ID}" \
               --assignee-principal-type ServicePrincipal \
               --role "AcrPull" \
               --scope "${ACR_RESOURCE_ID}" \
-              --output none 2>/dev/null || true
-            sleep 10
+              --output none 2>&1); then
+              if [[ "${ROLE_ASSIGNMENT_OUTPUT}" != *"RoleAssignmentExists"* && \
+                    "${ROLE_ASSIGNMENT_OUTPUT}" != *"role assignment already exists"* && \
+                    "${ROLE_ASSIGNMENT_OUTPUT}" != *"The role assignment already exists"* ]]; then
+                echo "::error::Failed to assign AcrPull role to ${CA_PRINCIPAL_ID}: ${ROLE_ASSIGNMENT_OUTPUT}"
+                exit 1
+              fi
+              echo "   AcrPull role assignment already exists for ${CA_PRINCIPAL_ID}"
+            fi
+            ACR_PULL_VISIBLE=false
+            for attempt in $(seq 1 12); do
+              ASSIGNMENT_ERROR_FILE="$(mktemp)"
+              if ! ASSIGNMENT_COUNT=$(az role assignment list \
+                --assignee-object-id "${CA_PRINCIPAL_ID}" \
+                --scope "${ACR_RESOURCE_ID}" \
+                --query "[?roleDefinitionName=='AcrPull'] | length(@)" \
+                -o tsv 2>"${ASSIGNMENT_ERROR_FILE}"); then
+                ASSIGNMENT_ERROR="$(cat "${ASSIGNMENT_ERROR_FILE}")"
+                rm -f "${ASSIGNMENT_ERROR_FILE}"
+                echo "::error::Failed to verify AcrPull role assignment for ${CA_PRINCIPAL_ID}: ${ASSIGNMENT_ERROR}"
+                exit 1
+              fi
+              rm -f "${ASSIGNMENT_ERROR_FILE}"
+              if [[ "${ASSIGNMENT_COUNT}" =~ ^[1-9][0-9]*$ ]]; then
+                ACR_PULL_VISIBLE=true
+                break
+              fi
+              echo "   Waiting for AcrPull role assignment to propagate (attempt ${attempt}/12)..."
+              sleep 10
+            done
+            if [[ "${ACR_PULL_VISIBLE}" != "true" ]]; then
+              echo "::error::AcrPull role assignment for ${CA_PRINCIPAL_ID} was not visible before switching registry auth"
+              exit 1
+            fi
             az containerapp registry set \
               --name "${CA_NAME}" \
               --resource-group "${RG}" \
@@ -1123,12 +1253,46 @@ jobs:
               exit 1
             fi
             ACR_RESOURCE_ID=$(az acr show --name "${ACR_NAME}" --query id -o tsv)
-            az role assignment create \
+            ROLE_ASSIGNMENT_OUTPUT=""
+            if ! ROLE_ASSIGNMENT_OUTPUT=$(az role assignment create \
               --assignee-object-id "${SYNC_PRINCIPAL_ID}" \
               --assignee-principal-type ServicePrincipal \
-              --role "AcrPull" --scope "${ACR_RESOURCE_ID}" \
-              --output none 2>/dev/null || true
-            sleep 10
+              --role "AcrPull" \
+              --scope "${ACR_RESOURCE_ID}" \
+              --output none 2>&1); then
+              if [[ "${ROLE_ASSIGNMENT_OUTPUT}" != *"RoleAssignmentExists"* && \
+                    "${ROLE_ASSIGNMENT_OUTPUT}" != *"role assignment already exists"* && \
+                    "${ROLE_ASSIGNMENT_OUTPUT}" != *"The role assignment already exists"* ]]; then
+                echo "::error::Failed to assign AcrPull role to ${SYNC_PRINCIPAL_ID}: ${ROLE_ASSIGNMENT_OUTPUT}"
+                exit 1
+              fi
+              echo "   AcrPull role assignment already exists for ${SYNC_PRINCIPAL_ID}"
+            fi
+            ACR_PULL_VISIBLE=false
+            for attempt in $(seq 1 12); do
+              ASSIGNMENT_ERROR_FILE="$(mktemp)"
+              if ! ASSIGNMENT_COUNT=$(az role assignment list \
+                --assignee-object-id "${SYNC_PRINCIPAL_ID}" \
+                --scope "${ACR_RESOURCE_ID}" \
+                --query "[?roleDefinitionName=='AcrPull'] | length(@)" \
+                -o tsv 2>"${ASSIGNMENT_ERROR_FILE}"); then
+                ASSIGNMENT_ERROR="$(cat "${ASSIGNMENT_ERROR_FILE}")"
+                rm -f "${ASSIGNMENT_ERROR_FILE}"
+                echo "::error::Failed to verify AcrPull role assignment for ${SYNC_PRINCIPAL_ID}: ${ASSIGNMENT_ERROR}"
+                exit 1
+              fi
+              rm -f "${ASSIGNMENT_ERROR_FILE}"
+              if [[ "${ASSIGNMENT_COUNT}" =~ ^[1-9][0-9]*$ ]]; then
+                ACR_PULL_VISIBLE=true
+                break
+              fi
+              echo "   Waiting for AcrPull role assignment to propagate (attempt ${attempt}/12)..."
+              sleep 10
+            done
+            if [[ "${ACR_PULL_VISIBLE}" != "true" ]]; then
+              echo "::error::AcrPull role assignment for ${SYNC_PRINCIPAL_ID} was not visible before switching registry auth"
+              exit 1
+            fi
             az containerapp registry set \
               --name "${CA_NAME}" \
               --resource-group "${RG}" \
@@ -1270,27 +1434,68 @@ jobs:
 
           echo "🧪 Running smoke test against Bolt endpoint: ${BOLT_FQDN}:7687"
 
-          # TLS handshake check — verify the public endpoint is actually serving TLS.
+          # The default ACA hostname intentionally requires a trust override, so the
+          # smoke test validates that the endpoint presents the configured certificate
+          # and that the certificate is currently within its validity window.
           SMOKE_OK=false
           SMOKE_LOG="${RUNNER_TEMP}/bolt-smoke.log"
+          EXPECTED_CERT_FILE="${RUNNER_TEMP}/expected-bolt-cert.pem"
+          LIVE_CERT_FILE="${RUNNER_TEMP}/live-bolt-cert.pem"
+          EXPECTED_CERT_PEM=$(az containerapp secret show \
+            --name "${BOLT_CA_NAME}" --resource-group "${RG}" \
+            --secret-name bolt-tls-cert --query value -o tsv 2>/dev/null || echo "")
+          if [[ -z "${EXPECTED_CERT_PEM}" ]]; then
+            echo "::error::Failed to resolve configured bolt-tls-cert secret"
+            exit 1
+          fi
+          printf '%s\n' "${EXPECTED_CERT_PEM}" > "${EXPECTED_CERT_FILE}"
+          EXPECTED_CERT_SHA256=$(openssl x509 -in "${EXPECTED_CERT_FILE}" -noout -fingerprint -sha256 2>/dev/null | cut -d= -f2 | tr -d ':')
+          if [[ -z "${EXPECTED_CERT_SHA256}" ]]; then
+            echo "::error::Failed to parse configured bolt-tls-cert"
+            exit 1
+          fi
           for i in $(seq 1 6); do
-            timeout 10 bash -c "printf '' | openssl s_client -showcerts -connect '${BOLT_FQDN}:7687' -servername '${BOLT_FQDN}' >'${SMOKE_LOG}' 2>&1" || true
-            if grep -Fq 'BEGIN CERTIFICATE' "${SMOKE_LOG}" && ! grep -Eq 'no peer certificate available|Cipher is \(NONE\)|wrong version number|unexpected eof while reading' "${SMOKE_LOG}"; then
-              echo "   TLS handshake reached Bolt endpoint (attempt ${i})"
-              SMOKE_OK=true
-              break
+            SMOKE_EXIT=0
+            timeout 10 bash -c "printf '' | openssl s_client -showcerts -connect '${BOLT_FQDN}:7687' -servername '${BOLT_FQDN}' >'${SMOKE_LOG}' 2>&1" || SMOKE_EXIT=$?
+            if [[ "${SMOKE_EXIT}" -ne 0 && "${SMOKE_EXIT}" -ne 124 ]]; then
+              echo "   Attempt ${i}/6: openssl exited with status ${SMOKE_EXIT}, waiting..."
+              sleep 10
+              continue
             fi
-            echo "   Attempt ${i}/6: TLS handshake not yet ready, waiting..."
-            sleep 10
+            awk '/BEGIN CERTIFICATE/{flag=1} flag{print} /END CERTIFICATE/{exit}' "${SMOKE_LOG}" > "${LIVE_CERT_FILE}"
+            if [[ ! -s "${LIVE_CERT_FILE}" ]]; then
+              echo "   Attempt ${i}/6: no certificate presented yet, waiting..."
+              sleep 10
+              continue
+            fi
+            LIVE_CERT_SHA256=$(openssl x509 -in "${LIVE_CERT_FILE}" -noout -fingerprint -sha256 2>/dev/null | cut -d= -f2 | tr -d ':')
+            if [[ -z "${LIVE_CERT_SHA256}" || "${LIVE_CERT_SHA256}" != "${EXPECTED_CERT_SHA256}" ]]; then
+              echo "   Attempt ${i}/6: live certificate does not match configured bolt-tls-cert, waiting..."
+              sleep 10
+              continue
+            fi
+            if ! openssl x509 -in "${LIVE_CERT_FILE}" -checkend 0 -noout >/dev/null 2>&1; then
+              echo "   Attempt ${i}/6: live certificate is expired, waiting..."
+              sleep 10
+              continue
+            fi
+            if grep -Eq 'no peer certificate available|Cipher is \(NONE\)|wrong version number|unexpected eof while reading' "${SMOKE_LOG}"; then
+              echo "   Attempt ${i}/6: TLS handshake did not complete cleanly, waiting..."
+              sleep 10
+              continue
+            fi
+            echo "   TLS handshake reached Bolt endpoint with the configured, unexpired certificate (attempt ${i})"
+            SMOKE_OK=true
+            break
           done
 
           if [[ "${SMOKE_OK}" == "false" ]]; then
-            echo "::error::Bolt TLS handshake did not complete after 60s"
+            echo "::error::Bolt TLS smoke test did not observe the configured, unexpired certificate after 60s"
             cat "${SMOKE_LOG}" || true
             exit 1
           fi
 
-          echo "✅ Smoke test passed — Bolt endpoint completed a TLS handshake"
+          echo "✅ Smoke test passed — Bolt endpoint presented the configured, unexpired TLS certificate"
 
       - name: Post deployment comment to PR
         if: github.event_name == 'pull_request'
@@ -1334,16 +1539,21 @@ jobs:
               --query value -o tsv
             \`\`\`
 
-            **Connect via Bolt (Neo4j driver):**
+            **Temporary bootstrap connection via Bolt (trust override required):**
             \`\`\`python
             from neo4j import GraphDatabase
             driver = GraphDatabase.driver(
                 "bolt+ssc://${boltFqdn}:7687",
                 auth=("neo4j", "<retrieve-bolt-password>"),
             )
-            # If you later bind a custom domain with a matching CA-issued
-            # certificate, switch to bolt+s://.
             \`\`\`
+
+            This ACA-generated hostname does **not** provide production-authenticated
+            TLS. Use \`bolt+ssc://\` only for temporary bootstrap or trusted-network
+            validation where you explicitly accept the trust override. Before treating
+            the endpoint as production-ready for untrusted clients, bind a custom
+            domain with a matching CA-issued certificate and switch clients to
+            \`bolt+s://\`.
 
             To clean up: run **Undeploy** workflow with resource group \`${rg}\`.`;
 
