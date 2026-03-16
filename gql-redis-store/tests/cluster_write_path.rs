@@ -159,16 +159,14 @@ fn wait_for_metric_at_least(
 #[test]
 fn ci1_max_nodes_for_delete_is_positive_and_bounded() {
     // Positive: must reject the empty-graph case properly elsewhere.
-    assert!(
-        gql_redis_store::MAX_NODES_FOR_DELETE > 0,
-        "MAX_NODES_FOR_DELETE must be positive"
-    );
+    const {
+        assert!(
+            gql_redis_store::MAX_NODES_FOR_DELETE > 0,
+            "MAX_NODES_FOR_DELETE must be positive"
+        )
+    };
     // Bounded: SMEMBERS on a set this large must not OOM a typical instance.
-    assert!(
-        gql_redis_store::MAX_NODES_FOR_DELETE <= 1_000_000,
-        "MAX_NODES_FOR_DELETE ({}) looks unreasonably large",
-        gql_redis_store::MAX_NODES_FOR_DELETE
-    );
+    const { assert!(gql_redis_store::MAX_NODES_FOR_DELETE <= 1_000_000) };
 }
 
 // ── CI-2: backend error counter is thread-safe and monotonic ────────────────
@@ -255,7 +253,7 @@ fn ci6_delete_graph_keys_carry_hash_tag() {
     ];
 
     // Per-ID keys.
-    let per_id = vec![
+    let per_id = [
         format!("G:{{{g}}}:node:1"),
         format!("G:{{{g}}}:out:1"),
         format!("G:{{{g}}}:in:1"),
@@ -613,11 +611,10 @@ fn ci27_write_lock_metrics_move_under_contention_then_success() {
         .expect("test should release the seeded write lock");
     assert_eq!(released, 1, "seeded lock should still be present");
 
-    let created = writer
+    writer
         .join()
         .expect("writer thread should complete")
         .expect("writer should succeed after lock contention clears");
-    assert_eq!(created, (), "writer should build the index successfully");
 
     let after_acquire_attempts =
         metric_value(handle, "redis_write_lock_acquire_attempts_total", &[]);

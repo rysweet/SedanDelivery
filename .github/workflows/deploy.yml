@@ -108,7 +108,7 @@ jobs:
               if [[ -z "$BRANCH_NAME" ]]; then
                 BRANCH_NAME="${GH_REF_NAME}"
               fi
-              SANITIZED=$(echo "$BRANCH_NAME" | sed 's/[^a-zA-Z0-9-]/-/g' | tr '[:upper:]' '[:lower:]' | cut -c1-20 | sed 's/^-*//;s/-*$//')
+               SANITIZED=$(echo "$BRANCH_NAME" | sed 's/[^a-zA-Z0-9-]/-/g' | tr '[:upper:]' '[:lower:]' | sed 's/--*/-/g' | cut -c1-20 | sed 's/^-*//;s/-*$//')
               if [ -z "$SANITIZED" ]; then
                 SANITIZED="manual-deploy"
               fi
@@ -123,7 +123,7 @@ jobs:
               SHOULD_DEPLOY="true"
               # Use env var instead of direct expression interpolation (shell injection fix)
               BRANCH_NAME="${GH_HEAD_REF}"
-              SANITIZED=$(echo "$BRANCH_NAME" | sed 's/[^a-zA-Z0-9-]/-/g' | tr '[:upper:]' '[:lower:]' | cut -c1-20 | sed 's/^-*//;s/-*$//')
+               SANITIZED=$(echo "$BRANCH_NAME" | sed 's/[^a-zA-Z0-9-]/-/g' | tr '[:upper:]' '[:lower:]' | sed 's/--*/-/g' | cut -c1-20 | sed 's/^-*//;s/-*$//')
               if [ -z "$SANITIZED" ]; then
                 SANITIZED="pr-${GH_PR_NUMBER}"
               fi
@@ -558,13 +558,20 @@ jobs:
           # Helper: create container app from scratch (used for new deploys and recovery)
           create_container_app() {
             echo "🆕 Creating container app ${CA_NAME}..."
+            ACR_ACCESS_TOKEN=$(az acr login --name "${ACR_NAME}" --expose-token --query accessToken -o tsv)
+            if [[ -z "${ACR_ACCESS_TOKEN}" ]]; then
+              echo "::error::Failed to obtain ACR access token for ${ACR_NAME}"
+              exit 1
+            fi
+            echo "::add-mask::${ACR_ACCESS_TOKEN}"
             az containerapp create \
               --name "${CA_NAME}" \
               --resource-group "${RG}" \
               --environment "${CAE_NAME}" \
               --image "${IMAGE}" \
               --registry-server "${ACR_SERVER}" \
-              --registry-identity system \
+              --registry-username "00000000-0000-0000-0000-000000000000" \
+              --registry-password "${ACR_ACCESS_TOKEN}" \
               --system-assigned \
               --cpu 0.5 \
               --memory 1Gi \
@@ -580,12 +587,73 @@ jobs:
               --output none
           }
 
+          ensure_registry_identity_auth() {
+            CA_PRINCIPAL_ID=$(az containerapp show \
+              --name "${CA_NAME}" \
+              --resource-group "${RG}" \
+              --query "identity.principalId" \
+              -o tsv 2>/dev/null || echo "")
+            if [[ -z "${CA_PRINCIPAL_ID}" || "${CA_PRINCIPAL_ID}" == "None" ]]; then
+              echo "::error::Container App managed identity is not available for ${CA_NAME}"
+              exit 1
+            fi
+            ACR_RESOURCE_ID=$(az acr show --name "${ACR_NAME}" --query id -o tsv)
+            ROLE_ASSIGNMENT_OUTPUT=""
+            if ! ROLE_ASSIGNMENT_OUTPUT=$(az role assignment create \
+              --assignee-object-id "${CA_PRINCIPAL_ID}" \
+              --assignee-principal-type ServicePrincipal \
+              --role "AcrPull" \
+              --scope "${ACR_RESOURCE_ID}" \
+              --output none 2>&1); then
+              if [[ "${ROLE_ASSIGNMENT_OUTPUT}" != *"RoleAssignmentExists"* && \
+                    "${ROLE_ASSIGNMENT_OUTPUT}" != *"role assignment already exists"* && \
+                    "${ROLE_ASSIGNMENT_OUTPUT}" != *"The role assignment already exists"* ]]; then
+                echo "::error::Failed to assign AcrPull role to ${CA_PRINCIPAL_ID}: ${ROLE_ASSIGNMENT_OUTPUT}"
+                exit 1
+              fi
+              echo "   AcrPull role assignment already exists for ${CA_PRINCIPAL_ID}"
+            fi
+            ACR_PULL_VISIBLE=false
+            for attempt in $(seq 1 12); do
+              ASSIGNMENT_ERROR_FILE="$(mktemp)"
+              if ! ASSIGNMENT_COUNT=$(az role assignment list \
+                --assignee-object-id "${CA_PRINCIPAL_ID}" \
+                --scope "${ACR_RESOURCE_ID}" \
+                --query "[?roleDefinitionName=='AcrPull'] | length(@)" \
+                -o tsv 2>"${ASSIGNMENT_ERROR_FILE}"); then
+                ASSIGNMENT_ERROR="$(cat "${ASSIGNMENT_ERROR_FILE}")"
+                rm -f "${ASSIGNMENT_ERROR_FILE}"
+                echo "::error::Failed to verify AcrPull role assignment for ${CA_PRINCIPAL_ID}: ${ASSIGNMENT_ERROR}"
+                exit 1
+              fi
+              rm -f "${ASSIGNMENT_ERROR_FILE}"
+              if [[ "${ASSIGNMENT_COUNT}" =~ ^[1-9][0-9]*$ ]]; then
+                ACR_PULL_VISIBLE=true
+                break
+              fi
+              echo "   Waiting for AcrPull role assignment to propagate (attempt ${attempt}/12)..."
+              sleep 10
+            done
+            if [[ "${ACR_PULL_VISIBLE}" != "true" ]]; then
+              echo "::error::AcrPull role assignment for ${CA_PRINCIPAL_ID} was not visible before switching registry auth"
+              exit 1
+            fi
+            az containerapp registry set \
+              --name "${CA_NAME}" \
+              --resource-group "${RG}" \
+              --server "${ACR_SERVER}" \
+              --identity system \
+              --output none
+            echo "   AcrPull role assigned to ${CA_PRINCIPAL_ID}"
+          }
+
           # Check if container app already exists
           if az containerapp show --name "${CA_NAME}" --resource-group "${RG}" >/dev/null 2>&1; then
             echo "🔄 Updating existing container app (Issue #68)..."
             # Try update; if it fails (broken revision, registry auth issues),
             # delete and recreate for idempotent recovery.
             UPDATE_OK=true
+            ensure_registry_identity_auth
             az containerapp secret set \
               --name "${CA_NAME}" \
               --resource-group "${RG}" \
@@ -602,26 +670,11 @@ jobs:
               echo "⚠️  Update failed — deleting and recreating for recovery..."
               az containerapp delete --name "${CA_NAME}" --resource-group "${RG}" --yes --output none 2>/dev/null || true
               create_container_app
+              ensure_registry_identity_auth
             fi
           else
             create_container_app
-          fi
-
-          # Ensure AcrPull role is assigned (SP has User Access Administrator).
-          CA_PRINCIPAL_ID=$(az containerapp show \
-            --name "${CA_NAME}" \
-            --resource-group "${RG}" \
-            --query "identity.principalId" \
-            -o tsv 2>/dev/null || echo "")
-          if [[ -n "${CA_PRINCIPAL_ID}" && "${CA_PRINCIPAL_ID}" != "None" ]]; then
-            ACR_RESOURCE_ID=$(az acr show --name "${ACR_NAME}" --query id -o tsv)
-            az role assignment create \
-              --assignee-object-id "${CA_PRINCIPAL_ID}" \
-              --assignee-principal-type ServicePrincipal \
-              --role "AcrPull" \
-              --scope "${ACR_RESOURCE_ID}" \
-              --output none 2>/dev/null || true
-            echo "   AcrPull role assigned to ${CA_PRINCIPAL_ID}"
+            ensure_registry_identity_auth
           fi
 
           echo "ca_name=${CA_NAME}" >> "$GITHUB_OUTPUT"
@@ -633,21 +686,26 @@ jobs:
           CA_NAME="${{ steps.deploy-app.outputs.ca_name }}"
 
           echo "⏳ Waiting for container app to reach Running state..."
-          for i in $(seq 1 24); do
-            RUNNING=$(az containerapp revision list \
+          timeout_s=120
+          poll_interval_s=5
+          max_iters=$((timeout_s / poll_interval_s))
+          iter=0
+          while [[ $iter -lt $max_iters ]]; do
+            RUNNING=$(timeout 10s az containerapp show \
               --name "${CA_NAME}" \
               --resource-group "${RG}" \
-              --query "[0].properties.runningState" \
+              --query "properties.runningStatus" \
               --output tsv 2>/dev/null || echo "Unknown")
-            echo "   Attempt ${i}/24: runningState=${RUNNING}"
             if [[ "$RUNNING" == "Running" ]]; then
-              echo "✅ Container app is running"
+              echo "✅ Container app is running (after $((iter * poll_interval_s))s)"
               break
             fi
-            if [[ $i -eq 24 ]]; then
-              echo "⚠️  Timeout waiting — check logs in Azure portal"
+            iter=$((iter + 1))
+            if [[ $iter -ge $max_iters ]]; then
+              echo "⚠️  Timeout after ${timeout_s}s — check logs in Azure portal"
+              break
             fi
-            sleep 10
+            sleep "${poll_interval_s}"
           done
 
       - name: Remove Bolt port 7687 from Valkey container (bolt is now separate)
@@ -692,6 +750,14 @@ jobs:
           BOLT_SECRET_MOUNT_PATH="/mnt/secrets"
           BOLT_TLS_CERT_PATH="${BOLT_SECRET_MOUNT_PATH}/bolt-tls-cert"
           BOLT_TLS_KEY_PATH="${BOLT_SECRET_MOUNT_PATH}/bolt-tls-key"
+
+          mask_multiline_secret() {
+            local value="$1"
+            local escaped="${value//'%'/'%25'}"
+            escaped="${escaped//$'\r'/'%0D'}"
+            escaped="${escaped//$'\n'/'%0A'}"
+            echo "::add-mask::${escaped}"
+          }
 
           echo "🚀 Deploying standalone Bolt server: ${CA_NAME}"
           echo "   Persistence backend: ${PERSISTENCE_BACKEND}"
@@ -743,15 +809,38 @@ jobs:
             echo "::error::DEPLOY_BOLT_TLS_CERT_PEM and DEPLOY_BOLT_TLS_KEY_PEM GitHub secrets are required for external Bolt TCP deploys"
             exit 1
           fi
+          mask_multiline_secret "${DEPLOY_BOLT_TLS_CERT_PEM}"
+          mask_multiline_secret "${DEPLOY_BOLT_TLS_KEY_PEM}"
 
           # Reuse the existing Bolt password on updates to avoid credential churn.
           APP_EXISTS=false
           BOLT_PASS=""
           if az containerapp show --name "${CA_NAME}" --resource-group "${RG}" >/dev/null 2>&1; then
             APP_EXISTS=true
-            EXISTING_BOLT_SECRET_NAMES=$(az containerapp show --name "${CA_NAME}" --resource-group "${RG}" --query "properties.configuration.secrets[].name" -o tsv 2>/dev/null || true)
+            if ! EXISTING_BOLT_SECRET_NAMES=$(az containerapp show \
+              --name "${CA_NAME}" \
+              --resource-group "${RG}" \
+              --query "properties.configuration.secrets[].name" \
+              -o tsv 2>&1); then
+              echo "::error::Failed to inspect existing Bolt secrets for ${CA_NAME}: ${EXISTING_BOLT_SECRET_NAMES}"
+              exit 1
+            fi
             if printf '%s\n' "${EXISTING_BOLT_SECRET_NAMES}" | grep -Fxq "bolt-password"; then
-              BOLT_PASS=$(az containerapp secret show --name "${CA_NAME}" --resource-group "${RG}" --secret-name bolt-password --query value -o tsv 2>/dev/null || true)
+              BOLT_PASS_VALUE_FILE="$(mktemp)"
+              BOLT_PASS_ERROR_FILE="$(mktemp)"
+              if ! az containerapp secret show \
+                --name "${CA_NAME}" \
+                --resource-group "${RG}" \
+                --secret-name bolt-password \
+                --query value \
+                -o tsv >"${BOLT_PASS_VALUE_FILE}" 2>"${BOLT_PASS_ERROR_FILE}"; then
+                BOLT_PASS_ERROR="$(cat "${BOLT_PASS_ERROR_FILE}")"
+                rm -f "${BOLT_PASS_VALUE_FILE}" "${BOLT_PASS_ERROR_FILE}"
+                echo "::error::Existing Bolt app has bolt-password configured but secret lookup failed: ${BOLT_PASS_ERROR}"
+                exit 1
+              fi
+              BOLT_PASS="$(tr -d '\r' < "${BOLT_PASS_VALUE_FILE}")"
+              rm -f "${BOLT_PASS_VALUE_FILE}" "${BOLT_PASS_ERROR_FILE}"
               if [[ -z "${BOLT_PASS}" ]]; then
                 echo "::error::Existing Bolt app has bolt-password configured but secret lookup failed — refusing to rotate credentials"
                 exit 1
@@ -795,7 +884,7 @@ jobs:
             "BOLT_PASSWORD=secretref:bolt-password"
             "BOLT_TLS_CERT=${BOLT_TLS_CERT_PATH}"
             "BOLT_TLS_KEY=${BOLT_TLS_KEY_PATH}"
-            "BOLT_REQUIRE_TLS=true"
+            "BOLT_REQUIRE_TLS=1"
           )
           if [[ -n "${REPLICA_URL}" ]]; then
             SECRETS_ARGS+=("redis-replica-url=${REPLICA_URL}")
@@ -807,13 +896,20 @@ jobs:
 
           # Helper: create bolt container app
           create_bolt_app() {
+            ACR_ACCESS_TOKEN=$(az acr login --name "${ACR_NAME}" --expose-token --query accessToken -o tsv)
+            if [[ -z "${ACR_ACCESS_TOKEN}" ]]; then
+              echo "::error::Failed to obtain ACR access token for ${ACR_NAME}"
+              exit 1
+            fi
+            echo "::add-mask::${ACR_ACCESS_TOKEN}"
             az containerapp create \
               --name "${CA_NAME}" \
               --resource-group "${RG}" \
               --environment "${CAE_NAME}" \
               --image "${IMAGE}" \
               --registry-server "${ACR_SERVER}" \
-              --registry-identity system \
+              --registry-username "00000000-0000-0000-0000-000000000000" \
+              --registry-password "${ACR_ACCESS_TOKEN}" \
               --system-assigned \
               --cpu 0.5 \
               --memory 1Gi \
@@ -829,10 +925,68 @@ jobs:
               --output none
           }
 
+          ensure_bolt_registry_identity_auth() {
+            CA_PRINCIPAL_ID=$(az containerapp show \
+              --name "${CA_NAME}" --resource-group "${RG}" \
+              --query "identity.principalId" -o tsv 2>/dev/null || echo "")
+            if [[ -z "${CA_PRINCIPAL_ID}" || "${CA_PRINCIPAL_ID}" == "None" ]]; then
+              echo "::error::Bolt Container App managed identity is not available for ${CA_NAME}"
+              exit 1
+            fi
+            ACR_RESOURCE_ID=$(az acr show --name "${ACR_NAME}" --query id -o tsv)
+            ROLE_ASSIGNMENT_OUTPUT=""
+            if ! ROLE_ASSIGNMENT_OUTPUT=$(az role assignment create \
+              --assignee-object-id "${CA_PRINCIPAL_ID}" \
+              --assignee-principal-type ServicePrincipal \
+              --role "AcrPull" \
+              --scope "${ACR_RESOURCE_ID}" \
+              --output none 2>&1); then
+              if [[ "${ROLE_ASSIGNMENT_OUTPUT}" != *"RoleAssignmentExists"* && \
+                    "${ROLE_ASSIGNMENT_OUTPUT}" != *"role assignment already exists"* && \
+                    "${ROLE_ASSIGNMENT_OUTPUT}" != *"The role assignment already exists"* ]]; then
+                echo "::error::Failed to assign AcrPull role to ${CA_PRINCIPAL_ID}: ${ROLE_ASSIGNMENT_OUTPUT}"
+                exit 1
+              fi
+              echo "   AcrPull role assignment already exists for ${CA_PRINCIPAL_ID}"
+            fi
+            ACR_PULL_VISIBLE=false
+            for attempt in $(seq 1 12); do
+              ASSIGNMENT_ERROR_FILE="$(mktemp)"
+              if ! ASSIGNMENT_COUNT=$(az role assignment list \
+                --assignee-object-id "${CA_PRINCIPAL_ID}" \
+                --scope "${ACR_RESOURCE_ID}" \
+                --query "[?roleDefinitionName=='AcrPull'] | length(@)" \
+                -o tsv 2>"${ASSIGNMENT_ERROR_FILE}"); then
+                ASSIGNMENT_ERROR="$(cat "${ASSIGNMENT_ERROR_FILE}")"
+                rm -f "${ASSIGNMENT_ERROR_FILE}"
+                echo "::error::Failed to verify AcrPull role assignment for ${CA_PRINCIPAL_ID}: ${ASSIGNMENT_ERROR}"
+                exit 1
+              fi
+              rm -f "${ASSIGNMENT_ERROR_FILE}"
+              if [[ "${ASSIGNMENT_COUNT}" =~ ^[1-9][0-9]*$ ]]; then
+                ACR_PULL_VISIBLE=true
+                break
+              fi
+              echo "   Waiting for AcrPull role assignment to propagate (attempt ${attempt}/12)..."
+              sleep 10
+            done
+            if [[ "${ACR_PULL_VISIBLE}" != "true" ]]; then
+              echo "::error::AcrPull role assignment for ${CA_PRINCIPAL_ID} was not visible before switching registry auth"
+              exit 1
+            fi
+            az containerapp registry set \
+              --name "${CA_NAME}" \
+              --resource-group "${RG}" \
+              --server "${ACR_SERVER}" \
+              --identity system \
+              --output none
+          }
+
           # Idempotent create-or-update
           if [[ "${APP_EXISTS}" == "true" ]]; then
             echo "🔄 Updating existing bolt container app..."
             UPDATE_OK=true
+            ensure_bolt_registry_identity_auth
             if ! az containerapp secret set \
               --name "${CA_NAME}" \
               --resource-group "${RG}" \
@@ -854,23 +1008,11 @@ jobs:
               echo "⚠️  Update failed — deleting and recreating..."
               az containerapp delete --name "${CA_NAME}" --resource-group "${RG}" --yes --output none 2>/dev/null || true
               create_bolt_app
+              ensure_bolt_registry_identity_auth
             fi
           else
             create_bolt_app
-          fi
-
-          # Ensure AcrPull role
-          CA_PRINCIPAL_ID=$(az containerapp show \
-            --name "${CA_NAME}" --resource-group "${RG}" \
-            --query "identity.principalId" -o tsv 2>/dev/null || echo "")
-          if [[ -n "${CA_PRINCIPAL_ID}" && "${CA_PRINCIPAL_ID}" != "None" ]]; then
-            ACR_RESOURCE_ID=$(az acr show --name "${ACR_NAME}" --query id -o tsv)
-            az role assignment create \
-              --assignee-object-id "${CA_PRINCIPAL_ID}" \
-              --assignee-principal-type ServicePrincipal \
-              --role "AcrPull" \
-              --scope "${ACR_RESOURCE_ID}" \
-              --output none 2>/dev/null || true
+            ensure_bolt_registry_identity_auth
           fi
 
           echo "bolt_ca_name=${CA_NAME}" >> "$GITHUB_OUTPUT"
@@ -905,24 +1047,22 @@ jobs:
           ENV_VAR_ARGS="${ENV_VAR_ARGS} GQL_API_BIND_ADDR=0.0.0.0:3001"
           ENV_VAR_ARGS="${ENV_VAR_ARGS} GQL_API_ALLOWED_ORIGINS=*"
 
-          # Idempotent create-or-update
-          if az containerapp show --name "${CA_NAME}" --resource-group "${RG}" >/dev/null 2>&1; then
-            echo "🔄 Updating existing gql-api container app..."
-            az containerapp update \
-              --name "${CA_NAME}" \
-              --resource-group "${RG}" \
-              --image "${IMAGE}" \
-              --set-env-vars ${ENV_VAR_ARGS} \
-              --output none
-          else
+          create_api_app() {
             echo "🆕 Creating gql-api container app..."
+            ACR_ACCESS_TOKEN=$(az acr login --name "${ACR_NAME}" --expose-token --query accessToken -o tsv)
+            if [[ -z "${ACR_ACCESS_TOKEN}" ]]; then
+              echo "::error::Failed to obtain ACR access token for ${ACR_NAME}"
+              exit 1
+            fi
+            echo "::add-mask::${ACR_ACCESS_TOKEN}"
             az containerapp create \
               --name "${CA_NAME}" \
               --resource-group "${RG}" \
               --environment "${CAE_NAME}" \
               --image "${IMAGE}" \
               --registry-server "${ACR_SERVER}" \
-              --registry-identity system \
+              --registry-username "00000000-0000-0000-0000-000000000000" \
+              --registry-password "${ACR_ACCESS_TOKEN}" \
               --system-assigned \
               --cpu 0.25 \
               --memory 0.5Gi \
@@ -933,20 +1073,85 @@ jobs:
               --transport http \
               --env-vars ${ENV_VAR_ARGS} \
               --output none
-          fi
+          }
 
-          # Ensure AcrPull role
-          CA_PRINCIPAL_ID=$(az containerapp show \
-            --name "${CA_NAME}" --resource-group "${RG}" \
-            --query "identity.principalId" -o tsv 2>/dev/null || echo "")
-          if [[ -n "${CA_PRINCIPAL_ID}" && "${CA_PRINCIPAL_ID}" != "None" ]]; then
+          ensure_api_registry_identity_auth() {
+            CA_PRINCIPAL_ID=$(az containerapp show \
+              --name "${CA_NAME}" --resource-group "${RG}" \
+              --query "identity.principalId" -o tsv 2>/dev/null || echo "")
+            if [[ -z "${CA_PRINCIPAL_ID}" || "${CA_PRINCIPAL_ID}" == "None" ]]; then
+              echo "::error::API Container App managed identity is not available for ${CA_NAME}"
+              exit 1
+            fi
             ACR_RESOURCE_ID=$(az acr show --name "${ACR_NAME}" --query id -o tsv)
-            az role assignment create \
+            ROLE_ASSIGNMENT_OUTPUT=""
+            if ! ROLE_ASSIGNMENT_OUTPUT=$(az role assignment create \
               --assignee-object-id "${CA_PRINCIPAL_ID}" \
               --assignee-principal-type ServicePrincipal \
               --role "AcrPull" \
               --scope "${ACR_RESOURCE_ID}" \
-              --output none 2>/dev/null || true
+              --output none 2>&1); then
+              if [[ "${ROLE_ASSIGNMENT_OUTPUT}" != *"RoleAssignmentExists"* && \
+                    "${ROLE_ASSIGNMENT_OUTPUT}" != *"role assignment already exists"* && \
+                    "${ROLE_ASSIGNMENT_OUTPUT}" != *"The role assignment already exists"* ]]; then
+                echo "::error::Failed to assign AcrPull role to ${CA_PRINCIPAL_ID}: ${ROLE_ASSIGNMENT_OUTPUT}"
+                exit 1
+              fi
+              echo "   AcrPull role assignment already exists for ${CA_PRINCIPAL_ID}"
+            fi
+            ACR_PULL_VISIBLE=false
+            for attempt in $(seq 1 12); do
+              ASSIGNMENT_ERROR_FILE="$(mktemp)"
+              if ! ASSIGNMENT_COUNT=$(az role assignment list \
+                --assignee-object-id "${CA_PRINCIPAL_ID}" \
+                --scope "${ACR_RESOURCE_ID}" \
+                --query "[?roleDefinitionName=='AcrPull'] | length(@)" \
+                -o tsv 2>"${ASSIGNMENT_ERROR_FILE}"); then
+                ASSIGNMENT_ERROR="$(cat "${ASSIGNMENT_ERROR_FILE}")"
+                rm -f "${ASSIGNMENT_ERROR_FILE}"
+                echo "::error::Failed to verify AcrPull role assignment for ${CA_PRINCIPAL_ID}: ${ASSIGNMENT_ERROR}"
+                exit 1
+              fi
+              rm -f "${ASSIGNMENT_ERROR_FILE}"
+              if [[ "${ASSIGNMENT_COUNT}" =~ ^[1-9][0-9]*$ ]]; then
+                ACR_PULL_VISIBLE=true
+                break
+              fi
+              echo "   Waiting for AcrPull role assignment to propagate (attempt ${attempt}/12)..."
+              sleep 10
+            done
+            if [[ "${ACR_PULL_VISIBLE}" != "true" ]]; then
+              echo "::error::AcrPull role assignment for ${CA_PRINCIPAL_ID} was not visible before switching registry auth"
+              exit 1
+            fi
+            az containerapp registry set \
+              --name "${CA_NAME}" \
+              --resource-group "${RG}" \
+              --server "${ACR_SERVER}" \
+              --identity system \
+              --output none
+          }
+
+          # Idempotent create-or-update
+          if az containerapp show --name "${CA_NAME}" --resource-group "${RG}" >/dev/null 2>&1; then
+            echo "🔄 Updating existing gql-api container app..."
+            ensure_api_registry_identity_auth
+            UPDATE_OK=true
+            az containerapp update \
+              --name "${CA_NAME}" \
+              --resource-group "${RG}" \
+              --image "${IMAGE}" \
+              --set-env-vars ${ENV_VAR_ARGS} \
+              --output none || UPDATE_OK=false
+            if [[ "${UPDATE_OK}" == "false" ]]; then
+              echo "⚠️  Update failed — deleting and recreating gql-api..."
+              az containerapp delete --name "${CA_NAME}" --resource-group "${RG}" --yes --output none 2>/dev/null || true
+              create_api_app
+              ensure_api_registry_identity_auth
+            fi
+          else
+            create_api_app
+            ensure_api_registry_identity_auth
           fi
 
           API_FQDN=$(az containerapp show \
@@ -980,7 +1185,7 @@ jobs:
           ACR_SERVER="${DEPLOY_ACR_SERVER}"
           ACR_NAME="${DEPLOY_ACR_NAME}"
           IMAGE="${ACR_SERVER}/sedandelivery-fabric-sync:${DEPLOY_SYNC_IMAGE_TAG}"
-          CA_NAME="sd2-${ENV_NAME}-fabric-sync"
+          CA_NAME="sd2-${ENV_NAME}-sync"
 
           # Derive Redis FQDN from the already-deployed primary container app
           # (not from a step that runs later — that would always be empty).
@@ -1008,31 +1213,22 @@ jobs:
           echo "   Image: ${IMAGE}"
           echo "   Redis: [masked]"
 
-          if az containerapp show --name "${CA_NAME}" --resource-group "${RG}" >/dev/null 2>&1; then
-            echo "🔄 Updating existing sync container app..."
-            az containerapp secret set \
-              --name "${CA_NAME}" --resource-group "${RG}" \
-              --secrets "fabric-client-secret=${DEPLOY_AZURE_CLIENT_SECRET}" \
-              --output none
-            az containerapp update \
-              --name "${CA_NAME}" --resource-group "${RG}" \
-              --image "${IMAGE}" \
-              --set-env-vars \
-                "GQL_REDIS_URL=${REDIS_URL}" \
-                "GQL_FABRIC_ENDPOINT=${DEPLOY_FABRIC_ENDPOINT}" \
-                "GQL_FABRIC_TENANT_ID=${DEPLOY_AZURE_TENANT_ID}" \
-                "GQL_FABRIC_CLIENT_ID=${DEPLOY_AZURE_CLIENT_ID}" \
-                "GQL_FABRIC_CLIENT_SECRET=secretref:fabric-client-secret" \
-              --output none
-          else
+          create_sync_app() {
             echo "🆕 Creating sync container app..."
+            ACR_ACCESS_TOKEN=$(az acr login --name "${ACR_NAME}" --expose-token --query accessToken -o tsv)
+            if [[ -z "${ACR_ACCESS_TOKEN}" ]]; then
+              echo "::error::Failed to obtain ACR access token for ${ACR_NAME}"
+              exit 1
+            fi
+            echo "::add-mask::${ACR_ACCESS_TOKEN}"
             az containerapp create \
               --name "${CA_NAME}" \
               --resource-group "${RG}" \
               --environment "${CAE_NAME}" \
               --image "${IMAGE}" \
               --registry-server "${ACR_SERVER}" \
-              --registry-identity system \
+              --registry-username "00000000-0000-0000-0000-000000000000" \
+              --registry-password "${ACR_ACCESS_TOKEN}" \
               --system-assigned \
               --cpu 0.25 \
               --memory 0.5Gi \
@@ -1046,19 +1242,92 @@ jobs:
                 "GQL_FABRIC_CLIENT_ID=${DEPLOY_AZURE_CLIENT_ID}" \
                 "GQL_FABRIC_CLIENT_SECRET=secretref:fabric-client-secret" \
               --output none
-          fi
+          }
 
-          # Grant AcrPull to the sync app's managed identity
-          SYNC_PRINCIPAL_ID=$(az containerapp show \
-            --name "${CA_NAME}" --resource-group "${RG}" \
-            --query "identity.principalId" -o tsv 2>/dev/null || echo "")
-          if [[ -n "${SYNC_PRINCIPAL_ID}" && "${SYNC_PRINCIPAL_ID}" != "None" ]]; then
+          ensure_sync_registry_identity_auth() {
+            SYNC_PRINCIPAL_ID=$(az containerapp show \
+              --name "${CA_NAME}" --resource-group "${RG}" \
+              --query "identity.principalId" -o tsv 2>/dev/null || echo "")
+            if [[ -z "${SYNC_PRINCIPAL_ID}" || "${SYNC_PRINCIPAL_ID}" == "None" ]]; then
+              echo "::error::Fabric sync Container App managed identity is not available for ${CA_NAME}"
+              exit 1
+            fi
             ACR_RESOURCE_ID=$(az acr show --name "${ACR_NAME}" --query id -o tsv)
-            az role assignment create \
+            ROLE_ASSIGNMENT_OUTPUT=""
+            if ! ROLE_ASSIGNMENT_OUTPUT=$(az role assignment create \
               --assignee-object-id "${SYNC_PRINCIPAL_ID}" \
               --assignee-principal-type ServicePrincipal \
-              --role "AcrPull" --scope "${ACR_RESOURCE_ID}" \
-              --output none 2>/dev/null || true
+              --role "AcrPull" \
+              --scope "${ACR_RESOURCE_ID}" \
+              --output none 2>&1); then
+              if [[ "${ROLE_ASSIGNMENT_OUTPUT}" != *"RoleAssignmentExists"* && \
+                    "${ROLE_ASSIGNMENT_OUTPUT}" != *"role assignment already exists"* && \
+                    "${ROLE_ASSIGNMENT_OUTPUT}" != *"The role assignment already exists"* ]]; then
+                echo "::error::Failed to assign AcrPull role to ${SYNC_PRINCIPAL_ID}: ${ROLE_ASSIGNMENT_OUTPUT}"
+                exit 1
+              fi
+              echo "   AcrPull role assignment already exists for ${SYNC_PRINCIPAL_ID}"
+            fi
+            ACR_PULL_VISIBLE=false
+            for attempt in $(seq 1 12); do
+              ASSIGNMENT_ERROR_FILE="$(mktemp)"
+              if ! ASSIGNMENT_COUNT=$(az role assignment list \
+                --assignee-object-id "${SYNC_PRINCIPAL_ID}" \
+                --scope "${ACR_RESOURCE_ID}" \
+                --query "[?roleDefinitionName=='AcrPull'] | length(@)" \
+                -o tsv 2>"${ASSIGNMENT_ERROR_FILE}"); then
+                ASSIGNMENT_ERROR="$(cat "${ASSIGNMENT_ERROR_FILE}")"
+                rm -f "${ASSIGNMENT_ERROR_FILE}"
+                echo "::error::Failed to verify AcrPull role assignment for ${SYNC_PRINCIPAL_ID}: ${ASSIGNMENT_ERROR}"
+                exit 1
+              fi
+              rm -f "${ASSIGNMENT_ERROR_FILE}"
+              if [[ "${ASSIGNMENT_COUNT}" =~ ^[1-9][0-9]*$ ]]; then
+                ACR_PULL_VISIBLE=true
+                break
+              fi
+              echo "   Waiting for AcrPull role assignment to propagate (attempt ${attempt}/12)..."
+              sleep 10
+            done
+            if [[ "${ACR_PULL_VISIBLE}" != "true" ]]; then
+              echo "::error::AcrPull role assignment for ${SYNC_PRINCIPAL_ID} was not visible before switching registry auth"
+              exit 1
+            fi
+            az containerapp registry set \
+              --name "${CA_NAME}" \
+              --resource-group "${RG}" \
+              --server "${ACR_SERVER}" \
+              --identity system \
+              --output none
+          }
+
+          if az containerapp show --name "${CA_NAME}" --resource-group "${RG}" >/dev/null 2>&1; then
+            echo "🔄 Updating existing sync container app..."
+            ensure_sync_registry_identity_auth
+            az containerapp secret set \
+              --name "${CA_NAME}" --resource-group "${RG}" \
+              --secrets "fabric-client-secret=${DEPLOY_AZURE_CLIENT_SECRET}" \
+              --output none
+            UPDATE_OK=true
+            az containerapp update \
+              --name "${CA_NAME}" --resource-group "${RG}" \
+              --image "${IMAGE}" \
+              --set-env-vars \
+                "GQL_REDIS_URL=${REDIS_URL}" \
+                "GQL_FABRIC_ENDPOINT=${DEPLOY_FABRIC_ENDPOINT}" \
+                "GQL_FABRIC_TENANT_ID=${DEPLOY_AZURE_TENANT_ID}" \
+                "GQL_FABRIC_CLIENT_ID=${DEPLOY_AZURE_CLIENT_ID}" \
+                "GQL_FABRIC_CLIENT_SECRET=secretref:fabric-client-secret" \
+              --output none || UPDATE_OK=false
+            if [[ "${UPDATE_OK}" == "false" ]]; then
+              echo "⚠️  Update failed — deleting and recreating sync container app..."
+              az containerapp delete --name "${CA_NAME}" --resource-group "${RG}" --yes --output none 2>/dev/null || true
+              create_sync_app
+              ensure_sync_registry_identity_auth
+            fi
+          else
+            create_sync_app
+            ensure_sync_registry_identity_auth
           fi
 
           echo "✅ sedandelivery-fabric-sync deployed: ${CA_NAME}"
@@ -1135,9 +1404,9 @@ jobs:
           else
             # Valkey container health check — verify the container app is running
             REDIS_CA_NAME="sd2-${ENV_NAME}-redis"
-            RUNNING=$(az containerapp revision list \
+            RUNNING=$(timeout 10s az containerapp show \
               --name "${REDIS_CA_NAME}" --resource-group "${RG}" \
-              --query "[0].properties.runningState" -o tsv 2>/dev/null || echo "Unknown")
+              --query "properties.runningStatus" -o tsv 2>/dev/null || echo "Unknown")
             echo "   Valkey container state: ${RUNNING}"
             if [[ "${RUNNING}" != "Running" ]]; then
               echo "::warning::Valkey container is not in Running state (${RUNNING})"
@@ -1165,27 +1434,68 @@ jobs:
 
           echo "🧪 Running smoke test against Bolt endpoint: ${BOLT_FQDN}:7687"
 
-          # TLS handshake check — verify the public endpoint is actually serving TLS.
+          # The default ACA hostname intentionally requires a trust override, so the
+          # smoke test validates that the endpoint presents the configured certificate
+          # and that the certificate is currently within its validity window.
           SMOKE_OK=false
           SMOKE_LOG="${RUNNER_TEMP}/bolt-smoke.log"
+          EXPECTED_CERT_FILE="${RUNNER_TEMP}/expected-bolt-cert.pem"
+          LIVE_CERT_FILE="${RUNNER_TEMP}/live-bolt-cert.pem"
+          EXPECTED_CERT_PEM=$(az containerapp secret show \
+            --name "${BOLT_CA_NAME}" --resource-group "${RG}" \
+            --secret-name bolt-tls-cert --query value -o tsv 2>/dev/null || echo "")
+          if [[ -z "${EXPECTED_CERT_PEM}" ]]; then
+            echo "::error::Failed to resolve configured bolt-tls-cert secret"
+            exit 1
+          fi
+          printf '%s\n' "${EXPECTED_CERT_PEM}" > "${EXPECTED_CERT_FILE}"
+          EXPECTED_CERT_SHA256=$(openssl x509 -in "${EXPECTED_CERT_FILE}" -noout -fingerprint -sha256 2>/dev/null | cut -d= -f2 | tr -d ':')
+          if [[ -z "${EXPECTED_CERT_SHA256}" ]]; then
+            echo "::error::Failed to parse configured bolt-tls-cert"
+            exit 1
+          fi
           for i in $(seq 1 6); do
-            timeout 10 bash -c "printf '' | openssl s_client -showcerts -connect '${BOLT_FQDN}:7687' -servername '${BOLT_FQDN}' >'${SMOKE_LOG}' 2>&1" || true
-            if grep -Fq 'BEGIN CERTIFICATE' "${SMOKE_LOG}" && ! grep -Eq 'no peer certificate available|Cipher is \(NONE\)|wrong version number|unexpected eof while reading' "${SMOKE_LOG}"; then
-              echo "   TLS handshake reached Bolt endpoint (attempt ${i})"
-              SMOKE_OK=true
-              break
+            SMOKE_EXIT=0
+            timeout 10 bash -c "printf '' | openssl s_client -showcerts -connect '${BOLT_FQDN}:7687' -servername '${BOLT_FQDN}' >'${SMOKE_LOG}' 2>&1" || SMOKE_EXIT=$?
+            if [[ "${SMOKE_EXIT}" -ne 0 && "${SMOKE_EXIT}" -ne 124 ]]; then
+              echo "   Attempt ${i}/6: openssl exited with status ${SMOKE_EXIT}, waiting..."
+              sleep 10
+              continue
             fi
-            echo "   Attempt ${i}/6: TLS handshake not yet ready, waiting..."
-            sleep 10
+            awk '/BEGIN CERTIFICATE/{flag=1} flag{print} /END CERTIFICATE/{exit}' "${SMOKE_LOG}" > "${LIVE_CERT_FILE}"
+            if [[ ! -s "${LIVE_CERT_FILE}" ]]; then
+              echo "   Attempt ${i}/6: no certificate presented yet, waiting..."
+              sleep 10
+              continue
+            fi
+            LIVE_CERT_SHA256=$(openssl x509 -in "${LIVE_CERT_FILE}" -noout -fingerprint -sha256 2>/dev/null | cut -d= -f2 | tr -d ':')
+            if [[ -z "${LIVE_CERT_SHA256}" || "${LIVE_CERT_SHA256}" != "${EXPECTED_CERT_SHA256}" ]]; then
+              echo "   Attempt ${i}/6: live certificate does not match configured bolt-tls-cert, waiting..."
+              sleep 10
+              continue
+            fi
+            if ! openssl x509 -in "${LIVE_CERT_FILE}" -checkend 0 -noout >/dev/null 2>&1; then
+              echo "   Attempt ${i}/6: live certificate is expired, waiting..."
+              sleep 10
+              continue
+            fi
+            if grep -Eq 'no peer certificate available|Cipher is \(NONE\)|wrong version number|unexpected eof while reading' "${SMOKE_LOG}"; then
+              echo "   Attempt ${i}/6: TLS handshake did not complete cleanly, waiting..."
+              sleep 10
+              continue
+            fi
+            echo "   TLS handshake reached Bolt endpoint with the configured, unexpired certificate (attempt ${i})"
+            SMOKE_OK=true
+            break
           done
 
           if [[ "${SMOKE_OK}" == "false" ]]; then
-            echo "::error::Bolt TLS handshake did not complete after 60s"
+            echo "::error::Bolt TLS smoke test did not observe the configured, unexpired certificate after 60s"
             cat "${SMOKE_LOG}" || true
             exit 1
           fi
 
-          echo "✅ Smoke test passed — Bolt endpoint completed a TLS handshake"
+          echo "✅ Smoke test passed — Bolt endpoint presented the configured, unexpired TLS certificate"
 
       - name: Post deployment comment to PR
         if: github.event_name == 'pull_request'
@@ -1229,16 +1539,21 @@ jobs:
               --query value -o tsv
             \`\`\`
 
-            **Connect via Bolt (Neo4j driver):**
+            **Temporary bootstrap connection via Bolt (trust override required):**
             \`\`\`python
             from neo4j import GraphDatabase
             driver = GraphDatabase.driver(
                 "bolt+ssc://${boltFqdn}:7687",
                 auth=("neo4j", "<retrieve-bolt-password>"),
             )
-            # If you later bind a custom domain with a matching CA-issued
-            # certificate, switch to bolt+s://.
             \`\`\`
+
+            This ACA-generated hostname does **not** provide production-authenticated
+            TLS. Use \`bolt+ssc://\` only for temporary bootstrap or trusted-network
+            validation where you explicitly accept the trust override. Before treating
+            the endpoint as production-ready for untrusted clients, bind a custom
+            domain with a matching CA-issued certificate and switch clients to
+            \`bolt+s://\`.
 
             To clean up: run **Undeploy** workflow with resource group \`${rg}\`.`;
 

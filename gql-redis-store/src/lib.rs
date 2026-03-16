@@ -1169,12 +1169,12 @@ mod tests {
     #[test]
     fn connection_defaults_are_sensible() {
         use connection::*;
-        assert!(DEFAULT_POOL_SIZE > 0);
-        assert!(DEFAULT_POOL_TIMEOUT_SECS > 0);
-        assert!(DEFAULT_IDLE_TIMEOUT_SECS > 0);
-        assert!(DEFAULT_MIN_IDLE > 0);
+        const { assert!(DEFAULT_POOL_SIZE > 0) };
+        const { assert!(DEFAULT_POOL_TIMEOUT_SECS > 0) };
+        const { assert!(DEFAULT_IDLE_TIMEOUT_SECS > 0) };
+        const { assert!(DEFAULT_MIN_IDLE > 0) };
         // Pool size should be reasonable (not absurdly large).
-        assert!(DEFAULT_POOL_SIZE <= 256);
+        const { assert!(DEFAULT_POOL_SIZE <= 256) };
     }
 }
 

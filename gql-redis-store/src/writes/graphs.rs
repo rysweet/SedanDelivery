@@ -381,8 +381,8 @@ mod tests {
     #[test]
     fn max_nodes_for_delete_constant() {
         // Verify the guard is a positive, bounded value.
-        assert!(crate::MAX_NODES_FOR_DELETE > 0);
-        assert!(crate::MAX_NODES_FOR_DELETE <= 1_000_000);
+        const { assert!(crate::MAX_NODES_FOR_DELETE > 0) };
+        const { assert!(crate::MAX_NODES_FOR_DELETE <= 1_000_000) };
     }
 
     #[test]

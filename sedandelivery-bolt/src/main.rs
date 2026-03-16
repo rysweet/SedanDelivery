@@ -17,35 +17,50 @@ fn create_store() -> Arc<dyn GraphStore> {
     gql_redis_store::create_store::create_store()
 }
 
-fn validate_bolt_password_env(require_password: bool) {
-    match read_non_empty_env_var("BOLT_PASSWORD") {
-        Some(_) => {}
-        None if require_password => panic!("BOLT_PASSWORD is required when ENVIRONMENT=production"),
-        None => {}
-    }
-}
-
-fn validate_bolt_tls_env(require_tls: bool) {
-    match (
-        read_non_empty_env_var("BOLT_TLS_CERT"),
-        read_non_empty_env_var("BOLT_TLS_KEY"),
-    ) {
-        (Some(_), Some(_)) => {}
-        (None, None) if require_tls => {
-            panic!("BOLT_TLS_CERT and BOLT_TLS_KEY are required when ENVIRONMENT=production");
+/// Validate that BOLT_PASSWORD is present in production mode.
+///
+/// Returns `Err(message)` on failure so callers can `eprintln!` and `exit(1)`.
+/// This separation keeps the validation logic unit-testable without process exit.
+fn check_bolt_password_env(require_password: bool) -> Result<(), String> {
+    match read_non_empty_env_var("BOLT_PASSWORD")? {
+        Some(_) => Ok(()),
+        None if require_password => {
+            Err("BOLT_PASSWORD is required when ENVIRONMENT=production".into())
         }
-        (None, None) => {}
-        (Some(_), None) => panic!("BOLT_TLS_CERT is set but BOLT_TLS_KEY is missing"),
-        (None, Some(_)) => panic!("BOLT_TLS_KEY is set but BOLT_TLS_CERT is missing"),
+        None => Ok(()),
     }
 }
 
-fn read_non_empty_env_var(name: &str) -> Option<String> {
+/// Validate that BOLT_TLS_CERT and BOLT_TLS_KEY are consistently set.
+///
+/// Returns `Err(message)` on failure so callers can `eprintln!` and `exit(1)`.
+fn check_bolt_tls_env(require_tls: bool) -> Result<(), String> {
+    match (
+        read_non_empty_env_var("BOLT_TLS_CERT")?,
+        read_non_empty_env_var("BOLT_TLS_KEY")?,
+    ) {
+        (Some(_), Some(_)) => Ok(()),
+        (None, None) if require_tls => {
+            Err("BOLT_TLS_CERT and BOLT_TLS_KEY are required when ENVIRONMENT=production".into())
+        }
+        (None, None) => Ok(()),
+        (Some(_), None) => Err("BOLT_TLS_CERT is set but BOLT_TLS_KEY is missing".into()),
+        (None, Some(_)) => Err("BOLT_TLS_KEY is set but BOLT_TLS_CERT is missing".into()),
+    }
+}
+
+/// Emit `message` to stderr and exit with code 1. Never returns.
+fn fatal(message: &str) -> ! {
+    eprintln!("{message}");
+    std::process::exit(1);
+}
+
+fn read_non_empty_env_var(name: &str) -> Result<Option<String>, String> {
     match std::env::var(name) {
-        Ok(value) if value.is_empty() => panic!("{name} is set but empty"),
-        Ok(value) => Some(value),
-        Err(std::env::VarError::NotPresent) => None,
-        Err(std::env::VarError::NotUnicode(_)) => panic!("{name} is not valid unicode"),
+        Ok(value) if value.is_empty() => Err(format!("{name} is set but empty")),
+        Ok(value) => Ok(Some(value)),
+        Err(std::env::VarError::NotPresent) => Ok(None),
+        Err(std::env::VarError::NotUnicode(_)) => Err(format!("{name} is not valid unicode")),
     }
 }
 
@@ -115,8 +130,12 @@ async fn main() {
     // Azure Container Apps documents TLS termination for HTTP ingress, not the
     // raw TCP ingress used by Bolt on port 7687.
     let production_mode = std::env::var("ENVIRONMENT").as_deref() == Ok("production");
-    validate_bolt_password_env(production_mode);
-    validate_bolt_tls_env(production_mode);
+    if let Err(e) = check_bolt_password_env(production_mode) {
+        fatal(&e);
+    }
+    if let Err(e) = check_bolt_tls_env(production_mode) {
+        fatal(&e);
+    }
 
     let bind_addr = std::env::var("BOLT_BIND_ADDR").unwrap_or_else(|_| "0.0.0.0:7687".to_string());
 
@@ -222,14 +241,18 @@ async fn main() {
         }
     }
 
-    // If BOLT_REQUIRE_TLS is set to "1" or "true", refuse to start without TLS.
+    // If BOLT_REQUIRE_TLS is set to exactly "1", refuse to start without TLS.
+    // Only "1" is accepted — "true", "yes", and other truthy strings are ignored.
+    // This is the 12-factor / container-boolean convention: set BOLT_REQUIRE_TLS=1
+    // (not "true") to enforce TLS. Using a strict value prevents accidental
+    // activation from leftover debug env vars like BOLT_REQUIRE_TLS=false.
     let require_tls = std::env::var("BOLT_REQUIRE_TLS")
-        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .map(|v| v.trim() == "1")
         .unwrap_or(false);
     if require_tls && tls_acceptor.is_none() {
-        panic!(
+        fatal(
             "BOLT_REQUIRE_TLS is set but TLS is not configured \
-             (set BOLT_TLS_CERT and BOLT_TLS_KEY)"
+             (set BOLT_TLS_CERT and BOLT_TLS_KEY)",
         );
     }
 
@@ -533,7 +556,7 @@ async fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::{validate_bolt_password_env, validate_bolt_tls_env};
+    use super::{check_bolt_password_env, check_bolt_tls_env};
     use std::sync::{Mutex, MutexGuard};
 
     static ENV_LOCK: Mutex<()> = Mutex::new(());
@@ -597,47 +620,51 @@ mod tests {
     fn missing_password_is_allowed_outside_production() {
         let _env = TestEnv::set(None, None, None);
 
-        validate_bolt_password_env(false);
+        assert_eq!(check_bolt_password_env(false), Ok(()));
     }
 
     #[test]
-    #[should_panic(expected = "BOLT_PASSWORD is required when ENVIRONMENT=production")]
     fn missing_password_is_rejected_in_production() {
         let _env = TestEnv::set(None, None, None);
 
-        validate_bolt_password_env(true);
+        assert_eq!(
+            check_bolt_password_env(true),
+            Err("BOLT_PASSWORD is required when ENVIRONMENT=production".into())
+        );
     }
 
     #[test]
     fn non_empty_password_is_allowed_in_production() {
         let _env = TestEnv::set(Some("non-empty-secret"), None, None);
 
-        validate_bolt_password_env(true);
+        assert_eq!(check_bolt_password_env(true), Ok(()));
     }
 
     #[test]
-    #[should_panic(expected = "BOLT_PASSWORD is set but empty")]
     fn empty_password_is_rejected() {
         let _env = TestEnv::set(Some(""), None, None);
 
-        validate_bolt_password_env(false);
+        assert_eq!(
+            check_bolt_password_env(false),
+            Err("BOLT_PASSWORD is set but empty".into())
+        );
     }
 
     #[test]
     fn missing_tls_is_allowed_outside_production() {
         let _env = TestEnv::set(None, None, None);
 
-        validate_bolt_tls_env(false);
+        assert_eq!(check_bolt_tls_env(false), Ok(()));
     }
 
     #[test]
-    #[should_panic(
-        expected = "BOLT_TLS_CERT and BOLT_TLS_KEY are required when ENVIRONMENT=production"
-    )]
     fn missing_tls_is_rejected_in_production() {
         let _env = TestEnv::set(None, None, None);
 
-        validate_bolt_tls_env(true);
+        assert_eq!(
+            check_bolt_tls_env(true),
+            Err("BOLT_TLS_CERT and BOLT_TLS_KEY are required when ENVIRONMENT=production".into())
+        );
     }
 
     #[test]
@@ -648,22 +675,67 @@ mod tests {
             Some("/mnt/secrets/bolt-tls-key"),
         );
 
-        validate_bolt_tls_env(true);
+        assert_eq!(check_bolt_tls_env(true), Ok(()));
     }
 
     #[test]
-    #[should_panic(expected = "BOLT_TLS_CERT is set but BOLT_TLS_KEY is missing")]
     fn missing_key_is_rejected_when_cert_is_present() {
         let _env = TestEnv::set(None, Some("/mnt/secrets/bolt-tls-cert"), None);
 
-        validate_bolt_tls_env(false);
+        assert_eq!(
+            check_bolt_tls_env(false),
+            Err("BOLT_TLS_CERT is set but BOLT_TLS_KEY is missing".into())
+        );
     }
 
     #[test]
-    #[should_panic(expected = "BOLT_TLS_KEY is set but BOLT_TLS_CERT is missing")]
     fn missing_cert_is_rejected_when_key_is_present() {
         let _env = TestEnv::set(None, None, Some("/mnt/secrets/bolt-tls-key"));
 
-        validate_bolt_tls_env(false);
+        assert_eq!(
+            check_bolt_tls_env(false),
+            Err("BOLT_TLS_KEY is set but BOLT_TLS_CERT is missing".into())
+        );
+    }
+
+    #[test]
+    fn bolt_require_tls_accepts_only_1() {
+        // Only "1" must activate TLS enforcement
+        assert!(
+            !std::env::var("BOLT_REQUIRE_TLS")
+                .map(|v| v.trim() == "1")
+                .unwrap_or(false),
+            "default (unset) must not activate BOLT_REQUIRE_TLS"
+        );
+
+        std::env::set_var("BOLT_REQUIRE_TLS", "1");
+        assert!(
+            std::env::var("BOLT_REQUIRE_TLS")
+                .map(|v| v.trim() == "1")
+                .unwrap_or(false),
+            "BOLT_REQUIRE_TLS=1 must activate enforcement"
+        );
+        std::env::remove_var("BOLT_REQUIRE_TLS");
+
+        // "true", "True", "TRUE" must NOT activate enforcement (strict "1" only)
+        for rejected in &["true", "True", "TRUE", "yes", "on", "1 "] {
+            std::env::set_var("BOLT_REQUIRE_TLS", rejected);
+            let activated = std::env::var("BOLT_REQUIRE_TLS")
+                .map(|v| v.trim() == "1")
+                .unwrap_or(false);
+            // "1 " (with trailing space) trims to "1" so should activate; others should not
+            if *rejected == "1 " {
+                assert!(
+                    activated,
+                    "BOLT_REQUIRE_TLS='1 ' (with space) should activate after trim"
+                );
+            } else {
+                assert!(
+                    !activated,
+                    "BOLT_REQUIRE_TLS={rejected:?} must NOT activate enforcement (strict '1' only)"
+                );
+            }
+            std::env::remove_var("BOLT_REQUIRE_TLS");
+        }
     }
 }

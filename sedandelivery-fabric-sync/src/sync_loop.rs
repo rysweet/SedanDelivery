@@ -20,6 +20,7 @@ fn dlq_stream() -> String {
 const PERMANENT_FAILURES_TOTAL: &str = "fabric_sync_permanent_failures_total";
 const MAX_CONSECUTIVE_UNRESOLVED_BATCHES: usize = 3;
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn run_sync_loop(
     client: &Client,
     conn: &mut Connection,

@@ -173,8 +173,9 @@ fall back to `pr-<number>`.
   the certificate secret at the same time if the key pair changes.
 
 For the default ACA-generated hostname, use `bolt+ssc://` (or the equivalent
-trust override) unless you separately bind a custom domain with a matching
-CA-issued certificate. If you do add a custom domain, clients can switch to
+trust override) only for temporary bootstrap or trusted-network validation. To
+offer production-authenticated TLS to untrusted clients, separately bind a
+custom domain with a matching CA-issued certificate and switch clients to
 `bolt+s://`.
 
 ---

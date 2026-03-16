@@ -118,9 +118,9 @@ async fn query_handler(
     Json(body): Json<CypherBody>,
 ) -> Result<Json<QueryResponse>, ApiError> {
     let name = body.database.as_ref().unwrap_or(&name);
-    validate_graph_name(&name).map_err(ApiError::from)?;
+    validate_graph_name(name).map_err(ApiError::from)?;
     reject_oversized_query(&body.cypher)?;
-    require_graph(&state, &name)?;
+    require_graph(&state, name)?;
 
     let store = Arc::clone(&state.store);
     let start = Instant::now();
@@ -135,7 +135,7 @@ async fn query_handler(
     } else {
         metrics::counter!("plan_cache_misses_total").increment(1);
         let ast = parse_query(&body.cypher).map_err(|e| ApiError::bad_request(e.to_string()))?;
-        let planner = QueryPlanner::new(store.as_ref(), &name);
+        let planner = QueryPlanner::new(store.as_ref(), name);
         let plan = planner
             .plan(&ast)
             .map_err(|e| ApiError::bad_request(e.to_string()))?;
@@ -175,7 +175,7 @@ async fn query_handler(
     let rows: Vec<serde_json::Value> = result
         .rows
         .iter()
-        .map(|row| row_to_json(row, &result.columns, store.as_ref(), &name))
+        .map(|row| row_to_json(row, &result.columns, store.as_ref(), name))
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| ApiError::internal(format!("failed to serialize result: {e}")))?;
 
@@ -194,21 +194,21 @@ async fn explain_handler(
     Json(body): Json<CypherBody>,
 ) -> Result<Json<ExplainResponse>, ApiError> {
     let name = body.database.as_ref().unwrap_or(&name);
-    validate_graph_name(&name).map_err(ApiError::from)?;
+    validate_graph_name(name).map_err(ApiError::from)?;
     reject_oversized_query(&body.cypher)?;
-    require_graph(&state, &name)?;
+    require_graph(&state, name)?;
 
     let store = Arc::clone(&state.store);
 
     let ast = parse_query(&body.cypher).map_err(|e| ApiError::bad_request(e.to_string()))?;
-    let planner = QueryPlanner::new(store.as_ref(), &name);
+    let planner = QueryPlanner::new(store.as_ref(), name);
     let plan = planner
         .plan(&ast)
         .map_err(|e| ApiError::bad_request(e.to_string()))?;
 
     let store_ref = store.as_ref();
     let graph_stats =
-        gql_core::planner::collect_graph_statistics(store_ref, &name).map_err(ApiError::from)?;
+        gql_core::planner::collect_graph_statistics(store_ref, name).map_err(ApiError::from)?;
     let estimates = gql_core::planner::estimate_cardinality(&plan, &graph_stats);
 
     let plan_json = operator_to_json(&plan, &estimates);
@@ -252,9 +252,9 @@ async fn profile_handler(
     Json(body): Json<CypherBody>,
 ) -> Result<Json<ProfileResponse>, ApiError> {
     let name = body.database.as_ref().unwrap_or(&name);
-    validate_graph_name(&name).map_err(ApiError::from)?;
+    validate_graph_name(name).map_err(ApiError::from)?;
     reject_oversized_query(&body.cypher)?;
-    require_graph(&state, &name)?;
+    require_graph(&state, name)?;
 
     let store = Arc::clone(&state.store);
     let start = Instant::now();
@@ -307,7 +307,7 @@ async fn profile_handler(
     let rows: Vec<serde_json::Value> = result
         .rows
         .iter()
-        .map(|row| row_to_json(row, &result.columns, store.as_ref(), &name))
+        .map(|row| row_to_json(row, &result.columns, store.as_ref(), name))
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| ApiError::internal(format!("failed to serialize result: {e}")))?;
 
@@ -367,9 +367,9 @@ async fn mutate_handler(
     Json(body): Json<CypherBody>,
 ) -> Result<Json<MutateResponse>, ApiError> {
     let name = body.database.as_ref().unwrap_or(&name);
-    validate_graph_name(&name).map_err(ApiError::from)?;
+    validate_graph_name(name).map_err(ApiError::from)?;
     reject_oversized_query(&body.cypher)?;
-    require_graph(&state, &name)?;
+    require_graph(&state, name)?;
 
     let store = Arc::clone(&state.store);
 
@@ -380,7 +380,7 @@ async fn mutate_handler(
     } else {
         metrics::counter!("plan_cache_misses_total").increment(1);
         let ast = parse_query(&body.cypher).map_err(|e| ApiError::bad_request(e.to_string()))?;
-        let planner = QueryPlanner::new(store.as_ref(), &name);
+        let planner = QueryPlanner::new(store.as_ref(), name);
         let plan = planner
             .plan(&ast)
             .map_err(|e| ApiError::bad_request(e.to_string()))?;
@@ -465,13 +465,13 @@ mod tests {
         map.insert("name".to_string(), json!("Bob"));
         map.insert("age".to_string(), json!(25));
         map.insert("active".to_string(), json!(true));
-        map.insert("score".to_string(), json!(3.14));
+        map.insert("score".to_string(), json!(std::f64::consts::PI));
         let result = convert_params(Some(&map)).unwrap();
         assert_eq!(result.len(), 4);
         assert_eq!(result["name"], Value::Str("Bob".into()));
         assert_eq!(result["age"], Value::Int(25));
         assert_eq!(result["active"], Value::Bool(true));
-        assert_eq!(result["score"], Value::Float(3.14));
+        assert_eq!(result["score"], Value::Float(std::f64::consts::PI));
     }
 
     #[test]

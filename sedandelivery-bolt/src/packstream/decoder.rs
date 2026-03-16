@@ -872,6 +872,7 @@ mod tests {
 
     /// Build `depth` levels of nested TinyList(1 element), with a Null at the
     /// innermost level: 0x91 0x91 ... 0x91 0xC0
+    #[allow(clippy::same_item_push)]
     fn nested_list_bytes(depth: usize) -> Vec<u8> {
         let mut buf = Vec::with_capacity(depth + 1);
         for _ in 0..depth {
@@ -942,6 +943,7 @@ mod tests {
     /// UnexpectedEof because the buffer only provides a few elements,
     /// but the key assertion is that the decoder does not OOM.
     #[test]
+    #[allow(clippy::same_item_push)]
     fn test_max_prealloc_caps_list_capacity() {
         let claimed_count: u32 = 1_000_000;
         let actual_elements: usize = 10;
@@ -987,6 +989,7 @@ mod tests {
     /// Verify that a list with exactly MAX_PREALLOC elements decodes
     /// correctly -- the capacity cap must not truncate the result.
     #[test]
+    #[allow(clippy::same_item_push)]
     fn test_list_at_max_prealloc_boundary_succeeds() {
         let count = super::MAX_PREALLOC; // 4096
 

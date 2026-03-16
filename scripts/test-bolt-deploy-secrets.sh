@@ -273,7 +273,7 @@ text = Path(sys.argv[1]).read_text()
 required_snippets = {
     "TLS cert GitHub secret": 'DEPLOY_BOLT_TLS_CERT_PEM: ${{ secrets.DEPLOY_BOLT_TLS_CERT_PEM }}',
     "TLS key GitHub secret": 'DEPLOY_BOLT_TLS_KEY_PEM: ${{ secrets.DEPLOY_BOLT_TLS_KEY_PEM }}',
-    "password reuse lookup": '--secret-name bolt-password --query value -o tsv',
+    "password reuse lookup": '--secret-name bolt-password',
     "password migration inventory check": 'properties.configuration.secrets[].name',
     "one-time password migration": 'Existing Bolt app has no bolt-password secret; generating one-time migration password',
     "fail closed on password lookup": 'Existing Bolt app has bolt-password configured but secret lookup failed',
@@ -282,9 +282,12 @@ required_snippets = {
     "secret volume mount": '--secret-volume-mount "${BOLT_SECRET_MOUNT_PATH}"',
     "mounted cert path": 'BOLT_TLS_CERT=${BOLT_TLS_CERT_PATH}',
     "mounted key path": 'BOLT_TLS_KEY=${BOLT_TLS_KEY_PATH}',
-    "strict TLS env": 'BOLT_REQUIRE_TLS=true',
+    "strict TLS env": 'BOLT_REQUIRE_TLS=1',
     "bolt fqdn output": 'echo "bolt_fqdn=${BOLT_FQDN}" >> "$GITHUB_OUTPUT"',
+    "mask multiline cert": 'mask_multiline_secret "${DEPLOY_BOLT_TLS_CERT_PEM}"',
+    "mask multiline key": 'mask_multiline_secret "${DEPLOY_BOLT_TLS_KEY_PEM}"',
     "TLS driver example": '"bolt+ssc://${boltFqdn}:7687"',
+    "trust override warning": 'This ACA-generated hostname does **not** provide production-authenticated',
 }
 
 missing = [name for name, snippet in required_snippets.items() if snippet not in text]
@@ -405,7 +408,7 @@ log_info "Starting production Bolt with in-process TLS..."
     export BOLT_PASSWORD="$BOLT_PASSWORD"
     export BOLT_TLS_CERT="$TLS_CERT_FILE"
     export BOLT_TLS_KEY="$TLS_KEY_FILE"
-    export BOLT_REQUIRE_TLS=true
+    export BOLT_REQUIRE_TLS=1
     export RUST_LOG="${RUST_LOG:-info}"
     "$BOLT_BIN"
 ) >"$BOLT_LOG" 2>&1 &

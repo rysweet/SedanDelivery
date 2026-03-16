@@ -724,7 +724,7 @@ mod tests {
     fn create_node_pipeline_keys_all_share_hash_tag() {
         let graph = "mygraph";
         let id = 42u64;
-        let labels = vec!["Label1".to_string(), "Label2".to_string()];
+        let labels = ["Label1".to_string(), "Label2".to_string()];
         let expected_tag = format!("{{{graph}}}");
 
         // All keys produced by the create_node pipeline.
