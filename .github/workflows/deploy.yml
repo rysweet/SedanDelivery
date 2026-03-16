@@ -1055,7 +1055,7 @@ jobs:
           ACR_SERVER="${DEPLOY_ACR_SERVER}"
           ACR_NAME="${DEPLOY_ACR_NAME}"
           IMAGE="${ACR_SERVER}/sedandelivery-fabric-sync:${DEPLOY_SYNC_IMAGE_TAG}"
-          CA_NAME="sd2-${ENV_NAME}-fabric-sync"
+          CA_NAME="sd2-${ENV_NAME}-sync"
 
           # Derive Redis FQDN from the already-deployed primary container app
           # (not from a step that runs later — that would always be empty).
