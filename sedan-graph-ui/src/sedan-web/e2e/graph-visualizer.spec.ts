@@ -59,9 +59,41 @@ async function selectGraph(page: import('@playwright/test').Page) {
 }
 
 async function waitForCypherEditor(page: import('@playwright/test').Page) {
-  const textarea = page.locator('.monaco-editor textarea').first()
-  await expect(textarea).toBeVisible({ timeout: 10000 })
-  return textarea
+  const editor = page.getByRole('textbox', { name: 'Editor content' })
+  await expect(editor).toBeVisible({ timeout: 10000 })
+  await page.waitForFunction(
+    () => Boolean(window.__SEDAN_TEST_HOOKS__?.setCypherEditorValue && window.__SEDAN_TEST_HOOKS__?.getCypherEditorValue),
+    undefined,
+    { timeout: 10000 },
+  )
+  return editor
+}
+
+async function setCypherEditorValue(page: import('@playwright/test').Page, cypher: string) {
+  await waitForCypherEditor(page)
+  let hookValue: string | null = null
+  let visibleValue = ''
+
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    hookValue = await page.evaluate((value: string) => {
+      const hooks = window.__SEDAN_TEST_HOOKS__
+      hooks?.setCypherEditorValue?.(value)
+      return hooks?.getCypherEditorValue?.() ?? null
+    }, cypher)
+
+    visibleValue = await page.locator('.monaco-editor .view-lines').evaluate((el) =>
+      (el.textContent ?? '').replace(/\u00a0/g, ' '),
+    )
+
+    if (hookValue === cypher && visibleValue.includes(cypher)) {
+      return
+    }
+
+    await page.waitForTimeout(250)
+  }
+
+  expect(hookValue).toBe(cypher)
+  expect(visibleValue).toContain(cypher)
 }
 
 test.describe('Graph Visualizer E2E', () => {
@@ -177,10 +209,7 @@ test.describe('Graph Visualizer E2E', () => {
     // Check if Monaco editor appeared
     const monaco = page.locator('.monaco-editor')
     if (await monaco.isVisible({ timeout: 10000 }).catch(() => false)) {
-      const textarea = await waitForCypherEditor(page)
-      await textarea.click({ force: true })
-      await page.keyboard.press('Control+a')
-      await page.keyboard.type('MATCH (w:Warehouse)-[:DELIVERS_TO]->(s:Store) RETURN w.name, s.name', { delay: 15 })
+      await setCypherEditorValue(page, 'MATCH (w:Warehouse)-[:DELIVERS_TO]->(s:Store) RETURN w.name, s.name')
 
       await page.screenshot({ path: 'e2e/screenshots/05-query-typed.png', fullPage: true })
 

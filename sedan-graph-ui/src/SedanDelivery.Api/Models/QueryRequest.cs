@@ -1,4 +1,5 @@
 using System.ComponentModel.DataAnnotations;
+using System.Text.Json;
 using System.Text.Json.Serialization;
 
 namespace SedanDelivery.Api.Models;
@@ -9,5 +10,8 @@ namespace SedanDelivery.Api.Models;
 public record QueryRequest(
     [property: JsonPropertyName("cypher")]
     [Required(AllowEmptyStrings = false, ErrorMessage = "cypher is required")]
-    string Cypher
+    string Cypher,
+
+    [property: JsonPropertyName("params")]
+    IReadOnlyDictionary<string, JsonElement>? Params = null
 );

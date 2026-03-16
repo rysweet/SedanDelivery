@@ -214,14 +214,20 @@ export const queryApi = {
   query(graphName: string, req: QueryRequest): Promise<QueryResponse> {
     return request<QueryResponse>(`/api/graphs/${encodeURIComponent(graphName)}/query`, {
       method: 'POST',
-      body: JSON.stringify(req),
+      body: JSON.stringify({
+        cypher: req.query,
+        params: req.parameters,
+      }),
     })
   },
 
   mutate(graphName: string, req: MutateRequest): Promise<MutateResponse> {
     return request<MutateResponse>(`/api/graphs/${encodeURIComponent(graphName)}/mutate`, {
       method: 'POST',
-      body: JSON.stringify(req),
+      body: JSON.stringify({
+        cypher: req.statement,
+        params: req.parameters,
+      }),
     })
   },
 }

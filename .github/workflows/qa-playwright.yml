@@ -1,28 +1,125 @@
-name: QA Playwright Tests (Disabled)
-
-# This repository contains a real Playwright project under
-# sedan-graph-ui/src/sedan-web, but the previous workflow file was imported
-# from a Cybergym template and no longer matched SedanDelivery's test layout,
-# triggers, or environment contract. Keep a valid placeholder here until a
-# SedanDelivery-specific workflow is authored.
+name: QA Playwright Tests
 
 on:
   workflow_dispatch:
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/workflows/qa-playwright.yml"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "gql-api/**"
+      - "gql-core/**"
+      - "gql-redis-store/**"
+      - "sedan-graph-ui/src/sedan-web/**"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/qa-playwright.yml"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "gql-api/**"
+      - "gql-core/**"
+      - "gql-redis-store/**"
+      - "sedan-graph-ui/src/sedan-web/**"
+
+concurrency:
+  group: qa-playwright-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
 
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
 jobs:
-  disabled:
-    name: Workflow disabled pending SedanDelivery port
+  playwright-e2e:
+    name: Sedan Web Playwright
     runs-on: ubuntu-latest
+    timeout-minutes: 30
+
     steps:
-      - name: Explain disabled status
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.1.5
+
+      - name: Install Rust stable
         run: |
-          echo "qa-playwright.yml is intentionally disabled."
-          echo "The previous workflow was imported from a Cybergym template and"
-          echo "did not match SedanDelivery's Playwright project or deployment"
-          echo "contract, which caused push-time workflow-file failures."
-          echo
-          echo "Port a new workflow from sedan-graph-ui/src/sedan-web before"
-          echo "re-enabling automated Playwright QA in this repository."
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustc --version
+          cargo --version
+
+      - name: Cache cargo registry
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-qa-playwright-${{ hashFiles('**/Cargo.toml') }}
+          restore-keys: ${{ runner.os }}-cargo-qa-playwright-
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: sedan-graph-ui/src/sedan-web/package-lock.json
+
+      - name: Install sedan-web dependencies
+        working-directory: sedan-graph-ui/src/sedan-web
+        run: npm ci
+
+      - name: Install Playwright browser
+        working-directory: sedan-graph-ui/src/sedan-web
+        run: npx playwright install --with-deps chromium
+
+      - name: Build gql-api
+        run: cargo build -p gql-api
+
+      - name: Start gql-api
+        env:
+          GQL_API_BIND_ADDR: 127.0.0.1:3001
+          GQL_API_ALLOWED_ORIGINS: http://localhost:5175
+        run: |
+          ./target/debug/gql-api > "$RUNNER_TEMP/gql-api.log" 2>&1 &
+          echo $! > "$RUNNER_TEMP/gql-api.pid"
+
+      - name: Wait for gql-api
+        run: |
+          for i in $(seq 1 60); do
+            if curl --silent --fail http://127.0.0.1:3001/health >/dev/null; then
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "gql-api failed to become healthy"
+          cat "$RUNNER_TEMP/gql-api.log"
+          exit 1
+
+      - name: Run Playwright tests
+        working-directory: sedan-graph-ui/src/sedan-web
+        env:
+          PLAYWRIGHT_HTML_OPEN: never
+        run: npx playwright test --reporter=line,html
+
+      - name: Stop background services
+        if: always()
+        run: |
+          if [ -f "$RUNNER_TEMP/gql-api.pid" ]; then
+            kill "$(cat "$RUNNER_TEMP/gql-api.pid")" 2>/dev/null || true
+            wait "$(cat "$RUNNER_TEMP/gql-api.pid")" 2>/dev/null || true
+          fi
+
+      - name: Upload Playwright artifacts
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: qa-playwright-artifacts
+          if-no-files-found: ignore
+          retention-days: 14
+          path: |
+            sedan-graph-ui/src/sedan-web/playwright-report/
+            sedan-graph-ui/src/sedan-web/test-results/
+            ${{ runner.temp }}/gql-api.log

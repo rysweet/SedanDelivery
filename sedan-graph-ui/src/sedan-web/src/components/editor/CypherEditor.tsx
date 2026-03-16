@@ -8,6 +8,18 @@ import { Button } from '../ui/Button'
 import type { QueryResult } from '../../types/graph'
 import type { MutateResponse } from '../../types/api'
 
+const isE2ETest = import.meta.env.VITE_E2E_TEST_AUTH === 'true'
+
+declare global {
+  interface Window {
+    __SEDAN_TEST_HOOKS__?: {
+      setCypherEditorValue?: (value: string) => void
+      getCypherEditorValue?: () => string
+      executeCypher?: () => Promise<void>
+    }
+  }
+}
+
 const CYPHER_KEYWORDS = [
   'MATCH', 'WHERE', 'RETURN', 'CREATE', 'MERGE', 'DELETE', 'DETACH',
   'SET', 'REMOVE', 'WITH', 'UNWIND', 'UNION', 'ORDER', 'BY', 'LIMIT',
@@ -144,6 +156,30 @@ export function CypherEditor() {
   useEffect(() => {
     handleExecuteRef.current = handleExecute
   }, [handleExecute])
+
+  useEffect(() => {
+    if (!isE2ETest || typeof window === 'undefined') {
+      return
+    }
+
+    const hooks = window.__SEDAN_TEST_HOOKS__ ?? {}
+    hooks.setCypherEditorValue = (value: string) => {
+      editorRef.current?.setValue(value)
+      editorRef.current?.focus()
+      setQueryValue(value)
+    }
+    hooks.getCypherEditorValue = () => editorRef.current?.getValue() ?? queryValue
+    hooks.executeCypher = () => handleExecuteRef.current()
+    window.__SEDAN_TEST_HOOKS__ = hooks
+
+    return () => {
+      if (window.__SEDAN_TEST_HOOKS__ === hooks) {
+        delete hooks.setCypherEditorValue
+        delete hooks.getCypherEditorValue
+        delete hooks.executeCypher
+      }
+    }
+  }, [queryValue])
 
   const handleEditorMount: OnMount = (editorInstance, monaco) => {
     editorRef.current = editorInstance

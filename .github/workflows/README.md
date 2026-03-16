@@ -13,7 +13,7 @@ CI/CD workflows for the SedanDelivery Rust workspace (GQL query engine over Redi
 | **Undeploy** | `undeploy.yml` | Manual dispatch | Clean up Azure deployments (delete environment, list/cleanup orphans) |
 | **Docs** | `docs.yml` | Push to `main` (`docs/**`), manual dispatch | Build and deploy documentation to GitHub Pages via Jekyll |
 | **Auto Release** | `auto-release.yml` | Push to `main` | Generate version tag and create GitHub release |
-| **QA Playwright Tests (Disabled)** | `qa-playwright.yml` | Manual dispatch | Placeholder only; the previous Cybergym-imported workflow was disabled pending a SedanDelivery-specific Playwright port |
+| **QA Playwright Tests** | `qa-playwright.yml` | PR to `main`, push to `main`, manual dispatch | Runs `sedan-web` Playwright E2E against a local `gql-api` test backend |
 | **Repo Guardian Gate** | `repo-guardian-gate.yml` | PR to `main`, issue comments | Enforce Repo Guardian findings as a blocking PR check |
 | **Copilot Setup** | `copilot-setup-steps.yml` | Manual dispatch, self-path push | Configure environment for GitHub Copilot Agent |
 | **Update PR Branches** | `update-pr-branches.yml` | Daily schedule (2 AM UTC), manual dispatch | Merge base branch into open PR branches to keep them current |
@@ -32,4 +32,5 @@ CI/CD workflows for the SedanDelivery Rust workspace (GQL query engine over Redi
 - **Cargo.lock is gitignored** -- CI cache keys use `Cargo.toml` hashes instead.
 - **libclang** is installed in CI for `redis-module` bindgen builds.
 - The `gql-module` crate produces a `cdylib` (`.so`) loaded by Valkey/Redis at runtime.
-- The current web UI Playwright project lives under `sedan-graph-ui/src/sedan-web`; `qa-playwright.yml` is only a disabled placeholder until that project gets a SedanDelivery-native CI workflow.
+- The web UI Playwright project lives under `sedan-graph-ui/src/sedan-web`.
+- `qa-playwright.yml` starts local `gql-api` on port `3001` and then runs the Playwright suite on the Vite dev server at port `5175` in E2E test-auth mode.
