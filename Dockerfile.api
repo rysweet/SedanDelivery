@@ -33,11 +33,12 @@ COPY sedandelivery-fabric-sync/Cargo.toml ./sedandelivery-fabric-sync/
 COPY tests/loadtest/Cargo.toml ./tests/loadtest/
 
 # Create stub source files so cargo can resolve the dependency graph.
-RUN mkdir -p gql-core/src gql-redis-store/src gql-fabric-store/src gql-module/src gql-cli/src gql-api/src \
+RUN mkdir -p gql-core/src gql-redis-store/src gql-redis-store/benches gql-fabric-store/src gql-module/src gql-cli/src gql-api/src \
              sedandelivery-bolt/src sedandelivery-bolt/benches sedandelivery-fabric-sync/src \
              tests/loadtest/src && \
     echo "pub fn stub() {}" > gql-core/src/lib.rs && \
     echo "pub fn stub() {}" > gql-redis-store/src/lib.rs && \
+    echo "fn main() {}" > gql-redis-store/benches/batch_write.rs && \
     echo "pub fn stub() {}" > gql-fabric-store/src/lib.rs && \
     echo "pub fn stub() {}" > gql-module/src/lib.rs && \
     echo "fn main() {}" > gql-cli/src/main.rs && \
@@ -52,6 +53,7 @@ RUN mkdir -p gql-core/src gql-redis-store/src gql-fabric-store/src gql-module/sr
 
 # Copy actual source code
 COPY gql-core/ ./gql-core/
+COPY gql-redis-store/ ./gql-redis-store/
 COPY gql-api/ ./gql-api/
 
 # Build the api binary
