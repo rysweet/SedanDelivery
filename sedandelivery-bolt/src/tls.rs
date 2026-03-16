@@ -145,8 +145,16 @@ fn base64_decode_std(s: &str) -> Option<Vec<u8>> {
     for chunk in bytes.chunks(4) {
         let a = table[chunk[0] as usize];
         let b = table[chunk[1] as usize];
-        let c = if chunk[2] == b'=' { 0 } else { table[chunk[2] as usize] };
-        let d = if chunk[3] == b'=' { 0 } else { table[chunk[3] as usize] };
+        let c = if chunk[2] == b'=' {
+            0
+        } else {
+            table[chunk[2] as usize]
+        };
+        let d = if chunk[3] == b'=' {
+            0
+        } else {
+            table[chunk[3] as usize]
+        };
         if a == 0xff || b == 0xff || c == 0xff || d == 0xff {
             return None;
         }
@@ -406,7 +414,9 @@ mod tests {
     fn nonexistent_file_is_self_signed_fail_secure() {
         // Condition 2: file does not exist → true (fail-secure)
         assert!(
-            is_self_signed_pem(std::path::Path::new("/nonexistent-sedandelivery-test-cert.pem")),
+            is_self_signed_pem(std::path::Path::new(
+                "/nonexistent-sedandelivery-test-cert.pem"
+            )),
             "missing file must return true (fail-secure)"
         );
     }

@@ -60,9 +60,7 @@ fn read_non_empty_env_var(name: &str) -> Result<Option<String>, String> {
         Ok(value) if value.is_empty() => Err(format!("{name} is set but empty")),
         Ok(value) => Ok(Some(value)),
         Err(std::env::VarError::NotPresent) => Ok(None),
-        Err(std::env::VarError::NotUnicode(_)) => {
-            Err(format!("{name} is not valid unicode"))
-        }
+        Err(std::env::VarError::NotUnicode(_)) => Err(format!("{name} is not valid unicode")),
     }
 }
 
@@ -665,9 +663,7 @@ mod tests {
 
         assert_eq!(
             check_bolt_tls_env(true),
-            Err(
-                "BOLT_TLS_CERT and BOLT_TLS_KEY are required when ENVIRONMENT=production".into()
-            )
+            Err("BOLT_TLS_CERT and BOLT_TLS_KEY are required when ENVIRONMENT=production".into())
         );
     }
 
@@ -705,15 +701,18 @@ mod tests {
     #[test]
     fn bolt_require_tls_accepts_only_1() {
         // Only "1" must activate TLS enforcement
-        assert!(std::env::var("BOLT_REQUIRE_TLS")
-            .map(|v| v.trim() == "1")
-            .unwrap_or(false)
-            == false,
-            "default (unset) must not activate BOLT_REQUIRE_TLS");
+        assert!(
+            !std::env::var("BOLT_REQUIRE_TLS")
+                .map(|v| v.trim() == "1")
+                .unwrap_or(false),
+            "default (unset) must not activate BOLT_REQUIRE_TLS"
+        );
 
         std::env::set_var("BOLT_REQUIRE_TLS", "1");
         assert!(
-            std::env::var("BOLT_REQUIRE_TLS").map(|v| v.trim() == "1").unwrap_or(false),
+            std::env::var("BOLT_REQUIRE_TLS")
+                .map(|v| v.trim() == "1")
+                .unwrap_or(false),
             "BOLT_REQUIRE_TLS=1 must activate enforcement"
         );
         std::env::remove_var("BOLT_REQUIRE_TLS");
@@ -726,7 +725,10 @@ mod tests {
                 .unwrap_or(false);
             // "1 " (with trailing space) trims to "1" so should activate; others should not
             if *rejected == "1 " {
-                assert!(activated, "BOLT_REQUIRE_TLS='1 ' (with space) should activate after trim");
+                assert!(
+                    activated,
+                    "BOLT_REQUIRE_TLS='1 ' (with space) should activate after trim"
+                );
             } else {
                 assert!(
                     !activated,
