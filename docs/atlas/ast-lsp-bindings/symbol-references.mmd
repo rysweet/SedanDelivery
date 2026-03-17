@@ -1,0 +1,59 @@
+graph LR
+    subgraph gql_core_exports["gql-core exports"]
+        GraphStore["GraphStore trait"]
+        InMemoryGraphStore["InMemoryGraphStore"]
+        Value["Value enum"]
+        QueryResult_t["QueryResult"]
+        QueryPlanner_t["QueryPlanner"]
+        QueryExecutor_t["QueryExecutor"]
+        parse_query["parse_query fn"]
+        NodeId_t["NodeId"]
+        EdgeId_t["EdgeId"]
+        NodeData_t["NodeData"]
+        EdgeData_t["EdgeData"]
+    end
+
+    subgraph consumers["Consumer Crates"]
+        redis_store["gql-redis-store"]
+        fabric_store["gql-fabric-store"]
+        module["gql-module"]
+        api["gql-api"]
+        bolt["sedandelivery-bolt"]
+        sync["sedandelivery-fabric-sync"]
+        cli["gql-cli"]
+    end
+
+    redis_store -->|"impl"| GraphStore
+    redis_store --> Value
+    redis_store --> NodeId_t
+    redis_store --> EdgeId_t
+    redis_store --> NodeData_t
+    redis_store --> EdgeData_t
+
+    fabric_store -->|"impl"| GraphStore
+    fabric_store --> Value
+
+    module --> InMemoryGraphStore
+    module --> QueryPlanner_t
+    module --> QueryExecutor_t
+    module --> parse_query
+
+    api --> GraphStore
+    api --> QueryPlanner_t
+    api --> QueryExecutor_t
+    api --> parse_query
+    api --> Value
+
+    bolt --> GraphStore
+    bolt --> QueryPlanner_t
+    bolt --> QueryExecutor_t
+    bolt --> parse_query
+    bolt --> Value
+
+    sync --> GraphStore
+    sync --> Value
+
+    cli --> InMemoryGraphStore
+    cli --> QueryPlanner_t
+    cli --> QueryExecutor_t
+    cli --> parse_query

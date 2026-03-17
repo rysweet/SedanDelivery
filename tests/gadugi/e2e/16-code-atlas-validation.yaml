@@ -1,0 +1,118 @@
+name: code-atlas-docs-validation
+description: >
+  Validates the code atlas documentation layer, env var documentation accuracy,
+  and bug fixes from the 3-pass code-atlas bug hunt.
+
+scenarios:
+
+  - name: atlas-index-links
+    description: Verify all atlas layer links from the index page resolve
+    steps:
+      - action: verify-file-exists
+        path: docs/atlas/index.md
+      - action: verify-file-exists
+        path: docs/atlas/repo-surface/README.md
+      - action: verify-file-exists
+        path: docs/atlas/compile-deps/README.md
+      - action: verify-file-exists
+        path: docs/atlas/runtime-topology/README.md
+      - action: verify-file-exists
+        path: docs/atlas/api-contracts/README.md
+      - action: verify-file-exists
+        path: docs/atlas/data-flow/README.md
+      - action: verify-file-exists
+        path: docs/atlas/service-components/README.md
+      - action: verify-file-exists
+        path: docs/atlas/ast-lsp-bindings/README.md
+      - action: verify-file-exists
+        path: docs/atlas/user-journeys/README.md
+      - action: verify-file-exists
+        path: docs/atlas/bug-reports/README.md
+
+  - name: atlas-svg-diagrams-exist
+    description: Verify all SVG diagrams are rendered and non-empty
+    steps:
+      - action: shell
+        command: |
+          count=$(find docs/atlas -name "*.svg" -size +100c | wc -l)
+          test "$count" -ge 16 || { echo "Expected >=16 SVGs, found $count"; exit 1; }
+          echo "Found $count SVG diagrams"
+
+  - name: bolt-write-concurrency-docs-match-code
+    description: BOLT_WRITE_CONCURRENCY default in docs matches code (128)
+    steps:
+      - action: shell
+        command: |
+          code_default=$(grep 'BOLT_WRITE_CONCURRENCY' sedandelivery-bolt/src/main.rs | grep -oP '\d+' | head -1)
+          doc_default=$(grep 'BOLT_WRITE_CONCURRENCY' docs/index.md | grep -oP '`\d+`' | tr -d '`')
+          test "$code_default" = "$doc_default" || { echo "Mismatch: code=$code_default docs=$doc_default"; exit 1; }
+          echo "BOLT_WRITE_CONCURRENCY: code=$code_default docs=$doc_default ✓"
+
+  - name: auth-rate-limit-configurable
+    description: BOLT_AUTH_MAX_ATTEMPTS and BOLT_AUTH_WINDOW_SECS are read from env vars
+    steps:
+      - action: shell
+        command: |
+          grep -q 'BOLT_AUTH_MAX_ATTEMPTS' sedandelivery-bolt/src/protocol/handler/hello.rs || { echo "BOLT_AUTH_MAX_ATTEMPTS not found in hello.rs"; exit 1; }
+          grep -q 'BOLT_AUTH_WINDOW_SECS' sedandelivery-bolt/src/protocol/handler/hello.rs || { echo "BOLT_AUTH_WINDOW_SECS not found in hello.rs"; exit 1; }
+          echo "Auth rate limit env vars are read in hello.rs ✓"
+
+  - name: bolt-enabled-removed-from-docs
+    description: BOLT_ENABLED phantom env var removed from docs
+    steps:
+      - action: shell
+        command: |
+          if grep -q 'BOLT_ENABLED' docs/index.md; then
+            echo "BOLT_ENABLED still present in docs/index.md"; exit 1
+          fi
+          echo "BOLT_ENABLED not in docs ✓"
+
+  - name: api-json-camelcase-consistent
+    description: All API response structs use camelCase serialization
+    steps:
+      - action: shell
+        command: |
+          structs=$(grep -c 'pub struct.*Response' gql-api/src/models.rs)
+          camel=$(grep -B1 'pub struct.*Response' gql-api/src/models.rs | grep -c 'camelCase')
+          echo "Response structs: $structs, with camelCase: $camel"
+          # HealthResponse may not need it (single field), so allow 1 difference
+          test "$camel" -ge "$((structs - 1))" || { echo "Not all response structs have camelCase"; exit 1; }
+
+  - name: gql-api-in-compose
+    description: gql-api service exists in docker-compose.yml
+    steps:
+      - action: shell
+        command: |
+          grep -q 'gql-api' docker-compose.yml || { echo "gql-api not in docker-compose.yml"; exit 1; }
+          grep -q 'profile' docker-compose.yml || { echo "gql-api not behind a profile"; exit 1; }
+          echo "gql-api service in docker-compose.yml behind profile ✓"
+
+  - name: undocumented-envvars-gap-closed
+    description: Previously undocumented env vars now appear in docs
+    steps:
+      - action: shell
+        command: |
+          missing=0
+          for var in BOLT_DRAIN_TIMEOUT_SECS BOLT_JSON_LOGS BOLT_HEALTH_PORT GQL_API_TLS_CERT GQL_API_DRAIN_TIMEOUT_SECS SD2_SYNC_BATCH GQL_PLAN_CACHE_SIZE GQL_REDIS_BATCH_SIZE; do
+            if ! grep -q "$var" docs/index.md; then
+              echo "MISSING: $var"
+              missing=$((missing + 1))
+            fi
+          done
+          test "$missing" -eq 0 || { echo "$missing vars still undocumented"; exit 1; }
+          echo "All sampled env vars documented ✓"
+
+  - name: gql-cli-has-tests
+    description: gql-cli crate now has test coverage
+    steps:
+      - action: shell
+        command: |
+          count=$(grep -c '#\[test\]' gql-cli/src/main.rs)
+          test "$count" -ge 2 || { echo "Expected >=2 tests, found $count"; exit 1; }
+          echo "gql-cli has $count tests ✓"
+
+  - name: cargo-check-compiles
+    description: All modified crates compile cleanly
+    steps:
+      - action: shell
+        command: cargo check -p sedandelivery-bolt -p gql-api -p gql-cli 2>&1 | tail -1

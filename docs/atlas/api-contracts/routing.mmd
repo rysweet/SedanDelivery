@@ -1,0 +1,73 @@
+flowchart TD
+    subgraph rest_api["gql-api REST API :3001"]
+        subgraph health_routes["Health"]
+            GET_health["GET /health"]
+            GET_metrics["GET /metrics"]
+        end
+
+        subgraph graph_mgmt["Graph Management"]
+            GET_graphs["GET /graphs"]
+            POST_graphs["POST /graphs"]
+            DEL_graph["DELETE /graphs/:name"]
+            GET_stats["GET /graphs/:name/stats"]
+        end
+
+        subgraph node_ops["Node CRUD"]
+            GET_nodes["GET /graphs/:name/nodes"]
+            POST_node["POST /graphs/:name/nodes"]
+            GET_node["GET /graphs/:name/nodes/:id"]
+            PUT_node["PUT /graphs/:name/nodes/:id"]
+            DEL_node["DELETE /graphs/:name/nodes/:id"]
+        end
+
+        subgraph edge_ops["Edge CRUD"]
+            GET_edges["GET /graphs/:name/edges"]
+            POST_edge["POST /graphs/:name/edges"]
+            GET_edge["GET /graphs/:name/edges/:id"]
+            PUT_edge["PUT /graphs/:name/edges/:id"]
+            DEL_edge["DELETE /graphs/:name/edges/:id"]
+        end
+
+        subgraph cypher_ops["Cypher Query"]
+            POST_query["POST /graphs/:name/query"]
+            POST_mutate["POST /graphs/:name/mutate"]
+            POST_explain["POST /graphs/:name/explain"]
+            POST_profile["POST /graphs/:name/profile"]
+        end
+
+        subgraph schema_ops["Schema and Traversal"]
+            GET_schema["GET /graphs/:name/schema"]
+            GET_neighbors["GET /graphs/:name/neighbors/:nid"]
+        end
+
+        subgraph import_export["Import/Export"]
+            GET_export["GET /graphs/:name/export"]
+            POST_import["POST /graphs/:name/import"]
+        end
+
+        subgraph admin_ops["Admin"]
+            POST_audit["POST /admin/graphs/:name/audit"]
+        end
+    end
+
+    subgraph bolt_proto["sedandelivery-bolt Bolt v4.4 :7687"]
+        HELLO["HELLO 0x01"]
+        LOGON["LOGON 0x6A"]
+        RUN["RUN 0x10"]
+        PULL["PULL 0x3F"]
+        DISCARD["DISCARD 0x2F"]
+        BEGIN_TX["BEGIN 0x11"]
+        COMMIT_TX["COMMIT 0x12"]
+        ROLLBACK_TX["ROLLBACK 0x13"]
+        RESET["RESET 0x0F"]
+        GOODBYE["GOODBYE 0x02"]
+    end
+
+    subgraph redis_cmds["gql-module Redis Commands"]
+        GQL_QUERY["GQL.QUERY graph cypher"]
+        GQL_MUTATE["GQL.MUTATE graph cypher"]
+        GQL_CREATE["GQL.CREATE-GRAPH graph"]
+        GQL_DELETE["GQL.DELETE-GRAPH graph"]
+        GQL_LIST["GQL.LIST-GRAPHS"]
+        GQL_EXPLAIN["GQL.EXPLAIN graph cypher"]
+    end

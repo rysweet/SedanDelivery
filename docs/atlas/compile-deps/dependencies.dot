@@ -1,0 +1,61 @@
+digraph compile_deps {
+    rankdir=TD
+    node [shape=box style=filled fontsize=10]
+    compound=true
+
+    subgraph cluster_workspace {
+        label="Cargo Workspace"
+        style=filled fillcolor="#E8F4FD"
+
+        gql_core [label="gql-core\n(lib)" fillcolor="#AED6F1" penwidth=2]
+        gql_redis [label="gql-redis-store\n(lib)" fillcolor="#AED6F1"]
+        gql_fabric [label="gql-fabric-store\n(lib)" fillcolor="#AED6F1"]
+        gql_module [label="gql-module\n(cdylib)" fillcolor="#A9DFBF"]
+        gql_api [label="gql-api\n(bin)" fillcolor="#A9DFBF"]
+        gql_cli [label="gql-cli\n(bin)" fillcolor="#A9DFBF"]
+        bolt [label="sedandelivery-bolt\n(bin)" fillcolor="#A9DFBF"]
+        sync [label="sedandelivery-\nfabric-sync\n(bin)" fillcolor="#A9DFBF"]
+        loadtest [label="tests/loadtest\n(bin)" fillcolor="#A9DFBF"]
+    }
+
+    subgraph cluster_external {
+        label="External Dependencies"
+        style=filled fillcolor="#FFF3E0"
+
+        redis_crate [label="redis" fillcolor="#FAD7A0"]
+        r2d2_crate [label="r2d2" fillcolor="#FAD7A0"]
+        axum_crate [label="axum" fillcolor="#FAD7A0"]
+        tokio_crate [label="tokio" fillcolor="#FAD7A0"]
+        reqwest_crate [label="reqwest" fillcolor="#FAD7A0"]
+        redis_module_crate [label="redis-module\n(bindgen)" fillcolor="#FAD7A0"]
+        petgraph_crate [label="petgraph" fillcolor="#FAD7A0"]
+        serde_crate [label="serde\nserde_json" fillcolor="#FAD7A0"]
+        tracing_crate [label="tracing\nopentelemetry" fillcolor="#FAD7A0"]
+    }
+
+    // Internal deps
+    gql_redis -> gql_core [color="#2980B9" penwidth=2]
+    gql_fabric -> gql_core [color="#2980B9" penwidth=2]
+    gql_module -> gql_core [color="#2980B9" penwidth=2]
+    gql_cli -> gql_core [color="#2980B9" penwidth=2]
+    gql_api -> gql_core [color="#2980B9" penwidth=2]
+    gql_api -> gql_redis [color="#2980B9"]
+    bolt -> gql_core [color="#2980B9" penwidth=2]
+    bolt -> gql_redis [color="#2980B9"]
+    sync -> gql_core [color="#2980B9" penwidth=2]
+    sync -> gql_redis [color="#2980B9"]
+    sync -> gql_fabric [color="#2980B9"]
+    loadtest -> gql_core [color="#2980B9"]
+
+    // External deps
+    gql_core -> petgraph_crate [style=dashed color="#888"]
+    gql_core -> serde_crate [style=dashed color="#888"]
+    gql_core -> tracing_crate [style=dashed color="#888"]
+    gql_redis -> redis_crate [style=dashed color="#888"]
+    gql_redis -> r2d2_crate [style=dashed color="#888"]
+    gql_fabric -> reqwest_crate [style=dashed color="#888"]
+    gql_module -> redis_module_crate [style=dashed color="#888"]
+    gql_api -> axum_crate [style=dashed color="#888"]
+    bolt -> tokio_crate [style=dashed color="#888"]
+    sync -> tokio_crate [style=dashed color="#888"]
+}

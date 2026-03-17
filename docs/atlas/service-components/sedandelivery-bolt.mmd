@@ -1,0 +1,42 @@
+graph TD
+    subgraph bolt_crate["sedandelivery-bolt"]
+        main_rs["main.rs\nTCP accept loop"]
+
+        subgraph connection_mod["connection/"]
+            conn_mgr["Connection manager\nsemaphore gating"]
+        end
+
+        subgraph protocol_mod["protocol/"]
+            handler_mod["handler/\nhello, run, pull,\ntransaction, explain"]
+            state["state.rs\nSession state machine"]
+        end
+
+        subgraph bridge_mod["bridge/"]
+            bridge_exec["executor.rs\nBolt-to-GQL"]
+            bridge_types["types.rs temporal.rs\nPackStream to Value"]
+        end
+
+        subgraph message_mod["message/"]
+            codec["codec.rs\nBolt binary framing"]
+        end
+
+        subgraph packstream_mod["packstream/"]
+            encoder["encoder.rs"]
+            decoder["decoder.rs"]
+            ps_value["value.rs"]
+        end
+
+        health["health.rs\nHTTP health"]
+        metrics["metrics.rs\nPrometheus"]
+        bookmark["bookmark.rs\nRead-after-write"]
+    end
+
+    main_rs --> conn_mgr
+    conn_mgr --> handler_mod
+    handler_mod --> state
+    handler_mod --> bridge_exec
+    bridge_exec --> bridge_types
+    handler_mod --> codec
+    codec --> encoder
+    codec --> decoder
+    main_rs --> health

@@ -271,3 +271,41 @@ fn main() {
     println!("Test suite: 237 tests (227 unit + 10 end-to-end integration)");
     println!("See docs/TUTORIAL.md for usage guide.");
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_store() -> InMemoryGraphStore {
+        let store = InMemoryGraphStore::new();
+        store.create_graph("test").expect("create graph");
+        store
+    }
+
+    #[test]
+    fn create_and_match_round_trip() {
+        let store = test_store();
+        // CREATE a node, then MATCH it back
+        let create_result = run_query(
+            &store,
+            "test",
+            "CREATE (n:Person {name: 'Alice'}) RETURN n.name",
+        )
+        .expect("CREATE+RETURN should succeed");
+        assert_eq!(create_result.columns, vec!["n.name"]);
+        assert_eq!(create_result.rows.len(), 1);
+
+        let match_result = run_query(&store, "test", "MATCH (n:Person) RETURN n.name")
+            .expect("MATCH should succeed");
+        assert_eq!(match_result.rows.len(), 1);
+        let name = match_result.rows[0].get("n.name").expect("column exists");
+        assert_eq!(*name, Value::Str("Alice".into()));
+    }
+
+    #[test]
+    fn invalid_query_returns_error() {
+        let store = test_store();
+        let result = run_query(&store, "test", "NOT VALID CYPHER !!!");
+        assert!(result.is_err(), "malformed Cypher should return an error");
+    }
+}

@@ -1,0 +1,17 @@
+sequenceDiagram
+    actor Client as Redis Client
+    participant Redis as Valkey 8.1
+    participant Module as gql-module
+    participant QE as QueryExecutor
+    participant Store as InMemoryGraphStore
+
+    Client->>Redis: GQL.QUERY social MATCH n RETURN n.name
+    Redis->>Module: cmd_gql_query ctx args
+    Module->>Module: catch_unwind panic safety
+    Module->>Module: validate no write clauses
+    Module->>QE: parse plan execute
+    QE->>Store: find_all_nodes social
+    Store-->>QE: node data
+    QE-->>Module: QueryResult columns rows
+    Module-->>Redis: RESP array
+    Redis-->>Client: results

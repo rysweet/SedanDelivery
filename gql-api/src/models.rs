@@ -21,6 +21,7 @@ pub struct CreateGraphBody {
 }
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct GraphListResponse {
     pub graphs: Vec<String>,
 }
@@ -51,6 +52,7 @@ pub struct UpdateNodeBody {
 }
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct NodeListResponse {
     pub nodes: Vec<Json>,
     pub total: usize,
@@ -75,6 +77,7 @@ pub struct UpdateEdgeBody {
 }
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct EdgeListResponse {
     pub edges: Vec<Json>,
     pub total: usize,
@@ -103,6 +106,7 @@ pub struct CypherBody {
 }
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct QueryResponse {
     pub columns: Vec<String>,
     pub rows: Vec<Json>,
@@ -248,6 +252,7 @@ fn default_neighbor_limit() -> usize {
 }
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct NeighborResponse {
     pub nodes: Vec<Json>,
     pub edges: Vec<Json>,
@@ -256,6 +261,7 @@ pub struct NeighborResponse {
 // ── Export / Import ───────────────────────────────────────────────────────────
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ExportResponse {
     pub nodes: Vec<Json>,
     pub edges: Vec<Json>,
@@ -442,7 +448,7 @@ mod tests {
         let json = serde_json::to_value(&resp).unwrap();
         assert_eq!(json["columns"], json!(["n"]));
         assert_eq!(json["rows"].as_array().unwrap().len(), 1);
-        assert_eq!(json["elapsed_ms"], 42);
+        assert_eq!(json["elapsedMs"], 42);
     }
 
     // ── MutateResponse serialization ─────────────────────────────────────────

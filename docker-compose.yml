@@ -72,5 +72,27 @@ services:
       retries: 10
       start_period: 15s
 
+  gql-api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    profiles:
+      - api
+    ports:
+      - "3001:3001"
+    environment:
+      - RUST_LOG=info
+      - GQL_REDIS_URL=redis://:${VALKEY_PASSWORD}@valkey:6379
+      - GQL_API_ALLOWED_ORIGINS=*  # Local dev only — restrict in production
+    depends_on:
+      valkey:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:3001/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 15s
+
 volumes:
   valkey-data:

@@ -26,6 +26,10 @@ A Rust GQL/Cypher query engine — a clean-room, MIT/Apache-2.0-licensed replace
 - [Secrets Configuration](secrets) — Repository secrets inventory, creation, rotation, and monitoring
 - [Benchmarks](benchmarks) — How to run and interpret performance benchmarks
 
+## Code Atlas
+
+- [**Code Atlas**](atlas/) — Living architecture documentation with 8 layers of diagrams, cross-crate analysis, and bug hunt reports
+
 ## Neo4j Compatibility
 
 - [**Neo4j Compatibility Gallery**](neo4j-compat-gallery) — 4 security apps validated against SedanDelivery's Bolt v4.4 protocol with screenshots (Neodash, neovis.js, GraphKer CVE explorer, Network Security analyzer)
@@ -91,16 +95,26 @@ See [ADR-004](ADR-004-distributed-redis) for the full architecture decision reco
 | `BOLT_TLS_KEY` | — | PEM private key file for in-process Bolt TLS; must be set together with `BOLT_TLS_CERT`; Azure Container Apps deploys mount this as `/mnt/secrets/bolt-tls-key` |
 | `BOLT_REQUIRE_TLS` | `false` | Refuse startup unless in-process Bolt TLS is configured; Azure Container Apps deploys set this to `true` for the public Bolt endpoint |
 | `BOLT_WS_ALLOWED_ORIGINS` | — | Comma-separated browser origins allowed to use Bolt over WebSocket; when set, a matching `Origin` header is required and `*` allows any origin |
-| `BOLT_ENABLED` | `true` | Enable/disable Bolt server in container |
 | `BOLT_MAX_CONNECTIONS` | `1024` | Max concurrent Bolt connections |
 | `BOLT_MAX_CONN_PER_IP` | `50` | Max concurrent connections from a single IP (DoS protection) |
 | `BOLT_HANDSHAKE_TIMEOUT_MS` | `5000` | Max time (ms) to complete TLS handshake before slot is reclaimed |
 | `BOLT_IDLE_TIMEOUT_SECS` | `300` | Close idle connections after N seconds (short default aids L4 load-balancer rebalancing) |
 | `BOLT_MAX_CONNECTION_LIFETIME_SECS` | `1800` | Force-close connections after N seconds regardless of activity (0 = disabled); periodic reconnection aids L4 load balancing |
-| `BOLT_WRITE_CONCURRENCY` | `64` | Max concurrent write transactions |
+| `BOLT_WRITE_CONCURRENCY` | `128` | Max concurrent write transactions |
 | `BOLT_AUTH_MAX_ATTEMPTS` | `10` | Max failed auth attempts per IP per window before rate limiting |
-| `BOLT_AUTH_WINDOW_SECS` | `60` | Auth rate limit sliding window duration (seconds) |
-| `GQL_REDIS_URL` | — | Redis/Valkey URL; when set, bolt uses Redis-backed store (use `rediss://` for TLS with Azure Cache) |
+| `BOLT_AUTH_WINDOW_SECS` | `3600` | Auth rate limit stale entry timeout (seconds); an IP blocked after `BOLT_AUTH_MAX_ATTEMPTS` failures cannot retry for this duration |
+| `BOLT_DRAIN_TIMEOUT_SECS` | `30` | Graceful shutdown drain timeout (seconds); active connections are given this long to finish before forced close |
+| `BOLT_HEALTH_PORT` | `7688` | Health/metrics HTTP server port |
+| `BOLT_HEALTH_BIND_ADDR` | `0.0.0.0` | Bind address for the health/metrics HTTP server |
+| `BOLT_JSON_LOGS` | `false` | Enable structured JSON logging (set to `1` to enable) |
+| `BOLT_MAX_CHUNK_SIZE` | `16384` | Max Bolt chunk size in bytes (clamped to spec max 65535) |
+| `BOLT_MAX_MESSAGE_SIZE` | `16777216` | Max reassembled Bolt message size in bytes (16 MiB); prevents OOM from oversized messages |
+| `BOLT_MAX_DECODE_DEPTH` | `128` | Max nesting depth for PackStream deserialization (stack overflow prevention) |
+| `BOLT_MAX_PENDING_RESULTS` | `16` | Max pending (unconsumed) query results per connection before backpressure is applied |
+| `BOLT_SERVER_VERSION` | `Neo4j/4.4.0` | Server version string reported in the Bolt HELLO handshake response |
+| `BOLT_WS_MAX_WRITE_BUF` | `16777216` | WebSocket write buffer size in bytes (16 MiB) |
+| `BOLT_TCP_KEEPALIVE_SECS` | `120` | TCP keepalive probe interval in seconds (range 10–300); keeps connections alive through Azure L4 load balancers |
+| `GQL_REDIS_URL` | — | Redis/Valkey URL; when set, bolt uses Redis-backed store (use `rediss://` for TLS with Azure Cache). Falls back to `REDIS_URL` if not set |
 | `GQL_REDIS_CLUSTER_NODES` | — | Comma-separated cluster seed URLs (enables Redis Cluster mode, overrides `GQL_REDIS_URL`) |
 | `GQL_REDIS_REPLICA_URL` | — | Comma-separated replica URLs for read-only query routing (round-robin) |
 | `GQL_REDIS_POOL_SIZE` | `64` | r2d2 connection pool max size |
@@ -108,6 +122,11 @@ See [ADR-004](ADR-004-distributed-redis) for the full architecture decision reco
 | `GQL_REDIS_IDLE_TIMEOUT_SECS` | `300` | Idle connection reap timeout in seconds |
 | `GQL_REDIS_MIN_IDLE` | `1` | Minimum warm connections kept in pool |
 | `GQL_REDIS_KEY_PREFIX` | — | Key prefix for multi-tenant isolation |
+| `GQL_REDIS_BATCH_SIZE` | `100` | Redis pipeline batch size for bulk node import |
+| `GQL_REDIS_STATS_INTERVAL_SECS` | `15` | Connection pool metrics reporting interval in seconds (range 1–3600) |
+| `GQL_REDIS_INDEX_BATCH_SIZE` | `500` | Batch size for Redis index-building operations (minimum 1) |
+| `GQL_REDIS_SMEMBERS_THRESHOLD` | `10000` | Set member count above which SSCAN is used instead of SMEMBERS to avoid Redis event-loop stalls |
+| `REDIS_URL` | `redis://127.0.0.1:6379` | Fallback Redis URL when `GQL_REDIS_URL` is not set |
 | `GQL_FABRIC_ENDPOINT` | — | Fabric Graph Database REST API URL |
 | `GQL_FABRIC_TENANT_ID` | — | Azure AD tenant for Fabric auth |
 | `GQL_FABRIC_CLIENT_ID` | — | Service principal app ID for Fabric |
@@ -127,6 +146,20 @@ See [ADR-004](ADR-004-distributed-redis) for the full architecture decision reco
 | `GQL_API_MAX_CONCURRENCY` | `100` | Max concurrent HTTP requests per replica; excess requests receive HTTP 503 |
 | `GQL_API_IMPORT_BODY_LIMIT_BYTES` | `2097152` | Max import request body size (bytes) |
 | `ENVIRONMENT` | — | Set to `production` to enforce auth and CORS config |
+| `GQL_API_TLS_CERT` | — | PEM certificate file for REST API TLS; must be set together with `GQL_API_TLS_KEY` |
+| `GQL_API_TLS_KEY` | — | PEM private key file for REST API TLS; must be set together with `GQL_API_TLS_CERT` |
+| `GQL_API_TLS_PORT` | `3443` | HTTPS listen port when TLS is enabled |
+| `GQL_API_DRAIN_TIMEOUT_SECS` | `30` | Graceful shutdown drain timeout (seconds) |
+| `GQL_API_MAX_QUERY_LENGTH` | `1048576` | Max Cypher query string length in bytes (1 MiB) |
+| `GQL_API_QUERY_BODY_LIMIT_BYTES` | `1048576` | Max query/mutate/explain request body size in bytes (1 MiB) |
+| `GQL_API_MAX_PAGE_LIMIT` | `10000` | Upper bound for client-requested page sizes |
+| `GQL_API_DEFAULT_PAGE_LIMIT` | `100` | Default page size when client omits `limit` |
+| `GQL_API_DEFAULT_NEIGHBOR_LIMIT` | `50` | Default neighbor traversal limit per node |
+| `GQL_API_MAX_EXPORT_ELEMENTS` | `1000000` | Max elements (nodes + edges) allowed per export |
+| `GQL_API_IMPORT_LIMIT` | `10000` | Max elements (nodes + edges) per import request |
+| `GQL_API_MAX_SCHEMA_SCAN_ELEMENTS` | `1000000` | Max elements loaded into memory for schema-count computation |
+| `GQL_API_JWKS_URL` | — | **Deprecated** — has no effect; authentication now uses `GQL_API_ENTRA_TENANT_ID` / `GQL_API_ENTRA_CLIENT_ID` |
+| `GQL_CSV_IMPORT_DIR` | cwd | Directory for CSV import files; defaults to the process working directory |
 
 ### GQL Engine Limits
 
@@ -137,6 +170,29 @@ See [ADR-004](ADR-004-distributed-redis) for the full architecture decision reco
 | `GQL_VARLEN_MAX_DEPTH` | `30` | Default max depth for `[*]` patterns. Min: 1 |
 | `GQL_MAX_QUERY_SIZE` | `67108864` | Max query string size (bytes). Min: 1 |
 | `GQL_PARSER_MAX_DEPTH` | `256` | Max expression nesting depth. Min: 1 |
+| `GQL_MAX_COLLECT_SIZE` | `10000000` | Max elements collected by `collect()` aggregation. Min: 1 |
+| `GQL_MAX_LIST_SIZE` | `10000000` | Max elements in lists produced by `range()`/`split()`. Min: 1 |
+| `GQL_MAX_REGEX_PATTERN_LEN` | `1024` | Max regex pattern length in bytes (ReDoS protection). Min: 1 |
+| `GQL_GRAPH_NAME_MAX_LEN` | `64` | Max graph name length in bytes. Min: 1 |
+| `GQL_PLAN_CACHE_SIZE` | `1024` | Process-local query plan cache capacity. Min: 0 |
+| `GQL_REGEX_CACHE_CAPACITY` | `512` | Max compiled regexes cached per thread. Min: 1 |
+| `GQL_BUDGET_CHECK_INTERVAL` | `1024` | Row interval between wall-clock deadline checks (rounded up to next power of two). Min: 1 |
+
+### sedandelivery-fabric-sync
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `SD2_SYNC_BATCH` | `100` | Entries per XREADGROUP batch from the changelog stream |
+| `SD2_SYNC_BLOCK_MS` | `1000` | XREADGROUP blocking timeout in milliseconds |
+| `SD2_SYNC_MAX_RETRIES` | `3` | Max retry attempts per event before moving to the dead-letter queue |
+| `SD2_SYNC_CONSUMER` | hostname | Consumer name within the XREADGROUP group; falls back to `worker-0` if hostname is unavailable |
+| `SYNC_DLQ_STREAM` | `__sd2:changelog:dlq` | Dead-letter queue stream name for permanently failed sync events |
+
+### System / Observability
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | — | When set, enables OpenTelemetry OTLP trace export (used by both `gql-api` and `sedandelivery-bolt`) |
 
 ## Bolt Protocol (Recommended)
 
@@ -215,7 +271,6 @@ Browser clients that connect over WebSocket must set `BOLT_WS_ALLOWED_ORIGINS` t
 | `BOLT_BIND_ADDR` | `0.0.0.0:7687` | Bolt TCP listen address |
 | `BOLT_PASSWORD` | (none) | Optional for direct bolt runs; local Compose profiles default it from `VALKEY_PASSWORD` unless overridden |
 | `BOLT_WS_ALLOWED_ORIGINS` | (none) | Comma-separated WebSocket origin allowlist; when set, requests must send a matching `Origin` header |
-| `BOLT_ENABLED` | `true` | Enable/disable Bolt server in container |
 
 See [Bolt Protocol Spec](specs/sedandelivery-bolt-spec) for implementation details.
 
