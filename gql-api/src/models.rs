@@ -103,6 +103,7 @@ pub struct CypherBody {
 }
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct QueryResponse {
     pub columns: Vec<String>,
     pub rows: Vec<Json>,
@@ -442,7 +443,7 @@ mod tests {
         let json = serde_json::to_value(&resp).unwrap();
         assert_eq!(json["columns"], json!(["n"]));
         assert_eq!(json["rows"].as_array().unwrap().len(), 1);
-        assert_eq!(json["elapsed_ms"], 42);
+        assert_eq!(json["elapsedMs"], 42);
     }
 
     // ── MutateResponse serialization ─────────────────────────────────────────
