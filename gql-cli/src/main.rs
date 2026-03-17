@@ -286,9 +286,12 @@ mod tests {
     fn create_and_match_round_trip() {
         let store = test_store();
         // CREATE a node, then MATCH it back
-        let create_result =
-            run_query(&store, "test", "CREATE (n:Person {name: 'Alice'}) RETURN n.name")
-                .expect("CREATE+RETURN should succeed");
+        let create_result = run_query(
+            &store,
+            "test",
+            "CREATE (n:Person {name: 'Alice'}) RETURN n.name",
+        )
+        .expect("CREATE+RETURN should succeed");
         assert_eq!(create_result.columns, vec!["n.name"]);
         assert_eq!(create_result.rows.len(), 1);
 

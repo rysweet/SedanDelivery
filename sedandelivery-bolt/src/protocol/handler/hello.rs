@@ -93,8 +93,9 @@ impl AuthRateLimiter {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
-        self.map
-            .retain(|_, v| now_secs.saturating_sub(v.1.load(Ordering::Relaxed)) < stale_after_secs());
+        self.map.retain(|_, v| {
+            now_secs.saturating_sub(v.1.load(Ordering::Relaxed)) < stale_after_secs()
+        });
     }
 }
 
