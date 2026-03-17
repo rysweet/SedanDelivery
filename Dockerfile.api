@@ -57,7 +57,7 @@ COPY gql-redis-store/ ./gql-redis-store/
 COPY gql-api/ ./gql-api/
 
 # Build the api binary
-RUN touch gql-core/src/lib.rs gql-api/src/main.rs && \
+RUN touch gql-core/src/lib.rs gql-api/src/lib.rs gql-api/src/main.rs && \
     cargo build --release -p gql-api && \
     ls -lh target/release/gql-api
 

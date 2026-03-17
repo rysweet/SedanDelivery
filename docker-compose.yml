@@ -83,7 +83,7 @@ services:
     environment:
       - RUST_LOG=info
       - GQL_REDIS_URL=redis://:${VALKEY_PASSWORD}@valkey:6379
-      - GQL_API_ALLOWED_ORIGINS=*
+      - GQL_API_ALLOWED_ORIGINS=*  # Local dev only — restrict in production
     depends_on:
       valkey:
         condition: service_healthy

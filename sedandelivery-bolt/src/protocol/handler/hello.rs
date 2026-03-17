@@ -36,13 +36,19 @@ const MAX_TRACKED_IPS: usize = 100_000;
 /// Maximum failed auth attempts per IP before returning RateLimit.
 /// Configurable via `BOLT_AUTH_MAX_ATTEMPTS` env var (default: 10).
 fn max_failures_per_ip() -> u32 {
-    gql_core::config::parse_env_range("BOLT_AUTH_MAX_ATTEMPTS", 10, 1, 10000)
+    static VAL: OnceLock<u32> = OnceLock::new();
+    *VAL.get_or_init(|| gql_core::config::parse_env_range("BOLT_AUTH_MAX_ATTEMPTS", 10, 1, 10000))
 }
 
 /// Seconds after which an entry is considered stale and eligible for sweep.
-/// Configurable via `BOLT_AUTH_WINDOW_SECS` env var (default: 60).
+/// Configurable via `BOLT_AUTH_WINDOW_SECS` env var (default: 3600).
+/// The default preserves the original 1-hour lockout window for brute-force
+/// protection. Operators may lower this for dev environments.
 fn stale_after_secs() -> u64 {
-    gql_core::config::parse_env_range("BOLT_AUTH_WINDOW_SECS", 60u64, 1, 86400)
+    static VAL: OnceLock<u64> = OnceLock::new();
+    *VAL.get_or_init(|| {
+        gql_core::config::parse_env_range("BOLT_AUTH_WINDOW_SECS", 3600u64, 1, 86400)
+    })
 }
 
 /// Per-IP entry: (failure_count, last_failure_unix_secs).

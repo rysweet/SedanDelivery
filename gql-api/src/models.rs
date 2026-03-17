@@ -21,6 +21,7 @@ pub struct CreateGraphBody {
 }
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct GraphListResponse {
     pub graphs: Vec<String>,
 }
@@ -51,6 +52,7 @@ pub struct UpdateNodeBody {
 }
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct NodeListResponse {
     pub nodes: Vec<Json>,
     pub total: usize,
@@ -75,6 +77,7 @@ pub struct UpdateEdgeBody {
 }
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct EdgeListResponse {
     pub edges: Vec<Json>,
     pub total: usize,

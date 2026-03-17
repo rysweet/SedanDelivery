@@ -102,7 +102,7 @@ See [ADR-004](ADR-004-distributed-redis) for the full architecture decision reco
 | `BOLT_MAX_CONNECTION_LIFETIME_SECS` | `1800` | Force-close connections after N seconds regardless of activity (0 = disabled); periodic reconnection aids L4 load balancing |
 | `BOLT_WRITE_CONCURRENCY` | `128` | Max concurrent write transactions |
 | `BOLT_AUTH_MAX_ATTEMPTS` | `10` | Max failed auth attempts per IP per window before rate limiting |
-| `BOLT_AUTH_WINDOW_SECS` | `60` | Auth rate limit sliding window duration (seconds) |
+| `BOLT_AUTH_WINDOW_SECS` | `3600` | Auth rate limit stale entry timeout (seconds); an IP blocked after `BOLT_AUTH_MAX_ATTEMPTS` failures cannot retry for this duration |
 | `BOLT_DRAIN_TIMEOUT_SECS` | `30` | Graceful shutdown drain timeout (seconds); active connections are given this long to finish before forced close |
 | `BOLT_HEALTH_PORT` | `7688` | Health/metrics HTTP server port |
 | `BOLT_HEALTH_BIND_ADDR` | `0.0.0.0` | Bind address for the health/metrics HTTP server |
