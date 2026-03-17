@@ -252,6 +252,7 @@ fn default_neighbor_limit() -> usize {
 }
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct NeighborResponse {
     pub nodes: Vec<Json>,
     pub edges: Vec<Json>,
@@ -260,6 +261,7 @@ pub struct NeighborResponse {
 // ── Export / Import ───────────────────────────────────────────────────────────
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ExportResponse {
     pub nodes: Vec<Json>,
     pub edges: Vec<Json>,

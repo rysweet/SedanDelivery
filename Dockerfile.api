@@ -39,6 +39,7 @@ RUN mkdir -p gql-core/src gql-redis-store/src gql-redis-store/benches gql-fabric
     echo "pub fn stub() {}" > gql-core/src/lib.rs && \
     echo "pub fn stub() {}" > gql-redis-store/src/lib.rs && \
     echo "fn main() {}" > gql-redis-store/benches/batch_write.rs && \
+    echo "fn main() {}" > gql-redis-store/benches/store_safety.rs && \
     echo "pub fn stub() {}" > gql-fabric-store/src/lib.rs && \
     echo "pub fn stub() {}" > gql-module/src/lib.rs && \
     echo "fn main() {}" > gql-cli/src/main.rs && \
@@ -57,7 +58,7 @@ COPY gql-redis-store/ ./gql-redis-store/
 COPY gql-api/ ./gql-api/
 
 # Build the api binary
-RUN touch gql-core/src/lib.rs gql-api/src/lib.rs gql-api/src/main.rs && \
+RUN touch gql-core/src/lib.rs gql-redis-store/src/lib.rs gql-api/src/lib.rs gql-api/src/main.rs && \
     cargo build --release -p gql-api && \
     ls -lh target/release/gql-api
 
