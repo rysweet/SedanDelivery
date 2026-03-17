@@ -1,0 +1,33 @@
+sequenceDiagram
+    actor Client as Neo4j Driver
+    participant Handler as Protocol Handler
+    participant Bridge as Bridge Executor
+    participant QE as QueryExecutor
+    participant Store as GraphStore
+
+    Client->>Handler: BEGIN db social
+    Handler->>Store: tx_snapshot social
+    Store-->>Handler: snapshot
+    Handler-->>Client: SUCCESS
+
+    Client->>Handler: RUN CREATE Task title Build Atlas
+    Handler->>Bridge: execute on snapshot
+    Bridge->>QE: parse plan execute against snapshot
+    QE->>Store: create_node on snapshot
+    Store-->>QE: NodeId
+    Handler-->>Client: SUCCESS qid 0
+    Client->>Handler: PULL n -1
+    Handler-->>Client: SUCCESS stats nodes_created 1
+
+    Client->>Handler: RUN MATCH t Task RETURN t.title
+    Handler->>Bridge: execute on same snapshot
+    Bridge->>QE: parse plan execute
+    QE->>Store: read from snapshot sees uncommitted
+    Handler-->>Client: SUCCESS RECORD Build Atlas SUCCESS
+
+    Client->>Handler: COMMIT
+    Handler->>Store: tx_commit snapshot
+    Store-->>Handler: Ok writes applied atomically
+    Handler-->>Client: SUCCESS bookmark
+
+    Note over Store: Other connections now see committed data

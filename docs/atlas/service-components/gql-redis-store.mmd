@@ -1,0 +1,24 @@
+graph TD
+    subgraph gql_redis["gql-redis-store"]
+        lib["lib.rs\nRedisGraphStore"]
+        create_store_mod["create_store.rs\nBackend selection"]
+        connection["connection.rs\nr2d2 pool, replicas"]
+        reads["reads.rs\nRedis read ops"]
+        writes_mod["writes/\nnodes, edges, graphs"]
+        indexing["indexing.rs\nProperty indexes"]
+        range_mod["range.rs\nRange queries"]
+        fanout["fanout.rs\nFanoutStore"]
+        keys["keys.rs\nKey schema"]
+    end
+
+    create_store_mod -->|"creates"| lib
+    create_store_mod -->|"creates"| fanout
+    lib --> connection
+    lib --> reads
+    lib --> writes_mod
+    lib --> indexing
+    lib --> range_mod
+    lib --> keys
+    reads --> keys
+    writes_mod --> keys
+    fanout -->|"wraps"| lib

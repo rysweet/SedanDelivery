@@ -26,6 +26,10 @@ A Rust GQL/Cypher query engine — a clean-room, MIT/Apache-2.0-licensed replace
 - [Secrets Configuration](secrets) — Repository secrets inventory, creation, rotation, and monitoring
 - [Benchmarks](benchmarks) — How to run and interpret performance benchmarks
 
+## Code Atlas
+
+- [**Code Atlas**](atlas/) — Living architecture documentation with 8 layers of diagrams, cross-crate analysis, and bug hunt reports
+
 ## Neo4j Compatibility
 
 - [**Neo4j Compatibility Gallery**](neo4j-compat-gallery) — 4 security apps validated against SedanDelivery's Bolt v4.4 protocol with screenshots (Neodash, neovis.js, GraphKer CVE explorer, Network Security analyzer)

@@ -1,0 +1,35 @@
+sequenceDiagram
+    actor User as Neo4j Driver Client
+    participant TCP as TCP Listener
+    participant Conn as Connection Manager
+    participant Handler as Protocol Handler
+    participant Bridge as Bridge Executor
+    participant QE as QueryExecutor
+    participant Store as GraphStore
+
+    User->>TCP: TCP connect :7687
+    TCP->>Conn: spawn per-connection task
+    User->>Conn: Bolt handshake magic + version
+    Conn-->>User: version agreement v4.4
+
+    User->>Handler: HELLO user_agent auth
+    Handler->>Handler: validate password
+    Handler-->>User: SUCCESS server connection_id
+
+    User->>Handler: RUN MATCH p:Person RETURN p
+    Handler->>Bridge: translate Bolt to GQL
+    Bridge->>QE: parse plan execute
+    QE->>Store: find_nodes_by_label Person
+    Store-->>QE: Vec NodeId
+    QE->>Store: get_nodes_batch ids
+    Store-->>QE: Vec NodeData
+    QE-->>Bridge: QueryResult
+    Bridge-->>Handler: PackStream SUCCESS
+    Handler-->>User: SUCCESS fields p qid 0
+
+    User->>Handler: PULL n -1
+    Handler-->>User: RECORD node_data repeated
+    Handler-->>User: SUCCESS bookmark type r
+
+    User->>Handler: GOODBYE
+    Conn-->>TCP: connection closed

@@ -1,0 +1,47 @@
+flowchart LR
+    subgraph entry["Entry Points"]
+        rest["REST API\nPOST /query"]
+        bolt["Bolt RUN\nmessage 0x10"]
+        redis["GQL.QUERY\nRedis command"]
+        cli["gql-cli\nREPL input"]
+    end
+
+    subgraph pipeline["Query Pipeline"]
+        lexer["Lexer\nCypher text to tokens"]
+        parser["Parser\nTokens to AST"]
+        validator["Validator\nSemantic checks"]
+        planner["Planner\nAST to operator tree\n28 physical operators"]
+        executor["Executor\nOperator tree to results"]
+        cache["Plan Cache\nhash-keyed"]
+    end
+
+    subgraph storage["Storage - GraphStore"]
+        mem["InMemoryGraphStore"]
+        redis_store["RedisGraphStore\nr2d2 pool"]
+        fabric_store["FabricGraphStore\nREST API"]
+        fanout["FanoutStore\nMulti-backend write"]
+    end
+
+    subgraph output["Output"]
+        result["QueryResult\ncolumns + rows"]
+    end
+
+    rest --> lexer
+    bolt --> lexer
+    redis --> lexer
+    cli --> lexer
+
+    lexer --> parser
+    parser --> cache
+    cache -->|"miss"| validator
+    cache -->|"hit"| executor
+    validator --> planner
+    planner --> executor
+    executor --> mem
+    executor --> redis_store
+    executor --> fabric_store
+    executor --> fanout
+    mem --> result
+    redis_store --> result
+    fabric_store --> result
+    fanout --> result

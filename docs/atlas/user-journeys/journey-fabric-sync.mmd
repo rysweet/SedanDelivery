@@ -1,0 +1,26 @@
+sequenceDiagram
+    actor Client as Bolt Driver
+    participant Bolt as sedandelivery-bolt
+    participant QE as QueryExecutor
+    participant Redis as RedisGraphStore
+    participant Stream as Redis Stream changelog
+    participant Sync as fabric-sync sidecar
+    participant Fabric as Microsoft Fabric
+
+    Client->>Bolt: RUN CREATE Person name Eve db social
+    Bolt->>QE: parse plan execute
+    QE->>Redis: create_node social Person name Eve
+    Redis-->>QE: NodeId 42
+    Redis->>Stream: XADD changelog op CREATE_NODE id 42
+    QE-->>Bolt: QueryResult nodes_created 1
+    Bolt-->>Client: SUCCESS bookmark
+
+    Note over Sync: Polling loop SD2_SYNC_BLOCK_MS 1000
+    Sync->>Stream: XREADGROUP GROUP fabric-sync BLOCK 1000
+    Stream-->>Sync: op CREATE_NODE id 42 labels Person
+    Sync->>Fabric: POST openCypher CREATE Person name Eve
+    Fabric-->>Sync: 200 OK
+    Sync->>Stream: XACK changelog fabric-sync msg-id
+
+    Note over Sync: On failure after max retries
+    Sync->>Sync: XADD dead-letter queue

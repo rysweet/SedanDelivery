@@ -1,0 +1,30 @@
+sequenceDiagram
+    actor Client as REST Client
+    participant MW as Middleware Stack
+    participant Router as axum Router
+    participant GH as graphs.rs handler
+    participant NH as nodes.rs handler
+    participant EH as edges.rs handler
+    participant Store as GraphStore
+
+    Client->>MW: POST /graphs name social
+    MW->>MW: CORS rate limit JWT validate
+    MW->>Router: route to handler
+    Router->>GH: create_graph social
+    GH->>Store: create_graph social
+    Store-->>GH: Ok
+    GH-->>Client: 201 Created
+
+    Client->>MW: POST /graphs/social/nodes labels Person props name Alice
+    MW->>Router: route to handler
+    Router->>NH: create_node
+    NH->>Store: create_node social Person name Alice
+    Store-->>NH: NodeId 1
+    NH-->>Client: 201 id 1 labels Person
+
+    Client->>MW: POST /graphs/social/edges src 1 dst 2 type KNOWS
+    MW->>Router: route
+    Router->>EH: create_edge
+    EH->>Store: create_edge
+    Store-->>EH: EdgeId 1
+    EH-->>Client: 201 id 1 src 1 dst 2

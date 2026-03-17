@@ -1,0 +1,92 @@
+digraph api_contracts {
+    rankdir=TD
+    node [shape=box style=filled fontsize=9]
+    compound=true
+
+    subgraph cluster_rest {
+        label="gql-api — REST API :3001"
+        style=filled fillcolor="#E8F5E9"
+
+        subgraph cluster_health {
+            label="Health"
+            get_health [label="GET /health" fillcolor="#C8E6C9"]
+            get_metrics [label="GET /metrics" fillcolor="#C8E6C9"]
+        }
+
+        subgraph cluster_graphs {
+            label="Graph Management"
+            get_graphs [label="GET /graphs" fillcolor="#A5D6A7"]
+            post_graphs [label="POST /graphs" fillcolor="#A5D6A7"]
+            del_graph [label="DELETE /graphs/:name" fillcolor="#A5D6A7"]
+            get_stats [label="GET /graphs/:name/stats" fillcolor="#A5D6A7"]
+        }
+
+        subgraph cluster_nodes {
+            label="Node CRUD"
+            list_nodes [label="GET .../nodes" fillcolor="#81C784"]
+            create_node [label="POST .../nodes" fillcolor="#81C784"]
+            get_node [label="GET .../nodes/:id" fillcolor="#81C784"]
+            put_node [label="PUT .../nodes/:id" fillcolor="#81C784"]
+            del_node [label="DELETE .../nodes/:id" fillcolor="#81C784"]
+        }
+
+        subgraph cluster_edges {
+            label="Edge CRUD"
+            list_edges [label="GET .../edges" fillcolor="#66BB6A"]
+            create_edge [label="POST .../edges" fillcolor="#66BB6A"]
+            get_edge [label="GET .../edges/:id" fillcolor="#66BB6A"]
+            put_edge [label="PUT .../edges/:id" fillcolor="#66BB6A"]
+            del_edge [label="DELETE .../edges/:id" fillcolor="#66BB6A"]
+        }
+
+        subgraph cluster_cypher {
+            label="Cypher Query"
+            post_query [label="POST .../query" fillcolor="#4CAF50" fontcolor=white]
+            post_mutate [label="POST .../mutate" fillcolor="#4CAF50" fontcolor=white]
+            post_explain [label="POST .../explain" fillcolor="#4CAF50" fontcolor=white]
+            post_profile [label="POST .../profile" fillcolor="#4CAF50" fontcolor=white]
+        }
+
+        subgraph cluster_schema {
+            label="Schema + Traversal"
+            get_schema [label="GET .../schema" fillcolor="#C8E6C9"]
+            get_neighbors [label="GET .../neighbors/:nid" fillcolor="#C8E6C9"]
+        }
+
+        subgraph cluster_io {
+            label="Import/Export"
+            get_export [label="GET .../export" fillcolor="#C8E6C9"]
+            post_import [label="POST .../import" fillcolor="#C8E6C9"]
+        }
+
+        post_audit [label="POST /admin/.../audit" fillcolor="#FFF59D"]
+    }
+
+    subgraph cluster_bolt {
+        label="sedandelivery-bolt — Bolt v4.4 :7687"
+        style=filled fillcolor="#E3F2FD"
+
+        hello [label="HELLO 0x01" fillcolor="#90CAF9"]
+        logon [label="LOGON 0x6A" fillcolor="#90CAF9"]
+        run [label="RUN 0x10" fillcolor="#64B5F6"]
+        pull [label="PULL 0x3F" fillcolor="#64B5F6"]
+        discard [label="DISCARD 0x2F" fillcolor="#64B5F6"]
+        begin_tx [label="BEGIN 0x11" fillcolor="#42A5F5"]
+        commit_tx [label="COMMIT 0x12" fillcolor="#42A5F5"]
+        rollback_tx [label="ROLLBACK 0x13" fillcolor="#42A5F5"]
+        reset [label="RESET 0x0F" fillcolor="#90CAF9"]
+        goodbye [label="GOODBYE 0x02" fillcolor="#90CAF9"]
+    }
+
+    subgraph cluster_redis {
+        label="gql-module — Redis Commands"
+        style=filled fillcolor="#FFF3E0"
+
+        gql_query [label="GQL.QUERY\ngraph cypher" fillcolor="#FFE0B2"]
+        gql_mutate [label="GQL.MUTATE\ngraph cypher" fillcolor="#FFE0B2"]
+        gql_create [label="GQL.CREATE-GRAPH\ngraph" fillcolor="#FFE0B2"]
+        gql_delete [label="GQL.DELETE-GRAPH\ngraph" fillcolor="#FFE0B2"]
+        gql_list [label="GQL.LIST-GRAPHS" fillcolor="#FFE0B2"]
+        gql_explain [label="GQL.EXPLAIN\ngraph cypher" fillcolor="#FFE0B2"]
+    }
+}
