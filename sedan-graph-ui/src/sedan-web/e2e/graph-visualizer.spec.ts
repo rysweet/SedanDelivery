@@ -59,9 +59,52 @@ async function selectGraph(page: import('@playwright/test').Page) {
 }
 
 async function waitForCypherEditor(page: import('@playwright/test').Page) {
-  const textarea = page.locator('.monaco-editor textarea').first()
-  await expect(textarea).toBeVisible({ timeout: 10000 })
-  return textarea
+  const editor = page.getByRole('textbox', { name: 'Editor content' })
+  await expect(editor).toBeVisible({ timeout: 10000 })
+  await page.waitForFunction(
+    () => Boolean(
+      window.__SEDAN_TEST_HOOKS__?.setCypherEditorValue &&
+      window.__SEDAN_TEST_HOOKS__?.getCypherEditorValue &&
+      window.__SEDAN_TEST_HOOKS__?.executeCypher,
+    ),
+    undefined,
+    { timeout: 10000 },
+  )
+  return editor
+}
+
+async function setCypherEditorValue(page: import('@playwright/test').Page, cypher: string) {
+  await waitForCypherEditor(page)
+  let hookValue: string | null = null
+  let visibleValue = ''
+
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    hookValue = await page.evaluate((value: string) => {
+      const hooks = window.__SEDAN_TEST_HOOKS__
+      hooks?.setCypherEditorValue?.(value)
+      return hooks?.getCypherEditorValue?.() ?? null
+    }, cypher)
+
+    visibleValue = await page.locator('.monaco-editor .view-lines').evaluate((el) =>
+      (el.textContent ?? '').replace(/\u00a0/g, ' '),
+    )
+
+    if (hookValue === cypher && visibleValue.includes(cypher)) {
+      return
+    }
+
+    await page.waitForTimeout(250)
+  }
+
+  expect(hookValue).toBe(cypher)
+  expect(visibleValue).toContain(cypher)
+}
+
+async function executeCypher(page: import('@playwright/test').Page) {
+  await waitForCypherEditor(page)
+  await page.evaluate(async () => {
+    await window.__SEDAN_TEST_HOOKS__?.executeCypher?.()
+  })
 }
 
 test.describe('Graph Visualizer E2E', () => {
@@ -155,44 +198,28 @@ test.describe('Graph Visualizer E2E', () => {
 
     // Find the query editor button by its tooltip text
     const queryBtn = page.locator('[aria-label*="Query"], [aria-label*="Cypher"], [title*="Query"]').first()
-    if (await queryBtn.isVisible()) {
-      await queryBtn.click()
-      await waitForCypherEditor(page)
-    } else {
-      // Try clicking buttons that might open the editor
-      const buttons = page.locator('button')
-      for (let i = 0; i < Math.min(await buttons.count(), 20); i++) {
-        const btn = buttons.nth(i)
-        const ariaLabel = await btn.getAttribute('aria-label').catch(() => '')
-        if (ariaLabel && (ariaLabel.includes('Query') || ariaLabel.includes('Terminal') || ariaLabel.includes('Cypher'))) {
-          await btn.click()
-          await waitForCypherEditor(page)
-          break
-        }
-      }
-    }
+    await expect(queryBtn).toBeVisible({ timeout: 10000 })
+    await queryBtn.click()
+    await waitForCypherEditor(page)
 
     await page.screenshot({ path: 'e2e/screenshots/05-editor-opened.png', fullPage: true })
 
     // Check if Monaco editor appeared
     const monaco = page.locator('.monaco-editor')
-    if (await monaco.isVisible({ timeout: 10000 }).catch(() => false)) {
-      const textarea = await waitForCypherEditor(page)
-      await textarea.click({ force: true })
-      await page.keyboard.press('Control+a')
-      await page.keyboard.type('MATCH (w:Warehouse)-[:DELIVERS_TO]->(s:Store) RETURN w.name, s.name', { delay: 15 })
+    await expect(monaco).toBeVisible({ timeout: 10000 })
+    await setCypherEditorValue(page, 'MATCH (w:Warehouse)-[:DELIVERS_TO]->(s:Store) RETURN w.name, s.name')
 
-      await page.screenshot({ path: 'e2e/screenshots/05-query-typed.png', fullPage: true })
+    await page.screenshot({ path: 'e2e/screenshots/05-query-typed.png', fullPage: true })
 
-      // Execute
-      const execBtn = page.getByText('Execute', { exact: false }).first()
-      if (await execBtn.isVisible()) {
-        await execBtn.click()
-        await page.waitForTimeout(2000)
-      }
+    const queryResponsePromise = page.waitForResponse((response) =>
+      response.url().includes('/api/graphs/supply-chain/query') && response.request().method() === 'POST',
+    )
+    await executeCypher(page)
+    const queryResponse = await queryResponsePromise
+    expect(queryResponse.status()).toBe(200)
+    await expect(page.getByRole('cell', { name: 'Seattle-HQ' }).first()).toBeVisible({ timeout: 10000 })
 
-      await page.screenshot({ path: 'e2e/screenshots/05-query-results.png', fullPage: true })
-    }
+    await page.screenshot({ path: 'e2e/screenshots/05-query-results.png', fullPage: true })
   })
 
   test('06 - Schema panel shows types', async ({ page }) => {

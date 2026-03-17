@@ -53,9 +53,52 @@ async function selectGraph(page: import('@playwright/test').Page) {
 }
 
 async function waitForCypherEditor(page: import('@playwright/test').Page) {
-  const textarea = page.locator('.monaco-editor textarea').first()
-  await expect(textarea).toBeVisible({ timeout: 10000 })
-  return textarea
+  const editor = page.getByRole('textbox', { name: 'Editor content' })
+  await expect(editor).toBeVisible({ timeout: 10000 })
+  await page.waitForFunction(
+    () => Boolean(
+      window.__SEDAN_TEST_HOOKS__?.setCypherEditorValue &&
+      window.__SEDAN_TEST_HOOKS__?.getCypherEditorValue &&
+      window.__SEDAN_TEST_HOOKS__?.executeCypher,
+    ),
+    undefined,
+    { timeout: 10000 },
+  )
+  return editor
+}
+
+async function setCypherEditorValue(page: import('@playwright/test').Page, cypher: string) {
+  await waitForCypherEditor(page)
+  let hookValue: string | null = null
+  let visibleValue = ''
+
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    hookValue = await page.evaluate((value: string) => {
+      const hooks = window.__SEDAN_TEST_HOOKS__
+      hooks?.setCypherEditorValue?.(value)
+      return hooks?.getCypherEditorValue?.() ?? null
+    }, cypher)
+
+    visibleValue = await page.locator('.monaco-editor .view-lines').evaluate((el) =>
+      (el.textContent ?? '').replace(/\u00a0/g, ' '),
+    )
+
+    if (hookValue === cypher && visibleValue.includes(cypher)) {
+      return
+    }
+
+    await page.waitForTimeout(250)
+  }
+
+  expect(hookValue).toBe(cypher)
+  expect(visibleValue).toContain(cypher)
+}
+
+async function executeCypher(page: import('@playwright/test').Page) {
+  await waitForCypherEditor(page)
+  await page.evaluate(async () => {
+    await window.__SEDAN_TEST_HOOKS__?.executeCypher?.()
+  })
 }
 
 test.describe('Detailed Flow Tests', () => {
@@ -69,47 +112,42 @@ test.describe('Detailed Flow Tests', () => {
 
     // Run CREATE via Cypher — same pattern as working test 05
     const queryBtn = page.locator('[aria-label="Cypher Query Editor"]').first()
-    if (await queryBtn.isVisible()) {
-      await queryBtn.click()
-      const textarea = await waitForCypherEditor(page)
-      await textarea.click({ force: true })
-      await page.keyboard.press('Control+a')
-      await page.keyboard.type("CREATE (:Product {name: 'Test Widget'})", { delay: 10 })
-      const execBtn = page.getByText('Execute').first()
-      if (await execBtn.isVisible()) {
-        await execBtn.click({ force: true })
-        await page.waitForTimeout(2000)
-      }
-    }
+    await expect(queryBtn).toBeVisible({ timeout: 10000 })
+    await queryBtn.click()
+    await setCypherEditorValue(page, "CREATE (:Product {name: 'Test Widget'})")
+    const mutateResponsePromise = page.waitForResponse((response) =>
+      response.url().includes('/api/graphs/supply-chain/mutate') && response.request().method() === 'POST',
+    )
+    await executeCypher(page)
+    const mutateResponse = await mutateResponsePromise
+    expect(mutateResponse.status()).toBe(200)
+    const mutatePayload = await mutateResponse.json()
+    expect(mutatePayload.nodesCreated ?? mutatePayload.nodes_created).toBe(1)
+    await expect(page.getByText('+1 nodes', { exact: false })).toBeVisible({ timeout: 10000 })
     await page.screenshot({ path: 'e2e/screenshots/17-create-mutation.png', fullPage: true })
-    expect(true).toBeTruthy()
   })
 
-  test('18 - Error toast on invalid Cypher', async ({ page }) => {
+  test('18 - Invalid Cypher returns 400 error', async ({ page }) => {
     await page.goto('/')
     await page.waitForLoadState('networkidle')
     await selectGraph(page)
 
     // Open Cypher editor
     const queryBtn = page.locator('[aria-label*="Cypher"], [aria-label*="Query"]').first()
-    if (await queryBtn.isVisible()) await queryBtn.click()
+    await expect(queryBtn).toBeVisible({ timeout: 10000 })
+    await queryBtn.click()
     const monaco = page.locator('.monaco-editor')
-    if (await monaco.isVisible({ timeout: 10000 }).catch(() => false)) {
-      const textarea = await waitForCypherEditor(page)
-      await textarea.click({ force: true })
-      await page.keyboard.press('Control+a')
-      await page.keyboard.type('THIS IS NOT VALID CYPHER AT ALL', { delay: 10 })
-      const execBtn = page.getByText('Execute', { exact: false }).first()
-      if (await execBtn.isVisible()) await execBtn.click({ force: true })
-      await page.waitForTimeout(2000)
-    }
+    await expect(monaco).toBeVisible({ timeout: 10000 })
+    await setCypherEditorValue(page, 'THIS IS NOT VALID CYPHER AT ALL')
+    const queryResponsePromise = page.waitForResponse((response) =>
+      response.url().includes('/api/graphs/supply-chain/query') && response.request().method() === 'POST',
+    )
+    await executeCypher(page)
+    const queryResponse = await queryResponsePromise
+    expect(queryResponse.status()).toBe(400)
+    expect(await queryResponse.text()).toMatch(/syntax error|expected clause keyword/i)
 
-    // Should show error (either inline or toast)
-    const hasError = await page.getByText('error', { exact: false }).isVisible().catch(() => false)
-    const hasHttp = await page.getByText('HTTP', { exact: false }).isVisible().catch(() => false)
     await page.screenshot({ path: 'e2e/screenshots/18-error-on-bad-cypher.png', fullPage: true })
-
-    expect(hasError || hasHttp).toBeTruthy()
   })
 
   test('19 - Graph deletion via API + UI verification', async ({ page, request }) => {
@@ -304,7 +342,8 @@ test.describe('Detailed Flow Tests', () => {
 
     // Right-click the canvas
     const canvas = page.locator('canvas').first()
-    await canvas.click({ button: "right", position: { x: 300, y: 300 }, force: true, force: true })
+    await expect(canvas).toBeVisible({ timeout: 10000 })
+    await canvas.click({ button: 'right', position: { x: 300, y: 300 }, force: true })
     await page.waitForTimeout(1000)
 
     await page.screenshot({ path: 'e2e/screenshots/26-context-menu-actions.png', fullPage: true })
@@ -400,24 +439,24 @@ test.describe('Detailed Flow Tests', () => {
     if (await detailItem.isVisible()) await detailItem.click()
     await page.waitForTimeout(3000)
 
-    // Step 4: Verify node exists (status bar shows 1 node)
-    await page.getByText('1 node', { exact: false }).isVisible().catch(() => false)
+    // Step 4: Verify the newly created graph is selected before querying it
+    const selectedGraph = page.locator('[aria-label^="Selected graph:"]').first()
+    await expect(selectedGraph).toBeVisible({ timeout: 10000 })
+    await expect(selectedGraph).toContainText('e2e-detail')
     await page.screenshot({ path: 'e2e/screenshots/30-crud-node-created.png', fullPage: true })
 
     // Step 5: Query via Cypher editor
     const queryBtn = page.locator('[aria-label*="Cypher"], [aria-label*="Query"]').first()
-    if (await queryBtn.isVisible()) {
-      await queryBtn.click()
-      const textarea = await waitForCypherEditor(page)
-      await textarea.click({ force: true })
-      await page.keyboard.press('Control+a')
-      await page.keyboard.type("MATCH (n:Person {name: 'CRUD Test User'}) RETURN n.name, n.age", { delay: 10 })
-      const execBtn = page.getByText('Execute', { exact: false }).first()
-      if (await execBtn.isVisible()) {
-        await execBtn.click({ force: true })
-        await page.waitForTimeout(2000)
-      }
-    }
+    await expect(queryBtn).toBeVisible({ timeout: 10000 })
+    await queryBtn.click()
+    await setCypherEditorValue(page, "MATCH (n:Person {name: 'CRUD Test User'}) RETURN n.name, n.age")
+    const queryResponsePromise = page.waitForResponse((response) =>
+      response.url().includes('/api/graphs/e2e-detail/query') && response.request().method() === 'POST',
+    )
+    await executeCypher(page)
+    const queryResponse = await queryResponsePromise
+    expect(queryResponse.status()).toBe(200)
+    await expect(page.getByRole('cell', { name: 'CRUD Test User' })).toBeVisible({ timeout: 10000 })
 
     await page.screenshot({ path: 'e2e/screenshots/30-crud-query-result.png', fullPage: true })
 
