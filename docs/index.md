@@ -95,7 +95,6 @@ See [ADR-004](ADR-004-distributed-redis) for the full architecture decision reco
 | `BOLT_TLS_KEY` | — | PEM private key file for in-process Bolt TLS; must be set together with `BOLT_TLS_CERT`; Azure Container Apps deploys mount this as `/mnt/secrets/bolt-tls-key` |
 | `BOLT_REQUIRE_TLS` | `false` | Refuse startup unless in-process Bolt TLS is configured; Azure Container Apps deploys set this to `true` for the public Bolt endpoint |
 | `BOLT_WS_ALLOWED_ORIGINS` | — | Comma-separated browser origins allowed to use Bolt over WebSocket; when set, a matching `Origin` header is required and `*` allows any origin |
-| `BOLT_ENABLED` | `true` | Enable/disable Bolt server in container |
 | `BOLT_MAX_CONNECTIONS` | `1024` | Max concurrent Bolt connections |
 | `BOLT_MAX_CONN_PER_IP` | `50` | Max concurrent connections from a single IP (DoS protection) |
 | `BOLT_HANDSHAKE_TIMEOUT_MS` | `5000` | Max time (ms) to complete TLS handshake before slot is reclaimed |
@@ -219,7 +218,6 @@ Browser clients that connect over WebSocket must set `BOLT_WS_ALLOWED_ORIGINS` t
 | `BOLT_BIND_ADDR` | `0.0.0.0:7687` | Bolt TCP listen address |
 | `BOLT_PASSWORD` | (none) | Optional for direct bolt runs; local Compose profiles default it from `VALKEY_PASSWORD` unless overridden |
 | `BOLT_WS_ALLOWED_ORIGINS` | (none) | Comma-separated WebSocket origin allowlist; when set, requests must send a matching `Origin` header |
-| `BOLT_ENABLED` | `true` | Enable/disable Bolt server in container |
 
 See [Bolt Protocol Spec](specs/sedandelivery-bolt-spec) for implementation details.
 
