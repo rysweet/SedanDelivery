@@ -115,7 +115,7 @@ See [ADR-004](ADR-004-distributed-redis) for the full architecture decision reco
 | `BOLT_SERVER_VERSION` | `Neo4j/4.4.0` | Server version string reported in the Bolt HELLO handshake response |
 | `BOLT_WS_MAX_WRITE_BUF` | `16777216` | WebSocket write buffer size in bytes (16 MiB) |
 | `BOLT_TCP_KEEPALIVE_SECS` | `120` | TCP keepalive probe interval in seconds (range 10–300); keeps connections alive through Azure L4 load balancers |
-| `GQL_REDIS_URL` | — | Redis/Valkey URL; when set, bolt uses Redis-backed store (use `rediss://` for TLS with Azure Cache) |
+| `GQL_REDIS_URL` | — | Redis/Valkey URL; when set, bolt uses Redis-backed store (use `rediss://` for TLS with Azure Cache). Falls back to `REDIS_URL` if not set |
 | `GQL_REDIS_CLUSTER_NODES` | — | Comma-separated cluster seed URLs (enables Redis Cluster mode, overrides `GQL_REDIS_URL`) |
 | `GQL_REDIS_REPLICA_URL` | — | Comma-separated replica URLs for read-only query routing (round-robin) |
 | `GQL_REDIS_POOL_SIZE` | `64` | r2d2 connection pool max size |
