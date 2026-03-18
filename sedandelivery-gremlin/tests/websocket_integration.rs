@@ -48,9 +48,9 @@ async fn start_test_server() -> (JoinHandle<()>, u16) {
 }
 
 /// Connect a WebSocket client to the test server.
-async fn connect(port: u16) -> tokio_tungstenite::WebSocketStream<
-    tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
-> {
+async fn connect(
+    port: u16,
+) -> tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>> {
     let url = format!("ws://127.0.0.1:{port}");
     let (ws, _response) = tokio_tungstenite::connect_async(&url)
         .await
@@ -150,11 +150,7 @@ fn create_modern_graph_store() -> InMemoryGraphStore {
         )
         .unwrap();
     let _peter = store
-        .create_node(
-            "default",
-            vec!["person".into()],
-            person_props("peter", 35),
-        )
+        .create_node("default", vec!["person".into()], person_props("peter", 35))
         .unwrap();
 
     // Edges
@@ -180,13 +176,7 @@ fn create_modern_graph_store() -> InMemoryGraphStore {
         .create_edge("default", josh, _lop, "created".into(), weight_props(0.4))
         .unwrap();
     store
-        .create_edge(
-            "default",
-            _peter,
-            _lop,
-            "created".into(),
-            weight_props(0.2),
-        )
+        .create_edge("default", _peter, _lop, "created".into(), weight_props(0.2))
         .unwrap();
 
     store
@@ -227,7 +217,9 @@ async fn test_vertex_count_over_websocket() {
 
     assert_eq!(resp["status"]["code"], 200, "response: {resp}");
 
-    let data = resp["result"]["data"].as_array().expect("data should be array");
+    let data = resp["result"]["data"]
+        .as_array()
+        .expect("data should be array");
     assert_eq!(data.len(), 1, "count should return a single value");
 
     // The count should be 6 (6 vertices in the modern graph).
@@ -244,15 +236,14 @@ async fn test_has_label_person() {
     let mut ws = connect(port).await;
 
     // g.V().hasLabel("person")
-    let msg = bytecode_request(vec![
-        ("V", vec![]),
-        ("hasLabel", vec![json!("person")]),
-    ]);
+    let msg = bytecode_request(vec![("V", vec![]), ("hasLabel", vec![json!("person")])]);
     let resp = send_and_receive(&mut ws, &msg).await;
 
     assert_eq!(resp["status"]["code"], 200, "response: {resp}");
 
-    let data = resp["result"]["data"].as_array().expect("data should be array");
+    let data = resp["result"]["data"]
+        .as_array()
+        .expect("data should be array");
     // 4 person vertices: marko, vadas, josh, peter
     assert_eq!(data.len(), 4, "modern graph has 4 person vertices");
 }
@@ -263,15 +254,14 @@ async fn test_has_label_software() {
     let mut ws = connect(port).await;
 
     // g.V().hasLabel("software")
-    let msg = bytecode_request(vec![
-        ("V", vec![]),
-        ("hasLabel", vec![json!("software")]),
-    ]);
+    let msg = bytecode_request(vec![("V", vec![]), ("hasLabel", vec![json!("software")])]);
     let resp = send_and_receive(&mut ws, &msg).await;
 
     assert_eq!(resp["status"]["code"], 200, "response: {resp}");
 
-    let data = resp["result"]["data"].as_array().expect("data should be array");
+    let data = resp["result"]["data"]
+        .as_array()
+        .expect("data should be array");
     // 2 software vertices: lop, ripple
     assert_eq!(data.len(), 2, "modern graph has 2 software vertices");
 }
@@ -292,7 +282,9 @@ async fn test_traversal_out_knows_values() {
 
     assert_eq!(resp["status"]["code"], 200, "response: {resp}");
 
-    let data = resp["result"]["data"].as_array().expect("data should be array");
+    let data = resp["result"]["data"]
+        .as_array()
+        .expect("data should be array");
     assert_eq!(data.len(), 2, "marko knows 2 people");
 
     let mut names: Vec<String> = data
@@ -343,7 +335,9 @@ async fn test_empty_traversal() {
     );
 
     if code == 200 {
-        let data = resp["result"]["data"].as_array().expect("data should be array");
+        let data = resp["result"]["data"]
+            .as_array()
+            .expect("data should be array");
         assert!(data.is_empty(), "no vertices should match: {data:?}");
     }
 }
@@ -423,7 +417,9 @@ async fn test_vertex_limit() {
 
     assert_eq!(resp["status"]["code"], 200, "response: {resp}");
 
-    let data = resp["result"]["data"].as_array().expect("data should be array");
+    let data = resp["result"]["data"]
+        .as_array()
+        .expect("data should be array");
     assert_eq!(data.len(), 2, "limit(2) should return exactly 2 vertices");
 }
 
@@ -438,13 +434,12 @@ async fn test_multiple_requests_on_same_connection() {
     assert_eq!(resp1["status"]["code"], 200, "first request: {resp1}");
 
     // Second request: g.V().hasLabel("software")
-    let msg2 = bytecode_request(vec![
-        ("V", vec![]),
-        ("hasLabel", vec![json!("software")]),
-    ]);
+    let msg2 = bytecode_request(vec![("V", vec![]), ("hasLabel", vec![json!("software")])]);
     let resp2 = send_and_receive(&mut ws, &msg2).await;
     assert_eq!(resp2["status"]["code"], 200, "second request: {resp2}");
 
-    let data = resp2["result"]["data"].as_array().expect("data should be array");
+    let data = resp2["result"]["data"]
+        .as_array()
+        .expect("data should be array");
     assert_eq!(data.len(), 2, "second request should still work");
 }

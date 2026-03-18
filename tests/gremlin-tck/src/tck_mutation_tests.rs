@@ -47,7 +47,10 @@ fn run_on(store: &InMemoryGraphStore, query: &str) -> QueryResult {
 fn test_add_vertex_animal() {
     let (store, _ids) = create_modern_graph();
 
-    let result = run_on(&store, "CREATE (a:animal {name: 'puppy'}) RETURN a.name AS name");
+    let result = run_on(
+        &store,
+        "CREATE (a:animal {name: 'puppy'}) RETURN a.name AS name",
+    );
     assert_eq!(result.stats.nodes_created, 1);
     assert_eq!(result.rows.len(), 1);
     assert_eq!(result.rows[0]["name"], Value::Str("puppy".into()));
@@ -85,7 +88,10 @@ fn test_add_property_to_existing() {
     assert_eq!(result.rows[0]["nick"], Value::Str("markito".into()));
 
     // Verify the property persists in a follow-up query.
-    let r2 = run_on(&store, "MATCH (n {name: 'marko'}) RETURN n.nickname AS nick");
+    let r2 = run_on(
+        &store,
+        "MATCH (n {name: 'marko'}) RETURN n.nickname AS nick",
+    );
     assert_eq!(r2.rows[0]["nick"], Value::Str("markito".into()));
 }
 
@@ -115,7 +121,10 @@ fn test_add_vertex_and_edge() {
     assert_eq!(result.rows[0]["name"], Value::Str("puppy".into()));
 
     // Verify edge traversal.
-    let r2 = run_on(&store, "MATCH ({name: 'marko'})-[:owns]->(a) RETURN a.name AS name");
+    let r2 = run_on(
+        &store,
+        "MATCH ({name: 'marko'})-[:owns]->(a) RETURN a.name AS name",
+    );
     assert_eq!(r2.rows.len(), 1);
     assert_eq!(r2.rows[0]["name"], Value::Str("puppy".into()));
 }
@@ -281,9 +290,7 @@ fn test_or_age_filter() {
 /// g.V().hasLabel("person").has("age", gt(30)).has("age", lt(35)) — josh only (32)
 #[test]
 fn test_age_range_filter() {
-    let rows = run_query(
-        "MATCH (n:person) WHERE n.age > 30 AND n.age < 35 RETURN n.name AS name",
-    );
+    let rows = run_query("MATCH (n:person) WHERE n.age > 30 AND n.age < 35 RETURN n.name AS name");
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0]["name"], Value::Str("josh".into()));
 }
@@ -291,9 +298,8 @@ fn test_age_range_filter() {
 /// g.V().has("age", within(27, 29, 35)) — vadas + marko + peter
 #[test]
 fn test_age_within() {
-    let rows = run_query(
-        "MATCH (n) WHERE n.age IN [27, 29, 35] RETURN n.name AS name ORDER BY name",
-    );
+    let rows =
+        run_query("MATCH (n) WHERE n.age IN [27, 29, 35] RETURN n.name AS name ORDER BY name");
     assert_eq!(rows.len(), 3);
     assert_eq!(rows[0]["name"], Value::Str("marko".into()));
     assert_eq!(rows[1]["name"], Value::Str("peter".into()));
@@ -314,9 +320,7 @@ fn test_age_without() {
 /// g.V().has("name", containing("a")) — names containing "a"
 #[test]
 fn test_name_containing() {
-    let rows = run_query(
-        "MATCH (n) WHERE n.name CONTAINS 'a' RETURN n.name AS name ORDER BY name",
-    );
+    let rows = run_query("MATCH (n) WHERE n.name CONTAINS 'a' RETURN n.name AS name ORDER BY name");
     // marko and vadas contain "a".
     assert_eq!(rows.len(), 2);
     assert_eq!(rows[0]["name"], Value::Str("marko".into()));
@@ -408,16 +412,15 @@ fn test_choose_by_label() {
 /// g.V().coalesce(has("age").values("age"), constant(-1)) — age or -1 for software
 #[test]
 fn test_coalesce_age_or_default() {
-    let rows = run_query(
-        "MATCH (n) RETURN n.name AS name, coalesce(n.age, -1) AS val ORDER BY name",
-    );
+    let rows =
+        run_query("MATCH (n) RETURN n.name AS name, coalesce(n.age, -1) AS val ORDER BY name");
     assert_eq!(rows.len(), 6);
-    assert_eq!(rows[0]["val"], Value::Int(32));  // josh
-    assert_eq!(rows[1]["val"], Value::Int(-1));  // lop
-    assert_eq!(rows[2]["val"], Value::Int(29));  // marko
-    assert_eq!(rows[3]["val"], Value::Int(35));  // peter
-    assert_eq!(rows[4]["val"], Value::Int(-1));  // ripple
-    assert_eq!(rows[5]["val"], Value::Int(27));  // vadas
+    assert_eq!(rows[0]["val"], Value::Int(32)); // josh
+    assert_eq!(rows[1]["val"], Value::Int(-1)); // lop
+    assert_eq!(rows[2]["val"], Value::Int(29)); // marko
+    assert_eq!(rows[3]["val"], Value::Int(35)); // peter
+    assert_eq!(rows[4]["val"], Value::Int(-1)); // ripple
+    assert_eq!(rows[5]["val"], Value::Int(27)); // vadas
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -427,9 +430,8 @@ fn test_coalesce_age_or_default() {
 /// g.V().has("name","marko").repeat(out()).times(1) — 1-hop: vadas, josh, lop
 #[test]
 fn test_repeat_out_times_1() {
-    let rows = run_query(
-        "MATCH ({name: 'marko'})-[*1..1]->(m) RETURN m.name AS name ORDER BY name",
-    );
+    let rows =
+        run_query("MATCH ({name: 'marko'})-[*1..1]->(m) RETURN m.name AS name ORDER BY name");
     assert_eq!(rows.len(), 3);
     assert_eq!(rows[0]["name"], Value::Str("josh".into()));
     assert_eq!(rows[1]["name"], Value::Str("lop".into()));
@@ -439,9 +441,8 @@ fn test_repeat_out_times_1() {
 /// g.V().has("name","marko").repeat(out()).times(2) — 2-hop: ripple, lop (through josh)
 #[test]
 fn test_repeat_out_times_2() {
-    let rows = run_query(
-        "MATCH ({name: 'marko'})-[*2..2]->(m) RETURN m.name AS name ORDER BY name",
-    );
+    let rows =
+        run_query("MATCH ({name: 'marko'})-[*2..2]->(m) RETURN m.name AS name ORDER BY name");
     // marko→josh→ripple, marko→josh→lop
     // (vadas and lop have no outgoing edges, so no 2-hop through them)
     assert_eq!(rows.len(), 2);
@@ -452,9 +453,8 @@ fn test_repeat_out_times_2() {
 /// g.V().has("name","marko").repeat(out("knows")).times(1) — josh, vadas
 #[test]
 fn test_repeat_knows_times_1() {
-    let rows = run_query(
-        "MATCH ({name: 'marko'})-[:knows*1..1]->(m) RETURN m.name AS name ORDER BY name",
-    );
+    let rows =
+        run_query("MATCH ({name: 'marko'})-[:knows*1..1]->(m) RETURN m.name AS name ORDER BY name");
     assert_eq!(rows.len(), 2);
     assert_eq!(rows[0]["name"], Value::Str("josh".into()));
     assert_eq!(rows[1]["name"], Value::Str("vadas".into()));
@@ -507,9 +507,8 @@ fn test_friends_created() {
 /// — vadas(27), josh(32)
 #[test]
 fn test_knows_ordered_by_age() {
-    let rows = run_query(
-        "MATCH ({name: 'marko'})-[:knows]->(m) RETURN m.name AS name ORDER BY m.age",
-    );
+    let rows =
+        run_query("MATCH ({name: 'marko'})-[:knows]->(m) RETURN m.name AS name ORDER BY m.age");
     assert_eq!(rows.len(), 2);
     assert_eq!(rows[0]["name"], Value::Str("vadas".into()));
     assert_eq!(rows[1]["name"], Value::Str("josh".into()));
@@ -518,9 +517,7 @@ fn test_knows_ordered_by_age() {
 /// g.V().hasLabel("person").order().by("age",desc).limit(1).values("name") — "peter"
 #[test]
 fn test_oldest_person() {
-    let rows = run_query(
-        "MATCH (n:person) RETURN n.name AS name ORDER BY n.age DESC LIMIT 1",
-    );
+    let rows = run_query("MATCH (n:person) RETURN n.name AS name ORDER BY n.age DESC LIMIT 1");
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0]["name"], Value::Str("peter".into()));
 }

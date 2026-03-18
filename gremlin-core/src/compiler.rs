@@ -75,12 +75,15 @@ impl GremlinCompiler {
         let mut pending_properties: Vec<(String, GremlinValue)> = Vec::new();
         // Pending By modifiers for Order
         let mut pending_order = false;
+        // Track aliases for path() reconstruction
+        let mut path_aliases: Vec<Identifier> = Vec::new();
 
         for step in steps {
             match step {
                 GremlinStep::V(ids) => {
                     let alias = self.next_alias("v");
                     current_alias = alias.clone();
+                    path_aliases.push(current_alias.clone());
                     let scan = Operator::NodeScan {
                         label: None,
                         alias: alias.clone(),
@@ -138,6 +141,7 @@ impl GremlinCompiler {
                         }),
                     };
                     current_alias = rel_alias.clone();
+                    path_aliases.push(current_alias.clone());
                     current = Some(match ids {
                         Some(id_list) if id_list.len() == 1 => {
                             let id_expr = gremlin_value_to_expr(&id_list[0]);
@@ -279,6 +283,7 @@ impl GremlinCompiler {
                         child: Box::new(child),
                     });
                     current_alias = dst;
+                    path_aliases.push(current_alias.clone());
                 }
 
                 GremlinStep::OutE(labels)
@@ -303,6 +308,7 @@ impl GremlinCompiler {
                         child: Box::new(child),
                     });
                     current_alias = rel_alias;
+                    path_aliases.push(current_alias.clone());
                 }
 
                 GremlinStep::InV | GremlinStep::OutV | GremlinStep::BothV | GremlinStep::OtherV => {
@@ -327,6 +333,7 @@ impl GremlinCompiler {
                         child: Box::new(child),
                     });
                     current_alias = vertex_alias;
+                    path_aliases.push(current_alias.clone());
                 }
 
                 GremlinStep::Values(keys) => {
@@ -784,7 +791,11 @@ impl GremlinCompiler {
                 }
 
                 GremlinStep::Path => {
-                    return Err(CompileError::UnsupportedStep("path".into()));
+                    let child = current.take().ok_or(CompileError::MissingChild)?;
+                    current = Some(Operator::GremlinPath {
+                        child: Box::new(child),
+                        path_aliases: path_aliases.clone(),
+                    });
                 }
 
                 GremlinStep::Repeat(body_steps) => {
@@ -884,10 +895,13 @@ impl GremlinCompiler {
                     });
                 }
 
-                GremlinStep::Aggregate(_key) => {
-                    return Err(CompileError::UnsupportedStep(
-                        "aggregate (side-effect)".into(),
-                    ));
+                GremlinStep::Aggregate(key) => {
+                    let child = current.take().ok_or(CompileError::MissingChild)?;
+                    current = Some(Operator::GremlinAggregate {
+                        key: key.clone(),
+                        child: Box::new(child),
+                        value_alias: current_alias.clone(),
+                    });
                 }
 
                 GremlinStep::Cap(keys) => {
@@ -920,8 +934,27 @@ impl GremlinCompiler {
                     current_alias = alias;
                 }
 
-                GremlinStep::Match(_patterns) => {
-                    return Err(CompileError::UnsupportedStep("match".into()));
+                GremlinStep::Match(patterns) => {
+                    let child = current.take().ok_or(CompileError::MissingChild)?;
+                    let mut compiled_patterns = Vec::with_capacity(patterns.len());
+                    for pattern_steps in patterns {
+                        let mut sub = self.sub_compiler();
+                        // Seed the sub-compiler with a SingleRow so that
+                        // pattern steps like out() have a starting point.
+                        // The executor seeds each pattern from current bindings.
+                        let mut seeded_steps = vec![GremlinStep::V(None)];
+                        seeded_steps.extend(pattern_steps.iter().cloned());
+                        let compiled = sub.compile(&seeded_steps)?;
+                        for (k, v) in &sub.alias_map {
+                            self.alias_map.entry(k.clone()).or_insert_with(|| v.clone());
+                        }
+                        self.absorb(&sub);
+                        compiled_patterns.push(compiled);
+                    }
+                    current = Some(Operator::GremlinMatch {
+                        patterns: compiled_patterns,
+                        child: Box::new(child),
+                    });
                 }
 
                 GremlinStep::Project(keys) => {
@@ -1272,7 +1305,10 @@ mod tests {
         let op = compiler.compile(&[GremlinStep::E(None)]).unwrap();
         // E(None) → Expand (all edges) over NodeScan
         assert!(matches!(op, Operator::Expand { .. }));
-        if let Operator::Expand { child, rel_types, .. } = &op {
+        if let Operator::Expand {
+            child, rel_types, ..
+        } = &op
+        {
             assert!(rel_types.is_empty());
             assert!(matches!(**child, Operator::NodeScan { .. }));
         }
@@ -1419,10 +1455,7 @@ mod tests {
     #[test]
     fn compile_in_e() {
         let mut compiler = GremlinCompiler::new();
-        let steps = vec![
-            GremlinStep::V(None),
-            GremlinStep::InE(vec!["knows".into()]),
-        ];
+        let steps = vec![GremlinStep::V(None), GremlinStep::InE(vec!["knows".into()])];
         let op = compiler.compile(&steps).unwrap();
         if let Operator::Expand {
             direction,
@@ -1868,7 +1901,10 @@ mod tests {
             GremlinStep::V(None),
             GremlinStep::Union(vec![
                 vec![GremlinStep::V(None), GremlinStep::Out(vec!["knows".into()])],
-                vec![GremlinStep::V(None), GremlinStep::Out(vec!["created".into()])],
+                vec![
+                    GremlinStep::V(None),
+                    GremlinStep::Out(vec!["created".into()]),
+                ],
             ]),
         ];
         let op = compiler.compile(&steps).unwrap();
@@ -1880,7 +1916,10 @@ mod tests {
         let mut compiler = GremlinCompiler::new();
         let steps = vec![
             GremlinStep::V(None),
-            GremlinStep::Repeat(vec![GremlinStep::V(None), GremlinStep::Out(vec!["knows".into()])]),
+            GremlinStep::Repeat(vec![
+                GremlinStep::V(None),
+                GremlinStep::Out(vec!["knows".into()]),
+            ]),
             GremlinStep::Times(3),
         ];
         let op = compiler.compile(&steps).unwrap();
@@ -1898,11 +1937,14 @@ mod tests {
         let steps = vec![
             GremlinStep::V(None),
             GremlinStep::Choose(
-                vec![GremlinStep::V(None), GremlinStep::Has(
-                    "age".into(),
-                    Some(GremlinValue::Integer(30)),
-                )],
-                vec![GremlinStep::V(None), GremlinStep::Values(vec!["name".into()])],
+                vec![
+                    GremlinStep::V(None),
+                    GremlinStep::Has("age".into(), Some(GremlinValue::Integer(30))),
+                ],
+                vec![
+                    GremlinStep::V(None),
+                    GremlinStep::Values(vec!["name".into()]),
+                ],
                 Some(vec![GremlinStep::Constant(GremlinValue::String(
                     "unknown".into(),
                 ))]),
@@ -1926,8 +1968,14 @@ mod tests {
         let steps = vec![
             GremlinStep::V(None),
             GremlinStep::Coalesce(vec![
-                vec![GremlinStep::V(None), GremlinStep::Values(vec!["nickname".into()])],
-                vec![GremlinStep::V(None), GremlinStep::Values(vec!["name".into()])],
+                vec![
+                    GremlinStep::V(None),
+                    GremlinStep::Values(vec!["nickname".into()]),
+                ],
+                vec![
+                    GremlinStep::V(None),
+                    GremlinStep::Values(vec!["name".into()]),
+                ],
             ]),
         ];
         let op = compiler.compile(&steps).unwrap();
@@ -1976,33 +2024,30 @@ mod tests {
     }
 
     #[test]
-    fn compile_path_unsupported() {
+    fn compile_path_produces_gremlin_path() {
         let mut compiler = GremlinCompiler::new();
         let steps = vec![GremlinStep::V(None), GremlinStep::Path];
-        let err = compiler.compile(&steps).unwrap_err();
-        assert!(matches!(err, CompileError::UnsupportedStep(_)));
+        let op = compiler.compile(&steps).unwrap();
+        assert!(matches!(op, Operator::GremlinPath { .. }));
     }
 
     #[test]
-    fn compile_match_unsupported() {
+    fn compile_match_produces_gremlin_match() {
         let mut compiler = GremlinCompiler::new();
         let steps = vec![
             GremlinStep::V(None),
             GremlinStep::Match(vec![vec![GremlinStep::Out(vec!["knows".into()])]]),
         ];
-        let err = compiler.compile(&steps).unwrap_err();
-        assert!(matches!(err, CompileError::UnsupportedStep(_)));
+        let op = compiler.compile(&steps).unwrap();
+        assert!(matches!(op, Operator::GremlinMatch { .. }));
     }
 
     #[test]
-    fn compile_aggregate_sideeffect_unsupported() {
+    fn compile_aggregate_produces_gremlin_aggregate() {
         let mut compiler = GremlinCompiler::new();
-        let steps = vec![
-            GremlinStep::V(None),
-            GremlinStep::Aggregate("x".into()),
-        ];
-        let err = compiler.compile(&steps).unwrap_err();
-        assert!(matches!(err, CompileError::UnsupportedStep(_)));
+        let steps = vec![GremlinStep::V(None), GremlinStep::Aggregate("x".into())];
+        let op = compiler.compile(&steps).unwrap();
+        assert!(matches!(op, Operator::GremlinAggregate { .. }));
     }
 
     #[test]
@@ -2070,10 +2115,7 @@ mod tests {
             GremlinStep::V(None),
             GremlinStep::SideEffect(vec![
                 GremlinStep::V(None),
-                GremlinStep::Property(
-                    "visited".into(),
-                    GremlinValue::Bool(true),
-                ),
+                GremlinStep::Property("visited".into(), GremlinValue::Bool(true)),
             ]),
         ];
         let op = compiler.compile(&steps).unwrap();
@@ -2113,7 +2155,10 @@ mod tests {
     #[test]
     fn compile_predicate_at_toplevel_errors() {
         let mut compiler = GremlinCompiler::new();
-        let steps = vec![GremlinStep::V(None), GremlinStep::Eq(GremlinValue::Integer(1))];
+        let steps = vec![
+            GremlinStep::V(None),
+            GremlinStep::Eq(GremlinValue::Integer(1)),
+        ];
         let err = compiler.compile(&steps).unwrap_err();
         assert!(matches!(err, CompileError::InvalidSequence(_)));
     }

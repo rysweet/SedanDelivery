@@ -10,9 +10,11 @@ pub mod bytecode;
 pub mod compiler;
 pub mod graphson;
 pub mod steps;
+pub mod text_parser;
 pub mod types;
 
 pub use bytecode::{Bytecode, GremlinStep, Predicate};
 pub use compiler::GremlinCompiler;
 pub use graphson::{RequestMessage, ResponseMessage, ResponseResult, ResponseStatus};
+pub use text_parser::{parse_traversal, TextParseError};
 pub use types::{GremlinValue, Traverser};

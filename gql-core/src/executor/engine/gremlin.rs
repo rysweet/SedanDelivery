@@ -202,8 +202,9 @@ impl<'a> QueryExecutor<'a> {
 
     /// Execute `Cap` — emit accumulated side-effect values for the given keys.
     ///
-    /// Phase 1 stub: executes the child and returns empty results.
-    /// Full implementation will integrate with a side-effect accumulator.
+    /// Executes the child plan (which should contain `GremlinAggregate` operators
+    /// that populate `__gremlin_agg_<key>` columns) and then collects those
+    /// accumulated values into a single result row.
     pub(crate) fn exec_cap(
         &self,
         cx: &mut ExecContext<'_>,
@@ -216,17 +217,177 @@ impl<'a> QueryExecutor<'a> {
             }));
         };
 
-        // Execute child for any side effects.
-        let _child_rows = self.exec_operator(cx, child)?;
+        let child_rows = self.exec_operator(cx, child)?;
 
-        // TODO(gremlin): integrate with side-effect accumulator to return
-        // collected values for `keys`. For now, return a single row with
-        // Null for each requested key.
+        // Collect aggregated values for each key from the child rows.
+        // The aggregate column already contains the full accumulated list,
+        // so we take it from the first row that has it (all rows carry the same list).
         let mut row = Row::new();
         for key in keys {
-            row.insert(key.clone(), Value::Null);
+            let agg_col = format!("__gremlin_agg_{key}");
+            let collected: Vec<Value> = child_rows
+                .iter()
+                .find_map(|r| r.get(&agg_col))
+                .and_then(|v| {
+                    if let Value::List(items) = v {
+                        Some(items.clone())
+                    } else {
+                        None
+                    }
+                })
+                .unwrap_or_default();
+            row.insert(key.clone(), Value::List(collected));
         }
         Ok(vec![row])
+    }
+
+    /// Execute `GremlinAggregate` — collect traverser values into a
+    /// `__gremlin_agg_<key>` column for later retrieval by `Cap`.
+    pub(crate) fn exec_gremlin_aggregate(
+        &self,
+        cx: &mut ExecContext<'_>,
+        op: &Operator,
+    ) -> Result<Vec<Row>, GqlError> {
+        let Operator::GremlinAggregate {
+            key,
+            child,
+            value_alias,
+        } = op
+        else {
+            debug_assert!(false, "expected GremlinAggregate operator");
+            return Err(GqlError::Execution(ExecutionError::UnsupportedFeature {
+                feature: "internal: expected GremlinAggregate operator".into(),
+            }));
+        };
+
+        let mut input = self.exec_operator(cx, child)?;
+        let agg_col = format!("__gremlin_agg_{key}");
+
+        // Collect all values seen across all rows.
+        let mut collected: Vec<Value> = Vec::new();
+        for row in &input {
+            if let Some(val) = row.get(value_alias.as_str()) {
+                collected.push(val.clone());
+            }
+        }
+
+        // Stamp the accumulated list onto every output row.
+        let agg_val = Value::List(collected);
+        for row in &mut input {
+            row.insert(agg_col.clone(), agg_val.clone());
+        }
+
+        Ok(input)
+    }
+
+    /// Execute `GremlinPath` — reconstruct the traversal path from the
+    /// tracked aliases and return it as a list.
+    pub(crate) fn exec_gremlin_path(
+        &self,
+        cx: &mut ExecContext<'_>,
+        op: &Operator,
+    ) -> Result<Vec<Row>, GqlError> {
+        let Operator::GremlinPath {
+            child,
+            path_aliases,
+        } = op
+        else {
+            debug_assert!(false, "expected GremlinPath operator");
+            return Err(GqlError::Execution(ExecutionError::UnsupportedFeature {
+                feature: "internal: expected GremlinPath operator".into(),
+            }));
+        };
+
+        let input = self.exec_operator(cx, child)?;
+        let mut out = Vec::with_capacity(input.len());
+        for row in input {
+            cx.budget.check_or_err()?;
+            let path: Vec<Value> = path_aliases
+                .iter()
+                .filter_map(|alias| row.get(alias.as_str()).cloned())
+                .filter(|v| !matches!(v, Value::Null))
+                .collect();
+            let mut result_row = Row::new();
+            result_row.insert("path".to_string(), Value::List(path));
+            out.push(result_row);
+        }
+        Ok(out)
+    }
+
+    /// Execute `GremlinMatch` — declarative pattern matching with named bindings.
+    ///
+    /// For each input row, iterate through patterns. Each pattern is a
+    /// sub-traversal that binds variables. We progressively join results
+    /// by requiring consistent bindings across patterns.
+    pub(crate) fn exec_gremlin_match(
+        &self,
+        cx: &mut ExecContext<'_>,
+        op: &Operator,
+    ) -> Result<Vec<Row>, GqlError> {
+        let Operator::GremlinMatch { patterns, child } = op else {
+            debug_assert!(false, "expected GremlinMatch operator");
+            return Err(GqlError::Execution(ExecutionError::UnsupportedFeature {
+                feature: "internal: expected GremlinMatch operator".into(),
+            }));
+        };
+
+        let input = self.exec_operator(cx, child)?;
+
+        if patterns.is_empty() {
+            return Ok(input);
+        }
+
+        // For each input row, execute all patterns and join on shared bindings.
+        let mut out = Vec::new();
+        for row in &input {
+            cx.budget.check_or_err()?;
+
+            // Start with the input row as the initial binding set.
+            let mut current_bindings = vec![row.clone()];
+
+            for pattern in patterns {
+                let mut next_bindings = Vec::new();
+
+                for binding in &current_bindings {
+                    cx.budget.check_or_err()?;
+                    // Seed the pattern execution with current bindings.
+                    self.foreach_seed
+                        .borrow_mut()
+                        .replace(vec![binding.clone()]);
+                    let pattern_rows = self.exec_operator(cx, pattern)?;
+                    self.foreach_seed.borrow_mut().take();
+
+                    // Merge pattern results with existing bindings,
+                    // checking for consistency on shared keys.
+                    for p_row in pattern_rows {
+                        let mut merged = binding.clone();
+                        let mut consistent = true;
+                        for (k, v) in &p_row {
+                            if let Some(existing) = merged.get(k) {
+                                if existing != v {
+                                    consistent = false;
+                                    break;
+                                }
+                            } else {
+                                merged.insert(k.clone(), v.clone());
+                            }
+                        }
+                        if consistent {
+                            next_bindings.push(merged);
+                        }
+                    }
+                }
+
+                current_bindings = next_bindings;
+                if current_bindings.is_empty() {
+                    break;
+                }
+            }
+
+            out.extend(current_bindings);
+        }
+
+        Ok(out)
     }
 }
 
@@ -535,7 +696,7 @@ mod tests {
     // ── Cap tests ────────────────────────────────────────────────────────────
 
     #[test]
-    fn cap_returns_null_stub_for_keys() {
+    fn cap_returns_empty_lists_for_keys_without_aggregate() {
         let store = make_store();
         let executor = QueryExecutor::new(&store);
 
@@ -547,7 +708,480 @@ mod tests {
         let mut budget = ExecutionBudget::unlimited();
         let result = executor.execute("g", &plan, &mut budget).unwrap();
         assert_eq!(result.rows.len(), 1);
-        assert_eq!(result.rows[0].get("x"), Some(&Value::Null));
-        assert_eq!(result.rows[0].get("y"), Some(&Value::Null));
+        assert_eq!(result.rows[0].get("x"), Some(&Value::List(vec![])));
+        assert_eq!(result.rows[0].get("y"), Some(&Value::List(vec![])));
+    }
+
+    // ── Aggregate + Cap tests ────────────────────────────────────────────────
+
+    #[test]
+    fn aggregate_cap_collects_all_nodes() {
+        let store = make_chain(); // A->B->C
+        let executor = QueryExecutor::new(&store);
+
+        let plan = Operator::Cap {
+            keys: vec!["x".to_string()],
+            child: Box::new(Operator::GremlinAggregate {
+                key: "x".to_string(),
+                child: Box::new(Operator::NodeScan {
+                    label: Some(Label::new("N")),
+                    alias: Identifier::new("n"),
+                }),
+                value_alias: Identifier::new("n"),
+            }),
+        };
+
+        let mut budget = ExecutionBudget::unlimited();
+        let result = executor.execute("g", &plan, &mut budget).unwrap();
+        assert_eq!(result.rows.len(), 1);
+        if let Some(Value::List(items)) = result.rows[0].get("x") {
+            assert_eq!(items.len(), 3, "should collect all 3 nodes");
+        } else {
+            panic!("expected list for cap key 'x'");
+        }
+    }
+
+    #[test]
+    fn aggregate_cap_collects_outgoing_neighbors() {
+        let store = make_chain(); // A->B->C
+        let executor = QueryExecutor::new(&store);
+
+        let plan = Operator::Cap {
+            keys: vec!["friends".to_string()],
+            child: Box::new(Operator::GremlinAggregate {
+                key: "friends".to_string(),
+                child: Box::new(Operator::Expand {
+                    direction: Direction::Outgoing,
+                    rel_types: vec![RelType::new("NEXT")],
+                    src_alias: Identifier::new("n"),
+                    rel_alias: None,
+                    dst_alias: Identifier::new("m"),
+                    child: Box::new(Operator::NodeScan {
+                        label: Some(Label::new("N")),
+                        alias: Identifier::new("n"),
+                    }),
+                }),
+                value_alias: Identifier::new("m"),
+            }),
+        };
+
+        let mut budget = ExecutionBudget::unlimited();
+        let result = executor.execute("g", &plan, &mut budget).unwrap();
+        assert_eq!(result.rows.len(), 1);
+        if let Some(Value::List(items)) = result.rows[0].get("friends") {
+            assert_eq!(items.len(), 2, "should collect 2 outgoing neighbors");
+        } else {
+            panic!("expected list for cap key 'friends'");
+        }
+    }
+
+    #[test]
+    fn aggregate_passes_rows_through() {
+        let store = make_chain();
+        let executor = QueryExecutor::new(&store);
+
+        let plan = Operator::GremlinAggregate {
+            key: "x".to_string(),
+            child: Box::new(Operator::NodeScan {
+                label: Some(Label::new("N")),
+                alias: Identifier::new("n"),
+            }),
+            value_alias: Identifier::new("n"),
+        };
+
+        let mut budget = ExecutionBudget::unlimited();
+        let result = executor.execute("g", &plan, &mut budget).unwrap();
+        assert_eq!(
+            result.rows.len(),
+            3,
+            "aggregate should pass all 3 rows through"
+        );
+        for row in &result.rows {
+            assert!(row.contains_key("__gremlin_agg_x"));
+        }
+    }
+
+    #[test]
+    fn cap_with_aggregate_multiple_keys() {
+        let store = make_chain();
+        let executor = QueryExecutor::new(&store);
+
+        let plan = Operator::Cap {
+            keys: vec!["x".to_string(), "y".to_string()],
+            child: Box::new(Operator::GremlinAggregate {
+                key: "x".to_string(),
+                child: Box::new(Operator::NodeScan {
+                    label: Some(Label::new("N")),
+                    alias: Identifier::new("n"),
+                }),
+                value_alias: Identifier::new("n"),
+            }),
+        };
+
+        let mut budget = ExecutionBudget::unlimited();
+        let result = executor.execute("g", &plan, &mut budget).unwrap();
+        assert_eq!(result.rows.len(), 1);
+        if let Some(Value::List(items)) = result.rows[0].get("x") {
+            assert_eq!(items.len(), 3);
+        } else {
+            panic!("expected list for 'x'");
+        }
+        assert!(result.rows[0].contains_key("y"));
+    }
+
+    #[test]
+    fn aggregate_cap_single_node() {
+        let store = make_store();
+        let mut props = HashMap::new();
+        props.insert("name".to_string(), Value::Str("solo".into()));
+        store
+            .create_node("g", vec!["X".to_string()], props)
+            .unwrap();
+
+        let executor = QueryExecutor::new(&store);
+
+        let plan = Operator::Cap {
+            keys: vec!["all".to_string()],
+            child: Box::new(Operator::GremlinAggregate {
+                key: "all".to_string(),
+                child: Box::new(Operator::NodeScan {
+                    label: Some(Label::new("X")),
+                    alias: Identifier::new("n"),
+                }),
+                value_alias: Identifier::new("n"),
+            }),
+        };
+
+        let mut budget = ExecutionBudget::unlimited();
+        let result = executor.execute("g", &plan, &mut budget).unwrap();
+        assert_eq!(result.rows.len(), 1);
+        if let Some(Value::List(items)) = result.rows[0].get("all") {
+            assert_eq!(items.len(), 1);
+        } else {
+            panic!("expected single-element list");
+        }
+    }
+
+    // ── GremlinPath tests ────────────────────────────────────────────────────
+
+    #[test]
+    fn path_returns_traversal_elements() {
+        let store = make_chain();
+        let executor = QueryExecutor::new(&store);
+
+        let plan = Operator::GremlinPath {
+            child: Box::new(Operator::Expand {
+                direction: Direction::Outgoing,
+                rel_types: vec![RelType::new("NEXT")],
+                src_alias: Identifier::new("n"),
+                rel_alias: None,
+                dst_alias: Identifier::new("m"),
+                child: Box::new(Operator::NodeScan {
+                    label: Some(Label::new("N")),
+                    alias: Identifier::new("n"),
+                }),
+            }),
+            path_aliases: vec![Identifier::new("n"), Identifier::new("m")],
+        };
+
+        let mut budget = ExecutionBudget::unlimited();
+        let result = executor.execute("g", &plan, &mut budget).unwrap();
+        assert_eq!(result.rows.len(), 2);
+        for row in &result.rows {
+            if let Some(Value::List(path)) = row.get("path") {
+                assert_eq!(path.len(), 2, "each path should have 2 elements");
+            } else {
+                panic!("expected path column with list value");
+            }
+        }
+    }
+
+    #[test]
+    fn path_three_hops() {
+        let store = make_chain();
+        let executor = QueryExecutor::new(&store);
+
+        let plan = Operator::GremlinPath {
+            child: Box::new(Operator::Expand {
+                direction: Direction::Outgoing,
+                rel_types: vec![RelType::new("NEXT")],
+                src_alias: Identifier::new("m"),
+                rel_alias: None,
+                dst_alias: Identifier::new("o"),
+                child: Box::new(Operator::Expand {
+                    direction: Direction::Outgoing,
+                    rel_types: vec![RelType::new("NEXT")],
+                    src_alias: Identifier::new("n"),
+                    rel_alias: None,
+                    dst_alias: Identifier::new("m"),
+                    child: Box::new(Operator::NodeScan {
+                        label: Some(Label::new("N")),
+                        alias: Identifier::new("n"),
+                    }),
+                }),
+            }),
+            path_aliases: vec![
+                Identifier::new("n"),
+                Identifier::new("m"),
+                Identifier::new("o"),
+            ],
+        };
+
+        let mut budget = ExecutionBudget::unlimited();
+        let result = executor.execute("g", &plan, &mut budget).unwrap();
+        assert_eq!(result.rows.len(), 1);
+        if let Some(Value::List(path)) = result.rows[0].get("path") {
+            assert_eq!(path.len(), 3, "3-hop path should have 3 elements");
+        } else {
+            panic!("expected path column with list value");
+        }
+    }
+
+    #[test]
+    fn path_with_no_aliases_returns_empty_paths() {
+        let store = make_store();
+        store
+            .create_node("g", vec!["A".to_string()], HashMap::new())
+            .unwrap();
+
+        let executor = QueryExecutor::new(&store);
+
+        let plan = Operator::GremlinPath {
+            child: Box::new(Operator::NodeScan {
+                label: Some(Label::new("A")),
+                alias: Identifier::new("n"),
+            }),
+            path_aliases: vec![],
+        };
+
+        let mut budget = ExecutionBudget::unlimited();
+        let result = executor.execute("g", &plan, &mut budget).unwrap();
+        assert_eq!(result.rows.len(), 1);
+        assert_eq!(result.rows[0].get("path"), Some(&Value::List(vec![])));
+    }
+
+    #[test]
+    fn path_single_step() {
+        let store = make_store();
+        store
+            .create_node("g", vec!["A".to_string()], HashMap::new())
+            .unwrap();
+        store
+            .create_node("g", vec!["A".to_string()], HashMap::new())
+            .unwrap();
+
+        let executor = QueryExecutor::new(&store);
+
+        let plan = Operator::GremlinPath {
+            child: Box::new(Operator::NodeScan {
+                label: Some(Label::new("A")),
+                alias: Identifier::new("n"),
+            }),
+            path_aliases: vec![Identifier::new("n")],
+        };
+
+        let mut budget = ExecutionBudget::unlimited();
+        let result = executor.execute("g", &plan, &mut budget).unwrap();
+        assert_eq!(result.rows.len(), 2);
+        for row in &result.rows {
+            if let Some(Value::List(path)) = row.get("path") {
+                assert_eq!(path.len(), 1);
+            } else {
+                panic!("expected single-element path");
+            }
+        }
+    }
+
+    #[test]
+    fn path_with_filtered_source() {
+        let store = make_chain(); // A->B->C
+        let executor = QueryExecutor::new(&store);
+
+        // V(:N).has("name","A").out("NEXT").path()
+        let plan = Operator::GremlinPath {
+            child: Box::new(Operator::Expand {
+                direction: Direction::Outgoing,
+                rel_types: vec![RelType::new("NEXT")],
+                src_alias: Identifier::new("n"),
+                rel_alias: None,
+                dst_alias: Identifier::new("m"),
+                child: Box::new(Operator::Filter {
+                    predicate: Expr::BinaryOp {
+                        op: crate::ast::BinaryOp::Eq,
+                        left: Box::new(Expr::Property(
+                            Box::new(Expr::Variable(Identifier::new("n"))),
+                            "name".into(),
+                        )),
+                        right: Box::new(Expr::Str("A".into())),
+                    },
+                    child: Box::new(Operator::NodeScan {
+                        label: Some(Label::new("N")),
+                        alias: Identifier::new("n"),
+                    }),
+                }),
+            }),
+            path_aliases: vec![Identifier::new("n"), Identifier::new("m")],
+        };
+
+        let mut budget = ExecutionBudget::unlimited();
+        let result = executor.execute("g", &plan, &mut budget).unwrap();
+        assert_eq!(result.rows.len(), 1, "only A has an outgoing NEXT");
+        if let Some(Value::List(path)) = result.rows[0].get("path") {
+            assert_eq!(path.len(), 2);
+        } else {
+            panic!("expected path");
+        }
+    }
+
+    // ── GremlinMatch tests ───────────────────────────────────────────────────
+
+    #[test]
+    fn match_single_pattern() {
+        let store = make_chain();
+        let executor = QueryExecutor::new(&store);
+
+        let plan = Operator::GremlinMatch {
+            patterns: vec![Operator::Expand {
+                direction: Direction::Outgoing,
+                rel_types: vec![RelType::new("NEXT")],
+                src_alias: Identifier::new("n"),
+                rel_alias: None,
+                dst_alias: Identifier::new("m"),
+                child: Box::new(Operator::SingleRow),
+            }],
+            child: Box::new(Operator::NodeScan {
+                label: Some(Label::new("N")),
+                alias: Identifier::new("n"),
+            }),
+        };
+
+        let mut budget = ExecutionBudget::unlimited();
+        let result = executor.execute("g", &plan, &mut budget).unwrap();
+        assert_eq!(result.rows.len(), 2);
+        for row in &result.rows {
+            assert!(row.contains_key("n"));
+            assert!(row.contains_key("m"));
+        }
+    }
+
+    #[test]
+    fn match_empty_patterns_passes_through() {
+        let store = make_chain();
+        let executor = QueryExecutor::new(&store);
+
+        let plan = Operator::GremlinMatch {
+            patterns: vec![],
+            child: Box::new(Operator::NodeScan {
+                label: Some(Label::new("N")),
+                alias: Identifier::new("n"),
+            }),
+        };
+
+        let mut budget = ExecutionBudget::unlimited();
+        let result = executor.execute("g", &plan, &mut budget).unwrap();
+        assert_eq!(result.rows.len(), 3);
+    }
+
+    #[test]
+    fn match_two_patterns_join() {
+        let store = make_chain(); // A->B->C
+        let executor = QueryExecutor::new(&store);
+
+        let plan = Operator::GremlinMatch {
+            patterns: vec![
+                Operator::Expand {
+                    direction: Direction::Outgoing,
+                    rel_types: vec![RelType::new("NEXT")],
+                    src_alias: Identifier::new("a"),
+                    rel_alias: None,
+                    dst_alias: Identifier::new("b"),
+                    child: Box::new(Operator::SingleRow),
+                },
+                Operator::Expand {
+                    direction: Direction::Outgoing,
+                    rel_types: vec![RelType::new("NEXT")],
+                    src_alias: Identifier::new("b"),
+                    rel_alias: None,
+                    dst_alias: Identifier::new("c"),
+                    child: Box::new(Operator::SingleRow),
+                },
+            ],
+            child: Box::new(Operator::NodeScan {
+                label: Some(Label::new("N")),
+                alias: Identifier::new("a"),
+            }),
+        };
+
+        let mut budget = ExecutionBudget::unlimited();
+        let result = executor.execute("g", &plan, &mut budget).unwrap();
+        assert_eq!(result.rows.len(), 1);
+        assert!(result.rows[0].contains_key("a"));
+        assert!(result.rows[0].contains_key("b"));
+        assert!(result.rows[0].contains_key("c"));
+    }
+
+    #[test]
+    fn match_contradicting_patterns_empty() {
+        let store = make_chain(); // A->B->C (linear)
+        let executor = QueryExecutor::new(&store);
+
+        // Match: a->b via NEXT, and a->b via NONEXISTENT (no such edges)
+        let plan = Operator::GremlinMatch {
+            patterns: vec![
+                Operator::Expand {
+                    direction: Direction::Outgoing,
+                    rel_types: vec![RelType::new("NEXT")],
+                    src_alias: Identifier::new("a"),
+                    rel_alias: None,
+                    dst_alias: Identifier::new("b"),
+                    child: Box::new(Operator::SingleRow),
+                },
+                Operator::Expand {
+                    direction: Direction::Outgoing,
+                    rel_types: vec![RelType::new("NONEXISTENT")],
+                    src_alias: Identifier::new("a"),
+                    rel_alias: None,
+                    dst_alias: Identifier::new("d"),
+                    child: Box::new(Operator::SingleRow),
+                },
+            ],
+            child: Box::new(Operator::NodeScan {
+                label: Some(Label::new("N")),
+                alias: Identifier::new("a"),
+            }),
+        };
+
+        let mut budget = ExecutionBudget::unlimited();
+        let result = executor.execute("g", &plan, &mut budget).unwrap();
+        assert_eq!(
+            result.rows.len(),
+            0,
+            "no node has both NEXT and NONEXISTENT edges"
+        );
+    }
+
+    #[test]
+    fn match_no_input_rows() {
+        let store = make_store();
+        let executor = QueryExecutor::new(&store);
+
+        let plan = Operator::GremlinMatch {
+            patterns: vec![Operator::Expand {
+                direction: Direction::Outgoing,
+                rel_types: vec![RelType::new("NEXT")],
+                src_alias: Identifier::new("n"),
+                rel_alias: None,
+                dst_alias: Identifier::new("m"),
+                child: Box::new(Operator::SingleRow),
+            }],
+            child: Box::new(Operator::NodeScan {
+                label: Some(Label::new("NOPE")),
+                alias: Identifier::new("n"),
+            }),
+        };
+
+        let mut budget = ExecutionBudget::unlimited();
+        let result = executor.execute("g", &plan, &mut budget).unwrap();
+        assert_eq!(result.rows.len(), 0);
     }
 }

@@ -261,6 +261,9 @@ impl<'a> QueryExecutor<'a> {
             | Operator::Choose { .. }
             | Operator::Coalesce { .. }
             | Operator::GremlinSideEffect { .. }
+            | Operator::GremlinAggregate { .. }
+            | Operator::GremlinPath { .. }
+            | Operator::GremlinMatch { .. }
             | Operator::Cap { .. } => false,
         }
     }

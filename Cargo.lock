@@ -1574,7 +1574,11 @@ dependencies = [
 name = "gremlin-tck"
 version = "0.1.0"
 dependencies = [
+ "cucumber",
  "gql-core",
+ "gremlin-core",
+ "indexmap",
+ "tokio",
 ]
 
 [[package]]

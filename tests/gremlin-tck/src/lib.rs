@@ -17,3 +17,6 @@ pub mod tck_mutation_tests;
 
 #[cfg(test)]
 pub mod tck_map_tests;
+
+#[cfg(test)]
+pub mod tck_advanced_tests;

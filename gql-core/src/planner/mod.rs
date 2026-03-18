@@ -218,6 +218,25 @@ pub enum Operator {
         keys: Vec<String>,
         child: Box<Operator>,
     },
+    /// Gremlin aggregate() — collect traverser values into a named side-effect.
+    GremlinAggregate {
+        key: String,
+        child: Box<Operator>,
+        /// The alias whose value is collected into the aggregate bucket.
+        value_alias: Identifier,
+    },
+    /// Gremlin path() — extract path from traverser aliases.
+    GremlinPath {
+        child: Box<Operator>,
+        /// Ordered list of aliases that form the path elements.
+        path_aliases: Vec<Identifier>,
+    },
+    /// Gremlin match() — declarative pattern matching with named bindings.
+    GremlinMatch {
+        /// Each pattern is a compiled sub-traversal that binds variables.
+        patterns: Vec<Operator>,
+        child: Box<Operator>,
+    },
 }
 
 impl Operator {
@@ -247,7 +266,9 @@ impl Operator {
             | Operator::AssemblePath { child, .. }
             | Operator::MergeRelationship { child, .. }
             | Operator::GremlinSideEffect { child, .. }
-            | Operator::Cap { child, .. } => vec![child],
+            | Operator::Cap { child, .. }
+            | Operator::GremlinAggregate { child, .. }
+            | Operator::GremlinPath { child, .. } => vec![child],
 
             Operator::ForEach { body, child, .. } | Operator::Repeat { body, child, .. } => {
                 vec![child, body]
@@ -287,6 +308,12 @@ impl Operator {
             } => {
                 let mut v = vec![child.as_ref()];
                 v.extend(alternatives.iter());
+                v
+            }
+
+            Operator::GremlinMatch { patterns, child } => {
+                let mut v = vec![child.as_ref()];
+                v.extend(patterns.iter());
                 v
             }
         }
@@ -557,6 +584,9 @@ fn estimate_recursive(
         Operator::Choose { child, .. } => estimate_recursive(child, stats, estimates),
         Operator::Coalesce { child, .. } => estimate_recursive(child, stats, estimates),
         Operator::GremlinSideEffect { child, .. } => estimate_recursive(child, stats, estimates),
+        Operator::GremlinAggregate { child, .. } => estimate_recursive(child, stats, estimates),
+        Operator::GremlinPath { child, .. } => estimate_recursive(child, stats, estimates),
+        Operator::GremlinMatch { child, .. } => estimate_recursive(child, stats, estimates),
         Operator::Cap { .. } => 1.0,
     };
 
@@ -812,10 +842,17 @@ fn collect_all_aliases(op: &Operator) -> Vec<String> {
         }
         Operator::Repeat { child, .. }
         | Operator::Choose { child, .. }
-        | Operator::GremlinSideEffect { child, .. } => {
+        | Operator::GremlinSideEffect { child, .. }
+        | Operator::GremlinAggregate { child, .. } => {
             aliases.extend(collect_all_aliases(child));
         }
         Operator::Coalesce { child, .. } => {
+            aliases.extend(collect_all_aliases(child));
+        }
+        Operator::GremlinPath { .. } => {
+            aliases.push("path".to_string());
+        }
+        Operator::GremlinMatch { child, .. } => {
             aliases.extend(collect_all_aliases(child));
         }
         Operator::Cap { keys, .. } => {
