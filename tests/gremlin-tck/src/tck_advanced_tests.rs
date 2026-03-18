@@ -52,9 +52,7 @@ fn test_filter_has_name_and_age_combined() {
 /// g.V().hasLabel("person").has("age", gt(28)).count() — chained label + predicate
 #[test]
 fn test_filter_has_label_person_age_gt_28() {
-    let rows = run_query(
-        "MATCH (n:person) WHERE n.age > 28 RETURN count(n) AS cnt",
-    );
+    let rows = run_query("MATCH (n:person) WHERE n.age > 28 RETURN count(n) AS cnt");
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0]["cnt"], Value::Int(3)); // marko(29), josh(32), peter(35)
 }
@@ -62,9 +60,7 @@ fn test_filter_has_label_person_age_gt_28() {
 /// g.V().has("age", neq(29)) — inequality filter
 #[test]
 fn test_filter_has_age_neq_29() {
-    let rows = run_query(
-        "MATCH (n:person) WHERE n.age <> 29 RETURN n.name AS name ORDER BY name",
-    );
+    let rows = run_query("MATCH (n:person) WHERE n.age <> 29 RETURN n.name AS name ORDER BY name");
     assert_eq!(rows.len(), 3);
     assert_eq!(rows[0]["name"], Value::Str("josh".into()));
     assert_eq!(rows[1]["name"], Value::Str("peter".into()));
@@ -74,9 +70,7 @@ fn test_filter_has_age_neq_29() {
 /// g.V().hasLabel("person","software") — multi-label HasLabel
 #[test]
 fn test_filter_has_label_person_or_software() {
-    let rows = run_query(
-        "MATCH (n) WHERE n:person OR n:software RETURN count(n) AS cnt",
-    );
+    let rows = run_query("MATCH (n) WHERE n:person OR n:software RETURN count(n) AS cnt");
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0]["cnt"], Value::Int(6));
 }
@@ -84,9 +78,7 @@ fn test_filter_has_label_person_or_software() {
 /// HasNot: g.V().hasNot("lang") — vertices without the lang property (persons)
 #[test]
 fn test_filter_has_not_lang() {
-    let rows = run_query(
-        "MATCH (n) WHERE n.lang IS NULL RETURN count(n) AS cnt",
-    );
+    let rows = run_query("MATCH (n) WHERE n.lang IS NULL RETURN count(n) AS cnt");
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0]["cnt"], Value::Int(4)); // 4 persons have no lang
 }
@@ -121,9 +113,7 @@ fn test_filter_or_specific_ages() {
 /// Not: g.V().not(hasLabel("software")) — only persons
 #[test]
 fn test_filter_not_software() {
-    let rows = run_query(
-        "MATCH (n) WHERE NOT n:software RETURN count(n) AS cnt",
-    );
+    let rows = run_query("MATCH (n) WHERE NOT n:software RETURN count(n) AS cnt");
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0]["cnt"], Value::Int(4));
 }
@@ -161,9 +151,7 @@ fn test_filter_simple_path_two_hops() {
 /// Dedup: g.V().values("lang").dedup() — just "java"
 #[test]
 fn test_filter_dedup_lang_values() {
-    let rows = run_query(
-        "MATCH (n:software) RETURN DISTINCT n.lang AS lang",
-    );
+    let rows = run_query("MATCH (n:software) RETURN DISTINCT n.lang AS lang");
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0]["lang"], Value::Str("java".into()));
 }
@@ -171,20 +159,16 @@ fn test_filter_dedup_lang_values() {
 /// Range: g.V().hasLabel("person").order().by("age").range(1,3)
 #[test]
 fn test_filter_range_skip_1_limit_2() {
-    let rows = run_query(
-        "MATCH (n:person) RETURN n.name AS name ORDER BY n.age SKIP 1 LIMIT 2",
-    );
+    let rows = run_query("MATCH (n:person) RETURN n.name AS name ORDER BY n.age SKIP 1 LIMIT 2");
     assert_eq!(rows.len(), 2);
     assert_eq!(rows[0]["name"], Value::Str("marko".into())); // age 29
-    assert_eq!(rows[1]["name"], Value::Str("josh".into()));  // age 32
+    assert_eq!(rows[1]["name"], Value::Str("josh".into())); // age 32
 }
 
 /// Tail: g.V().order().by("name").tail(2) — last two by name
 #[test]
 fn test_filter_tail_last_two_by_name() {
-    let rows = run_query(
-        "MATCH (n) RETURN n.name AS name ORDER BY n.name DESC LIMIT 2",
-    );
+    let rows = run_query("MATCH (n) RETURN n.name AS name ORDER BY n.name DESC LIMIT 2");
     assert_eq!(rows.len(), 2);
     assert_eq!(rows[0]["name"], Value::Str("vadas".into()));
     assert_eq!(rows[1]["name"], Value::Str("ripple".into()));
@@ -208,9 +192,7 @@ fn test_map_constant_value() {
 /// Fold: g.V().values("name").fold() — collect all names into one list
 #[test]
 fn test_map_fold_names() {
-    let rows = run_query(
-        "MATCH (n) RETURN collect(n.name) AS names",
-    );
+    let rows = run_query("MATCH (n) RETURN collect(n.name) AS names");
     assert_eq!(rows.len(), 1);
     if let Value::List(ref names) = rows[0]["names"] {
         assert_eq!(names.len(), 6);
@@ -222,9 +204,7 @@ fn test_map_fold_names() {
 /// Label: g.V().label() — label of each vertex
 #[test]
 fn test_map_labels() {
-    let rows = run_query(
-        "MATCH (n) RETURN labels(n) AS lbls",
-    );
+    let rows = run_query("MATCH (n) RETURN labels(n) AS lbls");
     assert_eq!(rows.len(), 6);
 }
 
@@ -246,36 +226,28 @@ fn test_map_vertex_id_non_null() {
 /// Max: g.V().values("age").max() — 35 (peter)
 #[test]
 fn test_map_max_age() {
-    let rows = run_query(
-        "MATCH (n:person) RETURN max(n.age) AS oldest",
-    );
+    let rows = run_query("MATCH (n:person) RETURN max(n.age) AS oldest");
     assert_eq!(rows[0]["oldest"], Value::Int(35));
 }
 
 /// Min: g.V().values("age").min() — 27 (vadas)
 #[test]
 fn test_map_min_age() {
-    let rows = run_query(
-        "MATCH (n:person) RETURN min(n.age) AS youngest",
-    );
+    let rows = run_query("MATCH (n:person) RETURN min(n.age) AS youngest");
     assert_eq!(rows[0]["youngest"], Value::Int(27));
 }
 
 /// Sum: g.V().values("age").sum() — 27+29+32+35 = 123
 #[test]
 fn test_map_sum_age() {
-    let rows = run_query(
-        "MATCH (n:person) RETURN sum(n.age) AS total",
-    );
+    let rows = run_query("MATCH (n:person) RETURN sum(n.age) AS total");
     assert_eq!(rows[0]["total"], Value::Int(123));
 }
 
 /// Mean: g.V().values("age").mean() — 123/4 = 30.75
 #[test]
 fn test_map_mean_age() {
-    let rows = run_query(
-        "MATCH (n:person) RETURN avg(n.age) AS average",
-    );
+    let rows = run_query("MATCH (n:person) RETURN avg(n.age) AS average");
     if let Value::Float(avg) = rows[0]["average"] {
         assert!((avg - 30.75).abs() < 0.01);
     } else {
@@ -286,9 +258,7 @@ fn test_map_mean_age() {
 /// Sum of edge weights: g.E().values("weight").sum()
 #[test]
 fn test_map_sum_edge_weights() {
-    let rows = run_query(
-        "MATCH ()-[r]->() RETURN sum(r.weight) AS total",
-    );
+    let rows = run_query("MATCH ()-[r]->() RETURN sum(r.weight) AS total");
     if let Value::Float(total) = rows[0]["total"] {
         // 0.5 + 1.0 + 0.4 + 1.0 + 0.4 + 0.2 = 3.5
         assert!((total - 3.5).abs() < 0.01);
@@ -311,18 +281,14 @@ fn test_map_count_persons() {
 /// g.V().has("name","marko").out().count() — 3
 #[test]
 fn test_map_count_marko_out() {
-    let rows = run_query(
-        "MATCH ({name: 'marko'})-->(t) RETURN count(t) AS cnt",
-    );
+    let rows = run_query("MATCH ({name: 'marko'})-->(t) RETURN count(t) AS cnt");
     assert_eq!(rows[0]["cnt"], Value::Int(3));
 }
 
 /// g.E().hasLabel("created").count() — 4
 #[test]
 fn test_map_count_created_edges() {
-    let rows = run_query(
-        "MATCH ()-[r:created]->() RETURN count(r) AS cnt",
-    );
+    let rows = run_query("MATCH ()-[r:created]->() RETURN count(r) AS cnt");
     assert_eq!(rows[0]["cnt"], Value::Int(4));
 }
 
@@ -333,9 +299,7 @@ fn test_map_count_created_edges() {
 /// g.V().hasLabel("person").order().by("name",asc) — alphabetical
 #[test]
 fn test_map_order_person_names_asc() {
-    let rows = run_query(
-        "MATCH (n:person) RETURN n.name AS name ORDER BY n.name ASC",
-    );
+    let rows = run_query("MATCH (n:person) RETURN n.name AS name ORDER BY n.name ASC");
     assert_eq!(rows.len(), 4);
     assert_eq!(rows[0]["name"], Value::Str("josh".into()));
     assert_eq!(rows[3]["name"], Value::Str("vadas".into()));
@@ -344,9 +308,7 @@ fn test_map_order_person_names_asc() {
 /// g.V().values("age").order().by(asc).limit(1) — youngest
 #[test]
 fn test_map_order_age_asc_limit_1() {
-    let rows = run_query(
-        "MATCH (n:person) RETURN n.name AS name ORDER BY n.age ASC LIMIT 1",
-    );
+    let rows = run_query("MATCH (n:person) RETURN n.name AS name ORDER BY n.age ASC LIMIT 1");
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0]["name"], Value::Str("vadas".into()));
 }
@@ -354,9 +316,7 @@ fn test_map_order_age_asc_limit_1() {
 /// g.E().order().by("weight",desc).limit(1) — heaviest edge
 #[test]
 fn test_map_order_edge_weight_desc() {
-    let rows = run_query(
-        "MATCH ()-[r]->() RETURN r.weight AS w ORDER BY r.weight DESC LIMIT 1",
-    );
+    let rows = run_query("MATCH ()-[r]->() RETURN r.weight AS w ORDER BY r.weight DESC LIMIT 1");
     assert_eq!(rows.len(), 1);
     if let Value::Float(w) = rows[0]["w"] {
         assert!((w - 1.0).abs() < 0.001);
@@ -383,9 +343,7 @@ fn test_map_select_creator_and_creation() {
 /// Project: g.V().hasLabel("person").project("n","a").by("name").by("age")
 #[test]
 fn test_map_project_name_age() {
-    let rows = run_query(
-        "MATCH (n:person) RETURN n.name AS n, n.age AS a ORDER BY n.name",
-    );
+    let rows = run_query("MATCH (n:person) RETURN n.name AS n, n.age AS a ORDER BY n.name");
     assert_eq!(rows.len(), 4);
     assert_eq!(rows[0]["n"], Value::Str("josh".into()));
     assert_eq!(rows[0]["a"], Value::Int(32));
@@ -411,9 +369,8 @@ fn test_map_select_three_hops() {
 /// Path: g.V().has("name","marko").out("knows").path() — 2 paths
 #[test]
 fn test_map_path_marko_knows_count() {
-    let rows = run_query(
-        "MATCH (a {name: 'marko'})-[:knows]->(b) RETURN b.name AS name ORDER BY name",
-    );
+    let rows =
+        run_query("MATCH (a {name: 'marko'})-[:knows]->(b) RETURN b.name AS name ORDER BY name");
     assert_eq!(rows.len(), 2);
     assert_eq!(rows[0]["name"], Value::Str("josh".into()));
     assert_eq!(rows[1]["name"], Value::Str("vadas".into()));
@@ -453,18 +410,14 @@ fn test_map_match_person_created_software() {
 /// GroupCount: g.V().groupCount().by(label) — person:4, software:2
 #[test]
 fn test_sideeffect_group_count_by_label() {
-    let rows = run_query(
-        "MATCH (n) RETURN labels(n) AS lbl, count(n) AS cnt ORDER BY lbl",
-    );
+    let rows = run_query("MATCH (n) RETURN labels(n) AS lbl, count(n) AS cnt ORDER BY lbl");
     assert_eq!(rows.len(), 2);
 }
 
 /// GroupCount: g.E().groupCount().by(label) — knows:2, created:4
 #[test]
 fn test_sideeffect_group_count_edges_by_type() {
-    let rows = run_query(
-        "MATCH ()-[r]->() RETURN type(r) AS t, count(r) AS cnt ORDER BY t",
-    );
+    let rows = run_query("MATCH ()-[r]->() RETURN type(r) AS t, count(r) AS cnt ORDER BY t");
     assert_eq!(rows.len(), 2);
     assert_eq!(rows[0]["t"], Value::Str("created".into()));
     assert_eq!(rows[0]["cnt"], Value::Int(4));
@@ -475,9 +428,8 @@ fn test_sideeffect_group_count_edges_by_type() {
 /// Group: g.V().hasLabel("person").group().by("age") — group persons by age
 #[test]
 fn test_sideeffect_group_persons_by_age() {
-    let rows = run_query(
-        "MATCH (n:person) RETURN n.age AS age, collect(n.name) AS names ORDER BY age",
-    );
+    let rows =
+        run_query("MATCH (n:person) RETURN n.age AS age, collect(n.name) AS names ORDER BY age");
     assert_eq!(rows.len(), 4); // four distinct ages
 }
 
@@ -504,9 +456,7 @@ fn test_sideeffect_group_creators_by_software() {
 /// Inject-like: collect all names then count
 #[test]
 fn test_sideeffect_collect_names_count() {
-    let rows = run_query(
-        "MATCH (n) WITH collect(n.name) AS names RETURN size(names) AS cnt",
-    );
+    let rows = run_query("MATCH (n) WITH collect(n.name) AS names RETURN size(names) AS cnt");
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0]["cnt"], Value::Int(6));
 }
@@ -519,9 +469,7 @@ fn test_sideeffect_collect_names_count() {
 /// Union: g.V().union(out("knows"),out("created")).count()
 #[test]
 fn test_branch_union_knows_and_created() {
-    let rows = run_query(
-        "MATCH (n)-[:knows|created]->(t) RETURN count(t) AS cnt",
-    );
+    let rows = run_query("MATCH (n)-[:knows|created]->(t) RETURN count(t) AS cnt");
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0]["cnt"], Value::Int(6));
 }
@@ -554,15 +502,13 @@ fn test_branch_choose_by_label() {
     );
     assert_eq!(rows.len(), 6);
     assert_eq!(rows[0]["kind"], Value::Str("human".into())); // josh
-    assert_eq!(rows[1]["kind"], Value::Str("code".into()));  // lop
+    assert_eq!(rows[1]["kind"], Value::Str("code".into())); // lop
 }
 
 /// Repeat out 1 hop: g.V("marko").repeat(out()).times(1)
 #[test]
 fn test_branch_repeat_out_1() {
-    let rows = run_query(
-        "MATCH ({name: 'marko'})-->(t) RETURN t.name AS name ORDER BY name",
-    );
+    let rows = run_query("MATCH ({name: 'marko'})-->(t) RETURN t.name AS name ORDER BY name");
     assert_eq!(rows.len(), 3); // vadas, josh, lop
 }
 
@@ -635,10 +581,7 @@ fn test_map_add_vertex_and_edge_chain() {
 #[test]
 fn test_filter_drop_vertex_peter() {
     let (store, _ids) = create_modern_graph();
-    let result = run_on(
-        &store,
-        "MATCH (n {name: 'peter'}) DETACH DELETE n",
-    );
+    let result = run_on(&store, "MATCH (n {name: 'peter'}) DETACH DELETE n");
     assert_eq!(result.stats.nodes_deleted, 1);
 
     let count = run_on(&store, "MATCH (n) RETURN count(n) AS cnt");
@@ -649,10 +592,7 @@ fn test_filter_drop_vertex_peter() {
 #[test]
 fn test_filter_drop_marko_created_edges() {
     let (store, _ids) = create_modern_graph();
-    let result = run_on(
-        &store,
-        "MATCH ({name: 'marko'})-[r:created]->() DELETE r",
-    );
+    let result = run_on(&store, "MATCH ({name: 'marko'})-[r:created]->() DELETE r");
     assert_eq!(result.stats.edges_deleted, 1);
 
     let count = run_on(&store, "MATCH ()-[r:created]->() RETURN count(r) AS cnt");
@@ -825,14 +765,8 @@ fn test_write_set_property() {
 #[test]
 fn test_write_multiple_creates() {
     let (store, _ids) = create_modern_graph();
-    run_on(
-        &store,
-        "CREATE (:animal {name: 'cat'})",
-    );
-    run_on(
-        &store,
-        "CREATE (:animal {name: 'dog'})",
-    );
+    run_on(&store, "CREATE (:animal {name: 'cat'})");
+    run_on(&store, "CREATE (:animal {name: 'dog'})");
     let count = run_on(&store, "MATCH (n:animal) RETURN count(n) AS cnt");
     assert_eq!(count.rows[0]["cnt"], Value::Int(2));
 }

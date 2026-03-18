@@ -201,8 +201,12 @@ fn test_sum_edge_weights() {
 fn test_group_count_by_label() {
     let rows = run_query("MATCH (n) RETURN labels(n)[0] AS lbl, count(n) AS cnt ORDER BY lbl");
     assert_eq!(rows.len(), 2);
-    let person = rows.iter().find(|r| r["lbl"] == Value::Str("person".into()));
-    let software = rows.iter().find(|r| r["lbl"] == Value::Str("software".into()));
+    let person = rows
+        .iter()
+        .find(|r| r["lbl"] == Value::Str("person".into()));
+    let software = rows
+        .iter()
+        .find(|r| r["lbl"] == Value::Str("software".into()));
     assert_eq!(person.unwrap()["cnt"], Value::Int(4));
     assert_eq!(software.unwrap()["cnt"], Value::Int(2));
 }
@@ -210,9 +214,8 @@ fn test_group_count_by_label() {
 /// g.V().group().by(label) — verify person group has 4 names, software has 2
 #[test]
 fn test_group_by_label_collect_names() {
-    let rows = run_query(
-        "MATCH (n) RETURN labels(n)[0] AS lbl, collect(n.name) AS names ORDER BY lbl",
-    );
+    let rows =
+        run_query("MATCH (n) RETURN labels(n)[0] AS lbl, collect(n.name) AS names ORDER BY lbl");
     assert_eq!(rows.len(), 2);
     for row in &rows {
         match &row["lbl"] {
@@ -238,9 +241,8 @@ fn test_group_by_label_collect_names() {
 /// g.V().hasLabel("person").group().by("age") — each age maps to exactly one person
 #[test]
 fn test_group_person_by_age() {
-    let rows = run_query(
-        "MATCH (n:person) RETURN n.age AS age, collect(n.name) AS names ORDER BY age",
-    );
+    let rows =
+        run_query("MATCH (n:person) RETURN n.age AS age, collect(n.name) AS names ORDER BY age");
     assert_eq!(rows.len(), 4);
     assert_eq!(rows[0]["age"], Value::Int(27));
     assert_eq!(rows[1]["age"], Value::Int(29));
@@ -270,18 +272,20 @@ fn test_edge_group_count_by_type() {
 /// g.V().out().groupCount().by("name") — count how many times each target appears
 #[test]
 fn test_out_group_count_by_name() {
-    let rows = run_query(
-        "MATCH ()-->(m) RETURN m.name AS name, count(m) AS cnt ORDER BY name",
-    );
+    let rows = run_query("MATCH ()-->(m) RETURN m.name AS name, count(m) AS cnt ORDER BY name");
     // lop is created by marko, josh, peter → 3; josh known by marko → 1;
     // vadas known by marko → 1; ripple created by josh → 1.
     let lop = rows.iter().find(|r| r["name"] == Value::Str("lop".into()));
     assert_eq!(lop.unwrap()["cnt"], Value::Int(3));
     let josh = rows.iter().find(|r| r["name"] == Value::Str("josh".into()));
     assert_eq!(josh.unwrap()["cnt"], Value::Int(1));
-    let vadas = rows.iter().find(|r| r["name"] == Value::Str("vadas".into()));
+    let vadas = rows
+        .iter()
+        .find(|r| r["name"] == Value::Str("vadas".into()));
     assert_eq!(vadas.unwrap()["cnt"], Value::Int(1));
-    let ripple = rows.iter().find(|r| r["name"] == Value::Str("ripple".into()));
+    let ripple = rows
+        .iter()
+        .find(|r| r["name"] == Value::Str("ripple".into()));
     assert_eq!(ripple.unwrap()["cnt"], Value::Int(1));
 }
 
@@ -356,8 +360,7 @@ fn test_dedup_person_ages() {
 /// g.V().out().dedup() — unique outgoing neighbors
 #[test]
 fn test_dedup_out_neighbors() {
-    let rows =
-        run_query("MATCH ()-->(m) RETURN DISTINCT m.name AS name ORDER BY name");
+    let rows = run_query("MATCH ()-->(m) RETURN DISTINCT m.name AS name ORDER BY name");
     // Targets: vadas, josh, lop(×3), ripple → distinct = 4
     assert_eq!(rows.len(), 4);
     assert_eq!(rows[0]["name"], Value::Str("josh".into()));
@@ -372,9 +375,7 @@ fn test_dedup_two_hop_count() {
     // From marko: out→{vadas,josh,lop}, then from josh: out→{ripple,lop}
     // From josh: out→{ripple,lop}, then from ripple/lop: no outgoing
     // Unique 2-hop: ripple, lop → 2 distinct targets
-    let rows = run_query(
-        "MATCH ()-->(m)-->(t) RETURN COUNT(DISTINCT t) AS cnt",
-    );
+    let rows = run_query("MATCH ()-->(m)-->(t) RETURN COUNT(DISTINCT t) AS cnt");
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0]["cnt"], Value::Int(2));
 }
@@ -402,9 +403,7 @@ fn test_select_marko_knows() {
 /// → collected list of marko's outgoing neighbor names
 #[test]
 fn test_fold_marko_out_names() {
-    let rows = run_query(
-        "MATCH ({name: 'marko'})-->(m) RETURN collect(m.name) AS names",
-    );
+    let rows = run_query("MATCH ({name: 'marko'})-->(m) RETURN collect(m.name) AS names");
     assert_eq!(rows.len(), 1);
     if let Value::List(names) = &rows[0]["names"] {
         assert_eq!(names.len(), 3);
@@ -447,9 +446,8 @@ fn test_select_three_variables() {
 /// Project a computed column: person name and whether their age is over 30
 #[test]
 fn test_project_age_comparison() {
-    let rows = run_query(
-        "MATCH (n:person) RETURN n.name AS name, n.age > 30 AS over30 ORDER BY n.name",
-    );
+    let rows =
+        run_query("MATCH (n:person) RETURN n.name AS name, n.age > 30 AS over30 ORDER BY n.name");
     assert_eq!(rows.len(), 4);
     assert_eq!(rows[0]["name"], Value::Str("josh".into()));
     assert_eq!(rows[0]["over30"], Value::Bool(true));
@@ -536,9 +534,8 @@ fn test_max_edge_weight() {
 /// Count edges per source vertex (out-degree)
 #[test]
 fn test_out_degree_per_vertex() {
-    let rows = run_query(
-        "MATCH (n)-->(m) RETURN n.name AS name, count(m) AS out_deg ORDER BY name",
-    );
+    let rows =
+        run_query("MATCH (n)-->(m) RETURN n.name AS name, count(m) AS out_deg ORDER BY name");
     // josh: 2 (created ripple, created lop)
     // marko: 3 (knows vadas, knows josh, created lop)
     // peter: 1 (created lop)
@@ -554,9 +551,7 @@ fn test_out_degree_per_vertex() {
 /// Count incoming edges per vertex (in-degree)
 #[test]
 fn test_in_degree_per_vertex() {
-    let rows = run_query(
-        "MATCH (m)-->(n) RETURN n.name AS name, count(m) AS in_deg ORDER BY name",
-    );
+    let rows = run_query("MATCH (m)-->(n) RETURN n.name AS name, count(m) AS in_deg ORDER BY name");
     // josh: 1 (known by marko)
     // lop: 3 (created by marko, josh, peter)
     // ripple: 1 (created by josh)
@@ -630,9 +625,7 @@ fn test_distinct_vertex_labels() {
 #[test]
 fn test_sink_vertices() {
     // vadas, lop, ripple have no outgoing edges.
-    let rows = run_query(
-        "MATCH (n) WHERE NOT (n)-->() RETURN n.name AS name ORDER BY name",
-    );
+    let rows = run_query("MATCH (n) WHERE NOT (n)-->() RETURN n.name AS name ORDER BY name");
     assert_eq!(rows.len(), 3);
     assert_eq!(rows[0]["name"], Value::Str("lop".into()));
     assert_eq!(rows[1]["name"], Value::Str("ripple".into()));
@@ -643,9 +636,7 @@ fn test_sink_vertices() {
 #[test]
 fn test_source_vertices() {
     // marko and peter have no incoming edges.
-    let rows = run_query(
-        "MATCH (n) WHERE NOT ()-->(n) RETURN n.name AS name ORDER BY name",
-    );
+    let rows = run_query("MATCH (n) WHERE NOT ()-->(n) RETURN n.name AS name ORDER BY name");
     assert_eq!(rows.len(), 2);
     assert_eq!(rows[0]["name"], Value::Str("marko".into()));
     assert_eq!(rows[1]["name"], Value::Str("peter".into()));

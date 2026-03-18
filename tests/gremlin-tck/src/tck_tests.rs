@@ -294,7 +294,8 @@ fn test_g_v_has_name_eq_marko() {
 /// g.V().has("person", "name", "marko") → 1 (label + property)
 #[test]
 fn test_g_v_has_label_person_name_marko() {
-    let rows = run_query("MATCH (n:person) WHERE n.name = 'marko' RETURN n.name AS name, n.age AS age");
+    let rows =
+        run_query("MATCH (n:person) WHERE n.name = 'marko' RETURN n.name AS name, n.age AS age");
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0]["name"], Value::Str("marko".into()));
     assert_eq!(rows[0]["age"], Value::Int(29));
@@ -354,9 +355,8 @@ fn test_g_v_has_age_lte_27() {
 /// g.V().has("age", between(28, 33)) → marko(29) + josh(32)
 #[test]
 fn test_g_v_has_age_between_28_33() {
-    let rows = run_query(
-        "MATCH (n) WHERE n.age >= 28 AND n.age < 33 RETURN n.name AS name ORDER BY name",
-    );
+    let rows =
+        run_query("MATCH (n) WHERE n.age >= 28 AND n.age < 33 RETURN n.name AS name ORDER BY name");
     assert_eq!(rows.len(), 2);
     assert_eq!(rows[0]["name"], Value::Str("josh".into()));
     assert_eq!(rows[1]["name"], Value::Str("marko".into()));
@@ -462,9 +462,7 @@ fn test_g_e_has_weight_gt_0_5() {
 /// g.V().has("name","marko").out() → 3 (vadas, josh, lop)
 #[test]
 fn test_g_v_has_name_marko_out() {
-    let rows = run_query(
-        "MATCH ({name: 'marko'})-->(m) RETURN m.name AS name ORDER BY name",
-    );
+    let rows = run_query("MATCH ({name: 'marko'})-->(m) RETURN m.name AS name ORDER BY name");
     assert_eq!(rows.len(), 3);
     assert_eq!(rows[0]["name"], Value::Str("josh".into()));
     assert_eq!(rows[1]["name"], Value::Str("lop".into()));
@@ -474,9 +472,8 @@ fn test_g_v_has_name_marko_out() {
 /// g.V().has("name","marko").out("knows") → 2 (vadas, josh)
 #[test]
 fn test_g_v_has_name_marko_out_knows() {
-    let rows = run_query(
-        "MATCH ({name: 'marko'})-[:knows]->(m) RETURN m.name AS name ORDER BY name",
-    );
+    let rows =
+        run_query("MATCH ({name: 'marko'})-[:knows]->(m) RETURN m.name AS name ORDER BY name");
     assert_eq!(rows.len(), 2);
     assert_eq!(rows[0]["name"], Value::Str("josh".into()));
     assert_eq!(rows[1]["name"], Value::Str("vadas".into()));
@@ -485,9 +482,7 @@ fn test_g_v_has_name_marko_out_knows() {
 /// g.V().has("name","marko").out("created") → 1 (lop)
 #[test]
 fn test_g_v_has_name_marko_out_created() {
-    let rows = run_query(
-        "MATCH ({name: 'marko'})-[:created]->(m) RETURN m.name AS name",
-    );
+    let rows = run_query("MATCH ({name: 'marko'})-[:created]->(m) RETURN m.name AS name");
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0]["name"], Value::Str("lop".into()));
 }
@@ -495,9 +490,7 @@ fn test_g_v_has_name_marko_out_created() {
 /// g.V().has("name","lop").in() → 3 (marko, josh, peter)
 #[test]
 fn test_g_v_has_name_lop_in() {
-    let rows = run_query(
-        "MATCH (c)-->({name: 'lop'}) RETURN c.name AS name ORDER BY name",
-    );
+    let rows = run_query("MATCH (c)-->({name: 'lop'}) RETURN c.name AS name ORDER BY name");
     assert_eq!(rows.len(), 3);
     assert_eq!(rows[0]["name"], Value::Str("josh".into()));
     assert_eq!(rows[1]["name"], Value::Str("marko".into()));
@@ -507,9 +500,8 @@ fn test_g_v_has_name_lop_in() {
 /// g.V().has("name","lop").in("created") → 3
 #[test]
 fn test_g_v_has_name_lop_in_created() {
-    let rows = run_query(
-        "MATCH (c)-[:created]->({name: 'lop'}) RETURN c.name AS name ORDER BY name",
-    );
+    let rows =
+        run_query("MATCH (c)-[:created]->({name: 'lop'}) RETURN c.name AS name ORDER BY name");
     assert_eq!(rows.len(), 3);
     assert_eq!(rows[0]["name"], Value::Str("josh".into()));
     assert_eq!(rows[1]["name"], Value::Str("marko".into()));
@@ -519,9 +511,8 @@ fn test_g_v_has_name_lop_in_created() {
 /// g.V().has("name","josh").both() → marko + lop + ripple (3 unique via undirected)
 #[test]
 fn test_g_v_has_name_josh_both() {
-    let rows = run_query(
-        "MATCH ({name: 'josh'})--(m) RETURN DISTINCT m.name AS name ORDER BY name",
-    );
+    let rows =
+        run_query("MATCH ({name: 'josh'})--(m) RETURN DISTINCT m.name AS name ORDER BY name");
     assert_eq!(rows.len(), 3);
     assert_eq!(rows[0]["name"], Value::Str("lop".into()));
     assert_eq!(rows[1]["name"], Value::Str("marko".into()));
@@ -542,9 +533,7 @@ fn test_g_v_marko_out_out() {
 /// g.V().has("name","marko").outE() → 3 edges
 #[test]
 fn test_g_v_has_name_marko_out_e() {
-    let rows = run_query(
-        "MATCH ({name: 'marko'})-[r]->() RETURN r.weight AS w ORDER BY w",
-    );
+    let rows = run_query("MATCH ({name: 'marko'})-[r]->() RETURN r.weight AS w ORDER BY w");
     assert_eq!(rows.len(), 3);
     assert_eq!(rows[0]["w"], Value::Float(0.4));
     assert_eq!(rows[1]["w"], Value::Float(0.5));
@@ -554,9 +543,7 @@ fn test_g_v_has_name_marko_out_e() {
 /// g.V().has("name","marko").outE("knows") → 2 edges
 #[test]
 fn test_g_v_has_name_marko_out_e_knows() {
-    let rows = run_query(
-        "MATCH ({name: 'marko'})-[r:knows]->() RETURN r.weight AS w ORDER BY w",
-    );
+    let rows = run_query("MATCH ({name: 'marko'})-[r:knows]->() RETURN r.weight AS w ORDER BY w");
     assert_eq!(rows.len(), 2);
     assert_eq!(rows[0]["w"], Value::Float(0.5));
     assert_eq!(rows[1]["w"], Value::Float(1.0));
@@ -565,9 +552,7 @@ fn test_g_v_has_name_marko_out_e_knows() {
 /// g.V().has("name","marko").outE().inV() → 3 vertices (same as out)
 #[test]
 fn test_g_v_has_name_marko_out_e_in_v() {
-    let rows = run_query(
-        "MATCH ({name: 'marko'})-[r]->(m) RETURN m.name AS name ORDER BY name",
-    );
+    let rows = run_query("MATCH ({name: 'marko'})-[r]->(m) RETURN m.name AS name ORDER BY name");
     assert_eq!(rows.len(), 3);
     assert_eq!(rows[0]["name"], Value::Str("josh".into()));
     assert_eq!(rows[1]["name"], Value::Str("lop".into()));
