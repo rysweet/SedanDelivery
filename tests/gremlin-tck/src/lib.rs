@@ -13,4 +13,7 @@ pub mod modern_graph;
 mod tck_tests;
 
 #[cfg(test)]
+pub mod tck_mutation_tests;
+
+#[cfg(test)]
 pub mod tck_map_tests;
