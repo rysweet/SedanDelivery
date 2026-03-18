@@ -1,0 +1,38 @@
+scenario:
+  name: "Read-After-Write Session Pinning"
+  description: >
+    Verifies that reads within 5 seconds of a write are routed to the primary
+    (session freshness window) and that reads without a prior write or after
+    the window expires use the default topology routing.
+  type: api
+  tags: [consistency, read-after-write, e2e]
+  timeout: 30s
+
+  prerequisites:
+    - "sedandelivery-bolt running on bolt://localhost:7687"
+    - "Redis primary with at least one replica configured"
+
+  steps:
+    - action: bolt_query
+      query: "CREATE (:RawPinTest {id: 'pin-1'})"
+      description: "Write a node to establish session freshness"
+
+    - action: bolt_query
+      query: "MATCH (n:RawPinTest {id: 'pin-1'}) RETURN n"
+      description: "Immediate read within 5s window — should route to primary and return the node"
+      expected:
+        row_count: 1
+
+    - action: wait
+      duration: 6s
+      description: "Wait for the read-after-write window to expire"
+
+    - action: bolt_query
+      query: "MATCH (n:RawPinTest {id: 'pin-1'}) RETURN n"
+      description: "Read after window expiry — routes via default topology (replica OK)"
+      expected:
+        row_count: 1
+
+    - action: bolt_query
+      query: "MATCH (n:RawPinTest) DELETE n"
+      description: "Cleanup test data"

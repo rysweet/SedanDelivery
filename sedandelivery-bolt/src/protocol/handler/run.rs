@@ -7,7 +7,7 @@ use crate::message::types::ServerMessage;
 use crate::metrics as bolt_metrics;
 use crate::packstream::value::{BoltMap, BoltMapExt, BoltValue};
 use crate::protocol::state::ServerState;
-use gql_core::storage::{GraphStore, ReadConsistency};
+use gql_core::storage::GraphStore;
 
 use super::explain::{detect_notifications, operator_to_plan_map, operator_to_profile_plan_map};
 use super::{
@@ -701,10 +701,7 @@ pub(crate) async fn handle_run(
     // but we need a fresh Arc for the execution closures below).
     let effective_store = resolve_effective_store(session);
 
-    if matches!(
-        session.read_consistency(),
-        ReadConsistency::SessionFreshPrimary
-    ) {
+    if session.force_primary_read() {
         tracing::debug!(
             graph = %graph,
             "routing reads to primary (session freshness window active)"
