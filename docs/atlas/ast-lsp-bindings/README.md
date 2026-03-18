@@ -8,6 +8,11 @@ and AST-level static approximation.
 
 ## Cross-Crate Symbol Reference Graph
 
+![Symbol References](symbol-references.svg)
+
+<details>
+<summary>Mermaid source</summary>
+
 ```mermaid
 graph LR
     subgraph gql_core_exports["gql-core exports"]
@@ -83,6 +88,8 @@ graph LR
     cli -->|"uses"| QueryExecutor_t
     cli -->|"uses"| parse_query
 ```
+
+</details>
 
 See [symbol-references.mmd](symbol-references.mmd) for the Mermaid source.
 

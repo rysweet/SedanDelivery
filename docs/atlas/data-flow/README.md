@@ -6,7 +6,10 @@ Data transformation chains from API entry to storage and back for SedanDelivery.
 
 All Cypher queries follow the same pipeline regardless of entry point (REST, Bolt, Redis module, CLI).
 
-### Mermaid
+![Query Pipeline](dataflow.svg)
+
+<details>
+<summary>Mermaid source</summary>
 
 ```mermaid
 flowchart LR
@@ -57,6 +60,8 @@ flowchart LR
     fabric_store --> result
     fanout --> result
 ```
+
+</details>
 
 See [dataflow.mmd](dataflow.mmd) and [dataflow.dot](dataflow.dot) for diagram sources.
 
