@@ -318,7 +318,7 @@ Set these in your Container App or `deploy.yml` to customize behavior:
 | `BOLT_PASSWORD` | (none) | Bolt authentication password. Required when `ENVIRONMENT=production`; the deploy workflow auto-generates and stores it as the Container App secret `bolt-password`, while local Compose defaults it from `VALKEY_PASSWORD` unless overridden |
 | `BOLT_TLS_CERT` | (none) | Path to the PEM certificate chain file for in-process Bolt TLS. Must be set together with `BOLT_TLS_KEY`; Azure Container Apps deploys mount this as `/mnt/secrets/bolt-tls-cert` |
 | `BOLT_TLS_KEY` | (none) | Path to the PEM private key for in-process Bolt TLS. Must be set together with `BOLT_TLS_CERT`; Azure Container Apps deploys mount this as `/mnt/secrets/bolt-tls-key` |
-| `BOLT_REQUIRE_TLS` | `false` | Refuse startup unless in-process TLS is configured. Azure Container Apps deploys set this to `true` for the public Bolt endpoint |
+| `BOLT_REQUIRE_TLS` | (unset) | Set to `1` to refuse startup unless in-process TLS is configured. The deploy workflow sets this automatically when `DEPLOY_BOLT_TLS_CERT_PEM` / `DEPLOY_BOLT_TLS_KEY_PEM` are provisioned |
 | `BOLT_WS_ALLOWED_ORIGINS` | (none) | Comma-separated browser origins allowed to upgrade Bolt over WebSocket; when set, requests must send a matching `Origin` header and `*` allows any origin |
 | `BOLT_MAX_CONNECTIONS` | `1024` | Max concurrent Bolt connections |
 | `BOLT_MAX_CONN_PER_IP` | `50` | Max concurrent connections from a single IP address (DoS protection) |
@@ -354,34 +354,44 @@ Set these in your Container App or `deploy.yml` to customize behavior:
 
 `deploy.yml` provisions a dedicated Container App secret named
 `bolt-password` for the Bolt container. On the first deploy it generates a
-random value; on later updates it reuses the existing secret so clients do not
-lose access unexpectedly after a routine rollout.
+random 32-byte value via `openssl rand`; on later updates it reuses the
+existing secret so clients do not lose access unexpectedly after a routine
+rollout.
 
 If an environment was deployed before `bolt-password` existed, the first
 post-#736 rollout generates a one-time migration password and stores it as the
 new `bolt-password` secret. Retrieve and redistribute that password before
 reconnecting clients.
 
+#### TLS provisioning
+
 Public Bolt runs over Azure Container Apps **TCP** ingress on port `7687`.
-Azure documents TLS termination for HTTP ingress, not raw TCP ingress, so the
-public Bolt endpoint must terminate TLS inside the Bolt process itself. The
-deploy workflow therefore requires two operator-managed GitHub **environment**
-secrets:
+Azure Container Apps provides TLS termination for **HTTPS** ingress but
+**not** for raw TCP transport. If Bolt is publicly exposed on TCP, you must
+terminate TLS inside the Bolt process itself by provisioning two GitHub
+**environment** secrets:
 
-- `DEPLOY_BOLT_TLS_CERT_PEM`
-- `DEPLOY_BOLT_TLS_KEY_PEM`
+- `DEPLOY_BOLT_TLS_CERT_PEM` — PEM certificate chain
+- `DEPLOY_BOLT_TLS_KEY_PEM` — PEM private key
 
-On deploy, the workflow stores them as Container App secrets
-`bolt-tls-cert` / `bolt-tls-key`, mounts `/mnt/secrets`, and sets:
+When both secrets are present, the deploy workflow:
 
-- `BOLT_TLS_CERT=/mnt/secrets/bolt-tls-cert`
-- `BOLT_TLS_KEY=/mnt/secrets/bolt-tls-key`
-- `BOLT_REQUIRE_TLS=true`
+1. Stores them as Container App secrets `bolt-tls-cert` / `bolt-tls-key`
+2. Mounts `/mnt/secrets` via `--secret-volume-mount`
+3. Sets `BOLT_TLS_CERT=/mnt/secrets/bolt-tls-cert`,
+   `BOLT_TLS_KEY=/mnt/secrets/bolt-tls-key`, and `BOLT_REQUIRE_TLS=1`
 
-If either TLS secret is missing, the deploy fails closed instead of exposing a
-public plaintext Bolt endpoint. In production mode (`ENVIRONMENT=production`),
-the Bolt process also refuses to start unless `BOLT_PASSWORD`, `BOLT_TLS_CERT`,
-and `BOLT_TLS_KEY` are all present.
+When the TLS secrets are **not** provisioned, the Bolt container starts in
+plaintext mode without `BOLT_REQUIRE_TLS`. This is safe only for:
+
+- Internal/VNet-only endpoints not exposed to the public internet
+- Environments where a sidecar proxy (e.g. Envoy, Dapr) terminates TLS
+  before traffic reaches the Bolt container
+
+> **Summary:** `BOLT_PASSWORD` is always provisioned automatically.
+> In-process TLS requires the operator to supply `DEPLOY_BOLT_TLS_CERT_PEM`
+> and `DEPLOY_BOLT_TLS_KEY_PEM`. Without them, Bolt starts in plaintext mode
+> with a warning — it will **not** panic on startup.
 
 Retrieve the current Bolt password after deploy with:
 

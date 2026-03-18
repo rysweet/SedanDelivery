@@ -805,12 +805,23 @@ jobs:
           [[ -n "${CLUSTER_NODES}" ]] && echo "::add-mask::${CLUSTER_NODES}"
           [[ -n "${REPLICA_URL}" ]] && echo "::add-mask::${REPLICA_URL}"
 
-          if [[ -z "${DEPLOY_BOLT_TLS_CERT_PEM}" || -z "${DEPLOY_BOLT_TLS_KEY_PEM}" ]]; then
-            echo "::error::DEPLOY_BOLT_TLS_CERT_PEM and DEPLOY_BOLT_TLS_KEY_PEM GitHub secrets are required for external Bolt TCP deploys"
-            exit 1
+          # TLS is optional: when DEPLOY_BOLT_TLS_CERT_PEM and DEPLOY_BOLT_TLS_KEY_PEM
+          # are both set, in-process TLS is enabled on port 7687. When absent, the
+          # Bolt server starts in plaintext mode.
+          #
+          # NOTE: Azure Container Apps provides TLS termination for HTTPS ingress
+          # but NOT for raw TCP ingress (transport=tcp). If Bolt is publicly
+          # exposed on TCP port 7687, provision the TLS secrets for end-to-end
+          # encryption. For private/internal-only Bolt endpoints behind a VNet or
+          # sidecar proxy that terminates TLS, the secrets may be omitted.
+          BOLT_TLS_ENABLED=false
+          if [[ -n "${DEPLOY_BOLT_TLS_CERT_PEM}" && -n "${DEPLOY_BOLT_TLS_KEY_PEM}" ]]; then
+            BOLT_TLS_ENABLED=true
+            mask_multiline_secret "${DEPLOY_BOLT_TLS_CERT_PEM}"
+            mask_multiline_secret "${DEPLOY_BOLT_TLS_KEY_PEM}"
+          else
+            echo "::warning::DEPLOY_BOLT_TLS_CERT_PEM / DEPLOY_BOLT_TLS_KEY_PEM not set — Bolt will run without in-process TLS. This is safe only for internal/VNet endpoints."
           fi
-          mask_multiline_secret "${DEPLOY_BOLT_TLS_CERT_PEM}"
-          mask_multiline_secret "${DEPLOY_BOLT_TLS_KEY_PEM}"
 
           # Reuse the existing Bolt password on updates to avoid credential churn.
           APP_EXISTS=false
@@ -876,16 +887,22 @@ jobs:
           fi
           SECRETS_ARGS+=(
             "bolt-password=${BOLT_PASS}"
-            "bolt-tls-cert=${DEPLOY_BOLT_TLS_CERT_PEM}"
-            "bolt-tls-key=${DEPLOY_BOLT_TLS_KEY_PEM}"
           )
           ENV_VAR_ARGS+=(
             "BOLT_BIND_ADDR=0.0.0.0:7687"
             "BOLT_PASSWORD=secretref:bolt-password"
-            "BOLT_TLS_CERT=${BOLT_TLS_CERT_PATH}"
-            "BOLT_TLS_KEY=${BOLT_TLS_KEY_PATH}"
-            "BOLT_REQUIRE_TLS=1"
           )
+          if [[ "${BOLT_TLS_ENABLED}" == "true" ]]; then
+            SECRETS_ARGS+=(
+              "bolt-tls-cert=${DEPLOY_BOLT_TLS_CERT_PEM}"
+              "bolt-tls-key=${DEPLOY_BOLT_TLS_KEY_PEM}"
+            )
+            ENV_VAR_ARGS+=(
+              "BOLT_TLS_CERT=${BOLT_TLS_CERT_PATH}"
+              "BOLT_TLS_KEY=${BOLT_TLS_KEY_PATH}"
+              "BOLT_REQUIRE_TLS=1"
+            )
+          fi
           if [[ -n "${REPLICA_URL}" ]]; then
             SECRETS_ARGS+=("redis-replica-url=${REPLICA_URL}")
             ENV_VAR_ARGS+=("GQL_REDIS_REPLICA_URL=secretref:redis-replica-url")
@@ -893,6 +910,13 @@ jobs:
 
           # Max replicas for horizontal scaling (default 1, configurable)
           BOLT_MAX_REPLICAS="${BOLT_MAX_REPLICAS:-1}"
+
+          # Optional --secret-volume-mount (only needed when TLS certs are stored
+          # as Container Apps secrets and read as files by the Bolt process).
+          VOLUME_MOUNT_ARGS=()
+          if [[ "${BOLT_TLS_ENABLED}" == "true" ]]; then
+            VOLUME_MOUNT_ARGS=(--secret-volume-mount "${BOLT_SECRET_MOUNT_PATH}")
+          fi
 
           # Helper: create bolt container app
           create_bolt_app() {
@@ -921,7 +945,7 @@ jobs:
               --exposed-port 7687 \
               --secrets "${SECRETS_ARGS[@]}" \
               --env-vars "${ENV_VAR_ARGS[@]}" \
-              --secret-volume-mount "${BOLT_SECRET_MOUNT_PATH}" \
+              "${VOLUME_MOUNT_ARGS[@]}" \
               --output none
           }
 
@@ -1001,7 +1025,7 @@ jobs:
               --image "${IMAGE}" \
               --set-env-vars "${ENV_VAR_ARGS[@]}" \
               --max-replicas "${BOLT_MAX_REPLICAS}" \
-              --secret-volume-mount "${BOLT_SECRET_MOUNT_PATH}" \
+              "${VOLUME_MOUNT_ARGS[@]}" \
               --output none 2>&1 || UPDATE_OK=false
 
             if [[ "${UPDATE_OK}" == "false" ]]; then
