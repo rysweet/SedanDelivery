@@ -27,7 +27,7 @@ indexmap      = { workspace = true }
 jiff          = { workspace = true }
 jsonwebtoken  = { version = "10", features = ["rust_crypto"] }
 ureq          = { version = "3", features = ["json"] }
-governor      = "0.8"
+governor      = "0.10"
 metrics       = "0.24"
 metrics-exporter-prometheus = "0.18"
 tokio-rustls  = "0.26"

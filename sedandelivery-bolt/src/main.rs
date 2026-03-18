@@ -97,8 +97,8 @@ async fn main() {
             .with_tonic()
             .build()
             .expect("failed to create OTLP span exporter");
-        let provider = opentelemetry_sdk::trace::TracerProvider::builder()
-            .with_batch_exporter(exporter, opentelemetry_sdk::runtime::Tokio)
+        let provider = opentelemetry_sdk::trace::SdkTracerProvider::builder()
+            .with_batch_exporter(exporter)
             .build();
         let tracer = opentelemetry::trace::TracerProvider::tracer(&provider, "sedandelivery-bolt");
 
