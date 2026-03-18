@@ -8,6 +8,8 @@ members = [
     "gql-api",
     "sedandelivery-bolt",
     "sedandelivery-fabric-sync",
+    "sedandelivery-gremlin",
+    "gremlin-core",
     "tests/loadtest",
     "tests/gremlin-tck",
 ]
@@ -26,7 +28,7 @@ repository  = "https://github.com/rysweet/SedanDelivery"
 thiserror    = "2.0"
 
 # Collections
-indexmap     = "2.0"
+indexmap     = { version = "2.0", features = ["serde"] }
 rustc-hash   = "2.0"
 
 # Parsing — hand-written recursive descent (lalrpop rejected: cannot handle Cypher's
@@ -60,6 +62,9 @@ tracing-opentelemetry = "0.32"
 opentelemetry = "0.31"
 opentelemetry_sdk = "0.31"
 opentelemetry-otlp = { version = "0.31", features = ["grpc-tonic"] }
+
+# UUID
+uuid         = { version = "1", features = ["v4", "serde"] }
 
 # Dev / test
 proptest     = "1.6"
