@@ -103,8 +103,6 @@ See [ADR-004](ADR-004-distributed-redis) for the full architecture decision reco
 | `BOLT_WRITE_CONCURRENCY` | `128` | Max concurrent write transactions |
 | `BOLT_AUTH_MAX_ATTEMPTS` | `10` | Max failed auth attempts per IP per window before rate limiting |
 | `BOLT_AUTH_WINDOW_SECS` | `3600` | Auth rate limit stale entry timeout (seconds); an IP blocked after `BOLT_AUTH_MAX_ATTEMPTS` failures cannot retry for this duration |
-
-> **Distributed rate limiting**: When `GQL_REDIS_URL` is set, auth failure counters are shared across all Bolt replicas via Redis `INCR`+`EXPIRE` (key format `__sd2:auth_rate:{ip}`). This prevents an attacker from multiplying their budget across N replicas. Without `GQL_REDIS_URL`, each replica maintains an independent in-memory counter. If Redis becomes unavailable the limiter fails open (allows the attempt) and logs a warning.
 | `BOLT_DRAIN_TIMEOUT_SECS` | `30` | Graceful shutdown drain timeout (seconds); active connections are given this long to finish before forced close |
 | `BOLT_HEALTH_PORT` | `7688` | Health/metrics HTTP server port |
 | `BOLT_HEALTH_BIND_ADDR` | `0.0.0.0` | Bind address for the health/metrics HTTP server |
@@ -116,6 +114,11 @@ See [ADR-004](ADR-004-distributed-redis) for the full architecture decision reco
 | `BOLT_SERVER_VERSION` | `Neo4j/4.4.0` | Server version string reported in the Bolt HELLO handshake response |
 | `BOLT_WS_MAX_WRITE_BUF` | `16777216` | WebSocket write buffer size in bytes (16 MiB) |
 | `BOLT_TCP_KEEPALIVE_SECS` | `120` | TCP keepalive probe interval in seconds (range 10–300); keeps connections alive through Azure L4 load balancers |
+
+> **Distributed rate limiting**: When `GQL_REDIS_URL` is set, auth failure counters are shared across all Bolt replicas via Redis `INCR`+`EXPIRE` (key format `__sd2:auth_rate:{ip}`). Without `GQL_REDIS_URL`, each replica maintains an independent in-memory counter. If Redis becomes unavailable the limiter fails open (allows the attempt) and logs a warning.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
 | `GQL_REDIS_URL` | — | Redis/Valkey URL; when set, bolt uses Redis-backed store (use `rediss://` for TLS with Azure Cache). Falls back to `REDIS_URL` if not set |
 | `GQL_REDIS_CLUSTER_NODES` | — | Comma-separated cluster seed URLs (enables Redis Cluster mode, overrides `GQL_REDIS_URL`) |
 | `GQL_REDIS_REPLICA_URL` | — | Comma-separated replica URLs for read-only query routing (round-robin) |
