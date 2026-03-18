@@ -1,0 +1,59 @@
+scenario:
+  name: "Gremlin TCK Foundation — Modern Graph Fixture Validation"
+  description: "Validates the Gremlin TCK test infrastructure: modern graph fixture, vertex/edge counts, label filtering, traversal patterns, and property access"
+  type: cli
+  tags: [critical, tck, gremlin, foundation]
+  timeout: 120s
+
+  variables:
+    cargo_test_cmd: "cargo test -p gremlin-tck"
+
+  steps:
+    # Phase 1: Compile the TCK test crate
+    - action: shell
+      command: "cargo check -p gremlin-tck --tests"
+      expect_exit_code: 0
+      description: "TCK test crate compiles without errors"
+
+    # Phase 2: Run all TCK tests
+    - action: shell
+      command: "${cargo_test_cmd} -- --test-threads=1"
+      expect_exit_code: 0
+      description: "All Gremlin TCK tests pass"
+
+    # Phase 3: Verify specific test categories
+    - action: shell
+      command: "${cargo_test_cmd} -- test_vertex_count"
+      expect_exit_code: 0
+      expect_stdout_contains: "test tck_tests::test_vertex_count ... ok"
+      description: "Vertex count test (g.V().count() equivalent)"
+
+    - action: shell
+      command: "${cargo_test_cmd} -- test_has_label"
+      expect_exit_code: 0
+      description: "HasLabel tests (hasLabel filtering equivalents)"
+
+    - action: shell
+      command: "${cargo_test_cmd} -- test_traversal"
+      expect_exit_code: 0
+      description: "Traversal tests (out/in step equivalents)"
+
+    - action: shell
+      command: "${cargo_test_cmd} -- test_edge_properties"
+      expect_exit_code: 0
+      description: "Edge property access tests"
+
+    - action: shell
+      command: "${cargo_test_cmd} -- test_group_count_by_label"
+      expect_exit_code: 0
+      description: "Group count by label (groupCount().by(label) equivalent)"
+
+    - action: shell
+      command: "${cargo_test_cmd} -- test_order"
+      expect_exit_code: 0
+      description: "Order tests (order().by() equivalents)"
+
+    - action: shell
+      command: "${cargo_test_cmd} -- test_add_vertex"
+      expect_exit_code: 0
+      description: "AddVertex test (addV() equivalent via CREATE)"

@@ -9,6 +9,7 @@ members = [
     "sedandelivery-bolt",
     "sedandelivery-fabric-sync",
     "tests/loadtest",
+    "tests/gremlin-tck",
 ]
 resolver = "2"
 
