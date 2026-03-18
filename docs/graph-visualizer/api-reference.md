@@ -147,10 +147,10 @@ Returns aggregate counts for the graph.
 
 ```json
 {
-  "node_count": 142,
-  "edge_count": 318,
-  "label_count": 4,
-  "rel_type_count": 6
+  "nodeCount": 142,
+  "edgeCount": 318,
+  "labelCount": 4,
+  "relTypeCount": 6
 }
 ```
 
@@ -370,7 +370,7 @@ submitted here will be rejected at the planning stage.
     ["Seattle-HQ", 5000],
     ["Portland-DC", 3200]
   ],
-  "elapsed_ms": 3
+  "elapsedMs": 3
 }
 ```
 
@@ -402,11 +402,11 @@ Executes a write Cypher statement (CREATE, MERGE, SET, DELETE, etc.).
 
 ```json
 {
-  "nodes_created": 1,
-  "nodes_deleted": 0,
-  "edges_created": 0,
-  "edges_deleted": 0,
-  "properties_set": 2
+  "nodesCreated": 1,
+  "nodesDeleted": 0,
+  "edgesCreated": 0,
+  "edgesDeleted": 0,
+  "propertiesSet": 2
 }
 ```
 
@@ -426,7 +426,7 @@ all nodes and edges. Results are sorted alphabetically.
     { "name": "Route",      "count": 37 },
     { "name": "Warehouse",  "count": 12 }
   ],
-  "relationship_types": [
+  "relationshipTypes": [
     { "name": "ASSIGNED_TO", "count": 48 },
     { "name": "CONNECTS",    "count": 156 },
     { "name": "SUPPLIES",    "count": 114 }
@@ -475,7 +475,7 @@ Exports all nodes, edges, and a schema summary as a single JSON document.
   ],
   "schema": {
     "labels": [{ "name": "Warehouse", "count": 1 }],
-    "relationship_types": [{ "name": "SUPPLIES", "count": 1 }]
+    "relationshipTypes": [{ "name": "SUPPLIES", "count": 1 }]
   }
 }
 ```
@@ -520,8 +520,8 @@ engine-assigned numeric ID returned from a previous `POST /nodes` call.
 
 ```json
 {
-  "nodes_created": 2,
-  "edges_created": 1
+  "nodesCreated": 2,
+  "edgesCreated": 1
 }
 ```
 

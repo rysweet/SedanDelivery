@@ -1,0 +1,48 @@
+graph TD
+    subgraph workspace["Workspace Crates"]
+        gql_core["gql-core<br/><i>lib</i>"]
+        gql_redis["gql-redis-store<br/><i>lib</i>"]
+        gql_fabric["gql-fabric-store<br/><i>lib</i>"]
+        gql_module["gql-module<br/><i>cdylib</i>"]
+        gql_api["gql-api<br/><i>bin</i>"]
+        gql_cli["gql-cli<br/><i>bin</i>"]
+        bolt["sedandelivery-bolt<br/><i>bin</i>"]
+        sync["sedandelivery-fabric-sync<br/><i>bin</i>"]
+        loadtest["tests/loadtest<br/><i>bin</i>"]
+    end
+
+    subgraph external["Key External Crates"]
+        redis_crate["redis"]
+        r2d2_crate["r2d2"]
+        axum_crate["axum"]
+        tokio_crate["tokio"]
+        reqwest_crate["reqwest"]
+        redis_module_crate["redis-module"]
+        petgraph_crate["petgraph"]
+        serde_crate["serde + serde_json"]
+        tracing_crate["tracing + opentelemetry"]
+    end
+
+    gql_redis --> gql_core
+    gql_fabric --> gql_core
+    gql_module --> gql_core
+    gql_cli --> gql_core
+    gql_api --> gql_core
+    gql_api --> gql_redis
+    bolt --> gql_core
+    bolt --> gql_redis
+    sync --> gql_core
+    sync --> gql_redis
+    sync --> gql_fabric
+    loadtest --> gql_core
+
+    gql_core --> petgraph_crate
+    gql_core --> serde_crate
+    gql_redis --> redis_crate
+    gql_redis --> r2d2_crate
+    gql_fabric --> reqwest_crate
+    gql_module --> redis_module_crate
+    gql_api --> axum_crate
+    bolt --> tokio_crate
+    sync --> tokio_crate
+    gql_core --> tracing_crate

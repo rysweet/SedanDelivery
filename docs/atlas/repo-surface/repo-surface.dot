@@ -1,0 +1,55 @@
+digraph repo_surface {
+    rankdir=TB
+    node [shape=box style=filled fontsize=11]
+    compound=true
+
+    subgraph cluster_core {
+        label="Core Engine Crates"
+        style=filled fillcolor="#E8F4FD"
+        gql_core [label="gql-core\nParser, planner, executor\nGraphStore trait, Value types" fillcolor="#AED6F1"]
+        gql_redis [label="gql-redis-store\nRedis/Valkey GraphStore\n+ FanoutStore" fillcolor="#AED6F1"]
+        gql_fabric [label="gql-fabric-store\nMicrosoft Fabric\nGraphStore" fillcolor="#AED6F1"]
+    }
+
+    subgraph cluster_entry {
+        label="Entry Point Crates"
+        style=filled fillcolor="#E8F8E8"
+        gql_module [label="gql-module\nValkey/Redis module (.so)" fillcolor="#A9DFBF"]
+        gql_api [label="gql-api\nHTTP REST API (axum)\nport 3001" fillcolor="#A9DFBF"]
+        bolt [label="sedandelivery-bolt\nBolt v4.4 TCP server\nport 7687" fillcolor="#A9DFBF"]
+        sync [label="sedandelivery-fabric-sync\nChangelog replication" fillcolor="#A9DFBF"]
+        cli [label="gql-cli\nInteractive REPL" fillcolor="#A9DFBF"]
+    }
+
+    subgraph cluster_sdks {
+        label="Client SDKs"
+        style=filled fillcolor="#FFF3E0"
+        sdk_py [label="sdk/python/" fillcolor="#FAD7A0"]
+        sdk_net [label="sdk/dotnet/" fillcolor="#FAD7A0"]
+        sdk_rs [label="sdk/rust/" fillcolor="#FAD7A0"]
+    }
+
+    subgraph cluster_infra {
+        label="Infrastructure & Deploy"
+        style=filled fillcolor="#F3E5F5"
+        infra [label="infra/\nBicep IaC" fillcolor="#D7BDE2"]
+        docker [label="Dockerfile.*\n4 container images" fillcolor="#D7BDE2"]
+        compose [label="docker-compose*.yml\n5 profiles" fillcolor="#D7BDE2"]
+        scripts [label="scripts/\nTest & provision" fillcolor="#D7BDE2"]
+        gh_actions [label=".github/workflows/\n30+ CI/CD" fillcolor="#D7BDE2"]
+    }
+
+    subgraph cluster_testing {
+        label="Testing"
+        style=filled fillcolor="#FFEBEE"
+        tests [label="tests/\nE2E, load, QA" fillcolor="#F5B7B1"]
+        neo4j_compat [label="neo4j-compat-gallery/" fillcolor="#F5B7B1"]
+    }
+
+    subgraph cluster_docs {
+        label="Documentation"
+        style=filled fillcolor="#FFFDE7"
+        docs [label="docs/\nArchitecture, ADRs" fillcolor="#F9E79F"]
+        sedan_ui [label="sedan-graph-ui/\n.NET BFF + React" fillcolor="#F9E79F"]
+    }
+}

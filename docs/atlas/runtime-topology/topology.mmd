@@ -1,0 +1,48 @@
+flowchart LR
+    subgraph clients["Client Applications"]
+        py["Python App<br/>neo4j driver"]
+        net[".NET App<br/>Neo4j.Driver"]
+        js["Browser / Node.js<br/>neo4j-driver"]
+        rest_client["REST Client<br/>curl / fetch"]
+        redis_client["Redis Client<br/>redis-py / StackExchange"]
+    end
+
+    subgraph cae["Azure Container Apps Environment"]
+        subgraph bolt_container["sd2-main-bolt"]
+            bolt_srv["sedandelivery-bolt<br/>Bolt v4.4<br/>TCP :7687 / TLS / WS<br/>Health :7688"]
+        end
+
+        subgraph api_container["sd2-main-api"]
+            api_srv["gql-api<br/>REST API<br/>HTTP :3001 / HTTPS :3443"]
+        end
+
+        subgraph redis_container["sd2-main-redis"]
+            valkey["Valkey 8.1<br/>+ gql-module .so<br/>Redis :6379"]
+        end
+
+        subgraph sync_container["sd2-main-fabric-sync"]
+            sync_svc["sedandelivery-fabric-sync<br/>Changelog Consumer"]
+        end
+    end
+
+    subgraph storage["Persistent Storage"]
+        afiles["Azure Files<br/>RDB + AOF"]
+    end
+
+    subgraph external["External Services"]
+        fabric["Microsoft Fabric<br/>Graph Database"]
+        entra["Microsoft Entra ID<br/>JWT Issuer"]
+    end
+
+    py -->|"bolt://"| bolt_srv
+    net -->|"bolt://"| bolt_srv
+    js -->|"bolt+wss://"| bolt_srv
+    rest_client -->|"https://"| api_srv
+    redis_client -->|"redis://"| valkey
+
+    bolt_srv -->|"GQL_REDIS_URL r2d2 pool"| valkey
+    api_srv -->|"GQL_REDIS_URL r2d2 pool"| valkey
+    valkey -->|"RDB + AOF"| afiles
+    valkey -->|"__sd2:changelog stream"| sync_svc
+    sync_svc -->|"HTTPS openCypher"| fabric
+    api_srv -.->|"JWKS fetch"| entra

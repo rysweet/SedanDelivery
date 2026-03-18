@@ -33,7 +33,7 @@ Replace the single `Mutex<Connection>` in `RedisGraphStore` with an **r2d2
 connection pool** (`r2d2::Pool<redis::Client>`). Pool configuration is
 injectable via environment variables:
 
-- `GQL_REDIS_POOL_SIZE` (default 16)
+- `GQL_REDIS_POOL_SIZE` (default 64; was 16 at time of writing)
 - `GQL_REDIS_POOL_TIMEOUT_SECS` (default 5)
 
 ### Tier 3: Multi-Instance Scaling

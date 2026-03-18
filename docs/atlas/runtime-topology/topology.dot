@@ -1,0 +1,69 @@
+digraph runtime_topology {
+    rankdir=LR
+    node [shape=box style=filled fontsize=10]
+    compound=true
+    newrank=true
+
+    subgraph cluster_clients {
+        label="Client Applications"
+        style=filled fillcolor="#E3F2FD"
+        py [label="Python App\nneo4j driver" fillcolor="#BBDEFB"]
+        net [label=".NET App\nNeo4j.Driver" fillcolor="#BBDEFB"]
+        js [label="Browser / Node.js\nneo4j-driver" fillcolor="#BBDEFB"]
+        rest_client [label="REST Client\ncurl / fetch" fillcolor="#BBDEFB"]
+        redis_client [label="Redis Client\nredis-py" fillcolor="#BBDEFB"]
+    }
+
+    subgraph cluster_cae {
+        label="Azure Container Apps Environment"
+        style=filled fillcolor="#E8F5E9"
+
+        subgraph cluster_bolt {
+            label="sd2-main-bolt (scalable)"
+            bolt_srv [label="sedandelivery-bolt\nBolt v4.4\nTCP :7687 / TLS / WS\nHealth :7688" fillcolor="#A5D6A7" shape=component]
+        }
+
+        subgraph cluster_api {
+            label="sd2-main-api (scalable)"
+            api_srv [label="gql-api\nREST API\nHTTP :3001 / HTTPS :3443" fillcolor="#A5D6A7" shape=component]
+        }
+
+        subgraph cluster_redis {
+            label="sd2-main-redis (single primary)"
+            valkey [label="Valkey 8.1\n+ gql-module .so\nRedis :6379" fillcolor="#A5D6A7" shape=cylinder]
+        }
+
+        subgraph cluster_sync {
+            label="sd2-main-fabric-sync (optional)"
+            sync_svc [label="sedandelivery-fabric-sync\nChangelog Consumer" fillcolor="#A5D6A7" shape=component]
+        }
+    }
+
+    subgraph cluster_storage {
+        label="Persistent Storage"
+        style=filled fillcolor="#FFF3E0"
+        afiles [label="Azure Files\nRDB + AOF" fillcolor="#FFE0B2" shape=folder]
+    }
+
+    subgraph cluster_external {
+        label="External Services"
+        style=filled fillcolor="#F3E5F5"
+        fabric [label="Microsoft Fabric\nGraph Database" fillcolor="#CE93D8" shape=component]
+        entra [label="Microsoft Entra ID\nJWT Issuer" fillcolor="#CE93D8" shape=component]
+    }
+
+    // Client connections
+    py -> bolt_srv [label="bolt://" color="#1565C0"]
+    net -> bolt_srv [label="bolt://" color="#1565C0"]
+    js -> bolt_srv [label="bolt+wss://" color="#1565C0"]
+    rest_client -> api_srv [label="https://" color="#2E7D32"]
+    redis_client -> valkey [label="redis://" color="#E65100"]
+
+    // Internal connections
+    bolt_srv -> valkey [label="GQL_REDIS_URL\nr2d2 pool" color="#E65100" penwidth=2]
+    api_srv -> valkey [label="GQL_REDIS_URL\nr2d2 pool" color="#E65100" penwidth=2]
+    valkey -> afiles [label="RDB + AOF" style=dashed]
+    valkey -> sync_svc [label="__sd2:changelog\nRedis Streams" color="#6A1B9A"]
+    sync_svc -> fabric [label="HTTPS\nopenCypher" color="#6A1B9A"]
+    api_srv -> entra [label="JWKS fetch" style=dashed color="#888"]
+}

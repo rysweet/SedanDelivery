@@ -1,0 +1,68 @@
+digraph data_flow {
+    rankdir=LR
+    node [shape=box style=filled fontsize=10]
+    compound=true
+
+    subgraph cluster_entry {
+        label="Entry Points"
+        style=filled fillcolor="#E3F2FD"
+        rest [label="REST API\nPOST /query" fillcolor="#BBDEFB"]
+        bolt [label="Bolt RUN\n0x10" fillcolor="#BBDEFB"]
+        redis [label="GQL.QUERY\nRedis cmd" fillcolor="#BBDEFB"]
+        cli [label="gql-cli\nREPL" fillcolor="#BBDEFB"]
+    }
+
+    subgraph cluster_pipeline {
+        label="Query Pipeline — gql-core"
+        style=filled fillcolor="#F3E5F5"
+
+        lexer [label="Lexer\nCypher → tokens" fillcolor="#E1BEE7"]
+        parser [label="Parser\ntokens → AST" fillcolor="#CE93D8"]
+        cache [label="Plan Cache\nhash-keyed" fillcolor="#E1BEE7" shape=diamond]
+        validator [label="Validator\nsemantic checks" fillcolor="#CE93D8"]
+        planner [label="Planner\nAST → operators\n(28 physical ops)" fillcolor="#AB47BC" fontcolor=white]
+        executor [label="Executor\noperators → results" fillcolor="#AB47BC" fontcolor=white]
+    }
+
+    subgraph cluster_storage {
+        label="Storage — GraphStore trait"
+        style=filled fillcolor="#E8F5E9"
+
+        mem [label="InMemory\nGraphStore" fillcolor="#A5D6A7"]
+        redis_store [label="Redis\nGraphStore\nr2d2 pool" fillcolor="#A5D6A7"]
+        fabric_store [label="Fabric\nGraphStore\nREST" fillcolor="#A5D6A7"]
+        fanout [label="FanoutStore\nmulti-write" fillcolor="#81C784"]
+    }
+
+    subgraph cluster_output {
+        label="Output"
+        style=filled fillcolor="#FFF3E0"
+        result [label="QueryResult\ncolumns + rows\nValue enum" fillcolor="#FFE0B2"]
+    }
+
+    // Entry to pipeline
+    rest -> lexer [color="#1565C0"]
+    bolt -> lexer [color="#1565C0"]
+    redis -> lexer [color="#1565C0"]
+    cli -> lexer [color="#1565C0"]
+
+    // Pipeline flow
+    lexer -> parser
+    parser -> cache
+    cache -> validator [label="miss"]
+    cache -> executor [label="hit" style=dashed]
+    validator -> planner
+    planner -> executor
+
+    // Executor to storage
+    executor -> mem [color="#2E7D32"]
+    executor -> redis_store [color="#2E7D32"]
+    executor -> fabric_store [color="#2E7D32"]
+    executor -> fanout [color="#2E7D32"]
+
+    // Storage to output
+    mem -> result [color="#E65100"]
+    redis_store -> result [color="#E65100"]
+    fabric_store -> result [color="#E65100"]
+    fanout -> result [color="#E65100"]
+}

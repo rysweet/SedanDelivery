@@ -1,0 +1,47 @@
+graph TD
+    subgraph gql_core["gql-core"]
+        subgraph parser_mod["parser/"]
+            lexer["lexer/\ntokens, scan"]
+            parser_inner["parser/\nclauses, expressions,\npatterns, subqueries"]
+        end
+
+        subgraph planner_mod["planner/"]
+            validator["validator/\nexpression, scope,\nsemantic checks"]
+            planner_inner["planner/\nmatch, mutation,\nresult planners"]
+            operators["mod.rs\n28+ physical operators"]
+        end
+
+        subgraph executor_mod["executor/"]
+            engine["engine/\nscan, mutations,\nhelpers, eval,\nproduce, shaping,\njoins, aggregation"]
+            filter["filter/\nbuiltins 60+ functions,\noperators, temporal,\ncollections"]
+            traversal["traversal.rs\nBFS, shortest path"]
+            budget["budget.rs\ntimeout, row-limit"]
+        end
+
+        subgraph storage_mod["storage/"]
+            graphstore["mod.rs\nGraphStore trait"]
+            mem_store["mem/\nInMemoryGraphStore"]
+            wal["wal.rs\nwrite-ahead log"]
+        end
+
+        subgraph types_mod["types/"]
+            value["value/\nValue enum"]
+        end
+
+        ast["ast/\nCypher AST types"]
+        config["config.rs"]
+        plan_cache["plan_cache.rs"]
+    end
+
+    lexer -->|"tokens"| parser_inner
+    parser_inner -->|"AST"| validator
+    validator --> planner_inner
+    planner_inner --> operators
+    operators -->|"op tree"| engine
+    engine --> graphstore
+    engine --> filter
+    engine --> traversal
+    engine --> budget
+    graphstore -.->|"impl"| mem_store
+    parser_inner -->|"uses"| ast
+    engine -->|"produces"| value

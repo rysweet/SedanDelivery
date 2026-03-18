@@ -411,4 +411,7 @@ SedanDelivery/
   neo4j-compat-gallery/        4 open-source apps validating Bolt compatibility
   docs/                        Documentation + architecture diagrams
   tests/                       E2E integration tests + gadugi scenarios
+  infra/                       Azure Bicep IaC, KEDA, Prometheus alerts
+  scripts/                     Test, provision, and validation scripts
+  sedan-graph-ui/              .NET BFF + React graph visualizer
 ```

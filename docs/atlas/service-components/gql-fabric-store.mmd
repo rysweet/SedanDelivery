@@ -1,0 +1,19 @@
+graph TD
+    subgraph fabric_crate["gql-fabric-store"]
+        fabric_lib["lib.rs\nFabricGraphStore\nconnection pool"]
+
+        subgraph store_mod["store/"]
+            store_nodes["nodes.rs"]
+            store_edges["edges.rs"]
+            store_admin["admin.rs"]
+        end
+
+        fabric_auth["auth.rs\nAzure AD token"]
+        parsing["parsing.rs\nFabric JSON"]
+        sanitize["sanitize.rs\nCypher injection prevention"]
+    end
+
+    fabric_lib --> store_mod
+    fabric_lib --> fabric_auth
+    store_mod --> parsing
+    store_mod --> sanitize

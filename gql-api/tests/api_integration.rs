@@ -402,7 +402,7 @@ async fn query_count_returns_200() {
     let body = body_json(resp.into_body()).await;
     assert!(body.get("columns").is_some());
     assert!(body.get("rows").is_some());
-    assert!(body.get("elapsed_ms").is_some());
+    assert!(body.get("elapsedMs").is_some());
 }
 
 #[tokio::test]
@@ -1406,7 +1406,7 @@ async fn profile_returns_results_and_plan_with_row_counts() {
         "plan should have estimatedRows"
     );
 
-    // Should have elapsed_ms
+    // Should have elapsedMs
     assert!(body["elapsedMs"].is_number());
 }
 

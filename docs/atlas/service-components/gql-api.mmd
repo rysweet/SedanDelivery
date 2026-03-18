@@ -1,0 +1,30 @@
+graph TD
+    subgraph api_crate["gql-api"]
+        api_main["main.rs\naxum server setup"]
+
+        subgraph routes_mod["routes/"]
+            r_graphs["graphs.rs"]
+            r_nodes["nodes.rs"]
+            r_edges["edges.rs"]
+            r_query["query.rs"]
+            r_schema["schema.rs"]
+            r_neighbors["neighbors.rs"]
+            r_export["export_import.rs"]
+            r_admin["admin_audit.rs"]
+        end
+
+        auth["auth.rs\nEntra ID JWT"]
+        rate_limit["rate_limit.rs\nPer-IP token bucket"]
+        metrics_api["metrics.rs\nPrometheus"]
+        tls_mod["tls.rs"]
+        serialize["serialize.rs\nValue to JSON"]
+    end
+
+    api_main --> routes_mod
+    api_main --> auth
+    api_main --> rate_limit
+    api_main --> metrics_api
+    api_main --> tls_mod
+    r_query --> serialize
+    r_nodes --> serialize
+    r_edges --> serialize

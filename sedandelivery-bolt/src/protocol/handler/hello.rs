@@ -34,10 +34,22 @@ use super::{bolt_map, constant_time_eq, ProtocolError, Session};
 const MAX_TRACKED_IPS: usize = 100_000;
 
 /// Maximum failed auth attempts per IP before returning RateLimit.
-const MAX_FAILURES_PER_IP: u32 = 10;
+/// Configurable via `BOLT_AUTH_MAX_ATTEMPTS` env var (default: 10).
+fn max_failures_per_ip() -> u32 {
+    static VAL: OnceLock<u32> = OnceLock::new();
+    *VAL.get_or_init(|| gql_core::config::parse_env_range("BOLT_AUTH_MAX_ATTEMPTS", 10, 1, 10000))
+}
 
 /// Seconds after which an entry is considered stale and eligible for sweep.
-const STALE_AFTER_SECS: u64 = 3600;
+/// Configurable via `BOLT_AUTH_WINDOW_SECS` env var (default: 3600).
+/// The default preserves the original 1-hour lockout window for brute-force
+/// protection. Operators may lower this for dev environments.
+fn stale_after_secs() -> u64 {
+    static VAL: OnceLock<u64> = OnceLock::new();
+    *VAL.get_or_init(|| {
+        gql_core::config::parse_env_range("BOLT_AUTH_WINDOW_SECS", 3600u64, 1, 86400)
+    })
+}
 
 /// Per-IP entry: (failure_count, last_failure_unix_secs).
 struct AuthRateLimiter {
@@ -62,7 +74,7 @@ impl AuthRateLimiter {
         if let Some(entry) = self.map.get(key) {
             entry.1.store(now_secs, Ordering::Relaxed);
             let prev = entry.0.fetch_add(1, Ordering::Relaxed);
-            return prev + 1 > MAX_FAILURES_PER_IP;
+            return prev + 1 > max_failures_per_ip();
         }
 
         // Only insert if we have room.
@@ -87,8 +99,9 @@ impl AuthRateLimiter {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
-        self.map
-            .retain(|_, v| now_secs.saturating_sub(v.1.load(Ordering::Relaxed)) < STALE_AFTER_SECS);
+        self.map.retain(|_, v| {
+            now_secs.saturating_sub(v.1.load(Ordering::Relaxed)) < stale_after_secs()
+        });
     }
 }
 
