@@ -5,6 +5,11 @@ Each crate with 3+ internal modules gets its own diagram.
 
 ## gql-core — Query Engine Core
 
+![gql-core](gql-core.svg)
+
+<details>
+<summary>Mermaid source</summary>
+
 ```mermaid
 graph TD
     subgraph gql_core["gql-core"]
@@ -55,9 +60,16 @@ graph TD
     engine -->|"produces"| value
 ```
 
+</details>
+
 See [gql-core.mmd](gql-core.mmd) for the Mermaid source.
 
 ## gql-redis-store — Redis Storage Backend
+
+![gql-redis-store](gql-redis-store.svg)
+
+<details>
+<summary>Mermaid source</summary>
 
 ```mermaid
 graph TD
@@ -86,9 +98,16 @@ graph TD
     fanout -->|"wraps"| lib
 ```
 
+</details>
+
 See [gql-redis-store.mmd](gql-redis-store.mmd) for the Mermaid source.
 
 ## sedandelivery-bolt — Bolt Protocol Server
+
+![sedandelivery-bolt](sedandelivery-bolt.svg)
+
+<details>
+<summary>Mermaid source</summary>
 
 ```mermaid
 graph TD
@@ -137,9 +156,16 @@ graph TD
     main_rs -->|"serves"| health
 ```
 
+</details>
+
 See [sedandelivery-bolt.mmd](sedandelivery-bolt.mmd) for the Mermaid source.
 
 ## gql-api — REST API Server
+
+![gql-api](gql-api.svg)
+
+<details>
+<summary>Mermaid source</summary>
 
 ```mermaid
 graph TD
@@ -174,9 +200,16 @@ graph TD
     r_edges -->|"uses"| serialize
 ```
 
+</details>
+
 See [gql-api.mmd](gql-api.mmd) for the Mermaid source.
 
 ## gql-fabric-store — Fabric Storage Backend
+
+![gql-fabric-store](gql-fabric-store.svg)
+
+<details>
+<summary>Mermaid source</summary>
 
 ```mermaid
 graph TD
@@ -199,5 +232,7 @@ graph TD
     store_mod -->|"uses"| parsing
     store_mod -->|"uses"| sanitize
 ```
+
+</details>
 
 See [gql-fabric-store.mmd](gql-fabric-store.mmd) for the Mermaid source.

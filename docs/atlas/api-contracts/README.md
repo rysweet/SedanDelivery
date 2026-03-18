@@ -5,7 +5,10 @@ REST API (gql-api), Bolt Protocol (sedandelivery-bolt), and Redis Module command
 
 ## API Surface Diagram
 
-### Mermaid
+![API Contracts](routing.svg)
+
+<details>
+<summary>Mermaid source</summary>
 
 ```mermaid
 flowchart TD
@@ -92,6 +95,8 @@ flowchart TD
         GQL_EXPLAIN["GQL.EXPLAIN graph cypher"]
     end
 ```
+
+</details>
 
 See [routing.mmd](routing.mmd) and [routing.dot](routing.dot) for diagram sources.
 

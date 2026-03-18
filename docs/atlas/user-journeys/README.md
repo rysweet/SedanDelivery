@@ -5,6 +5,11 @@ to final outcome.
 
 ## Journey 1: Bolt Client Executes a Cypher Query
 
+![Bolt Query Journey](journey-bolt-query.svg)
+
+<details>
+<summary>Mermaid source</summary>
+
 ```mermaid
 sequenceDiagram
     actor User as Neo4j Driver Client
@@ -43,9 +48,16 @@ sequenceDiagram
     Conn-->>TCP: connection closed
 ```
 
+</details>
+
 See [journey-bolt-query.mmd](journey-bolt-query.mmd).
 
 ## Journey 2: REST Client Creates a Graph and Adds Data
+
+![REST CRUD Journey](journey-rest-crud.svg)
+
+<details>
+<summary>Mermaid source</summary>
 
 ```mermaid
 sequenceDiagram
@@ -87,9 +99,16 @@ sequenceDiagram
     EH-->>Client: 201 {id: 1, src: 1, dst: 2, type: "KNOWS", ...}
 ```
 
+</details>
+
 See [journey-rest-crud.mmd](journey-rest-crud.mmd).
 
 ## Journey 3: Redis Module Processes GQL.QUERY
+
+![Redis Query Journey](journey-redis-query.svg)
+
+<details>
+<summary>Mermaid source</summary>
 
 ```mermaid
 sequenceDiagram
@@ -111,9 +130,16 @@ sequenceDiagram
     Redis-->>Client: [[name1], [name2], ...]
 ```
 
+</details>
+
 See [journey-redis-query.mmd](journey-redis-query.mmd).
 
 ## Journey 4: Fabric Sync Replicates a Mutation
+
+![Fabric Sync Journey](journey-fabric-sync.svg)
+
+<details>
+<summary>Mermaid source</summary>
 
 ```mermaid
 sequenceDiagram
@@ -144,9 +170,16 @@ sequenceDiagram
     Sync->>Sync: XADD __sd2:changelog:dlq (dead-letter queue)
 ```
 
+</details>
+
 See [journey-fabric-sync.mmd](journey-fabric-sync.mmd).
 
 ## Journey 5: Explicit Transaction with Snapshot Isolation
+
+![Explicit Transaction Journey](journey-explicit-tx.svg)
+
+<details>
+<summary>Mermaid source</summary>
 
 ```mermaid
 sequenceDiagram
@@ -183,5 +216,7 @@ sequenceDiagram
 
     Note over Store: Other connections now see the committed data
 ```
+
+</details>
 
 See [journey-explicit-tx.mmd](journey-explicit-tx.mmd).

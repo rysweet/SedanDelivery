@@ -7,7 +7,10 @@ Services, containers, ports, and inter-service connections for SedanDelivery.
 SedanDelivery deploys as 2–4 containers in an Azure Container Apps environment.
 Each component is independently scalable except the Valkey primary.
 
-### Mermaid
+![Runtime Topology](topology.svg)
+
+<details>
+<summary>Mermaid source</summary>
 
 ```mermaid
 flowchart LR
@@ -65,6 +68,8 @@ flowchart LR
     sync_svc -->|"HTTPS openCypher"| fabric
     api_srv -.->|"JWKS fetch"| entra
 ```
+
+</details>
 
 See [topology.mmd](topology.mmd) and [topology.dot](topology.dot) for diagram sources.
 

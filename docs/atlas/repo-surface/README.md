@@ -5,7 +5,10 @@ that runs as a Redis/Valkey module with Bolt v4.4 and REST API servers.
 
 ## Repository Structure Diagram
 
-### Mermaid
+![Repository Structure](repo-surface.svg)
+
+<details>
+<summary>Mermaid source</summary>
 
 ```mermaid
 graph TD
@@ -56,6 +59,8 @@ graph TD
     ROOT --> testing
     ROOT --> docs_group
 ```
+
+</details>
 
 See [repo-surface.mmd](repo-surface.mmd) and [repo-surface.dot](repo-surface.dot) for diagram sources.
 

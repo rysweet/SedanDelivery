@@ -7,6 +7,11 @@ title: Code Atlas
 
 A living architecture document derived from code-first truth. Last rebuilt: 2026-03-17.
 
+> **Rendering note:** Diagrams are embedded as pre-rendered SVG images for reliable
+> display on GitHub Pages. Mermaid source is preserved in collapsed
+> `<details>` blocks for reference. The site also loads Mermaid JS via
+> `_includes/head-custom.html` as a fallback for any inline mermaid blocks.
+
 ## Layer Overview
 
 | Layer | Description | Key Diagrams |
@@ -17,7 +22,7 @@ A living architecture document derived from code-first truth. Last rebuilt: 2026
 | [API Contracts](api-contracts/) | REST API routes, Bolt protocol, Redis commands | [routing.svg](api-contracts/routing.svg) |
 | [Data Flow](data-flow/) | Query pipeline, mutation flow, Redis key schema | [dataflow.svg](data-flow/dataflow.svg) |
 | [Service Components](service-components/) | Per-crate internal module architecture | 5 per-crate diagrams |
-| [AST+LSP Bindings](ast-lsp-bindings/) | Cross-crate symbol references, dead code | [symbol-references.mmd](ast-lsp-bindings/symbol-references.mmd) |
+| [AST+LSP Bindings](ast-lsp-bindings/) | Cross-crate symbol references, dead code | [symbol-references.svg](ast-lsp-bindings/symbol-references.svg) |
 | [User Journeys](user-journeys/) | 5 end-to-end paths from entry to outcome | 5 sequence diagrams |
 
 ## Quick Navigation

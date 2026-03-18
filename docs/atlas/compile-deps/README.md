@@ -4,7 +4,10 @@ Cargo workspace dependency graph for SedanDelivery — 8 crates plus a loadtest 
 
 ## Workspace Dependency Graph
 
-### Mermaid
+![Dependency Graph](dependencies.svg)
+
+<details>
+<summary>Mermaid source</summary>
 
 ```mermaid
 graph TD
@@ -33,6 +36,8 @@ graph TD
     sync -->|"depends on"| gql_fabric
     loadtest -->|"depends on"| gql_core
 ```
+
+</details>
 
 See [dependencies.mmd](dependencies.mmd) and [dependencies.dot](dependencies.dot) for diagram sources.
 
