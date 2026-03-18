@@ -1,0 +1,83 @@
+scenario:
+  name: "Cross-Driver Visibility — Bolt database parameter normalization (#697)"
+  description: >
+    Verifies that data written via one Neo4j driver is visible when queried by
+    another driver that sends a different `db` parameter variant. Node.js sends
+    db:"neo4j", .NET may send db:"" or omit db entirely. All must resolve to
+    the same default graph.
+  type: bolt
+  tags: [e2e, bolt, cross-driver, regression, 697]
+  timeout: 60s
+
+  variables:
+    bolt_uri: "bolt://localhost:7687"
+
+  steps:
+    # --- Scenario A: explicit db:"neo4j" writer, empty db:"" reader ----------
+
+    - action: bolt_query
+      uri: "${bolt_uri}"
+      extra: { "db": "neo4j" }
+      query: "CREATE (n:CrossDriver {src: 'nodejs', case: 'A'}) RETURN n.src AS src"
+      expect_rows: 1
+      description: "Node.js driver writes with db:'neo4j'"
+
+    - action: bolt_query
+      uri: "${bolt_uri}"
+      extra: { "db": "" }
+      query: "MATCH (n:CrossDriver {case: 'A'}) RETURN n.src AS src"
+      expect_rows: 1
+      verify_row:
+        src: "nodejs"
+      description: ".NET driver reads with db:'' — must see Node.js data"
+
+    # --- Scenario B: explicit db:"neo4j" writer, no db key reader ------------
+
+    - action: bolt_query
+      uri: "${bolt_uri}"
+      extra: { "db": "neo4j" }
+      query: "CREATE (n:CrossDriver {src: 'nodejs', case: 'B'}) RETURN n.src AS src"
+      expect_rows: 1
+      description: "Node.js driver writes with db:'neo4j'"
+
+    - action: bolt_query
+      uri: "${bolt_uri}"
+      extra: {}
+      query: "MATCH (n:CrossDriver {case: 'B'}) RETURN n.src AS src"
+      expect_rows: 1
+      verify_row:
+        src: "nodejs"
+      description: "Driver with no db key reads — must see Node.js data"
+
+    # --- Scenario C: empty db:"" writer, explicit db:"neo4j" reader ----------
+
+    - action: bolt_query
+      uri: "${bolt_uri}"
+      extra: { "db": "" }
+      query: "CREATE (n:CrossDriver {src: 'dotnet', case: 'C'}) RETURN n.src AS src"
+      expect_rows: 1
+      description: ".NET driver writes with db:''"
+
+    - action: bolt_query
+      uri: "${bolt_uri}"
+      extra: { "db": "neo4j" }
+      query: "MATCH (n:CrossDriver {case: 'C'}) RETURN n.src AS src"
+      expect_rows: 1
+      verify_row:
+        src: "dotnet"
+      description: "Node.js driver reads with db:'neo4j' — must see .NET data"
+
+    # --- Scenario D: quoted db parameter -------------------------------------
+
+    - action: bolt_query
+      uri: "${bolt_uri}"
+      extra: { "db": "'neo4j'" }
+      query: "MATCH (n:CrossDriver {case: 'A'}) RETURN n.src AS src"
+      expect_rows: 1
+      description: "Quoted db:'neo4j' resolves to same default graph"
+
+  cleanup:
+    - action: bolt_query
+      uri: "${bolt_uri}"
+      query: "MATCH (n:CrossDriver) DELETE n"
+      continue_on_failure: true
