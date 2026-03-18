@@ -1525,11 +1525,7 @@ mod tests {
         .await
         .unwrap();
         assert!(matches!(run_result[0], ServerMessage::Success(_)));
-        pull::handle_pull(
-            &mut nodejs_session,
-            bolt_map! { "n" => BoltValue::Int(-1) },
-        )
-        .unwrap();
+        pull::handle_pull(&mut nodejs_session, bolt_map! { "n" => BoltValue::Int(-1) }).unwrap();
 
         // .NET driver: MATCH with db: "" (empty string — the bug trigger)
         let run_result = run::handle_run(
@@ -1541,11 +1537,9 @@ mod tests {
         .await
         .unwrap();
         assert!(matches!(run_result[0], ServerMessage::Success(_)));
-        let pull_result = pull::handle_pull(
-            &mut dotnet_session,
-            bolt_map! { "n" => BoltValue::Int(-1) },
-        )
-        .unwrap();
+        let pull_result =
+            pull::handle_pull(&mut dotnet_session, bolt_map! { "n" => BoltValue::Int(-1) })
+                .unwrap();
 
         let records: Vec<_> = pull_result
             .iter()
@@ -1574,11 +1568,7 @@ mod tests {
         )
         .await
         .unwrap();
-        pull::handle_pull(
-            &mut nodejs_session,
-            bolt_map! { "n" => BoltValue::Int(-1) },
-        )
-        .unwrap();
+        pull::handle_pull(&mut nodejs_session, bolt_map! { "n" => BoltValue::Int(-1) }).unwrap();
 
         // .NET driver: MATCH with no db field (omitted entirely)
         run::handle_run(
@@ -1589,11 +1579,9 @@ mod tests {
         )
         .await
         .unwrap();
-        let pull_result = pull::handle_pull(
-            &mut dotnet_session,
-            bolt_map! { "n" => BoltValue::Int(-1) },
-        )
-        .unwrap();
+        let pull_result =
+            pull::handle_pull(&mut dotnet_session, bolt_map! { "n" => BoltValue::Int(-1) })
+                .unwrap();
 
         let records: Vec<_> = pull_result
             .iter()
@@ -1621,11 +1609,7 @@ mod tests {
         )
         .await
         .unwrap();
-        pull::handle_pull(
-            &mut nodejs_session,
-            bolt_map! { "n" => BoltValue::Int(-1) },
-        )
-        .unwrap();
+        pull::handle_pull(&mut nodejs_session, bolt_map! { "n" => BoltValue::Int(-1) }).unwrap();
 
         // .NET driver: MATCH with db: null (BoltValue::Null)
         run::handle_run(
@@ -1636,11 +1620,9 @@ mod tests {
         )
         .await
         .unwrap();
-        let pull_result = pull::handle_pull(
-            &mut dotnet_session,
-            bolt_map! { "n" => BoltValue::Int(-1) },
-        )
-        .unwrap();
+        let pull_result =
+            pull::handle_pull(&mut dotnet_session, bolt_map! { "n" => BoltValue::Int(-1) })
+                .unwrap();
 
         let records: Vec<_> = pull_result
             .iter()
