@@ -65,9 +65,7 @@ impl From<GremlinValue> for Value {
             GremlinValue::Integer(i) => Value::Int(i),
             GremlinValue::Float(f) => Value::Float(f),
             GremlinValue::String(s) => Value::Str(s.into_boxed_str()),
-            GremlinValue::List(items) => {
-                Value::List(items.into_iter().map(Value::from).collect())
-            }
+            GremlinValue::List(items) => Value::List(items.into_iter().map(Value::from).collect()),
             GremlinValue::Map(entries) => {
                 let map: IndexMap<Box<str>, Value> = entries
                     .into_iter()
@@ -139,9 +137,11 @@ impl From<Value> for GremlinValue {
                 GremlinValue::Path { labels, objects }
             }
             // Temporal/spatial/bytes → string representation
-            Value::Bytes(b) => {
-                GremlinValue::List(b.into_iter().map(|x| GremlinValue::Integer(x as i64)).collect())
-            }
+            Value::Bytes(b) => GremlinValue::List(
+                b.into_iter()
+                    .map(|x| GremlinValue::Integer(x as i64))
+                    .collect(),
+            ),
             _ => {
                 // Temporal and spatial types have no Gremlin equivalent; represent as string.
                 GremlinValue::String(format!("{:?}", v))
@@ -186,10 +186,7 @@ mod tests {
         // String
         let v: Value = GremlinValue::String("hello".into()).into();
         assert_eq!(v, Value::Str("hello".into()));
-        assert_eq!(
-            GremlinValue::from(v),
-            GremlinValue::String("hello".into())
-        );
+        assert_eq!(GremlinValue::from(v), GremlinValue::String("hello".into()));
     }
 
     #[test]

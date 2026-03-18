@@ -56,19 +56,25 @@ async fn main() {
     });
 
     // ── WebSocket accept loop ────────────────────────────────────────────
-    let listener = TcpListener::bind(&bind_addr)
-        .await
-        .unwrap_or_else(|e| {
-            eprintln!("failed to bind {bind_addr}: {e}");
-            std::process::exit(1);
-        });
+    let listener = TcpListener::bind(&bind_addr).await.unwrap_or_else(|e| {
+        eprintln!("failed to bind {bind_addr}: {e}");
+        std::process::exit(1);
+    });
     tracing::info!(%bind_addr, "gremlin WebSocket server listening");
+
+    // Listen for both SIGINT (Ctrl+C) and SIGTERM (container orchestration).
+    let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+        .expect("failed to register SIGTERM handler");
 
     loop {
         let accept_result = tokio::select! {
             biased;
             _ = tokio::signal::ctrl_c() => {
                 tracing::info!("received SIGINT, shutting down");
+                break;
+            }
+            _ = sigterm.recv() => {
+                tracing::info!("received SIGTERM, shutting down");
                 break;
             }
             result = listener.accept() => result,

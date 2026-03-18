@@ -8,6 +8,7 @@
 use std::collections::HashMap;
 
 use gql_core::error::{ExecutionError, GqlError};
+use gql_core::executor::{ExecutionBudget, QueryExecutor};
 
 /// Shorthand for creating a GqlError from a message string.
 fn gremlin_err(msg: impl Into<String>) -> GqlError {
@@ -15,7 +16,28 @@ fn gremlin_err(msg: impl Into<String>) -> GqlError {
         feature: msg.into(),
     })
 }
-use gql_core::executor::{ExecutionBudget, QueryExecutor};
+
+/// Escape a user-supplied identifier for safe embedding in Cypher.
+///
+/// Wraps the identifier in backticks and escapes embedded backticks,
+/// preventing Cypher injection through labels, property keys, or
+/// relationship type names.
+fn escape_identifier(s: &str) -> String {
+    format!("`{}`", s.replace('`', "``"))
+}
+
+/// Escape a user-supplied string literal for safe embedding in Cypher.
+///
+/// Handles backslashes and control characters in addition to single quotes.
+fn escape_string_literal(s: &str) -> String {
+    let escaped = s
+        .replace('\\', "\\\\")
+        .replace('\'', "\\'")
+        .replace('\n', "\\n")
+        .replace('\r', "\\r")
+        .replace('\t', "\\t");
+    format!("'{escaped}'")
+}
 use gql_core::parser::parse_query;
 use gql_core::planner::QueryPlanner;
 use gql_core::procedure::ProcedureRegistry;
@@ -82,9 +104,7 @@ fn bytecode_to_cypher(json: &serde_json::Value) -> Result<String, GqlError> {
 /// Extract the step array from GraphSON bytecode.
 fn extract_steps(json: &serde_json::Value) -> Result<Vec<Vec<serde_json::Value>>, GqlError> {
     // Handle both {"@type":"g:Bytecode","@value":{"step":[...]}} and {"step":[...]}
-    let value = json
-        .get("@value")
-        .unwrap_or(json);
+    let value = json.get("@value").unwrap_or(json);
 
     let steps = value
         .get("step")
@@ -179,10 +199,11 @@ fn translate_step(
         "hasLabel" => {
             if let Some(label) = args.first().and_then(|v| v.as_str()) {
                 let var = &ctx.node_var;
+                let safe_label = escape_identifier(label);
                 ctx.match_clause = if ctx.started_with_e {
-                    format!("()-[{var}:{label}]->()")
+                    format!("()-[{var}:{safe_label}]->()")
                 } else {
-                    format!("({var}:{label})")
+                    format!("({var}:{safe_label})")
                 };
             }
         }
@@ -192,20 +213,23 @@ fn translate_step(
                 2 => {
                     if let (Some(key), Some(val)) = (args[0].as_str(), graphson_to_literal(args[1]))
                     {
+                        let safe_key = escape_identifier(key);
                         ctx.where_clauses
-                            .push(format!("{}.{key} = {val}", ctx.node_var));
+                            .push(format!("{}.{safe_key} = {val}", ctx.node_var));
                     }
                 }
                 // has(label, key, value) — label + property
                 3 => {
                     if let Some(label) = args[0].as_str() {
                         let var = &ctx.node_var;
-                        ctx.match_clause = format!("({var}:{label})");
+                        let safe_label = escape_identifier(label);
+                        ctx.match_clause = format!("({var}:{safe_label})");
                     }
                     if let (Some(key), Some(val)) = (args[1].as_str(), graphson_to_literal(args[2]))
                     {
+                        let safe_key = escape_identifier(key);
                         ctx.where_clauses
-                            .push(format!("{}.{key} = {val}", ctx.node_var));
+                            .push(format!("{}.{safe_key} = {val}", ctx.node_var));
                     }
                 }
                 _ => {}
@@ -216,7 +240,7 @@ fn translate_step(
             let rel_part = if rel.is_empty() {
                 String::new()
             } else {
-                format!(":{rel}")
+                format!(":{}", escape_identifier(rel))
             };
             let prev = &ctx.node_var;
             let next = format!("{prev}_out");
@@ -229,7 +253,7 @@ fn translate_step(
             let rel_part = if rel.is_empty() {
                 String::new()
             } else {
-                format!(":{rel}")
+                format!(":{}", escape_identifier(rel))
             };
             let prev = &ctx.node_var;
             let next = format!("{prev}_in");
@@ -242,7 +266,7 @@ fn translate_step(
             let rel_part = if rel.is_empty() {
                 String::new()
             } else {
-                format!(":{rel}")
+                format!(":{}", escape_identifier(rel))
             };
             let prev = &ctx.node_var;
             let next = format!("{prev}_both");
@@ -255,7 +279,7 @@ fn translate_step(
             let rel_part = if rel.is_empty() {
                 String::new()
             } else {
-                format!(":{rel}")
+                format!(":{}", escape_identifier(rel))
             };
             let prev = &ctx.node_var;
             let edge_var = format!("{prev}_e");
@@ -268,7 +292,7 @@ fn translate_step(
             let rel_part = if rel.is_empty() {
                 String::new()
             } else {
-                format!(":{rel}")
+                format!(":{}", escape_identifier(rel))
             };
             let prev = &ctx.node_var;
             let edge_var = format!("{prev}_e");
@@ -278,7 +302,8 @@ fn translate_step(
         }
         "values" => {
             if let Some(key) = args.first().and_then(|v| v.as_str()) {
-                ctx.return_expr = format!("{}.{key}", ctx.node_var);
+                let safe_key = escape_identifier(key);
+                ctx.return_expr = format!("{}.{safe_key}", ctx.node_var);
             }
         }
         "count" => {
@@ -309,7 +334,7 @@ fn graphson_to_i64(v: &serde_json::Value) -> Option<i64> {
 /// Convert a GraphSON value to a Cypher literal string.
 fn graphson_to_literal(v: &serde_json::Value) -> Option<String> {
     if let Some(s) = v.as_str() {
-        return Some(format!("'{}'", s.replace('\'', "\\'")));
+        return Some(escape_string_literal(s));
     }
     if let Some(n) = graphson_to_i64(v) {
         return Some(n.to_string());
@@ -356,8 +381,8 @@ mod tests {
         ]));
         let cypher = bytecode_to_cypher(&json).unwrap();
         assert!(cypher.contains("MATCH (n)"));
-        assert!(cypher.contains("n.name = 'marko'"));
-        assert!(cypher.contains("knows"));
+        assert!(cypher.contains("n.`name` = 'marko'"));
+        assert!(cypher.contains("`knows`"));
     }
 
     #[test]

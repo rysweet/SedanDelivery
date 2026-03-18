@@ -26,7 +26,9 @@ fn run_query(query: &str) -> Vec<HashMap<String, Value>> {
     let plan = planner.plan(&ast).expect("plan failed");
     let executor = QueryExecutor::new(&store);
     let mut budget = unlimited();
-    let result = executor.execute("modern", &plan, &mut budget).expect("execute failed");
+    let result = executor
+        .execute("modern", &plan, &mut budget)
+        .expect("execute failed");
     result.rows
 }
 
@@ -77,9 +79,7 @@ fn test_has_property_name_marko() {
 /// g.V().has("person", "age", P.gt(30)) → josh (32), peter (35)
 #[test]
 fn test_has_property_age_gt_30() {
-    let rows = run_query(
-        "MATCH (n:person) WHERE n.age > 30 RETURN n.name AS name ORDER BY n.name",
-    );
+    let rows = run_query("MATCH (n:person) WHERE n.age > 30 RETURN n.name AS name ORDER BY n.name");
     assert_eq!(rows.len(), 2);
     assert_eq!(rows[0]["name"], Value::Str("josh".into()));
     assert_eq!(rows[1]["name"], Value::Str("peter".into()));
@@ -90,9 +90,8 @@ fn test_has_property_age_gt_30() {
 /// g.V().has("name","marko").out("knows").values("name") → {vadas, josh}
 #[test]
 fn test_traversal_out_knows() {
-    let rows = run_query(
-        "MATCH (n {name: 'marko'})-[:knows]->(m) RETURN m.name AS name ORDER BY name",
-    );
+    let rows =
+        run_query("MATCH (n {name: 'marko'})-[:knows]->(m) RETURN m.name AS name ORDER BY name");
     assert_eq!(rows.len(), 2);
     assert_eq!(rows[0]["name"], Value::Str("josh".into()));
     assert_eq!(rows[1]["name"], Value::Str("vadas".into()));
@@ -101,9 +100,7 @@ fn test_traversal_out_knows() {
 /// g.V().has("name","marko").outE("knows").values("weight") → {0.5, 1.0}
 #[test]
 fn test_edge_properties() {
-    let rows = run_query(
-        "MATCH ({name: 'marko'})-[r:knows]->() RETURN r.weight AS w ORDER BY w",
-    );
+    let rows = run_query("MATCH ({name: 'marko'})-[r:knows]->() RETURN r.weight AS w ORDER BY w");
     assert_eq!(rows.len(), 2);
     assert_eq!(rows[0]["w"], Value::Float(0.5));
     assert_eq!(rows[1]["w"], Value::Float(1.0));
@@ -112,9 +109,8 @@ fn test_edge_properties() {
 /// g.V().has("name","josh").out("created").values("name") → {ripple, lop}
 #[test]
 fn test_josh_created() {
-    let rows = run_query(
-        "MATCH ({name: 'josh'})-[:created]->(s) RETURN s.name AS name ORDER BY name",
-    );
+    let rows =
+        run_query("MATCH ({name: 'josh'})-[:created]->(s) RETURN s.name AS name ORDER BY name");
     assert_eq!(rows.len(), 2);
     assert_eq!(rows[0]["name"], Value::Str("lop".into()));
     assert_eq!(rows[1]["name"], Value::Str("ripple".into()));
@@ -123,9 +119,8 @@ fn test_josh_created() {
 /// g.V().has("name","lop").in("created").values("name") → {marko, josh, peter}
 #[test]
 fn test_lop_creators() {
-    let rows = run_query(
-        "MATCH (c)-[:created]->({name: 'lop'}) RETURN c.name AS name ORDER BY name",
-    );
+    let rows =
+        run_query("MATCH (c)-[:created]->({name: 'lop'}) RETURN c.name AS name ORDER BY name");
     assert_eq!(rows.len(), 3);
     assert_eq!(rows[0]["name"], Value::Str("josh".into()));
     assert_eq!(rows[1]["name"], Value::Str("marko".into()));
@@ -137,12 +132,12 @@ fn test_lop_creators() {
 /// g.V().groupCount().by(label) → {person: 4, software: 2}
 #[test]
 fn test_group_count_by_label() {
-    let rows = run_query(
-        "MATCH (n) RETURN labels(n)[0] AS lbl, count(n) AS cnt ORDER BY lbl",
-    );
+    let rows = run_query("MATCH (n) RETURN labels(n)[0] AS lbl, count(n) AS cnt ORDER BY lbl");
     assert_eq!(rows.len(), 2);
 
-    let person_row = rows.iter().find(|r| r.get("lbl") == Some(&Value::Str("person".into())));
+    let person_row = rows
+        .iter()
+        .find(|r| r.get("lbl") == Some(&Value::Str("person".into())));
     assert!(person_row.is_some(), "person label should be present");
     assert_eq!(person_row.unwrap().get("cnt"), Some(&Value::Int(4)));
 
@@ -158,9 +153,7 @@ fn test_group_count_by_label() {
 /// g.V().hasLabel("person").order().by("age") → vadas(27), marko(29), josh(32), peter(35)
 #[test]
 fn test_order_by_age() {
-    let rows = run_query(
-        "MATCH (n:person) RETURN n.name AS name, n.age AS age ORDER BY n.age",
-    );
+    let rows = run_query("MATCH (n:person) RETURN n.name AS name, n.age AS age ORDER BY n.age");
     assert_eq!(rows.len(), 4);
     assert_eq!(rows[0]["name"], Value::Str("vadas".into()));
     assert_eq!(rows[1]["name"], Value::Str("marko".into()));
@@ -171,9 +164,7 @@ fn test_order_by_age() {
 /// g.V().hasLabel("person").order().by("name", desc) → vadas, peter, marko, josh
 #[test]
 fn test_order_by_name_desc() {
-    let rows = run_query(
-        "MATCH (n:person) RETURN n.name AS name ORDER BY n.name DESC",
-    );
+    let rows = run_query("MATCH (n:person) RETURN n.name AS name ORDER BY n.name DESC");
     assert_eq!(rows.len(), 4);
     assert_eq!(rows[0]["name"], Value::Str("vadas".into()));
     assert_eq!(rows[1]["name"], Value::Str("peter".into()));
@@ -210,7 +201,9 @@ fn test_add_vertex() {
     let plan = planner.plan(&ast).expect("plan failed");
     let executor = QueryExecutor::new(&store);
     let mut budget = unlimited();
-    let result = executor.execute("modern", &plan, &mut budget).expect("execute failed");
+    let result = executor
+        .execute("modern", &plan, &mut budget)
+        .expect("execute failed");
 
     assert_eq!(result.stats.nodes_created, 1);
     assert_eq!(result.rows.len(), 1);

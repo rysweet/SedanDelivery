@@ -39,14 +39,15 @@ pub fn spawn_health_server(state: HealthState) {
         .and_then(|v| v.parse().ok())
         .unwrap_or(8183);
 
-    let bind_addr = std::env::var("GREMLIN_HEALTH_BIND_ADDR")
-        .unwrap_or_else(|_| "0.0.0.0".to_string());
+    let bind_addr =
+        std::env::var("GREMLIN_HEALTH_BIND_ADDR").unwrap_or_else(|_| "0.0.0.0".to_string());
 
-    let sock_addr: std::net::SocketAddr = format!("{bind_addr}:{port}")
-        .parse()
-        .unwrap_or_else(|_| {
+    let sock_addr: std::net::SocketAddr =
+        format!("{bind_addr}:{port}").parse().unwrap_or_else(|_| {
             tracing::warn!("invalid GREMLIN_HEALTH_BIND_ADDR, falling back to 0.0.0.0:{port}");
-            format!("0.0.0.0:{port}").parse().expect("fallback must parse")
+            format!("0.0.0.0:{port}")
+                .parse()
+                .expect("fallback must parse")
         });
 
     let app = Router::new()

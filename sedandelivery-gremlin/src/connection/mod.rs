@@ -54,7 +54,13 @@ pub async fn handle_connection(
     stream: TcpStream,
     store: Arc<dyn GraphStore>,
 ) -> Result<(), ConnectionError> {
-    let ws_stream = tokio_tungstenite::accept_async(stream).await?;
+    let ws_stream = {
+        let config = tokio_tungstenite::tungstenite::protocol::WebSocketConfig {
+            max_frame_size: Some(64 * 1024), // 64 KiB — prevents memory exhaustion from oversized frames
+            ..Default::default()
+        };
+        tokio_tungstenite::accept_async_with_config(stream, Some(config)).await?
+    };
     let (mut sink, mut source) = ws_stream.split();
 
     let mut session = GremlinSession::new(store);
@@ -62,8 +68,10 @@ pub async fn handle_connection(
     // If GREMLIN_PASSWORD is set, the first message must authenticate.
     if session.requires_auth() {
         let challenge = protocol::response::ResponseMessage::authenticate_challenge();
-        sink.send(Message::Text(serde_json::to_string(&challenge).unwrap()))
-            .await?;
+        let json = serde_json::to_string(&challenge).map_err(|e| {
+            ConnectionError::Protocol(protocol::ProtocolError::Internal(e.to_string()))
+        })?;
+        sink.send(Message::Text(json)).await?;
     }
 
     while let Some(msg) = source.next().await {
@@ -71,10 +79,10 @@ pub async fn handle_connection(
 
         match msg {
             Message::Text(text) => {
-                let response =
-                    protocol::handler::handle_message(&text, &mut session)?;
-                let json = serde_json::to_string(&response)
-                    .expect("ResponseMessage must serialise");
+                let response = protocol::handler::handle_message(&text, &mut session)?;
+                let json = serde_json::to_string(&response).map_err(|e| {
+                    ConnectionError::Protocol(protocol::ProtocolError::Internal(e.to_string()))
+                })?;
                 sink.send(Message::Text(json)).await?;
             }
             Message::Binary(_) => {
@@ -84,7 +92,9 @@ pub async fn handle_connection(
                     protocol::response::StatusCode::ServerError,
                     "binary frames not supported".to_string(),
                 );
-                let json = serde_json::to_string(&response).unwrap();
+                let json = serde_json::to_string(&response).map_err(|e| {
+                    ConnectionError::Protocol(protocol::ProtocolError::Internal(e.to_string()))
+                })?;
                 sink.send(Message::Text(json)).await?;
             }
             Message::Close(_) => break,

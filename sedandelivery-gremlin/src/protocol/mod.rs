@@ -13,4 +13,7 @@ pub enum ProtocolError {
     #[error("execution error: {0}")]
     #[allow(dead_code)]
     Execution(String),
+
+    #[error("internal error: {0}")]
+    Internal(String),
 }

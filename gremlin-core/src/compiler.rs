@@ -5,9 +5,7 @@
 //! previous operator (bottom-up construction).
 
 use gql_core::ast::{BinaryOp, Direction, Expr, Identifier, Label, RelType};
-use gql_core::planner::{
-    AggFunction, CreateEdgeSpec, CreatePattern, Operator, SetItem,
-};
+use gql_core::planner::{AggFunction, CreateEdgeSpec, CreatePattern, Operator, SetItem};
 use smol_str::SmolStr;
 
 use crate::bytecode::{GremlinStep, Predicate};
@@ -107,15 +105,15 @@ impl GremlinCompiler {
                     // Edge scan: represented as a full node scan + expand (simplified)
                     let alias = self.next_alias("e");
                     current_alias = alias.clone();
-                    current = Some(Operator::NodeScan {
-                        label: None,
-                        alias,
-                    });
+                    current = Some(Operator::NodeScan { label: None, alias });
                 }
 
                 GremlinStep::HasLabel(labels) => {
                     let child = current.take().ok_or(CompileError::MissingChild)?;
-                    if labels.len() == 1 {
+                    if labels.is_empty() {
+                        // hasLabel() with no labels — no filtering needed
+                        current = Some(child);
+                    } else if labels.len() == 1 {
                         current = Some(Operator::Filter {
                             predicate: Expr::HasLabel(
                                 Box::new(Expr::Variable(current_alias.clone())),
@@ -925,22 +923,20 @@ fn step_to_predicate(step: &GremlinStep, alias: &Identifier) -> Expr {
             Box::new(Expr::Variable(alias.clone())),
             SmolStr::new(key),
         ))),
-        GremlinStep::HasLabel(labels) if !labels.is_empty() => {
-            labels
-                .iter()
-                .map(|l| {
-                    Expr::HasLabel(
-                        Box::new(Expr::Variable(alias.clone())),
-                        Label::new(l.as_str()),
-                    )
-                })
-                .reduce(|a, b| Expr::BinaryOp {
-                    op: BinaryOp::Or,
-                    left: Box::new(a),
-                    right: Box::new(b),
-                })
-                .unwrap()
-        }
+        GremlinStep::HasLabel(labels) if !labels.is_empty() => labels
+            .iter()
+            .map(|l| {
+                Expr::HasLabel(
+                    Box::new(Expr::Variable(alias.clone())),
+                    Label::new(l.as_str()),
+                )
+            })
+            .reduce(|a, b| Expr::BinaryOp {
+                op: BinaryOp::Or,
+                left: Box::new(a),
+                right: Box::new(b),
+            })
+            .unwrap(),
         _ => Expr::Bool(true), // fallback for complex sub-traversals
     }
 }
@@ -1044,10 +1040,7 @@ mod tests {
     #[test]
     fn compile_out_expand() {
         let mut compiler = GremlinCompiler::new();
-        let steps = vec![
-            GremlinStep::V(None),
-            GremlinStep::Out(vec!["knows".into()]),
-        ];
+        let steps = vec![GremlinStep::V(None), GremlinStep::Out(vec!["knows".into()])];
         let op = compiler.compile(&steps).unwrap();
         assert!(matches!(
             op,

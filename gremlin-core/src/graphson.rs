@@ -16,7 +16,11 @@ pub struct RequestMessage {
 }
 
 impl RequestMessage {
-    pub fn new(op: impl Into<String>, processor: impl Into<String>, args: serde_json::Value) -> Self {
+    pub fn new(
+        op: impl Into<String>,
+        processor: impl Into<String>,
+        args: serde_json::Value,
+    ) -> Self {
         Self {
             request_id: Uuid::new_v4(),
             op: op.into(),
@@ -220,12 +224,8 @@ pub fn from_graphson(json: &serde_json::Value) -> GremlinValue {
     let inner = obj.get("@value");
 
     match (type_tag, inner) {
-        (Some("g:Int32" | "g:Int64"), Some(v)) => {
-            GremlinValue::Integer(v.as_i64().unwrap_or(0))
-        }
-        (Some("g:Float" | "g:Double"), Some(v)) => {
-            GremlinValue::Float(v.as_f64().unwrap_or(0.0))
-        }
+        (Some("g:Int32" | "g:Int64"), Some(v)) => GremlinValue::Integer(v.as_i64().unwrap_or(0)),
+        (Some("g:Float" | "g:Double"), Some(v)) => GremlinValue::Float(v.as_f64().unwrap_or(0.0)),
         (Some("g:List"), Some(v)) => {
             let items = v
                 .as_array()
@@ -470,10 +470,7 @@ mod tests {
     #[test]
     fn graphson_string_passthrough() {
         let json = serde_json::json!("hello");
-        assert_eq!(
-            from_graphson(&json),
-            GremlinValue::String("hello".into())
-        );
+        assert_eq!(from_graphson(&json), GremlinValue::String("hello".into()));
         assert_eq!(to_graphson(&GremlinValue::String("hello".into())), json);
     }
 }

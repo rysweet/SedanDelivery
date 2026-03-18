@@ -166,21 +166,21 @@ pub fn deserialize_bytecode(json: &serde_json::Value) -> Result<Vec<GremlinStep>
 
     let mut result = Vec::with_capacity(steps_array.len());
     for step_entry in steps_array {
-        let arr = step_entry.as_array().ok_or_else(|| {
-            BytecodeError::InvalidArgument {
+        let arr = step_entry
+            .as_array()
+            .ok_or_else(|| BytecodeError::InvalidArgument {
                 step: "entry".into(),
                 reason: "expected array".into(),
-            }
-        })?;
+            })?;
         if arr.is_empty() {
             continue;
         }
-        let name = arr[0].as_str().ok_or_else(|| {
-            BytecodeError::InvalidArgument {
+        let name = arr[0]
+            .as_str()
+            .ok_or_else(|| BytecodeError::InvalidArgument {
                 step: "entry".into(),
                 reason: "step name must be a string".into(),
-            }
-        })?;
+            })?;
         let args = &arr[1..];
         let step = parse_step(name, args)?;
         result.push(step);
@@ -376,7 +376,12 @@ fn parse_predicate_from_args(args: &[serde_json::Value]) -> Result<Predicate, By
         return Ok(Predicate::Eq(json_to_gremlin_value(&args[0])));
     }
     // Predicate object: {"@type": "g:P", "@value": {"predicate": "gt", "value": 10}}
-    let obj = args[0].as_object().unwrap();
+    let obj = args[0]
+        .as_object()
+        .ok_or_else(|| BytecodeError::InvalidArgument {
+            step: "is".into(),
+            reason: "predicate must be an object".into(),
+        })?;
     if let Some(pval) = obj.get("@value") {
         let pred_name = pval
             .get("predicate")
