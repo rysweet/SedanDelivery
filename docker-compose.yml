@@ -94,5 +94,33 @@ services:
       retries: 10
       start_period: 15s
 
+  sedandelivery-gremlin:
+    build:
+      context: .
+      dockerfile: Dockerfile.gremlin
+    profiles:
+      - gremlin
+    entrypoint:
+      - /bin/sh
+      - -ec
+      - |
+        exec sedandelivery-gremlin
+    ports:
+      - "8182:8182"
+      - "8183:8183"
+    environment:
+      - RUST_LOG=info
+      - GQL_REDIS_URL=redis://:${VALKEY_PASSWORD}@valkey:6379
+      - GREMLIN_PASSWORD=${GREMLIN_PASSWORD}
+    depends_on:
+      valkey:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8183/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 15s
+
 volumes:
   valkey-data:
