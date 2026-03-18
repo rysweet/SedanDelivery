@@ -58,10 +58,6 @@ SedanDelivery is a Rust GQL/Cypher query engine with:
 - **8 workspace crates** with `gql-core` as the foundational library
 - **Azure-native deployment**: Container Apps, Bicep IaC, KEDA auto-scaling
 
-## Bug Hunt Reports
-
-See [bug-reports/](bug-reports/) for three-pass contradiction analysis.
-
 ## Staleness
 
 This atlas should be rebuilt when:
