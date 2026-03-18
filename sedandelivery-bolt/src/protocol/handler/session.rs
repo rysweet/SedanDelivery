@@ -168,6 +168,16 @@ impl Session {
         )
     }
 
+    /// Convenience predicate: returns `true` when reads should be routed to
+    /// the primary instead of replicas because a write occurred within the
+    /// [`READ_AFTER_WRITE_WINDOW`].
+    pub(crate) fn force_primary_read(&self) -> bool {
+        matches!(
+            self.read_consistency(),
+            ReadConsistency::SessionFreshPrimary
+        )
+    }
+
     pub(crate) fn apply_recent_bookmark_age(&mut self, age: Duration) {
         if age >= READ_AFTER_WRITE_WINDOW {
             return;
@@ -363,5 +373,28 @@ mod tests {
     fn normalize_graph_name_preserves_custom_databases() {
         assert_eq!(normalize_graph_name("analytics"), "analytics");
         assert_eq!(normalize_graph_name("test-db"), "test-db");
+    }
+
+    // -- force_primary_read convenience predicate ----------------------------
+
+    #[test]
+    fn force_primary_read_false_without_prior_write() {
+        let session = ready_session();
+        assert!(!session.force_primary_read());
+    }
+
+    #[test]
+    fn force_primary_read_true_within_window() {
+        let mut session = ready_session();
+        session.last_write_at = Some(std::time::Instant::now() - Duration::from_secs(1));
+        assert!(session.force_primary_read());
+    }
+
+    #[test]
+    fn force_primary_read_false_after_window_expires() {
+        let mut session = ready_session();
+        session.last_write_at =
+            Some(std::time::Instant::now() - READ_AFTER_WRITE_WINDOW - Duration::from_millis(1));
+        assert!(!session.force_primary_read());
     }
 }
