@@ -209,6 +209,19 @@ pub(crate) fn discover_operator_aliases(op: &Operator) -> Vec<String> {
             // FOREACH variable is scoped — not visible after the block.
             aliases.extend(discover_operator_aliases(child));
         }
+        Operator::Repeat { child, .. }
+        | Operator::Choose { child, .. }
+        | Operator::GremlinSideEffect { child, .. } => {
+            aliases.extend(discover_operator_aliases(child));
+        }
+        Operator::Coalesce { child, .. } => {
+            aliases.extend(discover_operator_aliases(child));
+        }
+        Operator::Cap { keys, .. } => {
+            for key in keys {
+                aliases.push(key.clone());
+            }
+        }
         Operator::SingleRow | Operator::ProduceResults { .. } => {}
     }
     aliases

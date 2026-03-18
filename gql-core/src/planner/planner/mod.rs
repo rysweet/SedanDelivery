@@ -1617,8 +1617,32 @@ mod tests {
                 Some(c) => vec![c],
                 None => vec![],
             },
-            Operator::MergeRelationship { child, .. } => vec![child],
-            Operator::ForEach { body, child, .. } => vec![child, body],
+            Operator::MergeRelationship { child, .. }
+            | Operator::GremlinSideEffect { child, .. }
+            | Operator::Cap { child, .. } => vec![child],
+            Operator::ForEach { body, child, .. } | Operator::Repeat { body, child, .. } => {
+                vec![child, body]
+            }
+            Operator::Choose {
+                predicate,
+                if_true,
+                if_false,
+                child,
+            } => {
+                let mut v = vec![child.as_ref(), predicate.as_ref(), if_true.as_ref()];
+                if let Some(f) = if_false {
+                    v.push(f.as_ref());
+                }
+                v
+            }
+            Operator::Coalesce {
+                alternatives,
+                child,
+            } => {
+                let mut v = vec![child.as_ref()];
+                v.extend(alternatives.iter());
+                v
+            }
         }
     }
 }

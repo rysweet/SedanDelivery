@@ -1,0 +1,11 @@
+[package]
+name = "gremlin-tck"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+gql-core = { path = "../../gql-core" }
+
+[lib]
+path = "src/lib.rs"

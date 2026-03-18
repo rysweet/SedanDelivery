@@ -1,6 +1,6 @@
 //! Query planner — operator-type definitions and the QueryPlanner implementation.
 //!
-//! This module defines the complete physical plan operator set (28 operators)
+//! This module defines the complete physical plan operator set (33 operators)
 //! and the QueryPlanner that translates a parsed Query AST into an Operator tree.
 
 use crate::ast::{Direction, Expr, Identifier, Label, RelType};
@@ -186,6 +186,38 @@ pub enum Operator {
         columns: Vec<(String, Expr)>,
         child: Box<Operator>,
     },
+
+    // ── Gremlin traversal operators ──────────────────────────────────────────
+    /// Gremlin repeat() — execute body traversal repeatedly.
+    Repeat {
+        body: Box<Operator>,
+        times: Option<usize>,
+        until: Option<Box<Operator>>,
+        emit: bool,
+        child: Box<Operator>,
+    },
+    /// Gremlin choose() — conditional branching.
+    Choose {
+        predicate: Box<Operator>,
+        if_true: Box<Operator>,
+        if_false: Option<Box<Operator>>,
+        child: Box<Operator>,
+    },
+    /// Gremlin coalesce() — first non-empty alternative.
+    Coalesce {
+        alternatives: Vec<Operator>,
+        child: Box<Operator>,
+    },
+    /// Gremlin sideEffect() — execute for side effects, pass input through.
+    GremlinSideEffect {
+        effect: Box<Operator>,
+        child: Box<Operator>,
+    },
+    /// Gremlin cap() — emit accumulated side-effect value.
+    Cap {
+        keys: Vec<String>,
+        child: Box<Operator>,
+    },
 }
 
 impl Operator {
@@ -213,9 +245,13 @@ impl Operator {
             | Operator::Expand { child, .. }
             | Operator::VarLenExpand { child, .. }
             | Operator::AssemblePath { child, .. }
-            | Operator::MergeRelationship { child, .. } => vec![child],
+            | Operator::MergeRelationship { child, .. }
+            | Operator::GremlinSideEffect { child, .. }
+            | Operator::Cap { child, .. } => vec![child],
 
-            Operator::ForEach { body, child, .. } => vec![child, body],
+            Operator::ForEach { body, child, .. } | Operator::Repeat { body, child, .. } => {
+                vec![child, body]
+            }
 
             Operator::Apply { outer, inner }
             | Operator::LeftOuterApply {
@@ -231,6 +267,28 @@ impl Operator {
                 Some(c) => vec![c],
                 None => vec![],
             },
+
+            Operator::Choose {
+                predicate,
+                if_true,
+                if_false,
+                child,
+            } => {
+                let mut v = vec![child.as_ref(), predicate.as_ref(), if_true.as_ref()];
+                if let Some(f) = if_false {
+                    v.push(f.as_ref());
+                }
+                v
+            }
+
+            Operator::Coalesce {
+                alternatives,
+                child,
+            } => {
+                let mut v = vec![child.as_ref()];
+                v.extend(alternatives.iter());
+                v
+            }
         }
     }
 }
@@ -490,6 +548,16 @@ fn estimate_recursive(
         },
 
         Operator::ShortestPath { .. } => 1.0,
+
+        // Gremlin operators: conservative estimates.
+        Operator::Repeat { child, .. } => {
+            let child_est = estimate_recursive(child, stats, estimates);
+            child_est * 3.0 // assume ~3 iterations on average
+        }
+        Operator::Choose { child, .. } => estimate_recursive(child, stats, estimates),
+        Operator::Coalesce { child, .. } => estimate_recursive(child, stats, estimates),
+        Operator::GremlinSideEffect { child, .. } => estimate_recursive(child, stats, estimates),
+        Operator::Cap { .. } => 1.0,
     };
 
     estimates.insert(op as *const Operator, est);
@@ -741,6 +809,19 @@ fn collect_all_aliases(op: &Operator) -> Vec<String> {
             // FOREACH variable is scoped — not visible after the block.
             // Only propagate aliases from the child pipeline.
             aliases.extend(collect_all_aliases(child));
+        }
+        Operator::Repeat { child, .. }
+        | Operator::Choose { child, .. }
+        | Operator::GremlinSideEffect { child, .. } => {
+            aliases.extend(collect_all_aliases(child));
+        }
+        Operator::Coalesce { child, .. } => {
+            aliases.extend(collect_all_aliases(child));
+        }
+        Operator::Cap { keys, .. } => {
+            for key in keys {
+                aliases.push(key.clone());
+            }
         }
         // SingleRow and ProduceResults have no aliases of their own
         // (ProduceResults aliases come from its columns, already surfaced via child).
