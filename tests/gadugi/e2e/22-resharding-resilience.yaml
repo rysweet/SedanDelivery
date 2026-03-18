@@ -1,0 +1,27 @@
+name: resharding-resilience-validation
+description: >
+  Validates SedanDelivery survives Redis Cluster slot migration under write load.
+  Requires docker-compose.cluster.yml (6-node Redis Cluster).
+
+scenarios:
+  - name: resharding-under-write-load
+    description: Execute resharding resilience test with concurrent writes
+    steps:
+      - action: shell
+        command: |
+          export VALKEY_PASSWORD='test-password'
+          export BOLT_PASSWORD='test-password'
+          bash scripts/test-resharding-resilience.sh 2>&1 | tail -20
+    acceptance:
+      - "No StorageError::Backend errors during resharding"
+      - "Read-back after resharding matches load count"
+      - "Zero errors in /metrics endpoint"
+
+  - name: cluster-smoke-test
+    description: Basic write/read against Redis Cluster mode
+    steps:
+      - action: shell
+        command: |
+          export VALKEY_PASSWORD='test-password'
+          export BOLT_PASSWORD='test-password'
+          bash scripts/test-cluster-bolt-smoke.sh 2>&1 | tail -10
