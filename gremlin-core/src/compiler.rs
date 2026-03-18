@@ -4,6 +4,8 @@
 //! tree by walking the steps left-to-right, wrapping each subsequent step around the
 //! previous operator (bottom-up construction).
 
+use std::collections::HashMap;
+
 use gql_core::ast::{BinaryOp, Direction, Expr, Identifier, Label, RelType};
 use gql_core::planner::{AggFunction, CreateEdgeSpec, CreatePattern, Operator, SetItem};
 use smol_str::SmolStr;
@@ -25,6 +27,8 @@ pub enum CompileError {
 /// Compiles a sequence of Gremlin steps into a gql-core `Operator` tree.
 pub struct GremlinCompiler {
     alias_counter: u32,
+    /// Maps Gremlin `as()` labels to their operator-level aliases.
+    alias_map: HashMap<String, Identifier>,
 }
 
 impl Default for GremlinCompiler {
@@ -35,12 +39,28 @@ impl Default for GremlinCompiler {
 
 impl GremlinCompiler {
     pub fn new() -> Self {
-        Self { alias_counter: 0 }
+        Self {
+            alias_counter: 0,
+            alias_map: HashMap::new(),
+        }
     }
 
     fn next_alias(&mut self, prefix: &str) -> Identifier {
         self.alias_counter += 1;
         Identifier::new(format!("{prefix}_{}", self.alias_counter))
+    }
+
+    /// Create a sub-compiler that shares alias counter and alias map.
+    fn sub_compiler(&self) -> Self {
+        Self {
+            alias_counter: self.alias_counter,
+            alias_map: self.alias_map.clone(),
+        }
+    }
+
+    /// Absorb counter state from a sub-compiler after it finishes.
+    fn absorb(&mut self, sub: &Self) {
+        self.alias_counter = sub.alias_counter;
     }
 
     /// Compile a step sequence into an Operator tree.
@@ -101,11 +121,57 @@ impl GremlinCompiler {
                     });
                 }
 
-                GremlinStep::E(_ids) => {
-                    // Edge scan: represented as a full node scan + expand (simplified)
-                    let alias = self.next_alias("e");
-                    current_alias = alias.clone();
-                    current = Some(Operator::NodeScan { label: None, alias });
+                GremlinStep::E(ids) => {
+                    // Edge scan: NodeScan → Expand (all types) → optional id filter
+                    let src = self.next_alias("src");
+                    let rel_alias = self.next_alias("e");
+                    let dst = self.next_alias("dst");
+                    let expand = Operator::Expand {
+                        direction: Direction::Outgoing,
+                        rel_types: vec![],
+                        src_alias: src.clone(),
+                        rel_alias: Some(rel_alias.clone()),
+                        dst_alias: dst,
+                        child: Box::new(Operator::NodeScan {
+                            label: None,
+                            alias: src,
+                        }),
+                    };
+                    current_alias = rel_alias.clone();
+                    current = Some(match ids {
+                        Some(id_list) if id_list.len() == 1 => {
+                            let id_expr = gremlin_value_to_expr(&id_list[0]);
+                            Operator::Filter {
+                                predicate: Expr::BinaryOp {
+                                    op: BinaryOp::Eq,
+                                    left: Box::new(Expr::FunctionCall {
+                                        name: SmolStr::new("id"),
+                                        args: vec![Expr::Variable(rel_alias)],
+                                        distinct: false,
+                                    }),
+                                    right: Box::new(id_expr),
+                                },
+                                child: Box::new(expand),
+                            }
+                        }
+                        Some(id_list) if !id_list.is_empty() => {
+                            let id_exprs: Vec<Expr> =
+                                id_list.iter().map(gremlin_value_to_expr).collect();
+                            Operator::Filter {
+                                predicate: Expr::BinaryOp {
+                                    op: BinaryOp::In,
+                                    left: Box::new(Expr::FunctionCall {
+                                        name: SmolStr::new("id"),
+                                        args: vec![Expr::Variable(rel_alias)],
+                                        distinct: false,
+                                    }),
+                                    right: Box::new(Expr::List(id_exprs)),
+                                },
+                                child: Box::new(expand),
+                            }
+                        }
+                        _ => expand,
+                    });
                 }
 
                 GremlinStep::HasLabel(labels) => {
@@ -283,25 +349,54 @@ impl GremlinCompiler {
                     });
                 }
 
-                GremlinStep::ValueMap(_keys) => {
-                    // Simplified: pass through (full implementation would collect all properties)
+                GremlinStep::ValueMap(keys) => {
                     let child = current.take().ok_or(CompileError::MissingChild)?;
-                    current = Some(Operator::Project {
-                        items: vec![(
+                    let items: Vec<(Expr, Option<Identifier>)> = if keys.is_empty() {
+                        vec![(
                             Expr::Variable(current_alias.clone()),
                             Some(current_alias.clone()),
-                        )],
+                        )]
+                    } else {
+                        keys.iter()
+                            .map(|k| {
+                                (
+                                    Expr::Property(
+                                        Box::new(Expr::Variable(current_alias.clone())),
+                                        SmolStr::new(k),
+                                    ),
+                                    Some(Identifier::new(k.clone())),
+                                )
+                            })
+                            .collect()
+                    };
+                    current = Some(Operator::Project {
+                        items,
                         child: Box::new(child),
                     });
                 }
 
-                GremlinStep::Properties(_keys) => {
+                GremlinStep::Properties(keys) => {
                     let child = current.take().ok_or(CompileError::MissingChild)?;
-                    current = Some(Operator::Project {
-                        items: vec![(
+                    let items: Vec<(Expr, Option<Identifier>)> = if keys.is_empty() {
+                        vec![(
                             Expr::Variable(current_alias.clone()),
                             Some(current_alias.clone()),
-                        )],
+                        )]
+                    } else {
+                        keys.iter()
+                            .map(|k| {
+                                (
+                                    Expr::Property(
+                                        Box::new(Expr::Variable(current_alias.clone())),
+                                        SmolStr::new(k),
+                                    ),
+                                    Some(Identifier::new(k.clone())),
+                                )
+                            })
+                            .collect()
+                    };
+                    current = Some(Operator::Project {
+                        items,
                         child: Box::new(child),
                     });
                 }
@@ -340,16 +435,27 @@ impl GremlinCompiler {
                     current_alias = lbl_alias;
                 }
 
-                GremlinStep::As(_alias) => {
-                    // As just tags the current position — the alias tracking is used by
-                    // Select. For now, no-op on the operator tree.
+                GremlinStep::As(alias) => {
+                    self.alias_map.insert(alias.clone(), current_alias.clone());
                 }
 
-                GremlinStep::Select(_keys) => {
-                    // Simplified: pass through current
-                    if current.is_none() {
-                        return Err(CompileError::MissingChild);
-                    }
+                GremlinStep::Select(keys) => {
+                    let child = current.take().ok_or(CompileError::MissingChild)?;
+                    let items: Vec<(Expr, Option<Identifier>)> = keys
+                        .iter()
+                        .map(|k| {
+                            let var = self
+                                .alias_map
+                                .get(k)
+                                .cloned()
+                                .unwrap_or_else(|| Identifier::new(k.clone()));
+                            (Expr::Variable(var), Some(Identifier::new(k.clone())))
+                        })
+                        .collect();
+                    current = Some(Operator::Project {
+                        items,
+                        child: Box::new(child),
+                    });
                 }
 
                 GremlinStep::Count => {
@@ -678,19 +784,14 @@ impl GremlinCompiler {
                 }
 
                 GremlinStep::Path => {
-                    // Simplified: project current as-is
-                    if current.is_none() {
-                        return Err(CompileError::MissingChild);
-                    }
+                    return Err(CompileError::UnsupportedStep("path".into()));
                 }
 
                 GremlinStep::Repeat(body_steps) => {
                     let child = current.take().ok_or(CompileError::MissingChild)?;
-                    let mut sub = GremlinCompiler {
-                        alias_counter: self.alias_counter,
-                    };
+                    let mut sub = self.sub_compiler();
                     let body = sub.compile(body_steps)?;
-                    self.alias_counter = sub.alias_counter;
+                    self.absorb(&sub);
                     current = Some(Operator::Repeat {
                         body: Box::new(body),
                         times: None,
@@ -710,11 +811,9 @@ impl GremlinCompiler {
                 GremlinStep::Until(until_steps) => {
                     // Modify preceding Repeat
                     if let Some(Operator::Repeat { ref mut until, .. }) = current {
-                        let mut sub = GremlinCompiler {
-                            alias_counter: self.alias_counter,
-                        };
+                        let mut sub = self.sub_compiler();
                         let until_op = sub.compile(until_steps)?;
-                        self.alias_counter = sub.alias_counter;
+                        self.absorb(&sub);
                         *until = Some(Box::new(until_op));
                     }
                 }
@@ -727,16 +826,14 @@ impl GremlinCompiler {
 
                 GremlinStep::Choose(pred_steps, true_steps, false_steps) => {
                     let child = current.take().ok_or(CompileError::MissingChild)?;
-                    let mut sub = GremlinCompiler {
-                        alias_counter: self.alias_counter,
-                    };
+                    let mut sub = self.sub_compiler();
                     let pred_op = sub.compile(pred_steps)?;
                     let true_op = sub.compile(true_steps)?;
                     let false_op = match false_steps {
                         Some(steps) => Some(Box::new(sub.compile(steps)?)),
                         None => None,
                     };
-                    self.alias_counter = sub.alias_counter;
+                    self.absorb(&sub);
                     current = Some(Operator::Choose {
                         predicate: Box::new(pred_op),
                         if_true: Box::new(true_op),
@@ -747,12 +844,10 @@ impl GremlinCompiler {
 
                 GremlinStep::Coalesce(alternatives) => {
                     let child = current.take().ok_or(CompileError::MissingChild)?;
-                    let mut sub = GremlinCompiler {
-                        alias_counter: self.alias_counter,
-                    };
+                    let mut sub = self.sub_compiler();
                     let alt_ops: Result<Vec<Operator>, _> =
                         alternatives.iter().map(|s| sub.compile(s)).collect();
-                    self.alias_counter = sub.alias_counter;
+                    self.absorb(&sub);
                     current = Some(Operator::Coalesce {
                         alternatives: alt_ops?,
                         child: Box::new(child),
@@ -761,12 +856,10 @@ impl GremlinCompiler {
 
                 GremlinStep::Union(branches) => {
                     let _child = current.take().ok_or(CompileError::MissingChild)?;
-                    let mut sub = GremlinCompiler {
-                        alias_counter: self.alias_counter,
-                    };
+                    let mut sub = self.sub_compiler();
                     let branch_ops: Result<Vec<Operator>, _> =
                         branches.iter().map(|s| sub.compile(s)).collect();
-                    self.alias_counter = sub.alias_counter;
+                    self.absorb(&sub);
                     let branch_ops = branch_ops?;
                     // Build a left-associative union chain
                     let union = branch_ops
@@ -782,11 +875,9 @@ impl GremlinCompiler {
 
                 GremlinStep::SideEffect(effect_steps) => {
                     let child = current.take().ok_or(CompileError::MissingChild)?;
-                    let mut sub = GremlinCompiler {
-                        alias_counter: self.alias_counter,
-                    };
+                    let mut sub = self.sub_compiler();
                     let effect = sub.compile(effect_steps)?;
-                    self.alias_counter = sub.alias_counter;
+                    self.absorb(&sub);
                     current = Some(Operator::GremlinSideEffect {
                         effect: Box::new(effect),
                         child: Box::new(child),
@@ -794,10 +885,9 @@ impl GremlinCompiler {
                 }
 
                 GremlinStep::Aggregate(_key) => {
-                    // Side-effect accumulation — simplified to pass-through
-                    if current.is_none() {
-                        return Err(CompileError::MissingChild);
-                    }
+                    return Err(CompileError::UnsupportedStep(
+                        "aggregate (side-effect)".into(),
+                    ));
                 }
 
                 GremlinStep::Cap(keys) => {
@@ -831,10 +921,7 @@ impl GremlinCompiler {
                 }
 
                 GremlinStep::Match(_patterns) => {
-                    // Full match compilation is complex; placeholder pass-through
-                    if current.is_none() {
-                        return Err(CompileError::MissingChild);
-                    }
+                    return Err(CompileError::UnsupportedStep("match".into()));
                 }
 
                 GremlinStep::Project(keys) => {

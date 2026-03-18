@@ -1,14 +1,25 @@
 //! Gremlin bytecode → gql-core execution bridge.
 //!
-//! Phase 1 MVP: translate a subset of Gremlin bytecode steps into
-//! equivalent Cypher, then run through the existing parse → plan → execute
-//! pipeline. Supported steps: `V`, `E`, `has`, `hasLabel`, `out`, `in`,
-//! `outE`, `inE`, `values`, `count`, `limit`, `both`.
+//! Primary path: deserialize bytecode into `GremlinStep`s, compile to an
+//! `Operator` tree via `GremlinCompiler`, and execute directly.
+//!
+//! Fallback: if the compiler returns `UnsupportedStep`, translate bytecode
+//! to Cypher and run through parse → plan → execute.
 
 use std::collections::HashMap;
 
 use gql_core::error::{ExecutionError, GqlError};
 use gql_core::executor::{ExecutionBudget, QueryExecutor};
+use gql_core::parser::parse_query;
+use gql_core::planner::QueryPlanner;
+use gql_core::procedure::ProcedureRegistry;
+use gql_core::storage::GraphStore;
+use gql_core::types::Value;
+use gremlin_core::bytecode::deserialize_bytecode;
+use gremlin_core::compiler::{CompileError, GremlinCompiler};
+
+use super::ensure_graph_exists;
+use super::types::query_result_to_graphson;
 
 /// Shorthand for creating a GqlError from a message string.
 fn gremlin_err(msg: impl Into<String>) -> GqlError {
@@ -17,40 +28,50 @@ fn gremlin_err(msg: impl Into<String>) -> GqlError {
     })
 }
 
-/// Escape a user-supplied identifier for safe embedding in Cypher.
-///
-/// Wraps the identifier in backticks and escapes embedded backticks,
-/// preventing Cypher injection through labels, property keys, or
-/// relationship type names.
-fn escape_identifier(s: &str) -> String {
-    format!("`{}`", s.replace('`', "``"))
+/// Unwrap the optional `@value` envelope from GraphSON bytecode.
+fn unwrap_bytecode_value(json: &serde_json::Value) -> &serde_json::Value {
+    json.get("@value").unwrap_or(json)
 }
 
-/// Escape a user-supplied string literal for safe embedding in Cypher.
+/// Execute a Gremlin traversal via direct compilation.
 ///
-/// Handles backslashes and control characters in addition to single quotes.
-fn escape_string_literal(s: &str) -> String {
-    let escaped = s
-        .replace('\\', "\\\\")
-        .replace('\'', "\\'")
-        .replace('\n', "\\n")
-        .replace('\r', "\\r")
-        .replace('\t', "\\t");
-    format!("'{escaped}'")
+/// Falls back to Cypher translation when the compiler encounters an
+/// unsupported step.
+pub fn execute_gremlin(
+    store: &dyn GraphStore,
+    graph: &str,
+    bytecode_json: &serde_json::Value,
+) -> Result<Vec<serde_json::Value>, GqlError> {
+    ensure_graph_exists(store, graph)?;
+
+    let inner = unwrap_bytecode_value(bytecode_json);
+
+    // Deserialize bytecode into typed steps.
+    let steps = deserialize_bytecode(inner).map_err(|e| gremlin_err(e.to_string()))?;
+
+    // Compile to an Operator tree.
+    let mut compiler = GremlinCompiler::new();
+    let operator = match compiler.compile(&steps) {
+        Ok(op) => op,
+        Err(CompileError::UnsupportedStep(step)) => {
+            tracing::info!(step, "unsupported step, falling back to Cypher bridge");
+            return execute_gremlin_via_cypher(store, graph, bytecode_json);
+        }
+        Err(e) => return Err(gremlin_err(e.to_string())),
+    };
+
+    tracing::debug!(?operator, "compiled gremlin to operator tree");
+
+    // Execute the operator tree.
+    let executor = QueryExecutor::new(store);
+    let mut budget = ExecutionBudget::default_budget();
+    let result = executor.execute(graph, &operator, &mut budget)?;
+
+    Ok(query_result_to_graphson(&result))
 }
-use gql_core::parser::parse_query;
-use gql_core::planner::QueryPlanner;
-use gql_core::procedure::ProcedureRegistry;
-use gql_core::storage::GraphStore;
-use gql_core::types::Value;
 
-use super::ensure_graph_exists;
-use super::types::query_result_to_graphson;
-
-/// Execute a Gremlin traversal expressed as GraphSON bytecode JSON.
-///
-/// Returns a vec of GraphSON-encoded result values.
-pub fn execute_traversal(
+/// Fallback: translate bytecode to Cypher, then parse → plan → execute.
+pub fn execute_gremlin_via_cypher(
     store: &dyn GraphStore,
     graph: &str,
     bytecode_json: &serde_json::Value,
@@ -58,7 +79,7 @@ pub fn execute_traversal(
     ensure_graph_exists(store, graph)?;
 
     let cypher = bytecode_to_cypher(bytecode_json)?;
-    tracing::debug!(%cypher, "translated bytecode to cypher");
+    tracing::debug!(%cypher, "translated bytecode to cypher (fallback)");
 
     let params: HashMap<String, Value> = HashMap::new();
     let registry = ProcedureRegistry::default();
@@ -71,6 +92,22 @@ pub fn execute_traversal(
     let result = executor.execute(graph, &plan, &mut budget)?;
 
     Ok(query_result_to_graphson(&result))
+}
+
+/// Escape a user-supplied identifier for safe embedding in Cypher.
+fn escape_identifier(s: &str) -> String {
+    format!("`{}`", s.replace('`', "``"))
+}
+
+/// Escape a user-supplied string literal for safe embedding in Cypher.
+fn escape_string_literal(s: &str) -> String {
+    let escaped = s
+        .replace('\\', "\\\\")
+        .replace('\'', "\\'")
+        .replace('\n', "\\n")
+        .replace('\r', "\\r")
+        .replace('\t', "\\t");
+    format!("'{escaped}'")
 }
 
 // ── Bytecode → Cypher translation ────────────────────────────────────────────
