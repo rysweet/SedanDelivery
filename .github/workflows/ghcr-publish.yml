@@ -2,11 +2,13 @@ name: Publish Container Images to GHCR
 
 # Build and publish all SedanDelivery container images to GitHub Container
 # Registry (ghcr.io) on every push to main, on version tags, and on manual
-# dispatch.  Uses GITHUB_TOKEN — no custom secrets required.
+# dispatch. Uses GITHUB_TOKEN for publishing and GH_AW_GITHUB_TOKEN to set
+# package visibility explicitly after publish.
 #
 # Images:
 #   ghcr.io/cloud-ecosystem-security/sedandelivery           — Valkey + GQL module
 #   ghcr.io/cloud-ecosystem-security/sedandelivery-bolt       — Bolt protocol server
+#   ghcr.io/cloud-ecosystem-security/sedandelivery-sync       — Legacy Fabric sync alias
 #   ghcr.io/cloud-ecosystem-security/sedandelivery-fabric-sync — Fabric sync sidecar
 #
 # Closes #433
@@ -49,6 +51,10 @@ jobs:
             dockerfile: Dockerfile.sync
             suffix: "-fabric-sync"
             description: "SedanDelivery Fabric Sync — Microsoft Fabric graph sync sidecar"
+          - image: sedandelivery-sync
+            dockerfile: Dockerfile.sync
+            suffix: "-sync"
+            description: "SedanDelivery Sync — compatibility alias for the Fabric sync sidecar"
 
     steps:
       - name: Checkout repository
@@ -96,3 +102,19 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
           platforms: linux/amd64
+
+      - name: Make package public
+        env:
+          GH_TOKEN: ${{ secrets.GH_AW_GITHUB_TOKEN }}
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "GH_AW_GITHUB_TOKEN is required to set GHCR package visibility."
+            exit 1
+          fi
+
+          gh api \
+            --method PATCH \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "/orgs/${{ github.repository_owner }}/packages/container/${{ matrix.image }}/visibility" \
+            -f visibility=public
