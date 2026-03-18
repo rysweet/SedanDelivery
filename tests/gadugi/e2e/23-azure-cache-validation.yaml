@@ -1,0 +1,25 @@
+name: azure-cache-validation-plan
+description: >
+  Test plan for validating SedanDelivery against Azure Cache for Redis Standard C1.
+  Cannot be executed locally - requires Azure Cache instance.
+
+scenarios:
+  - name: tls-connection-path
+    description: Verify rediss:// TLS connection to Azure Cache
+    steps:
+      - action: verify-file-exists
+        path: gql-redis-store/src/connection.rs
+      - action: shell
+        command: grep -c 'rediss://' gql-redis-store/src/connection.rs gql-redis-store/src/lib.rs
+    acceptance:
+      - "TLS connection support exists in code"
+
+  - name: pool-sizing-validation
+    description: Verify pool size default (64) fits within Azure Cache C1 limit (256)
+    steps:
+      - action: shell
+        command: |
+          pool_size=$(grep 'DEFAULT_POOL_SIZE' gql-redis-store/src/connection.rs | grep -oP '\d+')
+          echo "Pool size: $pool_size"
+          test "$pool_size" -le 85 || { echo "WARN: 3 replicas x $pool_size = $((pool_size * 3)) exceeds C1 256 limit"; exit 1; }
+          echo "3 replicas x $pool_size = $((pool_size * 3)) connections (within C1 256 limit)"
