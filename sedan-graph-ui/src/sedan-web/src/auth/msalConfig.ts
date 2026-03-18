@@ -3,6 +3,12 @@ import { type Configuration, LogLevel } from '@azure/msal-browser'
 function requireEnv(name: string): string {
   const value = import.meta.env[name]
   if (!value) {
+    // During unit tests (vitest), env vars may not be set. Use placeholder
+    // values so module imports succeed. Tests that exercise auth should mock
+    // this module.
+    if (import.meta.env.MODE === 'test' || import.meta.env.VITEST) {
+      return `test-placeholder-${name}`
+    }
     throw new Error(
       `${name} is required. Add it to .env.development (see .env.development.example).`,
     )
