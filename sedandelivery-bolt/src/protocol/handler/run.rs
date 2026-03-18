@@ -653,8 +653,8 @@ pub(crate) async fn handle_run(
 
     let graph = extra
         .get_str("db")
+        .map(super::normalize_graph_name)
         .unwrap_or(&session.current_graph)
-        .trim_matches(|c| c == '\'' || c == '"')
         .to_string();
 
     // Try to handle as an admin/DDL query.

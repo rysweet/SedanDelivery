@@ -38,9 +38,9 @@ pub(crate) fn handle_begin(
     // If the BEGIN specifies a database, save the previous graph so that
     // ROLLBACK / RESET can restore it, then update the session's current
     // graph so subsequent RUN messages within the TX use the correct graph.
-    if let Some(db) = extra.get_str("db") {
-        let db = db.trim_matches(|c: char| c == '\'' || c == '"');
-        if !db.is_empty() {
+    if let Some(raw_db) = extra.get_str("db") {
+        let db = super::normalize_graph_name(raw_db);
+        if db != session.current_graph {
             session.saved_graph = Some(session.current_graph.clone());
             session.current_graph = db.to_string();
         }

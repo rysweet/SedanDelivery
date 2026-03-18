@@ -108,6 +108,31 @@ pub struct AdminStats {
     pub(crate) system_updates: u64,
 }
 
+/// The canonical default graph name used when no database is specified.
+pub(crate) const DEFAULT_GRAPH: &str = "neo4j";
+
+/// Normalize a Bolt `db` parameter to a canonical graph name.
+///
+/// Different Neo4j drivers send the database parameter differently:
+///
+/// - **Node.js neo4j-driver**: sends `db: "neo4j"` (explicit default)
+/// - **.NET Neo4j.Driver**: may send `db: null`, `db: ""`, or omit it entirely
+/// - **Python neo4j**: may send `db: "neo4j"` or omit it
+///
+/// Without normalization, `""` and `"neo4j"` resolve to different internal
+/// graph namespaces, causing cross-driver data invisibility (#697).
+///
+/// This function strips surrounding quotes and maps empty/blank strings to
+/// [`DEFAULT_GRAPH`] (`"neo4j"`).
+pub(crate) fn normalize_graph_name(raw: &str) -> &str {
+    let trimmed = raw.trim_matches(|c: char| c == '\'' || c == '"');
+    if trimmed.is_empty() {
+        DEFAULT_GRAPH
+    } else {
+        trimmed
+    }
+}
+
 /// The read-after-write consistency window.
 ///
 /// Reads issued within this duration after the most recent write in a session
@@ -298,5 +323,45 @@ mod tests {
             session.read_consistency(),
             ReadConsistency::SessionFreshPrimary
         );
+    }
+
+    // -- normalize_graph_name tests (#697) ------------------------------------
+
+    #[test]
+    fn normalize_graph_name_returns_explicit_name_unchanged() {
+        assert_eq!(normalize_graph_name("mydb"), "mydb");
+    }
+
+    #[test]
+    fn normalize_graph_name_returns_neo4j_unchanged() {
+        assert_eq!(normalize_graph_name("neo4j"), "neo4j");
+    }
+
+    #[test]
+    fn normalize_graph_name_maps_empty_string_to_default() {
+        assert_eq!(normalize_graph_name(""), DEFAULT_GRAPH);
+    }
+
+    #[test]
+    fn normalize_graph_name_strips_single_quotes() {
+        assert_eq!(normalize_graph_name("'mydb'"), "mydb");
+    }
+
+    #[test]
+    fn normalize_graph_name_strips_double_quotes() {
+        assert_eq!(normalize_graph_name("\"mydb\""), "mydb");
+    }
+
+    #[test]
+    fn normalize_graph_name_quoted_empty_maps_to_default() {
+        // A driver could send db: "''" — after stripping quotes the name is empty.
+        assert_eq!(normalize_graph_name("''"), DEFAULT_GRAPH);
+        assert_eq!(normalize_graph_name("\"\""), DEFAULT_GRAPH);
+    }
+
+    #[test]
+    fn normalize_graph_name_preserves_custom_databases() {
+        assert_eq!(normalize_graph_name("analytics"), "analytics");
+        assert_eq!(normalize_graph_name("test-db"), "test-db");
     }
 }
