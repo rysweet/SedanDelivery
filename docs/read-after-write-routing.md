@@ -70,6 +70,16 @@ store
     .unwrap_or(store)
 ```
 
+The convenience predicate `Session::force_primary_read()` wraps this check and
+returns `true` when reads should be pinned to the primary. The query dispatch
+path in `run.rs` uses it for debug logging:
+
+```rust
+if session.force_primary_read() {
+    tracing::debug!(graph = %graph, "routing reads to primary …");
+}
+```
+
 Backends that care about topology can return a specialized store view. Backends
 that do not care simply return `None` and keep their original behavior.
 
