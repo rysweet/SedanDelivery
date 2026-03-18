@@ -16,22 +16,26 @@ use super::{bolt_map, constant_time_eq, ProtocolError, Session};
 
 // -- Auth rate limiting ------------------------------------------------------
 //
-// LIMITATION: Per-process rate limiter.
+// When `GQL_REDIS_URL` is set, auth failure counters are shared across all
+// Bolt replicas via Redis INCR + EXPIRE. When no Redis URL is configured,
+// an in-process DashMap provides per-replica rate limiting as a fallback.
 //
-// The auth rate limiter uses an in-process DashMap, meaning each Bolt
-// replica maintains its own independent counter. With N replicas behind
-// an L4 load balancer, an attacker can make up to N x MAX_FAILURES_PER_IP
-// attempts before being throttled on all replicas.
-//
-// For most deployments (1-3 replicas) this is acceptable. To close the
-// gap, replace the DashMap with Redis-backed counters (INCR + EXPIRE)
-// keyed by IP. This is tracked as a future improvement.
-//
-// See also: docs/DEPLOY.md "Authentication Rate Limiting" section.
+// On Redis unavailability the limiter **fails open** (allows the attempt)
+// and logs a warning, so a Redis outage never locks out legitimate users.
 
-/// Maximum number of distinct IPs tracked simultaneously.
-/// Prevents unbounded memory growth under a flood of source IPs.
+/// Maximum number of distinct IPs tracked simultaneously (in-memory mode).
 const MAX_TRACKED_IPS: usize = 100_000;
+
+/// Redis key prefix for distributed auth rate limiting counters.
+const REDIS_KEY_PREFIX: &str = "__sd2:auth_rate:";
+
+/// Lua script: atomically INCR the counter and set EXPIRE on first increment.
+const INCR_WITH_EXPIRE_LUA: &str = "\
+local count = redis.call('INCR', KEYS[1])\n\
+if count == 1 then\n\
+  redis.call('EXPIRE', KEYS[1], ARGV[1])\n\
+end\n\
+return count";
 
 /// Maximum failed auth attempts per IP before returning RateLimit.
 /// Configurable via `BOLT_AUTH_MAX_ATTEMPTS` env var (default: 10).
@@ -42,8 +46,6 @@ fn max_failures_per_ip() -> u32 {
 
 /// Seconds after which an entry is considered stale and eligible for sweep.
 /// Configurable via `BOLT_AUTH_WINDOW_SECS` env var (default: 3600).
-/// The default preserves the original 1-hour lockout window for brute-force
-/// protection. Operators may lower this for dev environments.
 fn stale_after_secs() -> u64 {
     static VAL: OnceLock<u64> = OnceLock::new();
     *VAL.get_or_init(|| {
@@ -51,20 +53,26 @@ fn stale_after_secs() -> u64 {
     })
 }
 
-/// Per-IP entry: (failure_count, last_failure_unix_secs).
-struct AuthRateLimiter {
+/// Canonical string form of an IP address for use as a rate-limit key.
+fn normalize_ip(ip: IpAddr) -> String {
+    // Rust's `IpAddr::to_string()` already produces canonical form for both
+    // IPv4 and IPv6 (RFC 5952 compressed notation).
+    ip.to_string()
+}
+
+// -- In-memory backend -------------------------------------------------------
+
+struct InMemoryLimiter {
     map: DashMap<String, (AtomicU32, AtomicU64)>,
 }
 
-impl AuthRateLimiter {
+impl InMemoryLimiter {
     fn new() -> Self {
         Self {
             map: DashMap::new(),
         }
     }
 
-    /// Record a failed auth attempt for `key` (IP string).
-    /// Returns `true` if the IP is now rate-limited (exceeded MAX_FAILURES_PER_IP).
     fn record_failure(&self, key: &str) -> bool {
         let now_secs = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -77,7 +85,6 @@ impl AuthRateLimiter {
             return prev + 1 > max_failures_per_ip();
         }
 
-        // Only insert if we have room.
         if self.map.len() < MAX_TRACKED_IPS {
             self.map
                 .entry(key.to_string())
@@ -88,12 +95,10 @@ impl AuthRateLimiter {
         false
     }
 
-    /// Clear the failure counter for `key` (after a successful auth).
     fn record_success(&self, key: &str) {
         self.map.remove(key);
     }
 
-    /// Remove entries that have been stale for longer than STALE_AFTER_SECS.
     fn sweep(&self) {
         let now_secs = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -105,12 +110,151 @@ impl AuthRateLimiter {
     }
 }
 
+// -- Redis backend -----------------------------------------------------------
+
+struct RedisLimiter {
+    client: redis::Client,
+    conn: tokio::sync::Mutex<Option<redis::aio::MultiplexedConnection>>,
+}
+
+impl RedisLimiter {
+    fn new(client: redis::Client) -> Self {
+        Self {
+            client,
+            conn: tokio::sync::Mutex::new(None),
+        }
+    }
+
+    async fn get_conn(&self) -> Result<redis::aio::MultiplexedConnection, redis::RedisError> {
+        let mut guard = self.conn.lock().await;
+        if let Some(ref conn) = *guard {
+            return Ok(conn.clone());
+        }
+        let conn: redis::aio::MultiplexedConnection =
+            self.client.get_multiplexed_async_connection().await?;
+        *guard = Some(conn.clone());
+        Ok(conn)
+    }
+
+    async fn clear_cached_conn(&self) {
+        *self.conn.lock().await = None;
+    }
+
+    /// Increment failure counter via Lua script. Returns `Some(true)` if
+    /// rate-limited, `Some(false)` if not, or `None` on Redis failure (fail open).
+    async fn record_failure(&self, key: &str) -> Option<bool> {
+        let redis_key = format!("{REDIS_KEY_PREFIX}{key}");
+        let ttl = stale_after_secs();
+
+        let mut conn = match self.get_conn().await {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::warn!(error = %e, "Redis unavailable for auth rate limiting; failing open");
+                self.clear_cached_conn().await;
+                return None;
+            }
+        };
+
+        let result: Result<i64, redis::RedisError> = redis::cmd("EVAL")
+            .arg(INCR_WITH_EXPIRE_LUA)
+            .arg(1_i32)
+            .arg(&redis_key)
+            .arg(ttl as i64)
+            .query_async(&mut conn)
+            .await;
+
+        match result {
+            Ok(count) => Some(count > i64::from(max_failures_per_ip())),
+            Err(e) => {
+                tracing::warn!(error = %e, "Redis auth rate limit EVAL failed; failing open");
+                self.clear_cached_conn().await;
+                None
+            }
+        }
+    }
+
+    async fn record_success(&self, key: &str) {
+        let redis_key = format!("{REDIS_KEY_PREFIX}{key}");
+        let mut conn = match self.get_conn().await {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::warn!(error = %e, "Redis unavailable for auth rate limit reset");
+                self.clear_cached_conn().await;
+                return;
+            }
+        };
+
+        let result: Result<i64, redis::RedisError> = redis::cmd("DEL")
+            .arg(&redis_key)
+            .query_async(&mut conn)
+            .await;
+        if let Err(e) = result {
+            tracing::warn!(error = %e, "Redis auth rate limit DEL failed");
+            self.clear_cached_conn().await;
+        }
+    }
+}
+
+// -- Combined rate limiter ---------------------------------------------------
+
+enum AuthRateLimiter {
+    InMemory(InMemoryLimiter),
+    Redis(RedisLimiter),
+}
+
+impl AuthRateLimiter {
+    async fn record_failure(&self, key: &str) -> bool {
+        match self {
+            Self::InMemory(lim) => lim.record_failure(key),
+            Self::Redis(lim) => {
+                // Fail open: if Redis is unavailable, allow the attempt.
+                lim.record_failure(key).await.unwrap_or(false)
+            }
+        }
+    }
+
+    async fn record_success(&self, key: &str) {
+        match self {
+            Self::InMemory(lim) => lim.record_success(key),
+            Self::Redis(lim) => lim.record_success(key).await,
+        }
+    }
+
+    fn sweep(&self) {
+        match self {
+            Self::InMemory(lim) => lim.sweep(),
+            // Redis handles TTL via EXPIRE; nothing to sweep.
+            Self::Redis(_) => {}
+        }
+    }
+}
+
 fn auth_rate_limiter() -> &'static AuthRateLimiter {
     static LIMITER: OnceLock<AuthRateLimiter> = OnceLock::new();
-    LIMITER.get_or_init(AuthRateLimiter::new)
+    LIMITER.get_or_init(|| {
+        if let Ok(url) = std::env::var("GQL_REDIS_URL") {
+            match redis::Client::open(url.as_str()) {
+                Ok(client) => {
+                    tracing::info!("Auth rate limiter using Redis-backed counters");
+                    return AuthRateLimiter::Redis(RedisLimiter::new(client));
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        "Failed to create Redis client for auth rate limiter; \
+                         falling back to in-memory"
+                    );
+                }
+            }
+        }
+        tracing::info!("Auth rate limiter using in-memory counters");
+        AuthRateLimiter::InMemory(InMemoryLimiter::new())
+    })
 }
 
 /// Spawn a background task that periodically sweeps stale rate-limiter entries.
+/// In Redis mode this is a no-op (EXPIRE handles TTL), but the task still runs
+/// so the sweep interval is consistent.
 pub fn spawn_auth_rate_limiter_sweep() {
     tokio::spawn(async {
         let mut interval = tokio::time::interval(Duration::from_secs(300));
@@ -121,10 +265,9 @@ pub fn spawn_auth_rate_limiter_sweep() {
     });
 }
 
-// Keep the old public API used by tests so they still compile.
 #[cfg(test)]
-pub(crate) fn clear_auth_rate_limit(ip: IpAddr) {
-    auth_rate_limiter().record_success(&ip.to_string());
+pub(crate) async fn clear_auth_rate_limit(ip: IpAddr) {
+    auth_rate_limiter().record_success(&normalize_ip(ip)).await;
 }
 
 #[cfg(test)]
@@ -179,17 +322,17 @@ fn unauthorized_failure(session: &mut Session, message: &str) -> Vec<ServerMessa
     })]
 }
 
-fn register_failed_auth_attempt(session: &mut Session) -> Option<Vec<ServerMessage>> {
+async fn register_failed_auth_attempt(session: &mut Session) -> Option<Vec<ServerMessage>> {
     let ip = session.peer_ip?;
-    let key = ip.to_string();
-    if auth_rate_limiter().record_failure(&key) {
+    let key = normalize_ip(ip);
+    if auth_rate_limiter().record_failure(&key).await {
         Some(auth_rate_limit_failure(session, ip))
     } else {
         None
     }
 }
 
-fn validate_basic_auth(
+async fn validate_basic_auth(
     session: &mut Session,
     auth: &BoltMap,
     required_pw: Option<&str>,
@@ -197,7 +340,7 @@ fn validate_basic_auth(
     let required_pw = required_pw?;
     let scheme = auth.get_str("scheme").unwrap_or("");
     if scheme != "basic" {
-        if let Some(rate_limited) = register_failed_auth_attempt(session) {
+        if let Some(rate_limited) = register_failed_auth_attempt(session).await {
             return Some(rate_limited);
         }
         return Some(unauthorized_failure(
@@ -208,14 +351,14 @@ fn validate_basic_auth(
 
     let credentials = auth.get_str("credentials").unwrap_or("");
     if !constant_time_eq(credentials.as_bytes(), required_pw.as_bytes()) {
-        if let Some(rate_limited) = register_failed_auth_attempt(session) {
+        if let Some(rate_limited) = register_failed_auth_attempt(session).await {
             return Some(rate_limited);
         }
         return Some(unauthorized_failure(session, "Invalid credentials"));
     }
 
     if let Some(ip) = session.peer_ip {
-        auth_rate_limiter().record_success(&ip.to_string());
+        auth_rate_limiter().record_success(&normalize_ip(ip)).await;
     }
 
     None
@@ -240,7 +383,9 @@ pub(crate) async fn handle_hello(
     session: &mut Session,
     extra: BoltMap,
 ) -> Result<Vec<ServerMessage>, ProtocolError> {
-    if let Some(failure) = validate_basic_auth(session, &extra, required_password().as_deref()) {
+    if let Some(failure) =
+        validate_basic_auth(session, &extra, required_password().as_deref()).await
+    {
         return Ok(failure);
     }
 
@@ -278,7 +423,8 @@ pub(crate) async fn handle_logon(
     session: &mut Session,
     auth: BoltMap,
 ) -> Result<Vec<ServerMessage>, ProtocolError> {
-    if let Some(failure) = validate_basic_auth(session, &auth, required_password().as_deref()) {
+    if let Some(failure) = validate_basic_auth(session, &auth, required_password().as_deref()).await
+    {
         return Ok(failure);
     }
 
@@ -333,7 +479,7 @@ mod tests {
     #[tokio::test]
     async fn hello_without_password_does_not_rate_limit_repeated_attempts() {
         let ip = "10.0.0.11".parse().unwrap();
-        clear_auth_rate_limit(ip);
+        clear_auth_rate_limit(ip).await;
 
         with_required_password_override_for_tests(None, async move {
             for _ in 0..16 {
@@ -350,7 +496,7 @@ mod tests {
     #[tokio::test]
     async fn successful_hello_auth_clears_failed_attempt_budget() {
         let ip = "10.0.0.12".parse().unwrap();
-        clear_auth_rate_limit(ip);
+        clear_auth_rate_limit(ip).await;
 
         with_required_password_override_for_tests(Some("secret"), async move {
             for _ in 0..10 {
@@ -385,7 +531,7 @@ mod tests {
     #[tokio::test]
     async fn failed_logon_attempts_are_rate_limited() {
         let ip = "10.0.0.13".parse().unwrap();
-        clear_auth_rate_limit(ip);
+        clear_auth_rate_limit(ip).await;
 
         with_required_password_override_for_tests(Some("secret"), async move {
             for _ in 0..10 {
@@ -413,12 +559,15 @@ mod tests {
 
     #[test]
     fn stale_rate_limit_entries_are_evicted() {
-        // Insert a stale entry directly into the DashMap to verify sweep removes it.
+        // In tests, GQL_REDIS_URL is not set so the limiter is always InMemory.
         let stale_ip: IpAddr = "10.0.0.21".parse().unwrap();
         let stale_key = stale_ip.to_string();
         let limiter = auth_rate_limiter();
-        // Simulate a stale entry by inserting with a very old timestamp.
-        limiter.map.insert(
+        let map = match limiter {
+            AuthRateLimiter::InMemory(lim) => &lim.map,
+            AuthRateLimiter::Redis(_) => panic!("expected InMemory limiter in test"),
+        };
+        map.insert(
             stale_key.clone(),
             (
                 AtomicU32::new(99),
@@ -427,7 +576,7 @@ mod tests {
         );
         limiter.sweep();
         assert!(
-            !limiter.map.contains_key(&stale_key),
+            !map.contains_key(&stale_key),
             "expired auth-failure entries should be pruned"
         );
     }

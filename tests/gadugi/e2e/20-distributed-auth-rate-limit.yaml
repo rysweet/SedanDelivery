@@ -1,0 +1,81 @@
+scenario:
+  name: "Distributed Auth Rate Limiting"
+  description: >
+    Validates that auth failure counters are shared across Bolt replicas when
+    GQL_REDIS_URL is set.  With Redis-backed counters an attacker cannot
+    multiply their budget by connecting to different replicas.  Falls back to
+    in-memory counters when no Redis URL is configured.
+  type: api
+  tags: [e2e, bolt, security, auth, rate-limit, distributed]
+  timeout: 120s
+
+  # Prerequisites:
+  #   - Two sedandelivery-bolt replicas (BOLT_PORT=7687, BOLT_PORT=7688)
+  #   - Both configured with the same GQL_REDIS_URL and BOLT_PASSWORD
+  #   - BOLT_AUTH_MAX_ATTEMPTS=5  (low threshold for faster testing)
+  #   - BOLT_AUTH_WINDOW_SECS=60
+
+  variables:
+    bolt_replica_1: "bolt://localhost:7687"
+    bolt_replica_2: "bolt://localhost:7688"
+    max_attempts: 5
+    correct_password: "${BOLT_PASSWORD}"
+
+  steps:
+    # Step 1: Clear any prior state by authenticating successfully
+    - action: bolt_connect
+      url: "${bolt_replica_1}"
+      auth:
+        scheme: basic
+        credentials: "${correct_password}"
+      expected: SUCCESS
+      description: "Successful auth on replica 1 to reset counters"
+
+    # Step 2: Send (max_attempts - 1) failures against replica 1
+    - action: bolt_connect
+      url: "${bolt_replica_1}"
+      auth:
+        scheme: basic
+        credentials: "wrong-password"
+      repeat: 4
+      expected: "Neo.ClientError.Security.Unauthorized"
+      description: "4 failed attempts on replica 1 (under threshold)"
+
+    # Step 3: One more failure against replica 2 should share the counter
+    #         and push the total to max_attempts, triggering rate-limit
+    - action: bolt_connect
+      url: "${bolt_replica_2}"
+      auth:
+        scheme: basic
+        credentials: "wrong-password"
+      expected: "Neo.ClientError.Security.Unauthorized"
+      description: "5th failed attempt on replica 2 reaches shared threshold"
+
+    # Step 4: Next attempt on either replica should be rate-limited
+    - action: bolt_connect
+      url: "${bolt_replica_1}"
+      auth:
+        scheme: basic
+        credentials: "wrong-password"
+      expected: "Neo.ClientError.Security.AuthenticationRateLimit"
+      description: "6th attempt on replica 1 is rate-limited (shared counter)"
+
+    - action: bolt_connect
+      url: "${bolt_replica_2}"
+      auth:
+        scheme: basic
+        credentials: "wrong-password"
+      expected: "Neo.ClientError.Security.AuthenticationRateLimit"
+      description: "6th attempt on replica 2 is also rate-limited"
+
+    # Step 5: Verify Redis key exists with correct prefix
+    - action: redis_command
+      command: "EXISTS __sd2:auth_rate:127.0.0.1"
+      expected: 1
+      description: "Redis key with __sd2:auth_rate: prefix exists"
+
+    # Step 6: Verify the key has a TTL (set by EXPIRE in the Lua script)
+    - action: redis_command
+      command: "TTL __sd2:auth_rate:127.0.0.1"
+      expected_range: [1, 60]
+      description: "Redis key has TTL within BOLT_AUTH_WINDOW_SECS"

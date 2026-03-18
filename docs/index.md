@@ -103,6 +103,8 @@ See [ADR-004](ADR-004-distributed-redis) for the full architecture decision reco
 | `BOLT_WRITE_CONCURRENCY` | `128` | Max concurrent write transactions |
 | `BOLT_AUTH_MAX_ATTEMPTS` | `10` | Max failed auth attempts per IP per window before rate limiting |
 | `BOLT_AUTH_WINDOW_SECS` | `3600` | Auth rate limit stale entry timeout (seconds); an IP blocked after `BOLT_AUTH_MAX_ATTEMPTS` failures cannot retry for this duration |
+
+> **Distributed rate limiting**: When `GQL_REDIS_URL` is set, auth failure counters are shared across all Bolt replicas via Redis `INCR`+`EXPIRE` (key format `__sd2:auth_rate:{ip}`). This prevents an attacker from multiplying their budget across N replicas. Without `GQL_REDIS_URL`, each replica maintains an independent in-memory counter. If Redis becomes unavailable the limiter fails open (allows the attempt) and logs a warning.
 | `BOLT_DRAIN_TIMEOUT_SECS` | `30` | Graceful shutdown drain timeout (seconds); active connections are given this long to finish before forced close |
 | `BOLT_HEALTH_PORT` | `7688` | Health/metrics HTTP server port |
 | `BOLT_HEALTH_BIND_ADDR` | `0.0.0.0` | Bind address for the health/metrics HTTP server |
