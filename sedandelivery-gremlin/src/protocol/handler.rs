@@ -111,7 +111,7 @@ fn handle_bytecode(
         }
     };
 
-    match bridge::executor::execute_traversal(&*session.store, &session.graph, bytecode_json) {
+    match bridge::executor::execute_gremlin(&*session.store, &session.graph, bytecode_json) {
         Ok(data) => Ok(ResponseMessage::success(
             req.request_id,
             serde_json::Value::Array(data),

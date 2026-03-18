@@ -1,18 +1,9 @@
-//! sedandelivery-gremlin — Gremlin WebSocket server for SedanDelivery.
-//!
-//! Accepts Gremlin bytecode over WebSocket (port 8182) and translates
-//! traversals into gql-core query execution. Health endpoint on port 8183.
-
-mod bridge;
-mod connection;
-mod health;
-mod protocol;
-
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
 use gql_core::storage::GraphStore;
+use sedandelivery_gremlin::{connection, health};
 use tokio::net::TcpListener;
 
 /// Create the graph store based on environment configuration.

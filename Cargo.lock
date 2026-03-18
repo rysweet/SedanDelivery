@@ -3762,6 +3762,7 @@ dependencies = [
  "futures-util",
  "gql-core",
  "gql-redis-store",
+ "gremlin-core",
  "indexmap",
  "serde",
  "serde_json",
