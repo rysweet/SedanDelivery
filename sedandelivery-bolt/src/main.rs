@@ -33,7 +33,8 @@ fn check_bolt_password_env(require_password: bool) -> Result<(), String> {
 
 /// Validate that BOLT_TLS_CERT and BOLT_TLS_KEY are consistently set.
 ///
-/// Returns `Err(message)` on failure so callers can `eprintln!` and `exit(1)`.
+/// When `require_tls` is true, both must be present. When false, both-absent
+/// is allowed but one-without-the-other is always an error.
 fn check_bolt_tls_env(require_tls: bool) -> Result<(), String> {
     match (
         read_non_empty_env_var("BOLT_TLS_CERT")?,
@@ -41,7 +42,7 @@ fn check_bolt_tls_env(require_tls: bool) -> Result<(), String> {
     ) {
         (Some(_), Some(_)) => Ok(()),
         (None, None) if require_tls => {
-            Err("BOLT_TLS_CERT and BOLT_TLS_KEY are required when ENVIRONMENT=production".into())
+            Err("BOLT_TLS_CERT and BOLT_TLS_KEY are required when BOLT_REQUIRE_TLS=1".into())
         }
         (None, None) => Ok(()),
         (Some(_), None) => Err("BOLT_TLS_CERT is set but BOLT_TLS_KEY is missing".into()),
@@ -126,14 +127,20 @@ async fn main() {
         tracing_subscriber::fmt().with_env_filter(env_filter).init();
     }
 
-    // In production mode, require both password auth and in-process Bolt TLS.
-    // Azure Container Apps documents TLS termination for HTTP ingress, not the
-    // raw TCP ingress used by Bolt on port 7687.
+    // In production mode, require password auth. TLS is enforced separately
+    // via BOLT_REQUIRE_TLS=1 so operators can choose between in-process TLS
+    // (for raw TCP ingress on port 7687) and external TLS termination (e.g.
+    // a sidecar or private network). Azure Container Apps handles TLS for
+    // HTTPS ingress but NOT for raw TCP transport — set BOLT_REQUIRE_TLS=1
+    // when Bolt is publicly exposed on TCP.
     let production_mode = std::env::var("ENVIRONMENT").as_deref() == Ok("production");
     if let Err(e) = check_bolt_password_env(production_mode) {
         fatal(&e);
     }
-    if let Err(e) = check_bolt_tls_env(production_mode) {
+    // Validate TLS env-var consistency (cert without key or vice versa) but
+    // do not hard-require TLS based on ENVIRONMENT alone. BOLT_REQUIRE_TLS=1
+    // (checked below, after TLS config is loaded) is the opt-in enforcement.
+    if let Err(e) = check_bolt_tls_env(false) {
         fatal(&e);
     }
 
@@ -658,12 +665,12 @@ mod tests {
     }
 
     #[test]
-    fn missing_tls_is_rejected_in_production() {
+    fn missing_tls_is_rejected_when_required() {
         let _env = TestEnv::set(None, None, None);
 
         assert_eq!(
             check_bolt_tls_env(true),
-            Err("BOLT_TLS_CERT and BOLT_TLS_KEY are required when ENVIRONMENT=production".into())
+            Err("BOLT_TLS_CERT and BOLT_TLS_KEY are required when BOLT_REQUIRE_TLS=1".into())
         );
     }
 
