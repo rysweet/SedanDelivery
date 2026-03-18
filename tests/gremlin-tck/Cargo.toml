@@ -5,7 +5,18 @@ edition = "2021"
 publish = false
 
 [dependencies]
-gql-core = { path = "../../gql-core" }
+gql-core     = { path = "../../gql-core" }
+gremlin-core = { path = "../../gremlin-core" }
+
+[dev-dependencies]
+cucumber  = { workspace = true }
+tokio     = { workspace = true }
+indexmap   = { workspace = true }
 
 [lib]
 path = "src/lib.rs"
+
+[[test]]
+name    = "gremlin_tck"
+path    = "tests/tck_cucumber.rs"
+harness = false

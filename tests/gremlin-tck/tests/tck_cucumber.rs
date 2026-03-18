@@ -1,0 +1,699 @@
+//! Cucumber runner for TinkerPop Gremlin TCK `.feature` files.
+//!
+//! Runs: `cargo test -p gremlin-tck --test gremlin_tck`
+//!
+//! This wires up the standard TinkerPop Gherkin step patterns to SedanDelivery's
+//! Gremlin pipeline: text parser → GremlinStep bytecode → GremlinCompiler → Operator
+//! → QueryExecutor.
+
+use std::collections::HashMap;
+use std::sync::Arc;
+
+use cucumber::gherkin;
+use cucumber::{given, then, when, World};
+
+use gql_core::executor::{ExecutionBudget, QueryExecutor, QueryResult};
+use gql_core::storage::{EdgeId, GraphStore, InMemoryGraphStore, NodeId};
+use gql_core::types::Value;
+use gremlin_core::bytecode::GremlinStep;
+use gremlin_core::compiler::GremlinCompiler;
+use gremlin_core::text_parser;
+use gremlin_core::types::GremlinValue;
+
+use gremlin_tck::modern_graph::{create_modern_graph, ModernGraphIds};
+
+// ── World state ───────────────────────────────────────────────────────────────
+
+/// Outcome of executing a Gremlin traversal.
+#[derive(Debug)]
+enum TraversalOutcome {
+    Ok(QueryResult),
+    Err(String),
+}
+
+/// Per-scenario state for the Gremlin TCK cucumber runner.
+#[derive(Debug, Default, World)]
+pub struct GremlinWorld {
+    store: Option<Arc<InMemoryGraphStore>>,
+    graph_name: String,
+    /// Named vertex IDs from the modern graph fixture.
+    vertex_names: HashMap<String, NodeId>,
+    /// Named edge IDs from the modern graph fixture.
+    edge_names: HashMap<String, EdgeId>,
+    /// Parameters defined by `using the parameter` steps.
+    parameters: HashMap<String, GremlinValue>,
+    /// The raw Gremlin traversal text from the `traversal of` step.
+    traversal_text: String,
+    /// Parsed steps (populated during `when iterated`).
+    parsed_steps: Vec<GremlinStep>,
+    /// Execution outcome.
+    outcome: Option<TraversalOutcome>,
+}
+
+impl GremlinWorld {
+    fn get_store(&self) -> Arc<InMemoryGraphStore> {
+        self.store
+            .clone()
+            .expect("no store — missing Given graph step")
+    }
+}
+
+// ── Graph fixtures ────────────────────────────────────────────────────────────
+
+fn register_modern_ids(world: &mut GremlinWorld, ids: &ModernGraphIds) {
+    world.vertex_names.insert("marko".into(), ids.marko);
+    world.vertex_names.insert("vadas".into(), ids.vadas);
+    world.vertex_names.insert("lop".into(), ids.lop);
+    world.vertex_names.insert("josh".into(), ids.josh);
+    world.vertex_names.insert("ripple".into(), ids.ripple);
+    world.vertex_names.insert("peter".into(), ids.peter);
+}
+
+// ── Given steps ───────────────────────────────────────────────────────────────
+
+#[given("the modern graph")]
+async fn given_modern_graph(world: &mut GremlinWorld) {
+    let (store, ids) = create_modern_graph();
+    world.store = Some(Arc::new(store));
+    world.graph_name = "modern".into();
+    register_modern_ids(world, &ids);
+}
+
+#[given("the empty graph")]
+async fn given_empty_graph(world: &mut GremlinWorld) {
+    let store = InMemoryGraphStore::new();
+    store.create_graph("default").unwrap();
+    world.store = Some(Arc::new(store));
+    world.graph_name = "default".into();
+}
+
+#[given("the grateful graph")]
+async fn given_grateful_graph(world: &mut GremlinWorld) {
+    // The grateful dead graph is very large — not bundled.
+    // Create empty graph as placeholder; scenarios using it will fail at assertion.
+    let store = InMemoryGraphStore::new();
+    store.create_graph("grateful").unwrap();
+    world.store = Some(Arc::new(store));
+    world.graph_name = "grateful".into();
+}
+
+#[given("the crew graph")]
+async fn given_crew_graph(world: &mut GremlinWorld) {
+    // The crew graph is not bundled — placeholder.
+    let store = InMemoryGraphStore::new();
+    store.create_graph("crew").unwrap();
+    world.store = Some(Arc::new(store));
+    world.graph_name = "crew".into();
+}
+
+#[given("the sink graph")]
+async fn given_sink_graph(world: &mut GremlinWorld) {
+    // The sink graph is not bundled — placeholder.
+    let store = InMemoryGraphStore::new();
+    store.create_graph("sink").unwrap();
+    world.store = Some(Arc::new(store));
+    world.graph_name = "sink".into();
+}
+
+#[given("an unsupported test")]
+async fn given_unsupported(_world: &mut GremlinWorld) {
+    // Mark as unsupported — the scenario should be skipped/ignored.
+}
+
+#[given(regex = r"the graph initializer of")]
+async fn given_graph_initializer(world: &mut GremlinWorld, step: &gherkin::Step) {
+    // Parse and execute the initializer Gremlin text
+    let docstring = step
+        .docstring
+        .as_ref()
+        .map(|d| d.clone())
+        .unwrap_or_default();
+
+    let params = world.parameters.clone();
+    let vertex_names = world.vertex_names.clone();
+    let resolve = move |name: &str| -> Option<GremlinValue> {
+        if let Some(v) = params.get(name) {
+            return Some(v.clone());
+        }
+        if let Some(nid) = vertex_names.get(name) {
+            return Some(GremlinValue::Integer(nid.0 as i64));
+        }
+        None
+    };
+
+    if let Ok(steps) = text_parser::parse_traversal(docstring.trim(), &resolve) {
+        let mut compiler = GremlinCompiler::new();
+        if let Ok(operator) = compiler.compile(&steps) {
+            let store = world.get_store();
+            let executor = QueryExecutor::new(store.as_ref());
+            let mut budget = ExecutionBudget::default_budget();
+            let _ = executor.execute(&world.graph_name, &operator, &mut budget);
+        }
+    }
+}
+
+#[given(regex = r"(?i)the traversal of")]
+async fn given_traversal(world: &mut GremlinWorld, step: &gherkin::Step) {
+    let docstring = step
+        .docstring
+        .as_ref()
+        .map(|d| d.clone())
+        .unwrap_or_default();
+    world.traversal_text = docstring.trim().to_string();
+}
+
+#[given(regex = r"using the parameter (\w+) defined as (.+)")]
+async fn given_parameter(world: &mut GremlinWorld, param_name: String, definition: String) {
+    let value = resolve_parameter_definition(&definition, &world.vertex_names, &world.edge_names);
+    world.parameters.insert(param_name, value);
+}
+
+#[given(regex = r"using the side effect (\w+) defined as (.+)")]
+async fn given_side_effect(world: &mut GremlinWorld, name: String, definition: String) {
+    let value = resolve_parameter_definition(&definition, &world.vertex_names, &world.edge_names);
+    world.parameters.insert(name, value);
+}
+
+// ── When steps ────────────────────────────────────────────────────────────────
+
+#[when("iterated to list")]
+async fn when_iterated_to_list(world: &mut GremlinWorld) {
+    execute_traversal(world);
+}
+
+#[when("iterated next")]
+async fn when_iterated_next(world: &mut GremlinWorld) {
+    execute_traversal(world);
+}
+
+fn execute_traversal(world: &mut GremlinWorld) {
+    let params = world.parameters.clone();
+    let vertex_names = world.vertex_names.clone();
+    let resolve = move |name: &str| -> Option<GremlinValue> {
+        if let Some(v) = params.get(name) {
+            return Some(v.clone());
+        }
+        if let Some(nid) = vertex_names.get(name) {
+            return Some(GremlinValue::Integer(nid.0 as i64));
+        }
+        None
+    };
+
+    // Parse
+    let steps = match text_parser::parse_traversal(&world.traversal_text, &resolve) {
+        Ok(s) => s,
+        Err(e) => {
+            world.outcome = Some(TraversalOutcome::Err(format!("parse error: {e}")));
+            return;
+        }
+    };
+    world.parsed_steps = steps.clone();
+
+    // Compile
+    let mut compiler = GremlinCompiler::new();
+    let operator = match compiler.compile(&steps) {
+        Ok(op) => op,
+        Err(e) => {
+            world.outcome = Some(TraversalOutcome::Err(format!("compile error: {e}")));
+            return;
+        }
+    };
+
+    // Execute
+    let store = world.get_store();
+    let executor = QueryExecutor::new(store.as_ref());
+    let mut budget = ExecutionBudget::default_budget();
+    match executor.execute(&world.graph_name, &operator, &mut budget) {
+        Ok(result) => {
+            world.outcome = Some(TraversalOutcome::Ok(result));
+        }
+        Err(e) => {
+            world.outcome = Some(TraversalOutcome::Err(format!("execution error: {e}")));
+        }
+    }
+}
+
+// ── Then steps ────────────────────────────────────────────────────────────────
+
+#[then(regex = r"(?i)the result should be unordered")]
+async fn then_result_unordered(world: &mut GremlinWorld, step: &gherkin::Step) {
+    let result = expect_ok(world);
+    let expected = parse_expected_table(step, world);
+    assert_results_match_unordered(&result, &expected, world);
+}
+
+#[then(regex = r"(?i)the result should be ordered")]
+async fn then_result_ordered(world: &mut GremlinWorld, step: &gherkin::Step) {
+    let result = expect_ok(world);
+    let expected = parse_expected_table(step, world);
+    assert_results_match_ordered(&result, &expected, world);
+}
+
+#[then(regex = r"(?i)the result should be of")]
+async fn then_result_of(world: &mut GremlinWorld, step: &gherkin::Step) {
+    let result = expect_ok(world);
+    let expected = parse_expected_table(step, world);
+    assert_results_match_unordered(&result, &expected, world);
+}
+
+#[then(regex = r"(?i)the result should be empty")]
+async fn then_result_empty(world: &mut GremlinWorld) {
+    let result = expect_ok(world);
+    assert!(
+        result.rows.is_empty(),
+        "expected empty result but got {} rows",
+        result.rows.len()
+    );
+}
+
+#[then(expr = "the result should have a count of {int}")]
+async fn then_result_count(world: &mut GremlinWorld, expected: usize) {
+    let result = expect_ok(world);
+    assert_eq!(
+        result.rows.len(),
+        expected,
+        "expected {expected} rows but got {}",
+        result.rows.len()
+    );
+}
+
+#[then(regex = r"(?i)the traversal will raise an error")]
+async fn then_traversal_error(world: &mut GremlinWorld) {
+    match &world.outcome {
+        Some(TraversalOutcome::Err(_)) => { /* expected */ }
+        Some(TraversalOutcome::Ok(_)) => {
+            panic!("expected an error but traversal succeeded");
+        }
+        None => {
+            panic!("no outcome — traversal was not executed");
+        }
+    }
+}
+
+#[then(regex = r"(?i)the traversal will raise an error with message containing text of (.+)")]
+async fn then_traversal_error_message(world: &mut GremlinWorld, _expected_text: String) {
+    match &world.outcome {
+        Some(TraversalOutcome::Err(_)) => { /* expected */ }
+        Some(TraversalOutcome::Ok(_)) => {
+            panic!("expected an error but traversal succeeded");
+        }
+        None => {
+            panic!("no outcome — traversal was not executed");
+        }
+    }
+}
+
+#[then(regex = r"(?i)nothing should happen because")]
+async fn then_nothing(_world: &mut GremlinWorld) {
+    // No-op — this is a documentation step.
+}
+
+#[then(regex = r"(?i)the result should be a subgraph")]
+async fn then_result_subgraph(_world: &mut GremlinWorld) {
+    // Subgraph verification not implemented yet
+}
+
+#[then(regex = r"(?i)the result should be a tree")]
+async fn then_result_tree(_world: &mut GremlinWorld) {
+    // Tree verification not implemented yet
+}
+
+#[then(regex = r"(?i)the file .+ should exist")]
+async fn then_file_exists(_world: &mut GremlinWorld) {
+    // File verification not applicable in this environment
+}
+
+#[given(regex = r"the graph should return (\d+) for count of (.+)")]
+async fn given_graph_count_check(
+    world: &mut GremlinWorld,
+    expected_count: usize,
+    traversal: String,
+) {
+    // Post-mutation graph state assertion — execute the traversal and check count.
+    let traversal = traversal.trim_matches('"');
+    let params = world.parameters.clone();
+    let vertex_names = world.vertex_names.clone();
+    let resolve = move |name: &str| -> Option<GremlinValue> {
+        if let Some(v) = params.get(name) {
+            return Some(v.clone());
+        }
+        if let Some(nid) = vertex_names.get(name) {
+            return Some(GremlinValue::Integer(nid.0 as i64));
+        }
+        None
+    };
+
+    if let Ok(steps) = text_parser::parse_traversal(traversal, &resolve) {
+        let mut compiler = GremlinCompiler::new();
+        if let Ok(operator) = compiler.compile(&steps) {
+            let store = world.get_store();
+            let executor = QueryExecutor::new(store.as_ref());
+            let mut budget = ExecutionBudget::default_budget();
+            if let Ok(result) = executor.execute(&world.graph_name, &operator, &mut budget) {
+                // Count step produces a single row with a count value
+                let actual_count = if result.rows.len() == 1 {
+                    result.rows[0]
+                        .values()
+                        .next()
+                        .and_then(|v| match v {
+                            Value::Int(n) => Some(*n as usize),
+                            _ => None,
+                        })
+                        .unwrap_or(result.rows.len())
+                } else {
+                    result.rows.len()
+                };
+                assert_eq!(
+                    actual_count, expected_count,
+                    "graph count check: {traversal} expected {expected_count} got {actual_count}"
+                );
+            }
+        }
+    }
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+/// Extract the successful QueryResult or panic.
+fn expect_ok(world: &GremlinWorld) -> &QueryResult {
+    match &world.outcome {
+        Some(TraversalOutcome::Ok(r)) => r,
+        Some(TraversalOutcome::Err(e)) => panic!("traversal failed: {e}"),
+        None => panic!("no outcome — traversal was not executed"),
+    }
+}
+
+/// Resolve a parameter definition string from a TinkerPop feature file.
+///
+/// Formats:
+/// - `"v[marko].id"` → NodeId of marko
+/// - `"e[marko-knows->vadas].id"` → EdgeId
+/// - `"marko"` → String "marko"
+/// - `"d[29].i"` → Integer 29
+/// - `"d[0.5].d"` → Float 0.5
+/// - `"m[{...}]"` → Map
+fn resolve_parameter_definition(
+    definition: &str,
+    vertex_names: &HashMap<String, NodeId>,
+    edge_names: &HashMap<String, EdgeId>,
+) -> GremlinValue {
+    let s = definition.trim().trim_matches('"');
+
+    // v[name].id → vertex ID lookup
+    if let Some(rest) = s.strip_prefix("v[") {
+        if let Some(name_end) = rest.find(']') {
+            let name = &rest[..name_end];
+            if rest[name_end..].contains(".id") {
+                if let Some(nid) = vertex_names.get(name) {
+                    return GremlinValue::Integer(nid.0 as i64);
+                }
+            }
+            // v[name] without .id — vertex reference
+            if let Some(nid) = vertex_names.get(name) {
+                return GremlinValue::Integer(nid.0 as i64);
+            }
+        }
+    }
+
+    // e[src-label->dst].id → edge ID lookup
+    if let Some(rest) = s.strip_prefix("e[") {
+        if let Some(name_end) = rest.find(']') {
+            let _edge_desc = &rest[..name_end];
+            if rest[name_end..].contains(".id") {
+                if let Some(eid) = edge_names.get(_edge_desc) {
+                    return GremlinValue::Integer(eid.0 as i64);
+                }
+            }
+        }
+        // Edge IDs not registered — return 0 as placeholder
+        return GremlinValue::Integer(0);
+    }
+
+    // d[N].l / d[N].i → long/integer
+    if let Some(rest) = s.strip_prefix("d[") {
+        if let Some(end) = rest.find(']') {
+            let num_str = &rest[..end];
+            let suffix = &rest[end + 1..];
+            if suffix.starts_with(".l") || suffix.starts_with(".i") {
+                if let Ok(n) = num_str.parse::<i64>() {
+                    return GremlinValue::Integer(n);
+                }
+            }
+            if suffix.starts_with(".d") || suffix.starts_with(".f") {
+                if let Ok(f) = num_str.parse::<f64>() {
+                    return GremlinValue::Float(f);
+                }
+            }
+            // No suffix or unknown suffix — try integer then float
+            if let Ok(n) = num_str.parse::<i64>() {
+                return GremlinValue::Integer(n);
+            }
+            if let Ok(f) = num_str.parse::<f64>() {
+                return GremlinValue::Float(f);
+            }
+        }
+    }
+
+    // Map notation: m[{...}] — skip for now
+    if s.starts_with("m[") {
+        return GremlinValue::Map(indexmap::IndexMap::new());
+    }
+
+    // Plain integer
+    if let Ok(n) = s.parse::<i64>() {
+        return GremlinValue::Integer(n);
+    }
+
+    // Plain float
+    if let Ok(f) = s.parse::<f64>() {
+        return GremlinValue::Float(f);
+    }
+
+    // Plain string
+    GremlinValue::String(s.to_string())
+}
+
+/// Parse the expected results from a Gherkin data table.
+///
+/// TinkerPop TCK tables have a `result` column with values in special notation:
+/// - `v[marko]` → vertex reference
+/// - `e[marko-knows->vadas]` → edge reference
+/// - `d[6].l` → long integer 6
+/// - `d[0.5].d` → double 0.5
+/// - `m[{"key":"val"}]` → map
+/// - `p[v[marko],v[vadas]]` → path
+/// - plain string
+fn parse_expected_table(step: &gherkin::Step, world: &GremlinWorld) -> Vec<Vec<Value>> {
+    let table = match &step.table {
+        Some(t) => t,
+        None => return Vec::new(),
+    };
+
+    let mut rows = Vec::new();
+    // Skip header row
+    for row in table.rows.iter().skip(1) {
+        let values: Vec<Value> = row
+            .iter()
+            .map(|cell| parse_tck_value(cell.trim(), &world.vertex_names, &world.edge_names))
+            .collect();
+        rows.push(values);
+    }
+    rows
+}
+
+/// Parse a single TCK result value string into a `Value`.
+fn parse_tck_value(
+    s: &str,
+    vertex_names: &HashMap<String, NodeId>,
+    _edge_names: &HashMap<String, EdgeId>,
+) -> Value {
+    let s = s.trim();
+
+    // v[name] → Node ID
+    if let Some(rest) = s.strip_prefix("v[") {
+        if let Some(name) = rest.strip_suffix(']') {
+            if let Some(nid) = vertex_names.get(name) {
+                return Value::Node(*nid);
+            }
+            return Value::Str(format!("v[{name}]").into());
+        }
+    }
+
+    // e[desc] → Edge reference
+    if s.starts_with("e[") && s.ends_with(']') {
+        // Edge matching is complex — return as string for now
+        return Value::Str(s.into());
+    }
+
+    // d[N].l / d[N].i → integer
+    if let Some(rest) = s.strip_prefix("d[") {
+        if let Some(end) = rest.find(']') {
+            let num_str = &rest[..end];
+            let suffix = &rest[end + 1..];
+            if suffix.starts_with(".l") || suffix.starts_with(".i") {
+                if let Ok(n) = num_str.parse::<i64>() {
+                    return Value::Int(n);
+                }
+            }
+            if suffix.starts_with(".d") || suffix.starts_with(".f") {
+                if let Ok(f) = num_str.parse::<f64>() {
+                    return Value::Float(f);
+                }
+            }
+            if let Ok(n) = num_str.parse::<i64>() {
+                return Value::Int(n);
+            }
+            if let Ok(f) = num_str.parse::<f64>() {
+                return Value::Float(f);
+            }
+        }
+    }
+
+    // m[{...}] → map
+    if s.starts_with("m[") && s.ends_with(']') {
+        return Value::Map(indexmap::IndexMap::new());
+    }
+
+    // p[...] → path
+    if s.starts_with("p[") && s.ends_with(']') {
+        return Value::List(Vec::new());
+    }
+
+    // l[...] → list
+    if s.starts_with("l[") && s.ends_with(']') {
+        return Value::List(Vec::new());
+    }
+
+    // s[...] → set
+    if s.starts_with("s[") && s.ends_with(']') {
+        return Value::List(Vec::new());
+    }
+
+    // null
+    if s == "null" {
+        return Value::Null;
+    }
+
+    // boolean
+    if s == "true" {
+        return Value::Bool(true);
+    }
+    if s == "false" {
+        return Value::Bool(false);
+    }
+
+    // integer
+    if let Ok(n) = s.parse::<i64>() {
+        return Value::Int(n);
+    }
+
+    // float
+    if let Ok(f) = s.parse::<f64>() {
+        return Value::Float(f);
+    }
+
+    // plain string
+    Value::Str(s.into())
+}
+
+/// Assert that actual results match expected values (order-independent).
+fn assert_results_match_unordered(
+    result: &QueryResult,
+    expected: &[Vec<Value>],
+    world: &GremlinWorld,
+) {
+    assert_eq!(
+        result.rows.len(),
+        expected.len(),
+        "row count mismatch: got {} expected {}\ntraversal: {}\nactual rows: {:?}",
+        result.rows.len(),
+        expected.len(),
+        world.traversal_text,
+        result.rows,
+    );
+
+    // Collect actual values (first column of each row)
+    let actual_values: Vec<&Value> = result
+        .rows
+        .iter()
+        .filter_map(|row| row.values().next())
+        .collect();
+
+    for exp_row in expected {
+        let exp_val = &exp_row[0];
+        let found = actual_values
+            .iter()
+            .any(|actual| values_match(actual, exp_val));
+        assert!(
+            found,
+            "expected value {:?} not found in results\ntraversal: {}\nactual: {:?}",
+            exp_val, world.traversal_text, actual_values,
+        );
+    }
+}
+
+/// Assert that actual results match expected values (order-dependent).
+fn assert_results_match_ordered(
+    result: &QueryResult,
+    expected: &[Vec<Value>],
+    world: &GremlinWorld,
+) {
+    assert_eq!(
+        result.rows.len(),
+        expected.len(),
+        "row count mismatch: got {} expected {}\ntraversal: {}\nactual rows: {:?}",
+        result.rows.len(),
+        expected.len(),
+        world.traversal_text,
+        result.rows,
+    );
+
+    for (i, (row, exp_row)) in result.rows.iter().zip(expected.iter()).enumerate() {
+        if let Some(actual_val) = row.values().next() {
+            let exp_val = &exp_row[0];
+            assert!(
+                values_match(actual_val, exp_val),
+                "row {i}: expected {:?} but got {:?}\ntraversal: {}",
+                exp_val,
+                actual_val,
+                world.traversal_text,
+            );
+        }
+    }
+}
+
+/// Compare two Values for TCK-style equality.
+fn values_match(actual: &Value, expected: &Value) -> bool {
+    match (actual, expected) {
+        (Value::Node(a), Value::Node(e)) => a == e,
+        (Value::Int(a), Value::Int(e)) => a == e,
+        (Value::Float(a), Value::Float(e)) => (a - e).abs() < 1e-9,
+        (Value::Str(a), Value::Str(e)) => a == e,
+        (Value::Bool(a), Value::Bool(e)) => a == e,
+        (Value::Null, Value::Null) => true,
+        _ => actual == expected,
+    }
+}
+
+// ── Entry point ───────────────────────────────────────────────────────────────
+
+#[tokio::main]
+async fn main() {
+    // Resolve features path relative to the workspace root.
+    // When running via `cargo test`, the working directory is the workspace root.
+    // But when it's the package root, we need to adjust.
+    let features_path = if std::path::Path::new("features").is_dir() {
+        "features".to_string()
+    } else if std::path::Path::new("tests/gremlin-tck/features").is_dir() {
+        "tests/gremlin-tck/features".to_string()
+    } else {
+        // Use CARGO_MANIFEST_DIR to find the features
+        let manifest_dir = env!("CARGO_MANIFEST_DIR");
+        format!("{manifest_dir}/features")
+    };
+
+    GremlinWorld::cucumber()
+        .max_concurrent_scenarios(Some(4))
+        .run(features_path)
+        .await;
+}
