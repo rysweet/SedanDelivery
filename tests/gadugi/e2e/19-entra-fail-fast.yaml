@@ -1,0 +1,56 @@
+scenario:
+  name: "Entra ID Fail-Fast — missing env vars cause startup error"
+  description: >
+    Verifies that the SPA throws a descriptive error at startup when
+    required VITE_ENTRA_* environment variables are missing, instead of
+    silently falling back to hardcoded production Entra IDs.
+  type: web
+  tags: [security, auth, config, e2e]
+  timeout: 30s
+
+  prerequisites:
+    - "sedan-web built without .env.development (no VITE_ENTRA_* vars set)"
+
+  steps:
+    - action: set_env
+      unset:
+        - VITE_ENTRA_CLIENT_ID
+        - VITE_ENTRA_TENANT_ID
+        - VITE_ENTRA_API_SCOPE
+      description: "Ensure all Entra env vars are unset"
+
+    - action: navigate
+      url: "http://localhost:5173"
+      description: "Open the SPA without Entra env vars"
+
+    - action: wait_for_element
+      selector: ".error-boundary, [role='alert']"
+      timeout: 10s
+      description: "App should render an error boundary or alert"
+
+    - action: verify_text
+      pattern: "VITE_ENTRA_CLIENT_ID is required"
+      description: "Error message should name the missing env var"
+
+    - action: verify_no_request
+      url_pattern: "login.microsoftonline.com"
+      description: "No auth request should be made with hardcoded IDs"
+
+    - action: set_env
+      values:
+        VITE_ENTRA_CLIENT_ID: "test-client-id"
+        VITE_ENTRA_TENANT_ID: "test-tenant-id"
+        VITE_ENTRA_API_SCOPE: "api://test-client-id/Graph.ReadWrite"
+      description: "Set all required env vars"
+
+    - action: reload
+      description: "Reload the SPA with env vars set"
+
+    - action: wait_for_element
+      selector: "[aria-label='Select graph']"
+      timeout: 10s
+      description: "App should load normally when env vars are present"
+
+    - action: screenshot
+      save_as: "19-entra-fail-fast.png"
+      description: "Capture app state after successful env var configuration"
