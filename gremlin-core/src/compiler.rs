@@ -1263,4 +1263,858 @@ mod tests {
             assert!(matches!(**child, Operator::Skip { .. }));
         }
     }
+
+    // ── New tests for expanded compiler coverage ─────────────────────────────
+
+    #[test]
+    fn compile_e_scan() {
+        let mut compiler = GremlinCompiler::new();
+        let op = compiler.compile(&[GremlinStep::E(None)]).unwrap();
+        // E(None) → Expand (all edges) over NodeScan
+        assert!(matches!(op, Operator::Expand { .. }));
+        if let Operator::Expand { child, rel_types, .. } = &op {
+            assert!(rel_types.is_empty());
+            assert!(matches!(**child, Operator::NodeScan { .. }));
+        }
+    }
+
+    #[test]
+    fn compile_e_with_single_id() {
+        let mut compiler = GremlinCompiler::new();
+        let op = compiler
+            .compile(&[GremlinStep::E(Some(vec![GremlinValue::Integer(42)]))])
+            .unwrap();
+        assert!(matches!(op, Operator::Filter { .. }));
+        if let Operator::Filter { child, .. } = &op {
+            assert!(matches!(**child, Operator::Expand { .. }));
+        }
+    }
+
+    #[test]
+    fn compile_e_with_multiple_ids() {
+        let mut compiler = GremlinCompiler::new();
+        let op = compiler
+            .compile(&[GremlinStep::E(Some(vec![
+                GremlinValue::Integer(1),
+                GremlinValue::Integer(2),
+            ]))])
+            .unwrap();
+        assert!(matches!(op, Operator::Filter { .. }));
+    }
+
+    #[test]
+    fn compile_has_existence() {
+        let mut compiler = GremlinCompiler::new();
+        let steps = vec![GremlinStep::V(None), GremlinStep::Has("age".into(), None)];
+        let op = compiler.compile(&steps).unwrap();
+        assert!(matches!(op, Operator::Filter { .. }));
+        if let Operator::Filter { predicate, .. } = &op {
+            assert!(matches!(predicate, Expr::IsNotNull(_)));
+        }
+    }
+
+    #[test]
+    fn compile_has_id_single() {
+        let mut compiler = GremlinCompiler::new();
+        let steps = vec![
+            GremlinStep::V(None),
+            GremlinStep::HasId(vec![GremlinValue::Integer(7)]),
+        ];
+        let op = compiler.compile(&steps).unwrap();
+        assert!(matches!(op, Operator::Filter { .. }));
+        if let Operator::Filter { predicate, .. } = &op {
+            assert!(matches!(
+                predicate,
+                Expr::BinaryOp {
+                    op: BinaryOp::Eq,
+                    ..
+                }
+            ));
+        }
+    }
+
+    #[test]
+    fn compile_has_id_multiple() {
+        let mut compiler = GremlinCompiler::new();
+        let steps = vec![
+            GremlinStep::V(None),
+            GremlinStep::HasId(vec![
+                GremlinValue::Integer(1),
+                GremlinValue::Integer(2),
+                GremlinValue::Integer(3),
+            ]),
+        ];
+        let op = compiler.compile(&steps).unwrap();
+        assert!(matches!(op, Operator::Filter { .. }));
+        if let Operator::Filter { predicate, .. } = &op {
+            assert!(matches!(
+                predicate,
+                Expr::BinaryOp {
+                    op: BinaryOp::In,
+                    ..
+                }
+            ));
+        }
+    }
+
+    #[test]
+    fn compile_has_label_multiple() {
+        let mut compiler = GremlinCompiler::new();
+        let steps = vec![
+            GremlinStep::V(None),
+            GremlinStep::HasLabel(vec!["person".into(), "software".into()]),
+        ];
+        let op = compiler.compile(&steps).unwrap();
+        assert!(matches!(op, Operator::Filter { .. }));
+        if let Operator::Filter { predicate, .. } = &op {
+            // Multiple labels → OR of HasLabel checks
+            assert!(matches!(
+                predicate,
+                Expr::BinaryOp {
+                    op: BinaryOp::Or,
+                    ..
+                }
+            ));
+        }
+    }
+
+    #[test]
+    fn compile_both_expand() {
+        let mut compiler = GremlinCompiler::new();
+        let steps = vec![
+            GremlinStep::V(None),
+            GremlinStep::Both(vec!["knows".into()]),
+        ];
+        let op = compiler.compile(&steps).unwrap();
+        assert!(matches!(
+            op,
+            Operator::Expand {
+                direction: Direction::Undirected,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn compile_out_e() {
+        let mut compiler = GremlinCompiler::new();
+        let steps = vec![
+            GremlinStep::V(None),
+            GremlinStep::OutE(vec!["created".into()]),
+        ];
+        let op = compiler.compile(&steps).unwrap();
+        if let Operator::Expand {
+            direction,
+            rel_alias,
+            ..
+        } = &op
+        {
+            assert_eq!(*direction, Direction::Outgoing);
+            assert!(rel_alias.is_some(), "outE should set rel_alias");
+        } else {
+            panic!("expected Expand");
+        }
+    }
+
+    #[test]
+    fn compile_in_e() {
+        let mut compiler = GremlinCompiler::new();
+        let steps = vec![
+            GremlinStep::V(None),
+            GremlinStep::InE(vec!["knows".into()]),
+        ];
+        let op = compiler.compile(&steps).unwrap();
+        if let Operator::Expand {
+            direction,
+            rel_alias,
+            ..
+        } = &op
+        {
+            assert_eq!(*direction, Direction::Incoming);
+            assert!(rel_alias.is_some());
+        } else {
+            panic!("expected Expand");
+        }
+    }
+
+    #[test]
+    fn compile_both_e() {
+        let mut compiler = GremlinCompiler::new();
+        let steps = vec![GremlinStep::V(None), GremlinStep::BothE(vec![])];
+        let op = compiler.compile(&steps).unwrap();
+        if let Operator::Expand {
+            direction,
+            rel_alias,
+            ..
+        } = &op
+        {
+            assert_eq!(*direction, Direction::Undirected);
+            assert!(rel_alias.is_some());
+        } else {
+            panic!("expected Expand");
+        }
+    }
+
+    #[test]
+    fn compile_in_v() {
+        let mut compiler = GremlinCompiler::new();
+        let steps = vec![
+            GremlinStep::V(None),
+            GremlinStep::OutE(vec![]),
+            GremlinStep::InV,
+        ];
+        let op = compiler.compile(&steps).unwrap();
+        assert!(matches!(op, Operator::Project { .. }));
+    }
+
+    #[test]
+    fn compile_out_v() {
+        let mut compiler = GremlinCompiler::new();
+        let steps = vec![
+            GremlinStep::V(None),
+            GremlinStep::OutE(vec![]),
+            GremlinStep::OutV,
+        ];
+        let op = compiler.compile(&steps).unwrap();
+        assert!(matches!(op, Operator::Project { .. }));
+    }
+
+    #[test]
+    fn compile_values_multiple_keys() {
+        let mut compiler = GremlinCompiler::new();
+        let steps = vec![
+            GremlinStep::V(None),
+            GremlinStep::Values(vec!["name".into(), "age".into(), "city".into()]),
+        ];
+        let op = compiler.compile(&steps).unwrap();
+        if let Operator::Project { items, .. } = &op {
+            assert_eq!(items.len(), 3);
+        } else {
+            panic!("expected Project");
+        }
+    }
+
+    #[test]
+    fn compile_value_map_with_keys() {
+        let mut compiler = GremlinCompiler::new();
+        let steps = vec![
+            GremlinStep::V(None),
+            GremlinStep::ValueMap(vec!["name".into(), "age".into()]),
+        ];
+        let op = compiler.compile(&steps).unwrap();
+        if let Operator::Project { items, .. } = &op {
+            assert_eq!(items.len(), 2);
+            // Each item should be a Property projection
+            for (expr, _alias) in items {
+                assert!(matches!(expr, Expr::Property(_, _)));
+            }
+        } else {
+            panic!("expected Project");
+        }
+    }
+
+    #[test]
+    fn compile_value_map_empty() {
+        let mut compiler = GremlinCompiler::new();
+        let steps = vec![GremlinStep::V(None), GremlinStep::ValueMap(vec![])];
+        let op = compiler.compile(&steps).unwrap();
+        if let Operator::Project { items, .. } = &op {
+            assert_eq!(items.len(), 1);
+            assert!(matches!(&items[0].0, Expr::Variable(_)));
+        } else {
+            panic!("expected Project");
+        }
+    }
+
+    #[test]
+    fn compile_properties_with_keys() {
+        let mut compiler = GremlinCompiler::new();
+        let steps = vec![
+            GremlinStep::V(None),
+            GremlinStep::Properties(vec!["name".into(), "age".into()]),
+        ];
+        let op = compiler.compile(&steps).unwrap();
+        if let Operator::Project { items, .. } = &op {
+            assert_eq!(items.len(), 2);
+        } else {
+            panic!("expected Project");
+        }
+    }
+
+    #[test]
+    fn compile_id_step() {
+        let mut compiler = GremlinCompiler::new();
+        let steps = vec![GremlinStep::V(None), GremlinStep::Id];
+        let op = compiler.compile(&steps).unwrap();
+        if let Operator::Project { items, .. } = &op {
+            assert_eq!(items.len(), 1);
+            assert!(matches!(
+                &items[0].0,
+                Expr::FunctionCall { name, .. } if name.as_str() == "id"
+            ));
+        } else {
+            panic!("expected Project");
+        }
+    }
+
+    #[test]
+    fn compile_label_step() {
+        let mut compiler = GremlinCompiler::new();
+        let steps = vec![GremlinStep::V(None), GremlinStep::Label];
+        let op = compiler.compile(&steps).unwrap();
+        if let Operator::Project { items, .. } = &op {
+            assert_eq!(items.len(), 1);
+            assert!(matches!(
+                &items[0].0,
+                Expr::FunctionCall { name, .. } if name.as_str() == "labels"
+            ));
+        } else {
+            panic!("expected Project");
+        }
+    }
+
+    #[test]
+    fn compile_sum() {
+        let mut compiler = GremlinCompiler::new();
+        let steps = vec![
+            GremlinStep::V(None),
+            GremlinStep::Values(vec!["age".into()]),
+            GremlinStep::Sum,
+        ];
+        let op = compiler.compile(&steps).unwrap();
+        if let Operator::Aggregate { aggregations, .. } = &op {
+            assert_eq!(aggregations.len(), 1);
+            assert!(matches!(aggregations[0].0, AggFunction::Sum));
+        } else {
+            panic!("expected Aggregate");
+        }
+    }
+
+    #[test]
+    fn compile_min() {
+        let mut compiler = GremlinCompiler::new();
+        let steps = vec![
+            GremlinStep::V(None),
+            GremlinStep::Values(vec!["age".into()]),
+            GremlinStep::Min,
+        ];
+        let op = compiler.compile(&steps).unwrap();
+        if let Operator::Aggregate { aggregations, .. } = &op {
+            assert!(matches!(aggregations[0].0, AggFunction::Min));
+        } else {
+            panic!("expected Aggregate");
+        }
+    }
+
+    #[test]
+    fn compile_max() {
+        let mut compiler = GremlinCompiler::new();
+        let steps = vec![
+            GremlinStep::V(None),
+            GremlinStep::Values(vec!["age".into()]),
+            GremlinStep::Max,
+        ];
+        let op = compiler.compile(&steps).unwrap();
+        if let Operator::Aggregate { aggregations, .. } = &op {
+            assert!(matches!(aggregations[0].0, AggFunction::Max));
+        } else {
+            panic!("expected Aggregate");
+        }
+    }
+
+    #[test]
+    fn compile_mean() {
+        let mut compiler = GremlinCompiler::new();
+        let steps = vec![
+            GremlinStep::V(None),
+            GremlinStep::Values(vec!["age".into()]),
+            GremlinStep::Mean,
+        ];
+        let op = compiler.compile(&steps).unwrap();
+        if let Operator::Aggregate { aggregations, .. } = &op {
+            assert!(matches!(aggregations[0].0, AggFunction::Avg));
+        } else {
+            panic!("expected Aggregate");
+        }
+    }
+
+    #[test]
+    fn compile_group() {
+        let mut compiler = GremlinCompiler::new();
+        let steps = vec![GremlinStep::V(None), GremlinStep::Group];
+        let op = compiler.compile(&steps).unwrap();
+        if let Operator::Aggregate {
+            keys, aggregations, ..
+        } = &op
+        {
+            assert!(!keys.is_empty(), "group should set group keys");
+            assert!(matches!(aggregations[0].0, AggFunction::Collect));
+        } else {
+            panic!("expected Aggregate");
+        }
+    }
+
+    #[test]
+    fn compile_group_count() {
+        let mut compiler = GremlinCompiler::new();
+        let steps = vec![GremlinStep::V(None), GremlinStep::GroupCount];
+        let op = compiler.compile(&steps).unwrap();
+        if let Operator::Aggregate {
+            keys, aggregations, ..
+        } = &op
+        {
+            assert!(!keys.is_empty(), "groupCount should set group keys");
+            assert!(matches!(aggregations[0].0, AggFunction::Count));
+        } else {
+            panic!("expected Aggregate");
+        }
+    }
+
+    #[test]
+    fn compile_fold() {
+        let mut compiler = GremlinCompiler::new();
+        let steps = vec![GremlinStep::V(None), GremlinStep::Fold];
+        let op = compiler.compile(&steps).unwrap();
+        if let Operator::Aggregate {
+            keys, aggregations, ..
+        } = &op
+        {
+            assert!(keys.is_empty(), "fold has no group keys");
+            assert!(matches!(aggregations[0].0, AggFunction::Collect));
+        } else {
+            panic!("expected Aggregate");
+        }
+    }
+
+    #[test]
+    fn compile_unfold() {
+        let mut compiler = GremlinCompiler::new();
+        let steps = vec![GremlinStep::V(None), GremlinStep::Fold, GremlinStep::Unfold];
+        let op = compiler.compile(&steps).unwrap();
+        assert!(matches!(op, Operator::Unwind { .. }));
+    }
+
+    #[test]
+    fn compile_as_select() {
+        let mut compiler = GremlinCompiler::new();
+        let steps = vec![
+            GremlinStep::V(None),
+            GremlinStep::As("a".into()),
+            GremlinStep::Out(vec!["knows".into()]),
+            GremlinStep::As("b".into()),
+            GremlinStep::Select(vec!["a".into(), "b".into()]),
+        ];
+        let op = compiler.compile(&steps).unwrap();
+        if let Operator::Project { items, .. } = &op {
+            assert_eq!(items.len(), 2);
+            // Verify aliases are correctly projected
+            assert_eq!(
+                items[0].1.as_ref().unwrap(),
+                &Identifier::new("a".to_string())
+            );
+            assert_eq!(
+                items[1].1.as_ref().unwrap(),
+                &Identifier::new("b".to_string())
+            );
+        } else {
+            panic!("expected Project");
+        }
+    }
+
+    #[test]
+    fn compile_where_filter() {
+        let mut compiler = GremlinCompiler::new();
+        let steps = vec![
+            GremlinStep::V(None),
+            GremlinStep::Where(Box::new(GremlinStep::Has(
+                "age".into(),
+                Some(GremlinValue::Integer(30)),
+            ))),
+        ];
+        let op = compiler.compile(&steps).unwrap();
+        assert!(matches!(op, Operator::Filter { .. }));
+    }
+
+    #[test]
+    fn compile_not_filter() {
+        let mut compiler = GremlinCompiler::new();
+        let steps = vec![
+            GremlinStep::V(None),
+            GremlinStep::Not(Box::new(GremlinStep::Has(
+                "deleted".into(),
+                Some(GremlinValue::Bool(true)),
+            ))),
+        ];
+        let op = compiler.compile(&steps).unwrap();
+        if let Operator::Filter { predicate, .. } = &op {
+            assert!(matches!(
+                predicate,
+                Expr::UnaryOp {
+                    op: gql_core::ast::UnaryOp::Not,
+                    ..
+                }
+            ));
+        } else {
+            panic!("expected Filter");
+        }
+    }
+
+    #[test]
+    fn compile_and_filter() {
+        let mut compiler = GremlinCompiler::new();
+        let steps = vec![
+            GremlinStep::V(None),
+            GremlinStep::And(vec![
+                GremlinStep::Has("name".into(), Some(GremlinValue::String("marko".into()))),
+                GremlinStep::Has("age".into(), Some(GremlinValue::Integer(29))),
+            ]),
+        ];
+        let op = compiler.compile(&steps).unwrap();
+        if let Operator::Filter { predicate, .. } = &op {
+            assert!(matches!(
+                predicate,
+                Expr::BinaryOp {
+                    op: BinaryOp::And,
+                    ..
+                }
+            ));
+        } else {
+            panic!("expected Filter");
+        }
+    }
+
+    #[test]
+    fn compile_or_filter() {
+        let mut compiler = GremlinCompiler::new();
+        let steps = vec![
+            GremlinStep::V(None),
+            GremlinStep::Or(vec![
+                GremlinStep::HasLabel(vec!["person".into()]),
+                GremlinStep::HasLabel(vec!["software".into()]),
+            ]),
+        ];
+        let op = compiler.compile(&steps).unwrap();
+        if let Operator::Filter { predicate, .. } = &op {
+            assert!(matches!(
+                predicate,
+                Expr::BinaryOp {
+                    op: BinaryOp::Or,
+                    ..
+                }
+            ));
+        } else {
+            panic!("expected Filter");
+        }
+    }
+
+    #[test]
+    fn compile_is_predicate() {
+        let mut compiler = GremlinCompiler::new();
+        let steps = vec![
+            GremlinStep::V(None),
+            GremlinStep::Values(vec!["age".into()]),
+            GremlinStep::Is(Predicate::Gt(GremlinValue::Integer(25))),
+        ];
+        let op = compiler.compile(&steps).unwrap();
+        if let Operator::Filter { predicate, .. } = &op {
+            assert!(matches!(
+                predicate,
+                Expr::BinaryOp {
+                    op: BinaryOp::Gt,
+                    ..
+                }
+            ));
+        } else {
+            panic!("expected Filter");
+        }
+    }
+
+    #[test]
+    fn compile_constant() {
+        let mut compiler = GremlinCompiler::new();
+        let steps = vec![GremlinStep::Constant(GremlinValue::Integer(42))];
+        let op = compiler.compile(&steps).unwrap();
+        if let Operator::Project { items, .. } = &op {
+            assert_eq!(items.len(), 1);
+            assert!(matches!(&items[0].0, Expr::Integer(42)));
+        } else {
+            panic!("expected Project");
+        }
+    }
+
+    #[test]
+    fn compile_inject() {
+        let mut compiler = GremlinCompiler::new();
+        let steps = vec![GremlinStep::Inject(vec![
+            GremlinValue::Integer(1),
+            GremlinValue::Integer(2),
+            GremlinValue::Integer(3),
+        ])];
+        let op = compiler.compile(&steps).unwrap();
+        assert!(matches!(op, Operator::Unwind { .. }));
+        if let Operator::Unwind { list_expr, .. } = &op {
+            if let Expr::List(items) = list_expr {
+                assert_eq!(items.len(), 3);
+            } else {
+                panic!("expected List expr");
+            }
+        }
+    }
+
+    #[test]
+    fn compile_union() {
+        let mut compiler = GremlinCompiler::new();
+        let steps = vec![
+            GremlinStep::V(None),
+            GremlinStep::Union(vec![
+                vec![GremlinStep::V(None), GremlinStep::Out(vec!["knows".into()])],
+                vec![GremlinStep::V(None), GremlinStep::Out(vec!["created".into()])],
+            ]),
+        ];
+        let op = compiler.compile(&steps).unwrap();
+        assert!(matches!(op, Operator::Union { all: true, .. }));
+    }
+
+    #[test]
+    fn compile_repeat_times() {
+        let mut compiler = GremlinCompiler::new();
+        let steps = vec![
+            GremlinStep::V(None),
+            GremlinStep::Repeat(vec![GremlinStep::V(None), GremlinStep::Out(vec!["knows".into()])]),
+            GremlinStep::Times(3),
+        ];
+        let op = compiler.compile(&steps).unwrap();
+        if let Operator::Repeat { times, body, .. } = &op {
+            assert_eq!(*times, Some(3));
+            assert!(matches!(**body, Operator::Expand { .. }));
+        } else {
+            panic!("expected Repeat");
+        }
+    }
+
+    #[test]
+    fn compile_choose() {
+        let mut compiler = GremlinCompiler::new();
+        let steps = vec![
+            GremlinStep::V(None),
+            GremlinStep::Choose(
+                vec![GremlinStep::V(None), GremlinStep::Has(
+                    "age".into(),
+                    Some(GremlinValue::Integer(30)),
+                )],
+                vec![GremlinStep::V(None), GremlinStep::Values(vec!["name".into()])],
+                Some(vec![GremlinStep::Constant(GremlinValue::String(
+                    "unknown".into(),
+                ))]),
+            ),
+        ];
+        let op = compiler.compile(&steps).unwrap();
+        if let Operator::Choose {
+            if_true, if_false, ..
+        } = &op
+        {
+            assert!(matches!(**if_true, Operator::Project { .. }));
+            assert!(if_false.is_some());
+        } else {
+            panic!("expected Choose");
+        }
+    }
+
+    #[test]
+    fn compile_coalesce() {
+        let mut compiler = GremlinCompiler::new();
+        let steps = vec![
+            GremlinStep::V(None),
+            GremlinStep::Coalesce(vec![
+                vec![GremlinStep::V(None), GremlinStep::Values(vec!["nickname".into()])],
+                vec![GremlinStep::V(None), GremlinStep::Values(vec!["name".into()])],
+            ]),
+        ];
+        let op = compiler.compile(&steps).unwrap();
+        if let Operator::Coalesce { alternatives, .. } = &op {
+            assert_eq!(alternatives.len(), 2);
+        } else {
+            panic!("expected Coalesce");
+        }
+    }
+
+    #[test]
+    fn compile_order_default_sort() {
+        // Order without By → default ascending sort on current alias
+        let mut compiler = GremlinCompiler::new();
+        let steps = vec![GremlinStep::V(None), GremlinStep::Order];
+        let op = compiler.compile(&steps).unwrap();
+        if let Operator::Sort { items, .. } = &op {
+            assert_eq!(items.len(), 1);
+            assert!(items[0].1, "default sort should be ascending");
+        } else {
+            panic!("expected Sort");
+        }
+    }
+
+    #[test]
+    fn compile_v_multiple_ids() {
+        let mut compiler = GremlinCompiler::new();
+        let op = compiler
+            .compile(&[GremlinStep::V(Some(vec![
+                GremlinValue::Integer(1),
+                GremlinValue::Integer(2),
+                GremlinValue::Integer(3),
+            ]))])
+            .unwrap();
+        if let Operator::Filter { predicate, .. } = &op {
+            assert!(matches!(
+                predicate,
+                Expr::BinaryOp {
+                    op: BinaryOp::In,
+                    ..
+                }
+            ));
+        } else {
+            panic!("expected Filter for multi-id V()");
+        }
+    }
+
+    #[test]
+    fn compile_path_unsupported() {
+        let mut compiler = GremlinCompiler::new();
+        let steps = vec![GremlinStep::V(None), GremlinStep::Path];
+        let err = compiler.compile(&steps).unwrap_err();
+        assert!(matches!(err, CompileError::UnsupportedStep(_)));
+    }
+
+    #[test]
+    fn compile_match_unsupported() {
+        let mut compiler = GremlinCompiler::new();
+        let steps = vec![
+            GremlinStep::V(None),
+            GremlinStep::Match(vec![vec![GremlinStep::Out(vec!["knows".into()])]]),
+        ];
+        let err = compiler.compile(&steps).unwrap_err();
+        assert!(matches!(err, CompileError::UnsupportedStep(_)));
+    }
+
+    #[test]
+    fn compile_aggregate_sideeffect_unsupported() {
+        let mut compiler = GremlinCompiler::new();
+        let steps = vec![
+            GremlinStep::V(None),
+            GremlinStep::Aggregate("x".into()),
+        ];
+        let err = compiler.compile(&steps).unwrap_err();
+        assert!(matches!(err, CompileError::UnsupportedStep(_)));
+    }
+
+    #[test]
+    fn compile_add_e() {
+        let mut compiler = GremlinCompiler::new();
+        let steps = vec![
+            GremlinStep::AddV("person".into()),
+            GremlinStep::AddE("knows".into()),
+        ];
+        let op = compiler.compile(&steps).unwrap();
+        assert!(matches!(op, Operator::Create { .. }));
+    }
+
+    #[test]
+    fn compile_property_set() {
+        let mut compiler = GremlinCompiler::new();
+        let steps = vec![
+            GremlinStep::V(None),
+            GremlinStep::Property("status".into(), GremlinValue::String("active".into())),
+        ];
+        let op = compiler.compile(&steps).unwrap();
+        if let Operator::Set { items, .. } = &op {
+            assert_eq!(items.len(), 1);
+            if let SetItem::Property { key, .. } = &items[0] {
+                assert_eq!(key, "status");
+            } else {
+                panic!("expected SetItem::Property");
+            }
+        } else {
+            panic!("expected Set");
+        }
+    }
+
+    #[test]
+    fn compile_limit() {
+        let mut compiler = GremlinCompiler::new();
+        let steps = vec![GremlinStep::V(None), GremlinStep::Limit(5)];
+        let op = compiler.compile(&steps).unwrap();
+        if let Operator::Limit { count, .. } = &op {
+            assert!(matches!(count, Expr::Integer(5)));
+        } else {
+            panic!("expected Limit");
+        }
+    }
+
+    #[test]
+    fn compile_range_zero_start() {
+        // range(0, 10) → Limit only (no Skip needed)
+        let mut compiler = GremlinCompiler::new();
+        let steps = vec![GremlinStep::V(None), GremlinStep::Range(0, 10)];
+        let op = compiler.compile(&steps).unwrap();
+        if let Operator::Limit { count, child } = &op {
+            assert!(matches!(count, Expr::Integer(10)));
+            // No skip wrapping since low=0
+            assert!(matches!(**child, Operator::NodeScan { .. }));
+        } else {
+            panic!("expected Limit");
+        }
+    }
+
+    #[test]
+    fn compile_side_effect() {
+        let mut compiler = GremlinCompiler::new();
+        let steps = vec![
+            GremlinStep::V(None),
+            GremlinStep::SideEffect(vec![
+                GremlinStep::V(None),
+                GremlinStep::Property(
+                    "visited".into(),
+                    GremlinValue::Bool(true),
+                ),
+            ]),
+        ];
+        let op = compiler.compile(&steps).unwrap();
+        assert!(matches!(op, Operator::GremlinSideEffect { .. }));
+    }
+
+    #[test]
+    fn compile_cap() {
+        let mut compiler = GremlinCompiler::new();
+        let steps = vec![
+            GremlinStep::V(None),
+            GremlinStep::Cap(vec!["x".into(), "y".into()]),
+        ];
+        let op = compiler.compile(&steps).unwrap();
+        if let Operator::Cap { keys, .. } = &op {
+            assert_eq!(keys, &["x", "y"]);
+        } else {
+            panic!("expected Cap");
+        }
+    }
+
+    #[test]
+    fn compile_project_step() {
+        let mut compiler = GremlinCompiler::new();
+        let steps = vec![
+            GremlinStep::V(None),
+            GremlinStep::Project(vec!["name".into(), "age".into()]),
+        ];
+        let op = compiler.compile(&steps).unwrap();
+        if let Operator::Project { items, .. } = &op {
+            assert_eq!(items.len(), 2);
+        } else {
+            panic!("expected Project");
+        }
+    }
+
+    #[test]
+    fn compile_predicate_at_toplevel_errors() {
+        let mut compiler = GremlinCompiler::new();
+        let steps = vec![GremlinStep::V(None), GremlinStep::Eq(GremlinValue::Integer(1))];
+        let err = compiler.compile(&steps).unwrap_err();
+        assert!(matches!(err, CompileError::InvalidSequence(_)));
+    }
 }
