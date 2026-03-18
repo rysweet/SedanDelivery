@@ -1619,6 +1619,8 @@ mod tests {
             },
             Operator::MergeRelationship { child, .. }
             | Operator::GremlinSideEffect { child, .. }
+            | Operator::GremlinAggregate { child, .. }
+            | Operator::GremlinPath { child, .. }
             | Operator::Cap { child, .. } => vec![child],
             Operator::ForEach { body, child, .. } | Operator::Repeat { body, child, .. } => {
                 vec![child, body]
@@ -1641,6 +1643,11 @@ mod tests {
             } => {
                 let mut v = vec![child.as_ref()];
                 v.extend(alternatives.iter());
+                v
+            }
+            Operator::GremlinMatch { patterns, child } => {
+                let mut v = vec![child.as_ref()];
+                v.extend(patterns.iter());
                 v
             }
         }

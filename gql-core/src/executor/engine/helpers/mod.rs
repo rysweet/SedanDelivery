@@ -211,10 +211,17 @@ pub(crate) fn discover_operator_aliases(op: &Operator) -> Vec<String> {
         }
         Operator::Repeat { child, .. }
         | Operator::Choose { child, .. }
-        | Operator::GremlinSideEffect { child, .. } => {
+        | Operator::GremlinSideEffect { child, .. }
+        | Operator::GremlinAggregate { child, .. } => {
             aliases.extend(discover_operator_aliases(child));
         }
         Operator::Coalesce { child, .. } => {
+            aliases.extend(discover_operator_aliases(child));
+        }
+        Operator::GremlinPath { .. } => {
+            aliases.push("path".to_string());
+        }
+        Operator::GremlinMatch { child, .. } => {
             aliases.extend(discover_operator_aliases(child));
         }
         Operator::Cap { keys, .. } => {
