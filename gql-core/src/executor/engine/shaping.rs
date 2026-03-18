@@ -256,7 +256,12 @@ impl<'a> QueryExecutor<'a> {
             | Operator::Merge { .. }
             | Operator::MergeRelationship { .. }
             | Operator::Call { .. }
-            | Operator::ForEach { .. } => false,
+            | Operator::ForEach { .. }
+            | Operator::Repeat { .. }
+            | Operator::Choose { .. }
+            | Operator::Coalesce { .. }
+            | Operator::GremlinSideEffect { .. }
+            | Operator::Cap { .. } => false,
         }
     }
 

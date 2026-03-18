@@ -18,6 +18,8 @@ mod scan;
 mod scan_helpers;
 mod shaping;
 
+mod gremlin;
+
 use std::collections::{HashMap, HashSet};
 
 use crate::error::GqlError;
@@ -327,6 +329,11 @@ impl<'a> QueryExecutor<'a> {
             Operator::NodeByIdSeek { .. } => self.exec_node_by_id_seek(cx, op),
             Operator::ShortestPath { .. } => self.exec_shortest_path(cx, op),
             Operator::ForEach { .. } => self.exec_foreach(cx, op),
+            Operator::Repeat { .. } => self.exec_repeat(cx, op),
+            Operator::Choose { .. } => self.exec_choose(cx, op),
+            Operator::Coalesce { .. } => self.exec_coalesce(cx, op),
+            Operator::GremlinSideEffect { .. } => self.exec_gremlin_side_effect(cx, op),
+            Operator::Cap { .. } => self.exec_cap(cx, op),
         }?;
 
         // Record per-operator row counts when profiling is enabled.
