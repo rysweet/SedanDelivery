@@ -1,9 +1,29 @@
 import { type Configuration, LogLevel } from '@azure/msal-browser'
 
+function requireEnv(name: string): string {
+  const value = import.meta.env[name]
+  if (!value) {
+    // During unit tests (vitest), env vars may not be set. Use placeholder
+    // values so module imports succeed. Tests that exercise auth should mock
+    // this module.
+    if (import.meta.env.MODE === 'test' || import.meta.env.VITEST) {
+      return `test-placeholder-${name}`
+    }
+    throw new Error(
+      `${name} is required. Add it to .env.development (see .env.development.example).`,
+    )
+  }
+  return value
+}
+
+const clientId = requireEnv('VITE_ENTRA_CLIENT_ID')
+const tenantId = requireEnv('VITE_ENTRA_TENANT_ID')
+const apiScope = requireEnv('VITE_ENTRA_API_SCOPE')
+
 export const msalConfig: Configuration = {
   auth: {
-    clientId: import.meta.env.VITE_ENTRA_CLIENT_ID ?? '97926b31-e1a3-4a76-b09d-eed5aeeabc9f',
-    authority: `https://login.microsoftonline.com/${import.meta.env.VITE_ENTRA_TENANT_ID ?? '3cd87a41-1f61-4aef-a212-cefdecd9a2d1'}`,
+    clientId,
+    authority: `https://login.microsoftonline.com/${tenantId}`,
     redirectUri: window.location.origin,
     postLogoutRedirectUri: window.location.origin,
   },
@@ -19,13 +39,9 @@ export const msalConfig: Configuration = {
 }
 
 export const loginRequest = {
-  scopes: [
-    import.meta.env.VITE_ENTRA_API_SCOPE ?? 'api://97926b31-e1a3-4a76-b09d-eed5aeeabc9f/Graph.ReadWrite',
-  ],
+  scopes: [apiScope],
 }
 
 export const apiTokenRequest = {
-  scopes: [
-    import.meta.env.VITE_ENTRA_API_SCOPE ?? 'api://97926b31-e1a3-4a76-b09d-eed5aeeabc9f/Graph.ReadWrite',
-  ],
+  scopes: [apiScope],
 }
