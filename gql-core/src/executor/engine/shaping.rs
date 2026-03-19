@@ -349,7 +349,10 @@ impl<'a> QueryExecutor<'a> {
             | Operator::ChooseMap { .. }
             | Operator::GremlinSelect { .. }
             | Operator::GremlinGroup { .. }
-            | Operator::GremlinMapSlice { .. } => false,
+            | Operator::GremlinMapSlice { .. }
+            | Operator::GremlinSimplePath { .. }
+            | Operator::GremlinIndex { .. }
+            | Operator::GremlinProject { .. } => false,
         }
     }
 

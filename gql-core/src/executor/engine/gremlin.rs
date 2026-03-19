@@ -883,6 +883,187 @@ impl<'a> QueryExecutor<'a> {
         }
         Ok(out)
     }
+
+    /// Execute `GremlinSimplePath` — filter traversers whose path contains
+    /// repeated objects (by node/edge identity).
+    pub(crate) fn exec_gremlin_simple_path(
+        &self,
+        cx: &mut ExecContext<'_>,
+        op: &Operator,
+    ) -> Result<Vec<Row>, GqlError> {
+        let Operator::GremlinSimplePath {
+            child,
+            path_aliases,
+        } = op
+        else {
+            debug_assert!(false, "expected GremlinSimplePath operator");
+            return Err(GqlError::Execution(ExecutionError::UnsupportedFeature {
+                feature: "internal: expected GremlinSimplePath operator".into(),
+            }));
+        };
+
+        let input = self.exec_operator(cx, child)?;
+        let mut out = Vec::with_capacity(input.len());
+        for row in input {
+            cx.budget.check_or_err()?;
+            let mut seen = std::collections::HashSet::new();
+            let mut is_simple = true;
+            for alias in path_aliases {
+                if let Some(val) = row.get(alias.as_str()) {
+                    if matches!(val, Value::Null) {
+                        continue;
+                    }
+                    // Use a discriminator key to detect duplicate path entries
+                    let key = match val {
+                        Value::Node(nid) => format!("n:{}", nid.0),
+                        Value::Edge(eid) => format!("e:{}", eid.0),
+                        other => format!("v:{other:?}"),
+                    };
+                    if !seen.insert(key) {
+                        is_simple = false;
+                        break;
+                    }
+                }
+            }
+            if is_simple {
+                out.push(row);
+            }
+        }
+        Ok(out)
+    }
+
+    /// Execute `GremlinIndex` — pair each element with its positional index.
+    pub(crate) fn exec_gremlin_index(
+        &self,
+        cx: &mut ExecContext<'_>,
+        op: &Operator,
+    ) -> Result<Vec<Row>, GqlError> {
+        let Operator::GremlinIndex {
+            child,
+            alias,
+            out_alias,
+            with_map,
+        } = op
+        else {
+            debug_assert!(false, "expected GremlinIndex operator");
+            return Err(GqlError::Execution(ExecutionError::UnsupportedFeature {
+                feature: "internal: expected GremlinIndex operator".into(),
+            }));
+        };
+
+        let input = self.exec_operator(cx, child)?;
+        let mut out = Vec::with_capacity(input.len());
+
+        // Check if input is a single row containing a List — index its elements
+        if input.len() == 1 {
+            if let Some(Value::List(items)) = input[0].get(alias.as_str()) {
+                if *with_map {
+                    // Produce a single Map {0: elem0, 1: elem1, ...}
+                    let mut map = IndexMap::new();
+                    for (i, item) in items.iter().enumerate() {
+                        map.insert(
+                            format!("{i}").into_boxed_str(),
+                            item.clone(),
+                        );
+                    }
+                    let mut row = Row::new();
+                    row.insert(out_alias.0.clone(), Value::Map(map));
+                    out.push(row);
+                } else {
+                    // Produce [element, index] pairs
+                    for (i, item) in items.iter().enumerate() {
+                        let pair = Value::List(vec![item.clone(), Value::Int(i as i64)]);
+                        let mut row = Row::new();
+                        row.insert(out_alias.0.clone(), pair);
+                        out.push(row);
+                    }
+                }
+                return Ok(out);
+            }
+        }
+
+        // Stream mode: index rows positionally
+        if *with_map {
+            let mut map = IndexMap::new();
+            for (i, row) in input.iter().enumerate() {
+                if let Some(val) = row.get(alias.as_str()) {
+                    map.insert(format!("{i}").into_boxed_str(), val.clone());
+                }
+            }
+            let mut row = Row::new();
+            row.insert(out_alias.0.clone(), Value::Map(map));
+            out.push(row);
+        } else {
+            for (i, row) in input.iter().enumerate() {
+                cx.budget.check_or_err()?;
+                let val = row
+                    .get(alias.as_str())
+                    .cloned()
+                    .unwrap_or(Value::Null);
+                let pair = Value::List(vec![val, Value::Int(i as i64)]);
+                let mut new_row = Row::new();
+                new_row.insert(out_alias.0.clone(), pair);
+                out.push(new_row);
+            }
+        }
+        Ok(out)
+    }
+
+    /// Execute `GremlinProject` — evaluate sub-traversals per key for each input row.
+    pub(crate) fn exec_gremlin_project(
+        &self,
+        cx: &mut ExecContext<'_>,
+        op: &Operator,
+    ) -> Result<Vec<Row>, GqlError> {
+        let Operator::GremlinProject {
+            entries,
+            child,
+            current_alias,
+        } = op
+        else {
+            debug_assert!(false, "expected GremlinProject operator");
+            return Err(GqlError::Execution(ExecutionError::UnsupportedFeature {
+                feature: "internal: expected GremlinProject operator".into(),
+            }));
+        };
+
+        let input = self.exec_operator(cx, child)?;
+        let mut out = Vec::with_capacity(input.len());
+        for row in &input {
+            cx.budget.check_or_err()?;
+            let mut map = IndexMap::new();
+            for (key, sub_op, out_alias) in entries {
+                // Feed the current row as a seed and evaluate the sub-traversal
+                self.foreach_seed.borrow_mut().replace(vec![row.clone()]);
+                let sub_rows = self.exec_operator(cx, sub_op)?;
+                self.foreach_seed.borrow_mut().take();
+                // Take the first result value (project picks the first traverser)
+                let val = if let Some(sub_row) = sub_rows.first() {
+                    sub_row
+                        .get(out_alias.as_str())
+                        .or_else(|| {
+                            // Fall back to current_alias if out_alias not found
+                            sub_row.get(current_alias.as_str())
+                        })
+                        .cloned()
+                        .unwrap_or(Value::Null)
+                } else {
+                    Value::Null
+                };
+                map.insert(key.clone().into_boxed_str(), val);
+            }
+            // Store the projected Map as both individual columns and a combined Map
+            let map_val = Value::Map(map.clone());
+            let mut out_row = Row::new();
+            for (k, v) in &map {
+                out_row.insert(k.to_string(), v.clone());
+            }
+            // Also set the result on the current_alias so downstream steps find it
+            out_row.insert(current_alias.0.clone(), map_val);
+            out.push(out_row);
+        }
+        Ok(out)
+    }
 }
 
 /// Convert a Value to a string key for use in Gremlin group() Map output.

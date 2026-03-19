@@ -92,6 +92,8 @@ pub enum GremlinStep {
     /// `order(Scope.local)` — sort elements within a list
     SortLocal,
     By(String, bool), // (key, descending)
+    /// `by(traversal)` — by modulation with a sub-traversal
+    ByTraversal(Vec<GremlinStep>, bool),
     Limit(i64),
     Range(i64, i64),
     /// `limit(Scope.local, n)` — slice Map/List values
@@ -176,6 +178,10 @@ pub enum GremlinStep {
     Discard,
     /// `loops()` — returns the number of loops in a repeat context
     Loops,
+    /// `index()` — pair each element with its positional index
+    Index,
+    /// `index().with(WithOptions.indexer, WithOptions.map)` — index as a Map
+    IndexWithMap,
 
     /// `sack()` — retrieve the current sack value
     Sack,

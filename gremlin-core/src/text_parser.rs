@@ -863,8 +863,16 @@ fn parse_step_token(
                     }
                 }
             }
+            // with(WithOptions.indexer, WithOptions.map) — convert index to map mode
+            if args.iter().any(|a| a == "WithOptions.indexer") && args.iter().any(|a| a == "WithOptions.map") {
+                for step in out.iter_mut().rev() {
+                    if matches!(step, GremlinStep::Index) {
+                        *step = GremlinStep::IndexWithMap;
+                        break;
+                    }
+                }
+            }
             // withPath — enable path tracking
-            // withBulk — enable bulk optimization
             // withBulk — enable bulk optimization
         }
         "element" => {
@@ -878,7 +886,7 @@ fn parse_step_token(
         }
         "index" => {
             // index() — adds index to each element
-            out.push(GremlinStep::Identity);
+            out.push(GremlinStep::Index);
         }
         // ── String steps ────────────────────────────────────────────────────
         "toLower" => {
@@ -1448,7 +1456,7 @@ fn parse_predicate(
 }
 
 /// Parse an inner anonymous traversal: `__.out("knows")` or `outE().count().is(0)`.
-fn parse_inner_traversal(
+pub(crate) fn parse_inner_traversal(
     args_str: &str,
     resolve_param: &dyn Fn(&str) -> Option<GremlinValue>,
 ) -> Result<Vec<GremlinStep>, TextParseError> {

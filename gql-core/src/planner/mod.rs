@@ -297,6 +297,29 @@ pub enum Operator {
         hi: usize,
         child: Box<Operator>,
     },
+    /// Gremlin simplePath() — filter to traversers with no repeated objects in path.
+    GremlinSimplePath {
+        child: Box<Operator>,
+        /// Ordered list of aliases that form the path elements.
+        path_aliases: Vec<Identifier>,
+    },
+    /// Gremlin index() — pair each element with its positional index.
+    /// When `with_map` is true, produces a Map {index: element}; otherwise
+    /// produces a List [element, index].
+    GremlinIndex {
+        child: Box<Operator>,
+        alias: Identifier,
+        out_alias: Identifier,
+        with_map: bool,
+    },
+    /// Gremlin project() with by() modulation — evaluates sub-traversals per key.
+    GremlinProject {
+        /// (key_name, sub_traversal_operator, output_alias_of_traversal) per entry.
+        entries: Vec<(String, Operator, Identifier)>,
+        child: Box<Operator>,
+        /// Alias of the traverser feeding into project.
+        current_alias: Identifier,
+    },
 }
 
 impl Operator {
@@ -331,7 +354,19 @@ impl Operator {
             | Operator::GremlinPath { child, .. }
             | Operator::GremlinSelect { child, .. }
             | Operator::GremlinGroup { child, .. }
-            | Operator::GremlinMapSlice { child, .. } => vec![child],
+            | Operator::GremlinMapSlice { child, .. }
+            | Operator::GremlinSimplePath { child, .. }
+            | Operator::GremlinIndex { child, .. } => vec![child],
+
+            Operator::GremlinProject {
+                entries, child, ..
+            } => {
+                let mut v = vec![child.as_ref()];
+                for (_, op, _) in entries {
+                    v.push(op);
+                }
+                v
+            }
 
             Operator::ForEach { body, child, .. } | Operator::Repeat { body, child, .. } => {
                 vec![child, body]
@@ -673,7 +708,10 @@ fn estimate_recursive(
             ..
         } => estimate_recursive(child, stats, estimates),
         Operator::GremlinGroup { .. } => 1.0, // produces a single Map row
-        Operator::GremlinMapSlice { child, .. } => estimate_recursive(child, stats, estimates),
+        Operator::GremlinMapSlice { child, .. }
+        | Operator::GremlinSimplePath { child, .. }
+        | Operator::GremlinIndex { child, .. }
+        | Operator::GremlinProject { child, .. } => estimate_recursive(child, stats, estimates),
         Operator::Cap { .. } => 1.0,
     };
 
@@ -953,6 +991,17 @@ fn collect_all_aliases(op: &Operator) -> Vec<String> {
         }
         Operator::GremlinMapSlice { child, .. } => {
             aliases.extend(collect_all_aliases(child));
+        }
+        Operator::GremlinSimplePath { child, .. } => {
+            aliases.extend(collect_all_aliases(child));
+        }
+        Operator::GremlinIndex { child, .. } => {
+            aliases.extend(collect_all_aliases(child));
+        }
+        Operator::GremlinProject { entries, .. } => {
+            for (key, _, _) in entries {
+                aliases.push(key.clone());
+            }
         }
         Operator::Cap { keys, .. } => {
             for key in keys {

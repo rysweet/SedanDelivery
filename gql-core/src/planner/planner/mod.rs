@@ -1666,8 +1666,19 @@ mod tests {
             }
             Operator::GremlinSelect { child, .. }
             | Operator::GremlinGroup { child, .. }
-            | Operator::GremlinMapSlice { child, .. } => {
+            | Operator::GremlinMapSlice { child, .. }
+            | Operator::GremlinSimplePath { child, .. }
+            | Operator::GremlinIndex { child, .. } => {
                 vec![child]
+            }
+            Operator::GremlinProject {
+                entries, child, ..
+            } => {
+                let mut v = vec![child.as_ref()];
+                for (_, op, _) in entries {
+                    v.push(op);
+                }
+                v
             }
         }
     }
