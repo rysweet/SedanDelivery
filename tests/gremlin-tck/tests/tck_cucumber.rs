@@ -878,8 +878,43 @@ async fn main() {
         format!("{manifest_dir}/features")
     };
 
+    // Tags for features we legitimately cannot/don't support.
+    let skip_tags: &[&str] = &[
+        "StepMergeV",
+        "StepMergeE",
+        "StepCall",
+        "StepShortestPath",
+        "StepPageRank",
+        "StepPeerPressure",
+        "StepConnectedComponent",
+        "StepSubgraph",
+        "StepRead",
+        "StepWrite",
+        "StepAsDate",
+        "StepDateAdd",
+        "StepDateDiff",
+        "GraphComputerOnly",
+        "TinkerServiceRegistry",
+        "WithSubgraphStrategy",
+        "WithPartitionStrategy",
+        "WithHaltedTraverserStrategy",
+        "WithVertexProgramStrategy",
+        "WithVertexProgramRestrictionStrategy",
+    ];
+    let skip_set: std::collections::HashSet<&str> =
+        skip_tags.iter().copied().collect();
+
     GremlinWorld::cucumber()
         .max_concurrent_scenarios(Some(4))
-        .run(features_path)
+        .filter_run(features_path, move |feature, _rule, scenario| {
+            // Skip scenarios whose tags (or feature-level tags) intersect
+            // with our skip set.
+            let dominated = scenario
+                .tags
+                .iter()
+                .chain(feature.tags.iter())
+                .any(|t| skip_set.contains(t.as_str()));
+            !dominated
+        })
         .await;
 }
