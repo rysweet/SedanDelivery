@@ -1587,9 +1587,11 @@ impl GremlinCompiler {
                                     }),
                                 };
                                 let child = current.take().ok_or(CompileError::MissingChild)?;
+                                // Vertex lookup must be outer so its alias is
+                                // available when the Create operator runs.
                                 current = Some(Operator::Apply {
-                                    outer: Box::new(child),
-                                    inner: Box::new(scan),
+                                    outer: Box::new(scan),
+                                    inner: Box::new(child),
                                 });
                                 alias
                             }
@@ -1610,8 +1612,8 @@ impl GremlinCompiler {
                                     let inner_alias = sub.last_alias.clone();
                                     let child = current.take().ok_or(CompileError::MissingChild)?;
                                     current = Some(Operator::Apply {
-                                        outer: Box::new(child),
-                                        inner: Box::new(inner_op),
+                                        outer: Box::new(inner_op),
+                                        inner: Box::new(child),
                                     });
                                     inner_alias
                                 } else {
@@ -1627,8 +1629,8 @@ impl GremlinCompiler {
                             let inner_alias = sub.last_alias.clone();
                             let child = current.take().ok_or(CompileError::MissingChild)?;
                             current = Some(Operator::Apply {
-                                outer: Box::new(child),
-                                inner: Box::new(inner_op),
+                                outer: Box::new(inner_op),
+                                inner: Box::new(child),
                             });
                             inner_alias
                         } else {
