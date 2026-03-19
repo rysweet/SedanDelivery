@@ -237,9 +237,8 @@ impl GremlinCompiler {
                         for (i, (src_var, _)) in keys.iter_mut().enumerate() {
                             let mod_key = &select_by_mods[i % select_by_mods.len()];
                             if !mod_key.is_empty() {
-                                *src_var = Identifier::new(format!(
-                                    "__prop_{}__{}", mod_key, src_var.0
-                                ));
+                                *src_var =
+                                    Identifier::new(format!("__prop_{}__{}", mod_key, src_var.0));
                             }
                         }
                     }
@@ -1977,19 +1976,14 @@ impl GremlinCompiler {
                             } else if !input_bound {
                                 // First new label — bind to the current traverser.
                                 input_bound = true;
-                                sub.alias_map
-                                    .insert(label.clone(), current_alias.clone());
-                                sub.compile_with_seed(
-                                    &pattern_steps[1..],
-                                    current_alias.clone(),
-                                )?
+                                sub.alias_map.insert(label.clone(), current_alias.clone());
+                                sub.compile_with_seed(&pattern_steps[1..], current_alias.clone())?
                             } else {
                                 // Subsequent new label — create an explicit
                                 // NodeScan with a known alias so the label maps
                                 // to the correct column.
                                 let scan_alias = sub.next_alias("v");
-                                sub.alias_map
-                                    .insert(label.clone(), scan_alias.clone());
+                                sub.alias_map.insert(label.clone(), scan_alias.clone());
                                 let scan = Operator::NodeScan {
                                     label: None,
                                     alias: scan_alias.clone(),
@@ -2003,10 +1997,7 @@ impl GremlinCompiler {
                             }
                         } else {
                             // No leading as() — seed from the current traverser.
-                            sub.compile_with_seed(
-                                pattern_steps,
-                                current_alias.clone(),
-                            )?
+                            sub.compile_with_seed(pattern_steps, current_alias.clone())?
                         };
 
                         for (k, v) in &sub.alias_map {
@@ -3076,9 +3067,7 @@ impl GremlinCompiler {
                 for (i, (src_var, _)) in keys.iter_mut().enumerate() {
                     let mod_key = &select_by_mods[i % select_by_mods.len()];
                     if !mod_key.is_empty() {
-                        *src_var = Identifier::new(format!(
-                            "__prop_{}__{}", mod_key, src_var.0
-                        ));
+                        *src_var = Identifier::new(format!("__prop_{}__{}", mod_key, src_var.0));
                     }
                 }
             }

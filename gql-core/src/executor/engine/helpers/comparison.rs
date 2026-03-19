@@ -146,7 +146,6 @@ pub fn cmp_values(a: &Value, b: &Value) -> std::cmp::Ordering {
 /// Gremlin ascending order: Null < Bool < Number < Date < String < UUID
 ///   < Vertex < Edge < Property < Path < Set < List < Map
 pub fn gremlin_cmp_values(a: &Value, b: &Value) -> std::cmp::Ordering {
-
     fn type_rank(v: &Value) -> u8 {
         match v {
             Value::Null => 0,

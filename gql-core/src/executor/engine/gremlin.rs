@@ -524,9 +524,7 @@ impl<'a> QueryExecutor<'a> {
                         }
                     }
 
-                    self.foreach_seed
-                        .borrow_mut()
-                        .replace(vec![seed]);
+                    self.foreach_seed.borrow_mut().replace(vec![seed]);
                     let pattern_rows = self.exec_operator(cx, pattern)?;
                     self.foreach_seed.borrow_mut().take();
 
@@ -573,10 +571,7 @@ impl<'a> QueryExecutor<'a> {
                         }
                     }
                 }
-                result_row.insert(
-                    result_alias.0.to_string(),
-                    Value::Map(map_entries),
-                );
+                result_row.insert(result_alias.0.to_string(), Value::Map(map_entries));
                 out.push(result_row);
             }
         }

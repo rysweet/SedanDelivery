@@ -190,7 +190,12 @@ impl<'a> QueryExecutor<'a> {
         cx: &mut ExecContext<'_>,
         op: &Operator,
     ) -> Result<Vec<Row>, GqlError> {
-        let Operator::Sort { items, gremlin_order, child } = op else {
+        let Operator::Sort {
+            items,
+            gremlin_order,
+            child,
+        } = op
+        else {
             debug_assert!(false, "expected Sort operator");
             return Err(GqlError::Execution(
                 crate::error::ExecutionError::UnsupportedFeature {
