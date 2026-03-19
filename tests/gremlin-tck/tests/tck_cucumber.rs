@@ -273,7 +273,9 @@ async fn then_result_ordered(world: &mut GremlinWorld, step: &gherkin::Step) {
 async fn then_result_of(world: &mut GremlinWorld, step: &gherkin::Step) {
     let result = expect_ok(world);
     let expected = parse_expected_table(step, world);
-    assert_results_match_unordered(&result, &expected, world);
+    // "of" means actual results are a subset of the expected set,
+    // not that all expected must be present.
+    assert_results_subset_of(&result, &expected, world);
 }
 
 #[then(regex = r"(?i)the result should be empty")]
@@ -800,6 +802,31 @@ fn assert_results_match_unordered(
             found,
             "expected value {:?} not found in results\ntraversal: {}\nactual: {:?}",
             exp_val, world.traversal_text, actual_values,
+        );
+    }
+}
+
+/// Assert that each actual result value exists in the expected set.
+/// Used for "the result should be of" (subset semantics).
+fn assert_results_subset_of(
+    result: &QueryResult,
+    expected: &[Vec<Value>],
+    world: &GremlinWorld,
+) {
+    let actual_values: Vec<&Value> = result
+        .rows
+        .iter()
+        .filter_map(|row| row.values().next())
+        .collect();
+
+    let expected_values: Vec<&Value> = expected.iter().map(|r| &r[0]).collect();
+
+    for actual in &actual_values {
+        let found = expected_values.iter().any(|ev| values_match(actual, ev));
+        assert!(
+            found,
+            "actual value {:?} not in expected set\ntraversal: {}\nexpected set: {:?}",
+            actual, world.traversal_text, expected_values,
         );
     }
 }
