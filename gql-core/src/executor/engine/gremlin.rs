@@ -276,8 +276,7 @@ impl<'a> QueryExecutor<'a> {
             }
 
             if !matched {
-                // No alternative matched — pass through.
-                out.push(row);
+                // No alternative matched — drop the traverser.
             }
         }
         Ok(out)
