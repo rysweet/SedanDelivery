@@ -190,6 +190,8 @@ pub enum GremlinStep {
     Split(String),
     /// `substring(start)` or `substring(start, length)` — extract substring
     Substring(i64, Option<i64>),
+    /// `substring(Scope.local, start, end)` — substring each element in a list
+    SubstringLocal(i64, Option<i64>),
     /// `concat(traversals...)` — concatenate string results
     Concat(Vec<Vec<GremlinStep>>),
     /// `asString()` — convert to string

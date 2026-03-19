@@ -791,15 +791,25 @@ fn parse_step_token(
         }
         "substring" => {
             let args = parse_arg_list(args_str, resolve_param)?;
-            let start = match args.first() {
+            // Check if first arg is Scope.local
+            let (offset, is_local) = if matches!(args.first(), Some(GremlinValue::String(s)) if s.contains("local")) {
+                (1, true)
+            } else {
+                (0, false)
+            };
+            let start = match args.get(offset) {
                 Some(GremlinValue::Integer(n)) => *n,
                 _ => 0,
             };
-            let len = match args.get(1) {
+            let len = match args.get(offset + 1) {
                 Some(GremlinValue::Integer(n)) => Some(*n),
                 _ => None,
             };
-            out.push(GremlinStep::Substring(start, len));
+            if is_local {
+                out.push(GremlinStep::SubstringLocal(start, len));
+            } else {
+                out.push(GremlinStep::Substring(start, len));
+            }
         }
         "concat" => {
             // concat() args can be string literals, null, or traversals

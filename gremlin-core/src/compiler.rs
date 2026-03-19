@@ -2013,6 +2013,28 @@ impl GremlinCompiler {
                     current_alias = alias;
                 }
 
+                GremlinStep::SubstringLocal(start, len) => {
+                    let child = current.take().ok_or(CompileError::MissingChild)?;
+                    let alias = self.next_alias("substrl");
+                    let mut args =
+                        vec![Expr::Variable(current_alias.clone()), Expr::Integer(*start)];
+                    if let Some(l) = len {
+                        args.push(Expr::Integer(*l));
+                    }
+                    current = Some(Operator::Project {
+                        items: vec![(
+                            Expr::FunctionCall {
+                                name: SmolStr::new("gremlin_substring_local"),
+                                args,
+                                distinct: false,
+                            },
+                            Some(alias.clone()),
+                        )],
+                        child: Box::new(child),
+                    });
+                    current_alias = alias;
+                }
+
                 GremlinStep::Concat(traversals) => {
                     let child = current.take().ok_or(CompileError::MissingChild)?;
                     let alias = self.next_alias("concat");
