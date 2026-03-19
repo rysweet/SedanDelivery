@@ -514,10 +514,19 @@ impl GremlinCompiler {
 
                 GremlinStep::Properties(keys) => {
                     let child = current.take().ok_or(CompileError::MissingChild)?;
+                    let prop_alias = self.next_alias("prop");
                     let items: Vec<(Expr, Option<Identifier>)> = if keys.is_empty() {
                         vec![(
                             Expr::Variable(current_alias.clone()),
-                            Some(current_alias.clone()),
+                            Some(prop_alias.clone()),
+                        )]
+                    } else if keys.len() == 1 {
+                        vec![(
+                            Expr::Property(
+                                Box::new(Expr::Variable(current_alias.clone())),
+                                SmolStr::new(&keys[0]),
+                            ),
+                            Some(prop_alias.clone()),
                         )]
                     } else {
                         keys.iter()
@@ -536,6 +545,9 @@ impl GremlinCompiler {
                         items,
                         child: Box::new(child),
                     });
+                    if keys.len() <= 1 {
+                        current_alias = prop_alias;
+                    }
                 }
 
                 GremlinStep::Id => {
@@ -2369,36 +2381,69 @@ fn steps_to_predicate(
 fn predicate_to_expr(pred: &Predicate, alias: &Identifier) -> Expr {
     let var = Expr::Variable(alias.clone());
     match pred {
-        Predicate::Eq(v) => Expr::BinaryOp {
-            op: BinaryOp::Eq,
-            left: Box::new(var),
-            right: Box::new(gremlin_value_to_expr(v)),
-        },
-        Predicate::Neq(v) => Expr::BinaryOp {
-            op: BinaryOp::Neq,
-            left: Box::new(var),
-            right: Box::new(gremlin_value_to_expr(v)),
-        },
-        Predicate::Gt(v) => Expr::BinaryOp {
-            op: BinaryOp::Gt,
-            left: Box::new(var),
-            right: Box::new(gremlin_value_to_expr(v)),
-        },
-        Predicate::Gte(v) => Expr::BinaryOp {
-            op: BinaryOp::Gte,
-            left: Box::new(var),
-            right: Box::new(gremlin_value_to_expr(v)),
-        },
-        Predicate::Lt(v) => Expr::BinaryOp {
-            op: BinaryOp::Lt,
-            left: Box::new(var),
-            right: Box::new(gremlin_value_to_expr(v)),
-        },
-        Predicate::Lte(v) => Expr::BinaryOp {
-            op: BinaryOp::Lte,
-            left: Box::new(var),
-            right: Box::new(gremlin_value_to_expr(v)),
-        },
+        Predicate::Eq(v) => {
+            // Gremlin: P.eq(null) means IS NULL (unlike Cypher where null=null is null)
+            if matches!(v, GremlinValue::Null) {
+                return Expr::IsNull(Box::new(var));
+            }
+            Expr::BinaryOp {
+                op: BinaryOp::Eq,
+                left: Box::new(var),
+                right: Box::new(gremlin_value_to_expr(v)),
+            }
+        }
+        Predicate::Neq(v) => {
+            if matches!(v, GremlinValue::Null) {
+                return Expr::IsNotNull(Box::new(var));
+            }
+            Expr::BinaryOp {
+                op: BinaryOp::Neq,
+                left: Box::new(var),
+                right: Box::new(gremlin_value_to_expr(v)),
+            }
+        }
+        Predicate::Gt(v) => {
+            if matches!(v, GremlinValue::Null) {
+                return Expr::Bool(false);
+            }
+            Expr::BinaryOp {
+                op: BinaryOp::Gt,
+                left: Box::new(var),
+                right: Box::new(gremlin_value_to_expr(v)),
+            }
+        }
+        Predicate::Gte(v) => {
+            // Gremlin: P.gte(null) on null value should be true
+            if matches!(v, GremlinValue::Null) {
+                return Expr::IsNull(Box::new(var));
+            }
+            Expr::BinaryOp {
+                op: BinaryOp::Gte,
+                left: Box::new(var),
+                right: Box::new(gremlin_value_to_expr(v)),
+            }
+        }
+        Predicate::Lt(v) => {
+            // Gremlin: P.lt(null) always false (nothing is strictly less than null)
+            if matches!(v, GremlinValue::Null) {
+                return Expr::Bool(false);
+            }
+            Expr::BinaryOp {
+                op: BinaryOp::Lt,
+                left: Box::new(var),
+                right: Box::new(gremlin_value_to_expr(v)),
+            }
+        }
+        Predicate::Lte(v) => {
+            if matches!(v, GremlinValue::Null) {
+                return Expr::IsNull(Box::new(var));
+            }
+            Expr::BinaryOp {
+                op: BinaryOp::Lte,
+                left: Box::new(var),
+                right: Box::new(gremlin_value_to_expr(v)),
+            }
+        }
         Predicate::Within(vals) => Expr::BinaryOp {
             op: BinaryOp::In,
             left: Box::new(var),
