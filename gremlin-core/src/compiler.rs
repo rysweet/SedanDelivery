@@ -541,38 +541,25 @@ impl GremlinCompiler {
                     }
                 }
 
-                GremlinStep::ValueMap(keys) => {
+                GremlinStep::ValueMap(keys, with_tokens) => {
                     let child = current.take().ok_or(CompileError::MissingChild)?;
-                    let items: Vec<(Expr, Option<Identifier>)> = if keys.is_empty() {
-                        // Empty keys: return all properties as a map with list-wrapped values
-                        let alias = self.next_alias("vmap");
-                        let fc = Expr::FunctionCall {
-                            name: SmolStr::new("gremlin_valuemap"),
-                            args: vec![Expr::Variable(current_alias.clone())],
-                            distinct: false,
-                        };
-                        current_alias = alias.clone();
-                        vec![(fc, Some(alias))]
-                    } else {
-                        // Specific keys: wrap each property value in a list
-                        keys.iter()
-                            .map(|k| {
-                                (
-                                    Expr::FunctionCall {
-                                        name: SmolStr::new("gremlin_wraplist"),
-                                        args: vec![Expr::Property(
-                                            Box::new(Expr::Variable(current_alias.clone())),
-                                            SmolStr::new(k),
-                                        )],
-                                        distinct: false,
-                                    },
-                                    Some(Identifier::new(k.clone())),
-                                )
-                            })
-                            .collect()
+                    let alias = self.next_alias("vmap");
+                    // Build args: element, tokens flag, then optional key filters
+                    let mut args = vec![
+                        Expr::Variable(current_alias.clone()),
+                        Expr::Bool(*with_tokens),
+                    ];
+                    for k in keys {
+                        args.push(Expr::Str(k.as_str().into()));
+                    }
+                    let fc = Expr::FunctionCall {
+                        name: SmolStr::new("gremlin_valuemap"),
+                        args,
+                        distinct: false,
                     };
+                    current_alias = alias.clone();
                     current = Some(Operator::Project {
-                        items,
+                        items: vec![(fc, Some(alias))],
                         child: Box::new(child),
                     });
                 }
@@ -1458,15 +1445,50 @@ impl GremlinCompiler {
                 }
 
                 GremlinStep::Inject(values) => {
-                    let exprs: Vec<Expr> = values.iter().map(gremlin_value_to_expr).collect();
-                    let alias = self.next_alias("inj");
-                    let unwind = Operator::Unwind {
-                        list_expr: Expr::List(exprs),
-                        alias: alias.clone(),
-                        child: Box::new(current.take().unwrap_or(Operator::SingleRow)),
-                    };
-                    current = Some(unwind);
-                    current_alias = alias;
+                    if values.is_empty() {
+                        // inject() with no args is a pass-through
+                        if current.is_none() {
+                            current = Some(Operator::SingleRow);
+                        }
+                    } else {
+                        let exprs: Vec<Expr> = values.iter().map(gremlin_value_to_expr).collect();
+                        let alias = self.next_alias("inj");
+                        let injected = Operator::Unwind {
+                            list_expr: Expr::List(exprs),
+                            alias: alias.clone(),
+                            child: Box::new(Operator::SingleRow),
+                        };
+                        if let Some(child) = current.take() {
+                            // Mid-traversal: UNION child stream with injected values,
+                            // then project to a common alias.
+                            let prev_alias = current_alias.clone();
+                            let union_alias = self.next_alias("inj");
+                            let left = Operator::Project {
+                                items: vec![(
+                                    Expr::Variable(prev_alias),
+                                    Some(union_alias.clone()),
+                                )],
+                                child: Box::new(child),
+                            };
+                            let right = Operator::Project {
+                                items: vec![(
+                                    Expr::Variable(alias),
+                                    Some(union_alias.clone()),
+                                )],
+                                child: Box::new(injected),
+                            };
+                            current = Some(Operator::Union {
+                                left: Box::new(left),
+                                right: Box::new(right),
+                                all: true,
+                            });
+                            current_alias = union_alias;
+                        } else {
+                            // Source step: just unwind
+                            current = Some(injected);
+                            current_alias = alias;
+                        }
+                    }
                 }
 
                 GremlinStep::Match(patterns) => {
@@ -2107,7 +2129,7 @@ impl GremlinCompiler {
                 GremlinStep::Format(pattern) => {
                     let child = current.take().ok_or(CompileError::MissingChild)?;
                     let alias = self.next_alias("fmt");
-                    current = Some(Operator::Project {
+                    let project = Operator::Project {
                         items: vec![(
                             Expr::FunctionCall {
                                 name: SmolStr::new("gremlin_format"),
@@ -2120,6 +2142,11 @@ impl GremlinCompiler {
                             Some(alias.clone()),
                         )],
                         child: Box::new(child),
+                    };
+                    // Filter out traversers where format couldn't resolve all placeholders
+                    current = Some(Operator::Filter {
+                        predicate: Expr::IsNotNull(Box::new(Expr::Variable(alias.clone()))),
+                        child: Box::new(project),
                     });
                     current_alias = alias;
                 }
@@ -3364,15 +3391,13 @@ mod tests {
         let mut compiler = GremlinCompiler::new();
         let steps = vec![
             GremlinStep::V(None),
-            GremlinStep::ValueMap(vec!["name".into(), "age".into()]),
+            GremlinStep::ValueMap(vec!["name".into(), "age".into()], false),
         ];
         let op = compiler.compile(&steps).unwrap();
         if let Operator::Project { items, .. } = &op {
-            assert_eq!(items.len(), 2);
-            // Each item should be a FunctionCall (gremlin_wraplist) wrapping a Property
-            for (expr, _alias) in items {
-                assert!(matches!(expr, Expr::FunctionCall { .. }));
-            }
+            // Single gremlin_valuemap call with element + key args
+            assert_eq!(items.len(), 1);
+            assert!(matches!(&items[0].0, Expr::FunctionCall { .. }));
         } else {
             panic!("expected Project");
         }
@@ -3381,7 +3406,7 @@ mod tests {
     #[test]
     fn compile_value_map_empty() {
         let mut compiler = GremlinCompiler::new();
-        let steps = vec![GremlinStep::V(None), GremlinStep::ValueMap(vec![])];
+        let steps = vec![GremlinStep::V(None), GremlinStep::ValueMap(vec![], false)];
         let op = compiler.compile(&steps).unwrap();
         if let Operator::Project { items, .. } = &op {
             assert_eq!(items.len(), 1);

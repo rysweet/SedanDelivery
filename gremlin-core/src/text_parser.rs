@@ -272,7 +272,13 @@ fn parse_step_token(
         }
         "valueMap" => {
             let args = parse_string_arg_list(args_str)?;
-            out.push(GremlinStep::ValueMap(args));
+            // valueMap(true, ...) or valueMap(true) includes tokens (id/label)
+            let (with_tokens, keys) = if args.first().map(|s| s.as_str()) == Some("true") {
+                (true, args[1..].to_vec())
+            } else {
+                (false, args)
+            };
+            out.push(GremlinStep::ValueMap(keys, with_tokens));
         }
         "properties" => {
             let args = parse_string_arg_list(args_str)?;
@@ -730,8 +736,19 @@ fn parse_step_token(
             out.push(GremlinStep::Identity);
         }
         "with" | "withPath" | "withBulk" => {
-            // with(key, value) — configuration modifier, typically no-op for query execution
+            // with(WithOptions.tokens) — set tokens flag on preceding valueMap
+            let args = parse_string_arg_list(args_str)?;
+            if args.iter().any(|a| a == "WithOptions.tokens") {
+                // Find the last ValueMap in the output and set its tokens flag
+                for step in out.iter_mut().rev() {
+                    if let GremlinStep::ValueMap(_, ref mut with_tokens) = step {
+                        *with_tokens = true;
+                        break;
+                    }
+                }
+            }
             // withPath — enable path tracking
+            // withBulk — enable bulk optimization
             // withBulk — enable bulk optimization
         }
         "element" => {

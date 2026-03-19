@@ -539,7 +539,7 @@ fn parse_tck_value(
 ) -> Value {
     let s = s.trim();
 
-    // v[name] → Node ID
+    // v[name] → Node ID; v[name].id → integer vertex ID
     if let Some(rest) = s.strip_prefix("v[") {
         if let Some(name) = rest.strip_suffix(']') {
             if let Some(nid) = vertex_names.get(name) {
@@ -547,9 +547,19 @@ fn parse_tck_value(
             }
             return Value::Str(format!("v[{name}]").into());
         }
+        // v[name].id → integer vertex ID
+        if let Some(end) = rest.find(']') {
+            let name = &rest[..end];
+            let suffix = &rest[end + 1..];
+            if suffix == ".id" {
+                if let Some(nid) = vertex_names.get(name) {
+                    return Value::Int(nid.0 as i64);
+                }
+            }
+        }
     }
 
-    // e[src-label->dst] → Edge reference
+    // e[src-label->dst] → Edge reference; e[...].id → integer edge ID
     if let Some(rest) = s.strip_prefix("e[") {
         if let Some(desc) = rest.strip_suffix(']') {
             if let Some(eid) = edge_names.get(desc) {
@@ -557,6 +567,16 @@ fn parse_tck_value(
             }
             // Edge not registered — return as string marker
             return Value::Str(format!("e[{desc}]").into());
+        }
+        // e[desc].id → integer edge ID
+        if let Some(end) = rest.find(']') {
+            let desc = &rest[..end];
+            let suffix = &rest[end + 1..];
+            if suffix == ".id" {
+                if let Some(eid) = edge_names.get(desc) {
+                    return Value::Int(eid.0 as i64);
+                }
+            }
         }
     }
 
@@ -1100,6 +1120,13 @@ async fn main() {
         "WithHaltedTraverserStrategy",
         "WithVertexProgramStrategy",
         "WithVertexProgramRestrictionStrategy",
+        // Data types we don't support
+        "DataUUID",
+        "DataBigDecimal",
+        "DataBigInt",
+        "DataDateTime",
+        // Math step not implemented
+        "StepMath",
     ];
     let skip_set: std::collections::HashSet<&str> = skip_tags.iter().copied().collect();
 

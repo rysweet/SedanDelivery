@@ -12,6 +12,17 @@ use crate::types::Value;
 use super::helpers::{eval_binary_values, value_to_expr};
 use super::{ExecContext, MutationStats, QueryExecutor, Row};
 
+fn format_value(v: &Value) -> String {
+    match v {
+        Value::Str(s) => s.to_string(),
+        Value::Int(n) => n.to_string(),
+        Value::Float(f) => f.to_string(),
+        Value::Bool(b) => b.to_string(),
+        Value::Null => "null".to_string(),
+        other => format!("{:?}", other),
+    }
+}
+
 impl<'a> QueryExecutor<'a> {
     /// Build a `FilterRow` (borrowed string-key map) from an owned `Row`.
     ///
@@ -527,6 +538,152 @@ impl<'a> QueryExecutor<'a> {
                                 expected: "Relationship".to_string(),
                                 actual: other.type_name().to_string(),
                             })),
+                        }
+                    }
+                    "gremlin_valuemap" => {
+                        // valueMap(): extract properties and wrap each in a list.
+                        // Args: element, with_tokens_bool [, key1, key2, ...]
+                        let mut args_iter = evaled_args.into_iter();
+                        let element = args_iter.next();
+                        let with_tokens = matches!(args_iter.next(), Some(Value::Bool(true)));
+                        let keys: Vec<String> = args_iter
+                            .filter_map(|v| match v {
+                                Value::Str(s) => Some(s.to_string()),
+                                _ => None,
+                            })
+                            .collect();
+                        match element {
+                            Some(Value::Node(node_id)) => {
+                                match self.cached_get_node(graph, node_id)? {
+                                    Some(data) => {
+                                        let mut wrapped: indexmap::IndexMap<Box<str>, Value> =
+                                            indexmap::IndexMap::new();
+                                        if with_tokens {
+                                            wrapped.insert(
+                                                "t[id]".into(),
+                                                Value::Int(node_id.0 as i64),
+                                            );
+                                            let label_str = data
+                                                .labels
+                                                .first()
+                                                .map(|l| l.to_string())
+                                                .unwrap_or_default();
+                                            wrapped.insert(
+                                                "t[label]".into(),
+                                                Value::Str(label_str.into()),
+                                            );
+                                        }
+                                        for (k, v) in data.properties.into_iter() {
+                                            if keys.is_empty()
+                                                || keys.iter().any(|fk| fk == &k)
+                                            {
+                                                wrapped.insert(
+                                                    k.into_boxed_str(),
+                                                    Value::List(vec![v]),
+                                                );
+                                            }
+                                        }
+                                        Ok(Value::Map(wrapped))
+                                    }
+                                    None => Ok(Value::Map(indexmap::IndexMap::new())),
+                                }
+                            }
+                            Some(Value::Edge(edge_id)) => {
+                                match self.cached_get_edge(graph, edge_id)? {
+                                    Some(data) => {
+                                        let mut wrapped: indexmap::IndexMap<Box<str>, Value> =
+                                            indexmap::IndexMap::new();
+                                        if with_tokens {
+                                            wrapped.insert(
+                                                "t[id]".into(),
+                                                Value::Int(edge_id.0 as i64),
+                                            );
+                                            wrapped.insert(
+                                                "t[label]".into(),
+                                                Value::Str(
+                                                    data.rel_type.as_str().into(),
+                                                ),
+                                            );
+                                        }
+                                        for (k, v) in data.properties.into_iter() {
+                                            if keys.is_empty()
+                                                || keys.iter().any(|fk| fk == &k)
+                                            {
+                                                wrapped.insert(
+                                                    k.into_boxed_str(),
+                                                    Value::List(vec![v]),
+                                                );
+                                            }
+                                        }
+                                        Ok(Value::Map(wrapped))
+                                    }
+                                    None => Ok(Value::Map(indexmap::IndexMap::new())),
+                                }
+                            }
+                            Some(Value::Map(m)) => {
+                                let wrapped: indexmap::IndexMap<Box<str>, Value> = m
+                                    .into_iter()
+                                    .filter(|(k, _)| {
+                                        keys.is_empty()
+                                            || keys.iter().any(|fk| fk.as_str() == &**k)
+                                    })
+                                    .map(|(k, v)| (k, Value::List(vec![v])))
+                                    .collect();
+                                Ok(Value::Map(wrapped))
+                            }
+                            Some(other) => Ok(other),
+                            None => Ok(Value::Null),
+                        }
+                    }
+                    "gremlin_format" => {
+                        // format(): resolve %{key} from node/edge properties.
+                        // Returns Null if any %{key} placeholder can't be resolved.
+                        match (evaled_args.first(), evaled_args.get(1)) {
+                            (Some(Value::Node(node_id)), Some(Value::Str(pattern))) => {
+                                match self.cached_get_node(graph, *node_id)? {
+                                    Some(data) => {
+                                        let mut result = pattern.to_string();
+                                        for (k, v) in data.properties.iter() {
+                                            let placeholder = format!("%{{{}}}", k);
+                                            let val_str = format_value(v);
+                                            result = result.replace(&placeholder, &val_str);
+                                        }
+                                        if result.contains("%{") {
+                                            Ok(Value::Null)
+                                        } else {
+                                            Ok(Value::Str(result.into()))
+                                        }
+                                    }
+                                    None => Ok(Value::Null),
+                                }
+                            }
+                            (Some(Value::Edge(edge_id)), Some(Value::Str(pattern))) => {
+                                match self.cached_get_edge(graph, *edge_id)? {
+                                    Some(data) => {
+                                        let mut result = pattern.to_string();
+                                        for (k, v) in data.properties.iter() {
+                                            let placeholder = format!("%{{{}}}", k);
+                                            let val_str = format_value(v);
+                                            result = result.replace(&placeholder, &val_str);
+                                        }
+                                        if result.contains("%{") {
+                                            Ok(Value::Null)
+                                        } else {
+                                            Ok(Value::Str(result.into()))
+                                        }
+                                    }
+                                    None => Ok(Value::Null),
+                                }
+                            }
+                            (Some(Value::Str(_)), Some(Value::Str(pattern))) => {
+                                // Format with a string value (no properties to resolve)
+                                if !pattern.contains("%{") {
+                                    Ok(Value::Str(pattern.clone()))
+                                } else {
+                                    eval_function_with_vals(name, evaled_args)
+                                }
+                            }
+                            _ => eval_function_with_vals(name, evaled_args),
                         }
                     }
                     _ => eval_function_with_vals(name, evaled_args),
