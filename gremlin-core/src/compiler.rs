@@ -2471,37 +2471,32 @@ impl GremlinCompiler {
                 GremlinStep::Concat(traversals) => {
                     let child = current.take().ok_or(CompileError::MissingChild)?;
                     let alias = self.next_alias("concat");
-                    // Build concat args: current value + each sub-traversal compiled
+                    // Build concat args: current value + each sub-traversal result
                     let mut args = vec![Expr::Variable(current_alias.clone())];
+                    let mut base = child;
                     for trav in traversals {
+                        if trav.is_empty() {
+                            // Empty traversal → empty string
+                            args.push(Expr::Str("".into()));
+                            continue;
+                        }
+                        // Single constant → inline
+                        if trav.len() == 1 {
+                            if let GremlinStep::Constant(v) = &trav[0] {
+                                args.push(gremlin_value_to_expr(v));
+                                continue;
+                            }
+                        }
+                        // Sub-traversal: compile and wrap in Apply
                         let mut sub = self.sub_compiler();
                         let sub_op = sub.compile_seeded(trav, &current_alias)?;
+                        let sub_alias = sub.last_alias.clone();
                         self.absorb(&sub);
-                        // Wrap sub-traversal as an expression reference
-                        args.push(Expr::FunctionCall {
-                            name: SmolStr::new("gremlin_subtraversal"),
-                            args: vec![],
-                            distinct: false,
-                        });
-                        // For simple cases (constant/values), extract directly
-                        if trav.len() == 1 {
-                            match &trav[0] {
-                                GremlinStep::Constant(v) => {
-                                    args.pop();
-                                    args.push(gremlin_value_to_expr(v));
-                                }
-                                _ => {
-                                    args.pop();
-                                    // Fall back to Apply-based concat
-                                    // For now, treat as identity
-                                    args.push(Expr::Str("".into()));
-                                }
-                            }
-                        } else {
-                            args.pop();
-                            args.push(Expr::Str("".into()));
-                        }
-                        let _ = sub_op;
+                        base = Operator::Apply {
+                            outer: Box::new(base),
+                            inner: Box::new(sub_op),
+                        };
+                        args.push(Expr::Variable(sub_alias));
                     }
                     let mut items = vec![(
                         Expr::FunctionCall {
@@ -2514,7 +2509,7 @@ impl GremlinCompiler {
                     items.extend(self.label_carry_items());
                     current = Some(Operator::Project {
                         items,
-                        child: Box::new(child),
+                        child: Box::new(base),
                     });
                     current_alias = alias;
                 }
