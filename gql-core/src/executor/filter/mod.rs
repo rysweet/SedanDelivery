@@ -1282,9 +1282,15 @@ fn gremlin_pred_check(val: &Value, pred_op: &str, pred_val: &Value) -> bool {
         "eq" => gremlin_eq(val, pred_val),
         "neq" => !gremlin_eq(val, pred_val),
         "gt" => gremlin_cmp(val, pred_val) == Some(std::cmp::Ordering::Greater),
-        "gte" => matches!(gremlin_cmp(val, pred_val), Some(std::cmp::Ordering::Greater | std::cmp::Ordering::Equal)),
+        "gte" => matches!(
+            gremlin_cmp(val, pred_val),
+            Some(std::cmp::Ordering::Greater | std::cmp::Ordering::Equal)
+        ),
         "lt" => gremlin_cmp(val, pred_val) == Some(std::cmp::Ordering::Less),
-        "lte" => matches!(gremlin_cmp(val, pred_val), Some(std::cmp::Ordering::Less | std::cmp::Ordering::Equal)),
+        "lte" => matches!(
+            gremlin_cmp(val, pred_val),
+            Some(std::cmp::Ordering::Less | std::cmp::Ordering::Equal)
+        ),
         "within" => {
             if let Value::List(options) = pred_val {
                 options.iter().any(|o| gremlin_eq(val, o))

@@ -968,6 +968,22 @@ fn values_match_ctx(
         (Value::Str(a), Value::Int(e)) => a.as_ref() == &e.to_string(),
         (Value::Str(a), Value::Float(e)) => a.as_ref() == &e.to_string(),
         (Value::Str(a), Value::Bool(e)) => a.as_ref() == &e.to_string(),
+        // List matching stringified list: List(["marko"]) matches Str("[\"marko\"]")
+        (Value::List(items), Value::Str(expected_str)) => {
+            let parts: Vec<String> = items
+                .iter()
+                .map(|v| match v {
+                    Value::Str(s) => format!("\"{}\"", s),
+                    Value::Int(n) => n.to_string(),
+                    Value::Float(f) => f.to_string(),
+                    Value::Bool(b) => b.to_string(),
+                    Value::Null => "null".to_string(),
+                    other => format!("{:?}", other),
+                })
+                .collect();
+            let formatted = format!("[{}]", parts.join(", "));
+            formatted == expected_str.as_ref()
+        }
         (Value::Str(a), Value::Str(e)) => a == e,
         (Value::Bool(a), Value::Bool(e)) => a == e,
         (Value::Null, Value::Null) => true,

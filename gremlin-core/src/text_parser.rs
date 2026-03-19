@@ -792,7 +792,8 @@ fn parse_step_token(
         "substring" => {
             let args = parse_arg_list(args_str, resolve_param)?;
             // Check if first arg is Scope.local
-            let (offset, is_local) = if matches!(args.first(), Some(GremlinValue::String(s)) if s.contains("local")) {
+            let (offset, is_local) = if matches!(args.first(), Some(GremlinValue::String(s)) if s.contains("local"))
+            {
                 (1, true)
             } else {
                 (0, false)

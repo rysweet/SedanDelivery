@@ -2213,7 +2213,8 @@ impl GremlinCompiler {
                 GremlinStep::Combine(rhs_steps) => {
                     let child = current.take().ok_or(CompileError::MissingChild)?;
                     let alias = self.next_alias("coll");
-                    let (rhs_expr, base) = self.compile_collection_rhs(rhs_steps, &current_alias, child)?;
+                    let (rhs_expr, base) =
+                        self.compile_collection_rhs(rhs_steps, &current_alias, child)?;
                     current = Some(Operator::Project {
                         items: vec![(
                             Expr::FunctionCall {
@@ -2231,7 +2232,8 @@ impl GremlinCompiler {
                 GremlinStep::Intersect(rhs_steps) => {
                     let child = current.take().ok_or(CompileError::MissingChild)?;
                     let alias = self.next_alias("coll");
-                    let (rhs_expr, base) = self.compile_collection_rhs(rhs_steps, &current_alias, child)?;
+                    let (rhs_expr, base) =
+                        self.compile_collection_rhs(rhs_steps, &current_alias, child)?;
                     current = Some(Operator::Project {
                         items: vec![(
                             Expr::FunctionCall {
@@ -2249,7 +2251,8 @@ impl GremlinCompiler {
                 GremlinStep::Difference(rhs_steps) => {
                     let child = current.take().ok_or(CompileError::MissingChild)?;
                     let alias = self.next_alias("coll");
-                    let (rhs_expr, base) = self.compile_collection_rhs(rhs_steps, &current_alias, child)?;
+                    let (rhs_expr, base) =
+                        self.compile_collection_rhs(rhs_steps, &current_alias, child)?;
                     current = Some(Operator::Project {
                         items: vec![(
                             Expr::FunctionCall {
@@ -2267,7 +2270,8 @@ impl GremlinCompiler {
                 GremlinStep::Disjunct(rhs_steps) => {
                     let child = current.take().ok_or(CompileError::MissingChild)?;
                     let alias = self.next_alias("coll");
-                    let (rhs_expr, base) = self.compile_collection_rhs(rhs_steps, &current_alias, child)?;
+                    let (rhs_expr, base) =
+                        self.compile_collection_rhs(rhs_steps, &current_alias, child)?;
                     current = Some(Operator::Project {
                         items: vec![(
                             Expr::FunctionCall {
@@ -2285,7 +2289,8 @@ impl GremlinCompiler {
                 GremlinStep::MergeList(rhs_steps) => {
                     let child = current.take().ok_or(CompileError::MissingChild)?;
                     let alias = self.next_alias("coll");
-                    let (rhs_expr, base) = self.compile_collection_rhs(rhs_steps, &current_alias, child)?;
+                    let (rhs_expr, base) =
+                        self.compile_collection_rhs(rhs_steps, &current_alias, child)?;
                     current = Some(Operator::Project {
                         items: vec![(
                             Expr::FunctionCall {
@@ -2303,7 +2308,8 @@ impl GremlinCompiler {
                 GremlinStep::Product(rhs_steps) => {
                     let child = current.take().ok_or(CompileError::MissingChild)?;
                     let alias = self.next_alias("coll");
-                    let (rhs_expr, base) = self.compile_collection_rhs(rhs_steps, &current_alias, child)?;
+                    let (rhs_expr, base) =
+                        self.compile_collection_rhs(rhs_steps, &current_alias, child)?;
                     current = Some(Operator::Project {
                         items: vec![(
                             Expr::FunctionCall {
@@ -2672,7 +2678,10 @@ fn predicate_to_args(pred: &Predicate) -> (Box<str>, Expr) {
         ),
         Predicate::Between(low, high) => (
             "within".into(),
-            Expr::List(vec![gremlin_value_to_expr(low), gremlin_value_to_expr(high)]),
+            Expr::List(vec![
+                gremlin_value_to_expr(low),
+                gremlin_value_to_expr(high),
+            ]),
         ),
         _ => ("neq".into(), Expr::Null),
     }
