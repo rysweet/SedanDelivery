@@ -204,6 +204,8 @@ impl GremlinCompiler {
         let mut pending_group_by_count: u32 = 0;
         // Track whether the preceding step was select for by() modulation
         let mut pending_select = false;
+        // Collected by() modulations for select (applied cyclically)
+        let mut select_by_mods: Vec<String> = Vec::new();
         // Track whether the preceding step was dedup for by() modulation
         let mut pending_dedup = false;
         // Track whether the preceding step was aggregate for by() modulation
@@ -229,6 +231,20 @@ impl GremlinCompiler {
             if !matches!(step, GremlinStep::By(..)) {
                 aggregate_by_consumed = false;
                 pending_sack_op = false;
+                // Apply collected select by() modulations cyclically
+                if pending_select && !select_by_mods.is_empty() {
+                    if let Some(Operator::GremlinSelect { ref mut keys, .. }) = current {
+                        for (i, (src_var, _)) in keys.iter_mut().enumerate() {
+                            let mod_key = &select_by_mods[i % select_by_mods.len()];
+                            if !mod_key.is_empty() {
+                                *src_var = Identifier::new(format!(
+                                    "__prop_{}__{}", mod_key, src_var.0
+                                ));
+                            }
+                        }
+                    }
+                }
+                pending_select = false;
             }
             match step {
                 GremlinStep::V(ids) => {
@@ -766,6 +782,7 @@ impl GremlinCompiler {
                             child: Box::new(child),
                         });
                         pending_select = true;
+                        select_by_mods.clear();
                     }
                 }
 
@@ -1131,23 +1148,8 @@ impl GremlinCompiler {
                             pending_group = false;
                         }
                     } else if pending_select {
-                        // by() after select() — project selected values through property
-                        if let Some(Operator::GremlinSelect { ref mut keys, .. }) = current {
-                            if !key.is_empty() {
-                                // Apply property projection to ALL select keys
-                                // by("name") means project each selected value's "name" property
-                                for (src_var, _) in keys.iter_mut() {
-                                    // The src_var already points to the element; we need
-                                    // to change it to a property-accessor alias. We'll
-                                    // handle this by creating a synthetic alias that the
-                                    // GremlinSelect executor interprets as property access.
-                                    // For now, set a naming convention.
-                                    *src_var =
-                                        Identifier::new(format!("__prop_{}__{}", key, src_var.0));
-                                }
-                            }
-                        }
-                        pending_select = false;
+                        // by() after select() — collect modulation
+                        select_by_mods.push(key.clone());
                     } else if pending_dedup {
                         // by() after dedup() — dedup by specific property
                         if !key.is_empty() {
@@ -2970,6 +2972,20 @@ impl GremlinCompiler {
             return Err(CompileError::InvalidSequence(
                 "The repeat()-traversal was not defined".into(),
             ));
+        }
+
+        // Apply any remaining select by() modulations
+        if pending_select && !select_by_mods.is_empty() {
+            if let Some(Operator::GremlinSelect { ref mut keys, .. }) = current {
+                for (i, (src_var, _)) in keys.iter_mut().enumerate() {
+                    let mod_key = &select_by_mods[i % select_by_mods.len()];
+                    if !mod_key.is_empty() {
+                        *src_var = Identifier::new(format!(
+                            "__prop_{}__{}", mod_key, src_var.0
+                        ));
+                    }
+                }
+            }
         }
 
         self.last_alias = current_alias;
