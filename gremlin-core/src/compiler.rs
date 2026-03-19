@@ -465,7 +465,7 @@ impl GremlinCompiler {
                         current_alias = alias;
                     } else {
                         // Multiple keys: unwind values for each key, skip nulls
-                        let alias = self.next_alias("val");
+                        let _val_alias = self.next_alias("val");
                         let items: Vec<(Expr, Option<Identifier>)> = keys
                             .iter()
                             .map(|k| {
@@ -2405,7 +2405,8 @@ fn predicate_to_expr(pred: &Predicate, alias: &Identifier) -> Expr {
         Predicate::Containing(_) | Predicate::NotContaining(_)
         | Predicate::StartingWith(_) | Predicate::NotStartingWith(_)
         | Predicate::EndingWith(_) | Predicate::NotEndingWith(_)
-        | Predicate::Regex(_) | Predicate::NotRegex(_) => {
+        | Predicate::Regex(_) | Predicate::NotRegex(_)
+        | Predicate::IsType(_) => {
             predicate_to_prop_expr(pred, var)
         }
     }
@@ -2522,10 +2523,13 @@ fn predicate_to_prop_expr(pred: &Predicate, prop_expr: Expr) -> Expr {
                 distinct: false,
             }),
         },
+        Predicate::IsType(v) => Expr::FunctionCall {
+            name: SmolStr::new("gremlin_isType"),
+            args: vec![prop_expr, gremlin_value_to_expr(v)],
+            distinct: false,
+        },
     }
 }
-
-/// Check if a predicate's argument is a string that corresponds to a step label
 /// in the alias map. Returns the variable expression for that label if so.
 fn predicate_label_ref(pred: &Predicate, alias_map: &HashMap<String, Identifier>) -> Option<Expr> {
     let label = match pred {
@@ -2556,7 +2560,8 @@ fn predicate_to_binary_op(pred: &Predicate) -> BinaryOp {
         Predicate::Containing(_) | Predicate::NotContaining(_)
         | Predicate::StartingWith(_) | Predicate::NotStartingWith(_)
         | Predicate::EndingWith(_) | Predicate::NotEndingWith(_)
-        | Predicate::Regex(_) | Predicate::NotRegex(_) => BinaryOp::Eq,
+        | Predicate::Regex(_) | Predicate::NotRegex(_)
+        | Predicate::IsType(_) => BinaryOp::Eq,
     }
 }
 

@@ -24,6 +24,8 @@ pub enum Predicate {
     NotEndingWith(GremlinValue),
     Regex(GremlinValue),
     NotRegex(GremlinValue),
+    /// `P.typeOf(GType.STRING)` — check if value is of the specified Gremlin type
+    IsType(GremlinValue),
 }
 
 /// A single Gremlin traversal step.

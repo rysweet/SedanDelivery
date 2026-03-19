@@ -736,6 +736,38 @@ pub fn eval_function_with_vals(name: &str, vals: Vec<Value>) -> Result<Value, Gq
                 _ => Ok(Value::Bool(false)),
             }
         }
+        "gremlin_istype" => {
+            match (vals.first(), vals.get(1)) {
+                (Some(val), Some(Value::Str(expected_type))) => {
+                    let actual_type = match val {
+                        Value::Int(_) => "integer",
+                        Value::Float(_) => "double",
+                        Value::Str(_) => "string",
+                        Value::Bool(_) => "boolean",
+                        Value::Null => "null",
+                        Value::List(_) => "list",
+                        Value::Map(_) => "map",
+                        Value::Node(_) => "vertex",
+                        Value::Edge(_) => "edge",
+                        Value::Date(_) => "date",
+                        Value::Path { .. } => "path",
+                        _ => "unknown",
+                    };
+                    // Handle various type name formats
+                    let expected = expected_type.to_lowercase();
+                    let matches = actual_type == expected
+                        || (expected == "long" && actual_type == "integer")
+                        || (expected == "short" && actual_type == "integer")
+                        || (expected == "byte" && actual_type == "integer")
+                        || (expected == "biginteger" && actual_type == "integer")
+                        || (expected == "float" && actual_type == "double")
+                        || (expected == "bigdecimal" && actual_type == "double")
+                        || (expected == "set" && actual_type == "list");
+                    Ok(Value::Bool(matches))
+                }
+                _ => Ok(Value::Bool(false)),
+            }
+        }
 
         // ── Unknown function ──────────────────────────────────────────────────
         other => Err(GqlError::Execution(ExecutionError::unsupported(format!(

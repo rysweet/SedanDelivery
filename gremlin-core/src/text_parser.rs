@@ -1033,6 +1033,19 @@ fn try_parse_predicate_call(
         "notRegex" | "notregex" => {
             Some(Predicate::NotRegex(args.into_iter().next()?))
         }
+        "typeOf" | "typeof" => {
+            // P.typeOf(GType.STRING) → IsType("string")
+            let arg = args.into_iter().next()?;
+            // GType.XXX is parsed as a string, normalize it
+            let type_name = match &arg {
+                GremlinValue::String(s) => {
+                    let s = s.strip_prefix("GType.").unwrap_or(s);
+                    normalize_gtype(s)
+                }
+                _ => return None,
+            };
+            Some(Predicate::IsType(GremlinValue::String(type_name)))
+        }
         _ => None,
     }
 }
@@ -1301,6 +1314,11 @@ fn parse_single_value(
         return Ok(GremlinValue::String("none".to_string()));
     }
 
+    // GType.* — Gremlin type constants
+    if let Some(gtype) = s.strip_prefix("GType.") {
+        return Ok(GremlinValue::String(format!("GType.{gtype}")));
+    }
+
     // Parameter reference (bare identifier like vid1, xx1)
     if let Some(val) = resolve_param(s) {
         return Ok(val);
@@ -1323,6 +1341,26 @@ fn unquote(s: &str) -> String {
             .replace("\\\\", "\\")
     } else {
         s.to_string()
+    }
+}
+
+/// Normalize a GType name to the Gremlin type string used by typeOf().
+fn normalize_gtype(s: &str) -> String {
+    match s.to_uppercase().as_str() {
+        "STRING" | "JAVA_LANG_STRING" => "string".to_string(),
+        "INT" | "INTEGER" | "JAVA_LANG_INTEGER" => "integer".to_string(),
+        "LONG" | "JAVA_LANG_LONG" => "long".to_string(),
+        "DOUBLE" | "JAVA_LANG_DOUBLE" => "double".to_string(),
+        "FLOAT" | "JAVA_LANG_FLOAT" => "float".to_string(),
+        "BOOLEAN" | "JAVA_LANG_BOOLEAN" => "boolean".to_string(),
+        "MAP" | "JAVA_UTIL_MAP" => "map".to_string(),
+        "LIST" | "JAVA_UTIL_LIST" => "list".to_string(),
+        "SET" | "JAVA_UTIL_SET" => "set".to_string(),
+        "SHORT" | "JAVA_LANG_SHORT" => "short".to_string(),
+        "BYTE" | "JAVA_LANG_BYTE" => "byte".to_string(),
+        "BIGINTEGER" | "JAVA_MATH_BIGINTEGER" => "biginteger".to_string(),
+        "BIGDECIMAL" | "JAVA_MATH_BIGDECIMAL" => "bigdecimal".to_string(),
+        other => other.to_lowercase(),
     }
 }
 
