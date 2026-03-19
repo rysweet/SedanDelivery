@@ -2687,20 +2687,11 @@ impl GremlinCompiler {
             }
         }
 
-        // If a withSack() was present, wrap the entire tree in a
-        // GremlinSideEffect-style operator that initializes __sack on
-        // every input row. We use Apply(outer=current, inner=Project(__sack)).
+        // If a withSack() was present, inject __sack initialization into the
+        // bottom-most leaf operator of the tree.
         if let Some(init_expr) = pending_sack_init {
-            if let Some(op) = current.take() {
-                // Use Apply: outer produces the rows, inner adds __sack
-                let sack_init_op = Operator::Project {
-                    items: vec![(init_expr, Some(Identifier::new("__sack")))],
-                    child: Box::new(Operator::SingleRow),
-                };
-                current = Some(Operator::Apply {
-                    outer: Box::new(op),
-                    inner: Box::new(sack_init_op),
-                });
+            if let Some(ref mut op) = current {
+                inject_sack_init(op, &init_expr);
             }
         }
 
@@ -2710,10 +2701,9 @@ impl GremlinCompiler {
 }
 
 /// Inject a `__sack` column into the lowest-level scan/single-row operator
-/// by wrapping it in a Set operator that adds the initialization expression.
+/// by wrapping it in an Apply that adds the initialization value.
 fn inject_sack_init(op: &mut Operator, init_expr: &Expr) {
     match op {
-        // Recurse into child-bearing operators to find the leaf scan
         Operator::Filter { child, .. }
         | Operator::Sort { child, .. }
         | Operator::Limit { child, .. }
@@ -2722,30 +2712,38 @@ fn inject_sack_init(op: &mut Operator, init_expr: &Expr) {
         | Operator::GremlinAggregate { child, .. }
         | Operator::Cap { child, .. }
         | Operator::Repeat { child, .. }
-        | Operator::Project { child, .. } => {
+        | Operator::Project { child, .. }
+        | Operator::GremlinGroup { child, .. }
+        | Operator::GremlinSelect { child, .. }
+        | Operator::Choose { child, .. }
+        | Operator::ChooseMap { child, .. }
+        | Operator::Coalesce { child, .. } => {
             inject_sack_init(child, init_expr);
         }
         Operator::Apply { outer, .. } => {
             inject_sack_init(outer, init_expr);
         }
-        Operator::Union { left, .. } => {
+        Operator::Union { left, right, .. } => {
             inject_sack_init(left, init_expr);
+            inject_sack_init(right, init_expr);
         }
-        // Leaf operators: wrap in a Project that adds __sack
+        // Leaf operators: wrap in Apply that adds __sack
         Operator::NodeScan { .. }
         | Operator::IndexScan { .. }
         | Operator::NodeByIdSeek { .. }
         | Operator::SingleRow
-        | Operator::Unwind { .. } => {
+        | Operator::Unwind { .. }
+        | Operator::Aggregate { .. } => {
             let original = std::mem::replace(op, Operator::SingleRow);
-            *op = Operator::Project {
-                items: vec![(init_expr.clone(), Some(Identifier::new("__sack")))],
-                child: Box::new(original),
+            *op = Operator::Apply {
+                outer: Box::new(original),
+                inner: Box::new(Operator::Project {
+                    items: vec![(init_expr.clone(), Some(Identifier::new("__sack")))],
+                    child: Box::new(Operator::SingleRow),
+                }),
             };
         }
-        _ => {
-            // For other operators, try to wrap child if it exists
-        }
+        _ => {}
     }
 }
 
