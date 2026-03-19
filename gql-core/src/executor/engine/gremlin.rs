@@ -485,12 +485,19 @@ impl<'a> QueryExecutor<'a> {
             .map(|(label, alias)| (alias.0.as_str(), label.as_str()))
             .collect();
 
-        // For each input row, execute all patterns and join on shared bindings.
+        // Match patterns already include their own vertex scans (V()),
+        // so we seed with a single empty row rather than iterating over
+        // all input rows (which would create a cross-product).
+        let seed_rows = if input.is_empty() {
+            return Ok(Vec::new());
+        } else {
+            vec![Row::new()]
+        };
+
         let mut out = Vec::new();
-        for row in &input {
+        for row in &seed_rows {
             cx.budget.check_or_err()?;
 
-            // Start with the input row as the initial binding set.
             let mut current_bindings = vec![row.clone()];
 
             for pattern in patterns {
