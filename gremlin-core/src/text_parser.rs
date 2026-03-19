@@ -308,7 +308,7 @@ fn parse_step_token(
         }
         "has" => parse_has_step(args_str, resolve_param, out)?,
         "hasLabel" => {
-            let args = parse_string_arg_list(args_str)?;
+            let args = parse_string_arg_list_with_params(args_str, resolve_param)?;
             out.push(GremlinStep::HasLabel(args));
         }
         "hasId" => {
@@ -324,27 +324,27 @@ fn parse_step_token(
             }
         }
         "out" => {
-            let args = parse_string_arg_list(args_str)?;
+            let args = parse_string_arg_list_with_params(args_str, resolve_param)?;
             out.push(GremlinStep::Out(args));
         }
         "in" => {
-            let args = parse_string_arg_list(args_str)?;
+            let args = parse_string_arg_list_with_params(args_str, resolve_param)?;
             out.push(GremlinStep::In(args));
         }
         "both" => {
-            let args = parse_string_arg_list(args_str)?;
+            let args = parse_string_arg_list_with_params(args_str, resolve_param)?;
             out.push(GremlinStep::Both(args));
         }
         "outE" => {
-            let args = parse_string_arg_list(args_str)?;
+            let args = parse_string_arg_list_with_params(args_str, resolve_param)?;
             out.push(GremlinStep::OutE(args));
         }
         "inE" => {
-            let args = parse_string_arg_list(args_str)?;
+            let args = parse_string_arg_list_with_params(args_str, resolve_param)?;
             out.push(GremlinStep::InE(args));
         }
         "bothE" => {
-            let args = parse_string_arg_list(args_str)?;
+            let args = parse_string_arg_list_with_params(args_str, resolve_param)?;
             out.push(GremlinStep::BothE(args));
         }
         "inV" => out.push(GremlinStep::InV),
@@ -1628,6 +1628,27 @@ fn parse_string_arg_list(args_str: &str) -> Result<Vec<String>, TextParseError> 
     for arg in raw_args {
         let s = arg.trim();
         result.push(unquote(s));
+    }
+    Ok(result)
+}
+
+/// Parse a list of string arguments, resolving parameter references.
+fn parse_string_arg_list_with_params(
+    args_str: &str,
+    resolve_param: &dyn Fn(&str) -> Option<GremlinValue>,
+) -> Result<Vec<String>, TextParseError> {
+    if args_str.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+    let raw_args = split_top_level_args(args_str);
+    let mut result = Vec::new();
+    for arg in raw_args {
+        let s = arg.trim();
+        if let Some(GremlinValue::String(val)) = resolve_param(s) {
+            result.push(val);
+        } else {
+            result.push(unquote(s));
+        }
     }
     Ok(result)
 }
