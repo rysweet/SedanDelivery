@@ -5,7 +5,8 @@ use crate::planner::Operator;
 use crate::types::Value;
 
 use super::helpers::{
-    cmp_values, eval_count_expr, expr_to_column_name, inject_parameters, RowDedupSet,
+    cmp_values, eval_count_expr, expr_to_column_name, gremlin_cmp_values, inject_parameters,
+    RowDedupSet,
 };
 use super::{ExecContext, QueryExecutor, Row};
 
@@ -189,7 +190,7 @@ impl<'a> QueryExecutor<'a> {
         cx: &mut ExecContext<'_>,
         op: &Operator,
     ) -> Result<Vec<Row>, GqlError> {
-        let Operator::Sort { items, child } = op else {
+        let Operator::Sort { items, gremlin_order, child } = op else {
             debug_assert!(false, "expected Sort operator");
             return Err(GqlError::Execution(
                 crate::error::ExecutionError::UnsupportedFeature {
@@ -213,12 +214,17 @@ impl<'a> QueryExecutor<'a> {
             })
             .collect::<Result<Vec<_>, GqlError>>()?;
 
+        let use_gremlin = *gremlin_order;
         keyed.sort_by(|(ka, _), (kb, _)| {
             for i in 0..items.len() {
                 let va = &ka[i];
                 let vb = &kb[i];
                 let asc = items[i].1;
-                let ord = cmp_values(va, vb);
+                let ord = if use_gremlin {
+                    gremlin_cmp_values(va, vb)
+                } else {
+                    cmp_values(va, vb)
+                };
                 if ord != std::cmp::Ordering::Equal {
                     return if asc { ord } else { ord.reverse() };
                 }
@@ -456,6 +462,7 @@ mod tests {
                     ),
                     true,
                 )],
+                gremlin_order: false,
                 child: Box::new(Operator::NodeScan {
                     label: Some(Label::new("P")),
                     alias: Identifier::new("n"),
@@ -582,6 +589,7 @@ mod tests {
                     Expr::Property(Box::new(Expr::Variable(Identifier::new("n"))), "i".into()),
                     true,
                 )],
+                gremlin_order: false,
                 child: Box::new(Operator::NodeScan {
                     label: Some(Label::new("N")),
                     alias: Identifier::new("n"),

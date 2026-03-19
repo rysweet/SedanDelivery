@@ -9,6 +9,7 @@ mod expr_naming;
 // paths continue to work without modification.
 pub(crate) use self::arithmetic::{eval_binary_values, value_to_expr};
 pub use self::comparison::cmp_values;
+pub use self::comparison::gremlin_cmp_values;
 pub(crate) use self::dedup::RowDedupSet;
 pub(crate) use self::expr_naming::expr_to_column_name;
 

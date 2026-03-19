@@ -441,6 +441,7 @@ mod tests {
                     ),
                     true,
                 )],
+                gremlin_order: false,
                 child: Box::new(Operator::NodeScan {
                     label: Some(Label::new("Person")),
                     alias: Identifier::new("p"),

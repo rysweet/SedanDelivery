@@ -1046,6 +1046,7 @@ impl GremlinCompiler {
                             // by() with no key — sort by current value
                             current = Some(Operator::Sort {
                                 items: vec![(Expr::Variable(current_alias.clone()), !descending)],
+                                gremlin_order: true,
                                 child: Box::new(child),
                             });
                         } else if key == "~id" || key == "T.id" || key == "t[id]" {
@@ -1056,6 +1057,7 @@ impl GremlinCompiler {
                             };
                             current = Some(Operator::Sort {
                                 items: vec![(sort_expr, !descending)],
+                                gremlin_order: true,
                                 child: Box::new(child),
                             });
                         } else if key == "~label" || key == "T.label" || key == "t[label]" {
@@ -1066,6 +1068,7 @@ impl GremlinCompiler {
                             };
                             current = Some(Operator::Sort {
                                 items: vec![(sort_expr, !descending)],
+                                gremlin_order: true,
                                 child: Box::new(child),
                             });
                         } else {
@@ -1080,6 +1083,7 @@ impl GremlinCompiler {
                             };
                             current = Some(Operator::Sort {
                                 items: vec![(prop_expr, !descending)],
+                                gremlin_order: true,
                                 child: Box::new(filtered),
                             });
                         }
@@ -1964,6 +1968,7 @@ impl GremlinCompiler {
                     let child = current.take().ok_or(CompileError::MissingChild)?;
                     let reversed = Operator::Sort {
                         items: vec![(Expr::Variable(current_alias.clone()), false)],
+                        gremlin_order: true,
                         child: Box::new(child),
                     };
                     let limited = Operator::Limit {
@@ -1972,6 +1977,7 @@ impl GremlinCompiler {
                     };
                     current = Some(Operator::Sort {
                         items: vec![(Expr::Variable(current_alias.clone()), true)],
+                        gremlin_order: true,
                         child: Box::new(limited),
                     });
                 }
@@ -2945,6 +2951,7 @@ impl GremlinCompiler {
             if let Some(child) = current.take() {
                 current = Some(Operator::Sort {
                     items: vec![(Expr::Variable(current_alias.clone()), true)],
+                    gremlin_order: true,
                     child: Box::new(child),
                 });
             }

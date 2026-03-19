@@ -82,6 +82,9 @@ pub enum Operator {
     },
     Sort {
         items: Vec<(Expr, bool)>, // (expr, ascending)
+        /// Use Gremlin orderability (null < bool < number < string < ...)
+        /// instead of openCypher ordering.
+        gremlin_order: bool,
         child: Box<Operator>,
     },
     Limit {

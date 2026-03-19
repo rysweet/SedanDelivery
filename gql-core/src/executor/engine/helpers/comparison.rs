@@ -141,6 +141,45 @@ pub fn cmp_values(a: &Value, b: &Value) -> std::cmp::Ordering {
     }
 }
 
+/// Compare two `Value`s using Gremlin/TinkerPop orderability semantics.
+///
+/// Gremlin ascending order: Null < Bool < Number < Date < String < UUID
+///   < Vertex < Edge < Property < Path < Set < List < Map
+pub fn gremlin_cmp_values(a: &Value, b: &Value) -> std::cmp::Ordering {
+    use std::cmp::Ordering::*;
+
+    fn type_rank(v: &Value) -> u8 {
+        match v {
+            Value::Null => 0,
+            Value::Bool(_) => 1,
+            Value::Float(f) if f.is_nan() => 3,
+            Value::Int(_) | Value::Float(_) => 2,
+            Value::Date(_) => 4,
+            Value::LocalTime(_) | Value::Time(_, _) => 5,
+            Value::LocalDateTime(_) => 6,
+            Value::DateTime(_) => 7,
+            Value::Duration(_) => 8,
+            Value::Str(_) => 10,
+            Value::Bytes(_) => 11,
+            Value::Node(_) => 20,
+            Value::Edge(_) => 21,
+            Value::Path { .. } => 22,
+            Value::List(_) => 30,
+            Value::Map(_) => 31,
+            Value::Point(_) => 32,
+        }
+    }
+
+    let ra = type_rank(a);
+    let rb = type_rank(b);
+    if ra != rb {
+        return ra.cmp(&rb);
+    }
+
+    // Delegate same-type comparison to the existing logic.
+    cmp_values(a, b)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
