@@ -36,9 +36,10 @@ impl<'a> QueryExecutor<'a> {
         let mut collected: Vec<Row> = Vec::new();
 
         let max_iterations = times.unwrap_or(256);
-        for _ in 0..max_iterations {
+        for iteration in 0..max_iterations {
             cx.budget.check_or_err()?;
 
+            // Pre-emit: collect traversers before body execution.
             if *emit {
                 collected.extend(current.clone());
             }
@@ -47,8 +48,6 @@ impl<'a> QueryExecutor<'a> {
             let mut next = Vec::new();
             for row in &current {
                 cx.budget.check_or_err()?;
-                // Strip the body output alias from the seed so Expand doesn't
-                // see a pre-bound destination and filter out valid expansions.
                 let mut seed_row = row.clone();
                 if let Some((from, _)) = remap {
                     seed_row.remove(from.as_str());
@@ -74,26 +73,32 @@ impl<'a> QueryExecutor<'a> {
 
             current = next;
 
-            // Check the until predicate if one exists.
+            // Check the until predicate per-traverser: traversers that match
+            // the until condition are collected and removed from further iteration.
             if let Some(until_op) = until {
-                let mut should_stop = false;
-                for row in &current {
+                let mut continuing = Vec::new();
+                for row in current.drain(..) {
                     self.foreach_seed.borrow_mut().replace(vec![row.clone()]);
                     let result = self.exec_operator(cx, until_op)?;
                     self.foreach_seed.borrow_mut().take();
                     if !result.is_empty() {
-                        should_stop = true;
-                        break;
+                        // This traverser matched until — collect it
+                        collected.push(row);
+                    } else {
+                        continuing.push(row);
                     }
                 }
-                if should_stop {
-                    break;
+                current = continuing;
+                if current.is_empty() {
+                    return Ok(collected);
                 }
             }
 
-            // For fixed-count mode without `until`, the loop counter handles termination.
-            if times.is_some() {
-                continue;
+            // For fixed-count mode, check if we've done enough iterations.
+            if let Some(t) = times {
+                if iteration + 1 >= *t {
+                    break;
+                }
             }
         }
 
@@ -191,7 +196,19 @@ impl<'a> QueryExecutor<'a> {
                 match match_val {
                     None => default_branch = Some(branch),
                     Some(v) => {
-                        if sel_value.as_ref() == Some(v) {
+                        let matches = match (sel_value.as_ref(), Some(v)) {
+                            (Some(Value::Int(a)), Some(Value::Int(b))) => a == b,
+                            (Some(Value::Float(a)), Some(Value::Float(b))) => {
+                                (a - b).abs() < 1e-9
+                            }
+                            (Some(Value::Int(a)), Some(Value::Float(b)))
+                            | (Some(Value::Float(b)), Some(Value::Int(a))) => {
+                                (*a as f64 - b).abs() < 1e-9
+                            }
+                            (Some(a), Some(b)) => a == b,
+                            _ => false,
+                        };
+                        if matches {
                             matched_branch = Some(branch);
                             break;
                         }
@@ -204,8 +221,10 @@ impl<'a> QueryExecutor<'a> {
                 let branch_rows = self.exec_operator(cx, branch)?;
                 self.foreach_seed.borrow_mut().take();
                 out.extend(branch_rows);
+            } else {
+                // No branch matches and no default → identity (pass through)
+                out.push(row);
             }
-            // If no branch matches and no default, the traverser is dropped.
         }
         Ok(out)
     }
