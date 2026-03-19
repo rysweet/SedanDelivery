@@ -67,6 +67,26 @@ fn register_modern_ids(world: &mut GremlinWorld, ids: &ModernGraphIds) {
     world.vertex_names.insert("josh".into(), ids.josh);
     world.vertex_names.insert("ripple".into(), ids.ripple);
     world.vertex_names.insert("peter".into(), ids.peter);
+
+    // Register edges as "src-type->dst"
+    world
+        .edge_names
+        .insert("marko-knows->vadas".into(), ids.marko_knows_vadas);
+    world
+        .edge_names
+        .insert("marko-knows->josh".into(), ids.marko_knows_josh);
+    world
+        .edge_names
+        .insert("marko-created->lop".into(), ids.marko_created_lop);
+    world
+        .edge_names
+        .insert("josh-created->ripple".into(), ids.josh_created_ripple);
+    world
+        .edge_names
+        .insert("josh-created->lop".into(), ids.josh_created_lop);
+    world
+        .edge_names
+        .insert("peter-created->lop".into(), ids.peter_created_lop);
 }
 
 // ── Given steps ───────────────────────────────────────────────────────────────
@@ -434,12 +454,17 @@ fn resolve_parameter_definition(
         if let Some(end) = rest.find(']') {
             let num_str = &rest[..end];
             let suffix = &rest[end + 1..];
-            if suffix.starts_with(".l") || suffix.starts_with(".i") {
+            if suffix.starts_with(".l")
+                || suffix.starts_with(".i")
+                || suffix.starts_with(".b")
+                || suffix.starts_with(".s")
+                || suffix.starts_with(".n")
+            {
                 if let Ok(n) = num_str.parse::<i64>() {
                     return GremlinValue::Integer(n);
                 }
             }
-            if suffix.starts_with(".d") || suffix.starts_with(".f") {
+            if suffix.starts_with(".d") || suffix.starts_with(".f") || suffix.starts_with(".m") {
                 if let Ok(f) = num_str.parse::<f64>() {
                     return GremlinValue::Float(f);
                 }
@@ -535,12 +560,17 @@ fn parse_tck_value(
         if let Some(end) = rest.find(']') {
             let num_str = &rest[..end];
             let suffix = &rest[end + 1..];
-            if suffix.starts_with(".l") || suffix.starts_with(".i") {
+            if suffix.starts_with(".l")
+                || suffix.starts_with(".i")
+                || suffix.starts_with(".b")
+                || suffix.starts_with(".s")
+                || suffix.starts_with(".n")
+            {
                 if let Ok(n) = num_str.parse::<i64>() {
                     return Value::Int(n);
                 }
             }
-            if suffix.starts_with(".d") || suffix.starts_with(".f") {
+            if suffix.starts_with(".d") || suffix.starts_with(".f") || suffix.starts_with(".m") {
                 if let Ok(f) = num_str.parse::<f64>() {
                     return Value::Float(f);
                 }
@@ -653,6 +683,19 @@ fn parse_tck_map(
         if let Some(colon_pos) = find_top_level_char(part, ':') {
             let key = part[..colon_pos].trim();
             let val_str = part[colon_pos + 1..].trim();
+            // Strip surrounding quotes from key
+            let key = if key.starts_with('"') && key.ends_with('"') && key.len() >= 2 {
+                &key[1..key.len() - 1]
+            } else {
+                key
+            };
+            // Strip surrounding quotes from value before parsing
+            let val_str =
+                if val_str.starts_with('"') && val_str.ends_with('"') && val_str.len() >= 2 {
+                    &val_str[1..val_str.len() - 1]
+                } else {
+                    val_str
+                };
             let val = parse_tck_value(val_str, vertex_names, edge_names);
             map.insert(key.into(), val);
         }

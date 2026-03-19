@@ -518,6 +518,15 @@ impl GremlinCompiler {
                             (Expr::Variable(var), Some(Identifier::new(k.clone())))
                         })
                         .collect();
+                    // Update current_alias if single key select
+                    if keys.len() == 1 {
+                        let resolved = self
+                            .alias_map
+                            .get(&keys[0])
+                            .cloned()
+                            .unwrap_or_else(|| Identifier::new(keys[0].clone()));
+                        current_alias = resolved;
+                    }
                     current = Some(Operator::Project {
                         items,
                         child: Box::new(child),

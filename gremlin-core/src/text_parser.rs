@@ -228,12 +228,11 @@ fn parse_step_token(
             out.push(GremlinStep::HasId(args));
         }
         "hasNot" => {
-            // hasNot("key") is equivalent to has("key") with no value → filter absence
-            // We approximate as Has(key, None) + Not wrapper.  For simplicity, skip.
+            // hasNot("key") — filter elements where property does NOT exist
             let args = parse_string_arg_list(args_str)?;
             if let Some(key) = args.into_iter().next() {
-                out.push(GremlinStep::Has(key, None));
-                // Note: hasNot semantics differ — this is best-effort.
+                // Wrap in Not(Has(key, None)) to negate the existence check
+                out.push(GremlinStep::Not(vec![GremlinStep::Has(key, None)]));
             }
         }
         "out" => {
@@ -293,11 +292,22 @@ fn parse_step_token(
                 out.push(GremlinStep::As(alias));
             }
         }
-        "count" => out.push(GremlinStep::Count),
-        "sum" => out.push(GremlinStep::Sum),
-        "min" => out.push(GremlinStep::Min),
-        "max" => out.push(GremlinStep::Max),
-        "mean" => out.push(GremlinStep::Mean),
+        "count" => {
+            // count() or count(Scope.local) — ignore scope argument
+            out.push(GremlinStep::Count);
+        }
+        "sum" => {
+            out.push(GremlinStep::Sum);
+        }
+        "min" => {
+            out.push(GremlinStep::Min);
+        }
+        "max" => {
+            out.push(GremlinStep::Max);
+        }
+        "mean" => {
+            out.push(GremlinStep::Mean);
+        }
         "group" => out.push(GremlinStep::Group),
         "groupCount" => {
             let args = parse_string_arg_list(args_str)?;
@@ -314,17 +324,33 @@ fn parse_step_token(
         "by" => parse_by_step(args_str, out)?,
         "limit" => {
             let args = parse_arg_list(args_str, resolve_param)?;
-            if let Some(GremlinValue::Integer(n)) = args.first() {
-                out.push(GremlinStep::Limit(*n));
+            // limit(n) or limit(Scope.global, n) — skip Scope arg
+            let n = args.iter().find_map(|a| {
+                if let GremlinValue::Integer(v) = a {
+                    Some(*v)
+                } else {
+                    None
+                }
+            });
+            if let Some(n) = n {
+                out.push(GremlinStep::Limit(n));
             }
         }
         "range" => {
             let args = parse_arg_list(args_str, resolve_param)?;
+            // range(lo, hi) or range(Scope.global, lo, hi) — skip Scope arg
+            // range(Scope.local, lo, hi) — not supported (local scope has different semantics)
             if args.len() >= 2 {
-                if let (Some(GremlinValue::Integer(lo)), Some(GremlinValue::Integer(hi))) =
-                    (args.first(), args.get(1))
+                if let (GremlinValue::Integer(lo), GremlinValue::Integer(hi)) = (&args[0], &args[1])
                 {
                     out.push(GremlinStep::Range(*lo, *hi));
+                } else if args.len() >= 3 {
+                    // First arg is Scope, second and third are integers
+                    if let (GremlinValue::Integer(lo), GremlinValue::Integer(hi)) =
+                        (&args[1], &args[2])
+                    {
+                        out.push(GremlinStep::Range(*lo, *hi));
+                    }
                 }
             }
         }
@@ -457,11 +483,17 @@ fn parse_step_token(
         "identity" => out.push(GremlinStep::Identity),
         "tail" => {
             let args = parse_arg_list(args_str, resolve_param)?;
-            let n = if let Some(GremlinValue::Integer(v)) = args.first() {
-                *v
-            } else {
-                1
-            };
+            // tail(), tail(n), or tail(Scope.global, n) — skip Scope arg
+            let n = args
+                .iter()
+                .find_map(|a| {
+                    if let GremlinValue::Integer(v) = a {
+                        Some(*v)
+                    } else {
+                        None
+                    }
+                })
+                .unwrap_or(1);
             out.push(GremlinStep::Tail(n));
         }
         "skip" => {
@@ -629,13 +661,26 @@ fn parse_has_step(
         1 => {
             // has("key") — existence check
             let key = parse_single_value(raw_args[0].trim(), resolve_param)?;
-            if let GremlinValue::String(k) = key {
-                out.push(GremlinStep::Has(k, None));
+            match key {
+                GremlinValue::String(k) => {
+                    out.push(GremlinStep::Has(k, None));
+                }
+                GremlinValue::Null => {
+                    // has(null) — nothing has a null key, filter all
+                    out.push(GremlinStep::Is(Predicate::Eq(GremlinValue::Null)));
+                }
+                _ => {}
             }
         }
         2 => {
             let key = parse_single_value(raw_args[0].trim(), resolve_param)?;
             let val_str = raw_args[1].trim();
+
+            // has(null, ...) — always false
+            if matches!(key, GremlinValue::Null) {
+                out.push(GremlinStep::Is(Predicate::Eq(GremlinValue::Null)));
+                return Ok(());
+            }
 
             // has(T.label, X) → hasLabel(X)
             if let GremlinValue::String(ref k) = key {
@@ -1001,6 +1046,25 @@ fn parse_single_value(
     // Float
     if let Ok(f) = s.parse::<f64>() {
         return Ok(GremlinValue::Float(f));
+    }
+
+    // Numeric with type suffix: 1b (byte), 2s (short), 3i (int), 4L (long), 0.5f/0.5d (float/double)
+    if s.len() > 1 {
+        let suffix = s.as_bytes()[s.len() - 1];
+        let num_part = &s[..s.len() - 1];
+        if matches!(
+            suffix,
+            b'b' | b's' | b'i' | b'l' | b'L' | b'n' | b'B' | b'S' | b'I' | b'N'
+        ) {
+            if let Ok(n) = num_part.parse::<i64>() {
+                return Ok(GremlinValue::Integer(n));
+            }
+        }
+        if matches!(suffix, b'f' | b'd' | b'F' | b'D' | b'm' | b'M') {
+            if let Ok(f) = num_part.parse::<f64>() {
+                return Ok(GremlinValue::Float(f));
+            }
+        }
     }
 
     // Typed value notation from feature files: d[29].i, d[0.5].d, d[6].l
