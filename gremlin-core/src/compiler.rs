@@ -776,6 +776,9 @@ impl GremlinCompiler {
                                 .cloned()
                                 .unwrap_or_else(|| Identifier::new(keys[0].clone()));
                             current_alias = resolved;
+                        } else {
+                            // Multi-key: set alias to the Map output column name
+                            current_alias = Identifier::new(keys.join("_"));
                         }
                         current = Some(Operator::GremlinSelect {
                             keys: select_keys,

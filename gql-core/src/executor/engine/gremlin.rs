@@ -696,7 +696,6 @@ impl<'a> QueryExecutor<'a> {
                     }
                     let mut map_row = Row::new();
                     inject_parameters(&mut map_row, &self.parameters);
-                    // Use the first key as column name for the map result
                     let map_alias = keys
                         .iter()
                         .map(|(_, k)| k.as_str())
