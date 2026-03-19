@@ -89,6 +89,8 @@ pub enum GremlinStep {
 
     // ── Ordering & paging ────────────────────────────────────────────────────
     Order,
+    /// `order(Scope.local)` — sort elements within a list
+    SortLocal,
     By(String, bool), // (key, descending)
     Limit(i64),
     Range(i64, i64),
@@ -96,6 +98,8 @@ pub enum GremlinStep {
     LimitLocal(i64),
     /// `range(Scope.local, lo, hi)` — slice Map/List values
     RangeLocal(i64, i64),
+    /// `skip(Scope.local, n)` — skip first n elements from list
+    SkipLocal(i64),
     Dedup(Vec<String>),
 
     // ── Boolean steps ────────────────────────────────────────────────────────

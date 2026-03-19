@@ -438,7 +438,14 @@ fn parse_step_token(
         }
         "fold" => out.push(GremlinStep::Fold),
         "unfold" => out.push(GremlinStep::Unfold),
-        "order" => out.push(GremlinStep::Order),
+        "order" => {
+            // Detect Scope.local
+            if args_str.contains("Scope.local") {
+                out.push(GremlinStep::SortLocal);
+            } else {
+                out.push(GremlinStep::Order);
+            }
+        }
         "by" => parse_by_step(args_str, out)?,
         "limit" => {
             let args = parse_arg_list(args_str, resolve_param)?;
@@ -714,8 +721,22 @@ fn parse_step_token(
         }
         "skip" => {
             let args = parse_arg_list(args_str, resolve_param)?;
-            if let Some(GremlinValue::Integer(n)) = args.first() {
-                out.push(GremlinStep::Skip(*n));
+            let is_local = args
+                .iter()
+                .any(|a| matches!(a, GremlinValue::String(s) if s == "Scope.local"));
+            let n = args.iter().find_map(|a| {
+                if let GremlinValue::Integer(v) = a {
+                    Some(*v)
+                } else {
+                    None
+                }
+            });
+            if let Some(n) = n {
+                if is_local {
+                    out.push(GremlinStep::SkipLocal(n));
+                } else {
+                    out.push(GremlinStep::Skip(n));
+                }
             }
         }
         "elementMap" => {

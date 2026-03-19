@@ -1252,6 +1252,37 @@ impl GremlinCompiler {
                     });
                 }
 
+                GremlinStep::SkipLocal(n) => {
+                    let child = current.take().ok_or(CompileError::MissingChild)?;
+                    current = Some(Operator::GremlinMapSlice {
+                        alias: current_alias.clone(),
+                        lo: *n as usize,
+                        hi: usize::MAX,
+                        child: Box::new(child),
+                    });
+                }
+
+                GremlinStep::SortLocal => {
+                    // Sort elements within a list/map value
+                    let child = current.take().ok_or(CompileError::MissingChild)?;
+                    let alias = self.next_alias("srtl");
+                    let mut items = vec![(
+                        Expr::FunctionCall {
+                            name: SmolStr::new("gremlin_sort_local"),
+                            args: vec![Expr::Variable(current_alias.clone())],
+                            distinct: false,
+                        },
+                        Some(alias.clone()),
+                    )];
+                    items.extend(self.label_carry_items());
+                    current = Some(Operator::Project {
+                        items,
+                        child: Box::new(child),
+                    });
+                    current_alias = alias;
+                    pending_order = true;
+                }
+
                 GremlinStep::Dedup(keys) => {
                     let child = current.take().ok_or(CompileError::MissingChild)?;
                     // dedup() — deduplicate by the current traverser value

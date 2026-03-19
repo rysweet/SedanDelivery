@@ -1158,6 +1158,16 @@ pub fn eval_function_with_vals(name: &str, vals: Vec<Value>) -> Result<Value, Gq
                 Some(other) => Ok(Value::List(vec![other])),
             }
         }
+        "gremlin_sort_local" => match vals.into_iter().next() {
+            Some(Value::List(mut items)) => {
+                items.sort_by(|a, b| {
+                    crate::executor::engine::helpers::gremlin_cmp_values(a, b)
+                });
+                Ok(Value::List(items))
+            }
+            Some(other) => Ok(other),
+            None => Ok(Value::Null),
+        }
         "gremlin_sum_local" => match vals.first() {
             Some(Value::List(items)) => {
                 if items.is_empty() {
