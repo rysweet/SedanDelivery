@@ -264,7 +264,10 @@ impl<'a> QueryExecutor<'a> {
             | Operator::GremlinAggregate { .. }
             | Operator::GremlinPath { .. }
             | Operator::GremlinMatch { .. }
-            | Operator::Cap { .. } => false,
+            | Operator::Cap { .. }
+            | Operator::ChooseMap { .. }
+            | Operator::GremlinSelect { .. }
+            | Operator::GremlinGroup { .. } => false,
         }
     }
 

@@ -1645,10 +1645,26 @@ mod tests {
                 v.extend(alternatives.iter());
                 v
             }
-            Operator::GremlinMatch { patterns, child } => {
+            Operator::GremlinMatch {
+                patterns, child, ..
+            } => {
                 let mut v = vec![child.as_ref()];
                 v.extend(patterns.iter());
                 v
+            }
+            Operator::ChooseMap {
+                selector,
+                options,
+                child,
+            } => {
+                let mut v = vec![child.as_ref(), selector.as_ref()];
+                for (_, branch) in options {
+                    v.push(branch.as_ref());
+                }
+                v
+            }
+            Operator::GremlinSelect { child, .. } | Operator::GremlinGroup { child, .. } => {
+                vec![child]
             }
         }
     }

@@ -363,9 +363,28 @@ fn parse_step_token(
             out.push(GremlinStep::Is(pred));
         }
         "where" => {
-            // where(P.neq("a")) or where(__.out("knows")) or where(values("age").is(P.gt(30)))
-            let inner_steps = parse_inner_traversal(args_str, resolve_param)?;
-            out.push(GremlinStep::Where(inner_steps));
+            // where(P.neq("a")) or where("a", P.eq("b")) or where(__.out("knows"))
+            let raw_args = split_top_level_args(args_str);
+            if raw_args.len() == 2 {
+                // where("a", P.eq("b")) — label comparison
+                let first = raw_args[0].trim();
+                let second = raw_args[1].trim();
+                let label = unquote(first);
+                if let Some(pred) = try_parse_predicate_call(second, resolve_param) {
+                    // Convert to: select("a").is(pred) effectively
+                    // Emit as Where with a select + is pattern
+                    out.push(GremlinStep::Where(vec![
+                        GremlinStep::Select(vec![label]),
+                        GremlinStep::Is(pred),
+                    ]));
+                } else {
+                    let inner_steps = parse_inner_traversal(args_str, resolve_param)?;
+                    out.push(GremlinStep::Where(inner_steps));
+                }
+            } else {
+                let inner_steps = parse_inner_traversal(args_str, resolve_param)?;
+                out.push(GremlinStep::Where(inner_steps));
+            }
         }
         "not" => {
             let inner_steps = parse_inner_traversal(args_str, resolve_param)?;
@@ -446,8 +465,8 @@ fn parse_step_token(
             out.push(GremlinStep::Project(args));
         }
         "match" => {
-            // match() takes multiple traversal patterns — complex, skip for now
-            out.push(GremlinStep::Match(Vec::new()));
+            let traversals = parse_multi_traversal_args(args_str, resolve_param)?;
+            out.push(GremlinStep::Match(traversals));
         }
         "union" => {
             let traversals = parse_multi_traversal_args(args_str, resolve_param)?;
@@ -458,7 +477,6 @@ fn parse_step_token(
             out.push(GremlinStep::Coalesce(traversals));
         }
         "choose" => {
-            // choose(pred, true_branch, false_branch) — simplified
             let traversals = parse_multi_traversal_args(args_str, resolve_param)?;
             match traversals.len() {
                 3 => out.push(GremlinStep::Choose(
@@ -471,6 +489,10 @@ fn parse_step_token(
                     traversals[1].clone(),
                     None,
                 )),
+                1 => {
+                    // 1-arg choose: value-based dispatch with option() modifiers
+                    out.push(GremlinStep::Choose(traversals[0].clone(), Vec::new(), None));
+                }
                 _ => {
                     out.push(GremlinStep::Choose(Vec::new(), Vec::new(), None));
                 }
@@ -562,9 +584,19 @@ fn parse_step_token(
         }
         "option" => {
             // option(key, traversal) — modifier for choose/branch
-            // In the TCK, option is always a modifier on choose/branch.
-            // We can't easily attach it, so skip gracefully.
-            // This allows the choose to execute even if options aren't fully wired.
+            let args = parse_arg_list(args_str, resolve_param)?;
+            if args.len() >= 2 {
+                // First arg: the option key (Pick.none maps to "none" string)
+                let token = args[0].clone();
+                // Remaining args contain the traversal steps.
+                // Parse the original args_str to extract the traversal part.
+                let inner_traversal = parse_option_traversal(args_str, resolve_param)?;
+                out.push(GremlinStep::Option(token, inner_traversal));
+            } else if args.len() == 1 {
+                // option(Pick.none, discard) might parse as single arg
+                let token = args[0].clone();
+                out.push(GremlinStep::Option(token, vec![GremlinStep::Identity]));
+            }
         }
         "value" => {
             // value() — extract the value from a property
@@ -909,6 +941,21 @@ fn parse_multi_traversal_args(
     Ok(result)
 }
 
+/// Parse `option(key, traversal)` — skip the first arg (key) and return the traversal.
+fn parse_option_traversal(
+    args_str: &str,
+    resolve_param: &dyn Fn(&str) -> Option<GremlinValue>,
+) -> Result<Vec<GremlinStep>, TextParseError> {
+    let raw_args = split_top_level_args(args_str);
+    if raw_args.len() >= 2 {
+        // The second argument onward is the traversal
+        let traversal_str = raw_args[1..].join(",");
+        parse_inner_traversal(traversal_str.trim(), resolve_param)
+    } else {
+        Ok(vec![GremlinStep::Identity])
+    }
+}
+
 /// Parse a `from(...)` or `to(...)` argument — could be a string label or a traversal.
 fn parse_from_to_arg(
     args_str: &str,
@@ -1091,6 +1138,11 @@ fn parse_single_value(
     // Scope.local, Scope.global
     if s.starts_with("Scope.") || s.starts_with("Column.") || s.starts_with("Order.") {
         return Ok(GremlinValue::String(s.to_string()));
+    }
+
+    // Pick.none — default branch marker for choose/option
+    if s == "Pick.none" {
+        return Ok(GremlinValue::String("none".to_string()));
     }
 
     // Parameter reference (bare identifier like vid1, xx1)
