@@ -1582,7 +1582,7 @@ mod tests {
             Operator::Filter { child, .. }
             | Operator::Project { child, .. }
             | Operator::Aggregate { child, .. }
-            | Operator::Distinct { child }
+            | Operator::Distinct { child, .. }
             | Operator::Sort { child, .. }
             | Operator::Limit { child, .. }
             | Operator::Skip { child, .. }
@@ -1663,7 +1663,9 @@ mod tests {
                 }
                 v
             }
-            Operator::GremlinSelect { child, .. } | Operator::GremlinGroup { child, .. } => {
+            Operator::GremlinSelect { child, .. }
+            | Operator::GremlinGroup { child, .. }
+            | Operator::GremlinMapSlice { child, .. } => {
                 vec![child]
             }
         }

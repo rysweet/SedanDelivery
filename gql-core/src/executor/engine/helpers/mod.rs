@@ -233,7 +233,8 @@ pub(crate) fn discover_operator_aliases(op: &Operator) -> Vec<String> {
         Operator::SingleRow
         | Operator::ProduceResults { .. }
         | Operator::GremlinSelect { .. }
-        | Operator::GremlinGroup { .. } => {}
+        | Operator::GremlinGroup { .. }
+        | Operator::GremlinMapSlice { .. } => {}
     }
     aliases
 }

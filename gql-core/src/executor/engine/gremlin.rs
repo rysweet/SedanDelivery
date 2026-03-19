@@ -351,7 +351,10 @@ impl<'a> QueryExecutor<'a> {
                 let projected = self
                     .eval_with_storage(cx.graph, &prop_expr, row, &ctx)
                     .unwrap_or(Value::Null);
-                collected.push(projected);
+                // Skip null values (property doesn't exist on this element)
+                if !matches!(projected, Value::Null) {
+                    collected.push(projected);
+                }
             } else if let Some(val) = row.get(value_alias.as_str()) {
                 collected.push(val.clone());
             }

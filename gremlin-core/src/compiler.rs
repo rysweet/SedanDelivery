@@ -679,6 +679,7 @@ impl GremlinCompiler {
                     } else {
                         AggFunction::Collect
                     };
+                    let has_side_effect = key.is_some();
                     current = Some(Operator::GremlinGroup {
                         key_expr: Expr::Variable(current_alias.clone()),
                         value_expr: Expr::Variable(current_alias.clone()),
@@ -687,7 +688,11 @@ impl GremlinCompiler {
                         side_effect_key: key.clone(),
                         child: Box::new(child),
                     });
-                    current_alias = alias;
+                    // Named groups are side-effects (pass-through): keep current alias.
+                    // Unnamed groups consume the stream: switch to group alias.
+                    if !has_side_effect {
+                        current_alias = alias;
+                    }
                     pending_group = true;
                     pending_group_by_count = 0;
                 }

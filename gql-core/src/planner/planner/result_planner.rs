@@ -437,6 +437,7 @@ impl<'s> QueryPlanner<'s> {
         if wc.distinct && !has_aggregation {
             pipeline = Operator::Distinct {
                 child: Box::new(pipeline),
+                by_key: None,
             };
         }
 
@@ -787,6 +788,7 @@ impl<'s> QueryPlanner<'s> {
         if rc.distinct && !has_aggregation {
             Ok(Operator::Distinct {
                 child: Box::new(produce),
+                by_key: None,
             })
         } else {
             Ok(produce)
