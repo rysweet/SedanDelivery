@@ -415,26 +415,41 @@ pub fn eval_function_with_vals(name: &str, vals: Vec<Value>) -> Result<Value, Gq
         "gremlin_tolower" => match vals.first() {
             Some(Value::Str(s)) => Ok(Value::Str(s.to_lowercase().into())),
             Some(Value::Null) => Ok(Value::Null),
+            Some(Value::List(_)) => Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                expected: "String".into(), actual: "List".into(),
+            })),
             _ => Ok(Value::Null),
         },
         "gremlin_toupper" => match vals.first() {
             Some(Value::Str(s)) => Ok(Value::Str(s.to_uppercase().into())),
             Some(Value::Null) => Ok(Value::Null),
+            Some(Value::List(_)) => Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                expected: "String".into(), actual: "List".into(),
+            })),
             _ => Ok(Value::Null),
         },
         "gremlin_trim" => match vals.first() {
             Some(Value::Str(s)) => Ok(Value::Str(s.trim().into())),
             Some(Value::Null) => Ok(Value::Null),
+            Some(Value::List(_)) => Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                expected: "String".into(), actual: "List".into(),
+            })),
             _ => Ok(Value::Null),
         },
         "gremlin_ltrim" => match vals.first() {
             Some(Value::Str(s)) => Ok(Value::Str(s.trim_start().into())),
             Some(Value::Null) => Ok(Value::Null),
+            Some(Value::List(_)) => Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                expected: "String".into(), actual: "List".into(),
+            })),
             _ => Ok(Value::Null),
         },
         "gremlin_rtrim" => match vals.first() {
             Some(Value::Str(s)) => Ok(Value::Str(s.trim_end().into())),
             Some(Value::Null) => Ok(Value::Null),
+            Some(Value::List(_)) => Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                expected: "String".into(), actual: "List".into(),
+            })),
             _ => Ok(Value::Null),
         },
         "gremlin_length" => match vals.first() {
@@ -458,6 +473,9 @@ pub fn eval_function_with_vals(name: &str, vals: Vec<Value>) -> Result<Value, Gq
                 Ok(Value::Str(s.replace(old.as_ref(), new.as_ref()).into()))
             }
             (Some(Value::Null), _, _) => Ok(Value::Null),
+            (Some(Value::List(_)), _, _) => Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                expected: "String".into(), actual: "List".into(),
+            })),
             _ => Ok(Value::Null),
         },
         "gremlin_split" => match (vals.first(), vals.get(1)) {
@@ -469,6 +487,9 @@ pub fn eval_function_with_vals(name: &str, vals: Vec<Value>) -> Result<Value, Gq
                 Ok(Value::List(parts))
             }
             (Some(Value::Null), _) => Ok(Value::Null),
+            (Some(Value::List(_)), _) => Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                expected: "String".into(), actual: "List".into(),
+            })),
             _ => Ok(Value::Null),
         },
         "gremlin_substring" => match vals.first() {

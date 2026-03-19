@@ -2899,6 +2899,13 @@ impl GremlinCompiler {
             }
         }
 
+        // Validate: emit/until/times without repeat is an error
+        if pending_emit || pending_until.is_some() || pending_times.is_some() {
+            return Err(CompileError::InvalidSequence(
+                "The repeat()-traversal was not defined".into(),
+            ));
+        }
+
         self.last_alias = current_alias;
         current.ok_or(CompileError::MissingChild)
     }
