@@ -658,9 +658,11 @@ fn estimate_recursive(
         Operator::GremlinPath { child, .. } => estimate_recursive(child, stats, estimates),
         Operator::GremlinMatch { child, .. } => estimate_recursive(child, stats, estimates),
         Operator::GremlinSelect { child, .. } => estimate_recursive(child, stats, estimates),
-        Operator::GremlinGroup { side_effect_key: Some(_), child, .. } => {
-            estimate_recursive(child, stats, estimates)
-        }
+        Operator::GremlinGroup {
+            side_effect_key: Some(_),
+            child,
+            ..
+        } => estimate_recursive(child, stats, estimates),
         Operator::GremlinGroup { .. } => 1.0, // produces a single Map row
         Operator::GremlinMapSlice { child, .. } => estimate_recursive(child, stats, estimates),
         Operator::Cap { .. } => 1.0,

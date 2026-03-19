@@ -603,10 +603,31 @@ impl<'a> QueryExecutor<'a> {
             }
 
             if all_found {
-                // Preserve query parameters
-                inject_parameters(&mut new_row, &self.parameters);
-                cx.budget.record_row();
-                out.push(new_row);
+                // If multiple keys, produce a Map value (Gremlin select semantics)
+                if keys.len() > 1 {
+                    let mut map: indexmap::IndexMap<Box<str>, Value> = indexmap::IndexMap::new();
+                    for (_, output_key) in keys {
+                        if let Some(v) = new_row.get(output_key.as_str()) {
+                            map.insert(output_key.clone().into(), v.clone());
+                        }
+                    }
+                    let mut map_row = Row::new();
+                    inject_parameters(&mut map_row, &self.parameters);
+                    // Use the first key as column name for the map result
+                    let map_alias = keys
+                        .iter()
+                        .map(|(_, k)| k.as_str())
+                        .collect::<Vec<_>>()
+                        .join("_");
+                    map_row.insert(map_alias, Value::Map(map));
+                    cx.budget.record_row();
+                    out.push(map_row);
+                } else {
+                    // Preserve query parameters
+                    inject_parameters(&mut new_row, &self.parameters);
+                    cx.budget.record_row();
+                    out.push(new_row);
+                }
             }
         }
 
@@ -736,8 +757,12 @@ impl<'a> QueryExecutor<'a> {
             if let Some(val) = row.get(&alias.0) {
                 let sliced = match val {
                     Value::Map(m) => {
-                        let new_map: IndexMap<Box<str>, Value> =
-                            m.iter().skip(*lo).take(hi - lo).map(|(k, v)| (k.clone(), v.clone())).collect();
+                        let new_map: IndexMap<Box<str>, Value> = m
+                            .iter()
+                            .skip(*lo)
+                            .take(hi - lo)
+                            .map(|(k, v)| (k.clone(), v.clone()))
+                            .collect();
                         Value::Map(new_map)
                     }
                     Value::List(l) => {

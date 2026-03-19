@@ -45,6 +45,7 @@ pub fn parse_traversal(
         || input.starts_with("g.withSideEffect(")
         || input.starts_with("g.withSack(")
         || input.starts_with("g.withComputer(")
+        || input.starts_with("g.withBulk(")
         || input.starts_with("g.with(")
     {
         owned = strip_strategy_prefix(input);
@@ -87,6 +88,8 @@ fn strip_strategy_prefix(input: &str) -> String {
         } else if let Some(r) = result.strip_prefix("g.withSack(") {
             skip_balanced_parens(r)
         } else if let Some(r) = result.strip_prefix("g.withComputer(") {
+            skip_balanced_parens(r)
+        } else if let Some(r) = result.strip_prefix("g.withBulk(") {
             skip_balanced_parens(r)
         } else if let Some(r) = result.strip_prefix("g.with(") {
             skip_balanced_parens(r)
@@ -293,8 +296,16 @@ fn parse_step_token(
             }
         }
         "count" => {
-            // count() or count(Scope.local) — ignore scope argument
-            out.push(GremlinStep::Count);
+            let args = parse_arg_list(args_str, resolve_param)?;
+            let is_local = args
+                .iter()
+                .any(|a| matches!(a, GremlinValue::String(s) if s == "Scope.local"));
+            if is_local {
+                // count(local) — count elements in the list/map value
+                out.push(GremlinStep::Length);
+            } else {
+                out.push(GremlinStep::Count);
+            }
         }
         "sum" => {
             out.push(GremlinStep::Sum);
@@ -325,7 +336,9 @@ fn parse_step_token(
         "limit" => {
             let args = parse_arg_list(args_str, resolve_param)?;
             // Detect Scope.local
-            let is_local = args.iter().any(|a| matches!(a, GremlinValue::String(s) if s == "Scope.local"));
+            let is_local = args
+                .iter()
+                .any(|a| matches!(a, GremlinValue::String(s) if s == "Scope.local"));
             // limit(n) or limit(Scope.global, n) — skip Scope arg
             let n = args.iter().find_map(|a| {
                 if let GremlinValue::Integer(v) = a {
@@ -345,11 +358,20 @@ fn parse_step_token(
         "range" => {
             let args = parse_arg_list(args_str, resolve_param)?;
             // Detect Scope.local
-            let is_local = args.iter().any(|a| matches!(a, GremlinValue::String(s) if s == "Scope.local"));
+            let is_local = args
+                .iter()
+                .any(|a| matches!(a, GremlinValue::String(s) if s == "Scope.local"));
             // Collect integer args
-            let ints: Vec<i64> = args.iter().filter_map(|a| {
-                if let GremlinValue::Integer(v) = a { Some(*v) } else { None }
-            }).collect();
+            let ints: Vec<i64> = args
+                .iter()
+                .filter_map(|a| {
+                    if let GremlinValue::Integer(v) = a {
+                        Some(*v)
+                    } else {
+                        None
+                    }
+                })
+                .collect();
             if ints.len() >= 2 {
                 if is_local {
                     out.push(GremlinStep::RangeLocal(ints[0], ints[1]));
@@ -452,8 +474,10 @@ fn parse_step_token(
             // aggregate("x") or aggregate(local, "x") / aggregate(Scope.local, "x")
             let mut iter = args.into_iter();
             if let Some(first) = iter.next() {
-                if first == "local" || first == "Scope.local"
-                    || first == "global" || first == "Scope.global"
+                if first == "local"
+                    || first == "Scope.local"
+                    || first == "global"
+                    || first == "Scope.global"
                 {
                     // Scope argument — use the next arg as key
                     if let Some(key) = iter.next() {
@@ -658,14 +682,131 @@ fn parse_step_token(
             // index() — adds index to each element
             out.push(GremlinStep::Identity);
         }
-        // Steps still unsupported
-        "profile" | "iterate" | "explain" | "tree" | "subgraph" | "concat" | "conjoin"
-        | "toLower" | "toUpper" | "trim" | "lTrim" | "rTrim" | "length" | "replace" | "split"
-        | "substring" | "reverse" | "format" | "asString" | "asBool" | "asNumber" | "asDate"
-        | "dateAdd" | "dateDiff" | "fail" | "read" | "write" | "combine" | "intersect"
-        | "difference" | "disjunct" | "merge" | "mergeV" | "mergeE" | "product" | "all" | "any"
-        | "typeOf" | "connectedComponent" | "shortestPath" | "pageRank" | "peerPressure"
-        | "call" => {
+        // ── String steps ────────────────────────────────────────────────────
+        "toLower" => {
+            out.push(GremlinStep::ToLower);
+        }
+        "toUpper" => {
+            out.push(GremlinStep::ToUpper);
+        }
+        "trim" => {
+            out.push(GremlinStep::Trim);
+        }
+        "lTrim" => {
+            out.push(GremlinStep::LTrim);
+        }
+        "rTrim" => {
+            out.push(GremlinStep::RTrim);
+        }
+        "length" => {
+            out.push(GremlinStep::Length);
+        }
+        "reverse" => {
+            out.push(GremlinStep::Reverse);
+        }
+        "replace" => {
+            let args = parse_string_arg_list(args_str)?;
+            if args.len() >= 2 {
+                out.push(GremlinStep::Replace(args[0].clone(), args[1].clone()));
+            } else {
+                return Err(TextParseError::InvalidArgument(
+                    "replace requires 2 arguments".into(),
+                ));
+            }
+        }
+        "split" => {
+            let args = parse_string_arg_list(args_str)?;
+            if !args.is_empty() {
+                out.push(GremlinStep::Split(args[0].clone()));
+            } else {
+                return Err(TextParseError::InvalidArgument(
+                    "split requires 1 argument".into(),
+                ));
+            }
+        }
+        "substring" => {
+            let args = parse_arg_list(args_str, resolve_param)?;
+            let start = match args.first() {
+                Some(GremlinValue::Integer(n)) => *n,
+                _ => 0,
+            };
+            let len = match args.get(1) {
+                Some(GremlinValue::Integer(n)) => Some(*n),
+                _ => None,
+            };
+            out.push(GremlinStep::Substring(start, len));
+        }
+        "concat" => {
+            let traversals = parse_multi_traversal_args(args_str, resolve_param)?;
+            out.push(GremlinStep::Concat(traversals));
+        }
+        "conjoin" => {
+            let args = parse_string_arg_list(args_str)?;
+            let sep = args.into_iter().next().unwrap_or_default();
+            out.push(GremlinStep::Conjoin(sep));
+        }
+        "format" => {
+            let args = parse_string_arg_list(args_str)?;
+            let pattern = args.into_iter().next().unwrap_or_default();
+            out.push(GremlinStep::Format(pattern));
+        }
+        "asString" => {
+            out.push(GremlinStep::AsString);
+        }
+        "asNumber" => {
+            out.push(GremlinStep::AsNumber);
+        }
+        "asBool" => {
+            out.push(GremlinStep::AsBool);
+        }
+        "typeOf" => {
+            out.push(GremlinStep::TypeOf);
+        }
+        // ── Collection steps ────────────────────────────────────────────────
+        "combine" => {
+            let inner = parse_inner_traversal(args_str, resolve_param)?;
+            out.push(GremlinStep::Combine(inner));
+        }
+        "intersect" => {
+            let inner = parse_inner_traversal(args_str, resolve_param)?;
+            out.push(GremlinStep::Intersect(inner));
+        }
+        "difference" => {
+            let inner = parse_inner_traversal(args_str, resolve_param)?;
+            out.push(GremlinStep::Difference(inner));
+        }
+        "disjunct" => {
+            let inner = parse_inner_traversal(args_str, resolve_param)?;
+            out.push(GremlinStep::Disjunct(inner));
+        }
+        "merge" => {
+            let inner = parse_inner_traversal(args_str, resolve_param)?;
+            out.push(GremlinStep::MergeList(inner));
+        }
+        "product" => {
+            let inner = parse_inner_traversal(args_str, resolve_param)?;
+            out.push(GremlinStep::Product(inner));
+        }
+        "all" => {
+            // all(P.gt(0)) — all elements match predicate
+            if let Some(pred) = try_parse_predicate_call(args_str.trim(), resolve_param) {
+                out.push(GremlinStep::All(pred));
+            } else {
+                out.push(GremlinStep::All(Predicate::Neq(GremlinValue::Null)));
+            }
+        }
+        "any" => {
+            // any(P.gt(0)) — any element matches predicate
+            if let Some(pred) = try_parse_predicate_call(args_str.trim(), resolve_param) {
+                out.push(GremlinStep::Any(pred));
+            } else {
+                out.push(GremlinStep::Any(Predicate::Neq(GremlinValue::Null)));
+            }
+        }
+        // Steps still unsupported (provider-specific or not applicable)
+        "profile" | "iterate" | "explain" | "tree" | "subgraph" | "asDate" | "dateAdd"
+        | "dateDiff" | "fail" | "read" | "write" | "mergeV" | "mergeE" | "connectedComponent"
+        | "shortestPath" | "pageRank" | "peerPressure" | "call" => {
             // Unsupported steps — record as unknown so the runner can skip
             return Err(TextParseError::UnknownStep(name.to_string()));
         }
@@ -863,15 +1004,27 @@ fn parse_by_step(args_str: &str, out: &mut Vec<GremlinStep>) -> Result<(), TextP
 }
 
 /// Try to parse a predicate call like `P.gt(30)`, `P.within("a","b")`, etc.
+/// Also handles bare predicates like `eq(30)`, `gt(30)`.
 fn try_parse_predicate_call(
     s: &str,
     resolve_param: &dyn Fn(&str) -> Option<GremlinValue>,
 ) -> Option<Predicate> {
     let s = s.trim();
 
-    // Handle P.* predicates
+    // Handle P.* or TextP.* predicates
     let pred_str = s.strip_prefix("P.").or_else(|| s.strip_prefix("TextP."));
-    let pred_str = pred_str?;
+    let pred_str = if let Some(p) = pred_str {
+        p
+    } else {
+        // Try bare predicate names: eq(...), neq(...), gt(...), etc.
+        let (name, _) = split_step_name_args(s);
+        match name {
+            "eq" | "neq" | "gt" | "gte" | "lt" | "lte" | "within" | "without" | "between"
+            | "containing" | "notContaining" | "startingWith" | "notStartingWith"
+            | "endingWith" | "notEndingWith" | "regex" | "notRegex" | "typeOf" => s,
+            _ => return None,
+        }
+    };
 
     let (pred_name, args_str) = split_step_name_args(pred_str);
     let args = parse_arg_list(args_str, resolve_param).ok()?;
@@ -891,9 +1044,34 @@ fn try_parse_predicate_call(
             let hi = it.next()?;
             Some(Predicate::Between(lo, hi))
         }
-        // Text predicates — not directly representable, skip
-        "containing" | "startingWith" | "endingWith" | "regex" | "notContaining"
-        | "notStartingWith" | "notEndingWith" | "notRegex" => None,
+        // Text predicates
+        "containing" => Some(Predicate::Containing(args.into_iter().next()?)),
+        "notContaining" | "notcontaining" => {
+            Some(Predicate::NotContaining(args.into_iter().next()?))
+        }
+        "startingWith" | "startingwith" => Some(Predicate::StartingWith(args.into_iter().next()?)),
+        "notStartingWith" | "notstartingwith" => {
+            Some(Predicate::NotStartingWith(args.into_iter().next()?))
+        }
+        "endingWith" | "endingwith" => Some(Predicate::EndingWith(args.into_iter().next()?)),
+        "notEndingWith" | "notendingwith" => {
+            Some(Predicate::NotEndingWith(args.into_iter().next()?))
+        }
+        "regex" => Some(Predicate::Regex(args.into_iter().next()?)),
+        "notRegex" | "notregex" => Some(Predicate::NotRegex(args.into_iter().next()?)),
+        "typeOf" | "typeof" => {
+            // P.typeOf(GType.STRING) → IsType("string")
+            let arg = args.into_iter().next()?;
+            // GType.XXX is parsed as a string, normalize it
+            let type_name = match &arg {
+                GremlinValue::String(s) => {
+                    let s = s.strip_prefix("GType.").unwrap_or(s);
+                    normalize_gtype(s)
+                }
+                _ => return None,
+            };
+            Some(Predicate::IsType(GremlinValue::String(type_name)))
+        }
         _ => None,
     }
 }
@@ -1162,6 +1340,11 @@ fn parse_single_value(
         return Ok(GremlinValue::String("none".to_string()));
     }
 
+    // GType.* — Gremlin type constants
+    if let Some(gtype) = s.strip_prefix("GType.") {
+        return Ok(GremlinValue::String(format!("GType.{gtype}")));
+    }
+
     // Parameter reference (bare identifier like vid1, xx1)
     if let Some(val) = resolve_param(s) {
         return Ok(val);
@@ -1184,6 +1367,26 @@ fn unquote(s: &str) -> String {
             .replace("\\\\", "\\")
     } else {
         s.to_string()
+    }
+}
+
+/// Normalize a GType name to the Gremlin type string used by typeOf().
+fn normalize_gtype(s: &str) -> String {
+    match s.to_uppercase().as_str() {
+        "STRING" | "JAVA_LANG_STRING" => "string".to_string(),
+        "INT" | "INTEGER" | "JAVA_LANG_INTEGER" => "integer".to_string(),
+        "LONG" | "JAVA_LANG_LONG" => "long".to_string(),
+        "DOUBLE" | "JAVA_LANG_DOUBLE" => "double".to_string(),
+        "FLOAT" | "JAVA_LANG_FLOAT" => "float".to_string(),
+        "BOOLEAN" | "JAVA_LANG_BOOLEAN" => "boolean".to_string(),
+        "MAP" | "JAVA_UTIL_MAP" => "map".to_string(),
+        "LIST" | "JAVA_UTIL_LIST" => "list".to_string(),
+        "SET" | "JAVA_UTIL_SET" => "set".to_string(),
+        "SHORT" | "JAVA_LANG_SHORT" => "short".to_string(),
+        "BYTE" | "JAVA_LANG_BYTE" => "byte".to_string(),
+        "BIGINTEGER" | "JAVA_MATH_BIGINTEGER" => "biginteger".to_string(),
+        "BIGDECIMAL" | "JAVA_MATH_BIGDECIMAL" => "bigdecimal".to_string(),
+        other => other.to_lowercase(),
     }
 }
 

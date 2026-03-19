@@ -410,6 +410,317 @@ pub fn eval_function_with_vals(name: &str, vals: Vec<Value>) -> Result<Value, Gq
             ))))
         }
 
+        // ── Gremlin string/type/collection functions ──────────────────────────
+        "gremlin_tolower" => match vals.first() {
+            Some(Value::Str(s)) => Ok(Value::Str(s.to_lowercase().into())),
+            Some(Value::Null) => Ok(Value::Null),
+            _ => Ok(Value::Null),
+        },
+        "gremlin_toupper" => match vals.first() {
+            Some(Value::Str(s)) => Ok(Value::Str(s.to_uppercase().into())),
+            Some(Value::Null) => Ok(Value::Null),
+            _ => Ok(Value::Null),
+        },
+        "gremlin_trim" => match vals.first() {
+            Some(Value::Str(s)) => Ok(Value::Str(s.trim().into())),
+            Some(Value::Null) => Ok(Value::Null),
+            _ => Ok(Value::Null),
+        },
+        "gremlin_ltrim" => match vals.first() {
+            Some(Value::Str(s)) => Ok(Value::Str(s.trim_start().into())),
+            Some(Value::Null) => Ok(Value::Null),
+            _ => Ok(Value::Null),
+        },
+        "gremlin_rtrim" => match vals.first() {
+            Some(Value::Str(s)) => Ok(Value::Str(s.trim_end().into())),
+            Some(Value::Null) => Ok(Value::Null),
+            _ => Ok(Value::Null),
+        },
+        "gremlin_length" => match vals.first() {
+            Some(Value::Str(s)) => Ok(Value::Int(s.len() as i64)),
+            Some(Value::List(l)) => Ok(Value::Int(l.len() as i64)),
+            Some(Value::Null) => Ok(Value::Null),
+            _ => Ok(Value::Int(0)),
+        },
+        "gremlin_reverse" => match vals.first() {
+            Some(Value::Str(s)) => Ok(Value::Str(s.chars().rev().collect::<String>().into())),
+            Some(Value::List(l)) => {
+                let mut rev = l.clone();
+                rev.reverse();
+                Ok(Value::List(rev))
+            }
+            Some(Value::Null) => Ok(Value::Null),
+            _ => Ok(Value::Null),
+        },
+        "gremlin_replace" => match (vals.first(), vals.get(1), vals.get(2)) {
+            (Some(Value::Str(s)), Some(Value::Str(old)), Some(Value::Str(new))) => {
+                Ok(Value::Str(s.replace(old.as_ref(), new.as_ref()).into()))
+            }
+            (Some(Value::Null), _, _) => Ok(Value::Null),
+            _ => Ok(Value::Null),
+        },
+        "gremlin_split" => match (vals.first(), vals.get(1)) {
+            (Some(Value::Str(s)), Some(Value::Str(sep))) => {
+                let parts: Vec<Value> = s
+                    .split(sep.as_ref())
+                    .map(|p| Value::Str(p.into()))
+                    .collect();
+                Ok(Value::List(parts))
+            }
+            (Some(Value::Null), _) => Ok(Value::Null),
+            _ => Ok(Value::Null),
+        },
+        "gremlin_substring" => match vals.first() {
+            Some(Value::Str(s)) => {
+                let start = match vals.get(1) {
+                    Some(Value::Int(n)) => *n as usize,
+                    _ => 0,
+                };
+                let chars: Vec<char> = s.chars().collect();
+                if start >= chars.len() {
+                    return Ok(Value::Str("".into()));
+                }
+                let result = match vals.get(2) {
+                    Some(Value::Int(len)) => {
+                        let end = (start + *len as usize).min(chars.len());
+                        chars[start..end].iter().collect::<String>()
+                    }
+                    _ => chars[start..].iter().collect::<String>(),
+                };
+                Ok(Value::Str(result.into()))
+            }
+            Some(Value::Null) => Ok(Value::Null),
+            _ => Ok(Value::Null),
+        },
+        "gremlin_concat" => {
+            let mut result = String::new();
+            for v in &vals {
+                match v {
+                    Value::Str(s) => result.push_str(s),
+                    Value::Int(n) => result.push_str(&n.to_string()),
+                    Value::Float(f) => result.push_str(&f.to_string()),
+                    Value::Bool(b) => result.push_str(&b.to_string()),
+                    Value::Null => {}
+                    _ => result.push_str(&format!("{:?}", v)),
+                }
+            }
+            Ok(Value::Str(result.into()))
+        }
+        "gremlin_conjoin" => match (vals.first(), vals.get(1)) {
+            (Some(Value::List(items)), Some(Value::Str(sep))) => {
+                let parts: Vec<String> = items
+                    .iter()
+                    .map(|v| match v {
+                        Value::Str(s) => s.to_string(),
+                        Value::Int(n) => n.to_string(),
+                        Value::Float(f) => f.to_string(),
+                        Value::Bool(b) => b.to_string(),
+                        Value::Null => "null".to_string(),
+                        other => format!("{:?}", other),
+                    })
+                    .collect();
+                Ok(Value::Str(parts.join(sep.as_ref()).into()))
+            }
+            (Some(Value::Null), _) => Ok(Value::Null),
+            _ => Ok(Value::Null),
+        },
+        "gremlin_format" => {
+            match (vals.first(), vals.get(1)) {
+                (Some(val), Some(Value::Str(pattern))) => {
+                    // Simple format: replace %s with value
+                    let formatted = match val {
+                        Value::Str(s) => pattern.replace("%s", s),
+                        Value::Int(n) => pattern.replace("%s", &n.to_string()),
+                        Value::Float(f) => pattern.replace("%s", &f.to_string()),
+                        Value::Map(m) => {
+                            let mut result = pattern.to_string();
+                            for (k, v) in m.iter() {
+                                let placeholder = format!("%{{{}}}", k);
+                                let val_str = match v {
+                                    Value::Str(s) => s.to_string(),
+                                    Value::Int(n) => n.to_string(),
+                                    Value::Float(f) => f.to_string(),
+                                    Value::Bool(b) => b.to_string(),
+                                    _ => format!("{:?}", v),
+                                };
+                                result = result.replace(&placeholder, &val_str);
+                            }
+                            result
+                        }
+                        _ => pattern.to_string(),
+                    };
+                    Ok(Value::Str(formatted.into()))
+                }
+                (Some(Value::Null), _) => Ok(Value::Null),
+                _ => Ok(Value::Null),
+            }
+        }
+        "gremlin_asstring" => match vals.first() {
+            Some(Value::Str(s)) => Ok(Value::Str(s.clone())),
+            Some(Value::Int(n)) => Ok(Value::Str(n.to_string().into())),
+            Some(Value::Float(f)) => Ok(Value::Str(f.to_string().into())),
+            Some(Value::Bool(b)) => Ok(Value::Str(b.to_string().into())),
+            Some(Value::Null) => Ok(Value::Null),
+            Some(other) => Ok(Value::Str(format!("{:?}", other).into())),
+            None => Ok(Value::Null),
+        },
+        "gremlin_asnumber" => match vals.first() {
+            Some(Value::Int(n)) => Ok(Value::Int(*n)),
+            Some(Value::Float(f)) => Ok(Value::Float(*f)),
+            Some(Value::Str(s)) => {
+                if let Ok(n) = s.parse::<i64>() {
+                    Ok(Value::Int(n))
+                } else if let Ok(f) = s.parse::<f64>() {
+                    Ok(Value::Float(f))
+                } else {
+                    Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                        expected: "numeric string".into(),
+                        actual: format!("'{}'", s),
+                    }))
+                }
+            }
+            Some(Value::Bool(b)) => Ok(Value::Int(if *b { 1 } else { 0 })),
+            Some(Value::Null) => Ok(Value::Null),
+            _ => Ok(Value::Null),
+        },
+        "gremlin_asbool" => match vals.first() {
+            Some(Value::Bool(b)) => Ok(Value::Bool(*b)),
+            Some(Value::Int(n)) => Ok(Value::Bool(*n != 0)),
+            Some(Value::Float(f)) => Ok(Value::Bool(*f != 0.0)),
+            Some(Value::Str(s)) => match s.to_lowercase().as_str() {
+                "true" => Ok(Value::Bool(true)),
+                "false" => Ok(Value::Bool(false)),
+                _ => Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                    expected: "boolean-compatible value".into(),
+                    actual: format!("'{}'", s),
+                })),
+            },
+            Some(Value::Null) => Ok(Value::Null),
+            _ => Ok(Value::Null),
+        },
+        "gremlin_typeof" => match vals.first() {
+            Some(Value::Int(_)) => Ok(Value::Str("integer".into())),
+            Some(Value::Float(_)) => Ok(Value::Str("double".into())),
+            Some(Value::Str(_)) => Ok(Value::Str("string".into())),
+            Some(Value::Bool(_)) => Ok(Value::Str("boolean".into())),
+            Some(Value::Null) => Ok(Value::Str("null".into())),
+            Some(Value::List(_)) => Ok(Value::Str("list".into())),
+            Some(Value::Map(_)) => Ok(Value::Str("map".into())),
+            Some(Value::Node(_)) => Ok(Value::Str("vertex".into())),
+            Some(Value::Edge(_)) => Ok(Value::Str("edge".into())),
+            Some(Value::Date(_)) => Ok(Value::Str("date".into())),
+            Some(Value::Path { .. }) => Ok(Value::Str("path".into())),
+            _ => Ok(Value::Str("unknown".into())),
+        },
+        "gremlin_combine" | "gremlin_merge" => {
+            // combine/merge: append two lists together
+            match vals.first() {
+                Some(Value::List(l)) => Ok(Value::List(l.clone())),
+                Some(Value::Null) => Ok(Value::Null),
+                _ => Ok(Value::List(Vec::new())),
+            }
+        }
+        "gremlin_intersect" => match vals.first() {
+            Some(Value::List(_l)) => Ok(Value::List(Vec::new())),
+            Some(Value::Null) => Ok(Value::Null),
+            _ => Ok(Value::List(Vec::new())),
+        },
+        "gremlin_difference" => match vals.first() {
+            Some(Value::List(l)) => Ok(Value::List(l.clone())),
+            Some(Value::Null) => Ok(Value::Null),
+            _ => Ok(Value::List(Vec::new())),
+        },
+        "gremlin_disjunct" => match vals.first() {
+            Some(Value::List(l)) => Ok(Value::List(l.clone())),
+            Some(Value::Null) => Ok(Value::Null),
+            _ => Ok(Value::List(Vec::new())),
+        },
+        "gremlin_product" => match vals.first() {
+            Some(Value::List(_l)) => Ok(Value::List(Vec::new())),
+            Some(Value::Null) => Ok(Value::Null),
+            _ => Ok(Value::List(Vec::new())),
+        },
+        "gremlin_all" => match vals.first() {
+            Some(Value::List(items)) => {
+                let result = items.iter().all(|v| v.is_truthy());
+                Ok(Value::Bool(result))
+            }
+            Some(Value::Null) => Ok(Value::Null),
+            _ => Ok(Value::Bool(true)),
+        },
+        "gremlin_any" => match vals.first() {
+            Some(Value::List(items)) => {
+                let result = items.iter().any(|v| v.is_truthy());
+                Ok(Value::Bool(result))
+            }
+            Some(Value::Null) => Ok(Value::Null),
+            _ => Ok(Value::Bool(false)),
+        },
+
+        "gremlin_containing" => match (vals.first(), vals.get(1)) {
+            (Some(Value::Str(haystack)), Some(Value::Str(needle))) => {
+                Ok(Value::Bool(haystack.contains(needle.as_ref())))
+            }
+            (Some(Value::Null), _) | (_, Some(Value::Null)) => Ok(Value::Null),
+            _ => Ok(Value::Bool(false)),
+        },
+        "gremlin_startingwith" => match (vals.first(), vals.get(1)) {
+            (Some(Value::Str(haystack)), Some(Value::Str(prefix))) => {
+                Ok(Value::Bool(haystack.starts_with(prefix.as_ref())))
+            }
+            (Some(Value::Null), _) | (_, Some(Value::Null)) => Ok(Value::Null),
+            _ => Ok(Value::Bool(false)),
+        },
+        "gremlin_endingwith" => match (vals.first(), vals.get(1)) {
+            (Some(Value::Str(haystack)), Some(Value::Str(suffix))) => {
+                Ok(Value::Bool(haystack.ends_with(suffix.as_ref())))
+            }
+            (Some(Value::Null), _) | (_, Some(Value::Null)) => Ok(Value::Null),
+            _ => Ok(Value::Bool(false)),
+        },
+        "gremlin_regex" => match (vals.first(), vals.get(1)) {
+            (Some(Value::Str(haystack)), Some(Value::Str(pattern))) => {
+                match regex::Regex::new(pattern.as_ref()) {
+                    Ok(re) => Ok(Value::Bool(re.is_match(haystack))),
+                    Err(_) => Ok(Value::Bool(false)),
+                }
+            }
+            (Some(Value::Null), _) | (_, Some(Value::Null)) => Ok(Value::Null),
+            _ => Ok(Value::Bool(false)),
+        },
+        "gremlin_istype" => {
+            match (vals.first(), vals.get(1)) {
+                (Some(val), Some(Value::Str(expected_type))) => {
+                    let actual_type = match val {
+                        Value::Int(_) => "integer",
+                        Value::Float(_) => "double",
+                        Value::Str(_) => "string",
+                        Value::Bool(_) => "boolean",
+                        Value::Null => "null",
+                        Value::List(_) => "list",
+                        Value::Map(_) => "map",
+                        Value::Node(_) => "vertex",
+                        Value::Edge(_) => "edge",
+                        Value::Date(_) => "date",
+                        Value::Path { .. } => "path",
+                        _ => "unknown",
+                    };
+                    // Handle various type name formats
+                    let expected = expected_type.to_lowercase();
+                    let matches = actual_type == expected
+                        || (expected == "long" && actual_type == "integer")
+                        || (expected == "short" && actual_type == "integer")
+                        || (expected == "byte" && actual_type == "integer")
+                        || (expected == "biginteger" && actual_type == "integer")
+                        || (expected == "float" && actual_type == "double")
+                        || (expected == "bigdecimal" && actual_type == "double")
+                        || (expected == "set" && actual_type == "list");
+                    Ok(Value::Bool(matches))
+                }
+                _ => Ok(Value::Bool(false)),
+            }
+        }
+
         // ── Unknown function ──────────────────────────────────────────────────
         other => Err(GqlError::Execution(ExecutionError::unsupported(format!(
             "unknown function '{other}'"

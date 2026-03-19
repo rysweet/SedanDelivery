@@ -23,6 +23,13 @@ impl<'a> QueryExecutor<'a> {
         cx.budget.record_row();
         let mut row = Row::new();
         inject_parameters(&mut row, &self.parameters);
+        // Propagate outer row columns so sub-traversals (Apply, Choose, etc.)
+        // can reference parent-scope aliases like v_1.
+        if !cx.outer_rows.is_empty() {
+            for (k, v) in &cx.outer_rows[0] {
+                row.entry(k.clone()).or_insert_with(|| v.clone());
+            }
+        }
         Ok(vec![row])
     }
 
