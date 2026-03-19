@@ -658,7 +658,7 @@ mod tests {
     }
 
     #[test]
-    fn unwind_non_list_is_error() {
+    fn unwind_non_list_wraps_scalar() {
         let store = make_store();
         store.create_node("g", vec![], HashMap::new()).unwrap();
 
@@ -673,7 +673,11 @@ mod tests {
         };
         let mut budget = ExecutionBudget::unlimited();
         let result = executor.execute("g", &plan, &mut budget);
-        assert!(result.is_err());
+        // Non-list scalars are now wrapped as single-element results (Gremlin unfold semantics)
+        assert!(result.is_ok());
+        let qr = result.unwrap();
+        assert_eq!(qr.rows.len(), 1);
+        assert_eq!(qr.rows[0].get("x"), Some(&Value::Int(42)));
     }
 
     #[test]

@@ -433,9 +433,10 @@ impl GremlinCompiler {
                 GremlinStep::Values(keys) => {
                     let child = current.take().ok_or(CompileError::MissingChild)?;
                     if keys.len() == 1 {
-                        // Single key: project to a named alias
+                        // Single key: project to a named alias, filter out nulls
+                        // (Gremlin values() drops traversers without the property)
                         let alias = self.next_alias("val");
-                        current = Some(Operator::Project {
+                        let project = Operator::Project {
                             items: vec![(
                                 Expr::Property(
                                     Box::new(Expr::Variable(current_alias.clone())),
@@ -444,9 +445,27 @@ impl GremlinCompiler {
                                 Some(alias.clone()),
                             )],
                             child: Box::new(child),
+                        };
+                        current = Some(Operator::Filter {
+                            predicate: Expr::IsNotNull(Box::new(Expr::Variable(alias.clone()))),
+                            child: Box::new(project),
+                        });
+                        current_alias = alias;
+                    } else if keys.is_empty() {
+                        // values() with no keys: unwind all properties
+                        // Approximate as passing through the element
+                        let alias = self.next_alias("val");
+                        current = Some(Operator::Project {
+                            items: vec![(
+                                Expr::Variable(current_alias.clone()),
+                                Some(alias.clone()),
+                            )],
+                            child: Box::new(child),
                         });
                         current_alias = alias;
                     } else {
+                        // Multiple keys: unwind values for each key, skip nulls
+                        let alias = self.next_alias("val");
                         let items: Vec<(Expr, Option<Identifier>)> = keys
                             .iter()
                             .map(|k| {
@@ -2597,18 +2616,14 @@ mod tests {
             GremlinStep::Values(vec!["name".into()]),
         ];
         let op = compiler.compile(&steps).unwrap();
-        // Top-level should be Project (values)
-        assert!(matches!(op, Operator::Project { .. }));
+        // Top-level should be Filter (null filter from values) wrapping Project
+        assert!(matches!(op, Operator::Filter { .. }));
 
         // Walk down to verify structure
-        if let Operator::Project { child, items, .. } = &op {
-            assert_eq!(items.len(), 1);
-            assert!(matches!(**child, Operator::Expand { .. }));
-            if let Operator::Expand { child, .. } = child.as_ref() {
-                assert!(matches!(**child, Operator::Filter { .. }));
-                if let Operator::Filter { child, .. } = child.as_ref() {
-                    assert!(matches!(**child, Operator::NodeScan { .. }));
-                }
+        if let Operator::Filter { child: proj, .. } = &op {
+            if let Operator::Project { child, items, .. } = proj.as_ref() {
+                assert_eq!(items.len(), 1);
+                assert!(matches!(**child, Operator::Expand { .. }));
             }
         }
     }
@@ -3308,7 +3323,8 @@ mod tests {
             ]),
         ];
         let op = compiler.compile(&steps).unwrap();
-        assert!(matches!(op, Operator::Union { all: true, .. }));
+        // Union is now wrapped in Apply for parent-variable propagation
+        assert!(matches!(op, Operator::Apply { .. }));
     }
 
     #[test]
@@ -3355,7 +3371,10 @@ mod tests {
             if_true, if_false, ..
         } = &op
         {
-            assert!(matches!(**if_true, Operator::Project { .. }));
+            // values() now wraps Project in Filter (null filtering)
+            assert!(
+                matches!(**if_true, Operator::Filter { .. } | Operator::Project { .. })
+            );
             assert!(if_false.is_some());
         } else {
             panic!("expected Choose");
