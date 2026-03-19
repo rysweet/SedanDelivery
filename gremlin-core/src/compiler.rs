@@ -483,15 +483,17 @@ impl GremlinCompiler {
                         GremlinStep::OutV => "startNode",
                         _ => "endNode",
                     };
+                    let mut items = vec![(
+                        Expr::FunctionCall {
+                            name: SmolStr::new(fn_name),
+                            args: vec![Expr::Variable(current_alias.clone())],
+                            distinct: false,
+                        },
+                        Some(vertex_alias.clone()),
+                    )];
+                    items.extend(self.label_carry_items());
                     current = Some(Operator::Project {
-                        items: vec![(
-                            Expr::FunctionCall {
-                                name: SmolStr::new(fn_name),
-                                args: vec![Expr::Variable(current_alias.clone())],
-                                distinct: false,
-                            },
-                            Some(vertex_alias.clone()),
-                        )],
+                        items,
                         child: Box::new(child),
                     });
                     current_alias = vertex_alias;
@@ -624,15 +626,17 @@ impl GremlinCompiler {
                 GremlinStep::Id => {
                     let child = current.take().ok_or(CompileError::MissingChild)?;
                     let id_alias = self.next_alias("id");
+                    let mut items = vec![(
+                        Expr::FunctionCall {
+                            name: SmolStr::new("id"),
+                            args: vec![Expr::Variable(current_alias.clone())],
+                            distinct: false,
+                        },
+                        Some(id_alias.clone()),
+                    )];
+                    items.extend(self.label_carry_items());
                     current = Some(Operator::Project {
-                        items: vec![(
-                            Expr::FunctionCall {
-                                name: SmolStr::new("id"),
-                                args: vec![Expr::Variable(current_alias.clone())],
-                                distinct: false,
-                            },
-                            Some(id_alias.clone()),
-                        )],
+                        items,
                         child: Box::new(child),
                     });
                     current_alias = id_alias;
@@ -641,15 +645,17 @@ impl GremlinCompiler {
                 GremlinStep::Label => {
                     let child = current.take().ok_or(CompileError::MissingChild)?;
                     let lbl_alias = self.next_alias("lbl");
+                    let mut items = vec![(
+                        Expr::FunctionCall {
+                            name: SmolStr::new("labels"),
+                            args: vec![Expr::Variable(current_alias.clone())],
+                            distinct: false,
+                        },
+                        Some(lbl_alias.clone()),
+                    )];
+                    items.extend(self.label_carry_items());
                     current = Some(Operator::Project {
-                        items: vec![(
-                            Expr::FunctionCall {
-                                name: SmolStr::new("labels"),
-                                args: vec![Expr::Variable(current_alias.clone())],
-                                distinct: false,
-                            },
-                            Some(lbl_alias.clone()),
-                        )],
+                        items,
                         child: Box::new(child),
                     });
                     current_alias = lbl_alias;
@@ -1338,10 +1344,75 @@ impl GremlinCompiler {
                 }
 
                 GremlinStep::From(_) | GremlinStep::To(_) => {
-                    // Edge endpoint modifiers — in a full implementation these would
-                    // modify the preceding AddE's CreateEdgeSpec. Simplified: no-op.
-                    if current.is_none() {
-                        return Err(CompileError::MissingChild);
+                    // Edge endpoint modifiers: resolve the vertex reference
+                    // and rewrite the preceding AddE's CreateEdgeSpec.
+                    let inner_step = match step {
+                        GremlinStep::From(s) | GremlinStep::To(s) => s.as_ref(),
+                        _ => unreachable!(),
+                    };
+                    let is_from = matches!(step, GremlinStep::From(_));
+
+                    // Resolve the vertex reference from the inner step
+                    let resolved_alias = match inner_step {
+                        GremlinStep::V(Some(ids)) if ids.len() == 1 => {
+                            // from(V(id)) or to(V(id)) — compile a node lookup
+                            let alias = self.next_alias("fv");
+                            let scan = Operator::Filter {
+                                predicate: Expr::BinaryOp {
+                                    op: BinaryOp::Eq,
+                                    left: Box::new(Expr::FunctionCall {
+                                        name: SmolStr::new("id"),
+                                        args: vec![Expr::Variable(alias.clone())],
+                                        distinct: false,
+                                    }),
+                                    right: Box::new(gremlin_value_to_expr(&ids[0])),
+                                },
+                                child: Box::new(Operator::NodeScan {
+                                    label: None,
+                                    alias: alias.clone(),
+                                }),
+                            };
+                            // Wrap current in an Apply with this scan
+                            let child = current.take().ok_or(CompileError::MissingChild)?;
+                            current = Some(Operator::Apply {
+                                outer: Box::new(child),
+                                inner: Box::new(scan),
+                            });
+                            alias
+                        }
+                        GremlinStep::Select(keys) if keys.len() == 1 => {
+                            // from(select("a")) or to(select("a"))
+                            self.alias_map
+                                .get(&keys[0])
+                                .cloned()
+                                .unwrap_or_else(|| Identifier::new(keys[0].clone()))
+                        }
+                        _ => {
+                            // For complex inner traversals, compile as sub-traversal
+                            let mut sub = self.sub_compiler();
+                            if let Ok(inner_op) = sub.compile_seeded(
+                                std::slice::from_ref(inner_step),
+                                &current_alias,
+                            ) {
+                                self.absorb(&sub);
+                                let inner_alias = sub.last_alias.clone();
+                                let child = current.take().ok_or(CompileError::MissingChild)?;
+                                current = Some(Operator::Apply {
+                                    outer: Box::new(child),
+                                    inner: Box::new(inner_op),
+                                });
+                                inner_alias
+                            } else {
+                                // Fallback: use current alias
+                                current_alias.clone()
+                            }
+                        }
+                    };
+
+                    // Rewrite the __src/__dst placeholder in the Create operator
+                    let placeholder = if is_from { "__src" } else { "__dst" };
+                    if let Some(ref mut op) = current {
+                        rewrite_create_alias(op, placeholder, &resolved_alias);
                     }
                 }
 
@@ -1537,8 +1608,10 @@ impl GremlinCompiler {
                 GremlinStep::Constant(val) => {
                     let child = current.take().unwrap_or(Operator::SingleRow);
                     let alias = self.next_alias("const");
+                    let mut items = vec![(gremlin_value_to_expr(val), Some(alias.clone()))];
+                    items.extend(self.label_carry_items());
                     current = Some(Operator::Project {
-                        items: vec![(gremlin_value_to_expr(val), Some(alias.clone()))],
+                        items,
                         child: Box::new(child),
                     });
                     current_alias = alias;
@@ -2533,6 +2606,33 @@ impl GremlinCompiler {
 
         self.last_alias = current_alias;
         current.ok_or(CompileError::MissingChild)
+    }
+}
+
+/// Recursively rewrite a placeholder alias in a `Create` operator's edge specs.
+fn rewrite_create_alias(op: &mut Operator, placeholder: &str, replacement: &Identifier) {
+    match op {
+        Operator::Create { patterns, .. } => {
+            for pat in patterns {
+                for edge in &mut pat.edges {
+                    // edge is (alias, src, dst, rel_type, dir, props)
+                    if edge.1.as_str() == placeholder {
+                        edge.1 = replacement.clone();
+                    }
+                    if edge.2.as_str() == placeholder {
+                        edge.2 = replacement.clone();
+                    }
+                }
+            }
+        }
+        Operator::Apply { outer, inner } => {
+            rewrite_create_alias(outer, placeholder, replacement);
+            rewrite_create_alias(inner, placeholder, replacement);
+        }
+        Operator::Set { child, .. } => {
+            rewrite_create_alias(child, placeholder, replacement);
+        }
+        _ => {}
     }
 }
 
