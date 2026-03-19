@@ -1440,65 +1440,78 @@ impl GremlinCompiler {
                 GremlinStep::From(_) | GremlinStep::To(_) => {
                     // Edge endpoint modifiers: resolve the vertex reference
                     // and rewrite the preceding AddE's CreateEdgeSpec.
-                    let inner_step = match step {
-                        GremlinStep::From(s) | GremlinStep::To(s) => s.as_ref(),
+                    let inner_steps = match step {
+                        GremlinStep::From(s) | GremlinStep::To(s) => s.as_slice(),
                         _ => unreachable!(),
                     };
                     let is_from = matches!(step, GremlinStep::From(_));
 
-                    // Resolve the vertex reference from the inner step
-                    let resolved_alias = match inner_step {
-                        GremlinStep::V(Some(ids)) if ids.len() == 1 => {
-                            // from(V(id)) or to(V(id)) — compile a node lookup
-                            let alias = self.next_alias("fv");
-                            let scan = Operator::Filter {
-                                predicate: Expr::BinaryOp {
-                                    op: BinaryOp::Eq,
-                                    left: Box::new(Expr::FunctionCall {
-                                        name: SmolStr::new("id"),
-                                        args: vec![Expr::Variable(alias.clone())],
-                                        distinct: false,
+                    // Resolve the vertex reference from the inner steps
+                    let resolved_alias = if inner_steps.len() == 1 {
+                        match &inner_steps[0] {
+                            GremlinStep::V(Some(ids)) if ids.len() == 1 => {
+                                // from(V(id)) or to(V(id)) — compile a node lookup
+                                let alias = self.next_alias("fv");
+                                let scan = Operator::Filter {
+                                    predicate: Expr::BinaryOp {
+                                        op: BinaryOp::Eq,
+                                        left: Box::new(Expr::FunctionCall {
+                                            name: SmolStr::new("id"),
+                                            args: vec![Expr::Variable(alias.clone())],
+                                            distinct: false,
+                                        }),
+                                        right: Box::new(gremlin_value_to_expr(&ids[0])),
+                                    },
+                                    child: Box::new(Operator::NodeScan {
+                                        label: None,
+                                        alias: alias.clone(),
                                     }),
-                                    right: Box::new(gremlin_value_to_expr(&ids[0])),
-                                },
-                                child: Box::new(Operator::NodeScan {
-                                    label: None,
-                                    alias: alias.clone(),
-                                }),
-                            };
-                            // Wrap current in an Apply with this scan
-                            let child = current.take().ok_or(CompileError::MissingChild)?;
-                            current = Some(Operator::Apply {
-                                outer: Box::new(child),
-                                inner: Box::new(scan),
-                            });
-                            alias
-                        }
-                        GremlinStep::Select(keys) if keys.len() == 1 => {
-                            // from(select("a")) or to(select("a"))
-                            self.alias_map
-                                .get(&keys[0])
-                                .cloned()
-                                .unwrap_or_else(|| Identifier::new(keys[0].clone()))
-                        }
-                        _ => {
-                            // For complex inner traversals, compile as sub-traversal
-                            let mut sub = self.sub_compiler();
-                            if let Ok(inner_op) =
-                                sub.compile_seeded(std::slice::from_ref(inner_step), &current_alias)
-                            {
-                                self.absorb(&sub);
-                                let inner_alias = sub.last_alias.clone();
+                                };
                                 let child = current.take().ok_or(CompileError::MissingChild)?;
                                 current = Some(Operator::Apply {
                                     outer: Box::new(child),
-                                    inner: Box::new(inner_op),
+                                    inner: Box::new(scan),
                                 });
-                                inner_alias
-                            } else {
-                                // Fallback: use current alias
-                                current_alias.clone()
+                                alias
                             }
+                            GremlinStep::Select(keys) if keys.len() == 1 => {
+                                // from(select("a")) or to(select("a"))
+                                self.alias_map
+                                    .get(&keys[0])
+                                    .cloned()
+                                    .unwrap_or_else(|| Identifier::new(keys[0].clone()))
+                            }
+                            _ => {
+                                // Single-step complex traversal
+                                let mut sub = self.sub_compiler();
+                                if let Ok(inner_op) = sub.compile_seeded(inner_steps, &current_alias) {
+                                    self.absorb(&sub);
+                                    let inner_alias = sub.last_alias.clone();
+                                    let child = current.take().ok_or(CompileError::MissingChild)?;
+                                    current = Some(Operator::Apply {
+                                        outer: Box::new(child),
+                                        inner: Box::new(inner_op),
+                                    });
+                                    inner_alias
+                                } else {
+                                    current_alias.clone()
+                                }
+                            }
+                        }
+                    } else {
+                        // Multi-step traversal in from/to
+                        let mut sub = self.sub_compiler();
+                        if let Ok(inner_op) = sub.compile_seeded(inner_steps, &current_alias) {
+                            self.absorb(&sub);
+                            let inner_alias = sub.last_alias.clone();
+                            let child = current.take().ok_or(CompileError::MissingChild)?;
+                            current = Some(Operator::Apply {
+                                outer: Box::new(child),
+                                inner: Box::new(inner_op),
+                            });
+                            inner_alias
+                        } else {
+                            current_alias.clone()
                         }
                     };
 

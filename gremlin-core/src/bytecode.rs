@@ -109,8 +109,8 @@ pub enum GremlinStep {
     AddV(String),
     AddE(String),
     Property(String, GremlinValue),
-    From(Box<GremlinStep>),
-    To(Box<GremlinStep>),
+    From(Vec<GremlinStep>),
+    To(Vec<GremlinStep>),
     Drop,
 
     // ── Path steps ───────────────────────────────────────────────────────────

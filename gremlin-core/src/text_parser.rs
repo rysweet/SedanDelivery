@@ -593,12 +593,12 @@ fn parse_step_token(
             }
         }
         "from" => {
-            let inner = parse_from_to_arg(args_str, resolve_param)?;
-            out.push(GremlinStep::From(Box::new(inner)));
+            let inner = parse_from_to_traversal(args_str, resolve_param)?;
+            out.push(GremlinStep::From(inner));
         }
         "to" => {
-            let inner = parse_from_to_arg(args_str, resolve_param)?;
-            out.push(GremlinStep::To(Box::new(inner)));
+            let inner = parse_from_to_traversal(args_str, resolve_param)?;
+            out.push(GremlinStep::To(inner));
         }
         "drop" => out.push(GremlinStep::Drop),
         "path" => out.push(GremlinStep::Path),
@@ -1539,24 +1539,22 @@ fn parse_option_traversal(
 }
 
 /// Parse a `from(...)` or `to(...)` argument — could be a string label or a traversal.
-fn parse_from_to_arg(
+fn parse_from_to_traversal(
     args_str: &str,
     resolve_param: &dyn Fn(&str) -> Option<GremlinValue>,
-) -> Result<GremlinStep, TextParseError> {
+) -> Result<Vec<GremlinStep>, TextParseError> {
     let s = args_str.trim();
-
     // If it's a quoted string, it's a step label reference
     if s.starts_with('"') {
         let label = unquote(s);
-        return Ok(GremlinStep::Select(vec![label]));
+        return Ok(vec![GremlinStep::Select(vec![label])]);
     }
-
-    // Otherwise it's a traversal
+    // Otherwise parse as a full traversal
     let inner = parse_inner_traversal(s, resolve_param)?;
-    if let Some(step) = inner.into_iter().next() {
-        Ok(step)
+    if inner.is_empty() {
+        Ok(vec![GremlinStep::Select(vec![])])
     } else {
-        Ok(GremlinStep::Select(vec![]))
+        Ok(inner)
     }
 }
 
