@@ -598,9 +598,11 @@ impl GremlinCompiler {
                         args,
                         distinct: false,
                     };
-                    current_alias = alias.clone();
+                    let mut items = vec![(fc, Some(alias.clone()))];
+                    items.extend(self.label_carry_items());
+                    current_alias = alias;
                     current = Some(Operator::Project {
-                        items: vec![(fc, Some(alias))],
+                        items,
                         child: Box::new(child),
                     });
                 }
@@ -608,7 +610,7 @@ impl GremlinCompiler {
                 GremlinStep::Properties(keys) => {
                     let child = current.take().ok_or(CompileError::MissingChild)?;
                     let prop_alias = self.next_alias("prop");
-                    let items: Vec<(Expr, Option<Identifier>)> = if keys.is_empty() {
+                    let mut items: Vec<(Expr, Option<Identifier>)> = if keys.is_empty() {
                         vec![(
                             Expr::Variable(current_alias.clone()),
                             Some(prop_alias.clone()),
@@ -634,6 +636,7 @@ impl GremlinCompiler {
                             })
                             .collect()
                     };
+                    items.extend(self.label_carry_items());
                     current = Some(Operator::Project {
                         items,
                         child: Box::new(child),
@@ -1847,7 +1850,7 @@ impl GremlinCompiler {
 
                 GremlinStep::Project(keys) => {
                     let child = current.take().ok_or(CompileError::MissingChild)?;
-                    let items: Vec<(Expr, Option<Identifier>)> = keys
+                    let mut items: Vec<(Expr, Option<Identifier>)> = keys
                         .iter()
                         .map(|k| {
                             (
@@ -1859,6 +1862,7 @@ impl GremlinCompiler {
                             )
                         })
                         .collect();
+                    items.extend(self.label_carry_items());
                     current = Some(Operator::Project {
                         items,
                         child: Box::new(child),
@@ -1958,6 +1962,7 @@ impl GremlinCompiler {
                             ));
                         }
                     }
+                    items.extend(self.label_carry_items());
                     current = Some(Operator::Project {
                         items,
                         child: Box::new(child),
