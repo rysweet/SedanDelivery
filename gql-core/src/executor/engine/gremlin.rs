@@ -204,6 +204,12 @@ impl<'a> QueryExecutor<'a> {
                             | (Some(Value::Float(b)), Some(Value::Int(a))) => {
                                 (*a as f64 - b).abs() < 1e-9
                             }
+                            // Predicate matching: option value encodes a predicate string
+                            (Some(sel), Some(Value::Str(pred_str)))
+                                if pred_str.starts_with("P.") =>
+                            {
+                                eval_gremlin_predicate(pred_str, sel)
+                            }
                             (Some(a), Some(b)) => a == b,
                             _ => false,
                         };
@@ -851,6 +857,72 @@ fn value_to_map_key(v: &Value) -> Box<str> {
         Value::Edge(eid) => format!("e[{}]", eid.0).into_boxed_str(),
         _ => format!("{v:?}").into_boxed_str(),
     }
+}
+
+/// Evaluate a Gremlin predicate string (e.g., "P.between(26,30)") against a value.
+fn eval_gremlin_predicate(pred_str: &str, value: &Value) -> bool {
+    fn parse_num(s: &str) -> Option<f64> {
+        let s = s.trim();
+        if let Ok(i) = s.parse::<i64>() {
+            return Some(i as f64);
+        }
+        s.parse::<f64>().ok()
+    }
+    fn value_as_f64(v: &Value) -> Option<f64> {
+        match v {
+            Value::Int(i) => Some(*i as f64),
+            Value::Float(f) => Some(*f),
+            _ => None,
+        }
+    }
+
+    let pred = pred_str.strip_prefix("P.").unwrap_or(pred_str);
+
+    if let Some(rest) = pred.strip_prefix("between(") {
+        if let Some(args) = rest.strip_suffix(')') {
+            let parts: Vec<&str> = args.splitn(2, ',').collect();
+            if parts.len() == 2 {
+                if let (Some(lo), Some(hi), Some(v)) =
+                    (parse_num(parts[0]), parse_num(parts[1]), value_as_f64(value))
+                {
+                    return v >= lo && v < hi;
+                }
+            }
+        }
+        return false;
+    }
+
+    // Single-arg predicates: P.lt(30), P.gt(30), P.lte(30), P.gte(30), P.eq(x), P.neq(x)
+    for (prefix, cmp_fn) in &[
+        ("lt(", (|v: f64, t: f64| v < t) as fn(f64, f64) -> bool),
+        ("lte(", |v, t| v <= t),
+        ("gt(", |v, t| v > t),
+        ("gte(", |v, t| v >= t),
+        ("eq(", |v, t| (v - t).abs() < 1e-9),
+        ("neq(", |v, t| (v - t).abs() >= 1e-9),
+    ] {
+        if let Some(rest) = pred.strip_prefix(prefix) {
+            if let Some(arg_str) = rest.strip_suffix(')') {
+                if let (Some(threshold), Some(v)) = (parse_num(arg_str), value_as_f64(value)) {
+                    return cmp_fn(v, threshold);
+                }
+            }
+            return false;
+        }
+    }
+
+    // P.neq(y) with string comparison
+    if let Some(rest) = pred.strip_prefix("neq(") {
+        if let Some(arg_str) = rest.strip_suffix(')') {
+            let arg = arg_str.trim().trim_matches('"');
+            match value {
+                Value::Str(s) => return s.as_ref() != arg,
+                _ => return true,
+            }
+        }
+    }
+
+    false
 }
 
 #[cfg(test)]

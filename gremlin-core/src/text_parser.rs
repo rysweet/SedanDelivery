@@ -694,7 +694,9 @@ fn parse_step_token(
         "identity" => out.push(GremlinStep::Identity),
         "tail" => {
             let args = parse_arg_list(args_str, resolve_param)?;
-            // tail(), tail(n), or tail(Scope.global, n) — skip Scope arg
+            // Detect Scope.local
+            let has_local_scope = args_str.contains("local")
+                || args_str.contains("Scope.local");
             let n = args
                 .iter()
                 .find_map(|a| {
@@ -705,7 +707,11 @@ fn parse_step_token(
                     }
                 })
                 .unwrap_or(1);
-            out.push(GremlinStep::Tail(n));
+            if has_local_scope {
+                out.push(GremlinStep::TailLocal(n));
+            } else {
+                out.push(GremlinStep::Tail(n));
+            }
         }
         "skip" => {
             let args = parse_arg_list(args_str, resolve_param)?;

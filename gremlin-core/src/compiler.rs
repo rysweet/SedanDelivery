@@ -1116,7 +1116,7 @@ impl GremlinCompiler {
                         // by() after dedup() — dedup by specific property
                         if !key.is_empty() {
                             if let Some(Operator::Distinct { ref mut by_key, .. }) = current {
-                                *by_key = Some(key.to_string());
+                                *by_key = Some(format!("__dedup_prop__{}__{}", key, current_alias.0));
                             }
                         }
                         pending_dedup = false;
@@ -1172,6 +1172,11 @@ impl GremlinCompiler {
                 }
 
                 GremlinStep::Range(low, high) => {
+                    if *high < *low {
+                        return Err(CompileError::InvalidSequence(
+                            format!("range({}, {}): high must be >= low", low, high),
+                        ));
+                    }
                     let child = current.take().ok_or(CompileError::MissingChild)?;
                     let skipped = if *low > 0 {
                         Operator::Skip {
@@ -1207,11 +1212,22 @@ impl GremlinCompiler {
                     });
                 }
 
-                GremlinStep::Dedup(_keys) => {
+                GremlinStep::Dedup(keys) => {
                     let child = current.take().ok_or(CompileError::MissingChild)?;
+                    // dedup() — deduplicate by the current traverser value
+                    // dedup("a","b") — deduplicate by values at step labels
+                    let by_key = if keys.is_empty() {
+                        Some(current_alias.to_string())
+                    } else if keys.len() == 1 {
+                        Some(keys[0].clone())
+                    } else {
+                        // Multi-key dedup: compose a key from all labels
+                        // Handled by passing a composite key hint
+                        Some(keys.join("\x1f"))
+                    };
                     current = Some(Operator::Distinct {
                         child: Box::new(child),
-                        by_key: None,
+                        by_key,
                     });
                     pending_dedup = true;
                 }
@@ -1620,28 +1636,66 @@ impl GremlinCompiler {
 
                 GremlinStep::Union(branches) => {
                     let child = current.take().unwrap_or(Operator::SingleRow);
-                    let mut sub = self.sub_compiler();
-                    let branch_ops: Result<Vec<Operator>, _> = branches
-                        .iter()
-                        .map(|s| sub.compile_seeded(s, &current_alias))
-                        .collect();
-                    self.absorb(&sub);
-                    let branch_ops = branch_ops?;
-                    // Build a left-associative union chain
-                    let union = branch_ops
-                        .into_iter()
-                        .reduce(|left, right| Operator::Union {
-                            left: Box::new(left),
-                            right: Box::new(right),
-                            all: true,
-                        })
-                        .unwrap_or(Operator::SingleRow);
-                    // Wrap union in Apply so parent variables (v_1, etc.)
-                    // are available to each branch via outer_rows propagation.
-                    current = Some(Operator::Apply {
-                        outer: Box::new(child),
-                        inner: Box::new(union),
-                    });
+                    if branches.is_empty() {
+                        // union() with no branches → produce no results
+                        current = Some(Operator::Filter {
+                            predicate: Expr::Bool(false),
+                            child: Box::new(child),
+                        });
+                    } else {
+                        // Compile each branch and track its result alias.
+                        let mut branch_ops: Vec<Operator> = Vec::new();
+                        let mut branch_aliases: Vec<Identifier> = Vec::new();
+                        for s in branches {
+                            let mut sub = self.sub_compiler();
+                            let op = sub.compile_seeded(s, &current_alias)?;
+                            branch_aliases.push(sub.last_alias.clone());
+                            self.absorb(&sub);
+                            branch_ops.push(op);
+                        }
+
+                        // Choose a common output alias for the union.
+                        let union_alias = self.next_alias("u");
+
+                        // Wrap each branch in a Project to normalize the output alias.
+                        let normalized: Vec<Operator> = branch_ops
+                            .into_iter()
+                            .zip(branch_aliases.iter())
+                            .map(|(op, src_alias)| {
+                                if src_alias == &union_alias {
+                                    op
+                                } else {
+                                    let mut items = vec![(
+                                        Expr::Variable(src_alias.clone()),
+                                        Some(union_alias.clone()),
+                                    )];
+                                    // Carry forward all step labels
+                                    items.extend(self.label_carry_items());
+                                    Operator::Project {
+                                        items,
+                                        child: Box::new(op),
+                                    }
+                                }
+                            })
+                            .collect();
+
+                        // Build a left-associative union chain
+                        let union = normalized
+                            .into_iter()
+                            .reduce(|left, right| Operator::Union {
+                                left: Box::new(left),
+                                right: Box::new(right),
+                                all: true,
+                            })
+                            .unwrap_or(Operator::SingleRow);
+                        // Wrap union in Apply so parent variables (v_1, etc.)
+                        // are available to each branch via outer_rows propagation.
+                        current = Some(Operator::Apply {
+                            outer: Box::new(child),
+                            inner: Box::new(union),
+                        });
+                        current_alias = union_alias;
+                    }
                 }
 
                 GremlinStep::SideEffect(effect_steps) => {
@@ -1831,6 +1885,29 @@ impl GremlinCompiler {
                         items: vec![(Expr::Variable(current_alias.clone()), true)],
                         child: Box::new(limited),
                     });
+                }
+
+                GremlinStep::TailLocal(n) => {
+                    // tail(Scope.local, n): take last n elements of list values
+                    let child = current.take().ok_or(CompileError::MissingChild)?;
+                    let alias = self.next_alias("tail");
+                    let mut items = vec![(
+                        Expr::FunctionCall {
+                            name: SmolStr::new("gremlin_tail_local"),
+                            args: vec![
+                                Expr::Variable(current_alias.clone()),
+                                Expr::Integer(*n),
+                            ],
+                            distinct: false,
+                        },
+                        Some(alias.clone()),
+                    )];
+                    items.extend(self.label_carry_items());
+                    current = Some(Operator::Project {
+                        items,
+                        child: Box::new(child),
+                    });
+                    current_alias = alias;
                 }
 
                 GremlinStep::Skip(n) => {

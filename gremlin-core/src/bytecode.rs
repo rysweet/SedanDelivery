@@ -138,6 +138,8 @@ pub enum GremlinStep {
     Identity,
     /// `tail()` or `tail(n)` — keep only the last n elements (default 1)
     Tail(i64),
+    /// `tail(Scope.local)` or `tail(Scope.local, n)` — last n elements of a list
+    TailLocal(i64),
     /// `skip(n)` — drop the first n elements
     Skip(i64),
     /// `elementMap(keys...)` — like valueMap but includes id and label

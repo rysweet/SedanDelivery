@@ -568,6 +568,30 @@ pub fn eval_function_with_vals(name: &str, vals: Vec<Value>) -> Result<Value, Gq
                 .collect();
             Ok(Value::List(results))
         }
+        "gremlin_tail_local" => {
+            let val = vals.first().cloned().unwrap_or(Value::Null);
+            let n = match vals.get(1) {
+                Some(Value::Int(i)) => *i as usize,
+                _ => 1,
+            };
+            match val {
+                Value::List(items) => {
+                    let start = items.len().saturating_sub(n);
+                    Ok(Value::List(items[start..].to_vec()))
+                }
+                Value::Map(m) => {
+                    let entries: Vec<_> = m.iter().collect();
+                    let start = entries.len().saturating_sub(n);
+                    let result: IndexMap<Box<str>, Value> = entries[start..]
+                        .iter()
+                        .map(|(k, v)| ((*k).clone(), (*v).clone()))
+                        .collect();
+                    Ok(Value::Map(result))
+                }
+                Value::Null => Ok(Value::Null),
+                other => Ok(other),
+            }
+        }
         "gremlin_concat" => {
             // Gremlin concat: first arg is current traverser, rest are strings to append.
             // Null args are skipped. List args cause error.

@@ -106,18 +106,56 @@ impl<'a> QueryExecutor<'a> {
         let mut out = Vec::with_capacity(input.len());
 
         if let Some(key) = by_key {
-            // Dedup by column value: use the specified row column for uniqueness
             use std::collections::HashSet;
             let mut seen: HashSet<String> = HashSet::new();
-            for row in input {
-                cx.budget.check_or_err()?;
-                // Look up the column value for dedup
-                let dedup_val = row
-                    .get(key.as_str())
-                    .map(|v| v.canonical_key())
-                    .unwrap_or_default();
-                if seen.insert(dedup_val) {
-                    out.push(row);
+
+            // Multi-key dedup (keys separated by \x1f)
+            if key.contains('\x1f') {
+                let labels: Vec<&str> = key.split('\x1f').collect();
+                for row in input {
+                    cx.budget.check_or_err()?;
+                    let composite: String = labels
+                        .iter()
+                        .map(|l| {
+                            row.get(*l)
+                                .map(|v| v.canonical_key())
+                                .unwrap_or_default()
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\x1f");
+                    if seen.insert(composite) {
+                        out.push(row);
+                    }
+                }
+            } else if let Some(rest) = key.strip_prefix("__dedup_prop__") {
+                // Property-based dedup: extract property from the element
+                let parts: Vec<&str> = rest.splitn(2, "__").collect();
+                let prop_name = parts.first().copied().unwrap_or("");
+                let alias = parts.get(1).copied().unwrap_or("");
+                for row in input {
+                    cx.budget.check_or_err()?;
+                    let dedup_val = if let Some(val) = row.get(alias) {
+                        self.extract_property_from_value(cx.graph, val, prop_name)
+                            .map(|v| v.canonical_key())
+                            .unwrap_or_default()
+                    } else {
+                        String::new()
+                    };
+                    if seen.insert(dedup_val) {
+                        out.push(row);
+                    }
+                }
+            } else {
+                // Simple column-based dedup
+                for row in input {
+                    cx.budget.check_or_err()?;
+                    let dedup_val = row
+                        .get(key.as_str())
+                        .map(|v| v.canonical_key())
+                        .unwrap_or_default();
+                    if seen.insert(dedup_val) {
+                        out.push(row);
+                    }
                 }
             }
         } else {
@@ -130,6 +168,29 @@ impl<'a> QueryExecutor<'a> {
             }
         }
         Ok(out)
+    }
+
+    /// Extract a property from a Value (node, edge, or map).
+    fn extract_property_from_value(
+        &self,
+        graph: &str,
+        val: &Value,
+        prop: &str,
+    ) -> Option<Value> {
+        match val {
+            Value::Node(nid) => self
+                .cached_get_node(graph, *nid)
+                .ok()
+                .flatten()
+                .and_then(|n| n.properties.get(prop).cloned()),
+            Value::Edge(eid) => self
+                .cached_get_edge(graph, *eid)
+                .ok()
+                .flatten()
+                .and_then(|e| e.properties.get(prop).cloned()),
+            Value::Map(m) => m.get(prop).cloned(),
+            _ => None,
+        }
     }
 
     pub(crate) fn exec_sort(
