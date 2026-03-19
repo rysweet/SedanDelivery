@@ -895,22 +895,11 @@ impl GremlinCompiler {
                     });
                 }
 
-                GremlinStep::Dedup(keys) => {
+                GremlinStep::Dedup(_keys) => {
                     let child = current.take().ok_or(CompileError::MissingChild)?;
-                    // Use the current traverser alias as the dedup key
-                    // (Gremlin dedup removes duplicate traversers, not duplicate rows)
-                    let by_key = if keys.is_empty() {
-                        Some(current_alias.as_str().to_string())
-                    } else {
-                        // dedup("a", "b") — dedup by specific step labels
-                        // For simplicity, use the first key
-                        keys.first()
-                            .and_then(|k| self.alias_map.get(k).map(|id| id.as_str().to_string()))
-                            .or_else(|| Some(current_alias.as_str().to_string()))
-                    };
                     current = Some(Operator::Distinct {
                         child: Box::new(child),
-                        by_key,
+                        by_key: None,
                     });
                     pending_dedup = true;
                 }
@@ -2302,6 +2291,35 @@ fn steps_to_predicate(
                 );
                 return predicate_to_prop_expr(pred, prop_expr);
             }
+        }
+        // Label + Is(Eq("person")) → hasLabel("person")
+        if let (GremlinStep::Label, GremlinStep::Is(pred)) = (&steps[0], &steps[1]) {
+            match pred {
+                Predicate::Eq(GremlinValue::String(label)) => {
+                    return Expr::HasLabel(
+                        Box::new(Expr::Variable(alias.clone())),
+                        Label::new(label.as_str()),
+                    );
+                }
+                _ => {
+                    // For other predicates on label, use function call
+                    let label_expr = Expr::FunctionCall {
+                        name: SmolStr::new("labels"),
+                        args: vec![Expr::Variable(alias.clone())],
+                        distinct: false,
+                    };
+                    return predicate_to_prop_expr(pred, label_expr);
+                }
+            }
+        }
+        // Id + Is(pred) → id predicate
+        if let (GremlinStep::Id, GremlinStep::Is(pred)) = (&steps[0], &steps[1]) {
+            let id_expr = Expr::FunctionCall {
+                name: SmolStr::new("id"),
+                args: vec![Expr::Variable(alias.clone())],
+                distinct: false,
+            };
+            return predicate_to_prop_expr(pred, id_expr);
         }
         // Two-step pattern: Select(["label"]) + Is(pred) → labeled value comparison
         // This handles where("a", P.eq("b"))
