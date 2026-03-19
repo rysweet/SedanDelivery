@@ -36,9 +36,10 @@ impl<'a> QueryExecutor<'a> {
         let mut collected: Vec<Row> = Vec::new();
 
         let max_iterations = times.unwrap_or(256);
-        for _ in 0..max_iterations {
+        for iteration in 0..max_iterations {
             cx.budget.check_or_err()?;
 
+            // Pre-emit: collect traversers before body execution.
             if *emit {
                 collected.extend(current.clone());
             }
@@ -47,8 +48,6 @@ impl<'a> QueryExecutor<'a> {
             let mut next = Vec::new();
             for row in &current {
                 cx.budget.check_or_err()?;
-                // Strip the body output alias from the seed so Expand doesn't
-                // see a pre-bound destination and filter out valid expansions.
                 let mut seed_row = row.clone();
                 if let Some((from, _)) = remap {
                     seed_row.remove(from.as_str());
@@ -74,26 +73,32 @@ impl<'a> QueryExecutor<'a> {
 
             current = next;
 
-            // Check the until predicate if one exists.
+            // Check the until predicate per-traverser: traversers that match
+            // the until condition are collected and removed from further iteration.
             if let Some(until_op) = until {
-                let mut should_stop = false;
-                for row in &current {
+                let mut continuing = Vec::new();
+                for row in current.drain(..) {
                     self.foreach_seed.borrow_mut().replace(vec![row.clone()]);
                     let result = self.exec_operator(cx, until_op)?;
                     self.foreach_seed.borrow_mut().take();
                     if !result.is_empty() {
-                        should_stop = true;
-                        break;
+                        // This traverser matched until — collect it
+                        collected.push(row);
+                    } else {
+                        continuing.push(row);
                     }
                 }
-                if should_stop {
-                    break;
+                current = continuing;
+                if current.is_empty() {
+                    return Ok(collected);
                 }
             }
 
-            // For fixed-count mode without `until`, the loop counter handles termination.
-            if times.is_some() {
-                continue;
+            // For fixed-count mode, check if we've done enough iterations.
+            if let Some(t) = times {
+                if iteration + 1 >= *t {
+                    break;
+                }
             }
         }
 
@@ -191,7 +196,17 @@ impl<'a> QueryExecutor<'a> {
                 match match_val {
                     None => default_branch = Some(branch),
                     Some(v) => {
-                        if sel_value.as_ref() == Some(v) {
+                        let matches = match (sel_value.as_ref(), Some(v)) {
+                            (Some(Value::Int(a)), Some(Value::Int(b))) => a == b,
+                            (Some(Value::Float(a)), Some(Value::Float(b))) => (a - b).abs() < 1e-9,
+                            (Some(Value::Int(a)), Some(Value::Float(b)))
+                            | (Some(Value::Float(b)), Some(Value::Int(a))) => {
+                                (*a as f64 - b).abs() < 1e-9
+                            }
+                            (Some(a), Some(b)) => a == b,
+                            _ => false,
+                        };
+                        if matches {
                             matched_branch = Some(branch);
                             break;
                         }
@@ -204,8 +219,10 @@ impl<'a> QueryExecutor<'a> {
                 let branch_rows = self.exec_operator(cx, branch)?;
                 self.foreach_seed.borrow_mut().take();
                 out.extend(branch_rows);
+            } else {
+                // No branch matches and no default → identity (pass through)
+                out.push(row);
             }
-            // If no branch matches and no default, the traverser is dropped.
         }
         Ok(out)
     }
@@ -362,6 +379,12 @@ impl<'a> QueryExecutor<'a> {
 
         // Stamp the accumulated list onto every output row.
         let agg_val = Value::List(collected);
+        if input.is_empty() {
+            // Even with no input, the side-effect must be accessible via cap().
+            let mut sentinel = Row::new();
+            sentinel.insert(agg_col, agg_val);
+            return Ok(vec![sentinel]);
+        }
         for row in &mut input {
             row.insert(agg_col.clone(), agg_val.clone());
         }
@@ -668,17 +691,31 @@ impl<'a> QueryExecutor<'a> {
         // Use Box<str> keys since Value doesn't implement Hash.
         let mut groups: IndexMap<Box<str>, Vec<Value>> = IndexMap::new();
 
+        // Check if value_expr differs from key_expr (i.e., a value-by modulation is present).
+        let has_value_by = value_expr != key_expr;
+
         for row in &input {
             cx.budget.check_or_err()?;
             let ctx = self.build_filter_ctx(cx.graph, row)?;
             let key_val = self
                 .eval_with_storage(cx.graph, key_expr, row, &ctx)
                 .unwrap_or(Value::Null);
+            // Skip rows where the group key evaluates to Null (unproductive by).
+            // TinkerPop default: null keys are dropped unless ProductiveByStrategy.
+            if matches!(key_val, Value::Null) {
+                continue;
+            }
             let val = self
                 .eval_with_storage(cx.graph, value_expr, row, &ctx)
                 .unwrap_or(Value::Null);
             let key_str = value_to_map_key(&key_val);
-            groups.entry(key_str).or_default().push(val);
+            let entry = groups.entry(key_str).or_default();
+            // When a value-by projection is active, skip null values (unproductive by).
+            if has_value_by && matches!(val, Value::Null) {
+                // Key still gets created (via or_default) with empty vec
+            } else {
+                entry.push(val);
+            }
         }
 
         // Apply aggregation function to each group.
@@ -718,6 +755,12 @@ impl<'a> QueryExecutor<'a> {
             let agg_col = format!("__gremlin_agg_{key}");
             let map_val = Value::Map(result_map);
             let mut output = input;
+            if output.is_empty() {
+                // Even with no input, the side-effect must be accessible via cap().
+                let mut sentinel = Row::new();
+                sentinel.insert(agg_col, map_val);
+                return Ok(vec![sentinel]);
+            }
             for row in &mut output {
                 row.insert(agg_col.clone(), map_val.clone());
             }

@@ -123,6 +123,51 @@ impl GremlinCompiler {
         self.compile_from(steps, None, Identifier::new("__gremlin_v"), Vec::new())
     }
 
+    /// Extract a literal expression from collection step RHS sub-traversal steps.
+    /// Returns (rhs_expr, optional_apply_operator). If the RHS is a sub-traversal,
+    /// the caller must wrap their child in the Apply operator before projecting.
+    fn compile_collection_rhs(
+        &mut self,
+        rhs_steps: &[GremlinStep],
+        current_alias: &Identifier,
+        child: Operator,
+    ) -> Result<(Expr, Operator), CompileError> {
+        // Empty steps → Null (will trigger appropriate error in execution)
+        if rhs_steps.is_empty() {
+            return Ok((Expr::Null, child));
+        }
+        // Single Inject step with one list arg → literal list
+        if rhs_steps.len() == 1 {
+            if let GremlinStep::Inject(values) = &rhs_steps[0] {
+                if values.len() == 1 {
+                    return Ok((gremlin_value_to_expr(&values[0]), child));
+                }
+                return Ok((
+                    Expr::List(values.iter().map(gremlin_value_to_expr).collect()),
+                    child,
+                ));
+            }
+            if let GremlinStep::Constant(v) = &rhs_steps[0] {
+                return Ok((gremlin_value_to_expr(v), child));
+            }
+        }
+        // Sub-traversal: compile with Apply to evaluate within the current context
+        let mut sub = self.sub_compiler();
+        let rhs_op = sub.compile_seeded(rhs_steps, current_alias)?;
+        let rhs_alias = sub.last_alias.clone();
+        self.absorb(&sub);
+        let applied = Operator::Apply {
+            outer: Box::new(child),
+            inner: Box::new(rhs_op),
+        };
+        Ok((Expr::Variable(rhs_alias), applied))
+    }
+
+    /// Returns the alias for the traversal's final result column after compilation.
+    pub fn result_alias(&self) -> &str {
+        self.last_alias.0.as_str()
+    }
+
     /// Core compilation: walks steps left-to-right, wrapping each into the
     /// operator tree. `initial_op` / `initial_alias` allow callers to seed
     /// the compilation with an existing operator and alias.
@@ -138,7 +183,7 @@ impl GremlinCompiler {
         }
 
         let mut current: Option<Operator> = initial_op;
-        let mut current_alias = initial_alias;
+        let mut current_alias = initial_alias.clone();
         // Pending properties for AddV/AddE
         let mut pending_properties: Vec<(String, GremlinValue)> = Vec::new();
         // Pending By modifiers for Order
@@ -153,6 +198,12 @@ impl GremlinCompiler {
         let mut pending_dedup = false;
         // Track whether the preceding step was aggregate for by() modulation
         let mut pending_aggregate = false;
+        // Track whether the pending group is specifically a groupCount (rejects 2nd by())
+        let mut pending_group_is_count = false;
+        // Track whether aggregate already consumed its single by() — second by() is an error
+        let mut aggregate_by_consumed = false;
+        // The alias BEFORE group() changed it — used by by() modulation
+        let mut pre_group_alias: Identifier = initial_alias.clone();
         // Track aliases for path() reconstruction
         let mut path_aliases: Vec<Identifier> = initial_path_aliases;
         // Pending emit/until that appear before repeat()
@@ -160,6 +211,10 @@ impl GremlinCompiler {
         let mut pending_until: Option<Vec<GremlinStep>> = None;
 
         for step in steps {
+            // Reset aggregate by-consumed flag on any non-By step
+            if !matches!(step, GremlinStep::By(..)) {
+                aggregate_by_consumed = false;
+            }
             match step {
                 GremlinStep::V(ids) => {
                     let alias = self.next_alias("v");
@@ -486,38 +541,44 @@ impl GremlinCompiler {
                     }
                 }
 
-                GremlinStep::ValueMap(keys) => {
+                GremlinStep::ValueMap(keys, with_tokens) => {
                     let child = current.take().ok_or(CompileError::MissingChild)?;
-                    let items: Vec<(Expr, Option<Identifier>)> = if keys.is_empty() {
-                        vec![(
-                            Expr::Variable(current_alias.clone()),
-                            Some(current_alias.clone()),
-                        )]
-                    } else {
-                        keys.iter()
-                            .map(|k| {
-                                (
-                                    Expr::Property(
-                                        Box::new(Expr::Variable(current_alias.clone())),
-                                        SmolStr::new(k),
-                                    ),
-                                    Some(Identifier::new(k.clone())),
-                                )
-                            })
-                            .collect()
+                    let alias = self.next_alias("vmap");
+                    // Build args: element, tokens flag, then optional key filters
+                    let mut args = vec![
+                        Expr::Variable(current_alias.clone()),
+                        Expr::Bool(*with_tokens),
+                    ];
+                    for k in keys {
+                        args.push(Expr::Str(k.as_str().into()));
+                    }
+                    let fc = Expr::FunctionCall {
+                        name: SmolStr::new("gremlin_valuemap"),
+                        args,
+                        distinct: false,
                     };
+                    current_alias = alias.clone();
                     current = Some(Operator::Project {
-                        items,
+                        items: vec![(fc, Some(alias))],
                         child: Box::new(child),
                     });
                 }
 
                 GremlinStep::Properties(keys) => {
                     let child = current.take().ok_or(CompileError::MissingChild)?;
+                    let prop_alias = self.next_alias("prop");
                     let items: Vec<(Expr, Option<Identifier>)> = if keys.is_empty() {
                         vec![(
                             Expr::Variable(current_alias.clone()),
-                            Some(current_alias.clone()),
+                            Some(prop_alias.clone()),
+                        )]
+                    } else if keys.len() == 1 {
+                        vec![(
+                            Expr::Property(
+                                Box::new(Expr::Variable(current_alias.clone())),
+                                SmolStr::new(&keys[0]),
+                            ),
+                            Some(prop_alias.clone()),
                         )]
                     } else {
                         keys.iter()
@@ -536,6 +597,9 @@ impl GremlinCompiler {
                         items,
                         child: Box::new(child),
                     });
+                    if keys.len() <= 1 {
+                        current_alias = prop_alias;
+                    }
                 }
 
                 GremlinStep::Id => {
@@ -623,18 +687,36 @@ impl GremlinCompiler {
                 }
 
                 GremlinStep::Sum => {
+                    // Use Fold + SumLocal for Gremlin semantics (empty → empty)
                     let child = current.take().ok_or(CompileError::MissingChild)?;
-                    let sum_alias = self.next_alias("sum");
-                    current = Some(Operator::Aggregate {
+                    let fold_alias = self.next_alias("fold");
+                    let folded = Operator::Aggregate {
                         keys: vec![],
                         aggregations: vec![(
-                            AggFunction::Sum,
+                            AggFunction::Collect,
                             Expr::Variable(current_alias.clone()),
                             None,
                             false,
-                            sum_alias.clone(),
+                            fold_alias.clone(),
                         )],
                         child: Box::new(child),
+                    };
+                    let sum_alias = self.next_alias("sum");
+                    let projected = Operator::Project {
+                        items: vec![(
+                            Expr::FunctionCall {
+                                name: SmolStr::new("gremlin_sum_local"),
+                                args: vec![Expr::Variable(fold_alias)],
+                                distinct: false,
+                            },
+                            Some(sum_alias.clone()),
+                        )],
+                        child: Box::new(folded),
+                    };
+                    // Filter out null (empty list produces null sum)
+                    current = Some(Operator::Filter {
+                        predicate: Expr::IsNotNull(Box::new(Expr::Variable(sum_alias.clone()))),
+                        child: Box::new(projected),
                     });
                     current_alias = sum_alias;
                 }
@@ -642,7 +724,7 @@ impl GremlinCompiler {
                 GremlinStep::Min => {
                     let child = current.take().ok_or(CompileError::MissingChild)?;
                     let alias = self.next_alias("min");
-                    current = Some(Operator::Aggregate {
+                    let agg = Operator::Aggregate {
                         keys: vec![],
                         aggregations: vec![(
                             AggFunction::Min,
@@ -652,6 +734,10 @@ impl GremlinCompiler {
                             alias.clone(),
                         )],
                         child: Box::new(child),
+                    };
+                    current = Some(Operator::Filter {
+                        predicate: Expr::IsNotNull(Box::new(Expr::Variable(alias.clone()))),
+                        child: Box::new(agg),
                     });
                     current_alias = alias;
                 }
@@ -659,7 +745,7 @@ impl GremlinCompiler {
                 GremlinStep::Max => {
                     let child = current.take().ok_or(CompileError::MissingChild)?;
                     let alias = self.next_alias("max");
-                    current = Some(Operator::Aggregate {
+                    let agg = Operator::Aggregate {
                         keys: vec![],
                         aggregations: vec![(
                             AggFunction::Max,
@@ -669,6 +755,10 @@ impl GremlinCompiler {
                             alias.clone(),
                         )],
                         child: Box::new(child),
+                    };
+                    current = Some(Operator::Filter {
+                        predicate: Expr::IsNotNull(Box::new(Expr::Variable(alias.clone()))),
+                        child: Box::new(agg),
                     });
                     current_alias = alias;
                 }
@@ -676,7 +766,7 @@ impl GremlinCompiler {
                 GremlinStep::Mean => {
                     let child = current.take().ok_or(CompileError::MissingChild)?;
                     let alias = self.next_alias("avg");
-                    current = Some(Operator::Aggregate {
+                    let agg = Operator::Aggregate {
                         keys: vec![],
                         aggregations: vec![(
                             AggFunction::Avg,
@@ -686,6 +776,94 @@ impl GremlinCompiler {
                             alias.clone(),
                         )],
                         child: Box::new(child),
+                    };
+                    current = Some(Operator::Filter {
+                        predicate: Expr::IsNotNull(Box::new(Expr::Variable(alias.clone()))),
+                        child: Box::new(agg),
+                    });
+                    current_alias = alias;
+                }
+
+                GremlinStep::SumLocal => {
+                    let child = current.take().ok_or(CompileError::MissingChild)?;
+                    let alias = self.next_alias("suml");
+                    let proj = Operator::Project {
+                        items: vec![(
+                            Expr::FunctionCall {
+                                name: SmolStr::new("gremlin_sum_local"),
+                                args: vec![Expr::Variable(current_alias.clone())],
+                                distinct: false,
+                            },
+                            Some(alias.clone()),
+                        )],
+                        child: Box::new(child),
+                    };
+                    current = Some(Operator::Filter {
+                        predicate: Expr::IsNotNull(Box::new(Expr::Variable(alias.clone()))),
+                        child: Box::new(proj),
+                    });
+                    current_alias = alias;
+                }
+
+                GremlinStep::MinLocal => {
+                    let child = current.take().ok_or(CompileError::MissingChild)?;
+                    let alias = self.next_alias("minl");
+                    let proj = Operator::Project {
+                        items: vec![(
+                            Expr::FunctionCall {
+                                name: SmolStr::new("gremlin_min_local"),
+                                args: vec![Expr::Variable(current_alias.clone())],
+                                distinct: false,
+                            },
+                            Some(alias.clone()),
+                        )],
+                        child: Box::new(child),
+                    };
+                    current = Some(Operator::Filter {
+                        predicate: Expr::IsNotNull(Box::new(Expr::Variable(alias.clone()))),
+                        child: Box::new(proj),
+                    });
+                    current_alias = alias;
+                }
+
+                GremlinStep::MaxLocal => {
+                    let child = current.take().ok_or(CompileError::MissingChild)?;
+                    let alias = self.next_alias("maxl");
+                    let proj = Operator::Project {
+                        items: vec![(
+                            Expr::FunctionCall {
+                                name: SmolStr::new("gremlin_max_local"),
+                                args: vec![Expr::Variable(current_alias.clone())],
+                                distinct: false,
+                            },
+                            Some(alias.clone()),
+                        )],
+                        child: Box::new(child),
+                    };
+                    current = Some(Operator::Filter {
+                        predicate: Expr::IsNotNull(Box::new(Expr::Variable(alias.clone()))),
+                        child: Box::new(proj),
+                    });
+                    current_alias = alias;
+                }
+
+                GremlinStep::MeanLocal => {
+                    let child = current.take().ok_or(CompileError::MissingChild)?;
+                    let alias = self.next_alias("meanl");
+                    let proj = Operator::Project {
+                        items: vec![(
+                            Expr::FunctionCall {
+                                name: SmolStr::new("gremlin_mean_local"),
+                                args: vec![Expr::Variable(current_alias.clone())],
+                                distinct: false,
+                            },
+                            Some(alias.clone()),
+                        )],
+                        child: Box::new(child),
+                    };
+                    current = Some(Operator::Filter {
+                        predicate: Expr::IsNotNull(Box::new(Expr::Variable(alias.clone()))),
+                        child: Box::new(proj),
                     });
                     current_alias = alias;
                 }
@@ -693,12 +871,15 @@ impl GremlinCompiler {
                 GremlinStep::Group(ref key) | GremlinStep::GroupCount(ref key) => {
                     let child = current.take().ok_or(CompileError::MissingChild)?;
                     let alias = self.next_alias("grp");
-                    let agg_fn = if matches!(step, GremlinStep::GroupCount(..)) {
+                    let is_count = matches!(step, GremlinStep::GroupCount(..));
+                    let agg_fn = if is_count {
                         AggFunction::Count
                     } else {
                         AggFunction::Collect
                     };
                     let has_side_effect = key.is_some();
+                    // Save the pre-group alias for by() modulation
+                    pre_group_alias = current_alias.clone();
                     current = Some(Operator::GremlinGroup {
                         key_expr: Expr::Variable(current_alias.clone()),
                         value_expr: Expr::Variable(current_alias.clone()),
@@ -714,6 +895,7 @@ impl GremlinCompiler {
                     }
                     pending_group = true;
                     pending_group_by_count = 0;
+                    pending_group_is_count = is_count;
                 }
 
                 GremlinStep::Fold => {
@@ -752,34 +934,51 @@ impl GremlinCompiler {
                 GremlinStep::By(key, descending) => {
                     if pending_order {
                         let child = current.take().ok_or(CompileError::MissingChild)?;
-                        let sort_expr = if key.is_empty() {
+                        if key.is_empty() {
                             // by() with no key — sort by current value
-                            Expr::Variable(current_alias.clone())
+                            current = Some(Operator::Sort {
+                                items: vec![(Expr::Variable(current_alias.clone()), !descending)],
+                                child: Box::new(child),
+                            });
                         } else if key == "~id" || key == "T.id" || key == "t[id]" {
-                            Expr::FunctionCall {
+                            let sort_expr = Expr::FunctionCall {
                                 name: SmolStr::new("id"),
                                 args: vec![Expr::Variable(current_alias.clone())],
                                 distinct: false,
-                            }
+                            };
+                            current = Some(Operator::Sort {
+                                items: vec![(sort_expr, !descending)],
+                                child: Box::new(child),
+                            });
                         } else if key == "~label" || key == "T.label" || key == "t[label]" {
-                            Expr::FunctionCall {
+                            let sort_expr = Expr::FunctionCall {
                                 name: SmolStr::new("labels"),
                                 args: vec![Expr::Variable(current_alias.clone())],
                                 distinct: false,
-                            }
+                            };
+                            current = Some(Operator::Sort {
+                                items: vec![(sort_expr, !descending)],
+                                child: Box::new(child),
+                            });
                         } else {
-                            Expr::Property(
+                            // Property-based sort: filter out elements missing the property
+                            let prop_expr = Expr::Property(
                                 Box::new(Expr::Variable(current_alias.clone())),
                                 SmolStr::new(key),
-                            )
-                        };
-                        current = Some(Operator::Sort {
-                            items: vec![(sort_expr, !descending)],
-                            child: Box::new(child),
-                        });
+                            );
+                            let filtered = Operator::Filter {
+                                predicate: Expr::IsNotNull(Box::new(prop_expr.clone())),
+                                child: Box::new(child),
+                            };
+                            current = Some(Operator::Sort {
+                                items: vec![(prop_expr, !descending)],
+                                child: Box::new(filtered),
+                            });
+                        }
                         pending_order = false;
                     } else if pending_group {
-                        // by() after group()/groupCount() — modifies GremlinGroup
+                        // by() after group()/groupCount() — modifies GremlinGroup.
+                        // Use pre_group_alias (the alias before group() changed it).
                         if let Some(Operator::GremlinGroup {
                             ref mut key_expr,
                             ref mut value_expr,
@@ -790,10 +989,15 @@ impl GremlinCompiler {
                             if pending_group_by_count == 0 {
                                 // First by() = group key
                                 if !key.is_empty() {
-                                    let new_key = make_by_expr(key, &current_alias);
+                                    let new_key = make_by_expr(key, &pre_group_alias);
                                     *key_expr = new_key;
                                 }
                                 pending_group_by_count = 1;
+                            } else if pending_group_is_count {
+                                // groupCount() only supports one by() modulator
+                                return Err(CompileError::InvalidSequence(
+                                    "GroupCount step can only have one by modulator".into(),
+                                ));
                             } else {
                                 // Second by() = value aggregation
                                 if key == "count()" || key == "__.count()" {
@@ -807,7 +1011,7 @@ impl GremlinCompiler {
                                     *agg_fn = AggFunction::Collect;
                                 } else {
                                     // by("propName") — collect property values
-                                    *value_expr = make_by_expr(key, &current_alias);
+                                    *value_expr = make_by_expr(key, &pre_group_alias);
                                 }
                                 pending_group = false;
                             }
@@ -848,6 +1052,12 @@ impl GremlinCompiler {
                             }
                         }
                         pending_aggregate = false;
+                        aggregate_by_consumed = true;
+                    } else if aggregate_by_consumed {
+                        // Second by() after aggregate — error
+                        return Err(CompileError::InvalidSequence(
+                            "Aggregate step can only have one by modulator".into(),
+                        ));
                     }
                 }
 
@@ -1217,6 +1427,11 @@ impl GremlinCompiler {
                         keys: keys.clone(),
                         child: Box::new(child),
                     });
+                    // After cap(), the result row uses cap key names as columns.
+                    // Update current_alias so subsequent steps reference the right column.
+                    if keys.len() == 1 {
+                        current_alias = Identifier::new(keys[0].clone());
+                    }
                 }
 
                 GremlinStep::Constant(val) => {
@@ -1230,15 +1445,50 @@ impl GremlinCompiler {
                 }
 
                 GremlinStep::Inject(values) => {
-                    let exprs: Vec<Expr> = values.iter().map(gremlin_value_to_expr).collect();
-                    let alias = self.next_alias("inj");
-                    let unwind = Operator::Unwind {
-                        list_expr: Expr::List(exprs),
-                        alias: alias.clone(),
-                        child: Box::new(current.take().unwrap_or(Operator::SingleRow)),
-                    };
-                    current = Some(unwind);
-                    current_alias = alias;
+                    if values.is_empty() {
+                        // inject() with no args is a pass-through
+                        if current.is_none() {
+                            current = Some(Operator::SingleRow);
+                        }
+                    } else {
+                        let exprs: Vec<Expr> = values.iter().map(gremlin_value_to_expr).collect();
+                        let alias = self.next_alias("inj");
+                        let injected = Operator::Unwind {
+                            list_expr: Expr::List(exprs),
+                            alias: alias.clone(),
+                            child: Box::new(Operator::SingleRow),
+                        };
+                        if let Some(child) = current.take() {
+                            // Mid-traversal: UNION child stream with injected values,
+                            // then project to a common alias.
+                            let prev_alias = current_alias.clone();
+                            let union_alias = self.next_alias("inj");
+                            let left = Operator::Project {
+                                items: vec![(
+                                    Expr::Variable(prev_alias),
+                                    Some(union_alias.clone()),
+                                )],
+                                child: Box::new(child),
+                            };
+                            let right = Operator::Project {
+                                items: vec![(
+                                    Expr::Variable(alias),
+                                    Some(union_alias.clone()),
+                                )],
+                                child: Box::new(injected),
+                            };
+                            current = Some(Operator::Union {
+                                left: Box::new(left),
+                                right: Box::new(right),
+                                all: true,
+                            });
+                            current_alias = union_alias;
+                        } else {
+                            // Source step: just unwind
+                            current = Some(injected);
+                            current_alias = alias;
+                        }
+                    }
                 }
 
                 GremlinStep::Match(patterns) => {
@@ -1451,6 +1701,7 @@ impl GremlinCompiler {
                     let mut sub = self.sub_compiler();
                     let opt_op = sub.compile_seeded(opt_steps, &current_alias)?;
                     self.absorb(&sub);
+                    current_alias = sub.last_alias.clone();
                     current = Some(Operator::Coalesce {
                         alternatives: vec![opt_op, Operator::SingleRow],
                         child: Box::new(child),
@@ -1498,6 +1749,7 @@ impl GremlinCompiler {
                     let mut sub = self.sub_compiler();
                     let map_op = sub.compile_seeded(map_steps, &current_alias)?;
                     self.absorb(&sub);
+                    current_alias = sub.last_alias.clone();
                     current = Some(Operator::Apply {
                         outer: Box::new(child),
                         inner: Box::new(map_op),
@@ -1510,6 +1762,7 @@ impl GremlinCompiler {
                     let mut sub = self.sub_compiler();
                     let fm_op = sub.compile_seeded(fm_steps, &current_alias)?;
                     self.absorb(&sub);
+                    current_alias = sub.last_alias.clone();
                     current = Some(Operator::Apply {
                         outer: Box::new(child),
                         inner: Box::new(fm_op),
@@ -1782,6 +2035,28 @@ impl GremlinCompiler {
                     current_alias = alias;
                 }
 
+                GremlinStep::SubstringLocal(start, len) => {
+                    let child = current.take().ok_or(CompileError::MissingChild)?;
+                    let alias = self.next_alias("substrl");
+                    let mut args =
+                        vec![Expr::Variable(current_alias.clone()), Expr::Integer(*start)];
+                    if let Some(l) = len {
+                        args.push(Expr::Integer(*l));
+                    }
+                    current = Some(Operator::Project {
+                        items: vec![(
+                            Expr::FunctionCall {
+                                name: SmolStr::new("gremlin_substring_local"),
+                                args,
+                                distinct: false,
+                            },
+                            Some(alias.clone()),
+                        )],
+                        child: Box::new(child),
+                    });
+                    current_alias = alias;
+                }
+
                 GremlinStep::Concat(traversals) => {
                     let child = current.take().ok_or(CompileError::MissingChild)?;
                     let alias = self.next_alias("concat");
@@ -1854,7 +2129,7 @@ impl GremlinCompiler {
                 GremlinStep::Format(pattern) => {
                     let child = current.take().ok_or(CompileError::MissingChild)?;
                     let alias = self.next_alias("fmt");
-                    current = Some(Operator::Project {
+                    let project = Operator::Project {
                         items: vec![(
                             Expr::FunctionCall {
                                 name: SmolStr::new("gremlin_format"),
@@ -1867,6 +2142,11 @@ impl GremlinCompiler {
                             Some(alias.clone()),
                         )],
                         child: Box::new(child),
+                    };
+                    // Filter out traversers where format couldn't resolve all placeholders
+                    current = Some(Operator::Filter {
+                        predicate: Expr::IsNotNull(Box::new(Expr::Variable(alias.clone()))),
+                        child: Box::new(project),
                     });
                     current_alias = alias;
                 }
@@ -1878,6 +2158,23 @@ impl GremlinCompiler {
                         items: vec![(
                             Expr::FunctionCall {
                                 name: SmolStr::new("gremlin_asString"),
+                                args: vec![Expr::Variable(current_alias.clone())],
+                                distinct: false,
+                            },
+                            Some(alias.clone()),
+                        )],
+                        child: Box::new(child),
+                    });
+                    current_alias = alias;
+                }
+
+                GremlinStep::AsStringLocal => {
+                    let child = current.take().ok_or(CompileError::MissingChild)?;
+                    let alias = self.next_alias("strl");
+                    current = Some(Operator::Project {
+                        items: vec![(
+                            Expr::FunctionCall {
+                                name: SmolStr::new("gremlin_asstring_local"),
                                 args: vec![Expr::Variable(current_alias.clone())],
                                 distinct: false,
                             },
@@ -1943,20 +2240,18 @@ impl GremlinCompiler {
                 GremlinStep::Combine(rhs_steps) => {
                     let child = current.take().ok_or(CompileError::MissingChild)?;
                     let alias = self.next_alias("coll");
-                    let mut sub = self.sub_compiler();
-                    let rhs_op = sub.compile_seeded(rhs_steps, &current_alias)?;
-                    self.absorb(&sub);
-                    let _ = rhs_op;
+                    let (rhs_expr, base) =
+                        self.compile_collection_rhs(rhs_steps, &current_alias, child)?;
                     current = Some(Operator::Project {
                         items: vec![(
                             Expr::FunctionCall {
                                 name: SmolStr::new("gremlin_combine"),
-                                args: vec![Expr::Variable(current_alias.clone())],
+                                args: vec![Expr::Variable(current_alias.clone()), rhs_expr],
                                 distinct: false,
                             },
                             Some(alias.clone()),
                         )],
-                        child: Box::new(child),
+                        child: Box::new(base),
                     });
                     current_alias = alias;
                 }
@@ -1964,20 +2259,18 @@ impl GremlinCompiler {
                 GremlinStep::Intersect(rhs_steps) => {
                     let child = current.take().ok_or(CompileError::MissingChild)?;
                     let alias = self.next_alias("coll");
-                    let mut sub = self.sub_compiler();
-                    let rhs_op = sub.compile_seeded(rhs_steps, &current_alias)?;
-                    self.absorb(&sub);
-                    let _ = rhs_op;
+                    let (rhs_expr, base) =
+                        self.compile_collection_rhs(rhs_steps, &current_alias, child)?;
                     current = Some(Operator::Project {
                         items: vec![(
                             Expr::FunctionCall {
                                 name: SmolStr::new("gremlin_intersect"),
-                                args: vec![Expr::Variable(current_alias.clone())],
+                                args: vec![Expr::Variable(current_alias.clone()), rhs_expr],
                                 distinct: false,
                             },
                             Some(alias.clone()),
                         )],
-                        child: Box::new(child),
+                        child: Box::new(base),
                     });
                     current_alias = alias;
                 }
@@ -1985,20 +2278,18 @@ impl GremlinCompiler {
                 GremlinStep::Difference(rhs_steps) => {
                     let child = current.take().ok_or(CompileError::MissingChild)?;
                     let alias = self.next_alias("coll");
-                    let mut sub = self.sub_compiler();
-                    let rhs_op = sub.compile_seeded(rhs_steps, &current_alias)?;
-                    self.absorb(&sub);
-                    let _ = rhs_op;
+                    let (rhs_expr, base) =
+                        self.compile_collection_rhs(rhs_steps, &current_alias, child)?;
                     current = Some(Operator::Project {
                         items: vec![(
                             Expr::FunctionCall {
                                 name: SmolStr::new("gremlin_difference"),
-                                args: vec![Expr::Variable(current_alias.clone())],
+                                args: vec![Expr::Variable(current_alias.clone()), rhs_expr],
                                 distinct: false,
                             },
                             Some(alias.clone()),
                         )],
-                        child: Box::new(child),
+                        child: Box::new(base),
                     });
                     current_alias = alias;
                 }
@@ -2006,20 +2297,18 @@ impl GremlinCompiler {
                 GremlinStep::Disjunct(rhs_steps) => {
                     let child = current.take().ok_or(CompileError::MissingChild)?;
                     let alias = self.next_alias("coll");
-                    let mut sub = self.sub_compiler();
-                    let rhs_op = sub.compile_seeded(rhs_steps, &current_alias)?;
-                    self.absorb(&sub);
-                    let _ = rhs_op;
+                    let (rhs_expr, base) =
+                        self.compile_collection_rhs(rhs_steps, &current_alias, child)?;
                     current = Some(Operator::Project {
                         items: vec![(
                             Expr::FunctionCall {
                                 name: SmolStr::new("gremlin_disjunct"),
-                                args: vec![Expr::Variable(current_alias.clone())],
+                                args: vec![Expr::Variable(current_alias.clone()), rhs_expr],
                                 distinct: false,
                             },
                             Some(alias.clone()),
                         )],
-                        child: Box::new(child),
+                        child: Box::new(base),
                     });
                     current_alias = alias;
                 }
@@ -2027,20 +2316,18 @@ impl GremlinCompiler {
                 GremlinStep::MergeList(rhs_steps) => {
                     let child = current.take().ok_or(CompileError::MissingChild)?;
                     let alias = self.next_alias("coll");
-                    let mut sub = self.sub_compiler();
-                    let rhs_op = sub.compile_seeded(rhs_steps, &current_alias)?;
-                    self.absorb(&sub);
-                    let _ = rhs_op;
+                    let (rhs_expr, base) =
+                        self.compile_collection_rhs(rhs_steps, &current_alias, child)?;
                     current = Some(Operator::Project {
                         items: vec![(
                             Expr::FunctionCall {
                                 name: SmolStr::new("gremlin_merge"),
-                                args: vec![Expr::Variable(current_alias.clone())],
+                                args: vec![Expr::Variable(current_alias.clone()), rhs_expr],
                                 distinct: false,
                             },
                             Some(alias.clone()),
                         )],
-                        child: Box::new(child),
+                        child: Box::new(base),
                     });
                     current_alias = alias;
                 }
@@ -2048,56 +2335,74 @@ impl GremlinCompiler {
                 GremlinStep::Product(rhs_steps) => {
                     let child = current.take().ok_or(CompileError::MissingChild)?;
                     let alias = self.next_alias("coll");
-                    let mut sub = self.sub_compiler();
-                    let rhs_op = sub.compile_seeded(rhs_steps, &current_alias)?;
-                    self.absorb(&sub);
-                    let _ = rhs_op;
+                    let (rhs_expr, base) =
+                        self.compile_collection_rhs(rhs_steps, &current_alias, child)?;
                     current = Some(Operator::Project {
                         items: vec![(
                             Expr::FunctionCall {
                                 name: SmolStr::new("gremlin_product"),
-                                args: vec![Expr::Variable(current_alias.clone())],
+                                args: vec![Expr::Variable(current_alias.clone()), rhs_expr],
                                 distinct: false,
                             },
                             Some(alias.clone()),
                         )],
-                        child: Box::new(child),
+                        child: Box::new(base),
                     });
                     current_alias = alias;
                 }
 
-                GremlinStep::All(_pred) => {
+                GremlinStep::All(pred) => {
                     let child = current.take().ok_or(CompileError::MissingChild)?;
-                    let alias = self.next_alias("all");
-                    current = Some(Operator::Project {
-                        items: vec![(
-                            Expr::FunctionCall {
-                                name: SmolStr::new("gremlin_all"),
-                                args: vec![Expr::Variable(current_alias.clone())],
-                                distinct: false,
-                            },
-                            Some(alias.clone()),
-                        )],
+                    let (pred_op_str, pred_val_expr) = predicate_to_args(pred);
+                    let pred_fn = Expr::FunctionCall {
+                        name: SmolStr::new("gremlin_all"),
+                        args: vec![
+                            Expr::Variable(current_alias.clone()),
+                            Expr::Str(pred_op_str),
+                            pred_val_expr,
+                        ],
+                        distinct: false,
+                    };
+                    current = Some(Operator::Filter {
+                        predicate: pred_fn,
                         child: Box::new(child),
                     });
-                    current_alias = alias;
                 }
 
-                GremlinStep::Any(_pred) => {
+                GremlinStep::Any(pred) => {
                     let child = current.take().ok_or(CompileError::MissingChild)?;
-                    let alias = self.next_alias("any");
-                    current = Some(Operator::Project {
-                        items: vec![(
-                            Expr::FunctionCall {
-                                name: SmolStr::new("gremlin_any"),
-                                args: vec![Expr::Variable(current_alias.clone())],
-                                distinct: false,
-                            },
-                            Some(alias.clone()),
-                        )],
+                    let (pred_op_str, pred_val_expr) = predicate_to_args(pred);
+                    let pred_fn = Expr::FunctionCall {
+                        name: SmolStr::new("gremlin_any"),
+                        args: vec![
+                            Expr::Variable(current_alias.clone()),
+                            Expr::Str(pred_op_str),
+                            pred_val_expr,
+                        ],
+                        distinct: false,
+                    };
+                    current = Some(Operator::Filter {
+                        predicate: pred_fn,
                         child: Box::new(child),
                     });
-                    current_alias = alias;
+                }
+
+                GremlinStep::NonePred(pred) => {
+                    let child = current.take().ok_or(CompileError::MissingChild)?;
+                    let (pred_op_str, pred_val_expr) = predicate_to_args(pred);
+                    let pred_fn = Expr::FunctionCall {
+                        name: SmolStr::new("gremlin_none"),
+                        args: vec![
+                            Expr::Variable(current_alias.clone()),
+                            Expr::Str(pred_op_str),
+                            pred_val_expr,
+                        ],
+                        distinct: false,
+                    };
+                    current = Some(Operator::Filter {
+                        predicate: pred_fn,
+                        child: Box::new(child),
+                    });
                 }
 
                 // Predicate steps used inside Where/Is — should not appear at top level
@@ -2171,7 +2476,7 @@ fn gremlin_value_to_value(gv: &GremlinValue) -> Value {
 }
 
 /// Build an `Expr` from a `by(key)` modulator key string and the current alias.
-/// Handles T.id, T.label, Column.keys/values, and property names.
+/// Handles T.id, T.label, Column.keys/values, common traversal patterns, and property names.
 fn make_by_expr(key: &str, current_alias: &Identifier) -> Expr {
     if key == "~id" || key == "T.id" || key == "t[id]" {
         Expr::FunctionCall {
@@ -2179,12 +2484,28 @@ fn make_by_expr(key: &str, current_alias: &Identifier) -> Expr {
             args: vec![Expr::Variable(current_alias.clone())],
             distinct: false,
         }
-    } else if key == "~label" || key == "T.label" || key == "t[label]" {
+    } else if key == "~label"
+        || key == "T.label"
+        || key == "t[label]"
+        || key == "__.label()"
+        || key == "label()"
+    {
         Expr::FunctionCall {
             name: SmolStr::new("labels"),
             args: vec![Expr::Variable(current_alias.clone())],
             distinct: false,
         }
+    } else if let Some(prop) = key
+        .strip_prefix("__.values(")
+        .or_else(|| key.strip_prefix("values("))
+        .and_then(|s| s.strip_suffix(')'))
+    {
+        // by(values("name")) or by(__.values("name")) → property access
+        let prop = prop.trim_matches(|c| c == '\'' || c == '"');
+        Expr::Property(
+            Box::new(Expr::Variable(current_alias.clone())),
+            SmolStr::new(prop),
+        )
     } else {
         Expr::Property(
             Box::new(Expr::Variable(current_alias.clone())),
@@ -2365,40 +2686,113 @@ fn steps_to_predicate(
         .unwrap_or(Expr::Bool(true))
 }
 
+/// Extract predicate operator name and value expression for all()/any()/none() steps.
+fn predicate_to_args(pred: &Predicate) -> (Box<str>, Expr) {
+    match pred {
+        Predicate::Eq(v) => ("eq".into(), gremlin_value_to_expr(v)),
+        Predicate::Neq(v) => ("neq".into(), gremlin_value_to_expr(v)),
+        Predicate::Gt(v) => ("gt".into(), gremlin_value_to_expr(v)),
+        Predicate::Gte(v) => ("gte".into(), gremlin_value_to_expr(v)),
+        Predicate::Lt(v) => ("lt".into(), gremlin_value_to_expr(v)),
+        Predicate::Lte(v) => ("lte".into(), gremlin_value_to_expr(v)),
+        Predicate::Within(vals) => (
+            "within".into(),
+            Expr::List(vals.iter().map(gremlin_value_to_expr).collect()),
+        ),
+        Predicate::Without(vals) => (
+            "without".into(),
+            Expr::List(vals.iter().map(gremlin_value_to_expr).collect()),
+        ),
+        Predicate::Between(low, high) => (
+            "within".into(),
+            Expr::List(vec![
+                gremlin_value_to_expr(low),
+                gremlin_value_to_expr(high),
+            ]),
+        ),
+        _ => ("neq".into(), Expr::Null),
+    }
+}
+
 /// Convert a `Predicate` to an `Expr`.
 fn predicate_to_expr(pred: &Predicate, alias: &Identifier) -> Expr {
     let var = Expr::Variable(alias.clone());
     match pred {
-        Predicate::Eq(v) => Expr::BinaryOp {
-            op: BinaryOp::Eq,
-            left: Box::new(var),
-            right: Box::new(gremlin_value_to_expr(v)),
-        },
-        Predicate::Neq(v) => Expr::BinaryOp {
-            op: BinaryOp::Neq,
-            left: Box::new(var),
-            right: Box::new(gremlin_value_to_expr(v)),
-        },
-        Predicate::Gt(v) => Expr::BinaryOp {
-            op: BinaryOp::Gt,
-            left: Box::new(var),
-            right: Box::new(gremlin_value_to_expr(v)),
-        },
-        Predicate::Gte(v) => Expr::BinaryOp {
-            op: BinaryOp::Gte,
-            left: Box::new(var),
-            right: Box::new(gremlin_value_to_expr(v)),
-        },
-        Predicate::Lt(v) => Expr::BinaryOp {
-            op: BinaryOp::Lt,
-            left: Box::new(var),
-            right: Box::new(gremlin_value_to_expr(v)),
-        },
-        Predicate::Lte(v) => Expr::BinaryOp {
-            op: BinaryOp::Lte,
-            left: Box::new(var),
-            right: Box::new(gremlin_value_to_expr(v)),
-        },
+        Predicate::Eq(v) => {
+            // Gremlin: P.eq(null) means IS NULL (unlike Cypher where null=null is null)
+            if matches!(v, GremlinValue::Null) {
+                return Expr::IsNull(Box::new(var));
+            }
+            // Gremlin: null.eq(non_null) is false, not null.
+            // Use (var IS NOT NULL AND var == val) to prevent null from passing.
+            Expr::BinaryOp {
+                op: BinaryOp::And,
+                left: Box::new(Expr::IsNotNull(Box::new(Expr::Variable(alias.clone())))),
+                right: Box::new(Expr::BinaryOp {
+                    op: BinaryOp::Eq,
+                    left: Box::new(var),
+                    right: Box::new(gremlin_value_to_expr(v)),
+                }),
+            }
+        }
+        Predicate::Neq(v) => {
+            if matches!(v, GremlinValue::Null) {
+                return Expr::IsNotNull(Box::new(var));
+            }
+            // Gremlin: null != non_null is true (pass through).
+            // Use (var IS NULL OR var != val) to handle null propagation.
+            Expr::BinaryOp {
+                op: BinaryOp::Or,
+                left: Box::new(Expr::IsNull(Box::new(Expr::Variable(alias.clone())))),
+                right: Box::new(Expr::BinaryOp {
+                    op: BinaryOp::Neq,
+                    left: Box::new(var),
+                    right: Box::new(gremlin_value_to_expr(v)),
+                }),
+            }
+        }
+        Predicate::Gt(v) => {
+            if matches!(v, GremlinValue::Null) {
+                return Expr::Bool(false);
+            }
+            Expr::BinaryOp {
+                op: BinaryOp::Gt,
+                left: Box::new(var),
+                right: Box::new(gremlin_value_to_expr(v)),
+            }
+        }
+        Predicate::Gte(v) => {
+            // Gremlin: P.gte(null) on null value should be true
+            if matches!(v, GremlinValue::Null) {
+                return Expr::IsNull(Box::new(var));
+            }
+            Expr::BinaryOp {
+                op: BinaryOp::Gte,
+                left: Box::new(var),
+                right: Box::new(gremlin_value_to_expr(v)),
+            }
+        }
+        Predicate::Lt(v) => {
+            // Gremlin: P.lt(null) always false (nothing is strictly less than null)
+            if matches!(v, GremlinValue::Null) {
+                return Expr::Bool(false);
+            }
+            Expr::BinaryOp {
+                op: BinaryOp::Lt,
+                left: Box::new(var),
+                right: Box::new(gremlin_value_to_expr(v)),
+            }
+        }
+        Predicate::Lte(v) => {
+            if matches!(v, GremlinValue::Null) {
+                return Expr::IsNull(Box::new(var));
+            }
+            Expr::BinaryOp {
+                op: BinaryOp::Lte,
+                left: Box::new(var),
+                right: Box::new(gremlin_value_to_expr(v)),
+            }
+        }
         Predicate::Within(vals) => Expr::BinaryOp {
             op: BinaryOp::In,
             left: Box::new(var),
@@ -2997,15 +3391,13 @@ mod tests {
         let mut compiler = GremlinCompiler::new();
         let steps = vec![
             GremlinStep::V(None),
-            GremlinStep::ValueMap(vec!["name".into(), "age".into()]),
+            GremlinStep::ValueMap(vec!["name".into(), "age".into()], false),
         ];
         let op = compiler.compile(&steps).unwrap();
         if let Operator::Project { items, .. } = &op {
-            assert_eq!(items.len(), 2);
-            // Each item should be a Property projection
-            for (expr, _alias) in items {
-                assert!(matches!(expr, Expr::Property(_, _)));
-            }
+            // Single gremlin_valuemap call with element + key args
+            assert_eq!(items.len(), 1);
+            assert!(matches!(&items[0].0, Expr::FunctionCall { .. }));
         } else {
             panic!("expected Project");
         }
@@ -3014,11 +3406,11 @@ mod tests {
     #[test]
     fn compile_value_map_empty() {
         let mut compiler = GremlinCompiler::new();
-        let steps = vec![GremlinStep::V(None), GremlinStep::ValueMap(vec![])];
+        let steps = vec![GremlinStep::V(None), GremlinStep::ValueMap(vec![], false)];
         let op = compiler.compile(&steps).unwrap();
         if let Operator::Project { items, .. } = &op {
             assert_eq!(items.len(), 1);
-            assert!(matches!(&items[0].0, Expr::Variable(_)));
+            assert!(matches!(&items[0].0, Expr::FunctionCall { .. }));
         } else {
             panic!("expected Project");
         }
@@ -3080,12 +3472,8 @@ mod tests {
             GremlinStep::Sum,
         ];
         let op = compiler.compile(&steps).unwrap();
-        if let Operator::Aggregate { aggregations, .. } = &op {
-            assert_eq!(aggregations.len(), 1);
-            assert!(matches!(aggregations[0].0, AggFunction::Sum));
-        } else {
-            panic!("expected Aggregate");
-        }
+        // Sum now uses Filter { Project { gremlin_sum_local, Aggregate(Collect) } }
+        assert!(matches!(op, Operator::Filter { .. }));
     }
 
     #[test]
@@ -3097,10 +3485,14 @@ mod tests {
             GremlinStep::Min,
         ];
         let op = compiler.compile(&steps).unwrap();
-        if let Operator::Aggregate { aggregations, .. } = &op {
-            assert!(matches!(aggregations[0].0, AggFunction::Min));
+        if let Operator::Filter { child, .. } = &op {
+            if let Operator::Aggregate { aggregations, .. } = child.as_ref() {
+                assert!(matches!(aggregations[0].0, AggFunction::Min));
+            } else {
+                panic!("expected Aggregate inside Filter");
+            }
         } else {
-            panic!("expected Aggregate");
+            panic!("expected Filter");
         }
     }
 
@@ -3113,10 +3505,14 @@ mod tests {
             GremlinStep::Max,
         ];
         let op = compiler.compile(&steps).unwrap();
-        if let Operator::Aggregate { aggregations, .. } = &op {
-            assert!(matches!(aggregations[0].0, AggFunction::Max));
+        if let Operator::Filter { child, .. } = &op {
+            if let Operator::Aggregate { aggregations, .. } = child.as_ref() {
+                assert!(matches!(aggregations[0].0, AggFunction::Max));
+            } else {
+                panic!("expected Aggregate inside Filter");
+            }
         } else {
-            panic!("expected Aggregate");
+            panic!("expected Filter");
         }
     }
 
@@ -3129,10 +3525,14 @@ mod tests {
             GremlinStep::Mean,
         ];
         let op = compiler.compile(&steps).unwrap();
-        if let Operator::Aggregate { aggregations, .. } = &op {
-            assert!(matches!(aggregations[0].0, AggFunction::Avg));
+        if let Operator::Filter { child, .. } = &op {
+            if let Operator::Aggregate { aggregations, .. } = child.as_ref() {
+                assert!(matches!(aggregations[0].0, AggFunction::Avg));
+            } else {
+                panic!("expected Aggregate inside Filter");
+            }
         } else {
-            panic!("expected Aggregate");
+            panic!("expected Filter");
         }
     }
 

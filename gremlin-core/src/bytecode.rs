@@ -56,7 +56,8 @@ pub enum GremlinStep {
 
     // ── Element steps ────────────────────────────────────────────────────────
     Values(Vec<String>),
-    ValueMap(Vec<String>),
+    /// `valueMap()` — keys to project; bool indicates include tokens (id/label).
+    ValueMap(Vec<String>, bool),
     Properties(Vec<String>),
     Id,
     Label,
@@ -71,6 +72,10 @@ pub enum GremlinStep {
     Min,
     Max,
     Mean,
+    SumLocal,
+    MinLocal,
+    MaxLocal,
+    MeanLocal,
     Group(Option<String>),
     GroupCount(Option<String>),
     Fold,
@@ -186,10 +191,14 @@ pub enum GremlinStep {
     Split(String),
     /// `substring(start)` or `substring(start, length)` — extract substring
     Substring(i64, Option<i64>),
+    /// `substring(Scope.local, start, end)` — substring each element in a list
+    SubstringLocal(i64, Option<i64>),
     /// `concat(traversals...)` — concatenate string results
     Concat(Vec<Vec<GremlinStep>>),
     /// `asString()` — convert to string
     AsString,
+    /// `asString(Scope.local)` — convert elements of a list/map to strings
+    AsStringLocal,
     /// `asNumber()` — convert to number (integer or double)
     AsNumber,
     /// `asBool()` — convert to boolean
@@ -218,6 +227,8 @@ pub enum GremlinStep {
     All(Predicate),
     /// `any(predicate)` — true if any element satisfies predicate
     Any(Predicate),
+    /// `none(predicate)` — true if no elements satisfy predicate
+    NonePred(Predicate),
 
     // ── Predicate wrappers (used inside Is/Where) ────────────────────────────
     Eq(GremlinValue),
@@ -372,7 +383,7 @@ fn parse_step(name: &str, args: &[serde_json::Value]) -> Result<GremlinStep, Byt
         "bothV" => Ok(GremlinStep::BothV),
         "otherV" => Ok(GremlinStep::OtherV),
         "values" => Ok(GremlinStep::Values(collect_string_args(args))),
-        "valueMap" => Ok(GremlinStep::ValueMap(collect_string_args(args))),
+        "valueMap" => Ok(GremlinStep::ValueMap(collect_string_args(args), false)),
         "properties" => Ok(GremlinStep::Properties(collect_string_args(args))),
         "id" => Ok(GremlinStep::Id),
         "label" => Ok(GremlinStep::Label),

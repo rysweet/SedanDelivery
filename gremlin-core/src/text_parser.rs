@@ -272,7 +272,13 @@ fn parse_step_token(
         }
         "valueMap" => {
             let args = parse_string_arg_list(args_str)?;
-            out.push(GremlinStep::ValueMap(args));
+            // valueMap(true, ...) or valueMap(true) includes tokens (id/label)
+            let (with_tokens, keys) = if args.first().map(|s| s.as_str()) == Some("true") {
+                (true, args[1..].to_vec())
+            } else {
+                (false, args)
+            };
+            out.push(GremlinStep::ValueMap(keys, with_tokens));
         }
         "properties" => {
             let args = parse_string_arg_list(args_str)?;
@@ -308,16 +314,32 @@ fn parse_step_token(
             }
         }
         "sum" => {
-            out.push(GremlinStep::Sum);
+            if args_str.contains("local") || args_str.contains("Scope.local") {
+                out.push(GremlinStep::SumLocal);
+            } else {
+                out.push(GremlinStep::Sum);
+            }
         }
         "min" => {
-            out.push(GremlinStep::Min);
+            if args_str.contains("local") || args_str.contains("Scope.local") {
+                out.push(GremlinStep::MinLocal);
+            } else {
+                out.push(GremlinStep::Min);
+            }
         }
         "max" => {
-            out.push(GremlinStep::Max);
+            if args_str.contains("local") || args_str.contains("Scope.local") {
+                out.push(GremlinStep::MaxLocal);
+            } else {
+                out.push(GremlinStep::Max);
+            }
         }
         "mean" => {
-            out.push(GremlinStep::Mean);
+            if args_str.contains("local") || args_str.contains("Scope.local") {
+                out.push(GremlinStep::MeanLocal);
+            } else {
+                out.push(GremlinStep::Mean);
+            }
         }
         "group" => {
             let args = parse_string_arg_list(args_str)?;
@@ -387,8 +409,43 @@ fn parse_step_token(
             out.push(GremlinStep::Dedup(args));
         }
         "is" => {
-            let pred = parse_predicate(args_str, resolve_param)?;
-            out.push(GremlinStep::Is(pred));
+            // Handle chained predicates: P.eq(1).and(P.gt(0)) or P.eq(1).or(P.lt(0))
+            let s = args_str.trim();
+            let chain_parts = split_predicate_chain(s);
+            if chain_parts.len() > 1 {
+                // Multiple predicates chained with and/or
+                // Parse each part and emit as And/Or steps
+                let mut and_preds = Vec::new();
+                let mut or_preds = Vec::new();
+                let mut is_or = false;
+                for (i, (op, part)) in chain_parts.iter().enumerate() {
+                    if let Some(pred) = try_parse_predicate_call(part, resolve_param) {
+                        let step = GremlinStep::Is(pred);
+                        if i == 0 {
+                            and_preds.push(step);
+                        } else if *op == "or" {
+                            is_or = true;
+                            or_preds.push(step);
+                        } else {
+                            and_preds.push(step);
+                        }
+                    }
+                }
+                if is_or {
+                    // Combine all and_preds and or_preds into an Or
+                    let mut all_steps = and_preds;
+                    all_steps.extend(or_preds);
+                    out.push(GremlinStep::Or(all_steps));
+                } else {
+                    // All and — emit as sequential Is steps (implicit AND)
+                    for step in and_preds {
+                        out.push(step);
+                    }
+                }
+            } else {
+                let pred = parse_predicate(args_str, resolve_param)?;
+                out.push(GremlinStep::Is(pred));
+            }
         }
         "where" => {
             // where(P.neq("a")) or where("a", P.eq("b")) or where(__.out("knows"))
@@ -419,11 +476,19 @@ fn parse_step_token(
             out.push(GremlinStep::Not(inner_steps));
         }
         "and" => {
-            let inner_steps = parse_inner_traversal(args_str, resolve_param)?;
+            let inner_traversals = parse_multi_traversal_args(args_str, resolve_param)?;
+            let inner_steps: Vec<GremlinStep> = inner_traversals
+                .into_iter()
+                .flat_map(|steps| steps.into_iter())
+                .collect();
             out.push(GremlinStep::And(inner_steps));
         }
         "or" => {
-            let inner_steps = parse_inner_traversal(args_str, resolve_param)?;
+            let inner_traversals = parse_multi_traversal_args(args_str, resolve_param)?;
+            let inner_steps: Vec<GremlinStep> = inner_traversals
+                .into_iter()
+                .flat_map(|steps| steps.into_iter())
+                .collect();
             out.push(GremlinStep::Or(inner_steps));
         }
         "addV" => {
@@ -604,7 +669,13 @@ fn parse_step_token(
             let inner = parse_inner_traversal(args_str, resolve_param)?;
             out.push(GremlinStep::FilterTraversal(inner));
         }
-        "none" => out.push(GremlinStep::None),
+        "none" => {
+            if let Some(pred) = try_parse_predicate_call(args_str.trim(), resolve_param) {
+                out.push(GremlinStep::NonePred(pred));
+            } else {
+                out.push(GremlinStep::None);
+            }
+        }
         "barrier" => out.push(GremlinStep::Barrier),
         "sample" => {
             let args = parse_arg_list(args_str, resolve_param)?;
@@ -665,8 +736,19 @@ fn parse_step_token(
             out.push(GremlinStep::Identity);
         }
         "with" | "withPath" | "withBulk" => {
-            // with(key, value) — configuration modifier, typically no-op for query execution
+            // with(WithOptions.tokens) — set tokens flag on preceding valueMap
+            let args = parse_string_arg_list(args_str)?;
+            if args.iter().any(|a| a == "WithOptions.tokens") {
+                // Find the last ValueMap in the output and set its tokens flag
+                for step in out.iter_mut().rev() {
+                    if let GremlinStep::ValueMap(_, ref mut with_tokens) = step {
+                        *with_tokens = true;
+                        break;
+                    }
+                }
+            }
             // withPath — enable path tracking
+            // withBulk — enable bulk optimization
             // withBulk — enable bulk optimization
         }
         "element" => {
@@ -726,18 +808,49 @@ fn parse_step_token(
         }
         "substring" => {
             let args = parse_arg_list(args_str, resolve_param)?;
-            let start = match args.first() {
+            // Check if first arg is Scope.local
+            let (offset, is_local) = if matches!(args.first(), Some(GremlinValue::String(s)) if s.contains("local"))
+            {
+                (1, true)
+            } else {
+                (0, false)
+            };
+            let start = match args.get(offset) {
                 Some(GremlinValue::Integer(n)) => *n,
                 _ => 0,
             };
-            let len = match args.get(1) {
+            let len = match args.get(offset + 1) {
                 Some(GremlinValue::Integer(n)) => Some(*n),
                 _ => None,
             };
-            out.push(GremlinStep::Substring(start, len));
+            if is_local {
+                out.push(GremlinStep::SubstringLocal(start, len));
+            } else {
+                out.push(GremlinStep::Substring(start, len));
+            }
         }
         "concat" => {
-            let traversals = parse_multi_traversal_args(args_str, resolve_param)?;
+            // concat() args can be string literals, null, or traversals
+            let raw_args = split_top_level_args(args_str);
+            let mut traversals = Vec::new();
+            for arg in &raw_args {
+                let s = arg.trim();
+                if s.is_empty() {
+                    continue;
+                }
+                // String literal: "c"
+                if s.starts_with('"') && s.ends_with('"') && s.len() >= 2 {
+                    let inner = &s[1..s.len() - 1];
+                    let unescaped = inner.replace("\\\"", "\"").replace("\\\\", "\\");
+                    traversals.push(vec![GremlinStep::Constant(GremlinValue::String(unescaped))]);
+                } else if s == "null" {
+                    traversals.push(vec![GremlinStep::Constant(GremlinValue::Null)]);
+                } else {
+                    // Sub-traversal
+                    let inner = parse_inner_traversal(s, resolve_param)?;
+                    traversals.push(inner);
+                }
+            }
             out.push(GremlinStep::Concat(traversals));
         }
         "conjoin" => {
@@ -751,7 +864,11 @@ fn parse_step_token(
             out.push(GremlinStep::Format(pattern));
         }
         "asString" => {
-            out.push(GremlinStep::AsString);
+            if args_str.contains("local") || args_str.contains("Scope.local") {
+                out.push(GremlinStep::AsStringLocal);
+            } else {
+                out.push(GremlinStep::AsString);
+            }
         }
         "asNumber" => {
             out.push(GremlinStep::AsNumber);
@@ -764,27 +881,27 @@ fn parse_step_token(
         }
         // ── Collection steps ────────────────────────────────────────────────
         "combine" => {
-            let inner = parse_inner_traversal(args_str, resolve_param)?;
+            let inner = parse_collection_step_arg(args_str, resolve_param)?;
             out.push(GremlinStep::Combine(inner));
         }
         "intersect" => {
-            let inner = parse_inner_traversal(args_str, resolve_param)?;
+            let inner = parse_collection_step_arg(args_str, resolve_param)?;
             out.push(GremlinStep::Intersect(inner));
         }
         "difference" => {
-            let inner = parse_inner_traversal(args_str, resolve_param)?;
+            let inner = parse_collection_step_arg(args_str, resolve_param)?;
             out.push(GremlinStep::Difference(inner));
         }
         "disjunct" => {
-            let inner = parse_inner_traversal(args_str, resolve_param)?;
+            let inner = parse_collection_step_arg(args_str, resolve_param)?;
             out.push(GremlinStep::Disjunct(inner));
         }
         "merge" => {
-            let inner = parse_inner_traversal(args_str, resolve_param)?;
+            let inner = parse_collection_step_arg(args_str, resolve_param)?;
             out.push(GremlinStep::MergeList(inner));
         }
         "product" => {
-            let inner = parse_inner_traversal(args_str, resolve_param)?;
+            let inner = parse_collection_step_arg(args_str, resolve_param)?;
             out.push(GremlinStep::Product(inner));
         }
         "all" => {
@@ -1076,6 +1193,58 @@ fn try_parse_predicate_call(
     }
 }
 
+/// Split a predicate chain like `P.eq(1).and(P.gt(0)).or(P.lt(5))` into parts.
+/// Returns vec of (op, predicate_str) where op is "first", "and", or "or".
+fn split_predicate_chain(s: &str) -> Vec<(&str, &str)> {
+    let mut parts = Vec::new();
+    let mut depth = 0u32;
+    let mut last_start = 0;
+    let mut last_op = "first";
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'(' => depth += 1,
+            b')' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 && i + 1 < bytes.len() {
+                    // Check if followed by .and( or .or(
+                    let rest = &s[i + 1..];
+                    if rest.starts_with(".and(") {
+                        parts.push((last_op, &s[last_start..=i]));
+                        last_op = "and";
+                        last_start = i + 5; // skip ".and("
+                        i += 5;
+                        depth = 1;
+                        continue;
+                    } else if rest.starts_with(".or(") {
+                        parts.push((last_op, &s[last_start..=i]));
+                        last_op = "or";
+                        last_start = i + 4; // skip ".or("
+                        i += 4;
+                        depth = 1;
+                        continue;
+                    }
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    if last_start < s.len() {
+        let end = s.len();
+        // Remove trailing ) that was part of the .and()/.or() wrapper
+        let part = &s[last_start..end];
+        let part = part.strip_suffix(')').unwrap_or(part);
+        parts.push((last_op, part));
+    }
+    // If only one part (no chaining), return empty to signal no chain
+    if parts.len() <= 1 && last_op == "first" {
+        return vec![];
+    }
+    parts
+}
+
 /// Parse a predicate from an `is(...)` argument.
 fn parse_predicate(
     args_str: &str,
@@ -1120,6 +1289,64 @@ fn parse_inner_traversal(
         }
     }
     Ok(steps)
+}
+
+/// Parse a collection step argument. Handles both literal values (null, 2, [1,2,3])
+/// and sub-traversals (__.V().values("age").fold()).
+fn parse_collection_step_arg(
+    args_str: &str,
+    resolve_param: &dyn Fn(&str) -> Option<GremlinValue>,
+) -> Result<Vec<GremlinStep>, TextParseError> {
+    let s = args_str.trim();
+    if s.is_empty() {
+        return Ok(Vec::new());
+    }
+    // Detect literal null
+    if s == "null" {
+        return Ok(vec![GremlinStep::Constant(GremlinValue::Null)]);
+    }
+    // Detect list literal [...]
+    if s.starts_with('[') && s.ends_with(']') {
+        if let Ok(vals) = parse_arg_list(&s[1..s.len() - 1], resolve_param) {
+            return Ok(vec![GremlinStep::Inject(vec![GremlinValue::List(vals)])]);
+        }
+    }
+    // Detect simple numeric/boolean literals (not a traversal)
+    if let Ok(n) = s.parse::<i64>() {
+        return Ok(vec![GremlinStep::Constant(GremlinValue::Integer(n))]);
+    }
+    if let Ok(f) = s.parse::<f64>() {
+        return Ok(vec![GremlinStep::Constant(GremlinValue::Float(f))]);
+    }
+    if s == "true" {
+        return Ok(vec![GremlinStep::Constant(GremlinValue::Bool(true))]);
+    }
+    if s == "false" {
+        return Ok(vec![GremlinStep::Constant(GremlinValue::Bool(false))]);
+    }
+    // Detect quoted string literal
+    if s.starts_with('"') && s.ends_with('"') && s.len() >= 2 {
+        let inner = &s[1..s.len() - 1];
+        let unescaped = inner.replace("\\\"", "\"").replace("\\\\", "\\");
+        return Ok(vec![GremlinStep::Constant(GremlinValue::String(unescaped))]);
+    }
+    // Numeric with type suffix
+    if s.len() > 1 {
+        let suffix = s.as_bytes()[s.len() - 1];
+        let num_part = &s[..s.len() - 1];
+        if matches!(suffix, b'b' | b's' | b'i' | b'l' | b'L' | b'n') {
+            if let Ok(n) = num_part.parse::<i64>() {
+                return Ok(vec![GremlinStep::Constant(GremlinValue::Integer(n))]);
+            }
+        }
+        if matches!(suffix, b'f' | b'd') {
+            if let Ok(f) = num_part.parse::<f64>() {
+                return Ok(vec![GremlinStep::Constant(GremlinValue::Float(f))]);
+            }
+        }
+    }
+    // Fall back to sub-traversal parsing
+    parse_inner_traversal(args_str, resolve_param)
 }
 
 /// Parse multiple traversal arguments separated by commas at the top level.
@@ -1204,8 +1431,8 @@ fn split_top_level_args(s: &str) -> Vec<&str> {
             continue;
         }
         match ch {
-            '(' => depth += 1,
-            ')' => depth = depth.saturating_sub(1),
+            '(' | '[' => depth += 1,
+            ')' | ']' => depth = depth.saturating_sub(1),
             ',' if depth == 0 => {
                 result.push(&s[start..i]);
                 start = i + 1;
@@ -1278,6 +1505,24 @@ fn parse_single_value(
     // Null
     if s == "null" {
         return Ok(GremlinValue::Null);
+    }
+
+    // NaN / Infinity
+    if s == "NaN" || s == "Double.NaN" || s == "Float.NaN" {
+        return Ok(GremlinValue::Float(f64::NAN));
+    }
+    if s == "Infinity" || s == "+Infinity" || s == "Double.POSITIVE_INFINITY" {
+        return Ok(GremlinValue::Float(f64::INFINITY));
+    }
+    if s == "-Infinity" || s == "Double.NEGATIVE_INFINITY" {
+        return Ok(GremlinValue::Float(f64::NEG_INFINITY));
+    }
+
+    // List literal: [1, 2, "a", null]
+    if s.starts_with('[') && s.ends_with(']') {
+        let inner = &s[1..s.len() - 1];
+        let items = parse_arg_list(inner, resolve_param)?;
+        return Ok(GremlinValue::List(items));
     }
 
     // Integer
