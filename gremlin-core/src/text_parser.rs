@@ -293,8 +293,14 @@ fn parse_step_token(
             }
         }
         "count" => {
-            // count() or count(Scope.local) — ignore scope argument
-            out.push(GremlinStep::Count);
+            let args = parse_arg_list(args_str, resolve_param)?;
+            let is_local = args.iter().any(|a| matches!(a, GremlinValue::String(s) if s == "Scope.local"));
+            if is_local {
+                // count(local) — count elements in the list/map value
+                out.push(GremlinStep::Length);
+            } else {
+                out.push(GremlinStep::Count);
+            }
         }
         "sum" => {
             out.push(GremlinStep::Sum);
@@ -982,15 +988,28 @@ fn parse_by_step(args_str: &str, out: &mut Vec<GremlinStep>) -> Result<(), TextP
 }
 
 /// Try to parse a predicate call like `P.gt(30)`, `P.within("a","b")`, etc.
+/// Also handles bare predicates like `eq(30)`, `gt(30)`.
 fn try_parse_predicate_call(
     s: &str,
     resolve_param: &dyn Fn(&str) -> Option<GremlinValue>,
 ) -> Option<Predicate> {
     let s = s.trim();
 
-    // Handle P.* predicates
+    // Handle P.* or TextP.* predicates
     let pred_str = s.strip_prefix("P.").or_else(|| s.strip_prefix("TextP."));
-    let pred_str = pred_str?;
+    let pred_str = if let Some(p) = pred_str {
+        p
+    } else {
+        // Try bare predicate names: eq(...), neq(...), gt(...), etc.
+        let (name, _) = split_step_name_args(s);
+        match name {
+            "eq" | "neq" | "gt" | "gte" | "lt" | "lte" | "within" | "without"
+            | "between" | "containing" | "notContaining" | "startingWith"
+            | "notStartingWith" | "endingWith" | "notEndingWith" | "regex"
+            | "notRegex" | "typeOf" => s,
+            _ => return None,
+        }
+    };
 
     let (pred_name, args_str) = split_step_name_args(pred_str);
     let args = parse_arg_list(args_str, resolve_param).ok()?;
