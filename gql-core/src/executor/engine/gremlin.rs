@@ -480,38 +480,63 @@ impl<'a> QueryExecutor<'a> {
             return Ok(input);
         }
 
-        // Build a reverse map: internal_alias → label_name.
+        // Build reverse map: internal_alias → label_name.
         let reverse_map: std::collections::HashMap<&str, &str> = label_map
             .iter()
             .map(|(label, alias)| (alias.0.as_str(), label.as_str()))
             .collect();
+
+        // Normalize a row: replace internal aliases with label names.
+        // This ensures consistent keys across patterns for merging.
+        let normalize = |row: &Row| -> Row {
+            let mut out = Row::new();
+            for (k, v) in row {
+                let key = if let Some(label) = reverse_map.get(k.as_str()) {
+                    (*label).to_string()
+                } else {
+                    k.clone()
+                };
+                out.insert(key, v.clone());
+            }
+            out
+        };
 
         // For each input row, execute all patterns and join on shared bindings.
         let mut out = Vec::new();
         for row in &input {
             cx.budget.check_or_err()?;
 
-            // Start with the input row as the initial binding set.
-            let mut current_bindings = vec![row.clone()];
+            // Normalize input row so label names are used as keys.
+            let mut current_bindings = vec![normalize(row)];
 
             for pattern in patterns {
                 let mut next_bindings = Vec::new();
 
                 for binding in &current_bindings {
                     cx.budget.check_or_err()?;
-                    // Seed the pattern execution with current bindings.
+                    // Seed: the pattern expects internal alias names, so we
+                    // need to provide the binding with both label and internal
+                    // alias keys. Build a denormalized seed row.
+                    let mut seed = binding.clone();
+                    for (label, alias) in label_map {
+                        if let Some(v) = binding.get(label.as_str()) {
+                            seed.insert(alias.0.to_string(), v.clone());
+                        }
+                    }
+
                     self.foreach_seed
                         .borrow_mut()
-                        .replace(vec![binding.clone()]);
+                        .replace(vec![seed]);
                     let pattern_rows = self.exec_operator(cx, pattern)?;
                     self.foreach_seed.borrow_mut().take();
 
-                    // Merge pattern results with existing bindings,
-                    // checking for consistency on shared keys.
+                    // Normalize pattern results, then merge on shared label
+                    // keys, checking consistency.
                     for p_row in pattern_rows {
+                        let norm = normalize(&p_row);
                         let mut merged = binding.clone();
                         let mut consistent = true;
-                        for (k, v) in &p_row {
+                        for (k, v) in &norm {
                             if let Some(existing) = merged.get(k) {
                                 if existing != v {
                                     consistent = false;
@@ -533,23 +558,26 @@ impl<'a> QueryExecutor<'a> {
                 }
             }
 
-            // Rename internal aliases to label names and build a Map result.
+            // Build output rows with label columns and a Map result.
             for binding in current_bindings {
-                let mut renamed = Row::new();
+                let mut result_row = Row::new();
                 let mut map_entries = indexmap::IndexMap::new();
                 for (k, v) in &binding {
-                    if let Some(label) = reverse_map.get(k.as_str()) {
-                        renamed.insert((*label).to_string(), v.clone());
-                        map_entries.insert(Box::from(*label), v.clone());
+                    // Include label columns and also re-insert internal alias
+                    // keys so downstream steps (select, dedup) can find them.
+                    result_row.insert(k.clone(), v.clone());
+                    for (label, alias) in label_map {
+                        if label == k {
+                            result_row.insert(alias.0.to_string(), v.clone());
+                            map_entries.insert(Box::from(label.as_str()), v.clone());
+                        }
                     }
-                    // Also keep the original key for downstream operations.
-                    renamed.insert(k.clone(), v.clone());
                 }
-                renamed.insert(
+                result_row.insert(
                     result_alias.0.to_string(),
                     Value::Map(map_entries),
                 );
-                out.push(renamed);
+                out.push(result_row);
             }
         }
 

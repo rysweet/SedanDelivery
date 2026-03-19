@@ -1822,6 +1822,11 @@ impl GremlinCompiler {
                 GremlinStep::Match(patterns) => {
                     let child = current.take().ok_or(CompileError::MissingChild)?;
                     let mut compiled_patterns = Vec::with_capacity(patterns.len());
+                    let mut all_alias_pairs: Vec<(String, Identifier)> = Vec::new();
+                    // Track whether the input traverser has been bound to a
+                    // label. Only the first new label gets the input; subsequent
+                    // new labels enumerate via V(None).
+                    let mut input_bound = false;
                     for pattern_steps in patterns {
                         let mut sub = self.sub_compiler();
 
@@ -1839,14 +1844,31 @@ impl GremlinCompiler {
                                 // Label already bound — use existing alias as seed.
                                 let remaining = &pattern_steps[1..];
                                 sub.compile_with_seed(remaining, existing_alias)?
-                            } else {
-                                // New label — bind to the current traverser and
-                                // seed from the input row (not a full V() scan).
+                            } else if !input_bound {
+                                // First new label — bind to the current traverser.
+                                input_bound = true;
                                 sub.alias_map
                                     .insert(label.clone(), current_alias.clone());
                                 sub.compile_with_seed(
                                     &pattern_steps[1..],
                                     current_alias.clone(),
+                                )?
+                            } else {
+                                // Subsequent new label — create an explicit
+                                // NodeScan with a known alias so the label maps
+                                // to the correct column.
+                                let scan_alias = sub.next_alias("v");
+                                sub.alias_map
+                                    .insert(label.clone(), scan_alias.clone());
+                                let scan = Operator::NodeScan {
+                                    label: None,
+                                    alias: scan_alias.clone(),
+                                };
+                                sub.compile_from(
+                                    &pattern_steps[1..],
+                                    Some(scan),
+                                    scan_alias.clone(),
+                                    vec![scan_alias],
                                 )?
                             }
                         } else {
@@ -1860,15 +1882,17 @@ impl GremlinCompiler {
                         for (k, v) in &sub.alias_map {
                             self.alias_map.entry(k.clone()).or_insert_with(|| v.clone());
                         }
+                        // Collect ALL alias→label pairs from each pattern
+                        // (different patterns may use different aliases for the
+                        // same label).
+                        for (label, alias) in &sub.alias_map {
+                            all_alias_pairs.push((label.clone(), alias.clone()));
+                        }
                         self.absorb(&sub);
                         compiled_patterns.push(compiled);
                     }
-                    // Build the label→alias mapping for output renaming.
-                    let label_map: Vec<(String, Identifier)> = self
-                        .alias_map
-                        .iter()
-                        .map(|(label, alias)| (label.clone(), alias.clone()))
-                        .collect();
+                    // Build the label→alias mapping with ALL aliases.
+                    let label_map: Vec<(String, Identifier)> = all_alias_pairs;
                     let match_result_alias = self.next_alias("match");
                     current = Some(Operator::GremlinMatch {
                         patterns: compiled_patterns,
