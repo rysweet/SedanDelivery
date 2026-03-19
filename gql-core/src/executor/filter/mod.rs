@@ -454,7 +454,9 @@ pub fn eval_function_with_vals(name: &str, vals: Vec<Value>) -> Result<Value, Gq
         },
         "gremlin_length" => match vals.first() {
             Some(Value::Str(s)) => Ok(Value::Int(s.len() as i64)),
-            Some(Value::List(l)) => Ok(Value::Int(l.len() as i64)),
+            Some(Value::List(_)) => Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                expected: "String".into(), actual: "List".into(),
+            })),
             Some(Value::Null) => Ok(Value::Null),
             _ => Ok(Value::Int(0)),
         },
@@ -816,7 +818,13 @@ pub fn eval_function_with_vals(name: &str, vals: Vec<Value>) -> Result<Value, Gq
         "gremlin_asbool" => match vals.first() {
             Some(Value::Bool(b)) => Ok(Value::Bool(*b)),
             Some(Value::Int(n)) => Ok(Value::Bool(*n != 0)),
-            Some(Value::Float(f)) => Ok(Value::Bool(*f != 0.0)),
+            Some(Value::Float(f)) => {
+                if f.is_nan() {
+                    Ok(Value::Bool(false))
+                } else {
+                    Ok(Value::Bool(*f != 0.0))
+                }
+            }
             Some(Value::Str(s)) => match s.to_lowercase().as_str() {
                 "true" => Ok(Value::Bool(true)),
                 "false" => Ok(Value::Bool(false)),
@@ -825,8 +833,18 @@ pub fn eval_function_with_vals(name: &str, vals: Vec<Value>) -> Result<Value, Gq
                     actual: format!("'{}'", s),
                 })),
             },
-            Some(Value::Null) => Ok(Value::Null),
-            _ => Ok(Value::Null),
+            Some(Value::Null) => Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                expected: "boolean-compatible value".into(),
+                actual: "null".into(),
+            })),
+            Some(Value::List(_)) => Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                expected: "boolean-compatible value".into(),
+                actual: "list".into(),
+            })),
+            _ => Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                expected: "boolean-compatible value".into(),
+                actual: "unknown".into(),
+            })),
         },
         "gremlin_typeof" => match vals.first() {
             Some(Value::Int(_)) => Ok(Value::Str("integer".into())),
