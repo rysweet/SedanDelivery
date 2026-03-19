@@ -696,6 +696,14 @@ impl<'a> QueryExecutor<'a> {
                     }
                     let mut map_row = Row::new();
                     inject_parameters(&mut map_row, &self.parameters);
+                    // Add individual key columns AND their internal alias
+                    // columns so downstream where/filter can reference them.
+                    for (src_var, output_key) in keys {
+                        if let Some(v) = new_row.get(output_key.as_str()) {
+                            map_row.insert(output_key.clone(), v.clone());
+                            map_row.insert(src_var.0.to_string(), v.clone());
+                        }
+                    }
                     let map_alias = keys
                         .iter()
                         .map(|(_, k)| k.as_str())
