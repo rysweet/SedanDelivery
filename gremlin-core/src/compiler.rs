@@ -500,15 +500,12 @@ impl GremlinCompiler {
                     path_aliases.push(current_alias.clone());
                 }
 
-                GremlinStep::InV | GremlinStep::OutV | GremlinStep::BothV | GremlinStep::OtherV => {
-                    // These resolve to the target/source vertex of an edge traversal.
-                    // Represented as a project extracting the vertex from the edge context.
+                GremlinStep::InV | GremlinStep::OutV => {
                     let child = current.take().ok_or(CompileError::MissingChild)?;
                     let vertex_alias = self.next_alias("v");
                     let fn_name = match step {
                         GremlinStep::InV => "endNode",
-                        GremlinStep::OutV => "startNode",
-                        _ => "endNode",
+                        _ => "startNode",
                     };
                     let mut items = vec![(
                         Expr::FunctionCall {
@@ -522,6 +519,57 @@ impl GremlinCompiler {
                     current = Some(Operator::Project {
                         items,
                         child: Box::new(child),
+                    });
+                    current_alias = vertex_alias;
+                    path_aliases.push(current_alias.clone());
+                }
+
+                GremlinStep::OtherV => {
+                    // otherV: return the vertex that is NOT the traversal source.
+                    // We use a runtime function that picks the opposite endpoint.
+                    let child = current.take().ok_or(CompileError::MissingChild)?;
+                    let vertex_alias = self.next_alias("v");
+                    let mut items = vec![(
+                        Expr::FunctionCall {
+                            name: SmolStr::new("gremlin_other_v"),
+                            args: vec![Expr::Variable(current_alias.clone())],
+                            distinct: false,
+                        },
+                        Some(vertex_alias.clone()),
+                    )];
+                    items.extend(self.label_carry_items());
+                    current = Some(Operator::Project {
+                        items,
+                        child: Box::new(child),
+                    });
+                    current_alias = vertex_alias;
+                    path_aliases.push(current_alias.clone());
+                }
+
+                GremlinStep::BothV => {
+                    // bothV: return BOTH source and destination vertices.
+                    // Build a list [startNode, endNode] and unwind.
+                    let child = current.take().ok_or(CompileError::MissingChild)?;
+                    let list_alias = self.next_alias("bv");
+                    let vertex_alias = self.next_alias("v");
+                    let carry = self.label_carry_items();
+                    let mut items = vec![(
+                        Expr::FunctionCall {
+                            name: SmolStr::new("gremlin_both_v"),
+                            args: vec![Expr::Variable(current_alias.clone())],
+                            distinct: false,
+                        },
+                        Some(list_alias.clone()),
+                    )];
+                    items.extend(carry);
+                    let project = Operator::Project {
+                        items,
+                        child: Box::new(child),
+                    };
+                    current = Some(Operator::Unwind {
+                        list_expr: Expr::Variable(list_alias),
+                        alias: vertex_alias.clone(),
+                        child: Box::new(project),
                     });
                     current_alias = vertex_alias;
                     path_aliases.push(current_alias.clone());

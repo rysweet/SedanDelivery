@@ -540,6 +540,36 @@ impl<'a> QueryExecutor<'a> {
                             })),
                         }
                     }
+                    "gremlin_both_v" => {
+                        // Return [startNode, endNode] as a list
+                        match evaled_args.into_iter().next() {
+                            Some(Value::Edge(edge_id)) => {
+                                match self.cached_get_edge(graph, edge_id)? {
+                                    Some(data) => Ok(Value::List(vec![
+                                        Value::Node(data.src),
+                                        Value::Node(data.dst),
+                                    ])),
+                                    None => Ok(Value::List(vec![])),
+                                }
+                            }
+                            _ => Ok(Value::List(vec![])),
+                        }
+                    }
+                    "gremlin_other_v" => {
+                        // Return the opposite endpoint of an edge from
+                        // the traversal source. We don't track the source
+                        // direction, so return endNode as default (works
+                        // for outE().otherV() which is the common case).
+                        match evaled_args.into_iter().next() {
+                            Some(Value::Edge(edge_id)) => {
+                                match self.cached_get_edge(graph, edge_id)? {
+                                    Some(data) => Ok(Value::Node(data.dst)),
+                                    None => Ok(Value::Null),
+                                }
+                            }
+                            _ => Ok(Value::Null),
+                        }
+                    }
                     "gremlin_valuemap" => {
                         // valueMap(): extract properties and wrap each in a list.
                         // Args: element, with_tokens_bool [, key1, key2, ...]
