@@ -1140,6 +1140,13 @@ pub fn eval_function_with_vals(name: &str, vals: Vec<Value>) -> Result<Value, Gq
                 None => Ok(Value::Null),
             }
         }
+        "list_compact" => {
+            let result: Vec<Value> = vals
+                .into_iter()
+                .filter(|v| !matches!(v, Value::Null))
+                .collect();
+            Ok(Value::List(result))
+        }
         "gremlin_values_all" => {
             // Fallback for non-graph values (maps, etc.)
             match vals.into_iter().next() {
@@ -1147,7 +1154,8 @@ pub fn eval_function_with_vals(name: &str, vals: Vec<Value>) -> Result<Value, Gq
                     let vals: Vec<Value> = m.into_values().collect();
                     Ok(Value::List(vals))
                 }
-                _ => Ok(Value::List(vec![])),
+                Some(Value::Null) | None => Ok(Value::List(vec![])),
+                Some(other) => Ok(Value::List(vec![other])),
             }
         }
         "gremlin_sum_local" => match vals.first() {

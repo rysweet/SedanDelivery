@@ -611,40 +611,68 @@ impl GremlinCompiler {
                 GremlinStep::Properties(keys) => {
                     let child = current.take().ok_or(CompileError::MissingChild)?;
                     let prop_alias = self.next_alias("prop");
-                    let mut items: Vec<(Expr, Option<Identifier>)> = if keys.is_empty() {
-                        vec![(
+                    let carry = self.label_carry_items();
+                    if keys.is_empty() {
+                        // properties() with no keys: pass through the element
+                        let mut items = vec![(
                             Expr::Variable(current_alias.clone()),
                             Some(prop_alias.clone()),
-                        )]
+                        )];
+                        items.extend(carry);
+                        current = Some(Operator::Project {
+                            items,
+                            child: Box::new(child),
+                        });
                     } else if keys.len() == 1 {
-                        vec![(
+                        let mut items = vec![(
                             Expr::Property(
                                 Box::new(Expr::Variable(current_alias.clone())),
                                 SmolStr::new(&keys[0]),
                             ),
                             Some(prop_alias.clone()),
-                        )]
+                        )];
+                        items.extend(carry);
+                        current = Some(Operator::Filter {
+                            predicate: Expr::IsNotNull(Box::new(Expr::Variable(
+                                prop_alias.clone(),
+                            ))),
+                            child: Box::new(Operator::Project {
+                                items,
+                                child: Box::new(child),
+                            }),
+                        });
                     } else {
-                        keys.iter()
+                        // Multiple keys: build a list of values and unwind
+                        let list_alias = self.next_alias("plist");
+                        let list_exprs: Vec<Expr> = keys
+                            .iter()
                             .map(|k| {
-                                (
-                                    Expr::Property(
-                                        Box::new(Expr::Variable(current_alias.clone())),
-                                        SmolStr::new(k),
-                                    ),
-                                    Some(Identifier::new(k.clone())),
+                                Expr::Property(
+                                    Box::new(Expr::Variable(current_alias.clone())),
+                                    SmolStr::new(k),
                                 )
                             })
-                            .collect()
-                    };
-                    items.extend(self.label_carry_items());
-                    current = Some(Operator::Project {
-                        items,
-                        child: Box::new(child),
-                    });
-                    if keys.len() <= 1 {
-                        current_alias = prop_alias;
+                            .collect();
+                        let mut items = vec![(
+                            Expr::FunctionCall {
+                                name: SmolStr::new("list_compact"),
+                                args: list_exprs,
+                                distinct: false,
+                            },
+                            Some(list_alias.clone()),
+                        )];
+                        items.extend(carry);
+                        let project = Operator::Project {
+                            items,
+                            child: Box::new(child),
+                        };
+                        current = Some(Operator::Unwind {
+                            list_expr: Expr::Variable(list_alias),
+                            alias: prop_alias.clone(),
+                            child: Box::new(project),
+                        });
                     }
+                    current_alias = prop_alias;
                 }
 
                 GremlinStep::Id => {
@@ -4047,11 +4075,8 @@ mod tests {
             GremlinStep::Properties(vec!["name".into(), "age".into()]),
         ];
         let op = compiler.compile(&steps).unwrap();
-        if let Operator::Project { items, .. } = &op {
-            assert_eq!(items.len(), 2);
-        } else {
-            panic!("expected Project");
-        }
+        // Multi-key properties() produces Unwind { Project { list_compact(...) } }
+        assert!(matches!(&op, Operator::Unwind { .. }), "expected Unwind");
     }
 
     #[test]

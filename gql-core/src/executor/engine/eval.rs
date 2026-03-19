@@ -628,6 +628,14 @@ impl<'a> QueryExecutor<'a> {
                             None => Ok(Value::Null),
                         }
                     }
+                    "list_compact" => {
+                        // Build a list from arguments, filtering out nulls.
+                        let vals: Vec<Value> = evaled_args
+                            .into_iter()
+                            .filter(|v| !matches!(v, Value::Null))
+                            .collect();
+                        Ok(Value::List(vals))
+                    }
                     "gremlin_values_all" => {
                         // values() with no keys: return list of all property values
                         match evaled_args.into_iter().next() {
@@ -655,7 +663,11 @@ impl<'a> QueryExecutor<'a> {
                                 let vals: Vec<Value> = m.into_values().collect();
                                 Ok(Value::List(vals))
                             }
-                            _ => Ok(Value::List(vec![])),
+                            Some(Value::Null) | None => Ok(Value::List(vec![])),
+                            // Scalar values (from properties().value() chain):
+                            // wrap in a single-element list so Unwind produces
+                            // one row.
+                            Some(other) => Ok(Value::List(vec![other])),
                         }
                     }
                     "gremlin_format" => {
