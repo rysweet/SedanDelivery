@@ -464,6 +464,7 @@ impl<'a> QueryExecutor<'a> {
         let Operator::GremlinMatch {
             patterns,
             label_map,
+            result_alias,
             child,
         } = op
         else {
@@ -532,16 +533,22 @@ impl<'a> QueryExecutor<'a> {
                 }
             }
 
-            // Rename internal aliases to label names in the output.
+            // Rename internal aliases to label names and build a Map result.
             for binding in current_bindings {
                 let mut renamed = Row::new();
+                let mut map_entries = indexmap::IndexMap::new();
                 for (k, v) in &binding {
                     if let Some(label) = reverse_map.get(k.as_str()) {
                         renamed.insert((*label).to_string(), v.clone());
+                        map_entries.insert(Box::from(*label), v.clone());
                     }
                     // Also keep the original key for downstream operations.
                     renamed.insert(k.clone(), v.clone());
                 }
+                renamed.insert(
+                    result_alias.0.to_string(),
+                    Value::Map(map_entries),
+                );
                 out.push(renamed);
             }
         }
@@ -1588,6 +1595,7 @@ mod tests {
 
         let plan = Operator::GremlinMatch {
             label_map: vec![],
+            result_alias: Identifier::new("__match_result"),
             patterns: vec![Operator::Expand {
                 direction: Direction::Outgoing,
                 rel_types: vec![RelType::new("NEXT")],
@@ -1618,6 +1626,7 @@ mod tests {
 
         let plan = Operator::GremlinMatch {
             label_map: vec![],
+            result_alias: Identifier::new("__match_result"),
             patterns: vec![],
             child: Box::new(Operator::NodeScan {
                 label: Some(Label::new("N")),
@@ -1637,6 +1646,7 @@ mod tests {
 
         let plan = Operator::GremlinMatch {
             label_map: vec![],
+            result_alias: Identifier::new("__match_result"),
             patterns: vec![
                 Operator::Expand {
                     direction: Direction::Outgoing,
@@ -1677,6 +1687,7 @@ mod tests {
         // Match: a->b via NEXT, and a->b via NONEXISTENT (no such edges)
         let plan = Operator::GremlinMatch {
             label_map: vec![],
+            result_alias: Identifier::new("__match_result"),
             patterns: vec![
                 Operator::Expand {
                     direction: Direction::Outgoing,
@@ -1717,6 +1728,7 @@ mod tests {
 
         let plan = Operator::GremlinMatch {
             label_map: vec![],
+            result_alias: Identifier::new("__match_result"),
             patterns: vec![Operator::Expand {
                 direction: Direction::Outgoing,
                 rel_types: vec![RelType::new("NEXT")],

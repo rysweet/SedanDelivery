@@ -1840,18 +1840,21 @@ impl GremlinCompiler {
                                 let remaining = &pattern_steps[1..];
                                 sub.compile_with_seed(remaining, existing_alias)?
                             } else {
-                                // New label — use V(None) to enumerate all options.
-                                // Skip the As step: we'll assign __gremlin_v to this label.
+                                // New label — bind to the current traverser and
+                                // seed from the input row (not a full V() scan).
                                 sub.alias_map
-                                    .insert(label.clone(), Identifier::new("__gremlin_v"));
-                                let mut seeded = vec![GremlinStep::V(None)];
-                                seeded.extend(pattern_steps[1..].iter().cloned());
-                                sub.compile(&seeded)?
+                                    .insert(label.clone(), current_alias.clone());
+                                sub.compile_with_seed(
+                                    &pattern_steps[1..],
+                                    current_alias.clone(),
+                                )?
                             }
                         } else {
-                            let mut seeded = vec![GremlinStep::V(None)];
-                            seeded.extend(pattern_steps.iter().cloned());
-                            sub.compile(&seeded)?
+                            // No leading as() — seed from the current traverser.
+                            sub.compile_with_seed(
+                                pattern_steps,
+                                current_alias.clone(),
+                            )?
                         };
 
                         for (k, v) in &sub.alias_map {
@@ -1866,11 +1869,14 @@ impl GremlinCompiler {
                         .iter()
                         .map(|(label, alias)| (label.clone(), alias.clone()))
                         .collect();
+                    let match_result_alias = self.next_alias("match");
                     current = Some(Operator::GremlinMatch {
                         patterns: compiled_patterns,
                         label_map,
+                        result_alias: match_result_alias.clone(),
                         child: Box::new(child),
                     });
+                    current_alias = match_result_alias;
                 }
 
                 GremlinStep::Project(keys) => {

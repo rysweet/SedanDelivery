@@ -256,6 +256,8 @@ pub enum Operator {
         /// Maps step labels (e.g. "a", "b") to internal aliases (e.g. v_1).
         /// Used to rename output rows from internal aliases to label names.
         label_map: Vec<(String, Identifier)>,
+        /// The output alias for the Map result value.
+        result_alias: Identifier,
         child: Box<Operator>,
     },
     /// Gremlin select() — project labeled step values, skipping rows where
