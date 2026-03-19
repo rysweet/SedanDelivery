@@ -447,10 +447,33 @@ impl<'a> QueryExecutor<'a> {
                     // UNWIND null produces zero rows (Cypher semantics)
                 }
                 other => {
-                    return Err(GqlError::Execution(ExecutionError::TypeMismatch {
-                        expected: "List for UNWIND".to_string(),
-                        actual: other.type_name().to_string(),
-                    }));
+                    // Gremlin unfold: treat Map as list of entries, scalar as single-element list
+                    match other {
+                        Value::Map(m) => {
+                            for (k, v) in m.iter() {
+                                cx.budget.check_or_err()?;
+                                let mut entry = indexmap::IndexMap::new();
+                                entry.insert(k.clone(), v.clone());
+                                let mut new_row = row.clone();
+                                new_row.insert(alias.0.clone(), Value::Map(entry));
+                                cx.budget.record_row();
+                                out.push(new_row);
+                            }
+                        }
+                        Value::Str(_) | Value::Int(_) | Value::Float(_) | Value::Bool(_)
+                        | Value::Node(_) | Value::Edge(_) => {
+                            let mut new_row = row.clone();
+                            new_row.insert(alias.0.clone(), other);
+                            cx.budget.record_row();
+                            out.push(new_row);
+                        }
+                        _ => {
+                            return Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                                expected: "List for UNWIND".to_string(),
+                                actual: "unknown type".to_string(),
+                            }));
+                        }
+                    }
                 }
             }
         }

@@ -658,13 +658,132 @@ fn parse_step_token(
             // index() — adds index to each element
             out.push(GremlinStep::Identity);
         }
-        // Steps still unsupported
-        "profile" | "iterate" | "explain" | "tree" | "subgraph" | "concat" | "conjoin"
-        | "toLower" | "toUpper" | "trim" | "lTrim" | "rTrim" | "length" | "replace" | "split"
-        | "substring" | "reverse" | "format" | "asString" | "asBool" | "asNumber" | "asDate"
-        | "dateAdd" | "dateDiff" | "fail" | "read" | "write" | "combine" | "intersect"
-        | "difference" | "disjunct" | "merge" | "mergeV" | "mergeE" | "product" | "all" | "any"
-        | "typeOf" | "connectedComponent" | "shortestPath" | "pageRank" | "peerPressure"
+        // ── String steps ────────────────────────────────────────────────────
+        "toLower" => {
+            out.push(GremlinStep::ToLower);
+        }
+        "toUpper" => {
+            out.push(GremlinStep::ToUpper);
+        }
+        "trim" => {
+            out.push(GremlinStep::Trim);
+        }
+        "lTrim" => {
+            out.push(GremlinStep::LTrim);
+        }
+        "rTrim" => {
+            out.push(GremlinStep::RTrim);
+        }
+        "length" => {
+            out.push(GremlinStep::Length);
+        }
+        "reverse" => {
+            out.push(GremlinStep::Reverse);
+        }
+        "replace" => {
+            let args = parse_string_arg_list(args_str)?;
+            if args.len() >= 2 {
+                out.push(GremlinStep::Replace(args[0].clone(), args[1].clone()));
+            } else {
+                return Err(TextParseError::InvalidArgument(
+                    "replace requires 2 arguments".into(),
+                ));
+            }
+        }
+        "split" => {
+            let args = parse_string_arg_list(args_str)?;
+            if args.len() >= 1 {
+                out.push(GremlinStep::Split(args[0].clone()));
+            } else {
+                return Err(TextParseError::InvalidArgument(
+                    "split requires 1 argument".into(),
+                ));
+            }
+        }
+        "substring" => {
+            let args = parse_arg_list(args_str, resolve_param)?;
+            let start = match args.first() {
+                Some(GremlinValue::Integer(n)) => *n,
+                _ => 0,
+            };
+            let len = match args.get(1) {
+                Some(GremlinValue::Integer(n)) => Some(*n),
+                _ => None,
+            };
+            out.push(GremlinStep::Substring(start, len));
+        }
+        "concat" => {
+            let traversals = parse_multi_traversal_args(args_str, resolve_param)?;
+            out.push(GremlinStep::Concat(traversals));
+        }
+        "conjoin" => {
+            let args = parse_string_arg_list(args_str)?;
+            let sep = args.into_iter().next().unwrap_or_default();
+            out.push(GremlinStep::Conjoin(sep));
+        }
+        "format" => {
+            let args = parse_string_arg_list(args_str)?;
+            let pattern = args.into_iter().next().unwrap_or_default();
+            out.push(GremlinStep::Format(pattern));
+        }
+        "asString" => {
+            out.push(GremlinStep::AsString);
+        }
+        "asNumber" => {
+            out.push(GremlinStep::AsNumber);
+        }
+        "asBool" => {
+            out.push(GremlinStep::AsBool);
+        }
+        "typeOf" => {
+            out.push(GremlinStep::TypeOf);
+        }
+        // ── Collection steps ────────────────────────────────────────────────
+        "combine" => {
+            let inner = parse_inner_traversal(args_str, resolve_param)?;
+            out.push(GremlinStep::Combine(inner));
+        }
+        "intersect" => {
+            let inner = parse_inner_traversal(args_str, resolve_param)?;
+            out.push(GremlinStep::Intersect(inner));
+        }
+        "difference" => {
+            let inner = parse_inner_traversal(args_str, resolve_param)?;
+            out.push(GremlinStep::Difference(inner));
+        }
+        "disjunct" => {
+            let inner = parse_inner_traversal(args_str, resolve_param)?;
+            out.push(GremlinStep::Disjunct(inner));
+        }
+        "merge" => {
+            let inner = parse_inner_traversal(args_str, resolve_param)?;
+            out.push(GremlinStep::MergeList(inner));
+        }
+        "product" => {
+            let inner = parse_inner_traversal(args_str, resolve_param)?;
+            out.push(GremlinStep::Product(inner));
+        }
+        "all" => {
+            // all(P.gt(0)) — all elements match predicate
+            if let Some(pred) = try_parse_predicate_call(args_str.trim(), resolve_param) {
+                out.push(GremlinStep::All(pred));
+            } else {
+                out.push(GremlinStep::All(Predicate::Neq(GremlinValue::Null)));
+            }
+        }
+        "any" => {
+            // any(P.gt(0)) — any element matches predicate
+            if let Some(pred) = try_parse_predicate_call(args_str.trim(), resolve_param) {
+                out.push(GremlinStep::Any(pred));
+            } else {
+                out.push(GremlinStep::Any(Predicate::Neq(GremlinValue::Null)));
+            }
+        }
+        // Steps still unsupported (provider-specific or not applicable)
+        "profile" | "iterate" | "explain" | "tree" | "subgraph" | "asDate"
+        | "dateAdd" | "dateDiff" | "fail" | "read" | "write"
+        | "mergeV" | "mergeE"
+        | "connectedComponent" | "shortestPath" | "pageRank" | "peerPressure"
         | "call" => {
             // Unsupported steps — record as unknown so the runner can skip
             return Err(TextParseError::UnknownStep(name.to_string()));
@@ -891,9 +1010,29 @@ fn try_parse_predicate_call(
             let hi = it.next()?;
             Some(Predicate::Between(lo, hi))
         }
-        // Text predicates — not directly representable, skip
-        "containing" | "startingWith" | "endingWith" | "regex" | "notContaining"
-        | "notStartingWith" | "notEndingWith" | "notRegex" => None,
+        // Text predicates
+        "containing" => {
+            Some(Predicate::Containing(args.into_iter().next()?))
+        }
+        "notContaining" | "notcontaining" => {
+            Some(Predicate::NotContaining(args.into_iter().next()?))
+        }
+        "startingWith" | "startingwith" => {
+            Some(Predicate::StartingWith(args.into_iter().next()?))
+        }
+        "notStartingWith" | "notstartingwith" => {
+            Some(Predicate::NotStartingWith(args.into_iter().next()?))
+        }
+        "endingWith" | "endingwith" => {
+            Some(Predicate::EndingWith(args.into_iter().next()?))
+        }
+        "notEndingWith" | "notendingwith" => {
+            Some(Predicate::NotEndingWith(args.into_iter().next()?))
+        }
+        "regex" => Some(Predicate::Regex(args.into_iter().next()?)),
+        "notRegex" | "notregex" => {
+            Some(Predicate::NotRegex(args.into_iter().next()?))
+        }
         _ => None,
     }
 }

@@ -15,6 +15,15 @@ pub enum Predicate {
     Within(Vec<GremlinValue>),
     Without(Vec<GremlinValue>),
     Between(GremlinValue, GremlinValue),
+    // Text predicates
+    Containing(GremlinValue),
+    NotContaining(GremlinValue),
+    StartingWith(GremlinValue),
+    NotStartingWith(GremlinValue),
+    EndingWith(GremlinValue),
+    NotEndingWith(GremlinValue),
+    Regex(GremlinValue),
+    NotRegex(GremlinValue),
 }
 
 /// A single Gremlin traversal step.
@@ -153,6 +162,60 @@ pub enum GremlinStep {
     Sack,
     /// `option(token, traversal)` — option step for branch/choose
     Option(GremlinValue, Vec<GremlinStep>),
+
+    // ── String steps ────────────────────────────────────────────────────────
+    /// `toLower()` — lowercase string
+    ToLower,
+    /// `toUpper()` — uppercase string
+    ToUpper,
+    /// `trim()` — trim whitespace
+    Trim,
+    /// `lTrim()` — trim leading whitespace
+    LTrim,
+    /// `rTrim()` — trim trailing whitespace
+    RTrim,
+    /// `length()` — string length or list size
+    Length,
+    /// `reverse()` — reverse string or list
+    Reverse,
+    /// `replace(old, new)` — string replacement
+    Replace(String, String),
+    /// `split(separator)` — split string into list
+    Split(String),
+    /// `substring(start)` or `substring(start, length)` — extract substring
+    Substring(i64, Option<i64>),
+    /// `concat(traversals...)` — concatenate string results
+    Concat(Vec<Vec<GremlinStep>>),
+    /// `asString()` — convert to string
+    AsString,
+    /// `asNumber()` — convert to number (integer or double)
+    AsNumber,
+    /// `asBool()` — convert to boolean
+    AsBool,
+    /// `conjoin(separator)` — join list elements with separator
+    Conjoin(String),
+    /// `format(pattern)` — format string
+    Format(String),
+    /// `typeOf()` — return type name as string
+    TypeOf,
+
+    // ── Collection steps ────────────────────────────────────────────────────
+    /// `combine(traversal)` — append two lists
+    Combine(Vec<GremlinStep>),
+    /// `intersect(traversal)` — set intersection
+    Intersect(Vec<GremlinStep>),
+    /// `difference(traversal)` — set difference
+    Difference(Vec<GremlinStep>),
+    /// `disjunct(traversal)` — symmetric difference
+    Disjunct(Vec<GremlinStep>),
+    /// `merge(traversal)` — list merge (synonym of combine for lists)
+    MergeList(Vec<GremlinStep>),
+    /// `product(traversal)` — cartesian product of two lists
+    Product(Vec<GremlinStep>),
+    /// `all(predicate)` — true if all elements satisfy predicate
+    All(Predicate),
+    /// `any(predicate)` — true if any element satisfies predicate
+    Any(Predicate),
 
     // ── Predicate wrappers (used inside Is/Where) ────────────────────────────
     Eq(GremlinValue),
