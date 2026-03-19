@@ -63,6 +63,19 @@ impl GremlinCompiler {
         }
     }
 
+    /// Return extra projection items that carry forward every label set via `as()`.
+    /// This preserves step labels through projection steps like `values()`.
+    fn label_carry_items(&self) -> Vec<(Expr, Option<Identifier>)> {
+        let mut items = Vec::new();
+        for (_label, ident) in &self.alias_map {
+            items.push((
+                Expr::Variable(ident.clone()),
+                Some(ident.clone()),
+            ));
+        }
+        items
+    }
+
     /// Absorb counter state from a sub-compiler after it finishes.
     fn absorb(&mut self, sub: &Self) {
         self.alias_counter = sub.alias_counter;
@@ -487,18 +500,21 @@ impl GremlinCompiler {
 
                 GremlinStep::Values(keys) => {
                     let child = current.take().ok_or(CompileError::MissingChild)?;
+                    let carry = self.label_carry_items();
                     if keys.len() == 1 {
                         // Single key: project to a named alias, filter out nulls
                         // (Gremlin values() drops traversers without the property)
                         let alias = self.next_alias("val");
+                        let mut items = vec![(
+                            Expr::Property(
+                                Box::new(Expr::Variable(current_alias.clone())),
+                                SmolStr::new(&keys[0]),
+                            ),
+                            Some(alias.clone()),
+                        )];
+                        items.extend(carry);
                         let project = Operator::Project {
-                            items: vec![(
-                                Expr::Property(
-                                    Box::new(Expr::Variable(current_alias.clone())),
-                                    SmolStr::new(&keys[0]),
-                                ),
-                                Some(alias.clone()),
-                            )],
+                            items,
                             child: Box::new(child),
                         };
                         current = Some(Operator::Filter {
@@ -510,18 +526,20 @@ impl GremlinCompiler {
                         // values() with no keys: unwind all properties
                         // Approximate as passing through the element
                         let alias = self.next_alias("val");
+                        let mut items = vec![(
+                            Expr::Variable(current_alias.clone()),
+                            Some(alias.clone()),
+                        )];
+                        items.extend(carry);
                         current = Some(Operator::Project {
-                            items: vec![(
-                                Expr::Variable(current_alias.clone()),
-                                Some(alias.clone()),
-                            )],
+                            items,
                             child: Box::new(child),
                         });
                         current_alias = alias;
                     } else {
                         // Multiple keys: unwind values for each key, skip nulls
                         let _val_alias = self.next_alias("val");
-                        let items: Vec<(Expr, Option<Identifier>)> = keys
+                        let mut items: Vec<(Expr, Option<Identifier>)> = keys
                             .iter()
                             .map(|k| {
                                 (
@@ -533,6 +551,7 @@ impl GremlinCompiler {
                                 )
                             })
                             .collect();
+                        items.extend(carry);
                         current = Some(Operator::Project {
                             items,
                             child: Box::new(child),
@@ -1116,20 +1135,101 @@ impl GremlinCompiler {
 
                 GremlinStep::Where(inner_steps) | GremlinStep::Not(inner_steps) => {
                     let child = current.take().ok_or(CompileError::MissingChild)?;
-                    let inner_pred =
-                        steps_to_predicate(inner_steps, &current_alias, &self.alias_map);
-                    let predicate = if matches!(step, GremlinStep::Not(_)) {
-                        Expr::UnaryOp {
-                            op: gql_core::ast::UnaryOp::Not,
-                            expr: Box::new(inner_pred),
-                        }
-                    } else {
-                        inner_pred
-                    };
-                    current = Some(Operator::Filter {
-                        predicate,
-                        child: Box::new(child),
+                    let is_not = matches!(step, GremlinStep::Not(_));
+
+                    // Check whether inner steps are traversal steps (out/in/both/etc.)
+                    // that need sub-traversal existence semantics.
+                    let is_traversal = inner_steps.iter().any(|s| {
+                        matches!(
+                            s,
+                            GremlinStep::Out(_)
+                                | GremlinStep::In(_)
+                                | GremlinStep::Both(_)
+                                | GremlinStep::OutE(_)
+                                | GremlinStep::InE(_)
+                                | GremlinStep::BothE(_)
+                                | GremlinStep::InV
+                                | GremlinStep::OutV
+                                | GremlinStep::BothV
+                                | GremlinStep::V(_)
+                                | GremlinStep::E(_)
+                                | GremlinStep::Repeat(_)
+                                | GremlinStep::Fold
+                                | GremlinStep::Unfold
+                                | GremlinStep::Count
+                                | GremlinStep::Sum
+                                | GremlinStep::Mean
+                                | GremlinStep::Min
+                                | GremlinStep::Max
+                                | GremlinStep::Select(_)
+                                | GremlinStep::Path
+                        )
                     });
+
+                    if is_traversal {
+                        // Compile inner steps as a sub-traversal seeded with
+                        // the current alias. Use Apply + Count + Filter to
+                        // implement existence semantics.
+                        let mut sub = self.sub_compiler();
+                        let inner_op =
+                            sub.compile_seeded(inner_steps, &current_alias)?;
+                        self.absorb(&sub);
+                        let sub_result_alias = sub.last_alias.clone();
+
+                        // Count the sub-traversal results
+                        let cnt_alias = self.next_alias("wcnt");
+                        let count_op = Operator::Aggregate {
+                            keys: vec![],
+                            aggregations: vec![(
+                                gql_core::planner::AggFunction::Count,
+                                Expr::Variable(sub_result_alias),
+                                None,
+                                false,
+                                cnt_alias.clone(),
+                            )],
+                            child: Box::new(inner_op),
+                        };
+
+                        // Wrap in Apply so each input row seeds the sub-traversal
+                        let apply = Operator::Apply {
+                            outer: Box::new(child),
+                            inner: Box::new(count_op),
+                        };
+
+                        // Filter: keep rows where count > 0 (or == 0 for Not)
+                        let predicate = if is_not {
+                            Expr::BinaryOp {
+                                op: BinaryOp::Eq,
+                                left: Box::new(Expr::Variable(cnt_alias)),
+                                right: Box::new(Expr::Integer(0)),
+                            }
+                        } else {
+                            Expr::BinaryOp {
+                                op: BinaryOp::Gt,
+                                left: Box::new(Expr::Variable(cnt_alias)),
+                                right: Box::new(Expr::Integer(0)),
+                            }
+                        };
+                        current = Some(Operator::Filter {
+                            predicate,
+                            child: Box::new(apply),
+                        });
+                    } else {
+                        let inner_pred =
+                            steps_to_predicate(inner_steps, &current_alias, &self.alias_map);
+                        let predicate = if is_not {
+                            Expr::UnaryOp {
+                                op: gql_core::ast::UnaryOp::Not,
+                                expr: Box::new(inner_pred),
+                            }
+                        } else {
+                            inner_pred
+                        };
+                        current = Some(Operator::Filter {
+                            predicate,
+                            child: Box::new(child),
+                        });
+                    }
                 }
 
                 GremlinStep::And(steps_list) => {
