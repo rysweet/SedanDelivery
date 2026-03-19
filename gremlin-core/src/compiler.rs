@@ -2119,6 +2119,23 @@ impl GremlinCompiler {
                     current_alias = alias;
                 }
 
+                GremlinStep::AsStringLocal => {
+                    let child = current.take().ok_or(CompileError::MissingChild)?;
+                    let alias = self.next_alias("strl");
+                    current = Some(Operator::Project {
+                        items: vec![(
+                            Expr::FunctionCall {
+                                name: SmolStr::new("gremlin_asstring_local"),
+                                args: vec![Expr::Variable(current_alias.clone())],
+                                distinct: false,
+                            },
+                            Some(alias.clone()),
+                        )],
+                        child: Box::new(child),
+                    });
+                    current_alias = alias;
+                }
+
                 GremlinStep::AsNumber => {
                     let child = current.take().ok_or(CompileError::MissingChild)?;
                     let alias = self.next_alias("num");

@@ -836,7 +836,11 @@ fn parse_step_token(
             out.push(GremlinStep::Format(pattern));
         }
         "asString" => {
-            out.push(GremlinStep::AsString);
+            if args_str.contains("local") || args_str.contains("Scope.local") {
+                out.push(GremlinStep::AsStringLocal);
+            } else {
+                out.push(GremlinStep::AsString);
+            }
         }
         "asNumber" => {
             out.push(GremlinStep::AsNumber);

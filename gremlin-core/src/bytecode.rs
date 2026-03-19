@@ -194,6 +194,8 @@ pub enum GremlinStep {
     Concat(Vec<Vec<GremlinStep>>),
     /// `asString()` — convert to string
     AsString,
+    /// `asString(Scope.local)` — convert elements of a list/map to strings
+    AsStringLocal,
     /// `asNumber()` — convert to number (integer or double)
     AsNumber,
     /// `asBool()` — convert to boolean

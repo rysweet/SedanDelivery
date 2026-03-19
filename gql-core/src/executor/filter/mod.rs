@@ -649,9 +649,44 @@ pub fn eval_function_with_vals(name: &str, vals: Vec<Value>) -> Result<Value, Gq
                 }).collect();
                 Ok(Value::Str(format!("{{{}}}", parts.join(", ")).into()))
             }
+            Some(Value::Node(nid)) => Ok(Value::Str(format!("v[{}]", nid.0).into())),
+            Some(Value::Edge(eid)) => Ok(Value::Str(format!("e[{}]", eid.0).into())),
+            Some(Value::Path { nodes, edges }) => {
+                let parts: Vec<String> = nodes.iter().map(|n| format!("v[{}]", n.0))
+                    .chain(edges.iter().map(|e| format!("e[{}]", e.0)))
+                    .collect();
+                Ok(Value::Str(format!("path[{}]", parts.join(", ")).into()))
+            }
             Some(other) => Ok(Value::Str(format!("{:?}", other).into())),
             None => Ok(Value::Null),
         },
+        "gremlin_asstring_local" => {
+            // asString(Scope.local): convert list elements to strings
+            fn value_to_str(v: &Value) -> Result<Value, GqlError> {
+                match v {
+                    Value::Str(s) => Ok(Value::Str(s.clone())),
+                    Value::Int(n) => Ok(Value::Str(n.to_string().into())),
+                    Value::Float(f) => Ok(Value::Str(f.to_string().into())),
+                    Value::Bool(b) => Ok(Value::Str(b.to_string().into())),
+                    Value::Node(nid) => Ok(Value::Str(format!("v[{}]", nid.0).into())),
+                    Value::Edge(eid) => Ok(Value::Str(format!("e[{}]", eid.0).into())),
+                    Value::Null => Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                        expected: "Can't parse null as string".into(),
+                        actual: "null".into(),
+                    })),
+                    other => Ok(Value::Str(format!("{:?}", other).into())),
+                }
+            }
+            match vals.first() {
+                Some(Value::List(items)) => {
+                    let converted: Result<Vec<Value>, GqlError> =
+                        items.iter().map(value_to_str).collect();
+                    Ok(Value::List(converted?))
+                }
+                Some(other) => value_to_str(other),
+                None => Ok(Value::Null),
+            }
+        }
         "gremlin_asnumber" => match vals.first() {
             Some(Value::Int(n)) => Ok(Value::Int(*n)),
             Some(Value::Float(f)) => Ok(Value::Float(*f)),
