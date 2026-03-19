@@ -82,6 +82,15 @@ impl<'a> QueryExecutor<'a> {
                     }
                 }
             }
+            // In Gremlin mode, preserve the __sack column through
+            // intermediate projections so sack() can read it later.
+            if self.gremlin_mode {
+                if let Some(v) = row.get("__sack") {
+                    if !new_row.contains_key("__sack") {
+                        new_row.insert("__sack".to_string(), v.clone());
+                    }
+                }
+            }
             // Preserve query parameters through scope changes.
             inject_parameters(&mut new_row, &self.parameters);
             cx.budget.record_row();

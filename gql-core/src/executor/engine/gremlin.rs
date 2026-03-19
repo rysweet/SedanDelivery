@@ -326,16 +326,56 @@ impl<'a> QueryExecutor<'a> {
         let child_rows = self.exec_operator(cx, child)?;
 
         // Collect aggregated values for each key from the child rows.
-        // The aggregate column already contains the full accumulated value,
-        // so we take it from the first row that has it (all rows carry the same value).
-        // For aggregate() the value is a List; for group()/groupCount() it is a Map.
+        // When aggregate runs in a global scope, every row carries the same
+        // accumulated list, so taking the first is correct.  When aggregate
+        // runs inside local(), each row carries a *partial* single-item list.
+        // We detect the latter case and merge partial lists.
+        // For group()/groupCount(), the value is a Map — maps are merged by
+        // key with last-writer-wins.
         let mut row = Row::new();
         for key in keys {
             let agg_col = format!("__gremlin_agg_{key}");
-            if let Some(value) = child_rows.iter().find_map(|r| r.get(&agg_col).cloned()) {
-                row.insert(key.clone(), value);
-            } else {
+            let agg_vals: Vec<&Value> = child_rows
+                .iter()
+                .filter_map(|r| r.get(&agg_col))
+                .collect();
+            if agg_vals.is_empty() {
                 row.insert(key.clone(), Value::List(Vec::new()));
+                continue;
+            }
+            // If there is only one distinct value (all rows have the same),
+            // take it directly.  Otherwise merge partial lists/maps.
+            let first = agg_vals[0];
+            let all_same = agg_vals.iter().all(|v| *v == first);
+            if all_same {
+                row.insert(key.clone(), first.clone());
+            } else {
+                // Merge: for Lists, concatenate; for Maps, union by key.
+                match first {
+                    Value::List(_) => {
+                        let mut merged = Vec::new();
+                        for v in &agg_vals {
+                            if let Value::List(items) = v {
+                                merged.extend(items.iter().cloned());
+                            }
+                        }
+                        row.insert(key.clone(), Value::List(merged));
+                    }
+                    Value::Map(_) => {
+                        let mut merged = IndexMap::new();
+                        for v in &agg_vals {
+                            if let Value::Map(m) = v {
+                                for (mk, mv) in m {
+                                    merged.insert(mk.clone(), mv.clone());
+                                }
+                            }
+                        }
+                        row.insert(key.clone(), Value::Map(merged));
+                    }
+                    _ => {
+                        row.insert(key.clone(), first.clone());
+                    }
+                }
             }
         }
         Ok(vec![row])

@@ -1710,40 +1710,45 @@ impl GremlinCompiler {
                     let child = current.take().ok_or(CompileError::MissingChild)?;
                     let is_not = matches!(step, GremlinStep::Not(_));
 
-                    // Check whether inner steps are traversal steps (out/in/both/etc.)
-                    // that need sub-traversal existence semantics.
-                    let is_traversal = inner_steps.iter().any(|s| {
-                        matches!(
-                            s,
-                            GremlinStep::Out(_)
-                                | GremlinStep::In(_)
-                                | GremlinStep::Both(_)
-                                | GremlinStep::OutE(_)
-                                | GremlinStep::InE(_)
-                                | GremlinStep::BothE(_)
-                                | GremlinStep::InV
-                                | GremlinStep::OutV
-                                | GremlinStep::BothV
-                                | GremlinStep::V(_)
-                                | GremlinStep::E(_)
-                                | GremlinStep::Repeat(_)
-                                | GremlinStep::Fold
-                                | GremlinStep::Unfold
-                                | GremlinStep::Count
-                                | GremlinStep::Sum
-                                | GremlinStep::Mean
-                                | GremlinStep::Min
-                                | GremlinStep::Max
-                                | GremlinStep::Path
-                        )
-                    });
+                    // Use predicate mode only when ALL inner steps are simple
+                    // predicate-convertible steps. Otherwise use traversal mode
+                    // (sub-traversal existence check via Apply + Count + Filter).
+                    let can_be_predicate = !inner_steps.is_empty()
+                        && inner_steps.iter().all(|s| {
+                            matches!(
+                                s,
+                                GremlinStep::Is(_)
+                                    | GremlinStep::Has(_, _)
+                                    | GremlinStep::HasPredicate(_, _)
+                                    | GremlinStep::HasLabel(_)
+                                    | GremlinStep::Values(_)
+                                    | GremlinStep::Label
+                                    | GremlinStep::Id
+                                    | GremlinStep::Select(_)
+                            )
+                        });
 
-                    if is_traversal {
+                    if !can_be_predicate {
                         // Compile inner steps as a sub-traversal seeded with
                         // the current alias. Use Apply + Count + Filter to
                         // implement existence semantics.
+                        // If the sub-traversal starts with as("label"), seed
+                        // from that label's existing alias instead.
                         let mut sub = self.sub_compiler();
-                        let inner_op = sub.compile_seeded(inner_steps, &current_alias)?;
+                        let (seed_alias, steps_slice) =
+                            match inner_steps.first() {
+                                Some(GremlinStep::As(label))
+                                    if self.alias_map.contains_key(label) =>
+                                {
+                                    (
+                                        self.alias_map[label].clone(),
+                                        &inner_steps[1..],
+                                    )
+                                }
+                                _ => (current_alias.clone(), &inner_steps[..]),
+                            };
+                        let inner_op =
+                            sub.compile_seeded(steps_slice, &seed_alias)?;
                         self.absorb(&sub);
                         let sub_result_alias = sub.last_alias.clone();
 
@@ -3478,10 +3483,24 @@ fn inject_sack_init(op: &mut Operator, init_expr: &Expr) {
         | Operator::GremlinSelect { child, .. }
         | Operator::Choose { child, .. }
         | Operator::ChooseMap { child, .. }
-        | Operator::Coalesce { child, .. } => {
+        | Operator::Coalesce { child, .. }
+        | Operator::Expand { child, .. }
+        | Operator::GremlinSideEffect { child, .. }
+        | Operator::GremlinPath { child, .. }
+        | Operator::GremlinMatch { child, .. }
+        | Operator::GremlinSimplePath { child, .. }
+        | Operator::GremlinIndex { child, .. }
+        | Operator::GremlinProject { child, .. }
+        | Operator::GremlinMapSlice { child, .. }
+        | Operator::ForEach { child, .. }
+        | Operator::VarLenExpand { child, .. }
+        | Operator::Aggregate { child, .. } => {
             inject_sack_init(child, init_expr);
         }
-        Operator::Apply { outer, .. } => {
+        Operator::Apply { outer, .. }
+        | Operator::LeftOuterApply {
+            preserved: outer, ..
+        } => {
             inject_sack_init(outer, init_expr);
         }
         Operator::Union { left, right, .. } => {
@@ -3493,8 +3512,7 @@ fn inject_sack_init(op: &mut Operator, init_expr: &Expr) {
         | Operator::IndexScan { .. }
         | Operator::NodeByIdSeek { .. }
         | Operator::SingleRow
-        | Operator::Unwind { .. }
-        | Operator::Aggregate { .. } => {
+        | Operator::Unwind { .. } => {
             let original = std::mem::replace(op, Operator::SingleRow);
             *op = Operator::Apply {
                 outer: Box::new(original),

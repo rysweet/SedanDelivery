@@ -180,7 +180,7 @@ async fn given_graph_initializer(world: &mut GremlinWorld, step: &gherkin::Step)
         let mut compiler = GremlinCompiler::new();
         if let Ok(operator) = compiler.compile(&steps) {
             let store = world.get_store();
-            let executor = QueryExecutor::new(store.as_ref());
+            let executor = QueryExecutor::new(store.as_ref()).with_gremlin_mode();
             let mut budget = ExecutionBudget::default_budget();
             let _ = executor.execute(&world.graph_name, &operator, &mut budget);
         }
@@ -257,7 +257,7 @@ fn execute_traversal(world: &mut GremlinWorld) {
 
     // Execute
     let store = world.get_store();
-    let executor = QueryExecutor::new(store.as_ref());
+    let executor = QueryExecutor::new(store.as_ref()).with_gremlin_mode();
     let mut budget = ExecutionBudget::default_budget();
     match executor.execute(&world.graph_name, &operator, &mut budget) {
         Ok(result) => {
@@ -385,7 +385,7 @@ async fn given_graph_count_check(
         let mut compiler = GremlinCompiler::new();
         if let Ok(operator) = compiler.compile(&steps) {
             let store = world.get_store();
-            let executor = QueryExecutor::new(store.as_ref());
+            let executor = QueryExecutor::new(store.as_ref()).with_gremlin_mode();
             let mut budget = ExecutionBudget::default_budget();
             if let Ok(result) = executor.execute(&world.graph_name, &operator, &mut budget) {
                 // Count step produces a single row with a count value
