@@ -71,6 +71,10 @@ pub enum GremlinStep {
     Min,
     Max,
     Mean,
+    SumLocal,
+    MinLocal,
+    MaxLocal,
+    MeanLocal,
     Group(Option<String>),
     GroupCount(Option<String>),
     Fold,
@@ -218,6 +222,8 @@ pub enum GremlinStep {
     All(Predicate),
     /// `any(predicate)` — true if any element satisfies predicate
     Any(Predicate),
+    /// `none(predicate)` — true if no elements satisfy predicate
+    NonePred(Predicate),
 
     // ── Predicate wrappers (used inside Is/Where) ────────────────────────────
     Eq(GremlinValue),

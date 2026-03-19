@@ -560,11 +560,21 @@ fn parse_tck_value(
         }
     }
 
-    // d[N].l / d[N].i → integer
+    // d[N].l / d[N].i → integer, d[N].d / d[N].f → float
     if let Some(rest) = s.strip_prefix("d[") {
         if let Some(end) = rest.find(']') {
             let num_str = &rest[..end];
             let suffix = &rest[end + 1..];
+            // Handle NaN and Infinity
+            if num_str == "NaN" {
+                return Value::Float(f64::NAN);
+            }
+            if num_str == "Infinity" || num_str == "+Infinity" {
+                return Value::Float(f64::INFINITY);
+            }
+            if num_str == "-Infinity" {
+                return Value::Float(f64::NEG_INFINITY);
+            }
             if suffix.starts_with(".l")
                 || suffix.starts_with(".i")
                 || suffix.starts_with(".b")
@@ -620,6 +630,13 @@ fn parse_tck_value(
     // null
     if s == "null" {
         return Value::Null;
+    }
+
+    // str[...] → string with content
+    if let Some(rest) = s.strip_prefix("str[") {
+        if let Some(inner) = rest.strip_suffix(']') {
+            return Value::Str(inner.into());
+        }
     }
 
     // bare [] — empty list
@@ -935,10 +952,22 @@ fn values_match_ctx(
         (Value::Node(a), Value::Node(e)) => a == e,
         (Value::Edge(a), Value::Edge(e)) => a == e,
         (Value::Int(a), Value::Int(e)) => a == e,
-        (Value::Float(a), Value::Float(e)) => (a - e).abs() < 1e-9,
+        (Value::Float(a), Value::Float(e)) => {
+            if a.is_nan() && e.is_nan() {
+                return true;
+            }
+            if a.is_infinite() && e.is_infinite() {
+                return a.signum() == e.signum();
+            }
+            (a - e).abs() < 1e-9
+        }
         // Cross-type numeric comparisons
         (Value::Int(a), Value::Float(e)) => (*a as f64 - e).abs() < 1e-9,
         (Value::Float(a), Value::Int(e)) => (a - *e as f64).abs() < 1e-9,
+        // String representation match: Str("1") matches Int(1), etc.
+        (Value::Str(a), Value::Int(e)) => a.as_ref() == &e.to_string(),
+        (Value::Str(a), Value::Float(e)) => a.as_ref() == &e.to_string(),
+        (Value::Str(a), Value::Bool(e)) => a.as_ref() == &e.to_string(),
         (Value::Str(a), Value::Str(e)) => a == e,
         (Value::Bool(a), Value::Bool(e)) => a == e,
         (Value::Null, Value::Null) => true,

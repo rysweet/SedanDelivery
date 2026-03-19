@@ -472,35 +472,73 @@ pub fn eval_function_with_vals(name: &str, vals: Vec<Value>) -> Result<Value, Gq
         },
         "gremlin_substring" => match vals.first() {
             Some(Value::Str(s)) => {
-                let start = match vals.get(1) {
-                    Some(Value::Int(n)) => *n as usize,
+                let chars: Vec<char> = s.chars().collect();
+                let len = chars.len() as i64;
+                let raw_start = match vals.get(1) {
+                    Some(Value::Int(n)) => *n,
                     _ => 0,
                 };
-                let chars: Vec<char> = s.chars().collect();
+                // Resolve negative start: negative means from end
+                let start = if raw_start < 0 {
+                    (len + raw_start).max(0) as usize
+                } else {
+                    (raw_start as usize).min(chars.len())
+                };
                 if start >= chars.len() {
                     return Ok(Value::Str("".into()));
                 }
                 let result = match vals.get(2) {
-                    Some(Value::Int(len)) => {
-                        let end = (start + *len as usize).min(chars.len());
-                        chars[start..end].iter().collect::<String>()
+                    Some(Value::Int(raw_len)) => {
+                        let rl = *raw_len;
+                        if rl == 0 {
+                            String::new()
+                        } else if rl < 0 {
+                            // Negative length: end = len + raw_len
+                            let end = ((len + rl) as usize).min(chars.len());
+                            if end <= start {
+                                String::new()
+                            } else {
+                                chars[start..end].iter().collect::<String>()
+                            }
+                        } else {
+                            let end = (start + rl as usize).min(chars.len());
+                            chars[start..end].iter().collect::<String>()
+                        }
                     }
                     _ => chars[start..].iter().collect::<String>(),
                 };
                 Ok(Value::Str(result.into()))
             }
-            Some(Value::Null) => Ok(Value::Null),
+            Some(Value::Null) => Ok(Value::Str("null".into())),
+            Some(Value::List(_)) => Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                expected: "The substring() step can only take string as argument".into(),
+                actual: "list".into(),
+            })),
             _ => Ok(Value::Null),
         },
         "gremlin_concat" => {
+            // Gremlin concat: first arg is current traverser, rest are strings to append.
+            // Null args are skipped. List args cause error.
+            if vals.is_empty() {
+                return Ok(Value::Null);
+            }
             let mut result = String::new();
-            for v in &vals {
+            for (i, v) in vals.iter().enumerate() {
                 match v {
                     Value::Str(s) => result.push_str(s),
                     Value::Int(n) => result.push_str(&n.to_string()),
                     Value::Float(f) => result.push_str(&f.to_string()),
                     Value::Bool(b) => result.push_str(&b.to_string()),
-                    Value::Null => {}
+                    Value::Null => {
+                        // Null traverser (first arg) → skip (produces empty prefix)
+                        // Null concat arg (subsequent) → skip
+                    }
+                    Value::List(_) if i == 0 => {
+                        return Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                            expected: "String concat() can only take string as argument".into(),
+                            actual: "list".into(),
+                        }));
+                    }
                     _ => result.push_str(&format!("{:?}", v)),
                 }
             }
@@ -510,18 +548,25 @@ pub fn eval_function_with_vals(name: &str, vals: Vec<Value>) -> Result<Value, Gq
             (Some(Value::List(items)), Some(Value::Str(sep))) => {
                 let parts: Vec<String> = items
                     .iter()
-                    .map(|v| match v {
-                        Value::Str(s) => s.to_string(),
-                        Value::Int(n) => n.to_string(),
-                        Value::Float(f) => f.to_string(),
-                        Value::Bool(b) => b.to_string(),
-                        Value::Null => "null".to_string(),
-                        other => format!("{:?}", other),
+                    .filter_map(|v| match v {
+                        Value::Str(s) => Some(s.to_string()),
+                        Value::Int(n) => Some(n.to_string()),
+                        Value::Float(f) => Some(f.to_string()),
+                        Value::Bool(b) => Some(b.to_string()),
+                        Value::Null => None, // skip null elements
+                        other => Some(format!("{:?}", other)),
                     })
                     .collect();
                 Ok(Value::Str(parts.join(sep.as_ref()).into()))
             }
-            (Some(Value::Null), _) => Ok(Value::Null),
+            (Some(Value::Null), _) => Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                expected: "Incoming traverser for conjoin step can't be null".into(),
+                actual: "null".into(),
+            })),
+            (_, Some(Value::Str(_))) => Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                expected: "conjoin step can only take an array or an Iterable type for incoming traversers, encountered".into(),
+                actual: "non-list".into(),
+            })),
             _ => Ok(Value::Null),
         },
         "gremlin_format" => {
@@ -558,9 +603,52 @@ pub fn eval_function_with_vals(name: &str, vals: Vec<Value>) -> Result<Value, Gq
         "gremlin_asstring" => match vals.first() {
             Some(Value::Str(s)) => Ok(Value::Str(s.clone())),
             Some(Value::Int(n)) => Ok(Value::Str(n.to_string().into())),
-            Some(Value::Float(f)) => Ok(Value::Str(f.to_string().into())),
+            Some(Value::Float(f)) => {
+                if f.is_nan() {
+                    Ok(Value::Str("NaN".into()))
+                } else if f.is_infinite() {
+                    Ok(Value::Str(if *f > 0.0 { "Infinity" } else { "-Infinity" }.into()))
+                } else {
+                    Ok(Value::Str(f.to_string().into()))
+                }
+            }
             Some(Value::Bool(b)) => Ok(Value::Str(b.to_string().into())),
-            Some(Value::Null) => Ok(Value::Null),
+            Some(Value::Null) => Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                expected: "Can't parse null as string".into(),
+                actual: "null".into(),
+            })),
+            Some(Value::List(items)) => {
+                let parts: Vec<String> = items.iter().map(|v| match v {
+                    Value::Str(s) => s.to_string(),
+                    Value::Int(n) => n.to_string(),
+                    Value::Float(f) => f.to_string(),
+                    Value::Bool(b) => b.to_string(),
+                    Value::Null => "null".to_string(),
+                    other => format!("{:?}", other),
+                }).collect();
+                Ok(Value::Str(format!("[{}]", parts.join(", ")).into()))
+            }
+            Some(Value::Map(m)) => {
+                let parts: Vec<String> = m.iter().map(|(k, v)| {
+                    let vs = match v {
+                        Value::Str(s) => s.to_string(),
+                        Value::Int(n) => n.to_string(),
+                        Value::Float(f) => f.to_string(),
+                        Value::Bool(b) => b.to_string(),
+                        Value::List(items) => {
+                            let inner: Vec<String> = items.iter().map(|i| match i {
+                                Value::Str(s) => s.to_string(),
+                                Value::Int(n) => n.to_string(),
+                                other => format!("{:?}", other),
+                            }).collect();
+                            format!("[{}]", inner.join(", "))
+                        }
+                        other => format!("{:?}", other),
+                    };
+                    format!("{}={}", k, vs)
+                }).collect();
+                Ok(Value::Str(format!("{{{}}}", parts.join(", ")).into()))
+            }
             Some(other) => Ok(Value::Str(format!("{:?}", other).into())),
             None => Ok(Value::Null),
         },
@@ -568,19 +656,29 @@ pub fn eval_function_with_vals(name: &str, vals: Vec<Value>) -> Result<Value, Gq
             Some(Value::Int(n)) => Ok(Value::Int(*n)),
             Some(Value::Float(f)) => Ok(Value::Float(*f)),
             Some(Value::Str(s)) => {
+                // Try hex first: 0x5
+                if let Some(hex) = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
+                    if let Ok(n) = i64::from_str_radix(hex, 16) {
+                        return Ok(Value::Int(n));
+                    }
+                }
                 if let Ok(n) = s.parse::<i64>() {
                     Ok(Value::Int(n))
                 } else if let Ok(f) = s.parse::<f64>() {
                     Ok(Value::Float(f))
                 } else {
                     Err(GqlError::Execution(ExecutionError::TypeMismatch {
-                        expected: "numeric string".into(),
+                        expected: format!("Can't parse string '{}' as number.", s),
                         actual: format!("'{}'", s),
                     }))
                 }
             }
             Some(Value::Bool(b)) => Ok(Value::Int(if *b { 1 } else { 0 })),
             Some(Value::Null) => Ok(Value::Null),
+            Some(Value::List(_)) => Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                expected: "Can't parse type ArrayList as number.".into(),
+                actual: "list".into(),
+            })),
             _ => Ok(Value::Null),
         },
         "gremlin_asbool" => match vals.first() {
@@ -612,49 +710,374 @@ pub fn eval_function_with_vals(name: &str, vals: Vec<Value>) -> Result<Value, Gq
             Some(Value::Path { .. }) => Ok(Value::Str("path".into())),
             _ => Ok(Value::Str("unknown".into())),
         },
-        "gremlin_combine" | "gremlin_merge" => {
-            // combine/merge: append two lists together
-            match vals.first() {
-                Some(Value::List(l)) => Ok(Value::List(l.clone())),
-                Some(Value::Null) => Ok(Value::Null),
-                _ => Ok(Value::List(Vec::new())),
+        "gremlin_combine" => {
+            let lhs = vals.first().cloned().unwrap_or(Value::Null);
+            let rhs = vals.get(1).cloned().unwrap_or(Value::Null);
+            match (&lhs, &rhs) {
+                (Value::Null, _) => Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                    expected: "Incoming traverser for combine step can't be null".into(),
+                    actual: "null".into(),
+                })),
+                (Value::List(_), Value::Null) => Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                    expected: "traversal argument for combine step must yield an iterable type, not null".into(),
+                    actual: "null".into(),
+                })),
+                (Value::List(l), Value::List(r)) => {
+                    let mut result = l.clone();
+                    result.extend(r.iter().cloned());
+                    Ok(Value::List(result))
+                }
+                (_, Value::List(_)) => Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                    expected: "combine step can only take an array or an Iterable type for incoming traversers, encountered".into(),
+                    actual: format!("{:?}", lhs),
+                })),
+                _ => Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                    expected: "traversal argument for combine step must yield an iterable type, encountered".into(),
+                    actual: format!("{:?}", rhs),
+                })),
             }
         }
-        "gremlin_intersect" => match vals.first() {
-            Some(Value::List(_l)) => Ok(Value::List(Vec::new())),
-            Some(Value::Null) => Ok(Value::Null),
-            _ => Ok(Value::List(Vec::new())),
-        },
-        "gremlin_difference" => match vals.first() {
-            Some(Value::List(l)) => Ok(Value::List(l.clone())),
-            Some(Value::Null) => Ok(Value::Null),
-            _ => Ok(Value::List(Vec::new())),
-        },
-        "gremlin_disjunct" => match vals.first() {
-            Some(Value::List(l)) => Ok(Value::List(l.clone())),
-            Some(Value::Null) => Ok(Value::Null),
-            _ => Ok(Value::List(Vec::new())),
-        },
-        "gremlin_product" => match vals.first() {
-            Some(Value::List(_l)) => Ok(Value::List(Vec::new())),
-            Some(Value::Null) => Ok(Value::Null),
-            _ => Ok(Value::List(Vec::new())),
-        },
-        "gremlin_all" => match vals.first() {
+        "gremlin_merge" => {
+            let lhs = vals.first().cloned().unwrap_or(Value::Null);
+            let rhs = vals.get(1).cloned().unwrap_or(Value::Null);
+            match (&lhs, &rhs) {
+                (Value::Null, _) => Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                    expected: "Incoming traverser for merge step can't be null".into(),
+                    actual: "null".into(),
+                })),
+                (Value::List(_), Value::Null) => Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                    expected: "traversal argument for merge step must yield an iterable type, not null".into(),
+                    actual: "null".into(),
+                })),
+                (Value::List(l), Value::List(r)) => {
+                    // merge() is set-union: unique elements from both lists
+                    let mut result = l.clone();
+                    for item in r {
+                        if !result.iter().any(|existing| existing == item) {
+                            result.push(item.clone());
+                        }
+                    }
+                    Ok(Value::List(result))
+                }
+                (Value::Map(l), Value::Map(r)) => {
+                    // Map merge: combine maps
+                    let mut result = l.clone();
+                    for (k, v) in r.iter() {
+                        result.entry(k.clone()).or_insert_with(|| v.clone());
+                    }
+                    Ok(Value::Map(result))
+                }
+                (_, Value::List(_)) => Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                    expected: "merge step can only take an array or an Iterable type for incoming traversers, encountered".into(),
+                    actual: format!("{:?}", lhs),
+                })),
+                (_, Value::Map(_)) => Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                    expected: "merge step expected provided argument to evaluate to a Map, encountered".into(),
+                    actual: format!("{:?}", rhs),
+                })),
+                _ => Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                    expected: "traversal argument for merge step must yield an iterable type, encountered".into(),
+                    actual: format!("{:?}", rhs),
+                })),
+            }
+        }
+        "gremlin_intersect" => {
+            let lhs = vals.first().cloned().unwrap_or(Value::Null);
+            let rhs = vals.get(1).cloned().unwrap_or(Value::Null);
+            match (&lhs, &rhs) {
+                (Value::Null, _) => Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                    expected: "Incoming traverser for intersect step can't be null".into(),
+                    actual: "null".into(),
+                })),
+                (Value::List(_), Value::Null) => Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                    expected: "traversal argument for intersect step must yield an iterable type, not null".into(),
+                    actual: "null".into(),
+                })),
+                (Value::List(l), Value::List(r)) => {
+                    let mut result = Vec::new();
+                    let mut rhs_remaining: Vec<&Value> = r.iter().collect();
+                    for item in l {
+                        if let Some(pos) = rhs_remaining.iter().position(|rv| *rv == item) {
+                            result.push(item.clone());
+                            rhs_remaining.remove(pos);
+                        }
+                    }
+                    Ok(Value::List(result))
+                }
+                (_, Value::List(_)) => Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                    expected: "intersect step can only take an array or an Iterable type for incoming traversers, encountered".into(),
+                    actual: format!("{:?}", lhs),
+                })),
+                _ => Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                    expected: "traversal argument for intersect step must yield an iterable type, encountered".into(),
+                    actual: format!("{:?}", rhs),
+                })),
+            }
+        }
+        "gremlin_difference" => {
+            let lhs = vals.first().cloned().unwrap_or(Value::Null);
+            let rhs = vals.get(1).cloned().unwrap_or(Value::Null);
+            match (&lhs, &rhs) {
+                (Value::Null, _) => Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                    expected: "Incoming traverser for difference step can't be null".into(),
+                    actual: "null".into(),
+                })),
+                (Value::List(_), Value::Null) => Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                    expected: "traversal argument for difference step must yield an iterable type, not null".into(),
+                    actual: "null".into(),
+                })),
+                (Value::List(l), Value::List(r)) => {
+                    let mut result = Vec::new();
+                    let mut rhs_remaining: Vec<&Value> = r.iter().collect();
+                    for item in l {
+                        if let Some(pos) = rhs_remaining.iter().position(|rv| *rv == item) {
+                            rhs_remaining.remove(pos);
+                        } else {
+                            result.push(item.clone());
+                        }
+                    }
+                    Ok(Value::List(result))
+                }
+                (_, Value::List(_)) => Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                    expected: "difference step can only take an array or an Iterable type for incoming traversers".into(),
+                    actual: format!("{:?}", lhs),
+                })),
+                _ => Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                    expected: "traversal argument for difference step must yield an iterable type, encountered".into(),
+                    actual: format!("{:?}", rhs),
+                })),
+            }
+        }
+        "gremlin_disjunct" => {
+            let lhs = vals.first().cloned().unwrap_or(Value::Null);
+            let rhs = vals.get(1).cloned().unwrap_or(Value::Null);
+            match (&lhs, &rhs) {
+                (Value::Null, _) => Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                    expected: "Incoming traverser for disjunct step can't be null".into(),
+                    actual: "null".into(),
+                })),
+                (Value::List(_), Value::Null) => Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                    expected: "traversal argument for disjunct step must yield an iterable type, not null".into(),
+                    actual: "null".into(),
+                })),
+                (Value::List(l), Value::List(r)) => {
+                    // Symmetric difference: items in l not in r, plus items in r not in l
+                    let mut result = Vec::new();
+                    let mut r_remaining: Vec<&Value> = r.iter().collect();
+                    for item in l {
+                        if let Some(pos) = r_remaining.iter().position(|rv| *rv == item) {
+                            r_remaining.remove(pos);
+                        } else {
+                            result.push(item.clone());
+                        }
+                    }
+                    for item in r_remaining {
+                        result.push(item.clone());
+                    }
+                    Ok(Value::List(result))
+                }
+                (_, Value::List(_)) => Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                    expected: "disjunct step can only take an array or an Iterable type for incoming traversers, encountered".into(),
+                    actual: format!("{:?}", lhs),
+                })),
+                _ => Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                    expected: "traversal argument for disjunct step must yield an iterable type, encountered".into(),
+                    actual: format!("{:?}", rhs),
+                })),
+            }
+        }
+        "gremlin_product" => {
+            let lhs = vals.first().cloned().unwrap_or(Value::Null);
+            let rhs = vals.get(1).cloned().unwrap_or(Value::Null);
+            match (&lhs, &rhs) {
+                (Value::Null, _) => Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                    expected: "Incoming traverser for product step can't be null".into(),
+                    actual: "null".into(),
+                })),
+                (Value::List(_), Value::Null) => Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                    expected: "traversal argument for product step must yield an iterable type, not null".into(),
+                    actual: "null".into(),
+                })),
+                (Value::List(l), Value::List(r)) => {
+                    if l.is_empty() || r.is_empty() {
+                        return Ok(Value::List(Vec::new()));
+                    }
+                    let mut result = Vec::new();
+                    for a in l {
+                        for b in r {
+                            result.push(Value::List(vec![a.clone(), b.clone()]));
+                        }
+                    }
+                    Ok(Value::List(result))
+                }
+                (_, Value::List(_)) => Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                    expected: "product step can only take an array or an Iterable type for incoming traversers, encountered".into(),
+                    actual: format!("{:?}", lhs),
+                })),
+                _ => Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                    expected: "traversal argument for product step must yield an iterable type, encountered".into(),
+                    actual: format!("{:?}", rhs),
+                })),
+            }
+        }
+        "gremlin_all" => {
+            // all(pred): filter step — returns the list if ALL elements match, else filters out
+            let list_val = vals.first().cloned().unwrap_or(Value::Null);
+            match &list_val {
+                Value::List(items) => {
+                    // pred info in vals[1] (op string) and vals[2] (value)
+                    let pred_op = match vals.get(1) {
+                        Some(Value::Str(s)) => s.as_ref(),
+                        _ => "neq",
+                    };
+                    let pred_val = vals.get(2).cloned().unwrap_or(Value::Null);
+                    let all_match = items.iter().all(|v| gremlin_pred_check(v, pred_op, &pred_val));
+                    Ok(Value::Bool(all_match))
+                }
+                _ => Ok(Value::Bool(false)),
+            }
+        }
+        "gremlin_any" => {
+            let list_val = vals.first().cloned().unwrap_or(Value::Null);
+            match &list_val {
+                Value::List(items) => {
+                    let pred_op = match vals.get(1) {
+                        Some(Value::Str(s)) => s.as_ref(),
+                        _ => "neq",
+                    };
+                    let pred_val = vals.get(2).cloned().unwrap_or(Value::Null);
+                    let any_match = items.iter().any(|v| gremlin_pred_check(v, pred_op, &pred_val));
+                    Ok(Value::Bool(any_match))
+                }
+                _ => Ok(Value::Bool(false)),
+            }
+        }
+        "gremlin_none" => {
+            let list_val = vals.first().cloned().unwrap_or(Value::Null);
+            match &list_val {
+                Value::List(items) => {
+                    let pred_op = match vals.get(1) {
+                        Some(Value::Str(s)) => s.as_ref(),
+                        _ => "neq",
+                    };
+                    let pred_val = vals.get(2).cloned().unwrap_or(Value::Null);
+                    let none_match = !items.iter().any(|v| gremlin_pred_check(v, pred_op, &pred_val));
+                    Ok(Value::Bool(none_match))
+                }
+                _ => Ok(Value::Bool(true)),
+            }
+        }
+
+        "gremlin_wraplist" => {
+            // Wrap a single value in a list for valueMap
+            match vals.into_iter().next() {
+                Some(v) => Ok(Value::List(vec![v])),
+                None => Ok(Value::List(Vec::new())),
+            }
+        }
+        "gremlin_valuemap" => {
+            // Full valueMap: extract all properties and wrap in lists
+            match vals.into_iter().next() {
+                Some(Value::Map(m)) => {
+                    let wrapped: IndexMap<Box<str>, Value> = m
+                        .into_iter()
+                        .map(|(k, v)| (k, Value::List(vec![v])))
+                        .collect();
+                    Ok(Value::Map(wrapped))
+                }
+                Some(other) => Ok(other),
+                None => Ok(Value::Null),
+            }
+        }
+        "gremlin_sum_local" => match vals.first() {
             Some(Value::List(items)) => {
-                let result = items.iter().all(|v| v.is_truthy());
-                Ok(Value::Bool(result))
+                if items.is_empty() {
+                    return Ok(Value::Null);
+                }
+                let mut sum_i: i64 = 0;
+                let mut sum_f: f64 = 0.0;
+                let mut is_float = false;
+                let mut has_value = false;
+                for v in items {
+                    match v {
+                        Value::Int(n) => { sum_i += n; has_value = true; }
+                        Value::Float(f) => { sum_f += f; is_float = true; has_value = true; }
+                        Value::Null => {} // skip nulls
+                        _ => {}
+                    }
+                }
+                if !has_value {
+                    Ok(Value::Null)
+                } else if is_float {
+                    Ok(Value::Float(sum_f + sum_i as f64))
+                } else {
+                    Ok(Value::Int(sum_i))
+                }
             }
             Some(Value::Null) => Ok(Value::Null),
-            _ => Ok(Value::Bool(true)),
+            _ => Ok(Value::Null),
         },
-        "gremlin_any" => match vals.first() {
+        "gremlin_min_local" => match vals.first() {
             Some(Value::List(items)) => {
-                let result = items.iter().any(|v| v.is_truthy());
-                Ok(Value::Bool(result))
+                let mut result: Option<Value> = None;
+                for v in items {
+                    if matches!(v, Value::Null) { continue; }
+                    result = Some(match result {
+                        None => v.clone(),
+                        Some(cur) => {
+                            if let Ok(std::cmp::Ordering::Less) = super::filter::cypher_compare(v, &cur) {
+                                v.clone()
+                            } else {
+                                cur
+                            }
+                        }
+                    });
+                }
+                Ok(result.unwrap_or(Value::Null))
             }
             Some(Value::Null) => Ok(Value::Null),
-            _ => Ok(Value::Bool(false)),
+            _ => Ok(Value::Null),
+        },
+        "gremlin_max_local" => match vals.first() {
+            Some(Value::List(items)) => {
+                let mut result: Option<Value> = None;
+                for v in items {
+                    if matches!(v, Value::Null) { continue; }
+                    result = Some(match result {
+                        None => v.clone(),
+                        Some(cur) => {
+                            if let Ok(std::cmp::Ordering::Greater) = super::filter::cypher_compare(v, &cur) {
+                                v.clone()
+                            } else {
+                                cur
+                            }
+                        }
+                    });
+                }
+                Ok(result.unwrap_or(Value::Null))
+            }
+            Some(Value::Null) => Ok(Value::Null),
+            _ => Ok(Value::Null),
+        },
+        "gremlin_mean_local" => match vals.first() {
+            Some(Value::List(items)) => {
+                let mut sum: f64 = 0.0;
+                let mut count: usize = 0;
+                for v in items {
+                    match v {
+                        Value::Int(n) => { sum += *n as f64; count += 1; }
+                        Value::Float(f) => { sum += f; count += 1; }
+                        _ => {}
+                    }
+                }
+                if count == 0 {
+                    Ok(Value::Null)
+                } else {
+                    Ok(Value::Float(sum / count as f64))
+                }
+            }
+            Some(Value::Null) => Ok(Value::Null),
+            _ => Ok(Value::Null),
         },
 
         "gremlin_containing" => match (vals.first(), vals.get(1)) {
@@ -762,6 +1185,67 @@ fn eval_case<'r>(
     match default {
         Some(e) => eval_expr(e, row),
         None => Ok(Value::Null),
+    }
+}
+
+// ── Gremlin predicate helpers ─────────────────────────────────────────────────
+
+/// Evaluate a Gremlin predicate check for all()/any()/none() steps.
+fn gremlin_pred_check(val: &Value, pred_op: &str, pred_val: &Value) -> bool {
+    match pred_op {
+        "eq" => gremlin_eq(val, pred_val),
+        "neq" => !gremlin_eq(val, pred_val),
+        "gt" => gremlin_cmp(val, pred_val) == Some(std::cmp::Ordering::Greater),
+        "gte" => matches!(gremlin_cmp(val, pred_val), Some(std::cmp::Ordering::Greater | std::cmp::Ordering::Equal)),
+        "lt" => gremlin_cmp(val, pred_val) == Some(std::cmp::Ordering::Less),
+        "lte" => matches!(gremlin_cmp(val, pred_val), Some(std::cmp::Ordering::Less | std::cmp::Ordering::Equal)),
+        "within" => {
+            if let Value::List(options) = pred_val {
+                options.iter().any(|o| gremlin_eq(val, o))
+            } else {
+                false
+            }
+        }
+        "without" => {
+            if let Value::List(options) = pred_val {
+                !options.iter().any(|o| gremlin_eq(val, o))
+            } else {
+                true
+            }
+        }
+        _ => false,
+    }
+}
+
+/// Gremlin equality: null == null is true, NaN != NaN, Int/Float coercion.
+fn gremlin_eq(a: &Value, b: &Value) -> bool {
+    match (a, b) {
+        (Value::Null, Value::Null) => true,
+        (Value::Null, _) | (_, Value::Null) => false,
+        (Value::Float(f), _) if f.is_nan() => false,
+        (_, Value::Float(f)) if f.is_nan() => false,
+        (Value::Int(i), Value::Float(f)) | (Value::Float(f), Value::Int(i)) => {
+            let fi = *i as f64;
+            fi as i64 == *i && fi == *f
+        }
+        _ => a == b,
+    }
+}
+
+/// Gremlin ordering for comparable values.
+fn gremlin_cmp(a: &Value, b: &Value) -> Option<std::cmp::Ordering> {
+    match (a, b) {
+        (Value::Null, Value::Null) => Some(std::cmp::Ordering::Equal),
+        (Value::Null, _) | (_, Value::Null) => None,
+        (Value::Float(f), _) if f.is_nan() => None,
+        (_, Value::Float(f)) if f.is_nan() => None,
+        (Value::Int(i1), Value::Int(i2)) => i1.partial_cmp(i2),
+        (Value::Float(f1), Value::Float(f2)) => f1.partial_cmp(f2),
+        (Value::Int(i), Value::Float(f)) => (*i as f64).partial_cmp(f),
+        (Value::Float(f), Value::Int(i)) => f.partial_cmp(&(*i as f64)),
+        (Value::Str(s1), Value::Str(s2)) => Some(s1.cmp(s2)),
+        (Value::Bool(b1), Value::Bool(b2)) => b1.partial_cmp(b2),
+        _ => None,
     }
 }
 
