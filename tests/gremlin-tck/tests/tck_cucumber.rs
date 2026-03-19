@@ -302,7 +302,7 @@ async fn then_result_count(world: &mut GremlinWorld, expected: usize) {
     );
 }
 
-#[then(regex = r"(?i)the traversal will raise an error")]
+#[then(regex = r"(?i)the traversal will raise an error$")]
 async fn then_traversal_error(world: &mut GremlinWorld) {
     match &world.outcome {
         Some(TraversalOutcome::Err(_)) => { /* expected */ }
