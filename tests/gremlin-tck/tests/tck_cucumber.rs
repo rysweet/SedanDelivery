@@ -67,6 +67,26 @@ fn register_modern_ids(world: &mut GremlinWorld, ids: &ModernGraphIds) {
     world.vertex_names.insert("josh".into(), ids.josh);
     world.vertex_names.insert("ripple".into(), ids.ripple);
     world.vertex_names.insert("peter".into(), ids.peter);
+
+    // Register edges as "src-type->dst"
+    world
+        .edge_names
+        .insert("marko-knows->vadas".into(), ids.marko_knows_vadas);
+    world
+        .edge_names
+        .insert("marko-knows->josh".into(), ids.marko_knows_josh);
+    world
+        .edge_names
+        .insert("marko-created->lop".into(), ids.marko_created_lop);
+    world
+        .edge_names
+        .insert("josh-created->ripple".into(), ids.josh_created_ripple);
+    world
+        .edge_names
+        .insert("josh-created->lop".into(), ids.josh_created_lop);
+    world
+        .edge_names
+        .insert("peter-created->lop".into(), ids.peter_created_lop);
 }
 
 // ── Given steps ───────────────────────────────────────────────────────────────
@@ -434,12 +454,17 @@ fn resolve_parameter_definition(
         if let Some(end) = rest.find(']') {
             let num_str = &rest[..end];
             let suffix = &rest[end + 1..];
-            if suffix.starts_with(".l") || suffix.starts_with(".i") {
+            if suffix.starts_with(".l")
+                || suffix.starts_with(".i")
+                || suffix.starts_with(".b")
+                || suffix.starts_with(".s")
+                || suffix.starts_with(".n")
+            {
                 if let Ok(n) = num_str.parse::<i64>() {
                     return GremlinValue::Integer(n);
                 }
             }
-            if suffix.starts_with(".d") || suffix.starts_with(".f") {
+            if suffix.starts_with(".d") || suffix.starts_with(".f") || suffix.starts_with(".m") {
                 if let Ok(f) = num_str.parse::<f64>() {
                     return GremlinValue::Float(f);
                 }
@@ -505,7 +530,7 @@ fn parse_expected_table(step: &gherkin::Step, world: &GremlinWorld) -> Vec<Vec<V
 fn parse_tck_value(
     s: &str,
     vertex_names: &HashMap<String, NodeId>,
-    _edge_names: &HashMap<String, EdgeId>,
+    edge_names: &HashMap<String, EdgeId>,
 ) -> Value {
     let s = s.trim();
 
@@ -519,10 +544,15 @@ fn parse_tck_value(
         }
     }
 
-    // e[desc] → Edge reference
-    if s.starts_with("e[") && s.ends_with(']') {
-        // Edge matching is complex — return as string for now
-        return Value::Str(s.into());
+    // e[src-label->dst] → Edge reference
+    if let Some(rest) = s.strip_prefix("e[") {
+        if let Some(desc) = rest.strip_suffix(']') {
+            if let Some(eid) = edge_names.get(desc) {
+                return Value::Edge(*eid);
+            }
+            // Edge not registered — return as string marker
+            return Value::Str(format!("e[{desc}]").into());
+        }
     }
 
     // d[N].l / d[N].i → integer
@@ -530,12 +560,17 @@ fn parse_tck_value(
         if let Some(end) = rest.find(']') {
             let num_str = &rest[..end];
             let suffix = &rest[end + 1..];
-            if suffix.starts_with(".l") || suffix.starts_with(".i") {
+            if suffix.starts_with(".l")
+                || suffix.starts_with(".i")
+                || suffix.starts_with(".b")
+                || suffix.starts_with(".s")
+                || suffix.starts_with(".n")
+            {
                 if let Ok(n) = num_str.parse::<i64>() {
                     return Value::Int(n);
                 }
             }
-            if suffix.starts_with(".d") || suffix.starts_with(".f") {
+            if suffix.starts_with(".d") || suffix.starts_with(".f") || suffix.starts_with(".m") {
                 if let Ok(f) = num_str.parse::<f64>() {
                     return Value::Float(f);
                 }
@@ -549,24 +584,32 @@ fn parse_tck_value(
         }
     }
 
-    // m[{...}] → map
-    if s.starts_with("m[") && s.ends_with(']') {
-        return Value::Map(indexmap::IndexMap::new());
+    // m[{key:val,...}] → map
+    if let Some(rest) = s.strip_prefix("m[") {
+        if let Some(inner) = rest.strip_suffix(']') {
+            return parse_tck_map(inner, vertex_names, edge_names);
+        }
     }
 
-    // p[...] → path
-    if s.starts_with("p[") && s.ends_with(']') {
-        return Value::List(Vec::new());
+    // p[v[marko],v[vadas]] → path (list of values)
+    if let Some(rest) = s.strip_prefix("p[") {
+        if let Some(inner) = rest.strip_suffix(']') {
+            return parse_tck_list(inner, vertex_names, edge_names);
+        }
     }
 
-    // l[...] → list
-    if s.starts_with("l[") && s.ends_with(']') {
-        return Value::List(Vec::new());
+    // l[v[marko],v[vadas]] → list
+    if let Some(rest) = s.strip_prefix("l[") {
+        if let Some(inner) = rest.strip_suffix(']') {
+            return parse_tck_list(inner, vertex_names, edge_names);
+        }
     }
 
-    // s[...] → set
-    if s.starts_with("s[") && s.ends_with(']') {
-        return Value::List(Vec::new());
+    // s[v[marko],v[vadas]] → set (treated as list)
+    if let Some(rest) = s.strip_prefix("s[") {
+        if let Some(inner) = rest.strip_suffix(']') {
+            return parse_tck_list(inner, vertex_names, edge_names);
+        }
     }
 
     // null
@@ -596,6 +639,104 @@ fn parse_tck_value(
     Value::Str(s.into())
 }
 
+/// Parse a TCK list notation: `v[marko],v[vadas],d[29].i`
+/// Handles nested brackets by splitting on `,` only at top-level depth.
+fn parse_tck_list(
+    s: &str,
+    vertex_names: &HashMap<String, NodeId>,
+    edge_names: &HashMap<String, EdgeId>,
+) -> Value {
+    if s.trim().is_empty() {
+        return Value::List(Vec::new());
+    }
+    let parts = split_tck_top_level(s);
+    let items: Vec<Value> = parts
+        .iter()
+        .map(|p| parse_tck_value(p.trim(), vertex_names, edge_names))
+        .collect();
+    Value::List(items)
+}
+
+/// Parse a TCK map notation: `{key:val, key2:val2}` or just `key:val, key2:val2`
+fn parse_tck_map(
+    s: &str,
+    vertex_names: &HashMap<String, NodeId>,
+    edge_names: &HashMap<String, EdgeId>,
+) -> Value {
+    let inner = s.trim();
+    // Strip outer braces if present
+    let inner = if inner.starts_with('{') && inner.ends_with('}') {
+        &inner[1..inner.len() - 1]
+    } else {
+        inner
+    };
+
+    if inner.trim().is_empty() {
+        return Value::Map(indexmap::IndexMap::new());
+    }
+
+    let mut map: indexmap::IndexMap<Box<str>, Value> = indexmap::IndexMap::new();
+    let parts = split_tck_top_level(inner);
+    for part in &parts {
+        let part = part.trim();
+        // Find the first ':' that's not inside brackets
+        if let Some(colon_pos) = find_top_level_char(part, ':') {
+            let key = part[..colon_pos].trim();
+            let val_str = part[colon_pos + 1..].trim();
+            // Strip surrounding quotes from key
+            let key = if key.starts_with('"') && key.ends_with('"') && key.len() >= 2 {
+                &key[1..key.len() - 1]
+            } else {
+                key
+            };
+            // Strip surrounding quotes from value before parsing
+            let val_str =
+                if val_str.starts_with('"') && val_str.ends_with('"') && val_str.len() >= 2 {
+                    &val_str[1..val_str.len() - 1]
+                } else {
+                    val_str
+                };
+            let val = parse_tck_value(val_str, vertex_names, edge_names);
+            map.insert(key.into(), val);
+        }
+    }
+    Value::Map(map)
+}
+
+/// Split a string on commas, respecting brackets and braces depth.
+fn split_tck_top_level(s: &str) -> Vec<&str> {
+    let mut result = Vec::new();
+    let mut depth = 0u32;
+    let mut start = 0;
+    for (i, ch) in s.char_indices() {
+        match ch {
+            '[' | '{' | '(' => depth += 1,
+            ']' | '}' | ')' => depth = depth.saturating_sub(1),
+            ',' if depth == 0 => {
+                result.push(&s[start..i]);
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    result.push(&s[start..]);
+    result
+}
+
+/// Find the first occurrence of a character at top-level (not inside brackets).
+fn find_top_level_char(s: &str, target: char) -> Option<usize> {
+    let mut depth = 0u32;
+    for (i, ch) in s.char_indices() {
+        match ch {
+            '[' | '{' | '(' => depth += 1,
+            ']' | '}' | ')' => depth = depth.saturating_sub(1),
+            c if c == target && depth == 0 => return Some(i),
+            _ => {}
+        }
+    }
+    None
+}
+
 /// Assert that actual results match expected values (order-independent).
 fn assert_results_match_unordered(
     result: &QueryResult,
@@ -619,11 +760,19 @@ fn assert_results_match_unordered(
         .filter_map(|row| row.values().next())
         .collect();
 
+    // Track which actual values have been matched to avoid double-counting
+    let mut matched = vec![false; actual_values.len()];
+
     for exp_row in expected {
         let exp_val = &exp_row[0];
-        let found = actual_values
-            .iter()
-            .any(|actual| values_match(actual, exp_val));
+        let found = actual_values.iter().enumerate().any(|(i, actual)| {
+            if !matched[i] && values_match(actual, exp_val) {
+                matched[i] = true;
+                true
+            } else {
+                false
+            }
+        });
         assert!(
             found,
             "expected value {:?} not found in results\ntraversal: {}\nactual: {:?}",
@@ -666,11 +815,25 @@ fn assert_results_match_ordered(
 fn values_match(actual: &Value, expected: &Value) -> bool {
     match (actual, expected) {
         (Value::Node(a), Value::Node(e)) => a == e,
+        (Value::Edge(a), Value::Edge(e)) => a == e,
         (Value::Int(a), Value::Int(e)) => a == e,
         (Value::Float(a), Value::Float(e)) => (a - e).abs() < 1e-9,
+        // Cross-type numeric comparisons
+        (Value::Int(a), Value::Float(e)) => (*a as f64 - e).abs() < 1e-9,
+        (Value::Float(a), Value::Int(e)) => (a - *e as f64).abs() < 1e-9,
         (Value::Str(a), Value::Str(e)) => a == e,
         (Value::Bool(a), Value::Bool(e)) => a == e,
         (Value::Null, Value::Null) => true,
+        (Value::List(a), Value::List(e)) => {
+            a.len() == e.len() && a.iter().zip(e.iter()).all(|(av, ev)| values_match(av, ev))
+        }
+        (Value::Map(a), Value::Map(e)) => {
+            if a.len() != e.len() {
+                return false;
+            }
+            e.iter()
+                .all(|(k, ev)| a.get(k).map_or(false, |av| values_match(av, ev)))
+        }
         _ => actual == expected,
     }
 }

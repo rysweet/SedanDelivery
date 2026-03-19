@@ -8,7 +8,7 @@
 
 use std::collections::HashMap;
 
-use gql_core::storage::{GraphStore, InMemoryGraphStore, NodeId};
+use gql_core::storage::{EdgeId, GraphStore, InMemoryGraphStore, NodeId};
 use gql_core::types::Value;
 
 /// Vertex IDs returned after building the modern graph, for convenient
@@ -20,6 +20,13 @@ pub struct ModernGraphIds {
     pub josh: NodeId,
     pub ripple: NodeId,
     pub peter: NodeId,
+    // Edge IDs (named as src-type->dst)
+    pub marko_knows_vadas: EdgeId,
+    pub marko_knows_josh: EdgeId,
+    pub marko_created_lop: EdgeId,
+    pub josh_created_ripple: EdgeId,
+    pub josh_created_lop: EdgeId,
+    pub peter_created_lop: EdgeId,
 }
 
 /// Create an `InMemoryGraphStore` pre-populated with the TinkerPop "modern"
@@ -80,7 +87,7 @@ pub fn create_modern_graph() -> (InMemoryGraphStore, ModernGraphIds) {
 
     // ── Edges ──────────────────────────────────────────────────────────────
 
-    store
+    let marko_knows_vadas = store
         .create_edge(
             "modern",
             marko,
@@ -90,7 +97,7 @@ pub fn create_modern_graph() -> (InMemoryGraphStore, ModernGraphIds) {
         )
         .unwrap();
 
-    store
+    let marko_knows_josh = store
         .create_edge(
             "modern",
             marko,
@@ -100,7 +107,7 @@ pub fn create_modern_graph() -> (InMemoryGraphStore, ModernGraphIds) {
         )
         .unwrap();
 
-    store
+    let marko_created_lop = store
         .create_edge(
             "modern",
             marko,
@@ -110,7 +117,7 @@ pub fn create_modern_graph() -> (InMemoryGraphStore, ModernGraphIds) {
         )
         .unwrap();
 
-    store
+    let josh_created_ripple = store
         .create_edge(
             "modern",
             josh,
@@ -120,7 +127,7 @@ pub fn create_modern_graph() -> (InMemoryGraphStore, ModernGraphIds) {
         )
         .unwrap();
 
-    store
+    let josh_created_lop = store
         .create_edge(
             "modern",
             josh,
@@ -130,7 +137,7 @@ pub fn create_modern_graph() -> (InMemoryGraphStore, ModernGraphIds) {
         )
         .unwrap();
 
-    store
+    let peter_created_lop = store
         .create_edge(
             "modern",
             peter,
@@ -147,6 +154,12 @@ pub fn create_modern_graph() -> (InMemoryGraphStore, ModernGraphIds) {
         josh,
         ripple,
         peter,
+        marko_knows_vadas,
+        marko_knows_josh,
+        marko_created_lop,
+        josh_created_ripple,
+        josh_created_lop,
+        peter_created_lop,
     };
 
     (store, ids)

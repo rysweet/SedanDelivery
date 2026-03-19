@@ -27,6 +27,8 @@ pub enum GremlinStep {
     // ── Filter steps ─────────────────────────────────────────────────────────
     HasLabel(Vec<String>),
     Has(String, Option<GremlinValue>),
+    /// `has("key", P.gt(30))` — property predicate filter
+    HasPredicate(String, Predicate),
     HasId(Vec<GremlinValue>),
 
     // ── Traversal steps ──────────────────────────────────────────────────────
@@ -71,8 +73,8 @@ pub enum GremlinStep {
     Dedup(Vec<String>),
 
     // ── Boolean steps ────────────────────────────────────────────────────────
-    Where(Box<GremlinStep>),
-    Not(Box<GremlinStep>),
+    Where(Vec<GremlinStep>),
+    Not(Vec<GremlinStep>),
     And(Vec<GremlinStep>),
     Or(Vec<GremlinStep>),
     Is(Predicate),
@@ -107,6 +109,46 @@ pub enum GremlinStep {
     Inject(Vec<GremlinValue>),
     Match(Vec<Vec<GremlinStep>>),
     Project(Vec<String>),
+    Identity,
+    /// `tail()` or `tail(n)` — keep only the last n elements (default 1)
+    Tail(i64),
+    /// `skip(n)` — drop the first n elements
+    Skip(i64),
+    /// `elementMap(keys...)` — like valueMap but includes id and label
+    ElementMap(Vec<String>),
+    /// `hasKey(keys...)` — filter elements that have all listed property keys
+    HasKey(Vec<String>),
+    /// `hasValue(values...)` — filter elements that have any of the listed values
+    HasValue(Vec<GremlinValue>),
+    /// `optional(traversal)` — execute traversal, fall back to identity if empty
+    Optional(Vec<GremlinStep>),
+    /// `simplePath()` — filter to paths with no repeated elements
+    SimplePath,
+    /// `cyclicPath()` — filter to paths with repeated elements
+    CyclicPath,
+    /// `coin(probability)` — random filter (0.0 to 1.0)
+    Coin(f64),
+    /// `map(traversal)` — apply sub-traversal to each traverser
+    Map(Vec<GremlinStep>),
+    /// `flatMap(traversal)` — apply sub-traversal, flatten results
+    FlatMap(Vec<GremlinStep>),
+    /// `filter(traversal)` — keep traversers that produce results for the sub-traversal
+    FilterTraversal(Vec<GremlinStep>),
+    /// `none` predicate / `none()` step — matches nothing
+    None,
+    /// `barrier()` — bulk synchronization step
+    Barrier,
+    /// `sample(n)` — random sample of n traversers
+    Sample(i64),
+    /// `discard()` — consume traversal without returning results
+    Discard,
+    /// `loops()` — returns the number of loops in a repeat context
+    Loops,
+
+    /// `sack()` — retrieve the current sack value
+    Sack,
+    /// `option(token, traversal)` — option step for branch/choose
+    Option(GremlinValue, Vec<GremlinStep>),
 
     // ── Predicate wrappers (used inside Is/Where) ────────────────────────────
     Eq(GremlinValue),
@@ -363,6 +405,42 @@ fn parse_step(name: &str, args: &[serde_json::Value]) -> Result<GremlinStep, Byt
         }
         "inject" => Ok(GremlinStep::Inject(collect_value_args(args))),
         "project" => Ok(GremlinStep::Project(collect_string_args(args))),
+        "identity" => Ok(GremlinStep::Identity),
+        "tail" => {
+            let n = args.first().and_then(|a| a.as_i64()).unwrap_or(1);
+            Ok(GremlinStep::Tail(n))
+        }
+        "skip" => {
+            let n = args
+                .first()
+                .and_then(|a| a.as_i64())
+                .ok_or_else(|| BytecodeError::MissingArgument("skip".into()))?;
+            Ok(GremlinStep::Skip(n))
+        }
+        "elementMap" => Ok(GremlinStep::ElementMap(collect_string_args(args))),
+        "hasKey" => Ok(GremlinStep::HasKey(collect_string_args(args))),
+        "hasValue" => Ok(GremlinStep::HasValue(collect_value_args(args))),
+        "simplePath" => Ok(GremlinStep::SimplePath),
+        "cyclicPath" => Ok(GremlinStep::CyclicPath),
+        "coin" => {
+            let p = args
+                .first()
+                .and_then(|a| a.as_f64())
+                .ok_or_else(|| BytecodeError::MissingArgument("coin".into()))?;
+            Ok(GremlinStep::Coin(p))
+        }
+        "none" => Ok(GremlinStep::None),
+        "barrier" => Ok(GremlinStep::Barrier),
+        "sample" => {
+            let n = args
+                .first()
+                .and_then(|a| a.as_i64())
+                .ok_or_else(|| BytecodeError::MissingArgument("sample".into()))?;
+            Ok(GremlinStep::Sample(n))
+        }
+        "discard" => Ok(GremlinStep::Discard),
+        "loops" => Ok(GremlinStep::Loops),
+        "sack" => Ok(GremlinStep::Sack),
         _ => Err(BytecodeError::UnknownStep(name.into())),
     }
 }
