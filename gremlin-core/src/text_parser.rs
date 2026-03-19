@@ -695,8 +695,7 @@ fn parse_step_token(
         "tail" => {
             let args = parse_arg_list(args_str, resolve_param)?;
             // Detect Scope.local
-            let has_local_scope = args_str.contains("local")
-                || args_str.contains("Scope.local");
+            let has_local_scope = args_str.contains("local") || args_str.contains("Scope.local");
             let n = args
                 .iter()
                 .find_map(|a| {
@@ -1101,7 +1100,9 @@ fn parse_has_step(
                             out.push(GremlinStep::HasLabel(vec![label]));
                         } else if matches!(val, GremlinValue::Null) {
                             // has(T.label, null) — nothing matches null label
-                            out.push(GremlinStep::HasLabel(vec!["__null_label_no_match__".to_string()]));
+                            out.push(GremlinStep::HasLabel(vec![
+                                "__null_label_no_match__".to_string()
+                            ]));
                         }
                     }
                     return Ok(());

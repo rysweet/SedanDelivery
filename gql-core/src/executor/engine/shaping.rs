@@ -116,11 +116,7 @@ impl<'a> QueryExecutor<'a> {
                     cx.budget.check_or_err()?;
                     let composite: String = labels
                         .iter()
-                        .map(|l| {
-                            row.get(*l)
-                                .map(|v| v.canonical_key())
-                                .unwrap_or_default()
-                        })
+                        .map(|l| row.get(*l).map(|v| v.canonical_key()).unwrap_or_default())
                         .collect::<Vec<_>>()
                         .join("\x1f");
                     if seen.insert(composite) {
@@ -171,12 +167,7 @@ impl<'a> QueryExecutor<'a> {
     }
 
     /// Extract a property from a Value (node, edge, or map).
-    fn extract_property_from_value(
-        &self,
-        graph: &str,
-        val: &Value,
-        prop: &str,
-    ) -> Option<Value> {
+    fn extract_property_from_value(&self, graph: &str, val: &Value, prop: &str) -> Option<Value> {
         match val {
             Value::Node(nid) => self
                 .cached_get_node(graph, *nid)

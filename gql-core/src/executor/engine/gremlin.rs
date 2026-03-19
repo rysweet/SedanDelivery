@@ -885,9 +885,11 @@ fn eval_gremlin_predicate(pred_str: &str, value: &Value) -> bool {
         if let Some(args) = rest.strip_suffix(')') {
             let parts: Vec<&str> = args.splitn(2, ',').collect();
             if parts.len() == 2 {
-                if let (Some(lo), Some(hi), Some(v)) =
-                    (parse_num(parts[0]), parse_num(parts[1]), value_as_f64(value))
-                {
+                if let (Some(lo), Some(hi), Some(v)) = (
+                    parse_num(parts[0]),
+                    parse_num(parts[1]),
+                    value_as_f64(value),
+                ) {
                     return v >= lo && v < hi;
                 }
             }

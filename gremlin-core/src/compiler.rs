@@ -1120,7 +1120,8 @@ impl GremlinCompiler {
                         // by() after dedup() — dedup by specific property
                         if !key.is_empty() {
                             if let Some(Operator::Distinct { ref mut by_key, .. }) = current {
-                                *by_key = Some(format!("__dedup_prop__{}__{}", key, current_alias.0));
+                                *by_key =
+                                    Some(format!("__dedup_prop__{}__{}", key, current_alias.0));
                             }
                         }
                         pending_dedup = false;
@@ -1177,9 +1178,10 @@ impl GremlinCompiler {
 
                 GremlinStep::Range(low, high) => {
                     if *high < *low {
-                        return Err(CompileError::InvalidSequence(
-                            format!("range({}, {}): high must be >= low", low, high),
-                        ));
+                        return Err(CompileError::InvalidSequence(format!(
+                            "range({}, {}): high must be >= low",
+                            low, high
+                        )));
                     }
                     let child = current.take().ok_or(CompileError::MissingChild)?;
                     let skipped = if *low > 0 {
@@ -1485,7 +1487,9 @@ impl GremlinCompiler {
                             _ => {
                                 // Single-step complex traversal
                                 let mut sub = self.sub_compiler();
-                                if let Ok(inner_op) = sub.compile_seeded(inner_steps, &current_alias) {
+                                if let Ok(inner_op) =
+                                    sub.compile_seeded(inner_steps, &current_alias)
+                                {
                                     self.absorb(&sub);
                                     let inner_alias = sub.last_alias.clone();
                                     let child = current.take().ok_or(CompileError::MissingChild)?;
@@ -1921,10 +1925,7 @@ impl GremlinCompiler {
                     let mut items = vec![(
                         Expr::FunctionCall {
                             name: SmolStr::new("gremlin_tail_local"),
-                            args: vec![
-                                Expr::Variable(current_alias.clone()),
-                                Expr::Integer(*n),
-                            ],
+                            args: vec![Expr::Variable(current_alias.clone()), Expr::Integer(*n)],
                             distinct: false,
                         },
                         Some(alias.clone()),
