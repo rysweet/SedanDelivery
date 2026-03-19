@@ -800,7 +800,7 @@ impl GremlinCompiler {
                 GremlinStep::SumLocal => {
                     let child = current.take().ok_or(CompileError::MissingChild)?;
                     let alias = self.next_alias("suml");
-                    current = Some(Operator::Project {
+                    let proj = Operator::Project {
                         items: vec![(
                             Expr::FunctionCall {
                                 name: SmolStr::new("gremlin_sum_local"),
@@ -810,6 +810,10 @@ impl GremlinCompiler {
                             Some(alias.clone()),
                         )],
                         child: Box::new(child),
+                    };
+                    current = Some(Operator::Filter {
+                        predicate: Expr::IsNotNull(Box::new(Expr::Variable(alias.clone()))),
+                        child: Box::new(proj),
                     });
                     current_alias = alias;
                 }
@@ -817,7 +821,7 @@ impl GremlinCompiler {
                 GremlinStep::MinLocal => {
                     let child = current.take().ok_or(CompileError::MissingChild)?;
                     let alias = self.next_alias("minl");
-                    current = Some(Operator::Project {
+                    let proj = Operator::Project {
                         items: vec![(
                             Expr::FunctionCall {
                                 name: SmolStr::new("gremlin_min_local"),
@@ -827,6 +831,10 @@ impl GremlinCompiler {
                             Some(alias.clone()),
                         )],
                         child: Box::new(child),
+                    };
+                    current = Some(Operator::Filter {
+                        predicate: Expr::IsNotNull(Box::new(Expr::Variable(alias.clone()))),
+                        child: Box::new(proj),
                     });
                     current_alias = alias;
                 }
@@ -834,7 +842,7 @@ impl GremlinCompiler {
                 GremlinStep::MaxLocal => {
                     let child = current.take().ok_or(CompileError::MissingChild)?;
                     let alias = self.next_alias("maxl");
-                    current = Some(Operator::Project {
+                    let proj = Operator::Project {
                         items: vec![(
                             Expr::FunctionCall {
                                 name: SmolStr::new("gremlin_max_local"),
@@ -844,6 +852,10 @@ impl GremlinCompiler {
                             Some(alias.clone()),
                         )],
                         child: Box::new(child),
+                    };
+                    current = Some(Operator::Filter {
+                        predicate: Expr::IsNotNull(Box::new(Expr::Variable(alias.clone()))),
+                        child: Box::new(proj),
                     });
                     current_alias = alias;
                 }
@@ -851,7 +863,7 @@ impl GremlinCompiler {
                 GremlinStep::MeanLocal => {
                     let child = current.take().ok_or(CompileError::MissingChild)?;
                     let alias = self.next_alias("meanl");
-                    current = Some(Operator::Project {
+                    let proj = Operator::Project {
                         items: vec![(
                             Expr::FunctionCall {
                                 name: SmolStr::new("gremlin_mean_local"),
@@ -861,6 +873,10 @@ impl GremlinCompiler {
                             Some(alias.clone()),
                         )],
                         child: Box::new(child),
+                    };
+                    current = Some(Operator::Filter {
+                        predicate: Expr::IsNotNull(Box::new(Expr::Variable(alias.clone()))),
+                        child: Box::new(proj),
                     });
                     current_alias = alias;
                 }
