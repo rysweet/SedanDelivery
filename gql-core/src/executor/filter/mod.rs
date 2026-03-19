@@ -1076,6 +1076,16 @@ pub fn eval_function_with_vals(name: &str, vals: Vec<Value>) -> Result<Value, Gq
                 None => Ok(Value::Null),
             }
         }
+        "gremlin_values_all" => {
+            // Fallback for non-graph values (maps, etc.)
+            match vals.into_iter().next() {
+                Some(Value::Map(m)) => {
+                    let vals: Vec<Value> = m.into_values().collect();
+                    Ok(Value::List(vals))
+                }
+                _ => Ok(Value::List(vec![])),
+            }
+        }
         "gremlin_sum_local" => match vals.first() {
             Some(Value::List(items)) => {
                 if items.is_empty() {

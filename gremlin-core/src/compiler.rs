@@ -535,17 +535,29 @@ impl GremlinCompiler {
                         });
                         current_alias = alias;
                     } else if keys.is_empty() {
-                        // values() with no keys: unwind all properties
-                        // Approximate as passing through the element
+                        // values() with no keys: unwind all property values
                         let alias = self.next_alias("val");
-                        let mut items =
-                            vec![(Expr::Variable(current_alias.clone()), Some(alias.clone()))];
+                        let mut items = vec![(
+                            Expr::FunctionCall {
+                                name: SmolStr::new("gremlin_values_all"),
+                                args: vec![Expr::Variable(current_alias.clone())],
+                                distinct: false,
+                            },
+                            Some(alias.clone()),
+                        )];
                         items.extend(carry);
-                        current = Some(Operator::Project {
+                        let project = Operator::Project {
                             items,
                             child: Box::new(child),
+                        };
+                        // Unwind the list of all values
+                        let uf_alias = self.next_alias("uf");
+                        current = Some(Operator::Unwind {
+                            list_expr: Expr::Variable(alias),
+                            alias: uf_alias.clone(),
+                            child: Box::new(project),
                         });
-                        current_alias = alias;
+                        current_alias = uf_alias;
                     } else {
                         // Multiple keys: unwind values for each key, skip nulls
                         let _val_alias = self.next_alias("val");

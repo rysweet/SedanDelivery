@@ -628,6 +628,36 @@ impl<'a> QueryExecutor<'a> {
                             None => Ok(Value::Null),
                         }
                     }
+                    "gremlin_values_all" => {
+                        // values() with no keys: return list of all property values
+                        match evaled_args.into_iter().next() {
+                            Some(Value::Node(node_id)) => {
+                                match self.cached_get_node(graph, node_id)? {
+                                    Some(data) => {
+                                        let vals: Vec<Value> =
+                                            data.properties.into_values().collect();
+                                        Ok(Value::List(vals))
+                                    }
+                                    None => Ok(Value::List(vec![])),
+                                }
+                            }
+                            Some(Value::Edge(edge_id)) => {
+                                match self.cached_get_edge(graph, edge_id)? {
+                                    Some(data) => {
+                                        let vals: Vec<Value> =
+                                            data.properties.into_values().collect();
+                                        Ok(Value::List(vals))
+                                    }
+                                    None => Ok(Value::List(vec![])),
+                                }
+                            }
+                            Some(Value::Map(m)) => {
+                                let vals: Vec<Value> = m.into_values().collect();
+                                Ok(Value::List(vals))
+                            }
+                            _ => Ok(Value::List(vec![])),
+                        }
+                    }
                     "gremlin_format" => {
                         // format(): resolve %{key} from node/edge properties.
                         // Returns Null if any %{key} placeholder can't be resolved.
