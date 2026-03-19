@@ -94,7 +94,7 @@ impl<'a> QueryExecutor<'a> {
         cx: &mut ExecContext<'_>,
         op: &Operator,
     ) -> Result<Vec<Row>, GqlError> {
-        let Operator::Distinct { child } = op else {
+        let Operator::Distinct { child, by_key } = op else {
             debug_assert!(false, "expected Distinct operator");
             return Err(GqlError::Execution(
                 crate::error::ExecutionError::UnsupportedFeature {
@@ -103,12 +103,49 @@ impl<'a> QueryExecutor<'a> {
             ));
         };
         let input = self.exec_operator(cx, child)?;
-        let mut seen = RowDedupSet::new();
         let mut out = Vec::with_capacity(input.len());
-        for row in input {
-            cx.budget.check_or_err()?;
-            if seen.insert(&row) {
-                out.push(row);
+
+        if let Some(key) = by_key {
+            // Dedup by property value: extract key from current traverser.
+            use std::collections::HashSet;
+            let mut seen: HashSet<String> = HashSet::new();
+            for row in input {
+                cx.budget.check_or_err()?;
+                // Find the "current" traverser — the last column in the row.
+                let dedup_val = row
+                    .values()
+                    .last()
+                    .and_then(|v| match v {
+                        Value::Node(nid) => {
+                            self.store
+                                .get_node(cx.graph, *nid)
+                                .ok()
+                                .flatten()
+                                .and_then(|nd| nd.properties.get(key.as_str()).cloned())
+                                .map(|pv| pv.canonical_key())
+                        }
+                        Value::Edge(eid) => {
+                            self.store
+                                .get_edge(cx.graph, *eid)
+                                .ok()
+                                .flatten()
+                                .and_then(|ed| ed.properties.get(key.as_str()).cloned())
+                                .map(|pv| pv.canonical_key())
+                        }
+                        other => Some(other.canonical_key()),
+                    })
+                    .unwrap_or_default();
+                if seen.insert(dedup_val) {
+                    out.push(row);
+                }
+            }
+        } else {
+            let mut seen = RowDedupSet::new();
+            for row in input {
+                cx.budget.check_or_err()?;
+                if seen.insert(&row) {
+                    out.push(row);
+                }
             }
         }
         Ok(out)
@@ -264,7 +301,11 @@ impl<'a> QueryExecutor<'a> {
             | Operator::GremlinAggregate { .. }
             | Operator::GremlinPath { .. }
             | Operator::GremlinMatch { .. }
-            | Operator::Cap { .. } => false,
+            | Operator::Cap { .. }
+            | Operator::ChooseMap { .. }
+            | Operator::GremlinSelect { .. }
+            | Operator::GremlinGroup { .. }
+            | Operator::GremlinMapSlice { .. } => false,
         }
     }
 
@@ -350,6 +391,7 @@ mod tests {
                     alias: Identifier::new("n"),
                 }),
             }),
+            by_key: None,
         };
         let mut budget = ExecutionBudget::unlimited();
         let result = executor.execute("g", &plan, &mut budget).unwrap();

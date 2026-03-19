@@ -743,19 +743,42 @@ fn assert_results_match_unordered(
     expected: &[Vec<Value>],
     world: &GremlinWorld,
 ) {
+    // If the result is a single row containing a List (from cap/fold), unpack it
+    // into individual values for comparison, matching TinkerPop semantics.
+    let unpacked_rows: Vec<HashMap<String, Value>>;
+    let effective_result =
+        if result.rows.len() == 1 && expected.len() > 1 && result.rows[0].len() == 1 {
+            if let Some(Value::List(items)) = result.rows[0].values().next() {
+                // Unpack the list into individual rows
+                let key = result.rows[0].keys().next().unwrap().clone();
+                unpacked_rows = items
+                    .iter()
+                    .map(|v| {
+                        let mut row: HashMap<String, Value> = HashMap::new();
+                        row.insert(key.clone(), v.clone());
+                        row
+                    })
+                    .collect();
+                &unpacked_rows
+            } else {
+                result.rows.as_slice()
+            }
+        } else {
+            result.rows.as_slice()
+        };
+
     assert_eq!(
-        result.rows.len(),
+        effective_result.len(),
         expected.len(),
         "row count mismatch: got {} expected {}\ntraversal: {}\nactual rows: {:?}",
-        result.rows.len(),
+        effective_result.len(),
         expected.len(),
         world.traversal_text,
-        result.rows,
+        effective_result,
     );
 
     // Collect actual values (first column of each row)
-    let actual_values: Vec<&Value> = result
-        .rows
+    let actual_values: Vec<&Value> = effective_result
         .iter()
         .filter_map(|row| row.values().next())
         .collect();

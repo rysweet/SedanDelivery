@@ -211,6 +211,7 @@ pub(crate) fn discover_operator_aliases(op: &Operator) -> Vec<String> {
         }
         Operator::Repeat { child, .. }
         | Operator::Choose { child, .. }
+        | Operator::ChooseMap { child, .. }
         | Operator::GremlinSideEffect { child, .. }
         | Operator::GremlinAggregate { child, .. } => {
             aliases.extend(discover_operator_aliases(child));
@@ -229,7 +230,11 @@ pub(crate) fn discover_operator_aliases(op: &Operator) -> Vec<String> {
                 aliases.push(key.clone());
             }
         }
-        Operator::SingleRow | Operator::ProduceResults { .. } => {}
+        Operator::SingleRow
+        | Operator::ProduceResults { .. }
+        | Operator::GremlinSelect { .. }
+        | Operator::GremlinGroup { .. }
+        | Operator::GremlinMapSlice { .. } => {}
     }
     aliases
 }

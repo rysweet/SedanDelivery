@@ -60,8 +60,8 @@ pub enum GremlinStep {
     Min,
     Max,
     Mean,
-    Group,
-    GroupCount,
+    Group(Option<String>),
+    GroupCount(Option<String>),
     Fold,
     Unfold,
 
@@ -70,6 +70,10 @@ pub enum GremlinStep {
     By(String, bool), // (key, descending)
     Limit(i64),
     Range(i64, i64),
+    /// `limit(Scope.local, n)` — slice Map/List values
+    LimitLocal(i64),
+    /// `range(Scope.local, lo, hi)` — slice Map/List values
+    RangeLocal(i64, i64),
     Dedup(Vec<String>),
 
     // ── Boolean steps ────────────────────────────────────────────────────────
@@ -321,8 +325,8 @@ fn parse_step(name: &str, args: &[serde_json::Value]) -> Result<GremlinStep, Byt
         "min" => Ok(GremlinStep::Min),
         "max" => Ok(GremlinStep::Max),
         "mean" => Ok(GremlinStep::Mean),
-        "group" => Ok(GremlinStep::Group),
-        "groupCount" => Ok(GremlinStep::GroupCount),
+        "group" => Ok(GremlinStep::Group(None)),
+        "groupCount" => Ok(GremlinStep::GroupCount(None)),
         "fold" => Ok(GremlinStep::Fold),
         "unfold" => Ok(GremlinStep::Unfold),
         "order" => Ok(GremlinStep::Order),

@@ -77,6 +77,8 @@ pub enum Operator {
     },
     Distinct {
         child: Box<Operator>,
+        /// When set, dedup by property value instead of full row (Gremlin `dedup().by(key)`).
+        by_key: Option<String>,
     },
     Sort {
         items: Vec<(Expr, bool)>, // (expr, ascending)
@@ -194,6 +196,9 @@ pub enum Operator {
         times: Option<usize>,
         until: Option<Box<Operator>>,
         emit: bool,
+        /// After each body iteration, rename `body_out_alias` → `seed_alias`
+        /// so the next iteration receives traversers under the expected key.
+        remap: Option<(String, String)>,
         child: Box<Operator>,
     },
     /// Gremlin choose() — conditional branching.
@@ -201,6 +206,14 @@ pub enum Operator {
         predicate: Box<Operator>,
         if_true: Box<Operator>,
         if_false: Option<Box<Operator>>,
+        child: Box<Operator>,
+    },
+    /// Gremlin choose(selector).option(val, branch) — value-based dispatch.
+    ChooseMap {
+        /// Traversal that produces a dispatch value for each input row.
+        selector: Box<Operator>,
+        /// (match_value, branch_operator) pairs; `None` value = default branch.
+        options: Vec<(Option<crate::types::Value>, Box<Operator>)>,
         child: Box<Operator>,
     },
     /// Gremlin coalesce() — first non-empty alternative.
@@ -224,6 +237,8 @@ pub enum Operator {
         child: Box<Operator>,
         /// The alias whose value is collected into the aggregate bucket.
         value_alias: Identifier,
+        /// When set via `.by("prop")`, collect this property instead of the raw traverser.
+        by_key: Option<String>,
     },
     /// Gremlin path() — extract path from traverser aliases.
     GremlinPath {
@@ -235,6 +250,43 @@ pub enum Operator {
     GremlinMatch {
         /// Each pattern is a compiled sub-traversal that binds variables.
         patterns: Vec<Operator>,
+        /// Maps step labels (e.g. "a", "b") to internal aliases (e.g. v_1).
+        /// Used to rename output rows from internal aliases to label names.
+        label_map: Vec<(String, Identifier)>,
+        child: Box<Operator>,
+    },
+    /// Gremlin select() — project labeled step values, skipping rows where
+    /// any referenced label is not bound (instead of erroring).
+    GremlinSelect {
+        /// (source_variable, output_key) pairs.
+        keys: Vec<(Identifier, String)>,
+        child: Box<Operator>,
+    },
+    /// Gremlin group()/groupCount() — collect traversers into a single Map.
+    GremlinGroup {
+        /// Expression to compute the group key for each traverser.
+        key_expr: Expr,
+        /// Expression to access the value to aggregate (before aggregation).
+        value_expr: Expr,
+        /// Aggregation function (Count for groupCount, Collect for group).
+        agg_fn: AggFunction,
+        /// Alias for the resulting Map in the output row.
+        alias: Identifier,
+        /// When set (e.g. `groupCount("a")`), the group result is stored as a
+        /// side-effect in `__gremlin_agg_<key>` on every pass-through row
+        /// instead of collapsing the stream into a single Map row.
+        side_effect_key: Option<String>,
+        child: Box<Operator>,
+    },
+    /// Gremlin `range(Scope.local, lo, hi)` / `limit(Scope.local, n)` —
+    /// slice Map/List values in each row rather than slicing the stream.
+    GremlinMapSlice {
+        /// Column whose Map/List value should be sliced.
+        alias: Identifier,
+        /// Start index (inclusive).
+        lo: usize,
+        /// End index (exclusive).
+        hi: usize,
         child: Box<Operator>,
     },
 }
@@ -252,7 +304,7 @@ impl Operator {
             Operator::Filter { child, .. }
             | Operator::Project { child, .. }
             | Operator::Aggregate { child, .. }
-            | Operator::Distinct { child }
+            | Operator::Distinct { child, .. }
             | Operator::Sort { child, .. }
             | Operator::Limit { child, .. }
             | Operator::Skip { child, .. }
@@ -268,7 +320,10 @@ impl Operator {
             | Operator::GremlinSideEffect { child, .. }
             | Operator::Cap { child, .. }
             | Operator::GremlinAggregate { child, .. }
-            | Operator::GremlinPath { child, .. } => vec![child],
+            | Operator::GremlinPath { child, .. }
+            | Operator::GremlinSelect { child, .. }
+            | Operator::GremlinGroup { child, .. }
+            | Operator::GremlinMapSlice { child, .. } => vec![child],
 
             Operator::ForEach { body, child, .. } | Operator::Repeat { body, child, .. } => {
                 vec![child, body]
@@ -302,6 +357,18 @@ impl Operator {
                 v
             }
 
+            Operator::ChooseMap {
+                selector,
+                options,
+                child,
+            } => {
+                let mut v = vec![child.as_ref(), selector.as_ref()];
+                for (_, branch) in options {
+                    v.push(branch.as_ref());
+                }
+                v
+            }
+
             Operator::Coalesce {
                 alternatives,
                 child,
@@ -311,7 +378,9 @@ impl Operator {
                 v
             }
 
-            Operator::GremlinMatch { patterns, child } => {
+            Operator::GremlinMatch {
+                patterns, child, ..
+            } => {
                 let mut v = vec![child.as_ref()];
                 v.extend(patterns.iter());
                 v
@@ -529,7 +598,7 @@ fn estimate_recursive(
             child_est
         }
 
-        Operator::Distinct { child } => {
+        Operator::Distinct { child, .. } => {
             let child_est = estimate_recursive(child, stats, estimates);
             // Assume distinct removes ~20% of rows
             (child_est * 0.8).max(1.0)
@@ -582,11 +651,18 @@ fn estimate_recursive(
             child_est * 3.0 // assume ~3 iterations on average
         }
         Operator::Choose { child, .. } => estimate_recursive(child, stats, estimates),
+        Operator::ChooseMap { child, .. } => estimate_recursive(child, stats, estimates),
         Operator::Coalesce { child, .. } => estimate_recursive(child, stats, estimates),
         Operator::GremlinSideEffect { child, .. } => estimate_recursive(child, stats, estimates),
         Operator::GremlinAggregate { child, .. } => estimate_recursive(child, stats, estimates),
         Operator::GremlinPath { child, .. } => estimate_recursive(child, stats, estimates),
         Operator::GremlinMatch { child, .. } => estimate_recursive(child, stats, estimates),
+        Operator::GremlinSelect { child, .. } => estimate_recursive(child, stats, estimates),
+        Operator::GremlinGroup { side_effect_key: Some(_), child, .. } => {
+            estimate_recursive(child, stats, estimates)
+        }
+        Operator::GremlinGroup { .. } => 1.0, // produces a single Map row
+        Operator::GremlinMapSlice { child, .. } => estimate_recursive(child, stats, estimates),
         Operator::Cap { .. } => 1.0,
     };
 
@@ -842,6 +918,7 @@ fn collect_all_aliases(op: &Operator) -> Vec<String> {
         }
         Operator::Repeat { child, .. }
         | Operator::Choose { child, .. }
+        | Operator::ChooseMap { child, .. }
         | Operator::GremlinSideEffect { child, .. }
         | Operator::GremlinAggregate { child, .. } => {
             aliases.extend(collect_all_aliases(child));
@@ -853,6 +930,17 @@ fn collect_all_aliases(op: &Operator) -> Vec<String> {
             aliases.push("path".to_string());
         }
         Operator::GremlinMatch { child, .. } => {
+            aliases.extend(collect_all_aliases(child));
+        }
+        Operator::GremlinSelect { keys, .. } => {
+            for (_, output_key) in keys {
+                aliases.push(output_key.clone());
+            }
+        }
+        Operator::GremlinGroup { alias, .. } => {
+            aliases.push(alias.0.clone());
+        }
+        Operator::GremlinMapSlice { child, .. } => {
             aliases.extend(collect_all_aliases(child));
         }
         Operator::Cap { keys, .. } => {

@@ -260,7 +260,7 @@ impl<'a> QueryExecutor<'a> {
 
         // Derive column list.  Handle the case where the root is Distinct{ProduceResults}.
         let effective_root = match plan {
-            Operator::Distinct { child } => child.as_ref(),
+            Operator::Distinct { child, .. } => child.as_ref(),
             other => other,
         };
         let columns = if let Operator::ProduceResults { columns, .. } = effective_root {
@@ -331,12 +331,16 @@ impl<'a> QueryExecutor<'a> {
             Operator::ForEach { .. } => self.exec_foreach(cx, op),
             Operator::Repeat { .. } => self.exec_repeat(cx, op),
             Operator::Choose { .. } => self.exec_choose(cx, op),
+            Operator::ChooseMap { .. } => self.exec_choose_map(cx, op),
             Operator::Coalesce { .. } => self.exec_coalesce(cx, op),
             Operator::GremlinSideEffect { .. } => self.exec_gremlin_side_effect(cx, op),
             Operator::Cap { .. } => self.exec_cap(cx, op),
             Operator::GremlinAggregate { .. } => self.exec_gremlin_aggregate(cx, op),
             Operator::GremlinPath { .. } => self.exec_gremlin_path(cx, op),
             Operator::GremlinMatch { .. } => self.exec_gremlin_match(cx, op),
+            Operator::GremlinSelect { .. } => self.exec_gremlin_select(cx, op),
+            Operator::GremlinGroup { .. } => self.exec_gremlin_group(cx, op),
+            Operator::GremlinMapSlice { .. } => self.exec_gremlin_map_slice(cx, op),
         }?;
 
         // Record per-operator row counts when profiling is enabled.
