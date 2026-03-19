@@ -947,31 +947,47 @@ impl GremlinCompiler {
                 GremlinStep::By(key, descending) => {
                     if pending_order {
                         let child = current.take().ok_or(CompileError::MissingChild)?;
-                        let sort_expr = if key.is_empty() {
+                        if key.is_empty() {
                             // by() with no key — sort by current value
-                            Expr::Variable(current_alias.clone())
+                            current = Some(Operator::Sort {
+                                items: vec![(Expr::Variable(current_alias.clone()), !descending)],
+                                child: Box::new(child),
+                            });
                         } else if key == "~id" || key == "T.id" || key == "t[id]" {
-                            Expr::FunctionCall {
+                            let sort_expr = Expr::FunctionCall {
                                 name: SmolStr::new("id"),
                                 args: vec![Expr::Variable(current_alias.clone())],
                                 distinct: false,
-                            }
+                            };
+                            current = Some(Operator::Sort {
+                                items: vec![(sort_expr, !descending)],
+                                child: Box::new(child),
+                            });
                         } else if key == "~label" || key == "T.label" || key == "t[label]" {
-                            Expr::FunctionCall {
+                            let sort_expr = Expr::FunctionCall {
                                 name: SmolStr::new("labels"),
                                 args: vec![Expr::Variable(current_alias.clone())],
                                 distinct: false,
-                            }
+                            };
+                            current = Some(Operator::Sort {
+                                items: vec![(sort_expr, !descending)],
+                                child: Box::new(child),
+                            });
                         } else {
-                            Expr::Property(
+                            // Property-based sort: filter out elements missing the property
+                            let prop_expr = Expr::Property(
                                 Box::new(Expr::Variable(current_alias.clone())),
                                 SmolStr::new(key),
-                            )
-                        };
-                        current = Some(Operator::Sort {
-                            items: vec![(sort_expr, !descending)],
-                            child: Box::new(child),
-                        });
+                            );
+                            let filtered = Operator::Filter {
+                                predicate: Expr::IsNotNull(Box::new(prop_expr.clone())),
+                                child: Box::new(child),
+                            };
+                            current = Some(Operator::Sort {
+                                items: vec![(prop_expr, !descending)],
+                                child: Box::new(filtered),
+                            });
+                        }
                         pending_order = false;
                     } else if pending_group {
                         // by() after group()/groupCount() — modifies GremlinGroup.
