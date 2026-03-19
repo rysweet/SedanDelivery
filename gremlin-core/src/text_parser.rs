@@ -1669,10 +1669,17 @@ fn parse_single_value(
         return Ok(GremlinValue::Null);
     }
 
-    // String literal
+    // String literal (double quotes)
     if s.starts_with('"') && s.ends_with('"') && s.len() >= 2 {
         let inner = &s[1..s.len() - 1];
         let unescaped = inner.replace("\\\"", "\"").replace("\\\\", "\\");
+        return Ok(GremlinValue::String(unescaped));
+    }
+
+    // String literal (single quotes)
+    if s.starts_with('\'') && s.ends_with('\'') && s.len() >= 2 {
+        let inner = &s[1..s.len() - 1];
+        let unescaped = inner.replace("\\'", "'").replace("\\\\", "\\");
         return Ok(GremlinValue::String(unescaped));
     }
 
