@@ -185,6 +185,42 @@ async fn given_graph_initializer(world: &mut GremlinWorld, step: &gherkin::Step)
             let _ = executor.execute(&world.graph_name, &operator, &mut budget);
         }
     }
+
+    // After the initializer runs, discover vertex/edge names so that
+    // subsequent parameter definitions like v[marko].id can resolve.
+    let store = world.get_store();
+    if let Ok(node_ids) = store.all_node_ids(&world.graph_name) {
+        if let Ok(nodes) = store.get_nodes_batch(&world.graph_name, &node_ids) {
+            for maybe_node in nodes.into_iter().flatten() {
+                if let Some(Value::Str(name)) = maybe_node.properties.get("name") {
+                    world
+                        .vertex_names
+                        .entry(name.to_string())
+                        .or_insert(maybe_node.id);
+                }
+            }
+        }
+    }
+    if let Ok(edge_ids) = store.all_edge_ids(&world.graph_name) {
+        if let Ok(edges) = store.get_edges_batch(&world.graph_name, &edge_ids) {
+            for maybe_edge in edges.into_iter().flatten() {
+                let src_name = world
+                    .vertex_names
+                    .iter()
+                    .find(|(_, id)| **id == maybe_edge.src)
+                    .map(|(n, _)| n.clone());
+                let dst_name = world
+                    .vertex_names
+                    .iter()
+                    .find(|(_, id)| **id == maybe_edge.dst)
+                    .map(|(n, _)| n.clone());
+                if let (Some(src), Some(dst)) = (src_name, dst_name) {
+                    let key = format!("{}-{}->{}",src, maybe_edge.rel_type, dst);
+                    world.edge_names.entry(key).or_insert(maybe_edge.id);
+                }
+            }
+        }
+    }
 }
 
 #[given(regex = r"(?i)the traversal of")]
@@ -839,7 +875,7 @@ fn assert_results_match_unordered(
     // into individual values for comparison, matching TinkerPop semantics.
     let unpacked_rows: Vec<HashMap<String, Value>>;
     let effective_result =
-        if result.rows.len() == 1 && expected.len() > 1 && result.rows[0].len() == 1 {
+        if result.rows.len() == 1 && expected.len() > 1 {
             if let Some(Value::List(items)) = row_result_value(&result.rows[0], &world.result_alias)
             {
                 // Unpack the list into individual rows

@@ -233,8 +233,26 @@ impl GremlinCompiler {
         let mut project_by_count: usize = 0;
         // The alias of the traverser before project() ran (needed for by() sub-expressions)
         let mut pre_project_alias: Identifier = initial_alias.clone();
+        // The traverser alias just before addE — used to default __src/__dst
+        // when from()/to() is omitted.
+        let mut adde_traverser: Option<Identifier> = None;
 
         for step in steps {
+            // When we leave the addE modifier group (from/to/property), fill in
+            // any __src/__dst placeholders that were never overridden.
+            if adde_traverser.is_some()
+                && !matches!(
+                    step,
+                    GremlinStep::From(_) | GremlinStep::To(_) | GremlinStep::Property(..)
+                )
+            {
+                if let Some(ref traverser) = adde_traverser.take() {
+                    if let Some(ref mut op) = current {
+                        rewrite_create_alias(op, "__src", traverser);
+                        rewrite_create_alias(op, "__dst", traverser);
+                    }
+                }
+            }
             // Reset aggregate by-consumed flag on any non-By step
             if !matches!(step, GremlinStep::By(..) | GremlinStep::ByTraversal(..)) {
                 aggregate_by_consumed = false;
@@ -249,6 +267,11 @@ impl GremlinCompiler {
                                 *src_var =
                                     Identifier::new(format!("__prop_{}__{}", mod_key, src_var.0));
                             }
+                        }
+                        // After by() projection, result lives under the output
+                        // key name, not the raw internal alias.
+                        if keys.len() == 1 && !select_by_mods.is_empty() {
+                            current_alias = Identifier::new(keys[0].1.clone());
                         }
                     }
                 }
@@ -1877,6 +1900,7 @@ impl GremlinCompiler {
 
                 GremlinStep::AddE(label) => {
                     pending_properties.clear();
+                    adde_traverser = Some(current_alias.clone());
                     let rel_alias = self.next_alias("ne");
                     current_alias = rel_alias.clone();
                     // Placeholder: src/dst to be set by From/To steps
@@ -3458,6 +3482,17 @@ impl GremlinCompiler {
                         *src_var = Identifier::new(format!("__prop_{}__{}", mod_key, src_var.0));
                     }
                 }
+                if keys.len() == 1 && !select_by_mods.is_empty() {
+                    current_alias = Identifier::new(keys[0].1.clone());
+                }
+            }
+        }
+
+        // Flush any remaining addE defaults (traversal ends with addE group)
+        if let Some(ref traverser) = adde_traverser {
+            if let Some(ref mut op) = current {
+                rewrite_create_alias(op, "__src", traverser);
+                rewrite_create_alias(op, "__dst", traverser);
             }
         }
 
@@ -5077,6 +5112,39 @@ mod tests {
         ];
         let op = compiler.compile(&steps).unwrap();
         assert!(matches!(op, Operator::Create { .. }));
+    }
+
+    #[test]
+    fn compile_add_e_to_label() {
+        // g.V(1).as("a").out("created").addE("createdBy").to("a")
+        let mut compiler = GremlinCompiler::new();
+        let steps = vec![
+            GremlinStep::V(Some(vec![GremlinValue::Integer(1)])),
+            GremlinStep::As("a".into()),
+            GremlinStep::Out(vec!["created".into()]),
+            GremlinStep::AddE("createdBy".into()),
+            GremlinStep::To(vec![GremlinStep::Select(vec!["a".into()])]),
+        ];
+        let op = compiler.compile(&steps).unwrap();
+        // Verify Create operator has non-placeholder src/dst
+        fn check_create(op: &Operator) -> bool {
+            match op {
+                Operator::Create { patterns, .. } => {
+                    for pat in patterns {
+                        for edge in &pat.edges {
+                            if edge.1.as_str() == "__src" || edge.2.as_str() == "__dst" {
+                                return false;
+                            }
+                        }
+                    }
+                    true
+                }
+                Operator::Apply { outer, inner } => check_create(outer) && check_create(inner),
+                Operator::Set { child, .. } => check_create(child),
+                _ => true,
+            }
+        }
+        assert!(check_create(&op), "Create operator still has __src or __dst placeholders");
     }
 
     #[test]

@@ -688,6 +688,12 @@ impl<'a> QueryExecutor<'a> {
                 // Try looking up in the row directly.
                 let val = if let Some(v) = row.get(var_name) {
                     Some(v.clone())
+                } else if let Some(v) =
+                    row.get(&format!("__gremlin_agg_{}", output_key))
+                {
+                    // Fallback: aggregate sideeffect columns are stored
+                    // with a __gremlin_agg_ prefix.
+                    Some(v.clone())
                 } else {
                     // For select() after group(): the row may contain a Map value.
                     // Try looking up output_key as a map key in any Map values in the row.
@@ -748,10 +754,18 @@ impl<'a> QueryExecutor<'a> {
                     cx.budget.record_row();
                     out.push(map_row);
                 } else {
-                    // Preserve query parameters
-                    inject_parameters(&mut new_row, &self.parameters);
+                    // Single-key select: carry forward existing row columns
+                    // so that as() labels remain accessible to downstream steps
+                    // (needed for addE/from/to resolution after select/unfold).
+                    let mut out_row = row.clone();
+                    for (_, output_key) in keys {
+                        if let Some(v) = new_row.get(output_key.as_str()) {
+                            out_row.insert(output_key.clone(), v.clone());
+                        }
+                    }
+                    inject_parameters(&mut out_row, &self.parameters);
                     cx.budget.record_row();
-                    out.push(new_row);
+                    out.push(out_row);
                 }
             }
         }
