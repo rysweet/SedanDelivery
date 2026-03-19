@@ -842,10 +842,7 @@ impl GremlinCompiler {
                         pending_dedup = false;
                     } else if pending_aggregate {
                         // by() after aggregate() — project a property from each traverser
-                        if let Some(Operator::GremlinAggregate {
-                            ref mut by_key, ..
-                        }) = current
-                        {
+                        if let Some(Operator::GremlinAggregate { ref mut by_key, .. }) = current {
                             if !key.is_empty() {
                                 *by_key = Some(key.to_string());
                             }
@@ -898,11 +895,22 @@ impl GremlinCompiler {
                     });
                 }
 
-                GremlinStep::Dedup(_keys) => {
+                GremlinStep::Dedup(keys) => {
                     let child = current.take().ok_or(CompileError::MissingChild)?;
+                    // Use the current traverser alias as the dedup key
+                    // (Gremlin dedup removes duplicate traversers, not duplicate rows)
+                    let by_key = if keys.is_empty() {
+                        Some(current_alias.as_str().to_string())
+                    } else {
+                        // dedup("a", "b") — dedup by specific step labels
+                        // For simplicity, use the first key
+                        keys.first()
+                            .and_then(|k| self.alias_map.get(k).map(|id| id.as_str().to_string()))
+                            .or_else(|| Some(current_alias.as_str().to_string()))
+                    };
                     current = Some(Operator::Distinct {
                         child: Box::new(child),
-                        by_key: None,
+                        by_key,
                     });
                     pending_dedup = true;
                 }
@@ -1766,10 +1774,8 @@ impl GremlinCompiler {
                 GremlinStep::Substring(start, len) => {
                     let child = current.take().ok_or(CompileError::MissingChild)?;
                     let alias = self.next_alias("substr");
-                    let mut args = vec![
-                        Expr::Variable(current_alias.clone()),
-                        Expr::Integer(*start),
-                    ];
+                    let mut args =
+                        vec![Expr::Variable(current_alias.clone()), Expr::Integer(*start)];
                     if let Some(l) = len {
                         args.push(Expr::Integer(*l));
                     }
@@ -2402,13 +2408,15 @@ fn predicate_to_expr(pred: &Predicate, alias: &Identifier) -> Expr {
             }),
         },
         // Text predicates reuse the same pattern as predicate_to_prop_expr
-        Predicate::Containing(_) | Predicate::NotContaining(_)
-        | Predicate::StartingWith(_) | Predicate::NotStartingWith(_)
-        | Predicate::EndingWith(_) | Predicate::NotEndingWith(_)
-        | Predicate::Regex(_) | Predicate::NotRegex(_)
-        | Predicate::IsType(_) => {
-            predicate_to_prop_expr(pred, var)
-        }
+        Predicate::Containing(_)
+        | Predicate::NotContaining(_)
+        | Predicate::StartingWith(_)
+        | Predicate::NotStartingWith(_)
+        | Predicate::EndingWith(_)
+        | Predicate::NotEndingWith(_)
+        | Predicate::Regex(_)
+        | Predicate::NotRegex(_)
+        | Predicate::IsType(_) => predicate_to_prop_expr(pred, var),
     }
 }
 
@@ -2557,10 +2565,14 @@ fn predicate_to_binary_op(pred: &Predicate) -> BinaryOp {
         Predicate::Without(_) => BinaryOp::In,
         Predicate::Between(_, _) => BinaryOp::And,
         // Text predicates don't map to a single BinaryOp; default to Eq
-        Predicate::Containing(_) | Predicate::NotContaining(_)
-        | Predicate::StartingWith(_) | Predicate::NotStartingWith(_)
-        | Predicate::EndingWith(_) | Predicate::NotEndingWith(_)
-        | Predicate::Regex(_) | Predicate::NotRegex(_)
+        Predicate::Containing(_)
+        | Predicate::NotContaining(_)
+        | Predicate::StartingWith(_)
+        | Predicate::NotStartingWith(_)
+        | Predicate::EndingWith(_)
+        | Predicate::NotEndingWith(_)
+        | Predicate::Regex(_)
+        | Predicate::NotRegex(_)
         | Predicate::IsType(_) => BinaryOp::Eq,
     }
 }
@@ -3377,9 +3389,10 @@ mod tests {
         } = &op
         {
             // values() now wraps Project in Filter (null filtering)
-            assert!(
-                matches!(**if_true, Operator::Filter { .. } | Operator::Project { .. })
-            );
+            assert!(matches!(
+                **if_true,
+                Operator::Filter { .. } | Operator::Project { .. }
+            ));
             assert!(if_false.is_some());
         } else {
             panic!("expected Choose");

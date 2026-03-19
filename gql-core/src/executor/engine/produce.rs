@@ -460,8 +460,12 @@ impl<'a> QueryExecutor<'a> {
                                 out.push(new_row);
                             }
                         }
-                        Value::Str(_) | Value::Int(_) | Value::Float(_) | Value::Bool(_)
-                        | Value::Node(_) | Value::Edge(_) => {
+                        Value::Str(_)
+                        | Value::Int(_)
+                        | Value::Float(_)
+                        | Value::Bool(_)
+                        | Value::Node(_)
+                        | Value::Edge(_) => {
                             let mut new_row = row.clone();
                             new_row.insert(alias.0.clone(), other);
                             cx.budget.record_row();

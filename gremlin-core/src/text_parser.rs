@@ -294,7 +294,9 @@ fn parse_step_token(
         }
         "count" => {
             let args = parse_arg_list(args_str, resolve_param)?;
-            let is_local = args.iter().any(|a| matches!(a, GremlinValue::String(s) if s == "Scope.local"));
+            let is_local = args
+                .iter()
+                .any(|a| matches!(a, GremlinValue::String(s) if s == "Scope.local"));
             if is_local {
                 // count(local) — count elements in the list/map value
                 out.push(GremlinStep::Length);
@@ -331,7 +333,9 @@ fn parse_step_token(
         "limit" => {
             let args = parse_arg_list(args_str, resolve_param)?;
             // Detect Scope.local
-            let is_local = args.iter().any(|a| matches!(a, GremlinValue::String(s) if s == "Scope.local"));
+            let is_local = args
+                .iter()
+                .any(|a| matches!(a, GremlinValue::String(s) if s == "Scope.local"));
             // limit(n) or limit(Scope.global, n) — skip Scope arg
             let n = args.iter().find_map(|a| {
                 if let GremlinValue::Integer(v) = a {
@@ -351,11 +355,20 @@ fn parse_step_token(
         "range" => {
             let args = parse_arg_list(args_str, resolve_param)?;
             // Detect Scope.local
-            let is_local = args.iter().any(|a| matches!(a, GremlinValue::String(s) if s == "Scope.local"));
+            let is_local = args
+                .iter()
+                .any(|a| matches!(a, GremlinValue::String(s) if s == "Scope.local"));
             // Collect integer args
-            let ints: Vec<i64> = args.iter().filter_map(|a| {
-                if let GremlinValue::Integer(v) = a { Some(*v) } else { None }
-            }).collect();
+            let ints: Vec<i64> = args
+                .iter()
+                .filter_map(|a| {
+                    if let GremlinValue::Integer(v) = a {
+                        Some(*v)
+                    } else {
+                        None
+                    }
+                })
+                .collect();
             if ints.len() >= 2 {
                 if is_local {
                     out.push(GremlinStep::RangeLocal(ints[0], ints[1]));
@@ -458,8 +471,10 @@ fn parse_step_token(
             // aggregate("x") or aggregate(local, "x") / aggregate(Scope.local, "x")
             let mut iter = args.into_iter();
             if let Some(first) = iter.next() {
-                if first == "local" || first == "Scope.local"
-                    || first == "global" || first == "Scope.global"
+                if first == "local"
+                    || first == "Scope.local"
+                    || first == "global"
+                    || first == "Scope.global"
                 {
                     // Scope argument — use the next arg as key
                     if let Some(key) = iter.next() {
@@ -698,7 +713,7 @@ fn parse_step_token(
         }
         "split" => {
             let args = parse_string_arg_list(args_str)?;
-            if args.len() >= 1 {
+            if !args.is_empty() {
                 out.push(GremlinStep::Split(args[0].clone()));
             } else {
                 return Err(TextParseError::InvalidArgument(
@@ -786,11 +801,9 @@ fn parse_step_token(
             }
         }
         // Steps still unsupported (provider-specific or not applicable)
-        "profile" | "iterate" | "explain" | "tree" | "subgraph" | "asDate"
-        | "dateAdd" | "dateDiff" | "fail" | "read" | "write"
-        | "mergeV" | "mergeE"
-        | "connectedComponent" | "shortestPath" | "pageRank" | "peerPressure"
-        | "call" => {
+        "profile" | "iterate" | "explain" | "tree" | "subgraph" | "asDate" | "dateAdd"
+        | "dateDiff" | "fail" | "read" | "write" | "mergeV" | "mergeE" | "connectedComponent"
+        | "shortestPath" | "pageRank" | "peerPressure" | "call" => {
             // Unsupported steps — record as unknown so the runner can skip
             return Err(TextParseError::UnknownStep(name.to_string()));
         }
@@ -1003,10 +1016,9 @@ fn try_parse_predicate_call(
         // Try bare predicate names: eq(...), neq(...), gt(...), etc.
         let (name, _) = split_step_name_args(s);
         match name {
-            "eq" | "neq" | "gt" | "gte" | "lt" | "lte" | "within" | "without"
-            | "between" | "containing" | "notContaining" | "startingWith"
-            | "notStartingWith" | "endingWith" | "notEndingWith" | "regex"
-            | "notRegex" | "typeOf" => s,
+            "eq" | "neq" | "gt" | "gte" | "lt" | "lte" | "within" | "without" | "between"
+            | "containing" | "notContaining" | "startingWith" | "notStartingWith"
+            | "endingWith" | "notEndingWith" | "regex" | "notRegex" | "typeOf" => s,
             _ => return None,
         }
     };
@@ -1030,28 +1042,20 @@ fn try_parse_predicate_call(
             Some(Predicate::Between(lo, hi))
         }
         // Text predicates
-        "containing" => {
-            Some(Predicate::Containing(args.into_iter().next()?))
-        }
+        "containing" => Some(Predicate::Containing(args.into_iter().next()?)),
         "notContaining" | "notcontaining" => {
             Some(Predicate::NotContaining(args.into_iter().next()?))
         }
-        "startingWith" | "startingwith" => {
-            Some(Predicate::StartingWith(args.into_iter().next()?))
-        }
+        "startingWith" | "startingwith" => Some(Predicate::StartingWith(args.into_iter().next()?)),
         "notStartingWith" | "notstartingwith" => {
             Some(Predicate::NotStartingWith(args.into_iter().next()?))
         }
-        "endingWith" | "endingwith" => {
-            Some(Predicate::EndingWith(args.into_iter().next()?))
-        }
+        "endingWith" | "endingwith" => Some(Predicate::EndingWith(args.into_iter().next()?)),
         "notEndingWith" | "notendingwith" => {
             Some(Predicate::NotEndingWith(args.into_iter().next()?))
         }
         "regex" => Some(Predicate::Regex(args.into_iter().next()?)),
-        "notRegex" | "notregex" => {
-            Some(Predicate::NotRegex(args.into_iter().next()?))
-        }
+        "notRegex" | "notregex" => Some(Predicate::NotRegex(args.into_iter().next()?)),
         "typeOf" | "typeof" => {
             // P.typeOf(GType.STRING) → IsType("string")
             let arg = args.into_iter().next()?;

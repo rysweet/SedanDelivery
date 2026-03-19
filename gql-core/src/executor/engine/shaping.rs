@@ -106,34 +106,15 @@ impl<'a> QueryExecutor<'a> {
         let mut out = Vec::with_capacity(input.len());
 
         if let Some(key) = by_key {
-            // Dedup by property value: extract key from current traverser.
+            // Dedup by column value: use the specified row column for uniqueness
             use std::collections::HashSet;
             let mut seen: HashSet<String> = HashSet::new();
             for row in input {
                 cx.budget.check_or_err()?;
-                // Find the "current" traverser — the last column in the row.
+                // Look up the column value for dedup
                 let dedup_val = row
-                    .values()
-                    .last()
-                    .and_then(|v| match v {
-                        Value::Node(nid) => {
-                            self.store
-                                .get_node(cx.graph, *nid)
-                                .ok()
-                                .flatten()
-                                .and_then(|nd| nd.properties.get(key.as_str()).cloned())
-                                .map(|pv| pv.canonical_key())
-                        }
-                        Value::Edge(eid) => {
-                            self.store
-                                .get_edge(cx.graph, *eid)
-                                .ok()
-                                .flatten()
-                                .and_then(|ed| ed.properties.get(key.as_str()).cloned())
-                                .map(|pv| pv.canonical_key())
-                        }
-                        other => Some(other.canonical_key()),
-                    })
+                    .get(key.as_str())
+                    .map(|v| v.canonical_key())
                     .unwrap_or_default();
                 if seen.insert(dedup_val) {
                     out.push(row);

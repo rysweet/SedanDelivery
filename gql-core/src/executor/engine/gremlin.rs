@@ -757,8 +757,12 @@ impl<'a> QueryExecutor<'a> {
             if let Some(val) = row.get(&alias.0) {
                 let sliced = match val {
                     Value::Map(m) => {
-                        let new_map: IndexMap<Box<str>, Value> =
-                            m.iter().skip(*lo).take(hi - lo).map(|(k, v)| (k.clone(), v.clone())).collect();
+                        let new_map: IndexMap<Box<str>, Value> = m
+                            .iter()
+                            .skip(*lo)
+                            .take(hi - lo)
+                            .map(|(k, v)| (k.clone(), v.clone()))
+                            .collect();
                         Value::Map(new_map)
                     }
                     Value::List(l) => {
