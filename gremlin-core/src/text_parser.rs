@@ -37,6 +37,9 @@ pub fn parse_traversal(
 ) -> Result<Vec<GremlinStep>, TextParseError> {
     let input = input.trim();
 
+    // Extract withSack initial value if present before stripping
+    let sack_init = extract_with_sack_value(input, resolve_param);
+
     // Strip strategy wrappers: g.withStrategies(...).V()... or g.withoutStrategies(...).V()...
     // Also strip g.withSideEffect(...) and g.withSack(...) and g.withComputer(...)
     let owned;
@@ -64,6 +67,11 @@ pub fn parse_traversal(
 
     let tokens = tokenize_steps(rest)?;
     let mut steps = Vec::new();
+
+    // Emit WithSack as first step if present
+    if let Some(init_val) = sack_init {
+        steps.push(GremlinStep::WithSack(init_val));
+    }
 
     for token in &tokens {
         parse_step_token(token, resolve_param, &mut steps)?;
@@ -101,6 +109,72 @@ fn strip_strategy_prefix(input: &str) -> String {
         result = format!("g.{rest}");
     }
     result
+}
+
+/// Extract the initial value from `g.withSack(value)` if present.
+fn extract_with_sack_value(
+    input: &str,
+    resolve_param: &dyn Fn(&str) -> Option<GremlinValue>,
+) -> Option<GremlinValue> {
+    let prefix = "g.withSack(";
+    if !input.starts_with(prefix) {
+        if let Some(pos) = input.find(".withSack(") {
+            let after = &input[pos + ".withSack(".len()..];
+            return parse_sack_arg(after, resolve_param);
+        }
+        return None;
+    }
+    let after = &input[prefix.len()..];
+    parse_sack_arg(after, resolve_param)
+}
+
+fn parse_sack_arg(after: &str, resolve_param: &dyn Fn(&str) -> Option<GremlinValue>) -> Option<GremlinValue> {
+    let mut depth = 1;
+    let mut end = 0;
+    for (i, c) in after.char_indices() {
+        match c {
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    end = i;
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    if end == 0 {
+        return None;
+    }
+    let arg_str = after[..end].trim();
+    // Only take first arg (before comma) — ignore split/merge operators
+    let first_arg = arg_str.split(',').next().unwrap_or(arg_str).trim();
+    parse_literal_value(first_arg, resolve_param)
+}
+
+fn parse_literal_value(s: &str, resolve_param: &dyn Fn(&str) -> Option<GremlinValue>) -> Option<GremlinValue> {
+    if let Some(stripped) = s.strip_suffix('b').or_else(|| s.strip_suffix('s')).or_else(|| s.strip_suffix('i')).or_else(|| s.strip_suffix('l')) {
+        if let Ok(v) = stripped.parse::<i64>() {
+            return Some(GremlinValue::Integer(v));
+        }
+    }
+    if let Some(stripped) = s.strip_suffix('d').or_else(|| s.strip_suffix('f')) {
+        if let Ok(v) = stripped.parse::<f64>() {
+            return Some(GremlinValue::Float(v));
+        }
+    }
+    if let Ok(v) = s.parse::<i64>() {
+        return Some(GremlinValue::Integer(v));
+    }
+    if let Ok(v) = s.parse::<f64>() {
+        return Some(GremlinValue::Float(v));
+    }
+    let unquoted = s.trim_matches('"').trim_matches('\'');
+    if unquoted != s {
+        return Some(GremlinValue::String(unquoted.to_string()));
+    }
+    resolve_param(s).or(None)
 }
 
 /// Skip past balanced parentheses.  Input starts just after the opening `(`.
@@ -732,8 +806,18 @@ fn parse_step_token(
             out.push(GremlinStep::Choose(inner, Vec::new(), None));
         }
         "sack" => {
-            // sack() — returns the sack value or sets it; approximated as identity
-            out.push(GremlinStep::Identity);
+            let args_trimmed = args_str.trim();
+            if args_trimmed.is_empty() {
+                // sack() — returns the sack value
+                out.push(GremlinStep::Sack);
+            } else {
+                // sack(operator) — apply binary op
+                let op_name = args_trimmed
+                    .replace("Operator.", "")
+                    .trim()
+                    .to_lowercase();
+                out.push(GremlinStep::SackOp(op_name));
+            }
         }
         "with" | "withPath" | "withBulk" => {
             // with(WithOptions.tokens) — set tokens flag on preceding valueMap

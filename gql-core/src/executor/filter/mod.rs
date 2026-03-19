@@ -357,6 +357,7 @@ pub fn eval_function_with_vals(name: &str, vals: Vec<Value>) -> Result<Value, Gq
         "coalesce" => builtins::builtin_coalesce(vals),
         "isnull" => builtins::builtin_isnull(vals),
         "keys" => builtins::builtin_keys(vals),
+        "values" => builtins::builtin_values(vals),
         "properties" => builtins::builtin_properties(vals),
         "range" => builtins::builtin_range(vals),
 

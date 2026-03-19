@@ -167,6 +167,11 @@ pub enum GremlinStep {
 
     /// `sack()` — retrieve the current sack value
     Sack,
+    /// `sack(operator)` — apply binary op: sack = sack OP current_value
+    /// Operator string: "sum", "minus", "mult", "div", "assign"
+    SackOp(String),
+    /// `withSack(initValue)` — initialize the sack with a value
+    WithSack(GremlinValue),
     /// `option(token, traversal)` — option step for branch/choose
     Option(GremlinValue, Vec<GremlinStep>),
 

@@ -222,6 +222,7 @@ impl GremlinCompiler {
         // Pending emit/until that appear before repeat()
         let mut pending_emit = false;
         let mut pending_until: Option<Vec<GremlinStep>> = None;
+        let mut pending_sack_init: Option<Expr> = None;
 
         for step in steps {
             // Reset aggregate by-consumed flag on any non-By step
@@ -667,31 +668,56 @@ impl GremlinCompiler {
 
                 GremlinStep::Select(keys) => {
                     let child = current.take().ok_or(CompileError::MissingChild)?;
-                    let select_keys: Vec<(Identifier, String)> = keys
-                        .iter()
-                        .map(|k| {
-                            let var = self
+
+                    // Handle Column.keys / Column.values special selects
+                    if keys.len() == 1
+                        && (keys[0] == "Column.keys" || keys[0] == "Column.values")
+                    {
+                        let fn_name = if keys[0] == "Column.keys" {
+                            "keys"
+                        } else {
+                            "values"
+                        };
+                        let alias = self.next_alias(fn_name);
+                        current = Some(Operator::Project {
+                            items: vec![(
+                                Expr::FunctionCall {
+                                    name: SmolStr::new(fn_name),
+                                    args: vec![Expr::Variable(current_alias.clone())],
+                                    distinct: false,
+                                },
+                                Some(alias.clone()),
+                            )],
+                            child: Box::new(child),
+                        });
+                        current_alias = alias;
+                    } else {
+                        let select_keys: Vec<(Identifier, String)> = keys
+                            .iter()
+                            .map(|k| {
+                                let var = self
+                                    .alias_map
+                                    .get(k)
+                                    .cloned()
+                                    .unwrap_or_else(|| Identifier::new(k.clone()));
+                                (var, k.clone())
+                            })
+                            .collect();
+                        // Update current_alias if single key select
+                        if keys.len() == 1 {
+                            let resolved = self
                                 .alias_map
-                                .get(k)
+                                .get(&keys[0])
                                 .cloned()
-                                .unwrap_or_else(|| Identifier::new(k.clone()));
-                            (var, k.clone())
-                        })
-                        .collect();
-                    // Update current_alias if single key select
-                    if keys.len() == 1 {
-                        let resolved = self
-                            .alias_map
-                            .get(&keys[0])
-                            .cloned()
-                            .unwrap_or_else(|| Identifier::new(keys[0].clone()));
-                        current_alias = resolved;
+                                .unwrap_or_else(|| Identifier::new(keys[0].clone()));
+                            current_alias = resolved;
+                        }
+                        current = Some(Operator::GremlinSelect {
+                            keys: select_keys,
+                            child: Box::new(child),
+                        });
+                        pending_select = true;
                     }
-                    current = Some(Operator::GremlinSelect {
-                        keys: select_keys,
-                        child: Box::new(child),
-                    });
-                    pending_select = true;
                 }
 
                 GremlinStep::Count => {
@@ -2000,10 +2026,67 @@ impl GremlinCompiler {
                 }
 
                 GremlinStep::Sack => {
-                    // sack() with no args returns the sack value — identity passthrough
-                    if current.is_none() {
-                        current = Some(Operator::SingleRow);
-                    }
+                    // sack() — return the sack value from the __sack column
+                    let child = current.take().unwrap_or(Operator::SingleRow);
+                    let alias = self.next_alias("sack");
+                    let sack_var = Identifier::new("__sack");
+                    current = Some(Operator::Project {
+                        items: vec![(
+                            Expr::Variable(sack_var),
+                            Some(alias.clone()),
+                        )],
+                        child: Box::new(child),
+                    });
+                    current_alias = alias;
+                }
+
+                GremlinStep::SackOp(op) => {
+                    // sack(operator) — apply: __sack = __sack OP current_value
+                    // Must preserve current_alias and all label columns.
+                    let child = current.take().ok_or(CompileError::MissingChild)?;
+                    let sack_var = Identifier::new("__sack");
+                    let bin_op = match op.as_str() {
+                        "sum" | "add" => BinaryOp::Add,
+                        "minus" | "sub" => BinaryOp::Sub,
+                        "mult" | "multiply" => BinaryOp::Mul,
+                        "div" | "divide" => BinaryOp::Div,
+                        "assign" => {
+                            let mut items = vec![
+                                (Expr::Variable(current_alias.clone()), Some(sack_var)),
+                                (Expr::Variable(current_alias.clone()), Some(current_alias.clone())),
+                            ];
+                            items.extend(self.label_carry_items());
+                            current = Some(Operator::Project {
+                                items,
+                                child: Box::new(child),
+                            });
+                            continue;
+                        }
+                        _ => BinaryOp::Add,
+                    };
+                    let mut items = vec![
+                        (
+                            Expr::BinaryOp {
+                                op: bin_op,
+                                left: Box::new(Expr::Variable(sack_var.clone())),
+                                right: Box::new(Expr::Variable(current_alias.clone())),
+                            },
+                            Some(sack_var),
+                        ),
+                        (Expr::Variable(current_alias.clone()), Some(current_alias.clone())),
+                    ];
+                    items.extend(self.label_carry_items());
+                    current = Some(Operator::Project {
+                        items,
+                        child: Box::new(child),
+                    });
+                }
+
+                GremlinStep::WithSack(val) => {
+                    // withSack(value) — initialize __sack on all traversers
+                    // This should be the first step; apply to whichever op follows
+                    // We'll inject it as a Project that adds __sack to each row
+                    pending_sack_init = Some(gremlin_value_to_expr(val));
                 }
 
                 GremlinStep::Option(token, branch_steps) => {
@@ -2604,8 +2687,65 @@ impl GremlinCompiler {
             }
         }
 
+        // If a withSack() was present, wrap the entire tree in a
+        // GremlinSideEffect-style operator that initializes __sack on
+        // every input row. We use Apply(outer=current, inner=Project(__sack)).
+        if let Some(init_expr) = pending_sack_init {
+            if let Some(op) = current.take() {
+                // Use Apply: outer produces the rows, inner adds __sack
+                let sack_init_op = Operator::Project {
+                    items: vec![(init_expr, Some(Identifier::new("__sack")))],
+                    child: Box::new(Operator::SingleRow),
+                };
+                current = Some(Operator::Apply {
+                    outer: Box::new(op),
+                    inner: Box::new(sack_init_op),
+                });
+            }
+        }
+
         self.last_alias = current_alias;
         current.ok_or(CompileError::MissingChild)
+    }
+}
+
+/// Inject a `__sack` column into the lowest-level scan/single-row operator
+/// by wrapping it in a Set operator that adds the initialization expression.
+fn inject_sack_init(op: &mut Operator, init_expr: &Expr) {
+    match op {
+        // Recurse into child-bearing operators to find the leaf scan
+        Operator::Filter { child, .. }
+        | Operator::Sort { child, .. }
+        | Operator::Limit { child, .. }
+        | Operator::Skip { child, .. }
+        | Operator::Distinct { child, .. }
+        | Operator::GremlinAggregate { child, .. }
+        | Operator::Cap { child, .. }
+        | Operator::Repeat { child, .. }
+        | Operator::Project { child, .. } => {
+            inject_sack_init(child, init_expr);
+        }
+        Operator::Apply { outer, .. } => {
+            inject_sack_init(outer, init_expr);
+        }
+        Operator::Union { left, .. } => {
+            inject_sack_init(left, init_expr);
+        }
+        // Leaf operators: wrap in a Project that adds __sack
+        Operator::NodeScan { .. }
+        | Operator::IndexScan { .. }
+        | Operator::NodeByIdSeek { .. }
+        | Operator::SingleRow
+        | Operator::Unwind { .. } => {
+            let original = std::mem::replace(op, Operator::SingleRow);
+            *op = Operator::Project {
+                items: vec![(init_expr.clone(), Some(Identifier::new("__sack")))],
+                child: Box::new(original),
+            };
+        }
+        _ => {
+            // For other operators, try to wrap child if it exists
+        }
     }
 }
 

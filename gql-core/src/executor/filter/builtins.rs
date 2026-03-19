@@ -591,6 +591,15 @@ pub(super) fn builtin_keys(vals: Vec<Value>) -> Result<Value, GqlError> {
     }
 }
 
+pub(super) fn builtin_values(vals: Vec<Value>) -> Result<Value, GqlError> {
+    require_arity("values", 1, &vals)?;
+    match &vals[0] {
+        Value::Null => Ok(Value::Null),
+        Value::Map(m) => Ok(Value::List(m.values().cloned().collect())),
+        other => type_error("values", other),
+    }
+}
+
 pub(super) fn builtin_properties(vals: Vec<Value>) -> Result<Value, GqlError> {
     require_arity("properties", 1, &vals)?;
     match &vals[0] {
