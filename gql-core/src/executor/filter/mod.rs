@@ -1271,8 +1271,14 @@ pub fn eval_function_with_vals(name: &str, vals: Vec<Value>) -> Result<Value, Gq
             // Fallback for non-graph values (maps, etc.)
             match vals.into_iter().next() {
                 Some(Value::Map(m)) => {
-                    let vals: Vec<Value> = m.into_values().collect();
-                    Ok(Value::List(vals))
+                    // Property Map from properties(): extract ~value
+                    if m.contains_key("~value") {
+                        let val = m.get("~value").cloned().unwrap_or(Value::Null);
+                        Ok(Value::List(vec![val]))
+                    } else {
+                        let vals: Vec<Value> = m.into_values().collect();
+                        Ok(Value::List(vals))
+                    }
                 }
                 Some(Value::Null) | None => Ok(Value::List(vec![])),
                 Some(other) => Ok(Value::List(vec![other])),

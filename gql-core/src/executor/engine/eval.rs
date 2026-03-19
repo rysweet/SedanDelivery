@@ -328,6 +328,11 @@ impl<'a> QueryExecutor<'a> {
                                     actual: "deleted or missing Node".to_string(),
                                 })),
                             },
+                            // Property Map from properties(): key() extracts ~key
+                            Value::Map(m) if m.contains_key("~key") => {
+                                let key = m.get("~key").cloned().unwrap_or(Value::Null);
+                                Ok(Value::List(vec![key]))
+                            }
                             other => Err(GqlError::Execution(ExecutionError::TypeMismatch {
                                 expected: "Node".to_string(),
                                 actual: other.type_name().to_string(),
@@ -690,8 +695,14 @@ impl<'a> QueryExecutor<'a> {
                                 }
                             }
                             Some(Value::Map(m)) => {
-                                let vals: Vec<Value> = m.into_values().collect();
-                                Ok(Value::List(vals))
+                                // Property Map from properties(): extract ~value
+                                if m.contains_key("~value") {
+                                    let val = m.get("~value").cloned().unwrap_or(Value::Null);
+                                    Ok(Value::List(vec![val]))
+                                } else {
+                                    let vals: Vec<Value> = m.into_values().collect();
+                                    Ok(Value::List(vals))
+                                }
                             }
                             Some(Value::Null) | None => Ok(Value::List(vec![])),
                             // Scalar values (from properties().value() chain):
@@ -699,6 +710,57 @@ impl<'a> QueryExecutor<'a> {
                             // one row.
                             Some(other) => Ok(Value::List(vec![other])),
                         }
+                    }
+                    "gremlin_properties_entries" => {
+                        // properties(): return list of Maps with ~key, ~value, ~element.
+                        // First arg is the element; remaining args are optional key filters.
+                        let mut args_iter = evaled_args.into_iter();
+                        let element = args_iter.next().unwrap_or(Value::Null);
+                        let key_filters: Vec<String> = args_iter
+                            .filter_map(|v| match v {
+                                Value::Str(s) => Some(s.to_string()),
+                                _ => None,
+                            })
+                            .collect();
+                        let props: Vec<(String, Value)> = match &element {
+                            Value::Node(node_id) => {
+                                match self.cached_get_node(graph, *node_id)? {
+                                    Some(data) => data
+                                        .properties
+                                        .into_iter()
+                                        .collect(),
+                                    None => Vec::new(),
+                                }
+                            }
+                            Value::Edge(edge_id) => {
+                                match self.cached_get_edge(graph, *edge_id)? {
+                                    Some(data) => data
+                                        .properties
+                                        .into_iter()
+                                        .collect(),
+                                    None => Vec::new(),
+                                }
+                            }
+                            Value::Map(m) => m
+                                .iter()
+                                .map(|(k, v)| (k.to_string(), v.clone()))
+                                .collect(),
+                            _ => Vec::new(),
+                        };
+                        let entries: Vec<Value> = props
+                            .into_iter()
+                            .filter(|(k, _)| {
+                                key_filters.is_empty() || key_filters.iter().any(|f| f == k)
+                            })
+                            .map(|(k, v)| {
+                                let mut m = indexmap::IndexMap::new();
+                                m.insert(Box::from("~key"), Value::Str(k.into_boxed_str()));
+                                m.insert(Box::from("~value"), v);
+                                m.insert(Box::from("~element"), element.clone());
+                                Value::Map(m)
+                            })
+                            .collect();
+                        Ok(Value::List(entries))
                     }
                     "gremlin_format" => {
                         // format(): resolve %{key} from node/edge properties.

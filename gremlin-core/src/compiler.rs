@@ -192,6 +192,10 @@ impl GremlinCompiler {
             return Ok(initial_op.unwrap_or(Operator::SingleRow));
         }
 
+        // Preprocess infix and()/or() with no arguments into proper branching forms.
+        let preprocessed = preprocess_infix_connectives(steps);
+        let steps = &preprocessed;
+
         let mut current: Option<Operator> = initial_op;
         let mut current_alias = initial_alias.clone();
         // Pending properties for AddV/AddE
@@ -720,50 +724,62 @@ impl GremlinCompiler {
                     let prop_alias = self.next_alias("prop");
                     let carry = self.label_carry_items();
                     if keys.is_empty() {
-                        // properties() with no keys: pass through the element
-                        let mut items = vec![(
-                            Expr::Variable(current_alias.clone()),
-                            Some(prop_alias.clone()),
-                        )];
-                        items.extend(carry);
-                        current = Some(Operator::Project {
-                            items,
-                            child: Box::new(child),
-                        });
-                    } else if keys.len() == 1 {
-                        let mut items = vec![(
-                            Expr::Property(
-                                Box::new(Expr::Variable(current_alias.clone())),
-                                SmolStr::new(&keys[0]),
-                            ),
-                            Some(prop_alias.clone()),
-                        )];
-                        items.extend(carry);
-                        current = Some(Operator::Filter {
-                            predicate: Expr::IsNotNull(Box::new(Expr::Variable(
-                                prop_alias.clone(),
-                            ))),
-                            child: Box::new(Operator::Project {
-                                items,
-                                child: Box::new(child),
-                            }),
-                        });
-                    } else {
-                        // Multiple keys: build a list of values and unwind
+                        // properties() with no keys: unwind all properties as
+                        // Map entries with ~key, ~value, ~element fields.
                         let list_alias = self.next_alias("plist");
-                        let list_exprs: Vec<Expr> = keys
-                            .iter()
-                            .map(|k| {
-                                Expr::Property(
-                                    Box::new(Expr::Variable(current_alias.clone())),
-                                    SmolStr::new(k),
-                                )
-                            })
-                            .collect();
                         let mut items = vec![(
                             Expr::FunctionCall {
-                                name: SmolStr::new("list_compact"),
-                                args: list_exprs,
+                                name: SmolStr::new("gremlin_properties_entries"),
+                                args: vec![Expr::Variable(current_alias.clone())],
+                                distinct: false,
+                            },
+                            Some(list_alias.clone()),
+                        )];
+                        items.extend(carry);
+                        let project = Operator::Project {
+                            items,
+                            child: Box::new(child),
+                        };
+                        current = Some(Operator::Unwind {
+                            list_expr: Expr::Variable(list_alias),
+                            alias: prop_alias.clone(),
+                            child: Box::new(project),
+                        });
+                    } else if keys.len() == 1 {
+                        // Single key: produce a property Map with ~key, ~value, ~element.
+                        let list_alias = self.next_alias("plist");
+                        let mut items = vec![(
+                            Expr::FunctionCall {
+                                name: SmolStr::new("gremlin_properties_entries"),
+                                args: vec![
+                                    Expr::Variable(current_alias.clone()),
+                                    Expr::Str(keys[0].as_str().into()),
+                                ],
+                                distinct: false,
+                            },
+                            Some(list_alias.clone()),
+                        )];
+                        items.extend(carry);
+                        let project = Operator::Project {
+                            items,
+                            child: Box::new(child),
+                        };
+                        current = Some(Operator::Unwind {
+                            list_expr: Expr::Variable(list_alias),
+                            alias: prop_alias.clone(),
+                            child: Box::new(project),
+                        });
+                    } else {
+                        // Multiple keys: build property entry list for each key and unwind
+                        let list_alias = self.next_alias("plist");
+                        let mut args = vec![Expr::Variable(current_alias.clone())];
+                        for k in keys {
+                            args.push(Expr::Str(k.as_str().into()));
+                        }
+                        let mut items = vec![(
+                            Expr::FunctionCall {
+                                name: SmolStr::new("gremlin_properties_entries"),
+                                args,
                                 distinct: false,
                             },
                             Some(list_alias.clone()),
@@ -1833,42 +1849,30 @@ impl GremlinCompiler {
 
                 GremlinStep::And(branches) => {
                     let child = current.take().ok_or(CompileError::MissingChild)?;
-                    let preds: Vec<Expr> = branches
-                        .iter()
-                        .map(|branch| steps_to_predicate(branch, &current_alias, &self.alias_map))
-                        .collect();
-                    let predicate = preds
-                        .into_iter()
-                        .reduce(|a, b| Expr::BinaryOp {
-                            op: BinaryOp::And,
-                            left: Box::new(a),
-                            right: Box::new(b),
-                        })
-                        .unwrap_or(Expr::Bool(true));
-                    current = Some(Operator::Filter {
-                        predicate,
-                        child: Box::new(child),
-                    });
+                    if branches.is_empty() {
+                        current = Some(child);
+                    } else {
+                        current = Some(self.compile_connective_branches(
+                            branches,
+                            &current_alias,
+                            child,
+                            BinaryOp::And,
+                        )?);
+                    }
                 }
 
                 GremlinStep::Or(branches) => {
                     let child = current.take().ok_or(CompileError::MissingChild)?;
-                    let preds: Vec<Expr> = branches
-                        .iter()
-                        .map(|branch| steps_to_predicate(branch, &current_alias, &self.alias_map))
-                        .collect();
-                    let predicate = preds
-                        .into_iter()
-                        .reduce(|a, b| Expr::BinaryOp {
-                            op: BinaryOp::Or,
-                            left: Box::new(a),
-                            right: Box::new(b),
-                        })
-                        .unwrap_or(Expr::Bool(false));
-                    current = Some(Operator::Filter {
-                        predicate,
-                        child: Box::new(child),
-                    });
+                    if branches.is_empty() {
+                        current = Some(child);
+                    } else {
+                        current = Some(self.compile_connective_branches(
+                            branches,
+                            &current_alias,
+                            child,
+                            BinaryOp::Or,
+                        )?);
+                    }
                 }
 
                 GremlinStep::Is(predicate) => {
@@ -2533,24 +2537,46 @@ impl GremlinCompiler {
 
                 GremlinStep::HasKey(keys) => {
                     let child = current.take().ok_or(CompileError::MissingChild)?;
-                    // hasKey(k1, k2, ...) — all listed keys must exist (IS NOT NULL)
+                    // After properties(), current alias is a property Map with ~key.
+                    // Check if ~key matches any of the given keys.
                     let predicates: Vec<Expr> = keys
                         .iter()
                         .map(|k| {
-                            Expr::IsNotNull(Box::new(Expr::Property(
-                                Box::new(Expr::Variable(current_alias.clone())),
-                                SmolStr::new(k),
-                            )))
+                            // Check both: the element has the property (node/edge context)
+                            // AND the property Map ~key matches (properties() context).
+                            // Use ~key field for property Map objects.
+                            Expr::BinaryOp {
+                                op: BinaryOp::Eq,
+                                left: Box::new(Expr::Property(
+                                    Box::new(Expr::Variable(current_alias.clone())),
+                                    SmolStr::new("~key"),
+                                )),
+                                right: Box::new(Expr::Str(k.as_str().into())),
+                            }
                         })
                         .collect();
-                    let predicate = predicates
-                        .into_iter()
-                        .reduce(|a, b| Expr::BinaryOp {
-                            op: BinaryOp::And,
-                            left: Box::new(a),
-                            right: Box::new(b),
-                        })
-                        .unwrap_or(Expr::Bool(true));
+                    // Any key matches (OR), or if checking on element, all must exist (AND).
+                    // In Gremlin, hasKey on properties filters for any of the keys.
+                    let predicate = if keys.len() == 1 {
+                        // Single key: also support element context
+                        Expr::BinaryOp {
+                            op: BinaryOp::Or,
+                            left: Box::new(predicates[0].clone()),
+                            right: Box::new(Expr::IsNotNull(Box::new(Expr::Property(
+                                Box::new(Expr::Variable(current_alias.clone())),
+                                SmolStr::new(&keys[0]),
+                            )))),
+                        }
+                    } else {
+                        predicates
+                            .into_iter()
+                            .reduce(|a, b| Expr::BinaryOp {
+                                op: BinaryOp::Or,
+                                left: Box::new(a),
+                                right: Box::new(b),
+                            })
+                            .unwrap_or(Expr::Bool(true))
+                    };
                     current = Some(Operator::Filter {
                         predicate,
                         child: Box::new(child),
@@ -2558,14 +2584,31 @@ impl GremlinCompiler {
                 }
 
                 GremlinStep::HasValue(values) => {
-                    // hasValue filters properties by value — simplified as passthrough filter
+                    // hasValue filters by ~value (property context) or current value.
                     let child = current.take().ok_or(CompileError::MissingChild)?;
+                    // Try ~value for property Map context, fall back to current alias.
+                    let tilde_val = Expr::Property(
+                        Box::new(Expr::Variable(current_alias.clone())),
+                        SmolStr::new("~value"),
+                    );
                     if values.len() == 1 {
+                        // Check ~value == val OR current == val
+                        let val_expr = gremlin_value_to_expr(&values[0]);
+                        let pred_tilde = Expr::BinaryOp {
+                            op: BinaryOp::Eq,
+                            left: Box::new(tilde_val),
+                            right: Box::new(val_expr.clone()),
+                        };
+                        let pred_direct = Expr::BinaryOp {
+                            op: BinaryOp::Eq,
+                            left: Box::new(Expr::Variable(current_alias.clone())),
+                            right: Box::new(val_expr),
+                        };
                         current = Some(Operator::Filter {
                             predicate: Expr::BinaryOp {
-                                op: BinaryOp::Eq,
-                                left: Box::new(Expr::Variable(current_alias.clone())),
-                                right: Box::new(gremlin_value_to_expr(&values[0])),
+                                op: BinaryOp::Or,
+                                left: Box::new(pred_tilde),
+                                right: Box::new(pred_direct),
                             },
                             child: Box::new(child),
                         });
@@ -3499,6 +3542,282 @@ impl GremlinCompiler {
         self.last_alias = current_alias;
         current.ok_or(CompileError::MissingChild)
     }
+
+    /// Compile And/Or branches, using predicate mode for simple branches and
+    /// traversal (Apply+Count) mode for complex branches.
+    fn compile_connective_branches(
+        &mut self,
+        branches: &[Vec<GremlinStep>],
+        current_alias: &Identifier,
+        child: Operator,
+        conn_op: BinaryOp,
+    ) -> Result<Operator, CompileError> {
+        let all_simple = branches.iter().all(|branch| is_simple_predicate_steps(branch));
+
+        if all_simple {
+            let preds: Vec<Expr> = branches
+                .iter()
+                .map(|branch| steps_to_predicate(branch, current_alias, &self.alias_map))
+                .collect();
+            let default = if conn_op == BinaryOp::And {
+                Expr::Bool(true)
+            } else {
+                Expr::Bool(false)
+            };
+            let predicate = preds
+                .into_iter()
+                .reduce(|a, b| Expr::BinaryOp {
+                    op: conn_op,
+                    left: Box::new(a),
+                    right: Box::new(b),
+                })
+                .unwrap_or(default);
+            return Ok(Operator::Filter {
+                predicate,
+                child: Box::new(child),
+            });
+        }
+
+        // At least one branch has complex traversal steps.
+        // For AND: chain filters (each branch must pass).
+        // For OR: build existence count per branch and combine predicates.
+        if conn_op == BinaryOp::And {
+            let mut result = child;
+            for branch in branches {
+                if is_simple_predicate_steps(branch) {
+                    let pred = steps_to_predicate(branch, current_alias, &self.alias_map);
+                    result = Operator::Filter {
+                        predicate: pred,
+                        child: Box::new(result),
+                    };
+                } else {
+                    result = self.compile_existence_filter(
+                        branch,
+                        current_alias,
+                        result,
+                        false,
+                    )?;
+                }
+            }
+            Ok(result)
+        } else {
+            // OR: need to check if ANY branch produces results.
+            let mut cnt_aliases = Vec::new();
+            let mut result = child;
+            for branch in branches {
+                if is_simple_predicate_steps(branch) {
+                    let pred = steps_to_predicate(branch, current_alias, &self.alias_map);
+                    let cnt_alias = self.next_alias("ocnt");
+                    // Wrap in a project that produces 1 if pred is true, 0 if false.
+                    cnt_aliases.push((cnt_alias, Some(pred)));
+                } else {
+                    let mut sub = self.sub_compiler();
+                    let inner_op = sub.compile_seeded(branch, current_alias)?;
+                    self.absorb(&sub);
+                    let sub_alias = sub.last_alias.clone();
+                    let cnt_alias = self.next_alias("ocnt");
+                    let count_op = Operator::Aggregate {
+                        keys: vec![],
+                        aggregations: vec![(
+                            gql_core::planner::AggFunction::Count,
+                            Expr::Variable(sub_alias),
+                            None,
+                            false,
+                            cnt_alias.clone(),
+                        )],
+                        child: Box::new(inner_op),
+                    };
+                    result = Operator::Apply {
+                        outer: Box::new(result),
+                        inner: Box::new(count_op),
+                    };
+                    cnt_aliases.push((cnt_alias, None));
+                }
+            }
+
+            // Build OR predicate: any count > 0 or any simple pred is true
+            let or_pred = cnt_aliases
+                .into_iter()
+                .map(|(alias, simple_pred)| {
+                    if let Some(pred) = simple_pred {
+                        pred
+                    } else {
+                        Expr::BinaryOp {
+                            op: BinaryOp::Gt,
+                            left: Box::new(Expr::Variable(alias)),
+                            right: Box::new(Expr::Integer(0)),
+                        }
+                    }
+                })
+                .reduce(|a, b| Expr::BinaryOp {
+                    op: BinaryOp::Or,
+                    left: Box::new(a),
+                    right: Box::new(b),
+                })
+                .unwrap_or(Expr::Bool(false));
+
+            Ok(Operator::Filter {
+                predicate: or_pred,
+                child: Box::new(result),
+            })
+        }
+    }
+
+    /// Compile a sub-traversal as an existence filter (Apply + Count + Filter).
+    fn compile_existence_filter(
+        &mut self,
+        steps: &[GremlinStep],
+        seed_alias: &Identifier,
+        child: Operator,
+        negate: bool,
+    ) -> Result<Operator, CompileError> {
+        let mut sub = self.sub_compiler();
+        let inner_op = sub.compile_seeded(steps, seed_alias)?;
+        self.absorb(&sub);
+        let sub_alias = sub.last_alias.clone();
+        let cnt_alias = self.next_alias("acnt");
+        let count_op = Operator::Aggregate {
+            keys: vec![],
+            aggregations: vec![(
+                gql_core::planner::AggFunction::Count,
+                Expr::Variable(sub_alias),
+                None,
+                false,
+                cnt_alias.clone(),
+            )],
+            child: Box::new(inner_op),
+        };
+        let apply = Operator::Apply {
+            outer: Box::new(child),
+            inner: Box::new(count_op),
+        };
+        let predicate = if negate {
+            Expr::BinaryOp {
+                op: BinaryOp::Eq,
+                left: Box::new(Expr::Variable(cnt_alias)),
+                right: Box::new(Expr::Integer(0)),
+            }
+        } else {
+            Expr::BinaryOp {
+                op: BinaryOp::Gt,
+                left: Box::new(Expr::Variable(cnt_alias)),
+                right: Box::new(Expr::Integer(0)),
+            }
+        };
+        Ok(Operator::Filter {
+            predicate,
+            child: Box::new(apply),
+        })
+    }
+}
+
+/// Check whether all steps in a branch are simple predicate-convertible steps.
+fn is_simple_predicate_steps(steps: &[GremlinStep]) -> bool {
+    !steps.is_empty()
+        && steps.iter().all(|s| {
+            matches!(
+                s,
+                GremlinStep::Is(_)
+                    | GremlinStep::Has(_, _)
+                    | GremlinStep::HasPredicate(_, _)
+                    | GremlinStep::HasLabel(_)
+                    | GremlinStep::HasId(_)
+                    | GremlinStep::Values(_)
+                    | GremlinStep::Label
+                    | GremlinStep::Id
+                    | GremlinStep::Select(_)
+            )
+        })
+}
+
+/// Preprocess a step list to handle infix `and()`/`or()` with no arguments.
+///
+/// In Gremlin, `hasLabel("person").and().out("created")` is syntactic sugar for
+/// `and(hasLabel("person"), out("created"))`. This function detects empty `And([])`
+/// and `Or([])` steps and transforms the surrounding steps into proper branches.
+///
+/// Source steps (V, E, Inject) are preserved at the beginning, outside the
+/// connective branches.  Or has lower precedence than And.
+fn preprocess_infix_connectives(steps: &[GremlinStep]) -> Vec<GremlinStep> {
+    let has_infix = steps.iter().any(|s| match s {
+        GremlinStep::And(b) if b.is_empty() => true,
+        GremlinStep::Or(b) if b.is_empty() => true,
+        _ => false,
+    });
+    if !has_infix {
+        return steps.to_vec();
+    }
+
+    // Separate leading source steps from traversal steps.
+    let source_end = steps
+        .iter()
+        .position(|s| {
+            !matches!(
+                s,
+                GremlinStep::V(_) | GremlinStep::E(_) | GremlinStep::Inject(_)
+            )
+        })
+        .unwrap_or(steps.len());
+
+    let source_steps = &steps[..source_end];
+    let traversal_steps = &steps[source_end..];
+
+    // Re-check that the infix connective is in the traversal portion.
+    let has_infix_in_traversal = traversal_steps.iter().any(|s| match s {
+        GremlinStep::And(b) if b.is_empty() => true,
+        GremlinStep::Or(b) if b.is_empty() => true,
+        _ => false,
+    });
+    if !has_infix_in_traversal {
+        return steps.to_vec();
+    }
+
+    // Split traversal steps at Or([]) first (lower precedence).
+    let or_segments = split_at_empty_connective(traversal_steps, false);
+
+    let mut result: Vec<GremlinStep> = source_steps.to_vec();
+    if or_segments.len() > 1 {
+        let or_branches: Vec<Vec<GremlinStep>> = or_segments
+            .into_iter()
+            .map(|segment| {
+                let and_segments = split_at_empty_connective(&segment, true);
+                if and_segments.len() > 1 {
+                    vec![GremlinStep::And(and_segments)]
+                } else {
+                    segment
+                }
+            })
+            .collect();
+        result.push(GremlinStep::Or(or_branches));
+    } else {
+        let and_segments = split_at_empty_connective(traversal_steps, true);
+        if and_segments.len() > 1 {
+            result.push(GremlinStep::And(and_segments));
+        } else {
+            result.extend(traversal_steps.iter().cloned());
+        }
+    }
+    result
+}
+
+/// Split a step list at empty `And([])` (is_and=true) or `Or([])` (is_and=false).
+fn split_at_empty_connective(steps: &[GremlinStep], is_and: bool) -> Vec<Vec<GremlinStep>> {
+    let mut segments = Vec::new();
+    let mut current_seg = Vec::new();
+    for step in steps {
+        let is_split = match step {
+            GremlinStep::And(b) if b.is_empty() && is_and => true,
+            GremlinStep::Or(b) if b.is_empty() && !is_and => true,
+            _ => false,
+        };
+        if is_split {
+            segments.push(std::mem::take(&mut current_seg));
+        } else {
+            current_seg.push(step.clone());
+        }
+    }
+    segments.push(current_seg);
+    segments
 }
 
 /// Inject a `__sack` column into the lowest-level scan/single-row operator

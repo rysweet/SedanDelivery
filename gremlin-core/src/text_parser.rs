@@ -1519,6 +1519,14 @@ pub(crate) fn parse_inner_traversal(
         return Ok(vec![GremlinStep::Is(pred)]);
     }
 
+    // T.label / T.id as standalone traversal tokens (e.g., choose(T.label))
+    if s == "T.label" || s == "t[label]" {
+        return Ok(vec![GremlinStep::Label]);
+    }
+    if s == "T.id" || s == "t[id]" {
+        return Ok(vec![GremlinStep::Id]);
+    }
+
     // Strip __ prefix if present
     let traversal_str = s.strip_prefix("__.").unwrap_or(s);
 

@@ -189,10 +189,16 @@ impl<'a> QueryExecutor<'a> {
             self.foreach_seed.borrow_mut().take();
 
             // Extract the selector's result value using the known alias.
+            // Unwrap single-element lists (e.g. labels() returns List(["person"])) to
+            // a scalar so option matching works against plain string values.
             let sel_value = sel_rows
                 .first()
                 .and_then(|r| r.get(selector_alias.0.as_str()).cloned())
-                .or_else(|| sel_rows.first().and_then(|r| r.values().next().cloned()));
+                .or_else(|| sel_rows.first().and_then(|r| r.values().next().cloned()))
+                .map(|v| match v {
+                    Value::List(ref items) if items.len() == 1 => items[0].clone(),
+                    other => other,
+                });
 
             // Find the matching option branch.
             let mut matched_branch = None;
