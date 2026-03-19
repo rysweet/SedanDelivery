@@ -45,6 +45,7 @@ pub fn parse_traversal(
         || input.starts_with("g.withSideEffect(")
         || input.starts_with("g.withSack(")
         || input.starts_with("g.withComputer(")
+        || input.starts_with("g.withBulk(")
         || input.starts_with("g.with(")
     {
         owned = strip_strategy_prefix(input);
@@ -87,6 +88,8 @@ fn strip_strategy_prefix(input: &str) -> String {
         } else if let Some(r) = result.strip_prefix("g.withSack(") {
             skip_balanced_parens(r)
         } else if let Some(r) = result.strip_prefix("g.withComputer(") {
+            skip_balanced_parens(r)
+        } else if let Some(r) = result.strip_prefix("g.withBulk(") {
             skip_balanced_parens(r)
         } else if let Some(r) = result.strip_prefix("g.with(") {
             skip_balanced_parens(r)
