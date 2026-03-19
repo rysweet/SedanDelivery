@@ -77,6 +77,8 @@ pub enum Operator {
     },
     Distinct {
         child: Box<Operator>,
+        /// When set, dedup by property value instead of full row (Gremlin `dedup().by(key)`).
+        by_key: Option<String>,
     },
     Sort {
         items: Vec<(Expr, bool)>, // (expr, ascending)
@@ -235,6 +237,8 @@ pub enum Operator {
         child: Box<Operator>,
         /// The alias whose value is collected into the aggregate bucket.
         value_alias: Identifier,
+        /// When set via `.by("prop")`, collect this property instead of the raw traverser.
+        by_key: Option<String>,
     },
     /// Gremlin path() — extract path from traverser aliases.
     GremlinPath {
@@ -268,6 +272,21 @@ pub enum Operator {
         agg_fn: AggFunction,
         /// Alias for the resulting Map in the output row.
         alias: Identifier,
+        /// When set (e.g. `groupCount("a")`), the group result is stored as a
+        /// side-effect in `__gremlin_agg_<key>` on every pass-through row
+        /// instead of collapsing the stream into a single Map row.
+        side_effect_key: Option<String>,
+        child: Box<Operator>,
+    },
+    /// Gremlin `range(Scope.local, lo, hi)` / `limit(Scope.local, n)` —
+    /// slice Map/List values in each row rather than slicing the stream.
+    GremlinMapSlice {
+        /// Column whose Map/List value should be sliced.
+        alias: Identifier,
+        /// Start index (inclusive).
+        lo: usize,
+        /// End index (exclusive).
+        hi: usize,
         child: Box<Operator>,
     },
 }
@@ -285,7 +304,7 @@ impl Operator {
             Operator::Filter { child, .. }
             | Operator::Project { child, .. }
             | Operator::Aggregate { child, .. }
-            | Operator::Distinct { child }
+            | Operator::Distinct { child, .. }
             | Operator::Sort { child, .. }
             | Operator::Limit { child, .. }
             | Operator::Skip { child, .. }
@@ -303,7 +322,8 @@ impl Operator {
             | Operator::GremlinAggregate { child, .. }
             | Operator::GremlinPath { child, .. }
             | Operator::GremlinSelect { child, .. }
-            | Operator::GremlinGroup { child, .. } => vec![child],
+            | Operator::GremlinGroup { child, .. }
+            | Operator::GremlinMapSlice { child, .. } => vec![child],
 
             Operator::ForEach { body, child, .. } | Operator::Repeat { body, child, .. } => {
                 vec![child, body]
@@ -578,7 +598,7 @@ fn estimate_recursive(
             child_est
         }
 
-        Operator::Distinct { child } => {
+        Operator::Distinct { child, .. } => {
             let child_est = estimate_recursive(child, stats, estimates);
             // Assume distinct removes ~20% of rows
             (child_est * 0.8).max(1.0)
@@ -638,7 +658,11 @@ fn estimate_recursive(
         Operator::GremlinPath { child, .. } => estimate_recursive(child, stats, estimates),
         Operator::GremlinMatch { child, .. } => estimate_recursive(child, stats, estimates),
         Operator::GremlinSelect { child, .. } => estimate_recursive(child, stats, estimates),
+        Operator::GremlinGroup { side_effect_key: Some(_), child, .. } => {
+            estimate_recursive(child, stats, estimates)
+        }
         Operator::GremlinGroup { .. } => 1.0, // produces a single Map row
+        Operator::GremlinMapSlice { child, .. } => estimate_recursive(child, stats, estimates),
         Operator::Cap { .. } => 1.0,
     };
 
@@ -915,6 +939,9 @@ fn collect_all_aliases(op: &Operator) -> Vec<String> {
         }
         Operator::GremlinGroup { alias, .. } => {
             aliases.push(alias.0.clone());
+        }
+        Operator::GremlinMapSlice { child, .. } => {
+            aliases.extend(collect_all_aliases(child));
         }
         Operator::Cap { keys, .. } => {
             for key in keys {

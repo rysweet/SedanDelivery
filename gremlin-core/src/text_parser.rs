@@ -308,15 +308,15 @@ fn parse_step_token(
         "mean" => {
             out.push(GremlinStep::Mean);
         }
-        "group" => out.push(GremlinStep::Group),
+        "group" => {
+            let args = parse_string_arg_list(args_str)?;
+            let key = args.into_iter().next();
+            out.push(GremlinStep::Group(key));
+        }
         "groupCount" => {
             let args = parse_string_arg_list(args_str)?;
-            if args.is_empty() {
-                out.push(GremlinStep::GroupCount);
-            } else {
-                // groupCount("a") — named side effect
-                out.push(GremlinStep::GroupCount);
-            }
+            let key = args.into_iter().next();
+            out.push(GremlinStep::GroupCount(key));
         }
         "fold" => out.push(GremlinStep::Fold),
         "unfold" => out.push(GremlinStep::Unfold),
@@ -324,6 +324,8 @@ fn parse_step_token(
         "by" => parse_by_step(args_str, out)?,
         "limit" => {
             let args = parse_arg_list(args_str, resolve_param)?;
+            // Detect Scope.local
+            let is_local = args.iter().any(|a| matches!(a, GremlinValue::String(s) if s == "Scope.local"));
             // limit(n) or limit(Scope.global, n) — skip Scope arg
             let n = args.iter().find_map(|a| {
                 if let GremlinValue::Integer(v) = a {
@@ -333,25 +335,29 @@ fn parse_step_token(
                 }
             });
             if let Some(n) = n {
-                out.push(GremlinStep::Limit(n));
+                if is_local {
+                    out.push(GremlinStep::LimitLocal(n));
+                } else {
+                    out.push(GremlinStep::Limit(n));
+                }
             }
         }
         "range" => {
             let args = parse_arg_list(args_str, resolve_param)?;
-            // range(lo, hi) or range(Scope.global, lo, hi) — skip Scope arg
-            // range(Scope.local, lo, hi) — not supported (local scope has different semantics)
-            if args.len() >= 2 {
-                if let (GremlinValue::Integer(lo), GremlinValue::Integer(hi)) = (&args[0], &args[1])
-                {
-                    out.push(GremlinStep::Range(*lo, *hi));
-                } else if args.len() >= 3 {
-                    // First arg is Scope, second and third are integers
-                    if let (GremlinValue::Integer(lo), GremlinValue::Integer(hi)) =
-                        (&args[1], &args[2])
-                    {
-                        out.push(GremlinStep::Range(*lo, *hi));
-                    }
+            // Detect Scope.local
+            let is_local = args.iter().any(|a| matches!(a, GremlinValue::String(s) if s == "Scope.local"));
+            // Collect integer args
+            let ints: Vec<i64> = args.iter().filter_map(|a| {
+                if let GremlinValue::Integer(v) = a { Some(*v) } else { None }
+            }).collect();
+            if ints.len() >= 2 {
+                if is_local {
+                    out.push(GremlinStep::RangeLocal(ints[0], ints[1]));
+                } else {
+                    out.push(GremlinStep::Range(ints[0], ints[1]));
                 }
+            } else if ints.len() == 1 {
+                // Single int with scope — not meaningful, ignore
             }
         }
         "dedup" => {
@@ -443,8 +449,19 @@ fn parse_step_token(
         "emit" => out.push(GremlinStep::Emit),
         "aggregate" => {
             let args = parse_string_arg_list(args_str)?;
-            if let Some(key) = args.into_iter().next() {
-                out.push(GremlinStep::Aggregate(key));
+            // aggregate("x") or aggregate(local, "x") / aggregate(Scope.local, "x")
+            let mut iter = args.into_iter();
+            if let Some(first) = iter.next() {
+                if first == "local" || first == "Scope.local"
+                    || first == "global" || first == "Scope.global"
+                {
+                    // Scope argument — use the next arg as key
+                    if let Some(key) = iter.next() {
+                        out.push(GremlinStep::Aggregate(key));
+                    }
+                } else {
+                    out.push(GremlinStep::Aggregate(first));
+                }
             }
         }
         "cap" => {

@@ -299,23 +299,17 @@ impl<'a> QueryExecutor<'a> {
         let child_rows = self.exec_operator(cx, child)?;
 
         // Collect aggregated values for each key from the child rows.
-        // The aggregate column already contains the full accumulated list,
-        // so we take it from the first row that has it (all rows carry the same list).
+        // The aggregate column already contains the full accumulated value,
+        // so we take it from the first row that has it (all rows carry the same value).
+        // For aggregate() the value is a List; for group()/groupCount() it is a Map.
         let mut row = Row::new();
         for key in keys {
             let agg_col = format!("__gremlin_agg_{key}");
-            let collected: Vec<Value> = child_rows
-                .iter()
-                .find_map(|r| r.get(&agg_col))
-                .and_then(|v| {
-                    if let Value::List(items) = v {
-                        Some(items.clone())
-                    } else {
-                        None
-                    }
-                })
-                .unwrap_or_default();
-            row.insert(key.clone(), Value::List(collected));
+            if let Some(value) = child_rows.iter().find_map(|r| r.get(&agg_col).cloned()) {
+                row.insert(key.clone(), value);
+            } else {
+                row.insert(key.clone(), Value::List(Vec::new()));
+            }
         }
         Ok(vec![row])
     }
@@ -331,6 +325,7 @@ impl<'a> QueryExecutor<'a> {
             key,
             child,
             value_alias,
+            by_key,
         } = op
         else {
             debug_assert!(false, "expected GremlinAggregate operator");
@@ -343,9 +338,21 @@ impl<'a> QueryExecutor<'a> {
         let agg_col = format!("__gremlin_agg_{key}");
 
         // Collect all values seen across all rows.
+        // When by_key is set, project the property from the traverser instead.
         let mut collected: Vec<Value> = Vec::new();
         for row in &input {
-            if let Some(val) = row.get(value_alias.as_str()) {
+            if let Some(by_prop) = by_key {
+                // by("prop") modulation: resolve property from the node/edge value
+                let prop_expr = Expr::Property(
+                    Box::new(Expr::Variable(value_alias.clone())),
+                    smol_str::SmolStr::new(by_prop),
+                );
+                let ctx = self.build_filter_ctx(cx.graph, row)?;
+                let projected = self
+                    .eval_with_storage(cx.graph, &prop_expr, row, &ctx)
+                    .unwrap_or(Value::Null);
+                collected.push(projected);
+            } else if let Some(val) = row.get(value_alias.as_str()) {
                 collected.push(val.clone());
             }
         }
@@ -621,6 +628,7 @@ impl<'a> QueryExecutor<'a> {
             value_expr,
             agg_fn,
             alias,
+            side_effect_key,
             child,
         } = op
         else {
@@ -680,10 +688,67 @@ impl<'a> QueryExecutor<'a> {
             result_map.insert(key_str, agg_result);
         }
 
+        // Named side-effect: store the Map on every input row and pass
+        // traversers through instead of collapsing into a single Map row.
+        if let Some(key) = side_effect_key {
+            let agg_col = format!("__gremlin_agg_{key}");
+            let map_val = Value::Map(result_map);
+            let mut output = input;
+            for row in &mut output {
+                row.insert(agg_col.clone(), map_val.clone());
+            }
+            return Ok(output);
+        }
+
         let mut out_row = Row::new();
         out_row.insert(alias.0.clone(), Value::Map(result_map));
         cx.budget.record_row();
         Ok(vec![out_row])
+    }
+
+    /// Execute `GremlinMapSlice` — slice Map/List values in each row.
+    pub(crate) fn exec_gremlin_map_slice(
+        &self,
+        cx: &mut ExecContext<'_>,
+        op: &Operator,
+    ) -> Result<Vec<Row>, GqlError> {
+        use indexmap::IndexMap;
+
+        let Operator::GremlinMapSlice {
+            alias,
+            lo,
+            hi,
+            child,
+        } = op
+        else {
+            debug_assert!(false, "expected GremlinMapSlice operator");
+            return Err(GqlError::Execution(ExecutionError::UnsupportedFeature {
+                feature: "internal: expected GremlinMapSlice operator".into(),
+            }));
+        };
+        let input = self.exec_operator(cx, child)?;
+        let mut out = Vec::with_capacity(input.len());
+        for mut row in input {
+            cx.budget.check_or_err()?;
+            if let Some(val) = row.get(&alias.0) {
+                let sliced = match val {
+                    Value::Map(m) => {
+                        let new_map: IndexMap<Box<str>, Value> =
+                            m.iter().skip(*lo).take(hi - lo).map(|(k, v)| (k.clone(), v.clone())).collect();
+                        Value::Map(new_map)
+                    }
+                    Value::List(l) => {
+                        let new_list: Vec<Value> =
+                            l.iter().skip(*lo).take(hi - lo).cloned().collect();
+                        Value::List(new_list)
+                    }
+                    other => other.clone(),
+                };
+                row.insert(alias.0.clone(), sliced);
+            }
+            out.push(row);
+        }
+        Ok(out)
     }
 }
 
@@ -1040,6 +1105,7 @@ mod tests {
                     alias: Identifier::new("n"),
                 }),
                 value_alias: Identifier::new("n"),
+                by_key: None,
             }),
         };
 
@@ -1074,6 +1140,7 @@ mod tests {
                     }),
                 }),
                 value_alias: Identifier::new("m"),
+                by_key: None,
             }),
         };
 
@@ -1099,6 +1166,7 @@ mod tests {
                 alias: Identifier::new("n"),
             }),
             value_alias: Identifier::new("n"),
+            by_key: None,
         };
 
         let mut budget = ExecutionBudget::unlimited();
@@ -1127,6 +1195,7 @@ mod tests {
                     alias: Identifier::new("n"),
                 }),
                 value_alias: Identifier::new("n"),
+                by_key: None,
             }),
         };
 
@@ -1161,6 +1230,7 @@ mod tests {
                     alias: Identifier::new("n"),
                 }),
                 value_alias: Identifier::new("n"),
+                by_key: None,
             }),
         };
 

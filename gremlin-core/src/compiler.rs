@@ -151,6 +151,8 @@ impl GremlinCompiler {
         let mut pending_select = false;
         // Track whether the preceding step was dedup for by() modulation
         let mut pending_dedup = false;
+        // Track whether the preceding step was aggregate for by() modulation
+        let mut pending_aggregate = false;
         // Track aliases for path() reconstruction
         let mut path_aliases: Vec<Identifier> = initial_path_aliases;
         // Pending emit/until that appear before repeat()
@@ -669,10 +671,10 @@ impl GremlinCompiler {
                     current_alias = alias;
                 }
 
-                GremlinStep::Group | GremlinStep::GroupCount => {
+                GremlinStep::Group(ref key) | GremlinStep::GroupCount(ref key) => {
                     let child = current.take().ok_or(CompileError::MissingChild)?;
                     let alias = self.next_alias("grp");
-                    let agg_fn = if matches!(step, GremlinStep::GroupCount) {
+                    let agg_fn = if matches!(step, GremlinStep::GroupCount(..)) {
                         AggFunction::Count
                     } else {
                         AggFunction::Collect
@@ -682,6 +684,7 @@ impl GremlinCompiler {
                         value_expr: Expr::Variable(current_alias.clone()),
                         agg_fn,
                         alias: alias.clone(),
+                        side_effect_key: key.clone(),
                         child: Box::new(child),
                     });
                     current_alias = alias;
@@ -807,8 +810,23 @@ impl GremlinCompiler {
                         pending_select = false;
                     } else if pending_dedup {
                         // by() after dedup() — dedup by specific property
-                        // Already handled as Distinct, just clear the flag
+                        if !key.is_empty() {
+                            if let Some(Operator::Distinct { ref mut by_key, .. }) = current {
+                                *by_key = Some(key.to_string());
+                            }
+                        }
                         pending_dedup = false;
+                    } else if pending_aggregate {
+                        // by() after aggregate() — project a property from each traverser
+                        if let Some(Operator::GremlinAggregate {
+                            ref mut by_key, ..
+                        }) = current
+                        {
+                            if !key.is_empty() {
+                                *by_key = Some(key.to_string());
+                            }
+                        }
+                        pending_aggregate = false;
                     }
                 }
 
@@ -836,10 +854,31 @@ impl GremlinCompiler {
                     });
                 }
 
+                GremlinStep::LimitLocal(n) => {
+                    let child = current.take().ok_or(CompileError::MissingChild)?;
+                    current = Some(Operator::GremlinMapSlice {
+                        alias: current_alias.clone(),
+                        lo: 0,
+                        hi: *n as usize,
+                        child: Box::new(child),
+                    });
+                }
+
+                GremlinStep::RangeLocal(low, high) => {
+                    let child = current.take().ok_or(CompileError::MissingChild)?;
+                    current = Some(Operator::GremlinMapSlice {
+                        alias: current_alias.clone(),
+                        lo: *low as usize,
+                        hi: *high as usize,
+                        child: Box::new(child),
+                    });
+                }
+
                 GremlinStep::Dedup(_keys) => {
                     let child = current.take().ok_or(CompileError::MissingChild)?;
                     current = Some(Operator::Distinct {
                         child: Box::new(child),
+                        by_key: None,
                     });
                     pending_dedup = true;
                 }
@@ -1141,7 +1180,9 @@ impl GremlinCompiler {
                         key: key.clone(),
                         child: Box::new(child),
                         value_alias: current_alias.clone(),
+                        by_key: None,
                     });
+                    pending_aggregate = true;
                 }
 
                 GremlinStep::Cap(keys) => {
@@ -2471,7 +2512,7 @@ mod tests {
     #[test]
     fn compile_group() {
         let mut compiler = GremlinCompiler::new();
-        let steps = vec![GremlinStep::V(None), GremlinStep::Group];
+        let steps = vec![GremlinStep::V(None), GremlinStep::Group(None)];
         let op = compiler.compile(&steps).unwrap();
         if let Operator::GremlinGroup { agg_fn, .. } = &op {
             assert!(matches!(agg_fn, AggFunction::Collect));
@@ -2483,7 +2524,7 @@ mod tests {
     #[test]
     fn compile_group_count() {
         let mut compiler = GremlinCompiler::new();
-        let steps = vec![GremlinStep::V(None), GremlinStep::GroupCount];
+        let steps = vec![GremlinStep::V(None), GremlinStep::GroupCount(None)];
         let op = compiler.compile(&steps).unwrap();
         if let Operator::GremlinGroup { agg_fn, .. } = &op {
             assert!(matches!(agg_fn, AggFunction::Count));
