@@ -254,9 +254,21 @@ impl GremlinCompiler {
                         label: None,
                         alias: alias.clone(),
                     };
-                    let new_op = match ids {
+                    // Flatten list parameters: V(listParam) → V(id1, id2, ...)
+                    let flat_ids: Option<Vec<&GremlinValue>> = ids.as_ref().map(|id_list| {
+                        let mut flat = Vec::new();
+                        for id in id_list {
+                            if let GremlinValue::List(inner) = id {
+                                flat.extend(inner.iter());
+                            } else {
+                                flat.push(id);
+                            }
+                        }
+                        flat
+                    });
+                    let new_op = match &flat_ids {
                         Some(id_list) if id_list.len() == 1 => {
-                            let id_expr = gremlin_value_to_expr(&id_list[0]);
+                            let id_expr = gremlin_value_to_expr(id_list[0]);
                             Operator::Filter {
                                 predicate: Expr::BinaryOp {
                                     op: BinaryOp::Eq,
@@ -272,7 +284,7 @@ impl GremlinCompiler {
                         }
                         Some(id_list) if !id_list.is_empty() => {
                             let id_exprs: Vec<Expr> =
-                                id_list.iter().map(gremlin_value_to_expr).collect();
+                                id_list.iter().map(|v| gremlin_value_to_expr(v)).collect();
                             Operator::Filter {
                                 predicate: Expr::BinaryOp {
                                     op: BinaryOp::In,
