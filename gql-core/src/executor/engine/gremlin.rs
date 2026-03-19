@@ -198,9 +198,7 @@ impl<'a> QueryExecutor<'a> {
                     Some(v) => {
                         let matches = match (sel_value.as_ref(), Some(v)) {
                             (Some(Value::Int(a)), Some(Value::Int(b))) => a == b,
-                            (Some(Value::Float(a)), Some(Value::Float(b))) => {
-                                (a - b).abs() < 1e-9
-                            }
+                            (Some(Value::Float(a)), Some(Value::Float(b))) => (a - b).abs() < 1e-9,
                             (Some(Value::Int(a)), Some(Value::Float(b)))
                             | (Some(Value::Float(b)), Some(Value::Int(a))) => {
                                 (*a as f64 - b).abs() < 1e-9
@@ -381,6 +379,12 @@ impl<'a> QueryExecutor<'a> {
 
         // Stamp the accumulated list onto every output row.
         let agg_val = Value::List(collected);
+        if input.is_empty() {
+            // Even with no input, the side-effect must be accessible via cap().
+            let mut sentinel = Row::new();
+            sentinel.insert(agg_col, agg_val);
+            return Ok(vec![sentinel]);
+        }
         for row in &mut input {
             row.insert(agg_col.clone(), agg_val.clone());
         }
@@ -687,17 +691,31 @@ impl<'a> QueryExecutor<'a> {
         // Use Box<str> keys since Value doesn't implement Hash.
         let mut groups: IndexMap<Box<str>, Vec<Value>> = IndexMap::new();
 
+        // Check if value_expr differs from key_expr (i.e., a value-by modulation is present).
+        let has_value_by = value_expr != key_expr;
+
         for row in &input {
             cx.budget.check_or_err()?;
             let ctx = self.build_filter_ctx(cx.graph, row)?;
             let key_val = self
                 .eval_with_storage(cx.graph, key_expr, row, &ctx)
                 .unwrap_or(Value::Null);
+            // Skip rows where the group key evaluates to Null (unproductive by).
+            // TinkerPop default: null keys are dropped unless ProductiveByStrategy.
+            if matches!(key_val, Value::Null) {
+                continue;
+            }
             let val = self
                 .eval_with_storage(cx.graph, value_expr, row, &ctx)
                 .unwrap_or(Value::Null);
             let key_str = value_to_map_key(&key_val);
-            groups.entry(key_str).or_default().push(val);
+            let entry = groups.entry(key_str).or_default();
+            // When a value-by projection is active, skip null values (unproductive by).
+            if has_value_by && matches!(val, Value::Null) {
+                // Key still gets created (via or_default) with empty vec
+            } else {
+                entry.push(val);
+            }
         }
 
         // Apply aggregation function to each group.
@@ -737,6 +755,12 @@ impl<'a> QueryExecutor<'a> {
             let agg_col = format!("__gremlin_agg_{key}");
             let map_val = Value::Map(result_map);
             let mut output = input;
+            if output.is_empty() {
+                // Even with no input, the side-effect must be accessible via cap().
+                let mut sentinel = Row::new();
+                sentinel.insert(agg_col, map_val);
+                return Ok(vec![sentinel]);
+            }
             for row in &mut output {
                 row.insert(agg_col.clone(), map_val.clone());
             }

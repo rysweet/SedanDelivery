@@ -123,6 +123,11 @@ impl GremlinCompiler {
         self.compile_from(steps, None, Identifier::new("__gremlin_v"), Vec::new())
     }
 
+    /// Returns the alias for the traversal's final result column after compilation.
+    pub fn result_alias(&self) -> &str {
+        self.last_alias.0.as_str()
+    }
+
     /// Core compilation: walks steps left-to-right, wrapping each into the
     /// operator tree. `initial_op` / `initial_alias` allow callers to seed
     /// the compilation with an existing operator and alias.
@@ -138,7 +143,7 @@ impl GremlinCompiler {
         }
 
         let mut current: Option<Operator> = initial_op;
-        let mut current_alias = initial_alias;
+        let mut current_alias = initial_alias.clone();
         // Pending properties for AddV/AddE
         let mut pending_properties: Vec<(String, GremlinValue)> = Vec::new();
         // Pending By modifiers for Order
@@ -153,6 +158,12 @@ impl GremlinCompiler {
         let mut pending_dedup = false;
         // Track whether the preceding step was aggregate for by() modulation
         let mut pending_aggregate = false;
+        // Track whether the pending group is specifically a groupCount (rejects 2nd by())
+        let mut pending_group_is_count = false;
+        // Track whether aggregate already consumed its single by() — second by() is an error
+        let mut aggregate_by_consumed = false;
+        // The alias BEFORE group() changed it — used by by() modulation
+        let mut pre_group_alias: Identifier = initial_alias.clone();
         // Track aliases for path() reconstruction
         let mut path_aliases: Vec<Identifier> = initial_path_aliases;
         // Pending emit/until that appear before repeat()
@@ -160,6 +171,10 @@ impl GremlinCompiler {
         let mut pending_until: Option<Vec<GremlinStep>> = None;
 
         for step in steps {
+            // Reset aggregate by-consumed flag on any non-By step
+            if !matches!(step, GremlinStep::By(..)) {
+                aggregate_by_consumed = false;
+            }
             match step {
                 GremlinStep::V(ids) => {
                     let alias = self.next_alias("v");
@@ -705,12 +720,15 @@ impl GremlinCompiler {
                 GremlinStep::Group(ref key) | GremlinStep::GroupCount(ref key) => {
                     let child = current.take().ok_or(CompileError::MissingChild)?;
                     let alias = self.next_alias("grp");
-                    let agg_fn = if matches!(step, GremlinStep::GroupCount(..)) {
+                    let is_count = matches!(step, GremlinStep::GroupCount(..));
+                    let agg_fn = if is_count {
                         AggFunction::Count
                     } else {
                         AggFunction::Collect
                     };
                     let has_side_effect = key.is_some();
+                    // Save the pre-group alias for by() modulation
+                    pre_group_alias = current_alias.clone();
                     current = Some(Operator::GremlinGroup {
                         key_expr: Expr::Variable(current_alias.clone()),
                         value_expr: Expr::Variable(current_alias.clone()),
@@ -726,6 +744,7 @@ impl GremlinCompiler {
                     }
                     pending_group = true;
                     pending_group_by_count = 0;
+                    pending_group_is_count = is_count;
                 }
 
                 GremlinStep::Fold => {
@@ -791,7 +810,8 @@ impl GremlinCompiler {
                         });
                         pending_order = false;
                     } else if pending_group {
-                        // by() after group()/groupCount() — modifies GremlinGroup
+                        // by() after group()/groupCount() — modifies GremlinGroup.
+                        // Use pre_group_alias (the alias before group() changed it).
                         if let Some(Operator::GremlinGroup {
                             ref mut key_expr,
                             ref mut value_expr,
@@ -802,10 +822,15 @@ impl GremlinCompiler {
                             if pending_group_by_count == 0 {
                                 // First by() = group key
                                 if !key.is_empty() {
-                                    let new_key = make_by_expr(key, &current_alias);
+                                    let new_key = make_by_expr(key, &pre_group_alias);
                                     *key_expr = new_key;
                                 }
                                 pending_group_by_count = 1;
+                            } else if pending_group_is_count {
+                                // groupCount() only supports one by() modulator
+                                return Err(CompileError::InvalidSequence(
+                                    "GroupCount step can only have one by modulator".into(),
+                                ));
                             } else {
                                 // Second by() = value aggregation
                                 if key == "count()" || key == "__.count()" {
@@ -819,7 +844,7 @@ impl GremlinCompiler {
                                     *agg_fn = AggFunction::Collect;
                                 } else {
                                     // by("propName") — collect property values
-                                    *value_expr = make_by_expr(key, &current_alias);
+                                    *value_expr = make_by_expr(key, &pre_group_alias);
                                 }
                                 pending_group = false;
                             }
@@ -860,6 +885,12 @@ impl GremlinCompiler {
                             }
                         }
                         pending_aggregate = false;
+                        aggregate_by_consumed = true;
+                    } else if aggregate_by_consumed {
+                        // Second by() after aggregate — error
+                        return Err(CompileError::InvalidSequence(
+                            "Aggregate step can only have one by modulator".into(),
+                        ));
                     }
                 }
 
@@ -1229,6 +1260,11 @@ impl GremlinCompiler {
                         keys: keys.clone(),
                         child: Box::new(child),
                     });
+                    // After cap(), the result row uses cap key names as columns.
+                    // Update current_alias so subsequent steps reference the right column.
+                    if keys.len() == 1 {
+                        current_alias = Identifier::new(keys[0].clone());
+                    }
                 }
 
                 GremlinStep::Constant(val) => {
@@ -1463,6 +1499,7 @@ impl GremlinCompiler {
                     let mut sub = self.sub_compiler();
                     let opt_op = sub.compile_seeded(opt_steps, &current_alias)?;
                     self.absorb(&sub);
+                    current_alias = sub.last_alias.clone();
                     current = Some(Operator::Coalesce {
                         alternatives: vec![opt_op, Operator::SingleRow],
                         child: Box::new(child),
@@ -1510,6 +1547,7 @@ impl GremlinCompiler {
                     let mut sub = self.sub_compiler();
                     let map_op = sub.compile_seeded(map_steps, &current_alias)?;
                     self.absorb(&sub);
+                    current_alias = sub.last_alias.clone();
                     current = Some(Operator::Apply {
                         outer: Box::new(child),
                         inner: Box::new(map_op),
@@ -1522,6 +1560,7 @@ impl GremlinCompiler {
                     let mut sub = self.sub_compiler();
                     let fm_op = sub.compile_seeded(fm_steps, &current_alias)?;
                     self.absorb(&sub);
+                    current_alias = sub.last_alias.clone();
                     current = Some(Operator::Apply {
                         outer: Box::new(child),
                         inner: Box::new(fm_op),
@@ -2183,7 +2222,7 @@ fn gremlin_value_to_value(gv: &GremlinValue) -> Value {
 }
 
 /// Build an `Expr` from a `by(key)` modulator key string and the current alias.
-/// Handles T.id, T.label, Column.keys/values, and property names.
+/// Handles T.id, T.label, Column.keys/values, common traversal patterns, and property names.
 fn make_by_expr(key: &str, current_alias: &Identifier) -> Expr {
     if key == "~id" || key == "T.id" || key == "t[id]" {
         Expr::FunctionCall {
@@ -2191,12 +2230,28 @@ fn make_by_expr(key: &str, current_alias: &Identifier) -> Expr {
             args: vec![Expr::Variable(current_alias.clone())],
             distinct: false,
         }
-    } else if key == "~label" || key == "T.label" || key == "t[label]" {
+    } else if key == "~label"
+        || key == "T.label"
+        || key == "t[label]"
+        || key == "__.label()"
+        || key == "label()"
+    {
         Expr::FunctionCall {
             name: SmolStr::new("labels"),
             args: vec![Expr::Variable(current_alias.clone())],
             distinct: false,
         }
+    } else if let Some(prop) = key
+        .strip_prefix("__.values(")
+        .or_else(|| key.strip_prefix("values("))
+        .and_then(|s| s.strip_suffix(')'))
+    {
+        // by(values("name")) or by(__.values("name")) → property access
+        let prop = prop.trim_matches(|c| c == '\'' || c == '"');
+        Expr::Property(
+            Box::new(Expr::Variable(current_alias.clone())),
+            SmolStr::new(prop),
+        )
     } else {
         Expr::Property(
             Box::new(Expr::Variable(current_alias.clone())),

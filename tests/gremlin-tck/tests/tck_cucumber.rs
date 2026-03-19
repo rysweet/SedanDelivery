@@ -48,6 +48,8 @@ pub struct GremlinWorld {
     parsed_steps: Vec<GremlinStep>,
     /// Execution outcome.
     outcome: Option<TraversalOutcome>,
+    /// The compiler's result alias — identifies which column holds the traversal result.
+    result_alias: String,
 }
 
 impl GremlinWorld {
@@ -238,6 +240,7 @@ fn execute_traversal(world: &mut GremlinWorld) {
             return;
         }
     };
+    world.result_alias = compiler.result_alias().to_string();
 
     // Execute
     let store = world.get_store();
@@ -619,6 +622,11 @@ fn parse_tck_value(
         return Value::Null;
     }
 
+    // bare [] — empty list
+    if s == "[]" {
+        return Value::List(Vec::new());
+    }
+
     // boolean
     if s == "true" {
         return Value::Bool(true);
@@ -739,20 +747,57 @@ fn find_top_level_char(s: &str, target: char) -> Option<usize> {
     None
 }
 
+/// Get the "result" value from a row — uses the result_alias for deterministic access.
+fn row_result_value<'a>(row: &'a HashMap<String, Value>, result_alias: &str) -> Option<&'a Value> {
+    // Use the compiler's result alias for deterministic column selection.
+    if !result_alias.is_empty() {
+        if let Some(v) = row.get(result_alias) {
+            return Some(v);
+        }
+    }
+    // Fall back to single-column or arbitrary first value.
+    if row.len() == 1 {
+        return row.values().next();
+    }
+    row.values().next()
+}
+
+/// Build reverse lookup maps: NodeId→name and EdgeId→name from world.
+fn build_id_to_name(world: &GremlinWorld) -> (HashMap<NodeId, String>, HashMap<EdgeId, String>) {
+    let vid: HashMap<NodeId, String> = world
+        .vertex_names
+        .iter()
+        .map(|(name, id)| (*id, name.clone()))
+        .collect();
+    let eid: HashMap<EdgeId, String> = world
+        .edge_names
+        .iter()
+        .map(|(name, id)| (*id, name.clone()))
+        .collect();
+    (vid, eid)
+}
+
 /// Assert that actual results match expected values (order-independent).
 fn assert_results_match_unordered(
     result: &QueryResult,
     expected: &[Vec<Value>],
     world: &GremlinWorld,
 ) {
+    let (vid, eid) = build_id_to_name(world);
+
     // If the result is a single row containing a List (from cap/fold), unpack it
     // into individual values for comparison, matching TinkerPop semantics.
     let unpacked_rows: Vec<HashMap<String, Value>>;
     let effective_result =
         if result.rows.len() == 1 && expected.len() > 1 && result.rows[0].len() == 1 {
-            if let Some(Value::List(items)) = result.rows[0].values().next() {
+            if let Some(Value::List(items)) = row_result_value(&result.rows[0], &world.result_alias)
+            {
                 // Unpack the list into individual rows
-                let key = result.rows[0].keys().next().unwrap().clone();
+                let key = if !world.result_alias.is_empty() {
+                    world.result_alias.clone()
+                } else {
+                    result.rows[0].keys().next().unwrap().clone()
+                };
                 unpacked_rows = items
                     .iter()
                     .map(|v| {
@@ -779,10 +824,10 @@ fn assert_results_match_unordered(
         effective_result,
     );
 
-    // Collect actual values (first column of each row)
+    // Collect actual values (result column of each row)
     let actual_values: Vec<&Value> = effective_result
         .iter()
-        .filter_map(|row| row.values().next())
+        .filter_map(|row| row_result_value(row, &world.result_alias))
         .collect();
 
     // Track which actual values have been matched to avoid double-counting
@@ -791,7 +836,7 @@ fn assert_results_match_unordered(
     for exp_row in expected {
         let exp_val = &exp_row[0];
         let found = actual_values.iter().enumerate().any(|(i, actual)| {
-            if !matched[i] && values_match(actual, exp_val) {
+            if !matched[i] && values_match_ctx(actual, exp_val, &vid, &eid) {
                 matched[i] = true;
                 true
             } else {
@@ -808,21 +853,20 @@ fn assert_results_match_unordered(
 
 /// Assert that each actual result value exists in the expected set.
 /// Used for "the result should be of" (subset semantics).
-fn assert_results_subset_of(
-    result: &QueryResult,
-    expected: &[Vec<Value>],
-    world: &GremlinWorld,
-) {
+fn assert_results_subset_of(result: &QueryResult, expected: &[Vec<Value>], world: &GremlinWorld) {
+    let (vid, eid) = build_id_to_name(world);
     let actual_values: Vec<&Value> = result
         .rows
         .iter()
-        .filter_map(|row| row.values().next())
+        .filter_map(|row| row_result_value(row, &world.result_alias))
         .collect();
 
     let expected_values: Vec<&Value> = expected.iter().map(|r| &r[0]).collect();
 
     for actual in &actual_values {
-        let found = expected_values.iter().any(|ev| values_match(actual, ev));
+        let found = expected_values
+            .iter()
+            .any(|ev| values_match_ctx(actual, ev, &vid, &eid));
         assert!(
             found,
             "actual value {:?} not in expected set\ntraversal: {}\nexpected set: {:?}",
@@ -837,6 +881,7 @@ fn assert_results_match_ordered(
     expected: &[Vec<Value>],
     world: &GremlinWorld,
 ) {
+    let (vid, eid) = build_id_to_name(world);
     assert_eq!(
         result.rows.len(),
         expected.len(),
@@ -848,10 +893,10 @@ fn assert_results_match_ordered(
     );
 
     for (i, (row, exp_row)) in result.rows.iter().zip(expected.iter()).enumerate() {
-        if let Some(actual_val) = row.values().next() {
+        if let Some(actual_val) = row_result_value(row, &world.result_alias) {
             let exp_val = &exp_row[0];
             assert!(
-                values_match(actual_val, exp_val),
+                values_match_ctx(actual_val, exp_val, &vid, &eid),
                 "row {i}: expected {:?} but got {:?}\ntraversal: {}",
                 exp_val,
                 actual_val,
@@ -861,8 +906,31 @@ fn assert_results_match_ordered(
     }
 }
 
-/// Compare two Values for TCK-style equality.
+/// Normalize a map key for comparison — strips TCK type decorations.
+/// Handles `d[N].i`, `d[N].l`, `d[N].d`, `d[N].f`, etc. → `"N"`.
+/// Handles `l[...]` → `"l[...]"` (unchanged, for list keys).
+fn normalize_map_key(key: &str) -> std::borrow::Cow<'_, str> {
+    if let Some(rest) = key.strip_prefix("d[") {
+        if let Some(end) = rest.find(']') {
+            return std::borrow::Cow::Borrowed(&rest[..end]);
+        }
+    }
+    std::borrow::Cow::Borrowed(key)
+}
+
+/// Compare two Values for TCK-style equality (without context).
+#[allow(dead_code)]
 fn values_match(actual: &Value, expected: &Value) -> bool {
+    values_match_ctx(actual, expected, &HashMap::new(), &HashMap::new())
+}
+
+/// Compare two Values with vertex/edge name context for map key resolution.
+fn values_match_ctx(
+    actual: &Value,
+    expected: &Value,
+    vertex_id_to_name: &HashMap<NodeId, String>,
+    edge_id_to_name: &HashMap<EdgeId, String>,
+) -> bool {
     match (actual, expected) {
         (Value::Node(a), Value::Node(e)) => a == e,
         (Value::Edge(a), Value::Edge(e)) => a == e,
@@ -875,14 +943,74 @@ fn values_match(actual: &Value, expected: &Value) -> bool {
         (Value::Bool(a), Value::Bool(e)) => a == e,
         (Value::Null, Value::Null) => true,
         (Value::List(a), Value::List(e)) => {
-            a.len() == e.len() && a.iter().zip(e.iter()).all(|(av, ev)| values_match(av, ev))
+            if a.len() != e.len() {
+                return false;
+            }
+            // Try ordered comparison first
+            let ordered = a
+                .iter()
+                .zip(e.iter())
+                .all(|(av, ev)| values_match_ctx(av, ev, vertex_id_to_name, edge_id_to_name));
+            if ordered {
+                return true;
+            }
+            // Fall back to unordered comparison (handles s[...] set notation)
+            let mut matched = vec![false; a.len()];
+            e.iter().all(|ev| {
+                a.iter().enumerate().any(|(i, av)| {
+                    if !matched[i] && values_match_ctx(av, ev, vertex_id_to_name, edge_id_to_name) {
+                        matched[i] = true;
+                        true
+                    } else {
+                        false
+                    }
+                })
+            })
         }
         (Value::Map(a), Value::Map(e)) => {
             if a.len() != e.len() {
                 return false;
             }
-            e.iter()
-                .all(|(k, ev)| a.get(k).map_or(false, |av| values_match(av, ev)))
+            e.iter().all(|(ek, ev)| {
+                // Direct key match
+                if let Some(av) = a.get(ek) {
+                    return values_match_ctx(av, ev, vertex_id_to_name, edge_id_to_name);
+                }
+                // Try normalized key match (handles d[N].x vs N format)
+                let norm_ek = normalize_map_key(ek);
+                // Also try vertex key resolution: v[name] vs v[id]
+                a.iter().any(|(ak, av)| {
+                    let keys_equal = if normalize_map_key(ak) == norm_ek {
+                        true
+                    } else if let (Some(a_inner), Some(e_inner)) = (
+                        ak.strip_prefix("v[").and_then(|s| s.strip_suffix(']')),
+                        ek.strip_prefix("v[").and_then(|s| s.strip_suffix(']')),
+                    ) {
+                        // Resolve v[id] vs v[name]: parse actual as id, look up name
+                        if let Ok(id) = a_inner.parse::<u64>() {
+                            vertex_id_to_name
+                                .get(&NodeId(id))
+                                .map_or(false, |name| name == e_inner)
+                        } else {
+                            false
+                        }
+                    } else if let (Some(a_inner), Some(e_inner)) = (
+                        ak.strip_prefix("e[").and_then(|s| s.strip_suffix(']')),
+                        ek.strip_prefix("e[").and_then(|s| s.strip_suffix(']')),
+                    ) {
+                        if let Ok(id) = a_inner.parse::<u64>() {
+                            edge_id_to_name
+                                .get(&EdgeId(id))
+                                .map_or(false, |name| name == e_inner)
+                        } else {
+                            false
+                        }
+                    } else {
+                        false
+                    };
+                    keys_equal && values_match_ctx(av, ev, vertex_id_to_name, edge_id_to_name)
+                })
+            })
         }
         _ => actual == expected,
     }
@@ -928,8 +1056,7 @@ async fn main() {
         "WithVertexProgramStrategy",
         "WithVertexProgramRestrictionStrategy",
     ];
-    let skip_set: std::collections::HashSet<&str> =
-        skip_tags.iter().copied().collect();
+    let skip_set: std::collections::HashSet<&str> = skip_tags.iter().copied().collect();
 
     GremlinWorld::cucumber()
         .max_concurrent_scenarios(Some(4))
