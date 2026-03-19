@@ -30,6 +30,8 @@ pub enum Predicate {
     And(Vec<Predicate>),
     /// Compound predicate: any must match (P.gt(5).or(P.lt(1)))
     Or(Vec<Predicate>),
+    /// Negation of a predicate: P.not(P.eq(1))
+    Not(Box<Predicate>),
 }
 
 /// A single Gremlin traversal step.
@@ -99,8 +101,8 @@ pub enum GremlinStep {
     // ── Boolean steps ────────────────────────────────────────────────────────
     Where(Vec<GremlinStep>),
     Not(Vec<GremlinStep>),
-    And(Vec<GremlinStep>),
-    Or(Vec<GremlinStep>),
+    And(Vec<Vec<GremlinStep>>),
+    Or(Vec<Vec<GremlinStep>>),
     Is(Predicate),
 
     // ── Mutation steps ───────────────────────────────────────────────────────

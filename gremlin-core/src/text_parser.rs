@@ -522,16 +522,16 @@ fn parse_step_token(
                     }
                 } else {
                     // Build Or of And groups
-                    let mut or_steps = Vec::new();
+                    let mut or_branches: Vec<Vec<GremlinStep>> = Vec::new();
                     for group in or_groups {
                         if group.len() == 1 {
-                            or_steps.push(group.into_iter().next().unwrap());
+                            or_branches.push(group);
                         } else {
-                            // Wrap multiple AND predicates in an And step
-                            or_steps.push(GremlinStep::And(group));
+                            // Multiple AND predicates become a single branch
+                            or_branches.push(group);
                         }
                     }
-                    out.push(GremlinStep::Or(or_steps));
+                    out.push(GremlinStep::Or(or_branches));
                 }
             } else {
                 let pred = parse_predicate(args_str, resolve_param)?;
@@ -568,19 +568,11 @@ fn parse_step_token(
         }
         "and" => {
             let inner_traversals = parse_multi_traversal_args(args_str, resolve_param)?;
-            let inner_steps: Vec<GremlinStep> = inner_traversals
-                .into_iter()
-                .flat_map(|steps| steps.into_iter())
-                .collect();
-            out.push(GremlinStep::And(inner_steps));
+            out.push(GremlinStep::And(inner_traversals));
         }
         "or" => {
             let inner_traversals = parse_multi_traversal_args(args_str, resolve_param)?;
-            let inner_steps: Vec<GremlinStep> = inner_traversals
-                .into_iter()
-                .flat_map(|steps| steps.into_iter())
-                .collect();
-            out.push(GremlinStep::Or(inner_steps));
+            out.push(GremlinStep::Or(inner_traversals));
         }
         "addV" => {
             let args = parse_string_arg_list(args_str)?;
@@ -1328,6 +1320,12 @@ fn try_parse_predicate_single(
                 _ => return None,
             };
             Some(Predicate::IsType(GremlinValue::String(type_name)))
+        }
+        "not" => {
+            // P.not(P.eq(1)) — negate inner predicate
+            // The arg string is the inner predicate call
+            let inner = try_parse_predicate_call(args_str, resolve_param)?;
+            Some(Predicate::Not(Box::new(inner)))
         }
         _ => None,
     }

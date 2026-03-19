@@ -1313,11 +1313,11 @@ impl GremlinCompiler {
                     }
                 }
 
-                GremlinStep::And(steps_list) => {
+                GremlinStep::And(branches) => {
                     let child = current.take().ok_or(CompileError::MissingChild)?;
-                    let preds: Vec<Expr> = steps_list
+                    let preds: Vec<Expr> = branches
                         .iter()
-                        .map(|s| step_to_predicate(s, &current_alias))
+                        .map(|branch| steps_to_predicate(branch, &current_alias, &self.alias_map))
                         .collect();
                     let predicate = preds
                         .into_iter()
@@ -1333,11 +1333,11 @@ impl GremlinCompiler {
                     });
                 }
 
-                GremlinStep::Or(steps_list) => {
+                GremlinStep::Or(branches) => {
                     let child = current.take().ok_or(CompileError::MissingChild)?;
-                    let preds: Vec<Expr> = steps_list
+                    let preds: Vec<Expr> = branches
                         .iter()
-                        .map(|s| step_to_predicate(s, &current_alias))
+                        .map(|branch| steps_to_predicate(branch, &current_alias, &self.alias_map))
                         .collect();
                     let predicate = preds
                         .into_iter()
@@ -3287,7 +3287,8 @@ fn predicate_to_expr(pred: &Predicate, alias: &Identifier) -> Expr {
         | Predicate::NotRegex(_)
         | Predicate::IsType(_)
         | Predicate::And(_)
-        | Predicate::Or(_) => predicate_to_prop_expr(pred, var),
+        | Predicate::Or(_)
+        | Predicate::Not(_) => predicate_to_prop_expr(pred, var),
     }
 }
 
@@ -3425,6 +3426,10 @@ fn predicate_to_prop_expr(pred: &Predicate, prop_expr: Expr) -> Expr {
                 right: Box::new(predicate_to_prop_expr(p, prop_expr.clone())),
             })
         }
+        Predicate::Not(inner) => Expr::UnaryOp {
+            op: gql_core::ast::UnaryOp::Not,
+            expr: Box::new(predicate_to_prop_expr(inner, prop_expr)),
+        },
     }
 }
 /// in the alias map. Returns the variable expression for that label if so.
@@ -3464,7 +3469,8 @@ fn predicate_to_binary_op(pred: &Predicate) -> BinaryOp {
         | Predicate::NotRegex(_)
         | Predicate::IsType(_)
         | Predicate::And(_)
-        | Predicate::Or(_) => BinaryOp::Eq,
+        | Predicate::Or(_)
+        | Predicate::Not(_) => BinaryOp::Eq,
     }
 }
 
@@ -4127,8 +4133,14 @@ mod tests {
         let steps = vec![
             GremlinStep::V(None),
             GremlinStep::And(vec![
-                GremlinStep::Has("name".into(), Some(GremlinValue::String("marko".into()))),
-                GremlinStep::Has("age".into(), Some(GremlinValue::Integer(29))),
+                vec![GremlinStep::Has(
+                    "name".into(),
+                    Some(GremlinValue::String("marko".into())),
+                )],
+                vec![GremlinStep::Has(
+                    "age".into(),
+                    Some(GremlinValue::Integer(29)),
+                )],
             ]),
         ];
         let op = compiler.compile(&steps).unwrap();
@@ -4151,8 +4163,8 @@ mod tests {
         let steps = vec![
             GremlinStep::V(None),
             GremlinStep::Or(vec![
-                GremlinStep::HasLabel(vec!["person".into()]),
-                GremlinStep::HasLabel(vec!["software".into()]),
+                vec![GremlinStep::HasLabel(vec!["person".into()])],
+                vec![GremlinStep::HasLabel(vec!["software".into()])],
             ]),
         ];
         let op = compiler.compile(&steps).unwrap();
