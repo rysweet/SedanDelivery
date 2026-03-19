@@ -130,11 +130,24 @@ async fn given_crew_graph(world: &mut GremlinWorld) {
 
 #[given("the sink graph")]
 async fn given_sink_graph(world: &mut GremlinWorld) {
-    // The sink graph is not bundled — placeholder.
+    // The sink graph: one vertex "loop" with label "loops" and a self-edge "self".
     let store = InMemoryGraphStore::new();
     store.create_graph("sink").unwrap();
+    let mut props = HashMap::new();
+    props.insert("name".to_string(), Value::Str("loop".into()));
+    let loop_v = store
+        .create_node("sink", vec!["loops".to_string()], props)
+        .unwrap();
+    // Two self-edges
+    store
+        .create_edge("sink", loop_v, loop_v, "self".to_string(), HashMap::new())
+        .unwrap();
+    store
+        .create_edge("sink", loop_v, loop_v, "self".to_string(), HashMap::new())
+        .unwrap();
     world.store = Some(Arc::new(store));
     world.graph_name = "sink".into();
+    world.vertex_names.insert("loop".into(), loop_v);
 }
 
 #[given("an unsupported test")]

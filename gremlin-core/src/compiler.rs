@@ -216,9 +216,10 @@ impl GremlinCompiler {
         let mut pre_group_alias: Identifier = initial_alias.clone();
         // Track aliases for path() reconstruction
         let mut path_aliases: Vec<Identifier> = initial_path_aliases;
-        // Pending emit/until that appear before repeat()
+        // Pending emit/until/times that appear before repeat()
         let mut pending_emit = false;
         let mut pending_until: Option<Vec<GremlinStep>> = None;
+        let mut pending_times: Option<usize> = None;
         let mut pending_sack_init: Option<Expr> = None;
         // Track whether SackOp just ran, so that a following By() can rewrite the rhs
         let mut pending_sack_op = false;
@@ -1566,9 +1567,10 @@ impl GremlinCompiler {
                     } else {
                         None
                     };
+                    let times_val = pending_times.take();
                     current = Some(Operator::Repeat {
                         body: Box::new(body),
-                        times: None,
+                        times: times_val,
                         until: until_val,
                         emit: emit_val,
                         remap,
@@ -1580,6 +1582,9 @@ impl GremlinCompiler {
                     // Modify preceding Repeat
                     if let Some(Operator::Repeat { ref mut times, .. }) = current {
                         *times = Some(*n as usize);
+                    } else {
+                        // times() before repeat() — store as pending
+                        pending_times = Some(*n as usize);
                     }
                 }
 
