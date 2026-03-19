@@ -961,10 +961,7 @@ impl<'a> QueryExecutor<'a> {
                     // Produce a single Map {0: elem0, 1: elem1, ...}
                     let mut map = IndexMap::new();
                     for (i, item) in items.iter().enumerate() {
-                        map.insert(
-                            format!("{i}").into_boxed_str(),
-                            item.clone(),
-                        );
+                        map.insert(format!("{i}").into_boxed_str(), item.clone());
                     }
                     let mut row = Row::new();
                     row.insert(out_alias.0.clone(), Value::Map(map));
@@ -996,10 +993,7 @@ impl<'a> QueryExecutor<'a> {
         } else {
             for (i, row) in input.iter().enumerate() {
                 cx.budget.check_or_err()?;
-                let val = row
-                    .get(alias.as_str())
-                    .cloned()
-                    .unwrap_or(Value::Null);
+                let val = row.get(alias.as_str()).cloned().unwrap_or(Value::Null);
                 let pair = Value::List(vec![val, Value::Int(i as i64)]);
                 let mut new_row = Row::new();
                 new_row.insert(out_alias.0.clone(), pair);

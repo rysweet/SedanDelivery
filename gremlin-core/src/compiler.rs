@@ -1270,27 +1270,35 @@ impl GremlinCompiler {
                         // expression for the next project key with the by() expression.
                         if project_by_count < project_keys.len() {
                             // Check if the key looks like a sub-traversal
-                            let looks_like_traversal = key.contains('(')
-                                && !key.is_empty();
+                            let looks_like_traversal = key.contains('(') && !key.is_empty();
                             if looks_like_traversal {
                                 // Parse and compile the sub-traversal
                                 let no_param = |_: &str| -> Option<GremlinValue> { None };
-                                if let Ok(sub_steps) = crate::text_parser::parse_inner_traversal(
-                                    key,
-                                    &no_param,
-                                ) {
+                                if let Ok(sub_steps) =
+                                    crate::text_parser::parse_inner_traversal(key, &no_param)
+                                {
                                     if !sub_steps.is_empty() {
                                         let mut sub = self.sub_compiler();
-                                        if let Ok(sub_op) = sub.compile_seeded(&sub_steps, &pre_project_alias) {
+                                        if let Ok(sub_op) =
+                                            sub.compile_seeded(&sub_steps, &pre_project_alias)
+                                        {
                                             let sub_out_alias = sub.last_alias.clone();
                                             self.absorb(&sub);
 
                                             // Convert to GremlinProject
                                             match &current {
                                                 Some(Operator::Project { items, child }) => {
-                                                    let mut entries: Vec<(String, Operator, Identifier)> = Vec::new();
-                                                    for (i, (expr, alias_opt)) in items.iter().enumerate() {
-                                                        if i >= project_keys.len() { break; }
+                                                    let mut entries: Vec<(
+                                                        String,
+                                                        Operator,
+                                                        Identifier,
+                                                    )> = Vec::new();
+                                                    for (i, (expr, alias_opt)) in
+                                                        items.iter().enumerate()
+                                                    {
+                                                        if i >= project_keys.len() {
+                                                            break;
+                                                        }
                                                         if i == project_by_count {
                                                             entries.push((
                                                                 project_keys[i].clone(),
@@ -1299,15 +1307,25 @@ impl GremlinCompiler {
                                                             ));
                                                         } else {
                                                             let prop_op = Operator::Project {
-                                                                items: vec![(expr.clone(), alias_opt.clone())],
-                                                                child: Box::new(Operator::SingleRow),
+                                                                items: vec![(
+                                                                    expr.clone(),
+                                                                    alias_opt.clone(),
+                                                                )],
+                                                                child: Box::new(
+                                                                    Operator::SingleRow,
+                                                                ),
                                                             };
                                                             entries.push((
                                                                 project_keys[i].clone(),
                                                                 prop_op,
-                                                                alias_opt.as_ref()
+                                                                alias_opt
+                                                                    .as_ref()
                                                                     .cloned()
-                                                                    .unwrap_or_else(|| Identifier::new(&project_keys[i])),
+                                                                    .unwrap_or_else(|| {
+                                                                        Identifier::new(
+                                                                            &project_keys[i],
+                                                                        )
+                                                                    }),
                                                             ));
                                                         }
                                                     }
@@ -1317,7 +1335,11 @@ impl GremlinCompiler {
                                                         current_alias: pre_project_alias.clone(),
                                                     });
                                                 }
-                                                Some(Operator::GremlinProject { entries: old_entries, child, current_alias: ca }) => {
+                                                Some(Operator::GremlinProject {
+                                                    entries: old_entries,
+                                                    child,
+                                                    current_alias: ca,
+                                                }) => {
                                                     let mut entries = old_entries.clone();
                                                     if project_by_count < entries.len() {
                                                         entries[project_by_count] = (
@@ -1342,8 +1364,13 @@ impl GremlinCompiler {
                                         } else {
                                             // Compilation failed — fall back to expression
                                             let by_expr = make_by_expr(key, &pre_project_alias);
-                                            if let Some(Operator::Project { ref mut items, .. }) = current {
-                                                if let Some((expr, _)) = items.get_mut(project_by_count) {
+                                            if let Some(Operator::Project {
+                                                ref mut items, ..
+                                            }) = current
+                                            {
+                                                if let Some((expr, _)) =
+                                                    items.get_mut(project_by_count)
+                                                {
                                                     *expr = by_expr;
                                                 }
                                             }
@@ -1355,8 +1382,11 @@ impl GremlinCompiler {
                                     } else {
                                         // Empty steps — fall back
                                         let by_expr = make_by_expr(key, &pre_project_alias);
-                                        if let Some(Operator::Project { ref mut items, .. }) = current {
-                                            if let Some((expr, _)) = items.get_mut(project_by_count) {
+                                        if let Some(Operator::Project { ref mut items, .. }) =
+                                            current
+                                        {
+                                            if let Some((expr, _)) = items.get_mut(project_by_count)
+                                            {
                                                 *expr = by_expr;
                                             }
                                         }
@@ -1389,7 +1419,11 @@ impl GremlinCompiler {
                                     if let Some((expr, _)) = items.get_mut(project_by_count) {
                                         *expr = by_expr;
                                     }
-                                } else if let Some(Operator::GremlinProject { ref mut entries, .. }) = current {
+                                } else if let Some(Operator::GremlinProject {
+                                    ref mut entries,
+                                    ..
+                                }) = current
+                                {
                                     // Already converted to GremlinProject — update the entry
                                     if project_by_count < entries.len() {
                                         let by_ex = if key.is_empty() {
@@ -1398,7 +1432,12 @@ impl GremlinCompiler {
                                             make_by_expr(key, &pre_project_alias)
                                         };
                                         let prop_op = Operator::Project {
-                                            items: vec![(by_ex, Some(Identifier::new(&project_keys[project_by_count])))],
+                                            items: vec![(
+                                                by_ex,
+                                                Some(Identifier::new(
+                                                    &project_keys[project_by_count],
+                                                )),
+                                            )],
                                             child: Box::new(Operator::SingleRow),
                                         };
                                         entries[project_by_count] = (
@@ -1437,7 +1476,8 @@ impl GremlinCompiler {
                             match &current {
                                 Some(Operator::Project { items, child }) => {
                                     // Build GremlinProject entries from existing items
-                                    let mut entries: Vec<(String, Operator, Identifier)> = Vec::new();
+                                    let mut entries: Vec<(String, Operator, Identifier)> =
+                                        Vec::new();
                                     for (i, (_expr, alias_opt)) in items.iter().enumerate() {
                                         if i < project_keys.len() {
                                             if i == project_by_count {
@@ -1459,9 +1499,9 @@ impl GremlinCompiler {
                                                 entries.push((
                                                     project_keys[i].clone(),
                                                     prop_op,
-                                                    alias_opt.as_ref()
-                                                        .cloned()
-                                                        .unwrap_or_else(|| Identifier::new(&project_keys[i])),
+                                                    alias_opt.as_ref().cloned().unwrap_or_else(
+                                                        || Identifier::new(&project_keys[i]),
+                                                    ),
                                                 ));
                                             } else {
                                                 // Not yet filled — default to property access
@@ -1475,9 +1515,9 @@ impl GremlinCompiler {
                                                 entries.push((
                                                     project_keys[i].clone(),
                                                     prop_op,
-                                                    alias_opt.as_ref()
-                                                        .cloned()
-                                                        .unwrap_or_else(|| Identifier::new(&project_keys[i])),
+                                                    alias_opt.as_ref().cloned().unwrap_or_else(
+                                                        || Identifier::new(&project_keys[i]),
+                                                    ),
                                                 ));
                                             }
                                         }
@@ -1488,7 +1528,11 @@ impl GremlinCompiler {
                                         current_alias: pre_project_alias.clone(),
                                     });
                                 }
-                                Some(Operator::GremlinProject { entries: old_entries, child, current_alias: ca }) => {
+                                Some(Operator::GremlinProject {
+                                    entries: old_entries,
+                                    child,
+                                    current_alias: ca,
+                                }) => {
                                     // Already a GremlinProject — update the current entry
                                     let mut entries = old_entries.clone();
                                     if project_by_count < entries.len() {
@@ -3052,6 +3096,32 @@ impl GremlinCompiler {
                     current = Some(Operator::Filter {
                         predicate: Expr::IsNotNull(Box::new(Expr::Variable(alias.clone()))),
                         child: Box::new(project),
+                    });
+                    current_alias = alias;
+                }
+
+                GremlinStep::StringOpLocal(fn_name) => {
+                    let child = current.take().ok_or(CompileError::MissingChild)?;
+                    let alias = self.next_alias("sloc");
+                    // Parse function name and optional extra args from \0-separated string
+                    let parts: Vec<&str> = fn_name.split('\0').collect();
+                    let func_name = parts[0];
+                    let mut args = vec![Expr::Variable(current_alias.clone())];
+                    for extra in &parts[1..] {
+                        args.push(Expr::Str(extra.to_string().into_boxed_str()));
+                    }
+                    let mut items = vec![(
+                        Expr::FunctionCall {
+                            name: SmolStr::new(func_name),
+                            args,
+                            distinct: false,
+                        },
+                        Some(alias.clone()),
+                    )];
+                    items.extend(self.label_carry_items());
+                    current = Some(Operator::Project {
+                        items,
+                        child: Box::new(child),
                     });
                     current_alias = alias;
                 }
@@ -5096,7 +5166,8 @@ mod tests {
     #[test]
     fn compile_project_by_traversal() {
         let no_param = |_: &str| -> Option<GremlinValue> { None };
-        let steps = crate::text_parser::parse_inner_traversal("__.inE().count()", &no_param).unwrap();
+        let steps =
+            crate::text_parser::parse_inner_traversal("__.inE().count()", &no_param).unwrap();
         eprintln!("Parsed sub-traversal steps: {steps:?}");
         assert!(!steps.is_empty(), "Should parse to non-empty steps");
 

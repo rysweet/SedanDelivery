@@ -230,6 +230,9 @@ pub enum GremlinStep {
     Conjoin(String),
     /// `format(pattern)` — format string
     Format(String),
+    /// String operation with `Scope.local` — apply element-wise to list.
+    /// The String is the Gremlin function name (e.g. "gremlin_tolower_local").
+    StringOpLocal(String),
     /// `typeOf()` — return type name as string
     TypeOf,
 

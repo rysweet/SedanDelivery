@@ -393,7 +393,7 @@ fn parse_step_token(
                 .any(|a| matches!(a, GremlinValue::String(s) if s == "Scope.local"));
             if is_local {
                 // count(local) — count elements in the list/map value
-                out.push(GremlinStep::Length);
+                out.push(GremlinStep::StringOpLocal("gremlin_length_local".into()));
             } else {
                 out.push(GremlinStep::Count);
             }
@@ -864,7 +864,9 @@ fn parse_step_token(
                 }
             }
             // with(WithOptions.indexer, WithOptions.map) — convert index to map mode
-            if args.iter().any(|a| a == "WithOptions.indexer") && args.iter().any(|a| a == "WithOptions.map") {
+            if args.iter().any(|a| a == "WithOptions.indexer")
+                && args.iter().any(|a| a == "WithOptions.map")
+            {
                 for step in out.iter_mut().rev() {
                     if matches!(step, GremlinStep::Index) {
                         *step = GremlinStep::IndexWithMap;
@@ -890,29 +892,65 @@ fn parse_step_token(
         }
         // ── String steps ────────────────────────────────────────────────────
         "toLower" => {
-            out.push(GremlinStep::ToLower);
+            if args_str.contains("local") || args_str.contains("Scope.local") {
+                out.push(GremlinStep::StringOpLocal("gremlin_tolower_local".into()));
+            } else {
+                out.push(GremlinStep::ToLower);
+            }
         }
         "toUpper" => {
-            out.push(GremlinStep::ToUpper);
+            if args_str.contains("local") || args_str.contains("Scope.local") {
+                out.push(GremlinStep::StringOpLocal("gremlin_toupper_local".into()));
+            } else {
+                out.push(GremlinStep::ToUpper);
+            }
         }
         "trim" => {
-            out.push(GremlinStep::Trim);
+            if args_str.contains("local") || args_str.contains("Scope.local") {
+                out.push(GremlinStep::StringOpLocal("gremlin_trim_local".into()));
+            } else {
+                out.push(GremlinStep::Trim);
+            }
         }
         "lTrim" => {
-            out.push(GremlinStep::LTrim);
+            if args_str.contains("local") || args_str.contains("Scope.local") {
+                out.push(GremlinStep::StringOpLocal("gremlin_ltrim_local".into()));
+            } else {
+                out.push(GremlinStep::LTrim);
+            }
         }
         "rTrim" => {
-            out.push(GremlinStep::RTrim);
+            if args_str.contains("local") || args_str.contains("Scope.local") {
+                out.push(GremlinStep::StringOpLocal("gremlin_rtrim_local".into()));
+            } else {
+                out.push(GremlinStep::RTrim);
+            }
         }
         "length" => {
-            out.push(GremlinStep::Length);
+            if args_str.contains("local") || args_str.contains("Scope.local") {
+                out.push(GremlinStep::StringOpLocal("gremlin_length_local".into()));
+            } else {
+                out.push(GremlinStep::Length);
+            }
         }
         "reverse" => {
             out.push(GremlinStep::Reverse);
         }
         "replace" => {
             let args = parse_string_arg_list(args_str)?;
-            if args.len() >= 2 {
+            let is_local = args
+                .first()
+                .map(|a| a.contains("local") || a == "Scope.local")
+                .unwrap_or(false);
+            if is_local {
+                // replace(local, old, new)
+                if args.len() >= 3 {
+                    out.push(GremlinStep::StringOpLocal(format!(
+                        "gremlin_replace_local\x00{}\x00{}",
+                        args[1], args[2]
+                    )));
+                }
+            } else if args.len() >= 2 {
                 out.push(GremlinStep::Replace(args[0].clone(), args[1].clone()));
             } else {
                 return Err(TextParseError::InvalidArgument(
@@ -922,12 +960,23 @@ fn parse_step_token(
         }
         "split" => {
             let args = parse_string_arg_list(args_str)?;
-            if !args.is_empty() {
+            let is_local = args
+                .first()
+                .map(|a| a.contains("local") || a == "Scope.local")
+                .unwrap_or(false);
+            if is_local {
+                // split(local, sep)
+                if args.len() >= 2 {
+                    out.push(GremlinStep::StringOpLocal(format!(
+                        "gremlin_split_local\x00{}",
+                        args[1]
+                    )));
+                }
+            } else if !args.is_empty() {
                 out.push(GremlinStep::Split(args[0].clone()));
             } else {
-                return Err(TextParseError::InvalidArgument(
-                    "split requires 1 argument".into(),
-                ));
+                // split("") — split each character
+                out.push(GremlinStep::Split(String::new()));
             }
         }
         "substring" => {

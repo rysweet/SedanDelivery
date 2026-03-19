@@ -358,6 +358,13 @@ pub(super) fn builtin_length(vals: Vec<Value>) -> Result<Value, GqlError> {
     match &vals[0] {
         Value::Null => Ok(Value::Null),
         Value::Str(s) => Ok(Value::Int(s.chars().count() as i64)),
+        Value::List(items) => {
+            let results: Result<Vec<Value>, _> = items
+                .iter()
+                .map(|v| builtin_length(vec![v.clone()]))
+                .collect();
+            Ok(Value::List(results?))
+        }
         other => type_error("length", other),
     }
 }
@@ -367,6 +374,13 @@ pub(super) fn builtin_toupper(vals: Vec<Value>) -> Result<Value, GqlError> {
     match &vals[0] {
         Value::Null => Ok(Value::Null),
         Value::Str(s) => Ok(Value::Str(s.to_uppercase().into_boxed_str())),
+        Value::List(items) => {
+            let results: Result<Vec<Value>, _> = items
+                .iter()
+                .map(|v| builtin_toupper(vec![v.clone()]))
+                .collect();
+            Ok(Value::List(results?))
+        }
         other => type_error("toUpper", other),
     }
 }
@@ -376,6 +390,13 @@ pub(super) fn builtin_tolower(vals: Vec<Value>) -> Result<Value, GqlError> {
     match &vals[0] {
         Value::Null => Ok(Value::Null),
         Value::Str(s) => Ok(Value::Str(s.to_lowercase().into_boxed_str())),
+        Value::List(items) => {
+            let results: Result<Vec<Value>, _> = items
+                .iter()
+                .map(|v| builtin_tolower(vec![v.clone()]))
+                .collect();
+            Ok(Value::List(results?))
+        }
         other => type_error("toLower", other),
     }
 }
@@ -385,6 +406,13 @@ pub(super) fn builtin_trim(vals: Vec<Value>) -> Result<Value, GqlError> {
     match &vals[0] {
         Value::Null => Ok(Value::Null),
         Value::Str(s) => Ok(Value::Str(s.trim().to_string().into_boxed_str())),
+        Value::List(items) => {
+            let results: Result<Vec<Value>, _> = items
+                .iter()
+                .map(|v| builtin_trim(vec![v.clone()]))
+                .collect();
+            Ok(Value::List(results?))
+        }
         other => type_error("trim", other),
     }
 }
@@ -394,6 +422,13 @@ pub(super) fn builtin_ltrim(vals: Vec<Value>) -> Result<Value, GqlError> {
     match &vals[0] {
         Value::Null => Ok(Value::Null),
         Value::Str(s) => Ok(Value::Str(s.trim_start().to_string().into_boxed_str())),
+        Value::List(items) => {
+            let results: Result<Vec<Value>, _> = items
+                .iter()
+                .map(|v| builtin_ltrim(vec![v.clone()]))
+                .collect();
+            Ok(Value::List(results?))
+        }
         other => type_error("ltrim", other),
     }
 }
@@ -403,6 +438,13 @@ pub(super) fn builtin_rtrim(vals: Vec<Value>) -> Result<Value, GqlError> {
     match &vals[0] {
         Value::Null => Ok(Value::Null),
         Value::Str(s) => Ok(Value::Str(s.trim_end().to_string().into_boxed_str())),
+        Value::List(items) => {
+            let results: Result<Vec<Value>, _> = items
+                .iter()
+                .map(|v| builtin_rtrim(vec![v.clone()]))
+                .collect();
+            Ok(Value::List(results?))
+        }
         other => type_error("rtrim", other),
     }
 }
@@ -486,6 +528,13 @@ pub(super) fn builtin_replace(vals: Vec<Value>) -> Result<Value, GqlError> {
         (Value::Str(s), Value::Str(from), Value::Str(to)) => Ok(Value::Str(
             s.replace(from.as_ref(), to.as_ref()).into_boxed_str(),
         )),
+        (Value::List(items), from, to) => {
+            let results: Result<Vec<Value>, _> = items
+                .iter()
+                .map(|v| builtin_replace(vec![v.clone(), from.clone(), to.clone()]))
+                .collect();
+            Ok(Value::List(results?))
+        }
         _ => Err(GqlError::Execution(ExecutionError::TypeMismatch {
             expected: "String, String, String".to_string(),
             actual: format!(
@@ -509,6 +558,13 @@ pub(super) fn builtin_split(vals: Vec<Value>) -> Result<Value, GqlError> {
                 .map(|p| Value::Str(p.to_string().into_boxed_str()))
                 .collect();
             Ok(Value::List(parts))
+        }
+        (Value::List(items), delim) => {
+            let results: Result<Vec<Value>, _> = items
+                .iter()
+                .map(|v| builtin_split(vec![v.clone(), delim.clone()]))
+                .collect();
+            Ok(Value::List(results?))
         }
         _ => Err(GqlError::Execution(ExecutionError::TypeMismatch {
             expected: "String, String".to_string(),

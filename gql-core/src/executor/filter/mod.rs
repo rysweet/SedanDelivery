@@ -454,10 +454,11 @@ pub fn eval_function_with_vals(name: &str, vals: Vec<Value>) -> Result<Value, Gq
         },
         "gremlin_length" => match vals.first() {
             Some(Value::Str(s)) => Ok(Value::Int(s.len() as i64)),
-            Some(Value::List(_)) => Err(GqlError::Execution(ExecutionError::TypeMismatch {
-                expected: "String".into(), actual: "List".into(),
-            })),
             Some(Value::Null) => Ok(Value::Null),
+            Some(other) => Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                expected: "The length() step can only take string as argument".into(),
+                actual: other.type_name().into(),
+            })),
             _ => Ok(Value::Int(0)),
         },
         "gremlin_reverse" => match vals.first() {
@@ -482,10 +483,14 @@ pub fn eval_function_with_vals(name: &str, vals: Vec<Value>) -> Result<Value, Gq
         },
         "gremlin_split" => match (vals.first(), vals.get(1)) {
             (Some(Value::Str(s)), Some(Value::Str(sep))) => {
-                let parts: Vec<Value> = s
-                    .split(sep.as_ref())
-                    .map(|p| Value::Str(p.into()))
-                    .collect();
+                let parts: Vec<Value> = if sep.is_empty() {
+                    // Empty separator: split into individual characters
+                    s.chars().map(|c| Value::Str(c.to_string().into())).collect()
+                } else {
+                    s.split(sep.as_ref())
+                        .map(|p| Value::Str(p.into()))
+                        .collect()
+                };
                 Ok(Value::List(parts))
             }
             (Some(Value::Null), _) => Ok(Value::Null),
@@ -591,6 +596,121 @@ pub fn eval_function_with_vals(name: &str, vals: Vec<Value>) -> Result<Value, Gq
                 .collect();
             Ok(Value::List(results))
         }
+        "gremlin_tolower_local" => match vals.first() {
+            Some(Value::List(items)) => {
+                let results: Vec<Value> = items.iter().map(|v| match v {
+                    Value::Str(s) => Value::Str(s.to_lowercase().into()),
+                    Value::Null => Value::Null,
+                    other => other.clone(),
+                }).collect();
+                Ok(Value::List(results))
+            }
+            _ => eval_function_with_vals("gremlin_tolower", vals),
+        },
+        "gremlin_toupper_local" => match vals.first() {
+            Some(Value::List(items)) => {
+                let results: Vec<Value> = items.iter().map(|v| match v {
+                    Value::Str(s) => Value::Str(s.to_uppercase().into()),
+                    Value::Null => Value::Null,
+                    other => other.clone(),
+                }).collect();
+                Ok(Value::List(results))
+            }
+            _ => eval_function_with_vals("gremlin_toupper", vals),
+        },
+        "gremlin_trim_local" => match vals.first() {
+            Some(Value::List(items)) => {
+                // Validate all elements are String or Null
+                for v in items {
+                    if !matches!(v, Value::Str(_) | Value::Null) {
+                        return Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                            expected: "The trim(local) step can only take string or list of strings".into(),
+                            actual: v.type_name().into(),
+                        }));
+                    }
+                }
+                let results: Vec<Value> = items.iter().map(|v| match v {
+                    Value::Str(s) => Value::Str(s.trim().into()),
+                    _ => Value::Null,
+                }).collect();
+                Ok(Value::List(results))
+            }
+            _ => eval_function_with_vals("gremlin_trim", vals),
+        },
+        "gremlin_ltrim_local" => match vals.first() {
+            Some(Value::List(items)) => {
+                for v in items {
+                    if !matches!(v, Value::Str(_) | Value::Null) {
+                        return Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                            expected: "The lTrim(local) step can only take string or list of strings".into(),
+                            actual: v.type_name().into(),
+                        }));
+                    }
+                }
+                let results: Vec<Value> = items.iter().map(|v| match v {
+                    Value::Str(s) => Value::Str(s.trim_start().into()),
+                    _ => Value::Null,
+                }).collect();
+                Ok(Value::List(results))
+            }
+            _ => eval_function_with_vals("gremlin_ltrim", vals),
+        },
+        "gremlin_rtrim_local" => match vals.first() {
+            Some(Value::List(items)) => {
+                for v in items {
+                    if !matches!(v, Value::Str(_) | Value::Null) {
+                        return Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                            expected: "The rTrim(local) step can only take string or list of strings".into(),
+                            actual: v.type_name().into(),
+                        }));
+                    }
+                }
+                let results: Vec<Value> = items.iter().map(|v| match v {
+                    Value::Str(s) => Value::Str(s.trim_end().into()),
+                    _ => Value::Null,
+                }).collect();
+                Ok(Value::List(results))
+            }
+            _ => eval_function_with_vals("gremlin_rtrim", vals),
+        },
+        "gremlin_replace_local" => match (vals.first(), vals.get(1), vals.get(2)) {
+            (Some(Value::List(items)), Some(Value::Str(old)), Some(Value::Str(new))) => {
+                let results: Vec<Value> = items.iter().map(|v| match v {
+                    Value::Str(s) => Value::Str(s.replace(old.as_ref(), new.as_ref()).into()),
+                    Value::Null => Value::Null,
+                    other => other.clone(),
+                }).collect();
+                Ok(Value::List(results))
+            }
+            _ => eval_function_with_vals("gremlin_replace", vals),
+        },
+        "gremlin_split_local" => match (vals.first(), vals.get(1)) {
+            (Some(Value::List(items)), Some(Value::Str(sep))) => {
+                let results: Vec<Value> = items.iter().map(|v| match v {
+                    Value::Str(s) => {
+                        let parts: Vec<Value> = if sep.is_empty() {
+                            s.chars().map(|c| Value::Str(c.to_string().into())).collect()
+                        } else {
+                            s.split(sep.as_ref())
+                                .map(|p| Value::Str(p.into()))
+                                .collect()
+                        };
+                        Value::List(parts)
+                    }
+                    Value::Null => Value::Null,
+                    other => other.clone(),
+                }).collect();
+                Ok(Value::List(results))
+            }
+            _ => eval_function_with_vals("gremlin_split", vals),
+        },
+        "gremlin_length_local" => match vals.first() {
+            Some(Value::List(l)) => Ok(Value::Int(l.len() as i64)),
+            Some(Value::Map(m)) => Ok(Value::Int(m.len() as i64)),
+            Some(Value::Str(s)) => Ok(Value::Int(s.len() as i64)),
+            Some(Value::Null) => Ok(Value::Null),
+            _ => Ok(Value::Int(0)),
+        },
         "gremlin_tail_local" => {
             let val = vals.first().cloned().unwrap_or(Value::Null);
             let n = match vals.get(1) {

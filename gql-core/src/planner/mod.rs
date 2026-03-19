@@ -358,9 +358,7 @@ impl Operator {
             | Operator::GremlinSimplePath { child, .. }
             | Operator::GremlinIndex { child, .. } => vec![child],
 
-            Operator::GremlinProject {
-                entries, child, ..
-            } => {
+            Operator::GremlinProject { entries, child, .. } => {
                 let mut v = vec![child.as_ref()];
                 for (_, op, _) in entries {
                     v.push(op);
