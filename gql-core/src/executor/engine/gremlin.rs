@@ -4,6 +4,7 @@ use crate::ast::{Expr, Identifier};
 use crate::error::{ExecutionError, GqlError};
 use crate::planner::Operator;
 use crate::types::Value;
+use indexmap::IndexMap;
 
 use super::helpers::inject_parameters;
 use crate::executor::engine::{ExecContext, QueryExecutor, Row};
@@ -342,7 +343,7 @@ impl<'a> QueryExecutor<'a> {
             key,
             child,
             value_alias,
-            by_key,
+            by_keys,
         } = op
         else {
             debug_assert!(false, "expected GremlinAggregate operator");
@@ -355,11 +356,26 @@ impl<'a> QueryExecutor<'a> {
         let agg_col = format!("__gremlin_agg_{key}");
 
         // Collect all values seen across all rows.
-        // When by_key is set, project the property from the traverser instead.
+        // When by_keys is set, project properties from the traverser instead.
         let mut collected: Vec<Value> = Vec::new();
         for row in &input {
-            if let Some(by_prop) = by_key {
-                // by("prop") modulation: resolve property from the node/edge value
+            if by_keys.len() >= 2 {
+                // Multiple by() keys — collect a map of {key1: val1, key2: val2, ...}
+                let mut map = IndexMap::new();
+                for by_prop in by_keys {
+                    let prop_expr = Expr::Property(
+                        Box::new(Expr::Variable(value_alias.clone())),
+                        smol_str::SmolStr::new(by_prop),
+                    );
+                    let ctx = self.build_filter_ctx(cx.graph, row)?;
+                    let val = self
+                        .eval_with_storage(cx.graph, &prop_expr, row, &ctx)
+                        .unwrap_or(Value::Null);
+                    map.insert(by_prop.clone().into_boxed_str(), val);
+                }
+                collected.push(Value::Map(map));
+            } else if let Some(by_prop) = by_keys.first() {
+                // Single by("prop") modulation: resolve property from the node/edge value
                 let prop_expr = Expr::Property(
                     Box::new(Expr::Variable(value_alias.clone())),
                     smol_str::SmolStr::new(by_prop),
@@ -1176,7 +1192,7 @@ mod tests {
                     alias: Identifier::new("n"),
                 }),
                 value_alias: Identifier::new("n"),
-                by_key: None,
+                by_keys: vec![],
             }),
         };
 
@@ -1211,7 +1227,7 @@ mod tests {
                     }),
                 }),
                 value_alias: Identifier::new("m"),
-                by_key: None,
+                by_keys: vec![],
             }),
         };
 
@@ -1237,7 +1253,7 @@ mod tests {
                 alias: Identifier::new("n"),
             }),
             value_alias: Identifier::new("n"),
-            by_key: None,
+            by_keys: vec![],
         };
 
         let mut budget = ExecutionBudget::unlimited();
@@ -1266,7 +1282,7 @@ mod tests {
                     alias: Identifier::new("n"),
                 }),
                 value_alias: Identifier::new("n"),
-                by_key: None,
+                by_keys: vec![],
             }),
         };
 
@@ -1301,7 +1317,7 @@ mod tests {
                     alias: Identifier::new("n"),
                 }),
                 value_alias: Identifier::new("n"),
-                by_key: None,
+                by_keys: vec![],
             }),
         };
 

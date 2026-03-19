@@ -574,9 +574,7 @@ impl<'a> QueryExecutor<'a> {
                                             );
                                         }
                                         for (k, v) in data.properties.into_iter() {
-                                            if keys.is_empty()
-                                                || keys.iter().any(|fk| fk == &k)
-                                            {
+                                            if keys.is_empty() || keys.iter().any(|fk| fk == &k) {
                                                 wrapped.insert(
                                                     k.into_boxed_str(),
                                                     Value::List(vec![v]),
@@ -600,15 +598,11 @@ impl<'a> QueryExecutor<'a> {
                                             );
                                             wrapped.insert(
                                                 "t[label]".into(),
-                                                Value::Str(
-                                                    data.rel_type.as_str().into(),
-                                                ),
+                                                Value::Str(data.rel_type.as_str().into()),
                                             );
                                         }
                                         for (k, v) in data.properties.into_iter() {
-                                            if keys.is_empty()
-                                                || keys.iter().any(|fk| fk == &k)
-                                            {
+                                            if keys.is_empty() || keys.iter().any(|fk| fk == &k) {
                                                 wrapped.insert(
                                                     k.into_boxed_str(),
                                                     Value::List(vec![v]),
@@ -624,8 +618,7 @@ impl<'a> QueryExecutor<'a> {
                                 let wrapped: indexmap::IndexMap<Box<str>, Value> = m
                                     .into_iter()
                                     .filter(|(k, _)| {
-                                        keys.is_empty()
-                                            || keys.iter().any(|fk| fk.as_str() == &**k)
+                                        keys.is_empty() || keys.iter().any(|fk| fk.as_str() == &**k)
                                     })
                                     .map(|(k, v)| (k, Value::List(vec![v])))
                                     .collect();

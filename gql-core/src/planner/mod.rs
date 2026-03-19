@@ -237,8 +237,9 @@ pub enum Operator {
         child: Box<Operator>,
         /// The alias whose value is collected into the aggregate bucket.
         value_alias: Identifier,
-        /// When set via `.by("prop")`, collect this property instead of the raw traverser.
-        by_key: Option<String>,
+        /// When set via `.by("prop")`, collect these properties instead of the raw traverser.
+        /// A single key projects that property; two keys project a map of both.
+        by_keys: Vec<String>,
     },
     /// Gremlin path() — extract path from traverser aliases.
     GremlinPath {

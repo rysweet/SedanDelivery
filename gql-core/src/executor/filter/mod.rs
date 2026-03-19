@@ -1101,6 +1101,8 @@ pub fn eval_function_with_vals(name: &str, vals: Vec<Value>) -> Result<Value, Gq
                     Ok(Value::Int(sum_i))
                 }
             }
+            Some(Value::Int(n)) => Ok(Value::Int(*n)),
+            Some(Value::Float(f)) => Ok(Value::Float(*f)),
             Some(Value::Null) => Ok(Value::Null),
             _ => Ok(Value::Null),
         },
@@ -1122,6 +1124,9 @@ pub fn eval_function_with_vals(name: &str, vals: Vec<Value>) -> Result<Value, Gq
                 }
                 Ok(result.unwrap_or(Value::Null))
             }
+            Some(Value::Int(n)) => Ok(Value::Int(*n)),
+            Some(Value::Float(f)) => Ok(Value::Float(*f)),
+            Some(Value::Str(s)) => Ok(Value::Str(s.clone())),
             Some(Value::Null) => Ok(Value::Null),
             _ => Ok(Value::Null),
         },
@@ -1143,6 +1148,9 @@ pub fn eval_function_with_vals(name: &str, vals: Vec<Value>) -> Result<Value, Gq
                 }
                 Ok(result.unwrap_or(Value::Null))
             }
+            Some(Value::Int(n)) => Ok(Value::Int(*n)),
+            Some(Value::Float(f)) => Ok(Value::Float(*f)),
+            Some(Value::Str(s)) => Ok(Value::Str(s.clone())),
             Some(Value::Null) => Ok(Value::Null),
             _ => Ok(Value::Null),
         },
@@ -1163,6 +1171,8 @@ pub fn eval_function_with_vals(name: &str, vals: Vec<Value>) -> Result<Value, Gq
                     Ok(Value::Float(sum / count as f64))
                 }
             }
+            Some(Value::Int(n)) => Ok(Value::Float(*n as f64)),
+            Some(Value::Float(f)) => Ok(Value::Float(*f)),
             Some(Value::Null) => Ok(Value::Null),
             _ => Ok(Value::Null),
         },

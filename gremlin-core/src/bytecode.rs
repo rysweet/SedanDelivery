@@ -26,6 +26,10 @@ pub enum Predicate {
     NotRegex(GremlinValue),
     /// `P.typeOf(GType.STRING)` — check if value is of the specified Gremlin type
     IsType(GremlinValue),
+    /// Compound predicate: all must match (P.gt(1).and(P.lt(5)))
+    And(Vec<Predicate>),
+    /// Compound predicate: any must match (P.gt(5).or(P.lt(1)))
+    Or(Vec<Predicate>),
 }
 
 /// A single Gremlin traversal step.

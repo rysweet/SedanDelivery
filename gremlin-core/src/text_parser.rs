@@ -128,7 +128,10 @@ fn extract_with_sack_value(
     parse_sack_arg(after, resolve_param)
 }
 
-fn parse_sack_arg(after: &str, resolve_param: &dyn Fn(&str) -> Option<GremlinValue>) -> Option<GremlinValue> {
+fn parse_sack_arg(
+    after: &str,
+    resolve_param: &dyn Fn(&str) -> Option<GremlinValue>,
+) -> Option<GremlinValue> {
     let mut depth = 1;
     let mut end = 0;
     for (i, c) in after.char_indices() {
@@ -153,8 +156,16 @@ fn parse_sack_arg(after: &str, resolve_param: &dyn Fn(&str) -> Option<GremlinVal
     parse_literal_value(first_arg, resolve_param)
 }
 
-fn parse_literal_value(s: &str, resolve_param: &dyn Fn(&str) -> Option<GremlinValue>) -> Option<GremlinValue> {
-    if let Some(stripped) = s.strip_suffix('b').or_else(|| s.strip_suffix('s')).or_else(|| s.strip_suffix('i')).or_else(|| s.strip_suffix('l')) {
+fn parse_literal_value(
+    s: &str,
+    resolve_param: &dyn Fn(&str) -> Option<GremlinValue>,
+) -> Option<GremlinValue> {
+    if let Some(stripped) = s
+        .strip_suffix('b')
+        .or_else(|| s.strip_suffix('s'))
+        .or_else(|| s.strip_suffix('i'))
+        .or_else(|| s.strip_suffix('l'))
+    {
         if let Ok(v) = stripped.parse::<i64>() {
             return Some(GremlinValue::Integer(v));
         }
@@ -487,34 +498,40 @@ fn parse_step_token(
             let s = args_str.trim();
             let chain_parts = split_predicate_chain(s);
             if chain_parts.len() > 1 {
-                // Multiple predicates chained with and/or
-                // Parse each part and emit as And/Or steps
-                let mut and_preds = Vec::new();
-                let mut or_preds = Vec::new();
-                let mut is_or = false;
-                for (i, (op, part)) in chain_parts.iter().enumerate() {
+                // Parse each part individually
+                let mut parsed: Vec<(String, GremlinStep)> = Vec::new();
+                for (op, part) in &chain_parts {
                     if let Some(pred) = try_parse_predicate_call(part, resolve_param) {
-                        let step = GremlinStep::Is(pred);
-                        if i == 0 {
-                            and_preds.push(step);
-                        } else if *op == "or" {
-                            is_or = true;
-                            or_preds.push(step);
-                        } else {
-                            and_preds.push(step);
-                        }
+                        parsed.push((op.to_string(), GremlinStep::Is(pred)));
                     }
                 }
-                if is_or {
-                    // Combine all and_preds and or_preds into an Or
-                    let mut all_steps = and_preds;
-                    all_steps.extend(or_preds);
-                    out.push(GremlinStep::Or(all_steps));
-                } else {
-                    // All and — emit as sequential Is steps (implicit AND)
-                    for step in and_preds {
+                // Group into AND-chains separated by OR operators.
+                // P.gt(18).and(P.lt(30)).or(P.gt(35)) → (gt(18) AND lt(30)) OR gt(35)
+                let mut or_groups: Vec<Vec<GremlinStep>> = vec![vec![]];
+                for (op, step) in parsed {
+                    if op == "or" {
+                        or_groups.push(vec![step]);
+                    } else {
+                        or_groups.last_mut().unwrap().push(step);
+                    }
+                }
+                if or_groups.len() == 1 {
+                    // All AND — emit as sequential Is steps
+                    for step in or_groups.into_iter().flatten() {
                         out.push(step);
                     }
+                } else {
+                    // Build Or of And groups
+                    let mut or_steps = Vec::new();
+                    for group in or_groups {
+                        if group.len() == 1 {
+                            or_steps.push(group.into_iter().next().unwrap());
+                        } else {
+                            // Wrap multiple AND predicates in an And step
+                            or_steps.push(GremlinStep::And(group));
+                        }
+                    }
+                    out.push(GremlinStep::Or(or_steps));
                 }
             } else {
                 let pred = parse_predicate(args_str, resolve_param)?;
@@ -812,10 +829,7 @@ fn parse_step_token(
                 out.push(GremlinStep::Sack);
             } else {
                 // sack(operator) — apply binary op
-                let op_name = args_trimmed
-                    .replace("Operator.", "")
-                    .trim()
-                    .to_lowercase();
+                let op_name = args_trimmed.replace("Operator.", "").trim().to_lowercase();
                 out.push(GremlinStep::SackOp(op_name));
             }
         }
@@ -1212,6 +1226,48 @@ fn try_parse_predicate_call(
 ) -> Option<Predicate> {
     let s = s.trim();
 
+    // Check for predicate chains: P.gt(18).and(P.lt(30)).or(P.gt(35))
+    let chain_parts = split_predicate_chain(s);
+    if chain_parts.len() > 1 {
+        // Build compound predicate from chain
+        let mut or_groups: Vec<Vec<Predicate>> = vec![vec![]];
+        for (op, part) in &chain_parts {
+            let pred = try_parse_predicate_single(part, resolve_param)?;
+            if *op == "or" {
+                or_groups.push(vec![pred]);
+            } else {
+                or_groups.last_mut().unwrap().push(pred);
+            }
+        }
+        if or_groups.len() == 1 {
+            // All AND — return first compound as And
+            let preds = or_groups.into_iter().next().unwrap();
+            if preds.len() == 1 {
+                return preds.into_iter().next();
+            }
+            return Some(Predicate::And(preds));
+        }
+        // OR of AND groups
+        let mut or_preds = Vec::new();
+        for group in or_groups {
+            if group.len() == 1 {
+                or_preds.push(group.into_iter().next().unwrap());
+            } else {
+                or_preds.push(Predicate::And(group));
+            }
+        }
+        return Some(Predicate::Or(or_preds));
+    }
+
+    try_parse_predicate_single(s, resolve_param)
+}
+
+fn try_parse_predicate_single(
+    s: &str,
+    resolve_param: &dyn Fn(&str) -> Option<GremlinValue>,
+) -> Option<Predicate> {
+    let s = s.trim();
+
     // Handle P.* or TextP.* predicates
     let pred_str = s.strip_prefix("P.").or_else(|| s.strip_prefix("TextP."));
     let pred_str = if let Some(p) = pred_str {
@@ -1295,17 +1351,33 @@ fn split_predicate_chain(s: &str) -> Vec<(&str, &str)> {
                     // Check if followed by .and( or .or(
                     let rest = &s[i + 1..];
                     if rest.starts_with(".and(") {
-                        parts.push((last_op, &s[last_start..=i]));
+                        let part = &s[last_start..=i];
+                        // Non-first parts have an extra trailing ) from the
+                        // .and()/.or() wrapper — strip it.
+                        let part = if last_op != "first" {
+                            part.strip_suffix(')').unwrap_or(part)
+                        } else {
+                            part
+                        };
+                        parts.push((last_op, part));
                         last_op = "and";
-                        last_start = i + 5; // skip ".and("
-                        i += 5;
+                        // skip ".and(" — 5 chars from rest start (i+1), content at i+6
+                        last_start = i + 6;
+                        i += 6;
                         depth = 1;
                         continue;
                     } else if rest.starts_with(".or(") {
-                        parts.push((last_op, &s[last_start..=i]));
+                        let part = &s[last_start..=i];
+                        let part = if last_op != "first" {
+                            part.strip_suffix(')').unwrap_or(part)
+                        } else {
+                            part
+                        };
+                        parts.push((last_op, part));
                         last_op = "or";
-                        last_start = i + 4; // skip ".or("
-                        i += 4;
+                        // skip ".or(" — 4 chars from rest start (i+1), content at i+5
+                        last_start = i + 5;
+                        i += 5;
                         depth = 1;
                         continue;
                     }
