@@ -1065,17 +1065,18 @@ pub fn eval_function_with_vals(name: &str, vals: Vec<Value>) -> Result<Value, Gq
         }
         "gremlin_none" => {
             let list_val = vals.first().cloned().unwrap_or(Value::Null);
+            let pred_op = match vals.get(1) {
+                Some(Value::Str(s)) => s.as_ref(),
+                _ => "neq",
+            };
+            let pred_val = vals.get(2).cloned().unwrap_or(Value::Null);
             match &list_val {
                 Value::List(items) => {
-                    let pred_op = match vals.get(1) {
-                        Some(Value::Str(s)) => s.as_ref(),
-                        _ => "neq",
-                    };
-                    let pred_val = vals.get(2).cloned().unwrap_or(Value::Null);
                     let none_match = !items.iter().any(|v| gremlin_pred_check(v, pred_op, &pred_val));
                     Ok(Value::Bool(none_match))
                 }
-                _ => Ok(Value::Bool(true)),
+                // Scalar: none(P) → NOT matches(P)
+                other => Ok(Value::Bool(!gremlin_pred_check(other, pred_op, &pred_val))),
             }
         }
 

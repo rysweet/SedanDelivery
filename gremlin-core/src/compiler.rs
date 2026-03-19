@@ -1765,9 +1765,12 @@ impl GremlinCompiler {
 
                 GremlinStep::Inject(values) => {
                     if values.is_empty() {
-                        // inject() with no args is a pass-through
+                        // inject() with no args produces an empty stream
                         if current.is_none() {
-                            current = Some(Operator::SingleRow);
+                            current = Some(Operator::Filter {
+                                predicate: Expr::Bool(false),
+                                child: Box::new(Operator::SingleRow),
+                            });
                         }
                     } else {
                         let exprs: Vec<Expr> = values.iter().map(gremlin_value_to_expr).collect();

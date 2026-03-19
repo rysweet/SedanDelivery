@@ -1099,6 +1099,9 @@ fn parse_has_step(
                         let val = parse_single_value(val_str, resolve_param)?;
                         if let GremlinValue::String(label) = val {
                             out.push(GremlinStep::HasLabel(vec![label]));
+                        } else if matches!(val, GremlinValue::Null) {
+                            // has(T.label, null) — nothing matches null label
+                            out.push(GremlinStep::HasLabel(vec!["__null_label_no_match__".to_string()]));
                         }
                     }
                     return Ok(());
