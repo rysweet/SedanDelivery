@@ -1656,6 +1656,7 @@ mod tests {
                 selector,
                 options,
                 child,
+                ..
             } => {
                 let mut v = vec![child.as_ref(), selector.as_ref()];
                 for (_, branch) in options {

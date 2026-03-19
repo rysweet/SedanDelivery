@@ -212,6 +212,8 @@ pub enum Operator {
     ChooseMap {
         /// Traversal that produces a dispatch value for each input row.
         selector: Box<Operator>,
+        /// Alias of the selector's result column.
+        selector_alias: crate::ast::Identifier,
         /// (match_value, branch_operator) pairs; `None` value = default branch.
         options: Vec<(Option<crate::types::Value>, Box<Operator>)>,
         child: Box<Operator>,
@@ -362,6 +364,7 @@ impl Operator {
                 selector,
                 options,
                 child,
+                ..
             } => {
                 let mut v = vec![child.as_ref(), selector.as_ref()];
                 for (_, branch) in options {

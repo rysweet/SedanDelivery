@@ -166,6 +166,7 @@ impl<'a> QueryExecutor<'a> {
     ) -> Result<Vec<Row>, GqlError> {
         let Operator::ChooseMap {
             selector,
+            selector_alias,
             options,
             child,
         } = op
@@ -187,8 +188,11 @@ impl<'a> QueryExecutor<'a> {
             let sel_rows = self.exec_operator(cx, selector)?;
             self.foreach_seed.borrow_mut().take();
 
-            // Extract the first value from the selector result.
-            let sel_value = sel_rows.first().and_then(|r| r.values().next().cloned());
+            // Extract the selector's result value using the known alias.
+            let sel_value = sel_rows
+                .first()
+                .and_then(|r| r.get(selector_alias.0.as_str()).cloned())
+                .or_else(|| sel_rows.first().and_then(|r| r.values().next().cloned()));
 
             // Find the matching option branch.
             let mut matched_branch = None;

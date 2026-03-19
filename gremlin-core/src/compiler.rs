@@ -1595,9 +1595,11 @@ impl GremlinCompiler {
                     if true_steps.is_empty() && false_steps.is_none() {
                         // 1-arg choose: value-based dispatch, options come from Option steps
                         let selector = sub.compile_seeded(pred_steps, &current_alias)?;
+                        let sel_alias = sub.last_alias.clone();
                         self.absorb(&sub);
                         current = Some(Operator::ChooseMap {
                             selector: Box::new(selector),
+                            selector_alias: sel_alias,
                             options: Vec::new(),
                             child: Box::new(child),
                         });
