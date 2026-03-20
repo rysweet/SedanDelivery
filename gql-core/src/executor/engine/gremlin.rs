@@ -414,10 +414,7 @@ impl<'a> QueryExecutor<'a> {
         let mut row = Row::new();
         for key in keys {
             let agg_col = format!("__gremlin_agg_{key}");
-            let agg_vals: Vec<&Value> = child_rows
-                .iter()
-                .filter_map(|r| r.get(&agg_col))
-                .collect();
+            let agg_vals: Vec<&Value> = child_rows.iter().filter_map(|r| r.get(&agg_col)).collect();
             if agg_vals.is_empty() {
                 row.insert(key.clone(), Value::List(Vec::new()));
                 continue;
@@ -775,9 +772,7 @@ impl<'a> QueryExecutor<'a> {
                 // Try looking up in the row directly.
                 let val = if let Some(v) = row.get(var_name) {
                     Some(v.clone())
-                } else if let Some(v) =
-                    row.get(&format!("__gremlin_agg_{}", output_key))
-                {
+                } else if let Some(v) = row.get(&format!("__gremlin_agg_{}", output_key)) {
                     // Fallback: aggregate sideeffect columns are stored
                     // with a __gremlin_agg_ prefix.
                     Some(v.clone())
@@ -1712,7 +1707,7 @@ mod tests {
             }),
             value_alias: Identifier::new("n"),
             by_keys: vec![],
-                productive: false,
+            productive: false,
         };
 
         let mut budget = ExecutionBudget::unlimited();

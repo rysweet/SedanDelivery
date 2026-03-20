@@ -749,28 +749,17 @@ impl<'a> QueryExecutor<'a> {
                             })
                             .collect();
                         let props: Vec<(String, Value)> = match &element {
-                            Value::Node(node_id) => {
-                                match self.cached_get_node(graph, *node_id)? {
-                                    Some(data) => data
-                                        .properties
-                                        .into_iter()
-                                        .collect(),
-                                    None => Vec::new(),
-                                }
+                            Value::Node(node_id) => match self.cached_get_node(graph, *node_id)? {
+                                Some(data) => data.properties.into_iter().collect(),
+                                None => Vec::new(),
+                            },
+                            Value::Edge(edge_id) => match self.cached_get_edge(graph, *edge_id)? {
+                                Some(data) => data.properties.into_iter().collect(),
+                                None => Vec::new(),
+                            },
+                            Value::Map(m) => {
+                                m.iter().map(|(k, v)| (k.to_string(), v.clone())).collect()
                             }
-                            Value::Edge(edge_id) => {
-                                match self.cached_get_edge(graph, *edge_id)? {
-                                    Some(data) => data
-                                        .properties
-                                        .into_iter()
-                                        .collect(),
-                                    None => Vec::new(),
-                                }
-                            }
-                            Value::Map(m) => m
-                                .iter()
-                                .map(|(k, v)| (k.to_string(), v.clone()))
-                                .collect(),
                             _ => Vec::new(),
                         };
                         let entries: Vec<Value> = props

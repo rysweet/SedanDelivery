@@ -215,7 +215,7 @@ async fn given_graph_initializer(world: &mut GremlinWorld, step: &gherkin::Step)
                     .find(|(_, id)| **id == maybe_edge.dst)
                     .map(|(n, _)| n.clone());
                 if let (Some(src), Some(dst)) = (src_name, dst_name) {
-                    let key = format!("{}-{}->{}",src, maybe_edge.rel_type, dst);
+                    let key = format!("{}-{}->{}", src, maybe_edge.rel_type, dst);
                     world.edge_names.entry(key).or_insert(maybe_edge.id);
                 }
             }
@@ -874,31 +874,29 @@ fn assert_results_match_unordered(
     // If the result is a single row containing a List (from cap/fold), unpack it
     // into individual values for comparison, matching TinkerPop semantics.
     let unpacked_rows: Vec<HashMap<String, Value>>;
-    let effective_result =
-        if result.rows.len() == 1 && expected.len() > 1 {
-            if let Some(Value::List(items)) = row_result_value(&result.rows[0], &world.result_alias)
-            {
-                // Unpack the list into individual rows
-                let key = if !world.result_alias.is_empty() {
-                    world.result_alias.clone()
-                } else {
-                    result.rows[0].keys().next().unwrap().clone()
-                };
-                unpacked_rows = items
-                    .iter()
-                    .map(|v| {
-                        let mut row: HashMap<String, Value> = HashMap::new();
-                        row.insert(key.clone(), v.clone());
-                        row
-                    })
-                    .collect();
-                &unpacked_rows
+    let effective_result = if result.rows.len() == 1 && expected.len() > 1 {
+        if let Some(Value::List(items)) = row_result_value(&result.rows[0], &world.result_alias) {
+            // Unpack the list into individual rows
+            let key = if !world.result_alias.is_empty() {
+                world.result_alias.clone()
             } else {
-                result.rows.as_slice()
-            }
+                result.rows[0].keys().next().unwrap().clone()
+            };
+            unpacked_rows = items
+                .iter()
+                .map(|v| {
+                    let mut row: HashMap<String, Value> = HashMap::new();
+                    row.insert(key.clone(), v.clone());
+                    row
+                })
+                .collect();
+            &unpacked_rows
         } else {
             result.rows.as_slice()
-        };
+        }
+    } else {
+        result.rows.as_slice()
+    };
 
     assert_eq!(
         effective_result.len(),

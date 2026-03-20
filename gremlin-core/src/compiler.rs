@@ -490,9 +490,7 @@ impl GremlinCompiler {
                     let mut flat_ids = Vec::new();
                     for id in ids {
                         match id {
-                            GremlinValue::List(inner) => {
-                                flat_ids.extend(inner.iter().cloned())
-                            }
+                            GremlinValue::List(inner) => flat_ids.extend(inner.iter().cloned()),
                             other => flat_ids.push(other.clone()),
                         }
                     }
@@ -1815,20 +1813,13 @@ impl GremlinCompiler {
                         // If the sub-traversal starts with as("label"), seed
                         // from that label's existing alias instead.
                         let mut sub = self.sub_compiler();
-                        let (seed_alias, steps_slice) =
-                            match inner_steps.first() {
-                                Some(GremlinStep::As(label))
-                                    if self.alias_map.contains_key(label) =>
-                                {
-                                    (
-                                        self.alias_map[label].clone(),
-                                        &inner_steps[1..],
-                                    )
-                                }
-                                _ => (current_alias.clone(), &inner_steps[..]),
-                            };
-                        let inner_op =
-                            sub.compile_seeded(steps_slice, &seed_alias)?;
+                        let (seed_alias, steps_slice) = match inner_steps.first() {
+                            Some(GremlinStep::As(label)) if self.alias_map.contains_key(label) => {
+                                (self.alias_map[label].clone(), &inner_steps[1..])
+                            }
+                            _ => (current_alias.clone(), &inner_steps[..]),
+                        };
+                        let inner_op = sub.compile_seeded(steps_slice, &seed_alias)?;
                         self.absorb(&sub);
                         let sub_result_alias = sub.last_alias.clone();
 
@@ -2574,9 +2565,7 @@ impl GremlinCompiler {
                     )];
                     items.extend(self.label_carry_items());
                     current = Some(Operator::Filter {
-                        predicate: Expr::IsNotNull(Box::new(Expr::Variable(
-                            elem_alias.clone(),
-                        ))),
+                        predicate: Expr::IsNotNull(Box::new(Expr::Variable(elem_alias.clone()))),
                         child: Box::new(Operator::Project {
                             items,
                             child: Box::new(child),
@@ -3739,7 +3728,9 @@ impl GremlinCompiler {
         child: Operator,
         conn_op: BinaryOp,
     ) -> Result<Operator, CompileError> {
-        let all_simple = branches.iter().all(|branch| is_simple_predicate_steps(branch));
+        let all_simple = branches
+            .iter()
+            .all(|branch| is_simple_predicate_steps(branch));
 
         if all_simple {
             let preds: Vec<Expr> = branches
@@ -3778,12 +3769,7 @@ impl GremlinCompiler {
                         child: Box::new(result),
                     };
                 } else {
-                    result = self.compile_existence_filter(
-                        branch,
-                        current_alias,
-                        result,
-                        false,
-                    )?;
+                    result = self.compile_existence_filter(branch, current_alias, result, false)?;
                 }
             }
             Ok(result)
@@ -5678,7 +5664,10 @@ mod tests {
                 _ => true,
             }
         }
-        assert!(check_create(&op), "Create operator still has __src or __dst placeholders");
+        assert!(
+            check_create(&op),
+            "Create operator still has __src or __dst placeholders"
+        );
     }
 
     #[test]

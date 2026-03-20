@@ -144,16 +144,13 @@ impl<'a> QueryExecutor<'a> {
                 for row in input {
                     cx.budget.check_or_err()?;
                     if let Some(val) = row.get(alias) {
-                        let extracted =
-                            self.extract_property_from_value(cx.graph, val, prop_name);
+                        let extracted = self.extract_property_from_value(cx.graph, val, prop_name);
                         let is_element = matches!(val, Value::Node(_) | Value::Edge(_));
                         if extracted.is_none() && is_element {
                             // Property missing on node/edge → drop traverser
                             continue;
                         }
-                        let dedup_val = extracted
-                            .map(|v| v.canonical_key())
-                            .unwrap_or_default();
+                        let dedup_val = extracted.map(|v| v.canonical_key()).unwrap_or_default();
                         if seen.insert(dedup_val) {
                             out.push(row);
                         }

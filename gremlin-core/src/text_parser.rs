@@ -1831,10 +1831,7 @@ fn parse_from_to_traversal(
     if !args.is_empty() {
         let first = args[0].trim();
         if first.starts_with("Direction.") || first == "OUT" || first == "IN" || first == "BOTH" {
-            let labels: Vec<String> = args[1..]
-                .iter()
-                .map(|a| unquote(a.trim()))
-                .collect();
+            let labels: Vec<String> = args[1..].iter().map(|a| unquote(a.trim())).collect();
             return match first {
                 "Direction.OUT" | "OUT" => Ok(vec![GremlinStep::Out(labels)]),
                 "Direction.IN" | "IN" => Ok(vec![GremlinStep::In(labels)]),
