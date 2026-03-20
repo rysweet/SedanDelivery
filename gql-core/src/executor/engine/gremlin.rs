@@ -949,6 +949,8 @@ impl<'a> QueryExecutor<'a> {
         // Collect (key_str, value) pairs from input rows.
         // Use Box<str> keys since Value doesn't implement Hash.
         let mut groups: IndexMap<Box<str>, Vec<Value>> = IndexMap::new();
+        // Also collect raw rows per group for value_traversal (which runs on group members)
+        let mut group_rows: IndexMap<Box<str>, Vec<Row>> = IndexMap::new();
 
         // Check if value_expr differs from key_expr (i.e., a value-by modulation is present).
         let has_value_by = value_expr != key_expr || value_traversal.is_some();
@@ -972,63 +974,117 @@ impl<'a> QueryExecutor<'a> {
                     .unwrap_or(Value::Null)
             };
             // Skip rows where the group key evaluates to Null (unproductive by).
-            // TinkerPop default: null keys are dropped unless ProductiveByStrategy.
             if matches!(key_val, Value::Null) {
                 continue;
             }
 
-            // Compute group value: use traversal if available, else eval expression.
-            let val = if let Some((val_op, val_alias)) = value_traversal {
-                self.foreach_seed.borrow_mut().replace(vec![row.clone()]);
+            let key_str = value_to_map_key(&key_val);
+
+            if value_traversal.is_some() {
+                // For value_traversal mode, collect rows; we'll run traversal per group later
+                group_rows.entry(key_str).or_default().push(row.clone());
+            } else {
+                // For expression-based value, evaluate per row
+                let val = self
+                    .eval_with_storage(cx.graph, value_expr, row, &ctx)
+                    .unwrap_or(Value::Null);
+                let entry = groups.entry(key_str).or_default();
+                if has_value_by && matches!(val, Value::Null) {
+                    // Key still gets created with empty vec
+                } else {
+                    entry.push(val);
+                }
+            }
+        }
+
+        // For value_traversal, run the traversal per group with all members as seed
+        if let Some((val_op, val_alias)) = value_traversal {
+            for (key_str, rows) in &group_rows {
+                self.foreach_seed.borrow_mut().replace(rows.clone());
                 let val_rows = self.exec_operator(cx, val_op)?;
                 self.foreach_seed.borrow_mut().take();
-                val_rows
-                    .first()
-                    .and_then(|r| r.get(val_alias.0.as_str()).cloned())
-                    .or_else(|| val_rows.first().and_then(|r| r.values().next().cloned()))
-                    .unwrap_or(Value::Null)
-            } else {
-                self.eval_with_storage(cx.graph, value_expr, row, &ctx)
-                    .unwrap_or(Value::Null)
-            };
-
-            let key_str = value_to_map_key(&key_val);
-            let entry = groups.entry(key_str).or_default();
-            // When a value-by projection is active, skip null values (unproductive by).
-            if has_value_by && matches!(val, Value::Null) {
-                // Key still gets created (via or_default) with empty vec
-            } else {
-                entry.push(val);
+                let mut values = Vec::new();
+                for r in &val_rows {
+                    if let Some(v) = r.get(val_alias.0.as_str()).cloned() {
+                        values.push(v);
+                    } else if let Some(v) = r.values().next().cloned() {
+                        values.push(v);
+                    }
+                }
+                groups.insert(key_str.clone(), values);
             }
         }
 
         // Apply aggregation function to each group.
+        let has_value_trav = value_traversal.is_some();
         let mut result_map: IndexMap<Box<str>, Value> = IndexMap::new();
         for (key_str, values) in groups {
-            let agg_result = match agg_fn {
-                AggFunction::Count => Value::Int(values.len() as i64),
-                AggFunction::Collect => Value::List(values),
-                AggFunction::Sum => {
-                    let mut total = 0i64;
-                    let mut float_total = 0.0f64;
-                    let mut use_float = false;
-                    for v in &values {
-                        match v {
-                            Value::Int(i) => total += i,
-                            Value::Float(f) => {
-                                use_float = true;
-                                float_total += f;
+            let agg_result = if has_value_trav {
+                // When value_traversal is set, the traversal may produce a single
+                // aggregated result (e.g., constant(1), count(), sum()) or multiple
+                // per-member results to be collected. Apply agg_fn to the values,
+                // then unwrap single scalar results for the single-result case.
+                let agg_val = match agg_fn {
+                    AggFunction::Count => Value::Int(values.len() as i64),
+                    AggFunction::Sum => {
+                        let mut total = 0i64;
+                        let mut float_total = 0.0f64;
+                        let mut use_float = false;
+                        for v in &values {
+                            match v {
+                                Value::Int(i) => total += i,
+                                Value::Float(f) => {
+                                    use_float = true;
+                                    float_total += f;
+                                }
+                                _ => {}
                             }
-                            _ => {}
+                        }
+                        if use_float {
+                            Value::Float(float_total + total as f64)
+                        } else {
+                            Value::Int(total)
                         }
                     }
-                    if use_float {
-                        Value::Float(float_total + total as f64)
-                    } else {
-                        Value::Int(total)
+                    AggFunction::Collect => {
+                        // For Collect: if there's a single result that's NOT a List
+                        // (i.e., from constant(1) or similar scalar traversals),
+                        // use it directly. Lists (from fold) and multi-values stay as lists.
+                        if values.len() == 1 && !matches!(values.first(), Some(Value::List(_))) {
+                            values.into_iter().next().unwrap_or(Value::Null)
+                        } else {
+                            Value::List(values)
+                        }
                     }
+                    _ => Value::List(values),
+                };
+                agg_val
+            } else {
+                match agg_fn {
+                    AggFunction::Count => Value::Int(values.len() as i64),
+                    AggFunction::Collect => Value::List(values),
+                    AggFunction::Sum => {
+                        let mut total = 0i64;
+                        let mut float_total = 0.0f64;
+                        let mut use_float = false;
+                        for v in &values {
+                            match v {
+                                Value::Int(i) => total += i,
+                                Value::Float(f) => {
+                                    use_float = true;
+                                    float_total += f;
+                                }
+                                _ => {}
+                            }
+                        }
+                        if use_float {
+                            Value::Float(float_total + total as f64)
+                        } else {
+                            Value::Int(total)
+                        }
+                    }
+                    _ => Value::List(values),
                 }
-                _ => Value::List(values),
             };
             result_map.insert(key_str, agg_result);
         }
