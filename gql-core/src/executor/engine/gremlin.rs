@@ -1229,8 +1229,24 @@ fn eval_gremlin_predicate(pred_str: &str, value: &Value) -> bool {
     ] {
         if let Some(rest) = pred.strip_prefix(prefix) {
             if let Some(arg_str) = rest.strip_suffix(')') {
+                // Try numeric comparison first
                 if let (Some(threshold), Some(v)) = (parse_num(arg_str), value_as_f64(value)) {
                     return cmp_fn(v, threshold);
+                }
+                // For eq/neq, also try string comparison
+                if *prefix == "eq(" {
+                    let arg = arg_str.trim().trim_matches('"');
+                    return match value {
+                        Value::Str(s) => s.as_ref() == arg,
+                        _ => false,
+                    };
+                }
+                if *prefix == "neq(" {
+                    let arg = arg_str.trim().trim_matches('"');
+                    return match value {
+                        Value::Str(s) => s.as_ref() != arg,
+                        _ => true,
+                    };
                 }
             }
             return false;
