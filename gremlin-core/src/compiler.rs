@@ -2669,6 +2669,20 @@ impl GremlinCompiler {
                     }
                 }
 
+                GremlinStep::HasValuePredicate(pred) => {
+                    // hasValue(P.gt(30)) — filter on ~value (property context) or current value.
+                    let child = current.take().ok_or(CompileError::MissingChild)?;
+                    let tilde_val = Expr::Property(
+                        Box::new(Expr::Variable(current_alias.clone())),
+                        SmolStr::new("~value"),
+                    );
+                    let predicate = predicate_to_prop_expr(pred, tilde_val);
+                    current = Some(Operator::Filter {
+                        predicate,
+                        child: Box::new(child),
+                    });
+                }
+
                 GremlinStep::Optional(opt_steps) => {
                     // optional(traversal): coalesce(traversal, identity)
                     let child = current.take().ok_or(CompileError::MissingChild)?;

@@ -156,6 +156,8 @@ pub enum GremlinStep {
     HasKey(Vec<String>),
     /// `hasValue(values...)` — filter elements that have any of the listed values
     HasValue(Vec<GremlinValue>),
+    /// `hasValue(P.gt(30))` — filter properties by predicate on value
+    HasValuePredicate(Predicate),
     /// `optional(traversal)` — execute traversal, fall back to identity if empty
     Optional(Vec<GremlinStep>),
     /// `simplePath()` — filter to paths with no repeated elements

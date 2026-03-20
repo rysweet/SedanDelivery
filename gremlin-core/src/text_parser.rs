@@ -748,8 +748,13 @@ fn parse_step_token(
             out.push(GremlinStep::HasKey(args));
         }
         "hasValue" => {
-            let args = parse_arg_list(args_str, resolve_param)?;
-            out.push(GremlinStep::HasValue(args));
+            // Try predicate first: hasValue(P.gt(30))
+            if let Some(pred) = try_parse_predicate_call(args_str.trim(), resolve_param) {
+                out.push(GremlinStep::HasValuePredicate(pred));
+            } else {
+                let args = parse_arg_list(args_str, resolve_param)?;
+                out.push(GremlinStep::HasValue(args));
+            }
         }
         "optional" => {
             let inner = parse_inner_traversal(args_str, resolve_param)?;
