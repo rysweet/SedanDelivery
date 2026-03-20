@@ -339,6 +339,32 @@ impl<'a> QueryExecutor<'a> {
                             })),
                         }
                     }
+                    // Gremlin T.label: returns single label string (not a list)
+                    "gremlin_single_label" => {
+                        if evaled_args.len() != 1 {
+                            return Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                                expected: "gremlin_single_label() expects 1 argument".to_string(),
+                                actual: format!("{} arguments", evaled_args.len()),
+                            }));
+                        }
+                        match &evaled_args[0] {
+                            Value::Null => Ok(Value::Null),
+                            Value::Node(node_id) => match self.cached_get_node(graph, *node_id)? {
+                                Some(data) => {
+                                    if let Some(lbl) = data.labels.first() {
+                                        Ok(Value::Str(lbl.clone().into_boxed_str()))
+                                    } else {
+                                        Ok(Value::Str("".to_string().into_boxed_str()))
+                                    }
+                                }
+                                None => Ok(Value::Null),
+                            },
+                            other => Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                                expected: "Node".to_string(),
+                                actual: other.type_name().to_string(),
+                            })),
+                        }
+                    }
                     "type" => {
                         if evaled_args.len() != 1 {
                             return Err(GqlError::Execution(ExecutionError::TypeMismatch {

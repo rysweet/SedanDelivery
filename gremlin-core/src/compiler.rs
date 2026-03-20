@@ -4139,7 +4139,7 @@ fn make_by_expr(key: &str, current_alias: &Identifier) -> Expr {
         || key == "label()"
     {
         Expr::FunctionCall {
-            name: SmolStr::new("labels"),
+            name: SmolStr::new("gremlin_single_label"),
             args: vec![Expr::Variable(current_alias.clone())],
             distinct: false,
         }
