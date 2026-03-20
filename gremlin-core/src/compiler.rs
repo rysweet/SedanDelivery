@@ -319,6 +319,16 @@ impl GremlinCompiler {
                 pending_valuemap = false;
                 valuemap_by_consumed = false;
                 pending_project = false;
+                // Flush pending order: order() without by() → sort by identity
+                if pending_order && !pending_order_local {
+                    let child = current.take().unwrap_or(Operator::SingleRow);
+                    current = Some(Operator::Sort {
+                        items: vec![(Expr::Variable(current_alias.clone()), true)],
+                        gremlin_order: true,
+                        child: Box::new(child),
+                    });
+                    pending_order = false;
+                }
                 // Finalize pending format with collected by() modulations
                 if pending_format && !format_by_aliases.is_empty() {
                     let child = current.take().unwrap_or(Operator::SingleRow);
