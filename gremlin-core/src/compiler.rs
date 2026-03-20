@@ -32,6 +32,9 @@ pub struct GremlinCompiler {
     alias_map: HashMap<String, Identifier>,
     /// The alias that the most recent compilation left as the "current" traverser.
     last_alias: Identifier,
+    /// When true, by-modulation that can't produce a value yields null
+    /// instead of dropping the traverser (ProductiveByStrategy).
+    productive_by: bool,
 }
 
 impl Default for GremlinCompiler {
@@ -46,6 +49,7 @@ impl GremlinCompiler {
             alias_counter: 0,
             alias_map: HashMap::new(),
             last_alias: Identifier::new("__gremlin_v"),
+            productive_by: false,
         }
     }
 
@@ -60,6 +64,7 @@ impl GremlinCompiler {
             alias_counter: self.alias_counter,
             alias_map: self.alias_map.clone(),
             last_alias: self.last_alias.clone(),
+            productive_by: self.productive_by,
         }
     }
 
@@ -2371,6 +2376,7 @@ impl GremlinCompiler {
                         child: Box::new(child),
                         value_alias: current_alias.clone(),
                         by_keys: vec![],
+                        productive: self.productive_by,
                     });
                     pending_aggregate = true;
                 }
@@ -3006,6 +3012,10 @@ impl GremlinCompiler {
                     // This should be the first step; apply to whichever op follows
                     // We'll inject it as a Project that adds __sack to each row
                     pending_sack_init = Some(gremlin_value_to_expr(val));
+                }
+
+                GremlinStep::ProductiveByStrategy => {
+                    self.productive_by = true;
                 }
 
                 GremlinStep::Option(token, branch_steps) => {

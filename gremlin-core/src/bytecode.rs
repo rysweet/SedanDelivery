@@ -197,6 +197,8 @@ pub enum GremlinStep {
     WithSack(GremlinValue),
     /// `option(token, traversal)` — option step for branch/choose
     Option(GremlinValue, Vec<GremlinStep>),
+    /// Flag indicating ProductiveByStrategy is active
+    ProductiveByStrategy,
 
     // ── String steps ────────────────────────────────────────────────────────
     /// `toLower()` — lowercase string

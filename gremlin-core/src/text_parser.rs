@@ -40,6 +40,9 @@ pub fn parse_traversal(
     // Extract withSack initial value if present before stripping
     let sack_init = extract_with_sack_value(input, resolve_param);
 
+    // Detect ProductiveByStrategy before stripping
+    let productive_by = input.contains("ProductiveByStrategy");
+
     // Strip strategy wrappers: g.withStrategies(...).V()... or g.withoutStrategies(...).V()...
     // Also strip g.withSideEffect(...) and g.withSack(...) and g.withComputer(...)
     let owned;
@@ -71,6 +74,11 @@ pub fn parse_traversal(
     // Emit WithSack as first step if present
     if let Some(init_val) = sack_init {
         steps.push(GremlinStep::WithSack(init_val));
+    }
+
+    // Emit ProductiveByStrategy flag
+    if productive_by {
+        steps.push(GremlinStep::ProductiveByStrategy);
     }
 
     for token in &tokens {

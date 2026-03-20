@@ -257,6 +257,8 @@ pub enum Operator {
         /// When set via `.by("prop")`, collect these properties instead of the raw traverser.
         /// A single key projects that property; two keys project a map of both.
         by_keys: Vec<String>,
+        /// When true (ProductiveByStrategy), include null values for missing properties.
+        productive: bool,
     },
     /// Gremlin path() — extract path from traverser aliases.
     GremlinPath {

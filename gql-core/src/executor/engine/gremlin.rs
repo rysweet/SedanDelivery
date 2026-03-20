@@ -472,6 +472,7 @@ impl<'a> QueryExecutor<'a> {
             child,
             value_alias,
             by_keys,
+            productive,
         } = op
         else {
             debug_assert!(false, "expected GremlinAggregate operator");
@@ -512,8 +513,8 @@ impl<'a> QueryExecutor<'a> {
                 let projected = self
                     .eval_with_storage(cx.graph, &prop_expr, row, &ctx)
                     .unwrap_or(Value::Null);
-                // Skip null values (property doesn't exist on this element)
-                if !matches!(projected, Value::Null) {
+                // Skip null values unless ProductiveByStrategy is active
+                if *productive || !matches!(projected, Value::Null) {
                     collected.push(projected);
                 }
             } else if let Some(val) = row.get(value_alias.as_str()) {
