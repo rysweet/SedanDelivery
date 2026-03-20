@@ -851,7 +851,8 @@ impl<'a> QueryExecutor<'a> {
                                                     let placeholder = format!("%{{{}}}", k);
                                                     if result.contains(&placeholder) {
                                                         let val_str = format_value(v);
-                                                        result = result.replace(&placeholder, &val_str);
+                                                        result =
+                                                            result.replace(&placeholder, &val_str);
                                                     }
                                                 }
                                             }
@@ -880,7 +881,8 @@ impl<'a> QueryExecutor<'a> {
                                                     let placeholder = format!("%{{{}}}", k);
                                                     if result.contains(&placeholder) {
                                                         let val_str = format_value(v);
-                                                        result = result.replace(&placeholder, &val_str);
+                                                        result =
+                                                            result.replace(&placeholder, &val_str);
                                                     }
                                                 }
                                             }
@@ -947,38 +949,27 @@ impl<'a> QueryExecutor<'a> {
                             }
                             let val = &by_values[by_idx % by_values.len()];
                             let val_str = format_value(val);
-                            result = format!(
-                                "{}{}{}",
-                                &result[..pos],
-                                val_str,
-                                &result[pos + 4..]
-                            );
+                            result = format!("{}{}{}", &result[..pos], val_str, &result[pos + 4..]);
                             by_idx += 1;
                         }
                         // Resolve remaining %{key} from node/edge properties
                         if result.contains("%{") {
                             match evaled_args.first() {
                                 Some(Value::Node(node_id)) => {
-                                    if let Some(data) =
-                                        self.cached_get_node(graph, *node_id)?
-                                    {
+                                    if let Some(data) = self.cached_get_node(graph, *node_id)? {
                                         for (k, v) in data.properties.iter() {
                                             let placeholder = format!("%{{{}}}", k);
                                             let val_str = format_value(v);
-                                            result =
-                                                result.replace(&placeholder, &val_str);
+                                            result = result.replace(&placeholder, &val_str);
                                         }
                                     }
                                 }
                                 Some(Value::Edge(edge_id)) => {
-                                    if let Some(data) =
-                                        self.cached_get_edge(graph, *edge_id)?
-                                    {
+                                    if let Some(data) = self.cached_get_edge(graph, *edge_id)? {
                                         for (k, v) in data.properties.iter() {
                                             let placeholder = format!("%{{{}}}", k);
                                             let val_str = format_value(v);
-                                            result =
-                                                result.replace(&placeholder, &val_str);
+                                            result = result.replace(&placeholder, &val_str);
                                         }
                                     }
                                 }

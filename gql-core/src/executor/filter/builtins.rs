@@ -49,8 +49,8 @@ pub(super) fn builtin_rand(vals: Vec<Value>) -> Result<Value, GqlError> {
 /// Java-compatible Linear Congruential Generator for deterministic random.
 /// Matches `java.util.Random` behaviour so Gremlin SeedStrategy tests pass.
 pub(super) fn builtin_java_random_next_double(vals: Vec<Value>) -> Result<Value, GqlError> {
-    use std::sync::atomic::{AtomicI64, Ordering};
     use std::cell::Cell;
+    use std::sync::atomic::{AtomicI64, Ordering};
 
     // Thread-local state: (initial_seed_used, current_lcg_state)
     thread_local! {

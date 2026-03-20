@@ -231,8 +231,15 @@ pub enum Operator {
         selector_alias: crate::ast::Identifier,
         /// (match_value, branch_operator, branch_output_alias) triples.
         /// `None` match_value = default branch.
-        options: Vec<(Option<crate::types::Value>, Box<Operator>, Option<crate::ast::Identifier>)>,
+        options: Vec<(
+            Option<crate::types::Value>,
+            Box<Operator>,
+            Option<crate::ast::Identifier>,
+        )>,
         child: Box<Operator>,
+        /// Unified output alias: branch results are copied here so downstream
+        /// steps use a consistent column name.
+        output_alias: Option<crate::ast::Identifier>,
     },
     /// Gremlin coalesce() — first non-empty alternative.
     Coalesce {
@@ -248,6 +255,9 @@ pub enum Operator {
     Cap {
         keys: Vec<String>,
         child: Box<Operator>,
+        /// Optional per-key reduction: (key, operator, init_value) triples.
+        /// Populated from `withSideEffect(key, init, Operator.op)`.
+        reductions: Vec<(String, String, f64)>,
     },
     /// Gremlin aggregate() — collect traverser values into a named side-effect.
     GremlinAggregate {

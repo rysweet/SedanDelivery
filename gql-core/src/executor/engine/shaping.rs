@@ -21,7 +21,10 @@ fn property_aware_dedup_key(v: &Value) -> String {
             // Edge properties: compare by key+value only
             if let Some(Value::Edge(_)) = m.get("~element") {
                 let key = m.get("~key").map(|v| v.canonical_key()).unwrap_or_default();
-                let val = m.get("~value").map(|v| v.canonical_key()).unwrap_or_default();
+                let val = m
+                    .get("~value")
+                    .map(|v| v.canonical_key())
+                    .unwrap_or_default();
                 return format!("EdgeProp({key}, {val})");
             }
         }
@@ -206,20 +209,15 @@ impl<'a> QueryExecutor<'a> {
             Value::Node(nid) => {
                 // Handle special Gremlin tokens
                 if prop == "~label" {
-                    return self
-                        .cached_get_node(graph, *nid)
-                        .ok()
-                        .flatten()
-                        .map(|n| {
-                            let label = n.labels.first().map(|l| l.as_str()).unwrap_or("");
-                            Value::Str(Box::from(label))
-                        });
+                    return self.cached_get_node(graph, *nid).ok().flatten().map(|n| {
+                        let label = n.labels.first().map(|l| l.as_str()).unwrap_or("");
+                        Value::Str(Box::from(label))
+                    });
                 }
                 if prop == "~id" {
                     return Some(Value::Int(nid.0 as i64));
                 }
-                self
-                    .cached_get_node(graph, *nid)
+                self.cached_get_node(graph, *nid)
                     .ok()
                     .flatten()
                     .and_then(|n| n.properties.get(prop).cloned())
@@ -235,8 +233,7 @@ impl<'a> QueryExecutor<'a> {
                 if prop == "~id" {
                     return Some(Value::Int(eid.0 as i64));
                 }
-                self
-                    .cached_get_edge(graph, *eid)
+                self.cached_get_edge(graph, *eid)
                     .ok()
                     .flatten()
                     .and_then(|e| e.properties.get(prop).cloned())

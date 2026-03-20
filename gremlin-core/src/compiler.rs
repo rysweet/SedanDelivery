@@ -49,6 +49,9 @@ pub struct GremlinCompiler {
     edge_label_verify: bool,
     /// SeedStrategy seed value for deterministic coin/sample.
     seed: Option<i64>,
+    /// Reduction info from `withSideEffect(key, init, Operator.op)`.
+    /// Maps side-effect key → (operator, init_value).
+    reductions: HashMap<String, (String, f64)>,
 }
 
 impl Default for GremlinCompiler {
@@ -68,6 +71,7 @@ impl GremlinCompiler {
             reserved_keys: None,
             edge_label_verify: false,
             seed: None,
+            reductions: HashMap::new(),
         }
     }
 
@@ -87,6 +91,7 @@ impl GremlinCompiler {
             reserved_keys: self.reserved_keys.clone(),
             edge_label_verify: self.edge_label_verify,
             seed: self.seed,
+            reductions: self.reductions.clone(),
         }
     }
 
@@ -284,6 +289,8 @@ impl GremlinCompiler {
         // Track by() count for valueMap — only one allowed
         let mut pending_valuemap = false;
         let mut valuemap_by_consumed = false;
+        // Deferred output alias for ChooseMap — applied on the first non-Option step
+        let mut pending_choose_output: Option<Identifier> = None;
 
         for step in steps {
             // When we leave the addE modifier group (from/to/property), fill in
@@ -363,6 +370,12 @@ impl GremlinCompiler {
                     }
                 }
                 pending_select = false;
+            }
+            // Flush pending choose output alias on the first non-Option step
+            if !matches!(step, GremlinStep::Option(..)) {
+                if let Some(alias) = pending_choose_output.take() {
+                    current_alias = alias;
+                }
             }
             match step {
                 GremlinStep::V(ids) => {
@@ -1362,6 +1375,30 @@ impl GremlinCompiler {
                                 gremlin_order: true,
                                 child: Box::new(child),
                             });
+                        } else if key == "Column.values" {
+                            // Sort by map entry values (for unfold'd single-entry Maps)
+                            let sort_expr = Expr::FunctionCall {
+                                name: SmolStr::new("gremlin_column_values"),
+                                args: vec![Expr::Variable(current_alias.clone())],
+                                distinct: false,
+                            };
+                            current = Some(Operator::Sort {
+                                items: vec![(sort_expr, !descending)],
+                                gremlin_order: true,
+                                child: Box::new(child),
+                            });
+                        } else if key == "Column.keys" {
+                            // Sort by map entry keys (for unfold'd single-entry Maps)
+                            let sort_expr = Expr::FunctionCall {
+                                name: SmolStr::new("gremlin_column_keys"),
+                                args: vec![Expr::Variable(current_alias.clone())],
+                                distinct: false,
+                            };
+                            current = Some(Operator::Sort {
+                                items: vec![(sort_expr, !descending)],
+                                gremlin_order: true,
+                                child: Box::new(child),
+                            });
                         } else {
                             // Property-based sort
                             let prop_expr = Expr::Property(
@@ -1373,10 +1410,7 @@ impl GremlinCompiler {
                                 // for missing properties instead of filtering.
                                 let safe_prop = Expr::FunctionCall {
                                     name: SmolStr::new("coalesce"),
-                                    args: vec![
-                                        prop_expr,
-                                        Expr::Null,
-                                    ],
+                                    args: vec![prop_expr, Expr::Null],
                                     distinct: false,
                                 };
                                 current = Some(Operator::Sort {
@@ -1450,7 +1484,11 @@ impl GremlinCompiler {
                                     *agg_fn = AggFunction::Count;
                                 }
                             } else if key == "fold()" || key == "__.fold()" {
-                                if let Some(Operator::GremlinGroup { ref mut agg_fn, ref mut explicit_fold, .. }) = current
+                                if let Some(Operator::GremlinGroup {
+                                    ref mut agg_fn,
+                                    ref mut explicit_fold,
+                                    ..
+                                }) = current
                                 {
                                     *agg_fn = AggFunction::Collect;
                                     *explicit_fold = true;
@@ -1969,8 +2007,11 @@ impl GremlinCompiler {
                                 let (proj_steps, trailing_agg) = split_trailing_agg(sub_steps);
 
                                 if proj_steps.is_empty() {
-                                    if let Some(Operator::GremlinGroup { ref mut agg_fn, ref mut explicit_fold, .. }) =
-                                        current
+                                    if let Some(Operator::GremlinGroup {
+                                        ref mut agg_fn,
+                                        ref mut explicit_fold,
+                                        ..
+                                    }) = current
                                     {
                                         if let Some(agg) = trailing_agg {
                                             if matches!(agg, AggFunction::Collect) {
@@ -2080,6 +2121,29 @@ impl GremlinCompiler {
                 }
 
                 GremlinStep::RangeLocal(low, high) => {
+                    // Flush pending order(Scope.local) so the sort is applied
+                    // before slicing.
+                    if pending_order && pending_order_local {
+                        if let Some(child) = current.take() {
+                            let alias = self.next_alias("srtl");
+                            let mut items = vec![(
+                                Expr::FunctionCall {
+                                    name: SmolStr::new("gremlin_sort_local"),
+                                    args: vec![Expr::Variable(current_alias.clone())],
+                                    distinct: false,
+                                },
+                                Some(alias.clone()),
+                            )];
+                            items.extend(self.label_carry_items());
+                            current = Some(Operator::Project {
+                                items,
+                                child: Box::new(child),
+                            });
+                            current_alias = alias;
+                        }
+                        pending_order = false;
+                        pending_order_local = false;
+                    }
                     let child = current.take().ok_or(CompileError::MissingChild)?;
                     current = Some(Operator::GremlinMapSlice {
                         alias: current_alias.clone(),
@@ -2090,6 +2154,29 @@ impl GremlinCompiler {
                 }
 
                 GremlinStep::SkipLocal(n) => {
+                    // Flush pending order(Scope.local) so the sort is applied
+                    // before skipping.
+                    if pending_order && pending_order_local {
+                        if let Some(child) = current.take() {
+                            let alias = self.next_alias("srtl");
+                            let mut items = vec![(
+                                Expr::FunctionCall {
+                                    name: SmolStr::new("gremlin_sort_local"),
+                                    args: vec![Expr::Variable(current_alias.clone())],
+                                    distinct: false,
+                                },
+                                Some(alias.clone()),
+                            )];
+                            items.extend(self.label_carry_items());
+                            current = Some(Operator::Project {
+                                items,
+                                child: Box::new(child),
+                            });
+                            current_alias = alias;
+                        }
+                        pending_order = false;
+                        pending_order_local = false;
+                    }
                     let child = current.take().ok_or(CompileError::MissingChild)?;
                     current = Some(Operator::GremlinMapSlice {
                         alias: current_alias.clone(),
@@ -2549,12 +2636,16 @@ impl GremlinCompiler {
                         let selector = sub.compile_seeded(pred_steps, &current_alias)?;
                         let sel_alias = sub.last_alias.clone();
                         self.absorb(&sub);
+                        let choose_alias = self.next_alias("chm");
                         current = Some(Operator::ChooseMap {
                             selector: Box::new(selector),
                             selector_alias: sel_alias,
                             options: Vec::new(),
                             child: Box::new(child),
+                            output_alias: Some(choose_alias.clone()),
                         });
+                        // Defer alias switch until after all option() steps
+                        pending_choose_output = Some(choose_alias);
                     } else {
                         let pred_op = sub.compile_seeded(pred_steps, &current_alias)?;
                         let true_op = sub.compile_seeded(true_steps, &current_alias)?;
@@ -2730,9 +2821,17 @@ impl GremlinCompiler {
 
                 GremlinStep::Cap(keys) => {
                     let child = current.take().ok_or(CompileError::MissingChild)?;
+                    // Collect reduction metadata from compiler state
+                    let mut reductions: Vec<(String, String, f64)> = Vec::new();
+                    for k in keys {
+                        if let Some((op, init)) = self.reductions.get(k) {
+                            reductions.push((k.clone(), op.clone(), *init));
+                        }
+                    }
                     current = Some(Operator::Cap {
                         keys: keys.clone(),
                         child: Box::new(child),
+                        reductions,
                     });
                     // After cap(), the result row uses cap key names as columns.
                     // Update current_alias so subsequent steps reference the right column.
@@ -2963,6 +3062,29 @@ impl GremlinCompiler {
                 }
 
                 GremlinStep::TailLocal(n) => {
+                    // Flush pending order(Scope.local) so the sort is applied
+                    // before taking the tail.
+                    if pending_order && pending_order_local {
+                        if let Some(child) = current.take() {
+                            let alias = self.next_alias("srtl");
+                            let mut items = vec![(
+                                Expr::FunctionCall {
+                                    name: SmolStr::new("gremlin_sort_local"),
+                                    args: vec![Expr::Variable(current_alias.clone())],
+                                    distinct: false,
+                                },
+                                Some(alias.clone()),
+                            )];
+                            items.extend(self.label_carry_items());
+                            current = Some(Operator::Project {
+                                items,
+                                child: Box::new(child),
+                            });
+                            current_alias = alias;
+                        }
+                        pending_order = false;
+                        pending_order_local = false;
+                    }
                     // tail(Scope.local, n): take last n elements of list values
                     let child = current.take().ok_or(CompileError::MissingChild)?;
                     let alias = self.next_alias("tail");
@@ -3277,6 +3399,17 @@ impl GremlinCompiler {
                     sample_by_consumed = false;
                 }
 
+                GremlinStep::SampleLocal(n) => {
+                    // sample(Scope.local, n) — approximated as limit(local, n)
+                    let child = current.take().ok_or(CompileError::MissingChild)?;
+                    current = Some(Operator::GremlinMapSlice {
+                        alias: current_alias.clone(),
+                        lo: 0,
+                        hi: *n as usize,
+                        child: Box::new(child),
+                    });
+                }
+
                 GremlinStep::Discard => {
                     // discard() — consume traversal, return empty
                     let child = current.take().ok_or(CompileError::MissingChild)?;
@@ -3371,21 +3504,37 @@ impl GremlinCompiler {
                     pending_sack_init = Some(gremlin_value_to_expr(val));
                 }
 
-                GremlinStep::WithSideEffect(key, val) => {
-                    // withSideEffect(key, value) — register a named side-effect
-                    // Store in alias_map so select(key) can find it, and inject
-                    // as a constant column for filtering via P.within(key) etc.
+                GremlinStep::WithSideEffect(key, val, ref reduce_op) => {
+                    // withSideEffect(key, value[, operator]) — register a named side-effect
                     let se_alias = Identifier::new(format!("__side_effect_{}", key));
                     self.alias_map.insert(key.clone(), se_alias.clone());
-                    // Store the value expression for later injection
-                    let child = current.take().unwrap_or(Operator::SingleRow);
-                    let val_expr = gremlin_value_to_expr(val);
-                    let mut items = vec![(val_expr, Some(se_alias))];
-                    items.extend(self.label_carry_items());
-                    current = Some(Operator::Project {
-                        items,
-                        child: Box::new(child),
-                    });
+                    // For reduce operators, store in compiler state for Cap to use.
+                    // Don't inject a side-effect column — aggregate collects normally
+                    // and Cap applies the reduction using stored metadata.
+                    if let Some(op) = reduce_op {
+                        if op != "assign" {
+                            let init_val = match val {
+                                GremlinValue::Integer(n) => *n as f64,
+                                GremlinValue::Float(f) => *f,
+                                _ => 0.0,
+                            };
+                            self.reductions.insert(key.clone(), (op.clone(), init_val));
+                            // Skip column injection — let aggregate work normally
+                        } else {
+                            // Operator.assign: don't inject side effect (let aggregate
+                            // collect naturally)
+                        }
+                    } else {
+                        // No operator: inject side-effect value as column
+                        let child = current.take().unwrap_or(Operator::SingleRow);
+                        let val_expr = gremlin_value_to_expr(val);
+                        let mut items = vec![(val_expr, Some(se_alias))];
+                        items.extend(self.label_carry_items());
+                        current = Some(Operator::Project {
+                            items,
+                            child: Box::new(child),
+                        });
+                    }
                 }
 
                 GremlinStep::ProductiveByStrategy => {
@@ -3769,10 +3918,7 @@ impl GremlinCompiler {
                             .alias_map
                             .iter()
                             .map(|(label, ident)| {
-                                (
-                                    SmolStr::new(label),
-                                    Expr::Variable(ident.clone()),
-                                )
+                                (SmolStr::new(label), Expr::Variable(ident.clone()))
                             })
                             .collect();
                         let mut args = vec![
@@ -4164,6 +4310,11 @@ impl GremlinCompiler {
                     ));
                 }
             }
+        }
+
+        // Flush deferred choose output alias
+        if let Some(alias) = pending_choose_output.take() {
+            current_alias = alias;
         }
 
         // If Order was set but no By followed, apply default sort
@@ -4908,7 +5059,10 @@ fn steps_to_predicate(
                     .unwrap_or(Expr::Bool(true));
             }
             GremlinStep::Not(inner) => {
-                return Expr::UnaryOp { op: UnaryOp::Not, expr: Box::new(steps_to_predicate(inner, alias, alias_map)) };
+                return Expr::UnaryOp {
+                    op: UnaryOp::Not,
+                    expr: Box::new(steps_to_predicate(inner, alias, alias_map)),
+                };
             }
             _ => {}
         }
@@ -4993,31 +5147,30 @@ fn steps_to_predicate(
     for step in steps {
         // Handle Or/And/Not by recursing into steps_to_predicate
         let pred = match step {
-            GremlinStep::Or(branches) => {
-                branches
-                    .iter()
-                    .map(|b| steps_to_predicate(b, alias, alias_map))
-                    .reduce(|a, b| Expr::BinaryOp {
-                        op: BinaryOp::Or,
-                        left: Box::new(a),
-                        right: Box::new(b),
-                    })
-                    .unwrap_or(Expr::Bool(false))
-            }
-            GremlinStep::And(branches) => {
-                branches
-                    .iter()
-                    .map(|b| steps_to_predicate(b, alias, alias_map))
-                    .reduce(|a, b| Expr::BinaryOp {
-                        op: BinaryOp::And,
-                        left: Box::new(a),
-                        right: Box::new(b),
-                    })
-                    .unwrap_or(Expr::Bool(true))
-            }
+            GremlinStep::Or(branches) => branches
+                .iter()
+                .map(|b| steps_to_predicate(b, alias, alias_map))
+                .reduce(|a, b| Expr::BinaryOp {
+                    op: BinaryOp::Or,
+                    left: Box::new(a),
+                    right: Box::new(b),
+                })
+                .unwrap_or(Expr::Bool(false)),
+            GremlinStep::And(branches) => branches
+                .iter()
+                .map(|b| steps_to_predicate(b, alias, alias_map))
+                .reduce(|a, b| Expr::BinaryOp {
+                    op: BinaryOp::And,
+                    left: Box::new(a),
+                    right: Box::new(b),
+                })
+                .unwrap_or(Expr::Bool(true)),
             GremlinStep::Not(inner) => {
                 let inner_pred = steps_to_predicate(inner, alias, alias_map);
-                Expr::UnaryOp { op: UnaryOp::Not, expr: Box::new(inner_pred) }
+                Expr::UnaryOp {
+                    op: UnaryOp::Not,
+                    expr: Box::new(inner_pred),
+                }
             }
             _ => step_to_predicate(step, alias),
         };

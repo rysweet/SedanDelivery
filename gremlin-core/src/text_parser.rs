@@ -47,7 +47,8 @@ pub fn parse_traversal(
     let productive_by = input.contains("ProductiveByStrategy")
         && !input.contains("withoutStrategies(ProductiveByStrategy");
     // ReadOnlyStrategy: only active with withStrategies (not withoutStrategies)
-    let read_only = input.contains("withStrategies(") && input.contains("ReadOnlyStrategy")
+    let read_only = input.contains("withStrategies(")
+        && input.contains("ReadOnlyStrategy")
         && !input.contains("withoutStrategies(ReadOnlyStrategy");
     // EdgeLabelVerificationStrategy(throwException: true)
     let edge_label_verify = input.contains("withStrategies(")
@@ -88,8 +89,8 @@ pub fn parse_traversal(
     let mut steps = Vec::new();
 
     // Emit WithSideEffect as first steps
-    for (key, val) in side_effects {
-        steps.push(GremlinStep::WithSideEffect(key, val));
+    for (key, val, op) in side_effects {
+        steps.push(GremlinStep::WithSideEffect(key, val, op));
     }
 
     // Emit WithSack as first step if present
@@ -168,7 +169,9 @@ fn extract_seed_strategy(input: &str) -> Option<i64> {
     let rest = rest.trim_start().strip_prefix(':')?;
     let rest = rest.trim_start();
     // Parse the integer value
-    let end = rest.find(|c: char| !c.is_ascii_digit() && c != '-').unwrap_or(rest.len());
+    let end = rest
+        .find(|c: char| !c.is_ascii_digit() && c != '-')
+        .unwrap_or(rest.len());
     rest[..end].parse::<i64>().ok()
 }
 
@@ -281,11 +284,11 @@ fn parse_literal_value(
     resolve_param(s).or(None)
 }
 
-/// Extract all `withSideEffect(key, value)` pairs from the input.
+/// Extract all `withSideEffect(key, value[, operator])` tuples from the input.
 fn extract_with_side_effects(
     input: &str,
     resolve_param: &dyn Fn(&str) -> Option<GremlinValue>,
-) -> Vec<(String, GremlinValue)> {
+) -> Vec<(String, GremlinValue, Option<String>)> {
     let mut results = Vec::new();
     let mut search = input;
     while let Some(prefix) = search.find("withSideEffect(") {
@@ -363,10 +366,58 @@ fn extract_with_side_effects(
         }
         if let Some(cp) = comma_pos {
             let key_str = arg_str[..cp].trim().trim_matches('"');
-            let val_str = arg_str[cp + 1..].trim();
+            let rest_str = arg_str[cp + 1..].trim();
+            // Check for 3-arg form: value, Operator.xxx
+            // Split rest_str at the last top-level comma to separate value from operator
+            let mut last_comma = None;
+            let mut ld = 0i32;
+            let mut in_s2 = false;
+            let mut esc2 = false;
+            for (i2, c) in rest_str.char_indices() {
+                if esc2 {
+                    esc2 = false;
+                    continue;
+                }
+                if c == '\\' && in_s2 {
+                    esc2 = true;
+                    continue;
+                }
+                if c == '"' {
+                    in_s2 = !in_s2;
+                    continue;
+                }
+                if in_s2 {
+                    continue;
+                }
+                match c {
+                    '(' | '[' | '{' => ld += 1,
+                    ')' | ']' | '}' => ld -= 1,
+                    ',' if ld == 0 => {
+                        last_comma = Some(i2);
+                    }
+                    _ => {}
+                }
+            }
+            let (val_str, operator) = if let Some(lc) = last_comma {
+                let maybe_op = rest_str[lc + 1..].trim();
+                if maybe_op.starts_with("Operator.") {
+                    let op_name = maybe_op.strip_prefix("Operator.").unwrap_or("sum");
+                    // Only split for operators that we actually reduce
+                    // "assign" just means "collect normally" — skip it
+                    if op_name == "assign" {
+                        (rest_str, None)
+                    } else {
+                        (&rest_str[..lc], Some(op_name.to_string()))
+                    }
+                } else {
+                    (rest_str, None)
+                }
+            } else {
+                (rest_str, None)
+            };
             // Try to parse the value — handle sets like {"alice"}, lists like ["x","y"], etc.
-            if let Some(val) = parse_side_effect_value(val_str, resolve_param) {
-                results.push((key_str.to_string(), val));
+            if let Some(val) = parse_side_effect_value(val_str.trim(), resolve_param) {
+                results.push((key_str.to_string(), val, operator));
             }
         }
         search = &after[end..];
@@ -1044,12 +1095,24 @@ fn parse_step_token(
         "barrier" => out.push(GremlinStep::Barrier),
         "sample" => {
             let args = parse_arg_list(args_str, resolve_param)?;
-            let n = if let Some(GremlinValue::Integer(v)) = args.first() {
-                *v
+            let is_local = args
+                .iter()
+                .any(|a| matches!(a, GremlinValue::String(s) if s == "Scope.local"));
+            let n = args
+                .iter()
+                .find_map(|a| {
+                    if let GremlinValue::Integer(v) = a {
+                        Some(*v)
+                    } else {
+                        None
+                    }
+                })
+                .unwrap_or(1);
+            if is_local {
+                out.push(GremlinStep::SampleLocal(n));
             } else {
-                1
-            };
-            out.push(GremlinStep::Sample(n));
+                out.push(GremlinStep::Sample(n));
+            }
         }
         "discard" => out.push(GremlinStep::Discard),
         "loops" => out.push(GremlinStep::Loops),
@@ -1306,14 +1369,19 @@ fn parse_step_token(
                 out.push(GremlinStep::AsNumber);
             } else if trimmed.contains("INT") || trimmed.contains("LONG") {
                 out.push(GremlinStep::AsNumberTyped("int".into()));
-            } else if trimmed.contains("FLOAT") || trimmed.contains("DOUBLE") || trimmed.contains("BIG_DECIMAL") {
+            } else if trimmed.contains("FLOAT")
+                || trimmed.contains("DOUBLE")
+                || trimmed.contains("BIG_DECIMAL")
+            {
                 out.push(GremlinStep::AsNumberTyped("float".into()));
             } else if trimmed.contains("BYTE") {
                 out.push(GremlinStep::AsNumberTyped("byte".into()));
             } else if trimmed.contains("SHORT") {
                 out.push(GremlinStep::AsNumberTyped("short".into()));
-            } else if trimmed.contains("VERTEX") || trimmed.contains("EDGE")
-                || trimmed.contains("PROPERTY") || trimmed.contains("PATH")
+            } else if trimmed.contains("VERTEX")
+                || trimmed.contains("EDGE")
+                || trimmed.contains("PROPERTY")
+                || trimmed.contains("PATH")
             {
                 out.push(GremlinStep::AsNumberTyped("__invalid__".into()));
             } else {
@@ -1789,8 +1857,7 @@ fn try_parse_predicate_single(
         let (name, _) = split_step_name_args(s);
         match name {
             "eq" | "neq" | "gt" | "gte" | "lt" | "lte" | "within" | "without" | "between"
-            | "inside"
-            | "containing" | "notContaining" | "startingWith" | "notStartingWith"
+            | "inside" | "containing" | "notContaining" | "startingWith" | "notStartingWith"
             | "endingWith" | "notEndingWith" | "regex" | "notRegex" | "typeOf" => s,
             _ => return None,
         }

@@ -244,6 +244,7 @@ impl<'a> QueryExecutor<'a> {
             selector_alias,
             options,
             child,
+            output_alias,
         } = op
         else {
             debug_assert!(false, "expected ChooseMap operator");
@@ -288,10 +289,12 @@ impl<'a> QueryExecutor<'a> {
             // exists, the traverser passes through as identity.
             if selector_unproductive {
                 let mut unproductive_branch = None;
-                for (match_val, branch, _) in options.iter() {
+                let mut unproductive_alias = None;
+                for (match_val, branch, branch_alias) in options.iter() {
                     if let Some(Value::Str(s)) = match_val {
                         if s.as_ref() == "Pick.unproductive" || s.as_ref() == "unproductive" {
                             unproductive_branch = Some(branch);
+                            unproductive_alias = branch_alias.as_ref();
                             break;
                         }
                     }
@@ -300,7 +303,14 @@ impl<'a> QueryExecutor<'a> {
                     self.foreach_seed.borrow_mut().replace(vec![row]);
                     let branch_rows = self.exec_operator(cx, branch)?;
                     self.foreach_seed.borrow_mut().take();
-                    out.extend(branch_rows);
+                    for mut brow in branch_rows {
+                        if let (Some(out_a), Some(src_a)) = (output_alias, unproductive_alias) {
+                            if let Some(val) = brow.get(src_a.0.as_str()).cloned() {
+                                brow.insert(out_a.0.to_string(), val);
+                            }
+                        }
+                        out.push(brow);
+                    }
                 } else {
                     // No unproductive branch → identity (pass through)
                     out.push(row);
@@ -310,11 +320,14 @@ impl<'a> QueryExecutor<'a> {
 
             // Find the matching option branch.
             let mut matched_branch: Option<&Operator> = None;
+            let mut matched_alias: Option<&crate::ast::Identifier> = None;
             let mut default_branch: Option<&Operator> = None;
-            for (match_val, branch, _) in options {
+            let mut default_alias: Option<&crate::ast::Identifier> = None;
+            for (match_val, branch, branch_alias) in options {
                 match match_val {
                     None => {
                         default_branch = Some(branch);
+                        default_alias = branch_alias.as_ref();
                     }
                     Some(v) => {
                         // Skip "unproductive" sentinel (handled above)
@@ -341,17 +354,31 @@ impl<'a> QueryExecutor<'a> {
                         };
                         if matches {
                             matched_branch = Some(branch);
+                            matched_alias = branch_alias.as_ref();
                             break;
                         }
                     }
                 }
             }
 
-            if let Some(branch) = matched_branch.or(default_branch) {
+            let (chosen_branch, chosen_alias) = if matched_branch.is_some() {
+                (matched_branch, matched_alias)
+            } else {
+                (default_branch, default_alias)
+            };
+
+            if let Some(branch) = chosen_branch {
                 self.foreach_seed.borrow_mut().replace(vec![row]);
                 let branch_rows = self.exec_operator(cx, branch)?;
                 self.foreach_seed.borrow_mut().take();
-                out.extend(branch_rows);
+                for mut brow in branch_rows {
+                    if let (Some(out_a), Some(src_a)) = (output_alias, chosen_alias) {
+                        if let Some(val) = brow.get(src_a.0.as_str()).cloned() {
+                            brow.insert(out_a.0.to_string(), val);
+                        }
+                    }
+                    out.push(brow);
+                }
             } else {
                 // No branch matches and no default → identity (pass through)
                 out.push(row);
@@ -438,7 +465,12 @@ impl<'a> QueryExecutor<'a> {
         cx: &mut ExecContext<'_>,
         op: &Operator,
     ) -> Result<Vec<Row>, GqlError> {
-        let Operator::Cap { keys, child } = op else {
+        let Operator::Cap {
+            keys,
+            child,
+            reductions,
+        } = op
+        else {
             debug_assert!(false, "expected Cap operator");
             return Err(GqlError::Execution(ExecutionError::UnsupportedFeature {
                 feature: "internal: expected Cap operator".into(),
@@ -466,8 +498,8 @@ impl<'a> QueryExecutor<'a> {
             // take it directly.  Otherwise merge partial lists/maps.
             let first = agg_vals[0];
             let all_same = agg_vals.iter().all(|v| *v == first);
-            if all_same {
-                row.insert(key.clone(), first.clone());
+            let cap_value = if all_same {
+                first.clone()
             } else {
                 // Merge: for Lists, concatenate; for Maps, union by key.
                 match first {
@@ -478,7 +510,7 @@ impl<'a> QueryExecutor<'a> {
                                 merged.extend(items.iter().cloned());
                             }
                         }
-                        row.insert(key.clone(), Value::List(merged));
+                        Value::List(merged)
                     }
                     Value::Map(_) => {
                         let mut merged = IndexMap::new();
@@ -489,12 +521,61 @@ impl<'a> QueryExecutor<'a> {
                                 }
                             }
                         }
-                        row.insert(key.clone(), Value::Map(merged));
+                        Value::Map(merged)
                     }
-                    _ => {
-                        row.insert(key.clone(), first.clone());
-                    }
+                    _ => first.clone(),
                 }
+            };
+
+            // Check for a reduction operator (from withSideEffect with Operator.*)
+            let reduction = reductions.iter().find(|(k, _, _)| k == key);
+            if let Some((_k, op, init)) = reduction {
+                if let Value::List(items) = &cap_value {
+                    let mut acc = *init;
+                    let init_is_int = (*init - init.round()).abs() < 1e-12;
+                    let mut all_int = init_is_int;
+                    for item in items {
+                        let v = match item {
+                            Value::Int(n) => *n as f64,
+                            Value::Float(f) => {
+                                all_int = false;
+                                *f
+                            }
+                            _ => continue,
+                        };
+                        match op.as_str() {
+                            "sum" | "add" => acc += v,
+                            "minus" | "sub" => acc -= v,
+                            "mult" | "multiply" => acc *= v,
+                            "div" | "divide" => {
+                                if v != 0.0 {
+                                    all_int = false;
+                                    acc /= v;
+                                }
+                            }
+                            "min" => {
+                                if v < acc {
+                                    acc = v;
+                                }
+                            }
+                            "max" => {
+                                if v > acc {
+                                    acc = v;
+                                }
+                            }
+                            _ => acc += v,
+                        }
+                    }
+                    if all_int && !matches!(op.as_str(), "div" | "divide") {
+                        row.insert(key.clone(), Value::Int(acc as i64));
+                    } else {
+                        row.insert(key.clone(), Value::Float(acc));
+                    }
+                } else {
+                    row.insert(key.clone(), cap_value);
+                }
+            } else {
+                row.insert(key.clone(), cap_value);
             }
         }
         Ok(vec![row])
@@ -1022,6 +1103,17 @@ impl<'a> QueryExecutor<'a> {
         let has_value_trav = value_traversal.is_some();
         let mut result_map: IndexMap<Box<str>, Value> = IndexMap::new();
         for (key_str, values) in groups {
+            // When value traversal produces no results for a group member,
+            // skip the entry for reducing aggregations (Sum, Min, Max, Mean).
+            if has_value_trav
+                && values.is_empty()
+                && matches!(
+                    agg_fn,
+                    AggFunction::Sum | AggFunction::Min | AggFunction::Max | AggFunction::Avg
+                )
+            {
+                continue;
+            }
             let agg_result = if has_value_trav {
                 // When value_traversal is set, the traversal may produce a single
                 // aggregated result (e.g., constant(1), count(), sum()) or multiple
@@ -1053,7 +1145,9 @@ impl<'a> QueryExecutor<'a> {
                         if *explicit_fold {
                             // Explicit fold(): always produce a List
                             Value::List(values)
-                        } else if values.len() == 1 && !matches!(values.first(), Some(Value::List(_))) {
+                        } else if values.len() == 1
+                            && !matches!(values.first(), Some(Value::List(_)))
+                        {
                             // Single scalar result (e.g. constant(1)): unwrap
                             values.into_iter().next().unwrap_or(Value::Null)
                         } else {
@@ -1351,7 +1445,15 @@ fn value_to_map_key(v: &Value) -> Box<str> {
     match v {
         Value::Str(s) => s.clone(),
         Value::Int(i) => format!("{i}").into_boxed_str(),
-        Value::Float(f) => format!("{f}").into_boxed_str(),
+        Value::Float(f) => {
+            let s = format!("{f}");
+            // Ensure floats always have a decimal point for consistent key format
+            if s.contains('.') || s.contains('E') || s.contains('e') {
+                s.into_boxed_str()
+            } else {
+                format!("{s}.0").into_boxed_str()
+            }
+        }
         Value::Bool(b) => format!("{b}").into_boxed_str(),
         Value::Null => "null".to_string().into_boxed_str(),
         Value::Node(nid) => format!("v[{}]", nid.0).into_boxed_str(),
@@ -1826,6 +1928,7 @@ mod tests {
 
         let plan = Operator::Cap {
             keys: vec!["x".to_string(), "y".to_string()],
+            reductions: vec![],
             child: Box::new(Operator::SingleRow),
         };
 
@@ -1845,6 +1948,7 @@ mod tests {
 
         let plan = Operator::Cap {
             keys: vec!["x".to_string()],
+            reductions: vec![],
             child: Box::new(Operator::GremlinAggregate {
                 key: "x".to_string(),
                 child: Box::new(Operator::NodeScan {
@@ -1875,6 +1979,7 @@ mod tests {
 
         let plan = Operator::Cap {
             keys: vec!["friends".to_string()],
+            reductions: vec![],
             child: Box::new(Operator::GremlinAggregate {
                 key: "friends".to_string(),
                 child: Box::new(Operator::Expand {
@@ -1941,6 +2046,7 @@ mod tests {
 
         let plan = Operator::Cap {
             keys: vec!["x".to_string(), "y".to_string()],
+            reductions: vec![],
             child: Box::new(Operator::GremlinAggregate {
                 key: "x".to_string(),
                 child: Box::new(Operator::NodeScan {
@@ -1978,6 +2084,7 @@ mod tests {
 
         let plan = Operator::Cap {
             keys: vec!["all".to_string()],
+            reductions: vec![],
             child: Box::new(Operator::GremlinAggregate {
                 key: "all".to_string(),
                 child: Box::new(Operator::NodeScan {

@@ -183,6 +183,8 @@ pub enum GremlinStep {
     Barrier,
     /// `sample(n)` — random sample of n traversers
     Sample(i64),
+    /// `sample(Scope.local, n)` — sample elements within a list
+    SampleLocal(i64),
     /// `discard()` — consume traversal without returning results
     Discard,
     /// `loops()` — returns the number of loops in a repeat context
@@ -200,7 +202,9 @@ pub enum GremlinStep {
     /// `withSack(initValue)` — initialize the sack with a value
     WithSack(GremlinValue),
     /// `withSideEffect(key, value)` — register a named side-effect value
-    WithSideEffect(String, GremlinValue),
+    /// The optional third field is a reduction operator (e.g., "sum", "minus")
+    /// from `withSideEffect(key, init, Operator.op)`.
+    WithSideEffect(String, GremlinValue, Option<String>),
     /// `option(token, traversal)` — option step for branch/choose
     Option(GremlinValue, Vec<GremlinStep>),
     /// Flag indicating ProductiveByStrategy is active

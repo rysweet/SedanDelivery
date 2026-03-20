@@ -1048,7 +1048,17 @@ fn values_match_ctx(
         (Value::Float(a), Value::Int(e)) => (a - *e as f64).abs() < 1e-9,
         // String representation match: Str("1") matches Int(1), etc.
         (Value::Str(a), Value::Int(e)) => a.as_ref() == &e.to_string(),
-        (Value::Str(a), Value::Float(e)) => a.as_ref() == &e.to_string(),
+        (Value::Str(a), Value::Float(e)) => {
+            // Handle both "1" and "1.0" matching Float(1.0)
+            if a.as_ref() == &e.to_string() {
+                return true;
+            }
+            if let Ok(parsed) = a.parse::<f64>() {
+                (parsed - e).abs() < 1e-9
+            } else {
+                false
+            }
+        }
         (Value::Str(a), Value::Bool(e)) => a.as_ref() == &e.to_string(),
         // List matching stringified list: List(["marko"]) matches Str("[\"marko\"]")
         (Value::List(items), Value::Str(expected_str)) => {
