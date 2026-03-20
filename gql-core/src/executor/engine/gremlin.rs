@@ -61,7 +61,7 @@ impl<'a> QueryExecutor<'a> {
             }
 
             // Feed current rows through the body.
-            let mut next = Vec::new();
+            let mut next: Vec<Row> = Vec::new();
             for row in &current {
                 cx.budget.check_or_err()?;
 
@@ -90,8 +90,31 @@ impl<'a> QueryExecutor<'a> {
                 self.foreach_seed.borrow_mut().take();
 
                 // Carry path accumulator to body results that lack it.
+                // Skip sentinel rows (e.g., from side-effect groups with
+                // no traversers) that don't have the seed alias — they
+                // would break subsequent iterations that need the alias.
                 let path_acc = seed_row.get("__gremlin_path_acc").cloned();
                 for mut body_row in body_rows {
+                    if let Some(key) = seed_key {
+                        if !body_row.contains_key(key)
+                            && remap
+                                .as_ref()
+                                .map_or(true, |(from, _)| !body_row.contains_key(from.as_str()))
+                        {
+                            // Sentinel row without traverser alias — skip
+                            // but preserve any side-effect agg columns on
+                            // the seed_row so they aren't lost.
+                            for (k, v) in &body_row {
+                                if k.starts_with("__gremlin_agg_") {
+                                    // Merge sentinel agg into seed for next iteration
+                                    for nr in &mut next {
+                                        nr.entry(k.clone()).or_insert_with(|| v.clone());
+                                    }
+                                }
+                            }
+                            continue;
+                        }
+                    }
                     if let Some(ref acc) = path_acc {
                         if !body_row.contains_key("__gremlin_path_acc") {
                             body_row.insert("__gremlin_path_acc".to_string(), acc.clone());
@@ -1318,14 +1341,35 @@ impl<'a> QueryExecutor<'a> {
         // traversers through instead of collapsing into a single Map row.
         if let Some(key) = side_effect_key {
             let agg_col = format!("__gremlin_agg_{key}");
-            let map_val = Value::Map(result_map);
             let mut output = input;
             if output.is_empty() {
                 // Even with no input, the side-effect must be accessible via cap().
                 let mut sentinel = Row::new();
-                sentinel.insert(agg_col, map_val);
+                sentinel.insert(agg_col, Value::Map(result_map));
                 return Ok(vec![sentinel]);
             }
+            // Merge new counts with any existing aggregation carried from
+            // a previous repeat iteration so counts accumulate.
+            let map_val = {
+                let mut merged = result_map;
+                if let Some(first) = output.first() {
+                    if let Some(Value::Map(existing)) = first.get(&agg_col) {
+                        for (ek, ev) in existing {
+                            let entry = merged.entry(ek.clone()).or_insert(Value::Int(0));
+                            match (entry.clone(), ev) {
+                                (Value::Int(a), Value::Int(b)) => *entry = Value::Int(a + b),
+                                (Value::Float(a), Value::Float(b)) => *entry = Value::Float(a + b),
+                                (Value::List(mut a), Value::List(b)) => {
+                                    a.extend(b.iter().cloned());
+                                    *entry = Value::List(a);
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                }
+                Value::Map(merged)
+            };
             for row in &mut output {
                 row.insert(agg_col.clone(), map_val.clone());
             }

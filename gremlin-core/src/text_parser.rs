@@ -257,17 +257,35 @@ fn parse_literal_value(
     s: &str,
     resolve_param: &dyn Fn(&str) -> Option<GremlinValue>,
 ) -> Option<GremlinValue> {
+    // Integer with type suffix: 0b (byte), 0s (short), 0i (int), 0L/0l (long), 0n (BigInteger)
     if let Some(stripped) = s
         .strip_suffix('b')
+        .or_else(|| s.strip_suffix('B'))
         .or_else(|| s.strip_suffix('s'))
+        .or_else(|| s.strip_suffix('S'))
         .or_else(|| s.strip_suffix('i'))
+        .or_else(|| s.strip_suffix('I'))
         .or_else(|| s.strip_suffix('l'))
+        .or_else(|| s.strip_suffix('L'))
+        .or_else(|| s.strip_suffix('n'))
+        .or_else(|| s.strip_suffix('N'))
     {
         if let Ok(v) = stripped.parse::<i64>() {
             return Some(GremlinValue::Integer(v));
         }
+        // BigInteger values too large for i64: parse as f64 for approximate arithmetic
+        if let Ok(v) = stripped.parse::<f64>() {
+            return Some(GremlinValue::Float(v));
+        }
     }
-    if let Some(stripped) = s.strip_suffix('d').or_else(|| s.strip_suffix('f')) {
+    if let Some(stripped) = s
+        .strip_suffix('d')
+        .or_else(|| s.strip_suffix('D'))
+        .or_else(|| s.strip_suffix('f'))
+        .or_else(|| s.strip_suffix('F'))
+        .or_else(|| s.strip_suffix('m'))
+        .or_else(|| s.strip_suffix('M'))
+    {
         if let Ok(v) = stripped.parse::<f64>() {
             return Some(GremlinValue::Float(v));
         }

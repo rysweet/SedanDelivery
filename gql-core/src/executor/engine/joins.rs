@@ -128,6 +128,15 @@ impl<'a> QueryExecutor<'a> {
                     if k.starts_with("__anon") {
                         continue;
                     }
+                    // Skip internal Gremlin columns that are intentionally
+                    // updated by sub-traversals (sack, side-effect, aggregation).
+                    if self.gremlin_mode
+                        && (k == "__sack"
+                            || k.starts_with("__side_effect_")
+                            || k.starts_with("__gremlin_agg_"))
+                    {
+                        continue;
+                    }
                     if let Some(outer_v) = outer_row.get(k) {
                         if outer_v != v {
                             compatible = false;

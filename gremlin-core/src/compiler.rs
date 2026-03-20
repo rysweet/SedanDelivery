@@ -52,6 +52,9 @@ pub struct GremlinCompiler {
     /// Reduction info from `withSideEffect(key, init, Operator.op)`.
     /// Maps side-effect key → (operator, init_value).
     reductions: HashMap<String, (String, f64)>,
+    /// Compile-time literal values for side-effects, used to resolve
+    /// property keys like `property(select("a"), value)` at compile time.
+    side_effect_values: HashMap<String, GremlinValue>,
 }
 
 impl Default for GremlinCompiler {
@@ -72,6 +75,7 @@ impl GremlinCompiler {
             edge_label_verify: false,
             seed: None,
             reductions: HashMap::new(),
+            side_effect_values: HashMap::new(),
         }
     }
 
@@ -92,6 +96,7 @@ impl GremlinCompiler {
             edge_label_verify: self.edge_label_verify,
             seed: self.seed,
             reductions: self.reductions.clone(),
+            side_effect_values: self.side_effect_values.clone(),
         }
     }
 
@@ -106,8 +111,19 @@ impl GremlinCompiler {
     }
 
     /// Absorb counter state from a sub-compiler after it finishes.
+    /// Also merge any new alias_map entries and reductions so that
+    /// side-effect aliases created in sub-traversals (repeat, choose, etc.)
+    /// are visible to the parent compiler for downstream steps like cap().
     fn absorb(&mut self, sub: &Self) {
         self.alias_counter = sub.alias_counter;
+        // Merge new aliases from sub-compiler (e.g., groupCount("a") in repeat body)
+        for (k, v) in &sub.alias_map {
+            self.alias_map.entry(k.clone()).or_insert_with(|| v.clone());
+        }
+        // Merge new reductions from sub-compiler
+        for (k, v) in &sub.reductions {
+            self.reductions.entry(k.clone()).or_insert_with(|| v.clone());
+        }
     }
 
     /// Compile a match pattern sub-traversal starting from an already-bound alias.
@@ -2548,21 +2564,53 @@ impl GremlinCompiler {
                     if self.read_only {
                         return Err(CompileError::ReadOnlyViolation);
                     }
+                    // Helper: extract the select key from "__.select("x")" patterns
+                    let extract_select_key = |s: &str| -> Option<String> {
+                        let trimmed = s.trim_start_matches("__.");
+                        trimmed.strip_prefix("select(")
+                            .and_then(|s| s.strip_suffix(')'))
+                            .map(|inner| inner.trim_matches('"').trim_matches('\'').to_string())
+                    };
+                    // Resolve property key: if __.select("a") and "a" is a string
+                    // side-effect, use the string value as the property key name.
+                    let resolved_key = if let Some(ref sel_key) = extract_select_key(key) {
+                        if let Some(GremlinValue::String(s)) = self.side_effect_values.get(sel_key.as_str()) {
+                            s.clone()
+                        } else {
+                            key.clone()
+                        }
+                    } else {
+                        key.clone()
+                    };
                     if let Some(ref reserved) = self.reserved_keys {
                         let default_reserved = ["id", "label"];
-                        if default_reserved.contains(&key.as_str())
-                            || reserved.iter().any(|r| r == key)
+                        if default_reserved.contains(&resolved_key.as_str())
+                            || reserved.iter().any(|r| *r == resolved_key)
                         {
-                            return Err(CompileError::ReservedKeyViolation(key.clone()));
+                            return Err(CompileError::ReservedKeyViolation(resolved_key));
                         }
                     }
-                    pending_properties.push((key.clone(), value.clone()));
+                    pending_properties.push((resolved_key.clone(), value.clone()));
                     let child = current.take().ok_or(CompileError::MissingChild)?;
+                    // Resolve property value: if __.select("a"), emit Variable ref
+                    let val_expr = if let GremlinValue::String(s) = value {
+                        if let Some(ref sel_key) = extract_select_key(s) {
+                            if let Some(alias) = self.alias_map.get(sel_key.as_str()) {
+                                Expr::Variable(alias.clone())
+                            } else {
+                                gremlin_value_to_expr(value)
+                            }
+                        } else {
+                            gremlin_value_to_expr(value)
+                        }
+                    } else {
+                        gremlin_value_to_expr(value)
+                    };
                     current = Some(Operator::Set {
                         items: vec![SetItem::Property {
                             alias: current_alias.clone(),
-                            key: key.clone(),
-                            value: gremlin_value_to_expr(value),
+                            key: resolved_key,
+                            value: val_expr,
                         }],
                         child: Box::new(child),
                     });
@@ -3699,11 +3747,16 @@ impl GremlinCompiler {
                 GremlinStep::WithSideEffect(key, val, ref reduce_op) => {
                     // withSideEffect(key, value[, operator]) — register a named side-effect
                     let se_alias = Identifier::new(format!("__side_effect_{}", key));
+                    // Collect carry items BEFORE inserting the new alias to avoid
+                    // a self-referencing carry item that would try to read the
+                    // column we're about to create.
+                    let carry = self.label_carry_items();
                     self.alias_map.insert(key.clone(), se_alias.clone());
+                    // Store the literal value for compile-time key resolution
+                    self.side_effect_values.insert(key.clone(), val.clone());
                     // For reduce operators, store in compiler state for Cap to use.
-                    // Don't inject a side-effect column — aggregate collects normally
-                    // and Cap applies the reduction using stored metadata.
-                    let mut is_reduce = false;
+                    // Still inject the initial value as a column so downstream
+                    // select/where can resolve it (e.g., where(within('a'))).
                     if let Some(op) = reduce_op {
                         if op != "assign" {
                             let init_val = match val {
@@ -3712,23 +3765,18 @@ impl GremlinCompiler {
                                 _ => 0.0,
                             };
                             self.reductions.insert(key.clone(), (op.clone(), init_val));
-                            is_reduce = true;
                         }
                     }
-                    // Inject side-effect value as a column for "assign" and
-                    // no-operator cases so downstream select/where can resolve it.
-                    // Reduce operators (sum, addAll, etc.) skip this — aggregate
-                    // collects values and Cap applies the reduction.
-                    if !is_reduce {
-                        let child = current.take().unwrap_or(Operator::SingleRow);
-                        let val_expr = gremlin_value_to_expr(val);
-                        let mut items = vec![(val_expr, Some(se_alias))];
-                        items.extend(self.label_carry_items());
-                        current = Some(Operator::Project {
-                            items,
-                            child: Box::new(child),
-                        });
-                    }
+                    // Always inject the side-effect value as a column so
+                    // downstream select/where/property can resolve it.
+                    let child = current.take().unwrap_or(Operator::SingleRow);
+                    let val_expr = gremlin_value_to_expr(val);
+                    let mut items = vec![(val_expr, Some(se_alias))];
+                    items.extend(carry);
+                    current = Some(Operator::Project {
+                        items,
+                        child: Box::new(child),
+                    });
                 }
 
                 GremlinStep::ProductiveByStrategy => {
@@ -4955,6 +5003,23 @@ fn inject_sack_init(op: &mut Operator, init_expr: &Expr) {
                     child: Box::new(Operator::SingleRow),
                 }),
             };
+        }
+        // Operators with optional child: recurse if child exists
+        Operator::Create { child, .. }
+        | Operator::Merge { child, .. }
+        | Operator::Call { child, .. } => {
+            if let Some(ch) = child {
+                inject_sack_init(ch, init_expr);
+            }
+        }
+        // Remaining operators with a required child
+        Operator::MergeRelationship { child, .. }
+        | Operator::Set { child, .. }
+        | Operator::Remove { child, .. }
+        | Operator::Delete { child, .. }
+        | Operator::AssemblePath { child, .. }
+        | Operator::ProduceResults { child, .. } => {
+            inject_sack_init(child, init_expr);
         }
         _ => {}
     }
