@@ -1346,13 +1346,14 @@ mod tests {
 
         // Scan all :N nodes, then repeat out-expand once.
         // With times=1, each starting node expands one hop outward.
+        // Use a remap so the body output "m" gets renamed back to "n" for iteration.
         let plan = Operator::Repeat {
             body: Box::new(Operator::Expand {
                 direction: Direction::Outgoing,
                 rel_types: vec![RelType::new("NEXT")],
                 src_alias: Identifier::new("n"),
                 rel_alias: None,
-                dst_alias: Identifier::new("n"),
+                dst_alias: Identifier::new("m"),
                 child: Box::new(Operator::SingleRow),
             }),
             times: Some(1),
@@ -1360,7 +1361,7 @@ mod tests {
             emit: false,
             emit_before: false,
             emit_predicate: None,
-            remap: None,
+            remap: Some(("m".to_string(), "n".to_string())),
             child: Box::new(Operator::NodeScan {
                 label: Some(Label::new("N")),
                 alias: Identifier::new("n"),
@@ -1369,9 +1370,8 @@ mod tests {
 
         let mut budget = ExecutionBudget::unlimited();
         let result = executor.execute("g", &plan, &mut budget).unwrap();
-        // A->B, B->C expand succeeds; C has no outgoing so it stays from scan.
-        // Total: 3 rows after one expansion iteration.
-        assert_eq!(result.rows.len(), 3);
+        // A→B and B→C expand; C has no outgoing NEXT so it is dropped.
+        assert_eq!(result.rows.len(), 2);
     }
 
     #[test]
@@ -1649,6 +1649,7 @@ mod tests {
                 }),
                 value_alias: Identifier::new("n"),
                 by_keys: vec![],
+                productive: false,
             }),
         };
 
@@ -1684,6 +1685,7 @@ mod tests {
                 }),
                 value_alias: Identifier::new("m"),
                 by_keys: vec![],
+                productive: false,
             }),
         };
 
@@ -1710,6 +1712,7 @@ mod tests {
             }),
             value_alias: Identifier::new("n"),
             by_keys: vec![],
+                productive: false,
         };
 
         let mut budget = ExecutionBudget::unlimited();
@@ -1739,6 +1742,7 @@ mod tests {
                 }),
                 value_alias: Identifier::new("n"),
                 by_keys: vec![],
+                productive: false,
             }),
         };
 
@@ -1774,6 +1778,7 @@ mod tests {
                 }),
                 value_alias: Identifier::new("n"),
                 by_keys: vec![],
+                productive: false,
             }),
         };
 
