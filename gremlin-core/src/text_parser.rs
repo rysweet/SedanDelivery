@@ -1324,6 +1324,40 @@ fn parse_by_step(
         return Ok(());
     }
 
+    // Handle bare token references: by(label) = by(T.label), by(id) = by(T.id)
+    if first == "label" || first == "Label" {
+        let descending = raw_args.len() >= 2 && {
+            let second = raw_args[1].trim();
+            second == "Order.desc" || second == "desc"
+        };
+        out.push(GremlinStep::By("~label".to_string(), descending));
+        return Ok(());
+    }
+    if first == "id" || first == "Id" {
+        let descending = raw_args.len() >= 2 && {
+            let second = raw_args[1].trim();
+            second == "Order.desc" || second == "desc"
+        };
+        out.push(GremlinStep::By("~id".to_string(), descending));
+        return Ok(());
+    }
+    if first == "key" || first == "Key" {
+        let descending = raw_args.len() >= 2 && {
+            let second = raw_args[1].trim();
+            second == "Order.desc" || second == "desc"
+        };
+        out.push(GremlinStep::By("~key".to_string(), descending));
+        return Ok(());
+    }
+    if first == "value" || first == "Value" {
+        let descending = raw_args.len() >= 2 && {
+            let second = raw_args[1].trim();
+            second == "Order.desc" || second == "desc"
+        };
+        out.push(GremlinStep::By("~value".to_string(), descending));
+        return Ok(());
+    }
+
     // Check for Order.asc, Order.desc, Order.shuffle as second arg
     let descending = if raw_args.len() >= 2 {
         let second = raw_args[1].trim();
@@ -1786,7 +1820,7 @@ fn parse_from_to_traversal(
     // Handle to(Direction.OUT, "label") / to(Direction.IN, "label") / to(Direction.BOTH, "label")
     // These are equivalent to out("label") / in("label") / both("label")
     let args = split_top_level_args(s);
-    if args.len() >= 1 {
+    if !args.is_empty() {
         let first = args[0].trim();
         if first.starts_with("Direction.") || first == "OUT" || first == "IN" || first == "BOTH" {
             let labels: Vec<String> = args[1..]

@@ -2242,16 +2242,51 @@ impl GremlinCompiler {
 
                 GremlinStep::Coalesce(alternatives) => {
                     let child = current.take().ok_or(CompileError::MissingChild)?;
-                    let mut sub = self.sub_compiler();
-                    let alt_ops: Result<Vec<Operator>, _> = alternatives
-                        .iter()
-                        .map(|s| sub.compile_seeded(s, &current_alias))
+                    // Compile each alternative and track their output aliases.
+                    let mut alt_ops = Vec::new();
+                    let mut alt_aliases = Vec::new();
+                    for s in alternatives {
+                        let mut sub = self.sub_compiler();
+                        let op = sub.compile_seeded(s, &current_alias)?;
+                        alt_aliases.push(sub.last_alias.clone());
+                        self.absorb(&sub);
+                        alt_ops.push(op);
+                    }
+
+                    // Normalize: wrap each alternative in a Project to rename
+                    // its output to a common alias.
+                    let coal_alias = self.next_alias("coal");
+                    let normalized: Vec<Operator> = alt_ops
+                        .into_iter()
+                        .zip(alt_aliases.iter())
+                        .map(|(op, alt_alias)| {
+                            if alt_alias.as_str() == coal_alias.as_str() {
+                                op
+                            } else {
+                                Operator::Project {
+                                    items: vec![
+                                        (
+                                            Expr::Variable(alt_alias.clone()),
+                                            Some(coal_alias.clone()),
+                                        ),
+                                        // Also carry forward the original alias for path()
+                                        (
+                                            Expr::Variable(alt_alias.clone()),
+                                            Some(alt_alias.clone()),
+                                        ),
+                                    ],
+                                    child: Box::new(op),
+                                }
+                            }
+                        })
                         .collect();
-                    self.absorb(&sub);
+
                     current = Some(Operator::Coalesce {
-                        alternatives: alt_ops?,
+                        alternatives: normalized,
                         child: Box::new(child),
                     });
+                    current_alias = coal_alias;
+                    path_aliases.push(current_alias.clone());
                 }
 
                 GremlinStep::Union(branches) => {
@@ -4119,6 +4154,18 @@ fn make_by_expr(key: &str, current_alias: &Identifier) -> Expr {
             Box::new(Expr::Variable(current_alias.clone())),
             SmolStr::new(prop),
         )
+    } else if key == "~key" || key == "T.key" || key == "t[key]" {
+        Expr::FunctionCall {
+            name: SmolStr::new("gremlin_property_key"),
+            args: vec![Expr::Variable(current_alias.clone())],
+            distinct: false,
+        }
+    } else if key == "~value" || key == "T.value" || key == "t[value]" {
+        Expr::FunctionCall {
+            name: SmolStr::new("gremlin_property_value"),
+            args: vec![Expr::Variable(current_alias.clone())],
+            distinct: false,
+        }
     } else {
         Expr::Property(
             Box::new(Expr::Variable(current_alias.clone())),
