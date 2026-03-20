@@ -56,6 +56,30 @@ impl<'a> QueryExecutor<'a> {
                     Value::Null => {
                         // Deleting NULL is a no-op in Cypher
                     }
+                    // Property map (from properties() step): delete the property
+                    Value::Map(ref m) if m.contains_key("~key") && m.contains_key("~element") => {
+                        if let (Some(Value::Str(key)), Some(elem)) =
+                            (m.get("~key"), m.get("~element"))
+                        {
+                            match elem {
+                                Value::Node(nid) => {
+                                    let _ = self.store.remove_node_property(
+                                        cx.graph,
+                                        *nid,
+                                        key.as_ref(),
+                                    );
+                                }
+                                Value::Edge(eid) => {
+                                    let _ = self.store.remove_edge_property(
+                                        cx.graph,
+                                        *eid,
+                                        key.as_ref(),
+                                    );
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
                     Value::Path { nodes, edges } => {
                         // Cache rel_type before deleting so type(r) still works.
                         for &eid in &edges {
