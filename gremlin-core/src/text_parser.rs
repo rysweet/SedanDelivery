@@ -44,7 +44,8 @@ pub fn parse_traversal(
     let side_effects = extract_with_side_effects(input, resolve_param);
 
     // Detect strategy flags before stripping
-    let productive_by = input.contains("ProductiveByStrategy");
+    let productive_by = input.contains("ProductiveByStrategy")
+        && !input.contains("withoutStrategies(ProductiveByStrategy");
     // ReadOnlyStrategy: only active with withStrategies (not withoutStrategies)
     let read_only = input.contains("withStrategies(") && input.contains("ReadOnlyStrategy")
         && !input.contains("withoutStrategies(ReadOnlyStrategy");
@@ -1285,6 +1286,14 @@ fn parse_step_token(
                 out.push(GremlinStep::AsNumberTyped("int".into()));
             } else if trimmed.contains("FLOAT") || trimmed.contains("DOUBLE") || trimmed.contains("BIG_DECIMAL") {
                 out.push(GremlinStep::AsNumberTyped("float".into()));
+            } else if trimmed.contains("BYTE") {
+                out.push(GremlinStep::AsNumberTyped("byte".into()));
+            } else if trimmed.contains("SHORT") {
+                out.push(GremlinStep::AsNumberTyped("short".into()));
+            } else if trimmed.contains("VERTEX") || trimmed.contains("EDGE")
+                || trimmed.contains("PROPERTY") || trimmed.contains("PATH")
+            {
+                out.push(GremlinStep::AsNumberTyped("__invalid__".into()));
             } else {
                 out.push(GremlinStep::AsNumber);
             }

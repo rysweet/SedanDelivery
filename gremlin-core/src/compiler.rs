@@ -236,6 +236,8 @@ impl GremlinCompiler {
         let mut select_by_mods: Vec<String> = Vec::new();
         // Track whether the preceding step was dedup for by() modulation
         let mut pending_dedup = false;
+        // Track whether dedup already consumed its single by() — second by() is an error
+        let mut dedup_by_consumed = false;
         // Track whether the preceding step was aggregate for by() modulation
         let mut pending_aggregate = false;
         // Track whether the pending group is specifically a groupCount (rejects 2nd by())
@@ -290,6 +292,7 @@ impl GremlinCompiler {
             // Reset aggregate by-consumed flag on any non-By step
             if !matches!(step, GremlinStep::By(..) | GremlinStep::ByTraversal(..)) {
                 aggregate_by_consumed = false;
+                dedup_by_consumed = false;
                 pending_sack_op = false;
                 pending_project = false;
                 // Finalize pending format with collected by() modulations
@@ -1212,6 +1215,7 @@ impl GremlinCompiler {
                         side_effect_key: key.clone(),
                         key_traversal: None,
                         value_traversal: None,
+                        productive: self.productive_by,
                         child: Box::new(child),
                     });
                     // Named groups are side-effects (pass-through): keep current alias.
@@ -1478,6 +1482,11 @@ impl GremlinCompiler {
                         // by() after select() — collect modulation
                         select_by_mods.push(key.clone());
                     } else if pending_dedup {
+                        if dedup_by_consumed {
+                            return Err(CompileError::InvalidSequence(
+                                "Dedup step can only have one by modulator".into(),
+                            ));
+                        }
                         // by() after dedup() — dedup by specific property
                         if !key.is_empty() {
                             if let Some(Operator::Distinct { ref mut by_key, .. }) = current {
@@ -1485,7 +1494,7 @@ impl GremlinCompiler {
                                     Some(format!("__dedup_prop__{}__{}", key, current_alias.0));
                             }
                         }
-                        pending_dedup = false;
+                        dedup_by_consumed = true;
                     } else if pending_aggregate {
                         // by() after aggregate() — project a property from each traverser
                         if let Some(Operator::GremlinAggregate {
@@ -1852,6 +1861,22 @@ impl GremlinCompiler {
                             // by(traversal) after select() — treat as string key for select_by_mods
                             // (preserves existing behavior)
                             select_by_mods.push(String::new());
+                        } else if pending_dedup {
+                            // by(traversal) after dedup() — compile sub-traversal for dedup key
+                            let child = current.take().ok_or(CompileError::MissingChild)?;
+                            let mut sub = self.sub_compiler();
+                            let sub_op = sub.compile_seeded(sub_steps, &current_alias)?;
+                            let sub_out_alias = sub.last_alias.clone();
+                            self.absorb(&sub);
+                            let applied = Operator::Apply {
+                                outer: Box::new(child),
+                                inner: Box::new(sub_op),
+                            };
+                            current = Some(Operator::Distinct {
+                                child: Box::new(applied),
+                                by_key: Some(sub_out_alias.to_string()),
+                            });
+                            pending_dedup = false;
                         } else if pending_group {
                             // by(traversal) after group() — compile sub-traversal for key or value
                             if pending_group_by_count == 0 {

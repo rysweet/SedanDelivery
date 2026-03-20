@@ -1052,7 +1052,31 @@ fn values_match_ctx(
         (Value::Str(a), Value::Bool(e)) => a.as_ref() == &e.to_string(),
         // List matching stringified list: List(["marko"]) matches Str("[\"marko\"]")
         (Value::List(items), Value::Str(expected_str)) => {
+            let format_float = |f: &f64| -> String {
+                let s = f.to_string();
+                // Ensure floats like 1.0 keep the decimal point
+                if !s.contains('.') && !s.contains('E') && !s.contains('e') {
+                    format!("{}.0", s)
+                } else {
+                    s
+                }
+            };
             let parts: Vec<String> = items
+                .iter()
+                .map(|v| match v {
+                    Value::Str(s) => format!("\"{}\"", s),
+                    Value::Int(n) => n.to_string(),
+                    Value::Float(f) => format_float(f),
+                    Value::Bool(b) => b.to_string(),
+                    Value::Null => "null".to_string(),
+                    other => format!("{:?}", other),
+                })
+                .collect();
+            // Try both with and without spaces after commas
+            let with_spaces = format!("[{}]", parts.join(", "));
+            let without_spaces = format!("[{}]", parts.join(","));
+            // Also try with plain f.to_string() (no forced decimal)
+            let parts_plain: Vec<String> = items
                 .iter()
                 .map(|v| match v {
                     Value::Str(s) => format!("\"{}\"", s),
@@ -1063,10 +1087,12 @@ fn values_match_ctx(
                     other => format!("{:?}", other),
                 })
                 .collect();
-            // Try both with and without spaces after commas
-            let with_spaces = format!("[{}]", parts.join(", "));
-            let without_spaces = format!("[{}]", parts.join(","));
-            with_spaces == expected_str.as_ref() || without_spaces == expected_str.as_ref()
+            let plain_no_spaces = format!("[{}]", parts_plain.join(","));
+            let plain_with_spaces = format!("[{}]", parts_plain.join(", "));
+            with_spaces == expected_str.as_ref()
+                || without_spaces == expected_str.as_ref()
+                || plain_no_spaces == expected_str.as_ref()
+                || plain_with_spaces == expected_str.as_ref()
         }
         (Value::Str(a), Value::Str(e)) => a == e,
         (Value::Bool(a), Value::Bool(e)) => a == e,

@@ -307,6 +307,8 @@ pub enum Operator {
         /// Optional compiled sub-traversal for the group value (from by(traversal)).
         /// (Operator, output_alias) — seeded per-row to compute the value.
         value_traversal: Option<(Box<Operator>, Identifier)>,
+        /// When true (ProductiveByStrategy), include null-keyed entries for missing properties.
+        productive: bool,
         child: Box<Operator>,
     },
     /// Gremlin `range(Scope.local, lo, hi)` / `limit(Scope.local, n)` —

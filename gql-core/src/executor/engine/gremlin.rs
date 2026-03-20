@@ -933,6 +933,7 @@ impl<'a> QueryExecutor<'a> {
             side_effect_key,
             key_traversal,
             value_traversal,
+            productive,
             child,
         } = op
         else {
@@ -971,8 +972,9 @@ impl<'a> QueryExecutor<'a> {
                 self.eval_with_storage(cx.graph, key_expr, row, &ctx)
                     .unwrap_or(Value::Null)
             };
-            // Skip rows where the group key evaluates to Null (unproductive by).
-            if matches!(key_val, Value::Null) {
+            // Skip rows where the group key evaluates to Null (unproductive by),
+            // unless ProductiveByStrategy is active.
+            if matches!(key_val, Value::Null) && !*productive {
                 continue;
             }
 

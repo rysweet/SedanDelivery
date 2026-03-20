@@ -10,6 +10,25 @@ use super::helpers::{
 };
 use super::{ExecContext, QueryExecutor, Row};
 
+/// Compute a dedup key for a value, treating Gremlin edge property Maps specially:
+/// Edge property Maps (containing `~key`/`~value`/`~element` where element is an Edge)
+/// are compared by `~key` + `~value` only, ignoring `~element` (the parent edge).
+/// Vertex property Maps keep the `~element` in the comparison key since VertexProperty
+/// equality considers the parent vertex.
+fn property_aware_dedup_key(v: &Value) -> String {
+    if let Value::Map(m) = v {
+        if m.contains_key("~key") && m.contains_key("~value") {
+            // Edge properties: compare by key+value only
+            if let Some(Value::Edge(_)) = m.get("~element") {
+                let key = m.get("~key").map(|v| v.canonical_key()).unwrap_or_default();
+                let val = m.get("~value").map(|v| v.canonical_key()).unwrap_or_default();
+                return format!("EdgeProp({key}, {val})");
+            }
+        }
+    }
+    v.canonical_key()
+}
+
 impl<'a> QueryExecutor<'a> {
     pub(crate) fn exec_filter(
         &self,
@@ -162,7 +181,7 @@ impl<'a> QueryExecutor<'a> {
                     cx.budget.check_or_err()?;
                     let dedup_val = row
                         .get(key.as_str())
-                        .map(|v| v.canonical_key())
+                        .map(property_aware_dedup_key)
                         .unwrap_or_default();
                     if seen.insert(dedup_val) {
                         out.push(row);
@@ -191,7 +210,10 @@ impl<'a> QueryExecutor<'a> {
                         .cached_get_node(graph, *nid)
                         .ok()
                         .flatten()
-                        .map(|n| Value::Str(n.labels.first().map(|l| Box::from(l.0.as_str())).unwrap_or_default()));
+                        .map(|n| {
+                            let label = n.labels.first().map(|l| l.as_str()).unwrap_or("");
+                            Value::Str(Box::from(label))
+                        });
                 }
                 if prop == "~id" {
                     return Some(Value::Int(nid.0 as i64));
@@ -208,7 +230,7 @@ impl<'a> QueryExecutor<'a> {
                         .cached_get_edge(graph, *eid)
                         .ok()
                         .flatten()
-                        .map(|e| Value::Str(Box::from(e.rel_type.0.as_str())));
+                        .map(|e| Value::Str(Box::from(e.rel_type.as_str())));
                 }
                 if prop == "~id" {
                     return Some(Value::Int(eid.0 as i64));
