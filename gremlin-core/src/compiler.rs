@@ -1356,20 +1356,39 @@ impl GremlinCompiler {
                                 child: Box::new(child),
                             });
                         } else {
-                            // Property-based sort: filter out elements missing the property
+                            // Property-based sort
                             let prop_expr = Expr::Property(
                                 Box::new(Expr::Variable(current_alias.clone())),
                                 SmolStr::new(key),
                             );
-                            let filtered = Operator::Filter {
-                                predicate: Expr::IsNotNull(Box::new(prop_expr.clone())),
-                                child: Box::new(child),
-                            };
-                            current = Some(Operator::Sort {
-                                items: vec![(prop_expr, !descending)],
-                                gremlin_order: true,
-                                child: Box::new(filtered),
-                            });
+                            if self.productive_by {
+                                // ProductiveByStrategy: use coalesce to return Null
+                                // for missing properties instead of filtering.
+                                let safe_prop = Expr::FunctionCall {
+                                    name: SmolStr::new("coalesce"),
+                                    args: vec![
+                                        prop_expr,
+                                        Expr::Null,
+                                    ],
+                                    distinct: false,
+                                };
+                                current = Some(Operator::Sort {
+                                    items: vec![(safe_prop, !descending)],
+                                    gremlin_order: true,
+                                    child: Box::new(child),
+                                });
+                            } else {
+                                // Filter out elements missing the property
+                                let filtered = Operator::Filter {
+                                    predicate: Expr::IsNotNull(Box::new(prop_expr.clone())),
+                                    child: Box::new(child),
+                                };
+                                current = Some(Operator::Sort {
+                                    items: vec![(prop_expr, !descending)],
+                                    gremlin_order: true,
+                                    child: Box::new(filtered),
+                                });
+                            }
                         }
                         pending_order = false;
                     } else if pending_group {

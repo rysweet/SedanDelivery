@@ -50,10 +50,12 @@ pub(super) fn builtin_rand(vals: Vec<Value>) -> Result<Value, GqlError> {
 /// Matches `java.util.Random` behaviour so Gremlin SeedStrategy tests pass.
 pub(super) fn builtin_java_random_next_double(vals: Vec<Value>) -> Result<Value, GqlError> {
     use std::sync::atomic::{AtomicI64, Ordering};
+    use std::cell::Cell;
 
-    // Thread-local state for the Java LCG
+    // Thread-local state: (initial_seed_used, current_lcg_state)
     thread_local! {
-        static JAVA_RNG_SEED: AtomicI64 = const { AtomicI64::new(i64::MIN) };
+        static JAVA_RNG_STATE: AtomicI64 = const { AtomicI64::new(i64::MIN) };
+        static JAVA_RNG_INIT: Cell<i64> = const { Cell::new(i64::MIN) };
     }
 
     const MULTIPLIER: i64 = 0x5DEECE66D;
@@ -65,27 +67,38 @@ pub(super) fn builtin_java_random_next_double(vals: Vec<Value>) -> Result<Value,
         _ => 0,
     };
 
-    JAVA_RNG_SEED.with(|state| {
-        let current = state.load(Ordering::Relaxed);
-        let seed = if current == i64::MIN {
-            // First call: initialize with (initial_seed ^ MULTIPLIER) & MASK
-            (initial_seed ^ MULTIPLIER) & MASK
-        } else {
-            current
-        };
+    JAVA_RNG_STATE.with(|state| {
+        JAVA_RNG_INIT.with(|init| {
+            let prev_init = init.get();
+            let seed = if prev_init != initial_seed {
+                // New traversal with different seed: reset state
+                let s = (initial_seed ^ MULTIPLIER) & MASK;
+                init.set(initial_seed);
+                s
+            } else {
+                let current = state.load(Ordering::Relaxed);
+                if current == i64::MIN {
+                    let s = (initial_seed ^ MULTIPLIER) & MASK;
+                    init.set(initial_seed);
+                    s
+                } else {
+                    current
+                }
+            };
 
-        // next(26)
-        let seed1 = (seed.wrapping_mul(MULTIPLIER).wrapping_add(ADDEND)) & MASK;
-        let bits26 = seed1 >> (48 - 26);
+            // next(26)
+            let seed1 = (seed.wrapping_mul(MULTIPLIER).wrapping_add(ADDEND)) & MASK;
+            let bits26 = seed1 >> (48 - 26);
 
-        // next(27)
-        let seed2 = (seed1.wrapping_mul(MULTIPLIER).wrapping_add(ADDEND)) & MASK;
-        let bits27 = seed2 >> (48 - 27);
+            // next(27)
+            let seed2 = (seed1.wrapping_mul(MULTIPLIER).wrapping_add(ADDEND)) & MASK;
+            let bits27 = seed2 >> (48 - 27);
 
-        state.store(seed2, Ordering::Relaxed);
+            state.store(seed2, Ordering::Relaxed);
 
-        let val = ((bits26 << 27) + bits27) as f64 / ((1i64 << 53) as f64);
-        Ok(Value::Float(val))
+            let val = ((bits26 << 27) + bits27) as f64 / ((1i64 << 53) as f64);
+            Ok(Value::Float(val))
+        })
     })
 }
 
