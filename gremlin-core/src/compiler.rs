@@ -1198,6 +1198,30 @@ impl GremlinCompiler {
                                 gremlin_order: true,
                                 child: Box::new(child),
                             });
+                        } else if key == "~key" || key == "T.key" || key == "t[key]" {
+                            // Sort by property key name (for VertexProperty traversers)
+                            let sort_expr = Expr::FunctionCall {
+                                name: SmolStr::new("gremlin_property_key"),
+                                args: vec![Expr::Variable(current_alias.clone())],
+                                distinct: false,
+                            };
+                            current = Some(Operator::Sort {
+                                items: vec![(sort_expr, !descending)],
+                                gremlin_order: true,
+                                child: Box::new(child),
+                            });
+                        } else if key == "~value" || key == "T.value" || key == "t[value]" {
+                            // Sort by property value (for VertexProperty traversers)
+                            let sort_expr = Expr::FunctionCall {
+                                name: SmolStr::new("gremlin_property_value"),
+                                args: vec![Expr::Variable(current_alias.clone())],
+                                distinct: false,
+                            };
+                            current = Some(Operator::Sort {
+                                items: vec![(sort_expr, !descending)],
+                                gremlin_order: true,
+                                child: Box::new(child),
+                            });
                         } else {
                             // Property-based sort: filter out elements missing the property
                             let prop_expr = Expr::Property(
@@ -2080,6 +2104,7 @@ impl GremlinCompiler {
                         times: times_val,
                         until: until_val,
                         emit: emit_val,
+                        emit_before: emit_val,
                         remap,
                         child: Box::new(child),
                     });
@@ -2109,8 +2134,15 @@ impl GremlinCompiler {
                 }
 
                 GremlinStep::Emit => {
-                    if let Some(Operator::Repeat { ref mut emit, .. }) = current {
+                    if let Some(Operator::Repeat {
+                        ref mut emit,
+                        ref mut emit_before,
+                        ..
+                    }) = current
+                    {
                         *emit = true;
+                        // emit() after repeat() → post-emit (don't include starting traversers)
+                        *emit_before = false;
                     } else {
                         // emit() before repeat() — store as pending
                         pending_emit = true;

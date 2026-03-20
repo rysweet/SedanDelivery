@@ -199,6 +199,10 @@ pub enum Operator {
         times: Option<usize>,
         until: Option<Box<Operator>>,
         emit: bool,
+        /// When true, emit traversers BEFORE body execution (includes starting
+        /// traversers).  When false and `emit` is true, emit AFTER body execution
+        /// (excludes starting traversers).
+        emit_before: bool,
         /// After each body iteration, rename `body_out_alias` → `seed_alias`
         /// so the next iteration receives traversers under the expected key.
         remap: Option<(String, String)>,

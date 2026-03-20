@@ -23,6 +23,7 @@ impl<'a> QueryExecutor<'a> {
             times,
             until,
             emit,
+            emit_before,
             remap,
             child,
         } = op
@@ -41,7 +42,8 @@ impl<'a> QueryExecutor<'a> {
             cx.budget.check_or_err()?;
 
             // Pre-emit: collect traversers before body execution.
-            if *emit {
+            // Only when emit_before is true (emit() appeared before repeat()).
+            if *emit && *emit_before {
                 collected.extend(current.clone());
             }
 
@@ -74,6 +76,12 @@ impl<'a> QueryExecutor<'a> {
 
             current = next;
 
+            // Post-emit: collect body results after execution.
+            // Only when emit is true but emit_before is false (emit() after repeat()).
+            if *emit && !*emit_before {
+                collected.extend(current.clone());
+            }
+
             // Check the until predicate per-traverser: traversers that match
             // the until condition are collected and removed from further iteration.
             if let Some(until_op) = until {
@@ -103,7 +111,11 @@ impl<'a> QueryExecutor<'a> {
             }
         }
 
-        collected.extend(current);
+        // For non-emit or pre-emit mode, add final results.
+        // For post-emit mode, everything was already collected in the loop.
+        if !*emit || *emit_before {
+            collected.extend(current);
+        }
         Ok(collected)
     }
 
@@ -1291,6 +1303,7 @@ mod tests {
             times: Some(1),
             until: None,
             emit: false,
+            emit_before: false,
             remap: None,
             child: Box::new(Operator::NodeScan {
                 label: Some(Label::new("N")),
@@ -1322,6 +1335,7 @@ mod tests {
             times: Some(2),
             until: None,
             emit: true,
+            emit_before: true,
             remap: None,
             child: Box::new(Operator::NodeScan {
                 label: Some(Label::new("N")),

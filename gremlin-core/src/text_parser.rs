@@ -446,7 +446,7 @@ fn parse_step_token(
                 out.push(GremlinStep::Order);
             }
         }
-        "by" => parse_by_step(args_str, out)?,
+        "by" => parse_by_step(args_str, out, resolve_param)?,
         "limit" => {
             let args = parse_arg_list(args_str, resolve_param)?;
             // Detect Scope.local
@@ -1236,7 +1236,11 @@ fn parse_has_step(
 }
 
 /// Parse a `by(...)` modifier.
-fn parse_by_step(args_str: &str, out: &mut Vec<GremlinStep>) -> Result<(), TextParseError> {
+fn parse_by_step(
+    args_str: &str,
+    out: &mut Vec<GremlinStep>,
+    resolve_param: &dyn Fn(&str) -> Option<GremlinValue>,
+) -> Result<(), TextParseError> {
     let raw_args = split_top_level_args(args_str);
 
     if raw_args.is_empty() {
@@ -1279,6 +1283,25 @@ fn parse_by_step(args_str: &str, out: &mut Vec<GremlinStep>) -> Result<(), TextP
         return Ok(());
     }
 
+    // Handle T.key — for ordering by property key name
+    if first == "T.key" || first == "t[key]" {
+        let descending = raw_args.len() >= 2 && {
+            let second = raw_args[1].trim();
+            second == "Order.desc" || second == "desc"
+        };
+        out.push(GremlinStep::By("~key".to_string(), descending));
+        return Ok(());
+    }
+    // Handle T.value — for ordering by property value
+    if first == "T.value" || first == "t[value]" {
+        let descending = raw_args.len() >= 2 && {
+            let second = raw_args[1].trim();
+            second == "Order.desc" || second == "desc"
+        };
+        out.push(GremlinStep::By("~value".to_string(), descending));
+        return Ok(());
+    }
+
     // Handle Column.keys, Column.values
     if first == "Column.keys" || first == "Column.values" {
         let descending = raw_args.len() >= 2 && {
@@ -1289,8 +1312,6 @@ fn parse_by_step(args_str: &str, out: &mut Vec<GremlinStep>) -> Result<(), TextP
         return Ok(());
     }
 
-    let first_unquoted = unquote(first);
-
     // Check for Order.asc, Order.desc, Order.shuffle as second arg
     let descending = if raw_args.len() >= 2 {
         let second = raw_args[1].trim();
@@ -1299,8 +1320,114 @@ fn parse_by_step(args_str: &str, out: &mut Vec<GremlinStep>) -> Result<(), TextP
         false
     };
 
+    // Detect sub-traversal arguments: if the first arg looks like a traversal
+    // (contains function calls like values(...), out(), label(), etc.)
+    // parse it as a ByTraversal.
+    if looks_like_traversal(first) {
+        let inner = parse_inner_traversal(first, resolve_param)?;
+        if !inner.is_empty() {
+            out.push(GremlinStep::ByTraversal(inner, descending));
+            return Ok(());
+        }
+    }
+
+    let first_unquoted = unquote(first);
+
     out.push(GremlinStep::By(first_unquoted, descending));
     Ok(())
+}
+
+/// Check if a string looks like a Gremlin traversal rather than a property name.
+/// Only matches single-step calls like `values("name")`, `select("a")`, `count()`
+/// where the call is the entire argument (no chaining).
+/// Does NOT match `__.` prefixed multi-step traversals or chained calls —
+/// these are handled as string-based by() modulations.
+fn looks_like_traversal(s: &str) -> bool {
+    let s = s.trim();
+    // Quoted strings are property names, not traversals
+    if s.starts_with('"') || s.starts_with('\'') {
+        return false;
+    }
+    // Don't match __.prefix traversals — the compiler handles these
+    // as string by() modulations in select/group contexts.
+    if s.starts_with("__.") {
+        return false;
+    }
+    // Single-step traversal calls. Only match if the call is not chained
+    // (no `.` after the closing paren).
+    const SINGLE_STEP_TRAVERSALS: &[&str] = &[
+        "values(",
+        "out(",
+        "in(",
+        "both(",
+        "outE(",
+        "inE(",
+        "bothE(",
+        "label(",
+        "id(",
+        "count(",
+        "sum(",
+        "min(",
+        "max(",
+        "mean(",
+        "select(",
+        "has(",
+        "hasLabel(",
+        "hasId(",
+        "key(",
+        "value(",
+        "constant(",
+        "identity(",
+        "loops(",
+        "otherV(",
+        "inV(",
+        "outV(",
+        "bothV(",
+        "properties(",
+        "valueMap(",
+        "elementMap(",
+    ];
+    for step in SINGLE_STEP_TRAVERSALS {
+        if s.starts_with(step) {
+            // Find the matching closing paren
+            let after_name = &s[step.len() - 1..]; // includes opening paren
+            if let Some(close_pos) = find_matching_paren(after_name) {
+                let after_close = &after_name[close_pos + 1..].trim();
+                // Only a traversal if nothing follows the closing paren
+                if after_close.is_empty() {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+/// Find the position of the matching closing parenthesis.
+fn find_matching_paren(s: &str) -> Option<usize> {
+    let mut depth = 0i32;
+    let mut in_string = false;
+    let mut string_char = '"';
+    for (i, ch) in s.char_indices() {
+        if in_string {
+            if ch == string_char {
+                in_string = false;
+            }
+            continue;
+        }
+        if ch == '"' || ch == '\'' {
+            in_string = true;
+            string_char = ch;
+        } else if ch == '(' {
+            depth += 1;
+        } else if ch == ')' {
+            depth -= 1;
+            if depth == 0 {
+                return Some(i);
+            }
+        }
+    }
+    None
 }
 
 /// Try to parse a predicate call like `P.gt(30)`, `P.within("a","b")`, etc.
