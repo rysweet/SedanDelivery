@@ -3204,6 +3204,23 @@ impl GremlinCompiler {
                     pending_sack_init = Some(gremlin_value_to_expr(val));
                 }
 
+                GremlinStep::WithSideEffect(key, val) => {
+                    // withSideEffect(key, value) — register a named side-effect
+                    // Store in alias_map so select(key) can find it, and inject
+                    // as a constant column for filtering via P.within(key) etc.
+                    let se_alias = Identifier::new(format!("__side_effect_{}", key));
+                    self.alias_map.insert(key.clone(), se_alias.clone());
+                    // Store the value expression for later injection
+                    let child = current.take().unwrap_or(Operator::SingleRow);
+                    let val_expr = gremlin_value_to_expr(val);
+                    let mut items = vec![(val_expr, Some(se_alias))];
+                    items.extend(self.label_carry_items());
+                    current = Some(Operator::Project {
+                        items,
+                        child: Box::new(child),
+                    });
+                }
+
                 GremlinStep::ProductiveByStrategy => {
                     self.productive_by = true;
                 }

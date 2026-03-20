@@ -40,6 +40,9 @@ pub fn parse_traversal(
     // Extract withSack initial value if present before stripping
     let sack_init = extract_with_sack_value(input, resolve_param);
 
+    // Extract withSideEffect values before stripping
+    let side_effects = extract_with_side_effects(input, resolve_param);
+
     // Detect ProductiveByStrategy before stripping
     let productive_by = input.contains("ProductiveByStrategy");
 
@@ -70,6 +73,11 @@ pub fn parse_traversal(
 
     let tokens = tokenize_steps(rest)?;
     let mut steps = Vec::new();
+
+    // Emit WithSideEffect as first steps
+    for (key, val) in side_effects {
+        steps.push(GremlinStep::WithSideEffect(key, val));
+    }
 
     // Emit WithSack as first step if present
     if let Some(init_val) = sack_init {
@@ -194,6 +202,142 @@ fn parse_literal_value(
         return Some(GremlinValue::String(unquoted.to_string()));
     }
     resolve_param(s).or(None)
+}
+
+/// Extract all `withSideEffect(key, value)` pairs from the input.
+fn extract_with_side_effects(
+    input: &str,
+    resolve_param: &dyn Fn(&str) -> Option<GremlinValue>,
+) -> Vec<(String, GremlinValue)> {
+    let mut results = Vec::new();
+    let mut search = input;
+    loop {
+        let prefix = if let Some(pos) = search.find("withSideEffect(") {
+            pos
+        } else {
+            break;
+        };
+        let after = &search[prefix + "withSideEffect(".len()..];
+        // Find the matching close paren
+        let mut depth = 1u32;
+        let mut in_str = false;
+        let mut escape = false;
+        let mut end = 0;
+        for (i, c) in after.char_indices() {
+            if escape {
+                escape = false;
+                continue;
+            }
+            if c == '\\' && in_str {
+                escape = true;
+                continue;
+            }
+            if c == '"' {
+                in_str = !in_str;
+                continue;
+            }
+            if in_str {
+                continue;
+            }
+            match c {
+                '(' => depth += 1,
+                ')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        end = i;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        if end == 0 {
+            break;
+        }
+        let arg_str = &after[..end];
+        // Split into key and value (first comma at top level)
+        let mut comma_depth = 0;
+        let mut comma_pos = None;
+        let mut in_s = false;
+        let mut esc = false;
+        for (i, c) in arg_str.char_indices() {
+            if esc {
+                esc = false;
+                continue;
+            }
+            if c == '\\' && in_s {
+                esc = true;
+                continue;
+            }
+            if c == '"' {
+                in_s = !in_s;
+                continue;
+            }
+            if in_s {
+                continue;
+            }
+            match c {
+                '(' | '[' | '{' => comma_depth += 1,
+                ')' | ']' | '}' => comma_depth -= 1,
+                ',' if comma_depth == 0 => {
+                    if comma_pos.is_none() {
+                        comma_pos = Some(i);
+                    }
+                    // Don't break — we want the first comma only for key/value split
+                    break;
+                }
+                _ => {}
+            }
+        }
+        if let Some(cp) = comma_pos {
+            let key_str = arg_str[..cp].trim().trim_matches('"');
+            let val_str = arg_str[cp + 1..].trim();
+            // Try to parse the value — handle sets like {"alice"}, lists like ["x","y"], etc.
+            if let Some(val) = parse_side_effect_value(val_str, resolve_param) {
+                results.push((key_str.to_string(), val));
+            }
+        }
+        search = &after[end..];
+    }
+    results
+}
+
+/// Parse a withSideEffect value: strings, numbers, sets {}, lists [], etc.
+fn parse_side_effect_value(
+    s: &str,
+    resolve_param: &dyn Fn(&str) -> Option<GremlinValue>,
+) -> Option<GremlinValue> {
+    let s = s.trim();
+    // Handle Set notation: {"alice"} → List (treated as set)
+    if s.starts_with('{') && s.ends_with('}') {
+        let inner = &s[1..s.len() - 1];
+        let items: Vec<GremlinValue> = inner
+            .split(',')
+            .filter_map(|item| {
+                let item = item.trim().trim_matches('"');
+                if item.is_empty() {
+                    None
+                } else {
+                    Some(GremlinValue::String(item.to_string()))
+                }
+            })
+            .collect();
+        return Some(GremlinValue::List(items));
+    }
+    // Handle List notation: ["x","y"]
+    if s.starts_with('[') && s.ends_with(']') {
+        let inner = &s[1..s.len() - 1];
+        let items: Vec<GremlinValue> = inner
+            .split(',')
+            .filter_map(|item| parse_literal_value(item.trim(), resolve_param))
+            .collect();
+        return Some(GremlinValue::List(items));
+    }
+    // Handle "Set" keyword: skip the operator arg
+    if s == "Set" || s.starts_with("Operator.") {
+        return None;
+    }
+    parse_literal_value(s, resolve_param)
 }
 
 /// Skip past balanced parentheses.  Input starts just after the opening `(`.

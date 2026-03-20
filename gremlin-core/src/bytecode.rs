@@ -195,6 +195,8 @@ pub enum GremlinStep {
     SackOp(String),
     /// `withSack(initValue)` — initialize the sack with a value
     WithSack(GremlinValue),
+    /// `withSideEffect(key, value)` — register a named side-effect value
+    WithSideEffect(String, GremlinValue),
     /// `option(token, traversal)` — option step for branch/choose
     Option(GremlinValue, Vec<GremlinStep>),
     /// Flag indicating ProductiveByStrategy is active
