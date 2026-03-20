@@ -43,8 +43,18 @@ pub fn parse_traversal(
     // Extract withSideEffect values before stripping
     let side_effects = extract_with_side_effects(input, resolve_param);
 
-    // Detect ProductiveByStrategy before stripping
+    // Detect strategy flags before stripping
     let productive_by = input.contains("ProductiveByStrategy");
+    // ReadOnlyStrategy: only active with withStrategies (not withoutStrategies)
+    let read_only = input.contains("withStrategies(") && input.contains("ReadOnlyStrategy")
+        && !input.contains("withoutStrategies(ReadOnlyStrategy");
+    // EdgeLabelVerificationStrategy(throwException: true)
+    let edge_label_verify = input.contains("withStrategies(")
+        && input.contains("EdgeLabelVerificationStrategy")
+        && input.contains("throwException: true")
+        && !input.contains("withoutStrategies(EdgeLabelVerificationStrategy");
+    // ReservedKeysVerificationStrategy(throwException: true, keys: {...})
+    let reserved_keys = extract_reserved_keys_strategy(input);
 
     // Strip strategy wrappers: g.withStrategies(...).V()... or g.withoutStrategies(...).V()...
     // Also strip g.withSideEffect(...) and g.withSack(...) and g.withComputer(...)
@@ -84,9 +94,18 @@ pub fn parse_traversal(
         steps.push(GremlinStep::WithSack(init_val));
     }
 
-    // Emit ProductiveByStrategy flag
+    // Emit strategy flags
     if productive_by {
         steps.push(GremlinStep::ProductiveByStrategy);
+    }
+    if read_only {
+        steps.push(GremlinStep::ReadOnlyStrategy);
+    }
+    if let Some(keys) = reserved_keys {
+        steps.push(GremlinStep::ReservedKeysVerificationStrategy(keys));
+    }
+    if edge_label_verify {
+        steps.push(GremlinStep::EdgeLabelVerificationStrategy);
     }
 
     for token in &tokens {
@@ -125,6 +144,41 @@ fn strip_strategy_prefix(input: &str) -> String {
         result = format!("g.{rest}");
     }
     result
+}
+
+/// Extract reserved keys from `ReservedKeysVerificationStrategy(throwException: true, keys: {"age"})`.
+/// Returns `Some(extra_keys)` if the strategy is active with throwException: true,
+/// where `extra_keys` are user-specified reserved keys beyond the defaults ("id", "label").
+fn extract_reserved_keys_strategy(input: &str) -> Option<Vec<String>> {
+    if !input.contains("withStrategies(") || !input.contains("ReservedKeysVerificationStrategy") {
+        return None;
+    }
+    if input.contains("withoutStrategies(ReservedKeysVerificationStrategy") {
+        return None;
+    }
+    // Must have throwException: true
+    let start = input.find("ReservedKeysVerificationStrategy(")?;
+    let after = &input[start..];
+    if !after.contains("throwException: true") {
+        return None;
+    }
+    // Extract keys: {"age", "foo"} if present
+    let mut extra_keys = Vec::new();
+    if let Some(keys_pos) = after.find("keys:") {
+        let rest = &after[keys_pos + 5..];
+        if let Some(open) = rest.find('{') {
+            if let Some(close) = rest[open..].find('}') {
+                let inner = &rest[open + 1..open + close];
+                for part in inner.split(',') {
+                    let key = part.trim().trim_matches('"').trim_matches('\'');
+                    if !key.is_empty() {
+                        extra_keys.push(key.to_string());
+                    }
+                }
+            }
+        }
+    }
+    Some(extra_keys)
 }
 
 /// Extract the initial value from `g.withSack(value)` if present.
@@ -649,8 +703,18 @@ fn parse_step_token(
             }
         }
         "dedup" => {
-            let args = parse_string_arg_list(args_str)?;
-            out.push(GremlinStep::Dedup(args));
+            // Detect Scope.local
+            if args_str.contains("Scope.local") || args_str.contains("local") {
+                // dedup(Scope.local) or dedup(Scope.local, "x", "y")
+                let args: Vec<String> = parse_string_arg_list(args_str)?
+                    .into_iter()
+                    .filter(|a| a != "Scope.local" && a != "local")
+                    .collect();
+                out.push(GremlinStep::DedupLocal(args));
+            } else {
+                let args = parse_string_arg_list(args_str)?;
+                out.push(GremlinStep::Dedup(args));
+            }
         }
         "is" => {
             // Handle chained predicates: P.eq(1).and(P.gt(0)) or P.eq(1).or(P.lt(0))

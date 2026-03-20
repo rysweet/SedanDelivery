@@ -184,16 +184,41 @@ impl<'a> QueryExecutor<'a> {
     /// Extract a property from a Value (node, edge, or map).
     fn extract_property_from_value(&self, graph: &str, val: &Value, prop: &str) -> Option<Value> {
         match val {
-            Value::Node(nid) => self
-                .cached_get_node(graph, *nid)
-                .ok()
-                .flatten()
-                .and_then(|n| n.properties.get(prop).cloned()),
-            Value::Edge(eid) => self
-                .cached_get_edge(graph, *eid)
-                .ok()
-                .flatten()
-                .and_then(|e| e.properties.get(prop).cloned()),
+            Value::Node(nid) => {
+                // Handle special Gremlin tokens
+                if prop == "~label" {
+                    return self
+                        .cached_get_node(graph, *nid)
+                        .ok()
+                        .flatten()
+                        .map(|n| Value::Str(n.labels.first().map(|l| Box::from(l.0.as_str())).unwrap_or_default()));
+                }
+                if prop == "~id" {
+                    return Some(Value::Int(nid.0 as i64));
+                }
+                self
+                    .cached_get_node(graph, *nid)
+                    .ok()
+                    .flatten()
+                    .and_then(|n| n.properties.get(prop).cloned())
+            }
+            Value::Edge(eid) => {
+                if prop == "~label" {
+                    return self
+                        .cached_get_edge(graph, *eid)
+                        .ok()
+                        .flatten()
+                        .map(|e| Value::Str(Box::from(e.rel_type.0.as_str())));
+                }
+                if prop == "~id" {
+                    return Some(Value::Int(eid.0 as i64));
+                }
+                self
+                    .cached_get_edge(graph, *eid)
+                    .ok()
+                    .flatten()
+                    .and_then(|e| e.properties.get(prop).cloned())
+            }
             Value::Map(m) => m.get(prop).cloned(),
             _ => None,
         }

@@ -486,6 +486,11 @@ pub fn eval_function_with_vals(name: &str, vals: Vec<Value>) -> Result<Value, Gq
                 let parts: Vec<Value> = if sep.is_empty() {
                     // Empty separator: split into individual characters
                     s.chars().map(|c| Value::Str(c.to_string().into())).collect()
+                } else if sep.as_ref() == "null" {
+                    // null separator: split by whitespace
+                    s.split_whitespace()
+                        .map(|p| Value::Str(p.into()))
+                        .collect()
                 } else {
                     s.split(sep.as_ref())
                         .map(|p| Value::Str(p.into()))
@@ -738,6 +743,51 @@ pub fn eval_function_with_vals(name: &str, vals: Vec<Value>) -> Result<Value, Gq
                         .map(|(k, v)| ((*k).clone(), (*v).clone()))
                         .collect();
                     Ok(Value::Map(result))
+                }
+                Value::Null => Ok(Value::Null),
+                other => Ok(other),
+            }
+        }
+        "gremlin_dedup_local" => {
+            // dedup(Scope.local) — deduplicate elements within a list
+            // Args: [list_value] or [list_value, key1, key2, ...]
+            let val = vals.first().cloned().unwrap_or(Value::Null);
+            match val {
+                Value::List(items) => {
+                    if vals.len() > 1 {
+                        // Keyed dedup: dedup(Scope.local, "x", "y")
+                        // Items are Maps; dedup by the specified key values
+                        let keys: Vec<&str> = vals[1..].iter().filter_map(|v| {
+                            if let Value::Str(s) = v { Some(s.as_ref()) } else { None }
+                        }).collect();
+                        let mut seen = std::collections::HashSet::new();
+                        let mut result = Vec::new();
+                        for item in &items {
+                            let dedup_key = if let Value::Map(m) = item {
+                                keys.iter()
+                                    .map(|k| m.get(*k).map(|v| v.canonical_key()).unwrap_or_default())
+                                    .collect::<Vec<_>>()
+                                    .join("\x1f")
+                            } else {
+                                item.canonical_key()
+                            };
+                            if seen.insert(dedup_key) {
+                                result.push(item.clone());
+                            }
+                        }
+                        Ok(Value::List(result))
+                    } else {
+                        // Simple dedup: dedup(Scope.local)
+                        let mut seen = std::collections::HashSet::new();
+                        let mut result = Vec::new();
+                        for item in &items {
+                            let key = item.canonical_key();
+                            if seen.insert(key) {
+                                result.push(item.clone());
+                            }
+                        }
+                        Ok(Value::List(result))
+                    }
                 }
                 Value::Null => Ok(Value::Null),
                 other => Ok(other),

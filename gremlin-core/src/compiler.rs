@@ -23,6 +23,12 @@ pub enum CompileError {
     MissingChild,
     #[error("invalid step sequence: {0}")]
     InvalidSequence(String),
+    #[error("The provided traversal has a mutating step and thus is not read only")]
+    ReadOnlyViolation,
+    #[error("The provided traversal is setting a property key to a reserved word: {0}")]
+    ReservedKeyViolation(String),
+    #[error("The provided traversal contains a vertex step without any specified edge label")]
+    EdgeLabelRequired,
 }
 
 /// Compiles a sequence of Gremlin steps into a gql-core `Operator` tree.
@@ -35,6 +41,12 @@ pub struct GremlinCompiler {
     /// When true, by-modulation that can't produce a value yields null
     /// instead of dropping the traverser (ProductiveByStrategy).
     productive_by: bool,
+    /// When true, mutating steps (addV, addE, property, drop) must error.
+    read_only: bool,
+    /// When set, property keys in this set (plus "id", "label") must error.
+    reserved_keys: Option<Vec<String>>,
+    /// When true, vertex steps without edge labels must error.
+    edge_label_verify: bool,
 }
 
 impl Default for GremlinCompiler {
@@ -50,6 +62,9 @@ impl GremlinCompiler {
             alias_map: HashMap::new(),
             last_alias: Identifier::new("__gremlin_v"),
             productive_by: false,
+            read_only: false,
+            reserved_keys: None,
+            edge_label_verify: false,
         }
     }
 
@@ -65,6 +80,9 @@ impl GremlinCompiler {
             alias_map: self.alias_map.clone(),
             last_alias: self.last_alias.clone(),
             productive_by: self.productive_by,
+            read_only: self.read_only,
+            reserved_keys: self.reserved_keys.clone(),
+            edge_label_verify: self.edge_label_verify,
         }
     }
 
@@ -569,6 +587,9 @@ impl GremlinCompiler {
                 }
 
                 GremlinStep::Out(labels) | GremlinStep::In(labels) | GremlinStep::Both(labels) => {
+                    if self.edge_label_verify && labels.is_empty() {
+                        return Err(CompileError::EdgeLabelRequired);
+                    }
                     let child = current.take().ok_or(CompileError::MissingChild)?;
                     let dst = self.next_alias("v");
                     let direction = match step {
@@ -2138,6 +2159,9 @@ impl GremlinCompiler {
                 }
 
                 GremlinStep::AddV(label) => {
+                    if self.read_only {
+                        return Err(CompileError::ReadOnlyViolation);
+                    }
                     pending_properties.clear();
                     let alias = self.next_alias("nv");
                     current_alias = alias.clone();
@@ -2156,6 +2180,9 @@ impl GremlinCompiler {
                 }
 
                 GremlinStep::AddE(label) => {
+                    if self.read_only {
+                        return Err(CompileError::ReadOnlyViolation);
+                    }
                     pending_properties.clear();
                     adde_traverser = Some(current_alias.clone());
                     let rel_alias = self.next_alias("ne");
@@ -2182,6 +2209,17 @@ impl GremlinCompiler {
                 }
 
                 GremlinStep::Property(key, value) => {
+                    if self.read_only {
+                        return Err(CompileError::ReadOnlyViolation);
+                    }
+                    if let Some(ref reserved) = self.reserved_keys {
+                        let default_reserved = ["id", "label"];
+                        if default_reserved.contains(&key.as_str())
+                            || reserved.iter().any(|r| r == key)
+                        {
+                            return Err(CompileError::ReservedKeyViolation(key.clone()));
+                        }
+                    }
                     pending_properties.push((key.clone(), value.clone()));
                     let child = current.take().ok_or(CompileError::MissingChild)?;
                     current = Some(Operator::Set {
@@ -2276,6 +2314,9 @@ impl GremlinCompiler {
                 }
 
                 GremlinStep::Drop => {
+                    if self.read_only {
+                        return Err(CompileError::ReadOnlyViolation);
+                    }
                     let child = current.take().ok_or(CompileError::MissingChild)?;
                     current = Some(Operator::Delete {
                         exprs: vec![Expr::Variable(current_alias.clone())],
@@ -3237,6 +3278,41 @@ impl GremlinCompiler {
 
                 GremlinStep::ProductiveByStrategy => {
                     self.productive_by = true;
+                }
+
+                GremlinStep::ReadOnlyStrategy => {
+                    self.read_only = true;
+                }
+
+                GremlinStep::ReservedKeysVerificationStrategy(keys) => {
+                    self.reserved_keys = Some(keys.clone());
+                }
+
+                GremlinStep::EdgeLabelVerificationStrategy => {
+                    self.edge_label_verify = true;
+                }
+
+                GremlinStep::DedupLocal(keys) => {
+                    let child = current.take().ok_or(CompileError::MissingChild)?;
+                    let alias = self.next_alias("dedup_local");
+                    let mut args = vec![Expr::Variable(current_alias.clone())];
+                    for k in keys {
+                        args.push(Expr::Str(k.clone().into_boxed_str()));
+                    }
+                    let mut items = vec![(
+                        Expr::FunctionCall {
+                            name: SmolStr::new("gremlin_dedup_local"),
+                            args,
+                            distinct: false,
+                        },
+                        Some(alias.clone()),
+                    )];
+                    items.extend(self.label_carry_items());
+                    current = Some(Operator::Project {
+                        items,
+                        child: Box::new(child),
+                    });
+                    current_alias = alias;
                 }
 
                 GremlinStep::Option(token, branch_steps) => {

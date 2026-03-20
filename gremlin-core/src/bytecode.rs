@@ -205,6 +205,15 @@ pub enum GremlinStep {
     Option(GremlinValue, Vec<GremlinStep>),
     /// Flag indicating ProductiveByStrategy is active
     ProductiveByStrategy,
+    /// Flag indicating ReadOnlyStrategy is active — mutating steps must error
+    ReadOnlyStrategy,
+    /// Flag indicating ReservedKeysVerificationStrategy is active
+    /// Contains the set of extra reserved keys (besides "id" and "label")
+    ReservedKeysVerificationStrategy(Vec<String>),
+    /// Flag indicating EdgeLabelVerificationStrategy(throwException:true) is active
+    EdgeLabelVerificationStrategy,
+    /// `dedup(Scope.local)` — deduplicate elements within a list
+    DedupLocal(Vec<String>),
 
     // ── String steps ────────────────────────────────────────────────────────
     /// `toLower()` — lowercase string
