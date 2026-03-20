@@ -211,12 +211,7 @@ fn extract_with_side_effects(
 ) -> Vec<(String, GremlinValue)> {
     let mut results = Vec::new();
     let mut search = input;
-    loop {
-        let prefix = if let Some(pos) = search.find("withSideEffect(") {
-            pos
-        } else {
-            break;
-        };
+    while let Some(prefix) = search.find("withSideEffect(") {
         let after = &search[prefix + "withSideEffect(".len()..];
         // Find the matching close paren
         let mut depth = 1u32;

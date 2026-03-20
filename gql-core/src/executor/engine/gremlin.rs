@@ -119,13 +119,11 @@ impl<'a> QueryExecutor<'a> {
         }
 
         // Add final traversers when appropriate:
-        // - For non-emit mode: add the final current (result of last body execution)
-        // - For pre-emit with times: add after completing all iterations
-        // - For emit mode when body exhausted: don't add (no body result to emit)
-        // - For post-emit: already collected in the loop
-        if !*emit {
-            collected.extend(current);
-        } else if *emit_before && !body_exhausted {
+        // Add final traversers when appropriate:
+        // - Non-emit mode: always add final current
+        // - Pre-emit with times (body not exhausted): add final current
+        // - Post-emit or body exhausted: don't add (already collected in loop)
+        if !*emit || (*emit_before && !body_exhausted) {
             collected.extend(current);
         }
         Ok(collected)
