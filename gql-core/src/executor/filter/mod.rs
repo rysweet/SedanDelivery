@@ -1010,6 +1010,52 @@ pub fn eval_function_with_vals(name: &str, vals: Vec<Value>) -> Result<Value, Gq
             })),
             _ => Ok(Value::Null),
         },
+        "gremlin_asnumber_typed" => {
+            // asNumber(GType.INT/LONG/FLOAT/DOUBLE): convert to specific numeric type
+            match (vals.first(), vals.get(1)) {
+                (Some(Value::Float(f)), Some(Value::Str(t))) if t.as_ref() == "int" => {
+                    Ok(Value::Int(*f as i64))
+                }
+                (Some(Value::Int(n)), Some(Value::Str(t))) if t.as_ref() == "float" => {
+                    Ok(Value::Float(*n as f64))
+                }
+                (Some(Value::Str(s)), Some(Value::Str(t))) if t.as_ref() == "int" => {
+                    if let Ok(n) = s.parse::<i64>() {
+                        Ok(Value::Int(n))
+                    } else if let Ok(f) = s.parse::<f64>() {
+                        Ok(Value::Int(f as i64))
+                    } else {
+                        Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                            expected: format!("Can't parse string '{}' as integer.", s),
+                            actual: format!("'{}'", s),
+                        }))
+                    }
+                }
+                (Some(Value::Str(s)), Some(Value::Str(t))) if t.as_ref() == "float" => {
+                    if let Ok(f) = s.parse::<f64>() {
+                        Ok(Value::Float(f))
+                    } else {
+                        Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                            expected: format!("Can't parse string '{}' as float.", s),
+                            actual: format!("'{}'", s),
+                        }))
+                    }
+                }
+                (Some(val), _) => {
+                    // Fall through to default asNumber behavior
+                    match val {
+                        Value::Int(n) => Ok(Value::Int(*n)),
+                        Value::Float(f) => Ok(Value::Float(*f)),
+                        Value::Null => Ok(Value::Null),
+                        _ => Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                            expected: "Cannot convert to number".into(),
+                            actual: val.type_name().to_string(),
+                        })),
+                    }
+                }
+                _ => Ok(Value::Null),
+            }
+        }
         "gremlin_asbool" => match vals.first() {
             Some(Value::Bool(b)) => Ok(Value::Bool(*b)),
             Some(Value::Int(n)) => Ok(Value::Bool(*n != 0)),

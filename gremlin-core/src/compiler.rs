@@ -3649,8 +3649,30 @@ impl GremlinCompiler {
                     let alias = self.next_alias("num");
                     let mut items = vec![(
                         Expr::FunctionCall {
-                            name: SmolStr::new("gremlin_asNumber"),
+                            name: SmolStr::new("gremlin_asnumber"),
                             args: vec![Expr::Variable(current_alias.clone())],
+                            distinct: false,
+                        },
+                        Some(alias.clone()),
+                    )];
+                    items.extend(self.label_carry_items());
+                    current = Some(Operator::Project {
+                        items,
+                        child: Box::new(child),
+                    });
+                    current_alias = alias;
+                }
+
+                GremlinStep::AsNumberTyped(ref target_type) => {
+                    let child = current.take().ok_or(CompileError::MissingChild)?;
+                    let alias = self.next_alias("num");
+                    let mut items = vec![(
+                        Expr::FunctionCall {
+                            name: SmolStr::new("gremlin_asnumber_typed"),
+                            args: vec![
+                                Expr::Variable(current_alias.clone()),
+                                Expr::Str(target_type.clone().into_boxed_str()),
+                            ],
                             distinct: false,
                         },
                         Some(alias.clone()),

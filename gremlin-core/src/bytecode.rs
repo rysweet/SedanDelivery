@@ -230,7 +230,9 @@ pub enum GremlinStep {
     /// `asString(Scope.local)` — convert elements of a list/map to strings
     AsStringLocal,
     /// `asNumber()` — convert to number (integer or double)
+    /// Optional target type: "int", "long", "float", "double"
     AsNumber,
+    AsNumberTyped(String),
     /// `asBool()` — convert to boolean
     AsBool,
     /// `conjoin(separator)` — join list elements with separator

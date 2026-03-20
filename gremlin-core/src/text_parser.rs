@@ -1070,7 +1070,16 @@ fn parse_step_token(
             }
         }
         "asNumber" => {
-            out.push(GremlinStep::AsNumber);
+            let trimmed = args_str.trim();
+            if trimmed.is_empty() {
+                out.push(GremlinStep::AsNumber);
+            } else if trimmed.contains("INT") || trimmed.contains("LONG") {
+                out.push(GremlinStep::AsNumberTyped("int".into()));
+            } else if trimmed.contains("FLOAT") || trimmed.contains("DOUBLE") || trimmed.contains("BIG_DECIMAL") {
+                out.push(GremlinStep::AsNumberTyped("float".into()));
+            } else {
+                out.push(GremlinStep::AsNumber);
+            }
         }
         "asBool" => {
             out.push(GremlinStep::AsBool);
