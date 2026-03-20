@@ -712,9 +712,19 @@ pub fn eval_function_with_vals(name: &str, vals: Vec<Value>) -> Result<Value, Gq
             }
             _ => eval_function_with_vals("gremlin_split", vals),
         },
+        "gremlin_count_local" => match vals.first() {
+            Some(Value::List(l)) => {
+                // count(local) on a list returns the number of elements.
+                Ok(Value::Int(l.len() as i64))
+            }
+            Some(Value::Map(m)) => Ok(Value::Int(m.len() as i64)),
+            Some(Value::Str(s)) => Ok(Value::Int(s.len() as i64)),
+            Some(Value::Null) => Ok(Value::Null),
+            _ => Ok(Value::Int(0)),
+        },
         "gremlin_length_local" => match vals.first() {
             Some(Value::List(l)) => {
-                // Per-element length: return a list of lengths of each element
+                // length(local) on a list returns per-element string lengths.
                 let lengths: Vec<Value> = l.iter().map(|v| match v {
                     Value::Str(s) => Value::Int(s.len() as i64),
                     Value::List(inner) => Value::Int(inner.len() as i64),
@@ -728,6 +738,51 @@ pub fn eval_function_with_vals(name: &str, vals: Vec<Value>) -> Result<Value, Gq
             Some(Value::Str(s)) => Ok(Value::Int(s.len() as i64)),
             Some(Value::Null) => Ok(Value::Null),
             _ => Ok(Value::Int(0)),
+        },
+        "gremlin_fold_reduce" => {
+            // fold(seed, Operator) — reduce a collected list with a binary operator.
+            // Args: list, seed, operator_name
+            let list = vals.first().cloned().unwrap_or(Value::Null);
+            let seed = vals.get(1).cloned().unwrap_or(Value::Null);
+            let op = match vals.get(2) {
+                Some(Value::Str(s)) => s.as_ref(),
+                _ => "sum",
+            };
+            let items = match list {
+                Value::List(l) => l,
+                _ => vec![],
+            };
+            match op {
+                "sum" => {
+                    let mut acc = seed;
+                    for v in items {
+                        acc = match (&acc, &v) {
+                            (Value::Int(a), Value::Int(b)) => Value::Int(a + b),
+                            (Value::Float(a), Value::Int(b)) => Value::Float(a + *b as f64),
+                            (Value::Int(a), Value::Float(b)) => Value::Float(*a as f64 + b),
+                            (Value::Float(a), Value::Float(b)) => Value::Float(a + b),
+                            _ => acc,
+                        };
+                    }
+                    Ok(acc)
+                }
+                "addall" => {
+                    // Merge maps: last-writer-wins
+                    let mut result = match seed {
+                        Value::Map(m) => m,
+                        _ => IndexMap::new(),
+                    };
+                    for v in items {
+                        if let Value::Map(m) = v {
+                            for (k, val) in m {
+                                result.insert(k, val);
+                            }
+                        }
+                    }
+                    Ok(Value::Map(result))
+                }
+                _ => Ok(seed),
+            }
         },
         "gremlin_math" => {
             let current_val = vals.first().cloned().unwrap_or(Value::Null);
@@ -900,6 +955,11 @@ pub fn eval_function_with_vals(name: &str, vals: Vec<Value>) -> Result<Value, Gq
                                 result = result.replace(&placeholder, &val_str);
                             }
                         }
+                    }
+                    // If any %{...} placeholders remain unresolved, return Null
+                    // so the filter can drop this traverser.
+                    if result.contains("%{") {
+                        return Ok(Value::Null);
                     }
                     // Replace %s with the traverser value directly
                     if result.contains("%s") {

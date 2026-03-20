@@ -89,6 +89,8 @@ pub enum GremlinStep {
     Group(Option<String>),
     GroupCount(Option<String>),
     Fold,
+    /// `fold(seed, Operator)` — reduce with a seed value and binary operator.
+    FoldSeed(GremlinValue, String),
     Unfold,
 
     // ── Ordering & paging ────────────────────────────────────────────────────

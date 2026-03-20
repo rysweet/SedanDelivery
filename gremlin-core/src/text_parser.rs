@@ -692,7 +692,7 @@ fn parse_step_token(
                 .any(|a| matches!(a, GremlinValue::String(s) if s == "Scope.local"));
             if is_local {
                 // count(local) — count elements in the list/map value
-                out.push(GremlinStep::StringOpLocal("gremlin_length_local".into()));
+                out.push(GremlinStep::StringOpLocal("gremlin_count_local".into()));
             } else {
                 out.push(GremlinStep::Count);
             }
@@ -735,7 +735,20 @@ fn parse_step_token(
             let key = args.into_iter().next();
             out.push(GremlinStep::GroupCount(key));
         }
-        "fold" => out.push(GremlinStep::Fold),
+        "fold" => {
+            let args = parse_arg_list(args_str, resolve_param)?;
+            if args.len() >= 2 {
+                // fold(seed, Operator.op) — reduce with binary operator
+                let seed = args[0].clone();
+                let op_str = match &args[1] {
+                    GremlinValue::String(s) => s.clone(),
+                    _ => "sum".to_string(),
+                };
+                out.push(GremlinStep::FoldSeed(seed, op_str));
+            } else {
+                out.push(GremlinStep::Fold);
+            }
+        }
         "unfold" => out.push(GremlinStep::Unfold),
         "order" => {
             // Detect Scope.local
