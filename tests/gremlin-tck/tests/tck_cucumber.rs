@@ -20,6 +20,8 @@ use gremlin_core::compiler::GremlinCompiler;
 use gremlin_core::text_parser;
 use gremlin_core::types::GremlinValue;
 
+use gremlin_tck::crew_graph::{create_crew_graph, CrewGraphIds};
+use gremlin_tck::grateful_graph::{create_grateful_graph, GratefulGraphIds};
 use gremlin_tck::modern_graph::{create_modern_graph, ModernGraphIds};
 
 // ── World state ───────────────────────────────────────────────────────────────
@@ -91,6 +93,79 @@ fn register_modern_ids(world: &mut GremlinWorld, ids: &ModernGraphIds) {
         .insert("peter-created->lop".into(), ids.peter_created_lop);
 }
 
+fn register_grateful_ids(world: &mut GremlinWorld, ids: &GratefulGraphIds) {
+    // Register all vertices by name for v[name] resolution.
+    for (name, &node_id) in &ids.name_to_id {
+        world.vertex_names.insert(name.clone(), node_id);
+    }
+    // The grateful graph has too many edges to register individually;
+    // scenarios reference vertices by name, not edges by name.
+}
+
+fn register_crew_ids(world: &mut GremlinWorld, ids: &CrewGraphIds) {
+    // Vertices
+    world.vertex_names.insert("marko".into(), ids.marko);
+    world.vertex_names.insert("stephen".into(), ids.stephen);
+    world.vertex_names.insert("matthias".into(), ids.matthias);
+    world.vertex_names.insert("daniel".into(), ids.daniel);
+    world.vertex_names.insert("gremlin".into(), ids.gremlin);
+    world
+        .vertex_names
+        .insert("tinkergraph".into(), ids.tinkergraph);
+
+    // Edges (src-type->dst)
+    world
+        .edge_names
+        .insert("marko-develops->gremlin".into(), ids.marko_develops_gremlin);
+    world.edge_names.insert(
+        "marko-develops->tinkergraph".into(),
+        ids.marko_develops_tinkergraph,
+    );
+    world
+        .edge_names
+        .insert("marko-uses->gremlin".into(), ids.marko_uses_gremlin);
+    world
+        .edge_names
+        .insert("marko-uses->tinkergraph".into(), ids.marko_uses_tinkergraph);
+    world.edge_names.insert(
+        "stephen-develops->gremlin".into(),
+        ids.stephen_develops_gremlin,
+    );
+    world.edge_names.insert(
+        "stephen-develops->tinkergraph".into(),
+        ids.stephen_develops_tinkergraph,
+    );
+    world
+        .edge_names
+        .insert("stephen-uses->gremlin".into(), ids.stephen_uses_gremlin);
+    world.edge_names.insert(
+        "stephen-uses->tinkergraph".into(),
+        ids.stephen_uses_tinkergraph,
+    );
+    world.edge_names.insert(
+        "matthias-develops->gremlin".into(),
+        ids.matthias_develops_gremlin,
+    );
+    world
+        .edge_names
+        .insert("matthias-uses->gremlin".into(), ids.matthias_uses_gremlin);
+    world.edge_names.insert(
+        "matthias-uses->tinkergraph".into(),
+        ids.matthias_uses_tinkergraph,
+    );
+    world
+        .edge_names
+        .insert("daniel-uses->gremlin".into(), ids.daniel_uses_gremlin);
+    world.edge_names.insert(
+        "daniel-uses->tinkergraph".into(),
+        ids.daniel_uses_tinkergraph,
+    );
+    world.edge_names.insert(
+        "gremlin-traverses->tinkergraph".into(),
+        ids.gremlin_traverses_tinkergraph,
+    );
+}
+
 // ── Given steps ───────────────────────────────────────────────────────────────
 
 #[given("the modern graph")]
@@ -111,21 +186,18 @@ async fn given_empty_graph(world: &mut GremlinWorld) {
 
 #[given("the grateful graph")]
 async fn given_grateful_graph(world: &mut GremlinWorld) {
-    // The grateful dead graph is very large — not bundled.
-    // Create empty graph as placeholder; scenarios using it will fail at assertion.
-    let store = InMemoryGraphStore::new();
-    store.create_graph("grateful").unwrap();
+    let (store, ids) = create_grateful_graph();
     world.store = Some(Arc::new(store));
     world.graph_name = "grateful".into();
+    register_grateful_ids(world, &ids);
 }
 
 #[given("the crew graph")]
 async fn given_crew_graph(world: &mut GremlinWorld) {
-    // The crew graph is not bundled — placeholder.
-    let store = InMemoryGraphStore::new();
-    store.create_graph("crew").unwrap();
+    let (store, ids) = create_crew_graph();
     world.store = Some(Arc::new(store));
     world.graph_name = "crew".into();
+    register_crew_ids(world, &ids);
 }
 
 #[given("the sink graph")]
