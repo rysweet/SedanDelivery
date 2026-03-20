@@ -817,7 +817,6 @@ impl<'a> QueryExecutor<'a> {
                 path_aliases
                     .iter()
                     .filter_map(|alias| row.get(alias.as_str()).cloned())
-                    .filter(|v| !matches!(v, Value::Null))
                     .collect()
             };
 

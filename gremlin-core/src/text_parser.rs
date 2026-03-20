@@ -681,7 +681,7 @@ fn parse_step_token(
         }
         "as" => {
             let args = parse_string_arg_list(args_str)?;
-            if let Some(alias) = args.into_iter().next() {
+            for alias in args {
                 out.push(GremlinStep::As(alias));
             }
         }

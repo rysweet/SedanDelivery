@@ -55,6 +55,12 @@ pub struct GremlinCompiler {
     /// Compile-time literal values for side-effects, used to resolve
     /// property keys like `property(select("a"), value)` at compile time.
     side_effect_values: HashMap<String, GremlinValue>,
+    /// Aliases accumulated for path() tracking. Carried through Project
+    /// operations so that path() can reconstruct the traversal history.
+    path_tracking: Vec<Identifier>,
+    /// Whether the current traversal uses path()/simplePath()/cyclicPath().
+    /// When true, label_carry_items includes path tracking aliases.
+    needs_path_tracking: bool,
 }
 
 impl Default for GremlinCompiler {
@@ -76,6 +82,8 @@ impl GremlinCompiler {
             seed: None,
             reductions: HashMap::new(),
             side_effect_values: HashMap::new(),
+            path_tracking: Vec::new(),
+            needs_path_tracking: false,
         }
     }
 
@@ -97,15 +105,32 @@ impl GremlinCompiler {
             seed: self.seed,
             reductions: self.reductions.clone(),
             side_effect_values: self.side_effect_values.clone(),
+            // Sub-compilers should NOT carry parent path tracking — those
+            // aliases belong to the outer scope and would pollute inner
+            // sub-traversal projections.
+            path_tracking: Vec::new(),
+            needs_path_tracking: false,
         }
     }
 
-    /// Return extra projection items that carry forward every label set via `as()`.
-    /// This preserves step labels through projection steps like `values()`.
+    /// Return extra projection items that carry forward every label set via `as()`
+    /// and (when path tracking is active) every path-tracking alias. This preserves
+    /// step labels and path history through projection steps like `values()`.
     fn label_carry_items(&self) -> Vec<(Expr, Option<Identifier>)> {
         let mut items = Vec::new();
+        let mut seen = std::collections::HashSet::new();
         for ident in self.alias_map.values() {
-            items.push((Expr::Variable(ident.clone()), Some(ident.clone())));
+            if seen.insert(ident.0.as_str().to_owned()) {
+                items.push((Expr::Variable(ident.clone()), Some(ident.clone())));
+            }
+        }
+        // Carry path-tracking aliases only when a path step is present
+        if self.needs_path_tracking {
+            for ident in &self.path_tracking {
+                if seen.insert(ident.0.as_str().to_owned()) {
+                    items.push((Expr::Variable(ident.clone()), Some(ident.clone())));
+                }
+            }
         }
         items
     }
@@ -246,6 +271,12 @@ impl GremlinCompiler {
         let preprocessed = preprocess_infix_connectives(steps);
         let steps = &preprocessed;
 
+        // Pre-scan: detect if any step uses path tracking (path, simplePath, cyclicPath).
+        // This enables carrying path aliases through Project operations.
+        if !self.needs_path_tracking {
+            self.needs_path_tracking = steps_need_path_tracking(steps);
+        }
+
         let mut current: Option<Operator> = initial_op;
         let mut current_alias = initial_alias.clone();
         // Pending properties for AddV/AddE
@@ -275,6 +306,8 @@ impl GremlinCompiler {
         let mut pre_group_alias: Identifier = initial_alias.clone();
         // Track aliases for path() reconstruction
         let mut path_aliases: Vec<Identifier> = initial_path_aliases;
+        // Sync path_tracking from initial_path_aliases
+        self.path_tracking = path_aliases.clone();
         // Pending emit/until/times that appear before repeat()
         let mut pending_emit = false;
         let mut pending_emit_pred: Option<Vec<GremlinStep>> = None;
@@ -315,8 +348,12 @@ impl GremlinCompiler {
         // Track where() label comparison for by() modulation.
         // Stores (left_var, right_var) so by("key") can rewrite to property access.
         let mut pending_where_by: Option<(Identifier, Identifier)> = None;
+        // How many by() modulations have been consumed for where-by (0=left, 1=right)
+        let mut where_by_count: u32 = 0;
 
         for step in steps {
+            // Save alias before step to detect changes for path tracking
+            let pre_step_alias = current_alias.clone();
             // When we leave the addE modifier group (from/to/property), fill in
             // any __src/__dst placeholders that were never overridden.
             if adde_traverser.is_some()
@@ -355,6 +392,7 @@ impl GremlinCompiler {
                 path_by_keys.clear();
                 pending_project = false;
                 pending_where_by = None;
+                where_by_count = 0;
                 // Flush pending order: order() without by() → sort by identity
                 if pending_order && !pending_order_local {
                     let child = current.take().unwrap_or(Operator::SingleRow);
@@ -427,6 +465,7 @@ impl GremlinCompiler {
                 GremlinStep::V(ids) => {
                     let alias = self.next_alias("v");
                     path_aliases.push(alias.clone());
+                    self.path_tracking.push(alias.clone());
                     let scan = Operator::NodeScan {
                         label: None,
                         alias: alias.clone(),
@@ -507,9 +546,22 @@ impl GremlinCompiler {
                     };
                     current_alias = rel_alias.clone();
                     path_aliases.push(current_alias.clone());
-                    let new_op = match ids {
+                    self.path_tracking.push(current_alias.clone());
+                    // Flatten list parameters: E(listParam) → E(id1, id2, ...)
+                    let flat_ids: Option<Vec<&GremlinValue>> = ids.as_ref().map(|id_list| {
+                        let mut flat = Vec::new();
+                        for id in id_list {
+                            if let GremlinValue::List(inner) = id {
+                                flat.extend(inner.iter());
+                            } else {
+                                flat.push(id);
+                            }
+                        }
+                        flat
+                    });
+                    let new_op = match &flat_ids {
                         Some(id_list) if id_list.len() == 1 => {
-                            let id_expr = gremlin_value_to_expr(&id_list[0]);
+                            let id_expr = gremlin_value_to_expr(id_list[0]);
                             Operator::Filter {
                                 predicate: Expr::BinaryOp {
                                     op: BinaryOp::Eq,
@@ -525,7 +577,7 @@ impl GremlinCompiler {
                         }
                         Some(id_list) if !id_list.is_empty() => {
                             let id_exprs: Vec<Expr> =
-                                id_list.iter().map(gremlin_value_to_expr).collect();
+                                id_list.iter().map(|v| gremlin_value_to_expr(v)).collect();
                             Operator::Filter {
                                 predicate: Expr::BinaryOp {
                                     op: BinaryOp::In,
@@ -697,6 +749,7 @@ impl GremlinCompiler {
                     });
                     current_alias = dst;
                     path_aliases.push(current_alias.clone());
+                    self.path_tracking.push(current_alias.clone());
                 }
 
                 GremlinStep::OutE(labels)
@@ -722,6 +775,7 @@ impl GremlinCompiler {
                     });
                     current_alias = rel_alias;
                     path_aliases.push(current_alias.clone());
+                    self.path_tracking.push(current_alias.clone());
                 }
 
                 GremlinStep::InV | GremlinStep::OutV => {
@@ -746,6 +800,7 @@ impl GremlinCompiler {
                     });
                     current_alias = vertex_alias;
                     path_aliases.push(current_alias.clone());
+                    self.path_tracking.push(current_alias.clone());
                 }
 
                 GremlinStep::OtherV => {
@@ -768,6 +823,7 @@ impl GremlinCompiler {
                     });
                     current_alias = vertex_alias;
                     path_aliases.push(current_alias.clone());
+                    self.path_tracking.push(current_alias.clone());
                 }
 
                 GremlinStep::BothV => {
@@ -797,6 +853,7 @@ impl GremlinCompiler {
                     });
                     current_alias = vertex_alias;
                     path_aliases.push(current_alias.clone());
+                    self.path_tracking.push(current_alias.clone());
                 }
 
                 GremlinStep::Values(keys) => {
@@ -1980,14 +2037,24 @@ impl GremlinCompiler {
                         }
                     } else if pending_where_by.is_some() {
                         // by() after where("a", P.gt("b")) — rewrite filter predicate
-                        // to use property access: where("a", P.gt("b")).by("age")
-                        // becomes filter(a.age > b.age) instead of filter(a > b).
-                        if let Some((left_id, right_id)) = pending_where_by.take() {
+                        // to use property access. First by() rewrites BOTH sides,
+                        // second by() overwrites the RIGHT side only.
+                        if let Some((ref left_id, ref right_id)) = pending_where_by {
                             if !key.is_empty() {
                                 if let Some(Operator::Filter { ref mut predicate, .. }) = current {
-                                    rewrite_where_by_predicate(predicate, &left_id, &right_id, key);
+                                    if where_by_count == 0 {
+                                        // First by(): rewrite BOTH sides
+                                        rewrite_where_by_predicate(predicate, left_id, right_id, key);
+                                    } else {
+                                        // Second by(): overwrite RIGHT side only
+                                        rewrite_where_by_side(predicate, right_id, key, false);
+                                    }
                                 }
                             }
+                        }
+                        where_by_count += 1;
+                        if where_by_count >= 2 {
+                            pending_where_by = None;
                         }
                     } else if aggregate_by_consumed {
                         // Second by() after aggregate — error per Gremlin spec
@@ -2552,6 +2619,7 @@ impl GremlinCompiler {
                                 extract_where_label_pair(inner_steps, &self.alias_map, &current_alias)
                             {
                                 pending_where_by = Some((left_id, right_id));
+                                where_by_count = 0;
                             }
                         }
                         current = Some(Operator::Filter {
@@ -2810,6 +2878,9 @@ impl GremlinCompiler {
                     current_alias = Identifier::new("path");
                     pending_path = true;
                     path_by_keys.clear();
+                    // Path has consumed the aliases — stop carrying them
+                    // through subsequent Projects.
+                    self.path_tracking.clear();
                 }
 
                 GremlinStep::Repeat(body_steps) => {
@@ -3028,6 +3099,7 @@ impl GremlinCompiler {
                     });
                     current_alias = coal_alias;
                     path_aliases.push(current_alias.clone());
+                    self.path_tracking.push(current_alias.clone());
                 }
 
                 GremlinStep::Union(branches) => {
@@ -4627,6 +4699,37 @@ impl GremlinCompiler {
                     ));
                 }
             }
+
+            // Generic path tracking: if the current alias changed and this is
+            // a path-contributing step, record it for path() reconstruction.
+            if self.needs_path_tracking && current_alias != pre_step_alias {
+                let is_modulator = matches!(
+                    step,
+                    GremlinStep::By(..)
+                        | GremlinStep::ByTraversal(..)
+                        | GremlinStep::From(_)
+                        | GremlinStep::To(_)
+                        | GremlinStep::As(_)
+                        | GremlinStep::Times(_)
+                        | GremlinStep::Until(_)
+                        | GremlinStep::Emit
+                        | GremlinStep::EmitPred(_)
+                        | GremlinStep::Option(..)
+                        | GremlinStep::WithSideEffect(..)
+                        | GremlinStep::ProductiveByStrategy
+                        | GremlinStep::ReadOnlyStrategy
+                        | GremlinStep::SeedStrategy(_)
+                        | GremlinStep::ReservedKeysVerificationStrategy(_)
+                        | GremlinStep::EdgeLabelVerificationStrategy
+                        | GremlinStep::Property(..)
+                );
+                // Don't re-add aliases that are already explicitly tracked
+                let already_tracked = path_aliases.last() == Some(&current_alias);
+                if !is_modulator && !already_tracked {
+                    path_aliases.push(current_alias.clone());
+                    self.path_tracking.push(current_alias.clone());
+                }
+            }
         }
 
         // Flush deferred choose output alias
@@ -4930,6 +5033,40 @@ fn is_simple_predicate_steps(steps: &[GremlinStep]) -> bool {
                     | GremlinStep::Select(_)
             )
         })
+}
+
+/// Recursively check if any step in the sequence uses path tracking.
+fn steps_need_path_tracking(steps: &[GremlinStep]) -> bool {
+    for step in steps {
+        match step {
+            GremlinStep::Path | GremlinStep::SimplePath | GremlinStep::CyclicPath => {
+                return true;
+            }
+            GremlinStep::Repeat(inner)
+            | GremlinStep::FlatMap(inner)
+            | GremlinStep::Map(inner)
+            | GremlinStep::Not(inner)
+            | GremlinStep::Where(inner) => {
+                if steps_need_path_tracking(inner) {
+                    return true;
+                }
+            }
+            GremlinStep::And(branches) | GremlinStep::Or(branches) | GremlinStep::Union(branches) => {
+                for branch in branches {
+                    if steps_need_path_tracking(branch) {
+                        return true;
+                    }
+                }
+            }
+            GremlinStep::Choose(if_branch, else_branch, _) => {
+                if steps_need_path_tracking(if_branch) || steps_need_path_tracking(else_branch) {
+                    return true;
+                }
+            }
+            _ => {}
+        }
+    }
+    false
 }
 
 /// Preprocess a step list to handle infix `and()`/`or()` with no arguments.
@@ -5981,28 +6118,52 @@ fn extract_where_label_pair(
 
 /// Rewrite a where predicate to use property access. Transforms:
 /// `left_var > right_var` → `left_var.key > right_var.key`
+/// Handles compound predicates (And/Or) recursively.
 fn rewrite_where_by_predicate(
     predicate: &mut Expr,
     left_id: &Identifier,
     right_id: &Identifier,
     key: &str,
 ) {
+    rewrite_where_by_side(predicate, left_id, key, true);
+    rewrite_where_by_side(predicate, right_id, key, false);
+}
+
+/// Rewrite one side of a where-label predicate to use property access.
+/// `is_left` controls whether to rewrite the left or right operand.
+/// Recursively handles compound predicates (And/Or).
+fn rewrite_where_by_side(
+    predicate: &mut Expr,
+    target_id: &Identifier,
+    key: &str,
+    is_left: bool,
+) {
     match predicate {
-        Expr::BinaryOp { left, right, .. } => {
-            if let Expr::Variable(ref v) = **left {
-                if v == left_id {
-                    *left = Box::new(Expr::Property(
-                        Box::new(Expr::Variable(left_id.clone())),
-                        SmolStr::new(key),
-                    ));
+        Expr::BinaryOp { op, left, right } => {
+            if matches!(op, BinaryOp::And | BinaryOp::Or) {
+                // Compound predicate: recurse into both branches
+                rewrite_where_by_side(left, target_id, key, is_left);
+                rewrite_where_by_side(right, target_id, key, is_left);
+            } else {
+                let operand = if is_left { left } else { right };
+                if let Expr::Variable(ref v) = **operand {
+                    if v == target_id {
+                        **operand = Expr::Property(
+                            Box::new(Expr::Variable(target_id.clone())),
+                            SmolStr::new(key),
+                        );
+                    }
                 }
-            }
-            if let Expr::Variable(ref v) = **right {
-                if v == right_id {
-                    *right = Box::new(Expr::Property(
-                        Box::new(Expr::Variable(right_id.clone())),
-                        SmolStr::new(key),
-                    ));
+                // Also check if the side was already rewritten to Property — overwrite
+                if let Expr::Property(ref inner, _) = **operand {
+                    if let Expr::Variable(ref v) = **inner {
+                        if v == target_id {
+                            **operand = Expr::Property(
+                                Box::new(Expr::Variable(target_id.clone())),
+                                SmolStr::new(key),
+                            );
+                        }
+                    }
                 }
             }
         }

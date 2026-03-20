@@ -1853,16 +1853,28 @@ pub fn eval_function_with_vals(name: &str, vals: Vec<Value>) -> Result<Value, Gq
                         Value::Path { .. } => "path",
                         _ => "unknown",
                     };
-                    // Handle various type name formats
                     let expected = expected_type.to_lowercase();
+                    // Validate that the type name is recognized
+                    let known_types = [
+                        "string", "integer", "int", "long", "double", "float",
+                        "boolean", "null", "list", "map", "set", "path", "vertex",
+                        "edge", "date", "short", "byte", "biginteger", "bigdecimal",
+                        "uuid", "tree", "binary", "char", "datetime", "duration",
+                        "graph", "vproperty", "property",
+                    ];
+                    if !known_types.contains(&expected.as_str()) {
+                        return Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                            expected: format!("a known GType, got '{}'", expected_type),
+                            actual: "unregistered type name".to_string(),
+                        }));
+                    }
                     let matches = actual_type == expected
                         || (expected == "long" && actual_type == "integer")
                         || (expected == "short" && actual_type == "integer")
                         || (expected == "byte" && actual_type == "integer")
-                        || (expected == "biginteger" && actual_type == "integer")
                         || (expected == "float" && actual_type == "double")
-                        || (expected == "bigdecimal" && actual_type == "double")
-                        || (expected == "set" && actual_type == "list");
+                        || (expected == "set" && actual_type == "list")
+                        || (expected == "path" && actual_type == "list");
                     Ok(Value::Bool(matches))
                 }
                 _ => Ok(Value::Bool(false)),
