@@ -936,6 +936,7 @@ impl<'a> QueryExecutor<'a> {
             key_traversal,
             value_traversal,
             productive,
+            explicit_fold,
             child,
         } = op
         else {
@@ -1026,7 +1027,7 @@ impl<'a> QueryExecutor<'a> {
                 // aggregated result (e.g., constant(1), count(), sum()) or multiple
                 // per-member results to be collected. Apply agg_fn to the values,
                 // then unwrap single scalar results for the single-result case.
-                let agg_val = match agg_fn {
+                match agg_fn {
                     AggFunction::Count => Value::Int(values.len() as i64),
                     AggFunction::Sum => {
                         let mut total = 0i64;
@@ -1049,18 +1050,18 @@ impl<'a> QueryExecutor<'a> {
                         }
                     }
                     AggFunction::Collect => {
-                        // For Collect: if there's a single result that's NOT a List
-                        // (i.e., from constant(1) or similar scalar traversals),
-                        // use it directly. Lists (from fold) and multi-values stay as lists.
-                        if values.len() == 1 && !matches!(values.first(), Some(Value::List(_))) {
+                        if *explicit_fold {
+                            // Explicit fold(): always produce a List
+                            Value::List(values)
+                        } else if values.len() == 1 && !matches!(values.first(), Some(Value::List(_))) {
+                            // Single scalar result (e.g. constant(1)): unwrap
                             values.into_iter().next().unwrap_or(Value::Null)
                         } else {
                             Value::List(values)
                         }
                     }
                     _ => Value::List(values),
-                };
-                agg_val
+                }
             } else {
                 match agg_fn {
                     AggFunction::Count => Value::Int(values.len() as i64),

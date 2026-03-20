@@ -1234,6 +1234,7 @@ impl GremlinCompiler {
                         key_traversal: None,
                         value_traversal: None,
                         productive: self.productive_by,
+                        explicit_fold: false,
                         child: Box::new(child),
                     });
                     // Named groups are side-effects (pass-through): keep current alias.
@@ -1449,9 +1450,10 @@ impl GremlinCompiler {
                                     *agg_fn = AggFunction::Count;
                                 }
                             } else if key == "fold()" || key == "__.fold()" {
-                                if let Some(Operator::GremlinGroup { ref mut agg_fn, .. }) = current
+                                if let Some(Operator::GremlinGroup { ref mut agg_fn, ref mut explicit_fold, .. }) = current
                                 {
                                     *agg_fn = AggFunction::Collect;
+                                    *explicit_fold = true;
                                 }
                             } else if key == "sum()" || key == "__.sum()" {
                                 if let Some(Operator::GremlinGroup { ref mut agg_fn, .. }) = current
@@ -1476,10 +1478,14 @@ impl GremlinCompiler {
                                         if proj_steps.is_empty() {
                                             if let Some(Operator::GremlinGroup {
                                                 ref mut agg_fn,
+                                                ref mut explicit_fold,
                                                 ..
                                             }) = current
                                             {
                                                 if let Some(agg) = trailing_agg {
+                                                    if matches!(agg, AggFunction::Collect) {
+                                                        *explicit_fold = true;
+                                                    }
                                                     *agg_fn = agg;
                                                 }
                                             }
@@ -1493,12 +1499,16 @@ impl GremlinCompiler {
                                                 if let Some(Operator::GremlinGroup {
                                                     ref mut value_traversal,
                                                     ref mut agg_fn,
+                                                    ref mut explicit_fold,
                                                     ..
                                                 }) = current
                                                 {
                                                     *value_traversal =
                                                         Some((Box::new(sub_op), sub_out_alias));
                                                     if let Some(agg) = trailing_agg {
+                                                        if matches!(agg, AggFunction::Collect) {
+                                                            *explicit_fold = true;
+                                                        }
                                                         *agg_fn = agg;
                                                     }
                                                 }
@@ -1959,16 +1969,17 @@ impl GremlinCompiler {
                                 let (proj_steps, trailing_agg) = split_trailing_agg(sub_steps);
 
                                 if proj_steps.is_empty() {
-                                    // Just an aggregation function
-                                    if let Some(Operator::GremlinGroup { ref mut agg_fn, .. }) =
+                                    if let Some(Operator::GremlinGroup { ref mut agg_fn, ref mut explicit_fold, .. }) =
                                         current
                                     {
                                         if let Some(agg) = trailing_agg {
+                                            if matches!(agg, AggFunction::Collect) {
+                                                *explicit_fold = true;
+                                            }
                                             *agg_fn = agg;
                                         }
                                     }
                                 } else {
-                                    // Compile the per-element projection
                                     let mut sub = self.sub_compiler();
                                     let sub_op =
                                         sub.compile_seeded(proj_steps, &pre_group_alias)?;
@@ -1977,11 +1988,15 @@ impl GremlinCompiler {
                                     if let Some(Operator::GremlinGroup {
                                         ref mut value_traversal,
                                         ref mut agg_fn,
+                                        ref mut explicit_fold,
                                         ..
                                     }) = current
                                     {
                                         *value_traversal = Some((Box::new(sub_op), sub_out_alias));
                                         if let Some(agg) = trailing_agg {
+                                            if matches!(agg, AggFunction::Collect) {
+                                                *explicit_fold = true;
+                                            }
                                             *agg_fn = agg;
                                         }
                                     }

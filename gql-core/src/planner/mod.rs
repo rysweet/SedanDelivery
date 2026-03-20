@@ -310,6 +310,9 @@ pub enum Operator {
         value_traversal: Option<(Box<Operator>, Identifier)>,
         /// When true (ProductiveByStrategy), include null-keyed entries for missing properties.
         productive: bool,
+        /// When true, the Collect agg was set explicitly by fold() (not default).
+        /// Forces List result even for single-member groups.
+        explicit_fold: bool,
         child: Box<Operator>,
     },
     /// Gremlin `range(Scope.local, lo, hi)` / `limit(Scope.local, n)` —
