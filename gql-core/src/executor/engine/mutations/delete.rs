@@ -138,6 +138,10 @@ impl<'a> QueryExecutor<'a> {
             out.push(row);
         }
         self.invalidate_property_cache();
+        // In Gremlin mode, drop() is a void step returning no traversers.
+        if self.gremlin_mode {
+            return Ok(Vec::new());
+        }
         Ok(out)
     }
 }
