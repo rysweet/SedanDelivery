@@ -7,6 +7,7 @@
 
 use crate::bytecode::{GremlinStep, Predicate};
 use crate::types::GremlinValue;
+use indexmap::IndexMap;
 
 /// Errors that can occur during Gremlin text parsing.
 #[derive(Debug, thiserror::Error)]
@@ -37,6 +38,29 @@ pub fn parse_traversal(
 ) -> Result<Vec<GremlinStep>, TextParseError> {
     let input = input.trim();
 
+    // Extract withSack initial value if present before stripping
+    let sack_init = extract_with_sack_value(input, resolve_param);
+
+    // Extract withSideEffect values before stripping
+    let side_effects = extract_with_side_effects(input, resolve_param);
+
+    // Detect strategy flags before stripping
+    let productive_by = input.contains("ProductiveByStrategy")
+        && !input.contains("withoutStrategies(ProductiveByStrategy");
+    // ReadOnlyStrategy: only active with withStrategies (not withoutStrategies)
+    let read_only = input.contains("withStrategies(")
+        && input.contains("ReadOnlyStrategy")
+        && !input.contains("withoutStrategies(ReadOnlyStrategy");
+    // EdgeLabelVerificationStrategy(throwException: true)
+    let edge_label_verify = input.contains("withStrategies(")
+        && input.contains("EdgeLabelVerificationStrategy")
+        && input.contains("throwException: true")
+        && !input.contains("withoutStrategies(EdgeLabelVerificationStrategy");
+    // ReservedKeysVerificationStrategy(throwException: true, keys: {...})
+    let reserved_keys = extract_reserved_keys_strategy(input);
+    // SeedStrategy(seed: 999999) — extract seed value for deterministic random
+    let seed_strategy = extract_seed_strategy(input);
+
     // Strip strategy wrappers: g.withStrategies(...).V()... or g.withoutStrategies(...).V()...
     // Also strip g.withSideEffect(...) and g.withSack(...) and g.withComputer(...)
     let owned;
@@ -64,6 +88,33 @@ pub fn parse_traversal(
 
     let tokens = tokenize_steps(rest)?;
     let mut steps = Vec::new();
+
+    // Emit WithSideEffect as first steps
+    for (key, val, op) in side_effects {
+        steps.push(GremlinStep::WithSideEffect(key, val, op));
+    }
+
+    // Emit WithSack as first step if present
+    if let Some(init_val) = sack_init {
+        steps.push(GremlinStep::WithSack(init_val));
+    }
+
+    // Emit strategy flags
+    if productive_by {
+        steps.push(GremlinStep::ProductiveByStrategy);
+    }
+    if read_only {
+        steps.push(GremlinStep::ReadOnlyStrategy);
+    }
+    if let Some(keys) = reserved_keys {
+        steps.push(GremlinStep::ReservedKeysVerificationStrategy(keys));
+    }
+    if edge_label_verify {
+        steps.push(GremlinStep::EdgeLabelVerificationStrategy);
+    }
+    if let Some(seed) = seed_strategy {
+        steps.push(GremlinStep::SeedStrategy(seed));
+    }
 
     for token in &tokens {
         parse_step_token(token, resolve_param, &mut steps)?;
@@ -101,6 +152,316 @@ fn strip_strategy_prefix(input: &str) -> String {
         result = format!("g.{rest}");
     }
     result
+}
+
+/// Extract reserved keys from `ReservedKeysVerificationStrategy(throwException: true, keys: {"age"})`.
+/// Returns `Some(extra_keys)` if the strategy is active with throwException: true,
+/// where `extra_keys` are user-specified reserved keys beyond the defaults ("id", "label").
+/// Extract seed value from `SeedStrategy(seed: 999999)` if present.
+fn extract_seed_strategy(input: &str) -> Option<i64> {
+    if !input.contains("SeedStrategy") || input.contains("withoutStrategies(") {
+        return None;
+    }
+    let start = input.find("SeedStrategy(")?;
+    let after = &input[start + "SeedStrategy(".len()..];
+    // Find "seed:" or "seed :"
+    let seed_pos = after.find("seed")?;
+    let rest = &after[seed_pos + 4..];
+    let rest = rest.trim_start().strip_prefix(':')?;
+    let rest = rest.trim_start();
+    // Parse the integer value
+    let end = rest
+        .find(|c: char| !c.is_ascii_digit() && c != '-')
+        .unwrap_or(rest.len());
+    rest[..end].parse::<i64>().ok()
+}
+
+fn extract_reserved_keys_strategy(input: &str) -> Option<Vec<String>> {
+    if !input.contains("withStrategies(") || !input.contains("ReservedKeysVerificationStrategy") {
+        return None;
+    }
+    if input.contains("withoutStrategies(ReservedKeysVerificationStrategy") {
+        return None;
+    }
+    // Must have throwException: true
+    let start = input.find("ReservedKeysVerificationStrategy(")?;
+    let after = &input[start..];
+    if !after.contains("throwException: true") {
+        return None;
+    }
+    // Extract keys: {"age", "foo"} if present
+    let mut extra_keys = Vec::new();
+    if let Some(keys_pos) = after.find("keys:") {
+        let rest = &after[keys_pos + 5..];
+        if let Some(open) = rest.find('{') {
+            if let Some(close) = rest[open..].find('}') {
+                let inner = &rest[open + 1..open + close];
+                for part in inner.split(',') {
+                    let key = part.trim().trim_matches('"').trim_matches('\'');
+                    if !key.is_empty() {
+                        extra_keys.push(key.to_string());
+                    }
+                }
+            }
+        }
+    }
+    Some(extra_keys)
+}
+
+/// Extract the initial value from `g.withSack(value)` if present.
+fn extract_with_sack_value(
+    input: &str,
+    resolve_param: &dyn Fn(&str) -> Option<GremlinValue>,
+) -> Option<GremlinValue> {
+    let prefix = "g.withSack(";
+    if !input.starts_with(prefix) {
+        if let Some(pos) = input.find(".withSack(") {
+            let after = &input[pos + ".withSack(".len()..];
+            return parse_sack_arg(after, resolve_param);
+        }
+        return None;
+    }
+    let after = &input[prefix.len()..];
+    parse_sack_arg(after, resolve_param)
+}
+
+fn parse_sack_arg(
+    after: &str,
+    resolve_param: &dyn Fn(&str) -> Option<GremlinValue>,
+) -> Option<GremlinValue> {
+    let mut depth = 1;
+    let mut end = 0;
+    for (i, c) in after.char_indices() {
+        match c {
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    end = i;
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    if end == 0 {
+        return None;
+    }
+    let arg_str = after[..end].trim();
+    // Only take first arg (before comma) — ignore split/merge operators
+    let first_arg = arg_str.split(',').next().unwrap_or(arg_str).trim();
+    parse_literal_value(first_arg, resolve_param)
+}
+
+fn parse_literal_value(
+    s: &str,
+    resolve_param: &dyn Fn(&str) -> Option<GremlinValue>,
+) -> Option<GremlinValue> {
+    if let Some(stripped) = s
+        .strip_suffix('b')
+        .or_else(|| s.strip_suffix('s'))
+        .or_else(|| s.strip_suffix('i'))
+        .or_else(|| s.strip_suffix('l'))
+    {
+        if let Ok(v) = stripped.parse::<i64>() {
+            return Some(GremlinValue::Integer(v));
+        }
+    }
+    if let Some(stripped) = s.strip_suffix('d').or_else(|| s.strip_suffix('f')) {
+        if let Ok(v) = stripped.parse::<f64>() {
+            return Some(GremlinValue::Float(v));
+        }
+    }
+    if let Ok(v) = s.parse::<i64>() {
+        return Some(GremlinValue::Integer(v));
+    }
+    if let Ok(v) = s.parse::<f64>() {
+        return Some(GremlinValue::Float(v));
+    }
+    let unquoted = s.trim_matches('"').trim_matches('\'');
+    if unquoted != s {
+        return Some(GremlinValue::String(unquoted.to_string()));
+    }
+    resolve_param(s).or(None)
+}
+
+/// Extract all `withSideEffect(key, value[, operator])` tuples from the input.
+fn extract_with_side_effects(
+    input: &str,
+    resolve_param: &dyn Fn(&str) -> Option<GremlinValue>,
+) -> Vec<(String, GremlinValue, Option<String>)> {
+    let mut results = Vec::new();
+    let mut search = input;
+    while let Some(prefix) = search.find("withSideEffect(") {
+        let after = &search[prefix + "withSideEffect(".len()..];
+        // Find the matching close paren
+        let mut depth = 1u32;
+        let mut in_str = false;
+        let mut escape = false;
+        let mut end = 0;
+        for (i, c) in after.char_indices() {
+            if escape {
+                escape = false;
+                continue;
+            }
+            if c == '\\' && in_str {
+                escape = true;
+                continue;
+            }
+            if c == '"' {
+                in_str = !in_str;
+                continue;
+            }
+            if in_str {
+                continue;
+            }
+            match c {
+                '(' => depth += 1,
+                ')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        end = i;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        if end == 0 {
+            break;
+        }
+        let arg_str = &after[..end];
+        // Split into key and value (first comma at top level)
+        let mut comma_depth = 0;
+        let mut comma_pos = None;
+        let mut in_s = false;
+        let mut esc = false;
+        for (i, c) in arg_str.char_indices() {
+            if esc {
+                esc = false;
+                continue;
+            }
+            if c == '\\' && in_s {
+                esc = true;
+                continue;
+            }
+            if c == '"' {
+                in_s = !in_s;
+                continue;
+            }
+            if in_s {
+                continue;
+            }
+            match c {
+                '(' | '[' | '{' => comma_depth += 1,
+                ')' | ']' | '}' => comma_depth -= 1,
+                ',' if comma_depth == 0 => {
+                    if comma_pos.is_none() {
+                        comma_pos = Some(i);
+                    }
+                    // Don't break — we want the first comma only for key/value split
+                    break;
+                }
+                _ => {}
+            }
+        }
+        if let Some(cp) = comma_pos {
+            let key_str = arg_str[..cp].trim().trim_matches('"');
+            let rest_str = arg_str[cp + 1..].trim();
+            // Check for 3-arg form: value, Operator.xxx
+            // Split rest_str at the last top-level comma to separate value from operator
+            let mut last_comma = None;
+            let mut ld = 0i32;
+            let mut in_s2 = false;
+            let mut esc2 = false;
+            for (i2, c) in rest_str.char_indices() {
+                if esc2 {
+                    esc2 = false;
+                    continue;
+                }
+                if c == '\\' && in_s2 {
+                    esc2 = true;
+                    continue;
+                }
+                if c == '"' {
+                    in_s2 = !in_s2;
+                    continue;
+                }
+                if in_s2 {
+                    continue;
+                }
+                match c {
+                    '(' | '[' | '{' => ld += 1,
+                    ')' | ']' | '}' => ld -= 1,
+                    ',' if ld == 0 => {
+                        last_comma = Some(i2);
+                    }
+                    _ => {}
+                }
+            }
+            let (val_str, operator) = if let Some(lc) = last_comma {
+                let maybe_op = rest_str[lc + 1..].trim();
+                if maybe_op.starts_with("Operator.") {
+                    let op_name = maybe_op.strip_prefix("Operator.").unwrap_or("sum");
+                    // Only split for operators that we actually reduce
+                    // "assign" just means "collect normally" — skip it
+                    if op_name == "assign" {
+                        (rest_str, None)
+                    } else {
+                        (&rest_str[..lc], Some(op_name.to_string()))
+                    }
+                } else {
+                    (rest_str, None)
+                }
+            } else {
+                (rest_str, None)
+            };
+            // Try to parse the value — handle sets like {"alice"}, lists like ["x","y"], etc.
+            if let Some(val) = parse_side_effect_value(val_str.trim(), resolve_param) {
+                results.push((key_str.to_string(), val, operator));
+            }
+        }
+        search = &after[end..];
+    }
+    results
+}
+
+/// Parse a withSideEffect value: strings, numbers, sets {}, lists [], etc.
+fn parse_side_effect_value(
+    s: &str,
+    resolve_param: &dyn Fn(&str) -> Option<GremlinValue>,
+) -> Option<GremlinValue> {
+    let s = s.trim();
+    // Handle Set notation: {"alice"} → List (treated as set)
+    if s.starts_with('{') && s.ends_with('}') {
+        let inner = &s[1..s.len() - 1];
+        let items: Vec<GremlinValue> = inner
+            .split(',')
+            .filter_map(|item| {
+                let item = item.trim().trim_matches('"');
+                if item.is_empty() {
+                    None
+                } else {
+                    Some(GremlinValue::String(item.to_string()))
+                }
+            })
+            .collect();
+        return Some(GremlinValue::List(items));
+    }
+    // Handle List notation: ["x","y"]
+    if s.starts_with('[') && s.ends_with(']') {
+        let inner = &s[1..s.len() - 1];
+        let items: Vec<GremlinValue> = inner
+            .split(',')
+            .filter_map(|item| parse_literal_value(item.trim(), resolve_param))
+            .collect();
+        return Some(GremlinValue::List(items));
+    }
+    // Handle "Set" keyword: skip the operator arg
+    if s == "Set" || s.starts_with("Operator.") {
+        return None;
+    }
+    parse_literal_value(s, resolve_param)
 }
 
 /// Skip past balanced parentheses.  Input starts just after the opening `(`.
@@ -223,12 +584,17 @@ fn parse_step_token(
         }
         "has" => parse_has_step(args_str, resolve_param, out)?,
         "hasLabel" => {
-            let args = parse_string_arg_list(args_str)?;
+            let args = parse_string_arg_list_with_params(args_str, resolve_param)?;
             out.push(GremlinStep::HasLabel(args));
         }
         "hasId" => {
-            let args = parse_arg_list(args_str, resolve_param)?;
-            out.push(GremlinStep::HasId(args));
+            // Try predicate form first: hasId(P.neq(xx1)), hasId(P.without([]))
+            if let Some(pred) = try_parse_predicate_call(args_str.trim(), resolve_param) {
+                out.push(GremlinStep::HasIdPredicate(pred));
+            } else {
+                let args = parse_arg_list(args_str, resolve_param)?;
+                out.push(GremlinStep::HasId(args));
+            }
         }
         "hasNot" => {
             // hasNot("key") — filter elements where property does NOT exist
@@ -239,27 +605,27 @@ fn parse_step_token(
             }
         }
         "out" => {
-            let args = parse_string_arg_list(args_str)?;
+            let args = parse_string_arg_list_with_params(args_str, resolve_param)?;
             out.push(GremlinStep::Out(args));
         }
         "in" => {
-            let args = parse_string_arg_list(args_str)?;
+            let args = parse_string_arg_list_with_params(args_str, resolve_param)?;
             out.push(GremlinStep::In(args));
         }
         "both" => {
-            let args = parse_string_arg_list(args_str)?;
+            let args = parse_string_arg_list_with_params(args_str, resolve_param)?;
             out.push(GremlinStep::Both(args));
         }
         "outE" => {
-            let args = parse_string_arg_list(args_str)?;
+            let args = parse_string_arg_list_with_params(args_str, resolve_param)?;
             out.push(GremlinStep::OutE(args));
         }
         "inE" => {
-            let args = parse_string_arg_list(args_str)?;
+            let args = parse_string_arg_list_with_params(args_str, resolve_param)?;
             out.push(GremlinStep::InE(args));
         }
         "bothE" => {
-            let args = parse_string_arg_list(args_str)?;
+            let args = parse_string_arg_list_with_params(args_str, resolve_param)?;
             out.push(GremlinStep::BothE(args));
         }
         "inV" => out.push(GremlinStep::InV),
@@ -273,12 +639,12 @@ fn parse_step_token(
         "valueMap" => {
             let args = parse_string_arg_list(args_str)?;
             // valueMap(true, ...) or valueMap(true) includes tokens (id/label)
-            let (with_tokens, keys) = if args.first().map(|s| s.as_str()) == Some("true") {
-                (true, args[1..].to_vec())
+            let (token_mode, keys) = if args.first().map(|s| s.as_str()) == Some("true") {
+                (1u8, args[1..].to_vec())
             } else {
-                (false, args)
+                (0u8, args)
             };
-            out.push(GremlinStep::ValueMap(keys, with_tokens));
+            out.push(GremlinStep::ValueMap(keys, token_mode));
         }
         "properties" => {
             let args = parse_string_arg_list(args_str)?;
@@ -308,7 +674,7 @@ fn parse_step_token(
                 .any(|a| matches!(a, GremlinValue::String(s) if s == "Scope.local"));
             if is_local {
                 // count(local) — count elements in the list/map value
-                out.push(GremlinStep::Length);
+                out.push(GremlinStep::StringOpLocal("gremlin_length_local".into()));
             } else {
                 out.push(GremlinStep::Count);
             }
@@ -353,8 +719,15 @@ fn parse_step_token(
         }
         "fold" => out.push(GremlinStep::Fold),
         "unfold" => out.push(GremlinStep::Unfold),
-        "order" => out.push(GremlinStep::Order),
-        "by" => parse_by_step(args_str, out)?,
+        "order" => {
+            // Detect Scope.local
+            if args_str.contains("Scope.local") {
+                out.push(GremlinStep::SortLocal);
+            } else {
+                out.push(GremlinStep::Order);
+            }
+        }
+        "by" => parse_by_step(args_str, out, resolve_param)?,
         "limit" => {
             let args = parse_arg_list(args_str, resolve_param)?;
             // Detect Scope.local
@@ -405,42 +778,58 @@ fn parse_step_token(
             }
         }
         "dedup" => {
-            let args = parse_string_arg_list(args_str)?;
-            out.push(GremlinStep::Dedup(args));
+            // Detect Scope.local
+            if args_str.contains("Scope.local") || args_str.contains("local") {
+                // dedup(Scope.local) or dedup(Scope.local, "x", "y")
+                let args: Vec<String> = parse_string_arg_list(args_str)?
+                    .into_iter()
+                    .filter(|a| a != "Scope.local" && a != "local")
+                    .collect();
+                out.push(GremlinStep::DedupLocal(args));
+            } else {
+                let args = parse_string_arg_list(args_str)?;
+                out.push(GremlinStep::Dedup(args));
+            }
         }
         "is" => {
             // Handle chained predicates: P.eq(1).and(P.gt(0)) or P.eq(1).or(P.lt(0))
             let s = args_str.trim();
             let chain_parts = split_predicate_chain(s);
             if chain_parts.len() > 1 {
-                // Multiple predicates chained with and/or
-                // Parse each part and emit as And/Or steps
-                let mut and_preds = Vec::new();
-                let mut or_preds = Vec::new();
-                let mut is_or = false;
-                for (i, (op, part)) in chain_parts.iter().enumerate() {
+                // Parse each part individually
+                let mut parsed: Vec<(String, GremlinStep)> = Vec::new();
+                for (op, part) in &chain_parts {
                     if let Some(pred) = try_parse_predicate_call(part, resolve_param) {
-                        let step = GremlinStep::Is(pred);
-                        if i == 0 {
-                            and_preds.push(step);
-                        } else if *op == "or" {
-                            is_or = true;
-                            or_preds.push(step);
-                        } else {
-                            and_preds.push(step);
-                        }
+                        parsed.push((op.to_string(), GremlinStep::Is(pred)));
                     }
                 }
-                if is_or {
-                    // Combine all and_preds and or_preds into an Or
-                    let mut all_steps = and_preds;
-                    all_steps.extend(or_preds);
-                    out.push(GremlinStep::Or(all_steps));
-                } else {
-                    // All and — emit as sequential Is steps (implicit AND)
-                    for step in and_preds {
+                // Group into AND-chains separated by OR operators.
+                // P.gt(18).and(P.lt(30)).or(P.gt(35)) → (gt(18) AND lt(30)) OR gt(35)
+                let mut or_groups: Vec<Vec<GremlinStep>> = vec![vec![]];
+                for (op, step) in parsed {
+                    if op == "or" {
+                        or_groups.push(vec![step]);
+                    } else {
+                        or_groups.last_mut().unwrap().push(step);
+                    }
+                }
+                if or_groups.len() == 1 {
+                    // All AND — emit as sequential Is steps
+                    for step in or_groups.into_iter().flatten() {
                         out.push(step);
                     }
+                } else {
+                    // Build Or of And groups
+                    let mut or_branches: Vec<Vec<GremlinStep>> = Vec::new();
+                    for group in or_groups {
+                        if group.len() == 1 {
+                            or_branches.push(group);
+                        } else {
+                            // Multiple AND predicates become a single branch
+                            or_branches.push(group);
+                        }
+                    }
+                    out.push(GremlinStep::Or(or_branches));
                 }
             } else {
                 let pred = parse_predicate(args_str, resolve_param)?;
@@ -477,19 +866,11 @@ fn parse_step_token(
         }
         "and" => {
             let inner_traversals = parse_multi_traversal_args(args_str, resolve_param)?;
-            let inner_steps: Vec<GremlinStep> = inner_traversals
-                .into_iter()
-                .flat_map(|steps| steps.into_iter())
-                .collect();
-            out.push(GremlinStep::And(inner_steps));
+            out.push(GremlinStep::And(inner_traversals));
         }
         "or" => {
             let inner_traversals = parse_multi_traversal_args(args_str, resolve_param)?;
-            let inner_steps: Vec<GremlinStep> = inner_traversals
-                .into_iter()
-                .flat_map(|steps| steps.into_iter())
-                .collect();
-            out.push(GremlinStep::Or(inner_steps));
+            out.push(GremlinStep::Or(inner_traversals));
         }
         "addV" => {
             let args = parse_string_arg_list(args_str)?;
@@ -504,18 +885,29 @@ fn parse_step_token(
         "property" => {
             let args = parse_arg_list(args_str, resolve_param)?;
             if args.len() >= 2 {
-                if let GremlinValue::String(key) = &args[0] {
+                // Check for property(Cardinality.xxx, Map) pattern — expand Map
+                // into individual property steps.
+                let is_cardinality = matches!(&args[0],
+                    GremlinValue::String(s) if s.starts_with("Cardinality.") || s == "single" || s == "list" || s == "set"
+                );
+                if is_cardinality && matches!(&args[1], GremlinValue::Map(_)) {
+                    if let GremlinValue::Map(map) = &args[1] {
+                        for (k, v) in map {
+                            out.push(GremlinStep::Property(k.clone(), v.clone()));
+                        }
+                    }
+                } else if let GremlinValue::String(key) = &args[0] {
                     out.push(GremlinStep::Property(key.clone(), args[1].clone()));
                 }
             }
         }
         "from" => {
-            let inner = parse_from_to_arg(args_str, resolve_param)?;
-            out.push(GremlinStep::From(Box::new(inner)));
+            let inner = parse_from_to_traversal(args_str, resolve_param)?;
+            out.push(GremlinStep::From(inner));
         }
         "to" => {
-            let inner = parse_from_to_arg(args_str, resolve_param)?;
-            out.push(GremlinStep::To(Box::new(inner)));
+            let inner = parse_from_to_traversal(args_str, resolve_param)?;
+            out.push(GremlinStep::To(inner));
         }
         "drop" => out.push(GremlinStep::Drop),
         "path" => out.push(GremlinStep::Path),
@@ -533,7 +925,19 @@ fn parse_step_token(
             let inner = parse_inner_traversal(args_str, resolve_param)?;
             out.push(GremlinStep::Until(inner));
         }
-        "emit" => out.push(GremlinStep::Emit),
+        "emit" => {
+            let trimmed = args_str.trim();
+            if trimmed.is_empty() {
+                out.push(GremlinStep::Emit);
+            } else {
+                let inner = parse_inner_traversal(trimmed, resolve_param)?;
+                if inner.is_empty() {
+                    out.push(GremlinStep::Emit);
+                } else {
+                    out.push(GremlinStep::EmitPred(inner));
+                }
+            }
+        }
         "aggregate" => {
             let args = parse_string_arg_list(args_str)?;
             // aggregate("x") or aggregate(local, "x") / aggregate(Scope.local, "x")
@@ -611,7 +1015,8 @@ fn parse_step_token(
         "identity" => out.push(GremlinStep::Identity),
         "tail" => {
             let args = parse_arg_list(args_str, resolve_param)?;
-            // tail(), tail(n), or tail(Scope.global, n) — skip Scope arg
+            // Detect Scope.local
+            let has_local_scope = args_str.contains("local") || args_str.contains("Scope.local");
             let n = args
                 .iter()
                 .find_map(|a| {
@@ -622,12 +1027,30 @@ fn parse_step_token(
                     }
                 })
                 .unwrap_or(1);
-            out.push(GremlinStep::Tail(n));
+            if has_local_scope {
+                out.push(GremlinStep::TailLocal(n));
+            } else {
+                out.push(GremlinStep::Tail(n));
+            }
         }
         "skip" => {
             let args = parse_arg_list(args_str, resolve_param)?;
-            if let Some(GremlinValue::Integer(n)) = args.first() {
-                out.push(GremlinStep::Skip(*n));
+            let is_local = args
+                .iter()
+                .any(|a| matches!(a, GremlinValue::String(s) if s == "Scope.local"));
+            let n = args.iter().find_map(|a| {
+                if let GremlinValue::Integer(v) = a {
+                    Some(*v)
+                } else {
+                    None
+                }
+            });
+            if let Some(n) = n {
+                if is_local {
+                    out.push(GremlinStep::SkipLocal(n));
+                } else {
+                    out.push(GremlinStep::Skip(n));
+                }
             }
         }
         "elementMap" => {
@@ -639,8 +1062,13 @@ fn parse_step_token(
             out.push(GremlinStep::HasKey(args));
         }
         "hasValue" => {
-            let args = parse_arg_list(args_str, resolve_param)?;
-            out.push(GremlinStep::HasValue(args));
+            // Try predicate first: hasValue(P.gt(30))
+            if let Some(pred) = try_parse_predicate_call(args_str.trim(), resolve_param) {
+                out.push(GremlinStep::HasValuePredicate(pred));
+            } else {
+                let args = parse_arg_list(args_str, resolve_param)?;
+                out.push(GremlinStep::HasValue(args));
+            }
         }
         "optional" => {
             let inner = parse_inner_traversal(args_str, resolve_param)?;
@@ -679,12 +1107,24 @@ fn parse_step_token(
         "barrier" => out.push(GremlinStep::Barrier),
         "sample" => {
             let args = parse_arg_list(args_str, resolve_param)?;
-            let n = if let Some(GremlinValue::Integer(v)) = args.first() {
-                *v
+            let is_local = args
+                .iter()
+                .any(|a| matches!(a, GremlinValue::String(s) if s == "Scope.local"));
+            let n = args
+                .iter()
+                .find_map(|a| {
+                    if let GremlinValue::Integer(v) = a {
+                        Some(*v)
+                    } else {
+                        None
+                    }
+                })
+                .unwrap_or(1);
+            if is_local {
+                out.push(GremlinStep::SampleLocal(n));
             } else {
-                1
-            };
-            out.push(GremlinStep::Sample(n));
+                out.push(GremlinStep::Sample(n));
+            }
         }
         "discard" => out.push(GremlinStep::Discard),
         "loops" => out.push(GremlinStep::Loops),
@@ -732,63 +1172,123 @@ fn parse_step_token(
             out.push(GremlinStep::Choose(inner, Vec::new(), None));
         }
         "sack" => {
-            // sack() — returns the sack value or sets it; approximated as identity
-            out.push(GremlinStep::Identity);
+            let args_trimmed = args_str.trim();
+            if args_trimmed.is_empty() {
+                // sack() — returns the sack value
+                out.push(GremlinStep::Sack);
+            } else {
+                // sack(operator) — apply binary op
+                let op_name = args_trimmed.replace("Operator.", "").trim().to_lowercase();
+                out.push(GremlinStep::SackOp(op_name));
+            }
         }
         "with" | "withPath" | "withBulk" => {
-            // with(WithOptions.tokens) — set tokens flag on preceding valueMap
+            // with(WithOptions.tokens[, WithOptions.labels|ids]) — set token mode
             let args = parse_string_arg_list(args_str)?;
             if args.iter().any(|a| a == "WithOptions.tokens") {
-                // Find the last ValueMap in the output and set its tokens flag
+                let mode = if args.iter().any(|a| a == "WithOptions.labels") {
+                    2u8 // labels only
+                } else if args.iter().any(|a| a == "WithOptions.ids") {
+                    3u8 // ids only
+                } else {
+                    1u8 // all tokens
+                };
                 for step in out.iter_mut().rev() {
-                    if let GremlinStep::ValueMap(_, ref mut with_tokens) = step {
-                        *with_tokens = true;
+                    if let GremlinStep::ValueMap(_, ref mut token_mode) = step {
+                        *token_mode = mode;
+                        break;
+                    }
+                }
+            }
+            // with(WithOptions.indexer, WithOptions.map) — convert index to map mode
+            if args.iter().any(|a| a == "WithOptions.indexer")
+                && args.iter().any(|a| a == "WithOptions.map")
+            {
+                for step in out.iter_mut().rev() {
+                    if matches!(step, GremlinStep::Index) {
+                        *step = GremlinStep::IndexWithMap;
                         break;
                     }
                 }
             }
             // withPath — enable path tracking
             // withBulk — enable bulk optimization
-            // withBulk — enable bulk optimization
         }
         "element" => {
-            // element() — return the element from a property
-            out.push(GremlinStep::Identity);
+            // element() — return the owning element from a property
+            out.push(GremlinStep::Element);
         }
         "math" => {
             // math("expression") — mathematical expression on traversal values
-            // Not fully implementable, but parse as identity to avoid blocking
-            out.push(GremlinStep::Identity);
+            let args = parse_string_arg_list(args_str)?;
+            let expr_str = args.into_iter().next().unwrap_or_default();
+            out.push(GremlinStep::Math(expr_str));
         }
         "index" => {
             // index() — adds index to each element
-            out.push(GremlinStep::Identity);
+            out.push(GremlinStep::Index);
         }
         // ── String steps ────────────────────────────────────────────────────
         "toLower" => {
-            out.push(GremlinStep::ToLower);
+            if args_str.contains("local") || args_str.contains("Scope.local") {
+                out.push(GremlinStep::StringOpLocal("gremlin_tolower_local".into()));
+            } else {
+                out.push(GremlinStep::ToLower);
+            }
         }
         "toUpper" => {
-            out.push(GremlinStep::ToUpper);
+            if args_str.contains("local") || args_str.contains("Scope.local") {
+                out.push(GremlinStep::StringOpLocal("gremlin_toupper_local".into()));
+            } else {
+                out.push(GremlinStep::ToUpper);
+            }
         }
         "trim" => {
-            out.push(GremlinStep::Trim);
+            if args_str.contains("local") || args_str.contains("Scope.local") {
+                out.push(GremlinStep::StringOpLocal("gremlin_trim_local".into()));
+            } else {
+                out.push(GremlinStep::Trim);
+            }
         }
         "lTrim" => {
-            out.push(GremlinStep::LTrim);
+            if args_str.contains("local") || args_str.contains("Scope.local") {
+                out.push(GremlinStep::StringOpLocal("gremlin_ltrim_local".into()));
+            } else {
+                out.push(GremlinStep::LTrim);
+            }
         }
         "rTrim" => {
-            out.push(GremlinStep::RTrim);
+            if args_str.contains("local") || args_str.contains("Scope.local") {
+                out.push(GremlinStep::StringOpLocal("gremlin_rtrim_local".into()));
+            } else {
+                out.push(GremlinStep::RTrim);
+            }
         }
         "length" => {
-            out.push(GremlinStep::Length);
+            if args_str.contains("local") || args_str.contains("Scope.local") {
+                out.push(GremlinStep::StringOpLocal("gremlin_length_local".into()));
+            } else {
+                out.push(GremlinStep::Length);
+            }
         }
         "reverse" => {
             out.push(GremlinStep::Reverse);
         }
         "replace" => {
             let args = parse_string_arg_list(args_str)?;
-            if args.len() >= 2 {
+            let is_local = args
+                .first()
+                .map(|a| a.contains("local") || a == "Scope.local")
+                .unwrap_or(false);
+            if is_local {
+                // replace(local, old, new)
+                if args.len() >= 3 {
+                    out.push(GremlinStep::StringOpLocal(format!(
+                        "gremlin_replace_local\x00{}\x00{}",
+                        args[1], args[2]
+                    )));
+                }
+            } else if args.len() >= 2 {
                 out.push(GremlinStep::Replace(args[0].clone(), args[1].clone()));
             } else {
                 return Err(TextParseError::InvalidArgument(
@@ -798,12 +1298,23 @@ fn parse_step_token(
         }
         "split" => {
             let args = parse_string_arg_list(args_str)?;
-            if !args.is_empty() {
+            let is_local = args
+                .first()
+                .map(|a| a.contains("local") || a == "Scope.local")
+                .unwrap_or(false);
+            if is_local {
+                // split(local, sep)
+                if args.len() >= 2 {
+                    out.push(GremlinStep::StringOpLocal(format!(
+                        "gremlin_split_local\x00{}",
+                        args[1]
+                    )));
+                }
+            } else if !args.is_empty() {
                 out.push(GremlinStep::Split(args[0].clone()));
             } else {
-                return Err(TextParseError::InvalidArgument(
-                    "split requires 1 argument".into(),
-                ));
+                // split("") — split each character
+                out.push(GremlinStep::Split(String::new()));
             }
         }
         "substring" => {
@@ -871,7 +1382,29 @@ fn parse_step_token(
             }
         }
         "asNumber" => {
-            out.push(GremlinStep::AsNumber);
+            let trimmed = args_str.trim();
+            if trimmed.is_empty() {
+                out.push(GremlinStep::AsNumber);
+            } else if trimmed.contains("INT") || trimmed.contains("LONG") {
+                out.push(GremlinStep::AsNumberTyped("int".into()));
+            } else if trimmed.contains("FLOAT")
+                || trimmed.contains("DOUBLE")
+                || trimmed.contains("BIG_DECIMAL")
+            {
+                out.push(GremlinStep::AsNumberTyped("float".into()));
+            } else if trimmed.contains("BYTE") {
+                out.push(GremlinStep::AsNumberTyped("byte".into()));
+            } else if trimmed.contains("SHORT") {
+                out.push(GremlinStep::AsNumberTyped("short".into()));
+            } else if trimmed.contains("VERTEX")
+                || trimmed.contains("EDGE")
+                || trimmed.contains("PROPERTY")
+                || trimmed.contains("PATH")
+            {
+                out.push(GremlinStep::AsNumberTyped("__invalid__".into()));
+            } else {
+                out.push(GremlinStep::AsNumber);
+            }
         }
         "asBool" => {
             out.push(GremlinStep::AsBool);
@@ -1003,6 +1536,11 @@ fn parse_has_step(
                         let val = parse_single_value(val_str, resolve_param)?;
                         if let GremlinValue::String(label) = val {
                             out.push(GremlinStep::HasLabel(vec![label]));
+                        } else if matches!(val, GremlinValue::Null) {
+                            // has(T.label, null) — nothing matches null label
+                            out.push(GremlinStep::HasLabel(vec![
+                                "__null_label_no_match__".to_string()
+                            ]));
                         }
                     }
                     return Ok(());
@@ -1053,7 +1591,11 @@ fn parse_has_step(
 }
 
 /// Parse a `by(...)` modifier.
-fn parse_by_step(args_str: &str, out: &mut Vec<GremlinStep>) -> Result<(), TextParseError> {
+fn parse_by_step(
+    args_str: &str,
+    out: &mut Vec<GremlinStep>,
+    resolve_param: &dyn Fn(&str) -> Option<GremlinValue>,
+) -> Result<(), TextParseError> {
     let raw_args = split_top_level_args(args_str);
 
     if raw_args.is_empty() {
@@ -1096,6 +1638,25 @@ fn parse_by_step(args_str: &str, out: &mut Vec<GremlinStep>) -> Result<(), TextP
         return Ok(());
     }
 
+    // Handle T.key — for ordering by property key name
+    if first == "T.key" || first == "t[key]" {
+        let descending = raw_args.len() >= 2 && {
+            let second = raw_args[1].trim();
+            second == "Order.desc" || second == "desc"
+        };
+        out.push(GremlinStep::By("~key".to_string(), descending));
+        return Ok(());
+    }
+    // Handle T.value — for ordering by property value
+    if first == "T.value" || first == "t[value]" {
+        let descending = raw_args.len() >= 2 && {
+            let second = raw_args[1].trim();
+            second == "Order.desc" || second == "desc"
+        };
+        out.push(GremlinStep::By("~value".to_string(), descending));
+        return Ok(());
+    }
+
     // Handle Column.keys, Column.values
     if first == "Column.keys" || first == "Column.values" {
         let descending = raw_args.len() >= 2 && {
@@ -1106,7 +1667,39 @@ fn parse_by_step(args_str: &str, out: &mut Vec<GremlinStep>) -> Result<(), TextP
         return Ok(());
     }
 
-    let first_unquoted = unquote(first);
+    // Handle bare token references: by(label) = by(T.label), by(id) = by(T.id)
+    if first == "label" || first == "Label" {
+        let descending = raw_args.len() >= 2 && {
+            let second = raw_args[1].trim();
+            second == "Order.desc" || second == "desc"
+        };
+        out.push(GremlinStep::By("~label".to_string(), descending));
+        return Ok(());
+    }
+    if first == "id" || first == "Id" {
+        let descending = raw_args.len() >= 2 && {
+            let second = raw_args[1].trim();
+            second == "Order.desc" || second == "desc"
+        };
+        out.push(GremlinStep::By("~id".to_string(), descending));
+        return Ok(());
+    }
+    if first == "key" || first == "Key" {
+        let descending = raw_args.len() >= 2 && {
+            let second = raw_args[1].trim();
+            second == "Order.desc" || second == "desc"
+        };
+        out.push(GremlinStep::By("~key".to_string(), descending));
+        return Ok(());
+    }
+    if first == "value" || first == "Value" {
+        let descending = raw_args.len() >= 2 && {
+            let second = raw_args[1].trim();
+            second == "Order.desc" || second == "desc"
+        };
+        out.push(GremlinStep::By("~value".to_string(), descending));
+        return Ok(());
+    }
 
     // Check for Order.asc, Order.desc, Order.shuffle as second arg
     let descending = if raw_args.len() >= 2 {
@@ -1116,13 +1709,158 @@ fn parse_by_step(args_str: &str, out: &mut Vec<GremlinStep>) -> Result<(), TextP
         false
     };
 
+    // Detect sub-traversal arguments: if the first arg looks like a traversal
+    // (contains function calls like values(...), out(), label(), etc.)
+    // parse it as a ByTraversal.
+    if looks_like_traversal(first) {
+        let inner = parse_inner_traversal(first, resolve_param)?;
+        if !inner.is_empty() {
+            out.push(GremlinStep::ByTraversal(inner, descending));
+            return Ok(());
+        }
+    }
+
+    let first_unquoted = unquote(first);
+
     out.push(GremlinStep::By(first_unquoted, descending));
     Ok(())
+}
+
+/// Check if a string looks like a Gremlin traversal rather than a property name.
+/// Matches single-step calls like `values("name")`, `count()` and also chained
+/// calls like `bothE().count()`, `out().values("name")`.
+fn looks_like_traversal(s: &str) -> bool {
+    let s = s.trim();
+    // Quoted strings are property names, not traversals
+    if s.starts_with('"') || s.starts_with('\'') {
+        return false;
+    }
+    // Strip optional __.prefix for detection
+    let check = s.strip_prefix("__.").unwrap_or(s);
+    const TRAVERSAL_STEP_PREFIXES: &[&str] = &[
+        "values(",
+        "out(",
+        "in(",
+        "both(",
+        "outE(",
+        "inE(",
+        "bothE(",
+        "label(",
+        "id(",
+        "count(",
+        "sum(",
+        "min(",
+        "max(",
+        "mean(",
+        "select(",
+        "has(",
+        "hasLabel(",
+        "hasId(",
+        "key(",
+        "value(",
+        "constant(",
+        "identity(",
+        "loops(",
+        "otherV(",
+        "inV(",
+        "outV(",
+        "bothV(",
+        "properties(",
+        "valueMap(",
+        "elementMap(",
+        "tail(",
+        "unfold(",
+    ];
+    for step in TRAVERSAL_STEP_PREFIXES {
+        if check.starts_with(step) {
+            let after_name = &check[step.len() - 1..];
+            if let Some(close_pos) = find_matching_paren(after_name) {
+                let after_close = after_name[close_pos + 1..].trim();
+                if after_close.is_empty() {
+                    return true;
+                }
+                // Chained traversal: `.count()`, `.values("name")`, etc.
+                if after_close.starts_with('.') {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+/// Find the position of the matching closing parenthesis.
+fn find_matching_paren(s: &str) -> Option<usize> {
+    let mut depth = 0i32;
+    let mut in_string = false;
+    let mut string_char = '"';
+    for (i, ch) in s.char_indices() {
+        if in_string {
+            if ch == string_char {
+                in_string = false;
+            }
+            continue;
+        }
+        if ch == '"' || ch == '\'' {
+            in_string = true;
+            string_char = ch;
+        } else if ch == '(' {
+            depth += 1;
+        } else if ch == ')' {
+            depth -= 1;
+            if depth == 0 {
+                return Some(i);
+            }
+        }
+    }
+    None
 }
 
 /// Try to parse a predicate call like `P.gt(30)`, `P.within("a","b")`, etc.
 /// Also handles bare predicates like `eq(30)`, `gt(30)`.
 fn try_parse_predicate_call(
+    s: &str,
+    resolve_param: &dyn Fn(&str) -> Option<GremlinValue>,
+) -> Option<Predicate> {
+    let s = s.trim();
+
+    // Check for predicate chains: P.gt(18).and(P.lt(30)).or(P.gt(35))
+    let chain_parts = split_predicate_chain(s);
+    if chain_parts.len() > 1 {
+        // Build compound predicate from chain
+        let mut or_groups: Vec<Vec<Predicate>> = vec![vec![]];
+        for (op, part) in &chain_parts {
+            let pred = try_parse_predicate_single(part, resolve_param)?;
+            if *op == "or" {
+                or_groups.push(vec![pred]);
+            } else {
+                or_groups.last_mut().unwrap().push(pred);
+            }
+        }
+        if or_groups.len() == 1 {
+            // All AND — return first compound as And
+            let preds = or_groups.into_iter().next().unwrap();
+            if preds.len() == 1 {
+                return preds.into_iter().next();
+            }
+            return Some(Predicate::And(preds));
+        }
+        // OR of AND groups
+        let mut or_preds = Vec::new();
+        for group in or_groups {
+            if group.len() == 1 {
+                or_preds.push(group.into_iter().next().unwrap());
+            } else {
+                or_preds.push(Predicate::And(group));
+            }
+        }
+        return Some(Predicate::Or(or_preds));
+    }
+
+    try_parse_predicate_single(s, resolve_param)
+}
+
+fn try_parse_predicate_single(
     s: &str,
     resolve_param: &dyn Fn(&str) -> Option<GremlinValue>,
 ) -> Option<Predicate> {
@@ -1137,7 +1875,7 @@ fn try_parse_predicate_call(
         let (name, _) = split_step_name_args(s);
         match name {
             "eq" | "neq" | "gt" | "gte" | "lt" | "lte" | "within" | "without" | "between"
-            | "containing" | "notContaining" | "startingWith" | "notStartingWith"
+            | "inside" | "containing" | "notContaining" | "startingWith" | "notStartingWith"
             | "endingWith" | "notEndingWith" | "regex" | "notRegex" | "typeOf" => s,
             _ => return None,
         }
@@ -1160,6 +1898,12 @@ fn try_parse_predicate_call(
             let lo = it.next()?;
             let hi = it.next()?;
             Some(Predicate::Between(lo, hi))
+        }
+        "inside" => {
+            let mut it = args.into_iter();
+            let lo = it.next()?;
+            let hi = it.next()?;
+            Some(Predicate::Inside(lo, hi))
         }
         // Text predicates
         "containing" => Some(Predicate::Containing(args.into_iter().next()?)),
@@ -1189,6 +1933,12 @@ fn try_parse_predicate_call(
             };
             Some(Predicate::IsType(GremlinValue::String(type_name)))
         }
+        "not" => {
+            // P.not(P.eq(1)) — negate inner predicate
+            // The arg string is the inner predicate call
+            let inner = try_parse_predicate_call(args_str, resolve_param)?;
+            Some(Predicate::Not(Box::new(inner)))
+        }
         _ => None,
     }
 }
@@ -1211,17 +1961,33 @@ fn split_predicate_chain(s: &str) -> Vec<(&str, &str)> {
                     // Check if followed by .and( or .or(
                     let rest = &s[i + 1..];
                     if rest.starts_with(".and(") {
-                        parts.push((last_op, &s[last_start..=i]));
+                        let part = &s[last_start..=i];
+                        // Non-first parts have an extra trailing ) from the
+                        // .and()/.or() wrapper — strip it.
+                        let part = if last_op != "first" {
+                            part.strip_suffix(')').unwrap_or(part)
+                        } else {
+                            part
+                        };
+                        parts.push((last_op, part));
                         last_op = "and";
-                        last_start = i + 5; // skip ".and("
-                        i += 5;
+                        // skip ".and(" — 5 chars from rest start (i+1), content at i+6
+                        last_start = i + 6;
+                        i += 6;
                         depth = 1;
                         continue;
                     } else if rest.starts_with(".or(") {
-                        parts.push((last_op, &s[last_start..=i]));
+                        let part = &s[last_start..=i];
+                        let part = if last_op != "first" {
+                            part.strip_suffix(')').unwrap_or(part)
+                        } else {
+                            part
+                        };
+                        parts.push((last_op, part));
                         last_op = "or";
-                        last_start = i + 4; // skip ".or("
-                        i += 4;
+                        // skip ".or(" — 4 chars from rest start (i+1), content at i+5
+                        last_start = i + 5;
+                        i += 5;
                         depth = 1;
                         continue;
                     }
@@ -1263,7 +2029,7 @@ fn parse_predicate(
 }
 
 /// Parse an inner anonymous traversal: `__.out("knows")` or `outE().count().is(0)`.
-fn parse_inner_traversal(
+pub(crate) fn parse_inner_traversal(
     args_str: &str,
     resolve_param: &dyn Fn(&str) -> Option<GremlinValue>,
 ) -> Result<Vec<GremlinStep>, TextParseError> {
@@ -1275,6 +2041,14 @@ fn parse_inner_traversal(
     // Try P.* predicate as a single step
     if let Some(pred) = try_parse_predicate_call(s, resolve_param) {
         return Ok(vec![GremlinStep::Is(pred)]);
+    }
+
+    // T.label / T.id as standalone traversal tokens (e.g., choose(T.label))
+    if s == "T.label" || s == "t[label]" {
+        return Ok(vec![GremlinStep::Label]);
+    }
+    if s == "T.id" || s == "t[id]" {
+        return Ok(vec![GremlinStep::Id]);
     }
 
     // Strip __ prefix if present
@@ -1379,24 +2153,37 @@ fn parse_option_traversal(
 }
 
 /// Parse a `from(...)` or `to(...)` argument — could be a string label or a traversal.
-fn parse_from_to_arg(
+fn parse_from_to_traversal(
     args_str: &str,
     resolve_param: &dyn Fn(&str) -> Option<GremlinValue>,
-) -> Result<GremlinStep, TextParseError> {
+) -> Result<Vec<GremlinStep>, TextParseError> {
     let s = args_str.trim();
-
     // If it's a quoted string, it's a step label reference
     if s.starts_with('"') {
         let label = unquote(s);
-        return Ok(GremlinStep::Select(vec![label]));
+        return Ok(vec![GremlinStep::Select(vec![label])]);
     }
-
-    // Otherwise it's a traversal
+    // Handle to(Direction.OUT, "label") / to(Direction.IN, "label") / to(Direction.BOTH, "label")
+    // These are equivalent to out("label") / in("label") / both("label")
+    let args = split_top_level_args(s);
+    if !args.is_empty() {
+        let first = args[0].trim();
+        if first.starts_with("Direction.") || first == "OUT" || first == "IN" || first == "BOTH" {
+            let labels: Vec<String> = args[1..].iter().map(|a| unquote(a.trim())).collect();
+            return match first {
+                "Direction.OUT" | "OUT" => Ok(vec![GremlinStep::Out(labels)]),
+                "Direction.IN" | "IN" => Ok(vec![GremlinStep::In(labels)]),
+                "Direction.BOTH" | "BOTH" => Ok(vec![GremlinStep::Both(labels)]),
+                _ => Ok(vec![GremlinStep::Both(labels)]),
+            };
+        }
+    }
+    // Otherwise parse as a full traversal
     let inner = parse_inner_traversal(s, resolve_param)?;
-    if let Some(step) = inner.into_iter().next() {
-        Ok(step)
+    if inner.is_empty() {
+        Ok(vec![GremlinStep::Select(vec![])])
     } else {
-        Ok(GremlinStep::Select(vec![]))
+        Ok(inner)
     }
 }
 
@@ -1431,8 +2218,8 @@ fn split_top_level_args(s: &str) -> Vec<&str> {
             continue;
         }
         match ch {
-            '(' | '[' => depth += 1,
-            ')' | ']' => depth = depth.saturating_sub(1),
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' => depth = depth.saturating_sub(1),
             ',' if depth == 0 => {
                 result.push(&s[start..i]);
                 start = i + 1;
@@ -1476,6 +2263,27 @@ fn parse_string_arg_list(args_str: &str) -> Result<Vec<String>, TextParseError> 
     Ok(result)
 }
 
+/// Parse a list of string arguments, resolving parameter references.
+fn parse_string_arg_list_with_params(
+    args_str: &str,
+    resolve_param: &dyn Fn(&str) -> Option<GremlinValue>,
+) -> Result<Vec<String>, TextParseError> {
+    if args_str.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+    let raw_args = split_top_level_args(args_str);
+    let mut result = Vec::new();
+    for arg in raw_args {
+        let s = arg.trim();
+        if let Some(GremlinValue::String(val)) = resolve_param(s) {
+            result.push(val);
+        } else {
+            result.push(unquote(s));
+        }
+    }
+    Ok(result)
+}
+
 /// Parse a single value: string literal, number, boolean, null, or parameter reference.
 fn parse_single_value(
     s: &str,
@@ -1487,10 +2295,17 @@ fn parse_single_value(
         return Ok(GremlinValue::Null);
     }
 
-    // String literal
+    // String literal (double quotes)
     if s.starts_with('"') && s.ends_with('"') && s.len() >= 2 {
         let inner = &s[1..s.len() - 1];
         let unescaped = inner.replace("\\\"", "\"").replace("\\\\", "\\");
+        return Ok(GremlinValue::String(unescaped));
+    }
+
+    // String literal (single quotes)
+    if s.starts_with('\'') && s.ends_with('\'') && s.len() >= 2 {
+        let inner = &s[1..s.len() - 1];
+        let unescaped = inner.replace("\\'", "'").replace("\\\\", "\\");
         return Ok(GremlinValue::String(unescaped));
     }
 
@@ -1518,9 +2333,104 @@ fn parse_single_value(
         return Ok(GremlinValue::Float(f64::NEG_INFINITY));
     }
 
-    // List literal: [1, 2, "a", null]
+    // Set literal: {1, 2, 3} — deduplicated list
+    if s.starts_with('{') && s.ends_with('}') {
+        let inner = &s[1..s.len() - 1];
+        let items = parse_arg_list(inner, resolve_param)?;
+        let mut deduped: Vec<GremlinValue> = Vec::new();
+        for item in items {
+            if !deduped.contains(&item) {
+                deduped.push(item);
+            }
+        }
+        return Ok(GremlinValue::List(deduped));
+    }
+
+    // List or Map literal: [1, 2, "a"] or ["key": "val", ...]
     if s.starts_with('[') && s.ends_with(']') {
         let inner = &s[1..s.len() - 1];
+        // Detect Groovy map literal: ["key": "val", ...] — check for top-level ':'
+        let mut depth = 0u32;
+        let mut in_str = false;
+        let mut escape = false;
+        let mut has_colon = false;
+        for ch in inner.chars() {
+            if escape {
+                escape = false;
+                continue;
+            }
+            if ch == '\\' && in_str {
+                escape = true;
+                continue;
+            }
+            if ch == '"' || ch == '\'' {
+                in_str = !in_str;
+                continue;
+            }
+            if in_str {
+                continue;
+            }
+            match ch {
+                '(' | '[' | '{' => depth += 1,
+                ')' | ']' | '}' => depth = depth.saturating_sub(1),
+                ':' if depth == 0 => {
+                    has_colon = true;
+                    break;
+                }
+                _ => {}
+            }
+        }
+        if has_colon {
+            // Empty map: [:]
+            if inner.trim() == ":" {
+                return Ok(GremlinValue::Map(IndexMap::new()));
+            }
+            // Parse as map literal
+            let parts = split_top_level_args(inner);
+            let mut map = IndexMap::new();
+            for part in &parts {
+                let part = part.trim();
+                // Find the first top-level ':'
+                let mut d = 0u32;
+                let mut in_s = false;
+                let mut esc = false;
+                let mut colon_pos = None;
+                for (i, ch) in part.char_indices() {
+                    if esc {
+                        esc = false;
+                        continue;
+                    }
+                    if ch == '\\' && in_s {
+                        esc = true;
+                        continue;
+                    }
+                    if ch == '"' || ch == '\'' {
+                        in_s = !in_s;
+                        continue;
+                    }
+                    if in_s {
+                        continue;
+                    }
+                    match ch {
+                        '(' | '[' | '{' => d += 1,
+                        ')' | ']' | '}' => d = d.saturating_sub(1),
+                        ':' if d == 0 => {
+                            colon_pos = Some(i);
+                            break;
+                        }
+                        _ => {}
+                    }
+                }
+                if let Some(cp) = colon_pos {
+                    let key_str = part[..cp].trim();
+                    let val_str = part[cp + 1..].trim();
+                    let key = unquote(key_str);
+                    let val = parse_single_value(val_str, resolve_param)?;
+                    map.insert(key, val);
+                }
+            }
+            return Ok(GremlinValue::Map(map));
+        }
         let items = parse_arg_list(inner, resolve_param)?;
         return Ok(GremlinValue::List(items));
     }

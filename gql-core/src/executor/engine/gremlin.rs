@@ -4,6 +4,7 @@ use crate::ast::{Expr, Identifier};
 use crate::error::{ExecutionError, GqlError};
 use crate::planner::Operator;
 use crate::types::Value;
+use indexmap::IndexMap;
 
 use super::helpers::inject_parameters;
 use crate::executor::engine::{ExecContext, QueryExecutor, Row};
@@ -22,6 +23,8 @@ impl<'a> QueryExecutor<'a> {
             times,
             until,
             emit,
+            emit_before,
+            emit_predicate,
             remap,
             child,
         } = op
@@ -34,14 +37,16 @@ impl<'a> QueryExecutor<'a> {
 
         let mut current = self.exec_operator(cx, child)?;
         let mut collected: Vec<Row> = Vec::new();
+        let mut body_exhausted = false;
 
         let max_iterations = times.unwrap_or(256);
         for iteration in 0..max_iterations {
             cx.budget.check_or_err()?;
 
             // Pre-emit: collect traversers before body execution.
-            if *emit {
-                collected.extend(current.clone());
+            // Only when emit_before is true (emit() appeared before repeat()).
+            if *emit && *emit_before {
+                self.collect_emitted(cx, &current, emit_predicate, &mut collected)?;
             }
 
             // Feed current rows through the body.
@@ -59,6 +64,11 @@ impl<'a> QueryExecutor<'a> {
             }
 
             if next.is_empty() {
+                body_exhausted = true;
+                // Body produced no results — stop iterating.
+                if !*emit && until.is_none() {
+                    return Ok(collected);
+                }
                 break;
             }
 
@@ -72,6 +82,12 @@ impl<'a> QueryExecutor<'a> {
             }
 
             current = next;
+
+            // Post-emit: collect body results after execution.
+            // Only when emit is true but emit_before is false (emit() after repeat()).
+            if *emit && !*emit_before {
+                self.collect_emitted(cx, &current, emit_predicate, &mut collected)?;
+            }
 
             // Check the until predicate per-traverser: traversers that match
             // the until condition are collected and removed from further iteration.
@@ -102,8 +118,38 @@ impl<'a> QueryExecutor<'a> {
             }
         }
 
-        collected.extend(current);
+        // Add final traversers when appropriate:
+        // Add final traversers when appropriate:
+        // - Non-emit mode: always add final current
+        // - Pre-emit with times (body not exhausted): add final current
+        // - Post-emit or body exhausted: don't add (already collected in loop)
+        if !*emit || (*emit_before && !body_exhausted) {
+            collected.extend(current);
+        }
         Ok(collected)
+    }
+
+    /// Collect rows into `collected`, optionally filtering by emit predicate.
+    fn collect_emitted(
+        &self,
+        cx: &mut ExecContext<'_>,
+        rows: &[Row],
+        emit_predicate: &Option<Box<Operator>>,
+        collected: &mut Vec<Row>,
+    ) -> Result<(), GqlError> {
+        if let Some(pred_op) = emit_predicate {
+            for row in rows {
+                self.foreach_seed.borrow_mut().replace(vec![row.clone()]);
+                let result = self.exec_operator(cx, pred_op)?;
+                self.foreach_seed.borrow_mut().take();
+                if !result.is_empty() {
+                    collected.push(row.clone());
+                }
+            }
+        } else {
+            collected.extend(rows.iter().cloned());
+        }
+        Ok(())
     }
 
     /// Execute `Choose` — evaluate the predicate for each input row and route
@@ -118,6 +164,9 @@ impl<'a> QueryExecutor<'a> {
             if_true,
             if_false,
             child,
+            true_alias,
+            false_alias,
+            output_alias,
         } = op
         else {
             debug_assert!(false, "expected Choose operator");
@@ -137,20 +186,47 @@ impl<'a> QueryExecutor<'a> {
             let pred_result = self.exec_operator(cx, predicate)?;
             self.foreach_seed.borrow_mut().take();
 
-            let branch = if !pred_result.is_empty() {
+            let is_true = !pred_result.is_empty();
+            let branch = if is_true {
                 if_true
             } else if let Some(f) = if_false {
                 f
             } else {
                 // No else branch — pass through unchanged.
-                out.push(row);
+                // Copy the seed alias value to the output alias so subsequent
+                // steps can find the traverser under the unified alias.
+                if let (Some(out_alias), Some(fa)) = (output_alias, false_alias) {
+                    let mut prow = row;
+                    if let Some(val) = prow.get(fa.0.as_str()).cloned() {
+                        prow.insert(out_alias.0.to_string(), val);
+                    }
+                    out.push(prow);
+                } else {
+                    out.push(row);
+                }
                 continue;
             };
 
             self.foreach_seed.borrow_mut().replace(vec![row]);
             let branch_rows = self.exec_operator(cx, branch)?;
             self.foreach_seed.borrow_mut().take();
-            out.extend(branch_rows);
+
+            // Copy branch-specific result column to the unified output alias.
+            if let Some(out_alias) = output_alias {
+                let src = if is_true { true_alias } else { false_alias };
+                if let Some(src_alias) = src {
+                    for mut brow in branch_rows {
+                        if let Some(val) = brow.get(src_alias.0.as_str()).cloned() {
+                            brow.insert(out_alias.0.to_string(), val);
+                        }
+                        out.push(brow);
+                    }
+                } else {
+                    out.extend(branch_rows);
+                }
+            } else {
+                out.extend(branch_rows);
+            }
         }
         Ok(out)
     }
@@ -165,8 +241,10 @@ impl<'a> QueryExecutor<'a> {
     ) -> Result<Vec<Row>, GqlError> {
         let Operator::ChooseMap {
             selector,
+            selector_alias,
             options,
             child,
+            output_alias,
         } = op
         else {
             debug_assert!(false, "expected ChooseMap operator");
@@ -186,16 +264,78 @@ impl<'a> QueryExecutor<'a> {
             let sel_rows = self.exec_operator(cx, selector)?;
             self.foreach_seed.borrow_mut().take();
 
-            // Extract the first value from the selector result.
-            let sel_value = sel_rows.first().and_then(|r| r.values().next().cloned());
+            // Check if the selector was unproductive (returned no rows or only nulls).
+            let selector_unproductive = sel_rows.is_empty()
+                || sel_rows.first().is_none_or(|r| {
+                    r.get(selector_alias.0.as_str())
+                        .is_none_or(|v| matches!(v, Value::Null))
+                        && r.values().all(|v| matches!(v, Value::Null))
+                });
+
+            // Extract the selector's result value using the known alias.
+            // Unwrap single-element lists (e.g. labels() returns List(["person"])) to
+            // a scalar so option matching works against plain string values.
+            let sel_value = sel_rows
+                .first()
+                .and_then(|r| r.get(selector_alias.0.as_str()).cloned())
+                .or_else(|| sel_rows.first().and_then(|r| r.values().next().cloned()))
+                .map(|v| match v {
+                    Value::List(ref items) if items.len() == 1 => items[0].clone(),
+                    other => other,
+                });
+
+            // When the selector is unproductive (e.g. values("age") on a vertex
+            // without "age"), look for an "unproductive" option branch. If none
+            // exists, the traverser passes through as identity.
+            if selector_unproductive {
+                let mut unproductive_branch = None;
+                let mut unproductive_alias = None;
+                for (match_val, branch, branch_alias) in options.iter() {
+                    if let Some(Value::Str(s)) = match_val {
+                        if s.as_ref() == "Pick.unproductive" || s.as_ref() == "unproductive" {
+                            unproductive_branch = Some(branch);
+                            unproductive_alias = branch_alias.as_ref();
+                            break;
+                        }
+                    }
+                }
+                if let Some(branch) = unproductive_branch {
+                    self.foreach_seed.borrow_mut().replace(vec![row]);
+                    let branch_rows = self.exec_operator(cx, branch)?;
+                    self.foreach_seed.borrow_mut().take();
+                    for mut brow in branch_rows {
+                        if let (Some(out_a), Some(src_a)) = (output_alias, unproductive_alias) {
+                            if let Some(val) = brow.get(src_a.0.as_str()).cloned() {
+                                brow.insert(out_a.0.to_string(), val);
+                            }
+                        }
+                        out.push(brow);
+                    }
+                } else {
+                    // No unproductive branch → identity (pass through)
+                    out.push(row);
+                }
+                continue;
+            }
 
             // Find the matching option branch.
-            let mut matched_branch = None;
-            let mut default_branch = None;
-            for (match_val, branch) in options {
+            let mut matched_branch: Option<&Operator> = None;
+            let mut matched_alias: Option<&crate::ast::Identifier> = None;
+            let mut default_branch: Option<&Operator> = None;
+            let mut default_alias: Option<&crate::ast::Identifier> = None;
+            for (match_val, branch, branch_alias) in options {
                 match match_val {
-                    None => default_branch = Some(branch),
+                    None => {
+                        default_branch = Some(branch);
+                        default_alias = branch_alias.as_ref();
+                    }
                     Some(v) => {
+                        // Skip "unproductive" sentinel (handled above)
+                        if let Value::Str(s) = v {
+                            if s.as_ref() == "Pick.unproductive" || s.as_ref() == "unproductive" {
+                                continue;
+                            }
+                        }
                         let matches = match (sel_value.as_ref(), Some(v)) {
                             (Some(Value::Int(a)), Some(Value::Int(b))) => a == b,
                             (Some(Value::Float(a)), Some(Value::Float(b))) => (a - b).abs() < 1e-9,
@@ -203,22 +343,42 @@ impl<'a> QueryExecutor<'a> {
                             | (Some(Value::Float(b)), Some(Value::Int(a))) => {
                                 (*a as f64 - b).abs() < 1e-9
                             }
+                            // Predicate matching: option value encodes a predicate string
+                            (Some(sel), Some(Value::Str(pred_str)))
+                                if pred_str.starts_with("P.") =>
+                            {
+                                eval_gremlin_predicate(pred_str, sel)
+                            }
                             (Some(a), Some(b)) => a == b,
                             _ => false,
                         };
                         if matches {
                             matched_branch = Some(branch);
+                            matched_alias = branch_alias.as_ref();
                             break;
                         }
                     }
                 }
             }
 
-            if let Some(branch) = matched_branch.or(default_branch) {
+            let (chosen_branch, chosen_alias) = if matched_branch.is_some() {
+                (matched_branch, matched_alias)
+            } else {
+                (default_branch, default_alias)
+            };
+
+            if let Some(branch) = chosen_branch {
                 self.foreach_seed.borrow_mut().replace(vec![row]);
                 let branch_rows = self.exec_operator(cx, branch)?;
                 self.foreach_seed.borrow_mut().take();
-                out.extend(branch_rows);
+                for mut brow in branch_rows {
+                    if let (Some(out_a), Some(src_a)) = (output_alias, chosen_alias) {
+                        if let Some(val) = brow.get(src_a.0.as_str()).cloned() {
+                            brow.insert(out_a.0.to_string(), val);
+                        }
+                    }
+                    out.push(brow);
+                }
             } else {
                 // No branch matches and no default → identity (pass through)
                 out.push(row);
@@ -265,8 +425,7 @@ impl<'a> QueryExecutor<'a> {
             }
 
             if !matched {
-                // No alternative matched — pass through.
-                out.push(row);
+                // No alternative matched — drop the traverser.
             }
         }
         Ok(out)
@@ -306,7 +465,12 @@ impl<'a> QueryExecutor<'a> {
         cx: &mut ExecContext<'_>,
         op: &Operator,
     ) -> Result<Vec<Row>, GqlError> {
-        let Operator::Cap { keys, child } = op else {
+        let Operator::Cap {
+            keys,
+            child,
+            reductions,
+        } = op
+        else {
             debug_assert!(false, "expected Cap operator");
             return Err(GqlError::Execution(ExecutionError::UnsupportedFeature {
                 feature: "internal: expected Cap operator".into(),
@@ -316,16 +480,102 @@ impl<'a> QueryExecutor<'a> {
         let child_rows = self.exec_operator(cx, child)?;
 
         // Collect aggregated values for each key from the child rows.
-        // The aggregate column already contains the full accumulated value,
-        // so we take it from the first row that has it (all rows carry the same value).
-        // For aggregate() the value is a List; for group()/groupCount() it is a Map.
+        // When aggregate runs in a global scope, every row carries the same
+        // accumulated list, so taking the first is correct.  When aggregate
+        // runs inside local(), each row carries a *partial* single-item list.
+        // We detect the latter case and merge partial lists.
+        // For group()/groupCount(), the value is a Map — maps are merged by
+        // key with last-writer-wins.
         let mut row = Row::new();
         for key in keys {
             let agg_col = format!("__gremlin_agg_{key}");
-            if let Some(value) = child_rows.iter().find_map(|r| r.get(&agg_col).cloned()) {
-                row.insert(key.clone(), value);
-            } else {
+            let agg_vals: Vec<&Value> = child_rows.iter().filter_map(|r| r.get(&agg_col)).collect();
+            if agg_vals.is_empty() {
                 row.insert(key.clone(), Value::List(Vec::new()));
+                continue;
+            }
+            // If there is only one distinct value (all rows have the same),
+            // take it directly.  Otherwise merge partial lists/maps.
+            let first = agg_vals[0];
+            let all_same = agg_vals.iter().all(|v| *v == first);
+            let cap_value = if all_same {
+                first.clone()
+            } else {
+                // Merge: for Lists, concatenate; for Maps, union by key.
+                match first {
+                    Value::List(_) => {
+                        let mut merged = Vec::new();
+                        for v in &agg_vals {
+                            if let Value::List(items) = v {
+                                merged.extend(items.iter().cloned());
+                            }
+                        }
+                        Value::List(merged)
+                    }
+                    Value::Map(_) => {
+                        let mut merged = IndexMap::new();
+                        for v in &agg_vals {
+                            if let Value::Map(m) = v {
+                                for (mk, mv) in m {
+                                    merged.insert(mk.clone(), mv.clone());
+                                }
+                            }
+                        }
+                        Value::Map(merged)
+                    }
+                    _ => first.clone(),
+                }
+            };
+
+            // Check for a reduction operator (from withSideEffect with Operator.*)
+            let reduction = reductions.iter().find(|(k, _, _)| k == key);
+            if let Some((_k, op, init)) = reduction {
+                if let Value::List(items) = &cap_value {
+                    let mut acc = *init;
+                    let init_is_int = (*init - init.round()).abs() < 1e-12;
+                    let mut all_int = init_is_int;
+                    for item in items {
+                        let v = match item {
+                            Value::Int(n) => *n as f64,
+                            Value::Float(f) => {
+                                all_int = false;
+                                *f
+                            }
+                            _ => continue,
+                        };
+                        match op.as_str() {
+                            "sum" | "add" => acc += v,
+                            "minus" | "sub" => acc -= v,
+                            "mult" | "multiply" => acc *= v,
+                            "div" | "divide" => {
+                                if v != 0.0 {
+                                    all_int = false;
+                                    acc /= v;
+                                }
+                            }
+                            "min" => {
+                                if v < acc {
+                                    acc = v;
+                                }
+                            }
+                            "max" => {
+                                if v > acc {
+                                    acc = v;
+                                }
+                            }
+                            _ => acc += v,
+                        }
+                    }
+                    if all_int && !matches!(op.as_str(), "div" | "divide") {
+                        row.insert(key.clone(), Value::Int(acc as i64));
+                    } else {
+                        row.insert(key.clone(), Value::Float(acc));
+                    }
+                } else {
+                    row.insert(key.clone(), cap_value);
+                }
+            } else {
+                row.insert(key.clone(), cap_value);
             }
         }
         Ok(vec![row])
@@ -342,7 +592,9 @@ impl<'a> QueryExecutor<'a> {
             key,
             child,
             value_alias,
-            by_key,
+            by_keys,
+            by_traversal,
+            productive,
         } = op
         else {
             debug_assert!(false, "expected GremlinAggregate operator");
@@ -355,11 +607,41 @@ impl<'a> QueryExecutor<'a> {
         let agg_col = format!("__gremlin_agg_{key}");
 
         // Collect all values seen across all rows.
-        // When by_key is set, project the property from the traverser instead.
         let mut collected: Vec<Value> = Vec::new();
         for row in &input {
-            if let Some(by_prop) = by_key {
-                // by("prop") modulation: resolve property from the node/edge value
+            if let Some((trav_op, trav_alias)) = by_traversal {
+                // by(traversal) modulation: run the sub-traversal per traverser
+                self.foreach_seed.borrow_mut().replace(vec![row.clone()]);
+                let trav_rows = self.exec_operator(cx, trav_op)?;
+                self.foreach_seed.borrow_mut().take();
+                if let Some(trav_row) = trav_rows.first() {
+                    if let Some(val) = trav_row.get(trav_alias.as_str()) {
+                        if *productive || !matches!(val, Value::Null) {
+                            collected.push(val.clone());
+                        }
+                    } else if *productive {
+                        collected.push(Value::Null);
+                    }
+                } else if *productive {
+                    collected.push(Value::Null);
+                }
+            } else if by_keys.len() >= 2 {
+                // Multiple by() keys — collect a map of {key1: val1, key2: val2, ...}
+                let mut map = IndexMap::new();
+                for by_prop in by_keys {
+                    let prop_expr = Expr::Property(
+                        Box::new(Expr::Variable(value_alias.clone())),
+                        smol_str::SmolStr::new(by_prop),
+                    );
+                    let ctx = self.build_filter_ctx(cx.graph, row)?;
+                    let val = self
+                        .eval_with_storage(cx.graph, &prop_expr, row, &ctx)
+                        .unwrap_or(Value::Null);
+                    map.insert(by_prop.clone().into_boxed_str(), val);
+                }
+                collected.push(Value::Map(map));
+            } else if let Some(by_prop) = by_keys.first() {
+                // Single by("prop") modulation: resolve property from the node/edge value
                 let prop_expr = Expr::Property(
                     Box::new(Expr::Variable(value_alias.clone())),
                     smol_str::SmolStr::new(by_prop),
@@ -368,8 +650,8 @@ impl<'a> QueryExecutor<'a> {
                 let projected = self
                     .eval_with_storage(cx.graph, &prop_expr, row, &ctx)
                     .unwrap_or(Value::Null);
-                // Skip null values (property doesn't exist on this element)
-                if !matches!(projected, Value::Null) {
+                // Skip null values unless ProductiveByStrategy is active
+                if *productive || !matches!(projected, Value::Null) {
                     collected.push(projected);
                 }
             } else if let Some(val) = row.get(value_alias.as_str()) {
@@ -378,15 +660,22 @@ impl<'a> QueryExecutor<'a> {
         }
 
         // Stamp the accumulated list onto every output row.
-        let agg_val = Value::List(collected);
+        // If a row already carries a value for this agg column (e.g. from a
+        // previous local(aggregate("a")) step), extend it rather than overwrite.
         if input.is_empty() {
             // Even with no input, the side-effect must be accessible via cap().
             let mut sentinel = Row::new();
-            sentinel.insert(agg_col, agg_val);
+            sentinel.insert(agg_col, Value::List(collected));
             return Ok(vec![sentinel]);
         }
         for row in &mut input {
-            row.insert(agg_col.clone(), agg_val.clone());
+            if let Some(Value::List(existing)) = row.get(&agg_col).cloned() {
+                let mut merged = existing;
+                merged.extend(collected.iter().cloned());
+                row.insert(agg_col.clone(), Value::List(merged));
+            } else {
+                row.insert(agg_col.clone(), Value::List(collected.clone()));
+            }
         }
 
         Ok(input)
@@ -439,6 +728,7 @@ impl<'a> QueryExecutor<'a> {
         let Operator::GremlinMatch {
             patterns,
             label_map,
+            result_alias,
             child,
         } = op
         else {
@@ -454,38 +744,61 @@ impl<'a> QueryExecutor<'a> {
             return Ok(input);
         }
 
-        // Build a reverse map: internal_alias → label_name.
+        // Build reverse map: internal_alias → label_name.
         let reverse_map: std::collections::HashMap<&str, &str> = label_map
             .iter()
             .map(|(label, alias)| (alias.0.as_str(), label.as_str()))
             .collect();
+
+        // Normalize a row: replace internal aliases with label names.
+        // This ensures consistent keys across patterns for merging.
+        let normalize = |row: &Row| -> Row {
+            let mut out = Row::new();
+            for (k, v) in row {
+                let key = if let Some(label) = reverse_map.get(k.as_str()) {
+                    (*label).to_string()
+                } else {
+                    k.clone()
+                };
+                out.insert(key, v.clone());
+            }
+            out
+        };
 
         // For each input row, execute all patterns and join on shared bindings.
         let mut out = Vec::new();
         for row in &input {
             cx.budget.check_or_err()?;
 
-            // Start with the input row as the initial binding set.
-            let mut current_bindings = vec![row.clone()];
+            // Normalize input row so label names are used as keys.
+            let mut current_bindings = vec![normalize(row)];
 
             for pattern in patterns {
                 let mut next_bindings = Vec::new();
 
                 for binding in &current_bindings {
                     cx.budget.check_or_err()?;
-                    // Seed the pattern execution with current bindings.
-                    self.foreach_seed
-                        .borrow_mut()
-                        .replace(vec![binding.clone()]);
+                    // Seed: the pattern expects internal alias names, so we
+                    // need to provide the binding with both label and internal
+                    // alias keys. Build a denormalized seed row.
+                    let mut seed = binding.clone();
+                    for (label, alias) in label_map {
+                        if let Some(v) = binding.get(label.as_str()) {
+                            seed.insert(alias.0.to_string(), v.clone());
+                        }
+                    }
+
+                    self.foreach_seed.borrow_mut().replace(vec![seed]);
                     let pattern_rows = self.exec_operator(cx, pattern)?;
                     self.foreach_seed.borrow_mut().take();
 
-                    // Merge pattern results with existing bindings,
-                    // checking for consistency on shared keys.
+                    // Normalize pattern results, then merge on shared label
+                    // keys, checking consistency.
                     for p_row in pattern_rows {
+                        let norm = normalize(&p_row);
                         let mut merged = binding.clone();
                         let mut consistent = true;
-                        for (k, v) in &p_row {
+                        for (k, v) in &norm {
                             if let Some(existing) = merged.get(k) {
                                 if existing != v {
                                     consistent = false;
@@ -507,17 +820,23 @@ impl<'a> QueryExecutor<'a> {
                 }
             }
 
-            // Rename internal aliases to label names in the output.
+            // Build output rows with label columns and a Map result.
             for binding in current_bindings {
-                let mut renamed = Row::new();
+                let mut result_row = Row::new();
+                let mut map_entries = indexmap::IndexMap::new();
                 for (k, v) in &binding {
-                    if let Some(label) = reverse_map.get(k.as_str()) {
-                        renamed.insert((*label).to_string(), v.clone());
+                    // Include label columns and also re-insert internal alias
+                    // keys so downstream steps (select, dedup) can find them.
+                    result_row.insert(k.clone(), v.clone());
+                    for (label, alias) in label_map {
+                        if label == k {
+                            result_row.insert(alias.0.to_string(), v.clone());
+                            map_entries.insert(Box::from(label.as_str()), v.clone());
+                        }
                     }
-                    // Also keep the original key for downstream operations.
-                    renamed.insert(k.clone(), v.clone());
                 }
-                out.push(renamed);
+                result_row.insert(result_alias.0.to_string(), Value::Map(map_entries));
+                out.push(result_row);
             }
         }
 
@@ -593,6 +912,10 @@ impl<'a> QueryExecutor<'a> {
                 // Try looking up in the row directly.
                 let val = if let Some(v) = row.get(var_name) {
                     Some(v.clone())
+                } else if let Some(v) = row.get(&format!("__gremlin_agg_{}", output_key)) {
+                    // Fallback: aggregate sideeffect columns are stored
+                    // with a __gremlin_agg_ prefix.
+                    Some(v.clone())
                 } else {
                     // For select() after group(): the row may contain a Map value.
                     // Try looking up output_key as a map key in any Map values in the row.
@@ -636,7 +959,14 @@ impl<'a> QueryExecutor<'a> {
                     }
                     let mut map_row = Row::new();
                     inject_parameters(&mut map_row, &self.parameters);
-                    // Use the first key as column name for the map result
+                    // Add individual key columns AND their internal alias
+                    // columns so downstream where/filter can reference them.
+                    for (src_var, output_key) in keys {
+                        if let Some(v) = new_row.get(output_key.as_str()) {
+                            map_row.insert(output_key.clone(), v.clone());
+                            map_row.insert(src_var.0.to_string(), v.clone());
+                        }
+                    }
                     let map_alias = keys
                         .iter()
                         .map(|(_, k)| k.as_str())
@@ -646,10 +976,18 @@ impl<'a> QueryExecutor<'a> {
                     cx.budget.record_row();
                     out.push(map_row);
                 } else {
-                    // Preserve query parameters
-                    inject_parameters(&mut new_row, &self.parameters);
+                    // Single-key select: carry forward existing row columns
+                    // so that as() labels remain accessible to downstream steps
+                    // (needed for addE/from/to resolution after select/unfold).
+                    let mut out_row = row.clone();
+                    for (_, output_key) in keys {
+                        if let Some(v) = new_row.get(output_key.as_str()) {
+                            out_row.insert(output_key.clone(), v.clone());
+                        }
+                    }
+                    inject_parameters(&mut out_row, &self.parameters);
                     cx.budget.record_row();
-                    out.push(new_row);
+                    out.push(out_row);
                 }
             }
         }
@@ -676,6 +1014,10 @@ impl<'a> QueryExecutor<'a> {
             agg_fn,
             alias,
             side_effect_key,
+            key_traversal,
+            value_traversal,
+            productive,
+            explicit_fold,
             child,
         } = op
         else {
@@ -690,61 +1032,156 @@ impl<'a> QueryExecutor<'a> {
         // Collect (key_str, value) pairs from input rows.
         // Use Box<str> keys since Value doesn't implement Hash.
         let mut groups: IndexMap<Box<str>, Vec<Value>> = IndexMap::new();
+        // Also collect raw rows per group for value_traversal (which runs on group members)
+        let mut group_rows: IndexMap<Box<str>, Vec<Row>> = IndexMap::new();
 
         // Check if value_expr differs from key_expr (i.e., a value-by modulation is present).
-        let has_value_by = value_expr != key_expr;
+        let has_value_by = value_expr != key_expr || value_traversal.is_some();
 
         for row in &input {
             cx.budget.check_or_err()?;
             let ctx = self.build_filter_ctx(cx.graph, row)?;
-            let key_val = self
-                .eval_with_storage(cx.graph, key_expr, row, &ctx)
-                .unwrap_or(Value::Null);
-            // Skip rows where the group key evaluates to Null (unproductive by).
-            // TinkerPop default: null keys are dropped unless ProductiveByStrategy.
-            if matches!(key_val, Value::Null) {
+
+            // Compute group key: use traversal if available, else eval expression.
+            let key_val = if let Some((key_op, key_alias)) = key_traversal {
+                self.foreach_seed.borrow_mut().replace(vec![row.clone()]);
+                let key_rows = self.exec_operator(cx, key_op)?;
+                self.foreach_seed.borrow_mut().take();
+                key_rows
+                    .first()
+                    .and_then(|r| r.get(key_alias.0.as_str()).cloned())
+                    .or_else(|| key_rows.first().and_then(|r| r.values().next().cloned()))
+                    .unwrap_or(Value::Null)
+            } else {
+                self.eval_with_storage(cx.graph, key_expr, row, &ctx)
+                    .unwrap_or(Value::Null)
+            };
+            // Skip rows where the group key evaluates to Null (unproductive by),
+            // unless ProductiveByStrategy is active.
+            if matches!(key_val, Value::Null) && !*productive {
                 continue;
             }
-            let val = self
-                .eval_with_storage(cx.graph, value_expr, row, &ctx)
-                .unwrap_or(Value::Null);
+
             let key_str = value_to_map_key(&key_val);
-            let entry = groups.entry(key_str).or_default();
-            // When a value-by projection is active, skip null values (unproductive by).
-            if has_value_by && matches!(val, Value::Null) {
-                // Key still gets created (via or_default) with empty vec
+
+            if value_traversal.is_some() {
+                // For value_traversal mode, collect rows; we'll run traversal per group later
+                group_rows.entry(key_str).or_default().push(row.clone());
             } else {
-                entry.push(val);
+                // For expression-based value, evaluate per row
+                let val = self
+                    .eval_with_storage(cx.graph, value_expr, row, &ctx)
+                    .unwrap_or(Value::Null);
+                let entry = groups.entry(key_str).or_default();
+                if has_value_by && matches!(val, Value::Null) {
+                    // Key still gets created with empty vec
+                } else {
+                    entry.push(val);
+                }
+            }
+        }
+
+        // For value_traversal, run the traversal per group with all members as seed
+        if let Some((val_op, val_alias)) = value_traversal {
+            for (key_str, rows) in &group_rows {
+                self.foreach_seed.borrow_mut().replace(rows.clone());
+                let val_rows = self.exec_operator(cx, val_op)?;
+                self.foreach_seed.borrow_mut().take();
+                let mut values = Vec::new();
+                for r in &val_rows {
+                    if let Some(v) = r.get(val_alias.0.as_str()).cloned() {
+                        values.push(v);
+                    } else if let Some(v) = r.values().next().cloned() {
+                        values.push(v);
+                    }
+                }
+                groups.insert(key_str.clone(), values);
             }
         }
 
         // Apply aggregation function to each group.
+        let has_value_trav = value_traversal.is_some();
         let mut result_map: IndexMap<Box<str>, Value> = IndexMap::new();
         for (key_str, values) in groups {
-            let agg_result = match agg_fn {
-                AggFunction::Count => Value::Int(values.len() as i64),
-                AggFunction::Collect => Value::List(values),
-                AggFunction::Sum => {
-                    let mut total = 0i64;
-                    let mut float_total = 0.0f64;
-                    let mut use_float = false;
-                    for v in &values {
-                        match v {
-                            Value::Int(i) => total += i,
-                            Value::Float(f) => {
-                                use_float = true;
-                                float_total += f;
+            // When value traversal produces no results for a group member,
+            // skip the entry for reducing aggregations (Sum, Min, Max, Mean).
+            if has_value_trav
+                && values.is_empty()
+                && matches!(
+                    agg_fn,
+                    AggFunction::Sum | AggFunction::Min | AggFunction::Max | AggFunction::Avg
+                )
+            {
+                continue;
+            }
+            let agg_result = if has_value_trav {
+                // When value_traversal is set, the traversal may produce a single
+                // aggregated result (e.g., constant(1), count(), sum()) or multiple
+                // per-member results to be collected. Apply agg_fn to the values,
+                // then unwrap single scalar results for the single-result case.
+                match agg_fn {
+                    AggFunction::Count => Value::Int(values.len() as i64),
+                    AggFunction::Sum => {
+                        let mut total = 0i64;
+                        let mut float_total = 0.0f64;
+                        let mut use_float = false;
+                        for v in &values {
+                            match v {
+                                Value::Int(i) => total += i,
+                                Value::Float(f) => {
+                                    use_float = true;
+                                    float_total += f;
+                                }
+                                _ => {}
                             }
-                            _ => {}
+                        }
+                        if use_float {
+                            Value::Float(float_total + total as f64)
+                        } else {
+                            Value::Int(total)
                         }
                     }
-                    if use_float {
-                        Value::Float(float_total + total as f64)
-                    } else {
-                        Value::Int(total)
+                    AggFunction::Collect => {
+                        if *explicit_fold {
+                            // Explicit fold(): always produce a List
+                            Value::List(values)
+                        } else if values.len() == 1
+                            && !matches!(values.first(), Some(Value::List(_)))
+                        {
+                            // Single scalar result (e.g. constant(1)): unwrap
+                            values.into_iter().next().unwrap_or(Value::Null)
+                        } else {
+                            Value::List(values)
+                        }
                     }
+                    _ => Value::List(values),
                 }
-                _ => Value::List(values),
+            } else {
+                match agg_fn {
+                    AggFunction::Count => Value::Int(values.len() as i64),
+                    AggFunction::Collect => Value::List(values),
+                    AggFunction::Sum => {
+                        let mut total = 0i64;
+                        let mut float_total = 0.0f64;
+                        let mut use_float = false;
+                        for v in &values {
+                            match v {
+                                Value::Int(i) => total += i,
+                                Value::Float(f) => {
+                                    use_float = true;
+                                    float_total += f;
+                                }
+                                _ => {}
+                            }
+                        }
+                        if use_float {
+                            Value::Float(float_total + total as f64)
+                        } else {
+                            Value::Int(total)
+                        }
+                    }
+                    _ => Value::List(values),
+                }
             };
             result_map.insert(key_str, agg_result);
         }
@@ -821,6 +1258,186 @@ impl<'a> QueryExecutor<'a> {
         }
         Ok(out)
     }
+
+    /// Execute `GremlinSimplePath` — filter traversers whose path contains
+    /// repeated objects (by node/edge identity).
+    pub(crate) fn exec_gremlin_simple_path(
+        &self,
+        cx: &mut ExecContext<'_>,
+        op: &Operator,
+    ) -> Result<Vec<Row>, GqlError> {
+        let Operator::GremlinSimplePath {
+            child,
+            path_aliases,
+        } = op
+        else {
+            debug_assert!(false, "expected GremlinSimplePath operator");
+            return Err(GqlError::Execution(ExecutionError::UnsupportedFeature {
+                feature: "internal: expected GremlinSimplePath operator".into(),
+            }));
+        };
+
+        let input = self.exec_operator(cx, child)?;
+        let mut out = Vec::with_capacity(input.len());
+        for row in input {
+            cx.budget.check_or_err()?;
+            let mut seen = std::collections::HashSet::new();
+            let mut is_simple = true;
+            for alias in path_aliases {
+                if let Some(val) = row.get(alias.as_str()) {
+                    if matches!(val, Value::Null) {
+                        continue;
+                    }
+                    // Use a discriminator key to detect duplicate path entries
+                    let key = match val {
+                        Value::Node(nid) => format!("n:{}", nid.0),
+                        Value::Edge(eid) => format!("e:{}", eid.0),
+                        other => format!("v:{other:?}"),
+                    };
+                    if !seen.insert(key) {
+                        is_simple = false;
+                        break;
+                    }
+                }
+            }
+            if is_simple {
+                out.push(row);
+            }
+        }
+        Ok(out)
+    }
+
+    /// Execute `GremlinIndex` — pair each element with its positional index.
+    pub(crate) fn exec_gremlin_index(
+        &self,
+        cx: &mut ExecContext<'_>,
+        op: &Operator,
+    ) -> Result<Vec<Row>, GqlError> {
+        let Operator::GremlinIndex {
+            child,
+            alias,
+            out_alias,
+            with_map,
+        } = op
+        else {
+            debug_assert!(false, "expected GremlinIndex operator");
+            return Err(GqlError::Execution(ExecutionError::UnsupportedFeature {
+                feature: "internal: expected GremlinIndex operator".into(),
+            }));
+        };
+
+        let input = self.exec_operator(cx, child)?;
+        let mut out = Vec::with_capacity(input.len());
+
+        // Check if input is a single row containing a List — index its elements
+        if input.len() == 1 {
+            if let Some(Value::List(items)) = input[0].get(alias.as_str()) {
+                if *with_map {
+                    // Produce a single Map {0: elem0, 1: elem1, ...}
+                    let mut map = IndexMap::new();
+                    for (i, item) in items.iter().enumerate() {
+                        map.insert(format!("{i}").into_boxed_str(), item.clone());
+                    }
+                    let mut row = Row::new();
+                    row.insert(out_alias.0.clone(), Value::Map(map));
+                    out.push(row);
+                } else {
+                    // Produce [element, index] pairs
+                    for (i, item) in items.iter().enumerate() {
+                        let pair = Value::List(vec![item.clone(), Value::Int(i as i64)]);
+                        let mut row = Row::new();
+                        row.insert(out_alias.0.clone(), pair);
+                        out.push(row);
+                    }
+                }
+                return Ok(out);
+            }
+        }
+
+        // Stream mode: each individual traverser gets index 0 (per TinkerPop semantics).
+        // Collect all [element, 0] pairs into a single list so unfold() can unwrap them.
+        if *with_map {
+            // with(map) mode: each individual traverser → {0: element}
+            let mut maps = Vec::with_capacity(input.len());
+            for row in input.iter() {
+                if let Some(val) = row.get(alias.as_str()) {
+                    let mut map = IndexMap::new();
+                    map.insert("0".to_string().into_boxed_str(), val.clone());
+                    maps.push(Value::Map(map));
+                }
+            }
+            let mut row = Row::new();
+            row.insert(out_alias.0.clone(), Value::List(maps));
+            out.push(row);
+        } else {
+            let mut pairs = Vec::with_capacity(input.len());
+            for row in input.iter() {
+                cx.budget.check_or_err()?;
+                let val = row.get(alias.as_str()).cloned().unwrap_or(Value::Null);
+                pairs.push(Value::List(vec![val, Value::Int(0)]));
+            }
+            let mut row = Row::new();
+            row.insert(out_alias.0.clone(), Value::List(pairs));
+            out.push(row);
+        }
+        Ok(out)
+    }
+
+    /// Execute `GremlinProject` — evaluate sub-traversals per key for each input row.
+    pub(crate) fn exec_gremlin_project(
+        &self,
+        cx: &mut ExecContext<'_>,
+        op: &Operator,
+    ) -> Result<Vec<Row>, GqlError> {
+        let Operator::GremlinProject {
+            entries,
+            child,
+            current_alias,
+        } = op
+        else {
+            debug_assert!(false, "expected GremlinProject operator");
+            return Err(GqlError::Execution(ExecutionError::UnsupportedFeature {
+                feature: "internal: expected GremlinProject operator".into(),
+            }));
+        };
+
+        let input = self.exec_operator(cx, child)?;
+        let mut out = Vec::with_capacity(input.len());
+        for row in &input {
+            cx.budget.check_or_err()?;
+            let mut map = IndexMap::new();
+            for (key, sub_op, out_alias) in entries {
+                // Feed the current row as a seed and evaluate the sub-traversal
+                self.foreach_seed.borrow_mut().replace(vec![row.clone()]);
+                let sub_rows = self.exec_operator(cx, sub_op)?;
+                self.foreach_seed.borrow_mut().take();
+                // Take the first result value (project picks the first traverser)
+                let val = if let Some(sub_row) = sub_rows.first() {
+                    sub_row
+                        .get(out_alias.as_str())
+                        .or_else(|| {
+                            // Fall back to current_alias if out_alias not found
+                            sub_row.get(current_alias.as_str())
+                        })
+                        .cloned()
+                        .unwrap_or(Value::Null)
+                } else {
+                    Value::Null
+                };
+                map.insert(key.clone().into_boxed_str(), val);
+            }
+            // Store the projected Map as both individual columns and a combined Map
+            let map_val = Value::Map(map.clone());
+            let mut out_row = Row::new();
+            for (k, v) in &map {
+                out_row.insert(k.to_string(), v.clone());
+            }
+            // Also set the result on the current_alias so downstream steps find it
+            out_row.insert(current_alias.0.clone(), map_val);
+            out.push(out_row);
+        }
+        Ok(out)
+    }
 }
 
 /// Convert a Value to a string key for use in Gremlin group() Map output.
@@ -828,13 +1445,164 @@ fn value_to_map_key(v: &Value) -> Box<str> {
     match v {
         Value::Str(s) => s.clone(),
         Value::Int(i) => format!("{i}").into_boxed_str(),
-        Value::Float(f) => format!("{f}").into_boxed_str(),
+        Value::Float(f) => {
+            let s = format!("{f}");
+            // Ensure floats always have a decimal point for consistent key format
+            if s.contains('.') || s.contains('E') || s.contains('e') {
+                s.into_boxed_str()
+            } else {
+                format!("{s}.0").into_boxed_str()
+            }
+        }
         Value::Bool(b) => format!("{b}").into_boxed_str(),
         Value::Null => "null".to_string().into_boxed_str(),
         Value::Node(nid) => format!("v[{}]", nid.0).into_boxed_str(),
         Value::Edge(eid) => format!("e[{}]", eid.0).into_boxed_str(),
         _ => format!("{v:?}").into_boxed_str(),
     }
+}
+
+/// Evaluate a Gremlin predicate string (e.g., "P.between(26,30)") against a value.
+fn eval_gremlin_predicate(pred_str: &str, value: &Value) -> bool {
+    fn parse_num(s: &str) -> Option<f64> {
+        let s = s.trim();
+        if let Ok(i) = s.parse::<i64>() {
+            return Some(i as f64);
+        }
+        s.parse::<f64>().ok()
+    }
+    fn value_as_f64(v: &Value) -> Option<f64> {
+        match v {
+            Value::Int(i) => Some(*i as f64),
+            Value::Float(f) => Some(*f),
+            _ => None,
+        }
+    }
+
+    let pred = pred_str.strip_prefix("P.").unwrap_or(pred_str);
+
+    // Handle compound predicates: .or(P.xxx) and .and(P.xxx)
+    // Split at top-level .or() / .and() boundaries.
+    if let Some((left, right, is_or)) = split_compound_predicate(pred) {
+        let left_str = if left.starts_with("P.") {
+            left.to_string()
+        } else {
+            format!("P.{left}")
+        };
+        let right_str = if right.starts_with("P.") {
+            right.to_string()
+        } else {
+            format!("P.{right}")
+        };
+        let left_result = eval_gremlin_predicate(&left_str, value);
+        let right_result = eval_gremlin_predicate(&right_str, value);
+        return if is_or {
+            left_result || right_result
+        } else {
+            left_result && right_result
+        };
+    }
+
+    if let Some(rest) = pred.strip_prefix("between(") {
+        if let Some(args) = rest.strip_suffix(')') {
+            let parts: Vec<&str> = args.splitn(2, ',').collect();
+            if parts.len() == 2 {
+                if let (Some(lo), Some(hi), Some(v)) = (
+                    parse_num(parts[0]),
+                    parse_num(parts[1]),
+                    value_as_f64(value),
+                ) {
+                    return v >= lo && v < hi;
+                }
+            }
+        }
+        return false;
+    }
+
+    // Single-arg predicates: P.lt(30), P.gt(30), P.lte(30), P.gte(30), P.eq(x), P.neq(x)
+    for (prefix, cmp_fn) in &[
+        ("lt(", (|v: f64, t: f64| v < t) as fn(f64, f64) -> bool),
+        ("lte(", |v, t| v <= t),
+        ("gt(", |v, t| v > t),
+        ("gte(", |v, t| v >= t),
+        ("eq(", |v, t| (v - t).abs() < 1e-9),
+        ("neq(", |v, t| (v - t).abs() >= 1e-9),
+    ] {
+        if let Some(rest) = pred.strip_prefix(prefix) {
+            if let Some(arg_str) = rest.strip_suffix(')') {
+                // Try numeric comparison first
+                if let (Some(threshold), Some(v)) = (parse_num(arg_str), value_as_f64(value)) {
+                    return cmp_fn(v, threshold);
+                }
+                // For eq/neq, also try string comparison
+                if *prefix == "eq(" {
+                    let arg = arg_str.trim().trim_matches('"');
+                    return match value {
+                        Value::Str(s) => s.as_ref() == arg,
+                        _ => false,
+                    };
+                }
+                if *prefix == "neq(" {
+                    let arg = arg_str.trim().trim_matches('"');
+                    return match value {
+                        Value::Str(s) => s.as_ref() != arg,
+                        _ => true,
+                    };
+                }
+            }
+            return false;
+        }
+    }
+
+    // P.neq(y) with string comparison
+    if let Some(rest) = pred.strip_prefix("neq(") {
+        if let Some(arg_str) = rest.strip_suffix(')') {
+            let arg = arg_str.trim().trim_matches('"');
+            match value {
+                Value::Str(s) => return s.as_ref() != arg,
+                _ => return true,
+            }
+        }
+    }
+
+    false
+}
+
+/// Split a compound predicate like "between(26, 30).or(gt(34))" into
+/// (left_pred, right_pred, is_or). Returns None if not compound.
+fn split_compound_predicate(pred: &str) -> Option<(&str, &str, bool)> {
+    // Look for .or( or .and( at the top level (outside balanced parens).
+    let mut depth = 0u32;
+    let bytes = pred.as_bytes();
+    let len = bytes.len();
+    let mut i = 0;
+    while i < len {
+        match bytes[i] {
+            b'(' => depth += 1,
+            b')' => depth = depth.saturating_sub(1),
+            b'.' if depth == 0 && i + 4 <= len => {
+                let suffix = &pred[i..];
+                if suffix.starts_with(".or(") {
+                    let left = &pred[..i];
+                    let inner = &pred[i + 4..];
+                    // Find matching closing paren for .or(
+                    if let Some(close) = inner.strip_suffix(')') {
+                        return Some((left, close, true));
+                    }
+                }
+                if suffix.starts_with(".and(") {
+                    let left = &pred[..i];
+                    let inner = &pred[i + 5..];
+                    if let Some(close) = inner.strip_suffix(')') {
+                        return Some((left, close, false));
+                    }
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    None
 }
 
 #[cfg(test)]
@@ -884,19 +1652,22 @@ mod tests {
 
         // Scan all :N nodes, then repeat out-expand once.
         // With times=1, each starting node expands one hop outward.
+        // Use a remap so the body output "m" gets renamed back to "n" for iteration.
         let plan = Operator::Repeat {
             body: Box::new(Operator::Expand {
                 direction: Direction::Outgoing,
                 rel_types: vec![RelType::new("NEXT")],
                 src_alias: Identifier::new("n"),
                 rel_alias: None,
-                dst_alias: Identifier::new("n"),
+                dst_alias: Identifier::new("m"),
                 child: Box::new(Operator::SingleRow),
             }),
             times: Some(1),
             until: None,
             emit: false,
-            remap: None,
+            emit_before: false,
+            emit_predicate: None,
+            remap: Some(("m".to_string(), "n".to_string())),
             child: Box::new(Operator::NodeScan {
                 label: Some(Label::new("N")),
                 alias: Identifier::new("n"),
@@ -905,9 +1676,8 @@ mod tests {
 
         let mut budget = ExecutionBudget::unlimited();
         let result = executor.execute("g", &plan, &mut budget).unwrap();
-        // A->B, B->C expand succeeds; C has no outgoing so it stays from scan.
-        // Total: 3 rows after one expansion iteration.
-        assert_eq!(result.rows.len(), 3);
+        // A→B and B→C expand; C has no outgoing NEXT so it is dropped.
+        assert_eq!(result.rows.len(), 2);
     }
 
     #[test]
@@ -927,6 +1697,8 @@ mod tests {
             times: Some(2),
             until: None,
             emit: true,
+            emit_before: true,
+            emit_predicate: None,
             remap: None,
             child: Box::new(Operator::NodeScan {
                 label: Some(Label::new("N")),
@@ -986,6 +1758,9 @@ mod tests {
                 label: None,
                 alias: Identifier::new("n"),
             }),
+            true_alias: None,
+            false_alias: None,
+            output_alias: None,
         };
 
         let mut budget = ExecutionBudget::unlimited();
@@ -1024,6 +1799,9 @@ mod tests {
                 label: Some(Label::new("A")),
                 alias: Identifier::new("n"),
             }),
+            true_alias: None,
+            false_alias: None,
+            output_alias: None,
         };
 
         let mut budget = ExecutionBudget::unlimited();
@@ -1150,6 +1928,7 @@ mod tests {
 
         let plan = Operator::Cap {
             keys: vec!["x".to_string(), "y".to_string()],
+            reductions: vec![],
             child: Box::new(Operator::SingleRow),
         };
 
@@ -1169,6 +1948,7 @@ mod tests {
 
         let plan = Operator::Cap {
             keys: vec!["x".to_string()],
+            reductions: vec![],
             child: Box::new(Operator::GremlinAggregate {
                 key: "x".to_string(),
                 child: Box::new(Operator::NodeScan {
@@ -1176,7 +1956,9 @@ mod tests {
                     alias: Identifier::new("n"),
                 }),
                 value_alias: Identifier::new("n"),
-                by_key: None,
+                by_keys: vec![],
+                by_traversal: None,
+                productive: false,
             }),
         };
 
@@ -1197,6 +1979,7 @@ mod tests {
 
         let plan = Operator::Cap {
             keys: vec!["friends".to_string()],
+            reductions: vec![],
             child: Box::new(Operator::GremlinAggregate {
                 key: "friends".to_string(),
                 child: Box::new(Operator::Expand {
@@ -1211,7 +1994,9 @@ mod tests {
                     }),
                 }),
                 value_alias: Identifier::new("m"),
-                by_key: None,
+                by_keys: vec![],
+                by_traversal: None,
+                productive: false,
             }),
         };
 
@@ -1237,7 +2022,9 @@ mod tests {
                 alias: Identifier::new("n"),
             }),
             value_alias: Identifier::new("n"),
-            by_key: None,
+            by_keys: vec![],
+            by_traversal: None,
+            productive: false,
         };
 
         let mut budget = ExecutionBudget::unlimited();
@@ -1259,6 +2046,7 @@ mod tests {
 
         let plan = Operator::Cap {
             keys: vec!["x".to_string(), "y".to_string()],
+            reductions: vec![],
             child: Box::new(Operator::GremlinAggregate {
                 key: "x".to_string(),
                 child: Box::new(Operator::NodeScan {
@@ -1266,7 +2054,9 @@ mod tests {
                     alias: Identifier::new("n"),
                 }),
                 value_alias: Identifier::new("n"),
-                by_key: None,
+                by_keys: vec![],
+                by_traversal: None,
+                productive: false,
             }),
         };
 
@@ -1294,6 +2084,7 @@ mod tests {
 
         let plan = Operator::Cap {
             keys: vec!["all".to_string()],
+            reductions: vec![],
             child: Box::new(Operator::GremlinAggregate {
                 key: "all".to_string(),
                 child: Box::new(Operator::NodeScan {
@@ -1301,7 +2092,9 @@ mod tests {
                     alias: Identifier::new("n"),
                 }),
                 value_alias: Identifier::new("n"),
-                by_key: None,
+                by_keys: vec![],
+                by_traversal: None,
+                productive: false,
             }),
         };
 
@@ -1495,6 +2288,7 @@ mod tests {
 
         let plan = Operator::GremlinMatch {
             label_map: vec![],
+            result_alias: Identifier::new("__match_result"),
             patterns: vec![Operator::Expand {
                 direction: Direction::Outgoing,
                 rel_types: vec![RelType::new("NEXT")],
@@ -1525,6 +2319,7 @@ mod tests {
 
         let plan = Operator::GremlinMatch {
             label_map: vec![],
+            result_alias: Identifier::new("__match_result"),
             patterns: vec![],
             child: Box::new(Operator::NodeScan {
                 label: Some(Label::new("N")),
@@ -1544,6 +2339,7 @@ mod tests {
 
         let plan = Operator::GremlinMatch {
             label_map: vec![],
+            result_alias: Identifier::new("__match_result"),
             patterns: vec![
                 Operator::Expand {
                     direction: Direction::Outgoing,
@@ -1584,6 +2380,7 @@ mod tests {
         // Match: a->b via NEXT, and a->b via NONEXISTENT (no such edges)
         let plan = Operator::GremlinMatch {
             label_map: vec![],
+            result_alias: Identifier::new("__match_result"),
             patterns: vec![
                 Operator::Expand {
                     direction: Direction::Outgoing,
@@ -1624,6 +2421,7 @@ mod tests {
 
         let plan = Operator::GremlinMatch {
             label_map: vec![],
+            result_alias: Identifier::new("__match_result"),
             patterns: vec![Operator::Expand {
                 direction: Direction::Outgoing,
                 rel_types: vec![RelType::new("NEXT")],

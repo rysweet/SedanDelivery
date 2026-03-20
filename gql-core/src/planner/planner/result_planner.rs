@@ -334,6 +334,7 @@ impl<'s> QueryPlanner<'s> {
                         .iter()
                         .map(|s| (s.expr.clone(), s.ascending))
                         .collect(),
+                    gremlin_order: false,
                     child: Box::new(raw),
                 };
             }
@@ -409,6 +410,7 @@ impl<'s> QueryPlanner<'s> {
                 .collect();
             pipeline = Operator::Sort {
                 items: sort_items,
+                gremlin_order: false,
                 child: Box::new(pipeline),
             };
         }
@@ -733,6 +735,7 @@ impl<'s> QueryPlanner<'s> {
                 .collect();
             Operator::Sort {
                 items: sort_items,
+                gremlin_order: false,
                 child: Box::new(pipeline),
             }
         } else {

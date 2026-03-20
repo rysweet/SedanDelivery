@@ -138,12 +138,14 @@ impl<'a> QueryExecutor<'a> {
                     }
                     return Ok(());
                 }
-                // Validate that the property value is a valid Cypher property type.
-                // Maps and lists-of-maps are not allowed as property values.
+                // Validate that the property value is a valid property type.
+                // Lists-of-maps are not allowed, but standalone Maps are
+                // permitted (needed for Gremlin @AllowMapPropertyValues).
                 fn is_invalid_prop_value(v: &Value) -> bool {
                     match v {
-                        Value::Map(_) => true,
-                        Value::List(items) => items.iter().any(is_invalid_prop_value),
+                        Value::List(items) => {
+                            items.iter().any(|item| matches!(item, Value::Map(_)))
+                        }
                         _ => false,
                     }
                 }

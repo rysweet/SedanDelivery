@@ -134,6 +134,10 @@ pub struct QueryExecutor<'a> {
     /// When set, `exec_single_row` returns these rows instead of `[{}]`.
     /// Used by FOREACH to inject the loop variable binding into the body sub-plan.
     pub(crate) foreach_seed: std::cell::RefCell<Option<Vec<Row>>>,
+    /// When true, `exec_project` preserves all input row columns in addition
+    /// to the projected items.  This is required for Gremlin, where step
+    /// labels set via `as()` must survive property projections.
+    pub(crate) gremlin_mode: bool,
 }
 
 impl<'a> QueryExecutor<'a> {
@@ -149,6 +153,7 @@ impl<'a> QueryExecutor<'a> {
             node_cache: std::cell::RefCell::new(HashMap::new()),
             edge_cache: std::cell::RefCell::new(HashMap::new()),
             foreach_seed: std::cell::RefCell::new(None),
+            gremlin_mode: false,
         }
     }
 
@@ -179,7 +184,16 @@ impl<'a> QueryExecutor<'a> {
             node_cache: std::cell::RefCell::new(HashMap::new()),
             edge_cache: std::cell::RefCell::new(HashMap::new()),
             foreach_seed: std::cell::RefCell::new(None),
+            gremlin_mode: false,
         }
+    }
+
+    /// Enable Gremlin mode: `Project` operators preserve all input columns
+    /// so that step labels set via `as()` survive property projections.
+    #[allow(dead_code)]
+    pub fn with_gremlin_mode(mut self) -> Self {
+        self.gremlin_mode = true;
+        self
     }
 
     // ── Property access cache helpers ──────────────────────────────────────────
@@ -341,6 +355,9 @@ impl<'a> QueryExecutor<'a> {
             Operator::GremlinSelect { .. } => self.exec_gremlin_select(cx, op),
             Operator::GremlinGroup { .. } => self.exec_gremlin_group(cx, op),
             Operator::GremlinMapSlice { .. } => self.exec_gremlin_map_slice(cx, op),
+            Operator::GremlinSimplePath { .. } => self.exec_gremlin_simple_path(cx, op),
+            Operator::GremlinIndex { .. } => self.exec_gremlin_index(cx, op),
+            Operator::GremlinProject { .. } => self.exec_gremlin_project(cx, op),
         }?;
 
         // Record per-operator row counts when profiling is enabled.
@@ -427,6 +444,7 @@ mod tests {
                     ),
                     true,
                 )],
+                gremlin_order: false,
                 child: Box::new(Operator::NodeScan {
                     label: Some(Label::new("Person")),
                     alias: Identifier::new("p"),

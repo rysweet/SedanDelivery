@@ -82,6 +82,9 @@ pub enum Operator {
     },
     Sort {
         items: Vec<(Expr, bool)>, // (expr, ascending)
+        /// Use Gremlin orderability (null < bool < number < string < ...)
+        /// instead of openCypher ordering.
+        gremlin_order: bool,
         child: Box<Operator>,
     },
     Limit {
@@ -196,6 +199,12 @@ pub enum Operator {
         times: Option<usize>,
         until: Option<Box<Operator>>,
         emit: bool,
+        /// When true, emit traversers BEFORE body execution (includes starting
+        /// traversers).  When false and `emit` is true, emit AFTER body execution
+        /// (excludes starting traversers).
+        emit_before: bool,
+        /// Optional predicate to filter which traversers are emitted.
+        emit_predicate: Option<Box<Operator>>,
         /// After each body iteration, rename `body_out_alias` → `seed_alias`
         /// so the next iteration receives traversers under the expected key.
         remap: Option<(String, String)>,
@@ -207,14 +216,30 @@ pub enum Operator {
         if_true: Box<Operator>,
         if_false: Option<Box<Operator>>,
         child: Box<Operator>,
+        /// Alias names for the true/false branch results plus unified output.
+        /// The executor copies each branch's result column to `output_alias`
+        /// so subsequent steps use a consistent column name.
+        true_alias: Option<crate::ast::Identifier>,
+        false_alias: Option<crate::ast::Identifier>,
+        output_alias: Option<crate::ast::Identifier>,
     },
     /// Gremlin choose(selector).option(val, branch) — value-based dispatch.
     ChooseMap {
         /// Traversal that produces a dispatch value for each input row.
         selector: Box<Operator>,
-        /// (match_value, branch_operator) pairs; `None` value = default branch.
-        options: Vec<(Option<crate::types::Value>, Box<Operator>)>,
+        /// Alias of the selector's result column.
+        selector_alias: crate::ast::Identifier,
+        /// (match_value, branch_operator, branch_output_alias) triples.
+        /// `None` match_value = default branch.
+        options: Vec<(
+            Option<crate::types::Value>,
+            Box<Operator>,
+            Option<crate::ast::Identifier>,
+        )>,
         child: Box<Operator>,
+        /// Unified output alias: branch results are copied here so downstream
+        /// steps use a consistent column name.
+        output_alias: Option<crate::ast::Identifier>,
     },
     /// Gremlin coalesce() — first non-empty alternative.
     Coalesce {
@@ -230,6 +255,9 @@ pub enum Operator {
     Cap {
         keys: Vec<String>,
         child: Box<Operator>,
+        /// Optional per-key reduction: (key, operator, init_value) triples.
+        /// Populated from `withSideEffect(key, init, Operator.op)`.
+        reductions: Vec<(String, String, f64)>,
     },
     /// Gremlin aggregate() — collect traverser values into a named side-effect.
     GremlinAggregate {
@@ -237,8 +265,14 @@ pub enum Operator {
         child: Box<Operator>,
         /// The alias whose value is collected into the aggregate bucket.
         value_alias: Identifier,
-        /// When set via `.by("prop")`, collect this property instead of the raw traverser.
-        by_key: Option<String>,
+        /// When set via `.by("prop")`, collect these properties instead of the raw traverser.
+        /// A single key projects that property; two keys project a map of both.
+        by_keys: Vec<String>,
+        /// When set via `.by(traversal)`, run this sub-traversal per traverser to compute
+        /// the collected value. Takes precedence over `by_keys`.
+        by_traversal: Option<(Box<Operator>, Identifier)>,
+        /// When true (ProductiveByStrategy), include null values for missing properties.
+        productive: bool,
     },
     /// Gremlin path() — extract path from traverser aliases.
     GremlinPath {
@@ -253,6 +287,8 @@ pub enum Operator {
         /// Maps step labels (e.g. "a", "b") to internal aliases (e.g. v_1).
         /// Used to rename output rows from internal aliases to label names.
         label_map: Vec<(String, Identifier)>,
+        /// The output alias for the Map result value.
+        result_alias: Identifier,
         child: Box<Operator>,
     },
     /// Gremlin select() — project labeled step values, skipping rows where
@@ -276,6 +312,17 @@ pub enum Operator {
         /// side-effect in `__gremlin_agg_<key>` on every pass-through row
         /// instead of collapsing the stream into a single Map row.
         side_effect_key: Option<String>,
+        /// Optional compiled sub-traversal for the group key (from by(traversal)).
+        /// (Operator, output_alias) — seeded per-row to compute the key.
+        key_traversal: Option<(Box<Operator>, Identifier)>,
+        /// Optional compiled sub-traversal for the group value (from by(traversal)).
+        /// (Operator, output_alias) — seeded per-row to compute the value.
+        value_traversal: Option<(Box<Operator>, Identifier)>,
+        /// When true (ProductiveByStrategy), include null-keyed entries for missing properties.
+        productive: bool,
+        /// When true, the Collect agg was set explicitly by fold() (not default).
+        /// Forces List result even for single-member groups.
+        explicit_fold: bool,
         child: Box<Operator>,
     },
     /// Gremlin `range(Scope.local, lo, hi)` / `limit(Scope.local, n)` —
@@ -288,6 +335,29 @@ pub enum Operator {
         /// End index (exclusive).
         hi: usize,
         child: Box<Operator>,
+    },
+    /// Gremlin simplePath() — filter to traversers with no repeated objects in path.
+    GremlinSimplePath {
+        child: Box<Operator>,
+        /// Ordered list of aliases that form the path elements.
+        path_aliases: Vec<Identifier>,
+    },
+    /// Gremlin index() — pair each element with its positional index.
+    /// When `with_map` is true, produces a Map {index: element}; otherwise
+    /// produces a List [element, index].
+    GremlinIndex {
+        child: Box<Operator>,
+        alias: Identifier,
+        out_alias: Identifier,
+        with_map: bool,
+    },
+    /// Gremlin project() with by() modulation — evaluates sub-traversals per key.
+    GremlinProject {
+        /// (key_name, sub_traversal_operator, output_alias_of_traversal) per entry.
+        entries: Vec<(String, Operator, Identifier)>,
+        child: Box<Operator>,
+        /// Alias of the traverser feeding into project.
+        current_alias: Identifier,
     },
 }
 
@@ -322,8 +392,33 @@ impl Operator {
             | Operator::GremlinAggregate { child, .. }
             | Operator::GremlinPath { child, .. }
             | Operator::GremlinSelect { child, .. }
-            | Operator::GremlinGroup { child, .. }
-            | Operator::GremlinMapSlice { child, .. } => vec![child],
+            | Operator::GremlinMapSlice { child, .. }
+            | Operator::GremlinSimplePath { child, .. }
+            | Operator::GremlinIndex { child, .. } => vec![child],
+
+            Operator::GremlinGroup {
+                child,
+                key_traversal,
+                value_traversal,
+                ..
+            } => {
+                let mut v = vec![child.as_ref()];
+                if let Some((op, _)) = key_traversal {
+                    v.push(op.as_ref());
+                }
+                if let Some((op, _)) = value_traversal {
+                    v.push(op.as_ref());
+                }
+                v
+            }
+
+            Operator::GremlinProject { entries, child, .. } => {
+                let mut v = vec![child.as_ref()];
+                for (_, op, _) in entries {
+                    v.push(op);
+                }
+                v
+            }
 
             Operator::ForEach { body, child, .. } | Operator::Repeat { body, child, .. } => {
                 vec![child, body]
@@ -349,6 +444,7 @@ impl Operator {
                 if_true,
                 if_false,
                 child,
+                ..
             } => {
                 let mut v = vec![child.as_ref(), predicate.as_ref(), if_true.as_ref()];
                 if let Some(f) = if_false {
@@ -361,9 +457,10 @@ impl Operator {
                 selector,
                 options,
                 child,
+                ..
             } => {
                 let mut v = vec![child.as_ref(), selector.as_ref()];
-                for (_, branch) in options {
+                for (_, branch, _) in options {
                     v.push(branch.as_ref());
                 }
                 v
@@ -664,7 +761,10 @@ fn estimate_recursive(
             ..
         } => estimate_recursive(child, stats, estimates),
         Operator::GremlinGroup { .. } => 1.0, // produces a single Map row
-        Operator::GremlinMapSlice { child, .. } => estimate_recursive(child, stats, estimates),
+        Operator::GremlinMapSlice { child, .. }
+        | Operator::GremlinSimplePath { child, .. }
+        | Operator::GremlinIndex { child, .. }
+        | Operator::GremlinProject { child, .. } => estimate_recursive(child, stats, estimates),
         Operator::Cap { .. } => 1.0,
     };
 
@@ -944,6 +1044,17 @@ fn collect_all_aliases(op: &Operator) -> Vec<String> {
         }
         Operator::GremlinMapSlice { child, .. } => {
             aliases.extend(collect_all_aliases(child));
+        }
+        Operator::GremlinSimplePath { child, .. } => {
+            aliases.extend(collect_all_aliases(child));
+        }
+        Operator::GremlinIndex { child, .. } => {
+            aliases.extend(collect_all_aliases(child));
+        }
+        Operator::GremlinProject { entries, .. } => {
+            for (key, _, _) in entries {
+                aliases.push(key.clone());
+            }
         }
         Operator::Cap { keys, .. } => {
             for key in keys {

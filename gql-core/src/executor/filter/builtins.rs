@@ -46,6 +46,62 @@ pub(super) fn builtin_rand(vals: Vec<Value>) -> Result<Value, GqlError> {
     Ok(Value::Float(val))
 }
 
+/// Java-compatible Linear Congruential Generator for deterministic random.
+/// Matches `java.util.Random` behaviour so Gremlin SeedStrategy tests pass.
+pub(super) fn builtin_java_random_next_double(vals: Vec<Value>) -> Result<Value, GqlError> {
+    use std::cell::Cell;
+    use std::sync::atomic::{AtomicI64, Ordering};
+
+    // Thread-local state: (initial_seed_used, current_lcg_state)
+    thread_local! {
+        static JAVA_RNG_STATE: AtomicI64 = const { AtomicI64::new(i64::MIN) };
+        static JAVA_RNG_INIT: Cell<i64> = const { Cell::new(i64::MIN) };
+    }
+
+    const MULTIPLIER: i64 = 0x5DEECE66D;
+    const ADDEND: i64 = 0xB;
+    const MASK: i64 = (1i64 << 48) - 1;
+
+    let initial_seed = match vals.first() {
+        Some(Value::Int(s)) => *s,
+        _ => 0,
+    };
+
+    JAVA_RNG_STATE.with(|state| {
+        JAVA_RNG_INIT.with(|init| {
+            let prev_init = init.get();
+            let seed = if prev_init != initial_seed {
+                // New traversal with different seed: reset state
+                let s = (initial_seed ^ MULTIPLIER) & MASK;
+                init.set(initial_seed);
+                s
+            } else {
+                let current = state.load(Ordering::Relaxed);
+                if current == i64::MIN {
+                    let s = (initial_seed ^ MULTIPLIER) & MASK;
+                    init.set(initial_seed);
+                    s
+                } else {
+                    current
+                }
+            };
+
+            // next(26)
+            let seed1 = (seed.wrapping_mul(MULTIPLIER).wrapping_add(ADDEND)) & MASK;
+            let bits26 = seed1 >> (48 - 26);
+
+            // next(27)
+            let seed2 = (seed1.wrapping_mul(MULTIPLIER).wrapping_add(ADDEND)) & MASK;
+            let bits27 = seed2 >> (48 - 27);
+
+            state.store(seed2, Ordering::Relaxed);
+
+            let val = ((bits26 << 27) + bits27) as f64 / ((1i64 << 53) as f64);
+            Ok(Value::Float(val))
+        })
+    })
+}
+
 pub(super) fn builtin_abs(vals: Vec<Value>) -> Result<Value, GqlError> {
     require_arity("abs", 1, &vals)?;
     match &vals[0] {
@@ -358,6 +414,13 @@ pub(super) fn builtin_length(vals: Vec<Value>) -> Result<Value, GqlError> {
     match &vals[0] {
         Value::Null => Ok(Value::Null),
         Value::Str(s) => Ok(Value::Int(s.chars().count() as i64)),
+        Value::List(items) => {
+            let results: Result<Vec<Value>, _> = items
+                .iter()
+                .map(|v| builtin_length(vec![v.clone()]))
+                .collect();
+            Ok(Value::List(results?))
+        }
         other => type_error("length", other),
     }
 }
@@ -367,6 +430,13 @@ pub(super) fn builtin_toupper(vals: Vec<Value>) -> Result<Value, GqlError> {
     match &vals[0] {
         Value::Null => Ok(Value::Null),
         Value::Str(s) => Ok(Value::Str(s.to_uppercase().into_boxed_str())),
+        Value::List(items) => {
+            let results: Result<Vec<Value>, _> = items
+                .iter()
+                .map(|v| builtin_toupper(vec![v.clone()]))
+                .collect();
+            Ok(Value::List(results?))
+        }
         other => type_error("toUpper", other),
     }
 }
@@ -376,6 +446,13 @@ pub(super) fn builtin_tolower(vals: Vec<Value>) -> Result<Value, GqlError> {
     match &vals[0] {
         Value::Null => Ok(Value::Null),
         Value::Str(s) => Ok(Value::Str(s.to_lowercase().into_boxed_str())),
+        Value::List(items) => {
+            let results: Result<Vec<Value>, _> = items
+                .iter()
+                .map(|v| builtin_tolower(vec![v.clone()]))
+                .collect();
+            Ok(Value::List(results?))
+        }
         other => type_error("toLower", other),
     }
 }
@@ -385,6 +462,13 @@ pub(super) fn builtin_trim(vals: Vec<Value>) -> Result<Value, GqlError> {
     match &vals[0] {
         Value::Null => Ok(Value::Null),
         Value::Str(s) => Ok(Value::Str(s.trim().to_string().into_boxed_str())),
+        Value::List(items) => {
+            let results: Result<Vec<Value>, _> = items
+                .iter()
+                .map(|v| builtin_trim(vec![v.clone()]))
+                .collect();
+            Ok(Value::List(results?))
+        }
         other => type_error("trim", other),
     }
 }
@@ -394,6 +478,13 @@ pub(super) fn builtin_ltrim(vals: Vec<Value>) -> Result<Value, GqlError> {
     match &vals[0] {
         Value::Null => Ok(Value::Null),
         Value::Str(s) => Ok(Value::Str(s.trim_start().to_string().into_boxed_str())),
+        Value::List(items) => {
+            let results: Result<Vec<Value>, _> = items
+                .iter()
+                .map(|v| builtin_ltrim(vec![v.clone()]))
+                .collect();
+            Ok(Value::List(results?))
+        }
         other => type_error("ltrim", other),
     }
 }
@@ -403,6 +494,13 @@ pub(super) fn builtin_rtrim(vals: Vec<Value>) -> Result<Value, GqlError> {
     match &vals[0] {
         Value::Null => Ok(Value::Null),
         Value::Str(s) => Ok(Value::Str(s.trim_end().to_string().into_boxed_str())),
+        Value::List(items) => {
+            let results: Result<Vec<Value>, _> = items
+                .iter()
+                .map(|v| builtin_rtrim(vec![v.clone()]))
+                .collect();
+            Ok(Value::List(results?))
+        }
         other => type_error("rtrim", other),
     }
 }
@@ -486,6 +584,13 @@ pub(super) fn builtin_replace(vals: Vec<Value>) -> Result<Value, GqlError> {
         (Value::Str(s), Value::Str(from), Value::Str(to)) => Ok(Value::Str(
             s.replace(from.as_ref(), to.as_ref()).into_boxed_str(),
         )),
+        (Value::List(items), from, to) => {
+            let results: Result<Vec<Value>, _> = items
+                .iter()
+                .map(|v| builtin_replace(vec![v.clone(), from.clone(), to.clone()]))
+                .collect();
+            Ok(Value::List(results?))
+        }
         _ => Err(GqlError::Execution(ExecutionError::TypeMismatch {
             expected: "String, String, String".to_string(),
             actual: format!(
@@ -509,6 +614,13 @@ pub(super) fn builtin_split(vals: Vec<Value>) -> Result<Value, GqlError> {
                 .map(|p| Value::Str(p.to_string().into_boxed_str()))
                 .collect();
             Ok(Value::List(parts))
+        }
+        (Value::List(items), delim) => {
+            let results: Result<Vec<Value>, _> = items
+                .iter()
+                .map(|v| builtin_split(vec![v.clone(), delim.clone()]))
+                .collect();
+            Ok(Value::List(results?))
         }
         _ => Err(GqlError::Execution(ExecutionError::TypeMismatch {
             expected: "String, String".to_string(),
@@ -588,6 +700,15 @@ pub(super) fn builtin_keys(vals: Vec<Value>) -> Result<Value, GqlError> {
                 .collect(),
         )),
         other => type_error("keys", other),
+    }
+}
+
+pub(super) fn builtin_values(vals: Vec<Value>) -> Result<Value, GqlError> {
+    require_arity("values", 1, &vals)?;
+    match &vals[0] {
+        Value::Null => Ok(Value::Null),
+        Value::Map(m) => Ok(Value::List(m.values().cloned().collect())),
+        other => type_error("values", other),
     }
 }
 

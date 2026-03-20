@@ -130,11 +130,24 @@ async fn given_crew_graph(world: &mut GremlinWorld) {
 
 #[given("the sink graph")]
 async fn given_sink_graph(world: &mut GremlinWorld) {
-    // The sink graph is not bundled — placeholder.
+    // The sink graph: one vertex "loop" with label "loops" and a self-edge "self".
     let store = InMemoryGraphStore::new();
     store.create_graph("sink").unwrap();
+    let mut props = HashMap::new();
+    props.insert("name".to_string(), Value::Str("loop".into()));
+    let loop_v = store
+        .create_node("sink", vec!["loops".to_string()], props)
+        .unwrap();
+    // Two self-edges
+    store
+        .create_edge("sink", loop_v, loop_v, "self".to_string(), HashMap::new())
+        .unwrap();
+    store
+        .create_edge("sink", loop_v, loop_v, "self".to_string(), HashMap::new())
+        .unwrap();
     world.store = Some(Arc::new(store));
     world.graph_name = "sink".into();
+    world.vertex_names.insert("loop".into(), loop_v);
 }
 
 #[given("an unsupported test")]
@@ -167,9 +180,45 @@ async fn given_graph_initializer(world: &mut GremlinWorld, step: &gherkin::Step)
         let mut compiler = GremlinCompiler::new();
         if let Ok(operator) = compiler.compile(&steps) {
             let store = world.get_store();
-            let executor = QueryExecutor::new(store.as_ref());
+            let executor = QueryExecutor::new(store.as_ref()).with_gremlin_mode();
             let mut budget = ExecutionBudget::default_budget();
             let _ = executor.execute(&world.graph_name, &operator, &mut budget);
+        }
+    }
+
+    // After the initializer runs, discover vertex/edge names so that
+    // subsequent parameter definitions like v[marko].id can resolve.
+    let store = world.get_store();
+    if let Ok(node_ids) = store.all_node_ids(&world.graph_name) {
+        if let Ok(nodes) = store.get_nodes_batch(&world.graph_name, &node_ids) {
+            for maybe_node in nodes.into_iter().flatten() {
+                if let Some(Value::Str(name)) = maybe_node.properties.get("name") {
+                    world
+                        .vertex_names
+                        .entry(name.to_string())
+                        .or_insert(maybe_node.id);
+                }
+            }
+        }
+    }
+    if let Ok(edge_ids) = store.all_edge_ids(&world.graph_name) {
+        if let Ok(edges) = store.get_edges_batch(&world.graph_name, &edge_ids) {
+            for maybe_edge in edges.into_iter().flatten() {
+                let src_name = world
+                    .vertex_names
+                    .iter()
+                    .find(|(_, id)| **id == maybe_edge.src)
+                    .map(|(n, _)| n.clone());
+                let dst_name = world
+                    .vertex_names
+                    .iter()
+                    .find(|(_, id)| **id == maybe_edge.dst)
+                    .map(|(n, _)| n.clone());
+                if let (Some(src), Some(dst)) = (src_name, dst_name) {
+                    let key = format!("{}-{}->{}", src, maybe_edge.rel_type, dst);
+                    world.edge_names.entry(key).or_insert(maybe_edge.id);
+                }
+            }
         }
     }
 }
@@ -244,7 +293,7 @@ fn execute_traversal(world: &mut GremlinWorld) {
 
     // Execute
     let store = world.get_store();
-    let executor = QueryExecutor::new(store.as_ref());
+    let executor = QueryExecutor::new(store.as_ref()).with_gremlin_mode();
     let mut budget = ExecutionBudget::default_budget();
     match executor.execute(&world.graph_name, &operator, &mut budget) {
         Ok(result) => {
@@ -302,7 +351,7 @@ async fn then_result_count(world: &mut GremlinWorld, expected: usize) {
     );
 }
 
-#[then(regex = r"(?i)the traversal will raise an error")]
+#[then(regex = r"(?i)the traversal will raise an error$")]
 async fn then_traversal_error(world: &mut GremlinWorld) {
     match &world.outcome {
         Some(TraversalOutcome::Err(_)) => { /* expected */ }
@@ -372,7 +421,7 @@ async fn given_graph_count_check(
         let mut compiler = GremlinCompiler::new();
         if let Ok(operator) = compiler.compile(&steps) {
             let store = world.get_store();
-            let executor = QueryExecutor::new(store.as_ref());
+            let executor = QueryExecutor::new(store.as_ref()).with_gremlin_mode();
             let mut budget = ExecutionBudget::default_budget();
             if let Ok(result) = executor.execute(&world.graph_name, &operator, &mut budget) {
                 // Count step produces a single row with a count value
@@ -481,6 +530,21 @@ fn resolve_parameter_definition(
             if let Ok(f) = num_str.parse::<f64>() {
                 return GremlinValue::Float(f);
             }
+        }
+    }
+
+    // l[...] → list of resolved values
+    if let Some(rest) = s.strip_prefix("l[") {
+        if let Some(inner) = rest.strip_suffix(']') {
+            if inner.trim().is_empty() {
+                return GremlinValue::List(Vec::new());
+            }
+            let parts = split_tck_top_level(inner);
+            let items: Vec<GremlinValue> = parts
+                .iter()
+                .map(|p| resolve_parameter_definition(p.trim(), vertex_names, edge_names))
+                .collect();
+            return GremlinValue::List(items);
         }
     }
 
@@ -825,31 +889,29 @@ fn assert_results_match_unordered(
     // If the result is a single row containing a List (from cap/fold), unpack it
     // into individual values for comparison, matching TinkerPop semantics.
     let unpacked_rows: Vec<HashMap<String, Value>>;
-    let effective_result =
-        if result.rows.len() == 1 && expected.len() > 1 && result.rows[0].len() == 1 {
-            if let Some(Value::List(items)) = row_result_value(&result.rows[0], &world.result_alias)
-            {
-                // Unpack the list into individual rows
-                let key = if !world.result_alias.is_empty() {
-                    world.result_alias.clone()
-                } else {
-                    result.rows[0].keys().next().unwrap().clone()
-                };
-                unpacked_rows = items
-                    .iter()
-                    .map(|v| {
-                        let mut row: HashMap<String, Value> = HashMap::new();
-                        row.insert(key.clone(), v.clone());
-                        row
-                    })
-                    .collect();
-                &unpacked_rows
+    let effective_result = if result.rows.len() == 1 && expected.len() > 1 {
+        if let Some(Value::List(items)) = row_result_value(&result.rows[0], &world.result_alias) {
+            // Unpack the list into individual rows
+            let key = if !world.result_alias.is_empty() {
+                world.result_alias.clone()
             } else {
-                result.rows.as_slice()
-            }
+                result.rows[0].keys().next().unwrap().clone()
+            };
+            unpacked_rows = items
+                .iter()
+                .map(|v| {
+                    let mut row: HashMap<String, Value> = HashMap::new();
+                    row.insert(key.clone(), v.clone());
+                    row
+                })
+                .collect();
+            &unpacked_rows
         } else {
             result.rows.as_slice()
-        };
+        }
+    } else {
+        result.rows.as_slice()
+    };
 
     assert_eq!(
         effective_result.len(),
@@ -986,11 +1048,45 @@ fn values_match_ctx(
         (Value::Float(a), Value::Int(e)) => (a - *e as f64).abs() < 1e-9,
         // String representation match: Str("1") matches Int(1), etc.
         (Value::Str(a), Value::Int(e)) => a.as_ref() == &e.to_string(),
-        (Value::Str(a), Value::Float(e)) => a.as_ref() == &e.to_string(),
+        (Value::Str(a), Value::Float(e)) => {
+            // Handle both "1" and "1.0" matching Float(1.0)
+            if a.as_ref() == &e.to_string() {
+                return true;
+            }
+            if let Ok(parsed) = a.parse::<f64>() {
+                (parsed - e).abs() < 1e-9
+            } else {
+                false
+            }
+        }
         (Value::Str(a), Value::Bool(e)) => a.as_ref() == &e.to_string(),
         // List matching stringified list: List(["marko"]) matches Str("[\"marko\"]")
         (Value::List(items), Value::Str(expected_str)) => {
+            let format_float = |f: &f64| -> String {
+                let s = f.to_string();
+                // Ensure floats like 1.0 keep the decimal point
+                if !s.contains('.') && !s.contains('E') && !s.contains('e') {
+                    format!("{}.0", s)
+                } else {
+                    s
+                }
+            };
             let parts: Vec<String> = items
+                .iter()
+                .map(|v| match v {
+                    Value::Str(s) => format!("\"{}\"", s),
+                    Value::Int(n) => n.to_string(),
+                    Value::Float(f) => format_float(f),
+                    Value::Bool(b) => b.to_string(),
+                    Value::Null => "null".to_string(),
+                    other => format!("{:?}", other),
+                })
+                .collect();
+            // Try both with and without spaces after commas
+            let with_spaces = format!("[{}]", parts.join(", "));
+            let without_spaces = format!("[{}]", parts.join(","));
+            // Also try with plain f.to_string() (no forced decimal)
+            let parts_plain: Vec<String> = items
                 .iter()
                 .map(|v| match v {
                     Value::Str(s) => format!("\"{}\"", s),
@@ -1001,8 +1097,79 @@ fn values_match_ctx(
                     other => format!("{:?}", other),
                 })
                 .collect();
-            let formatted = format!("[{}]", parts.join(", "));
-            formatted == expected_str.as_ref()
+            let plain_no_spaces = format!("[{}]", parts_plain.join(","));
+            let plain_with_spaces = format!("[{}]", parts_plain.join(", "));
+            with_spaces == expected_str.as_ref()
+                || without_spaces == expected_str.as_ref()
+                || plain_no_spaces == expected_str.as_ref()
+                || plain_with_spaces == expected_str.as_ref()
+        }
+        // Match property Map against vp[owner-key->value] or prop[key,value] notation
+        (Value::Map(a), Value::Str(e)) if a.contains_key("~key") && a.contains_key("~value") => {
+            let e_str = e.as_ref();
+            // vp[owner-key->value] — VertexProperty
+            if let Some(inner) = e_str.strip_prefix("vp[").and_then(|r| r.strip_suffix(']')) {
+                if let Some(arrow_pos) = inner.find("->") {
+                    let prefix = &inner[..arrow_pos];
+                    let exp_value_str = &inner[arrow_pos + 2..];
+                    if let Some(dash_pos) = prefix.rfind('-') {
+                        let exp_owner = &prefix[..dash_pos];
+                        let exp_key = &prefix[dash_pos + 1..];
+                        let key_ok =
+                            matches!(a.get("~key"), Some(Value::Str(k)) if k.as_ref() == exp_key);
+                        let elem_ok = match a.get("~element") {
+                            Some(Value::Node(nid)) => {
+                                vertex_id_to_name.get(nid).map_or(false, |n| n == exp_owner)
+                            }
+                            _ => false,
+                        };
+                        let val_ok = match a.get("~value") {
+                            Some(actual_val) => {
+                                let exp_val = parse_tck_value(
+                                    exp_value_str,
+                                    &HashMap::new(),
+                                    &HashMap::new(),
+                                );
+                                values_match_ctx(
+                                    actual_val,
+                                    &exp_val,
+                                    vertex_id_to_name,
+                                    edge_id_to_name,
+                                )
+                            }
+                            None => false,
+                        };
+                        return key_ok && elem_ok && val_ok;
+                    }
+                }
+            }
+            // prop[key,value] — EdgeProperty
+            if let Some(inner) = e_str
+                .strip_prefix("prop[")
+                .and_then(|r| r.strip_suffix(']'))
+            {
+                if let Some(comma_pos) = inner.find(',') {
+                    let exp_key = inner[..comma_pos].trim();
+                    let exp_value_str = inner[comma_pos + 1..].trim();
+                    let key_ok =
+                        matches!(a.get("~key"), Some(Value::Str(k)) if k.as_ref() == exp_key);
+                    let val_ok = match a.get("~value") {
+                        Some(actual_val) => {
+                            let exp_val =
+                                parse_tck_value(exp_value_str, &HashMap::new(), &HashMap::new());
+                            values_match_ctx(
+                                actual_val,
+                                &exp_val,
+                                vertex_id_to_name,
+                                edge_id_to_name,
+                            )
+                        }
+                        None => false,
+                    };
+                    return key_ok && val_ok;
+                }
+            }
+            false
         }
         (Value::Str(a), Value::Str(e)) => a == e,
         (Value::Bool(a), Value::Bool(e)) => a == e,

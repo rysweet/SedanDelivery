@@ -307,6 +307,7 @@ pub fn eval_function_with_vals(name: &str, vals: Vec<Value>) -> Result<Value, Gq
     match name.to_ascii_lowercase().as_str() {
         // ── Math functions ────────────────────────────────────────────────────
         "rand" => builtins::builtin_rand(vals),
+        "java_random_next_double" => builtins::builtin_java_random_next_double(vals),
         "abs" => builtins::builtin_abs(vals),
         "ceil" => builtins::builtin_ceil(vals),
         "floor" => builtins::builtin_floor(vals),
@@ -357,6 +358,7 @@ pub fn eval_function_with_vals(name: &str, vals: Vec<Value>) -> Result<Value, Gq
         "coalesce" => builtins::builtin_coalesce(vals),
         "isnull" => builtins::builtin_isnull(vals),
         "keys" => builtins::builtin_keys(vals),
+        "values" => builtins::builtin_values(vals),
         "properties" => builtins::builtin_properties(vals),
         "range" => builtins::builtin_range(vals),
 
@@ -414,32 +416,50 @@ pub fn eval_function_with_vals(name: &str, vals: Vec<Value>) -> Result<Value, Gq
         "gremlin_tolower" => match vals.first() {
             Some(Value::Str(s)) => Ok(Value::Str(s.to_lowercase().into())),
             Some(Value::Null) => Ok(Value::Null),
+            Some(Value::List(_)) => Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                expected: "String".into(), actual: "List".into(),
+            })),
             _ => Ok(Value::Null),
         },
         "gremlin_toupper" => match vals.first() {
             Some(Value::Str(s)) => Ok(Value::Str(s.to_uppercase().into())),
             Some(Value::Null) => Ok(Value::Null),
+            Some(Value::List(_)) => Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                expected: "String".into(), actual: "List".into(),
+            })),
             _ => Ok(Value::Null),
         },
         "gremlin_trim" => match vals.first() {
             Some(Value::Str(s)) => Ok(Value::Str(s.trim().into())),
             Some(Value::Null) => Ok(Value::Null),
+            Some(Value::List(_)) => Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                expected: "String".into(), actual: "List".into(),
+            })),
             _ => Ok(Value::Null),
         },
         "gremlin_ltrim" => match vals.first() {
             Some(Value::Str(s)) => Ok(Value::Str(s.trim_start().into())),
             Some(Value::Null) => Ok(Value::Null),
+            Some(Value::List(_)) => Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                expected: "String".into(), actual: "List".into(),
+            })),
             _ => Ok(Value::Null),
         },
         "gremlin_rtrim" => match vals.first() {
             Some(Value::Str(s)) => Ok(Value::Str(s.trim_end().into())),
             Some(Value::Null) => Ok(Value::Null),
+            Some(Value::List(_)) => Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                expected: "String".into(), actual: "List".into(),
+            })),
             _ => Ok(Value::Null),
         },
         "gremlin_length" => match vals.first() {
             Some(Value::Str(s)) => Ok(Value::Int(s.len() as i64)),
-            Some(Value::List(l)) => Ok(Value::Int(l.len() as i64)),
             Some(Value::Null) => Ok(Value::Null),
+            Some(other) => Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                expected: "The length() step can only take string as argument".into(),
+                actual: other.type_name().into(),
+            })),
             _ => Ok(Value::Int(0)),
         },
         "gremlin_reverse" => match vals.first() {
@@ -457,17 +477,32 @@ pub fn eval_function_with_vals(name: &str, vals: Vec<Value>) -> Result<Value, Gq
                 Ok(Value::Str(s.replace(old.as_ref(), new.as_ref()).into()))
             }
             (Some(Value::Null), _, _) => Ok(Value::Null),
+            (Some(Value::List(_)), _, _) => Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                expected: "String".into(), actual: "List".into(),
+            })),
             _ => Ok(Value::Null),
         },
         "gremlin_split" => match (vals.first(), vals.get(1)) {
             (Some(Value::Str(s)), Some(Value::Str(sep))) => {
-                let parts: Vec<Value> = s
-                    .split(sep.as_ref())
-                    .map(|p| Value::Str(p.into()))
-                    .collect();
+                let parts: Vec<Value> = if sep.is_empty() {
+                    // Empty separator: split into individual characters
+                    s.chars().map(|c| Value::Str(c.to_string().into())).collect()
+                } else if sep.as_ref() == "null" {
+                    // null separator: split by whitespace
+                    s.split_whitespace()
+                        .map(|p| Value::Str(p.into()))
+                        .collect()
+                } else {
+                    s.split(sep.as_ref())
+                        .map(|p| Value::Str(p.into()))
+                        .collect()
+                };
                 Ok(Value::List(parts))
             }
             (Some(Value::Null), _) => Ok(Value::Null),
+            (Some(Value::List(_)), _) => Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                expected: "String".into(), actual: "List".into(),
+            })),
             _ => Ok(Value::Null),
         },
         "gremlin_substring" => match vals.first() {
@@ -512,7 +547,7 @@ pub fn eval_function_with_vals(name: &str, vals: Vec<Value>) -> Result<Value, Gq
                 };
                 Ok(Value::Str(result.into()))
             }
-            Some(Value::Null) => Ok(Value::Str("null".into())),
+            Some(Value::Null) => Ok(Value::Null),
             Some(Value::List(_)) => Err(GqlError::Execution(ExecutionError::TypeMismatch {
                 expected: "The substring() step can only take string as argument".into(),
                 actual: "list".into(),
@@ -567,28 +602,225 @@ pub fn eval_function_with_vals(name: &str, vals: Vec<Value>) -> Result<Value, Gq
                 .collect();
             Ok(Value::List(results))
         }
+        "gremlin_tolower_local" => match vals.first() {
+            Some(Value::List(items)) => {
+                let results: Vec<Value> = items.iter().map(|v| match v {
+                    Value::Str(s) => Value::Str(s.to_lowercase().into()),
+                    Value::Null => Value::Null,
+                    other => other.clone(),
+                }).collect();
+                Ok(Value::List(results))
+            }
+            _ => eval_function_with_vals("gremlin_tolower", vals),
+        },
+        "gremlin_toupper_local" => match vals.first() {
+            Some(Value::List(items)) => {
+                let results: Vec<Value> = items.iter().map(|v| match v {
+                    Value::Str(s) => Value::Str(s.to_uppercase().into()),
+                    Value::Null => Value::Null,
+                    other => other.clone(),
+                }).collect();
+                Ok(Value::List(results))
+            }
+            _ => eval_function_with_vals("gremlin_toupper", vals),
+        },
+        "gremlin_trim_local" => match vals.first() {
+            Some(Value::List(items)) => {
+                // Validate all elements are String or Null
+                for v in items {
+                    if !matches!(v, Value::Str(_) | Value::Null) {
+                        return Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                            expected: "The trim(local) step can only take string or list of strings".into(),
+                            actual: v.type_name().into(),
+                        }));
+                    }
+                }
+                let results: Vec<Value> = items.iter().map(|v| match v {
+                    Value::Str(s) => Value::Str(s.trim().into()),
+                    _ => Value::Null,
+                }).collect();
+                Ok(Value::List(results))
+            }
+            _ => eval_function_with_vals("gremlin_trim", vals),
+        },
+        "gremlin_ltrim_local" => match vals.first() {
+            Some(Value::List(items)) => {
+                for v in items {
+                    if !matches!(v, Value::Str(_) | Value::Null) {
+                        return Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                            expected: "The lTrim(local) step can only take string or list of strings".into(),
+                            actual: v.type_name().into(),
+                        }));
+                    }
+                }
+                let results: Vec<Value> = items.iter().map(|v| match v {
+                    Value::Str(s) => Value::Str(s.trim_start().into()),
+                    _ => Value::Null,
+                }).collect();
+                Ok(Value::List(results))
+            }
+            _ => eval_function_with_vals("gremlin_ltrim", vals),
+        },
+        "gremlin_rtrim_local" => match vals.first() {
+            Some(Value::List(items)) => {
+                for v in items {
+                    if !matches!(v, Value::Str(_) | Value::Null) {
+                        return Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                            expected: "The rTrim(local) step can only take string or list of strings".into(),
+                            actual: v.type_name().into(),
+                        }));
+                    }
+                }
+                let results: Vec<Value> = items.iter().map(|v| match v {
+                    Value::Str(s) => Value::Str(s.trim_end().into()),
+                    _ => Value::Null,
+                }).collect();
+                Ok(Value::List(results))
+            }
+            _ => eval_function_with_vals("gremlin_rtrim", vals),
+        },
+        "gremlin_replace_local" => match (vals.first(), vals.get(1), vals.get(2)) {
+            (Some(Value::List(items)), Some(Value::Str(old)), Some(Value::Str(new))) => {
+                let results: Vec<Value> = items.iter().map(|v| match v {
+                    Value::Str(s) => Value::Str(s.replace(old.as_ref(), new.as_ref()).into()),
+                    Value::Null => Value::Null,
+                    other => other.clone(),
+                }).collect();
+                Ok(Value::List(results))
+            }
+            _ => eval_function_with_vals("gremlin_replace", vals),
+        },
+        "gremlin_split_local" => match (vals.first(), vals.get(1)) {
+            (Some(Value::List(items)), Some(Value::Str(sep))) => {
+                let results: Vec<Value> = items.iter().map(|v| match v {
+                    Value::Str(s) => {
+                        let parts: Vec<Value> = if sep.is_empty() {
+                            s.chars().map(|c| Value::Str(c.to_string().into())).collect()
+                        } else {
+                            s.split(sep.as_ref())
+                                .map(|p| Value::Str(p.into()))
+                                .collect()
+                        };
+                        Value::List(parts)
+                    }
+                    Value::Null => Value::Null,
+                    other => other.clone(),
+                }).collect();
+                Ok(Value::List(results))
+            }
+            _ => eval_function_with_vals("gremlin_split", vals),
+        },
+        "gremlin_length_local" => match vals.first() {
+            Some(Value::List(l)) => Ok(Value::Int(l.len() as i64)),
+            Some(Value::Map(m)) => Ok(Value::Int(m.len() as i64)),
+            Some(Value::Str(s)) => Ok(Value::Int(s.len() as i64)),
+            Some(Value::Null) => Ok(Value::Null),
+            _ => Ok(Value::Int(0)),
+        },
+        "gremlin_math" => {
+            let current_val = vals.first().cloned().unwrap_or(Value::Null);
+            let expr_str = match vals.get(1) {
+                Some(Value::Str(s)) => s.as_ref(),
+                _ => return Ok(Value::Null),
+            };
+            eval_math_expr(expr_str, &current_val)
+        },
+        "gremlin_tail_local" => {
+            let val = vals.first().cloned().unwrap_or(Value::Null);
+            let n = match vals.get(1) {
+                Some(Value::Int(i)) => *i as usize,
+                _ => 1,
+            };
+            match val {
+                Value::List(items) => {
+                    let start = items.len().saturating_sub(n);
+                    Ok(Value::List(items[start..].to_vec()))
+                }
+                Value::Map(m) => {
+                    let entries: Vec<_> = m.iter().collect();
+                    let start = entries.len().saturating_sub(n);
+                    let result: IndexMap<Box<str>, Value> = entries[start..]
+                        .iter()
+                        .map(|(k, v)| ((*k).clone(), (*v).clone()))
+                        .collect();
+                    Ok(Value::Map(result))
+                }
+                Value::Null => Ok(Value::Null),
+                other => Ok(other),
+            }
+        }
+        "gremlin_dedup_local" => {
+            // dedup(Scope.local) — deduplicate elements within a list
+            // Args: [list_value] or [list_value, key1, key2, ...]
+            let val = vals.first().cloned().unwrap_or(Value::Null);
+            match val {
+                Value::List(items) => {
+                    if vals.len() > 1 {
+                        // Keyed dedup: dedup(Scope.local, "x", "y")
+                        // Items are Maps; dedup by the specified key values
+                        let keys: Vec<&str> = vals[1..].iter().filter_map(|v| {
+                            if let Value::Str(s) = v { Some(s.as_ref()) } else { None }
+                        }).collect();
+                        let mut seen = std::collections::HashSet::new();
+                        let mut result = Vec::new();
+                        for item in &items {
+                            let dedup_key = if let Value::Map(m) = item {
+                                keys.iter()
+                                    .map(|k| m.get(*k).map(|v| v.canonical_key()).unwrap_or_default())
+                                    .collect::<Vec<_>>()
+                                    .join("\x1f")
+                            } else {
+                                item.canonical_key()
+                            };
+                            if seen.insert(dedup_key) {
+                                result.push(item.clone());
+                            }
+                        }
+                        Ok(Value::List(result))
+                    } else {
+                        // Simple dedup: dedup(Scope.local)
+                        let mut seen = std::collections::HashSet::new();
+                        let mut result = Vec::new();
+                        for item in &items {
+                            let key = item.canonical_key();
+                            if seen.insert(key) {
+                                result.push(item.clone());
+                            }
+                        }
+                        Ok(Value::List(result))
+                    }
+                }
+                Value::Null => Ok(Value::Null),
+                other => Ok(other),
+            }
+        }
         "gremlin_concat" => {
-            // Gremlin concat: first arg is current traverser, rest are strings to append.
-            // Null args are skipped. List args cause error.
+            // Gremlin concat: first arg is current traverser, rest are args to append.
+            // Null traverser (first arg) with no other args → null.
+            // Null args → skipped.
+            // List as traverser (first arg) → error.
             if vals.is_empty() {
                 return Ok(Value::Null);
             }
+            if matches!(vals.first(), Some(Value::List(_))) {
+                return Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                    expected: "String concat() can only take string as argument".into(),
+                    actual: "list".into(),
+                }));
+            }
+            // If only arg is null traverser and no concat args, return null
+            if vals.len() == 1 && matches!(vals.first(), Some(Value::Null)) {
+                return Ok(Value::Null);
+            }
             let mut result = String::new();
-            for (i, v) in vals.iter().enumerate() {
+            for v in vals.iter() {
                 match v {
                     Value::Str(s) => result.push_str(s),
                     Value::Int(n) => result.push_str(&n.to_string()),
                     Value::Float(f) => result.push_str(&f.to_string()),
                     Value::Bool(b) => result.push_str(&b.to_string()),
                     Value::Null => {
-                        // Null traverser (first arg) → skip (produces empty prefix)
-                        // Null concat arg (subsequent) → skip
-                    }
-                    Value::List(_) if i == 0 => {
-                        return Err(GqlError::Execution(ExecutionError::TypeMismatch {
-                            expected: "String concat() can only take string as argument".into(),
-                            actual: "list".into(),
-                        }));
+                        // Null args are skipped
                     }
                     _ => result.push_str(&format!("{:?}", v)),
                 }
@@ -621,15 +853,29 @@ pub fn eval_function_with_vals(name: &str, vals: Vec<Value>) -> Result<Value, Gq
             _ => Ok(Value::Null),
         },
         "gremlin_format" => {
+            // args: [traverser, pattern, optional_labels_map]
             match (vals.first(), vals.get(1)) {
                 (Some(val), Some(Value::Str(pattern))) => {
-                    // Simple format: replace %s with value
-                    let formatted = match val {
-                        Value::Str(s) => pattern.replace("%s", s),
-                        Value::Int(n) => pattern.replace("%s", &n.to_string()),
-                        Value::Float(f) => pattern.replace("%s", &f.to_string()),
-                        Value::Map(m) => {
-                            let mut result = pattern.to_string();
+                    let mut result = pattern.to_string();
+                    // First, resolve %{label} from optional labels map (3rd arg)
+                    if let Some(Value::Map(labels)) = vals.get(2) {
+                        for (k, v) in labels.iter() {
+                            let placeholder = format!("%{{{}}}", k);
+                            if result.contains(&placeholder) {
+                                let val_str = match v {
+                                    Value::Str(s) => s.to_string(),
+                                    Value::Int(n) => n.to_string(),
+                                    Value::Float(f) => f.to_string(),
+                                    Value::Bool(b) => b.to_string(),
+                                    _ => format!("{:?}", v),
+                                };
+                                result = result.replace(&placeholder, &val_str);
+                            }
+                        }
+                    }
+                    // Then resolve %{key} from the traverser value if it's a Map
+                    if result.contains("%{") {
+                        if let Value::Map(m) = val {
                             for (k, v) in m.iter() {
                                 let placeholder = format!("%{{{}}}", k);
                                 let val_str = match v {
@@ -641,15 +887,63 @@ pub fn eval_function_with_vals(name: &str, vals: Vec<Value>) -> Result<Value, Gq
                                 };
                                 result = result.replace(&placeholder, &val_str);
                             }
-                            result
                         }
-                        _ => pattern.to_string(),
-                    };
-                    Ok(Value::Str(formatted.into()))
+                    }
+                    // Replace %s with the traverser value directly
+                    if result.contains("%s") {
+                        let val_str = match val {
+                            Value::Str(s) => s.to_string(),
+                            Value::Int(n) => n.to_string(),
+                            Value::Float(f) => f.to_string(),
+                            _ => String::new(),
+                        };
+                        result = result.replace("%s", &val_str);
+                    }
+                    Ok(Value::Str(result.into()))
                 }
                 (Some(Value::Null), _) => Ok(Value::Null),
                 _ => Ok(Value::Null),
             }
+        }
+        "gremlin_format_by" => {
+            // format() with by() modulations: args = [traverser, pattern, by1, by2, ...]
+            // Replace %{_} placeholders cyclically with by-values.
+            // Also resolve %{name} from node/edge properties.
+            if vals.len() < 2 {
+                return Ok(Value::Null);
+            }
+            if matches!(vals.first(), Some(Value::Null)) {
+                return Ok(Value::Null);
+            }
+            let pattern = match vals.get(1) {
+                Some(Value::Str(s)) => s.to_string(),
+                _ => return Ok(Value::Null),
+            };
+            let by_values = &vals[2..];
+            let mut result = pattern;
+            // Replace %{_} with by-values cyclically
+            let mut by_idx = 0;
+            while let Some(pos) = result.find("%{_}") {
+                if by_values.is_empty() {
+                    break;
+                }
+                let val = &by_values[by_idx % by_values.len()];
+                let val_str = match val {
+                    Value::Str(s) => s.to_string(),
+                    Value::Int(n) => n.to_string(),
+                    Value::Float(f) => f.to_string(),
+                    Value::Bool(b) => b.to_string(),
+                    Value::Null => return Ok(Value::Null),
+                    _ => format!("{:?}", val),
+                };
+                result = format!("{}{}{}", &result[..pos], val_str, &result[pos + 4..]);
+                by_idx += 1;
+            }
+            // If there are still %{key} placeholders, try resolving from node/edge properties
+            if result.contains("%{") {
+                return Ok(Value::Null);
+            }
+            Ok(Value::Str(result.into()))
         }
         "gremlin_asstring" => match vals.first() {
             Some(Value::Str(s)) => Ok(Value::Str(s.clone())),
@@ -767,10 +1061,145 @@ pub fn eval_function_with_vals(name: &str, vals: Vec<Value>) -> Result<Value, Gq
             })),
             _ => Ok(Value::Null),
         },
+        "gremlin_asnumber_typed" => {
+            // asNumber(GType.INT/LONG/FLOAT/DOUBLE/BYTE/SHORT): convert to specific numeric type
+            match (vals.first(), vals.get(1)) {
+                (_, Some(Value::Str(t))) if t.as_ref() == "__invalid__" => {
+                    Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                        expected: "asNumber() requires a numeric type token".into(),
+                        actual: "non-numeric type".into(),
+                    }))
+                }
+                (Some(Value::Int(n)), Some(Value::Str(t))) if t.as_ref() == "byte" => {
+                    if *n < i8::MIN as i64 || *n > i8::MAX as i64 {
+                        Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                            expected: "Can't convert number of type Integer to Byte due to overflow.".into(),
+                            actual: n.to_string(),
+                        }))
+                    } else {
+                        Ok(Value::Int(*n))
+                    }
+                }
+                (Some(Value::Int(n)), Some(Value::Str(t))) if t.as_ref() == "short" => {
+                    if *n < i16::MIN as i64 || *n > i16::MAX as i64 {
+                        Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                            expected: "Can't convert number of type Integer to Short due to overflow.".into(),
+                            actual: n.to_string(),
+                        }))
+                    } else {
+                        Ok(Value::Int(*n))
+                    }
+                }
+                (Some(Value::Float(f)), Some(Value::Str(t))) if t.as_ref() == "int" => {
+                    Ok(Value::Int(*f as i64))
+                }
+                (Some(Value::Int(n)), Some(Value::Str(t))) if t.as_ref() == "float" => {
+                    Ok(Value::Float(*n as f64))
+                }
+                (Some(Value::Str(s)), Some(Value::Str(t))) if t.as_ref() == "int" => {
+                    if let Ok(n) = s.parse::<i64>() {
+                        Ok(Value::Int(n))
+                    } else if let Ok(f) = s.parse::<f64>() {
+                        Ok(Value::Int(f as i64))
+                    } else {
+                        Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                            expected: format!("Can't parse string '{}' as integer.", s),
+                            actual: format!("'{}'", s),
+                        }))
+                    }
+                }
+                (Some(Value::Str(s)), Some(Value::Str(t))) if t.as_ref() == "float" => {
+                    if let Ok(f) = s.parse::<f64>() {
+                        Ok(Value::Float(f))
+                    } else {
+                        Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                            expected: format!("Can't parse string '{}' as float.", s),
+                            actual: format!("'{}'", s),
+                        }))
+                    }
+                }
+                (Some(Value::Str(s)), Some(Value::Str(t))) if t.as_ref() == "byte" => {
+                    if let Ok(n) = s.parse::<i64>() {
+                        if n < i8::MIN as i64 || n > i8::MAX as i64 {
+                            Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                                expected: "Can't convert number of type Integer to Byte due to overflow.".into(),
+                                actual: n.to_string(),
+                            }))
+                        } else {
+                            Ok(Value::Int(n))
+                        }
+                    } else {
+                        Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                            expected: format!("Can't parse string '{}' as byte.", s),
+                            actual: format!("'{}'", s),
+                        }))
+                    }
+                }
+                (Some(Value::Str(s)), Some(Value::Str(t))) if t.as_ref() == "short" => {
+                    if let Ok(n) = s.parse::<i64>() {
+                        if n < i16::MIN as i64 || n > i16::MAX as i64 {
+                            Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                                expected: "Can't convert number of type Integer to Short due to overflow.".into(),
+                                actual: n.to_string(),
+                            }))
+                        } else {
+                            Ok(Value::Int(n))
+                        }
+                    } else {
+                        Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                            expected: format!("Can't parse string '{}' as short.", s),
+                            actual: format!("'{}'", s),
+                        }))
+                    }
+                }
+                // byte/short for float inputs — truncate if in range
+                (Some(Value::Float(f)), Some(Value::Str(t))) if t.as_ref() == "byte" => {
+                    let n = *f as i64;
+                    if n < i8::MIN as i64 || n > i8::MAX as i64 {
+                        Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                            expected: "Can't convert number to Byte due to overflow.".into(),
+                            actual: f.to_string(),
+                        }))
+                    } else {
+                        Ok(Value::Int(n))
+                    }
+                }
+                (Some(Value::Float(f)), Some(Value::Str(t))) if t.as_ref() == "short" => {
+                    let n = *f as i64;
+                    if n < i16::MIN as i64 || n > i16::MAX as i64 {
+                        Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                            expected: "Can't convert number to Short due to overflow.".into(),
+                            actual: f.to_string(),
+                        }))
+                    } else {
+                        Ok(Value::Int(n))
+                    }
+                }
+                (Some(val), _) => {
+                    // Fall through to default asNumber behavior
+                    match val {
+                        Value::Int(n) => Ok(Value::Int(*n)),
+                        Value::Float(f) => Ok(Value::Float(*f)),
+                        Value::Null => Ok(Value::Null),
+                        _ => Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                            expected: "Cannot convert to number".into(),
+                            actual: val.type_name().to_string(),
+                        })),
+                    }
+                }
+                _ => Ok(Value::Null),
+            }
+        }
         "gremlin_asbool" => match vals.first() {
             Some(Value::Bool(b)) => Ok(Value::Bool(*b)),
             Some(Value::Int(n)) => Ok(Value::Bool(*n != 0)),
-            Some(Value::Float(f)) => Ok(Value::Bool(*f != 0.0)),
+            Some(Value::Float(f)) => {
+                if f.is_nan() {
+                    Ok(Value::Bool(false))
+                } else {
+                    Ok(Value::Bool(*f != 0.0))
+                }
+            }
             Some(Value::Str(s)) => match s.to_lowercase().as_str() {
                 "true" => Ok(Value::Bool(true)),
                 "false" => Ok(Value::Bool(false)),
@@ -779,8 +1208,18 @@ pub fn eval_function_with_vals(name: &str, vals: Vec<Value>) -> Result<Value, Gq
                     actual: format!("'{}'", s),
                 })),
             },
-            Some(Value::Null) => Ok(Value::Null),
-            _ => Ok(Value::Null),
+            Some(Value::Null) => Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                expected: "boolean-compatible value".into(),
+                actual: "null".into(),
+            })),
+            Some(Value::List(_)) => Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                expected: "boolean-compatible value".into(),
+                actual: "list".into(),
+            })),
+            _ => Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                expected: "boolean-compatible value".into(),
+                actual: "unknown".into(),
+            })),
         },
         "gremlin_typeof" => match vals.first() {
             Some(Value::Int(_)) => Ok(Value::Str("integer".into())),
@@ -845,6 +1284,10 @@ pub fn eval_function_with_vals(name: &str, vals: Vec<Value>) -> Result<Value, Gq
                     }
                     Ok(Value::List(result))
                 }
+                (Value::List(_), Value::Map(_)) => Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                    expected: "step type mismatch: expected argument to be Iterable but got Map".into(),
+                    actual: "Map".into(),
+                })),
                 (Value::Map(l), Value::Map(r)) => {
                     // Map merge: combine maps
                     let mut result = l.clone();
@@ -1040,17 +1483,18 @@ pub fn eval_function_with_vals(name: &str, vals: Vec<Value>) -> Result<Value, Gq
         }
         "gremlin_none" => {
             let list_val = vals.first().cloned().unwrap_or(Value::Null);
+            let pred_op = match vals.get(1) {
+                Some(Value::Str(s)) => s.as_ref(),
+                _ => "neq",
+            };
+            let pred_val = vals.get(2).cloned().unwrap_or(Value::Null);
             match &list_val {
                 Value::List(items) => {
-                    let pred_op = match vals.get(1) {
-                        Some(Value::Str(s)) => s.as_ref(),
-                        _ => "neq",
-                    };
-                    let pred_val = vals.get(2).cloned().unwrap_or(Value::Null);
                     let none_match = !items.iter().any(|v| gremlin_pred_check(v, pred_op, &pred_val));
                     Ok(Value::Bool(none_match))
                 }
-                _ => Ok(Value::Bool(true)),
+                // Scalar: none(P) → NOT matches(P)
+                other => Ok(Value::Bool(!gremlin_pred_check(other, pred_op, &pred_val))),
             }
         }
 
@@ -1073,6 +1517,119 @@ pub fn eval_function_with_vals(name: &str, vals: Vec<Value>) -> Result<Value, Gq
                 }
                 Some(other) => Ok(other),
                 None => Ok(Value::Null),
+            }
+        }
+        "gremlin_valuemap_unfold" => {
+            // Unwrap list values in a valueMap result (by(__.unfold()))
+            match vals.into_iter().next() {
+                Some(Value::Map(m)) => {
+                    let unwrapped: IndexMap<Box<str>, Value> = m
+                        .into_iter()
+                        .map(|(k, v)| {
+                            let unwrapped = match v {
+                                Value::List(items) if items.len() == 1 => {
+                                    items.into_iter().next().unwrap_or(Value::Null)
+                                }
+                                other => other,
+                            };
+                            (k, unwrapped)
+                        })
+                        .collect();
+                    Ok(Value::Map(unwrapped))
+                }
+                Some(other) => Ok(other),
+                None => Ok(Value::Null),
+            }
+        }
+        "list_compact" => {
+            let result: Vec<Value> = vals
+                .into_iter()
+                .filter(|v| !matches!(v, Value::Null))
+                .collect();
+            Ok(Value::List(result))
+        }
+        "gremlin_values_all" => {
+            // Fallback for non-graph values (maps, etc.)
+            match vals.into_iter().next() {
+                Some(Value::Map(m)) => {
+                    // Property Map from properties(): extract ~value
+                    if m.contains_key("~value") {
+                        let val = m.get("~value").cloned().unwrap_or(Value::Null);
+                        Ok(Value::List(vec![val]))
+                    } else {
+                        let vals: Vec<Value> = m.into_values().collect();
+                        Ok(Value::List(vals))
+                    }
+                }
+                Some(Value::Null) | None => Ok(Value::List(vec![])),
+                Some(other) => Ok(Value::List(vec![other])),
+            }
+        }
+        "gremlin_column_values" => match vals.first() {
+            Some(Value::Map(m)) => {
+                Ok(m.values().next().cloned().unwrap_or(Value::Null))
+            }
+            other => Ok(other.cloned().unwrap_or(Value::Null)),
+        },
+        "gremlin_column_keys" => match vals.first() {
+            Some(Value::Map(m)) => {
+                Ok(m.keys().next().map(|k| Value::Str(k.clone())).unwrap_or(Value::Null))
+            }
+            other => Ok(other.cloned().unwrap_or(Value::Null)),
+        },
+        "gremlin_sort_local" => {
+            let mut vals_iter = vals.into_iter();
+            let list_val = vals_iter.next().unwrap_or(Value::Null);
+            let by_key = match vals_iter.next() {
+                Some(Value::Str(s)) if !s.is_empty() => Some(s),
+                _ => None,
+            };
+            let descending =
+                matches!(vals_iter.next(), Some(Value::Str(s)) if s.as_ref() == "desc");
+
+            match list_val {
+                Value::List(mut items) => {
+                    if let Some(ref key) = by_key {
+                        // Sort by property key — extract key from each item for comparison
+                        items.sort_by(|a, b| {
+                            let a_prop = extract_sort_key(a, key);
+                            let b_prop = extract_sort_key(b, key);
+                            let ord = crate::executor::engine::helpers::gremlin_cmp_values(
+                                &a_prop, &b_prop,
+                            );
+                            if descending { ord.reverse() } else { ord }
+                        });
+                    } else {
+                        items.sort_by(|a, b| {
+                            let ord =
+                                crate::executor::engine::helpers::gremlin_cmp_values(a, b);
+                            if descending { ord.reverse() } else { ord }
+                        });
+                    }
+                    Ok(Value::List(items))
+                }
+                Value::Map(m) => {
+                    // Sort map entries by value (Column.values) or key (Column.keys)
+                    let mut entries: Vec<(Box<str>, Value)> = m.into_iter().collect();
+                    if let Some(ref key) = by_key {
+                        if key.as_ref() == "Column.keys" {
+                            entries.sort_by(|(ka, _), (kb, _)| ka.cmp(kb));
+                        } else {
+                            entries.sort_by(|(_, va), (_, vb)| {
+                                crate::executor::engine::helpers::gremlin_cmp_values(va, vb)
+                            });
+                        }
+                    } else {
+                        entries.sort_by(|(ka, _), (kb, _)| ka.cmp(kb));
+                    }
+                    if descending {
+                        entries.reverse();
+                    }
+                    let result: indexmap::IndexMap<Box<str>, Value> =
+                        entries.into_iter().collect();
+                    Ok(Value::Map(result))
+                }
+                other => Ok(other),
             }
         }
         "gremlin_sum_local" => match vals.first() {
@@ -1100,6 +1657,8 @@ pub fn eval_function_with_vals(name: &str, vals: Vec<Value>) -> Result<Value, Gq
                     Ok(Value::Int(sum_i))
                 }
             }
+            Some(Value::Int(n)) => Ok(Value::Int(*n)),
+            Some(Value::Float(f)) => Ok(Value::Float(*f)),
             Some(Value::Null) => Ok(Value::Null),
             _ => Ok(Value::Null),
         },
@@ -1121,6 +1680,9 @@ pub fn eval_function_with_vals(name: &str, vals: Vec<Value>) -> Result<Value, Gq
                 }
                 Ok(result.unwrap_or(Value::Null))
             }
+            Some(Value::Int(n)) => Ok(Value::Int(*n)),
+            Some(Value::Float(f)) => Ok(Value::Float(*f)),
+            Some(Value::Str(s)) => Ok(Value::Str(s.clone())),
             Some(Value::Null) => Ok(Value::Null),
             _ => Ok(Value::Null),
         },
@@ -1142,6 +1704,9 @@ pub fn eval_function_with_vals(name: &str, vals: Vec<Value>) -> Result<Value, Gq
                 }
                 Ok(result.unwrap_or(Value::Null))
             }
+            Some(Value::Int(n)) => Ok(Value::Int(*n)),
+            Some(Value::Float(f)) => Ok(Value::Float(*f)),
+            Some(Value::Str(s)) => Ok(Value::Str(s.clone())),
             Some(Value::Null) => Ok(Value::Null),
             _ => Ok(Value::Null),
         },
@@ -1162,6 +1727,8 @@ pub fn eval_function_with_vals(name: &str, vals: Vec<Value>) -> Result<Value, Gq
                     Ok(Value::Float(sum / count as f64))
                 }
             }
+            Some(Value::Int(n)) => Ok(Value::Float(*n as f64)),
+            Some(Value::Float(f)) => Ok(Value::Float(*f)),
             Some(Value::Null) => Ok(Value::Null),
             _ => Ok(Value::Null),
         },
@@ -1339,6 +1906,87 @@ fn gremlin_cmp(a: &Value, b: &Value) -> Option<std::cmp::Ordering> {
         (Value::Bool(b1), Value::Bool(b2)) => b1.partial_cmp(b2),
         _ => None,
     }
+}
+
+/// Extract a sort key from a value (node, edge, or map) by property name.
+fn extract_sort_key(v: &Value, key: &str) -> Value {
+    match v {
+        Value::Map(m) => m.get(key).cloned().unwrap_or(Value::Null),
+        // For nodes/edges, we can't directly access properties here
+        // since we don't have GraphStore access in filter context.
+        _ => Value::Null,
+    }
+}
+
+/// Evaluate a Gremlin math expression. `_` refers to the current value.
+/// Supports: `_ + N`, `_ - N`, `_ * N`, `_ / N`, `ceil(_)`, `floor(_)`,
+/// `abs(_)`, `_ + 1` (inc).
+fn eval_math_expr(expr: &str, current: &Value) -> Result<Value, GqlError> {
+    let expr = expr.trim();
+
+    // Helper to extract numeric value
+    fn as_f64(v: &Value) -> Option<f64> {
+        match v {
+            Value::Int(i) => Some(*i as f64),
+            Value::Float(f) => Some(*f),
+            _ => None,
+        }
+    }
+
+    let val = as_f64(current).unwrap_or(0.0);
+
+    // ceil(_), floor(_), abs(_)
+    if expr.starts_with("ceil(") {
+        return Ok(Value::Float(val.ceil()));
+    }
+    if expr.starts_with("floor(") {
+        return Ok(Value::Float(val.floor()));
+    }
+    if expr.starts_with("abs(") {
+        return Ok(Value::Float(val.abs()));
+    }
+    if expr.starts_with("sqrt(") {
+        return Ok(Value::Float(val.sqrt()));
+    }
+
+    // Binary operations: _ op N
+    for (op_str, op_fn) in &[
+        (" + ", (|a: f64, b: f64| a + b) as fn(f64, f64) -> f64),
+        (" - ", |a, b| a - b),
+        (" * ", |a, b| a * b),
+        (" / ", |a, b| if b != 0.0 { a / b } else { f64::NAN }),
+        (" % ", |a, b| if b != 0.0 { a % b } else { f64::NAN }),
+    ] {
+        if let Some(pos) = expr.find(op_str) {
+            let left_str = expr[..pos].trim();
+            let right_str = expr[pos + op_str.len()..].trim();
+
+            let left_val = if left_str == "_" {
+                val
+            } else if let Ok(n) = left_str.parse::<f64>() {
+                n
+            } else {
+                val // default to current value for variable refs
+            };
+            let right_val = if right_str == "_" {
+                val
+            } else if let Ok(n) = right_str.parse::<f64>() {
+                n
+            } else {
+                val
+            };
+
+            let result = op_fn(left_val, right_val);
+            // Return Int if the result is a whole number and both operands are int-like
+            if result.fract() == 0.0 && matches!(current, Value::Int(_)) {
+                return Ok(Value::Float(result));
+            }
+            return Ok(Value::Float(result));
+        }
+    }
+
+    // Fallback: return current value unchanged
+    Ok(current.clone())
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────

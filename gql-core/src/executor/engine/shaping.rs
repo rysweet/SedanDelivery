@@ -5,9 +5,32 @@ use crate::planner::Operator;
 use crate::types::Value;
 
 use super::helpers::{
-    cmp_values, eval_count_expr, expr_to_column_name, inject_parameters, RowDedupSet,
+    cmp_values, eval_count_expr, expr_to_column_name, gremlin_cmp_values, inject_parameters,
+    RowDedupSet,
 };
 use super::{ExecContext, QueryExecutor, Row};
+
+/// Compute a dedup key for a value, treating Gremlin edge property Maps specially:
+/// Edge property Maps (containing `~key`/`~value`/`~element` where element is an Edge)
+/// are compared by `~key` + `~value` only, ignoring `~element` (the parent edge).
+/// Vertex property Maps keep the `~element` in the comparison key since VertexProperty
+/// equality considers the parent vertex.
+fn property_aware_dedup_key(v: &Value) -> String {
+    if let Value::Map(m) = v {
+        if m.contains_key("~key") && m.contains_key("~value") {
+            // Edge properties: compare by key+value only
+            if let Some(Value::Edge(_)) = m.get("~element") {
+                let key = m.get("~key").map(|v| v.canonical_key()).unwrap_or_default();
+                let val = m
+                    .get("~value")
+                    .map(|v| v.canonical_key())
+                    .unwrap_or_default();
+                return format!("EdgeProp({key}, {val})");
+            }
+        }
+    }
+    v.canonical_key()
+}
 
 impl<'a> QueryExecutor<'a> {
     pub(crate) fn exec_filter(
@@ -81,6 +104,15 @@ impl<'a> QueryExecutor<'a> {
                     }
                 }
             }
+            // In Gremlin mode, preserve the __sack column through
+            // intermediate projections so sack() can read it later.
+            if self.gremlin_mode {
+                if let Some(v) = row.get("__sack") {
+                    if !new_row.contains_key("__sack") {
+                        new_row.insert("__sack".to_string(), v.clone());
+                    }
+                }
+            }
             // Preserve query parameters through scope changes.
             inject_parameters(&mut new_row, &self.parameters);
             cx.budget.record_row();
@@ -106,18 +138,57 @@ impl<'a> QueryExecutor<'a> {
         let mut out = Vec::with_capacity(input.len());
 
         if let Some(key) = by_key {
-            // Dedup by column value: use the specified row column for uniqueness
             use std::collections::HashSet;
             let mut seen: HashSet<String> = HashSet::new();
-            for row in input {
-                cx.budget.check_or_err()?;
-                // Look up the column value for dedup
-                let dedup_val = row
-                    .get(key.as_str())
-                    .map(|v| v.canonical_key())
-                    .unwrap_or_default();
-                if seen.insert(dedup_val) {
-                    out.push(row);
+
+            // Multi-key dedup (keys separated by \x1f)
+            if key.contains('\x1f') {
+                let labels: Vec<&str> = key.split('\x1f').collect();
+                for row in input {
+                    cx.budget.check_or_err()?;
+                    let composite: String = labels
+                        .iter()
+                        .map(|l| row.get(*l).map(|v| v.canonical_key()).unwrap_or_default())
+                        .collect::<Vec<_>>()
+                        .join("\x1f");
+                    if seen.insert(composite) {
+                        out.push(row);
+                    }
+                }
+            } else if let Some(rest) = key.strip_prefix("__dedup_prop__") {
+                // Property-based dedup: extract property from the element.
+                // For Node/Edge values where the property doesn't exist,
+                // drop the traverser (non-productive by-modulation).
+                // For other value types, use empty string as dedup key.
+                let parts: Vec<&str> = rest.splitn(2, "__").collect();
+                let prop_name = parts.first().copied().unwrap_or("");
+                let alias = parts.get(1).copied().unwrap_or("");
+                for row in input {
+                    cx.budget.check_or_err()?;
+                    if let Some(val) = row.get(alias) {
+                        let extracted = self.extract_property_from_value(cx.graph, val, prop_name);
+                        let is_element = matches!(val, Value::Node(_) | Value::Edge(_));
+                        if extracted.is_none() && is_element {
+                            // Property missing on node/edge → drop traverser
+                            continue;
+                        }
+                        let dedup_val = extracted.map(|v| v.canonical_key()).unwrap_or_default();
+                        if seen.insert(dedup_val) {
+                            out.push(row);
+                        }
+                    }
+                }
+            } else {
+                // Simple column-based dedup
+                for row in input {
+                    cx.budget.check_or_err()?;
+                    let dedup_val = row
+                        .get(key.as_str())
+                        .map(property_aware_dedup_key)
+                        .unwrap_or_default();
+                    if seen.insert(dedup_val) {
+                        out.push(row);
+                    }
                 }
             }
         } else {
@@ -132,12 +203,57 @@ impl<'a> QueryExecutor<'a> {
         Ok(out)
     }
 
+    /// Extract a property from a Value (node, edge, or map).
+    fn extract_property_from_value(&self, graph: &str, val: &Value, prop: &str) -> Option<Value> {
+        match val {
+            Value::Node(nid) => {
+                // Handle special Gremlin tokens
+                if prop == "~label" {
+                    return self.cached_get_node(graph, *nid).ok().flatten().map(|n| {
+                        let label = n.labels.first().map(|l| l.as_str()).unwrap_or("");
+                        Value::Str(Box::from(label))
+                    });
+                }
+                if prop == "~id" {
+                    return Some(Value::Int(nid.0 as i64));
+                }
+                self.cached_get_node(graph, *nid)
+                    .ok()
+                    .flatten()
+                    .and_then(|n| n.properties.get(prop).cloned())
+            }
+            Value::Edge(eid) => {
+                if prop == "~label" {
+                    return self
+                        .cached_get_edge(graph, *eid)
+                        .ok()
+                        .flatten()
+                        .map(|e| Value::Str(Box::from(e.rel_type.as_str())));
+                }
+                if prop == "~id" {
+                    return Some(Value::Int(eid.0 as i64));
+                }
+                self.cached_get_edge(graph, *eid)
+                    .ok()
+                    .flatten()
+                    .and_then(|e| e.properties.get(prop).cloned())
+            }
+            Value::Map(m) => m.get(prop).cloned(),
+            _ => None,
+        }
+    }
+
     pub(crate) fn exec_sort(
         &self,
         cx: &mut ExecContext<'_>,
         op: &Operator,
     ) -> Result<Vec<Row>, GqlError> {
-        let Operator::Sort { items, child } = op else {
+        let Operator::Sort {
+            items,
+            gremlin_order,
+            child,
+        } = op
+        else {
             debug_assert!(false, "expected Sort operator");
             return Err(GqlError::Execution(
                 crate::error::ExecutionError::UnsupportedFeature {
@@ -161,12 +277,17 @@ impl<'a> QueryExecutor<'a> {
             })
             .collect::<Result<Vec<_>, GqlError>>()?;
 
+        let use_gremlin = *gremlin_order;
         keyed.sort_by(|(ka, _), (kb, _)| {
             for i in 0..items.len() {
                 let va = &ka[i];
                 let vb = &kb[i];
                 let asc = items[i].1;
-                let ord = cmp_values(va, vb);
+                let ord = if use_gremlin {
+                    gremlin_cmp_values(va, vb)
+                } else {
+                    cmp_values(va, vb)
+                };
                 if ord != std::cmp::Ordering::Equal {
                     return if asc { ord } else { ord.reverse() };
                 }
@@ -286,7 +407,10 @@ impl<'a> QueryExecutor<'a> {
             | Operator::ChooseMap { .. }
             | Operator::GremlinSelect { .. }
             | Operator::GremlinGroup { .. }
-            | Operator::GremlinMapSlice { .. } => false,
+            | Operator::GremlinMapSlice { .. }
+            | Operator::GremlinSimplePath { .. }
+            | Operator::GremlinIndex { .. }
+            | Operator::GremlinProject { .. } => false,
         }
     }
 
@@ -404,6 +528,7 @@ mod tests {
                     ),
                     true,
                 )],
+                gremlin_order: false,
                 child: Box::new(Operator::NodeScan {
                     label: Some(Label::new("P")),
                     alias: Identifier::new("n"),
@@ -530,6 +655,7 @@ mod tests {
                     Expr::Property(Box::new(Expr::Variable(Identifier::new("n"))), "i".into()),
                     true,
                 )],
+                gremlin_order: false,
                 child: Box::new(Operator::NodeScan {
                     label: Some(Label::new("N")),
                     alias: Identifier::new("n"),

@@ -1630,6 +1630,7 @@ mod tests {
                 if_true,
                 if_false,
                 child,
+                ..
             } => {
                 let mut v = vec![child.as_ref(), predicate.as_ref(), if_true.as_ref()];
                 if let Some(f) = if_false {
@@ -1656,17 +1657,27 @@ mod tests {
                 selector,
                 options,
                 child,
+                ..
             } => {
                 let mut v = vec![child.as_ref(), selector.as_ref()];
-                for (_, branch) in options {
+                for (_, branch, _) in options {
                     v.push(branch.as_ref());
                 }
                 v
             }
             Operator::GremlinSelect { child, .. }
             | Operator::GremlinGroup { child, .. }
-            | Operator::GremlinMapSlice { child, .. } => {
+            | Operator::GremlinMapSlice { child, .. }
+            | Operator::GremlinSimplePath { child, .. }
+            | Operator::GremlinIndex { child, .. } => {
                 vec![child]
+            }
+            Operator::GremlinProject { entries, child, .. } => {
+                let mut v = vec![child.as_ref()];
+                for (_, op, _) in entries {
+                    v.push(op);
+                }
+                v
             }
         }
     }

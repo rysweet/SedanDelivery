@@ -328,10 +328,87 @@ impl<'a> QueryExecutor<'a> {
                                     actual: "deleted or missing Node".to_string(),
                                 })),
                             },
+                            Value::Edge(edge_id) => match self.cached_get_edge(graph, *edge_id)? {
+                                Some(data) => Ok(Value::List(vec![Value::Str(
+                                    data.rel_type.into_boxed_str(),
+                                )])),
+                                None => Ok(Value::List(vec![])),
+                            },
+                            // Property Map from properties(): key() extracts ~key
+                            Value::Map(m) if m.contains_key("~key") => {
+                                let key = m.get("~key").cloned().unwrap_or(Value::Null);
+                                Ok(key)
+                            }
                             other => Err(GqlError::Execution(ExecutionError::TypeMismatch {
                                 expected: "Node".to_string(),
                                 actual: other.type_name().to_string(),
                             })),
+                        }
+                    }
+                    // Gremlin T.label: returns single label string (not a list)
+                    "gremlin_single_label" => {
+                        if evaled_args.len() != 1 {
+                            return Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                                expected: "gremlin_single_label() expects 1 argument".to_string(),
+                                actual: format!("{} arguments", evaled_args.len()),
+                            }));
+                        }
+                        match &evaled_args[0] {
+                            Value::Null => Ok(Value::Null),
+                            Value::Node(node_id) => match self.cached_get_node(graph, *node_id)? {
+                                Some(data) => {
+                                    if let Some(lbl) = data.labels.first() {
+                                        Ok(Value::Str(lbl.clone().into_boxed_str()))
+                                    } else {
+                                        Ok(Value::Str("".to_string().into_boxed_str()))
+                                    }
+                                }
+                                None => Ok(Value::Null),
+                            },
+                            Value::Edge(edge_id) => match self.cached_get_edge(graph, *edge_id)? {
+                                Some(data) => Ok(Value::Str(data.rel_type.into_boxed_str())),
+                                None => Ok(Value::Null),
+                            },
+                            // Property Map: return ~key as label
+                            Value::Map(m) if m.contains_key("~key") => {
+                                Ok(m.get("~key").cloned().unwrap_or(Value::Null))
+                            }
+                            other => Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                                expected: "Node".to_string(),
+                                actual: other.type_name().to_string(),
+                            })),
+                        }
+                    }
+                    // Gremlin T.key: extract ~key from property map
+                    "gremlin_property_key" => {
+                        if evaled_args.len() != 1 {
+                            return Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                                expected: "gremlin_property_key() expects 1 argument".to_string(),
+                                actual: format!("{} arguments", evaled_args.len()),
+                            }));
+                        }
+                        match &evaled_args[0] {
+                            Value::Map(m) if m.contains_key("~key") => {
+                                Ok(m.get("~key").cloned().unwrap_or(Value::Null))
+                            }
+                            Value::Null => Ok(Value::Null),
+                            _ => Ok(Value::Null),
+                        }
+                    }
+                    // Gremlin T.value: extract ~value from property map
+                    "gremlin_property_value" => {
+                        if evaled_args.len() != 1 {
+                            return Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                                expected: "gremlin_property_value() expects 1 argument".to_string(),
+                                actual: format!("{} arguments", evaled_args.len()),
+                            }));
+                        }
+                        match &evaled_args[0] {
+                            Value::Map(m) if m.contains_key("~value") => {
+                                Ok(m.get("~value").cloned().unwrap_or(Value::Null))
+                            }
+                            Value::Null => Ok(Value::Null),
+                            _ => Ok(Value::Null),
                         }
                     }
                     "type" => {
@@ -371,6 +448,10 @@ impl<'a> QueryExecutor<'a> {
                             Value::Null => Ok(Value::Null),
                             Value::Node(node_id) => Ok(Value::Int(node_id.0 as i64)),
                             Value::Edge(edge_id) => Ok(Value::Int(edge_id.0 as i64)),
+                            // Property maps carry ~id for property identity.
+                            Value::Map(m) if m.contains_key("~id") => {
+                                Ok(m.get("~id").cloned().unwrap_or(Value::Null))
+                            }
                             other => Err(GqlError::Execution(ExecutionError::TypeMismatch {
                                 expected: "Node or Relationship".to_string(),
                                 actual: other.type_name().to_string(),
@@ -540,12 +621,49 @@ impl<'a> QueryExecutor<'a> {
                             })),
                         }
                     }
+                    "gremlin_both_v" => {
+                        // Return [startNode, endNode] as a list
+                        match evaled_args.into_iter().next() {
+                            Some(Value::Edge(edge_id)) => {
+                                match self.cached_get_edge(graph, edge_id)? {
+                                    Some(data) => Ok(Value::List(vec![
+                                        Value::Node(data.src),
+                                        Value::Node(data.dst),
+                                    ])),
+                                    None => Ok(Value::List(vec![])),
+                                }
+                            }
+                            _ => Ok(Value::List(vec![])),
+                        }
+                    }
+                    "gremlin_other_v" => {
+                        // Return the opposite endpoint of an edge from
+                        // the traversal source. We don't track the source
+                        // direction, so return endNode as default (works
+                        // for outE().otherV() which is the common case).
+                        match evaled_args.into_iter().next() {
+                            Some(Value::Edge(edge_id)) => {
+                                match self.cached_get_edge(graph, edge_id)? {
+                                    Some(data) => Ok(Value::Node(data.dst)),
+                                    None => Ok(Value::Null),
+                                }
+                            }
+                            _ => Ok(Value::Null),
+                        }
+                    }
                     "gremlin_valuemap" => {
                         // valueMap(): extract properties and wrap each in a list.
-                        // Args: element, with_tokens_bool [, key1, key2, ...]
+                        // Args: element, token_mode_int [, key1, key2, ...]
+                        // token_mode: 0=none, 1=all, 2=labels, 3=ids
                         let mut args_iter = evaled_args.into_iter();
                         let element = args_iter.next();
-                        let with_tokens = matches!(args_iter.next(), Some(Value::Bool(true)));
+                        let token_mode = match args_iter.next() {
+                            Some(Value::Int(n)) => n as u8,
+                            Some(Value::Bool(true)) => 1u8, // backwards compat
+                            _ => 0u8,
+                        };
+                        let include_id = token_mode == 1 || token_mode == 3;
+                        let include_label = token_mode == 1 || token_mode == 2;
                         let keys: Vec<String> = args_iter
                             .filter_map(|v| match v {
                                 Value::Str(s) => Some(s.to_string()),
@@ -558,11 +676,13 @@ impl<'a> QueryExecutor<'a> {
                                     Some(data) => {
                                         let mut wrapped: indexmap::IndexMap<Box<str>, Value> =
                                             indexmap::IndexMap::new();
-                                        if with_tokens {
+                                        if include_id {
                                             wrapped.insert(
                                                 "t[id]".into(),
                                                 Value::Int(node_id.0 as i64),
                                             );
+                                        }
+                                        if include_label {
                                             let label_str = data
                                                 .labels
                                                 .first()
@@ -574,9 +694,7 @@ impl<'a> QueryExecutor<'a> {
                                             );
                                         }
                                         for (k, v) in data.properties.into_iter() {
-                                            if keys.is_empty()
-                                                || keys.iter().any(|fk| fk == &k)
-                                            {
+                                            if keys.is_empty() || keys.iter().any(|fk| fk == &k) {
                                                 wrapped.insert(
                                                     k.into_boxed_str(),
                                                     Value::List(vec![v]),
@@ -593,22 +711,20 @@ impl<'a> QueryExecutor<'a> {
                                     Some(data) => {
                                         let mut wrapped: indexmap::IndexMap<Box<str>, Value> =
                                             indexmap::IndexMap::new();
-                                        if with_tokens {
+                                        if include_id {
                                             wrapped.insert(
                                                 "t[id]".into(),
                                                 Value::Int(edge_id.0 as i64),
                                             );
+                                        }
+                                        if include_label {
                                             wrapped.insert(
                                                 "t[label]".into(),
-                                                Value::Str(
-                                                    data.rel_type.as_str().into(),
-                                                ),
+                                                Value::Str(data.rel_type.as_str().into()),
                                             );
                                         }
                                         for (k, v) in data.properties.into_iter() {
-                                            if keys.is_empty()
-                                                || keys.iter().any(|fk| fk == &k)
-                                            {
+                                            if keys.is_empty() || keys.iter().any(|fk| fk == &k) {
                                                 wrapped.insert(
                                                     k.into_boxed_str(),
                                                     Value::List(vec![v]),
@@ -624,8 +740,7 @@ impl<'a> QueryExecutor<'a> {
                                 let wrapped: indexmap::IndexMap<Box<str>, Value> = m
                                     .into_iter()
                                     .filter(|(k, _)| {
-                                        keys.is_empty()
-                                            || keys.iter().any(|fk| fk.as_str() == &**k)
+                                        keys.is_empty() || keys.iter().any(|fk| fk.as_str() == &**k)
                                     })
                                     .map(|(k, v)| (k, Value::List(vec![v])))
                                     .collect();
@@ -635,18 +750,134 @@ impl<'a> QueryExecutor<'a> {
                             None => Ok(Value::Null),
                         }
                     }
+                    "list_compact" => {
+                        // Build a list from arguments, filtering out nulls.
+                        let vals: Vec<Value> = evaled_args
+                            .into_iter()
+                            .filter(|v| !matches!(v, Value::Null))
+                            .collect();
+                        Ok(Value::List(vals))
+                    }
+                    "gremlin_values_all" => {
+                        // values() with no keys: return list of all property values
+                        match evaled_args.into_iter().next() {
+                            Some(Value::Node(node_id)) => {
+                                match self.cached_get_node(graph, node_id)? {
+                                    Some(data) => {
+                                        let vals: Vec<Value> =
+                                            data.properties.into_values().collect();
+                                        Ok(Value::List(vals))
+                                    }
+                                    None => Ok(Value::List(vec![])),
+                                }
+                            }
+                            Some(Value::Edge(edge_id)) => {
+                                match self.cached_get_edge(graph, edge_id)? {
+                                    Some(data) => {
+                                        let vals: Vec<Value> =
+                                            data.properties.into_values().collect();
+                                        Ok(Value::List(vals))
+                                    }
+                                    None => Ok(Value::List(vec![])),
+                                }
+                            }
+                            Some(Value::Map(m)) => {
+                                // Property Map from properties(): extract ~value
+                                if m.contains_key("~value") {
+                                    let val = m.get("~value").cloned().unwrap_or(Value::Null);
+                                    Ok(Value::List(vec![val]))
+                                } else {
+                                    let vals: Vec<Value> = m.into_values().collect();
+                                    Ok(Value::List(vals))
+                                }
+                            }
+                            Some(Value::Null) | None => Ok(Value::List(vec![])),
+                            // Scalar values (from properties().value() chain):
+                            // wrap in a single-element list so Unwind produces
+                            // one row.
+                            Some(other) => Ok(Value::List(vec![other])),
+                        }
+                    }
+                    "gremlin_properties_entries" => {
+                        // properties(): return list of Maps with ~key, ~value, ~element.
+                        // First arg is the element; remaining args are optional key filters.
+                        let mut args_iter = evaled_args.into_iter();
+                        let element = args_iter.next().unwrap_or(Value::Null);
+                        let key_filters: Vec<String> = args_iter
+                            .filter_map(|v| match v {
+                                Value::Str(s) => Some(s.to_string()),
+                                _ => None,
+                            })
+                            .collect();
+                        let props: Vec<(String, Value)> = match &element {
+                            Value::Node(node_id) => match self.cached_get_node(graph, *node_id)? {
+                                Some(data) => data.properties.into_iter().collect(),
+                                None => Vec::new(),
+                            },
+                            Value::Edge(edge_id) => match self.cached_get_edge(graph, *edge_id)? {
+                                Some(data) => data.properties.into_iter().collect(),
+                                None => Vec::new(),
+                            },
+                            Value::Map(m) => {
+                                m.iter().map(|(k, v)| (k.to_string(), v.clone())).collect()
+                            }
+                            _ => Vec::new(),
+                        };
+                        let entries: Vec<Value> = props
+                            .into_iter()
+                            .filter(|(k, _)| {
+                                key_filters.is_empty() || key_filters.iter().any(|f| f == k)
+                            })
+                            .enumerate()
+                            .map(|(idx, (k, v))| {
+                                let elem_base = match &element {
+                                    Value::Node(nid) => nid.0 as i64 * 1000,
+                                    Value::Edge(eid) => eid.0 as i64 * 1000,
+                                    _ => 0,
+                                };
+                                let mut m = indexmap::IndexMap::new();
+                                m.insert(Box::from("~id"), Value::Int(elem_base + idx as i64));
+                                m.insert(Box::from("~key"), Value::Str(k.into_boxed_str()));
+                                m.insert(Box::from("~value"), v);
+                                m.insert(Box::from("~element"), element.clone());
+                                Value::Map(m)
+                            })
+                            .collect();
+                        Ok(Value::List(entries))
+                    }
                     "gremlin_format" => {
-                        // format(): resolve %{key} from node/edge properties.
+                        // format(): resolve %{key} from node/edge properties and/or as-labels.
+                        // Priority: node/edge properties first, then as-labels for remaining.
                         // Returns Null if any %{key} placeholder can't be resolved.
+
+                        let labels_map = match evaled_args.get(2) {
+                            Some(Value::Map(m)) => Some(m),
+                            _ => None,
+                        };
+
                         match (evaled_args.first(), evaled_args.get(1)) {
                             (Some(Value::Node(node_id)), Some(Value::Str(pattern))) => {
                                 match self.cached_get_node(graph, *node_id)? {
                                     Some(data) => {
                                         let mut result = pattern.to_string();
+                                        // Resolve from node properties first
                                         for (k, v) in data.properties.iter() {
                                             let placeholder = format!("%{{{}}}", k);
                                             let val_str = format_value(v);
                                             result = result.replace(&placeholder, &val_str);
+                                        }
+                                        // Then resolve remaining from labels
+                                        if result.contains("%{") {
+                                            if let Some(labels) = labels_map {
+                                                for (k, v) in labels.iter() {
+                                                    let placeholder = format!("%{{{}}}", k);
+                                                    if result.contains(&placeholder) {
+                                                        let val_str = format_value(v);
+                                                        result =
+                                                            result.replace(&placeholder, &val_str);
+                                                    }
+                                                }
+                                            }
                                         }
                                         if result.contains("%{") {
                                             Ok(Value::Null)
@@ -667,6 +898,18 @@ impl<'a> QueryExecutor<'a> {
                                             result = result.replace(&placeholder, &val_str);
                                         }
                                         if result.contains("%{") {
+                                            if let Some(labels) = labels_map {
+                                                for (k, v) in labels.iter() {
+                                                    let placeholder = format!("%{{{}}}", k);
+                                                    if result.contains(&placeholder) {
+                                                        let val_str = format_value(v);
+                                                        result =
+                                                            result.replace(&placeholder, &val_str);
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        if result.contains("%{") {
                                             Ok(Value::Null)
                                         } else {
                                             Ok(Value::Str(result.into()))
@@ -675,8 +918,25 @@ impl<'a> QueryExecutor<'a> {
                                     None => Ok(Value::Null),
                                 }
                             }
+                            (_, Some(Value::Str(pattern))) if labels_map.is_some() => {
+                                // Non-node/edge: resolve from labels only
+                                let mut result = pattern.to_string();
+                                if let Some(labels) = labels_map {
+                                    for (k, v) in labels.iter() {
+                                        let placeholder = format!("%{{{}}}", k);
+                                        if result.contains(&placeholder) {
+                                            let val_str = format_value(v);
+                                            result = result.replace(&placeholder, &val_str);
+                                        }
+                                    }
+                                }
+                                if result.contains("%{") {
+                                    Ok(Value::Null)
+                                } else {
+                                    Ok(Value::Str(result.to_string().into()))
+                                }
+                            }
                             (Some(Value::Str(_)), Some(Value::Str(pattern))) => {
-                                // Format with a string value (no properties to resolve)
                                 if !pattern.contains("%{") {
                                     Ok(Value::Str(pattern.clone()))
                                 } else {
@@ -684,6 +944,64 @@ impl<'a> QueryExecutor<'a> {
                                 }
                             }
                             _ => eval_function_with_vals(name, evaled_args),
+                        }
+                    }
+                    "gremlin_format_by" => {
+                        // format() with by() modulations + property resolution.
+                        // args = [traverser, pattern, by1, by2, ...]
+                        // First replace %{_} with by-values, then resolve %{key} from
+                        // node/edge properties.
+                        if evaled_args.len() < 2 {
+                            return Ok(Value::Null);
+                        }
+                        if matches!(evaled_args.first(), Some(Value::Null)) {
+                            return Ok(Value::Null);
+                        }
+                        let pattern = match evaled_args.get(1) {
+                            Some(Value::Str(s)) => s.to_string(),
+                            _ => return Ok(Value::Null),
+                        };
+                        let by_values = &evaled_args[2..];
+                        let mut result = pattern;
+                        // Replace %{_} with by-values cyclically
+                        let mut by_idx = 0;
+                        while let Some(pos) = result.find("%{_}") {
+                            if by_values.is_empty() {
+                                break;
+                            }
+                            let val = &by_values[by_idx % by_values.len()];
+                            let val_str = format_value(val);
+                            result = format!("{}{}{}", &result[..pos], val_str, &result[pos + 4..]);
+                            by_idx += 1;
+                        }
+                        // Resolve remaining %{key} from node/edge properties
+                        if result.contains("%{") {
+                            match evaled_args.first() {
+                                Some(Value::Node(node_id)) => {
+                                    if let Some(data) = self.cached_get_node(graph, *node_id)? {
+                                        for (k, v) in data.properties.iter() {
+                                            let placeholder = format!("%{{{}}}", k);
+                                            let val_str = format_value(v);
+                                            result = result.replace(&placeholder, &val_str);
+                                        }
+                                    }
+                                }
+                                Some(Value::Edge(edge_id)) => {
+                                    if let Some(data) = self.cached_get_edge(graph, *edge_id)? {
+                                        for (k, v) in data.properties.iter() {
+                                            let placeholder = format!("%{{{}}}", k);
+                                            let val_str = format_value(v);
+                                            result = result.replace(&placeholder, &val_str);
+                                        }
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+                        if result.contains("%{") {
+                            Ok(Value::Null)
+                        } else {
+                            Ok(Value::Str(result.into()))
                         }
                     }
                     _ => eval_function_with_vals(name, evaled_args),

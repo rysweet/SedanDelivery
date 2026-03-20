@@ -15,6 +15,8 @@ pub enum Predicate {
     Within(Vec<GremlinValue>),
     Without(Vec<GremlinValue>),
     Between(GremlinValue, GremlinValue),
+    /// `P.inside(low, high)` — exclusive range (low < x < high)
+    Inside(GremlinValue, GremlinValue),
     // Text predicates
     Containing(GremlinValue),
     NotContaining(GremlinValue),
@@ -26,6 +28,12 @@ pub enum Predicate {
     NotRegex(GremlinValue),
     /// `P.typeOf(GType.STRING)` — check if value is of the specified Gremlin type
     IsType(GremlinValue),
+    /// Compound predicate: all must match (P.gt(1).and(P.lt(5)))
+    And(Vec<Predicate>),
+    /// Compound predicate: any must match (P.gt(5).or(P.lt(1)))
+    Or(Vec<Predicate>),
+    /// Negation of a predicate: P.not(P.eq(1))
+    Not(Box<Predicate>),
 }
 
 /// A single Gremlin traversal step.
@@ -41,6 +49,8 @@ pub enum GremlinStep {
     /// `has("key", P.gt(30))` — property predicate filter
     HasPredicate(String, Predicate),
     HasId(Vec<GremlinValue>),
+    /// `hasId(P.neq(xx1))` — ID predicate filter
+    HasIdPredicate(Predicate),
 
     // ── Traversal steps ──────────────────────────────────────────────────────
     Out(Vec<String>),
@@ -56,8 +66,8 @@ pub enum GremlinStep {
 
     // ── Element steps ────────────────────────────────────────────────────────
     Values(Vec<String>),
-    /// `valueMap()` — keys to project; bool indicates include tokens (id/label).
-    ValueMap(Vec<String>, bool),
+    /// `valueMap()` — keys to project; u8 token mode: 0=none, 1=all, 2=labels, 3=ids.
+    ValueMap(Vec<String>, u8),
     Properties(Vec<String>),
     Id,
     Label,
@@ -83,28 +93,34 @@ pub enum GremlinStep {
 
     // ── Ordering & paging ────────────────────────────────────────────────────
     Order,
+    /// `order(Scope.local)` — sort elements within a list
+    SortLocal,
     By(String, bool), // (key, descending)
+    /// `by(traversal)` — by modulation with a sub-traversal
+    ByTraversal(Vec<GremlinStep>, bool),
     Limit(i64),
     Range(i64, i64),
     /// `limit(Scope.local, n)` — slice Map/List values
     LimitLocal(i64),
     /// `range(Scope.local, lo, hi)` — slice Map/List values
     RangeLocal(i64, i64),
+    /// `skip(Scope.local, n)` — skip first n elements from list
+    SkipLocal(i64),
     Dedup(Vec<String>),
 
     // ── Boolean steps ────────────────────────────────────────────────────────
     Where(Vec<GremlinStep>),
     Not(Vec<GremlinStep>),
-    And(Vec<GremlinStep>),
-    Or(Vec<GremlinStep>),
+    And(Vec<Vec<GremlinStep>>),
+    Or(Vec<Vec<GremlinStep>>),
     Is(Predicate),
 
     // ── Mutation steps ───────────────────────────────────────────────────────
     AddV(String),
     AddE(String),
     Property(String, GremlinValue),
-    From(Box<GremlinStep>),
-    To(Box<GremlinStep>),
+    From(Vec<GremlinStep>),
+    To(Vec<GremlinStep>),
     Drop,
 
     // ── Path steps ───────────────────────────────────────────────────────────
@@ -115,6 +131,7 @@ pub enum GremlinStep {
     Times(i64),
     Until(Vec<GremlinStep>),
     Emit,
+    EmitPred(Vec<GremlinStep>),
     Choose(Vec<GremlinStep>, Vec<GremlinStep>, Option<Vec<GremlinStep>>),
     Coalesce(Vec<Vec<GremlinStep>>),
     Union(Vec<Vec<GremlinStep>>),
@@ -130,8 +147,12 @@ pub enum GremlinStep {
     Match(Vec<Vec<GremlinStep>>),
     Project(Vec<String>),
     Identity,
+    /// `element()` — return the owning element from a property object
+    Element,
     /// `tail()` or `tail(n)` — keep only the last n elements (default 1)
     Tail(i64),
+    /// `tail(Scope.local)` or `tail(Scope.local, n)` — last n elements of a list
+    TailLocal(i64),
     /// `skip(n)` — drop the first n elements
     Skip(i64),
     /// `elementMap(keys...)` — like valueMap but includes id and label
@@ -140,6 +161,8 @@ pub enum GremlinStep {
     HasKey(Vec<String>),
     /// `hasValue(values...)` — filter elements that have any of the listed values
     HasValue(Vec<GremlinValue>),
+    /// `hasValue(P.gt(30))` — filter properties by predicate on value
+    HasValuePredicate(Predicate),
     /// `optional(traversal)` — execute traversal, fall back to identity if empty
     Optional(Vec<GremlinStep>),
     /// `simplePath()` — filter to paths with no repeated elements
@@ -160,15 +183,43 @@ pub enum GremlinStep {
     Barrier,
     /// `sample(n)` — random sample of n traversers
     Sample(i64),
+    /// `sample(Scope.local, n)` — sample elements within a list
+    SampleLocal(i64),
     /// `discard()` — consume traversal without returning results
     Discard,
     /// `loops()` — returns the number of loops in a repeat context
     Loops,
+    /// `index()` — pair each element with its positional index
+    Index,
+    /// `index().with(WithOptions.indexer, WithOptions.map)` — index as a Map
+    IndexWithMap,
 
     /// `sack()` — retrieve the current sack value
     Sack,
+    /// `sack(operator)` — apply binary op: sack = sack OP current_value
+    /// Operator string: "sum", "minus", "mult", "div", "assign"
+    SackOp(String),
+    /// `withSack(initValue)` — initialize the sack with a value
+    WithSack(GremlinValue),
+    /// `withSideEffect(key, value)` — register a named side-effect value
+    /// The optional third field is a reduction operator (e.g., "sum", "minus")
+    /// from `withSideEffect(key, init, Operator.op)`.
+    WithSideEffect(String, GremlinValue, Option<String>),
     /// `option(token, traversal)` — option step for branch/choose
     Option(GremlinValue, Vec<GremlinStep>),
+    /// Flag indicating ProductiveByStrategy is active
+    ProductiveByStrategy,
+    /// Flag indicating ReadOnlyStrategy is active — mutating steps must error
+    ReadOnlyStrategy,
+    /// SeedStrategy with seed value for deterministic random operations
+    SeedStrategy(i64),
+    /// Flag indicating ReservedKeysVerificationStrategy is active
+    /// Contains the set of extra reserved keys (besides "id" and "label")
+    ReservedKeysVerificationStrategy(Vec<String>),
+    /// Flag indicating EdgeLabelVerificationStrategy(throwException:true) is active
+    EdgeLabelVerificationStrategy,
+    /// `dedup(Scope.local)` — deduplicate elements within a list
+    DedupLocal(Vec<String>),
 
     // ── String steps ────────────────────────────────────────────────────────
     /// `toLower()` — lowercase string
@@ -200,15 +251,22 @@ pub enum GremlinStep {
     /// `asString(Scope.local)` — convert elements of a list/map to strings
     AsStringLocal,
     /// `asNumber()` — convert to number (integer or double)
+    /// Optional target type: "int", "long", "float", "double"
     AsNumber,
+    AsNumberTyped(String),
     /// `asBool()` — convert to boolean
     AsBool,
     /// `conjoin(separator)` — join list elements with separator
     Conjoin(String),
     /// `format(pattern)` — format string
     Format(String),
+    /// String operation with `Scope.local` — apply element-wise to list.
+    /// The String is the Gremlin function name (e.g. "gremlin_tolower_local").
+    StringOpLocal(String),
     /// `typeOf()` — return type name as string
     TypeOf,
+    /// `math(expression)` — evaluate mathematical expression
+    Math(String),
 
     // ── Collection steps ────────────────────────────────────────────────────
     /// `combine(traversal)` — append two lists
@@ -383,7 +441,7 @@ fn parse_step(name: &str, args: &[serde_json::Value]) -> Result<GremlinStep, Byt
         "bothV" => Ok(GremlinStep::BothV),
         "otherV" => Ok(GremlinStep::OtherV),
         "values" => Ok(GremlinStep::Values(collect_string_args(args))),
-        "valueMap" => Ok(GremlinStep::ValueMap(collect_string_args(args), false)),
+        "valueMap" => Ok(GremlinStep::ValueMap(collect_string_args(args), 0)),
         "properties" => Ok(GremlinStep::Properties(collect_string_args(args))),
         "id" => Ok(GremlinStep::Id),
         "label" => Ok(GremlinStep::Label),
