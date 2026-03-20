@@ -2654,14 +2654,28 @@ impl GremlinCompiler {
                             child: Box::new(child),
                         });
                     } else if !values.is_empty() {
-                        let val_exprs: Vec<Expr> =
-                            values.iter().map(gremlin_value_to_expr).collect();
-                        current = Some(Operator::Filter {
-                            predicate: Expr::BinaryOp {
+                        // Filter null values out, then check ~value IN [non-null values]
+                        // OR ~value IS NULL if null is in the list.
+                        let non_null: Vec<Expr> = values
+                            .iter()
+                            .filter(|v| !matches!(v, GremlinValue::Null))
+                            .map(gremlin_value_to_expr)
+                            .collect();
+                        let pred_in = if !non_null.is_empty() {
+                            Some(Expr::BinaryOp {
                                 op: BinaryOp::In,
-                                left: Box::new(Expr::Variable(current_alias.clone())),
-                                right: Box::new(Expr::List(val_exprs)),
-                            },
+                                left: Box::new(tilde_val.clone()),
+                                right: Box::new(Expr::List(non_null)),
+                            })
+                        } else {
+                            None
+                        };
+                        let predicate = match pred_in {
+                            Some(pred) => pred,
+                            None => Expr::Bool(false),
+                        };
+                        current = Some(Operator::Filter {
+                            predicate,
                             child: Box::new(child),
                         });
                     } else {
