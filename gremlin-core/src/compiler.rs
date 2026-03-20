@@ -6059,7 +6059,7 @@ mod tests {
             assert_eq!(items.len(), 1);
             assert!(matches!(
                 &items[0].0,
-                Expr::FunctionCall { name, .. } if name.as_str() == "labels"
+                Expr::FunctionCall { name, .. } if name.as_str() == "gremlin_single_label"
             ));
         } else {
             panic!("expected Project");
