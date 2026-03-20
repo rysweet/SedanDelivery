@@ -6089,7 +6089,7 @@ mod tests {
         let mut compiler = GremlinCompiler::new();
         let steps = vec![
             GremlinStep::V(None),
-            GremlinStep::ValueMap(vec!["name".into(), "age".into()], false),
+            GremlinStep::ValueMap(vec!["name".into(), "age".into()], 0),
         ];
         let op = compiler.compile(&steps).unwrap();
         if let Operator::Project { items, .. } = &op {
@@ -6104,7 +6104,7 @@ mod tests {
     #[test]
     fn compile_value_map_empty() {
         let mut compiler = GremlinCompiler::new();
-        let steps = vec![GremlinStep::V(None), GremlinStep::ValueMap(vec![], false)];
+        let steps = vec![GremlinStep::V(None), GremlinStep::ValueMap(vec![], 0)];
         let op = compiler.compile(&steps).unwrap();
         if let Operator::Project { items, .. } = &op {
             assert_eq!(items.len(), 1);
