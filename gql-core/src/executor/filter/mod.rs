@@ -541,7 +541,7 @@ pub fn eval_function_with_vals(name: &str, vals: Vec<Value>) -> Result<Value, Gq
                 };
                 Ok(Value::Str(result.into()))
             }
-            Some(Value::Null) => Ok(Value::Str("null".into())),
+            Some(Value::Null) => Ok(Value::Null),
             Some(Value::List(_)) => Err(GqlError::Execution(ExecutionError::TypeMismatch {
                 expected: "The substring() step can only take string as argument".into(),
                 actual: "list".into(),
