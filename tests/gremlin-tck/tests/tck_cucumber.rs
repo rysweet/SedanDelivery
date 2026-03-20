@@ -533,6 +533,21 @@ fn resolve_parameter_definition(
         }
     }
 
+    // l[...] → list of resolved values
+    if let Some(rest) = s.strip_prefix("l[") {
+        if let Some(inner) = rest.strip_suffix(']') {
+            if inner.trim().is_empty() {
+                return GremlinValue::List(Vec::new());
+            }
+            let parts = split_tck_top_level(inner);
+            let items: Vec<GremlinValue> = parts
+                .iter()
+                .map(|p| resolve_parameter_definition(p.trim(), vertex_names, edge_names))
+                .collect();
+            return GremlinValue::List(items);
+        }
+    }
+
     // Map notation: m[{...}] — skip for now
     if s.starts_with("m[") {
         return GremlinValue::Map(indexmap::IndexMap::new());

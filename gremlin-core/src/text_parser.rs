@@ -459,8 +459,13 @@ fn parse_step_token(
             out.push(GremlinStep::HasLabel(args));
         }
         "hasId" => {
-            let args = parse_arg_list(args_str, resolve_param)?;
-            out.push(GremlinStep::HasId(args));
+            // Try predicate form first: hasId(P.neq(xx1)), hasId(P.without([]))
+            if let Some(pred) = try_parse_predicate_call(args_str.trim(), resolve_param) {
+                out.push(GremlinStep::HasIdPredicate(pred));
+            } else {
+                let args = parse_arg_list(args_str, resolve_param)?;
+                out.push(GremlinStep::HasId(args));
+            }
         }
         "hasNot" => {
             // hasNot("key") — filter elements where property does NOT exist
@@ -1541,24 +1546,17 @@ fn parse_by_step(
 }
 
 /// Check if a string looks like a Gremlin traversal rather than a property name.
-/// Only matches single-step calls like `values("name")`, `select("a")`, `count()`
-/// where the call is the entire argument (no chaining).
-/// Does NOT match `__.` prefixed multi-step traversals or chained calls —
-/// these are handled as string-based by() modulations.
+/// Matches single-step calls like `values("name")`, `count()` and also chained
+/// calls like `bothE().count()`, `out().values("name")`.
 fn looks_like_traversal(s: &str) -> bool {
     let s = s.trim();
     // Quoted strings are property names, not traversals
     if s.starts_with('"') || s.starts_with('\'') {
         return false;
     }
-    // Don't match __.prefix traversals — the compiler handles these
-    // as string by() modulations in select/group contexts.
-    if s.starts_with("__.") {
-        return false;
-    }
-    // Single-step traversal calls. Only match if the call is not chained
-    // (no `.` after the closing paren).
-    const SINGLE_STEP_TRAVERSALS: &[&str] = &[
+    // Strip optional __.prefix for detection
+    let check = s.strip_prefix("__.").unwrap_or(s);
+    const TRAVERSAL_STEP_PREFIXES: &[&str] = &[
         "values(",
         "out(",
         "in(",
@@ -1589,15 +1587,19 @@ fn looks_like_traversal(s: &str) -> bool {
         "properties(",
         "valueMap(",
         "elementMap(",
+        "tail(",
+        "unfold(",
     ];
-    for step in SINGLE_STEP_TRAVERSALS {
-        if s.starts_with(step) {
-            // Find the matching closing paren
-            let after_name = &s[step.len() - 1..]; // includes opening paren
+    for step in TRAVERSAL_STEP_PREFIXES {
+        if check.starts_with(step) {
+            let after_name = &check[step.len() - 1..];
             if let Some(close_pos) = find_matching_paren(after_name) {
-                let after_close = &after_name[close_pos + 1..].trim();
-                // Only a traversal if nothing follows the closing paren
+                let after_close = after_name[close_pos + 1..].trim();
                 if after_close.is_empty() {
+                    return true;
+                }
+                // Chained traversal: `.count()`, `.values("name")`, etc.
+                if after_close.starts_with('.') {
                     return true;
                 }
             }
@@ -1692,6 +1694,7 @@ fn try_parse_predicate_single(
         let (name, _) = split_step_name_args(s);
         match name {
             "eq" | "neq" | "gt" | "gte" | "lt" | "lte" | "within" | "without" | "between"
+            | "inside"
             | "containing" | "notContaining" | "startingWith" | "notStartingWith"
             | "endingWith" | "notEndingWith" | "regex" | "notRegex" | "typeOf" => s,
             _ => return None,
@@ -1715,6 +1718,12 @@ fn try_parse_predicate_single(
             let lo = it.next()?;
             let hi = it.next()?;
             Some(Predicate::Between(lo, hi))
+        }
+        "inside" => {
+            let mut it = args.into_iter();
+            let lo = it.next()?;
+            let hi = it.next()?;
+            Some(Predicate::Inside(lo, hi))
         }
         // Text predicates
         "containing" => Some(Predicate::Containing(args.into_iter().next()?)),

@@ -15,6 +15,8 @@ pub enum Predicate {
     Within(Vec<GremlinValue>),
     Without(Vec<GremlinValue>),
     Between(GremlinValue, GremlinValue),
+    /// `P.inside(low, high)` — exclusive range (low < x < high)
+    Inside(GremlinValue, GremlinValue),
     // Text predicates
     Containing(GremlinValue),
     NotContaining(GremlinValue),
@@ -47,6 +49,8 @@ pub enum GremlinStep {
     /// `has("key", P.gt(30))` — property predicate filter
     HasPredicate(String, Predicate),
     HasId(Vec<GremlinValue>),
+    /// `hasId(P.neq(xx1))` — ID predicate filter
+    HasIdPredicate(Predicate),
 
     // ── Traversal steps ──────────────────────────────────────────────────────
     Out(Vec<String>),

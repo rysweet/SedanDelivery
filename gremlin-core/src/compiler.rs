@@ -554,6 +554,20 @@ impl GremlinCompiler {
                     });
                 }
 
+                GremlinStep::HasIdPredicate(pred) => {
+                    let child = current.take().ok_or(CompileError::MissingChild)?;
+                    let id_fn = Expr::FunctionCall {
+                        name: SmolStr::new("id"),
+                        args: vec![Expr::Variable(current_alias.clone())],
+                        distinct: false,
+                    };
+                    let predicate = predicate_to_prop_expr(pred, id_fn);
+                    current = Some(Operator::Filter {
+                        predicate,
+                        child: Box::new(child),
+                    });
+                }
+
                 GremlinStep::Out(labels) | GremlinStep::In(labels) | GremlinStep::Both(labels) => {
                     let child = current.take().ok_or(CompileError::MissingChild)?;
                     let dst = self.next_alias("v");
@@ -4238,6 +4252,7 @@ fn is_simple_predicate_steps(steps: &[GremlinStep]) -> bool {
                     | GremlinStep::HasPredicate(_, _)
                     | GremlinStep::HasLabel(_)
                     | GremlinStep::HasId(_)
+                    | GremlinStep::HasIdPredicate(_)
                     | GremlinStep::Values(_)
                     | GremlinStep::Label
                     | GremlinStep::Id
@@ -4650,6 +4665,14 @@ fn step_to_predicate(step: &GremlinStep, alias: &Identifier) -> Expr {
                 }
             }
         }
+        GremlinStep::HasIdPredicate(pred) => {
+            let id_fn = Expr::FunctionCall {
+                name: SmolStr::new("id"),
+                args: vec![Expr::Variable(alias.clone())],
+                distinct: false,
+            };
+            predicate_to_prop_expr(pred, id_fn)
+        }
         _ => Expr::Bool(true), // fallback for complex sub-traversals
     }
 }
@@ -4790,6 +4813,13 @@ fn predicate_to_args(pred: &Predicate) -> (Box<str>, Expr) {
                 gremlin_value_to_expr(high),
             ]),
         ),
+        Predicate::Inside(low, high) => (
+            "within".into(),
+            Expr::List(vec![
+                gremlin_value_to_expr(low),
+                gremlin_value_to_expr(high),
+            ]),
+        ),
         _ => ("neq".into(), Expr::Null),
     }
 }
@@ -4899,6 +4929,20 @@ fn predicate_to_expr(pred: &Predicate, alias: &Identifier) -> Expr {
                 right: Box::new(gremlin_value_to_expr(high)),
             }),
         },
+        // inside(low, high) → low < x < high (exclusive on both ends)
+        Predicate::Inside(low, high) => Expr::BinaryOp {
+            op: BinaryOp::And,
+            left: Box::new(Expr::BinaryOp {
+                op: BinaryOp::Gt,
+                left: Box::new(Expr::Variable(alias.clone())),
+                right: Box::new(gremlin_value_to_expr(low)),
+            }),
+            right: Box::new(Expr::BinaryOp {
+                op: BinaryOp::Lt,
+                left: Box::new(Expr::Variable(alias.clone())),
+                right: Box::new(gremlin_value_to_expr(high)),
+            }),
+        },
         // Text predicates reuse the same pattern as predicate_to_prop_expr
         Predicate::Containing(_)
         | Predicate::NotContaining(_)
@@ -4965,6 +5009,20 @@ fn predicate_to_prop_expr(pred: &Predicate, prop_expr: Expr) -> Expr {
             op: BinaryOp::And,
             left: Box::new(Expr::BinaryOp {
                 op: BinaryOp::Gte,
+                left: Box::new(prop_expr.clone()),
+                right: Box::new(gremlin_value_to_expr(low)),
+            }),
+            right: Box::new(Expr::BinaryOp {
+                op: BinaryOp::Lt,
+                left: Box::new(prop_expr),
+                right: Box::new(gremlin_value_to_expr(high)),
+            }),
+        },
+        // inside(low, high) → low < x < high (exclusive on both ends)
+        Predicate::Inside(low, high) => Expr::BinaryOp {
+            op: BinaryOp::And,
+            left: Box::new(Expr::BinaryOp {
+                op: BinaryOp::Gt,
                 left: Box::new(prop_expr.clone()),
                 right: Box::new(gremlin_value_to_expr(low)),
             }),
@@ -5081,6 +5139,7 @@ fn predicate_to_binary_op(pred: &Predicate) -> BinaryOp {
         Predicate::Within(_) => BinaryOp::In,
         Predicate::Without(_) => BinaryOp::In,
         Predicate::Between(_, _) => BinaryOp::And,
+        Predicate::Inside(_, _) => BinaryOp::And,
         // Text predicates don't map to a single BinaryOp; default to Eq
         Predicate::Containing(_)
         | Predicate::NotContaining(_)
@@ -6185,6 +6244,20 @@ mod tests {
         assert!(
             op_str.contains("GremlinProject"),
             "Expected GremlinProject, got: {op_str}"
+        );
+    }
+
+    #[test]
+    fn compile_format_by_traversal() {
+        let no_param = |_: &str| -> Option<GremlinValue> { None };
+        let input = r#"g.V().format("%{name} has %{_} connections").by(bothE().count())"#;
+        let full = crate::text_parser::parse_traversal(input, &no_param).unwrap();
+        let mut compiler = GremlinCompiler::new();
+        let op = compiler.compile(&full).unwrap();
+        let op_str = format!("{op:?}");
+        assert!(
+            op_str.contains("gremlin_format_by"),
+            "Expected gremlin_format_by in compiled plan"
         );
     }
 }

@@ -1255,26 +1255,31 @@ impl<'a> QueryExecutor<'a> {
             }
         }
 
-        // Stream mode: index rows positionally
+        // Stream mode: each individual traverser gets index 0 (per TinkerPop semantics).
+        // Collect all [element, 0] pairs into a single list so unfold() can unwrap them.
         if *with_map {
-            let mut map = IndexMap::new();
-            for (i, row) in input.iter().enumerate() {
+            // with(map) mode: each individual traverser → {0: element}
+            let mut maps = Vec::with_capacity(input.len());
+            for row in input.iter() {
                 if let Some(val) = row.get(alias.as_str()) {
-                    map.insert(format!("{i}").into_boxed_str(), val.clone());
+                    let mut map = IndexMap::new();
+                    map.insert("0".to_string().into_boxed_str(), val.clone());
+                    maps.push(Value::Map(map));
                 }
             }
             let mut row = Row::new();
-            row.insert(out_alias.0.clone(), Value::Map(map));
+            row.insert(out_alias.0.clone(), Value::List(maps));
             out.push(row);
         } else {
-            for (i, row) in input.iter().enumerate() {
+            let mut pairs = Vec::with_capacity(input.len());
+            for row in input.iter() {
                 cx.budget.check_or_err()?;
                 let val = row.get(alias.as_str()).cloned().unwrap_or(Value::Null);
-                let pair = Value::List(vec![val, Value::Int(i as i64)]);
-                let mut new_row = Row::new();
-                new_row.insert(out_alias.0.clone(), pair);
-                out.push(new_row);
+                pairs.push(Value::List(vec![val, Value::Int(0)]));
             }
+            let mut row = Row::new();
+            row.insert(out_alias.0.clone(), Value::List(pairs));
+            out.push(row);
         }
         Ok(out)
     }

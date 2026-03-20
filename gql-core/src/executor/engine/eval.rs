@@ -922,6 +922,75 @@ impl<'a> QueryExecutor<'a> {
                             _ => eval_function_with_vals(name, evaled_args),
                         }
                     }
+                    "gremlin_format_by" => {
+                        // format() with by() modulations + property resolution.
+                        // args = [traverser, pattern, by1, by2, ...]
+                        // First replace %{_} with by-values, then resolve %{key} from
+                        // node/edge properties.
+                        if evaled_args.len() < 2 {
+                            return Ok(Value::Null);
+                        }
+                        if matches!(evaled_args.first(), Some(Value::Null)) {
+                            return Ok(Value::Null);
+                        }
+                        let pattern = match evaled_args.get(1) {
+                            Some(Value::Str(s)) => s.to_string(),
+                            _ => return Ok(Value::Null),
+                        };
+                        let by_values = &evaled_args[2..];
+                        let mut result = pattern;
+                        // Replace %{_} with by-values cyclically
+                        let mut by_idx = 0;
+                        while let Some(pos) = result.find("%{_}") {
+                            if by_values.is_empty() {
+                                break;
+                            }
+                            let val = &by_values[by_idx % by_values.len()];
+                            let val_str = format_value(val);
+                            result = format!(
+                                "{}{}{}",
+                                &result[..pos],
+                                val_str,
+                                &result[pos + 4..]
+                            );
+                            by_idx += 1;
+                        }
+                        // Resolve remaining %{key} from node/edge properties
+                        if result.contains("%{") {
+                            match evaled_args.first() {
+                                Some(Value::Node(node_id)) => {
+                                    if let Some(data) =
+                                        self.cached_get_node(graph, *node_id)?
+                                    {
+                                        for (k, v) in data.properties.iter() {
+                                            let placeholder = format!("%{{{}}}", k);
+                                            let val_str = format_value(v);
+                                            result =
+                                                result.replace(&placeholder, &val_str);
+                                        }
+                                    }
+                                }
+                                Some(Value::Edge(edge_id)) => {
+                                    if let Some(data) =
+                                        self.cached_get_edge(graph, *edge_id)?
+                                    {
+                                        for (k, v) in data.properties.iter() {
+                                            let placeholder = format!("%{{{}}}", k);
+                                            let val_str = format_value(v);
+                                            result =
+                                                result.replace(&placeholder, &val_str);
+                                        }
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+                        if result.contains("%{") {
+                            Ok(Value::Null)
+                        } else {
+                            Ok(Value::Str(result.into()))
+                        }
+                    }
                     _ => eval_function_with_vals(name, evaled_args),
                 }
             }
