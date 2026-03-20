@@ -142,6 +142,8 @@ pub enum GremlinStep {
     Match(Vec<Vec<GremlinStep>>),
     Project(Vec<String>),
     Identity,
+    /// `element()` — return the owning element from a property object
+    Element,
     /// `tail()` or `tail(n)` — keep only the last n elements (default 1)
     Tail(i64),
     /// `tail(Scope.local)` or `tail(Scope.local, n)` — last n elements of a list

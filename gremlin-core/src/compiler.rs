@@ -2447,6 +2447,30 @@ impl GremlinCompiler {
                     }
                 }
 
+                GremlinStep::Element => {
+                    // element() — extract ~element from property Map objects.
+                    let child = current.take().ok_or(CompileError::MissingChild)?;
+                    let elem_alias = self.next_alias("elem");
+                    let mut items = vec![(
+                        Expr::Property(
+                            Box::new(Expr::Variable(current_alias.clone())),
+                            SmolStr::new("~element"),
+                        ),
+                        Some(elem_alias.clone()),
+                    )];
+                    items.extend(self.label_carry_items());
+                    current = Some(Operator::Filter {
+                        predicate: Expr::IsNotNull(Box::new(Expr::Variable(
+                            elem_alias.clone(),
+                        ))),
+                        child: Box::new(Operator::Project {
+                            items,
+                            child: Box::new(child),
+                        }),
+                    });
+                    current_alias = elem_alias;
+                }
+
                 GremlinStep::Index | GremlinStep::IndexWithMap => {
                     let child = current.take().ok_or(CompileError::MissingChild)?;
                     let out_alias = self.next_alias("idx");

@@ -878,8 +878,8 @@ fn parse_step_token(
             // withBulk — enable bulk optimization
         }
         "element" => {
-            // element() — return the element from a property
-            out.push(GremlinStep::Identity);
+            // element() — return the owning element from a property
+            out.push(GremlinStep::Element);
         }
         "math" => {
             // math("expression") — mathematical expression on traversal values
