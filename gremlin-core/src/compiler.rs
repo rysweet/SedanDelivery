@@ -1063,11 +1063,18 @@ impl GremlinCompiler {
                         )],
                         child: Box::new(folded),
                     };
-                    // Filter out null (empty list produces null sum)
-                    current = Some(Operator::Filter {
-                        predicate: Expr::IsNotNull(Box::new(Expr::Variable(sum_alias.clone()))),
-                        child: Box::new(projected),
-                    });
+                    // Filter out null (empty list produces null sum) unless
+                    // ProductiveByStrategy is active (all-null lists → null).
+                    if self.productive_by {
+                        current = Some(projected);
+                    } else {
+                        current = Some(Operator::Filter {
+                            predicate: Expr::IsNotNull(Box::new(Expr::Variable(
+                                sum_alias.clone(),
+                            ))),
+                            child: Box::new(projected),
+                        });
+                    }
                     current_alias = sum_alias;
                 }
 
@@ -1085,10 +1092,14 @@ impl GremlinCompiler {
                         )],
                         child: Box::new(child),
                     };
-                    current = Some(Operator::Filter {
-                        predicate: Expr::IsNotNull(Box::new(Expr::Variable(alias.clone()))),
-                        child: Box::new(agg),
-                    });
+                    if self.productive_by {
+                        current = Some(agg);
+                    } else {
+                        current = Some(Operator::Filter {
+                            predicate: Expr::IsNotNull(Box::new(Expr::Variable(alias.clone()))),
+                            child: Box::new(agg),
+                        });
+                    }
                     current_alias = alias;
                 }
 
@@ -1106,10 +1117,14 @@ impl GremlinCompiler {
                         )],
                         child: Box::new(child),
                     };
-                    current = Some(Operator::Filter {
-                        predicate: Expr::IsNotNull(Box::new(Expr::Variable(alias.clone()))),
-                        child: Box::new(agg),
-                    });
+                    if self.productive_by {
+                        current = Some(agg);
+                    } else {
+                        current = Some(Operator::Filter {
+                            predicate: Expr::IsNotNull(Box::new(Expr::Variable(alias.clone()))),
+                            child: Box::new(agg),
+                        });
+                    }
                     current_alias = alias;
                 }
 
@@ -1127,10 +1142,14 @@ impl GremlinCompiler {
                         )],
                         child: Box::new(child),
                     };
-                    current = Some(Operator::Filter {
-                        predicate: Expr::IsNotNull(Box::new(Expr::Variable(alias.clone()))),
-                        child: Box::new(agg),
-                    });
+                    if self.productive_by {
+                        current = Some(agg);
+                    } else {
+                        current = Some(Operator::Filter {
+                            predicate: Expr::IsNotNull(Box::new(Expr::Variable(alias.clone()))),
+                            child: Box::new(agg),
+                        });
+                    }
                     current_alias = alias;
                 }
 
@@ -1150,10 +1169,14 @@ impl GremlinCompiler {
                         items,
                         child: Box::new(child),
                     };
-                    current = Some(Operator::Filter {
-                        predicate: Expr::IsNotNull(Box::new(Expr::Variable(alias.clone()))),
-                        child: Box::new(proj),
-                    });
+                    if self.productive_by {
+                        current = Some(proj);
+                    } else {
+                        current = Some(Operator::Filter {
+                            predicate: Expr::IsNotNull(Box::new(Expr::Variable(alias.clone()))),
+                            child: Box::new(proj),
+                        });
+                    }
                     current_alias = alias;
                 }
 
@@ -1173,10 +1196,14 @@ impl GremlinCompiler {
                         items,
                         child: Box::new(child),
                     };
-                    current = Some(Operator::Filter {
-                        predicate: Expr::IsNotNull(Box::new(Expr::Variable(alias.clone()))),
-                        child: Box::new(proj),
-                    });
+                    if self.productive_by {
+                        current = Some(proj);
+                    } else {
+                        current = Some(Operator::Filter {
+                            predicate: Expr::IsNotNull(Box::new(Expr::Variable(alias.clone()))),
+                            child: Box::new(proj),
+                        });
+                    }
                     current_alias = alias;
                 }
 
@@ -1196,10 +1223,14 @@ impl GremlinCompiler {
                         items,
                         child: Box::new(child),
                     };
-                    current = Some(Operator::Filter {
-                        predicate: Expr::IsNotNull(Box::new(Expr::Variable(alias.clone()))),
-                        child: Box::new(proj),
-                    });
+                    if self.productive_by {
+                        current = Some(proj);
+                    } else {
+                        current = Some(Operator::Filter {
+                            predicate: Expr::IsNotNull(Box::new(Expr::Variable(alias.clone()))),
+                            child: Box::new(proj),
+                        });
+                    }
                     current_alias = alias;
                 }
 
@@ -1219,10 +1250,14 @@ impl GremlinCompiler {
                         items,
                         child: Box::new(child),
                     };
-                    current = Some(Operator::Filter {
-                        predicate: Expr::IsNotNull(Box::new(Expr::Variable(alias.clone()))),
-                        child: Box::new(proj),
-                    });
+                    if self.productive_by {
+                        current = Some(proj);
+                    } else {
+                        current = Some(Operator::Filter {
+                            predicate: Expr::IsNotNull(Box::new(Expr::Variable(alias.clone()))),
+                            child: Box::new(proj),
+                        });
+                    }
                     current_alias = alias;
                 }
 

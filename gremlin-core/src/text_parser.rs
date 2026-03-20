@@ -2200,8 +2200,8 @@ fn split_top_level_args(s: &str) -> Vec<&str> {
             continue;
         }
         match ch {
-            '(' | '[' => depth += 1,
-            ')' | ']' => depth = depth.saturating_sub(1),
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' => depth = depth.saturating_sub(1),
             ',' if depth == 0 => {
                 result.push(&s[start..i]);
                 start = i + 1;
@@ -2313,6 +2313,19 @@ fn parse_single_value(
     }
     if s == "-Infinity" || s == "Double.NEGATIVE_INFINITY" {
         return Ok(GremlinValue::Float(f64::NEG_INFINITY));
+    }
+
+    // Set literal: {1, 2, 3} — deduplicated list
+    if s.starts_with('{') && s.ends_with('}') {
+        let inner = &s[1..s.len() - 1];
+        let items = parse_arg_list(inner, resolve_param)?;
+        let mut deduped: Vec<GremlinValue> = Vec::new();
+        for item in items {
+            if !deduped.contains(&item) {
+                deduped.push(item);
+            }
+        }
+        return Ok(GremlinValue::List(deduped));
     }
 
     // List literal: [1, 2, "a", null]
