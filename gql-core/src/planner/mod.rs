@@ -306,6 +306,9 @@ pub enum Operator {
     GremlinSelect {
         /// (source_variable, output_key) pairs.
         keys: Vec<(Identifier, String)>,
+        /// When true, missing properties produce Null. When false (default),
+        /// missing properties cause the traverser to be dropped.
+        productive: bool,
         child: Box<Operator>,
     },
     /// Gremlin group()/groupCount() — collect traversers into a single Map.

@@ -470,7 +470,9 @@ pub fn eval_function_with_vals(name: &str, vals: Vec<Value>) -> Result<Value, Gq
                 Ok(Value::List(rev))
             }
             Some(Value::Null) => Ok(Value::Null),
-            _ => Ok(Value::Null),
+            // Non-string, non-list types: return the value unchanged (Gremlin semantics)
+            Some(other) => Ok(other.clone()),
+            None => Ok(Value::Null),
         },
         "gremlin_replace" => match (vals.first(), vals.get(1), vals.get(2)) {
             (Some(Value::Str(s)), Some(Value::Str(old)), Some(Value::Str(new))) => {
@@ -711,7 +713,17 @@ pub fn eval_function_with_vals(name: &str, vals: Vec<Value>) -> Result<Value, Gq
             _ => eval_function_with_vals("gremlin_split", vals),
         },
         "gremlin_length_local" => match vals.first() {
-            Some(Value::List(l)) => Ok(Value::Int(l.len() as i64)),
+            Some(Value::List(l)) => {
+                // Per-element length: return a list of lengths of each element
+                let lengths: Vec<Value> = l.iter().map(|v| match v {
+                    Value::Str(s) => Value::Int(s.len() as i64),
+                    Value::List(inner) => Value::Int(inner.len() as i64),
+                    Value::Map(m) => Value::Int(m.len() as i64),
+                    Value::Null => Value::Null,
+                    _ => Value::Int(0),
+                }).collect();
+                Ok(Value::List(lengths))
+            }
             Some(Value::Map(m)) => Ok(Value::Int(m.len() as i64)),
             Some(Value::Str(s)) => Ok(Value::Int(s.len() as i64)),
             Some(Value::Null) => Ok(Value::Null),

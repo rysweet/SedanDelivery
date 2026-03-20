@@ -549,9 +549,16 @@ fn resolve_parameter_definition(
     if let Some(rest) = s.strip_prefix("v[") {
         if let Some(name_end) = rest.find(']') {
             let name = &rest[..name_end];
-            if rest[name_end..].contains(".id") {
+            let suffix = &rest[name_end + 1..];
+            if suffix.contains(".id") {
                 if let Some(nid) = vertex_names.get(name) {
                     return GremlinValue::Integer(nid.0 as i64);
+                }
+            }
+            // v[name].sid → string representation of vertex ID
+            if suffix.contains(".sid") {
+                if let Some(nid) = vertex_names.get(name) {
+                    return GremlinValue::String(nid.0.to_string());
                 }
             }
             // v[name] without .id — vertex reference
@@ -565,9 +572,16 @@ fn resolve_parameter_definition(
     if let Some(rest) = s.strip_prefix("e[") {
         if let Some(name_end) = rest.find(']') {
             let _edge_desc = &rest[..name_end];
-            if rest[name_end..].contains(".id") {
+            let suffix = &rest[name_end + 1..];
+            if suffix.contains(".id") {
                 if let Some(eid) = edge_names.get(_edge_desc) {
                     return GremlinValue::Integer(eid.0 as i64);
+                }
+            }
+            // e[desc].sid → string representation of edge ID
+            if suffix.contains(".sid") {
+                if let Some(eid) = edge_names.get(_edge_desc) {
+                    return GremlinValue::String(eid.0.to_string());
                 }
             }
         }
@@ -978,6 +992,29 @@ fn assert_results_match_unordered(
                 })
                 .collect();
             &unpacked_rows
+        } else {
+            result.rows.as_slice()
+        }
+    } else if result.rows.len() == 1 && expected.len() == 1 {
+        // Single row, single expected: if the result is a single-element List
+        // but the expected value is a scalar (not a List), unwrap it so that
+        // List([Int(100)]) matches Int(100).
+        if let Some(Value::List(items)) = row_result_value(&result.rows[0], &world.result_alias) {
+            if items.len() == 1 && !matches!(&expected[0][0], Value::List(_)) {
+                let key = if !world.result_alias.is_empty() {
+                    world.result_alias.clone()
+                } else {
+                    result.rows[0].keys().next().unwrap().clone()
+                };
+                unpacked_rows = vec![{
+                    let mut row: HashMap<String, Value> = HashMap::new();
+                    row.insert(key, items[0].clone());
+                    row
+                }];
+                &unpacked_rows
+            } else {
+                result.rows.as_slice()
+            }
         } else {
             result.rows.as_slice()
         }

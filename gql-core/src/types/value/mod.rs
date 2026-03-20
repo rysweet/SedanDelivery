@@ -279,6 +279,16 @@ impl Value {
             // Bytes: direct comparison
             (Self::Bytes(a), Self::Bytes(b)) => Some(a == b),
 
+            // Gremlin ID coercion: compare Int and Str by parsing the string as int.
+            // This handles has(T.id, stringId) where the ID is stored as an integer.
+            (Self::Int(a), Self::Str(s)) | (Self::Str(s), Self::Int(a)) => {
+                if let Ok(parsed) = s.parse::<i64>() {
+                    Some(*a == parsed)
+                } else {
+                    Some(false)
+                }
+            }
+
             // All other types: delegate to PartialEq
             _ => Some(self == other),
         }

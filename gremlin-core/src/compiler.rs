@@ -122,7 +122,9 @@ impl GremlinCompiler {
         }
         // Merge new reductions from sub-compiler
         for (k, v) in &sub.reductions {
-            self.reductions.entry(k.clone()).or_insert_with(|| v.clone());
+            self.reductions
+                .entry(k.clone())
+                .or_insert_with(|| v.clone());
         }
     }
 
@@ -1052,6 +1054,7 @@ impl GremlinCompiler {
                         }
                         current = Some(Operator::GremlinSelect {
                             keys: select_keys,
+                            productive: self.productive_by,
                             child: Box::new(child),
                         });
                         pending_select = true;
@@ -2459,9 +2462,18 @@ impl GremlinCompiler {
                         let inner_pred =
                             steps_to_predicate(inner_steps, &current_alias, &self.alias_map);
                         let predicate = if is_not {
+                            // Wrap in COALESCE so that Null (from cross-type
+                            // comparison) becomes false before negation. This
+                            // ensures not(has("name", P.gt(27))) correctly
+                            // keeps traversers when the comparison is undefined.
+                            let coalesced = Expr::FunctionCall {
+                                name: SmolStr::new("coalesce"),
+                                args: vec![inner_pred, Expr::Bool(false)],
+                                distinct: false,
+                            };
                             Expr::UnaryOp {
                                 op: gql_core::ast::UnaryOp::Not,
-                                expr: Box::new(inner_pred),
+                                expr: Box::new(coalesced),
                             }
                         } else {
                             inner_pred
@@ -2567,14 +2579,17 @@ impl GremlinCompiler {
                     // Helper: extract the select key from "__.select("x")" patterns
                     let extract_select_key = |s: &str| -> Option<String> {
                         let trimmed = s.trim_start_matches("__.");
-                        trimmed.strip_prefix("select(")
+                        trimmed
+                            .strip_prefix("select(")
                             .and_then(|s| s.strip_suffix(')'))
                             .map(|inner| inner.trim_matches('"').trim_matches('\'').to_string())
                     };
                     // Resolve property key: if __.select("a") and "a" is a string
                     // side-effect, use the string value as the property key name.
                     let resolved_key = if let Some(ref sel_key) = extract_select_key(key) {
-                        if let Some(GremlinValue::String(s)) = self.side_effect_values.get(sel_key.as_str()) {
+                        if let Some(GremlinValue::String(s)) =
+                            self.side_effect_values.get(sel_key.as_str())
+                        {
                             s.clone()
                         } else {
                             key.clone()
@@ -3762,6 +3777,13 @@ impl GremlinCompiler {
                             let init_val = match val {
                                 GremlinValue::Integer(n) => *n as f64,
                                 GremlinValue::Float(f) => *f,
+                                GremlinValue::Bool(b) => {
+                                    if *b {
+                                        1.0
+                                    } else {
+                                        0.0
+                                    }
+                                }
                                 _ => 0.0,
                             };
                             self.reductions.insert(key.clone(), (op.clone(), init_val));
@@ -5796,6 +5818,23 @@ fn predicate_label_ref(pred: &Predicate, alias_map: &HashMap<String, Identifier>
         | Predicate::Gte(GremlinValue::String(s))
         | Predicate::Lt(GremlinValue::String(s))
         | Predicate::Lte(GremlinValue::String(s)) => s,
+        // within("a") / without("a") with a single string argument:
+        // if it resolves to a known alias/side-effect, treat it as a
+        // variable reference (membership test against the stored list).
+        Predicate::Within(vals) if vals.len() == 1 => {
+            if let GremlinValue::String(s) = &vals[0] {
+                s
+            } else {
+                return None;
+            }
+        }
+        Predicate::Without(vals) if vals.len() == 1 => {
+            if let GremlinValue::String(s) = &vals[0] {
+                s
+            } else {
+                return None;
+            }
+        }
         _ => return None,
     };
     alias_map.get(label).map(|id| Expr::Variable(id.clone()))

@@ -99,7 +99,7 @@ impl<'a> QueryExecutor<'a> {
                         if !body_row.contains_key(key)
                             && remap
                                 .as_ref()
-                                .map_or(true, |(from, _)| !body_row.contains_key(from.as_str()))
+                                .is_none_or(|(from, _)| !body_row.contains_key(from.as_str()))
                         {
                             // Sentinel row without traverser alias — skip
                             // but preserve any side-effect agg columns on
@@ -378,9 +378,10 @@ impl<'a> QueryExecutor<'a> {
                 continue;
             }
 
-            // Find the matching option branch.
-            let mut matched_branch: Option<&Operator> = None;
-            let mut matched_alias: Option<&crate::ast::Identifier> = None;
+            // Find ALL matching option branches (Gremlin allows multiple
+            // options with the same key — all matching branches execute).
+            let mut matched_branches: Vec<(&Operator, Option<&crate::ast::Identifier>)> =
+                Vec::new();
             let mut default_branch: Option<&Operator> = None;
             let mut default_alias: Option<&crate::ast::Identifier> = None;
             for (match_val, branch, branch_alias) in options {
@@ -393,6 +394,11 @@ impl<'a> QueryExecutor<'a> {
                         // Skip "unproductive" sentinel (handled above)
                         if let Value::Str(s) = v {
                             if s.as_ref() == "Pick.unproductive" || s.as_ref() == "unproductive" {
+                                continue;
+                            }
+                            // Pick.any — always matches (wildcard)
+                            if s.as_ref() == "Pick.any" || s.as_ref() == "any" {
+                                matched_branches.push((branch, branch_alias.as_ref()));
                                 continue;
                             }
                         }
@@ -413,31 +419,39 @@ impl<'a> QueryExecutor<'a> {
                             _ => false,
                         };
                         if matches {
-                            matched_branch = Some(branch);
-                            matched_alias = branch_alias.as_ref();
-                            break;
+                            // For predicate-based matching (P.*), only the
+                            // first match fires (if-else-if semantics). For
+                            // exact-value matching, all matching options fire.
+                            let is_predicate_match =
+                                matches!(v, Value::Str(s) if s.starts_with("P."));
+                            matched_branches.push((branch, branch_alias.as_ref()));
+                            if is_predicate_match {
+                                break;
+                            }
                         }
                     }
                 }
             }
 
-            let (chosen_branch, chosen_alias) = if matched_branch.is_some() {
-                (matched_branch, matched_alias)
-            } else {
-                (default_branch, default_alias)
-            };
+            if matched_branches.is_empty() {
+                if let Some(branch) = default_branch {
+                    matched_branches.push((branch, default_alias));
+                }
+            }
 
-            if let Some(branch) = chosen_branch {
-                self.foreach_seed.borrow_mut().replace(vec![row]);
-                let branch_rows = self.exec_operator(cx, branch)?;
-                self.foreach_seed.borrow_mut().take();
-                for mut brow in branch_rows {
-                    if let (Some(out_a), Some(src_a)) = (output_alias, chosen_alias) {
-                        if let Some(val) = brow.get(src_a.0.as_str()).cloned() {
-                            brow.insert(out_a.0.to_string(), val);
+            if !matched_branches.is_empty() {
+                for (branch, branch_alias) in &matched_branches {
+                    self.foreach_seed.borrow_mut().replace(vec![row.clone()]);
+                    let branch_rows = self.exec_operator(cx, branch)?;
+                    self.foreach_seed.borrow_mut().take();
+                    for mut brow in branch_rows {
+                        if let (Some(out_a), Some(src_a)) = (output_alias, branch_alias) {
+                            if let Some(val) = brow.get(src_a.0.as_str()).cloned() {
+                                brow.insert(out_a.0.to_string(), val);
+                            }
                         }
+                        out.push(brow);
                     }
-                    out.push(brow);
                 }
             } else {
                 // No branch matches and no default → identity (pass through)
@@ -591,45 +605,65 @@ impl<'a> QueryExecutor<'a> {
             let reduction = reductions.iter().find(|(k, _, _)| k == key);
             if let Some((_k, op, init)) = reduction {
                 if let Value::List(items) = &cap_value {
-                    let mut acc = *init;
-                    let init_is_int = (*init - init.round()).abs() < 1e-12;
-                    let mut all_int = init_is_int;
-                    for item in items {
-                        let v = match item {
-                            Value::Int(n) => *n as f64,
-                            Value::Float(f) => {
-                                all_int = false;
-                                *f
+                    // Handle boolean reductions (and/or)
+                    if op == "and" || op == "or" {
+                        let init_bool = *init != 0.0;
+                        let mut acc = init_bool;
+                        for item in items {
+                            let v = match item {
+                                Value::Bool(b) => *b,
+                                Value::Int(n) => *n != 0,
+                                _ => continue,
+                            };
+                            match op.as_str() {
+                                "and" => acc = acc && v,
+                                "or" => acc = acc || v,
+                                _ => {}
                             }
-                            _ => continue,
-                        };
-                        match op.as_str() {
-                            "sum" | "add" => acc += v,
-                            "minus" | "sub" => acc -= v,
-                            "mult" | "multiply" => acc *= v,
-                            "div" | "divide" => {
-                                if v != 0.0 {
-                                    all_int = false;
-                                    acc /= v;
-                                }
-                            }
-                            "min" => {
-                                if v < acc {
-                                    acc = v;
-                                }
-                            }
-                            "max" => {
-                                if v > acc {
-                                    acc = v;
-                                }
-                            }
-                            _ => acc += v,
                         }
-                    }
-                    if all_int && !matches!(op.as_str(), "div" | "divide") {
-                        row.insert(key.clone(), Value::Int(acc as i64));
+                        row.insert(key.clone(), Value::Bool(acc));
                     } else {
-                        row.insert(key.clone(), Value::Float(acc));
+                        // Numeric reductions
+                        let mut acc = *init;
+                        let init_is_int = (*init - init.round()).abs() < 1e-12;
+                        let mut all_int = init_is_int;
+                        for item in items {
+                            let v = match item {
+                                Value::Int(n) => *n as f64,
+                                Value::Float(f) => {
+                                    all_int = false;
+                                    *f
+                                }
+                                _ => continue,
+                            };
+                            match op.as_str() {
+                                "sum" | "add" => acc += v,
+                                "minus" | "sub" => acc -= v,
+                                "mult" | "multiply" => acc *= v,
+                                "div" | "divide" => {
+                                    if v != 0.0 {
+                                        all_int = false;
+                                        acc /= v;
+                                    }
+                                }
+                                "min" => {
+                                    if v < acc {
+                                        acc = v;
+                                    }
+                                }
+                                "max" => {
+                                    if v > acc {
+                                        acc = v;
+                                    }
+                                }
+                                _ => acc += v,
+                            }
+                        }
+                        if all_int && !matches!(op.as_str(), "div" | "divide") {
+                            row.insert(key.clone(), Value::Int(acc as i64));
+                        } else {
+                            row.insert(key.clone(), Value::Float(acc));
+                        }
                     }
                 } else {
                     row.insert(key.clone(), cap_value);
@@ -1001,7 +1035,12 @@ impl<'a> QueryExecutor<'a> {
         cx: &mut ExecContext<'_>,
         op: &Operator,
     ) -> Result<Vec<Row>, GqlError> {
-        let Operator::GremlinSelect { keys, child } = op else {
+        let Operator::GremlinSelect {
+            keys,
+            productive,
+            child,
+        } = op
+        else {
             debug_assert!(false, "expected GremlinSelect operator");
             return Err(GqlError::Execution(ExecutionError::UnsupportedFeature {
                 feature: "internal: expected GremlinSelect operator".into(),
@@ -1030,6 +1069,53 @@ impl<'a> QueryExecutor<'a> {
                         let val = row.get(real_var);
                         match val {
                             Some(node_val) => {
+                                // Handle special property names (~id, T.id, ~label, T.label)
+                                let resolved = if prop_name == "~id"
+                                    || prop_name == "T.id"
+                                    || prop_name == "t[id]"
+                                {
+                                    match node_val {
+                                        Value::Node(nid) => Some(Value::Int(nid.0 as i64)),
+                                        Value::Edge(eid) => Some(Value::Int(eid.0 as i64)),
+                                        _ => None,
+                                    }
+                                } else if prop_name == "~label"
+                                    || prop_name == "T.label"
+                                    || prop_name == "t[label]"
+                                {
+                                    match node_val {
+                                        Value::Node(nid) => {
+                                            if let Ok(Some(node)) =
+                                                self.store.get_node(cx.graph, *nid)
+                                            {
+                                                node.labels
+                                                    .into_iter()
+                                                    .next()
+                                                    .map(|l| Value::Str(l.into_boxed_str()))
+                                            } else {
+                                                None
+                                            }
+                                        }
+                                        Value::Edge(eid) => {
+                                            if let Ok(Some(edge)) =
+                                                self.store.get_edge(cx.graph, *eid)
+                                            {
+                                                Some(Value::Str(edge.rel_type.into_boxed_str()))
+                                            } else {
+                                                None
+                                            }
+                                        }
+                                        _ => None,
+                                    }
+                                } else {
+                                    None
+                                };
+
+                                if let Some(v) = resolved {
+                                    new_row.insert(output_key.clone(), v);
+                                    continue;
+                                }
+
                                 // Resolve property from the node/edge
                                 let prop_expr = Expr::Property(
                                     Box::new(Expr::Variable(Identifier::new(real_var))),
@@ -1037,16 +1123,42 @@ impl<'a> QueryExecutor<'a> {
                                 );
                                 match self.eval_with_storage(cx.graph, &prop_expr, row, &ctx) {
                                     Ok(v) => {
+                                        if !*productive && matches!(v, Value::Null) {
+                                            all_found = false;
+                                            break;
+                                        }
                                         new_row.insert(output_key.clone(), v);
                                     }
                                     Err(_) => {
-                                        // Property doesn't exist — use Null for maps
-                                        if let Value::Map(m) = node_val {
-                                            let v =
-                                                m.get(prop_name).cloned().unwrap_or(Value::Null);
-                                            new_row.insert(output_key.clone(), v);
+                                        // Property doesn't exist
+                                        if !*productive {
+                                            // Non-productive: drop the traverser
+                                            if let Value::Map(m) = node_val {
+                                                let v = m.get(prop_name).cloned();
+                                                match v {
+                                                    Some(val) => {
+                                                        new_row.insert(output_key.clone(), val);
+                                                    }
+                                                    None => {
+                                                        all_found = false;
+                                                        break;
+                                                    }
+                                                }
+                                            } else {
+                                                all_found = false;
+                                                break;
+                                            }
                                         } else {
-                                            new_row.insert(output_key.clone(), Value::Null);
+                                            // Productive: use Null
+                                            if let Value::Map(m) = node_val {
+                                                let v = m
+                                                    .get(prop_name)
+                                                    .cloned()
+                                                    .unwrap_or(Value::Null);
+                                                new_row.insert(output_key.clone(), v);
+                                            } else {
+                                                new_row.insert(output_key.clone(), Value::Null);
+                                            }
                                         }
                                     }
                                 }
@@ -1683,6 +1795,13 @@ impl<'a> QueryExecutor<'a> {
                 } else {
                     Value::Null
                 };
+                // Only include Null values when the sub-traversal actually
+                // produced a result (not when it was empty/unproductive).
+                // This omits keys with no value unless ProductiveByStrategy
+                // is active (in which case the sub-traversal wraps Null).
+                if matches!(val, Value::Null) && sub_rows.is_empty() {
+                    continue;
+                }
                 map.insert(key.clone().into_boxed_str(), val);
             }
             // Store the projected Map as both individual columns and a combined Map
