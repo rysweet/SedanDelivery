@@ -62,6 +62,13 @@ impl<'a> QueryExecutor<'a> {
             }
 
             if next.is_empty() {
+                // Body produced no results — stop iterating.
+                // For non-emit mode without until, don't add the pre-body
+                // rows since the traversal terminated before completing all
+                // iterations. (With until, results are collected separately.)
+                if !*emit && until.is_none() {
+                    return Ok(collected);
+                }
                 break;
             }
 

@@ -1771,6 +1771,24 @@ fn parse_from_to_traversal(
         let label = unquote(s);
         return Ok(vec![GremlinStep::Select(vec![label])]);
     }
+    // Handle to(Direction.OUT, "label") / to(Direction.IN, "label") / to(Direction.BOTH, "label")
+    // These are equivalent to out("label") / in("label") / both("label")
+    let args = split_top_level_args(s);
+    if args.len() >= 1 {
+        let first = args[0].trim();
+        if first.starts_with("Direction.") || first == "OUT" || first == "IN" || first == "BOTH" {
+            let labels: Vec<String> = args[1..]
+                .iter()
+                .map(|a| unquote(a.trim()))
+                .collect();
+            return match first {
+                "Direction.OUT" | "OUT" => Ok(vec![GremlinStep::Out(labels)]),
+                "Direction.IN" | "IN" => Ok(vec![GremlinStep::In(labels)]),
+                "Direction.BOTH" | "BOTH" => Ok(vec![GremlinStep::Both(labels)]),
+                _ => Ok(vec![GremlinStep::Both(labels)]),
+            };
+        }
+    }
     // Otherwise parse as a full traversal
     let inner = parse_inner_traversal(s, resolve_param)?;
     if inner.is_empty() {

@@ -134,21 +134,29 @@ impl<'a> QueryExecutor<'a> {
                     }
                 }
             } else if let Some(rest) = key.strip_prefix("__dedup_prop__") {
-                // Property-based dedup: extract property from the element
+                // Property-based dedup: extract property from the element.
+                // For Node/Edge values where the property doesn't exist,
+                // drop the traverser (non-productive by-modulation).
+                // For other value types, use empty string as dedup key.
                 let parts: Vec<&str> = rest.splitn(2, "__").collect();
                 let prop_name = parts.first().copied().unwrap_or("");
                 let alias = parts.get(1).copied().unwrap_or("");
                 for row in input {
                     cx.budget.check_or_err()?;
-                    let dedup_val = if let Some(val) = row.get(alias) {
-                        self.extract_property_from_value(cx.graph, val, prop_name)
+                    if let Some(val) = row.get(alias) {
+                        let extracted =
+                            self.extract_property_from_value(cx.graph, val, prop_name);
+                        let is_element = matches!(val, Value::Node(_) | Value::Edge(_));
+                        if extracted.is_none() && is_element {
+                            // Property missing on node/edge → drop traverser
+                            continue;
+                        }
+                        let dedup_val = extracted
                             .map(|v| v.canonical_key())
-                            .unwrap_or_default()
-                    } else {
-                        String::new()
-                    };
-                    if seen.insert(dedup_val) {
-                        out.push(row);
+                            .unwrap_or_default();
+                        if seen.insert(dedup_val) {
+                            out.push(row);
+                        }
                     }
                 }
             } else {
