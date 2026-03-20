@@ -328,6 +328,12 @@ impl<'a> QueryExecutor<'a> {
                                     actual: "deleted or missing Node".to_string(),
                                 })),
                             },
+                            Value::Edge(edge_id) => match self.cached_get_edge(graph, *edge_id)? {
+                                Some(data) => Ok(Value::List(vec![Value::Str(
+                                    data.rel_type.into_boxed_str(),
+                                )])),
+                                None => Ok(Value::List(vec![])),
+                            },
                             // Property Map from properties(): key() extracts ~key
                             Value::Map(m) if m.contains_key("~key") => {
                                 let key = m.get("~key").cloned().unwrap_or(Value::Null);
@@ -359,6 +365,14 @@ impl<'a> QueryExecutor<'a> {
                                 }
                                 None => Ok(Value::Null),
                             },
+                            Value::Edge(edge_id) => match self.cached_get_edge(graph, *edge_id)? {
+                                Some(data) => Ok(Value::Str(data.rel_type.into_boxed_str())),
+                                None => Ok(Value::Null),
+                            },
+                            // Property Map: return ~key as label
+                            Value::Map(m) if m.contains_key("~key") => {
+                                Ok(m.get("~key").cloned().unwrap_or(Value::Null))
+                            }
                             other => Err(GqlError::Execution(ExecutionError::TypeMismatch {
                                 expected: "Node".to_string(),
                                 actual: other.type_name().to_string(),
