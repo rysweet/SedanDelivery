@@ -1872,6 +1872,7 @@ pub fn eval_function_with_vals(name: &str, vals: Vec<Value>) -> Result<Value, Gq
                         || (expected == "long" && actual_type == "integer")
                         || (expected == "short" && actual_type == "integer")
                         || (expected == "byte" && actual_type == "integer")
+                        || (expected == "integer" && actual_type == "long")
                         || (expected == "float" && actual_type == "double")
                         || (expected == "set" && actual_type == "list")
                         || (expected == "path" && actual_type == "list");

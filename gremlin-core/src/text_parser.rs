@@ -300,6 +300,13 @@ fn parse_literal_value(
     if unquoted != s {
         return Some(GremlinValue::String(unquoted.to_string()));
     }
+    // Boolean literals
+    if s == "true" {
+        return Some(GremlinValue::Bool(true));
+    }
+    if s == "false" {
+        return Some(GremlinValue::Bool(false));
+    }
     resolve_param(s).or(None)
 }
 

@@ -155,6 +155,35 @@ impl<'a> QueryExecutor<'a> {
                 out.push(combined);
             }
         }
+        // In Gremlin, aggregate() is a global side-effect.  When it runs
+        // inside local()/Apply each outer-row produces its own partial list
+        // in __gremlin_agg_<key>.  We must merge these partial lists and
+        // redistribute so that downstream steps (and cap()) see the full
+        // accumulated set even if some rows are later filtered out.
+        if self.gremlin_mode && !out.is_empty() {
+            let mut agg_merged: std::collections::HashMap<String, Vec<Value>> =
+                std::collections::HashMap::new();
+            for row in &out {
+                for (k, v) in row {
+                    if k.starts_with("__gremlin_agg_") {
+                        if let Value::List(items) = v {
+                            agg_merged
+                                .entry(k.clone())
+                                .or_default()
+                                .extend(items.iter().cloned());
+                        }
+                    }
+                }
+            }
+            if !agg_merged.is_empty() {
+                for row in &mut out {
+                    for (k, merged) in &agg_merged {
+                        row.insert(k.clone(), Value::List(merged.clone()));
+                    }
+                }
+            }
+        }
+
         Ok(out)
     }
 }

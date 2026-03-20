@@ -62,6 +62,14 @@ impl<'a> QueryExecutor<'a> {
 
             // Feed current rows through the body.
             let mut next: Vec<Row> = Vec::new();
+            // Track per-iteration side-effect accumulation for Map-typed
+            // aggregations (groupCount).  Each body-run stamps the same map
+            // on all its output rows, so we merge one map per body-run.
+            let mut iteration_agg_maps: std::collections::HashMap<
+                String,
+                indexmap::IndexMap<Box<str>, Value>,
+            > = std::collections::HashMap::new();
+            let mut _prev_next_len: usize = 0;
             for row in &current {
                 cx.budget.check_or_err()?;
 
@@ -94,6 +102,7 @@ impl<'a> QueryExecutor<'a> {
                 // no traversers) that don't have the seed alias — they
                 // would break subsequent iterations that need the alias.
                 let path_acc = seed_row.get("__gremlin_path_acc").cloned();
+                let body_run_start = next.len();
                 for mut body_row in body_rows {
                     if let Some(key) = seed_key {
                         if !body_row.contains_key(key)
@@ -102,11 +111,26 @@ impl<'a> QueryExecutor<'a> {
                                 .is_none_or(|(from, _)| !body_row.contains_key(from.as_str()))
                         {
                             // Sentinel row without traverser alias — skip
-                            // but preserve any side-effect agg columns on
-                            // the seed_row so they aren't lost.
+                            // but merge any side-effect agg columns into the
+                            // iteration accumulator so they aren't lost.
                             for (k, v) in &body_row {
                                 if k.starts_with("__gremlin_agg_") {
-                                    // Merge sentinel agg into seed for next iteration
+                                    if let Value::Map(m) = v {
+                                        let acc = iteration_agg_maps.entry(k.clone()).or_default();
+                                        for (mk, mv) in m {
+                                            let e = acc.entry(mk.clone()).or_insert(Value::Int(0));
+                                            match (e.clone(), mv) {
+                                                (Value::Int(a), Value::Int(b)) => {
+                                                    *e = Value::Int(a + b)
+                                                }
+                                                (Value::Float(a), Value::Float(b)) => {
+                                                    *e = Value::Float(a + b)
+                                                }
+                                                (_, new_v) => *e = new_v.clone(),
+                                            }
+                                        }
+                                    }
+                                    // Also distribute sentinel agg to existing next rows
                                     for nr in &mut next {
                                         nr.entry(k.clone()).or_insert_with(|| v.clone());
                                     }
@@ -121,6 +145,41 @@ impl<'a> QueryExecutor<'a> {
                         }
                     }
                     next.push(body_row);
+                }
+
+                // Collect ONE map per body-run for Map-type agg columns.
+                // All rows from a single body-run share the same map, so
+                // taking the first avoids double-counting.
+                if next.len() > body_run_start {
+                    let first_new = &next[body_run_start];
+                    for (k, v) in first_new {
+                        if k.starts_with("__gremlin_agg_") {
+                            if let Value::Map(m) = v {
+                                let acc = iteration_agg_maps.entry(k.clone()).or_default();
+                                for (mk, mv) in m {
+                                    let e = acc.entry(mk.clone()).or_insert(Value::Int(0));
+                                    match (e.clone(), mv) {
+                                        (Value::Int(a), Value::Int(b)) => *e = Value::Int(a + b),
+                                        (Value::Float(a), Value::Float(b)) => {
+                                            *e = Value::Float(a + b)
+                                        }
+                                        (_, new_v) => *e = new_v.clone(),
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                _prev_next_len = next.len();
+            }
+
+            // Stamp the merged side-effect maps on all rows so every
+            // traverser carries the full accumulated state.
+            if !iteration_agg_maps.is_empty() {
+                for row in &mut next {
+                    for (k, merged) in &iteration_agg_maps {
+                        row.insert(k.clone(), Value::Map(merged.clone()));
+                    }
                 }
             }
 
@@ -587,11 +646,30 @@ impl<'a> QueryExecutor<'a> {
                         Value::List(merged)
                     }
                     Value::Map(_) => {
-                        let mut merged = IndexMap::new();
+                        let mut merged: IndexMap<Box<str>, Value> = IndexMap::new();
                         for v in &agg_vals {
                             if let Value::Map(m) = v {
                                 for (mk, mv) in m {
-                                    merged.insert(mk.clone(), mv.clone());
+                                    // For integer values (groupCount), add counts
+                                    // instead of overwriting so accumulation across
+                                    // traverser branches works correctly.
+                                    match (merged.get(mk), mv) {
+                                        (Some(Value::Int(existing)), Value::Int(incoming)) => {
+                                            merged.insert(
+                                                mk.clone(),
+                                                Value::Int(existing + incoming),
+                                            );
+                                        }
+                                        (Some(Value::Float(existing)), Value::Float(incoming)) => {
+                                            merged.insert(
+                                                mk.clone(),
+                                                Value::Float(existing + incoming),
+                                            );
+                                        }
+                                        _ => {
+                                            merged.insert(mk.clone(), mv.clone());
+                                        }
+                                    }
                                 }
                             }
                         }
