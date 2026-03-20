@@ -244,6 +244,11 @@ impl GremlinCompiler {
         let mut project_by_count: usize = 0;
         // The alias of the traverser before project() ran (needed for by() sub-expressions)
         let mut pre_project_alias: Identifier = initial_alias.clone();
+        // Track format() step state for by() modulation
+        let mut pending_format = false;
+        let mut format_pattern: String = String::new();
+        let mut format_pre_alias: Identifier = initial_alias.clone();
+        let mut format_by_aliases: Vec<Identifier> = Vec::new();
         // The traverser alias just before addE — used to default __src/__dst
         // when from()/to() is omitted.
         let mut adde_traverser: Option<Identifier> = None;
@@ -269,6 +274,39 @@ impl GremlinCompiler {
                 aggregate_by_consumed = false;
                 pending_sack_op = false;
                 pending_project = false;
+                // Finalize pending format with collected by() modulations
+                if pending_format && !format_by_aliases.is_empty() {
+                    let child = current.take().unwrap_or(Operator::SingleRow);
+                    let alias = self.next_alias("fmt");
+                    // Build gremlin_format_by args: pattern, then each by-alias value
+                    let mut args = vec![
+                        Expr::Variable(format_pre_alias.clone()),
+                        Expr::Str(format_pattern.clone().into_boxed_str()),
+                    ];
+                    for by_alias in &format_by_aliases {
+                        args.push(Expr::Variable(by_alias.clone()));
+                    }
+                    let mut items = vec![(
+                        Expr::FunctionCall {
+                            name: SmolStr::new("gremlin_format_by"),
+                            args,
+                            distinct: false,
+                        },
+                        Some(alias.clone()),
+                    )];
+                    items.extend(self.label_carry_items());
+                    let project = Operator::Project {
+                        items,
+                        child: Box::new(child),
+                    };
+                    current = Some(Operator::Filter {
+                        predicate: Expr::IsNotNull(Box::new(Expr::Variable(alias.clone()))),
+                        child: Box::new(project),
+                    });
+                    current_alias = alias;
+                    format_by_aliases.clear();
+                }
+                pending_format = false;
                 // Apply collected select by() modulations cyclically
                 if pending_select && !select_by_mods.is_empty() {
                     if let Some(Operator::GremlinSelect { ref mut keys, .. }) = current {
@@ -1425,6 +1463,22 @@ impl GremlinCompiler {
                         }
                         pending_aggregate = false;
                         aggregate_by_consumed = true;
+                    } else if pending_format {
+                        // by(key) after format() — compile by-key to a property access
+                        let child = current.take().ok_or(CompileError::MissingChild)?;
+                        let by_alias = self.next_alias("fby");
+                        let by_expr = if key.is_empty() {
+                            Expr::Variable(format_pre_alias.clone())
+                        } else {
+                            make_by_expr(key, &format_pre_alias)
+                        };
+                        let mut items = vec![(by_expr, Some(by_alias.clone()))];
+                        items.extend(self.label_carry_items());
+                        current = Some(Operator::Project {
+                            items,
+                            child: Box::new(child),
+                        });
+                        format_by_aliases.push(by_alias);
                     } else if pending_sack_op {
                         // by(key) after sack(op) — rewrite the sack Project to
                         // use a property/label expression instead of current_alias.
@@ -1829,6 +1883,23 @@ impl GremlinCompiler {
                             }
                             pending_aggregate = false;
                             aggregate_by_consumed = true;
+                        } else if pending_format {
+                            // by(traversal) after format() — compile sub-traversal for by-modulation
+                            let child = current.take().ok_or(CompileError::MissingChild)?;
+                            let mut sub = self.sub_compiler();
+                            let sub_op = sub.compile_seeded(sub_steps, &format_pre_alias)?;
+                            let sub_out_alias = sub.last_alias.clone();
+                            self.absorb(&sub);
+                            // Limit to 1 result per input row
+                            let limited = Operator::Limit {
+                                count: Expr::Integer(1),
+                                child: Box::new(sub_op),
+                            };
+                            current = Some(Operator::Apply {
+                                outer: Box::new(child),
+                                inner: Box::new(limited),
+                            });
+                            format_by_aliases.push(sub_out_alias);
                         }
                     }
                 }
@@ -3458,30 +3529,40 @@ impl GremlinCompiler {
                 }
 
                 GremlinStep::Format(pattern) => {
-                    let child = current.take().ok_or(CompileError::MissingChild)?;
-                    let alias = self.next_alias("fmt");
-                    let mut items = vec![(
-                        Expr::FunctionCall {
-                            name: SmolStr::new("gremlin_format"),
-                            args: vec![
-                                Expr::Variable(current_alias.clone()),
-                                Expr::Str(pattern.clone().into_boxed_str()),
-                            ],
-                            distinct: false,
-                        },
-                        Some(alias.clone()),
-                    )];
-                    items.extend(self.label_carry_items());
-                    let project = Operator::Project {
-                        items,
-                        child: Box::new(child),
-                    };
-                    // Filter out traversers where format couldn't resolve all placeholders
-                    current = Some(Operator::Filter {
-                        predicate: Expr::IsNotNull(Box::new(Expr::Variable(alias.clone()))),
-                        child: Box::new(project),
-                    });
-                    current_alias = alias;
+                    if pattern.contains("%{_}") {
+                        // Pattern has positional placeholders — defer until by() modulations collected
+                        let child = current.take().ok_or(CompileError::MissingChild)?;
+                        pending_format = true;
+                        format_pattern = pattern.clone();
+                        format_pre_alias = current_alias.clone();
+                        format_by_aliases.clear();
+                        current = Some(child);
+                    } else {
+                        let child = current.take().ok_or(CompileError::MissingChild)?;
+                        let alias = self.next_alias("fmt");
+                        let mut items = vec![(
+                            Expr::FunctionCall {
+                                name: SmolStr::new("gremlin_format"),
+                                args: vec![
+                                    Expr::Variable(current_alias.clone()),
+                                    Expr::Str(pattern.clone().into_boxed_str()),
+                                ],
+                                distinct: false,
+                            },
+                            Some(alias.clone()),
+                        )];
+                        items.extend(self.label_carry_items());
+                        let project = Operator::Project {
+                            items,
+                            child: Box::new(child),
+                        };
+                        // Filter out traversers where format couldn't resolve all placeholders
+                        current = Some(Operator::Filter {
+                            predicate: Expr::IsNotNull(Box::new(Expr::Variable(alias.clone()))),
+                            child: Box::new(project),
+                        });
+                        current_alias = alias;
+                    }
                 }
 
                 GremlinStep::StringOpLocal(fn_name) => {
@@ -3890,6 +3971,37 @@ impl GremlinCompiler {
                 rewrite_create_alias(op, "__src", traverser);
                 rewrite_create_alias(op, "__dst", traverser);
             }
+        }
+
+        // Finalize any remaining format with by() modulations
+        if pending_format && !format_by_aliases.is_empty() {
+            let child = current.take().unwrap_or(Operator::SingleRow);
+            let alias = self.next_alias("fmt");
+            let mut args = vec![
+                Expr::Variable(format_pre_alias.clone()),
+                Expr::Str(format_pattern.clone().into_boxed_str()),
+            ];
+            for by_alias in &format_by_aliases {
+                args.push(Expr::Variable(by_alias.clone()));
+            }
+            let mut items = vec![(
+                Expr::FunctionCall {
+                    name: SmolStr::new("gremlin_format_by"),
+                    args,
+                    distinct: false,
+                },
+                Some(alias.clone()),
+            )];
+            items.extend(self.label_carry_items());
+            let project = Operator::Project {
+                items,
+                child: Box::new(child),
+            };
+            current = Some(Operator::Filter {
+                predicate: Expr::IsNotNull(Box::new(Expr::Variable(alias.clone()))),
+                child: Box::new(project),
+            });
+            current_alias = alias;
         }
 
         self.last_alias = current_alias;

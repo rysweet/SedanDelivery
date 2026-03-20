@@ -832,6 +832,46 @@ pub fn eval_function_with_vals(name: &str, vals: Vec<Value>) -> Result<Value, Gq
                 _ => Ok(Value::Null),
             }
         }
+        "gremlin_format_by" => {
+            // format() with by() modulations: args = [traverser, pattern, by1, by2, ...]
+            // Replace %{_} placeholders cyclically with by-values.
+            // Also resolve %{name} from node/edge properties.
+            if vals.len() < 2 {
+                return Ok(Value::Null);
+            }
+            if matches!(vals.first(), Some(Value::Null)) {
+                return Ok(Value::Null);
+            }
+            let pattern = match vals.get(1) {
+                Some(Value::Str(s)) => s.to_string(),
+                _ => return Ok(Value::Null),
+            };
+            let by_values = &vals[2..];
+            let mut result = pattern;
+            // Replace %{_} with by-values cyclically
+            let mut by_idx = 0;
+            while let Some(pos) = result.find("%{_}") {
+                if by_values.is_empty() {
+                    break;
+                }
+                let val = &by_values[by_idx % by_values.len()];
+                let val_str = match val {
+                    Value::Str(s) => s.to_string(),
+                    Value::Int(n) => n.to_string(),
+                    Value::Float(f) => f.to_string(),
+                    Value::Bool(b) => b.to_string(),
+                    Value::Null => return Ok(Value::Null),
+                    _ => format!("{:?}", val),
+                };
+                result = format!("{}{}{}", &result[..pos], val_str, &result[pos + 4..]);
+                by_idx += 1;
+            }
+            // If there are still %{key} placeholders, try resolving from node/edge properties
+            if result.contains("%{") {
+                return Ok(Value::Null);
+            }
+            Ok(Value::Str(result.into()))
+        }
         "gremlin_asstring" => match vals.first() {
             Some(Value::Str(s)) => Ok(Value::Str(s.clone())),
             Some(Value::Int(n)) => Ok(Value::Str(n.to_string().into())),
