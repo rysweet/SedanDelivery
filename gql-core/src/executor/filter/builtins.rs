@@ -46,6 +46,49 @@ pub(super) fn builtin_rand(vals: Vec<Value>) -> Result<Value, GqlError> {
     Ok(Value::Float(val))
 }
 
+/// Java-compatible Linear Congruential Generator for deterministic random.
+/// Matches `java.util.Random` behaviour so Gremlin SeedStrategy tests pass.
+pub(super) fn builtin_java_random_next_double(vals: Vec<Value>) -> Result<Value, GqlError> {
+    use std::sync::atomic::{AtomicI64, Ordering};
+
+    // Thread-local state for the Java LCG
+    thread_local! {
+        static JAVA_RNG_SEED: AtomicI64 = const { AtomicI64::new(i64::MIN) };
+    }
+
+    const MULTIPLIER: i64 = 0x5DEECE66D;
+    const ADDEND: i64 = 0xB;
+    const MASK: i64 = (1i64 << 48) - 1;
+
+    let initial_seed = match vals.first() {
+        Some(Value::Int(s)) => *s,
+        _ => 0,
+    };
+
+    JAVA_RNG_SEED.with(|state| {
+        let current = state.load(Ordering::Relaxed);
+        let seed = if current == i64::MIN {
+            // First call: initialize with (initial_seed ^ MULTIPLIER) & MASK
+            (initial_seed ^ MULTIPLIER) & MASK
+        } else {
+            current
+        };
+
+        // next(26)
+        let seed1 = (seed.wrapping_mul(MULTIPLIER).wrapping_add(ADDEND)) & MASK;
+        let bits26 = seed1 >> (48 - 26);
+
+        // next(27)
+        let seed2 = (seed1.wrapping_mul(MULTIPLIER).wrapping_add(ADDEND)) & MASK;
+        let bits27 = seed2 >> (48 - 27);
+
+        state.store(seed2, Ordering::Relaxed);
+
+        let val = ((bits26 << 27) + bits27) as f64 / ((1i64 << 53) as f64);
+        Ok(Value::Float(val))
+    })
+}
+
 pub(super) fn builtin_abs(vals: Vec<Value>) -> Result<Value, GqlError> {
     require_arity("abs", 1, &vals)?;
     match &vals[0] {

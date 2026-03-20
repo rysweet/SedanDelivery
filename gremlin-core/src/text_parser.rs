@@ -56,6 +56,8 @@ pub fn parse_traversal(
         && !input.contains("withoutStrategies(EdgeLabelVerificationStrategy");
     // ReservedKeysVerificationStrategy(throwException: true, keys: {...})
     let reserved_keys = extract_reserved_keys_strategy(input);
+    // SeedStrategy(seed: 999999) — extract seed value for deterministic random
+    let seed_strategy = extract_seed_strategy(input);
 
     // Strip strategy wrappers: g.withStrategies(...).V()... or g.withoutStrategies(...).V()...
     // Also strip g.withSideEffect(...) and g.withSack(...) and g.withComputer(...)
@@ -108,6 +110,9 @@ pub fn parse_traversal(
     if edge_label_verify {
         steps.push(GremlinStep::EdgeLabelVerificationStrategy);
     }
+    if let Some(seed) = seed_strategy {
+        steps.push(GremlinStep::SeedStrategy(seed));
+    }
 
     for token in &tokens {
         parse_step_token(token, resolve_param, &mut steps)?;
@@ -150,6 +155,23 @@ fn strip_strategy_prefix(input: &str) -> String {
 /// Extract reserved keys from `ReservedKeysVerificationStrategy(throwException: true, keys: {"age"})`.
 /// Returns `Some(extra_keys)` if the strategy is active with throwException: true,
 /// where `extra_keys` are user-specified reserved keys beyond the defaults ("id", "label").
+/// Extract seed value from `SeedStrategy(seed: 999999)` if present.
+fn extract_seed_strategy(input: &str) -> Option<i64> {
+    if !input.contains("SeedStrategy") || input.contains("withoutStrategies(") {
+        return None;
+    }
+    let start = input.find("SeedStrategy(")?;
+    let after = &input[start + "SeedStrategy(".len()..];
+    // Find "seed:" or "seed :"
+    let seed_pos = after.find("seed")?;
+    let rest = &after[seed_pos + 4..];
+    let rest = rest.trim_start().strip_prefix(':')?;
+    let rest = rest.trim_start();
+    // Parse the integer value
+    let end = rest.find(|c: char| !c.is_ascii_digit() && c != '-').unwrap_or(rest.len());
+    rest[..end].parse::<i64>().ok()
+}
+
 fn extract_reserved_keys_strategy(input: &str) -> Option<Vec<String>> {
     if !input.contains("withStrategies(") || !input.contains("ReservedKeysVerificationStrategy") {
         return None;

@@ -229,8 +229,9 @@ pub enum Operator {
         selector: Box<Operator>,
         /// Alias of the selector's result column.
         selector_alias: crate::ast::Identifier,
-        /// (match_value, branch_operator) pairs; `None` value = default branch.
-        options: Vec<(Option<crate::types::Value>, Box<Operator>)>,
+        /// (match_value, branch_operator, branch_output_alias) triples.
+        /// `None` match_value = default branch.
+        options: Vec<(Option<crate::types::Value>, Box<Operator>, Option<crate::ast::Identifier>)>,
         child: Box<Operator>,
     },
     /// Gremlin coalesce() — first non-empty alternative.
@@ -446,7 +447,7 @@ impl Operator {
                 ..
             } => {
                 let mut v = vec![child.as_ref(), selector.as_ref()];
-                for (_, branch) in options {
+                for (_, branch, _) in options {
                     v.push(branch.as_ref());
                 }
                 v

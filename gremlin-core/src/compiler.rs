@@ -6,7 +6,7 @@
 
 use std::collections::HashMap;
 
-use gql_core::ast::{BinaryOp, Direction, Expr, Identifier, Label, RelType};
+use gql_core::ast::{BinaryOp, Direction, Expr, Identifier, Label, RelType, UnaryOp};
 use gql_core::planner::{AggFunction, CreateEdgeSpec, CreatePattern, Operator, SetItem};
 use gql_core::types::Value;
 use smol_str::SmolStr;
@@ -47,6 +47,8 @@ pub struct GremlinCompiler {
     reserved_keys: Option<Vec<String>>,
     /// When true, vertex steps without edge labels must error.
     edge_label_verify: bool,
+    /// SeedStrategy seed value for deterministic coin/sample.
+    seed: Option<i64>,
 }
 
 impl Default for GremlinCompiler {
@@ -65,6 +67,7 @@ impl GremlinCompiler {
             read_only: false,
             reserved_keys: None,
             edge_label_verify: false,
+            seed: None,
         }
     }
 
@@ -83,6 +86,7 @@ impl GremlinCompiler {
             read_only: self.read_only,
             reserved_keys: self.reserved_keys.clone(),
             edge_label_verify: self.edge_label_verify,
+            seed: self.seed,
         }
     }
 
@@ -272,6 +276,11 @@ impl GremlinCompiler {
         // The traverser alias just before addE — used to default __src/__dst
         // when from()/to() is omitted.
         let mut adde_traverser: Option<Identifier> = None;
+        // Track by() count for sample — only one allowed
+        let mut pending_sample = false;
+        let mut sample_by_consumed = false;
+        // Track by() count for sack ops — only one allowed
+        let mut pending_sack_by_consumed = false;
 
         for step in steps {
             // When we leave the addE modifier group (from/to/property), fill in
@@ -294,6 +303,9 @@ impl GremlinCompiler {
                 aggregate_by_consumed = false;
                 dedup_by_consumed = false;
                 pending_sack_op = false;
+                pending_sack_by_consumed = false;
+                pending_sample = false;
+                sample_by_consumed = false;
                 pending_project = false;
                 // Finalize pending format with collected by() modulations
                 if pending_format && !format_by_aliases.is_empty() {
@@ -1546,6 +1558,7 @@ impl GremlinCompiler {
                             }
                         }
                         pending_sack_op = false;
+                        pending_sack_by_consumed = true;
                     } else if pending_project {
                         // by() after project() — replace the default property
                         // expression for the next project key with the by() expression.
@@ -1739,6 +1752,29 @@ impl GremlinCompiler {
                         return Err(CompileError::InvalidSequence(
                             "Aggregate step can only have one by modulator".into(),
                         ));
+                    } else if pending_sample && sample_by_consumed {
+                        return Err(CompileError::InvalidSequence(
+                            "Sample step can only have one by modulator".into(),
+                        ));
+                    } else if pending_sack_by_consumed {
+                        return Err(CompileError::InvalidSequence(
+                            "Sack step can only have one by modulator".into(),
+                        ));
+                    }
+                    // Track by() consumption for sample/sack
+                    if pending_sample {
+                        if sample_by_consumed {
+                            // Already checked above
+                        } else {
+                            sample_by_consumed = true;
+                        }
+                    }
+                    if pending_sack_op {
+                        if pending_sack_by_consumed {
+                            // Already checked above
+                        } else {
+                            pending_sack_by_consumed = true;
+                        }
                     }
                 }
 
@@ -3114,14 +3150,24 @@ impl GremlinCompiler {
 
                 GremlinStep::Coin(probability) => {
                     let child = current.take().ok_or(CompileError::MissingChild)?;
+                    let rand_expr = if let Some(seed) = self.seed {
+                        // Seeded: use Java-compatible LCG for deterministic results
+                        Expr::FunctionCall {
+                            name: SmolStr::new("java_random_next_double"),
+                            args: vec![Expr::Integer(seed)],
+                            distinct: false,
+                        }
+                    } else {
+                        Expr::FunctionCall {
+                            name: SmolStr::new("rand"),
+                            args: vec![],
+                            distinct: false,
+                        }
+                    };
                     current = Some(Operator::Filter {
                         predicate: Expr::BinaryOp {
                             op: BinaryOp::Lt,
-                            left: Box::new(Expr::FunctionCall {
-                                name: SmolStr::new("rand"),
-                                args: vec![],
-                                distinct: false,
-                            }),
+                            left: Box::new(rand_expr),
                             right: Box::new(Expr::Float(*probability)),
                         },
                         child: Box::new(child),
@@ -3188,6 +3234,8 @@ impl GremlinCompiler {
                         count: Expr::Integer(*n),
                         child: Box::new(child),
                     });
+                    pending_sample = true;
+                    sample_by_consumed = false;
                 }
 
                 GremlinStep::Discard => {
@@ -3305,6 +3353,10 @@ impl GremlinCompiler {
                     self.productive_by = true;
                 }
 
+                GremlinStep::SeedStrategy(seed) => {
+                    self.seed = Some(*seed);
+                }
+
                 GremlinStep::ReadOnlyStrategy => {
                     self.read_only = true;
                 }
@@ -3347,12 +3399,13 @@ impl GremlinCompiler {
                     {
                         let mut sub = self.sub_compiler();
                         let branch_op = sub.compile_seeded(branch_steps, &current_alias)?;
+                        let branch_alias = sub.last_alias.clone();
                         self.absorb(&sub);
                         let match_val = match token {
                             GremlinValue::String(s) if s == "none" => None,
                             _ => Some(gremlin_value_to_value(token)),
                         };
-                        options.push((match_val, Box::new(branch_op)));
+                        options.push((match_val, Box::new(branch_op), Some(branch_alias)));
                     } else if current.is_none() {
                         return Err(CompileError::MissingChild);
                     }
@@ -4791,6 +4844,35 @@ fn steps_to_predicate(
 
     // Single step: delegate to step_to_predicate
     if steps.len() == 1 {
+        // Handle Or/And/Not at the single-step level too
+        match &steps[0] {
+            GremlinStep::Or(branches) => {
+                return branches
+                    .iter()
+                    .map(|b| steps_to_predicate(b, alias, alias_map))
+                    .reduce(|a, b| Expr::BinaryOp {
+                        op: BinaryOp::Or,
+                        left: Box::new(a),
+                        right: Box::new(b),
+                    })
+                    .unwrap_or(Expr::Bool(false));
+            }
+            GremlinStep::And(branches) => {
+                return branches
+                    .iter()
+                    .map(|b| steps_to_predicate(b, alias, alias_map))
+                    .reduce(|a, b| Expr::BinaryOp {
+                        op: BinaryOp::And,
+                        left: Box::new(a),
+                        right: Box::new(b),
+                    })
+                    .unwrap_or(Expr::Bool(true));
+            }
+            GremlinStep::Not(inner) => {
+                return Expr::UnaryOp { op: UnaryOp::Not, expr: Box::new(steps_to_predicate(inner, alias, alias_map)) };
+            }
+            _ => {}
+        }
         // Single Is(pred) where the pred argument is a string label reference:
         // where(P.eq("b")) → compare current value against labeled value "b"
         if let GremlinStep::Is(pred) = &steps[0] {
@@ -4870,7 +4952,36 @@ fn steps_to_predicate(
     // Multi-step patterns: try to build AND of individual predicates
     let mut preds = Vec::new();
     for step in steps {
-        let pred = step_to_predicate(step, alias);
+        // Handle Or/And/Not by recursing into steps_to_predicate
+        let pred = match step {
+            GremlinStep::Or(branches) => {
+                branches
+                    .iter()
+                    .map(|b| steps_to_predicate(b, alias, alias_map))
+                    .reduce(|a, b| Expr::BinaryOp {
+                        op: BinaryOp::Or,
+                        left: Box::new(a),
+                        right: Box::new(b),
+                    })
+                    .unwrap_or(Expr::Bool(false))
+            }
+            GremlinStep::And(branches) => {
+                branches
+                    .iter()
+                    .map(|b| steps_to_predicate(b, alias, alias_map))
+                    .reduce(|a, b| Expr::BinaryOp {
+                        op: BinaryOp::And,
+                        left: Box::new(a),
+                        right: Box::new(b),
+                    })
+                    .unwrap_or(Expr::Bool(true))
+            }
+            GremlinStep::Not(inner) => {
+                let inner_pred = steps_to_predicate(inner, alias, alias_map);
+                Expr::UnaryOp { op: UnaryOp::Not, expr: Box::new(inner_pred) }
+            }
+            _ => step_to_predicate(step, alias),
+        };
         if pred != Expr::Bool(true) {
             preds.push(pred);
         }

@@ -207,6 +207,8 @@ pub enum GremlinStep {
     ProductiveByStrategy,
     /// Flag indicating ReadOnlyStrategy is active — mutating steps must error
     ReadOnlyStrategy,
+    /// SeedStrategy with seed value for deterministic random operations
+    SeedStrategy(i64),
     /// Flag indicating ReservedKeysVerificationStrategy is active
     /// Contains the set of extra reserved keys (besides "id" and "label")
     ReservedKeysVerificationStrategy(Vec<String>),

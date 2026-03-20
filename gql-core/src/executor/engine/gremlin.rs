@@ -288,7 +288,7 @@ impl<'a> QueryExecutor<'a> {
             // exists, the traverser passes through as identity.
             if selector_unproductive {
                 let mut unproductive_branch = None;
-                for (match_val, branch) in options.iter() {
+                for (match_val, branch, _) in options.iter() {
                     if let Some(Value::Str(s)) = match_val {
                         if s.as_ref() == "Pick.unproductive" || s.as_ref() == "unproductive" {
                             unproductive_branch = Some(branch);
@@ -309,11 +309,13 @@ impl<'a> QueryExecutor<'a> {
             }
 
             // Find the matching option branch.
-            let mut matched_branch = None;
-            let mut default_branch = None;
-            for (match_val, branch) in options {
+            let mut matched_branch: Option<&Operator> = None;
+            let mut default_branch: Option<&Operator> = None;
+            for (match_val, branch, _) in options {
                 match match_val {
-                    None => default_branch = Some(branch),
+                    None => {
+                        default_branch = Some(branch);
+                    }
                     Some(v) => {
                         // Skip "unproductive" sentinel (handled above)
                         if let Value::Str(s) = v {

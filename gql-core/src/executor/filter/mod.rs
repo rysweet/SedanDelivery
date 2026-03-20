@@ -307,6 +307,7 @@ pub fn eval_function_with_vals(name: &str, vals: Vec<Value>) -> Result<Value, Gq
     match name.to_ascii_lowercase().as_str() {
         // ── Math functions ────────────────────────────────────────────────────
         "rand" => builtins::builtin_rand(vals),
+        "java_random_next_double" => builtins::builtin_java_random_next_double(vals),
         "abs" => builtins::builtin_abs(vals),
         "ceil" => builtins::builtin_ceil(vals),
         "floor" => builtins::builtin_floor(vals),
@@ -1283,6 +1284,10 @@ pub fn eval_function_with_vals(name: &str, vals: Vec<Value>) -> Result<Value, Gq
                     }
                     Ok(Value::List(result))
                 }
+                (Value::List(_), Value::Map(_)) => Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                    expected: "step type mismatch: expected argument to be Iterable but got Map".into(),
+                    actual: "Map".into(),
+                })),
                 (Value::Map(l), Value::Map(r)) => {
                     // Map merge: combine maps
                     let mut result = l.clone();
