@@ -448,6 +448,10 @@ impl<'a> QueryExecutor<'a> {
                             Value::Null => Ok(Value::Null),
                             Value::Node(node_id) => Ok(Value::Int(node_id.0 as i64)),
                             Value::Edge(edge_id) => Ok(Value::Int(edge_id.0 as i64)),
+                            // Property maps carry ~id for property identity.
+                            Value::Map(m) if m.contains_key("~id") => {
+                                Ok(m.get("~id").cloned().unwrap_or(Value::Null))
+                            }
                             other => Err(GqlError::Execution(ExecutionError::TypeMismatch {
                                 expected: "Node or Relationship".to_string(),
                                 actual: other.type_name().to_string(),
@@ -813,8 +817,15 @@ impl<'a> QueryExecutor<'a> {
                             .filter(|(k, _)| {
                                 key_filters.is_empty() || key_filters.iter().any(|f| f == k)
                             })
-                            .map(|(k, v)| {
+                            .enumerate()
+                            .map(|(idx, (k, v))| {
+                                let elem_base = match &element {
+                                    Value::Node(nid) => nid.0 as i64 * 1000,
+                                    Value::Edge(eid) => eid.0 as i64 * 1000,
+                                    _ => 0,
+                                };
                                 let mut m = indexmap::IndexMap::new();
+                                m.insert(Box::from("~id"), Value::Int(elem_base + idx as i64));
                                 m.insert(Box::from("~key"), Value::Str(k.into_boxed_str()));
                                 m.insert(Box::from("~value"), v);
                                 m.insert(Box::from("~element"), element.clone());

@@ -146,6 +146,15 @@ pub fn cmp_values(a: &Value, b: &Value) -> std::cmp::Ordering {
 /// Gremlin ascending order: Null < Bool < Number < Date < String < UUID
 ///   < Vertex < Edge < Property < Path < Set < List < Map
 pub fn gremlin_cmp_values(a: &Value, b: &Value) -> std::cmp::Ordering {
+    /// Detect a property Map: a Map with keys `~key`, `~value`, `~element`.
+    fn is_property_map(v: &Value) -> bool {
+        if let Value::Map(m) = v {
+            m.contains_key("~key") && m.contains_key("~value") && m.contains_key("~element")
+        } else {
+            false
+        }
+    }
+
     fn type_rank(v: &Value) -> u8 {
         match v {
             Value::Null => 0,
@@ -161,7 +170,15 @@ pub fn gremlin_cmp_values(a: &Value, b: &Value) -> std::cmp::Ordering {
             Value::Bytes(_) => 11,
             Value::Node(_) => 20,
             Value::Edge(_) => 21,
-            Value::Path { .. } => 22,
+            // Property maps rank between Edge and Path in Gremlin orderability.
+            Value::Map(m)
+                if m.contains_key("~key")
+                    && m.contains_key("~value")
+                    && m.contains_key("~element") =>
+            {
+                22
+            }
+            Value::Path { .. } => 24,
             Value::List(_) => 30,
             Value::Map(_) => 31,
             Value::Point(_) => 32,
@@ -172,6 +189,28 @@ pub fn gremlin_cmp_values(a: &Value, b: &Value) -> std::cmp::Ordering {
     let rb = type_rank(b);
     if ra != rb {
         return ra.cmp(&rb);
+    }
+
+    // Property maps: compare by element first, then by ~id (insertion order).
+    if is_property_map(a) && is_property_map(b) {
+        if let (Value::Map(ma), Value::Map(mb)) = (a, b) {
+            let ea = ma.get("~element").unwrap_or(&Value::Null);
+            let eb = mb.get("~element").unwrap_or(&Value::Null);
+            let elem_cmp = gremlin_cmp_values(ea, eb);
+            if elem_cmp != std::cmp::Ordering::Equal {
+                return elem_cmp;
+            }
+            // Compare by property ID (insertion order within element).
+            let ida = ma.get("~id").unwrap_or(&Value::Null);
+            let idb = mb.get("~id").unwrap_or(&Value::Null);
+            let id_cmp = gremlin_cmp_values(ida, idb);
+            if id_cmp != std::cmp::Ordering::Equal {
+                return id_cmp;
+            }
+            let va = ma.get("~value").unwrap_or(&Value::Null);
+            let vb = mb.get("~value").unwrap_or(&Value::Null);
+            return gremlin_cmp_values(va, vb);
+        }
     }
 
     // Delegate same-type comparison to the existing logic.

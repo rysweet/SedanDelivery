@@ -1104,6 +1104,73 @@ fn values_match_ctx(
                 || plain_no_spaces == expected_str.as_ref()
                 || plain_with_spaces == expected_str.as_ref()
         }
+        // Match property Map against vp[owner-key->value] or prop[key,value] notation
+        (Value::Map(a), Value::Str(e)) if a.contains_key("~key") && a.contains_key("~value") => {
+            let e_str = e.as_ref();
+            // vp[owner-key->value] — VertexProperty
+            if let Some(inner) = e_str.strip_prefix("vp[").and_then(|r| r.strip_suffix(']')) {
+                if let Some(arrow_pos) = inner.find("->") {
+                    let prefix = &inner[..arrow_pos];
+                    let exp_value_str = &inner[arrow_pos + 2..];
+                    if let Some(dash_pos) = prefix.rfind('-') {
+                        let exp_owner = &prefix[..dash_pos];
+                        let exp_key = &prefix[dash_pos + 1..];
+                        let key_ok =
+                            matches!(a.get("~key"), Some(Value::Str(k)) if k.as_ref() == exp_key);
+                        let elem_ok = match a.get("~element") {
+                            Some(Value::Node(nid)) => {
+                                vertex_id_to_name.get(nid).map_or(false, |n| n == exp_owner)
+                            }
+                            _ => false,
+                        };
+                        let val_ok = match a.get("~value") {
+                            Some(actual_val) => {
+                                let exp_val = parse_tck_value(
+                                    exp_value_str,
+                                    &HashMap::new(),
+                                    &HashMap::new(),
+                                );
+                                values_match_ctx(
+                                    actual_val,
+                                    &exp_val,
+                                    vertex_id_to_name,
+                                    edge_id_to_name,
+                                )
+                            }
+                            None => false,
+                        };
+                        return key_ok && elem_ok && val_ok;
+                    }
+                }
+            }
+            // prop[key,value] — EdgeProperty
+            if let Some(inner) = e_str
+                .strip_prefix("prop[")
+                .and_then(|r| r.strip_suffix(']'))
+            {
+                if let Some(comma_pos) = inner.find(',') {
+                    let exp_key = inner[..comma_pos].trim();
+                    let exp_value_str = inner[comma_pos + 1..].trim();
+                    let key_ok =
+                        matches!(a.get("~key"), Some(Value::Str(k)) if k.as_ref() == exp_key);
+                    let val_ok = match a.get("~value") {
+                        Some(actual_val) => {
+                            let exp_val =
+                                parse_tck_value(exp_value_str, &HashMap::new(), &HashMap::new());
+                            values_match_ctx(
+                                actual_val,
+                                &exp_val,
+                                vertex_id_to_name,
+                                edge_id_to_name,
+                            )
+                        }
+                        None => false,
+                    };
+                    return key_ok && val_ok;
+                }
+            }
+            false
+        }
         (Value::Str(a), Value::Str(e)) => a == e,
         (Value::Bool(a), Value::Bool(e)) => a == e,
         (Value::Null, Value::Null) => true,

@@ -1069,9 +1069,7 @@ impl GremlinCompiler {
                         current = Some(projected);
                     } else {
                         current = Some(Operator::Filter {
-                            predicate: Expr::IsNotNull(Box::new(Expr::Variable(
-                                sum_alias.clone(),
-                            ))),
+                            predicate: Expr::IsNotNull(Box::new(Expr::Variable(sum_alias.clone()))),
                             child: Box::new(projected),
                         });
                     }
@@ -1467,6 +1465,28 @@ impl GremlinCompiler {
                             }
                         }
                         pending_order = false;
+                    } else if !pending_order && matches!(current, Some(Operator::Sort { .. })) {
+                        // Additional by() after a Sort — add secondary sort key
+                        let sort_expr = if key.is_empty() {
+                            Expr::Variable(current_alias.clone())
+                        } else {
+                            let prop = Expr::Property(
+                                Box::new(Expr::Variable(current_alias.clone())),
+                                SmolStr::new(key),
+                            );
+                            if self.productive_by {
+                                Expr::FunctionCall {
+                                    name: SmolStr::new("coalesce"),
+                                    args: vec![prop, Expr::Null],
+                                    distinct: false,
+                                }
+                            } else {
+                                prop
+                            }
+                        };
+                        if let Some(Operator::Sort { ref mut items, .. }) = current {
+                            items.push((sort_expr, !descending));
+                        }
                     } else if pending_group {
                         // by() after group()/groupCount() — modifies GremlinGroup.
                         // Use pre_group_alias (the alias before group() changed it).
@@ -3401,10 +3421,44 @@ impl GremlinCompiler {
                     let child = current.take().ok_or(CompileError::MissingChild)?;
                     // Try to extract a predicate from the inner steps
                     let pred = steps_to_predicate(filter_steps, &current_alias, &self.alias_map);
-                    current = Some(Operator::Filter {
-                        predicate: pred,
-                        child: Box::new(child),
-                    });
+                    // If steps_to_predicate returned true (couldn't convert) and
+                    // there are actual steps, fall back to sub-traversal existence
+                    // check via Apply + Count + Filter (same pattern as Where).
+                    if pred == Expr::Bool(true) && !filter_steps.is_empty() {
+                        let mut sub = self.sub_compiler();
+                        let inner_op = sub.compile_seeded(filter_steps, &current_alias)?;
+                        self.absorb(&sub);
+                        let sub_result_alias = sub.last_alias.clone();
+                        let cnt_alias = self.next_alias("fcnt");
+                        let count_op = Operator::Aggregate {
+                            keys: vec![],
+                            aggregations: vec![(
+                                gql_core::planner::AggFunction::Count,
+                                Expr::Variable(sub_result_alias),
+                                None,
+                                false,
+                                cnt_alias.clone(),
+                            )],
+                            child: Box::new(inner_op),
+                        };
+                        let apply = Operator::Apply {
+                            outer: Box::new(child),
+                            inner: Box::new(count_op),
+                        };
+                        current = Some(Operator::Filter {
+                            predicate: Expr::BinaryOp {
+                                op: BinaryOp::Gt,
+                                left: Box::new(Expr::Variable(cnt_alias)),
+                                right: Box::new(Expr::Integer(0)),
+                            },
+                            child: Box::new(apply),
+                        });
+                    } else {
+                        current = Some(Operator::Filter {
+                            predicate: pred,
+                            child: Box::new(child),
+                        });
+                    }
                 }
 
                 GremlinStep::None => {

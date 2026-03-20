@@ -7,6 +7,7 @@
 
 use crate::bytecode::{GremlinStep, Predicate};
 use crate::types::GremlinValue;
+use indexmap::IndexMap;
 
 /// Errors that can occur during Gremlin text parsing.
 #[derive(Debug, thiserror::Error)]
@@ -884,7 +885,18 @@ fn parse_step_token(
         "property" => {
             let args = parse_arg_list(args_str, resolve_param)?;
             if args.len() >= 2 {
-                if let GremlinValue::String(key) = &args[0] {
+                // Check for property(Cardinality.xxx, Map) pattern — expand Map
+                // into individual property steps.
+                let is_cardinality = matches!(&args[0],
+                    GremlinValue::String(s) if s.starts_with("Cardinality.") || s == "single" || s == "list" || s == "set"
+                );
+                if is_cardinality && matches!(&args[1], GremlinValue::Map(_)) {
+                    if let GremlinValue::Map(map) = &args[1] {
+                        for (k, v) in map {
+                            out.push(GremlinStep::Property(k.clone(), v.clone()));
+                        }
+                    }
+                } else if let GremlinValue::String(key) = &args[0] {
                     out.push(GremlinStep::Property(key.clone(), args[1].clone()));
                 }
             }
@@ -2328,9 +2340,91 @@ fn parse_single_value(
         return Ok(GremlinValue::List(deduped));
     }
 
-    // List literal: [1, 2, "a", null]
+    // List or Map literal: [1, 2, "a"] or ["key": "val", ...]
     if s.starts_with('[') && s.ends_with(']') {
         let inner = &s[1..s.len() - 1];
+        // Detect Groovy map literal: ["key": "val", ...] — check for top-level ':'
+        let mut depth = 0u32;
+        let mut in_str = false;
+        let mut escape = false;
+        let mut has_colon = false;
+        for ch in inner.chars() {
+            if escape {
+                escape = false;
+                continue;
+            }
+            if ch == '\\' && in_str {
+                escape = true;
+                continue;
+            }
+            if ch == '"' || ch == '\'' {
+                in_str = !in_str;
+                continue;
+            }
+            if in_str {
+                continue;
+            }
+            match ch {
+                '(' | '[' | '{' => depth += 1,
+                ')' | ']' | '}' => depth = depth.saturating_sub(1),
+                ':' if depth == 0 => {
+                    has_colon = true;
+                    break;
+                }
+                _ => {}
+            }
+        }
+        if has_colon {
+            // Empty map: [:]
+            if inner.trim() == ":" {
+                return Ok(GremlinValue::Map(IndexMap::new()));
+            }
+            // Parse as map literal
+            let parts = split_top_level_args(inner);
+            let mut map = IndexMap::new();
+            for part in &parts {
+                let part = part.trim();
+                // Find the first top-level ':'
+                let mut d = 0u32;
+                let mut in_s = false;
+                let mut esc = false;
+                let mut colon_pos = None;
+                for (i, ch) in part.char_indices() {
+                    if esc {
+                        esc = false;
+                        continue;
+                    }
+                    if ch == '\\' && in_s {
+                        esc = true;
+                        continue;
+                    }
+                    if ch == '"' || ch == '\'' {
+                        in_s = !in_s;
+                        continue;
+                    }
+                    if in_s {
+                        continue;
+                    }
+                    match ch {
+                        '(' | '[' | '{' => d += 1,
+                        ')' | ']' | '}' => d = d.saturating_sub(1),
+                        ':' if d == 0 => {
+                            colon_pos = Some(i);
+                            break;
+                        }
+                        _ => {}
+                    }
+                }
+                if let Some(cp) = colon_pos {
+                    let key_str = part[..cp].trim();
+                    let val_str = part[cp + 1..].trim();
+                    let key = unquote(key_str);
+                    let val = parse_single_value(val_str, resolve_param)?;
+                    map.insert(key, val);
+                }
+            }
+            return Ok(GremlinValue::Map(map));
+        }
         let items = parse_arg_list(inner, resolve_param)?;
         return Ok(GremlinValue::List(items));
     }
