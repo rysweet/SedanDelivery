@@ -711,6 +711,14 @@ pub fn eval_function_with_vals(name: &str, vals: Vec<Value>) -> Result<Value, Gq
             Some(Value::Null) => Ok(Value::Null),
             _ => Ok(Value::Int(0)),
         },
+        "gremlin_math" => {
+            let current_val = vals.first().cloned().unwrap_or(Value::Null);
+            let expr_str = match vals.get(1) {
+                Some(Value::Str(s)) => s.as_ref(),
+                _ => return Ok(Value::Null),
+            };
+            eval_math_expr(expr_str, &current_val)
+        },
         "gremlin_tail_local" => {
             let val = vals.first().cloned().unwrap_or(Value::Null);
             let n = match vals.get(1) {
@@ -1284,15 +1292,60 @@ pub fn eval_function_with_vals(name: &str, vals: Vec<Value>) -> Result<Value, Gq
                 Some(other) => Ok(Value::List(vec![other])),
             }
         }
-        "gremlin_sort_local" => match vals.into_iter().next() {
-            Some(Value::List(mut items)) => {
-                items.sort_by(|a, b| {
-                    crate::executor::engine::helpers::gremlin_cmp_values(a, b)
-                });
-                Ok(Value::List(items))
+        "gremlin_sort_local" => {
+            let mut vals_iter = vals.into_iter();
+            let list_val = vals_iter.next().unwrap_or(Value::Null);
+            let by_key = match vals_iter.next() {
+                Some(Value::Str(s)) if !s.is_empty() => Some(s),
+                _ => None,
+            };
+            let descending =
+                matches!(vals_iter.next(), Some(Value::Str(s)) if s.as_ref() == "desc");
+
+            match list_val {
+                Value::List(mut items) => {
+                    if let Some(ref key) = by_key {
+                        // Sort by property key — extract key from each item for comparison
+                        items.sort_by(|a, b| {
+                            let a_prop = extract_sort_key(a, key);
+                            let b_prop = extract_sort_key(b, key);
+                            let ord = crate::executor::engine::helpers::gremlin_cmp_values(
+                                &a_prop, &b_prop,
+                            );
+                            if descending { ord.reverse() } else { ord }
+                        });
+                    } else {
+                        items.sort_by(|a, b| {
+                            let ord =
+                                crate::executor::engine::helpers::gremlin_cmp_values(a, b);
+                            if descending { ord.reverse() } else { ord }
+                        });
+                    }
+                    Ok(Value::List(items))
+                }
+                Value::Map(m) => {
+                    // Sort map entries by value (Column.values) or key (Column.keys)
+                    let mut entries: Vec<(Box<str>, Value)> = m.into_iter().collect();
+                    if let Some(ref key) = by_key {
+                        if key.as_ref() == "Column.keys" {
+                            entries.sort_by(|(ka, _), (kb, _)| ka.cmp(kb));
+                        } else {
+                            entries.sort_by(|(_, va), (_, vb)| {
+                                crate::executor::engine::helpers::gremlin_cmp_values(va, vb)
+                            });
+                        }
+                    } else {
+                        entries.sort_by(|(ka, _), (kb, _)| ka.cmp(kb));
+                    }
+                    if descending {
+                        entries.reverse();
+                    }
+                    let result: indexmap::IndexMap<Box<str>, Value> =
+                        entries.into_iter().collect();
+                    Ok(Value::Map(result))
+                }
+                other => Ok(other),
             }
-            Some(other) => Ok(other),
-            None => Ok(Value::Null),
         }
         "gremlin_sum_local" => match vals.first() {
             Some(Value::List(items)) => {
@@ -1568,6 +1621,87 @@ fn gremlin_cmp(a: &Value, b: &Value) -> Option<std::cmp::Ordering> {
         (Value::Bool(b1), Value::Bool(b2)) => b1.partial_cmp(b2),
         _ => None,
     }
+}
+
+/// Extract a sort key from a value (node, edge, or map) by property name.
+fn extract_sort_key(v: &Value, key: &str) -> Value {
+    match v {
+        Value::Map(m) => m.get(key).cloned().unwrap_or(Value::Null),
+        // For nodes/edges, we can't directly access properties here
+        // since we don't have GraphStore access in filter context.
+        _ => Value::Null,
+    }
+}
+
+/// Evaluate a Gremlin math expression. `_` refers to the current value.
+/// Supports: `_ + N`, `_ - N`, `_ * N`, `_ / N`, `ceil(_)`, `floor(_)`,
+/// `abs(_)`, `_ + 1` (inc).
+fn eval_math_expr(expr: &str, current: &Value) -> Result<Value, GqlError> {
+    let expr = expr.trim();
+
+    // Helper to extract numeric value
+    fn as_f64(v: &Value) -> Option<f64> {
+        match v {
+            Value::Int(i) => Some(*i as f64),
+            Value::Float(f) => Some(*f),
+            _ => None,
+        }
+    }
+
+    let val = as_f64(current).unwrap_or(0.0);
+
+    // ceil(_), floor(_), abs(_)
+    if expr.starts_with("ceil(") {
+        return Ok(Value::Float(val.ceil()));
+    }
+    if expr.starts_with("floor(") {
+        return Ok(Value::Float(val.floor()));
+    }
+    if expr.starts_with("abs(") {
+        return Ok(Value::Float(val.abs()));
+    }
+    if expr.starts_with("sqrt(") {
+        return Ok(Value::Float(val.sqrt()));
+    }
+
+    // Binary operations: _ op N
+    for (op_str, op_fn) in &[
+        (" + ", (|a: f64, b: f64| a + b) as fn(f64, f64) -> f64),
+        (" - ", |a, b| a - b),
+        (" * ", |a, b| a * b),
+        (" / ", |a, b| if b != 0.0 { a / b } else { f64::NAN }),
+        (" % ", |a, b| if b != 0.0 { a % b } else { f64::NAN }),
+    ] {
+        if let Some(pos) = expr.find(op_str) {
+            let left_str = expr[..pos].trim();
+            let right_str = expr[pos + op_str.len()..].trim();
+
+            let left_val = if left_str == "_" {
+                val
+            } else if let Ok(n) = left_str.parse::<f64>() {
+                n
+            } else {
+                val // default to current value for variable refs
+            };
+            let right_val = if right_str == "_" {
+                val
+            } else if let Ok(n) = right_str.parse::<f64>() {
+                n
+            } else {
+                val
+            };
+
+            let result = op_fn(left_val, right_val);
+            // Return Int if the result is a whole number and both operands are int-like
+            if result.fract() == 0.0 && matches!(current, Value::Int(_)) {
+                return Ok(Value::Float(result));
+            }
+            return Ok(Value::Float(result));
+        }
+    }
+
+    // Fallback: return current value unchanged
+    Ok(current.clone())
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────

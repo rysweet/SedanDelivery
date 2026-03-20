@@ -242,6 +242,8 @@ pub enum GremlinStep {
     StringOpLocal(String),
     /// `typeOf()` — return type name as string
     TypeOf,
+    /// `math(expression)` — evaluate mathematical expression
+    Math(String),
 
     // ── Collection steps ────────────────────────────────────────────────────
     /// `combine(traversal)` — append two lists

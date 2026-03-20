@@ -908,8 +908,9 @@ fn parse_step_token(
         }
         "math" => {
             // math("expression") — mathematical expression on traversal values
-            // Not fully implementable, but parse as identity to avoid blocking
-            out.push(GremlinStep::Identity);
+            let args = parse_string_arg_list(args_str)?;
+            let expr_str = args.into_iter().next().unwrap_or_default();
+            out.push(GremlinStep::Math(expr_str));
         }
         "index" => {
             // index() — adds index to each element

@@ -207,6 +207,7 @@ impl GremlinCompiler {
         let mut pending_properties: Vec<(String, GremlinValue)> = Vec::new();
         // Pending By modifiers for Order
         let mut pending_order = false;
+        let mut pending_order_local = false;
         // Track whether the preceding step was group/groupCount for by() modulation
         let mut pending_group = false;
         // Track how many by() the current group has consumed (0=key, 1=value)
@@ -1136,6 +1137,8 @@ impl GremlinCompiler {
                         agg_fn,
                         alias: alias.clone(),
                         side_effect_key: key.clone(),
+                        key_traversal: None,
+                        value_traversal: None,
                         child: Box::new(child),
                     });
                     // Named groups are side-effects (pass-through): keep current alias.
@@ -1182,7 +1185,33 @@ impl GremlinCompiler {
                 }
 
                 GremlinStep::By(key, descending) => {
-                    if pending_order {
+                    if pending_order && pending_order_local {
+                        // by() after order(Scope.local) — sort within list by key
+                        let child = current.take().ok_or(CompileError::MissingChild)?;
+                        let alias = self.next_alias("srtl");
+                        let by_key = if key.is_empty() { "" } else { key };
+                        let desc_str = if *descending { "desc" } else { "asc" };
+                        let mut items = vec![(
+                            Expr::FunctionCall {
+                                name: SmolStr::new("gremlin_sort_local"),
+                                args: vec![
+                                    Expr::Variable(current_alias.clone()),
+                                    Expr::Str(by_key.to_string().into_boxed_str()),
+                                    Expr::Str(desc_str.to_string().into_boxed_str()),
+                                ],
+                                distinct: false,
+                            },
+                            Some(alias.clone()),
+                        )];
+                        items.extend(self.label_carry_items());
+                        current = Some(Operator::Project {
+                            items,
+                            child: Box::new(child),
+                        });
+                        current_alias = alias;
+                        pending_order = false;
+                        pending_order_local = false;
+                    } else if pending_order {
                         let child = current.take().ok_or(CompileError::MissingChild)?;
                         if key.is_empty() {
                             // by() with no key — sort by current value
@@ -1257,43 +1286,119 @@ impl GremlinCompiler {
                     } else if pending_group {
                         // by() after group()/groupCount() — modifies GremlinGroup.
                         // Use pre_group_alias (the alias before group() changed it).
-                        if let Some(Operator::GremlinGroup {
-                            ref mut key_expr,
-                            ref mut value_expr,
-                            ref mut agg_fn,
-                            ..
-                        }) = current
-                        {
-                            if pending_group_by_count == 0 {
-                                // First by() = group key
-                                if !key.is_empty() {
-                                    let new_key = make_by_expr(key, &pre_group_alias);
-                                    *key_expr = new_key;
+                        if pending_group_by_count == 0 {
+                            // First by() = group key
+                            if !key.is_empty() {
+                                // Try parsing __.prefix strings as sub-traversals
+                                if key.starts_with("__.") && key.contains('(') {
+                                    let no_param = |_: &str| -> Option<GremlinValue> { None };
+                                    if let Ok(sub_steps) =
+                                        crate::text_parser::parse_inner_traversal(key, &no_param)
+                                    {
+                                        if !sub_steps.is_empty() {
+                                            let mut sub = self.sub_compiler();
+                                            if let Ok(sub_op) =
+                                                sub.compile_seeded(&sub_steps, &pre_group_alias)
+                                            {
+                                                let sub_out_alias = sub.last_alias.clone();
+                                                self.absorb(&sub);
+                                                if let Some(Operator::GremlinGroup {
+                                                    ref mut key_traversal,
+                                                    ..
+                                                }) = current
+                                                {
+                                                    *key_traversal =
+                                                        Some((Box::new(sub_op), sub_out_alias));
+                                                }
+                                            }
+                                        }
+                                    }
+                                } else if let Some(Operator::GremlinGroup {
+                                    ref mut key_expr,
+                                    ..
+                                }) = current
+                                {
+                                    *key_expr = make_by_expr(key, &pre_group_alias);
                                 }
-                                pending_group_by_count = 1;
-                            } else if pending_group_is_count {
-                                // groupCount() only supports one by() modulator
-                                return Err(CompileError::InvalidSequence(
-                                    "GroupCount step can only have one by modulator".into(),
-                                ));
-                            } else {
-                                // Second by() = value aggregation
-                                if key == "count()" || key == "__.count()" {
-                                    *agg_fn = AggFunction::Count;
-                                } else if key == "fold()" || key == "__.fold()" {
-                                    *agg_fn = AggFunction::Collect;
-                                } else if key == "sum()" || key == "__.sum()" {
-                                    *agg_fn = AggFunction::Sum;
-                                } else if key.is_empty() {
-                                    // by() with no args — identity (collect the element)
-                                    *agg_fn = AggFunction::Collect;
-                                } else {
-                                    // by("propName") — collect property values
-                                    *value_expr = make_by_expr(key, &pre_group_alias);
-                                }
-                                pending_group = false;
                             }
+                            pending_group_by_count = 1;
+                        } else if pending_group_is_count {
+                            // groupCount() only supports one by() modulator
+                            return Err(CompileError::InvalidSequence(
+                                "GroupCount step can only have one by modulator".into(),
+                            ));
                         } else {
+                            // Second by() = value aggregation
+                            if key == "count()" || key == "__.count()" {
+                                if let Some(Operator::GremlinGroup { ref mut agg_fn, .. }) = current
+                                {
+                                    *agg_fn = AggFunction::Count;
+                                }
+                            } else if key == "fold()" || key == "__.fold()" {
+                                if let Some(Operator::GremlinGroup { ref mut agg_fn, .. }) = current
+                                {
+                                    *agg_fn = AggFunction::Collect;
+                                }
+                            } else if key == "sum()" || key == "__.sum()" {
+                                if let Some(Operator::GremlinGroup { ref mut agg_fn, .. }) = current
+                                {
+                                    *agg_fn = AggFunction::Sum;
+                                }
+                            } else if key.is_empty() {
+                                // by() with no args — identity (collect the element)
+                                if let Some(Operator::GremlinGroup { ref mut agg_fn, .. }) = current
+                                {
+                                    *agg_fn = AggFunction::Collect;
+                                }
+                            } else if key.starts_with("__.") && key.contains('(') {
+                                // __.prefix value-by: parse as sub-traversal
+                                let no_param = |_: &str| -> Option<GremlinValue> { None };
+                                if let Ok(sub_steps) =
+                                    crate::text_parser::parse_inner_traversal(key, &no_param)
+                                {
+                                    if !sub_steps.is_empty() {
+                                        let (proj_steps, trailing_agg) =
+                                            split_trailing_agg(&sub_steps);
+                                        if proj_steps.is_empty() {
+                                            if let Some(Operator::GremlinGroup {
+                                                ref mut agg_fn,
+                                                ..
+                                            }) = current
+                                            {
+                                                if let Some(agg) = trailing_agg {
+                                                    *agg_fn = agg;
+                                                }
+                                            }
+                                        } else {
+                                            let mut sub = self.sub_compiler();
+                                            if let Ok(sub_op) =
+                                                sub.compile_seeded(proj_steps, &pre_group_alias)
+                                            {
+                                                let sub_out_alias = sub.last_alias.clone();
+                                                self.absorb(&sub);
+                                                if let Some(Operator::GremlinGroup {
+                                                    ref mut value_traversal,
+                                                    ref mut agg_fn,
+                                                    ..
+                                                }) = current
+                                                {
+                                                    *value_traversal =
+                                                        Some((Box::new(sub_op), sub_out_alias));
+                                                    if let Some(agg) = trailing_agg {
+                                                        *agg_fn = agg;
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            } else if let Some(Operator::GremlinGroup {
+                                ref mut value_expr, ..
+                            }) = current
+                            {
+                                // by("propName") — collect property values
+                                *value_expr = make_by_expr(key, &pre_group_alias);
+                            }
                             pending_group = false;
                         }
                     } else if pending_select {
@@ -1659,25 +1764,55 @@ impl GremlinCompiler {
                             // (preserves existing behavior)
                             select_by_mods.push(String::new());
                         } else if pending_group {
-                            // by(traversal) after group() — handle value aggregation
-                            if let Some(Operator::GremlinGroup {
-                                key_expr: _,
-                                value_expr: _,
-                                ref mut agg_fn,
-                                ..
-                            }) = current
-                            {
-                                if pending_group_by_count == 0 {
-                                    pending_group_by_count = 1;
-                                } else {
-                                    let step_str = format!("{:?}", sub_steps);
-                                    if step_str.contains("Count") {
-                                        *agg_fn = AggFunction::Count;
-                                    } else if step_str.contains("Fold") {
-                                        *agg_fn = AggFunction::Collect;
-                                    }
-                                    pending_group = false;
+                            // by(traversal) after group() — compile sub-traversal for key or value
+                            if pending_group_by_count == 0 {
+                                // First by(traversal) = group key
+                                let mut sub = self.sub_compiler();
+                                let sub_op = sub.compile_seeded(sub_steps, &pre_group_alias)?;
+                                let sub_out_alias = sub.last_alias.clone();
+                                self.absorb(&sub);
+                                if let Some(Operator::GremlinGroup {
+                                    ref mut key_traversal,
+                                    ..
+                                }) = current
+                                {
+                                    *key_traversal = Some((Box::new(sub_op), sub_out_alias));
                                 }
+                                pending_group_by_count = 1;
+                            } else {
+                                // Second by(traversal) = value aggregation
+                                // Check for trailing agg step (count/sum/fold)
+                                let (proj_steps, trailing_agg) = split_trailing_agg(sub_steps);
+
+                                if proj_steps.is_empty() {
+                                    // Just an aggregation function
+                                    if let Some(Operator::GremlinGroup { ref mut agg_fn, .. }) =
+                                        current
+                                    {
+                                        if let Some(agg) = trailing_agg {
+                                            *agg_fn = agg;
+                                        }
+                                    }
+                                } else {
+                                    // Compile the per-element projection
+                                    let mut sub = self.sub_compiler();
+                                    let sub_op =
+                                        sub.compile_seeded(proj_steps, &pre_group_alias)?;
+                                    let sub_out_alias = sub.last_alias.clone();
+                                    self.absorb(&sub);
+                                    if let Some(Operator::GremlinGroup {
+                                        ref mut value_traversal,
+                                        ref mut agg_fn,
+                                        ..
+                                    }) = current
+                                    {
+                                        *value_traversal = Some((Box::new(sub_op), sub_out_alias));
+                                        if let Some(agg) = trailing_agg {
+                                            *agg_fn = agg;
+                                        }
+                                    }
+                                }
+                                pending_group = false;
                             }
                         }
                     }
@@ -1744,24 +1879,10 @@ impl GremlinCompiler {
                 }
 
                 GremlinStep::SortLocal => {
-                    // Sort elements within a list/map value
-                    let child = current.take().ok_or(CompileError::MissingChild)?;
-                    let alias = self.next_alias("srtl");
-                    let mut items = vec![(
-                        Expr::FunctionCall {
-                            name: SmolStr::new("gremlin_sort_local"),
-                            args: vec![Expr::Variable(current_alias.clone())],
-                            distinct: false,
-                        },
-                        Some(alias.clone()),
-                    )];
-                    items.extend(self.label_carry_items());
-                    current = Some(Operator::Project {
-                        items,
-                        child: Box::new(child),
-                    });
-                    current_alias = alias;
+                    // Sort elements within a list/map value.
+                    // Defer to by() handler; if no by() follows, resolve at end.
                     pending_order = true;
+                    pending_order_local = true;
                 }
 
                 GremlinStep::Dedup(keys) => {
@@ -2004,12 +2125,10 @@ impl GremlinCompiler {
                                     }),
                                 };
                                 let child = current.take().ok_or(CompileError::MissingChild)?;
-                                // Vertex lookup must be outer so its alias is
-                                // available when the Create operator runs.
-                                current = Some(Operator::Apply {
-                                    outer: Box::new(scan),
-                                    inner: Box::new(child),
-                                });
+                                // Inject the vertex lookup as a cross join into the
+                                // Create's child chain so that the fv_N alias is
+                                // present in every row when Create resolves src/dst.
+                                current = Some(inject_scan_into_child(child, scan));
                                 alias
                             }
                             GremlinStep::Select(keys) if keys.len() == 1 => {
@@ -2028,10 +2147,7 @@ impl GremlinCompiler {
                                     self.absorb(&sub);
                                     let inner_alias = sub.last_alias.clone();
                                     let child = current.take().ok_or(CompileError::MissingChild)?;
-                                    current = Some(Operator::Apply {
-                                        outer: Box::new(inner_op),
-                                        inner: Box::new(child),
-                                    });
+                                    current = Some(inject_scan_into_child(child, inner_op));
                                     inner_alias
                                 } else {
                                     current_alias.clone()
@@ -2045,10 +2161,7 @@ impl GremlinCompiler {
                             self.absorb(&sub);
                             let inner_alias = sub.last_alias.clone();
                             let child = current.take().ok_or(CompileError::MissingChild)?;
-                            current = Some(Operator::Apply {
-                                outer: Box::new(inner_op),
-                                inner: Box::new(child),
-                            });
+                            current = Some(inject_scan_into_child(child, inner_op));
                             inner_alias
                         } else {
                             current_alias.clone()
@@ -3450,6 +3563,28 @@ impl GremlinCompiler {
                     current_alias = alias;
                 }
 
+                GremlinStep::Math(expr_str) => {
+                    let child = current.take().ok_or(CompileError::MissingChild)?;
+                    let alias = self.next_alias("math");
+                    let mut items = vec![(
+                        Expr::FunctionCall {
+                            name: SmolStr::new("gremlin_math"),
+                            args: vec![
+                                Expr::Variable(current_alias.clone()),
+                                Expr::Str(expr_str.clone().into_boxed_str()),
+                            ],
+                            distinct: false,
+                        },
+                        Some(alias.clone()),
+                    )];
+                    items.extend(self.label_carry_items());
+                    current = Some(Operator::Project {
+                        items,
+                        child: Box::new(child),
+                    });
+                    current_alias = alias;
+                }
+
                 GremlinStep::TypeOf => {
                     let child = current.take().ok_or(CompileError::MissingChild)?;
                     let alias = self.next_alias("type");
@@ -3667,7 +3802,26 @@ impl GremlinCompiler {
         }
 
         // If Order was set but no By followed, apply default sort
-        if pending_order {
+        if pending_order && pending_order_local {
+            // order(Scope.local) with no by() — default sort
+            if let Some(child) = current.take() {
+                let alias = self.next_alias("srtl");
+                let mut items = vec![(
+                    Expr::FunctionCall {
+                        name: SmolStr::new("gremlin_sort_local"),
+                        args: vec![Expr::Variable(current_alias.clone())],
+                        distinct: false,
+                    },
+                    Some(alias.clone()),
+                )];
+                items.extend(self.label_carry_items());
+                current = Some(Operator::Project {
+                    items,
+                    child: Box::new(child),
+                });
+                current_alias = alias;
+            }
+        } else if pending_order {
             if let Some(child) = current.take() {
                 current = Some(Operator::Sort {
                     items: vec![(Expr::Variable(current_alias.clone()), true)],
@@ -4053,6 +4207,41 @@ fn inject_sack_init(op: &mut Operator, init_expr: &Expr) {
     }
 }
 
+/// Inject a vertex scan into the child chain of an operator (typically Create)
+/// so that the scan's alias is available in every row when the operator executes.
+/// Uses Apply with scan as outer and original operator as inner.
+fn inject_scan_into_child(op: Operator, scan: Operator) -> Operator {
+    match op {
+        Operator::Create { patterns, child } => {
+            let new_child = match child {
+                Some(ch) => Some(Box::new(Operator::Apply {
+                    outer: Box::new(scan),
+                    inner: ch,
+                })),
+                None => Some(Box::new(scan)),
+            };
+            Operator::Create {
+                patterns,
+                child: new_child,
+            }
+        }
+        Operator::Set { items, child } => {
+            // Set wrapping Create: inject into Set's child
+            Operator::Set {
+                items,
+                child: Box::new(inject_scan_into_child(*child, scan)),
+            }
+        }
+        other => {
+            // Fallback: Apply with scan as outer
+            Operator::Apply {
+                outer: Box::new(scan),
+                inner: Box::new(other),
+            }
+        }
+    }
+}
+
 /// Recursively rewrite a placeholder alias in a `Create` operator's edge specs.
 fn rewrite_create_alias(op: &mut Operator, placeholder: &str, replacement: &Identifier) {
     match op {
@@ -4116,6 +4305,21 @@ fn gremlin_value_to_value(gv: &GremlinValue) -> Value {
         | GremlinValue::Vertex { .. }
         | GremlinValue::Edge { .. }
         | GremlinValue::Path { .. } => Value::Null,
+    }
+}
+
+/// Split a trailing aggregation step (Count, Sum, Fold) from a list of Gremlin steps.
+/// Returns the remaining steps (before the agg) and the detected aggregation function.
+fn split_trailing_agg(steps: &[GremlinStep]) -> (&[GremlinStep], Option<AggFunction>) {
+    if let Some(last) = steps.last() {
+        match last {
+            GremlinStep::Count => (&steps[..steps.len() - 1], Some(AggFunction::Count)),
+            GremlinStep::Sum => (&steps[..steps.len() - 1], Some(AggFunction::Sum)),
+            GremlinStep::Fold => (&steps[..steps.len() - 1], Some(AggFunction::Collect)),
+            _ => (steps, None),
+        }
+    } else {
+        (steps, None)
     }
 }
 

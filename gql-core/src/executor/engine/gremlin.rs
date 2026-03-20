@@ -261,6 +261,14 @@ impl<'a> QueryExecutor<'a> {
             let sel_rows = self.exec_operator(cx, selector)?;
             self.foreach_seed.borrow_mut().take();
 
+            // Check if the selector was unproductive (returned no rows or only nulls).
+            let selector_unproductive = sel_rows.is_empty()
+                || sel_rows.first().is_none_or(|r| {
+                    r.get(selector_alias.0.as_str())
+                        .is_none_or(|v| matches!(v, Value::Null))
+                        && r.values().all(|v| matches!(v, Value::Null))
+                });
+
             // Extract the selector's result value using the known alias.
             // Unwrap single-element lists (e.g. labels() returns List(["person"])) to
             // a scalar so option matching works against plain string values.
@@ -273,6 +281,31 @@ impl<'a> QueryExecutor<'a> {
                     other => other,
                 });
 
+            // When the selector is unproductive (e.g. values("age") on a vertex
+            // without "age"), look for an "unproductive" option branch. If none
+            // exists, the traverser passes through as identity.
+            if selector_unproductive {
+                let mut unproductive_branch = None;
+                for (match_val, branch) in options.iter() {
+                    if let Some(Value::Str(s)) = match_val {
+                        if s.as_ref() == "Pick.unproductive" || s.as_ref() == "unproductive" {
+                            unproductive_branch = Some(branch);
+                            break;
+                        }
+                    }
+                }
+                if let Some(branch) = unproductive_branch {
+                    self.foreach_seed.borrow_mut().replace(vec![row]);
+                    let branch_rows = self.exec_operator(cx, branch)?;
+                    self.foreach_seed.borrow_mut().take();
+                    out.extend(branch_rows);
+                } else {
+                    // No unproductive branch → identity (pass through)
+                    out.push(row);
+                }
+                continue;
+            }
+
             // Find the matching option branch.
             let mut matched_branch = None;
             let mut default_branch = None;
@@ -280,6 +313,12 @@ impl<'a> QueryExecutor<'a> {
                 match match_val {
                     None => default_branch = Some(branch),
                     Some(v) => {
+                        // Skip "unproductive" sentinel (handled above)
+                        if let Value::Str(s) = v {
+                            if s.as_ref() == "Pick.unproductive" || s.as_ref() == "unproductive" {
+                                continue;
+                            }
+                        }
                         let matches = match (sel_value.as_ref(), Some(v)) {
                             (Some(Value::Int(a)), Some(Value::Int(b))) => a == b,
                             (Some(Value::Float(a)), Some(Value::Float(b))) => (a - b).abs() < 1e-9,
@@ -874,6 +913,8 @@ impl<'a> QueryExecutor<'a> {
             agg_fn,
             alias,
             side_effect_key,
+            key_traversal,
+            value_traversal,
             child,
         } = op
         else {
@@ -890,22 +931,47 @@ impl<'a> QueryExecutor<'a> {
         let mut groups: IndexMap<Box<str>, Vec<Value>> = IndexMap::new();
 
         // Check if value_expr differs from key_expr (i.e., a value-by modulation is present).
-        let has_value_by = value_expr != key_expr;
+        let has_value_by = value_expr != key_expr || value_traversal.is_some();
 
         for row in &input {
             cx.budget.check_or_err()?;
             let ctx = self.build_filter_ctx(cx.graph, row)?;
-            let key_val = self
-                .eval_with_storage(cx.graph, key_expr, row, &ctx)
-                .unwrap_or(Value::Null);
+
+            // Compute group key: use traversal if available, else eval expression.
+            let key_val = if let Some((key_op, key_alias)) = key_traversal {
+                self.foreach_seed.borrow_mut().replace(vec![row.clone()]);
+                let key_rows = self.exec_operator(cx, key_op)?;
+                self.foreach_seed.borrow_mut().take();
+                key_rows
+                    .first()
+                    .and_then(|r| r.get(key_alias.0.as_str()).cloned())
+                    .or_else(|| key_rows.first().and_then(|r| r.values().next().cloned()))
+                    .unwrap_or(Value::Null)
+            } else {
+                self.eval_with_storage(cx.graph, key_expr, row, &ctx)
+                    .unwrap_or(Value::Null)
+            };
             // Skip rows where the group key evaluates to Null (unproductive by).
             // TinkerPop default: null keys are dropped unless ProductiveByStrategy.
             if matches!(key_val, Value::Null) {
                 continue;
             }
-            let val = self
-                .eval_with_storage(cx.graph, value_expr, row, &ctx)
-                .unwrap_or(Value::Null);
+
+            // Compute group value: use traversal if available, else eval expression.
+            let val = if let Some((val_op, val_alias)) = value_traversal {
+                self.foreach_seed.borrow_mut().replace(vec![row.clone()]);
+                let val_rows = self.exec_operator(cx, val_op)?;
+                self.foreach_seed.borrow_mut().take();
+                val_rows
+                    .first()
+                    .and_then(|r| r.get(val_alias.0.as_str()).cloned())
+                    .or_else(|| val_rows.first().and_then(|r| r.values().next().cloned()))
+                    .unwrap_or(Value::Null)
+            } else {
+                self.eval_with_storage(cx.graph, value_expr, row, &ctx)
+                    .unwrap_or(Value::Null)
+            };
+
             let key_str = value_to_map_key(&key_val);
             let entry = groups.entry(key_str).or_default();
             // When a value-by projection is active, skip null values (unproductive by).
@@ -1229,6 +1295,28 @@ fn eval_gremlin_predicate(pred_str: &str, value: &Value) -> bool {
 
     let pred = pred_str.strip_prefix("P.").unwrap_or(pred_str);
 
+    // Handle compound predicates: .or(P.xxx) and .and(P.xxx)
+    // Split at top-level .or() / .and() boundaries.
+    if let Some((left, right, is_or)) = split_compound_predicate(pred) {
+        let left_str = if left.starts_with("P.") {
+            left.to_string()
+        } else {
+            format!("P.{left}")
+        };
+        let right_str = if right.starts_with("P.") {
+            right.to_string()
+        } else {
+            format!("P.{right}")
+        };
+        let left_result = eval_gremlin_predicate(&left_str, value);
+        let right_result = eval_gremlin_predicate(&right_str, value);
+        return if is_or {
+            left_result || right_result
+        } else {
+            left_result && right_result
+        };
+    }
+
     if let Some(rest) = pred.strip_prefix("between(") {
         if let Some(args) = rest.strip_suffix(')') {
             let parts: Vec<&str> = args.splitn(2, ',').collect();
@@ -1292,6 +1380,43 @@ fn eval_gremlin_predicate(pred_str: &str, value: &Value) -> bool {
     }
 
     false
+}
+
+/// Split a compound predicate like "between(26, 30).or(gt(34))" into
+/// (left_pred, right_pred, is_or). Returns None if not compound.
+fn split_compound_predicate(pred: &str) -> Option<(&str, &str, bool)> {
+    // Look for .or( or .and( at the top level (outside balanced parens).
+    let mut depth = 0u32;
+    let bytes = pred.as_bytes();
+    let len = bytes.len();
+    let mut i = 0;
+    while i < len {
+        match bytes[i] {
+            b'(' => depth += 1,
+            b')' => depth = depth.saturating_sub(1),
+            b'.' if depth == 0 && i + 4 <= len => {
+                let suffix = &pred[i..];
+                if suffix.starts_with(".or(") {
+                    let left = &pred[..i];
+                    let inner = &pred[i + 4..];
+                    // Find matching closing paren for .or(
+                    if let Some(close) = inner.strip_suffix(')') {
+                        return Some((left, close, true));
+                    }
+                }
+                if suffix.starts_with(".and(") {
+                    let left = &pred[..i];
+                    let inner = &pred[i + 5..];
+                    if let Some(close) = inner.strip_suffix(')') {
+                        return Some((left, close, false));
+                    }
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    None
 }
 
 #[cfg(test)]

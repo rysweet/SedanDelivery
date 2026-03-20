@@ -298,6 +298,12 @@ pub enum Operator {
         /// side-effect in `__gremlin_agg_<key>` on every pass-through row
         /// instead of collapsing the stream into a single Map row.
         side_effect_key: Option<String>,
+        /// Optional compiled sub-traversal for the group key (from by(traversal)).
+        /// (Operator, output_alias) — seeded per-row to compute the key.
+        key_traversal: Option<(Box<Operator>, Identifier)>,
+        /// Optional compiled sub-traversal for the group value (from by(traversal)).
+        /// (Operator, output_alias) — seeded per-row to compute the value.
+        value_traversal: Option<(Box<Operator>, Identifier)>,
         child: Box<Operator>,
     },
     /// Gremlin `range(Scope.local, lo, hi)` / `limit(Scope.local, n)` —
@@ -367,10 +373,25 @@ impl Operator {
             | Operator::GremlinAggregate { child, .. }
             | Operator::GremlinPath { child, .. }
             | Operator::GremlinSelect { child, .. }
-            | Operator::GremlinGroup { child, .. }
             | Operator::GremlinMapSlice { child, .. }
             | Operator::GremlinSimplePath { child, .. }
             | Operator::GremlinIndex { child, .. } => vec![child],
+
+            Operator::GremlinGroup {
+                child,
+                key_traversal,
+                value_traversal,
+                ..
+            } => {
+                let mut v = vec![child.as_ref()];
+                if let Some((op, _)) = key_traversal {
+                    v.push(op.as_ref());
+                }
+                if let Some((op, _)) = value_traversal {
+                    v.push(op.as_ref());
+                }
+                v
+            }
 
             Operator::GremlinProject { entries, child, .. } => {
                 let mut v = vec![child.as_ref()];

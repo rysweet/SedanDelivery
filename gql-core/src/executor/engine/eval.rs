@@ -331,7 +331,7 @@ impl<'a> QueryExecutor<'a> {
                             // Property Map from properties(): key() extracts ~key
                             Value::Map(m) if m.contains_key("~key") => {
                                 let key = m.get("~key").cloned().unwrap_or(Value::Null);
-                                Ok(Value::List(vec![key]))
+                                Ok(key)
                             }
                             other => Err(GqlError::Execution(ExecutionError::TypeMismatch {
                                 expected: "Node".to_string(),
@@ -363,6 +363,38 @@ impl<'a> QueryExecutor<'a> {
                                 expected: "Node".to_string(),
                                 actual: other.type_name().to_string(),
                             })),
+                        }
+                    }
+                    // Gremlin T.key: extract ~key from property map
+                    "gremlin_property_key" => {
+                        if evaled_args.len() != 1 {
+                            return Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                                expected: "gremlin_property_key() expects 1 argument".to_string(),
+                                actual: format!("{} arguments", evaled_args.len()),
+                            }));
+                        }
+                        match &evaled_args[0] {
+                            Value::Map(m) if m.contains_key("~key") => {
+                                Ok(m.get("~key").cloned().unwrap_or(Value::Null))
+                            }
+                            Value::Null => Ok(Value::Null),
+                            _ => Ok(Value::Null),
+                        }
+                    }
+                    // Gremlin T.value: extract ~value from property map
+                    "gremlin_property_value" => {
+                        if evaled_args.len() != 1 {
+                            return Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                                expected: "gremlin_property_value() expects 1 argument".to_string(),
+                                actual: format!("{} arguments", evaled_args.len()),
+                            }));
+                        }
+                        match &evaled_args[0] {
+                            Value::Map(m) if m.contains_key("~value") => {
+                                Ok(m.get("~value").cloned().unwrap_or(Value::Null))
+                            }
+                            Value::Null => Ok(Value::Null),
+                            _ => Ok(Value::Null),
                         }
                     }
                     "type" => {

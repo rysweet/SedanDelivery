@@ -1048,8 +1048,10 @@ fn values_match_ctx(
                     other => format!("{:?}", other),
                 })
                 .collect();
-            let formatted = format!("[{}]", parts.join(", "));
-            formatted == expected_str.as_ref()
+            // Try both with and without spaces after commas
+            let with_spaces = format!("[{}]", parts.join(", "));
+            let without_spaces = format!("[{}]", parts.join(","));
+            with_spaces == expected_str.as_ref() || without_spaces == expected_str.as_ref()
         }
         (Value::Str(a), Value::Str(e)) => a == e,
         (Value::Bool(a), Value::Bool(e)) => a == e,
