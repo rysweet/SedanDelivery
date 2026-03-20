@@ -281,6 +281,9 @@ impl GremlinCompiler {
         let mut sample_by_consumed = false;
         // Track by() count for sack ops — only one allowed
         let mut pending_sack_by_consumed = false;
+        // Track by() count for valueMap — only one allowed
+        let mut pending_valuemap = false;
+        let mut valuemap_by_consumed = false;
 
         for step in steps {
             // When we leave the addE modifier group (from/to/property), fill in
@@ -306,6 +309,8 @@ impl GremlinCompiler {
                 pending_sack_by_consumed = false;
                 pending_sample = false;
                 sample_by_consumed = false;
+                pending_valuemap = false;
+                valuemap_by_consumed = false;
                 pending_project = false;
                 // Finalize pending format with collected by() modulations
                 if pending_format && !format_by_aliases.is_empty() {
@@ -801,7 +806,6 @@ impl GremlinCompiler {
                 GremlinStep::ValueMap(keys, with_tokens) => {
                     let child = current.take().ok_or(CompileError::MissingChild)?;
                     let alias = self.next_alias("vmap");
-                    // Build args: element, tokens flag, then optional key filters
                     let mut args = vec![
                         Expr::Variable(current_alias.clone()),
                         Expr::Bool(*with_tokens),
@@ -821,6 +825,8 @@ impl GremlinCompiler {
                         items,
                         child: Box::new(child),
                     });
+                    pending_valuemap = true;
+                    valuemap_by_consumed = false;
                 }
 
                 GremlinStep::Properties(keys) => {
@@ -1779,21 +1785,20 @@ impl GremlinCompiler {
                         return Err(CompileError::InvalidSequence(
                             "Sack step can only have one by modulator".into(),
                         ));
+                    } else if pending_valuemap && valuemap_by_consumed {
+                        return Err(CompileError::InvalidSequence(
+                            "step can only have one by modulator".into(),
+                        ));
                     }
-                    // Track by() consumption for sample/sack
-                    if pending_sample {
-                        if sample_by_consumed {
-                            // Already checked above
-                        } else {
-                            sample_by_consumed = true;
-                        }
+                    // Track by() consumption for sample/sack/valueMap
+                    if pending_sample && !sample_by_consumed {
+                        sample_by_consumed = true;
                     }
-                    if pending_sack_op {
-                        if pending_sack_by_consumed {
-                            // Already checked above
-                        } else {
-                            pending_sack_by_consumed = true;
-                        }
+                    if pending_sack_op && !pending_sack_by_consumed {
+                        pending_sack_by_consumed = true;
+                    }
+                    if pending_valuemap && !valuemap_by_consumed {
+                        valuemap_by_consumed = true;
                     }
                 }
 
