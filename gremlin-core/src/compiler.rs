@@ -3540,13 +3540,28 @@ impl GremlinCompiler {
                     } else {
                         let child = current.take().ok_or(CompileError::MissingChild)?;
                         let alias = self.next_alias("fmt");
+                        // Build a map of as-label values for %{label} resolution
+                        let label_pairs: Vec<(SmolStr, Expr)> = self
+                            .alias_map
+                            .iter()
+                            .map(|(label, ident)| {
+                                (
+                                    SmolStr::new(label),
+                                    Expr::Variable(ident.clone()),
+                                )
+                            })
+                            .collect();
+                        let mut args = vec![
+                            Expr::Variable(current_alias.clone()),
+                            Expr::Str(pattern.clone().into_boxed_str()),
+                        ];
+                        if !label_pairs.is_empty() {
+                            args.push(Expr::MapLiteral(label_pairs));
+                        }
                         let mut items = vec![(
                             Expr::FunctionCall {
                                 name: SmolStr::new("gremlin_format"),
-                                args: vec![
-                                    Expr::Variable(current_alias.clone()),
-                                    Expr::Str(pattern.clone().into_boxed_str()),
-                                ],
+                                args,
                                 distinct: false,
                             },
                             Some(alias.clone()),

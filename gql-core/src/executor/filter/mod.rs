@@ -802,15 +802,29 @@ pub fn eval_function_with_vals(name: &str, vals: Vec<Value>) -> Result<Value, Gq
             _ => Ok(Value::Null),
         },
         "gremlin_format" => {
+            // args: [traverser, pattern, optional_labels_map]
             match (vals.first(), vals.get(1)) {
                 (Some(val), Some(Value::Str(pattern))) => {
-                    // Simple format: replace %s with value
-                    let formatted = match val {
-                        Value::Str(s) => pattern.replace("%s", s),
-                        Value::Int(n) => pattern.replace("%s", &n.to_string()),
-                        Value::Float(f) => pattern.replace("%s", &f.to_string()),
-                        Value::Map(m) => {
-                            let mut result = pattern.to_string();
+                    let mut result = pattern.to_string();
+                    // First, resolve %{label} from optional labels map (3rd arg)
+                    if let Some(Value::Map(labels)) = vals.get(2) {
+                        for (k, v) in labels.iter() {
+                            let placeholder = format!("%{{{}}}", k);
+                            if result.contains(&placeholder) {
+                                let val_str = match v {
+                                    Value::Str(s) => s.to_string(),
+                                    Value::Int(n) => n.to_string(),
+                                    Value::Float(f) => f.to_string(),
+                                    Value::Bool(b) => b.to_string(),
+                                    _ => format!("{:?}", v),
+                                };
+                                result = result.replace(&placeholder, &val_str);
+                            }
+                        }
+                    }
+                    // Then resolve %{key} from the traverser value if it's a Map
+                    if result.contains("%{") {
+                        if let Value::Map(m) = val {
                             for (k, v) in m.iter() {
                                 let placeholder = format!("%{{{}}}", k);
                                 let val_str = match v {
@@ -822,11 +836,19 @@ pub fn eval_function_with_vals(name: &str, vals: Vec<Value>) -> Result<Value, Gq
                                 };
                                 result = result.replace(&placeholder, &val_str);
                             }
-                            result
                         }
-                        _ => pattern.to_string(),
-                    };
-                    Ok(Value::Str(formatted.into()))
+                    }
+                    // Replace %s with the traverser value directly
+                    if result.contains("%s") {
+                        let val_str = match val {
+                            Value::Str(s) => s.to_string(),
+                            Value::Int(n) => n.to_string(),
+                            Value::Float(f) => f.to_string(),
+                            _ => String::new(),
+                        };
+                        result = result.replace("%s", &val_str);
+                    }
+                    Ok(Value::Str(result.into()))
                 }
                 (Some(Value::Null), _) => Ok(Value::Null),
                 _ => Ok(Value::Null),
