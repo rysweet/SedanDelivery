@@ -119,6 +119,9 @@ impl<'a> QueryExecutor<'a> {
             if_true,
             if_false,
             child,
+            true_alias,
+            false_alias,
+            output_alias,
         } = op
         else {
             debug_assert!(false, "expected Choose operator");
@@ -138,20 +141,47 @@ impl<'a> QueryExecutor<'a> {
             let pred_result = self.exec_operator(cx, predicate)?;
             self.foreach_seed.borrow_mut().take();
 
-            let branch = if !pred_result.is_empty() {
+            let is_true = !pred_result.is_empty();
+            let branch = if is_true {
                 if_true
             } else if let Some(f) = if_false {
                 f
             } else {
                 // No else branch — pass through unchanged.
-                out.push(row);
+                // Copy the seed alias value to the output alias so subsequent
+                // steps can find the traverser under the unified alias.
+                if let (Some(out_alias), Some(fa)) = (output_alias, false_alias) {
+                    let mut prow = row;
+                    if let Some(val) = prow.get(fa.0.as_str()).cloned() {
+                        prow.insert(out_alias.0.to_string(), val);
+                    }
+                    out.push(prow);
+                } else {
+                    out.push(row);
+                }
                 continue;
             };
 
             self.foreach_seed.borrow_mut().replace(vec![row]);
             let branch_rows = self.exec_operator(cx, branch)?;
             self.foreach_seed.borrow_mut().take();
-            out.extend(branch_rows);
+
+            // Copy branch-specific result column to the unified output alias.
+            if let Some(out_alias) = output_alias {
+                let src = if is_true { true_alias } else { false_alias };
+                if let Some(src_alias) = src {
+                    for mut brow in branch_rows {
+                        if let Some(val) = brow.get(src_alias.0.as_str()).cloned() {
+                            brow.insert(out_alias.0.to_string(), val);
+                        }
+                        out.push(brow);
+                    }
+                } else {
+                    out.extend(branch_rows);
+                }
+            } else {
+                out.extend(branch_rows);
+            }
         }
         Ok(out)
     }
@@ -1351,6 +1381,9 @@ mod tests {
                 label: None,
                 alias: Identifier::new("n"),
             }),
+            true_alias: None,
+            false_alias: None,
+            output_alias: None,
         };
 
         let mut budget = ExecutionBudget::unlimited();
@@ -1389,6 +1422,9 @@ mod tests {
                 label: Some(Label::new("A")),
                 alias: Identifier::new("n"),
             }),
+            true_alias: None,
+            false_alias: None,
+            output_alias: None,
         };
 
         let mut budget = ExecutionBudget::unlimited();

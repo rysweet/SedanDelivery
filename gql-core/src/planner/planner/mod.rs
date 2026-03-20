@@ -1630,6 +1630,7 @@ mod tests {
                 if_true,
                 if_false,
                 child,
+                ..
             } => {
                 let mut v = vec![child.as_ref(), predicate.as_ref(), if_true.as_ref()];
                 if let Some(f) = if_false {

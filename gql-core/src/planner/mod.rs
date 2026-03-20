@@ -210,6 +210,12 @@ pub enum Operator {
         if_true: Box<Operator>,
         if_false: Option<Box<Operator>>,
         child: Box<Operator>,
+        /// Alias names for the true/false branch results plus unified output.
+        /// The executor copies each branch's result column to `output_alias`
+        /// so subsequent steps use a consistent column name.
+        true_alias: Option<crate::ast::Identifier>,
+        false_alias: Option<crate::ast::Identifier>,
+        output_alias: Option<crate::ast::Identifier>,
     },
     /// Gremlin choose(selector).option(val, branch) — value-based dispatch.
     ChooseMap {
@@ -390,6 +396,7 @@ impl Operator {
                 if_true,
                 if_false,
                 child,
+                ..
             } => {
                 let mut v = vec![child.as_ref(), predicate.as_ref(), if_true.as_ref()];
                 if let Some(f) = if_false {

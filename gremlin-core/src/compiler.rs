@@ -2134,18 +2134,35 @@ impl GremlinCompiler {
                     } else {
                         let pred_op = sub.compile_seeded(pred_steps, &current_alias)?;
                         let true_op = sub.compile_seeded(true_steps, &current_alias)?;
+                        let t_alias = sub.last_alias.clone();
                         let false_op = match false_steps {
                             Some(steps) => {
                                 Some(Box::new(sub.compile_seeded(steps, &current_alias)?))
                             }
                             None => None,
                         };
+                        // For false branch: use the sub-compiler's alias if a false
+                        // branch exists, otherwise use the seed alias (current_alias
+                        // before choose) for pass-through rows.
+                        let f_alias = if false_steps.is_some() {
+                            sub.last_alias.clone()
+                        } else {
+                            current_alias.clone()
+                        };
                         self.absorb(&sub);
+
+                        // Create a unified output alias for choose branches.
+                        let choose_alias = self.next_alias("ch");
+                        current_alias = choose_alias.clone();
+
                         current = Some(Operator::Choose {
                             predicate: Box::new(pred_op),
                             if_true: Box::new(true_op),
                             if_false: false_op,
                             child: Box::new(child),
+                            true_alias: Some(t_alias),
+                            false_alias: Some(f_alias),
+                            output_alias: Some(choose_alias.clone()),
                         });
                     }
                 }
