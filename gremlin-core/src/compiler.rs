@@ -289,6 +289,9 @@ impl GremlinCompiler {
         // Track by() count for valueMap — only one allowed
         let mut pending_valuemap = false;
         let mut valuemap_by_consumed = false;
+        // Track path() step for by() modulation
+        let mut pending_path = false;
+        let mut path_by_keys: Vec<String> = Vec::new();
         // Deferred output alias for ChooseMap — applied on the first non-Option step
         let mut pending_choose_output: Option<Identifier> = None;
 
@@ -318,6 +321,17 @@ impl GremlinCompiler {
                 sample_by_consumed = false;
                 pending_valuemap = false;
                 valuemap_by_consumed = false;
+                // Flush accumulated path by-keys into the GremlinPath operator
+                if pending_path && !path_by_keys.is_empty() {
+                    if let Some(Operator::GremlinPath {
+                        ref mut by_keys, ..
+                    }) = current
+                    {
+                        *by_keys = path_by_keys.clone();
+                    }
+                }
+                pending_path = false;
+                path_by_keys.clear();
                 pending_project = false;
                 // Flush pending order: order() without by() → sort by identity
                 if pending_order && !pending_order_local {
@@ -1631,6 +1645,9 @@ impl GremlinCompiler {
                     } else if pending_select {
                         // by() after select() — collect modulation
                         select_by_mods.push(key.clone());
+                    } else if pending_path {
+                        // by() after path() — collect by-key for path element transformation
+                        path_by_keys.push(key.to_string());
                     } else if pending_dedup {
                         if dedup_by_consumed {
                             return Err(CompileError::InvalidSequence(
@@ -2062,6 +2079,10 @@ impl GremlinCompiler {
                             // by(traversal) after select() — treat as string key for select_by_mods
                             // (preserves existing behavior)
                             select_by_mods.push(String::new());
+                        } else if pending_path {
+                            // by(traversal) after path() — not yet supported as
+                            // sub-traversal, treat as identity
+                            path_by_keys.push(String::new());
                         } else if pending_dedup {
                             // by(traversal) after dedup() — compile sub-traversal for dedup key
                             let child = current.take().ok_or(CompileError::MissingChild)?;
@@ -2169,6 +2190,41 @@ impl GremlinCompiler {
                                 inner: Box::new(limited),
                             });
                             format_by_aliases.push(sub_out_alias);
+                        } else if pending_sack_op && !pending_sack_by_consumed {
+                            // by(traversal) after sack(op) — rewrite sack assignment
+                            // to use the sub-traversal result instead of current_alias.
+                            let mut sub = self.sub_compiler();
+                            let sub_op = sub.compile_seeded(sub_steps, &current_alias)?;
+                            let sub_out_alias = sub.last_alias.clone();
+                            self.absorb(&sub);
+                            let by_expr = Expr::Variable(sub_out_alias);
+                            // Wrap current operator in Apply so the sub-traversal runs
+                            // per-row, then rewrite the sack Project's rhs.
+                            if let Some(ref mut proj) = current {
+                                // First, wrap child in Apply with the sub-traversal
+                                let sack_var = Identifier::new("__sack");
+                                if let Operator::Project {
+                                    ref mut items,
+                                    ref mut child,
+                                } = proj
+                                {
+                                    **child = Operator::Apply {
+                                        outer: child.clone(),
+                                        inner: Box::new(sub_op),
+                                    };
+                                    if let Some((expr, _)) = items.first_mut() {
+                                        rewrite_sack_by(expr, &current_alias, &by_expr);
+                                    }
+                                }
+                                // Filter out rows where __sack is null
+                                let proj_taken = std::mem::replace(proj, Operator::SingleRow);
+                                *proj = Operator::Filter {
+                                    predicate: Expr::IsNotNull(Box::new(Expr::Variable(sack_var))),
+                                    child: Box::new(proj_taken),
+                                };
+                            }
+                            pending_sack_op = false;
+                            pending_sack_by_consumed = true;
                         }
                     }
                 }
@@ -2610,8 +2666,11 @@ impl GremlinCompiler {
                     current = Some(Operator::GremlinPath {
                         child: Box::new(child),
                         path_aliases: path_aliases.clone(),
+                        by_keys: vec![],
                     });
                     current_alias = Identifier::new("path");
+                    pending_path = true;
+                    path_by_keys.clear();
                 }
 
                 GremlinStep::Repeat(body_steps) => {
@@ -2642,6 +2701,7 @@ impl GremlinCompiler {
                         None
                     };
                     let times_val = pending_times.take();
+                    let times_before_val = times_val.is_some();
                     current = Some(Operator::Repeat {
                         body: Box::new(body),
                         times: times_val,
@@ -2657,14 +2717,21 @@ impl GremlinCompiler {
                             None
                         },
                         remap,
+                        times_before: times_before_val,
                         child: Box::new(child),
                     });
                 }
 
                 GremlinStep::Times(n) => {
                     // Modify preceding Repeat
-                    if let Some(Operator::Repeat { ref mut times, .. }) = current {
+                    if let Some(Operator::Repeat {
+                        ref mut times,
+                        ref mut times_before,
+                        ..
+                    }) = current
+                    {
                         *times = Some(*n as usize);
+                        *times_before = false; // times() after repeat() → do-while
                     } else {
                         // times() before repeat() — store as pending
                         pending_times = Some(*n as usize);
@@ -4442,6 +4509,16 @@ impl GremlinCompiler {
         // Flush deferred choose output alias
         if let Some(alias) = pending_choose_output.take() {
             current_alias = alias;
+        }
+
+        // Flush accumulated path by-keys into the GremlinPath operator
+        if pending_path && !path_by_keys.is_empty() {
+            if let Some(Operator::GremlinPath {
+                ref mut by_keys, ..
+            }) = current
+            {
+                *by_keys = path_by_keys;
+            }
         }
 
         // If Order was set but no By followed, apply default sort

@@ -26,6 +26,7 @@ impl<'a> QueryExecutor<'a> {
             emit_before,
             emit_predicate,
             remap,
+            times_before,
             child,
         } = op
         else {
@@ -39,7 +40,17 @@ impl<'a> QueryExecutor<'a> {
         let mut collected: Vec<Row> = Vec::new();
         let mut body_exhausted = false;
 
-        let max_iterations = times.unwrap_or(256);
+        // Determine the seed alias name from remap (used for path tracking).
+        let seed_key = remap.as_ref().map(|(_, to)| to.as_str());
+
+        // Do-while semantics: when times() appears AFTER repeat(), always
+        // execute the body at least once, even for times(0).
+        let max_iterations = match *times {
+            Some(0) if !*times_before => 1,
+            Some(n) => n,
+            None => 256,
+        };
+
         for iteration in 0..max_iterations {
             cx.budget.check_or_err()?;
 
@@ -53,14 +64,41 @@ impl<'a> QueryExecutor<'a> {
             let mut next = Vec::new();
             for row in &current {
                 cx.budget.check_or_err()?;
+
+                // Accumulate path history: push the current seed value
+                // before the body modifies it. This allows path() to
+                // reconstruct the full traversal after repeat completes.
                 let mut seed_row = row.clone();
+                if let Some(key) = seed_key {
+                    if let Some(seed_val) = row.get(key).cloned() {
+                        let mut acc = match row.get("__gremlin_path_acc") {
+                            Some(Value::List(l)) => l.clone(),
+                            _ => vec![],
+                        };
+                        acc.push(seed_val);
+                        seed_row.insert("__gremlin_path_acc".to_string(), Value::List(acc));
+                    }
+                }
+
                 if let Some((from, _)) = remap {
                     seed_row.remove(from.as_str());
                 }
-                self.foreach_seed.borrow_mut().replace(vec![seed_row]);
+                self.foreach_seed
+                    .borrow_mut()
+                    .replace(vec![seed_row.clone()]);
                 let body_rows = self.exec_operator(cx, body)?;
                 self.foreach_seed.borrow_mut().take();
-                next.extend(body_rows);
+
+                // Carry path accumulator to body results that lack it.
+                let path_acc = seed_row.get("__gremlin_path_acc").cloned();
+                for mut body_row in body_rows {
+                    if let Some(ref acc) = path_acc {
+                        if !body_row.contains_key("__gremlin_path_acc") {
+                            body_row.insert("__gremlin_path_acc".to_string(), acc.clone());
+                        }
+                    }
+                    next.push(body_row);
+                }
             }
 
             if next.is_empty() {
@@ -118,7 +156,6 @@ impl<'a> QueryExecutor<'a> {
             }
         }
 
-        // Add final traversers when appropriate:
         // Add final traversers when appropriate:
         // - Non-emit mode: always add final current
         // - Pre-emit with times (body not exhausted): add final current
@@ -691,6 +728,7 @@ impl<'a> QueryExecutor<'a> {
         let Operator::GremlinPath {
             child,
             path_aliases,
+            by_keys,
         } = op
         else {
             debug_assert!(false, "expected GremlinPath operator");
@@ -703,16 +741,106 @@ impl<'a> QueryExecutor<'a> {
         let mut out = Vec::with_capacity(input.len());
         for row in input {
             cx.budget.check_or_err()?;
-            let path: Vec<Value> = path_aliases
-                .iter()
-                .filter_map(|alias| row.get(alias.as_str()).cloned())
-                .filter(|v| !matches!(v, Value::Null))
-                .collect();
+            let raw_path: Vec<Value> = if let Some(Value::List(acc)) = row.get("__gremlin_path_acc")
+            {
+                let mut p: Vec<Value> = acc
+                    .iter()
+                    .filter(|v| !matches!(v, Value::Null))
+                    .cloned()
+                    .collect();
+                if let Some(last_alias) = path_aliases.last() {
+                    if let Some(val) = row.get(last_alias.as_str()) {
+                        if !matches!(val, Value::Null) {
+                            p.push(val.clone());
+                        }
+                    }
+                }
+                p
+            } else {
+                path_aliases
+                    .iter()
+                    .filter_map(|alias| row.get(alias.as_str()).cloned())
+                    .filter(|v| !matches!(v, Value::Null))
+                    .collect()
+            };
+
+            // Apply by-key modulation: each element uses by_keys[i % len].
+            let path = if by_keys.is_empty() {
+                raw_path
+            } else {
+                let transformed: Vec<Value> = raw_path
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, val)| {
+                        let key = &by_keys[i % by_keys.len()];
+                        self.apply_path_by_key(cx, key, &val)
+                    })
+                    .collect();
+                // Drop the traverser if any by-key resolution produced Null
+                if transformed.iter().any(|v| matches!(v, Value::Null)) {
+                    continue;
+                }
+                transformed
+            };
+
             let mut result_row = Row::new();
             result_row.insert("path".to_string(), Value::List(path));
             out.push(result_row);
         }
         Ok(out)
+    }
+
+    /// Apply a single by-key transformation to a path element value.
+    fn apply_path_by_key(&self, cx: &mut ExecContext<'_>, key: &str, val: &Value) -> Value {
+        if key.is_empty() {
+            return val.clone();
+        }
+        match key {
+            "~label" | "T.label" | "label" => match val {
+                Value::Node(nid) => {
+                    if let Ok(Some(node)) = self.store.get_node(cx.graph, *nid) {
+                        if let Some(label) = node.labels.into_iter().next() {
+                            return Value::Str(label.into_boxed_str());
+                        }
+                    }
+                    Value::Null
+                }
+                Value::Edge(eid) => {
+                    if let Ok(Some(edge)) = self.store.get_edge(cx.graph, *eid) {
+                        return Value::Str(edge.rel_type.into_boxed_str());
+                    }
+                    Value::Null
+                }
+                _ => val.clone(),
+            },
+            "~id" | "T.id" | "id" => match val {
+                Value::Node(nid) => Value::Int(nid.0 as i64),
+                Value::Edge(eid) => Value::Int(eid.0 as i64),
+                _ => val.clone(),
+            },
+            _ => {
+                // Property access
+                match val {
+                    Value::Node(nid) => {
+                        if let Ok(Some(node)) = self.store.get_node(cx.graph, *nid) {
+                            if let Some(v) = node.properties.get(key) {
+                                return v.clone();
+                            }
+                        }
+                        Value::Null
+                    }
+                    Value::Edge(eid) => {
+                        if let Ok(Some(edge)) = self.store.get_edge(cx.graph, *eid) {
+                            if let Some(v) = edge.properties.get(key) {
+                                return v.clone();
+                            }
+                        }
+                        Value::Null
+                    }
+                    _ => val.clone(),
+                }
+            }
+        }
     }
 
     /// Execute `GremlinMatch` — declarative pattern matching with named bindings.
@@ -1283,21 +1411,41 @@ impl<'a> QueryExecutor<'a> {
             cx.budget.check_or_err()?;
             let mut seen = std::collections::HashSet::new();
             let mut is_simple = true;
-            for alias in path_aliases {
-                if let Some(val) = row.get(alias.as_str()) {
-                    if matches!(val, Value::Null) {
-                        continue;
+
+            // Use accumulated path history if available (repeat iterations).
+            let path_values: Vec<Value> =
+                if let Some(Value::List(acc)) = row.get("__gremlin_path_acc") {
+                    let mut p: Vec<Value> = acc
+                        .iter()
+                        .filter(|v| !matches!(v, Value::Null))
+                        .cloned()
+                        .collect();
+                    // Add current position from last path alias
+                    if let Some(last_alias) = path_aliases.last() {
+                        if let Some(val) = row.get(last_alias.as_str()) {
+                            if !matches!(val, Value::Null) {
+                                p.push(val.clone());
+                            }
+                        }
                     }
-                    // Use a discriminator key to detect duplicate path entries
-                    let key = match val {
-                        Value::Node(nid) => format!("n:{}", nid.0),
-                        Value::Edge(eid) => format!("e:{}", eid.0),
-                        other => format!("v:{other:?}"),
-                    };
-                    if !seen.insert(key) {
-                        is_simple = false;
-                        break;
-                    }
+                    p
+                } else {
+                    path_aliases
+                        .iter()
+                        .filter_map(|alias| row.get(alias.as_str()).cloned())
+                        .filter(|v| !matches!(v, Value::Null))
+                        .collect()
+                };
+
+            for val in &path_values {
+                let key = match val {
+                    Value::Node(nid) => format!("n:{}", nid.0),
+                    Value::Edge(eid) => format!("e:{}", eid.0),
+                    other => format!("v:{other:?}"),
+                };
+                if !seen.insert(key) {
+                    is_simple = false;
+                    break;
                 }
             }
             if is_simple {
@@ -1331,20 +1479,40 @@ impl<'a> QueryExecutor<'a> {
             cx.budget.check_or_err()?;
             let mut seen = std::collections::HashSet::new();
             let mut has_cycle = false;
-            for alias in path_aliases {
-                if let Some(val) = row.get(alias.as_str()) {
-                    if matches!(val, Value::Null) {
-                        continue;
+
+            // Use accumulated path history if available (repeat iterations).
+            let path_values: Vec<Value> =
+                if let Some(Value::List(acc)) = row.get("__gremlin_path_acc") {
+                    let mut p: Vec<Value> = acc
+                        .iter()
+                        .filter(|v| !matches!(v, Value::Null))
+                        .cloned()
+                        .collect();
+                    if let Some(last_alias) = path_aliases.last() {
+                        if let Some(val) = row.get(last_alias.as_str()) {
+                            if !matches!(val, Value::Null) {
+                                p.push(val.clone());
+                            }
+                        }
                     }
-                    let key = match val {
-                        Value::Node(nid) => format!("n:{}", nid.0),
-                        Value::Edge(eid) => format!("e:{}", eid.0),
-                        other => format!("v:{other:?}"),
-                    };
-                    if !seen.insert(key) {
-                        has_cycle = true;
-                        break;
-                    }
+                    p
+                } else {
+                    path_aliases
+                        .iter()
+                        .filter_map(|alias| row.get(alias.as_str()).cloned())
+                        .filter(|v| !matches!(v, Value::Null))
+                        .collect()
+                };
+
+            for val in &path_values {
+                let key = match val {
+                    Value::Node(nid) => format!("n:{}", nid.0),
+                    Value::Edge(eid) => format!("e:{}", eid.0),
+                    other => format!("v:{other:?}"),
+                };
+                if !seen.insert(key) {
+                    has_cycle = true;
+                    break;
                 }
             }
             if has_cycle {
@@ -1715,6 +1883,7 @@ mod tests {
             emit_before: false,
             emit_predicate: None,
             remap: Some(("m".to_string(), "n".to_string())),
+            times_before: false,
             child: Box::new(Operator::NodeScan {
                 label: Some(Label::new("N")),
                 alias: Identifier::new("n"),
@@ -1747,6 +1916,7 @@ mod tests {
             emit_before: true,
             emit_predicate: None,
             remap: None,
+            times_before: false,
             child: Box::new(Operator::NodeScan {
                 label: Some(Label::new("N")),
                 alias: Identifier::new("n"),
@@ -2175,6 +2345,7 @@ mod tests {
                 }),
             }),
             path_aliases: vec![Identifier::new("n"), Identifier::new("m")],
+            by_keys: vec![],
         };
 
         let mut budget = ExecutionBudget::unlimited();
@@ -2218,6 +2389,7 @@ mod tests {
                 Identifier::new("m"),
                 Identifier::new("o"),
             ],
+            by_keys: vec![],
         };
 
         let mut budget = ExecutionBudget::unlimited();
@@ -2245,6 +2417,7 @@ mod tests {
                 alias: Identifier::new("n"),
             }),
             path_aliases: vec![],
+            by_keys: vec![],
         };
 
         let mut budget = ExecutionBudget::unlimited();
@@ -2271,6 +2444,7 @@ mod tests {
                 alias: Identifier::new("n"),
             }),
             path_aliases: vec![Identifier::new("n")],
+            by_keys: vec![],
         };
 
         let mut budget = ExecutionBudget::unlimited();
@@ -2314,6 +2488,7 @@ mod tests {
                 }),
             }),
             path_aliases: vec![Identifier::new("n"), Identifier::new("m")],
+            by_keys: vec![],
         };
 
         let mut budget = ExecutionBudget::unlimited();

@@ -208,6 +208,11 @@ pub enum Operator {
         /// After each body iteration, rename `body_out_alias` → `seed_alias`
         /// so the next iteration receives traversers under the expected key.
         remap: Option<(String, String)>,
+        /// When true, `times` was specified BEFORE `repeat()` (while-loop
+        /// semantics: check count before executing body).  When false,
+        /// `times` was specified AFTER `repeat()` (do-while semantics:
+        /// always execute the body at least once).
+        times_before: bool,
         child: Box<Operator>,
     },
     /// Gremlin choose() — conditional branching.
@@ -279,6 +284,11 @@ pub enum Operator {
         child: Box<Operator>,
         /// Ordered list of aliases that form the path elements.
         path_aliases: Vec<Identifier>,
+        /// Cycling by-modulator keys for path element transformation.
+        /// Empty means return raw values.  Otherwise element `i` uses
+        /// `by_keys[i % by_keys.len()]`.  Each key is a property name,
+        /// `"T.label"`, `"T.id"`, or `""` for identity.
+        by_keys: Vec<String>,
     },
     /// Gremlin match() — declarative pattern matching with named bindings.
     GremlinMatch {
