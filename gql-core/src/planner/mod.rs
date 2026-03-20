@@ -203,6 +203,8 @@ pub enum Operator {
         /// traversers).  When false and `emit` is true, emit AFTER body execution
         /// (excludes starting traversers).
         emit_before: bool,
+        /// Optional predicate to filter which traversers are emitted.
+        emit_predicate: Option<Box<Operator>>,
         /// After each body iteration, rename `body_out_alias` → `seed_alias`
         /// so the next iteration receives traversers under the expected key.
         remap: Option<(String, String)>,

@@ -224,6 +224,7 @@ impl GremlinCompiler {
         let mut path_aliases: Vec<Identifier> = initial_path_aliases;
         // Pending emit/until/times that appear before repeat()
         let mut pending_emit = false;
+        let mut pending_emit_pred: Option<Vec<GremlinStep>> = None;
         let mut pending_until: Option<Vec<GremlinStep>> = None;
         let mut pending_times: Option<usize> = None;
         let mut pending_sack_init: Option<Expr> = None;
@@ -2116,6 +2117,14 @@ impl GremlinCompiler {
                         until: until_val,
                         emit: emit_val,
                         emit_before: emit_val,
+                        emit_predicate: if let Some(ep_steps) = pending_emit_pred.take() {
+                            let mut sub3 = self.sub_compiler();
+                            let ep_op = sub3.compile_seeded(&ep_steps, &current_alias)?;
+                            self.absorb(&sub3);
+                            Some(Box::new(ep_op))
+                        } else {
+                            None
+                        },
                         remap,
                         child: Box::new(child),
                     });
@@ -2157,6 +2166,27 @@ impl GremlinCompiler {
                     } else {
                         // emit() before repeat() — store as pending
                         pending_emit = true;
+                    }
+                }
+
+                GremlinStep::EmitPred(pred_steps) => {
+                    if let Some(Operator::Repeat {
+                        ref mut emit,
+                        ref mut emit_before,
+                        ref mut emit_predicate,
+                        ..
+                    }) = current
+                    {
+                        *emit = true;
+                        *emit_before = false;
+                        let mut sub = self.sub_compiler();
+                        let ep_op = sub.compile_seeded(pred_steps, &current_alias)?;
+                        self.absorb(&sub);
+                        *emit_predicate = Some(Box::new(ep_op));
+                    } else {
+                        // emit(pred) before repeat() — store as pending
+                        pending_emit = true;
+                        pending_emit_pred = Some(pred_steps.clone());
                     }
                 }
 

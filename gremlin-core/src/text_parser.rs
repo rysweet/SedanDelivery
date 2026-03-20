@@ -623,7 +623,19 @@ fn parse_step_token(
             let inner = parse_inner_traversal(args_str, resolve_param)?;
             out.push(GremlinStep::Until(inner));
         }
-        "emit" => out.push(GremlinStep::Emit),
+        "emit" => {
+            let trimmed = args_str.trim();
+            if trimmed.is_empty() {
+                out.push(GremlinStep::Emit);
+            } else {
+                let inner = parse_inner_traversal(trimmed, resolve_param)?;
+                if inner.is_empty() {
+                    out.push(GremlinStep::Emit);
+                } else {
+                    out.push(GremlinStep::EmitPred(inner));
+                }
+            }
+        }
         "aggregate" => {
             let args = parse_string_arg_list(args_str)?;
             // aggregate("x") or aggregate(local, "x") / aggregate(Scope.local, "x")

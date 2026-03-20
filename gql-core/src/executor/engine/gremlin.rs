@@ -24,6 +24,7 @@ impl<'a> QueryExecutor<'a> {
             until,
             emit,
             emit_before,
+            emit_predicate,
             remap,
             child,
         } = op
@@ -44,7 +45,7 @@ impl<'a> QueryExecutor<'a> {
             // Pre-emit: collect traversers before body execution.
             // Only when emit_before is true (emit() appeared before repeat()).
             if *emit && *emit_before {
-                collected.extend(current.clone());
+                self.collect_emitted(cx, &current, emit_predicate, &mut collected)?;
             }
 
             // Feed current rows through the body.
@@ -86,7 +87,7 @@ impl<'a> QueryExecutor<'a> {
             // Post-emit: collect body results after execution.
             // Only when emit is true but emit_before is false (emit() after repeat()).
             if *emit && !*emit_before {
-                collected.extend(current.clone());
+                self.collect_emitted(cx, &current, emit_predicate, &mut collected)?;
             }
 
             // Check the until predicate per-traverser: traversers that match
@@ -124,6 +125,29 @@ impl<'a> QueryExecutor<'a> {
             collected.extend(current);
         }
         Ok(collected)
+    }
+
+    /// Collect rows into `collected`, optionally filtering by emit predicate.
+    fn collect_emitted(
+        &self,
+        cx: &mut ExecContext<'_>,
+        rows: &[Row],
+        emit_predicate: &Option<Box<Operator>>,
+        collected: &mut Vec<Row>,
+    ) -> Result<(), GqlError> {
+        if let Some(pred_op) = emit_predicate {
+            for row in rows {
+                self.foreach_seed.borrow_mut().replace(vec![row.clone()]);
+                let result = self.exec_operator(cx, pred_op)?;
+                self.foreach_seed.borrow_mut().take();
+                if !result.is_empty() {
+                    collected.push(row.clone());
+                }
+            }
+        } else {
+            collected.extend(rows.iter().cloned());
+        }
+        Ok(())
     }
 
     /// Execute `Choose` — evaluate the predicate for each input row and route
@@ -1334,6 +1358,7 @@ mod tests {
             until: None,
             emit: false,
             emit_before: false,
+            emit_predicate: None,
             remap: None,
             child: Box::new(Operator::NodeScan {
                 label: Some(Label::new("N")),
@@ -1366,6 +1391,7 @@ mod tests {
             until: None,
             emit: true,
             emit_before: true,
+            emit_predicate: None,
             remap: None,
             child: Box::new(Operator::NodeScan {
                 label: Some(Label::new("N")),

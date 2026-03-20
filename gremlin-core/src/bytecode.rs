@@ -127,6 +127,7 @@ pub enum GremlinStep {
     Times(i64),
     Until(Vec<GremlinStep>),
     Emit,
+    EmitPred(Vec<GremlinStep>),
     Choose(Vec<GremlinStep>, Vec<GremlinStep>, Option<Vec<GremlinStep>>),
     Coalesce(Vec<Vec<GremlinStep>>),
     Union(Vec<Vec<GremlinStep>>),
