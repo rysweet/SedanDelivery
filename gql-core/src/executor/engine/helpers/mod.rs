@@ -237,6 +237,7 @@ pub(crate) fn discover_operator_aliases(op: &Operator) -> Vec<String> {
         | Operator::GremlinGroup { .. }
         | Operator::GremlinMapSlice { .. }
         | Operator::GremlinSimplePath { .. }
+        | Operator::GremlinCyclicPath { .. }
         | Operator::GremlinIndex { .. }
         | Operator::GremlinProject { .. } => {}
     }

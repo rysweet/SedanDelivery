@@ -409,6 +409,7 @@ impl<'a> QueryExecutor<'a> {
             | Operator::GremlinGroup { .. }
             | Operator::GremlinMapSlice { .. }
             | Operator::GremlinSimplePath { .. }
+            | Operator::GremlinCyclicPath { .. }
             | Operator::GremlinIndex { .. }
             | Operator::GremlinProject { .. } => false,
         }

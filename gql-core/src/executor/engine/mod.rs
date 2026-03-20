@@ -356,6 +356,7 @@ impl<'a> QueryExecutor<'a> {
             Operator::GremlinGroup { .. } => self.exec_gremlin_group(cx, op),
             Operator::GremlinMapSlice { .. } => self.exec_gremlin_map_slice(cx, op),
             Operator::GremlinSimplePath { .. } => self.exec_gremlin_simple_path(cx, op),
+            Operator::GremlinCyclicPath { .. } => self.exec_gremlin_cyclic_path(cx, op),
             Operator::GremlinIndex { .. } => self.exec_gremlin_index(cx, op),
             Operator::GremlinProject { .. } => self.exec_gremlin_project(cx, op),
         }?;

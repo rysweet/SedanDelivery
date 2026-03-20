@@ -3393,12 +3393,10 @@ impl GremlinCompiler {
                 }
 
                 GremlinStep::CyclicPath => {
-                    // cyclicPath() — filter to paths with repeated elements
-                    // Without native path tracking, approximate as always-false filter.
                     let child = current.take().ok_or(CompileError::MissingChild)?;
-                    current = Some(Operator::Filter {
-                        predicate: Expr::Bool(false),
+                    current = Some(Operator::GremlinCyclicPath {
                         child: Box::new(child),
+                        path_aliases: path_aliases.clone(),
                     });
                 }
 
@@ -3638,6 +3636,7 @@ impl GremlinCompiler {
                     // For reduce operators, store in compiler state for Cap to use.
                     // Don't inject a side-effect column — aggregate collects normally
                     // and Cap applies the reduction using stored metadata.
+                    let mut is_reduce = false;
                     if let Some(op) = reduce_op {
                         if op != "assign" {
                             let init_val = match val {
@@ -3646,13 +3645,14 @@ impl GremlinCompiler {
                                 _ => 0.0,
                             };
                             self.reductions.insert(key.clone(), (op.clone(), init_val));
-                            // Skip column injection — let aggregate work normally
-                        } else {
-                            // Operator.assign: don't inject side effect (let aggregate
-                            // collect naturally)
+                            is_reduce = true;
                         }
-                    } else {
-                        // No operator: inject side-effect value as column
+                    }
+                    // Inject side-effect value as a column for "assign" and
+                    // no-operator cases so downstream select/where can resolve it.
+                    // Reduce operators (sum, addAll, etc.) skip this — aggregate
+                    // collects values and Cap applies the reduction.
+                    if !is_reduce {
                         let child = current.take().unwrap_or(Operator::SingleRow);
                         let val_expr = gremlin_value_to_expr(val);
                         let mut items = vec![(val_expr, Some(se_alias))];
@@ -4845,6 +4845,7 @@ fn inject_sack_init(op: &mut Operator, init_expr: &Expr) {
         | Operator::GremlinPath { child, .. }
         | Operator::GremlinMatch { child, .. }
         | Operator::GremlinSimplePath { child, .. }
+        | Operator::GremlinCyclicPath { child, .. }
         | Operator::GremlinIndex { child, .. }
         | Operator::GremlinProject { child, .. }
         | Operator::GremlinMapSlice { child, .. }

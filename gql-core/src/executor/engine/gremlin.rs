@@ -1307,6 +1307,53 @@ impl<'a> QueryExecutor<'a> {
         Ok(out)
     }
 
+    /// Execute `GremlinCyclicPath` — filter traversers whose path contains
+    /// at least one repeated object (by node/edge identity).
+    pub(crate) fn exec_gremlin_cyclic_path(
+        &self,
+        cx: &mut ExecContext<'_>,
+        op: &Operator,
+    ) -> Result<Vec<Row>, GqlError> {
+        let Operator::GremlinCyclicPath {
+            child,
+            path_aliases,
+        } = op
+        else {
+            debug_assert!(false, "expected GremlinCyclicPath operator");
+            return Err(GqlError::Execution(ExecutionError::UnsupportedFeature {
+                feature: "internal: expected GremlinCyclicPath operator".into(),
+            }));
+        };
+
+        let input = self.exec_operator(cx, child)?;
+        let mut out = Vec::with_capacity(input.len());
+        for row in input {
+            cx.budget.check_or_err()?;
+            let mut seen = std::collections::HashSet::new();
+            let mut has_cycle = false;
+            for alias in path_aliases {
+                if let Some(val) = row.get(alias.as_str()) {
+                    if matches!(val, Value::Null) {
+                        continue;
+                    }
+                    let key = match val {
+                        Value::Node(nid) => format!("n:{}", nid.0),
+                        Value::Edge(eid) => format!("e:{}", eid.0),
+                        other => format!("v:{other:?}"),
+                    };
+                    if !seen.insert(key) {
+                        has_cycle = true;
+                        break;
+                    }
+                }
+            }
+            if has_cycle {
+                out.push(row);
+            }
+        }
+        Ok(out)
+    }
+
     /// Execute `GremlinIndex` — pair each element with its positional index.
     pub(crate) fn exec_gremlin_index(
         &self,

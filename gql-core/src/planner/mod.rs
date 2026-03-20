@@ -342,6 +342,12 @@ pub enum Operator {
         /// Ordered list of aliases that form the path elements.
         path_aliases: Vec<Identifier>,
     },
+    /// Gremlin cyclicPath() — filter to traversers with repeated objects in path.
+    GremlinCyclicPath {
+        child: Box<Operator>,
+        /// Ordered list of aliases that form the path elements.
+        path_aliases: Vec<Identifier>,
+    },
     /// Gremlin index() — pair each element with its positional index.
     /// When `with_map` is true, produces a Map {index: element}; otherwise
     /// produces a List [element, index].
@@ -394,6 +400,7 @@ impl Operator {
             | Operator::GremlinSelect { child, .. }
             | Operator::GremlinMapSlice { child, .. }
             | Operator::GremlinSimplePath { child, .. }
+            | Operator::GremlinCyclicPath { child, .. }
             | Operator::GremlinIndex { child, .. } => vec![child],
 
             Operator::GremlinGroup {
@@ -763,6 +770,7 @@ fn estimate_recursive(
         Operator::GremlinGroup { .. } => 1.0, // produces a single Map row
         Operator::GremlinMapSlice { child, .. }
         | Operator::GremlinSimplePath { child, .. }
+        | Operator::GremlinCyclicPath { child, .. }
         | Operator::GremlinIndex { child, .. }
         | Operator::GremlinProject { child, .. } => estimate_recursive(child, stats, estimates),
         Operator::Cap { .. } => 1.0,
@@ -1046,6 +1054,9 @@ fn collect_all_aliases(op: &Operator) -> Vec<String> {
             aliases.extend(collect_all_aliases(child));
         }
         Operator::GremlinSimplePath { child, .. } => {
+            aliases.extend(collect_all_aliases(child));
+        }
+        Operator::GremlinCyclicPath { child, .. } => {
             aliases.extend(collect_all_aliases(child));
         }
         Operator::GremlinIndex { child, .. } => {
