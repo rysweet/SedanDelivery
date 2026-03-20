@@ -491,15 +491,22 @@ impl<'a> QueryExecutor<'a> {
         }
 
         // Stamp the accumulated list onto every output row.
-        let agg_val = Value::List(collected);
+        // If a row already carries a value for this agg column (e.g. from a
+        // previous local(aggregate("a")) step), extend it rather than overwrite.
         if input.is_empty() {
             // Even with no input, the side-effect must be accessible via cap().
             let mut sentinel = Row::new();
-            sentinel.insert(agg_col, agg_val);
+            sentinel.insert(agg_col, Value::List(collected));
             return Ok(vec![sentinel]);
         }
         for row in &mut input {
-            row.insert(agg_col.clone(), agg_val.clone());
+            if let Some(Value::List(existing)) = row.get(&agg_col).cloned() {
+                let mut merged = existing;
+                merged.extend(collected.iter().cloned());
+                row.insert(agg_col.clone(), Value::List(merged));
+            } else {
+                row.insert(agg_col.clone(), Value::List(collected.clone()));
+            }
         }
 
         Ok(input)

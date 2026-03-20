@@ -480,14 +480,25 @@ impl GremlinCompiler {
                         args: vec![Expr::Variable(current_alias.clone())],
                         distinct: false,
                     };
-                    let predicate = if ids.len() == 1 {
+                    // Flatten list parameters: hasId(id1, [id2, id3]) → hasId(id1, id2, id3)
+                    let mut flat_ids = Vec::new();
+                    for id in ids {
+                        match id {
+                            GremlinValue::List(inner) => {
+                                flat_ids.extend(inner.iter().cloned())
+                            }
+                            other => flat_ids.push(other.clone()),
+                        }
+                    }
+                    let predicate = if flat_ids.len() == 1 {
                         Expr::BinaryOp {
                             op: BinaryOp::Eq,
                             left: Box::new(id_fn),
-                            right: Box::new(gremlin_value_to_expr(&ids[0])),
+                            right: Box::new(gremlin_value_to_expr(&flat_ids[0])),
                         }
                     } else {
-                        let id_exprs: Vec<Expr> = ids.iter().map(gremlin_value_to_expr).collect();
+                        let id_exprs: Vec<Expr> =
+                            flat_ids.iter().map(gremlin_value_to_expr).collect();
                         Expr::BinaryOp {
                             op: BinaryOp::In,
                             left: Box::new(id_fn),
@@ -4119,7 +4130,15 @@ fn step_to_predicate(step: &GremlinStep, alias: &Identifier) -> Expr {
         GremlinStep::HasPredicate(key, pred) => {
             let prop_expr =
                 Expr::Property(Box::new(Expr::Variable(alias.clone())), SmolStr::new(key));
-            predicate_to_prop_expr(pred, prop_expr)
+            // has(key, pred) means: property exists AND satisfies predicate.
+            // Wrap in AND(IsNotNull(prop), pred(prop)) to properly handle
+            // missing properties (returns false instead of null).
+            let pred_expr = predicate_to_prop_expr(pred, prop_expr.clone());
+            Expr::BinaryOp {
+                op: BinaryOp::And,
+                left: Box::new(Expr::IsNotNull(Box::new(prop_expr))),
+                right: Box::new(pred_expr),
+            }
         }
         GremlinStep::HasLabel(labels) if !labels.is_empty() => labels
             .iter()
@@ -4142,14 +4161,22 @@ fn step_to_predicate(step: &GremlinStep, alias: &Identifier) -> Expr {
                 args: vec![Expr::Variable(alias.clone())],
                 distinct: false,
             };
-            if ids.len() == 1 {
+            // Flatten list parameters: hasId(id1, [id2, id3]) → hasId(id1, id2, id3)
+            let mut flat_ids = Vec::new();
+            for id in ids {
+                match id {
+                    GremlinValue::List(inner) => flat_ids.extend(inner.iter().cloned()),
+                    other => flat_ids.push(other.clone()),
+                }
+            }
+            if flat_ids.len() == 1 {
                 Expr::BinaryOp {
                     op: BinaryOp::Eq,
                     left: Box::new(id_fn),
-                    right: Box::new(gremlin_value_to_expr(&ids[0])),
+                    right: Box::new(gremlin_value_to_expr(&flat_ids[0])),
                 }
             } else {
-                let id_exprs: Vec<Expr> = ids.iter().map(gremlin_value_to_expr).collect();
+                let id_exprs: Vec<Expr> = flat_ids.iter().map(gremlin_value_to_expr).collect();
                 Expr::BinaryOp {
                     op: BinaryOp::In,
                     left: Box::new(id_fn),
