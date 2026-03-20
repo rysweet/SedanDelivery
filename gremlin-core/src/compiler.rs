@@ -914,7 +914,7 @@ impl GremlinCompiler {
                     let lbl_alias = self.next_alias("lbl");
                     let mut items = vec![(
                         Expr::FunctionCall {
-                            name: SmolStr::new("labels"),
+                            name: SmolStr::new("gremlin_single_label"),
                             args: vec![Expr::Variable(current_alias.clone())],
                             distinct: false,
                         },
