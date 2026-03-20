@@ -1660,7 +1660,7 @@ mod tests {
                 ..
             } => {
                 let mut v = vec![child.as_ref(), selector.as_ref()];
-                for (_, branch) in options {
+                for (_, branch, _) in options {
                     v.push(branch.as_ref());
                 }
                 v
