@@ -825,37 +825,36 @@ impl<'a> QueryExecutor<'a> {
                     }
                     "gremlin_format" => {
                         // format(): resolve %{key} from node/edge properties and/or as-labels.
+                        // Priority: node/edge properties first, then as-labels for remaining.
                         // Returns Null if any %{key} placeholder can't be resolved.
 
-                        // First, resolve label placeholders from optional 3rd arg (labels map)
-                        let mut labels_resolved_pattern = None;
-                        if let (Some(Value::Str(pattern)), Some(Value::Map(labels))) =
-                            (evaled_args.get(1), evaled_args.get(2))
-                        {
-                            let mut result = pattern.to_string();
-                            for (k, v) in labels.iter() {
-                                let placeholder = format!("%{{{}}}", k);
-                                if result.contains(&placeholder) {
-                                    let val_str = format_value(v);
-                                    result = result.replace(&placeholder, &val_str);
-                                }
-                            }
-                            labels_resolved_pattern = Some(result);
-                        }
-
-                        let effective_pattern = labels_resolved_pattern.as_deref();
+                        let labels_map = match evaled_args.get(2) {
+                            Some(Value::Map(m)) => Some(m),
+                            _ => None,
+                        };
 
                         match (evaled_args.first(), evaled_args.get(1)) {
-                            (Some(Value::Node(node_id)), Some(Value::Str(orig_pattern))) => {
-                                let pattern = effective_pattern
-                                    .unwrap_or(orig_pattern.as_ref());
+                            (Some(Value::Node(node_id)), Some(Value::Str(pattern))) => {
                                 match self.cached_get_node(graph, *node_id)? {
                                     Some(data) => {
                                         let mut result = pattern.to_string();
+                                        // Resolve from node properties first
                                         for (k, v) in data.properties.iter() {
                                             let placeholder = format!("%{{{}}}", k);
                                             let val_str = format_value(v);
                                             result = result.replace(&placeholder, &val_str);
+                                        }
+                                        // Then resolve remaining from labels
+                                        if result.contains("%{") {
+                                            if let Some(labels) = labels_map {
+                                                for (k, v) in labels.iter() {
+                                                    let placeholder = format!("%{{{}}}", k);
+                                                    if result.contains(&placeholder) {
+                                                        let val_str = format_value(v);
+                                                        result = result.replace(&placeholder, &val_str);
+                                                    }
+                                                }
+                                            }
                                         }
                                         if result.contains("%{") {
                                             Ok(Value::Null)
@@ -866,9 +865,7 @@ impl<'a> QueryExecutor<'a> {
                                     None => Ok(Value::Null),
                                 }
                             }
-                            (Some(Value::Edge(edge_id)), Some(Value::Str(orig_pattern))) => {
-                                let pattern = effective_pattern
-                                    .unwrap_or(orig_pattern.as_ref());
+                            (Some(Value::Edge(edge_id)), Some(Value::Str(pattern))) => {
                                 match self.cached_get_edge(graph, *edge_id)? {
                                     Some(data) => {
                                         let mut result = pattern.to_string();
@@ -878,6 +875,17 @@ impl<'a> QueryExecutor<'a> {
                                             result = result.replace(&placeholder, &val_str);
                                         }
                                         if result.contains("%{") {
+                                            if let Some(labels) = labels_map {
+                                                for (k, v) in labels.iter() {
+                                                    let placeholder = format!("%{{{}}}", k);
+                                                    if result.contains(&placeholder) {
+                                                        let val_str = format_value(v);
+                                                        result = result.replace(&placeholder, &val_str);
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        if result.contains("%{") {
                                             Ok(Value::Null)
                                         } else {
                                             Ok(Value::Str(result.into()))
@@ -886,9 +894,18 @@ impl<'a> QueryExecutor<'a> {
                                     None => Ok(Value::Null),
                                 }
                             }
-                            (_, Some(Value::Str(_))) if effective_pattern.is_some() => {
-                                // Labels resolved all placeholders
-                                let result = effective_pattern.unwrap();
+                            (_, Some(Value::Str(pattern))) if labels_map.is_some() => {
+                                // Non-node/edge: resolve from labels only
+                                let mut result = pattern.to_string();
+                                if let Some(labels) = labels_map {
+                                    for (k, v) in labels.iter() {
+                                        let placeholder = format!("%{{{}}}", k);
+                                        if result.contains(&placeholder) {
+                                            let val_str = format_value(v);
+                                            result = result.replace(&placeholder, &val_str);
+                                        }
+                                    }
+                                }
                                 if result.contains("%{") {
                                     Ok(Value::Null)
                                 } else {
@@ -896,7 +913,6 @@ impl<'a> QueryExecutor<'a> {
                                 }
                             }
                             (Some(Value::Str(_)), Some(Value::Str(pattern))) => {
-                                // Format with a string value (no properties to resolve)
                                 if !pattern.contains("%{") {
                                     Ok(Value::Str(pattern.clone()))
                                 } else {
