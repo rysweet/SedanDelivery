@@ -744,27 +744,32 @@ pub fn eval_function_with_vals(name: &str, vals: Vec<Value>) -> Result<Value, Gq
             }
         }
         "gremlin_concat" => {
-            // Gremlin concat: first arg is current traverser, rest are strings to append.
-            // Null args are skipped. List args cause error.
+            // Gremlin concat: first arg is current traverser, rest are args to append.
+            // Null traverser (first arg) with no other args → null.
+            // Null args → skipped.
+            // List as traverser (first arg) → error.
             if vals.is_empty() {
                 return Ok(Value::Null);
             }
+            if matches!(vals.first(), Some(Value::List(_))) {
+                return Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                    expected: "String concat() can only take string as argument".into(),
+                    actual: "list".into(),
+                }));
+            }
+            // If only arg is null traverser and no concat args, return null
+            if vals.len() == 1 && matches!(vals.first(), Some(Value::Null)) {
+                return Ok(Value::Null);
+            }
             let mut result = String::new();
-            for (i, v) in vals.iter().enumerate() {
+            for v in vals.iter() {
                 match v {
                     Value::Str(s) => result.push_str(s),
                     Value::Int(n) => result.push_str(&n.to_string()),
                     Value::Float(f) => result.push_str(&f.to_string()),
                     Value::Bool(b) => result.push_str(&b.to_string()),
                     Value::Null => {
-                        // Null traverser (first arg) → skip (produces empty prefix)
-                        // Null concat arg (subsequent) → skip
-                    }
-                    Value::List(_) if i == 0 => {
-                        return Err(GqlError::Execution(ExecutionError::TypeMismatch {
-                            expected: "String concat() can only take string as argument".into(),
-                            actual: "list".into(),
-                        }));
+                        // Null args are skipped
                     }
                     _ => result.push_str(&format!("{:?}", v)),
                 }

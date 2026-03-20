@@ -37,6 +37,7 @@ impl<'a> QueryExecutor<'a> {
 
         let mut current = self.exec_operator(cx, child)?;
         let mut collected: Vec<Row> = Vec::new();
+        let mut body_exhausted = false;
 
         let max_iterations = times.unwrap_or(256);
         for iteration in 0..max_iterations {
@@ -63,10 +64,8 @@ impl<'a> QueryExecutor<'a> {
             }
 
             if next.is_empty() {
+                body_exhausted = true;
                 // Body produced no results — stop iterating.
-                // For non-emit mode without until, don't add the pre-body
-                // rows since the traversal terminated before completing all
-                // iterations. (With until, results are collected separately.)
                 if !*emit && until.is_none() {
                     return Ok(collected);
                 }
@@ -119,9 +118,14 @@ impl<'a> QueryExecutor<'a> {
             }
         }
 
-        // For non-emit or pre-emit mode, add final results.
-        // For post-emit mode, everything was already collected in the loop.
-        if !*emit || *emit_before {
+        // Add final traversers when appropriate:
+        // - For non-emit mode: add the final current (result of last body execution)
+        // - For pre-emit with times: add after completing all iterations
+        // - For emit mode when body exhausted: don't add (no body result to emit)
+        // - For post-emit: already collected in the loop
+        if !*emit {
+            collected.extend(current);
+        } else if *emit_before && !body_exhausted {
             collected.extend(current);
         }
         Ok(collected)
@@ -508,6 +512,7 @@ impl<'a> QueryExecutor<'a> {
             child,
             value_alias,
             by_keys,
+            by_traversal,
             productive,
         } = op
         else {
@@ -521,10 +526,25 @@ impl<'a> QueryExecutor<'a> {
         let agg_col = format!("__gremlin_agg_{key}");
 
         // Collect all values seen across all rows.
-        // When by_keys is set, project properties from the traverser instead.
         let mut collected: Vec<Value> = Vec::new();
         for row in &input {
-            if by_keys.len() >= 2 {
+            if let Some((trav_op, trav_alias)) = by_traversal {
+                // by(traversal) modulation: run the sub-traversal per traverser
+                self.foreach_seed.borrow_mut().replace(vec![row.clone()]);
+                let trav_rows = self.exec_operator(cx, trav_op)?;
+                self.foreach_seed.borrow_mut().take();
+                if let Some(trav_row) = trav_rows.first() {
+                    if let Some(val) = trav_row.get(trav_alias.as_str()) {
+                        if *productive || !matches!(val, Value::Null) {
+                            collected.push(val.clone());
+                        }
+                    } else if *productive {
+                        collected.push(Value::Null);
+                    }
+                } else if *productive {
+                    collected.push(Value::Null);
+                }
+            } else if by_keys.len() >= 2 {
                 // Multiple by() keys — collect a map of {key1: val1, key2: val2, ...}
                 let mut map = IndexMap::new();
                 for by_prop in by_keys {
@@ -1769,6 +1789,7 @@ mod tests {
                 }),
                 value_alias: Identifier::new("n"),
                 by_keys: vec![],
+                by_traversal: None,
                 productive: false,
             }),
         };
@@ -1805,6 +1826,7 @@ mod tests {
                 }),
                 value_alias: Identifier::new("m"),
                 by_keys: vec![],
+                by_traversal: None,
                 productive: false,
             }),
         };
@@ -1832,6 +1854,7 @@ mod tests {
             }),
             value_alias: Identifier::new("n"),
             by_keys: vec![],
+            by_traversal: None,
             productive: false,
         };
 
@@ -1862,6 +1885,7 @@ mod tests {
                 }),
                 value_alias: Identifier::new("n"),
                 by_keys: vec![],
+                by_traversal: None,
                 productive: false,
             }),
         };
@@ -1898,6 +1922,7 @@ mod tests {
                 }),
                 value_alias: Identifier::new("n"),
                 by_keys: vec![],
+                by_traversal: None,
                 productive: false,
             }),
         };

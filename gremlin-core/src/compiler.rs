@@ -1814,6 +1814,21 @@ impl GremlinCompiler {
                                 }
                                 pending_group = false;
                             }
+                        } else if pending_aggregate {
+                            // by(traversal) after aggregate() — compile sub-traversal
+                            let mut sub = self.sub_compiler();
+                            let sub_op = sub.compile_seeded(sub_steps, &current_alias)?;
+                            let sub_out_alias = sub.last_alias.clone();
+                            self.absorb(&sub);
+                            if let Some(Operator::GremlinAggregate {
+                                ref mut by_traversal,
+                                ..
+                            }) = current
+                            {
+                                *by_traversal = Some((Box::new(sub_op), sub_out_alias));
+                            }
+                            pending_aggregate = false;
+                            aggregate_by_consumed = true;
                         }
                     }
                 }
@@ -2190,6 +2205,7 @@ impl GremlinCompiler {
                         child: Box::new(child),
                         path_aliases: path_aliases.clone(),
                     });
+                    current_alias = Identifier::new("path");
                 }
 
                 GremlinStep::Repeat(body_steps) => {
@@ -2480,6 +2496,7 @@ impl GremlinCompiler {
                         child: Box::new(child),
                         value_alias: current_alias.clone(),
                         by_keys: vec![],
+                        by_traversal: None,
                         productive: self.productive_by,
                     });
                     pending_aggregate = true;
@@ -3385,14 +3402,20 @@ impl GremlinCompiler {
                                 continue;
                             }
                         }
-                        // Sub-traversal: compile and wrap in Apply
+                        // Sub-traversal: compile and wrap in Apply.
+                        // Limit inner to 1 result per outer row (Gremlin concat
+                        // uses only the first value from inner traversals).
                         let mut sub = self.sub_compiler();
                         let sub_op = sub.compile_seeded(trav, &current_alias)?;
                         let sub_alias = sub.last_alias.clone();
                         self.absorb(&sub);
+                        let limited = Operator::Limit {
+                            count: Expr::Integer(1),
+                            child: Box::new(sub_op),
+                        };
                         base = Operator::Apply {
                             outer: Box::new(base),
-                            inner: Box::new(sub_op),
+                            inner: Box::new(limited),
                         };
                         args.push(Expr::Variable(sub_alias));
                     }

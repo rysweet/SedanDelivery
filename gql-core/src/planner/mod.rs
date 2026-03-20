@@ -257,6 +257,9 @@ pub enum Operator {
         /// When set via `.by("prop")`, collect these properties instead of the raw traverser.
         /// A single key projects that property; two keys project a map of both.
         by_keys: Vec<String>,
+        /// When set via `.by(traversal)`, run this sub-traversal per traverser to compute
+        /// the collected value. Takes precedence over `by_keys`.
+        by_traversal: Option<(Box<Operator>, Identifier)>,
         /// When true (ProductiveByStrategy), include null values for missing properties.
         productive: bool,
     },
