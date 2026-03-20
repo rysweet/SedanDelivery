@@ -816,12 +816,12 @@ impl GremlinCompiler {
                     }
                 }
 
-                GremlinStep::ValueMap(keys, with_tokens) => {
+                GremlinStep::ValueMap(keys, token_mode) => {
                     let child = current.take().ok_or(CompileError::MissingChild)?;
                     let alias = self.next_alias("vmap");
                     let mut args = vec![
                         Expr::Variable(current_alias.clone()),
-                        Expr::Bool(*with_tokens),
+                        Expr::Integer(i64::from(*token_mode)),
                     ];
                     for k in keys {
                         args.push(Expr::Str(k.as_str().into()));
@@ -1906,7 +1906,35 @@ impl GremlinCompiler {
                 }
 
                 GremlinStep::ByTraversal(sub_steps, _descending) => {
-                    if pending_project {
+                    // by(traversal) after valueMap — unfold list values
+                    if pending_valuemap && !valuemap_by_consumed {
+                        let is_unfold =
+                            sub_steps.len() == 1 && matches!(sub_steps[0], GremlinStep::Unfold);
+                        if is_unfold {
+                            // Wrap the current valueMap result to unfold lists
+                            let child = current.take().ok_or(CompileError::MissingChild)?;
+                            let alias = self.next_alias("vmuf");
+                            let mut items = vec![(
+                                Expr::FunctionCall {
+                                    name: SmolStr::new("gremlin_valuemap_unfold"),
+                                    args: vec![Expr::Variable(current_alias.clone())],
+                                    distinct: false,
+                                },
+                                Some(alias.clone()),
+                            )];
+                            items.extend(self.label_carry_items());
+                            current = Some(Operator::Project {
+                                items,
+                                child: Box::new(child),
+                            });
+                            current_alias = alias;
+                        }
+                        valuemap_by_consumed = true;
+                    } else if pending_valuemap && valuemap_by_consumed {
+                        return Err(CompileError::InvalidSequence(
+                            "step can only have one by modulator".into(),
+                        ));
+                    } else if pending_project {
                         // by(traversal) after project() — compile the sub-traversal
                         // and convert to GremlinProject if not already done.
                         if project_by_count < project_keys.len() {

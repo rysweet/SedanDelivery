@@ -653,10 +653,17 @@ impl<'a> QueryExecutor<'a> {
                     }
                     "gremlin_valuemap" => {
                         // valueMap(): extract properties and wrap each in a list.
-                        // Args: element, with_tokens_bool [, key1, key2, ...]
+                        // Args: element, token_mode_int [, key1, key2, ...]
+                        // token_mode: 0=none, 1=all, 2=labels, 3=ids
                         let mut args_iter = evaled_args.into_iter();
                         let element = args_iter.next();
-                        let with_tokens = matches!(args_iter.next(), Some(Value::Bool(true)));
+                        let token_mode = match args_iter.next() {
+                            Some(Value::Int(n)) => n as u8,
+                            Some(Value::Bool(true)) => 1u8, // backwards compat
+                            _ => 0u8,
+                        };
+                        let include_id = token_mode == 1 || token_mode == 3;
+                        let include_label = token_mode == 1 || token_mode == 2;
                         let keys: Vec<String> = args_iter
                             .filter_map(|v| match v {
                                 Value::Str(s) => Some(s.to_string()),
@@ -669,11 +676,13 @@ impl<'a> QueryExecutor<'a> {
                                     Some(data) => {
                                         let mut wrapped: indexmap::IndexMap<Box<str>, Value> =
                                             indexmap::IndexMap::new();
-                                        if with_tokens {
+                                        if include_id {
                                             wrapped.insert(
                                                 "t[id]".into(),
                                                 Value::Int(node_id.0 as i64),
                                             );
+                                        }
+                                        if include_label {
                                             let label_str = data
                                                 .labels
                                                 .first()
@@ -702,11 +711,13 @@ impl<'a> QueryExecutor<'a> {
                                     Some(data) => {
                                         let mut wrapped: indexmap::IndexMap<Box<str>, Value> =
                                             indexmap::IndexMap::new();
-                                        if with_tokens {
+                                        if include_id {
                                             wrapped.insert(
                                                 "t[id]".into(),
                                                 Value::Int(edge_id.0 as i64),
                                             );
+                                        }
+                                        if include_label {
                                             wrapped.insert(
                                                 "t[label]".into(),
                                                 Value::Str(data.rel_type.as_str().into()),

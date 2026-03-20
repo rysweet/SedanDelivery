@@ -66,8 +66,8 @@ pub enum GremlinStep {
 
     // ── Element steps ────────────────────────────────────────────────────────
     Values(Vec<String>),
-    /// `valueMap()` — keys to project; bool indicates include tokens (id/label).
-    ValueMap(Vec<String>, bool),
+    /// `valueMap()` — keys to project; u8 token mode: 0=none, 1=all, 2=labels, 3=ids.
+    ValueMap(Vec<String>, u8),
     Properties(Vec<String>),
     Id,
     Label,
@@ -441,7 +441,7 @@ fn parse_step(name: &str, args: &[serde_json::Value]) -> Result<GremlinStep, Byt
         "bothV" => Ok(GremlinStep::BothV),
         "otherV" => Ok(GremlinStep::OtherV),
         "values" => Ok(GremlinStep::Values(collect_string_args(args))),
-        "valueMap" => Ok(GremlinStep::ValueMap(collect_string_args(args), false)),
+        "valueMap" => Ok(GremlinStep::ValueMap(collect_string_args(args), 0)),
         "properties" => Ok(GremlinStep::Properties(collect_string_args(args))),
         "id" => Ok(GremlinStep::Id),
         "label" => Ok(GremlinStep::Label),

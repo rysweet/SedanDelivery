@@ -1519,6 +1519,28 @@ pub fn eval_function_with_vals(name: &str, vals: Vec<Value>) -> Result<Value, Gq
                 None => Ok(Value::Null),
             }
         }
+        "gremlin_valuemap_unfold" => {
+            // Unwrap list values in a valueMap result (by(__.unfold()))
+            match vals.into_iter().next() {
+                Some(Value::Map(m)) => {
+                    let unwrapped: IndexMap<Box<str>, Value> = m
+                        .into_iter()
+                        .map(|(k, v)| {
+                            let unwrapped = match v {
+                                Value::List(items) if items.len() == 1 => {
+                                    items.into_iter().next().unwrap_or(Value::Null)
+                                }
+                                other => other,
+                            };
+                            (k, unwrapped)
+                        })
+                        .collect();
+                    Ok(Value::Map(unwrapped))
+                }
+                Some(other) => Ok(other),
+                None => Ok(Value::Null),
+            }
+        }
         "list_compact" => {
             let result: Vec<Value> = vals
                 .into_iter()

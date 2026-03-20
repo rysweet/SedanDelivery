@@ -639,12 +639,12 @@ fn parse_step_token(
         "valueMap" => {
             let args = parse_string_arg_list(args_str)?;
             // valueMap(true, ...) or valueMap(true) includes tokens (id/label)
-            let (with_tokens, keys) = if args.first().map(|s| s.as_str()) == Some("true") {
-                (true, args[1..].to_vec())
+            let (token_mode, keys) = if args.first().map(|s| s.as_str()) == Some("true") {
+                (1u8, args[1..].to_vec())
             } else {
-                (false, args)
+                (0u8, args)
             };
-            out.push(GremlinStep::ValueMap(keys, with_tokens));
+            out.push(GremlinStep::ValueMap(keys, token_mode));
         }
         "properties" => {
             let args = parse_string_arg_list(args_str)?;
@@ -1183,13 +1183,19 @@ fn parse_step_token(
             }
         }
         "with" | "withPath" | "withBulk" => {
-            // with(WithOptions.tokens) — set tokens flag on preceding valueMap
+            // with(WithOptions.tokens[, WithOptions.labels|ids]) — set token mode
             let args = parse_string_arg_list(args_str)?;
             if args.iter().any(|a| a == "WithOptions.tokens") {
-                // Find the last ValueMap in the output and set its tokens flag
+                let mode = if args.iter().any(|a| a == "WithOptions.labels") {
+                    2u8 // labels only
+                } else if args.iter().any(|a| a == "WithOptions.ids") {
+                    3u8 // ids only
+                } else {
+                    1u8 // all tokens
+                };
                 for step in out.iter_mut().rev() {
-                    if let GremlinStep::ValueMap(_, ref mut with_tokens) = step {
-                        *with_tokens = true;
+                    if let GremlinStep::ValueMap(_, ref mut token_mode) = step {
+                        *token_mode = mode;
                         break;
                     }
                 }
