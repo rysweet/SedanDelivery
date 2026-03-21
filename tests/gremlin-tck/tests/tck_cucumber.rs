@@ -350,6 +350,7 @@ fn execute_traversal(world: &mut GremlinWorld) {
             return;
         }
     };
+
     world.parsed_steps = steps.clone();
 
     // Compile

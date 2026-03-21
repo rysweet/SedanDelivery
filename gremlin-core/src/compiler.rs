@@ -438,8 +438,21 @@ impl GremlinCompiler {
                         *by_keys = path_by_keys.clone();
                     }
                 }
-                pending_path = false;
-                path_by_keys.clear();
+                // Preserve pending_path through from()/to() modifiers so
+                // subsequent by() modulations are still accumulated.
+                let is_path_from_to = matches!(
+                    step,
+                    GremlinStep::From(_) | GremlinStep::To(_)
+                ) && matches!(
+                    &current,
+                    Some(Operator::GremlinPath { .. })
+                        | Some(Operator::GremlinSimplePath { .. })
+                        | Some(Operator::GremlinCyclicPath { .. })
+                );
+                if !is_path_from_to {
+                    pending_path = false;
+                    path_by_keys.clear();
+                }
                 pending_project = false;
                 // ProductiveByStrategy: wrap null-eq before clearing where_by
                 if self.productive_by && where_by_count > 0 {
