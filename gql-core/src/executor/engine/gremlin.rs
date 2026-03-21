@@ -178,7 +178,10 @@ impl<'a> QueryExecutor<'a> {
             if next.is_empty() {
                 body_exhausted = true;
                 // Body produced no results — stop iterating.
-                if !*emit && until.is_none() {
+                // When emit is false, remaining traversers are never output:
+                // - No until: they simply exhausted the body.
+                // - With until: they never satisfied the exit condition.
+                if !*emit {
                     return Ok(collected);
                 }
                 break;
@@ -194,6 +197,16 @@ impl<'a> QueryExecutor<'a> {
             }
 
             current = next;
+
+            // Update loop count: after body execution in iteration N, the
+            // traverser has completed N+1 loops. Gremlin's loops() function
+            // returns the number of completed body executions.
+            for row in &mut current {
+                row.insert(
+                    "__gremlin_loop_count".to_string(),
+                    Value::Int((iteration + 1) as i64),
+                );
+            }
 
             // Post-emit: collect body results after execution.
             // Only when emit is true but emit_before is false (emit() after repeat()).
@@ -231,10 +244,18 @@ impl<'a> QueryExecutor<'a> {
         }
 
         // Add final traversers when appropriate:
-        // - Non-emit mode: always add final current
+        // - Non-emit mode with times (no until): add final current (loop count satisfied)
+        // - Non-emit mode with until: don't add (traversers never matched exit condition)
         // - Pre-emit with times (body not exhausted): add final current
         // - Post-emit or body exhausted: don't add (already collected in loop)
-        if !*emit || (*emit_before && !body_exhausted) {
+        let add_final = if *emit {
+            *emit_before && !body_exhausted
+        } else {
+            // With an until condition, only add remaining if times is also set
+            // (traversers completed the required iterations even without matching until).
+            until.is_none() || times.is_some()
+        };
+        if add_final {
             collected.extend(current);
         }
         Ok(collected)
@@ -1051,6 +1072,17 @@ impl<'a> QueryExecutor<'a> {
 
     /// Execute `GremlinMatch` — declarative pattern matching with named bindings.
     ///
+    /// Resolve a property on a Value (Node or Edge). Used by select()
+    /// by-modulation to apply property extraction to Pop-resolved values.
+    fn resolve_prop_on_value(
+        &self,
+        cx: &mut ExecContext<'_>,
+        prop_name: &str,
+        val: &Value,
+    ) -> Value {
+        self.apply_path_by_key(cx, prop_name, val)
+    }
+
     /// For each input row, iterate through patterns. Each pattern is a
     /// sub-traversal that binds variables. We progressively join results
     /// by requiring consistent bindings across patterns.
@@ -1245,6 +1277,19 @@ impl<'a> QueryExecutor<'a> {
                                 }
                             }
                         };
+                        // Apply by-modulation: if src_var has a __prop_ prefix,
+                        // extract the property from the resolved value.
+                        let resolved =
+                            if let Some(rest) = var_name.strip_prefix("__prop_") {
+                                if let Some(sep_pos) = rest.find("__") {
+                                    let prop_name = &rest[..sep_pos];
+                                    self.resolve_prop_on_value(cx, prop_name, &resolved)
+                                } else {
+                                    resolved
+                                }
+                            } else {
+                                resolved
+                            };
                         new_row.insert(output_key.clone(), resolved);
                         continue;
                     }

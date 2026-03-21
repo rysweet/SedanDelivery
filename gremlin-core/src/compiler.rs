@@ -63,6 +63,9 @@ pub struct GremlinCompiler {
     /// Aliases accumulated for path() tracking. Carried through Project
     /// operations so that path() can reconstruct the traversal history.
     path_tracking: Vec<Identifier>,
+    /// The source vertex alias from the most recent edge expansion step
+    /// (OutE/InE/BothE). Used by OtherV to determine which endpoint is "other".
+    edge_src_vertex: Option<Identifier>,
     /// Whether the current traversal uses path()/simplePath()/cyclicPath().
     /// When true, label_carry_items includes path tracking aliases.
     needs_path_tracking: bool,
@@ -92,6 +95,7 @@ impl GremlinCompiler {
             reductions: HashMap::new(),
             side_effect_values: HashMap::new(),
             path_tracking: Vec::new(),
+            edge_src_vertex: None,
             needs_path_tracking: false,
             needs_label_stacks: false,
         }
@@ -120,6 +124,7 @@ impl GremlinCompiler {
             // aliases belong to the outer scope and would pollute inner
             // sub-traversal projections.
             path_tracking: Vec::new(),
+            edge_src_vertex: self.edge_src_vertex.clone(),
             needs_path_tracking: false,
             needs_label_stacks: self.needs_label_stacks,
         }
@@ -3230,6 +3235,11 @@ impl GremlinCompiler {
                         let mut sub = self.sub_compiler();
                         let op = sub.compile_seeded(s, &current_alias)?;
                         alt_aliases.push(sub.last_alias.clone());
+                        // Propagate edge source so otherV() after coalesce works.
+                        if sub.edge_src_vertex.is_some() && self.edge_src_vertex.is_none()
+                        {
+                            self.edge_src_vertex = sub.edge_src_vertex.clone();
+                        }
                         self.absorb(&sub);
                         alt_ops.push(op);
                     }
@@ -3237,6 +3247,7 @@ impl GremlinCompiler {
                     // Normalize: wrap each alternative in a Project to rename
                     // its output to a common alias.
                     let coal_alias = self.next_alias("coal");
+                    let edge_src = self.edge_src_vertex.clone();
                     let normalized: Vec<Operator> = alt_ops
                         .into_iter()
                         .zip(alt_aliases.iter())
@@ -3244,18 +3255,27 @@ impl GremlinCompiler {
                             if alt_alias.as_str() == coal_alias.as_str() {
                                 op
                             } else {
+                                let mut items = vec![
+                                    (
+                                        Expr::Variable(alt_alias.clone()),
+                                        Some(coal_alias.clone()),
+                                    ),
+                                    // Also carry forward the original alias for path()
+                                    (
+                                        Expr::Variable(alt_alias.clone()),
+                                        Some(alt_alias.clone()),
+                                    ),
+                                ];
+                                // Carry the edge source vertex so otherV() can
+                                // find it in the row after coalesce.
+                                if let Some(ref src) = edge_src {
+                                    items.push((
+                                        Expr::Variable(src.clone()),
+                                        Some(src.clone()),
+                                    ));
+                                }
                                 Operator::Project {
-                                    items: vec![
-                                        (
-                                            Expr::Variable(alt_alias.clone()),
-                                            Some(coal_alias.clone()),
-                                        ),
-                                        // Also carry forward the original alias for path()
-                                        (
-                                            Expr::Variable(alt_alias.clone()),
-                                            Some(alt_alias.clone()),
-                                        ),
-                                    ],
+                                    items,
                                     child: Box::new(op),
                                 }
                             }
