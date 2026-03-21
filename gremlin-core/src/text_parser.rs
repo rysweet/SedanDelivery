@@ -1596,11 +1596,65 @@ fn parse_step_token(
             }
         }
         // Steps still unsupported (provider-specific or not applicable)
-        "profile" | "iterate" | "explain" | "tree" | "subgraph" | "asDate" | "dateAdd"
-        | "dateDiff" | "fail" | "read" | "write" | "connectedComponent" | "shortestPath"
-        | "pageRank" | "peerPressure" | "call" => {
-            // Unsupported steps — record as unknown so the runner can skip
+        "profile" | "iterate" | "explain" | "fail" => {
             return Err(TextParseError::UnknownStep(name.to_string()));
+        }
+        // Unsupported but parseable — compile to CompileError::UnsupportedStep
+        "read" | "write" => {
+            out.push(GremlinStep::Io(String::new()));
+        }
+        "tree" => {
+            let args = parse_string_arg_list(args_str)?;
+            out.push(GremlinStep::Tree(args.into_iter().next()));
+        }
+        "subgraph" => {
+            let args = parse_string_arg_list(args_str)?;
+            let key = args.into_iter().next().unwrap_or_default();
+            out.push(GremlinStep::Subgraph(key));
+        }
+        "call" => {
+            let args = parse_arg_list(args_str, resolve_param)?;
+            out.push(GremlinStep::Call(args));
+        }
+        "shortestPath" => {
+            out.push(GremlinStep::ShortestPath);
+        }
+        "pageRank" => {
+            out.push(GremlinStep::PageRank);
+        }
+        "connectedComponent" => {
+            out.push(GremlinStep::ConnectedComponent);
+        }
+        "peerPressure" => {
+            out.push(GremlinStep::PeerPressure);
+        }
+        "io" => {
+            let args = parse_string_arg_list(args_str)?;
+            let file = args.into_iter().next().unwrap_or_default();
+            out.push(GremlinStep::Io(file));
+        }
+        "asDate" => {
+            out.push(GremlinStep::AsDate);
+        }
+        "dateAdd" => {
+            let args = parse_arg_list(args_str, resolve_param)?;
+            let unit = match args.first() {
+                Some(GremlinValue::String(s)) => s.clone(),
+                _ => String::new(),
+            };
+            let amount = match args.get(1) {
+                Some(GremlinValue::Integer(n)) => *n,
+                _ => 0,
+            };
+            out.push(GremlinStep::DateAdd(unit, amount));
+        }
+        "dateDiff" => {
+            let inner = parse_inner_traversal(args_str, resolve_param)?;
+            out.push(GremlinStep::DateDiff(inner));
+        }
+        "toE" => {
+            let args = parse_arg_list(args_str, resolve_param)?;
+            out.push(GremlinStep::ToE(args));
         }
         "mergeV" => {
             let args = parse_arg_list(args_str, resolve_param)?;

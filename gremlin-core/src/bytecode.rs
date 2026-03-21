@@ -308,6 +308,32 @@ pub enum GremlinStep {
     /// `none(predicate)` — true if no elements satisfy predicate
     NonePred(Predicate),
 
+    // ── Unsupported steps (parsed but not compilable) ──────────────────────────
+    /// `tree()` or `tree(sideEffectKey)` — build a tree structure from traversal paths
+    Tree(Option<String>),
+    /// `subgraph(sideEffectKey)` — capture a subgraph of traversed elements
+    Subgraph(String),
+    /// `call(service, args...)` — external service call
+    Call(Vec<GremlinValue>),
+    /// `shortestPath()` — shortest path algorithm
+    ShortestPath,
+    /// `pageRank()` — page rank algorithm
+    PageRank,
+    /// `connectedComponent()` — connected component algorithm
+    ConnectedComponent,
+    /// `peerPressure()` — peer pressure algorithm
+    PeerPressure,
+    /// `io(file)` — file I/O operations
+    Io(String),
+    /// `asDate()` — convert to date
+    AsDate,
+    /// `dateAdd(unit, amount)` — date arithmetic
+    DateAdd(String, i64),
+    /// `dateDiff(traversal)` — date difference
+    DateDiff(Vec<GremlinStep>),
+    /// `toE(direction, labels...)` — edge-to-vertex step
+    ToE(Vec<GremlinValue>),
+
     // ── Predicate wrappers (used inside Is/Where) ────────────────────────────
     Eq(GremlinValue),
     Neq(GremlinValue),

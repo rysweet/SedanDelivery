@@ -404,12 +404,15 @@ impl GremlinCompiler {
         for step in steps {
             // Save alias before step to detect changes for path tracking
             let pre_step_alias = current_alias.clone();
-            // When we leave the addE modifier group (from/to/property), fill in
-            // any __src/__dst placeholders that were never overridden.
+            // When we leave the addE/mergeE modifier group (from/to/property/option),
+            // fill in any __src/__dst placeholders that were never overridden.
             if adde_traverser.is_some()
                 && !matches!(
                     step,
-                    GremlinStep::From(_) | GremlinStep::To(_) | GremlinStep::Property(..)
+                    GremlinStep::From(_)
+                        | GremlinStep::To(_)
+                        | GremlinStep::Property(..)
+                        | GremlinStep::Option(..)
                 )
             {
                 if let Some(ref traverser) = adde_traverser.take() {
@@ -3000,6 +3003,7 @@ impl GremlinCompiler {
                         return Err(CompileError::ReadOnlyViolation);
                     }
                     pending_properties.clear();
+                    adde_traverser = Some(current_alias.clone());
                     let rel_alias = self.next_alias("me");
                     current_alias = rel_alias.clone();
 
@@ -5320,6 +5324,44 @@ impl GremlinCompiler {
                         "predicate steps should not appear at the top level".into(),
                     ));
                 }
+
+                // Unsupported steps — parsed successfully but not compilable
+                GremlinStep::Tree(_) => {
+                    return Err(CompileError::UnsupportedStep("tree".into()));
+                }
+                GremlinStep::Subgraph(_) => {
+                    return Err(CompileError::UnsupportedStep("subgraph".into()));
+                }
+                GremlinStep::Call(_) => {
+                    return Err(CompileError::UnsupportedStep("call".into()));
+                }
+                GremlinStep::ShortestPath => {
+                    return Err(CompileError::UnsupportedStep("shortestPath".into()));
+                }
+                GremlinStep::PageRank => {
+                    return Err(CompileError::UnsupportedStep("pageRank".into()));
+                }
+                GremlinStep::ConnectedComponent => {
+                    return Err(CompileError::UnsupportedStep("connectedComponent".into()));
+                }
+                GremlinStep::PeerPressure => {
+                    return Err(CompileError::UnsupportedStep("peerPressure".into()));
+                }
+                GremlinStep::Io(_) => {
+                    return Err(CompileError::UnsupportedStep("io".into()));
+                }
+                GremlinStep::AsDate => {
+                    return Err(CompileError::UnsupportedStep("asDate".into()));
+                }
+                GremlinStep::DateAdd(..) => {
+                    return Err(CompileError::UnsupportedStep("dateAdd".into()));
+                }
+                GremlinStep::DateDiff(_) => {
+                    return Err(CompileError::UnsupportedStep("dateDiff".into()));
+                }
+                GremlinStep::ToE(_) => {
+                    return Err(CompileError::UnsupportedStep("toE".into()));
+                }
             }
 
             // Generic path tracking: if the current alias changed and this is
@@ -5979,6 +6021,20 @@ fn rewrite_create_alias(op: &mut Operator, placeholder: &str, replacement: &Iden
                     }
                 }
             }
+        }
+        Operator::MergeRelationship {
+            src_alias,
+            dst_alias,
+            child,
+            ..
+        } => {
+            if src_alias.as_str() == placeholder {
+                *src_alias = replacement.clone();
+            }
+            if dst_alias.as_str() == placeholder {
+                *dst_alias = replacement.clone();
+            }
+            rewrite_create_alias(child, placeholder, replacement);
         }
         Operator::Apply { outer, inner } => {
             rewrite_create_alias(outer, placeholder, replacement);
