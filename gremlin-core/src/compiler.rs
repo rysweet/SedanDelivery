@@ -3442,27 +3442,80 @@ impl GremlinCompiler {
                             child: Box::new(Operator::SingleRow),
                         };
                         if let Some(child) = current.take() {
-                            // Mid-traversal: UNION child stream with injected values,
-                            // then project to a common alias.
-                            let prev_alias = current_alias.clone();
-                            let union_alias = self.next_alias("inj");
-                            let mut left_items =
-                                vec![(Expr::Variable(prev_alias), Some(union_alias.clone()))];
-                            left_items.extend(self.label_carry_items());
-                            let left = Operator::Project {
-                                items: left_items,
-                                child: Box::new(child),
-                            };
-                            let right = Operator::Project {
-                                items: vec![(Expr::Variable(alias), Some(union_alias.clone()))],
-                                child: Box::new(injected),
-                            };
-                            current = Some(Operator::Union {
-                                left: Box::new(left),
-                                right: Box::new(right),
-                                all: true,
-                            });
-                            current_alias = union_alias;
+                            // Check if we have a real data source or just
+                            // configuration steps (withSideEffect, strategies).
+                            if current_alias.0.as_str() == "__gremlin_v" {
+                                // Source inject with configuration context:
+                                // no real traversers to union with.
+                                // Produce injected rows with side-effect
+                                // columns projected as constants.
+                                let union_alias = self.next_alias("inj");
+                                let mut items = vec![(
+                                    Expr::Variable(alias),
+                                    Some(union_alias.clone()),
+                                )];
+                                for (se_key, se_ident) in &self.alias_map {
+                                    if se_ident.0.starts_with("__side_effect_") {
+                                        if let Some(val) =
+                                            self.side_effect_values.get(se_key)
+                                        {
+                                            items.push((
+                                                gremlin_value_to_expr(val),
+                                                Some(se_ident.clone()),
+                                            ));
+                                        }
+                                    }
+                                }
+                                current = Some(Operator::Project {
+                                    items,
+                                    child: Box::new(injected),
+                                });
+                                current_alias = union_alias;
+                            } else {
+                                // Mid-traversal: UNION child stream with injected
+                                // values, then project to a common alias.
+                                let prev_alias = current_alias.clone();
+                                let union_alias = self.next_alias("inj");
+                                let mut left_items = vec![(
+                                    Expr::Variable(prev_alias),
+                                    Some(union_alias.clone()),
+                                )];
+                                left_items.extend(self.label_carry_items());
+                                let left = Operator::Project {
+                                    items: left_items,
+                                    child: Box::new(child),
+                                };
+                                let right = Operator::Project {
+                                    items: {
+                                        let mut items = vec![(
+                                            Expr::Variable(alias),
+                                            Some(union_alias.clone()),
+                                        )];
+                                        // Carry side-effect columns into injected
+                                        // rows so select("k") can find them.
+                                        for (se_key, se_ident) in &self.alias_map {
+                                            if se_ident.0.starts_with("__side_effect_") {
+                                                if let Some(val) =
+                                                    self.side_effect_values.get(se_key)
+                                                {
+                                                    items.push((
+                                                        gremlin_value_to_expr(val),
+                                                        Some(se_ident.clone()),
+                                                    ));
+                                                }
+                                            }
+                                        }
+                                        items
+                                    },
+                                    child: Box::new(injected),
+                                };
+                                current = Some(Operator::Union {
+                                    left: Box::new(left),
+                                    right: Box::new(right),
+                                    all: true,
+                                });
+                                current_alias = union_alias;
+                            }
                         } else {
                             // Source step: just unwind
                             current = Some(injected);

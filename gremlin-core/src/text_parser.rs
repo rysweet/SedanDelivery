@@ -797,11 +797,7 @@ fn parse_step_token(
             }
         }
         "count" => {
-            let args = parse_arg_list(args_str, resolve_param)?;
-            let is_local = args
-                .iter()
-                .any(|a| matches!(a, GremlinValue::String(s) if s == "Scope.local"));
-            if is_local {
+            if args_str.contains("local") || args_str.contains("Scope.local") {
                 // count(local) — count elements in the list/map value
                 out.push(GremlinStep::StringOpLocal("gremlin_count_local".into()));
             } else {
@@ -863,7 +859,7 @@ fn parse_step_token(
         "unfold" => out.push(GremlinStep::Unfold),
         "order" => {
             // Detect Scope.local
-            if args_str.contains("Scope.local") {
+            if args_str.contains("Scope.local") || args_str.contains("local") {
                 out.push(GremlinStep::SortLocal);
             } else {
                 out.push(GremlinStep::Order);
@@ -875,7 +871,7 @@ fn parse_step_token(
             // Detect Scope.local
             let is_local = args
                 .iter()
-                .any(|a| matches!(a, GremlinValue::String(s) if s == "Scope.local"));
+                .any(|a| matches!(a, GremlinValue::String(s) if s == "Scope.local" || s == "local"));
             // limit(n) or limit(Scope.global, n) — skip Scope arg
             let n = args.iter().find_map(|a| {
                 if let GremlinValue::Integer(v) = a {
@@ -897,7 +893,7 @@ fn parse_step_token(
             // Detect Scope.local
             let is_local = args
                 .iter()
-                .any(|a| matches!(a, GremlinValue::String(s) if s == "Scope.local"));
+                .any(|a| matches!(a, GremlinValue::String(s) if s == "Scope.local" || s == "local"));
             // Collect integer args
             let ints: Vec<i64> = args
                 .iter()
@@ -1179,7 +1175,7 @@ fn parse_step_token(
             let args = parse_arg_list(args_str, resolve_param)?;
             let is_local = args
                 .iter()
-                .any(|a| matches!(a, GremlinValue::String(s) if s == "Scope.local"));
+                .any(|a| matches!(a, GremlinValue::String(s) if s == "Scope.local" || s == "local"));
             let n = args.iter().find_map(|a| {
                 if let GremlinValue::Integer(v) = a {
                     Some(*v)
@@ -1251,7 +1247,7 @@ fn parse_step_token(
             let args = parse_arg_list(args_str, resolve_param)?;
             let is_local = args
                 .iter()
-                .any(|a| matches!(a, GremlinValue::String(s) if s == "Scope.local"));
+                .any(|a| matches!(a, GremlinValue::String(s) if s == "Scope.local" || s == "local"));
             let n = args
                 .iter()
                 .find_map(|a| {

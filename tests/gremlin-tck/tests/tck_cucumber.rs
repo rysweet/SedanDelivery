@@ -1098,17 +1098,45 @@ fn assert_results_match_ordered(
     world: &GremlinWorld,
 ) {
     let (vid, eid) = build_id_to_name(world);
+
+    // If the result is a single row containing a List but we expect multiple
+    // rows, unpack the list into individual rows (matching TinkerPop semantics
+    // for fold/order(local) results).
+    let unpacked_rows: Vec<HashMap<String, Value>>;
+    let effective_result = if result.rows.len() == 1 && expected.len() > 1 {
+        if let Some(Value::List(items)) = row_result_value(&result.rows[0], &world.result_alias) {
+            let key = if !world.result_alias.is_empty() {
+                world.result_alias.clone()
+            } else {
+                result.rows[0].keys().next().unwrap().clone()
+            };
+            unpacked_rows = items
+                .iter()
+                .map(|v| {
+                    let mut row: HashMap<String, Value> = HashMap::new();
+                    row.insert(key.clone(), v.clone());
+                    row
+                })
+                .collect();
+            &unpacked_rows
+        } else {
+            result.rows.as_slice()
+        }
+    } else {
+        result.rows.as_slice()
+    };
+
     assert_eq!(
-        result.rows.len(),
+        effective_result.len(),
         expected.len(),
         "row count mismatch: got {} expected {}\ntraversal: {}\nactual rows: {:?}",
-        result.rows.len(),
+        effective_result.len(),
         expected.len(),
         world.traversal_text,
-        result.rows,
+        effective_result,
     );
 
-    for (i, (row, exp_row)) in result.rows.iter().zip(expected.iter()).enumerate() {
+    for (i, (row, exp_row)) in effective_result.iter().zip(expected.iter()).enumerate() {
         if let Some(actual_val) = row_result_value(row, &world.result_alias) {
             let exp_val = &exp_row[0];
             assert!(
