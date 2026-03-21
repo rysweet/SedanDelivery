@@ -138,6 +138,10 @@ pub enum GremlinStep {
     From(Vec<GremlinStep>),
     To(Vec<GremlinStep>),
     Drop,
+    /// `mergeV(searchMap)` — upsert vertex: find by criteria or create
+    MergeV(GremlinValue),
+    /// `mergeE(searchMap)` — upsert edge: find by criteria or create
+    MergeE(GremlinValue),
 
     // ── Path steps ───────────────────────────────────────────────────────────
     Path,

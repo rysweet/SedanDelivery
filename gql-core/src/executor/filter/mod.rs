@@ -152,10 +152,7 @@ pub fn eval_expr<'r>(expr: &Expr, row: &Row<'r>) -> Result<Value, GqlError> {
                 | Value::Duration(_) => temporal_property_access(&obj, key.as_str()),
                 // Point property access (x, y, z, srid, crs)
                 Value::Point(_) => temporal_property_access(&obj, key.as_str()),
-                other => Err(GqlError::Execution(ExecutionError::TypeMismatch {
-                    expected: "Node, Relationship, or Map".to_string(),
-                    actual: other.type_name().to_string(),
-                })),
+                _ => Ok(Value::Null),
             }
         }
 
@@ -1626,8 +1623,9 @@ pub fn eval_function_with_vals(name: &str, vals: Vec<Value>) -> Result<Value, Gq
                     let none_match = !items.iter().any(|v| gremlin_pred_check(v, pred_op, &pred_val));
                     Ok(Value::Bool(none_match))
                 }
-                // Scalar: none(P) → NOT matches(P)
-                other => Ok(Value::Bool(!gremlin_pred_check(other, pred_op, &pred_val))),
+                // Scalar: none(P) is a collection predicate — always false
+                // for non-collection values.
+                _ => Ok(Value::Bool(false)),
             }
         }
 
@@ -1920,7 +1918,7 @@ pub fn eval_function_with_vals(name: &str, vals: Vec<Value>) -> Result<Value, Gq
                         "string", "integer", "int", "long", "double", "float",
                         "boolean", "null", "list", "map", "set", "path", "vertex",
                         "edge", "date", "short", "byte", "biginteger", "bigdecimal",
-                        "uuid", "tree", "binary", "char", "datetime", "duration",
+                        "bigint", "uuid", "tree", "binary", "char", "datetime", "duration",
                         "graph", "vproperty", "property",
                     ];
                     if !known_types.contains(&expected.as_str()) {
@@ -1934,6 +1932,9 @@ pub fn eval_function_with_vals(name: &str, vals: Vec<Value>) -> Result<Value, Gq
                         || (expected == "int" && actual_type == "integer")
                         || (expected == "short" && actual_type == "integer")
                         || (expected == "byte" && actual_type == "integer")
+                        || (expected == "bigint" && actual_type == "integer")
+                        || (expected == "biginteger" && actual_type == "integer")
+                        || (expected == "bigdecimal" && actual_type == "double")
                         || (expected == "float" && actual_type == "double")
                         || (expected == "set" && actual_type == "list")
                         || (expected == "path" && actual_type == "list");

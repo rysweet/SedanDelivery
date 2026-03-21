@@ -933,6 +933,7 @@ impl<'a> QueryExecutor<'a> {
             child,
             path_aliases,
             by_keys,
+            productive,
         } = op
         else {
             debug_assert!(false, "expected GremlinPath operator");
@@ -980,7 +981,7 @@ impl<'a> QueryExecutor<'a> {
                     })
                     .collect();
                 // Drop the traverser if any by-key resolution produced Null
-                if transformed.iter().any(|v| matches!(v, Value::Null)) {
+                if !*productive && transformed.iter().any(|v| matches!(v, Value::Null)) {
                     continue;
                 }
                 transformed
@@ -2749,6 +2750,7 @@ mod tests {
             }),
             path_aliases: vec![Identifier::new("n"), Identifier::new("m")],
             by_keys: vec![],
+            productive: false,
         };
 
         let mut budget = ExecutionBudget::unlimited();
@@ -2793,6 +2795,7 @@ mod tests {
                 Identifier::new("o"),
             ],
             by_keys: vec![],
+            productive: false,
         };
 
         let mut budget = ExecutionBudget::unlimited();
@@ -2821,6 +2824,7 @@ mod tests {
             }),
             path_aliases: vec![],
             by_keys: vec![],
+            productive: false,
         };
 
         let mut budget = ExecutionBudget::unlimited();
@@ -2848,6 +2852,7 @@ mod tests {
             }),
             path_aliases: vec![Identifier::new("n")],
             by_keys: vec![],
+            productive: false,
         };
 
         let mut budget = ExecutionBudget::unlimited();
@@ -2892,6 +2897,7 @@ mod tests {
             }),
             path_aliases: vec![Identifier::new("n"), Identifier::new("m")],
             by_keys: vec![],
+            productive: false,
         };
 
         let mut budget = ExecutionBudget::unlimited();

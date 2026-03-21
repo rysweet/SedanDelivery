@@ -295,10 +295,10 @@ pub enum Operator {
         /// Ordered list of aliases that form the path elements.
         path_aliases: Vec<Identifier>,
         /// Cycling by-modulator keys for path element transformation.
-        /// Empty means return raw values.  Otherwise element `i` uses
-        /// `by_keys[i % by_keys.len()]`.  Each key is a property name,
-        /// `"T.label"`, `"T.id"`, or `""` for identity.
         by_keys: Vec<String>,
+        /// When true (ProductiveByStrategy), preserve Null by-key
+        /// results instead of dropping the traverser.
+        productive: bool,
     },
     /// Gremlin match() — declarative pattern matching with named bindings.
     GremlinMatch {

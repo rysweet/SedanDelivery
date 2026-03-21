@@ -2962,6 +2962,7 @@ impl GremlinCompiler {
                         child: Box::new(child),
                         path_aliases: path_aliases.clone(),
                         by_keys: vec![],
+                        productive: self.productive_by,
                     });
                     current_alias = Identifier::new("path");
                     pending_path = true;

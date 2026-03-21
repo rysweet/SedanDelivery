@@ -60,6 +60,8 @@ pub fn parse_traversal(
     let reserved_keys = extract_reserved_keys_strategy(input);
     // SeedStrategy(seed: 999999) — extract seed value for deterministic random
     let seed_strategy = extract_seed_strategy(input);
+    // SubgraphStrategy — extract vertex/edge filter traversals
+    let subgraph_vertex_filter = extract_subgraph_vertex_filter(input, resolve_param);
 
     // Strip strategy wrappers: g.withStrategies(...).V()... or g.withoutStrategies(...).V()...
     // Also strip g.withSideEffect(...) and g.withSack(...) and g.withComputer(...)
@@ -118,6 +120,11 @@ pub fn parse_traversal(
 
     for token in &tokens {
         parse_step_token(token, resolve_param, &mut steps)?;
+    }
+
+    // Apply SubgraphStrategy vertex filter: inject filter steps after V/out/in/both/etc
+    if let Some(ref vf_steps) = subgraph_vertex_filter {
+        steps = inject_subgraph_vertex_filter(steps, vf_steps);
     }
 
     Ok(steps)
@@ -206,6 +213,84 @@ fn extract_reserved_keys_strategy(input: &str) -> Option<Vec<String>> {
         }
     }
     Some(extra_keys)
+}
+
+/// Extract the vertex filter traversal from SubgraphStrategy.
+/// e.g., `SubgraphStrategy(vertices: __.has("name", P.within("josh", "lop", "ripple")))`
+/// Returns the parsed filter steps if found.
+fn extract_subgraph_vertex_filter(
+    input: &str,
+    resolve_param: &dyn Fn(&str) -> Option<GremlinValue>,
+) -> Option<Vec<GremlinStep>> {
+    if !input.contains("SubgraphStrategy") {
+        return None;
+    }
+    let start = input.find("SubgraphStrategy(")?;
+    let after = &input[start + "SubgraphStrategy(".len()..];
+
+    // Find "vertices:" parameter
+    let vpos = after.find("vertices:")?;
+    let rest = after[vpos + "vertices:".len()..].trim_start();
+
+    // Extract the traversal text up to the matching close or next parameter
+    let traversal_text = extract_balanced_traversal(rest)?;
+
+    // Parse the filter traversal
+    parse_inner_traversal(&traversal_text, resolve_param).ok()
+}
+
+/// Extract a balanced traversal expression from a position in a string.
+/// Handles nested parentheses and stops at `,` or `)` at depth 0.
+fn extract_balanced_traversal(input: &str) -> Option<String> {
+    let input = input.trim_start();
+    let mut depth = 0i32;
+    let mut end = 0;
+    let chars: Vec<char> = input.chars().collect();
+
+    for (i, &ch) in chars.iter().enumerate() {
+        match ch {
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' => {
+                if depth == 0 {
+                    end = i;
+                    break;
+                }
+                depth -= 1;
+            }
+            ',' if depth == 0 => {
+                end = i;
+                break;
+            }
+            _ => {}
+        }
+        end = i + 1;
+    }
+
+    let text = input[..end].trim().trim_end_matches(',').trim();
+    if text.is_empty() {
+        return None;
+    }
+    Some(text.to_string())
+}
+
+/// Inject SubgraphStrategy vertex filter steps after V() steps.
+fn inject_subgraph_vertex_filter(
+    steps: Vec<GremlinStep>,
+    filter_steps: &[GremlinStep],
+) -> Vec<GremlinStep> {
+    let mut result = Vec::with_capacity(steps.len() * 2);
+
+    for step in steps {
+        let needs_vertex_filter = matches!(step, GremlinStep::V(_));
+
+        result.push(step);
+
+        if needs_vertex_filter {
+            result.push(GremlinStep::Where(filter_steps.to_vec()));
+        }
+    }
+
+    result
 }
 
 /// Extract the initial value from `g.withSack(value)` if present.
@@ -1512,10 +1597,20 @@ fn parse_step_token(
         }
         // Steps still unsupported (provider-specific or not applicable)
         "profile" | "iterate" | "explain" | "tree" | "subgraph" | "asDate" | "dateAdd"
-        | "dateDiff" | "fail" | "read" | "write" | "mergeV" | "mergeE" | "connectedComponent"
+        | "dateDiff" | "fail" | "read" | "write" | "connectedComponent"
         | "shortestPath" | "pageRank" | "peerPressure" | "call" => {
             // Unsupported steps — record as unknown so the runner can skip
             return Err(TextParseError::UnknownStep(name.to_string()));
+        }
+        "mergeV" => {
+            let args = parse_arg_list(args_str, resolve_param)?;
+            let search = args.into_iter().next().unwrap_or(GremlinValue::Map(IndexMap::new()));
+            out.push(GremlinStep::MergeV(search));
+        }
+        "mergeE" => {
+            let args = parse_arg_list(args_str, resolve_param)?;
+            let search = args.into_iter().next().unwrap_or(GremlinValue::Map(IndexMap::new()));
+            out.push(GremlinStep::MergeE(search));
         }
         _ => {
             return Err(TextParseError::UnknownStep(name.to_string()));
@@ -1887,7 +1982,7 @@ fn try_parse_predicate_call(
         // Build compound predicate from chain
         let mut or_groups: Vec<Vec<Predicate>> = vec![vec![]];
         for (op, part) in &chain_parts {
-            let pred = try_parse_predicate_single(part, resolve_param)?;
+            let pred = try_parse_predicate_call(part, resolve_param)?;
             if *op == "or" {
                 or_groups.push(vec![pred]);
             } else {
@@ -2544,6 +2639,11 @@ fn parse_single_value(
 
     // Scope.local, Scope.global
     if s.starts_with("Scope.") || s.starts_with("Column.") || s.starts_with("Order.") {
+        return Ok(GremlinValue::String(s.to_string()));
+    }
+
+    // Merge.* — merge step option tokens
+    if s.starts_with("Merge.") {
         return Ok(GremlinValue::String(s.to_string()));
     }
 

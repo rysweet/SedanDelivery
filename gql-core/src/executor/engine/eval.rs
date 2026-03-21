@@ -86,10 +86,16 @@ impl<'a> QueryExecutor<'a> {
                     Value::Point(_) => {
                         crate::executor::filter::temporal_property_access(&obj_val, key.as_str())
                     }
-                    other => Err(GqlError::Execution(ExecutionError::TypeMismatch {
-                        expected: "Node, Relationship, or Map".to_string(),
-                        actual: other.type_name().to_string(),
-                    })),
+                    _ => {
+                        if self.gremlin_mode {
+                            Ok(Value::Null)
+                        } else {
+                            Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                                expected: "Node, Relationship, or Map".to_string(),
+                                actual: obj_val.type_name().to_string(),
+                            }))
+                        }
+                    }
                 }
             }
             Expr::Variable(id) => {
