@@ -2804,6 +2804,86 @@ impl GremlinCompiler {
                     });
                 }
 
+                GremlinStep::MergeV(ref search_map) => {
+                    if self.read_only {
+                        return Err(CompileError::ReadOnlyViolation);
+                    }
+                    pending_properties.clear();
+                    let alias = self.next_alias("mv");
+                    current_alias = alias.clone();
+
+                    let mut labels = Vec::new();
+                    let mut properties = Vec::new();
+                    if let GremlinValue::Map(ref map) = search_map {
+                        for (k, v) in map {
+                            if k == "t[label]" || k == "T.label" {
+                                if let GremlinValue::String(l) = v {
+                                    labels.push(Label::new(l.as_str()));
+                                }
+                            } else if k != "t[id]" && k != "T.id" {
+                                properties.push((
+                                    k.clone(),
+                                    gremlin_value_to_expr(v),
+                                ));
+                            }
+                        }
+                    }
+
+                    current = Some(Operator::Merge {
+                        node_alias: Some(alias),
+                        labels,
+                        properties,
+                        on_create: vec![],
+                        on_match: vec![],
+                        child: current.map(Box::new),
+                    });
+                }
+
+                GremlinStep::MergeE(ref search_map) => {
+                    if self.read_only {
+                        return Err(CompileError::ReadOnlyViolation);
+                    }
+                    pending_properties.clear();
+                    let rel_alias = self.next_alias("me");
+                    current_alias = rel_alias.clone();
+
+                    let mut rel_type_str = String::new();
+                    let mut properties = Vec::new();
+                    if let GremlinValue::Map(ref map) = search_map {
+                        for (k, v) in map {
+                            if k == "t[label]" || k == "T.label" {
+                                if let GremlinValue::String(l) = v {
+                                    rel_type_str = l.clone();
+                                }
+                            } else if !k.starts_with('(') && !k.starts_with("Direction.") && k != "t[id]" && k != "T.id" {
+                                properties.push((
+                                    k.clone(),
+                                    gremlin_value_to_expr(v),
+                                ));
+                            }
+                        }
+                    }
+
+                    let src = Identifier::new("__src");
+                    let dst = Identifier::new("__dst");
+                    let rel_type = if rel_type_str.is_empty() {
+                        RelType::new("__default")
+                    } else {
+                        RelType::new(rel_type_str.as_str())
+                    };
+                    current = Some(Operator::MergeRelationship {
+                        src_alias: src,
+                        dst_alias: dst,
+                        rel_alias: Some(rel_alias),
+                        rel_type,
+                        direction: Direction::Outgoing,
+                        properties,
+                        on_create: vec![],
+                        on_match: vec![],
+                        child: Box::new(current.unwrap_or(Operator::SingleRow)),
+                    });
+                }
+
                 GremlinStep::Property(key, value) => {
                     if self.read_only {
                         return Err(CompileError::ReadOnlyViolation);
@@ -4139,7 +4219,14 @@ impl GremlinCompiler {
                 }
 
                 GremlinStep::Option(token, branch_steps) => {
-                    if let Some(Operator::ChooseMap {
+                    // Handle Merge.* tokens for mergeV/mergeE options
+                    let is_merge_option = matches!(
+                        token,
+                        GremlinValue::String(s) if s.starts_with("Merge.")
+                    );
+                    if is_merge_option {
+                        // mergeV/mergeE options — no-op for now
+                    } else if let Some(Operator::ChooseMap {
                         ref mut options, ..
                     }) = current
                     {
@@ -4155,7 +4242,7 @@ impl GremlinCompiler {
                     } else if current.is_none() {
                         return Err(CompileError::MissingChild);
                     }
-                    // If current is not ChooseMap, option is ignored (no-op).
+                    // If current is not ChooseMap or Merge, option is ignored (no-op).
                 }
 
                 // ── String steps ─────────────────────────────────────────────────
