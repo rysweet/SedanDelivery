@@ -787,7 +787,21 @@ pub fn eval_function_with_vals(name: &str, vals: Vec<Value>) -> Result<Value, Gq
                 Some(Value::Str(s)) => s.as_ref(),
                 _ => return Ok(Value::Null),
             };
-            eval_math_expr(expr_str, &current_val)
+            // Parse extra variable bindings: pairs of (name, value) starting at index 2
+            let mut var_bindings: Vec<(String, f64)> = Vec::new();
+            let mut i = 2;
+            while i + 1 < vals.len() {
+                if let (Some(Value::Str(name)), Some(val)) = (vals.get(i), vals.get(i + 1)) {
+                    let num = match val {
+                        Value::Int(n) => *n as f64,
+                        Value::Float(f) => *f,
+                        _ => 0.0,
+                    };
+                    var_bindings.push((name.to_string(), num));
+                }
+                i += 2;
+            }
+            eval_math_expr(expr_str, &current_val, &var_bindings)
         },
         "gremlin_tail_local" => {
             let val = vals.first().cloned().unwrap_or(Value::Null);
@@ -1744,7 +1758,17 @@ pub fn eval_function_with_vals(name: &str, vals: Vec<Value>) -> Result<Value, Gq
                     let mut entries: Vec<(Box<str>, Value)> = m.into_iter().collect();
                     if let Some(ref key) = by_key {
                         if key.as_ref() == "Column.keys" {
-                            entries.sort_by(|(ka, _), (kb, _)| ka.cmp(kb));
+                            // Sort by key name; strip t[...] wrapper for T tokens
+                            // so t[id] compares as "id" and t[label] as "label"
+                            entries.sort_by(|(ka, _), (kb, _)| {
+                                let ka_cmp = ka.strip_prefix("t[")
+                                    .and_then(|s| s.strip_suffix(']'))
+                                    .unwrap_or(ka);
+                                let kb_cmp = kb.strip_prefix("t[")
+                                    .and_then(|s| s.strip_suffix(']'))
+                                    .unwrap_or(kb);
+                                ka_cmp.cmp(kb_cmp)
+                            });
                         } else {
                             entries.sort_by(|(_, va), (_, vb)| {
                                 crate::executor::engine::helpers::gremlin_cmp_values(va, vb)
@@ -2066,9 +2090,12 @@ fn extract_sort_key(v: &Value, key: &str) -> Value {
 }
 
 /// Evaluate a Gremlin math expression. `_` refers to the current value.
-/// Supports: `_ + N`, `_ - N`, `_ * N`, `_ / N`, `ceil(_)`, `floor(_)`,
-/// `abs(_)`, `_ + 1` (inc).
-fn eval_math_expr(expr: &str, current: &Value) -> Result<Value, GqlError> {
+/// `var_bindings` provides named variable values (e.g., from by() modulation or side effects).
+fn eval_math_expr(
+    expr: &str,
+    current: &Value,
+    var_bindings: &[(String, f64)],
+) -> Result<Value, GqlError> {
     let expr = expr.trim();
 
     // Helper to extract numeric value
@@ -2080,19 +2107,37 @@ fn eval_math_expr(expr: &str, current: &Value) -> Result<Value, GqlError> {
         }
     }
 
+    // Helper to resolve a token to a numeric value
+    let resolve = |token: &str| -> f64 {
+        if token == "_" {
+            return as_f64(current).unwrap_or(0.0);
+        }
+        if let Ok(n) = token.parse::<f64>() {
+            return n;
+        }
+        // Look up in variable bindings
+        for (name, val) in var_bindings {
+            if name == token {
+                return *val;
+            }
+        }
+        // Default to current value
+        as_f64(current).unwrap_or(0.0)
+    };
+
     let val = as_f64(current).unwrap_or(0.0);
 
     // ceil(_), floor(_), abs(_)
-    if expr.starts_with("ceil(") {
+    if expr.starts_with("ceil(") || expr.starts_with("ceil ") || expr == "ceil" {
         return Ok(Value::Float(val.ceil()));
     }
-    if expr.starts_with("floor(") {
+    if expr.starts_with("floor(") || expr.starts_with("floor ") || expr == "floor" {
         return Ok(Value::Float(val.floor()));
     }
-    if expr.starts_with("abs(") {
+    if expr.starts_with("abs(") || expr.starts_with("abs ") || expr == "abs" {
         return Ok(Value::Float(val.abs()));
     }
-    if expr.starts_with("sqrt(") {
+    if expr.starts_with("sqrt(") || expr.starts_with("sqrt ") || expr == "sqrt" {
         return Ok(Value::Float(val.sqrt()));
     }
 
@@ -2108,26 +2153,10 @@ fn eval_math_expr(expr: &str, current: &Value) -> Result<Value, GqlError> {
             let left_str = expr[..pos].trim();
             let right_str = expr[pos + op_str.len()..].trim();
 
-            let left_val = if left_str == "_" {
-                val
-            } else if let Ok(n) = left_str.parse::<f64>() {
-                n
-            } else {
-                val // default to current value for variable refs
-            };
-            let right_val = if right_str == "_" {
-                val
-            } else if let Ok(n) = right_str.parse::<f64>() {
-                n
-            } else {
-                val
-            };
+            let left_val = resolve(left_str);
+            let right_val = resolve(right_str);
 
             let result = op_fn(left_val, right_val);
-            // Return Int if the result is a whole number and both operands are int-like
-            if result.fract() == 0.0 && matches!(current, Value::Int(_)) {
-                return Ok(Value::Float(result));
-            }
             return Ok(Value::Float(result));
         }
     }

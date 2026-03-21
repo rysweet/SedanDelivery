@@ -387,6 +387,10 @@ impl GremlinCompiler {
         let mut pending_where_by: Option<(Identifier, Identifier)> = None;
         // How many by() modulations have been consumed for where-by (0=left, 1=right)
         let mut where_by_count: u32 = 0;
+        // Track math() step for by() modulation of variable references
+        let mut pending_math = false;
+        let mut pending_math_expr: String = String::new();
+        let mut pre_math_alias: Identifier = initial_alias.clone();
 
         for step in steps {
             // Save alias before step to detect changes for path tracking
@@ -441,6 +445,42 @@ impl GremlinCompiler {
                 }
                 pending_where_by = None;
                 where_by_count = 0;
+                // Flush pending math without by() modulation — resolve side-effect variables
+                if pending_math {
+                    let child = current.take().unwrap_or(Operator::SingleRow);
+                    let alias = self.next_alias("math");
+                    let mut args = vec![
+                        Expr::Variable(pre_math_alias.clone()),
+                        Expr::Str(pending_math_expr.clone().into_boxed_str()),
+                    ];
+                    // Resolve variable references in the expression from side effects
+                    for var_name in extract_math_variables(&pending_math_expr) {
+                        let se_key = format!("__side_effect_{}", var_name);
+                        if let Some(se_ident) = self.alias_map.get(&var_name) {
+                            args.push(Expr::Str(var_name.into_boxed_str()));
+                            args.push(Expr::Variable(se_ident.clone()));
+                        } else if self.side_effect_values.contains_key(&var_name) {
+                            args.push(Expr::Str(var_name.into_boxed_str()));
+                            args.push(Expr::Variable(Identifier::new(se_key)));
+                        }
+                    }
+                    let mut items = vec![(
+                        Expr::FunctionCall {
+                            name: SmolStr::new("gremlin_math"),
+                            args,
+                            distinct: false,
+                        },
+                        Some(alias.clone()),
+                    )];
+                    items.extend(self.label_carry_items());
+                    current = Some(Operator::Project {
+                        items,
+                        child: Box::new(child),
+                    });
+                    current_alias = alias;
+                    pending_math = false;
+                    pending_math_expr.clear();
+                }
                 // Flush pending order: order() without by() → sort by identity
                 if pending_order && !pending_order_local {
                     let child = current.take().unwrap_or(Operator::SingleRow);
@@ -450,6 +490,31 @@ impl GremlinCompiler {
                         child: Box::new(child),
                     });
                     pending_order = false;
+                }
+                // Flush pending order(Scope.local) without by() — sort list by natural ordering
+                if pending_order && pending_order_local {
+                    let child = current.take().unwrap_or(Operator::SingleRow);
+                    let alias = self.next_alias("srtl");
+                    let mut items = vec![(
+                        Expr::FunctionCall {
+                            name: SmolStr::new("gremlin_sort_local"),
+                            args: vec![
+                                Expr::Variable(current_alias.clone()),
+                                Expr::Str("".into()),
+                                Expr::Str("asc".into()),
+                            ],
+                            distinct: false,
+                        },
+                        Some(alias.clone()),
+                    )];
+                    items.extend(self.label_carry_items());
+                    current = Some(Operator::Project {
+                        items,
+                        child: Box::new(child),
+                    });
+                    current_alias = alias;
+                    pending_order = false;
+                    pending_order_local = false;
                 }
                 // Finalize pending format with collected by() modulations
                 if pending_format && !format_by_aliases.is_empty() {
@@ -1566,7 +1631,57 @@ impl GremlinCompiler {
                 }
 
                 GremlinStep::By(key, descending) => {
-                    if pending_order && pending_order_local {
+                    if pending_math {
+                        // by() after math() — resolve variable references with property key
+                        let child = current.take().ok_or(CompileError::MissingChild)?;
+                        let alias = self.next_alias("math");
+                        let mut args = vec![
+                            Expr::Variable(pre_math_alias.clone()),
+                            Expr::Str(pending_math_expr.clone().into_boxed_str()),
+                        ];
+                        // For each variable in the expression, resolve using the by key
+                        for var_name in extract_math_variables(&pending_math_expr) {
+                            if let Some(stacks) = self.label_stacks.get(&var_name) {
+                                if let Some(label_alias) = stacks.last() {
+                                    args.push(Expr::Str(var_name.into_boxed_str()));
+                                    if key.is_empty() {
+                                        args.push(Expr::Variable(label_alias.clone()));
+                                    } else {
+                                        args.push(Expr::Property(
+                                            Box::new(Expr::Variable(label_alias.clone())),
+                                            SmolStr::new(key),
+                                        ));
+                                    }
+                                }
+                            } else if let Some(se_ident) = self.alias_map.get(&var_name) {
+                                args.push(Expr::Str(var_name.into_boxed_str()));
+                                if key.is_empty() {
+                                    args.push(Expr::Variable(se_ident.clone()));
+                                } else {
+                                    args.push(Expr::Property(
+                                        Box::new(Expr::Variable(se_ident.clone())),
+                                        SmolStr::new(key),
+                                    ));
+                                }
+                            }
+                        }
+                        let mut items = vec![(
+                            Expr::FunctionCall {
+                                name: SmolStr::new("gremlin_math"),
+                                args,
+                                distinct: false,
+                            },
+                            Some(alias.clone()),
+                        )];
+                        items.extend(self.label_carry_items());
+                        current = Some(Operator::Project {
+                            items,
+                            child: Box::new(child),
+                        });
+                        current_alias = alias;
+                        pending_math = false;
+                        pending_math_expr.clear();
+                    } else if pending_order && pending_order_local {
                         // by() after order(Scope.local) — sort within list by key
                         let child = current.take().ok_or(CompileError::MissingChild)?;
                         let alias = self.next_alias("srtl");
@@ -2836,10 +2951,7 @@ impl GremlinCompiler {
                                     labels.push(Label::new(l.as_str()));
                                 }
                             } else if k != "t[id]" && k != "T.id" {
-                                properties.push((
-                                    k.clone(),
-                                    gremlin_value_to_expr(v),
-                                ));
+                                properties.push((k.clone(), gremlin_value_to_expr(v)));
                             }
                         }
                     }
@@ -2870,11 +2982,12 @@ impl GremlinCompiler {
                                 if let GremlinValue::String(l) = v {
                                     rel_type_str = l.clone();
                                 }
-                            } else if !k.starts_with('(') && !k.starts_with("Direction.") && k != "t[id]" && k != "T.id" {
-                                properties.push((
-                                    k.clone(),
-                                    gremlin_value_to_expr(v),
-                                ));
+                            } else if !k.starts_with('(')
+                                && !k.starts_with("Direction.")
+                                && k != "t[id]"
+                                && k != "T.id"
+                            {
+                                properties.push((k.clone(), gremlin_value_to_expr(v)));
                             }
                         }
                     }
@@ -3068,6 +3181,15 @@ impl GremlinCompiler {
                 }
 
                 GremlinStep::Repeat(body_steps) => {
+                    // Validate: inject() is not allowed inside repeat()
+                    if body_steps
+                        .iter()
+                        .any(|s| matches!(s, GremlinStep::Inject(_)))
+                    {
+                        return Err(CompileError::InvalidSequence(
+                            "The parent of inject()-step can not be repeat()-step".into(),
+                        ));
+                    }
                     let child = current.take().ok_or(CompileError::MissingChild)?;
                     let seed_alias = current_alias.clone();
                     let mut sub = self.sub_compiler();
@@ -3246,8 +3368,7 @@ impl GremlinCompiler {
                         let op = sub.compile_seeded(s, &current_alias)?;
                         alt_aliases.push(sub.last_alias.clone());
                         // Propagate edge source so otherV() after coalesce works.
-                        if sub.edge_src_vertex.is_some() && self.edge_src_vertex.is_none()
-                        {
+                        if sub.edge_src_vertex.is_some() && self.edge_src_vertex.is_none() {
                             self.edge_src_vertex = sub.edge_src_vertex.clone();
                         }
                         self.absorb(&sub);
@@ -3266,23 +3387,14 @@ impl GremlinCompiler {
                                 op
                             } else {
                                 let mut items = vec![
-                                    (
-                                        Expr::Variable(alt_alias.clone()),
-                                        Some(coal_alias.clone()),
-                                    ),
+                                    (Expr::Variable(alt_alias.clone()), Some(coal_alias.clone())),
                                     // Also carry forward the original alias for path()
-                                    (
-                                        Expr::Variable(alt_alias.clone()),
-                                        Some(alt_alias.clone()),
-                                    ),
+                                    (Expr::Variable(alt_alias.clone()), Some(alt_alias.clone())),
                                 ];
                                 // Carry the edge source vertex so otherV() can
                                 // find it in the row after coalesce.
                                 if let Some(ref src) = edge_src {
-                                    items.push((
-                                        Expr::Variable(src.clone()),
-                                        Some(src.clone()),
-                                    ));
+                                    items.push((Expr::Variable(src.clone()), Some(src.clone())));
                                 }
                                 Operator::Project {
                                     items,
@@ -3450,15 +3562,11 @@ impl GremlinCompiler {
                                 // Produce injected rows with side-effect
                                 // columns projected as constants.
                                 let union_alias = self.next_alias("inj");
-                                let mut items = vec![(
-                                    Expr::Variable(alias),
-                                    Some(union_alias.clone()),
-                                )];
+                                let mut items =
+                                    vec![(Expr::Variable(alias), Some(union_alias.clone()))];
                                 for (se_key, se_ident) in &self.alias_map {
                                     if se_ident.0.starts_with("__side_effect_") {
-                                        if let Some(val) =
-                                            self.side_effect_values.get(se_key)
-                                        {
+                                        if let Some(val) = self.side_effect_values.get(se_key) {
                                             items.push((
                                                 gremlin_value_to_expr(val),
                                                 Some(se_ident.clone()),
@@ -3476,10 +3584,8 @@ impl GremlinCompiler {
                                 // values, then project to a common alias.
                                 let prev_alias = current_alias.clone();
                                 let union_alias = self.next_alias("inj");
-                                let mut left_items = vec![(
-                                    Expr::Variable(prev_alias),
-                                    Some(union_alias.clone()),
-                                )];
+                                let mut left_items =
+                                    vec![(Expr::Variable(prev_alias), Some(union_alias.clone()))];
                                 left_items.extend(self.label_carry_items());
                                 let left = Operator::Project {
                                     items: left_items,
@@ -4818,25 +4924,10 @@ impl GremlinCompiler {
                 }
 
                 GremlinStep::Math(expr_str) => {
-                    let child = current.take().ok_or(CompileError::MissingChild)?;
-                    let alias = self.next_alias("math");
-                    let mut items = vec![(
-                        Expr::FunctionCall {
-                            name: SmolStr::new("gremlin_math"),
-                            args: vec![
-                                Expr::Variable(current_alias.clone()),
-                                Expr::Str(expr_str.clone().into_boxed_str()),
-                            ],
-                            distinct: false,
-                        },
-                        Some(alias.clone()),
-                    )];
-                    items.extend(self.label_carry_items());
-                    current = Some(Operator::Project {
-                        items,
-                        child: Box::new(child),
-                    });
-                    current_alias = alias;
+                    // Set pending_math so that a following by() can resolve variables
+                    pending_math = true;
+                    pending_math_expr = expr_str.clone();
+                    pre_math_alias = current_alias.clone();
                 }
 
                 GremlinStep::TypeOf => {
@@ -5167,6 +5258,40 @@ impl GremlinCompiler {
                 rewrite_create_alias(op, "__src", traverser);
                 rewrite_create_alias(op, "__dst", traverser);
             }
+        }
+
+        // Flush pending math without by() modulation
+        if pending_math {
+            let child = current.take().unwrap_or(Operator::SingleRow);
+            let alias = self.next_alias("math");
+            let mut args = vec![
+                Expr::Variable(pre_math_alias.clone()),
+                Expr::Str(pending_math_expr.clone().into_boxed_str()),
+            ];
+            for var_name in extract_math_variables(&pending_math_expr) {
+                let se_key = format!("__side_effect_{}", var_name);
+                if let Some(se_ident) = self.alias_map.get(&var_name) {
+                    args.push(Expr::Str(var_name.into_boxed_str()));
+                    args.push(Expr::Variable(se_ident.clone()));
+                } else if self.side_effect_values.contains_key(&var_name) {
+                    args.push(Expr::Str(var_name.into_boxed_str()));
+                    args.push(Expr::Variable(Identifier::new(se_key)));
+                }
+            }
+            let mut items = vec![(
+                Expr::FunctionCall {
+                    name: SmolStr::new("gremlin_math"),
+                    args,
+                    distinct: false,
+                },
+                Some(alias.clone()),
+            )];
+            items.extend(self.label_carry_items());
+            current = Some(Operator::Project {
+                items,
+                child: Box::new(child),
+            });
+            current_alias = alias;
         }
 
         // Finalize any remaining format with by() modulations
@@ -6692,13 +6817,39 @@ fn extract_by_traversal_key(steps: &[GremlinStep]) -> String {
         [GremlinStep::Values(keys), GremlinStep::ToLower] if keys.len() == 1 => {
             format!("~tolower:{}", keys[0])
         }
-        [GremlinStep::Unfold, GremlinStep::Values(keys), GremlinStep::Fold]
-            if keys.len() == 1 =>
-        {
+        [GremlinStep::Unfold, GremlinStep::Values(keys), GremlinStep::Fold] if keys.len() == 1 => {
             format!("~unfold_values_fold:{}", keys[0])
         }
         _ => String::new(),
     }
+}
+
+/// Extract variable names from a math expression.
+/// Variables are non-numeric, non-"_" tokens that appear as operands in binary expressions.
+fn extract_math_variables(expr: &str) -> Vec<String> {
+    let mut vars = Vec::new();
+    let expr = expr.trim();
+    // Check tokens around binary operators
+    for op in &[" + ", " - ", " * ", " / ", " % "] {
+        if let Some(pos) = expr.find(op) {
+            let left = expr[..pos].trim();
+            let right = expr[pos + op.len()..].trim();
+            for token in &[left, right] {
+                if *token != "_"
+                    && !token.is_empty()
+                    && token.parse::<f64>().is_err()
+                    && !token.starts_with("ceil")
+                    && !token.starts_with("floor")
+                    && !token.starts_with("abs")
+                    && !token.starts_with("sqrt")
+                    && !vars.contains(&token.to_string())
+                {
+                    vars.push(token.to_string());
+                }
+            }
+        }
+    }
+    vars
 }
 
 #[cfg(test)]

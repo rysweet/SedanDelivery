@@ -869,9 +869,9 @@ fn parse_step_token(
         "limit" => {
             let args = parse_arg_list(args_str, resolve_param)?;
             // Detect Scope.local
-            let is_local = args
-                .iter()
-                .any(|a| matches!(a, GremlinValue::String(s) if s == "Scope.local" || s == "local"));
+            let is_local = args.iter().any(
+                |a| matches!(a, GremlinValue::String(s) if s == "Scope.local" || s == "local"),
+            );
             // limit(n) or limit(Scope.global, n) — skip Scope arg
             let n = args.iter().find_map(|a| {
                 if let GremlinValue::Integer(v) = a {
@@ -891,9 +891,9 @@ fn parse_step_token(
         "range" => {
             let args = parse_arg_list(args_str, resolve_param)?;
             // Detect Scope.local
-            let is_local = args
-                .iter()
-                .any(|a| matches!(a, GremlinValue::String(s) if s == "Scope.local" || s == "local"));
+            let is_local = args.iter().any(
+                |a| matches!(a, GremlinValue::String(s) if s == "Scope.local" || s == "local"),
+            );
             // Collect integer args
             let ints: Vec<i64> = args
                 .iter()
@@ -1173,9 +1173,9 @@ fn parse_step_token(
         }
         "skip" => {
             let args = parse_arg_list(args_str, resolve_param)?;
-            let is_local = args
-                .iter()
-                .any(|a| matches!(a, GremlinValue::String(s) if s == "Scope.local" || s == "local"));
+            let is_local = args.iter().any(
+                |a| matches!(a, GremlinValue::String(s) if s == "Scope.local" || s == "local"),
+            );
             let n = args.iter().find_map(|a| {
                 if let GremlinValue::Integer(v) = a {
                     Some(*v)
@@ -1245,9 +1245,9 @@ fn parse_step_token(
         "barrier" => out.push(GremlinStep::Barrier),
         "sample" => {
             let args = parse_arg_list(args_str, resolve_param)?;
-            let is_local = args
-                .iter()
-                .any(|a| matches!(a, GremlinValue::String(s) if s == "Scope.local" || s == "local"));
+            let is_local = args.iter().any(
+                |a| matches!(a, GremlinValue::String(s) if s == "Scope.local" || s == "local"),
+            );
             let n = args
                 .iter()
                 .find_map(|a| {
@@ -1593,19 +1593,25 @@ fn parse_step_token(
         }
         // Steps still unsupported (provider-specific or not applicable)
         "profile" | "iterate" | "explain" | "tree" | "subgraph" | "asDate" | "dateAdd"
-        | "dateDiff" | "fail" | "read" | "write" | "connectedComponent"
-        | "shortestPath" | "pageRank" | "peerPressure" | "call" => {
+        | "dateDiff" | "fail" | "read" | "write" | "connectedComponent" | "shortestPath"
+        | "pageRank" | "peerPressure" | "call" => {
             // Unsupported steps — record as unknown so the runner can skip
             return Err(TextParseError::UnknownStep(name.to_string()));
         }
         "mergeV" => {
             let args = parse_arg_list(args_str, resolve_param)?;
-            let search = args.into_iter().next().unwrap_or(GremlinValue::Map(IndexMap::new()));
+            let search = args
+                .into_iter()
+                .next()
+                .unwrap_or(GremlinValue::Map(IndexMap::new()));
             out.push(GremlinStep::MergeV(search));
         }
         "mergeE" => {
             let args = parse_arg_list(args_str, resolve_param)?;
-            let search = args.into_iter().next().unwrap_or(GremlinValue::Map(IndexMap::new()));
+            let search = args
+                .into_iter()
+                .next()
+                .unwrap_or(GremlinValue::Map(IndexMap::new()));
             out.push(GremlinStep::MergeE(search));
         }
         _ => {

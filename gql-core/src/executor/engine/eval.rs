@@ -1151,9 +1151,9 @@ impl<'a> QueryExecutor<'a> {
                         // For pure value lists (ints, floats, strings), delegate to
                         // the filter version to preserve existing behavior.
                         let needs_graph = match evaled_args.first() {
-                            Some(Value::List(items)) => items.iter().any(|v| {
-                                matches!(v, Value::Node(_) | Value::Edge(_))
-                            }),
+                            Some(Value::List(items)) => items
+                                .iter()
+                                .any(|v| matches!(v, Value::Node(_) | Value::Edge(_))),
                             _ => false,
                         };
                         if !needs_graph {
@@ -1185,9 +1185,7 @@ impl<'a> QueryExecutor<'a> {
                                         // Remove items lacking the sort property
                                         items.retain(|item| {
                                             !matches!(
-                                                self.extract_sort_key_with_graph(
-                                                    graph, item, key,
-                                                ),
+                                                self.extract_sort_key_with_graph(graph, item, key,),
                                                 Value::Null
                                             )
                                         });

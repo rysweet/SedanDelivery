@@ -1044,7 +1044,11 @@ impl<'a> QueryExecutor<'a> {
                     .iter()
                     .filter_map(|item| {
                         let v = self.apply_path_by_key(cx, prop, item);
-                        if matches!(v, Value::Null) { None } else { Some(v) }
+                        if matches!(v, Value::Null) {
+                            None
+                        } else {
+                            Some(v)
+                        }
                     })
                     .collect();
                 return Value::List(names);
@@ -1308,17 +1312,16 @@ impl<'a> QueryExecutor<'a> {
                         };
                         // Apply by-modulation: if src_var has a __prop_ prefix,
                         // extract the property from the resolved value.
-                        let resolved =
-                            if let Some(rest) = var_name.strip_prefix("__prop_") {
-                                if let Some(sep_pos) = rest.find("__") {
-                                    let prop_name = &rest[..sep_pos];
-                                    self.resolve_prop_on_value(cx, prop_name, &resolved)
-                                } else {
-                                    resolved
-                                }
+                        let resolved = if let Some(rest) = var_name.strip_prefix("__prop_") {
+                            if let Some(sep_pos) = rest.find("__") {
+                                let prop_name = &rest[..sep_pos];
+                                self.resolve_prop_on_value(cx, prop_name, &resolved)
                             } else {
                                 resolved
-                            };
+                            }
+                        } else {
+                            resolved
+                        };
                         new_row.insert(output_key.clone(), resolved);
                         continue;
                     }
