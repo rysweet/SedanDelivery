@@ -4,7 +4,7 @@
 //! tree by walking the steps left-to-right, wrapping each subsequent step around the
 //! previous operator (bottom-up construction).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use gql_core::ast::{BinaryOp, Direction, Expr, Identifier, Label, RelType, UnaryOp};
 use gql_core::planner::{
@@ -72,6 +72,9 @@ pub struct GremlinCompiler {
     /// Whether the current traversal uses select() with Pop modifiers.
     /// When true, label_carry_items includes all label stack aliases.
     needs_label_stacks: bool,
+    /// Keys registered by aggregate() steps, used by within/without to
+    /// resolve side-effect references without polluting alias_map.
+    aggregate_keys: HashSet<String>,
 }
 
 impl Default for GremlinCompiler {
@@ -98,6 +101,7 @@ impl GremlinCompiler {
             edge_src_vertex: None,
             needs_path_tracking: false,
             needs_label_stacks: false,
+            aggregate_keys: HashSet::new(),
         }
     }
 
@@ -127,6 +131,7 @@ impl GremlinCompiler {
             edge_src_vertex: self.edge_src_vertex.clone(),
             needs_path_tracking: false,
             needs_label_stacks: self.needs_label_stacks,
+            aggregate_keys: self.aggregate_keys.clone(),
         }
     }
 
@@ -183,6 +188,10 @@ impl GremlinCompiler {
             self.reductions
                 .entry(k.clone())
                 .or_insert_with(|| v.clone());
+        }
+        // Merge aggregate keys from sub-compiler
+        for k in &sub.aggregate_keys {
+            self.aggregate_keys.insert(k.clone());
         }
     }
 
@@ -2816,7 +2825,7 @@ impl GremlinCompiler {
                         });
                     } else {
                         let inner_pred =
-                            steps_to_predicate(inner_steps, &current_alias, &self.alias_map);
+                            steps_to_predicate(inner_steps, &current_alias, &self.alias_map, &self.aggregate_keys);
                         let predicate = if is_not {
                             // Wrap in COALESCE so that Null (from cross-type
                             // comparison) becomes false before negation. This
@@ -3095,7 +3104,13 @@ impl GremlinCompiler {
                     if is_path_modifier && inner_steps.len() == 1 {
                         if let GremlinStep::Select(_, keys) = &inner_steps[0] {
                             if keys.len() == 1 {
-                                let label = keys[0].clone();
+                                // Resolve user-facing label to internal alias
+                                // so the executor can match against path_aliases.
+                                let label = self
+                                    .alias_map
+                                    .get(&keys[0])
+                                    .map(|id| id.as_str().to_string())
+                                    .unwrap_or_else(|| keys[0].clone());
                                 match &mut current {
                                     Some(Operator::GremlinPath {
                                         from_label,
@@ -3138,6 +3153,12 @@ impl GremlinCompiler {
                         // Bare string label reference: from("a")
                         if let GremlinStep::Constant(GremlinValue::String(label)) = &inner_steps[0]
                         {
+                            // Resolve user-facing label to internal alias
+                            let resolved = self
+                                .alias_map
+                                .get(label)
+                                .map(|id| id.as_str().to_string())
+                                .unwrap_or_else(|| label.clone());
                             match &mut current {
                                 Some(Operator::GremlinPath {
                                     from_label,
@@ -3145,9 +3166,9 @@ impl GremlinCompiler {
                                     ..
                                 }) => {
                                     if is_from {
-                                        *from_label = Some(label.clone());
+                                        *from_label = Some(resolved.clone());
                                     } else {
-                                        *to_label = Some(label.clone());
+                                        *to_label = Some(resolved.clone());
                                     }
                                 }
                                 Some(Operator::GremlinSimplePath {
@@ -3156,9 +3177,9 @@ impl GremlinCompiler {
                                     ..
                                 }) => {
                                     if is_from {
-                                        *from_label = Some(label.clone());
+                                        *from_label = Some(resolved.clone());
                                     } else {
-                                        *to_label = Some(label.clone());
+                                        *to_label = Some(resolved.clone());
                                     }
                                 }
                                 Some(Operator::GremlinCyclicPath {
@@ -3167,9 +3188,9 @@ impl GremlinCompiler {
                                     ..
                                 }) => {
                                     if is_from {
-                                        *from_label = Some(label.clone());
+                                        *from_label = Some(resolved.clone());
                                     } else {
-                                        *to_label = Some(label.clone());
+                                        *to_label = Some(resolved.clone());
                                     }
                                 }
                                 _ => {}
@@ -3522,12 +3543,41 @@ impl GremlinCompiler {
                             child: Box::new(child),
                         });
                     } else {
+                        // When the child is a real data-producing operator
+                        // (not SingleRow from a sub-traversal), embed it
+                        // directly into each branch so barrier steps (count,
+                        // fold, sum) aggregate ALL traversers, not per-row.
+                        // When the child is SingleRow, data comes from an
+                        // outer Apply scope — use the old per-row approach.
+                        let embed_child = !matches!(&child, Operator::SingleRow);
+
                         // Compile each branch and track its result alias.
                         let mut branch_ops: Vec<Operator> = Vec::new();
                         let mut branch_aliases: Vec<Identifier> = Vec::new();
                         for s in branches {
                             let mut sub = self.sub_compiler();
-                            let op = sub.compile_seeded(s, &current_alias)?;
+                            let op = if embed_child {
+                                let has_source = matches!(
+                                    s.first(),
+                                    Some(
+                                        GremlinStep::V(_)
+                                            | GremlinStep::E(_)
+                                            | GremlinStep::Inject(_)
+                                    )
+                                );
+                                if has_source {
+                                    sub.compile_seeded(s, &current_alias)?
+                                } else {
+                                    sub.compile_from(
+                                        s,
+                                        Some(child.clone()),
+                                        current_alias.clone(),
+                                        path_aliases.clone(),
+                                    )?
+                                }
+                            } else {
+                                sub.compile_seeded(s, &current_alias)?
+                            };
                             branch_aliases.push(sub.last_alias.clone());
                             self.absorb(&sub);
                             branch_ops.push(op);
@@ -3567,12 +3617,17 @@ impl GremlinCompiler {
                                 all: true,
                             })
                             .unwrap_or(Operator::SingleRow);
-                        // Wrap union in Apply so parent variables (v_1, etc.)
-                        // are available to each branch via outer_rows propagation.
-                        current = Some(Operator::Apply {
-                            outer: Box::new(child),
-                            inner: Box::new(union),
-                        });
+
+                        if embed_child {
+                            // Child is embedded — no Apply needed
+                            current = Some(union);
+                        } else {
+                            // Data comes from outer scope — use Apply
+                            current = Some(Operator::Apply {
+                                outer: Box::new(child),
+                                inner: Box::new(union),
+                            });
+                        }
                         current_alias = union_alias;
                         path_aliases.push(current_alias.clone());
                         self.path_tracking.push(current_alias.clone());
@@ -3600,6 +3655,9 @@ impl GremlinCompiler {
                         by_traversal: None,
                         productive: self.productive_by,
                     });
+                    // Track aggregate keys separately for within/without
+                    // resolution (not in alias_map to avoid conflicts).
+                    self.aggregate_keys.insert(key.clone());
                     pending_aggregate = true;
                 }
 
@@ -4256,7 +4314,7 @@ impl GremlinCompiler {
                     // filter(traversal) — keep traversers where sub-traversal is true
                     let child = current.take().ok_or(CompileError::MissingChild)?;
                     // Try to extract a predicate from the inner steps
-                    let pred = steps_to_predicate(filter_steps, &current_alias, &self.alias_map);
+                    let pred = steps_to_predicate(filter_steps, &current_alias, &self.alias_map, &self.aggregate_keys);
                     // If steps_to_predicate returned true (couldn't convert) and
                     // there are actual steps, fall back to sub-traversal existence
                     // check via Apply + Count + Filter (same pattern as Where).
@@ -5449,7 +5507,7 @@ impl GremlinCompiler {
         if all_simple {
             let preds: Vec<Expr> = branches
                 .iter()
-                .map(|branch| steps_to_predicate(branch, current_alias, &self.alias_map))
+                .map(|branch| steps_to_predicate(branch, current_alias, &self.alias_map, &self.aggregate_keys))
                 .collect();
             let default = if conn_op == BinaryOp::And {
                 Expr::Bool(true)
@@ -5477,7 +5535,7 @@ impl GremlinCompiler {
             let mut result = child;
             for branch in branches {
                 if is_simple_predicate_steps(branch) {
-                    let pred = steps_to_predicate(branch, current_alias, &self.alias_map);
+                    let pred = steps_to_predicate(branch, current_alias, &self.alias_map, &self.aggregate_keys);
                     result = Operator::Filter {
                         predicate: pred,
                         child: Box::new(result),
@@ -5493,7 +5551,7 @@ impl GremlinCompiler {
             let mut result = child;
             for branch in branches {
                 if is_simple_predicate_steps(branch) {
-                    let pred = steps_to_predicate(branch, current_alias, &self.alias_map);
+                    let pred = steps_to_predicate(branch, current_alias, &self.alias_map, &self.aggregate_keys);
                     let cnt_alias = self.next_alias("ocnt");
                     // Wrap in a project that produces 1 if pred is true, 0 if false.
                     cnt_aliases.push((cnt_alias, Some(pred)));
@@ -6128,6 +6186,7 @@ fn steps_to_predicate(
     steps: &[GremlinStep],
     alias: &Identifier,
     alias_map: &HashMap<String, Identifier>,
+    aggregate_keys: &HashSet<String>,
 ) -> Expr {
     if steps.is_empty() {
         return Expr::Bool(true);
@@ -6140,7 +6199,7 @@ fn steps_to_predicate(
             GremlinStep::Or(branches) => {
                 return branches
                     .iter()
-                    .map(|b| steps_to_predicate(b, alias, alias_map))
+                    .map(|b| steps_to_predicate(b, alias, alias_map, aggregate_keys))
                     .reduce(|a, b| Expr::BinaryOp {
                         op: BinaryOp::Or,
                         left: Box::new(a),
@@ -6151,7 +6210,7 @@ fn steps_to_predicate(
             GremlinStep::And(branches) => {
                 return branches
                     .iter()
-                    .map(|b| steps_to_predicate(b, alias, alias_map))
+                    .map(|b| steps_to_predicate(b, alias, alias_map, aggregate_keys))
                     .reduce(|a, b| Expr::BinaryOp {
                         op: BinaryOp::And,
                         left: Box::new(a),
@@ -6162,7 +6221,7 @@ fn steps_to_predicate(
             GremlinStep::Not(inner) => {
                 return Expr::UnaryOp {
                     op: UnaryOp::Not,
-                    expr: Box::new(steps_to_predicate(inner, alias, alias_map)),
+                    expr: Box::new(steps_to_predicate(inner, alias, alias_map, aggregate_keys)),
                 };
             }
             _ => {}
@@ -6170,7 +6229,7 @@ fn steps_to_predicate(
         // Single Is(pred) where the pred argument is a string label reference:
         // where(P.eq("b")) → compare current value against labeled value "b"
         if let GremlinStep::Is(pred) = &steps[0] {
-            if let Some(label_expr) = predicate_label_ref(pred, alias_map) {
+            if let Some(label_expr) = predicate_label_ref(pred, alias_map, aggregate_keys) {
                 let op = predicate_to_binary_op(pred);
                 return Expr::BinaryOp {
                     op,
@@ -6230,7 +6289,7 @@ fn steps_to_predicate(
                     .get(&keys[0])
                     .cloned()
                     .unwrap_or_else(|| Identifier::new(keys[0].clone()));
-                if let Some(label_expr) = predicate_label_ref(pred, alias_map) {
+                if let Some(label_expr) = predicate_label_ref(pred, alias_map, aggregate_keys) {
                     let op = predicate_to_binary_op(pred);
                     return Expr::BinaryOp {
                         op,
@@ -6259,7 +6318,7 @@ fn steps_to_predicate(
         let pred = match step {
             GremlinStep::Or(branches) => branches
                 .iter()
-                .map(|b| steps_to_predicate(b, alias, alias_map))
+                .map(|b| steps_to_predicate(b, alias, alias_map, aggregate_keys))
                 .reduce(|a, b| Expr::BinaryOp {
                     op: BinaryOp::Or,
                     left: Box::new(a),
@@ -6268,7 +6327,7 @@ fn steps_to_predicate(
                 .unwrap_or(Expr::Bool(false)),
             GremlinStep::And(branches) => branches
                 .iter()
-                .map(|b| steps_to_predicate(b, alias, alias_map))
+                .map(|b| steps_to_predicate(b, alias, alias_map, aggregate_keys))
                 .reduce(|a, b| Expr::BinaryOp {
                     op: BinaryOp::And,
                     left: Box::new(a),
@@ -6276,7 +6335,7 @@ fn steps_to_predicate(
                 })
                 .unwrap_or(Expr::Bool(true)),
             GremlinStep::Not(inner) => {
-                let inner_pred = steps_to_predicate(inner, alias, alias_map);
+                let inner_pred = steps_to_predicate(inner, alias, alias_map, aggregate_keys);
                 Expr::UnaryOp {
                     op: UnaryOp::Not,
                     expr: Box::new(inner_pred),
@@ -6697,8 +6756,12 @@ fn predicate_to_label_aware_expr(
     }
 }
 
-/// in the alias map. Returns the variable expression for that label if so.
-fn predicate_label_ref(pred: &Predicate, alias_map: &HashMap<String, Identifier>) -> Option<Expr> {
+/// in the alias map or aggregate keys. Returns the variable expression for that label if so.
+fn predicate_label_ref(
+    pred: &Predicate,
+    alias_map: &HashMap<String, Identifier>,
+    aggregate_keys: &HashSet<String>,
+) -> Option<Expr> {
     let label = match pred {
         Predicate::Eq(GremlinValue::String(s))
         | Predicate::Neq(GremlinValue::String(s))
@@ -6725,7 +6788,17 @@ fn predicate_label_ref(pred: &Predicate, alias_map: &HashMap<String, Identifier>
         }
         _ => return None,
     };
-    alias_map.get(label).map(|id| Expr::Variable(id.clone()))
+    // Check alias_map first (as-labels, side-effects)
+    if let Some(id) = alias_map.get(label) {
+        return Some(Expr::Variable(id.clone()));
+    }
+    // Check aggregate keys — resolve to __gremlin_agg_<key>
+    if aggregate_keys.contains(label) {
+        return Some(Expr::Variable(Identifier::new(format!(
+            "__gremlin_agg_{label}"
+        ))));
+    }
+    None
 }
 
 /// Extract the BinaryOp from a predicate (ignoring its value).
@@ -7718,6 +7791,10 @@ mod tests {
     #[test]
     fn compile_union() {
         let mut compiler = GremlinCompiler::new();
+        // Both branches start with V() (own source) → child is not embedded.
+        // The parent V() is a real operator (not SingleRow) so embed_child is
+        // true, but has_source is also true for each branch → compile_seeded.
+        // Result is a Union (no Apply wrapper).
         let steps = vec![
             GremlinStep::V(None),
             GremlinStep::Union(vec![
@@ -7729,8 +7806,7 @@ mod tests {
             ]),
         ];
         let op = compiler.compile(&steps).unwrap();
-        // Union is now wrapped in Apply for parent-variable propagation
-        assert!(matches!(op, Operator::Apply { .. }));
+        assert!(matches!(op, Operator::Union { .. }));
     }
 
     #[test]

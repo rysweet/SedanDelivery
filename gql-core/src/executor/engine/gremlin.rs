@@ -1083,40 +1083,19 @@ impl<'a> QueryExecutor<'a> {
         Ok(out)
     }
 
-    /// Resolve a user-facing label (e.g. "b") to the internal alias name
-    /// that appears in path_aliases, by looking up the row for a matching
-    /// Gremlin `as()` label column.
+    /// Resolve a label (now pre-resolved at compile time to an internal
+    /// alias like "v_2") against path_aliases.  Falls back to the old
+    /// row-based resolution for backward compatibility.
     fn resolve_label_alias(
         &self,
         label: &str,
         path_aliases: &[Identifier],
-        row: &Row,
+        _row: &Row,
     ) -> Option<String> {
-        // The label may have been recorded as `__gremlin_label_<label>` pointing to
-        // an alias like "v_2". Check if any path alias matches the stored value.
-        let label_key = format!("__gremlin_label_{label}");
-        if let Some(Value::Str(alias_name)) = row.get(&label_key) {
-            if path_aliases
-                .iter()
-                .any(|a| a.as_str() == alias_name.as_ref())
-            {
-                return Some(alias_name.to_string());
-            }
-        }
-        // Direct match: the label IS an alias in path_aliases
-        if path_aliases.iter().any(|a| a.as_str() == label) && row.contains_key(label) {
+        // Direct match: the label is an internal alias in path_aliases.
+        // This is the primary path after compile-time resolution.
+        if path_aliases.iter().any(|a| a.as_str() == label) {
             return Some(label.to_string());
-        }
-        // Try to find the alias that was mapped to this label in the row
-        for alias in path_aliases {
-            if row.contains_key(alias.as_str()) {
-                let as_key = format!("__gremlin_as_{}", alias.as_str());
-                if let Some(Value::Str(l)) = row.get(&as_key) {
-                    if l.as_ref() == label {
-                        return Some(alias.as_str().to_string());
-                    }
-                }
-            }
         }
         None
     }
@@ -2078,46 +2057,27 @@ impl<'a> QueryExecutor<'a> {
             return full_path.into_iter().map(|(_, v)| v).collect();
         }
 
-        // Find start/end indices based on label aliases
-        let find_label_idx =
-            |label: &str, from_end: bool| -> Option<usize> {
-                // Check if any path alias was mapped to this label
-                for (i, (alias, _)) in full_path.iter().enumerate().rev().take(if from_end {
-                    full_path.len()
-                } else {
-                    0
-                }) {
-                    if !alias.is_empty() {
-                        if let Some(Value::Str(l)) = row.get(&format!("__gremlin_as_{alias}")) {
-                            if l.as_ref() == label {
-                                return Some(i);
-                            }
-                        }
-                    }
-                }
-                // Direct alias match
-                for (i, (alias, _)) in full_path.iter().enumerate() {
-                    if *alias == label {
-                        return Some(i);
-                    }
-                    // Check if this alias stores the label mapping
-                    if !alias.is_empty() && row.contains_key(label) {
-                        let label_key = format!("__gremlin_label_{label}");
-                        if let Some(Value::Str(mapped)) = row.get(&label_key) {
-                            if mapped.as_ref() == *alias {
-                                return Some(i);
-                            }
-                        }
-                    }
-                }
-                None
-            };
+        // Find the index of a label in path_aliases. The label is an
+        // internal alias (resolved at compile time), so direct comparison
+        // against path_aliases entries works.
+        let find_idx = |label: &str, from_end: bool| -> Option<usize> {
+            // Direct match against path_aliases (works for non-accumulator paths)
+            if from_end {
+                path_aliases
+                    .iter()
+                    .rposition(|a| a.as_str() == label)
+            } else {
+                path_aliases
+                    .iter()
+                    .position(|a| a.as_str() == label)
+            }
+        };
 
         let start = from_label
-            .and_then(|l| find_label_idx(l, false))
+            .and_then(|l| find_idx(l, false))
             .unwrap_or(0);
         let end = to_label
-            .and_then(|l| find_label_idx(l, true))
+            .and_then(|l| find_idx(l, true))
             .map(|i| i + 1)
             .unwrap_or(full_path.len());
 
