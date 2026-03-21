@@ -1022,6 +1022,35 @@ impl<'a> QueryExecutor<'a> {
         if key.is_empty() {
             return val.clone();
         }
+        // Handle ~toupper:prop and ~tolower:prop
+        if let Some(prop) = key.strip_prefix("~toupper:") {
+            let inner = self.apply_path_by_key(cx, prop, val);
+            return match inner {
+                Value::Str(s) => Value::Str(s.to_uppercase().into_boxed_str()),
+                other => other,
+            };
+        }
+        if let Some(prop) = key.strip_prefix("~tolower:") {
+            let inner = self.apply_path_by_key(cx, prop, val);
+            return match inner {
+                Value::Str(s) => Value::Str(s.to_lowercase().into_boxed_str()),
+                other => other,
+            };
+        }
+        // Handle ~unfold_values_fold:prop — collect property from list of nodes
+        if let Some(prop) = key.strip_prefix("~unfold_values_fold:") {
+            if let Value::List(items) = val {
+                let names: Vec<Value> = items
+                    .iter()
+                    .filter_map(|item| {
+                        let v = self.apply_path_by_key(cx, prop, item);
+                        if matches!(v, Value::Null) { None } else { Some(v) }
+                    })
+                    .collect();
+                return Value::List(names);
+            }
+            return self.apply_path_by_key(cx, prop, val);
+        }
         match key {
             "~label" | "T.label" | "label" => match val {
                 Value::Node(nid) => {

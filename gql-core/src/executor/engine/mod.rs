@@ -251,6 +251,28 @@ impl<'a> QueryExecutor<'a> {
         self.edge_cache.borrow_mut().clear();
     }
 
+    /// Extract a sort key from a value, resolving node/edge properties via graph store.
+    fn extract_sort_key_with_graph(&self, graph: &str, v: &Value, key: &str) -> Value {
+        match v {
+            Value::Map(m) => m.get(key).cloned().unwrap_or(Value::Null),
+            Value::Node(nid) => {
+                if let Ok(Some(data)) = self.cached_get_node(graph, *nid) {
+                    data.properties.get(key).cloned().unwrap_or(Value::Null)
+                } else {
+                    Value::Null
+                }
+            }
+            Value::Edge(eid) => {
+                if let Ok(Some(data)) = self.cached_get_edge(graph, *eid) {
+                    data.properties.get(key).cloned().unwrap_or(Value::Null)
+                } else {
+                    Value::Null
+                }
+            }
+            _ => Value::Null,
+        }
+    }
+
     /// Execute `plan` against the named `graph`, enforcing `budget`.
     pub fn execute(
         &self,

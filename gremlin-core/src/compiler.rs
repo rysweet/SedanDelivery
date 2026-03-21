@@ -813,6 +813,7 @@ impl GremlinCompiler {
                     };
                     let rel_types: Vec<RelType> =
                         labels.iter().map(|l| RelType::new(l.as_str())).collect();
+                    let edge_src = current_alias.clone();
                     current = Some(Operator::Expand {
                         direction,
                         rel_types,
@@ -822,6 +823,7 @@ impl GremlinCompiler {
                         child: Box::new(child),
                     });
                     current_alias = rel_alias;
+                    self.edge_src_vertex = Some(edge_src);
                     path_aliases.push(current_alias.clone());
                     self.path_tracking.push(current_alias.clone());
                 }
@@ -853,13 +855,19 @@ impl GremlinCompiler {
 
                 GremlinStep::OtherV => {
                     // otherV: return the vertex that is NOT the traversal source.
-                    // We use a runtime function that picks the opposite endpoint.
+                    // Pass both the edge and the source vertex so the runtime can
+                    // determine which endpoint is "other".
                     let child = current.take().ok_or(CompileError::MissingChild)?;
                     let vertex_alias = self.next_alias("v");
+                    let src_arg = self
+                        .edge_src_vertex
+                        .clone()
+                        .map(Expr::Variable)
+                        .unwrap_or(Expr::Null);
                     let mut items = vec![(
                         Expr::FunctionCall {
                             name: SmolStr::new("gremlin_other_v"),
-                            args: vec![Expr::Variable(current_alias.clone())],
+                            args: vec![Expr::Variable(current_alias.clone()), src_arg],
                             distinct: false,
                         },
                         Some(vertex_alias.clone()),
@@ -2321,13 +2329,15 @@ impl GremlinCompiler {
                             });
                             pending_order = false;
                         } else if pending_select {
-                            // by(traversal) after select() — treat as string key for select_by_mods
-                            // (preserves existing behavior)
-                            select_by_mods.push(String::new());
+                            // by(traversal) after select() — extract property key
+                            // from simple patterns like by(values('name'))
+                            let key = extract_by_traversal_key(sub_steps);
+                            select_by_mods.push(key);
                         } else if pending_path {
-                            // by(traversal) after path() — not yet supported as
-                            // sub-traversal, treat as identity
-                            path_by_keys.push(String::new());
+                            // by(traversal) after path() — extract property key
+                            // from patterns like by(values('name').toUpper())
+                            let key = extract_by_traversal_key(sub_steps);
+                            path_by_keys.push(key);
                         } else if pending_dedup {
                             // by(traversal) after dedup() — compile sub-traversal for dedup key
                             let child = current.take().ok_or(CompileError::MissingChild)?;
@@ -3352,6 +3362,8 @@ impl GremlinCompiler {
                             inner: Box::new(union),
                         });
                         current_alias = union_alias;
+                        path_aliases.push(current_alias.clone());
+                        self.path_tracking.push(current_alias.clone());
                     }
                 }
 
@@ -3905,6 +3917,8 @@ impl GremlinCompiler {
                         alternatives: vec![opt_op, Operator::SingleRow],
                         child: Box::new(child),
                     });
+                    path_aliases.push(current_alias.clone());
+                    self.path_tracking.push(current_alias.clone());
                 }
 
                 GremlinStep::SimplePath => {
@@ -6600,6 +6614,37 @@ fn wrap_where_by_null_eq(predicate: &mut Expr, _left_id: &Identifier, _right_id:
                 right: Box::new(null_check),
             };
         }
+    }
+}
+
+/// Extract a property key string from a simple `by(traversal)` pattern.
+///
+/// Recognizes patterns like:
+///   `[Values(["name"])]`               → `"name"`
+///   `[Label]`                           → `"~label"`
+///   `[Id]`                              → `"~id"`
+///   `[Values(["name"]), ToUpper]`       → `"~toupper:name"`
+///   `[Values(["name"]), ToLower]`       → `"~tolower:name"`
+///   `[Unfold, Values(["name"]), Fold]`  → `"~unfold_values_fold:name"`
+///
+/// Returns empty string for unrecognized patterns (identity behavior).
+fn extract_by_traversal_key(steps: &[GremlinStep]) -> String {
+    match steps {
+        [GremlinStep::Values(keys)] if keys.len() == 1 => keys[0].clone(),
+        [GremlinStep::Label] => "~label".to_string(),
+        [GremlinStep::Id] => "~id".to_string(),
+        [GremlinStep::Values(keys), GremlinStep::ToUpper] if keys.len() == 1 => {
+            format!("~toupper:{}", keys[0])
+        }
+        [GremlinStep::Values(keys), GremlinStep::ToLower] if keys.len() == 1 => {
+            format!("~tolower:{}", keys[0])
+        }
+        [GremlinStep::Unfold, GremlinStep::Values(keys), GremlinStep::Fold]
+            if keys.len() == 1 =>
+        {
+            format!("~unfold_values_fold:{}", keys[0])
+        }
+        _ => String::new(),
     }
 }
 

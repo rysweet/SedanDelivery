@@ -643,14 +643,26 @@ impl<'a> QueryExecutor<'a> {
                         }
                     }
                     "gremlin_other_v" => {
-                        // Return the opposite endpoint of an edge from
-                        // the traversal source. We don't track the source
-                        // direction, so return endNode as default (works
-                        // for outE().otherV() which is the common case).
-                        match evaled_args.into_iter().next() {
-                            Some(Value::Edge(edge_id)) => {
+                        // Return the opposite endpoint of an edge relative to
+                        // the traversal source vertex. Args: (edge, source_vertex).
+                        let mut args_it = evaled_args.into_iter();
+                        let edge_val = args_it.next().unwrap_or(Value::Null);
+                        let src_val = args_it.next().unwrap_or(Value::Null);
+                        match edge_val {
+                            Value::Edge(edge_id) => {
                                 match self.cached_get_edge(graph, edge_id)? {
-                                    Some(data) => Ok(Value::Node(data.dst)),
+                                    Some(data) => {
+                                        if let Value::Node(src_nid) = src_val {
+                                            if src_nid == data.src {
+                                                Ok(Value::Node(data.dst))
+                                            } else {
+                                                Ok(Value::Node(data.src))
+                                            }
+                                        } else {
+                                            // No source info — default to dst
+                                            Ok(Value::Node(data.dst))
+                                        }
+                                    }
                                     None => Ok(Value::Null),
                                 }
                             }
@@ -1132,6 +1144,63 @@ impl<'a> QueryExecutor<'a> {
                             Ok(Value::Null)
                         } else {
                             Ok(Value::Str(result.into()))
+                        }
+                    }
+                    "gremlin_sort_local" => {
+                        // Graph-aware sort for lists containing nodes/edges.
+                        // For pure value lists (ints, floats, strings), delegate to
+                        // the filter version to preserve existing behavior.
+                        let needs_graph = match evaled_args.first() {
+                            Some(Value::List(items)) => items.iter().any(|v| {
+                                matches!(v, Value::Node(_) | Value::Edge(_))
+                            }),
+                            _ => false,
+                        };
+                        if !needs_graph {
+                            eval_function_with_vals(name, evaled_args)
+                        } else {
+                            let mut vals_iter = evaled_args.into_iter();
+                            let list_val = vals_iter.next().unwrap_or(Value::Null);
+                            let by_key = match vals_iter.next() {
+                                Some(Value::Str(s)) if !s.is_empty() => Some(s),
+                                _ => None,
+                            };
+                            let descending = matches!(
+                                vals_iter.next(),
+                                Some(Value::Str(s)) if s.as_ref() == "desc"
+                            );
+                            match list_val {
+                                Value::List(mut items) => {
+                                    if let Some(ref key) = by_key {
+                                        items.sort_by(|a, b| {
+                                            let a_prop = self
+                                                .extract_sort_key_with_graph(graph, a, key);
+                                            let b_prop = self
+                                                .extract_sort_key_with_graph(graph, b, key);
+                                            let ord = crate::executor::engine::helpers::gremlin_cmp_values(
+                                                &a_prop, &b_prop,
+                                            );
+                                            if descending { ord.reverse() } else { ord }
+                                        });
+                                        // Remove items lacking the sort property
+                                        items.retain(|item| {
+                                            !matches!(
+                                                self.extract_sort_key_with_graph(
+                                                    graph, item, key,
+                                                ),
+                                                Value::Null
+                                            )
+                                        });
+                                    } else {
+                                        items.sort_by(|a, b| {
+                                            let ord = crate::executor::engine::helpers::gremlin_cmp_values(a, b);
+                                            if descending { ord.reverse() } else { ord }
+                                        });
+                                    }
+                                    Ok(Value::List(items))
+                                }
+                                other => Ok(other),
+                            }
                         }
                     }
                     _ => eval_function_with_vals(name, evaled_args),
