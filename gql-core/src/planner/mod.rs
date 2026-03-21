@@ -516,6 +516,8 @@ pub enum AggFunction {
     Min,
     Max,
     Collect,
+    /// Like Collect but includes null values (used by Gremlin fold()).
+    CollectAll,
     StDev,
     StDevP,
     PercentileCont,

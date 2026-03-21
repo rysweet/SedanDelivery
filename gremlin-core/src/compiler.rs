@@ -1085,8 +1085,13 @@ impl GremlinCompiler {
                     let child = current.take().ok_or(CompileError::MissingChild)?;
 
                     // Handle Column.keys / Column.values special selects
-                    if keys.len() == 1 && (keys[0] == "Column.keys" || keys[0] == "Column.values") {
-                        let fn_name = if keys[0] == "Column.keys" {
+                    if keys.len() == 1
+                        && (keys[0] == "Column.keys"
+                            || keys[0] == "Column.values"
+                            || keys[0] == "keys"
+                            || keys[0] == "values")
+                    {
+                        let fn_name = if keys[0] == "Column.keys" || keys[0] == "keys" {
                             "keys"
                         } else {
                             "values"
@@ -3245,11 +3250,13 @@ impl GremlinCompiler {
                             // then project to a common alias.
                             let prev_alias = current_alias.clone();
                             let union_alias = self.next_alias("inj");
+                            let mut left_items = vec![(
+                                Expr::Variable(prev_alias),
+                                Some(union_alias.clone()),
+                            )];
+                            left_items.extend(self.label_carry_items());
                             let left = Operator::Project {
-                                items: vec![(
-                                    Expr::Variable(prev_alias),
-                                    Some(union_alias.clone()),
-                                )],
+                                items: left_items,
                                 child: Box::new(child),
                             };
                             let right = Operator::Project {

@@ -622,16 +622,62 @@ impl<'a> QueryExecutor<'a> {
         let mut row = Row::new();
         for key in keys {
             let agg_col = format!("__gremlin_agg_{key}");
+
+            // Check the side-effect store first — it has the authoritative
+            // accumulated value for aggregate() / local(aggregate()) patterns.
+            let se_val = self.gremlin_side_effects.borrow().get(&agg_col).cloned();
+
             let agg_vals: Vec<&Value> = child_rows.iter().filter_map(|r| r.get(&agg_col)).collect();
             if agg_vals.is_empty() {
-                row.insert(key.clone(), Value::List(Vec::new()));
+                if let Some(stored) = se_val {
+                    row.insert(key.clone(), stored);
+                } else {
+                    row.insert(key.clone(), Value::List(Vec::new()));
+                }
                 continue;
             }
             // If there is only one distinct value (all rows have the same),
             // take it directly.  Otherwise merge partial lists/maps.
             let first = agg_vals[0];
             let all_same = agg_vals.iter().all(|v| *v == first);
-            let cap_value = if all_same {
+            let cap_value = if let Some(stored) = &se_val {
+                // For List aggregations, prefer the side-effect store which
+                // has the authoritative accumulated value (handles local(aggregate)).
+                if matches!(stored, Value::List(_)) {
+                    stored.clone()
+                } else if all_same {
+                    first.clone()
+                } else if matches!(first, Value::Map(_)) {
+                    // Merge maps from rows
+                    let mut merged: IndexMap<Box<str>, Value> = IndexMap::new();
+                    for v in &agg_vals {
+                        if let Value::Map(m) = v {
+                            for (mk, mv) in m {
+                                match (merged.get(mk), mv) {
+                                    (Some(Value::Int(existing)), Value::Int(incoming)) => {
+                                        merged.insert(
+                                            mk.clone(),
+                                            Value::Int(existing + incoming),
+                                        );
+                                    }
+                                    (Some(Value::Float(existing)), Value::Float(incoming)) => {
+                                        merged.insert(
+                                            mk.clone(),
+                                            Value::Float(existing + incoming),
+                                        );
+                                    }
+                                    _ => {
+                                        merged.insert(mk.clone(), mv.clone());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    Value::Map(merged)
+                } else {
+                    stored.clone()
+                }
+            } else if all_same {
                 first.clone()
             } else {
                 // Merge: for Lists, concatenate; for Maps, union by key.
@@ -834,10 +880,27 @@ impl<'a> QueryExecutor<'a> {
         // Stamp the accumulated list onto every output row.
         // If a row already carries a value for this agg column (e.g. from a
         // previous local(aggregate("a")) step), extend it rather than overwrite.
+        //
+        // Also accumulate into the side-effect store so that cap() can
+        // retrieve the full list even when downstream steps filter out rows.
+        {
+            let mut se = self.gremlin_side_effects.borrow_mut();
+            if let Some(Value::List(existing)) = se.get_mut(&agg_col) {
+                existing.extend(collected.iter().cloned());
+            } else {
+                se.insert(agg_col.clone(), Value::List(collected.clone()));
+            }
+        }
         if input.is_empty() {
             // Even with no input, the side-effect must be accessible via cap().
             let mut sentinel = Row::new();
-            sentinel.insert(agg_col, Value::List(collected));
+            let stored = self
+                .gremlin_side_effects
+                .borrow()
+                .get(&agg_col)
+                .cloned()
+                .unwrap_or(Value::List(collected));
+            sentinel.insert(agg_col, stored);
             return Ok(vec![sentinel]);
         }
         for row in &mut input {
@@ -1534,7 +1597,11 @@ impl<'a> QueryExecutor<'a> {
             if output.is_empty() {
                 // Even with no input, the side-effect must be accessible via cap().
                 let mut sentinel = Row::new();
-                sentinel.insert(agg_col, Value::Map(result_map));
+                sentinel.insert(agg_col.clone(), Value::Map(result_map.clone()));
+                // Store in side-effect store for cap() retrieval
+                self.gremlin_side_effects
+                    .borrow_mut()
+                    .insert(agg_col, Value::Map(result_map));
                 return Ok(vec![sentinel]);
             }
             // Merge new counts with any existing aggregation carried from
@@ -1559,6 +1626,10 @@ impl<'a> QueryExecutor<'a> {
                 }
                 Value::Map(merged)
             };
+            // Store in side-effect store for cap() retrieval
+            self.gremlin_side_effects
+                .borrow_mut()
+                .insert(agg_col.clone(), map_val.clone());
             for row in &mut output {
                 row.insert(agg_col.clone(), map_val.clone());
             }
@@ -1803,21 +1874,19 @@ impl<'a> QueryExecutor<'a> {
         }
 
         // Stream mode: each individual traverser gets index 0 (per TinkerPop semantics).
-        // Collect all [element, 0] pairs into a single list so unfold() can unwrap them.
         if *with_map {
             // with(map) mode: each individual traverser → {0: element}
-            let mut maps = Vec::with_capacity(input.len());
             for row in input.iter() {
                 if let Some(val) = row.get(alias.as_str()) {
                     let mut map = IndexMap::new();
                     map.insert("0".to_string().into_boxed_str(), val.clone());
-                    maps.push(Value::Map(map));
+                    let mut new_row = Row::new();
+                    new_row.insert(out_alias.0.clone(), Value::Map(map));
+                    out.push(new_row);
                 }
             }
-            let mut row = Row::new();
-            row.insert(out_alias.0.clone(), Value::List(maps));
-            out.push(row);
         } else {
+            // Collect all [element, 0] pairs into a single list for unfold().
             let mut pairs = Vec::with_capacity(input.len());
             for row in input.iter() {
                 cx.budget.check_or_err()?;

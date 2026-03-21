@@ -893,6 +893,14 @@ fn parse_tck_map(
                 } else {
                     val_str
                 };
+            // Unescape backslash-escaped quotes (e.g. in nested map notation)
+            let unescaped;
+            let val_str = if val_str.contains("\\\"") {
+                unescaped = val_str.replace("\\\"", "\"");
+                unescaped.as_str()
+            } else {
+                val_str
+            };
             let val = parse_tck_value(val_str, vertex_names, edge_names);
             map.insert(key.into(), val);
         }

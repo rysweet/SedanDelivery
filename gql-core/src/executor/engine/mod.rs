@@ -138,6 +138,10 @@ pub struct QueryExecutor<'a> {
     /// to the projected items.  This is required for Gremlin, where step
     /// labels set via `as()` must survive property projections.
     pub(crate) gremlin_mode: bool,
+    /// Gremlin side-effect store: holds values set by side-effect steps
+    /// (group("a"), groupCount("a"), aggregate("a")) so that cap() can
+    /// retrieve them even when downstream steps produce zero traversers.
+    pub(crate) gremlin_side_effects: std::cell::RefCell<HashMap<String, Value>>,
 }
 
 impl<'a> QueryExecutor<'a> {
@@ -154,6 +158,7 @@ impl<'a> QueryExecutor<'a> {
             edge_cache: std::cell::RefCell::new(HashMap::new()),
             foreach_seed: std::cell::RefCell::new(None),
             gremlin_mode: false,
+            gremlin_side_effects: std::cell::RefCell::new(HashMap::new()),
         }
     }
 
@@ -185,6 +190,7 @@ impl<'a> QueryExecutor<'a> {
             edge_cache: std::cell::RefCell::new(HashMap::new()),
             foreach_seed: std::cell::RefCell::new(None),
             gremlin_mode: false,
+            gremlin_side_effects: std::cell::RefCell::new(HashMap::new()),
         }
     }
 

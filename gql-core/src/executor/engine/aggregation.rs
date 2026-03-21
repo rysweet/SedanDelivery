@@ -187,6 +187,12 @@ impl AggState {
                     self.collected.push(val);
                 }
             }
+            AggFunction::CollectAll => {
+                let max_collect = crate::config::global().max_collect_size;
+                if self.collected.len() < max_collect {
+                    self.collected.push(val);
+                }
+            }
             AggFunction::StDev | AggFunction::StDevP => {
                 let max_collect = crate::config::global().max_collect_size;
                 if !val.is_null() && self.collected.len() < max_collect {
@@ -227,7 +233,7 @@ impl AggState {
             }
             AggFunction::Min => Ok(self.min.clone().unwrap_or(Value::Null)),
             AggFunction::Max => Ok(self.max.clone().unwrap_or(Value::Null)),
-            AggFunction::Collect => Ok(Value::List(self.collected.clone())),
+            AggFunction::Collect | AggFunction::CollectAll => Ok(Value::List(self.collected.clone())),
             AggFunction::StDev => {
                 let nums: Vec<f64> = self.collected.iter().filter_map(|v| v.as_float()).collect();
                 if nums.len() <= 1 {
