@@ -3,6 +3,20 @@
 use crate::types::GremlinValue;
 use serde::{Deserialize, Serialize};
 
+/// Gremlin Pop modifier for select() — controls which labeled value to return
+/// when a label has been assigned multiple times in the traversal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Pop {
+    /// Return the first value assigned to the label.
+    First,
+    /// Return the last (most recent) value assigned to the label.
+    Last,
+    /// Return all values as a list.
+    All,
+    /// Return a single value unwrapped, or a list if multiple values exist.
+    Mixed,
+}
+
 /// A Gremlin predicate for comparison operations.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Predicate {
@@ -73,7 +87,7 @@ pub enum GremlinStep {
     Label,
 
     // ── Map/select steps ─────────────────────────────────────────────────────
-    Select(Vec<String>),
+    Select(Option<Pop>, Vec<String>),
     As(String),
 
     // ── Aggregation steps ────────────────────────────────────────────────────
@@ -447,7 +461,7 @@ fn parse_step(name: &str, args: &[serde_json::Value]) -> Result<GremlinStep, Byt
         "properties" => Ok(GremlinStep::Properties(collect_string_args(args))),
         "id" => Ok(GremlinStep::Id),
         "label" => Ok(GremlinStep::Label),
-        "select" => Ok(GremlinStep::Select(collect_string_args(args))),
+        "select" => Ok(GremlinStep::Select(None, collect_string_args(args))),
         "as" => {
             let alias = args
                 .first()

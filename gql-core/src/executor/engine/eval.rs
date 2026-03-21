@@ -777,9 +777,7 @@ impl<'a> QueryExecutor<'a> {
                                             .unwrap_or_default();
                                         m.insert("t[label]".into(), Value::Str(label_str.into()));
                                         for (k, v) in data.properties.into_iter() {
-                                            if keys.is_empty()
-                                                || keys.iter().any(|fk| fk == &k)
-                                            {
+                                            if keys.is_empty() || keys.iter().any(|fk| fk == &k) {
                                                 m.insert(k.into_boxed_str(), v);
                                             }
                                         }
@@ -799,9 +797,7 @@ impl<'a> QueryExecutor<'a> {
                                             Value::Str(data.rel_type.as_str().into()),
                                         );
                                         for (k, v) in data.properties.into_iter() {
-                                            if keys.is_empty()
-                                                || keys.iter().any(|fk| fk == &k)
-                                            {
+                                            if keys.is_empty() || keys.iter().any(|fk| fk == &k) {
                                                 m.insert(k.into_boxed_str(), v);
                                             }
                                         }
@@ -820,8 +816,7 @@ impl<'a> QueryExecutor<'a> {
                                                 .first()
                                                 .map(|l| l.to_string())
                                                 .unwrap_or_default();
-                                            out_m
-                                                .insert("t[label]".into(), Value::Str(l.into()));
+                                            out_m.insert("t[label]".into(), Value::Str(l.into()));
                                             m.insert("D[OUT]".into(), Value::Map(out_m));
                                         }
                                         if let Some(dst_data) =
@@ -910,18 +905,14 @@ impl<'a> QueryExecutor<'a> {
                             })
                             .collect();
                         let props: Vec<(String, Value)> = match &element {
-                            Value::Node(node_id) => {
-                                match self.cached_get_node(graph, *node_id)? {
-                                    Some(data) => data.properties.into_iter().collect(),
-                                    None => Vec::new(),
-                                }
-                            }
-                            Value::Edge(edge_id) => {
-                                match self.cached_get_edge(graph, *edge_id)? {
-                                    Some(data) => data.properties.into_iter().collect(),
-                                    None => Vec::new(),
-                                }
-                            }
+                            Value::Node(node_id) => match self.cached_get_node(graph, *node_id)? {
+                                Some(data) => data.properties.into_iter().collect(),
+                                None => Vec::new(),
+                            },
+                            Value::Edge(edge_id) => match self.cached_get_edge(graph, *edge_id)? {
+                                Some(data) => data.properties.into_iter().collect(),
+                                None => Vec::new(),
+                            },
                             _ => Vec::new(),
                         };
                         let vals: Vec<Value> = props

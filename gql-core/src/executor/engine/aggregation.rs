@@ -233,7 +233,9 @@ impl AggState {
             }
             AggFunction::Min => Ok(self.min.clone().unwrap_or(Value::Null)),
             AggFunction::Max => Ok(self.max.clone().unwrap_or(Value::Null)),
-            AggFunction::Collect | AggFunction::CollectAll => Ok(Value::List(self.collected.clone())),
+            AggFunction::Collect | AggFunction::CollectAll => {
+                Ok(Value::List(self.collected.clone()))
+            }
             AggFunction::StDev => {
                 let nums: Vec<f64> = self.collected.iter().filter_map(|v| v.as_float()).collect();
                 if nums.len() <= 1 {

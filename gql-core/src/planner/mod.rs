@@ -9,6 +9,16 @@ use crate::error::GqlError;
 
 // ── Physical Plan Operators ───────────────────────────────────────────────────
 
+/// Pop modifier for Gremlin select() — controls which labeled value to
+/// return when a label has been assigned multiple times.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GremlinPop {
+    First,
+    Last,
+    All,
+    Mixed,
+}
+
 #[derive(Debug, Clone)]
 pub enum Operator {
     /// Produces exactly one empty row. Used as a leaf for bare `RETURN` (no MATCH).
@@ -309,6 +319,12 @@ pub enum Operator {
         /// When true, missing properties produce Null. When false (default),
         /// missing properties cause the traverser to be dropped.
         productive: bool,
+        /// Pop modifier: controls which value to return when a label has
+        /// been assigned multiple times (first, last, all, mixed).
+        pop: Option<GremlinPop>,
+        /// For each output key, the full list of variable aliases from
+        /// all as() assignments (ordered oldest-to-newest). Used by Pop.
+        label_stacks: Vec<(String, Vec<Identifier>)>,
         child: Box<Operator>,
     },
     /// Gremlin group()/groupCount() — collect traversers into a single Map.

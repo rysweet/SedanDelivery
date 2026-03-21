@@ -1320,7 +1320,12 @@ fn values_match_ctx(
                                     .collect(),
                             );
                             a.get(k).map_or(false, |actual_val| {
-                                values_match_ctx(actual_val, &exp_val, vertex_id_to_name, edge_id_to_name)
+                                values_match_ctx(
+                                    actual_val,
+                                    &exp_val,
+                                    vertex_id_to_name,
+                                    edge_id_to_name,
+                                )
                             })
                         } else {
                             false

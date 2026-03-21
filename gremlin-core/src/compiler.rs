@@ -7,7 +7,9 @@
 use std::collections::HashMap;
 
 use gql_core::ast::{BinaryOp, Direction, Expr, Identifier, Label, RelType, UnaryOp};
-use gql_core::planner::{AggFunction, CreateEdgeSpec, CreatePattern, Operator, SetItem};
+use gql_core::planner::{
+    AggFunction, CreateEdgeSpec, CreatePattern, GremlinPop, Operator, SetItem,
+};
 use gql_core::types::Value;
 use smol_str::SmolStr;
 
@@ -36,6 +38,9 @@ pub struct GremlinCompiler {
     alias_counter: u32,
     /// Maps Gremlin `as()` labels to their operator-level aliases.
     alias_map: HashMap<String, Identifier>,
+    /// Tracks ALL aliases assigned to each label (for Pop.first/all/mixed).
+    /// When the same label is used multiple times, all aliases are recorded.
+    label_stacks: HashMap<String, Vec<Identifier>>,
     /// The alias that the most recent compilation left as the "current" traverser.
     last_alias: Identifier,
     /// When true, by-modulation that can't produce a value yields null
@@ -61,6 +66,9 @@ pub struct GremlinCompiler {
     /// Whether the current traversal uses path()/simplePath()/cyclicPath().
     /// When true, label_carry_items includes path tracking aliases.
     needs_path_tracking: bool,
+    /// Whether the current traversal uses select() with Pop modifiers.
+    /// When true, label_carry_items includes all label stack aliases.
+    needs_label_stacks: bool,
 }
 
 impl Default for GremlinCompiler {
@@ -74,6 +82,7 @@ impl GremlinCompiler {
         Self {
             alias_counter: 0,
             alias_map: HashMap::new(),
+            label_stacks: HashMap::new(),
             last_alias: Identifier::new("__gremlin_v"),
             productive_by: false,
             read_only: false,
@@ -84,6 +93,7 @@ impl GremlinCompiler {
             side_effect_values: HashMap::new(),
             path_tracking: Vec::new(),
             needs_path_tracking: false,
+            needs_label_stacks: false,
         }
     }
 
@@ -97,6 +107,7 @@ impl GremlinCompiler {
         Self {
             alias_counter: self.alias_counter,
             alias_map: self.alias_map.clone(),
+            label_stacks: self.label_stacks.clone(),
             last_alias: self.last_alias.clone(),
             productive_by: self.productive_by,
             read_only: self.read_only,
@@ -110,6 +121,7 @@ impl GremlinCompiler {
             // sub-traversal projections.
             path_tracking: Vec::new(),
             needs_path_tracking: false,
+            needs_label_stacks: self.needs_label_stacks,
         }
     }
 
@@ -122,6 +134,16 @@ impl GremlinCompiler {
         for ident in self.alias_map.values() {
             if seen.insert(ident.0.as_str().to_owned()) {
                 items.push((Expr::Variable(ident.clone()), Some(ident.clone())));
+            }
+        }
+        // Carry all label-stack aliases only when Pop select is present
+        if self.needs_label_stacks {
+            for aliases in self.label_stacks.values() {
+                for ident in aliases {
+                    if seen.insert(ident.0.as_str().to_owned()) {
+                        items.push((Expr::Variable(ident.clone()), Some(ident.clone())));
+                    }
+                }
             }
         }
         // Carry path-tracking aliases only when a path step is present
@@ -144,6 +166,12 @@ impl GremlinCompiler {
         // Merge new aliases from sub-compiler (e.g., groupCount("a") in repeat body)
         for (k, v) in &sub.alias_map {
             self.alias_map.entry(k.clone()).or_insert_with(|| v.clone());
+        }
+        // Merge label stacks from sub-compiler
+        for (k, v) in &sub.label_stacks {
+            self.label_stacks
+                .entry(k.clone())
+                .or_insert_with(|| v.clone());
         }
         // Merge new reductions from sub-compiler
         for (k, v) in &sub.reductions {
@@ -275,6 +303,10 @@ impl GremlinCompiler {
         // This enables carrying path aliases through Project operations.
         if !self.needs_path_tracking {
             self.needs_path_tracking = steps_need_path_tracking(steps);
+        }
+        // Pre-scan: detect if any select() uses Pop modifiers.
+        if !self.needs_label_stacks {
+            self.needs_label_stacks = steps_need_label_stacks(steps);
         }
 
         let mut current: Option<Operator> = initial_op;
@@ -1090,9 +1122,13 @@ impl GremlinCompiler {
 
                 GremlinStep::As(alias) => {
                     self.alias_map.insert(alias.clone(), current_alias.clone());
+                    self.label_stacks
+                        .entry(alias.clone())
+                        .or_default()
+                        .push(current_alias.clone());
                 }
 
-                GremlinStep::Select(keys) => {
+                GremlinStep::Select(pop, keys) => {
                     let child = current.take().ok_or(CompileError::MissingChild)?;
 
                     // Handle Column.keys / Column.values special selects
@@ -1132,6 +1168,21 @@ impl GremlinCompiler {
                                 (var, k.clone())
                             })
                             .collect();
+                        // Build label stacks for Pop support
+                        let stacks: Vec<(String, Vec<Identifier>)> = keys
+                            .iter()
+                            .map(|k| {
+                                let stack = self.label_stacks.get(k).cloned().unwrap_or_default();
+                                (k.clone(), stack)
+                            })
+                            .collect();
+                        // Map bytecode Pop to planner GremlinPop
+                        let planner_pop = pop.map(|p| match p {
+                            crate::bytecode::Pop::First => GremlinPop::First,
+                            crate::bytecode::Pop::Last => GremlinPop::Last,
+                            crate::bytecode::Pop::All => GremlinPop::All,
+                            crate::bytecode::Pop::Mixed => GremlinPop::Mixed,
+                        });
                         // Update current_alias if single key select
                         if keys.len() == 1 {
                             let resolved = self
@@ -1147,6 +1198,8 @@ impl GremlinCompiler {
                         current = Some(Operator::GremlinSelect {
                             keys: select_keys,
                             productive: self.productive_by,
+                            pop: planner_pop,
+                            label_stacks: stacks,
                             child: Box::new(child),
                         });
                         pending_select = true;
@@ -2078,9 +2131,7 @@ impl GremlinCompiler {
                             // ProductiveByStrategy: wrap Eq comparisons so
                             // null == null returns true instead of null.
                             if self.productive_by {
-                                if let Some((ref left_id, ref right_id)) =
-                                    pending_where_by
-                                {
+                                if let Some((ref left_id, ref right_id)) = pending_where_by {
                                     if let Some(Operator::Filter {
                                         ref mut predicate, ..
                                     }) = current
@@ -2569,7 +2620,7 @@ impl GremlinCompiler {
                                     | GremlinStep::Values(_)
                                     | GremlinStep::Label
                                     | GremlinStep::Id
-                                    | GremlinStep::Select(_)
+                                    | GremlinStep::Select(..)
                             )
                         });
 
@@ -2849,7 +2900,7 @@ impl GremlinCompiler {
                                 current = Some(inject_scan_into_child(child, scan));
                                 alias
                             }
-                            GremlinStep::Select(keys) if keys.len() == 1 => {
+                            GremlinStep::Select(_, keys) if keys.len() == 1 => {
                                 // from(select("a")) or to(select("a"))
                                 self.alias_map
                                     .get(&keys[0])
@@ -3405,8 +3456,7 @@ impl GremlinCompiler {
                             Some(GremlinStep::Where(inner)) => (false, inner.as_slice()),
                             _ => continue,
                         };
-                        let match_child =
-                            current.take().ok_or(CompileError::MissingChild)?;
+                        let match_child = current.take().ok_or(CompileError::MissingChild)?;
                         // Determine seed alias from the first As() in the inner steps.
                         let mut sub = self.sub_compiler();
                         // Inject match label→alias bindings into sub compiler
@@ -3416,9 +3466,7 @@ impl GremlinCompiler {
                                 .or_insert_with(|| alias.clone());
                         }
                         let (seed_alias, compile_steps) = match inner_steps.first() {
-                            Some(GremlinStep::As(label))
-                                if sub.alias_map.contains_key(label) =>
-                            {
+                            Some(GremlinStep::As(label)) if sub.alias_map.contains_key(label) => {
                                 (sub.alias_map[label].clone(), &inner_steps[1..])
                             }
                             _ => (current_alias.clone(), inner_steps),
@@ -3919,11 +3967,12 @@ impl GremlinCompiler {
                 }
 
                 GremlinStep::Loops => {
-                    // loops() — returns loop count; approximated as constant 0
-                    // outside repeat context
+                    // loops() — returns current loop iteration counter.
+                    // Inside a repeat body the executor injects __gremlin_loop_count.
                     let child = current.take().unwrap_or(Operator::SingleRow);
                     let alias = self.next_alias("loops");
-                    let mut items = vec![(Expr::Integer(0), Some(alias.clone()))];
+                    let loop_var = Identifier::new("__gremlin_loop_count");
+                    let mut items = vec![(Expr::Variable(loop_var), Some(alias.clone()))];
                     items.extend(self.label_carry_items());
                     current = Some(Operator::Project {
                         items,
@@ -5160,7 +5209,7 @@ fn is_simple_predicate_steps(steps: &[GremlinStep]) -> bool {
                     | GremlinStep::Values(_)
                     | GremlinStep::Label
                     | GremlinStep::Id
-                    | GremlinStep::Select(_)
+                    | GremlinStep::Select(..)
             )
         })
 }
@@ -5192,6 +5241,40 @@ fn steps_need_path_tracking(steps: &[GremlinStep]) -> bool {
             }
             GremlinStep::Choose(if_branch, else_branch, _) => {
                 if steps_need_path_tracking(if_branch) || steps_need_path_tracking(else_branch) {
+                    return true;
+                }
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
+/// Check if any step in the sequence uses select() with a Pop modifier.
+fn steps_need_label_stacks(steps: &[GremlinStep]) -> bool {
+    for step in steps {
+        match step {
+            GremlinStep::Select(Some(_), _) => return true,
+            GremlinStep::Repeat(inner)
+            | GremlinStep::FlatMap(inner)
+            | GremlinStep::Map(inner)
+            | GremlinStep::Not(inner)
+            | GremlinStep::Where(inner) => {
+                if steps_need_label_stacks(inner) {
+                    return true;
+                }
+            }
+            GremlinStep::And(branches)
+            | GremlinStep::Or(branches)
+            | GremlinStep::Union(branches) => {
+                for branch in branches {
+                    if steps_need_label_stacks(branch) {
+                        return true;
+                    }
+                }
+            }
+            GremlinStep::Choose(if_branch, else_branch, _) => {
+                if steps_need_label_stacks(if_branch) || steps_need_label_stacks(else_branch) {
                     return true;
                 }
             }
@@ -5737,7 +5820,7 @@ fn steps_to_predicate(
         }
         // Two-step pattern: Select(["label"]) + Is(pred) → labeled value comparison
         // This handles where("a", P.eq("b"))
-        if let (GremlinStep::Select(keys), GremlinStep::Is(pred)) = (&steps[0], &steps[1]) {
+        if let (GremlinStep::Select(_, keys), GremlinStep::Is(pred)) = (&steps[0], &steps[1]) {
             if keys.len() == 1 {
                 let src_var = alias_map
                     .get(&keys[0])
@@ -6112,7 +6195,7 @@ fn predicate_to_prop_expr(pred: &Predicate, prop_expr: Expr) -> Expr {
             }),
         },
         Predicate::IsType(v) => Expr::FunctionCall {
-            name: SmolStr::new("gremlin_isType"),
+            name: SmolStr::new("gremlin_istype"),
             args: vec![prop_expr, gremlin_value_to_expr(v)],
             distinct: false,
         },
@@ -6309,7 +6392,7 @@ fn extract_where_label_pair(
 ) -> Option<(Identifier, Identifier)> {
     // Pattern 1: Select(["a"]) + Is(pred("b")) → where("a", P.gt("b"))
     if steps.len() == 2 {
-        if let (GremlinStep::Select(keys), GremlinStep::Is(pred)) = (&steps[0], &steps[1]) {
+        if let (GremlinStep::Select(_, keys), GremlinStep::Is(pred)) = (&steps[0], &steps[1]) {
             if keys.len() == 1 {
                 let left = alias_map
                     .get(&keys[0])
@@ -7013,7 +7096,7 @@ mod tests {
             GremlinStep::As("a".into()),
             GremlinStep::Out(vec!["knows".into()]),
             GremlinStep::As("b".into()),
-            GremlinStep::Select(vec!["a".into(), "b".into()]),
+            GremlinStep::Select(None, vec!["a".into(), "b".into()]),
         ];
         let op = compiler.compile(&steps).unwrap();
         if let Operator::GremlinSelect { keys, .. } = &op {
@@ -7352,7 +7435,7 @@ mod tests {
             GremlinStep::As("a".into()),
             GremlinStep::Out(vec!["created".into()]),
             GremlinStep::AddE("createdBy".into()),
-            GremlinStep::To(vec![GremlinStep::Select(vec!["a".into()])]),
+            GremlinStep::To(vec![GremlinStep::Select(None, vec!["a".into()])]),
         ];
         let op = compiler.compile(&steps).unwrap();
         // Verify Create operator has non-placeholder src/dst

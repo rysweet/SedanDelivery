@@ -99,8 +99,17 @@ impl<'a> QueryExecutor<'a> {
                         // erroring — they are auxiliary and not critical.
                         if self.gremlin_mode {
                             if let Expr::Variable(id) = expr {
+                                let name = id.0.as_str();
+                                // loops() outside repeat context: default to 0
+                                if name == "__gremlin_loop_count" {
+                                    let col_name = match alias {
+                                        Some(a) => a.0.clone(),
+                                        None => name.to_string(),
+                                    };
+                                    new_row.insert(col_name, Value::Int(0));
+                                    continue;
+                                }
                                 if alias.as_ref() == Some(id) {
-                                    let name = id.0.as_str();
                                     // Only skip step-alias carry-forward variables
                                     // (v_N, e_N patterns from Gremlin compiler).
                                     let is_step_alias = (name.starts_with("v_")

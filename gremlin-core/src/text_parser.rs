@@ -679,12 +679,31 @@ fn parse_step_token(
         "label" => out.push(GremlinStep::Label),
         "select" => {
             let args = parse_string_arg_list(args_str)?;
-            // Filter out Pop.* arguments (Pop.first, Pop.last, Pop.all, Pop.mixed)
+            // Extract Pop.* modifier if present (must be qualified with Pop. prefix)
+            let mut pop = None;
             let filtered: Vec<String> = args
                 .into_iter()
-                .filter(|a| !a.starts_with("Pop."))
+                .filter(|a| match a.as_str() {
+                    "Pop.first" => {
+                        pop = Some(crate::bytecode::Pop::First);
+                        false
+                    }
+                    "Pop.last" => {
+                        pop = Some(crate::bytecode::Pop::Last);
+                        false
+                    }
+                    "Pop.all" => {
+                        pop = Some(crate::bytecode::Pop::All);
+                        false
+                    }
+                    "Pop.mixed" => {
+                        pop = Some(crate::bytecode::Pop::Mixed);
+                        false
+                    }
+                    _ => true,
+                })
                 .collect();
-            out.push(GremlinStep::Select(filtered));
+            out.push(GremlinStep::Select(pop, filtered));
         }
         "as" => {
             let args = parse_string_arg_list(args_str)?;
@@ -886,7 +905,7 @@ fn parse_step_token(
                     // Convert to: select("a").is(pred) effectively
                     // Emit as Where with a select + is pattern
                     out.push(GremlinStep::Where(vec![
-                        GremlinStep::Select(vec![label]),
+                        GremlinStep::Select(None, vec![label]),
                         GremlinStep::Is(pred),
                     ]));
                 } else {
@@ -2199,7 +2218,7 @@ fn parse_from_to_traversal(
     // If it's a quoted string, it's a step label reference
     if s.starts_with('"') {
         let label = unquote(s);
-        return Ok(vec![GremlinStep::Select(vec![label])]);
+        return Ok(vec![GremlinStep::Select(None, vec![label])]);
     }
     // Handle to(Direction.OUT, "label") / to(Direction.IN, "label") / to(Direction.BOTH, "label")
     // These are equivalent to out("label") / in("label") / both("label")
@@ -2219,7 +2238,7 @@ fn parse_from_to_traversal(
     // Otherwise parse as a full traversal
     let inner = parse_inner_traversal(s, resolve_param)?;
     if inner.is_empty() {
-        Ok(vec![GremlinStep::Select(vec![])])
+        Ok(vec![GremlinStep::Select(None, vec![])])
     } else {
         Ok(inner)
     }
@@ -2559,9 +2578,7 @@ fn unquote(s: &str) -> String {
             .replace("\\\"", "\"")
             .replace("\\\\", "\\")
     } else if s.starts_with('\'') && s.ends_with('\'') && s.len() >= 2 {
-        s[1..s.len() - 1]
-            .replace("\\'", "'")
-            .replace("\\\\", "\\")
+        s[1..s.len() - 1].replace("\\'", "'").replace("\\\\", "\\")
     } else {
         s.to_string()
     }
@@ -2717,6 +2734,9 @@ mod tests {
         .unwrap();
         assert_eq!(steps[1], GremlinStep::As("a".into()));
         assert_eq!(steps[3], GremlinStep::As("b".into()));
-        assert_eq!(steps[4], GremlinStep::Select(vec!["a".into(), "b".into()]));
+        assert_eq!(
+            steps[4],
+            GremlinStep::Select(None, vec!["a".into(), "b".into()])
+        );
     }
 }

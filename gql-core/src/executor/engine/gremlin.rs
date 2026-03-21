@@ -54,6 +54,15 @@ impl<'a> QueryExecutor<'a> {
         for iteration in 0..max_iterations {
             cx.budget.check_or_err()?;
 
+            // Inject loop counter into current rows so emit predicates and
+            // until conditions that reference loops() can see the value.
+            for row in &mut current {
+                row.insert(
+                    "__gremlin_loop_count".to_string(),
+                    Value::Int(iteration as i64),
+                );
+            }
+
             // Pre-emit: collect traversers before body execution.
             // Only when emit_before is true (emit() appeared before repeat()).
             if *emit && *emit_before {
@@ -66,6 +75,11 @@ impl<'a> QueryExecutor<'a> {
             let mut seeds: Vec<Row> = Vec::with_capacity(current.len());
             for row in &current {
                 let mut seed_row = row.clone();
+                // Inject loop iteration counter so loops() can read it.
+                seed_row.insert(
+                    "__gremlin_loop_count".to_string(),
+                    Value::Int(iteration as i64),
+                );
                 // Accumulate path history: push the current seed value
                 // before the body modifies it.
                 if let Some(key) = seed_key {
@@ -142,9 +156,7 @@ impl<'a> QueryExecutor<'a> {
                                 let e = acc.entry(mk.clone()).or_insert(Value::Int(0));
                                 match (e.clone(), mv) {
                                     (Value::Int(a), Value::Int(b)) => *e = Value::Int(a + b),
-                                    (Value::Float(a), Value::Float(b)) => {
-                                        *e = Value::Float(a + b)
-                                    }
+                                    (Value::Float(a), Value::Float(b)) => *e = Value::Float(a + b),
                                     (_, new_v) => *e = new_v.clone(),
                                 }
                             }
@@ -703,7 +715,11 @@ impl<'a> QueryExecutor<'a> {
             // Check for a reduction operator (from withSideEffect with Operator.*)
             let reduction = reductions.iter().find(|(k, _, _)| k == key);
             if let Some((_k, op, init)) = reduction {
-                if let Value::List(items) = &cap_value {
+                if op == "addAll" || op == "assign" {
+                    // addAll / assign: the cap value is already the full list
+                    // (initial values + aggregated values). Return as-is.
+                    row.insert(key.clone(), cap_value);
+                } else if let Value::List(items) = &cap_value {
                     // Handle boolean reductions (and/or)
                     if op == "and" || op == "or" {
                         let init_bool = *init != 0.0;
@@ -799,8 +815,23 @@ impl<'a> QueryExecutor<'a> {
         let mut input = self.exec_operator(cx, child)?;
         let agg_col = format!("__gremlin_agg_{key}");
 
-        // Collect all values seen across all rows.
+        // Pre-seed from withSideEffect initial value on the very first call.
+        // The initial value is stored in __side_effect_{key} column by the
+        // compiler. Only pre-seed if the side-effect store has no entry yet.
         let mut collected: Vec<Value> = Vec::new();
+        {
+            let se = self.gremlin_side_effects.borrow();
+            if se.contains_key(&agg_col) {
+                // Already seeded from a prior call — don't re-seed.
+            } else {
+                let se_col = format!("__side_effect_{key}");
+                if let Some(row) = input.first() {
+                    if let Some(Value::List(items)) = row.get(&se_col) {
+                        collected.extend(items.iter().cloned());
+                    }
+                }
+            }
+        }
         for row in &input {
             if let Some((trav_op, trav_alias)) = by_traversal {
                 // by(traversal) modulation: run the sub-traversal per traverser
@@ -1155,6 +1186,8 @@ impl<'a> QueryExecutor<'a> {
         let Operator::GremlinSelect {
             keys,
             productive,
+            pop,
+            label_stacks,
             child,
         } = op
         else {
@@ -1177,6 +1210,44 @@ impl<'a> QueryExecutor<'a> {
 
             for (src_var, output_key) in keys {
                 let var_name = src_var.0.as_str();
+
+                // Pop modifier handling: when Pop is set and label_stacks has
+                // multiple aliases for this key, resolve values from all aliases.
+                if let Some(pop_mode) = pop {
+                    use crate::planner::GremlinPop;
+                    let stack = label_stacks
+                        .iter()
+                        .find(|(k, _)| k == output_key)
+                        .map(|(_, v)| v.as_slice())
+                        .unwrap_or(&[]);
+                    if !stack.is_empty() {
+                        // Collect all values from the label stack
+                        let mut vals: Vec<Value> = Vec::new();
+                        for alias in stack {
+                            if let Some(v) = row.get(alias.0.as_str()) {
+                                vals.push(v.clone());
+                            }
+                        }
+                        if vals.is_empty() {
+                            all_found = false;
+                            break;
+                        }
+                        let resolved = match pop_mode {
+                            GremlinPop::First => vals.into_iter().next().unwrap(),
+                            GremlinPop::Last => vals.into_iter().last().unwrap(),
+                            GremlinPop::All => Value::List(vals),
+                            GremlinPop::Mixed => {
+                                if vals.len() == 1 {
+                                    vals.into_iter().next().unwrap()
+                                } else {
+                                    Value::List(vals)
+                                }
+                            }
+                        };
+                        new_row.insert(output_key.clone(), resolved);
+                        continue;
+                    }
+                }
 
                 // Handle property-accessor pattern: __prop_PROPNAME__VARNAME
                 if let Some(rest) = var_name.strip_prefix("__prop_") {
@@ -1368,9 +1439,15 @@ impl<'a> QueryExecutor<'a> {
                     // so that as() labels remain accessible to downstream steps
                     // (needed for addE/from/to resolution after select/unfold).
                     let mut out_row = row.clone();
-                    for (_, output_key) in keys {
+                    for (src_var, output_key) in keys {
                         if let Some(v) = new_row.get(output_key.as_str()) {
                             out_row.insert(output_key.clone(), v.clone());
+                            // For Pop select, also update the source variable
+                            // so downstream steps using the compiler alias get
+                            // the Pop-resolved value.
+                            if pop.is_some() {
+                                out_row.insert(src_var.0.to_string(), v.clone());
+                            }
                         }
                     }
                     inject_parameters(&mut out_row, &self.parameters);
