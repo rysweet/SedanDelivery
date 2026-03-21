@@ -32,9 +32,10 @@ fn format_value(v: &Value) -> String {
 fn valuemap_wrap_property(v: Value) -> Value {
     match v {
         Value::List(items) => {
-            if items.iter().all(|item| {
-                matches!(item, Value::Map(m) if m.contains_key("value"))
-            }) && !items.is_empty()
+            if items
+                .iter()
+                .all(|item| matches!(item, Value::Map(m) if m.contains_key("value")))
+                && !items.is_empty()
             {
                 // Multi-valued vertex property with meta-properties: extract values
                 let values = items
@@ -1047,10 +1048,7 @@ impl<'a> QueryExecutor<'a> {
                                 }
                                 // Single-valued property: one entry.
                                 let mut m = indexmap::IndexMap::new();
-                                m.insert(
-                                    Box::from("~id"),
-                                    Value::Int(elem_base + prop_idx),
-                                );
+                                m.insert(Box::from("~id"), Value::Int(elem_base + prop_idx));
                                 m.insert(Box::from("~key"), Value::Str(k.into_boxed_str()));
                                 m.insert(Box::from("~value"), v);
                                 m.insert(Box::from("~element"), element.clone());

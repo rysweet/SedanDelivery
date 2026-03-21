@@ -43,6 +43,18 @@ impl<'a> QueryExecutor<'a> {
         // Determine the seed alias name from remap (used for path tracking).
         let seed_key = remap.as_ref().map(|(_, to)| to.as_str());
 
+        // When the repeat body contains a Distinct operator, enable shared
+        // dedup state so that values seen in iteration N are remembered in
+        // iteration N+1 (cross-iteration dedup semantics).
+        let body_has_distinct = operator_contains_distinct(body);
+        let prev_dedup_state = if body_has_distinct {
+            let prev = self.repeat_dedup_state.borrow_mut().take();
+            *self.repeat_dedup_state.borrow_mut() = Some(std::collections::HashSet::new());
+            prev
+        } else {
+            None
+        };
+
         // Do-while semantics: when times() appears AFTER repeat(), always
         // execute the body at least once, even for times(0).
         let max_iterations = match *times {
@@ -258,6 +270,12 @@ impl<'a> QueryExecutor<'a> {
         if add_final {
             collected.extend(current);
         }
+
+        // Restore previous dedup state (or clear it).
+        if body_has_distinct {
+            *self.repeat_dedup_state.borrow_mut() = prev_dedup_state;
+        }
+
         Ok(collected)
     }
 
@@ -459,8 +477,13 @@ impl<'a> QueryExecutor<'a> {
             for (match_val, branch, branch_alias) in options {
                 match match_val {
                     None => {
-                        default_branch = Some(branch);
-                        default_alias = branch_alias.as_ref();
+                        // Keep only the first default (Pick.none) branch;
+                        // subsequent option(Pick.none, ...) entries are ignored
+                        // per TinkerPop semantics.
+                        if default_branch.is_none() {
+                            default_branch = Some(branch);
+                            default_alias = branch_alias.as_ref();
+                        }
                     }
                     Some(v) => {
                         // Skip "unproductive" sentinel (handled above)
@@ -955,6 +978,8 @@ impl<'a> QueryExecutor<'a> {
             path_aliases,
             by_keys,
             productive,
+            from_label,
+            to_label,
         } = op
         else {
             debug_assert!(false, "expected GremlinPath operator");
@@ -967,26 +992,67 @@ impl<'a> QueryExecutor<'a> {
         let mut out = Vec::with_capacity(input.len());
         for row in input {
             cx.budget.check_or_err()?;
-            let raw_path: Vec<Value> = if let Some(Value::List(acc)) = row.get("__gremlin_path_acc")
-            {
-                let mut p: Vec<Value> = acc
-                    .iter()
-                    .filter(|v| !matches!(v, Value::Null))
-                    .cloned()
-                    .collect();
-                if let Some(last_alias) = path_aliases.last() {
-                    if let Some(val) = row.get(last_alias.as_str()) {
-                        if !matches!(val, Value::Null) {
-                            p.push(val.clone());
+            let full_path: Vec<(Option<&str>, Value)> =
+                if let Some(Value::List(acc)) = row.get("__gremlin_path_acc") {
+                    let mut p: Vec<(Option<&str>, Value)> = acc
+                        .iter()
+                        .filter(|v| !matches!(v, Value::Null))
+                        .map(|v| (None, v.clone()))
+                        .collect();
+                    if let Some(last_alias) = path_aliases.last() {
+                        if let Some(val) = row.get(last_alias.as_str()) {
+                            if !matches!(val, Value::Null) {
+                                p.push((None, val.clone()));
+                            }
                         }
                     }
+                    p
+                } else {
+                    path_aliases
+                        .iter()
+                        .filter_map(|alias| {
+                            row.get(alias.as_str())
+                                .cloned()
+                                .map(|v| (Some(alias.as_str()), v))
+                        })
+                        .collect()
+                };
+
+            // Apply from/to slicing: select only the sub-path between
+            // the from-label and to-label (inclusive).
+            let raw_path: Vec<Value> = if from_label.is_some() || to_label.is_some() {
+                // Find indices matching from/to labels by checking row aliases
+                let start = if let Some(fl) = from_label {
+                    if let Some(alias) = self.resolve_label_alias(fl, path_aliases, &row) {
+                        full_path
+                            .iter()
+                            .position(|(a, _)| *a == Some(alias.as_str()))
+                    } else {
+                        None
+                    }
+                } else {
+                    Some(0)
+                };
+                let end = if let Some(tl) = to_label {
+                    if let Some(alias) = self.resolve_label_alias(tl, path_aliases, &row) {
+                        full_path
+                            .iter()
+                            .rposition(|(a, _)| *a == Some(alias.as_str()))
+                            .map(|i| i + 1)
+                    } else {
+                        None
+                    }
+                } else {
+                    Some(full_path.len())
+                };
+                match (start, end) {
+                    (Some(s), Some(e)) if s <= e => {
+                        full_path[s..e].iter().map(|(_, v)| v.clone()).collect()
+                    }
+                    _ => full_path.into_iter().map(|(_, v)| v).collect(),
                 }
-                p
             } else {
-                path_aliases
-                    .iter()
-                    .filter_map(|alias| row.get(alias.as_str()).cloned())
-                    .collect()
+                full_path.into_iter().map(|(_, v)| v).collect()
             };
 
             // Apply by-key modulation: each element uses by_keys[i % len].
@@ -1015,6 +1081,44 @@ impl<'a> QueryExecutor<'a> {
             out.push(result_row);
         }
         Ok(out)
+    }
+
+    /// Resolve a user-facing label (e.g. "b") to the internal alias name
+    /// that appears in path_aliases, by looking up the row for a matching
+    /// Gremlin `as()` label column.
+    fn resolve_label_alias(
+        &self,
+        label: &str,
+        path_aliases: &[Identifier],
+        row: &Row,
+    ) -> Option<String> {
+        // The label may have been recorded as `__gremlin_label_<label>` pointing to
+        // an alias like "v_2". Check if any path alias matches the stored value.
+        let label_key = format!("__gremlin_label_{label}");
+        if let Some(Value::Str(alias_name)) = row.get(&label_key) {
+            if path_aliases
+                .iter()
+                .any(|a| a.as_str() == alias_name.as_ref())
+            {
+                return Some(alias_name.to_string());
+            }
+        }
+        // Direct match: the label IS an alias in path_aliases
+        if path_aliases.iter().any(|a| a.as_str() == label) && row.contains_key(label) {
+            return Some(label.to_string());
+        }
+        // Try to find the alias that was mapped to this label in the row
+        for alias in path_aliases {
+            if row.contains_key(alias.as_str()) {
+                let as_key = format!("__gremlin_as_{}", alias.as_str());
+                if let Some(Value::Str(l)) = row.get(&as_key) {
+                    if l.as_ref() == label {
+                        return Some(alias.as_str().to_string());
+                    }
+                }
+            }
+        }
+        None
     }
 
     /// Apply a single by-key transformation to a path element value.
@@ -1841,6 +1945,8 @@ impl<'a> QueryExecutor<'a> {
         let Operator::GremlinSimplePath {
             child,
             path_aliases,
+            from_label,
+            to_label,
         } = op
         else {
             debug_assert!(false, "expected GremlinSimplePath operator");
@@ -1856,30 +1962,12 @@ impl<'a> QueryExecutor<'a> {
             let mut seen = std::collections::HashSet::new();
             let mut is_simple = true;
 
-            // Use accumulated path history if available (repeat iterations).
-            let path_values: Vec<Value> =
-                if let Some(Value::List(acc)) = row.get("__gremlin_path_acc") {
-                    let mut p: Vec<Value> = acc
-                        .iter()
-                        .filter(|v| !matches!(v, Value::Null))
-                        .cloned()
-                        .collect();
-                    // Add current position from last path alias
-                    if let Some(last_alias) = path_aliases.last() {
-                        if let Some(val) = row.get(last_alias.as_str()) {
-                            if !matches!(val, Value::Null) {
-                                p.push(val.clone());
-                            }
-                        }
-                    }
-                    p
-                } else {
-                    path_aliases
-                        .iter()
-                        .filter_map(|alias| row.get(alias.as_str()).cloned())
-                        .filter(|v| !matches!(v, Value::Null))
-                        .collect()
-                };
+            let path_values = self.collect_path_values(
+                path_aliases,
+                &row,
+                from_label.as_deref(),
+                to_label.as_deref(),
+            );
 
             for val in &path_values {
                 let key = match val {
@@ -1909,6 +1997,8 @@ impl<'a> QueryExecutor<'a> {
         let Operator::GremlinCyclicPath {
             child,
             path_aliases,
+            from_label,
+            to_label,
         } = op
         else {
             debug_assert!(false, "expected GremlinCyclicPath operator");
@@ -1924,29 +2014,12 @@ impl<'a> QueryExecutor<'a> {
             let mut seen = std::collections::HashSet::new();
             let mut has_cycle = false;
 
-            // Use accumulated path history if available (repeat iterations).
-            let path_values: Vec<Value> =
-                if let Some(Value::List(acc)) = row.get("__gremlin_path_acc") {
-                    let mut p: Vec<Value> = acc
-                        .iter()
-                        .filter(|v| !matches!(v, Value::Null))
-                        .cloned()
-                        .collect();
-                    if let Some(last_alias) = path_aliases.last() {
-                        if let Some(val) = row.get(last_alias.as_str()) {
-                            if !matches!(val, Value::Null) {
-                                p.push(val.clone());
-                            }
-                        }
-                    }
-                    p
-                } else {
-                    path_aliases
-                        .iter()
-                        .filter_map(|alias| row.get(alias.as_str()).cloned())
-                        .filter(|v| !matches!(v, Value::Null))
-                        .collect()
-                };
+            let path_values = self.collect_path_values(
+                path_aliases,
+                &row,
+                from_label.as_deref(),
+                to_label.as_deref(),
+            );
 
             for val in &path_values {
                 let key = match val {
@@ -1964,6 +2037,98 @@ impl<'a> QueryExecutor<'a> {
             }
         }
         Ok(out)
+    }
+
+    /// Collect path values from a row, optionally slicing between from/to labels.
+    fn collect_path_values(
+        &self,
+        path_aliases: &[Identifier],
+        row: &Row,
+        from_label: Option<&str>,
+        to_label: Option<&str>,
+    ) -> Vec<Value> {
+        // Build full path with alias tags for from/to slicing.
+        let full_path: Vec<(&str, Value)> =
+            if let Some(Value::List(acc)) = row.get("__gremlin_path_acc") {
+                let mut p: Vec<(&str, Value)> = acc
+                    .iter()
+                    .filter(|v| !matches!(v, Value::Null))
+                    .map(|v| ("", v.clone()))
+                    .collect();
+                if let Some(last_alias) = path_aliases.last() {
+                    if let Some(val) = row.get(last_alias.as_str()) {
+                        if !matches!(val, Value::Null) {
+                            p.push((last_alias.as_str(), val.clone()));
+                        }
+                    }
+                }
+                p
+            } else {
+                path_aliases
+                    .iter()
+                    .filter_map(|alias| {
+                        row.get(alias.as_str())
+                            .filter(|v| !matches!(v, Value::Null))
+                            .map(|v| (alias.as_str(), v.clone()))
+                    })
+                    .collect()
+            };
+
+        if from_label.is_none() && to_label.is_none() {
+            return full_path.into_iter().map(|(_, v)| v).collect();
+        }
+
+        // Find start/end indices based on label aliases
+        let find_label_idx =
+            |label: &str, from_end: bool| -> Option<usize> {
+                // Check if any path alias was mapped to this label
+                for (i, (alias, _)) in full_path.iter().enumerate().rev().take(if from_end {
+                    full_path.len()
+                } else {
+                    0
+                }) {
+                    if !alias.is_empty() {
+                        if let Some(Value::Str(l)) = row.get(&format!("__gremlin_as_{alias}")) {
+                            if l.as_ref() == label {
+                                return Some(i);
+                            }
+                        }
+                    }
+                }
+                // Direct alias match
+                for (i, (alias, _)) in full_path.iter().enumerate() {
+                    if *alias == label {
+                        return Some(i);
+                    }
+                    // Check if this alias stores the label mapping
+                    if !alias.is_empty() && row.contains_key(label) {
+                        let label_key = format!("__gremlin_label_{label}");
+                        if let Some(Value::Str(mapped)) = row.get(&label_key) {
+                            if mapped.as_ref() == *alias {
+                                return Some(i);
+                            }
+                        }
+                    }
+                }
+                None
+            };
+
+        let start = from_label
+            .and_then(|l| find_label_idx(l, false))
+            .unwrap_or(0);
+        let end = to_label
+            .and_then(|l| find_label_idx(l, true))
+            .map(|i| i + 1)
+            .unwrap_or(full_path.len());
+
+        if start <= end && end <= full_path.len() {
+            full_path[start..end]
+                .iter()
+                .map(|(_, v)| v.clone())
+                .collect()
+        } else {
+            full_path.into_iter().map(|(_, v)| v).collect()
+        }
     }
 
     /// Execute `GremlinIndex` — pair each element with its positional index.
@@ -2050,6 +2215,7 @@ impl<'a> QueryExecutor<'a> {
             entries,
             child,
             current_alias,
+            productive,
         } = op
         else {
             debug_assert!(false, "expected GremlinProject operator");
@@ -2081,11 +2247,9 @@ impl<'a> QueryExecutor<'a> {
                 } else {
                     Value::Null
                 };
-                // Only include Null values when the sub-traversal actually
-                // produced a result (not when it was empty/unproductive).
-                // This omits keys with no value unless ProductiveByStrategy
-                // is active (in which case the sub-traversal wraps Null).
-                if matches!(val, Value::Null) && sub_rows.is_empty() {
+                // Omit keys where by-modulation produced Null (property
+                // doesn't exist), unless ProductiveByStrategy is active.
+                if matches!(val, Value::Null) && !*productive {
                     continue;
                 }
                 map.insert(key.clone().into_boxed_str(), val);
@@ -2299,6 +2463,37 @@ fn split_compound_predicate(pred: &str) -> Option<(&str, &str, bool)> {
         i += 1;
     }
     None
+}
+
+/// Check whether an operator tree contains a `Distinct` node (shallow search).
+/// Used by `exec_repeat` to decide whether to enable cross-iteration dedup.
+fn operator_contains_distinct(op: &Operator) -> bool {
+    match op {
+        Operator::Distinct { .. } => true,
+        // Walk through wrappers that commonly sit between Repeat body root
+        // and the actual Distinct.
+        Operator::Project { child, .. }
+        | Operator::Filter { child, .. }
+        | Operator::Sort { child, .. }
+        | Operator::Limit { child, .. }
+        | Operator::Skip { child, .. }
+        | Operator::Expand { child, .. }
+        | Operator::GremlinSideEffect { child, .. }
+        | Operator::Coalesce { child, .. }
+        | Operator::GremlinSimplePath { child, .. }
+        | Operator::GremlinCyclicPath { child, .. } => operator_contains_distinct(child),
+        Operator::Apply { outer, inner } => {
+            operator_contains_distinct(outer) || operator_contains_distinct(inner)
+        }
+        Operator::LeftOuterApply {
+            preserved,
+            optional_pattern,
+        } => operator_contains_distinct(preserved) || operator_contains_distinct(optional_pattern),
+        Operator::Union { left, right, .. } => {
+            operator_contains_distinct(left) || operator_contains_distinct(right)
+        }
+        _ => false,
+    }
 }
 
 #[cfg(test)]
@@ -2828,6 +3023,8 @@ mod tests {
             path_aliases: vec![Identifier::new("n"), Identifier::new("m")],
             by_keys: vec![],
             productive: false,
+            from_label: None,
+            to_label: None,
         };
 
         let mut budget = ExecutionBudget::unlimited();
@@ -2873,6 +3070,8 @@ mod tests {
             ],
             by_keys: vec![],
             productive: false,
+            from_label: None,
+            to_label: None,
         };
 
         let mut budget = ExecutionBudget::unlimited();
@@ -2902,6 +3101,8 @@ mod tests {
             path_aliases: vec![],
             by_keys: vec![],
             productive: false,
+            from_label: None,
+            to_label: None,
         };
 
         let mut budget = ExecutionBudget::unlimited();
@@ -2930,6 +3131,8 @@ mod tests {
             path_aliases: vec![Identifier::new("n")],
             by_keys: vec![],
             productive: false,
+            from_label: None,
+            to_label: None,
         };
 
         let mut budget = ExecutionBudget::unlimited();
@@ -2975,6 +3178,8 @@ mod tests {
             path_aliases: vec![Identifier::new("n"), Identifier::new("m")],
             by_keys: vec![],
             productive: false,
+            from_label: None,
+            to_label: None,
         };
 
         let mut budget = ExecutionBudget::unlimited();

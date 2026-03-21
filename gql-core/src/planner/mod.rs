@@ -299,6 +299,10 @@ pub enum Operator {
         /// When true (ProductiveByStrategy), preserve Null by-key
         /// results instead of dropping the traverser.
         productive: bool,
+        /// Optional label for `from()` — path starts at this label.
+        from_label: Option<String>,
+        /// Optional label for `to()` — path ends at this label.
+        to_label: Option<String>,
     },
     /// Gremlin match() — declarative pattern matching with named bindings.
     GremlinMatch {
@@ -370,12 +374,20 @@ pub enum Operator {
         child: Box<Operator>,
         /// Ordered list of aliases that form the path elements.
         path_aliases: Vec<Identifier>,
+        /// Optional label for `from()` — path checking starts at this label.
+        from_label: Option<String>,
+        /// Optional label for `to()` — path checking ends at this label.
+        to_label: Option<String>,
     },
     /// Gremlin cyclicPath() — filter to traversers with repeated objects in path.
     GremlinCyclicPath {
         child: Box<Operator>,
         /// Ordered list of aliases that form the path elements.
         path_aliases: Vec<Identifier>,
+        /// Optional label for `from()` — path checking starts at this label.
+        from_label: Option<String>,
+        /// Optional label for `to()` — path checking ends at this label.
+        to_label: Option<String>,
     },
     /// Gremlin index() — pair each element with its positional index.
     /// When `with_map` is true, produces a Map {index: element}; otherwise
@@ -393,6 +405,9 @@ pub enum Operator {
         child: Box<Operator>,
         /// Alias of the traverser feeding into project.
         current_alias: Identifier,
+        /// When true (ProductiveByStrategy), include Null values in the map
+        /// instead of omitting keys with no value.
+        productive: bool,
     },
 }
 

@@ -2112,12 +2112,14 @@ impl GremlinCompiler {
                                                         entries,
                                                         child: child.clone(),
                                                         current_alias: pre_project_alias.clone(),
+                                                        productive: self.productive_by,
                                                     });
                                                 }
                                                 Some(Operator::GremlinProject {
                                                     entries: old_entries,
                                                     child,
                                                     current_alias: ca,
+                                                    ..
                                                 }) => {
                                                     let mut entries = old_entries.clone();
                                                     if project_by_count < entries.len() {
@@ -2131,6 +2133,7 @@ impl GremlinCompiler {
                                                         entries,
                                                         child: child.clone(),
                                                         current_alias: ca.clone(),
+                                                        productive: self.productive_by,
                                                     });
                                                 }
                                                 _ => {}
@@ -2393,14 +2396,15 @@ impl GremlinCompiler {
                                         entries,
                                         child: child.clone(),
                                         current_alias: pre_project_alias.clone(),
+                                        productive: self.productive_by,
                                     });
                                 }
                                 Some(Operator::GremlinProject {
                                     entries: old_entries,
                                     child,
                                     current_alias: ca,
+                                    ..
                                 }) => {
-                                    // Already a GremlinProject — update the current entry
                                     let mut entries = old_entries.clone();
                                     if project_by_count < entries.len() {
                                         entries[project_by_count] = (
@@ -2413,6 +2417,7 @@ impl GremlinCompiler {
                                         entries,
                                         child: child.clone(),
                                         current_alias: ca.clone(),
+                                        productive: self.productive_by,
                                     });
                                 }
                                 _ => {}
@@ -3072,13 +3077,106 @@ impl GremlinCompiler {
                 }
 
                 GremlinStep::From(_) | GremlinStep::To(_) => {
-                    // Edge endpoint modifiers: resolve the vertex reference
-                    // and rewrite the preceding AddE's CreateEdgeSpec.
+                    // Edge endpoint modifiers OR path from/to modifiers.
                     let inner_steps = match step {
                         GremlinStep::From(s) | GremlinStep::To(s) => s.as_slice(),
                         _ => unreachable!(),
                     };
                     let is_from = matches!(step, GremlinStep::From(_));
+
+                    // Check if this is a path/simplePath/cyclicPath modifier (from/to with a label string).
+                    let is_path_modifier = matches!(
+                        &current,
+                        Some(Operator::GremlinPath { .. })
+                            | Some(Operator::GremlinSimplePath { .. })
+                            | Some(Operator::GremlinCyclicPath { .. })
+                    );
+
+                    if is_path_modifier && inner_steps.len() == 1 {
+                        if let GremlinStep::Select(_, keys) = &inner_steps[0] {
+                            if keys.len() == 1 {
+                                let label = keys[0].clone();
+                                match &mut current {
+                                    Some(Operator::GremlinPath {
+                                        from_label,
+                                        to_label,
+                                        ..
+                                    }) => {
+                                        if is_from {
+                                            *from_label = Some(label);
+                                        } else {
+                                            *to_label = Some(label);
+                                        }
+                                    }
+                                    Some(Operator::GremlinSimplePath {
+                                        from_label,
+                                        to_label,
+                                        ..
+                                    }) => {
+                                        if is_from {
+                                            *from_label = Some(label);
+                                        } else {
+                                            *to_label = Some(label);
+                                        }
+                                    }
+                                    Some(Operator::GremlinCyclicPath {
+                                        from_label,
+                                        to_label,
+                                        ..
+                                    }) => {
+                                        if is_from {
+                                            *from_label = Some(label);
+                                        } else {
+                                            *to_label = Some(label);
+                                        }
+                                    }
+                                    _ => {}
+                                }
+                                continue;
+                            }
+                        }
+                        // Bare string label reference: from("a")
+                        if let GremlinStep::Constant(GremlinValue::String(label)) = &inner_steps[0]
+                        {
+                            match &mut current {
+                                Some(Operator::GremlinPath {
+                                    from_label,
+                                    to_label,
+                                    ..
+                                }) => {
+                                    if is_from {
+                                        *from_label = Some(label.clone());
+                                    } else {
+                                        *to_label = Some(label.clone());
+                                    }
+                                }
+                                Some(Operator::GremlinSimplePath {
+                                    from_label,
+                                    to_label,
+                                    ..
+                                }) => {
+                                    if is_from {
+                                        *from_label = Some(label.clone());
+                                    } else {
+                                        *to_label = Some(label.clone());
+                                    }
+                                }
+                                Some(Operator::GremlinCyclicPath {
+                                    from_label,
+                                    to_label,
+                                    ..
+                                }) => {
+                                    if is_from {
+                                        *from_label = Some(label.clone());
+                                    } else {
+                                        *to_label = Some(label.clone());
+                                    }
+                                }
+                                _ => {}
+                            }
+                            continue;
+                        }
+                    }
 
                     // Resolve the vertex reference from the inner steps
                     let resolved_alias = if inner_steps.len() == 1 {
@@ -3171,6 +3269,8 @@ impl GremlinCompiler {
                         path_aliases: path_aliases.clone(),
                         by_keys: vec![],
                         productive: self.productive_by,
+                        from_label: None,
+                        to_label: None,
                     });
                     current_alias = Identifier::new("path");
                     pending_path = true;
@@ -4085,6 +4185,8 @@ impl GremlinCompiler {
                     current = Some(Operator::GremlinSimplePath {
                         child: Box::new(child),
                         path_aliases: path_aliases.clone(),
+                        from_label: None,
+                        to_label: None,
                     });
                 }
 
@@ -4093,6 +4195,8 @@ impl GremlinCompiler {
                     current = Some(Operator::GremlinCyclicPath {
                         child: Box::new(child),
                         path_aliases: path_aliases.clone(),
+                        from_label: None,
+                        to_label: None,
                     });
                 }
 

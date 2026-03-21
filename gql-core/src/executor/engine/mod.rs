@@ -142,6 +142,10 @@ pub struct QueryExecutor<'a> {
     /// (group("a"), groupCount("a"), aggregate("a")) so that cap() can
     /// retrieve them even when downstream steps produce zero traversers.
     pub(crate) gremlin_side_effects: std::cell::RefCell<HashMap<String, Value>>,
+    /// Shared dedup state for `Distinct` operators inside `Repeat`.
+    /// When set, `exec_distinct` uses (and updates) this set instead of
+    /// creating a fresh one, giving cross-iteration dedup semantics.
+    pub(crate) repeat_dedup_state: std::cell::RefCell<Option<std::collections::HashSet<String>>>,
 }
 
 impl<'a> QueryExecutor<'a> {
@@ -159,6 +163,7 @@ impl<'a> QueryExecutor<'a> {
             foreach_seed: std::cell::RefCell::new(None),
             gremlin_mode: false,
             gremlin_side_effects: std::cell::RefCell::new(HashMap::new()),
+            repeat_dedup_state: std::cell::RefCell::new(None),
         }
     }
 
@@ -191,6 +196,7 @@ impl<'a> QueryExecutor<'a> {
             foreach_seed: std::cell::RefCell::new(None),
             gremlin_mode: false,
             gremlin_side_effects: std::cell::RefCell::new(HashMap::new()),
+            repeat_dedup_state: std::cell::RefCell::new(None),
         }
     }
 
