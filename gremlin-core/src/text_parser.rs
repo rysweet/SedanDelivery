@@ -328,25 +328,40 @@ fn inject_subgraph_vertex_filter(
 }
 
 /// Inject SubgraphStrategy edge filter steps after edge-producing steps.
+/// For vertex-navigation steps (out/in/both), decompose them to use
+/// edge traversal with filter: out() → outE().where(filter).inV()
 fn inject_subgraph_edge_filter(
     steps: Vec<GremlinStep>,
     filter_steps: &[GremlinStep],
 ) -> Vec<GremlinStep> {
-    let mut result = Vec::with_capacity(steps.len() * 2);
+    let mut result = Vec::with_capacity(steps.len() * 3);
 
     for step in steps {
-        let needs_edge_filter = matches!(
-            step,
-            GremlinStep::E(_)
-                | GremlinStep::OutE(_)
-                | GremlinStep::InE(_)
-                | GremlinStep::BothE(_)
-        );
-
-        result.push(step);
-
-        if needs_edge_filter {
-            result.push(GremlinStep::Where(filter_steps.to_vec()));
+        match &step {
+            // Edge-producing steps: inject filter after
+            GremlinStep::E(_) | GremlinStep::OutE(_) | GremlinStep::InE(_) | GremlinStep::BothE(_) => {
+                result.push(step);
+                result.push(GremlinStep::Where(filter_steps.to_vec()));
+            }
+            // Vertex-navigation steps: decompose to edge traversal with filter
+            GremlinStep::Out(labels) => {
+                result.push(GremlinStep::OutE(labels.clone()));
+                result.push(GremlinStep::Where(filter_steps.to_vec()));
+                result.push(GremlinStep::InV);
+            }
+            GremlinStep::In(labels) => {
+                result.push(GremlinStep::InE(labels.clone()));
+                result.push(GremlinStep::Where(filter_steps.to_vec()));
+                result.push(GremlinStep::OutV);
+            }
+            GremlinStep::Both(labels) => {
+                result.push(GremlinStep::BothE(labels.clone()));
+                result.push(GremlinStep::Where(filter_steps.to_vec()));
+                result.push(GremlinStep::OtherV);
+            }
+            _ => {
+                result.push(step);
+            }
         }
     }
 
