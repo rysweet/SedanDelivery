@@ -2558,6 +2558,10 @@ fn unquote(s: &str) -> String {
         s[1..s.len() - 1]
             .replace("\\\"", "\"")
             .replace("\\\\", "\\")
+    } else if s.starts_with('\'') && s.ends_with('\'') && s.len() >= 2 {
+        s[1..s.len() - 1]
+            .replace("\\'", "'")
+            .replace("\\\\", "\\")
     } else {
         s.to_string()
     }

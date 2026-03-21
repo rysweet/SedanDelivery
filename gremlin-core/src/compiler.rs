@@ -391,6 +391,17 @@ impl GremlinCompiler {
                 pending_path = false;
                 path_by_keys.clear();
                 pending_project = false;
+                // ProductiveByStrategy: wrap null-eq before clearing where_by
+                if self.productive_by && where_by_count > 0 {
+                    if let Some((ref left_id, ref right_id)) = pending_where_by {
+                        if let Some(Operator::Filter {
+                            ref mut predicate, ..
+                        }) = current
+                        {
+                            wrap_where_by_null_eq(predicate, left_id, right_id);
+                        }
+                    }
+                }
                 pending_where_by = None;
                 where_by_count = 0;
                 // Flush pending order: order() without by() → sort by identity
@@ -2064,6 +2075,20 @@ impl GremlinCompiler {
                         }
                         where_by_count += 1;
                         if where_by_count >= 2 {
+                            // ProductiveByStrategy: wrap Eq comparisons so
+                            // null == null returns true instead of null.
+                            if self.productive_by {
+                                if let Some((ref left_id, ref right_id)) =
+                                    pending_where_by
+                                {
+                                    if let Some(Operator::Filter {
+                                        ref mut predicate, ..
+                                    }) = current
+                                    {
+                                        wrap_where_by_null_eq(predicate, left_id, right_id);
+                                    }
+                                }
+                            }
                             pending_where_by = None;
                         }
                     } else if aggregate_by_consumed {
@@ -2756,7 +2781,7 @@ impl GremlinCompiler {
                     if let Some(ref reserved) = self.reserved_keys {
                         let default_reserved = ["id", "label"];
                         if default_reserved.contains(&resolved_key.as_str())
-                            || reserved.iter().any(|r| *r == resolved_key)
+                            || reserved.contains(&resolved_key)
                         {
                             return Err(CompileError::ReservedKeyViolation(resolved_key));
                         }
@@ -5644,6 +5669,15 @@ fn steps_to_predicate(
                         right: Box::new(label_expr),
                     };
                 }
+                // For compound predicates (Or/And/Not) that reference labels,
+                // build the expression resolving each label to its variable.
+                if predicate_has_label_refs(pred, alias_map) {
+                    return predicate_to_label_aware_expr(
+                        pred,
+                        &Expr::Variable(src_var),
+                        alias_map,
+                    );
+                }
                 return predicate_to_expr(pred, &src_var);
             }
         }
@@ -6024,6 +6058,76 @@ fn predicate_to_prop_expr(pred: &Predicate, prop_expr: Expr) -> Expr {
         },
     }
 }
+
+/// Check if any leaf predicate in a compound predicate references a known label.
+fn predicate_has_label_refs(pred: &Predicate, alias_map: &HashMap<String, Identifier>) -> bool {
+    match pred {
+        Predicate::Eq(GremlinValue::String(s))
+        | Predicate::Neq(GremlinValue::String(s))
+        | Predicate::Gt(GremlinValue::String(s))
+        | Predicate::Gte(GremlinValue::String(s))
+        | Predicate::Lt(GremlinValue::String(s))
+        | Predicate::Lte(GremlinValue::String(s)) => alias_map.contains_key(s.as_str()),
+        Predicate::Or(preds) | Predicate::And(preds) => {
+            preds.iter().any(|p| predicate_has_label_refs(p, alias_map))
+        }
+        Predicate::Not(inner) => predicate_has_label_refs(inner, alias_map),
+        _ => false,
+    }
+}
+
+/// Build a comparison expression for a compound predicate where each leaf
+/// may reference a different label. Resolves each label to its variable.
+fn predicate_to_label_aware_expr(
+    pred: &Predicate,
+    left: &Expr,
+    alias_map: &HashMap<String, Identifier>,
+) -> Expr {
+    match pred {
+        Predicate::Eq(GremlinValue::String(s))
+        | Predicate::Neq(GremlinValue::String(s))
+        | Predicate::Gt(GremlinValue::String(s))
+        | Predicate::Gte(GremlinValue::String(s))
+        | Predicate::Lt(GremlinValue::String(s))
+        | Predicate::Lte(GremlinValue::String(s)) => {
+            let right = if let Some(id) = alias_map.get(s.as_str()) {
+                Expr::Variable(id.clone())
+            } else {
+                gremlin_value_to_expr(&GremlinValue::String(s.clone()))
+            };
+            let op = predicate_to_binary_op(pred);
+            Expr::BinaryOp {
+                op,
+                left: Box::new(left.clone()),
+                right: Box::new(right),
+            }
+        }
+        Predicate::Or(preds) => {
+            let mut iter = preds.iter();
+            let first = predicate_to_label_aware_expr(iter.next().unwrap(), left, alias_map);
+            iter.fold(first, |acc, p| Expr::BinaryOp {
+                op: BinaryOp::Or,
+                left: Box::new(acc),
+                right: Box::new(predicate_to_label_aware_expr(p, left, alias_map)),
+            })
+        }
+        Predicate::And(preds) => {
+            let mut iter = preds.iter();
+            let first = predicate_to_label_aware_expr(iter.next().unwrap(), left, alias_map);
+            iter.fold(first, |acc, p| Expr::BinaryOp {
+                op: BinaryOp::And,
+                left: Box::new(acc),
+                right: Box::new(predicate_to_label_aware_expr(p, left, alias_map)),
+            })
+        }
+        Predicate::Not(inner) => Expr::UnaryOp {
+            op: gql_core::ast::UnaryOp::Not,
+            expr: Box::new(predicate_to_label_aware_expr(inner, left, alias_map)),
+        },
+        _ => predicate_to_prop_expr(pred, left.clone()),
+    }
+}
+
 /// in the alias map. Returns the variable expression for that label if so.
 fn predicate_label_ref(pred: &Predicate, alias_map: &HashMap<String, Identifier>) -> Option<Expr> {
     let label = match pred {
@@ -6086,6 +6190,36 @@ fn predicate_to_binary_op(pred: &Predicate) -> BinaryOp {
 
 /// Extract the left/right variable identifiers from a `Where([Select(["a"]), Is(pred)])`
 /// pattern where the predicate references another label. Returns `(left_var, right_var)`.
+/// Extract the string label from a simple or compound predicate.
+/// For compound predicates (Or/And), returns the label only if all
+/// sub-predicates reference the same label.
+fn extract_predicate_label(pred: &Predicate) -> Option<&str> {
+    match pred {
+        Predicate::Eq(GremlinValue::String(s))
+        | Predicate::Neq(GremlinValue::String(s))
+        | Predicate::Gt(GremlinValue::String(s))
+        | Predicate::Gte(GremlinValue::String(s))
+        | Predicate::Lt(GremlinValue::String(s))
+        | Predicate::Lte(GremlinValue::String(s)) => Some(s.as_str()),
+        Predicate::Or(preds) | Predicate::And(preds) => {
+            let mut common_label: Option<&str> = None;
+            for p in preds {
+                let label = extract_predicate_label(p)?;
+                if let Some(existing) = common_label {
+                    if existing != label {
+                        return None;
+                    }
+                } else {
+                    common_label = Some(label);
+                }
+            }
+            common_label
+        }
+        Predicate::Not(inner) => extract_predicate_label(inner),
+        _ => None,
+    }
+}
+
 fn extract_where_label_pair(
     steps: &[GremlinStep],
     alias_map: &HashMap<String, Identifier>,
@@ -6099,16 +6233,7 @@ fn extract_where_label_pair(
                     .get(&keys[0])
                     .cloned()
                     .unwrap_or_else(|| Identifier::new(keys[0].clone()));
-                let right_label = match pred {
-                    Predicate::Eq(GremlinValue::String(s))
-                    | Predicate::Neq(GremlinValue::String(s))
-                    | Predicate::Gt(GremlinValue::String(s))
-                    | Predicate::Gte(GremlinValue::String(s))
-                    | Predicate::Lt(GremlinValue::String(s))
-                    | Predicate::Lte(GremlinValue::String(s)) => Some(s.as_str()),
-                    _ => None,
-                };
-                if let Some(rl) = right_label {
+                if let Some(rl) = extract_predicate_label(pred) {
                     let right = alias_map
                         .get(rl)
                         .cloned()
@@ -6121,16 +6246,7 @@ fn extract_where_label_pair(
     // Pattern 2: Is(pred("a")) → where(P.gt("a")) compares current vs label
     if steps.len() == 1 {
         if let GremlinStep::Is(pred) = &steps[0] {
-            let label = match pred {
-                Predicate::Gt(GremlinValue::String(s))
-                | Predicate::Gte(GremlinValue::String(s))
-                | Predicate::Lt(GremlinValue::String(s))
-                | Predicate::Lte(GremlinValue::String(s))
-                | Predicate::Eq(GremlinValue::String(s))
-                | Predicate::Neq(GremlinValue::String(s)) => Some(s.as_str()),
-                _ => None,
-            };
-            if let Some(l) = label {
+            if let Some(l) = extract_predicate_label(pred) {
                 if alias_map.contains_key(l) {
                     let right = alias_map[l].clone();
                     return Some((current_alias.clone(), right));
@@ -6158,15 +6274,24 @@ fn rewrite_where_by_predicate(
 /// `is_left` controls whether to rewrite the left or right operand.
 /// Recursively handles compound predicates (And/Or).
 fn rewrite_where_by_side(predicate: &mut Expr, target_id: &Identifier, key: &str, is_left: bool) {
-    match predicate {
-        Expr::BinaryOp { op, left, right } => {
-            if matches!(op, BinaryOp::And | BinaryOp::Or) {
-                // Compound predicate: recurse into both branches
-                rewrite_where_by_side(left, target_id, key, is_left);
-                rewrite_where_by_side(right, target_id, key, is_left);
-            } else {
-                let operand = if is_left { left } else { right };
-                if let Expr::Variable(ref v) = **operand {
+    if let Expr::BinaryOp { op, left, right } = predicate {
+        if matches!(op, BinaryOp::And | BinaryOp::Or) {
+            // Compound predicate: recurse into both branches
+            rewrite_where_by_side(left, target_id, key, is_left);
+            rewrite_where_by_side(right, target_id, key, is_left);
+        } else {
+            let operand = if is_left { left } else { right };
+            if let Expr::Variable(ref v) = **operand {
+                if v == target_id {
+                    **operand = Expr::Property(
+                        Box::new(Expr::Variable(target_id.clone())),
+                        SmolStr::new(key),
+                    );
+                }
+            }
+            // Also check if the side was already rewritten to Property — overwrite
+            if let Expr::Property(ref inner, _) = **operand {
+                if let Expr::Variable(ref v) = **inner {
                     if v == target_id {
                         **operand = Expr::Property(
                             Box::new(Expr::Variable(target_id.clone())),
@@ -6174,20 +6299,34 @@ fn rewrite_where_by_side(predicate: &mut Expr, target_id: &Identifier, key: &str
                         );
                     }
                 }
-                // Also check if the side was already rewritten to Property — overwrite
-                if let Expr::Property(ref inner, _) = **operand {
-                    if let Expr::Variable(ref v) = **inner {
-                        if v == target_id {
-                            **operand = Expr::Property(
-                                Box::new(Expr::Variable(target_id.clone())),
-                                SmolStr::new(key),
-                            );
-                        }
-                    }
-                }
             }
         }
-        _ => {}
+    }
+}
+
+/// ProductiveByStrategy: for each Eq comparison leaf in a where-by predicate,
+/// add `OR (left IS NULL AND right IS NULL)` so that null == null passes.
+fn wrap_where_by_null_eq(predicate: &mut Expr, _left_id: &Identifier, _right_id: &Identifier) {
+    if let Expr::BinaryOp { op, left, right } = predicate {
+        if matches!(op, BinaryOp::And | BinaryOp::Or) {
+            wrap_where_by_null_eq(left, _left_id, _right_id);
+            wrap_where_by_null_eq(right, _left_id, _right_id);
+        } else if matches!(op, BinaryOp::Eq) {
+            // Transform: (L == R) → (L == R) OR (L IS NULL AND R IS NULL)
+            let left_clone = left.clone();
+            let right_clone = right.clone();
+            let null_check = Expr::BinaryOp {
+                op: BinaryOp::And,
+                left: Box::new(Expr::IsNull(left_clone)),
+                right: Box::new(Expr::IsNull(right_clone)),
+            };
+            let original = std::mem::replace(predicate, Expr::Bool(true));
+            *predicate = Expr::BinaryOp {
+                op: BinaryOp::Or,
+                left: Box::new(original),
+                right: Box::new(null_check),
+            };
+        }
     }
 }
 

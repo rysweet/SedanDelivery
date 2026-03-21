@@ -1294,6 +1294,42 @@ fn values_match_ctx(
             }
             false
         }
+        // Match Map against a JSON-like string representation:
+        // e.g., Map({"created": Int(1), "knows": Int(2)}) against
+        // Str("{\"created\": \"d[1].l\", \"knows\": \"d[2].l\"}")
+        (Value::Map(a), Value::Str(e)) => {
+            let e_str = e.as_ref();
+            // Try parsing the expected string as a map
+            if e_str.starts_with('{') && e_str.ends_with('}') {
+                let inner = &e_str[1..e_str.len() - 1];
+                let parts = split_tck_top_level(inner);
+                if parts.len() == a.len() {
+                    return parts.iter().all(|part| {
+                        if let Some(colon_pos) = find_top_level_char(part, ':') {
+                            let k = part[..colon_pos].trim().trim_matches('"');
+                            let v_str = part[colon_pos + 1..].trim().trim_matches('"');
+                            let exp_val = parse_tck_value(
+                                v_str,
+                                &vertex_id_to_name
+                                    .iter()
+                                    .map(|(nid, name)| (name.clone(), *nid))
+                                    .collect(),
+                                &edge_id_to_name
+                                    .iter()
+                                    .map(|(eid, name)| (name.clone(), *eid))
+                                    .collect(),
+                            );
+                            a.get(k).map_or(false, |actual_val| {
+                                values_match_ctx(actual_val, &exp_val, vertex_id_to_name, edge_id_to_name)
+                            })
+                        } else {
+                            false
+                        }
+                    });
+                }
+            }
+            false
+        }
         (Value::Str(a), Value::Str(e)) => a == e,
         (Value::Bool(a), Value::Bool(e)) => a == e,
         (Value::Null, Value::Null) => true,
