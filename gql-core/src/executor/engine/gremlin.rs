@@ -60,23 +60,14 @@ impl<'a> QueryExecutor<'a> {
                 self.collect_emitted(cx, &current, emit_predicate, &mut collected)?;
             }
 
-            // Feed current rows through the body.
-            let mut next: Vec<Row> = Vec::new();
-            // Track per-iteration side-effect accumulation for Map-typed
-            // aggregations (groupCount).  Each body-run stamps the same map
-            // on all its output rows, so we merge one map per body-run.
-            let mut iteration_agg_maps: std::collections::HashMap<
-                String,
-                indexmap::IndexMap<Box<str>, Value>,
-            > = std::collections::HashMap::new();
-            let mut _prev_next_len: usize = 0;
+            // Batch mode: prepare all seed rows, then execute body once.
+            // This gives correct Gremlin semantics for limit/sample/dedup
+            // inside the repeat body (they apply per-iteration, not per-traverser).
+            let mut seeds: Vec<Row> = Vec::with_capacity(current.len());
             for row in &current {
-                cx.budget.check_or_err()?;
-
-                // Accumulate path history: push the current seed value
-                // before the body modifies it. This allows path() to
-                // reconstruct the full traversal after repeat completes.
                 let mut seed_row = row.clone();
+                // Accumulate path history: push the current seed value
+                // before the body modifies it.
                 if let Some(key) = seed_key {
                     if let Some(seed_val) = row.get(key).cloned() {
                         let mut acc = match row.get("__gremlin_path_acc") {
@@ -87,90 +78,79 @@ impl<'a> QueryExecutor<'a> {
                         seed_row.insert("__gremlin_path_acc".to_string(), Value::List(acc));
                     }
                 }
-
                 if let Some((from, _)) = remap {
                     seed_row.remove(from.as_str());
                 }
-                self.foreach_seed
-                    .borrow_mut()
-                    .replace(vec![seed_row.clone()]);
-                let body_rows = self.exec_operator(cx, body)?;
-                self.foreach_seed.borrow_mut().take();
+                seeds.push(seed_row);
+            }
 
-                // Carry path accumulator to body results that lack it.
-                // Skip sentinel rows (e.g., from side-effect groups with
-                // no traversers) that don't have the seed alias — they
-                // would break subsequent iterations that need the alias.
-                let path_acc = seed_row.get("__gremlin_path_acc").cloned();
-                let body_run_start = next.len();
-                for mut body_row in body_rows {
-                    if let Some(key) = seed_key {
-                        if !body_row.contains_key(key)
-                            && remap
-                                .as_ref()
-                                .is_none_or(|(from, _)| !body_row.contains_key(from.as_str()))
-                        {
-                            // Sentinel row without traverser alias — skip
-                            // but merge any side-effect agg columns into the
-                            // iteration accumulator so they aren't lost.
-                            for (k, v) in &body_row {
-                                if k.starts_with("__gremlin_agg_") {
-                                    if let Value::Map(m) = v {
-                                        let acc = iteration_agg_maps.entry(k.clone()).or_default();
-                                        for (mk, mv) in m {
-                                            let e = acc.entry(mk.clone()).or_insert(Value::Int(0));
-                                            match (e.clone(), mv) {
-                                                (Value::Int(a), Value::Int(b)) => {
-                                                    *e = Value::Int(a + b)
-                                                }
-                                                (Value::Float(a), Value::Float(b)) => {
-                                                    *e = Value::Float(a + b)
-                                                }
-                                                (_, new_v) => *e = new_v.clone(),
+            self.foreach_seed.borrow_mut().replace(seeds);
+            let body_rows = self.exec_operator(cx, body)?;
+            self.foreach_seed.borrow_mut().take();
+
+            // Process body results: separate sentinel rows (side-effects)
+            // from regular traverser rows.
+            let mut next: Vec<Row> = Vec::new();
+            let mut iteration_agg_maps: std::collections::HashMap<
+                String,
+                indexmap::IndexMap<Box<str>, Value>,
+            > = std::collections::HashMap::new();
+            for body_row in body_rows {
+                if let Some(key) = seed_key {
+                    if !body_row.contains_key(key)
+                        && remap
+                            .as_ref()
+                            .is_none_or(|(from, _)| !body_row.contains_key(from.as_str()))
+                    {
+                        // Sentinel row without traverser alias — merge
+                        // side-effect agg columns.
+                        for (k, v) in &body_row {
+                            if k.starts_with("__gremlin_agg_") {
+                                if let Value::Map(m) = v {
+                                    let acc = iteration_agg_maps.entry(k.clone()).or_default();
+                                    for (mk, mv) in m {
+                                        let e = acc.entry(mk.clone()).or_insert(Value::Int(0));
+                                        match (e.clone(), mv) {
+                                            (Value::Int(a), Value::Int(b)) => {
+                                                *e = Value::Int(a + b)
                                             }
+                                            (Value::Float(a), Value::Float(b)) => {
+                                                *e = Value::Float(a + b)
+                                            }
+                                            (_, new_v) => *e = new_v.clone(),
                                         }
                                     }
-                                    // Also distribute sentinel agg to existing next rows
-                                    for nr in &mut next {
-                                        nr.entry(k.clone()).or_insert_with(|| v.clone());
-                                    }
+                                }
+                                for nr in &mut next {
+                                    nr.entry(k.clone()).or_insert_with(|| v.clone());
                                 }
                             }
-                            continue;
                         }
+                        continue;
                     }
-                    if let Some(ref acc) = path_acc {
-                        if !body_row.contains_key("__gremlin_path_acc") {
-                            body_row.insert("__gremlin_path_acc".to_string(), acc.clone());
-                        }
-                    }
-                    next.push(body_row);
                 }
+                next.push(body_row);
+            }
 
-                // Collect ONE map per body-run for Map-type agg columns.
-                // All rows from a single body-run share the same map, so
-                // taking the first avoids double-counting.
-                if next.len() > body_run_start {
-                    let first_new = &next[body_run_start];
-                    for (k, v) in first_new {
-                        if k.starts_with("__gremlin_agg_") {
-                            if let Value::Map(m) = v {
-                                let acc = iteration_agg_maps.entry(k.clone()).or_default();
-                                for (mk, mv) in m {
-                                    let e = acc.entry(mk.clone()).or_insert(Value::Int(0));
-                                    match (e.clone(), mv) {
-                                        (Value::Int(a), Value::Int(b)) => *e = Value::Int(a + b),
-                                        (Value::Float(a), Value::Float(b)) => {
-                                            *e = Value::Float(a + b)
-                                        }
-                                        (_, new_v) => *e = new_v.clone(),
+            // Collect agg maps from the single batch body-run.
+            if let Some(first) = next.first() {
+                for (k, v) in first {
+                    if k.starts_with("__gremlin_agg_") {
+                        if let Value::Map(m) = v {
+                            let acc = iteration_agg_maps.entry(k.clone()).or_default();
+                            for (mk, mv) in m {
+                                let e = acc.entry(mk.clone()).or_insert(Value::Int(0));
+                                match (e.clone(), mv) {
+                                    (Value::Int(a), Value::Int(b)) => *e = Value::Int(a + b),
+                                    (Value::Float(a), Value::Float(b)) => {
+                                        *e = Value::Float(a + b)
                                     }
+                                    (_, new_v) => *e = new_v.clone(),
                                 }
                             }
                         }
                     }
                 }
-                _prev_next_len = next.len();
             }
 
             // Stamp the merged side-effect maps on all rows so every
@@ -1359,6 +1339,14 @@ impl<'a> QueryExecutor<'a> {
                     }
                     let mut map_row = Row::new();
                     inject_parameters(&mut map_row, &self.parameters);
+                    // Carry forward Gremlin internal columns (path
+                    // accumulator, sack, side-effects) so downstream steps
+                    // can access them after multi-key select.
+                    for (k, v) in row.iter() {
+                        if k.starts_with("__gremlin_") || k == "__sack" {
+                            map_row.entry(k.clone()).or_insert_with(|| v.clone());
+                        }
+                    }
                     // Add individual key columns AND their internal alias
                     // columns so downstream where/filter can reference them.
                     for (src_var, output_key) in keys {

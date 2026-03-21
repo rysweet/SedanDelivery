@@ -1,5 +1,6 @@
 //! Row-shaping operators: filter, project, distinct, sort, skip, limit.
 
+use crate::ast::Expr;
 use crate::error::GqlError;
 use crate::planner::Operator;
 use crate::types::Value;
@@ -91,6 +92,28 @@ impl<'a> QueryExecutor<'a> {
                         new_row.insert(col_name, val);
                     }
                     Err(e) => {
+                        // In Gremlin mode, label_carry_items() may reference
+                        // step-alias variables (v_N, e_N) that are not present
+                        // in all row contexts (e.g., after multi-key select).
+                        // Skip these carry-forward items silently rather than
+                        // erroring — they are auxiliary and not critical.
+                        if self.gremlin_mode {
+                            if let Expr::Variable(id) = expr {
+                                if alias.as_ref() == Some(id) {
+                                    let name = id.0.as_str();
+                                    // Only skip step-alias carry-forward variables
+                                    // (v_N, e_N patterns from Gremlin compiler).
+                                    let is_step_alias = (name.starts_with("v_")
+                                        || name.starts_with("e_")
+                                        || name.starts_with("u_")
+                                        || name.starts_with("grp_"))
+                                        && name[2..].chars().all(|c| c.is_ascii_digit());
+                                    if is_step_alias {
+                                        continue;
+                                    }
+                                }
+                            }
+                        }
                         // If we already produced at least one row, treat
                         // this as a streaming error: return the partial
                         // rows and stash the error for the caller.

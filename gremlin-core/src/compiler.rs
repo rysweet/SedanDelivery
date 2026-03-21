@@ -3311,11 +3311,25 @@ impl GremlinCompiler {
                     let child = current.take().ok_or(CompileError::MissingChild)?;
                     let mut compiled_patterns = Vec::with_capacity(patterns.len());
                     let mut all_alias_pairs: Vec<(String, Identifier)> = Vec::new();
+                    // Separate filter patterns (not/where) from join patterns.
+                    // Filter patterns are applied as post-filters after the match join.
+                    let mut filter_pattern_steps: Vec<Vec<GremlinStep>> = Vec::new();
                     // Track whether the input traverser has been bound to a
                     // label. Only the first new label gets the input; subsequent
                     // new labels enumerate via V(None).
                     let mut input_bound = false;
                     for pattern_steps in patterns {
+                        // Detect filter-only patterns: a single Not or Where step
+                        let is_filter = pattern_steps.len() == 1
+                            && matches!(
+                                pattern_steps.first(),
+                                Some(GremlinStep::Not(_)) | Some(GremlinStep::Where(_))
+                            );
+                        if is_filter {
+                            filter_pattern_steps.push(pattern_steps.clone());
+                            continue;
+                        }
+
                         let mut sub = self.sub_compiler();
 
                         // Check if the pattern starts with As("X").
@@ -3376,11 +3390,79 @@ impl GremlinCompiler {
                     let match_result_alias = self.next_alias("match");
                     current = Some(Operator::GremlinMatch {
                         patterns: compiled_patterns,
-                        label_map,
+                        label_map: label_map.clone(),
                         result_alias: match_result_alias.clone(),
                         child: Box::new(child),
                     });
                     current_alias = match_result_alias;
+
+                    // Apply not()/where() filter patterns as post-filters on
+                    // the match results. Each filter is compiled as a sub-
+                    // traversal existence check using Apply + Count + Filter.
+                    for fsteps in &filter_pattern_steps {
+                        let (is_not, inner_steps) = match fsteps.first() {
+                            Some(GremlinStep::Not(inner)) => (true, inner.as_slice()),
+                            Some(GremlinStep::Where(inner)) => (false, inner.as_slice()),
+                            _ => continue,
+                        };
+                        let match_child =
+                            current.take().ok_or(CompileError::MissingChild)?;
+                        // Determine seed alias from the first As() in the inner steps.
+                        let mut sub = self.sub_compiler();
+                        // Inject match label→alias bindings into sub compiler
+                        for (label, alias) in &label_map {
+                            sub.alias_map
+                                .entry(label.clone())
+                                .or_insert_with(|| alias.clone());
+                        }
+                        let (seed_alias, compile_steps) = match inner_steps.first() {
+                            Some(GremlinStep::As(label))
+                                if sub.alias_map.contains_key(label) =>
+                            {
+                                (sub.alias_map[label].clone(), &inner_steps[1..])
+                            }
+                            _ => (current_alias.clone(), inner_steps),
+                        };
+                        let inner_op = sub.compile_seeded(compile_steps, &seed_alias)?;
+                        self.absorb(&sub);
+                        let sub_result_alias = sub.last_alias.clone();
+
+                        let cnt_alias = self.next_alias("mcnt");
+                        let count_op = Operator::Aggregate {
+                            keys: vec![],
+                            aggregations: vec![(
+                                gql_core::planner::AggFunction::Count,
+                                Expr::Variable(sub_result_alias),
+                                None,
+                                false,
+                                cnt_alias.clone(),
+                            )],
+                            child: Box::new(inner_op),
+                        };
+
+                        let apply = Operator::Apply {
+                            outer: Box::new(match_child),
+                            inner: Box::new(count_op),
+                        };
+
+                        let predicate = if is_not {
+                            Expr::BinaryOp {
+                                op: BinaryOp::Eq,
+                                left: Box::new(Expr::Variable(cnt_alias)),
+                                right: Box::new(Expr::Integer(0)),
+                            }
+                        } else {
+                            Expr::BinaryOp {
+                                op: BinaryOp::Gt,
+                                left: Box::new(Expr::Variable(cnt_alias)),
+                                right: Box::new(Expr::Integer(0)),
+                            }
+                        };
+                        current = Some(Operator::Filter {
+                            predicate,
+                            child: Box::new(apply),
+                        });
+                    }
                 }
 
                 GremlinStep::Project(keys) => {
