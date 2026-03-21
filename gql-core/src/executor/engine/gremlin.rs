@@ -1644,13 +1644,13 @@ impl<'a> QueryExecutor<'a> {
         let mut result_map: IndexMap<Box<str>, Value> = IndexMap::new();
         for (key_str, values) in groups {
             // When value traversal produces no results for a group member,
-            // skip the entry for reducing aggregations (Sum, Min, Max, Mean).
+            // skip the entry for reducing aggregations and non-explicit Collect.
             if has_value_trav
                 && values.is_empty()
-                && matches!(
+                && (matches!(
                     agg_fn,
                     AggFunction::Sum | AggFunction::Min | AggFunction::Max | AggFunction::Avg
-                )
+                ) || (matches!(agg_fn, AggFunction::Collect) && !*explicit_fold))
             {
                 continue;
             }
