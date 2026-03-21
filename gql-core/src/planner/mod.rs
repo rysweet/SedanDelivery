@@ -89,6 +89,9 @@ pub enum Operator {
         child: Box<Operator>,
         /// When set, dedup by property value instead of full row (Gremlin `dedup().by(key)`).
         by_key: Option<String>,
+        /// ProductiveByStrategy: keep traversers with missing dedup property
+        /// instead of dropping them.
+        productive: bool,
     },
     Sort {
         items: Vec<(Expr, bool)>, // (expr, ascending)

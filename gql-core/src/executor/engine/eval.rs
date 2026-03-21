@@ -133,6 +133,16 @@ impl<'a> QueryExecutor<'a> {
             Expr::Variable(id) => {
                 if let Some(v) = row.get(id.0.as_str()) {
                     Ok(v.clone())
+                } else if self.gremlin_mode && id.0.starts_with("__gremlin_agg_") {
+                    // Aggregate columns may not be carried through intermediate
+                    // steps (e.g. .out() after .aggregate()).  Fall back to the
+                    // side-effect store which persists across all steps.
+                    let se = self.gremlin_side_effects.borrow();
+                    if let Some(v) = se.get(id.0.as_str()) {
+                        Ok(v.clone())
+                    } else {
+                        eval_expr(expr, ctx)
+                    }
                 } else {
                     eval_expr(expr, ctx)
                 }

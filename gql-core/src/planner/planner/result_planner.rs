@@ -440,6 +440,7 @@ impl<'s> QueryPlanner<'s> {
             pipeline = Operator::Distinct {
                 child: Box::new(pipeline),
                 by_key: None,
+                productive: false,
             };
         }
 
@@ -792,6 +793,7 @@ impl<'s> QueryPlanner<'s> {
             Ok(Operator::Distinct {
                 child: Box::new(produce),
                 by_key: None,
+                productive: false,
             })
         } else {
             Ok(produce)

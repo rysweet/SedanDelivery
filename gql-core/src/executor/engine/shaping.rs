@@ -158,7 +158,7 @@ impl<'a> QueryExecutor<'a> {
         cx: &mut ExecContext<'_>,
         op: &Operator,
     ) -> Result<Vec<Row>, GqlError> {
-        let Operator::Distinct { child, by_key } = op else {
+        let Operator::Distinct { child, by_key, productive } = op else {
             debug_assert!(false, "expected Distinct operator");
             return Err(GqlError::Execution(
                 crate::error::ExecutionError::UnsupportedFeature {
@@ -209,8 +209,9 @@ impl<'a> QueryExecutor<'a> {
                     if let Some(val) = row.get(alias) {
                         let extracted = self.extract_property_from_value(cx.graph, val, prop_name);
                         let is_element = matches!(val, Value::Node(_) | Value::Edge(_));
-                        if extracted.is_none() && is_element {
+                        if extracted.is_none() && is_element && !*productive {
                             // Property missing on node/edge → drop traverser
+                            // (unless ProductiveByStrategy is active)
                             continue;
                         }
                         let dedup_val = extracted.map(|v| v.canonical_key()).unwrap_or_default();
@@ -576,6 +577,7 @@ mod tests {
                 }),
             }),
             by_key: None,
+            productive: false,
         };
         let mut budget = ExecutionBudget::unlimited();
         let result = executor.execute("g", &plan, &mut budget).unwrap();

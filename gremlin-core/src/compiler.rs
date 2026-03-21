@@ -2494,6 +2494,7 @@ impl GremlinCompiler {
                             current = Some(Operator::Distinct {
                                 child: Box::new(applied),
                                 by_key: Some(sub_out_alias.to_string()),
+                                productive: self.productive_by,
                             });
                             pending_dedup = false;
                         } else if pending_group {
@@ -2755,6 +2756,7 @@ impl GremlinCompiler {
                     current = Some(Operator::Distinct {
                         child: Box::new(child),
                         by_key,
+                        productive: self.productive_by,
                     });
                     pending_dedup = true;
                 }
@@ -6242,13 +6244,36 @@ fn steps_to_predicate(
         // Single Is(pred) where the pred argument is a string label reference:
         // where(P.eq("b")) → compare current value against labeled value "b"
         if let GremlinStep::Is(pred) = &steps[0] {
-            if let Some(label_expr) = predicate_label_ref(pred, alias_map, aggregate_keys) {
-                let op = predicate_to_binary_op(pred);
-                return Expr::BinaryOp {
+            // Handle Not(inner) by unwrapping: resolve the inner predicate's
+            // label reference and then negate the result.
+            let (negated, inner_pred) = match pred {
+                Predicate::Not(inner) => (true, inner.as_ref()),
+                _ => (false, pred),
+            };
+            if let Some(label_expr) = predicate_label_ref(inner_pred, alias_map, aggregate_keys) {
+                let op = predicate_to_binary_op(inner_pred);
+                let cmp = Expr::BinaryOp {
                     op,
                     left: Box::new(Expr::Variable(alias.clone())),
                     right: Box::new(label_expr),
                 };
+                return if negated {
+                    Expr::UnaryOp {
+                        op: UnaryOp::Not,
+                        expr: Box::new(cmp),
+                    }
+                } else {
+                    cmp
+                };
+            }
+            // Also try predicate_has_label_refs + predicate_to_label_aware_expr
+            // for compound predicates like P.not(P.neq("a"))
+            if predicate_has_label_refs(pred, alias_map) {
+                return predicate_to_label_aware_expr(
+                    pred,
+                    &Expr::Variable(alias.clone()),
+                    alias_map,
+                );
             }
         }
         return step_to_predicate(&steps[0], alias);

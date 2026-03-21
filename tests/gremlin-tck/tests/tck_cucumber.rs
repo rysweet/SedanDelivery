@@ -13,6 +13,16 @@ use cucumber::gherkin;
 use cucumber::{given, then, when, World};
 
 use gql_core::executor::{ExecutionBudget, QueryExecutor, QueryResult};
+
+/// Budget for TCK tests — needs a higher row limit than the default 10M
+/// because the grateful dead graph with `repeat(out()).times(3)` produces
+/// ~14.5M intermediate rows.
+fn tck_budget() -> ExecutionBudget {
+    ExecutionBudget::new(
+        std::time::Duration::from_secs(120),
+        20_000_000,
+    )
+}
 use gql_core::storage::{EdgeId, GraphStore, InMemoryGraphStore, NodeId};
 use gql_core::types::Value;
 use gremlin_core::bytecode::GremlinStep;
@@ -253,7 +263,7 @@ async fn given_graph_initializer(world: &mut GremlinWorld, step: &gherkin::Step)
         if let Ok(operator) = compiler.compile(&steps) {
             let store = world.get_store();
             let executor = QueryExecutor::new(store.as_ref()).with_gremlin_mode();
-            let mut budget = ExecutionBudget::default_budget();
+            let mut budget = tck_budget();
             let _ = executor.execute(&world.graph_name, &operator, &mut budget);
         }
     }
@@ -367,7 +377,7 @@ fn execute_traversal(world: &mut GremlinWorld) {
     // Execute
     let store = world.get_store();
     let executor = QueryExecutor::new(store.as_ref()).with_gremlin_mode();
-    let mut budget = ExecutionBudget::default_budget();
+    let mut budget = tck_budget();
     match executor.execute(&world.graph_name, &operator, &mut budget) {
         Ok(result) => {
             world.outcome = Some(TraversalOutcome::Ok(result));
@@ -495,7 +505,7 @@ async fn given_graph_count_check(
         if let Ok(operator) = compiler.compile(&steps) {
             let store = world.get_store();
             let executor = QueryExecutor::new(store.as_ref()).with_gremlin_mode();
-            let mut budget = ExecutionBudget::default_budget();
+            let mut budget = tck_budget();
             if let Ok(result) = executor.execute(&world.graph_name, &operator, &mut budget) {
                 // Count step produces a single row with a count value
                 let actual_count = if result.rows.len() == 1 {
