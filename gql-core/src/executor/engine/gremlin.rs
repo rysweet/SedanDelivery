@@ -655,16 +655,11 @@ impl<'a> QueryExecutor<'a> {
                             for (mk, mv) in m {
                                 match (merged.get(mk), mv) {
                                     (Some(Value::Int(existing)), Value::Int(incoming)) => {
-                                        merged.insert(
-                                            mk.clone(),
-                                            Value::Int(existing + incoming),
-                                        );
+                                        merged.insert(mk.clone(), Value::Int(existing + incoming));
                                     }
                                     (Some(Value::Float(existing)), Value::Float(incoming)) => {
-                                        merged.insert(
-                                            mk.clone(),
-                                            Value::Float(existing + incoming),
-                                        );
+                                        merged
+                                            .insert(mk.clone(), Value::Float(existing + incoming));
                                     }
                                     _ => {
                                         merged.insert(mk.clone(), mv.clone());
@@ -980,7 +975,9 @@ impl<'a> QueryExecutor<'a> {
                 transformed
             };
 
-            let mut result_row = Row::new();
+            // Carry forward input columns (preserves as() labels for
+            // subsequent select() after path()).
+            let mut result_row = row.clone();
             result_row.insert("path".to_string(), Value::List(path));
             out.push(result_row);
         }
@@ -1982,6 +1979,38 @@ fn value_to_map_key(v: &Value) -> Box<str> {
         Value::Null => "null".to_string().into_boxed_str(),
         Value::Node(nid) => format!("v[{}]", nid.0).into_boxed_str(),
         Value::Edge(eid) => format!("e[{}]", eid.0).into_boxed_str(),
+        Value::List(items) => {
+            // Gremlin list key format: l[elem1,elem2,...] (no spaces)
+            let parts: Vec<String> = items
+                .iter()
+                .map(|item| match item {
+                    Value::Str(s) => s.to_string(),
+                    Value::Int(n) => n.to_string(),
+                    Value::Float(f) => f.to_string(),
+                    Value::Bool(b) => b.to_string(),
+                    Value::Null => "null".to_string(),
+                    Value::Node(nid) => format!("v[{}]", nid.0),
+                    Value::Edge(eid) => format!("e[{}]", eid.0),
+                    other => format!("{other:?}"),
+                })
+                .collect();
+            format!("l[{}]", parts.join(",")).into_boxed_str()
+        }
+        Value::Map(m) => {
+            let parts: Vec<String> = m
+                .iter()
+                .map(|(k, v)| {
+                    let vs = match v {
+                        Value::Str(s) => s.to_string(),
+                        Value::Int(n) => n.to_string(),
+                        Value::Float(f) => f.to_string(),
+                        other => format!("{other:?}"),
+                    };
+                    format!("{k}={vs}")
+                })
+                .collect();
+            format!("{{{}}}", parts.join(", ")).into_boxed_str()
+        }
         _ => format!("{v:?}").into_boxed_str(),
     }
 }

@@ -1046,7 +1046,24 @@ pub fn eval_function_with_vals(name: &str, vals: Vec<Value>) -> Result<Value, Gq
                 Ok(Value::Str(format!("[{}]", parts.join(", ")).into()))
             }
             Some(Value::Map(m)) => {
-                let parts: Vec<String> = m.iter().map(|(k, v)| {
+                // Detect VertexProperty maps: {~key, ~value, ~element(Node)}
+                if m.contains_key("~key") && m.contains_key("~value") {
+                    if let (Some(Value::Str(key)), Some(val)) =
+                        (m.get("~key"), m.get("~value"))
+                    {
+                        let val_str = match val {
+                            Value::Str(s) => s.to_string(),
+                            Value::Int(n) => n.to_string(),
+                            Value::Float(f) => f.to_string(),
+                            Value::Bool(b) => b.to_string(),
+                            other => format!("{:?}", other),
+                        };
+                        return Ok(Value::Str(format!("vp[{}->{}]", key, val_str).into()));
+                    }
+                }
+                let parts: Vec<String> = m.iter()
+                    .filter(|(k, _)| !k.starts_with('~'))
+                    .map(|(k, v)| {
                     let vs = match v {
                         Value::Str(s) => s.to_string(),
                         Value::Int(n) => n.to_string(),
@@ -1091,6 +1108,50 @@ pub fn eval_function_with_vals(name: &str, vals: Vec<Value>) -> Result<Value, Gq
                         expected: "Can't parse null as string".into(),
                         actual: "null".into(),
                     })),
+                    Value::Map(m) => {
+                        // Detect VertexProperty maps
+                        if m.contains_key("~key") && m.contains_key("~value") {
+                            if let (Some(Value::Str(key)), Some(val)) =
+                                (m.get("~key"), m.get("~value"))
+                            {
+                                let val_str = match val {
+                                    Value::Str(s) => s.to_string(),
+                                    Value::Int(n) => n.to_string(),
+                                    Value::Float(f) => f.to_string(),
+                                    Value::Bool(b) => b.to_string(),
+                                    other => format!("{:?}", other),
+                                };
+                                return Ok(Value::Str(
+                                    format!("vp[{}->{}]", key, val_str).into(),
+                                ));
+                            }
+                        }
+                        // Regular map: {key=[values]} format
+                        let parts: Vec<String> = m
+                            .iter()
+                            .filter(|(k, _)| !k.starts_with('~'))
+                            .map(|(k, v)| {
+                                let vs = match v {
+                                    Value::Str(s) => s.to_string(),
+                                    Value::Int(n) => n.to_string(),
+                                    Value::Float(f) => f.to_string(),
+                                    Value::Bool(b) => b.to_string(),
+                                    Value::List(items) => {
+                                        let inner: Vec<String> =
+                                            items.iter().map(|i| match i {
+                                                Value::Str(s) => s.to_string(),
+                                                Value::Int(n) => n.to_string(),
+                                                other => format!("{:?}", other),
+                                            }).collect();
+                                        format!("[{}]", inner.join(", "))
+                                    }
+                                    other => format!("{:?}", other),
+                                };
+                                format!("{}={}", k, vs)
+                            })
+                            .collect();
+                        Ok(Value::Str(format!("{{{}}}", parts.join(", ")).into()))
+                    }
                     other => Ok(Value::Str(format!("{:?}", other).into())),
                 }
             }

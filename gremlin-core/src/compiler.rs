@@ -2046,10 +2046,15 @@ impl GremlinCompiler {
                         // second by() overwrites the RIGHT side only.
                         if let Some((ref left_id, ref right_id)) = pending_where_by {
                             if !key.is_empty() {
-                                if let Some(Operator::Filter { ref mut predicate, .. }) = current {
+                                if let Some(Operator::Filter {
+                                    ref mut predicate, ..
+                                }) = current
+                                {
                                     if where_by_count == 0 {
                                         // First by(): rewrite BOTH sides
-                                        rewrite_where_by_predicate(predicate, left_id, right_id, key);
+                                        rewrite_where_by_predicate(
+                                            predicate, left_id, right_id, key,
+                                        );
                                     } else {
                                         // Second by(): overwrite RIGHT side only
                                         rewrite_where_by_side(predicate, right_id, key, false);
@@ -2620,9 +2625,11 @@ impl GremlinCompiler {
                         };
                         // Track label pair for by() modulation on where("a", P.gt("b")).by("age")
                         if !is_not {
-                            if let Some((left_id, right_id)) =
-                                extract_where_label_pair(inner_steps, &self.alias_map, &current_alias)
-                            {
+                            if let Some((left_id, right_id)) = extract_where_label_pair(
+                                inner_steps,
+                                &self.alias_map,
+                                &current_alias,
+                            ) {
                                 pending_where_by = Some((left_id, right_id));
                                 where_by_count = 0;
                             }
@@ -3250,10 +3257,8 @@ impl GremlinCompiler {
                             // then project to a common alias.
                             let prev_alias = current_alias.clone();
                             let union_alias = self.next_alias("inj");
-                            let mut left_items = vec![(
-                                Expr::Variable(prev_alias),
-                                Some(union_alias.clone()),
-                            )];
+                            let mut left_items =
+                                vec![(Expr::Variable(prev_alias), Some(union_alias.clone()))];
                             left_items.extend(self.label_carry_items());
                             let left = Operator::Project {
                                 items: left_items,
@@ -4245,8 +4250,19 @@ impl GremlinCompiler {
                         // Sub-traversal: compile and wrap in Apply.
                         // Limit inner to 1 result per outer row (Gremlin concat
                         // uses only the first value from inner traversals).
+                        // Use compile_from with a seed so inject() adds to the
+                        // incoming stream rather than replacing it.
                         let mut sub = self.sub_compiler();
-                        let sub_op = sub.compile_seeded(trav, &current_alias)?;
+                        let sub_op = if matches!(trav.first(), Some(GremlinStep::Inject(_))) {
+                            sub.compile_from(
+                                trav,
+                                Some(Operator::SingleRow),
+                                current_alias.clone(),
+                                vec![current_alias.clone()],
+                            )?
+                        } else {
+                            sub.compile_seeded(trav, &current_alias)?
+                        };
                         let sub_alias = sub.last_alias.clone();
                         self.absorb(&sub);
                         let limited = Operator::Limit {
@@ -5058,7 +5074,9 @@ fn steps_need_path_tracking(steps: &[GremlinStep]) -> bool {
                     return true;
                 }
             }
-            GremlinStep::And(branches) | GremlinStep::Or(branches) | GremlinStep::Union(branches) => {
+            GremlinStep::And(branches)
+            | GremlinStep::Or(branches)
+            | GremlinStep::Union(branches) => {
                 for branch in branches {
                     if steps_need_path_tracking(branch) {
                         return true;
@@ -6139,12 +6157,7 @@ fn rewrite_where_by_predicate(
 /// Rewrite one side of a where-label predicate to use property access.
 /// `is_left` controls whether to rewrite the left or right operand.
 /// Recursively handles compound predicates (And/Or).
-fn rewrite_where_by_side(
-    predicate: &mut Expr,
-    target_id: &Identifier,
-    key: &str,
-    is_left: bool,
-) {
+fn rewrite_where_by_side(predicate: &mut Expr, target_id: &Identifier, key: &str, is_left: bool) {
     match predicate {
         Expr::BinaryOp { op, left, right } => {
             if matches!(op, BinaryOp::And | BinaryOp::Or) {

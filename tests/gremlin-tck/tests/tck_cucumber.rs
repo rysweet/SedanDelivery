@@ -1126,10 +1126,16 @@ fn assert_results_match_ordered(
 /// Handles `d[N].i`, `d[N].l`, `d[N].d`, `d[N].f`, etc. → `"N"`.
 /// Handles `l[...]` → `"l[...]"` (unchanged, for list keys).
 fn normalize_map_key(key: &str) -> std::borrow::Cow<'_, str> {
+    // d[N].suffix → N (strip type wrapper)
     if let Some(rest) = key.strip_prefix("d[") {
         if let Some(end) = rest.find(']') {
             return std::borrow::Cow::Borrowed(&rest[..end]);
         }
+    }
+    // l[items] → l[items] (keep as-is for list keys)
+    // s[items] → l[items] (normalize set notation to list for comparison)
+    if let Some(inner) = key.strip_prefix("s[").and_then(|r| r.strip_suffix(']')) {
+        return std::borrow::Cow::Owned(format!("l[{}]", inner));
     }
     std::borrow::Cow::Borrowed(key)
 }
