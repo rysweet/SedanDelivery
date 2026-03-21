@@ -62,6 +62,7 @@ pub fn parse_traversal(
     let seed_strategy = extract_seed_strategy(input);
     // SubgraphStrategy — extract vertex/edge filter traversals
     let subgraph_vertex_filter = extract_subgraph_vertex_filter(input, resolve_param);
+    let subgraph_edge_filter = extract_subgraph_edge_filter(input, resolve_param);
 
     // Strip strategy wrappers: g.withStrategies(...).V()... or g.withoutStrategies(...).V()...
     // Also strip g.withSideEffect(...) and g.withSack(...) and g.withComputer(...)
@@ -122,9 +123,12 @@ pub fn parse_traversal(
         parse_step_token(token, resolve_param, &mut steps)?;
     }
 
-    // Apply SubgraphStrategy vertex filter: inject filter steps after V/out/in/both/etc
+    // Apply SubgraphStrategy filters: inject vertex/edge filter steps
     if let Some(ref vf_steps) = subgraph_vertex_filter {
         steps = inject_subgraph_vertex_filter(steps, vf_steps);
+    }
+    if let Some(ref ef_steps) = subgraph_edge_filter {
+        steps = inject_subgraph_edge_filter(steps, ef_steps);
     }
 
     Ok(steps)
@@ -273,7 +277,27 @@ fn extract_balanced_traversal(input: &str) -> Option<String> {
     Some(text.to_string())
 }
 
-/// Inject SubgraphStrategy vertex filter steps after V() steps.
+/// Extract the edge filter traversal from SubgraphStrategy.
+/// e.g., `SubgraphStrategy(edges: __.hasLabel("created"))`
+fn extract_subgraph_edge_filter(
+    input: &str,
+    resolve_param: &dyn Fn(&str) -> Option<GremlinValue>,
+) -> Option<Vec<GremlinStep>> {
+    if !input.contains("SubgraphStrategy") {
+        return None;
+    }
+    let start = input.find("SubgraphStrategy(")?;
+    let after = &input[start + "SubgraphStrategy(".len()..];
+
+    // Find "edges:" parameter
+    let epos = after.find("edges:")?;
+    let rest = after[epos + "edges:".len()..].trim_start();
+
+    let traversal_text = extract_balanced_traversal(rest)?;
+    parse_inner_traversal(&traversal_text, resolve_param).ok()
+}
+
+/// Inject SubgraphStrategy vertex filter steps after V() and vertex-producing navigation steps.
 fn inject_subgraph_vertex_filter(
     steps: Vec<GremlinStep>,
     filter_steps: &[GremlinStep],
@@ -281,11 +305,47 @@ fn inject_subgraph_vertex_filter(
     let mut result = Vec::with_capacity(steps.len() * 2);
 
     for step in steps {
-        let needs_vertex_filter = matches!(step, GremlinStep::V(_));
+        let needs_vertex_filter = matches!(
+            step,
+            GremlinStep::V(_)
+                | GremlinStep::Out(_)
+                | GremlinStep::In(_)
+                | GremlinStep::Both(_)
+                | GremlinStep::InV
+                | GremlinStep::OutV
+                | GremlinStep::BothV
+                | GremlinStep::OtherV
+        );
 
         result.push(step);
 
         if needs_vertex_filter {
+            result.push(GremlinStep::Where(filter_steps.to_vec()));
+        }
+    }
+
+    result
+}
+
+/// Inject SubgraphStrategy edge filter steps after edge-producing steps.
+fn inject_subgraph_edge_filter(
+    steps: Vec<GremlinStep>,
+    filter_steps: &[GremlinStep],
+) -> Vec<GremlinStep> {
+    let mut result = Vec::with_capacity(steps.len() * 2);
+
+    for step in steps {
+        let needs_edge_filter = matches!(
+            step,
+            GremlinStep::E(_)
+                | GremlinStep::OutE(_)
+                | GremlinStep::InE(_)
+                | GremlinStep::BothE(_)
+        );
+
+        result.push(step);
+
+        if needs_edge_filter {
             result.push(GremlinStep::Where(filter_steps.to_vec()));
         }
     }
