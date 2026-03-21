@@ -23,6 +23,37 @@ fn format_value(v: &Value) -> String {
     }
 }
 
+/// Wrap a property value for `valueMap()` output.
+///
+/// Single scalar values are wrapped in `List([v])`.
+/// Multi-valued vertex properties (stored as `List` of `Map`s with a "value"
+/// key) are flattened to `List` of the extracted values.
+/// Plain lists (no Maps with "value") are kept as-is.
+fn valuemap_wrap_property(v: Value) -> Value {
+    match v {
+        Value::List(items) => {
+            if items.iter().all(|item| {
+                matches!(item, Value::Map(m) if m.contains_key("value"))
+            }) && !items.is_empty()
+            {
+                // Multi-valued vertex property with meta-properties: extract values
+                let values = items
+                    .into_iter()
+                    .map(|item| match item {
+                        Value::Map(m) => m.get("value").cloned().unwrap_or(Value::Null),
+                        other => other,
+                    })
+                    .collect();
+                Value::List(values)
+            } else {
+                // Plain list property — already a list of values
+                Value::List(items)
+            }
+        }
+        single => Value::List(vec![single]),
+    }
+}
+
 impl<'a> QueryExecutor<'a> {
     /// Build a `FilterRow` (borrowed string-key map) from an owned `Row`.
     ///
@@ -715,7 +746,7 @@ impl<'a> QueryExecutor<'a> {
                                             if keys.is_empty() || keys.iter().any(|fk| fk == &k) {
                                                 wrapped.insert(
                                                     k.into_boxed_str(),
-                                                    Value::List(vec![v]),
+                                                    valuemap_wrap_property(v),
                                                 );
                                             }
                                         }
@@ -745,7 +776,7 @@ impl<'a> QueryExecutor<'a> {
                                             if keys.is_empty() || keys.iter().any(|fk| fk == &k) {
                                                 wrapped.insert(
                                                     k.into_boxed_str(),
-                                                    Value::List(vec![v]),
+                                                    valuemap_wrap_property(v),
                                                 );
                                             }
                                         }
@@ -760,7 +791,7 @@ impl<'a> QueryExecutor<'a> {
                                     .filter(|(k, _)| {
                                         keys.is_empty() || keys.iter().any(|fk| fk.as_str() == &**k)
                                     })
-                                    .map(|(k, v)| (k, Value::List(vec![v])))
+                                    .map(|(k, v)| (k, valuemap_wrap_property(v)))
                                     .collect();
                                 Ok(Value::Map(wrapped))
                             }
@@ -965,24 +996,66 @@ impl<'a> QueryExecutor<'a> {
                             }
                             _ => Vec::new(),
                         };
+                        let mut prop_idx: i64 = 0;
                         let entries: Vec<Value> = props
                             .into_iter()
                             .filter(|(k, _)| {
                                 key_filters.is_empty() || key_filters.iter().any(|f| f == k)
                             })
-                            .enumerate()
-                            .map(|(idx, (k, v))| {
+                            .flat_map(|(k, v)| {
                                 let elem_base = match &element {
                                     Value::Node(nid) => nid.0 as i64 * 1000,
                                     Value::Edge(eid) => eid.0 as i64 * 1000,
                                     _ => 0,
                                 };
+                                // Multi-valued vertex property (List of Maps with "value" key):
+                                // explode into individual property entries.
+                                if let Value::List(ref items) = v {
+                                    if !items.is_empty()
+                                        && items.iter().all(|item| {
+                                            matches!(item, Value::Map(m) if m.contains_key("value"))
+                                        })
+                                    {
+                                        let result: Vec<Value> = items
+                                            .iter()
+                                            .map(|item| {
+                                                let main_val = match item {
+                                                    Value::Map(m) => {
+                                                        m.get("value")
+                                                            .cloned()
+                                                            .unwrap_or(Value::Null)
+                                                    }
+                                                    other => other.clone(),
+                                                };
+                                                let mut m = indexmap::IndexMap::new();
+                                                m.insert(
+                                                    Box::from("~id"),
+                                                    Value::Int(elem_base + prop_idx),
+                                                );
+                                                m.insert(
+                                                    Box::from("~key"),
+                                                    Value::Str(k.clone().into_boxed_str()),
+                                                );
+                                                m.insert(Box::from("~value"), main_val);
+                                                m.insert(Box::from("~element"), element.clone());
+                                                prop_idx += 1;
+                                                Value::Map(m)
+                                            })
+                                            .collect();
+                                        return result;
+                                    }
+                                }
+                                // Single-valued property: one entry.
                                 let mut m = indexmap::IndexMap::new();
-                                m.insert(Box::from("~id"), Value::Int(elem_base + idx as i64));
+                                m.insert(
+                                    Box::from("~id"),
+                                    Value::Int(elem_base + prop_idx),
+                                );
                                 m.insert(Box::from("~key"), Value::Str(k.into_boxed_str()));
                                 m.insert(Box::from("~value"), v);
                                 m.insert(Box::from("~element"), element.clone());
-                                Value::Map(m)
+                                prop_idx += 1;
+                                vec![Value::Map(m)]
                             })
                             .collect();
                         Ok(Value::List(entries))

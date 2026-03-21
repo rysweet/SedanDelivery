@@ -1565,7 +1565,7 @@ impl GremlinCompiler {
                     current = Some(Operator::Aggregate {
                         keys: vec![],
                         aggregations: vec![(
-                            AggFunction::Collect,
+                            AggFunction::CollectAll,
                             Expr::Variable(current_alias.clone()),
                             None,
                             false,
@@ -7431,7 +7431,7 @@ mod tests {
         } = &op
         {
             assert!(keys.is_empty(), "fold has no group keys");
-            assert!(matches!(aggregations[0].0, AggFunction::Collect));
+            assert!(matches!(aggregations[0].0, AggFunction::CollectAll));
         } else {
             panic!("expected Aggregate");
         }
