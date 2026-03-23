@@ -191,21 +191,31 @@ pub fn gremlin_cmp_values(a: &Value, b: &Value) -> std::cmp::Ordering {
         return ra.cmp(&rb);
     }
 
-    // Property maps: compare by element first, then by ~id (insertion order).
+    // Property maps: comparison depends on element type.
+    // Vertex properties (VertexProperty extends Element): by element, then ID.
+    // Edge properties (Property): by key, then value.
     if is_property_map(a) && is_property_map(b) {
         if let (Value::Map(ma), Value::Map(mb)) = (a, b) {
             let ea = ma.get("~element").unwrap_or(&Value::Null);
             let eb = mb.get("~element").unwrap_or(&Value::Null);
-            let elem_cmp = gremlin_cmp_values(ea, eb);
-            if elem_cmp != std::cmp::Ordering::Equal {
-                return elem_cmp;
+
+            if matches!(ea, Value::Node(_)) && matches!(eb, Value::Node(_)) {
+                // VertexProperty: order by owning vertex, then property ID.
+                let elem_cmp = gremlin_cmp_values(ea, eb);
+                if elem_cmp != std::cmp::Ordering::Equal {
+                    return elem_cmp;
+                }
+                let ida = ma.get("~id").unwrap_or(&Value::Null);
+                let idb = mb.get("~id").unwrap_or(&Value::Null);
+                return gremlin_cmp_values(ida, idb);
             }
-            // Compare by property ID (insertion order within element).
-            let ida = ma.get("~id").unwrap_or(&Value::Null);
-            let idb = mb.get("~id").unwrap_or(&Value::Null);
-            let id_cmp = gremlin_cmp_values(ida, idb);
-            if id_cmp != std::cmp::Ordering::Equal {
-                return id_cmp;
+
+            // Edge Property: order by key name, then value.
+            let ka = ma.get("~key").unwrap_or(&Value::Null);
+            let kb = mb.get("~key").unwrap_or(&Value::Null);
+            let key_cmp = gremlin_cmp_values(ka, kb);
+            if key_cmp != std::cmp::Ordering::Equal {
+                return key_cmp;
             }
             let va = ma.get("~value").unwrap_or(&Value::Null);
             let vb = mb.get("~value").unwrap_or(&Value::Null);

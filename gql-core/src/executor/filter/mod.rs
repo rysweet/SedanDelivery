@@ -152,10 +152,7 @@ pub fn eval_expr<'r>(expr: &Expr, row: &Row<'r>) -> Result<Value, GqlError> {
                 | Value::Duration(_) => temporal_property_access(&obj, key.as_str()),
                 // Point property access (x, y, z, srid, crs)
                 Value::Point(_) => temporal_property_access(&obj, key.as_str()),
-                other => Err(GqlError::Execution(ExecutionError::TypeMismatch {
-                    expected: "Node, Relationship, or Map".to_string(),
-                    actual: other.type_name().to_string(),
-                })),
+                _ => Ok(Value::Null),
             }
         }
 
@@ -470,7 +467,9 @@ pub fn eval_function_with_vals(name: &str, vals: Vec<Value>) -> Result<Value, Gq
                 Ok(Value::List(rev))
             }
             Some(Value::Null) => Ok(Value::Null),
-            _ => Ok(Value::Null),
+            // Non-string, non-list types: return the value unchanged (Gremlin semantics)
+            Some(other) => Ok(other.clone()),
+            None => Ok(Value::Null),
         },
         "gremlin_replace" => match (vals.first(), vals.get(1), vals.get(2)) {
             (Some(Value::Str(s)), Some(Value::Str(old)), Some(Value::Str(new))) => {
@@ -710,12 +709,77 @@ pub fn eval_function_with_vals(name: &str, vals: Vec<Value>) -> Result<Value, Gq
             }
             _ => eval_function_with_vals("gremlin_split", vals),
         },
-        "gremlin_length_local" => match vals.first() {
-            Some(Value::List(l)) => Ok(Value::Int(l.len() as i64)),
+        "gremlin_count_local" => match vals.first() {
+            Some(Value::List(l)) => {
+                // count(local) on a list returns the number of elements.
+                Ok(Value::Int(l.len() as i64))
+            }
             Some(Value::Map(m)) => Ok(Value::Int(m.len() as i64)),
             Some(Value::Str(s)) => Ok(Value::Int(s.len() as i64)),
             Some(Value::Null) => Ok(Value::Null),
             _ => Ok(Value::Int(0)),
+        },
+        "gremlin_length_local" => match vals.first() {
+            Some(Value::List(l)) => {
+                // length(local) on a list returns per-element string lengths.
+                let lengths: Vec<Value> = l.iter().map(|v| match v {
+                    Value::Str(s) => Value::Int(s.len() as i64),
+                    Value::List(inner) => Value::Int(inner.len() as i64),
+                    Value::Map(m) => Value::Int(m.len() as i64),
+                    Value::Null => Value::Null,
+                    _ => Value::Int(0),
+                }).collect();
+                Ok(Value::List(lengths))
+            }
+            Some(Value::Map(m)) => Ok(Value::Int(m.len() as i64)),
+            Some(Value::Str(s)) => Ok(Value::Int(s.len() as i64)),
+            Some(Value::Null) => Ok(Value::Null),
+            _ => Ok(Value::Int(0)),
+        },
+        "gremlin_fold_reduce" => {
+            // fold(seed, Operator) — reduce a collected list with a binary operator.
+            // Args: list, seed, operator_name
+            let list = vals.first().cloned().unwrap_or(Value::Null);
+            let seed = vals.get(1).cloned().unwrap_or(Value::Null);
+            let op = match vals.get(2) {
+                Some(Value::Str(s)) => s.as_ref(),
+                _ => "sum",
+            };
+            let items = match list {
+                Value::List(l) => l,
+                _ => vec![],
+            };
+            match op {
+                "sum" => {
+                    let mut acc = seed;
+                    for v in items {
+                        acc = match (&acc, &v) {
+                            (Value::Int(a), Value::Int(b)) => Value::Int(a + b),
+                            (Value::Float(a), Value::Int(b)) => Value::Float(a + *b as f64),
+                            (Value::Int(a), Value::Float(b)) => Value::Float(*a as f64 + b),
+                            (Value::Float(a), Value::Float(b)) => Value::Float(a + b),
+                            _ => acc,
+                        };
+                    }
+                    Ok(acc)
+                }
+                "addall" => {
+                    // Merge maps: last-writer-wins
+                    let mut result = match seed {
+                        Value::Map(m) => m,
+                        _ => IndexMap::new(),
+                    };
+                    for v in items {
+                        if let Value::Map(m) = v {
+                            for (k, val) in m {
+                                result.insert(k, val);
+                            }
+                        }
+                    }
+                    Ok(Value::Map(result))
+                }
+                _ => Ok(seed),
+            }
         },
         "gremlin_math" => {
             let current_val = vals.first().cloned().unwrap_or(Value::Null);
@@ -723,7 +787,21 @@ pub fn eval_function_with_vals(name: &str, vals: Vec<Value>) -> Result<Value, Gq
                 Some(Value::Str(s)) => s.as_ref(),
                 _ => return Ok(Value::Null),
             };
-            eval_math_expr(expr_str, &current_val)
+            // Parse extra variable bindings: pairs of (name, value) starting at index 2
+            let mut var_bindings: Vec<(String, f64)> = Vec::new();
+            let mut i = 2;
+            while i + 1 < vals.len() {
+                if let (Some(Value::Str(name)), Some(val)) = (vals.get(i), vals.get(i + 1)) {
+                    let num = match val {
+                        Value::Int(n) => *n as f64,
+                        Value::Float(f) => *f,
+                        _ => 0.0,
+                    };
+                    var_bindings.push((name.to_string(), num));
+                }
+                i += 2;
+            }
+            eval_math_expr(expr_str, &current_val, &var_bindings)
         },
         "gremlin_tail_local" => {
             let val = vals.first().cloned().unwrap_or(Value::Null);
@@ -889,6 +967,11 @@ pub fn eval_function_with_vals(name: &str, vals: Vec<Value>) -> Result<Value, Gq
                             }
                         }
                     }
+                    // If any %{...} placeholders remain unresolved, return Null
+                    // so the filter can drop this traverser.
+                    if result.contains("%{") {
+                        return Ok(Value::Null);
+                    }
                     // Replace %s with the traverser value directly
                     if result.contains("%s") {
                         let val_str = match val {
@@ -974,7 +1057,24 @@ pub fn eval_function_with_vals(name: &str, vals: Vec<Value>) -> Result<Value, Gq
                 Ok(Value::Str(format!("[{}]", parts.join(", ")).into()))
             }
             Some(Value::Map(m)) => {
-                let parts: Vec<String> = m.iter().map(|(k, v)| {
+                // Detect VertexProperty maps: {~key, ~value, ~element(Node)}
+                if m.contains_key("~key") && m.contains_key("~value") {
+                    if let (Some(Value::Str(key)), Some(val)) =
+                        (m.get("~key"), m.get("~value"))
+                    {
+                        let val_str = match val {
+                            Value::Str(s) => s.to_string(),
+                            Value::Int(n) => n.to_string(),
+                            Value::Float(f) => f.to_string(),
+                            Value::Bool(b) => b.to_string(),
+                            other => format!("{:?}", other),
+                        };
+                        return Ok(Value::Str(format!("vp[{}->{}]", key, val_str).into()));
+                    }
+                }
+                let parts: Vec<String> = m.iter()
+                    .filter(|(k, _)| !k.starts_with('~'))
+                    .map(|(k, v)| {
                     let vs = match v {
                         Value::Str(s) => s.to_string(),
                         Value::Int(n) => n.to_string(),
@@ -1019,6 +1119,50 @@ pub fn eval_function_with_vals(name: &str, vals: Vec<Value>) -> Result<Value, Gq
                         expected: "Can't parse null as string".into(),
                         actual: "null".into(),
                     })),
+                    Value::Map(m) => {
+                        // Detect VertexProperty maps
+                        if m.contains_key("~key") && m.contains_key("~value") {
+                            if let (Some(Value::Str(key)), Some(val)) =
+                                (m.get("~key"), m.get("~value"))
+                            {
+                                let val_str = match val {
+                                    Value::Str(s) => s.to_string(),
+                                    Value::Int(n) => n.to_string(),
+                                    Value::Float(f) => f.to_string(),
+                                    Value::Bool(b) => b.to_string(),
+                                    other => format!("{:?}", other),
+                                };
+                                return Ok(Value::Str(
+                                    format!("vp[{}->{}]", key, val_str).into(),
+                                ));
+                            }
+                        }
+                        // Regular map: {key=[values]} format
+                        let parts: Vec<String> = m
+                            .iter()
+                            .filter(|(k, _)| !k.starts_with('~'))
+                            .map(|(k, v)| {
+                                let vs = match v {
+                                    Value::Str(s) => s.to_string(),
+                                    Value::Int(n) => n.to_string(),
+                                    Value::Float(f) => f.to_string(),
+                                    Value::Bool(b) => b.to_string(),
+                                    Value::List(items) => {
+                                        let inner: Vec<String> =
+                                            items.iter().map(|i| match i {
+                                                Value::Str(s) => s.to_string(),
+                                                Value::Int(n) => n.to_string(),
+                                                other => format!("{:?}", other),
+                                            }).collect();
+                                        format!("[{}]", inner.join(", "))
+                                    }
+                                    other => format!("{:?}", other),
+                                };
+                                format!("{}={}", k, vs)
+                            })
+                            .collect();
+                        Ok(Value::Str(format!("{{{}}}", parts.join(", ")).into()))
+                    }
                     other => Ok(Value::Str(format!("{:?}", other).into())),
                 }
             }
@@ -1493,8 +1637,9 @@ pub fn eval_function_with_vals(name: &str, vals: Vec<Value>) -> Result<Value, Gq
                     let none_match = !items.iter().any(|v| gremlin_pred_check(v, pred_op, &pred_val));
                     Ok(Value::Bool(none_match))
                 }
-                // Scalar: none(P) → NOT matches(P)
-                other => Ok(Value::Bool(!gremlin_pred_check(other, pred_op, &pred_val))),
+                // Scalar: none(P) is a collection predicate — always false
+                // for non-collection values.
+                _ => Ok(Value::Bool(false)),
             }
         }
 
@@ -1613,7 +1758,17 @@ pub fn eval_function_with_vals(name: &str, vals: Vec<Value>) -> Result<Value, Gq
                     let mut entries: Vec<(Box<str>, Value)> = m.into_iter().collect();
                     if let Some(ref key) = by_key {
                         if key.as_ref() == "Column.keys" {
-                            entries.sort_by(|(ka, _), (kb, _)| ka.cmp(kb));
+                            // Sort by key name; strip t[...] wrapper for T tokens
+                            // so t[id] compares as "id" and t[label] as "label"
+                            entries.sort_by(|(ka, _), (kb, _)| {
+                                let ka_cmp = ka.strip_prefix("t[")
+                                    .and_then(|s| s.strip_suffix(']'))
+                                    .unwrap_or(ka);
+                                let kb_cmp = kb.strip_prefix("t[")
+                                    .and_then(|s| s.strip_suffix(']'))
+                                    .unwrap_or(kb);
+                                ka_cmp.cmp(kb_cmp)
+                            });
                         } else {
                             entries.sort_by(|(_, va), (_, vb)| {
                                 crate::executor::engine::helpers::gremlin_cmp_values(va, vb)
@@ -1781,16 +1936,32 @@ pub fn eval_function_with_vals(name: &str, vals: Vec<Value>) -> Result<Value, Gq
                         Value::Path { .. } => "path",
                         _ => "unknown",
                     };
-                    // Handle various type name formats
                     let expected = expected_type.to_lowercase();
+                    // Validate that the type name is recognized
+                    let known_types = [
+                        "string", "integer", "int", "long", "double", "float",
+                        "boolean", "null", "list", "map", "set", "path", "vertex",
+                        "edge", "date", "short", "byte", "biginteger", "bigdecimal",
+                        "bigint", "uuid", "tree", "binary", "char", "datetime", "duration",
+                        "graph", "vproperty", "property",
+                    ];
+                    if !known_types.contains(&expected.as_str()) {
+                        return Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                            expected: format!("a known GType, got '{}'", expected_type),
+                            actual: "unregistered type name".to_string(),
+                        }));
+                    }
                     let matches = actual_type == expected
                         || (expected == "long" && actual_type == "integer")
+                        || (expected == "int" && actual_type == "integer")
                         || (expected == "short" && actual_type == "integer")
                         || (expected == "byte" && actual_type == "integer")
+                        || (expected == "bigint" && actual_type == "integer")
                         || (expected == "biginteger" && actual_type == "integer")
-                        || (expected == "float" && actual_type == "double")
                         || (expected == "bigdecimal" && actual_type == "double")
-                        || (expected == "set" && actual_type == "list");
+                        || (expected == "float" && actual_type == "double")
+                        || (expected == "set" && actual_type == "list")
+                        || (expected == "path" && actual_type == "list");
                     Ok(Value::Bool(matches))
                 }
                 _ => Ok(Value::Bool(false)),
@@ -1919,9 +2090,12 @@ fn extract_sort_key(v: &Value, key: &str) -> Value {
 }
 
 /// Evaluate a Gremlin math expression. `_` refers to the current value.
-/// Supports: `_ + N`, `_ - N`, `_ * N`, `_ / N`, `ceil(_)`, `floor(_)`,
-/// `abs(_)`, `_ + 1` (inc).
-fn eval_math_expr(expr: &str, current: &Value) -> Result<Value, GqlError> {
+/// `var_bindings` provides named variable values (e.g., from by() modulation or side effects).
+fn eval_math_expr(
+    expr: &str,
+    current: &Value,
+    var_bindings: &[(String, f64)],
+) -> Result<Value, GqlError> {
     let expr = expr.trim();
 
     // Helper to extract numeric value
@@ -1933,19 +2107,37 @@ fn eval_math_expr(expr: &str, current: &Value) -> Result<Value, GqlError> {
         }
     }
 
+    // Helper to resolve a token to a numeric value
+    let resolve = |token: &str| -> f64 {
+        if token == "_" {
+            return as_f64(current).unwrap_or(0.0);
+        }
+        if let Ok(n) = token.parse::<f64>() {
+            return n;
+        }
+        // Look up in variable bindings
+        for (name, val) in var_bindings {
+            if name == token {
+                return *val;
+            }
+        }
+        // Default to current value
+        as_f64(current).unwrap_or(0.0)
+    };
+
     let val = as_f64(current).unwrap_or(0.0);
 
     // ceil(_), floor(_), abs(_)
-    if expr.starts_with("ceil(") {
+    if expr.starts_with("ceil(") || expr.starts_with("ceil ") || expr == "ceil" {
         return Ok(Value::Float(val.ceil()));
     }
-    if expr.starts_with("floor(") {
+    if expr.starts_with("floor(") || expr.starts_with("floor ") || expr == "floor" {
         return Ok(Value::Float(val.floor()));
     }
-    if expr.starts_with("abs(") {
+    if expr.starts_with("abs(") || expr.starts_with("abs ") || expr == "abs" {
         return Ok(Value::Float(val.abs()));
     }
-    if expr.starts_with("sqrt(") {
+    if expr.starts_with("sqrt(") || expr.starts_with("sqrt ") || expr == "sqrt" {
         return Ok(Value::Float(val.sqrt()));
     }
 
@@ -1961,26 +2153,10 @@ fn eval_math_expr(expr: &str, current: &Value) -> Result<Value, GqlError> {
             let left_str = expr[..pos].trim();
             let right_str = expr[pos + op_str.len()..].trim();
 
-            let left_val = if left_str == "_" {
-                val
-            } else if let Ok(n) = left_str.parse::<f64>() {
-                n
-            } else {
-                val // default to current value for variable refs
-            };
-            let right_val = if right_str == "_" {
-                val
-            } else if let Ok(n) = right_str.parse::<f64>() {
-                n
-            } else {
-                val
-            };
+            let left_val = resolve(left_str);
+            let right_val = resolve(right_str);
 
             let result = op_fn(left_val, right_val);
-            // Return Int if the result is a whole number and both operands are int-like
-            if result.fract() == 0.0 && matches!(current, Value::Int(_)) {
-                return Ok(Value::Float(result));
-            }
             return Ok(Value::Float(result));
         }
     }

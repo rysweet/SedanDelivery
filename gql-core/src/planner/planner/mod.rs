@@ -1669,6 +1669,7 @@ mod tests {
             | Operator::GremlinGroup { child, .. }
             | Operator::GremlinMapSlice { child, .. }
             | Operator::GremlinSimplePath { child, .. }
+            | Operator::GremlinCyclicPath { child, .. }
             | Operator::GremlinIndex { child, .. } => {
                 vec![child]
             }

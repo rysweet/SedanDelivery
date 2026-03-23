@@ -26,6 +26,9 @@ impl<'a> QueryExecutor<'a> {
             emit_before,
             emit_predicate,
             remap,
+            times_before,
+            loop_label,
+            body_path_aliases,
             child,
         } = op
         else {
@@ -35,13 +38,71 @@ impl<'a> QueryExecutor<'a> {
             }));
         };
 
+        // Loop counter key: __gremlin_loop_count (unlabeled) or
+        // __gremlin_loop_count_<label> (labeled). Always inject the generic
+        // counter too so that unlabeled loops() reads the innermost repeat.
+        let labeled_counter_key = loop_label
+            .as_ref()
+            .map(|l| format!("__gremlin_loop_count_{l}"));
+        let generic_counter_key = "__gremlin_loop_count".to_string();
+
         let mut current = self.exec_operator(cx, child)?;
         let mut collected: Vec<Row> = Vec::new();
         let mut body_exhausted = false;
 
-        let max_iterations = times.unwrap_or(256);
+        // Determine the seed alias name from remap (used for path tracking).
+        let seed_key = remap.as_ref().map(|(_, to)| to.as_str());
+
+        // When the repeat body contains a Distinct operator, enable shared
+        // dedup state so that values seen in iteration N are remembered in
+        // iteration N+1 (cross-iteration dedup semantics).
+        let body_has_distinct = operator_contains_distinct(body);
+        let prev_dedup_state = if body_has_distinct {
+            let prev = self.repeat_dedup_state.borrow_mut().take();
+            *self.repeat_dedup_state.borrow_mut() = Some(std::collections::HashSet::new());
+            prev
+        } else {
+            None
+        };
+
+        // Do-while semantics: when times() appears AFTER repeat(), always
+        // execute the body at least once, even for times(0).
+        let max_iterations = match *times {
+            Some(0) if !*times_before => 1,
+            Some(n) => n,
+            None => 256,
+        };
+
+        // Batch size for streaming seed processing. When `current` exceeds
+        // this threshold, seeds are fed to the body in chunks to cap peak
+        // memory at BATCH_SIZE × branching_factor instead of
+        // total_seeds × branching_factor. This prevents OOM on exponential
+        // growth patterns (e.g., repeat(both()).until(loops().is(40)) where
+        // each iteration multiplies traversers by the graph's branching factor).
+        //
+        // When the body contains barrier steps (Sort, Aggregate, Distinct),
+        // batching is disabled because barriers must see all rows at once to
+        // produce correct results (e.g., order().tail(2) must sort ALL
+        // traversers, not each batch independently).
+        const BATCH_SIZE: usize = 10_000;
+        let body_has_barriers = operator_contains_barrier(body);
+        let effective_batch = if body_has_barriers {
+            usize::MAX
+        } else {
+            BATCH_SIZE
+        };
+
         for iteration in 0..max_iterations {
             cx.budget.check_or_err()?;
+
+            // Inject loop counter into current rows so emit predicates and
+            // until conditions that reference loops() can see the value.
+            for row in &mut current {
+                row.insert(generic_counter_key.clone(), Value::Int(iteration as i64));
+                if let Some(lk) = &labeled_counter_key {
+                    row.insert(lk.clone(), Value::Int(iteration as i64));
+                }
+            }
 
             // Pre-emit: collect traversers before body execution.
             // Only when emit_before is true (emit() appeared before repeat()).
@@ -49,27 +110,146 @@ impl<'a> QueryExecutor<'a> {
                 self.collect_emitted(cx, &current, emit_predicate, &mut collected)?;
             }
 
-            // Feed current rows through the body.
-            let mut next = Vec::new();
-            for row in &current {
+            // Execute the repeat body with batched streaming: process seeds
+            // in chunks of BATCH_SIZE to cap peak memory. Each batch is
+            // independently fed to the body operator and results are merged.
+            let mut next: Vec<Row> = Vec::new();
+            let mut iteration_agg_maps: std::collections::HashMap<
+                String,
+                indexmap::IndexMap<Box<str>, Value>,
+            > = std::collections::HashMap::new();
+
+            for batch_start in (0..current.len()).step_by(effective_batch) {
                 cx.budget.check_or_err()?;
-                let mut seed_row = row.clone();
-                if let Some((from, _)) = remap {
-                    seed_row.remove(from.as_str());
+                let batch_end = (batch_start + BATCH_SIZE).min(current.len());
+                let batch = &current[batch_start..batch_end];
+
+                // Prepare seed rows for this batch.
+                let mut seeds: Vec<Row> = Vec::with_capacity(batch.len());
+                for row in batch {
+                    let mut seed_row = row.clone();
+                    seed_row.insert(generic_counter_key.clone(), Value::Int(iteration as i64));
+                    if let Some(lk) = &labeled_counter_key {
+                        seed_row.insert(lk.clone(), Value::Int(iteration as i64));
+                    }
+                    if let Some(key) = seed_key {
+                        if let Some(seed_val) = row.get(key).cloned() {
+                            let mut acc = match row.get("__gremlin_path_acc") {
+                                Some(Value::List(l)) => l.clone(),
+                                _ => vec![],
+                            };
+                            acc.push(seed_val);
+                            seed_row.insert("__gremlin_path_acc".to_string(), Value::List(acc));
+                        }
+                    }
+                    if let Some((from, _)) = remap {
+                        seed_row.remove(from.as_str());
+                    }
+                    // Remove intermediate body path aliases from seed rows
+                    // to avoid edge isomorphism conflicts in the next body
+                    // execution (e.g., stale e_2 from a previous outE).
+                    for alias in body_path_aliases {
+                        seed_row.remove(alias.as_str());
+                    }
+                    seeds.push(seed_row);
                 }
-                self.foreach_seed.borrow_mut().replace(vec![seed_row]);
+
+                self.foreach_seed.borrow_mut().replace(seeds);
                 let body_rows = self.exec_operator(cx, body)?;
                 self.foreach_seed.borrow_mut().take();
-                next.extend(body_rows);
+
+                // Separate traverser rows from side-effect sentinel rows.
+                for body_row in body_rows {
+                    if let Some(key) = seed_key {
+                        if !body_row.contains_key(key)
+                            && remap
+                                .as_ref()
+                                .is_none_or(|(from, _)| !body_row.contains_key(from.as_str()))
+                        {
+                            for (k, v) in &body_row {
+                                if k.starts_with("__gremlin_agg_") {
+                                    if let Value::Map(m) = v {
+                                        let acc = iteration_agg_maps.entry(k.clone()).or_default();
+                                        for (mk, mv) in m {
+                                            let e = acc.entry(mk.clone()).or_insert(Value::Int(0));
+                                            match (e.clone(), mv) {
+                                                (Value::Int(a), Value::Int(b)) => {
+                                                    *e = Value::Int(a + b)
+                                                }
+                                                (Value::Float(a), Value::Float(b)) => {
+                                                    *e = Value::Float(a + b)
+                                                }
+                                                (_, new_v) => *e = new_v.clone(),
+                                            }
+                                        }
+                                    }
+                                    for nr in &mut next {
+                                        nr.entry(k.clone()).or_insert_with(|| v.clone());
+                                    }
+                                }
+                            }
+                            continue;
+                        }
+                    }
+                    cx.budget.record_row();
+                    next.push(body_row);
+                }
+            }
+
+            // Merge side-effect agg maps from body results.
+            if let Some(first) = next.first() {
+                for (k, v) in first {
+                    if k.starts_with("__gremlin_agg_") {
+                        if let Value::Map(m) = v {
+                            let acc = iteration_agg_maps.entry(k.clone()).or_default();
+                            for (mk, mv) in m {
+                                let e = acc.entry(mk.clone()).or_insert(Value::Int(0));
+                                match (e.clone(), mv) {
+                                    (Value::Int(a), Value::Int(b)) => *e = Value::Int(a + b),
+                                    (Value::Float(a), Value::Float(b)) => *e = Value::Float(a + b),
+                                    (_, new_v) => *e = new_v.clone(),
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Stamp the merged side-effect maps on all rows so every
+            // traverser carries the full accumulated state.
+            if !iteration_agg_maps.is_empty() {
+                for row in &mut next {
+                    for (k, merged) in &iteration_agg_maps {
+                        row.insert(k.clone(), Value::Map(merged.clone()));
+                    }
+                }
             }
 
             if next.is_empty() {
                 body_exhausted = true;
-                // Body produced no results — stop iterating.
-                if !*emit && until.is_none() {
+                if !*emit {
                     return Ok(collected);
                 }
                 break;
+            }
+
+            // Accumulate intermediate body path aliases (e.g., edge values from
+            // outE) into __gremlin_path_acc so path() sees them.
+            if !body_path_aliases.is_empty() {
+                for row in &mut next {
+                    let vals: Vec<Value> = body_path_aliases
+                        .iter()
+                        .filter_map(|alias| row.get(alias.as_str()).cloned())
+                        .collect();
+                    if !vals.is_empty() {
+                        let mut acc = match row.get("__gremlin_path_acc") {
+                            Some(Value::List(l)) => l.clone(),
+                            _ => vec![],
+                        };
+                        acc.extend(vals);
+                        row.insert("__gremlin_path_acc".to_string(), Value::List(acc));
+                    }
+                }
             }
 
             // Remap body output alias back to seed alias for the next iteration.
@@ -82,9 +262,21 @@ impl<'a> QueryExecutor<'a> {
             }
 
             current = next;
+            cx.budget.check_or_err()?;
+
+            // Update loop count: after body execution in iteration N, the
+            // traverser has completed N+1 loops.
+            for row in &mut current {
+                row.insert(
+                    generic_counter_key.clone(),
+                    Value::Int((iteration + 1) as i64),
+                );
+                if let Some(lk) = &labeled_counter_key {
+                    row.insert(lk.clone(), Value::Int((iteration + 1) as i64));
+                }
+            }
 
             // Post-emit: collect body results after execution.
-            // Only when emit is true but emit_before is false (emit() after repeat()).
             if *emit && !*emit_before {
                 self.collect_emitted(cx, &current, emit_predicate, &mut collected)?;
             }
@@ -98,7 +290,6 @@ impl<'a> QueryExecutor<'a> {
                     let result = self.exec_operator(cx, until_op)?;
                     self.foreach_seed.borrow_mut().take();
                     if !result.is_empty() {
-                        // This traverser matched until — collect it
                         collected.push(row);
                     } else {
                         continuing.push(row);
@@ -119,13 +310,24 @@ impl<'a> QueryExecutor<'a> {
         }
 
         // Add final traversers when appropriate:
-        // Add final traversers when appropriate:
-        // - Non-emit mode: always add final current
+        // - Non-emit mode with times (no until): add final current
+        // - Non-emit mode with until: don't add (never matched exit condition)
         // - Pre-emit with times (body not exhausted): add final current
-        // - Post-emit or body exhausted: don't add (already collected in loop)
-        if !*emit || (*emit_before && !body_exhausted) {
+        // - Post-emit or body exhausted: don't add (already collected)
+        let add_final = if *emit {
+            *emit_before && !body_exhausted
+        } else {
+            until.is_none() || times.is_some()
+        };
+        if add_final {
             collected.extend(current);
         }
+
+        // Restore previous dedup state (or clear it).
+        if body_has_distinct {
+            *self.repeat_dedup_state.borrow_mut() = prev_dedup_state;
+        }
+
         Ok(collected)
     }
 
@@ -318,21 +520,32 @@ impl<'a> QueryExecutor<'a> {
                 continue;
             }
 
-            // Find the matching option branch.
-            let mut matched_branch: Option<&Operator> = None;
-            let mut matched_alias: Option<&crate::ast::Identifier> = None;
+            // Find ALL matching option branches (Gremlin allows multiple
+            // options with the same key — all matching branches execute).
+            let mut matched_branches: Vec<(&Operator, Option<&crate::ast::Identifier>)> =
+                Vec::new();
             let mut default_branch: Option<&Operator> = None;
             let mut default_alias: Option<&crate::ast::Identifier> = None;
             for (match_val, branch, branch_alias) in options {
                 match match_val {
                     None => {
-                        default_branch = Some(branch);
-                        default_alias = branch_alias.as_ref();
+                        // Keep only the first default (Pick.none) branch;
+                        // subsequent option(Pick.none, ...) entries are ignored
+                        // per TinkerPop semantics.
+                        if default_branch.is_none() {
+                            default_branch = Some(branch);
+                            default_alias = branch_alias.as_ref();
+                        }
                     }
                     Some(v) => {
                         // Skip "unproductive" sentinel (handled above)
                         if let Value::Str(s) = v {
                             if s.as_ref() == "Pick.unproductive" || s.as_ref() == "unproductive" {
+                                continue;
+                            }
+                            // Pick.any — always matches (wildcard)
+                            if s.as_ref() == "Pick.any" || s.as_ref() == "any" {
+                                matched_branches.push((branch, branch_alias.as_ref()));
                                 continue;
                             }
                         }
@@ -353,31 +566,39 @@ impl<'a> QueryExecutor<'a> {
                             _ => false,
                         };
                         if matches {
-                            matched_branch = Some(branch);
-                            matched_alias = branch_alias.as_ref();
-                            break;
+                            // For predicate-based matching (P.*), only the
+                            // first match fires (if-else-if semantics). For
+                            // exact-value matching, all matching options fire.
+                            let is_predicate_match =
+                                matches!(v, Value::Str(s) if s.starts_with("P."));
+                            matched_branches.push((branch, branch_alias.as_ref()));
+                            if is_predicate_match {
+                                break;
+                            }
                         }
                     }
                 }
             }
 
-            let (chosen_branch, chosen_alias) = if matched_branch.is_some() {
-                (matched_branch, matched_alias)
-            } else {
-                (default_branch, default_alias)
-            };
+            if matched_branches.is_empty() {
+                if let Some(branch) = default_branch {
+                    matched_branches.push((branch, default_alias));
+                }
+            }
 
-            if let Some(branch) = chosen_branch {
-                self.foreach_seed.borrow_mut().replace(vec![row]);
-                let branch_rows = self.exec_operator(cx, branch)?;
-                self.foreach_seed.borrow_mut().take();
-                for mut brow in branch_rows {
-                    if let (Some(out_a), Some(src_a)) = (output_alias, chosen_alias) {
-                        if let Some(val) = brow.get(src_a.0.as_str()).cloned() {
-                            brow.insert(out_a.0.to_string(), val);
+            if !matched_branches.is_empty() {
+                for (branch, branch_alias) in &matched_branches {
+                    self.foreach_seed.borrow_mut().replace(vec![row.clone()]);
+                    let branch_rows = self.exec_operator(cx, branch)?;
+                    self.foreach_seed.borrow_mut().take();
+                    for mut brow in branch_rows {
+                        if let (Some(out_a), Some(src_a)) = (output_alias, branch_alias) {
+                            if let Some(val) = brow.get(src_a.0.as_str()).cloned() {
+                                brow.insert(out_a.0.to_string(), val);
+                            }
                         }
+                        out.push(brow);
                     }
-                    out.push(brow);
                 }
             } else {
                 // No branch matches and no default → identity (pass through)
@@ -489,16 +710,57 @@ impl<'a> QueryExecutor<'a> {
         let mut row = Row::new();
         for key in keys {
             let agg_col = format!("__gremlin_agg_{key}");
+
+            // Check the side-effect store first — it has the authoritative
+            // accumulated value for aggregate() / local(aggregate()) patterns.
+            let se_val = self.gremlin_side_effects.borrow().get(&agg_col).cloned();
+
             let agg_vals: Vec<&Value> = child_rows.iter().filter_map(|r| r.get(&agg_col)).collect();
             if agg_vals.is_empty() {
-                row.insert(key.clone(), Value::List(Vec::new()));
+                if let Some(stored) = se_val {
+                    row.insert(key.clone(), stored);
+                } else {
+                    row.insert(key.clone(), Value::List(Vec::new()));
+                }
                 continue;
             }
             // If there is only one distinct value (all rows have the same),
             // take it directly.  Otherwise merge partial lists/maps.
             let first = agg_vals[0];
             let all_same = agg_vals.iter().all(|v| *v == first);
-            let cap_value = if all_same {
+            let cap_value = if let Some(stored) = &se_val {
+                // For List aggregations, prefer the side-effect store which
+                // has the authoritative accumulated value (handles local(aggregate)).
+                if matches!(stored, Value::List(_)) {
+                    stored.clone()
+                } else if all_same {
+                    first.clone()
+                } else if matches!(first, Value::Map(_)) {
+                    // Merge maps from rows
+                    let mut merged: IndexMap<Box<str>, Value> = IndexMap::new();
+                    for v in &agg_vals {
+                        if let Value::Map(m) = v {
+                            for (mk, mv) in m {
+                                match (merged.get(mk), mv) {
+                                    (Some(Value::Int(existing)), Value::Int(incoming)) => {
+                                        merged.insert(mk.clone(), Value::Int(existing + incoming));
+                                    }
+                                    (Some(Value::Float(existing)), Value::Float(incoming)) => {
+                                        merged
+                                            .insert(mk.clone(), Value::Float(existing + incoming));
+                                    }
+                                    _ => {
+                                        merged.insert(mk.clone(), mv.clone());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    Value::Map(merged)
+                } else {
+                    stored.clone()
+                }
+            } else if all_same {
                 first.clone()
             } else {
                 // Merge: for Lists, concatenate; for Maps, union by key.
@@ -513,11 +775,30 @@ impl<'a> QueryExecutor<'a> {
                         Value::List(merged)
                     }
                     Value::Map(_) => {
-                        let mut merged = IndexMap::new();
+                        let mut merged: IndexMap<Box<str>, Value> = IndexMap::new();
                         for v in &agg_vals {
                             if let Value::Map(m) = v {
                                 for (mk, mv) in m {
-                                    merged.insert(mk.clone(), mv.clone());
+                                    // For integer values (groupCount), add counts
+                                    // instead of overwriting so accumulation across
+                                    // traverser branches works correctly.
+                                    match (merged.get(mk), mv) {
+                                        (Some(Value::Int(existing)), Value::Int(incoming)) => {
+                                            merged.insert(
+                                                mk.clone(),
+                                                Value::Int(existing + incoming),
+                                            );
+                                        }
+                                        (Some(Value::Float(existing)), Value::Float(incoming)) => {
+                                            merged.insert(
+                                                mk.clone(),
+                                                Value::Float(existing + incoming),
+                                            );
+                                        }
+                                        _ => {
+                                            merged.insert(mk.clone(), mv.clone());
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -530,46 +811,70 @@ impl<'a> QueryExecutor<'a> {
             // Check for a reduction operator (from withSideEffect with Operator.*)
             let reduction = reductions.iter().find(|(k, _, _)| k == key);
             if let Some((_k, op, init)) = reduction {
-                if let Value::List(items) = &cap_value {
-                    let mut acc = *init;
-                    let init_is_int = (*init - init.round()).abs() < 1e-12;
-                    let mut all_int = init_is_int;
-                    for item in items {
-                        let v = match item {
-                            Value::Int(n) => *n as f64,
-                            Value::Float(f) => {
-                                all_int = false;
-                                *f
+                if op == "addAll" || op == "assign" {
+                    // addAll / assign: the cap value is already the full list
+                    // (initial values + aggregated values). Return as-is.
+                    row.insert(key.clone(), cap_value);
+                } else if let Value::List(items) = &cap_value {
+                    // Handle boolean reductions (and/or)
+                    if op == "and" || op == "or" {
+                        let init_bool = *init != 0.0;
+                        let mut acc = init_bool;
+                        for item in items {
+                            let v = match item {
+                                Value::Bool(b) => *b,
+                                Value::Int(n) => *n != 0,
+                                _ => continue,
+                            };
+                            match op.as_str() {
+                                "and" => acc = acc && v,
+                                "or" => acc = acc || v,
+                                _ => {}
                             }
-                            _ => continue,
-                        };
-                        match op.as_str() {
-                            "sum" | "add" => acc += v,
-                            "minus" | "sub" => acc -= v,
-                            "mult" | "multiply" => acc *= v,
-                            "div" | "divide" => {
-                                if v != 0.0 {
-                                    all_int = false;
-                                    acc /= v;
-                                }
-                            }
-                            "min" => {
-                                if v < acc {
-                                    acc = v;
-                                }
-                            }
-                            "max" => {
-                                if v > acc {
-                                    acc = v;
-                                }
-                            }
-                            _ => acc += v,
                         }
-                    }
-                    if all_int && !matches!(op.as_str(), "div" | "divide") {
-                        row.insert(key.clone(), Value::Int(acc as i64));
+                        row.insert(key.clone(), Value::Bool(acc));
                     } else {
-                        row.insert(key.clone(), Value::Float(acc));
+                        // Numeric reductions
+                        let mut acc = *init;
+                        let init_is_int = (*init - init.round()).abs() < 1e-12;
+                        let mut all_int = init_is_int;
+                        for item in items {
+                            let v = match item {
+                                Value::Int(n) => *n as f64,
+                                Value::Float(f) => {
+                                    all_int = false;
+                                    *f
+                                }
+                                _ => continue,
+                            };
+                            match op.as_str() {
+                                "sum" | "add" => acc += v,
+                                "minus" | "sub" => acc -= v,
+                                "mult" | "multiply" => acc *= v,
+                                "div" | "divide" => {
+                                    if v != 0.0 {
+                                        all_int = false;
+                                        acc /= v;
+                                    }
+                                }
+                                "min" => {
+                                    if v < acc {
+                                        acc = v;
+                                    }
+                                }
+                                "max" => {
+                                    if v > acc {
+                                        acc = v;
+                                    }
+                                }
+                                _ => acc += v,
+                            }
+                        }
+                        if all_int && !matches!(op.as_str(), "div" | "divide") {
+                            row.insert(key.clone(), Value::Int(acc as i64));
+                        } else {
+                            row.insert(key.clone(), Value::Float(acc));
+                        }
                     }
                 } else {
                     row.insert(key.clone(), cap_value);
@@ -606,8 +911,23 @@ impl<'a> QueryExecutor<'a> {
         let mut input = self.exec_operator(cx, child)?;
         let agg_col = format!("__gremlin_agg_{key}");
 
-        // Collect all values seen across all rows.
+        // Pre-seed from withSideEffect initial value on the very first call.
+        // The initial value is stored in __side_effect_{key} column by the
+        // compiler. Only pre-seed if the side-effect store has no entry yet.
         let mut collected: Vec<Value> = Vec::new();
+        {
+            let se = self.gremlin_side_effects.borrow();
+            if se.contains_key(&agg_col) {
+                // Already seeded from a prior call — don't re-seed.
+            } else {
+                let se_col = format!("__side_effect_{key}");
+                if let Some(row) = input.first() {
+                    if let Some(Value::List(items)) = row.get(&se_col) {
+                        collected.extend(items.iter().cloned());
+                    }
+                }
+            }
+        }
         for row in &input {
             if let Some((trav_op, trav_alias)) = by_traversal {
                 // by(traversal) modulation: run the sub-traversal per traverser
@@ -662,10 +982,27 @@ impl<'a> QueryExecutor<'a> {
         // Stamp the accumulated list onto every output row.
         // If a row already carries a value for this agg column (e.g. from a
         // previous local(aggregate("a")) step), extend it rather than overwrite.
+        //
+        // Also accumulate into the side-effect store so that cap() can
+        // retrieve the full list even when downstream steps filter out rows.
+        {
+            let mut se = self.gremlin_side_effects.borrow_mut();
+            if let Some(Value::List(existing)) = se.get_mut(&agg_col) {
+                existing.extend(collected.iter().cloned());
+            } else {
+                se.insert(agg_col.clone(), Value::List(collected.clone()));
+            }
+        }
         if input.is_empty() {
             // Even with no input, the side-effect must be accessible via cap().
             let mut sentinel = Row::new();
-            sentinel.insert(agg_col, Value::List(collected));
+            let stored = self
+                .gremlin_side_effects
+                .borrow()
+                .get(&agg_col)
+                .cloned()
+                .unwrap_or(Value::List(collected));
+            sentinel.insert(agg_col, stored);
             return Ok(vec![sentinel]);
         }
         for row in &mut input {
@@ -691,6 +1028,10 @@ impl<'a> QueryExecutor<'a> {
         let Operator::GremlinPath {
             child,
             path_aliases,
+            by_keys,
+            productive,
+            from_label,
+            to_label,
         } = op
         else {
             debug_assert!(false, "expected GremlinPath operator");
@@ -703,20 +1044,213 @@ impl<'a> QueryExecutor<'a> {
         let mut out = Vec::with_capacity(input.len());
         for row in input {
             cx.budget.check_or_err()?;
-            let path: Vec<Value> = path_aliases
-                .iter()
-                .filter_map(|alias| row.get(alias.as_str()).cloned())
-                .filter(|v| !matches!(v, Value::Null))
-                .collect();
-            let mut result_row = Row::new();
+            let full_path: Vec<(Option<&str>, Value)> =
+                if let Some(Value::List(acc)) = row.get("__gremlin_path_acc") {
+                    let mut p: Vec<(Option<&str>, Value)> = acc
+                        .iter()
+                        .filter(|v| !matches!(v, Value::Null))
+                        .map(|v| (None, v.clone()))
+                        .collect();
+                    if let Some(last_alias) = path_aliases.last() {
+                        if let Some(val) = row.get(last_alias.as_str()) {
+                            if !matches!(val, Value::Null) {
+                                p.push((None, val.clone()));
+                            }
+                        }
+                    }
+                    p
+                } else {
+                    path_aliases
+                        .iter()
+                        .filter_map(|alias| {
+                            row.get(alias.as_str())
+                                .cloned()
+                                .map(|v| (Some(alias.as_str()), v))
+                        })
+                        .collect()
+                };
+
+            // Apply from/to slicing: select only the sub-path between
+            // the from-label and to-label (inclusive).
+            let raw_path: Vec<Value> = if from_label.is_some() || to_label.is_some() {
+                // Find indices matching from/to labels by checking row aliases
+                let start = if let Some(fl) = from_label {
+                    if let Some(alias) = self.resolve_label_alias(fl, path_aliases, &row) {
+                        full_path
+                            .iter()
+                            .position(|(a, _)| *a == Some(alias.as_str()))
+                    } else {
+                        None
+                    }
+                } else {
+                    Some(0)
+                };
+                let end = if let Some(tl) = to_label {
+                    if let Some(alias) = self.resolve_label_alias(tl, path_aliases, &row) {
+                        full_path
+                            .iter()
+                            .rposition(|(a, _)| *a == Some(alias.as_str()))
+                            .map(|i| i + 1)
+                    } else {
+                        None
+                    }
+                } else {
+                    Some(full_path.len())
+                };
+                match (start, end) {
+                    (Some(s), Some(e)) if s <= e => {
+                        full_path[s..e].iter().map(|(_, v)| v.clone()).collect()
+                    }
+                    _ => full_path.into_iter().map(|(_, v)| v).collect(),
+                }
+            } else {
+                full_path.into_iter().map(|(_, v)| v).collect()
+            };
+
+            // Apply by-key modulation: each element uses by_keys[i % len].
+            let path = if by_keys.is_empty() {
+                raw_path
+            } else {
+                let transformed: Vec<Value> = raw_path
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, val)| {
+                        let key = &by_keys[i % by_keys.len()];
+                        self.apply_path_by_key(cx, key, &val)
+                    })
+                    .collect();
+                // Drop the traverser if any by-key resolution produced Null
+                if !*productive && transformed.iter().any(|v| matches!(v, Value::Null)) {
+                    continue;
+                }
+                transformed
+            };
+
+            // Carry forward input columns (preserves as() labels for
+            // subsequent select() after path()).
+            let mut result_row = row.clone();
             result_row.insert("path".to_string(), Value::List(path));
             out.push(result_row);
         }
         Ok(out)
     }
 
+    /// Resolve a label (now pre-resolved at compile time to an internal
+    /// alias like "v_2") against path_aliases.  Falls back to the old
+    /// row-based resolution for backward compatibility.
+    fn resolve_label_alias(
+        &self,
+        label: &str,
+        path_aliases: &[Identifier],
+        _row: &Row,
+    ) -> Option<String> {
+        // Direct match: the label is an internal alias in path_aliases.
+        // This is the primary path after compile-time resolution.
+        if path_aliases.iter().any(|a| a.as_str() == label) {
+            return Some(label.to_string());
+        }
+        None
+    }
+
+    /// Apply a single by-key transformation to a path element value.
+    fn apply_path_by_key(&self, cx: &mut ExecContext<'_>, key: &str, val: &Value) -> Value {
+        if key.is_empty() {
+            return val.clone();
+        }
+        // Handle ~toupper:prop and ~tolower:prop
+        if let Some(prop) = key.strip_prefix("~toupper:") {
+            let inner = self.apply_path_by_key(cx, prop, val);
+            return match inner {
+                Value::Str(s) => Value::Str(s.to_uppercase().into_boxed_str()),
+                other => other,
+            };
+        }
+        if let Some(prop) = key.strip_prefix("~tolower:") {
+            let inner = self.apply_path_by_key(cx, prop, val);
+            return match inner {
+                Value::Str(s) => Value::Str(s.to_lowercase().into_boxed_str()),
+                other => other,
+            };
+        }
+        // Handle ~unfold_values_fold:prop — collect property from list of nodes
+        if let Some(prop) = key.strip_prefix("~unfold_values_fold:") {
+            if let Value::List(items) = val {
+                let names: Vec<Value> = items
+                    .iter()
+                    .filter_map(|item| {
+                        let v = self.apply_path_by_key(cx, prop, item);
+                        if matches!(v, Value::Null) {
+                            None
+                        } else {
+                            Some(v)
+                        }
+                    })
+                    .collect();
+                return Value::List(names);
+            }
+            return self.apply_path_by_key(cx, prop, val);
+        }
+        match key {
+            "~label" | "T.label" | "label" => match val {
+                Value::Node(nid) => {
+                    if let Ok(Some(node)) = self.store.get_node(cx.graph, *nid) {
+                        if let Some(label) = node.labels.into_iter().next() {
+                            return Value::Str(label.into_boxed_str());
+                        }
+                    }
+                    Value::Null
+                }
+                Value::Edge(eid) => {
+                    if let Ok(Some(edge)) = self.store.get_edge(cx.graph, *eid) {
+                        return Value::Str(edge.rel_type.into_boxed_str());
+                    }
+                    Value::Null
+                }
+                _ => val.clone(),
+            },
+            "~id" | "T.id" | "id" => match val {
+                Value::Node(nid) => Value::Int(nid.0 as i64),
+                Value::Edge(eid) => Value::Int(eid.0 as i64),
+                _ => val.clone(),
+            },
+            _ => {
+                // Property access
+                match val {
+                    Value::Node(nid) => {
+                        if let Ok(Some(node)) = self.store.get_node(cx.graph, *nid) {
+                            if let Some(v) = node.properties.get(key) {
+                                return v.clone();
+                            }
+                        }
+                        Value::Null
+                    }
+                    Value::Edge(eid) => {
+                        if let Ok(Some(edge)) = self.store.get_edge(cx.graph, *eid) {
+                            if let Some(v) = edge.properties.get(key) {
+                                return v.clone();
+                            }
+                        }
+                        Value::Null
+                    }
+                    _ => val.clone(),
+                }
+            }
+        }
+    }
+
     /// Execute `GremlinMatch` — declarative pattern matching with named bindings.
     ///
+    /// Resolve a property on a Value (Node or Edge). Used by select()
+    /// by-modulation to apply property extraction to Pop-resolved values.
+    fn resolve_prop_on_value(
+        &self,
+        cx: &mut ExecContext<'_>,
+        prop_name: &str,
+        val: &Value,
+    ) -> Value {
+        self.apply_path_by_key(cx, prop_name, val)
+    }
+
     /// For each input row, iterate through patterns. Each pattern is a
     /// sub-traversal that binds variables. We progressively join results
     /// by requiring consistent bindings across patterns.
@@ -850,7 +1384,14 @@ impl<'a> QueryExecutor<'a> {
         cx: &mut ExecContext<'_>,
         op: &Operator,
     ) -> Result<Vec<Row>, GqlError> {
-        let Operator::GremlinSelect { keys, child } = op else {
+        let Operator::GremlinSelect {
+            keys,
+            productive,
+            pop,
+            label_stacks,
+            child,
+        } = op
+        else {
             debug_assert!(false, "expected GremlinSelect operator");
             return Err(GqlError::Execution(ExecutionError::UnsupportedFeature {
                 feature: "internal: expected GremlinSelect operator".into(),
@@ -871,6 +1412,56 @@ impl<'a> QueryExecutor<'a> {
             for (src_var, output_key) in keys {
                 let var_name = src_var.0.as_str();
 
+                // Pop modifier handling: when Pop is set and label_stacks has
+                // multiple aliases for this key, resolve values from all aliases.
+                if let Some(pop_mode) = pop {
+                    use crate::planner::GremlinPop;
+                    let stack = label_stacks
+                        .iter()
+                        .find(|(k, _)| k == output_key)
+                        .map(|(_, v)| v.as_slice())
+                        .unwrap_or(&[]);
+                    if !stack.is_empty() {
+                        // Collect all values from the label stack
+                        let mut vals: Vec<Value> = Vec::new();
+                        for alias in stack {
+                            if let Some(v) = row.get(alias.0.as_str()) {
+                                vals.push(v.clone());
+                            }
+                        }
+                        if vals.is_empty() {
+                            all_found = false;
+                            break;
+                        }
+                        let resolved = match pop_mode {
+                            GremlinPop::First => vals.into_iter().next().unwrap(),
+                            GremlinPop::Last => vals.into_iter().last().unwrap(),
+                            GremlinPop::All => Value::List(vals),
+                            GremlinPop::Mixed => {
+                                if vals.len() == 1 {
+                                    vals.into_iter().next().unwrap()
+                                } else {
+                                    Value::List(vals)
+                                }
+                            }
+                        };
+                        // Apply by-modulation: if src_var has a __prop_ prefix,
+                        // extract the property from the resolved value.
+                        let resolved = if let Some(rest) = var_name.strip_prefix("__prop_") {
+                            if let Some(sep_pos) = rest.find("__") {
+                                let prop_name = &rest[..sep_pos];
+                                self.resolve_prop_on_value(cx, prop_name, &resolved)
+                            } else {
+                                resolved
+                            }
+                        } else {
+                            resolved
+                        };
+                        new_row.insert(output_key.clone(), resolved);
+                        continue;
+                    }
+                }
+
                 // Handle property-accessor pattern: __prop_PROPNAME__VARNAME
                 if let Some(rest) = var_name.strip_prefix("__prop_") {
                     if let Some(sep_pos) = rest.find("__") {
@@ -879,6 +1470,53 @@ impl<'a> QueryExecutor<'a> {
                         let val = row.get(real_var);
                         match val {
                             Some(node_val) => {
+                                // Handle special property names (~id, T.id, ~label, T.label)
+                                let resolved = if prop_name == "~id"
+                                    || prop_name == "T.id"
+                                    || prop_name == "t[id]"
+                                {
+                                    match node_val {
+                                        Value::Node(nid) => Some(Value::Int(nid.0 as i64)),
+                                        Value::Edge(eid) => Some(Value::Int(eid.0 as i64)),
+                                        _ => None,
+                                    }
+                                } else if prop_name == "~label"
+                                    || prop_name == "T.label"
+                                    || prop_name == "t[label]"
+                                {
+                                    match node_val {
+                                        Value::Node(nid) => {
+                                            if let Ok(Some(node)) =
+                                                self.store.get_node(cx.graph, *nid)
+                                            {
+                                                node.labels
+                                                    .into_iter()
+                                                    .next()
+                                                    .map(|l| Value::Str(l.into_boxed_str()))
+                                            } else {
+                                                None
+                                            }
+                                        }
+                                        Value::Edge(eid) => {
+                                            if let Ok(Some(edge)) =
+                                                self.store.get_edge(cx.graph, *eid)
+                                            {
+                                                Some(Value::Str(edge.rel_type.into_boxed_str()))
+                                            } else {
+                                                None
+                                            }
+                                        }
+                                        _ => None,
+                                    }
+                                } else {
+                                    None
+                                };
+
+                                if let Some(v) = resolved {
+                                    new_row.insert(output_key.clone(), v);
+                                    continue;
+                                }
+
                                 // Resolve property from the node/edge
                                 let prop_expr = Expr::Property(
                                     Box::new(Expr::Variable(Identifier::new(real_var))),
@@ -886,16 +1524,42 @@ impl<'a> QueryExecutor<'a> {
                                 );
                                 match self.eval_with_storage(cx.graph, &prop_expr, row, &ctx) {
                                     Ok(v) => {
+                                        if !*productive && matches!(v, Value::Null) {
+                                            all_found = false;
+                                            break;
+                                        }
                                         new_row.insert(output_key.clone(), v);
                                     }
                                     Err(_) => {
-                                        // Property doesn't exist — use Null for maps
-                                        if let Value::Map(m) = node_val {
-                                            let v =
-                                                m.get(prop_name).cloned().unwrap_or(Value::Null);
-                                            new_row.insert(output_key.clone(), v);
+                                        // Property doesn't exist
+                                        if !*productive {
+                                            // Non-productive: drop the traverser
+                                            if let Value::Map(m) = node_val {
+                                                let v = m.get(prop_name).cloned();
+                                                match v {
+                                                    Some(val) => {
+                                                        new_row.insert(output_key.clone(), val);
+                                                    }
+                                                    None => {
+                                                        all_found = false;
+                                                        break;
+                                                    }
+                                                }
+                                            } else {
+                                                all_found = false;
+                                                break;
+                                            }
                                         } else {
-                                            new_row.insert(output_key.clone(), Value::Null);
+                                            // Productive: use Null
+                                            if let Value::Map(m) = node_val {
+                                                let v = m
+                                                    .get(prop_name)
+                                                    .cloned()
+                                                    .unwrap_or(Value::Null);
+                                                new_row.insert(output_key.clone(), v);
+                                            } else {
+                                                new_row.insert(output_key.clone(), Value::Null);
+                                            }
                                         }
                                     }
                                 }
@@ -959,6 +1623,14 @@ impl<'a> QueryExecutor<'a> {
                     }
                     let mut map_row = Row::new();
                     inject_parameters(&mut map_row, &self.parameters);
+                    // Carry forward Gremlin internal columns (path
+                    // accumulator, sack, side-effects) so downstream steps
+                    // can access them after multi-key select.
+                    for (k, v) in row.iter() {
+                        if k.starts_with("__gremlin_") || k == "__sack" {
+                            map_row.entry(k.clone()).or_insert_with(|| v.clone());
+                        }
+                    }
                     // Add individual key columns AND their internal alias
                     // columns so downstream where/filter can reference them.
                     for (src_var, output_key) in keys {
@@ -980,9 +1652,15 @@ impl<'a> QueryExecutor<'a> {
                     // so that as() labels remain accessible to downstream steps
                     // (needed for addE/from/to resolution after select/unfold).
                     let mut out_row = row.clone();
-                    for (_, output_key) in keys {
+                    for (src_var, output_key) in keys {
                         if let Some(v) = new_row.get(output_key.as_str()) {
                             out_row.insert(output_key.clone(), v.clone());
+                            // For Pop select, also update the source variable
+                            // so downstream steps using the compiler alias get
+                            // the Pop-resolved value.
+                            if pop.is_some() {
+                                out_row.insert(src_var.0.to_string(), v.clone());
+                            }
                         }
                     }
                     inject_parameters(&mut out_row, &self.parameters);
@@ -1104,13 +1782,13 @@ impl<'a> QueryExecutor<'a> {
         let mut result_map: IndexMap<Box<str>, Value> = IndexMap::new();
         for (key_str, values) in groups {
             // When value traversal produces no results for a group member,
-            // skip the entry for reducing aggregations (Sum, Min, Max, Mean).
+            // skip the entry for reducing aggregations and non-explicit Collect.
             if has_value_trav
                 && values.is_empty()
-                && matches!(
+                && (matches!(
                     agg_fn,
                     AggFunction::Sum | AggFunction::Min | AggFunction::Max | AggFunction::Avg
-                )
+                ) || (matches!(agg_fn, AggFunction::Collect) && !*explicit_fold))
             {
                 continue;
             }
@@ -1190,14 +1868,43 @@ impl<'a> QueryExecutor<'a> {
         // traversers through instead of collapsing into a single Map row.
         if let Some(key) = side_effect_key {
             let agg_col = format!("__gremlin_agg_{key}");
-            let map_val = Value::Map(result_map);
             let mut output = input;
             if output.is_empty() {
                 // Even with no input, the side-effect must be accessible via cap().
                 let mut sentinel = Row::new();
-                sentinel.insert(agg_col, map_val);
+                sentinel.insert(agg_col.clone(), Value::Map(result_map.clone()));
+                // Store in side-effect store for cap() retrieval
+                self.gremlin_side_effects
+                    .borrow_mut()
+                    .insert(agg_col, Value::Map(result_map));
                 return Ok(vec![sentinel]);
             }
+            // Merge new counts with any existing aggregation carried from
+            // a previous repeat iteration so counts accumulate.
+            let map_val = {
+                let mut merged = result_map;
+                if let Some(first) = output.first() {
+                    if let Some(Value::Map(existing)) = first.get(&agg_col) {
+                        for (ek, ev) in existing {
+                            let entry = merged.entry(ek.clone()).or_insert(Value::Int(0));
+                            match (entry.clone(), ev) {
+                                (Value::Int(a), Value::Int(b)) => *entry = Value::Int(a + b),
+                                (Value::Float(a), Value::Float(b)) => *entry = Value::Float(a + b),
+                                (Value::List(mut a), Value::List(b)) => {
+                                    a.extend(b.iter().cloned());
+                                    *entry = Value::List(a);
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                }
+                Value::Map(merged)
+            };
+            // Store in side-effect store for cap() retrieval
+            self.gremlin_side_effects
+                .borrow_mut()
+                .insert(agg_col.clone(), map_val.clone());
             for row in &mut output {
                 row.insert(agg_col.clone(), map_val.clone());
             }
@@ -1269,6 +1976,8 @@ impl<'a> QueryExecutor<'a> {
         let Operator::GremlinSimplePath {
             child,
             path_aliases,
+            from_label,
+            to_label,
         } = op
         else {
             debug_assert!(false, "expected GremlinSimplePath operator");
@@ -1283,21 +1992,23 @@ impl<'a> QueryExecutor<'a> {
             cx.budget.check_or_err()?;
             let mut seen = std::collections::HashSet::new();
             let mut is_simple = true;
-            for alias in path_aliases {
-                if let Some(val) = row.get(alias.as_str()) {
-                    if matches!(val, Value::Null) {
-                        continue;
-                    }
-                    // Use a discriminator key to detect duplicate path entries
-                    let key = match val {
-                        Value::Node(nid) => format!("n:{}", nid.0),
-                        Value::Edge(eid) => format!("e:{}", eid.0),
-                        other => format!("v:{other:?}"),
-                    };
-                    if !seen.insert(key) {
-                        is_simple = false;
-                        break;
-                    }
+
+            let path_values = self.collect_path_values(
+                path_aliases,
+                &row,
+                from_label.as_deref(),
+                to_label.as_deref(),
+            );
+
+            for val in &path_values {
+                let key = match val {
+                    Value::Node(nid) => format!("n:{}", nid.0),
+                    Value::Edge(eid) => format!("e:{}", eid.0),
+                    other => format!("v:{other:?}"),
+                };
+                if !seen.insert(key) {
+                    is_simple = false;
+                    break;
                 }
             }
             if is_simple {
@@ -1305,6 +2016,125 @@ impl<'a> QueryExecutor<'a> {
             }
         }
         Ok(out)
+    }
+
+    /// Execute `GremlinCyclicPath` — filter traversers whose path contains
+    /// at least one repeated object (by node/edge identity).
+    pub(crate) fn exec_gremlin_cyclic_path(
+        &self,
+        cx: &mut ExecContext<'_>,
+        op: &Operator,
+    ) -> Result<Vec<Row>, GqlError> {
+        let Operator::GremlinCyclicPath {
+            child,
+            path_aliases,
+            from_label,
+            to_label,
+        } = op
+        else {
+            debug_assert!(false, "expected GremlinCyclicPath operator");
+            return Err(GqlError::Execution(ExecutionError::UnsupportedFeature {
+                feature: "internal: expected GremlinCyclicPath operator".into(),
+            }));
+        };
+
+        let input = self.exec_operator(cx, child)?;
+        let mut out = Vec::with_capacity(input.len());
+        for row in input {
+            cx.budget.check_or_err()?;
+            let mut seen = std::collections::HashSet::new();
+            let mut has_cycle = false;
+
+            let path_values = self.collect_path_values(
+                path_aliases,
+                &row,
+                from_label.as_deref(),
+                to_label.as_deref(),
+            );
+
+            for val in &path_values {
+                let key = match val {
+                    Value::Node(nid) => format!("n:{}", nid.0),
+                    Value::Edge(eid) => format!("e:{}", eid.0),
+                    other => format!("v:{other:?}"),
+                };
+                if !seen.insert(key) {
+                    has_cycle = true;
+                    break;
+                }
+            }
+            if has_cycle {
+                out.push(row);
+            }
+        }
+        Ok(out)
+    }
+
+    /// Collect path values from a row, optionally slicing between from/to labels.
+    fn collect_path_values(
+        &self,
+        path_aliases: &[Identifier],
+        row: &Row,
+        from_label: Option<&str>,
+        to_label: Option<&str>,
+    ) -> Vec<Value> {
+        // Build full path with alias tags for from/to slicing.
+        let full_path: Vec<(&str, Value)> =
+            if let Some(Value::List(acc)) = row.get("__gremlin_path_acc") {
+                let mut p: Vec<(&str, Value)> = acc
+                    .iter()
+                    .filter(|v| !matches!(v, Value::Null))
+                    .map(|v| ("", v.clone()))
+                    .collect();
+                if let Some(last_alias) = path_aliases.last() {
+                    if let Some(val) = row.get(last_alias.as_str()) {
+                        if !matches!(val, Value::Null) {
+                            p.push((last_alias.as_str(), val.clone()));
+                        }
+                    }
+                }
+                p
+            } else {
+                path_aliases
+                    .iter()
+                    .filter_map(|alias| {
+                        row.get(alias.as_str())
+                            .filter(|v| !matches!(v, Value::Null))
+                            .map(|v| (alias.as_str(), v.clone()))
+                    })
+                    .collect()
+            };
+
+        if from_label.is_none() && to_label.is_none() {
+            return full_path.into_iter().map(|(_, v)| v).collect();
+        }
+
+        // Find the index of a label in path_aliases. The label is an
+        // internal alias (resolved at compile time), so direct comparison
+        // against path_aliases entries works.
+        let find_idx = |label: &str, from_end: bool| -> Option<usize> {
+            // Direct match against path_aliases (works for non-accumulator paths)
+            if from_end {
+                path_aliases.iter().rposition(|a| a.as_str() == label)
+            } else {
+                path_aliases.iter().position(|a| a.as_str() == label)
+            }
+        };
+
+        let start = from_label.and_then(|l| find_idx(l, false)).unwrap_or(0);
+        let end = to_label
+            .and_then(|l| find_idx(l, true))
+            .map(|i| i + 1)
+            .unwrap_or(full_path.len());
+
+        if start <= end && end <= full_path.len() {
+            full_path[start..end]
+                .iter()
+                .map(|(_, v)| v.clone())
+                .collect()
+        } else {
+            full_path.into_iter().map(|(_, v)| v).collect()
+        }
     }
 
     /// Execute `GremlinIndex` — pair each element with its positional index.
@@ -1355,21 +2185,19 @@ impl<'a> QueryExecutor<'a> {
         }
 
         // Stream mode: each individual traverser gets index 0 (per TinkerPop semantics).
-        // Collect all [element, 0] pairs into a single list so unfold() can unwrap them.
         if *with_map {
             // with(map) mode: each individual traverser → {0: element}
-            let mut maps = Vec::with_capacity(input.len());
             for row in input.iter() {
                 if let Some(val) = row.get(alias.as_str()) {
                     let mut map = IndexMap::new();
                     map.insert("0".to_string().into_boxed_str(), val.clone());
-                    maps.push(Value::Map(map));
+                    let mut new_row = Row::new();
+                    new_row.insert(out_alias.0.clone(), Value::Map(map));
+                    out.push(new_row);
                 }
             }
-            let mut row = Row::new();
-            row.insert(out_alias.0.clone(), Value::List(maps));
-            out.push(row);
         } else {
+            // Collect all [element, 0] pairs into a single list for unfold().
             let mut pairs = Vec::with_capacity(input.len());
             for row in input.iter() {
                 cx.budget.check_or_err()?;
@@ -1393,6 +2221,7 @@ impl<'a> QueryExecutor<'a> {
             entries,
             child,
             current_alias,
+            productive,
         } = op
         else {
             debug_assert!(false, "expected GremlinProject operator");
@@ -1424,6 +2253,11 @@ impl<'a> QueryExecutor<'a> {
                 } else {
                     Value::Null
                 };
+                // Omit keys where by-modulation produced Null (property
+                // doesn't exist), unless ProductiveByStrategy is active.
+                if matches!(val, Value::Null) && !*productive {
+                    continue;
+                }
                 map.insert(key.clone().into_boxed_str(), val);
             }
             // Store the projected Map as both individual columns and a combined Map
@@ -1458,6 +2292,38 @@ fn value_to_map_key(v: &Value) -> Box<str> {
         Value::Null => "null".to_string().into_boxed_str(),
         Value::Node(nid) => format!("v[{}]", nid.0).into_boxed_str(),
         Value::Edge(eid) => format!("e[{}]", eid.0).into_boxed_str(),
+        Value::List(items) => {
+            // Gremlin list key format: l[elem1,elem2,...] (no spaces)
+            let parts: Vec<String> = items
+                .iter()
+                .map(|item| match item {
+                    Value::Str(s) => s.to_string(),
+                    Value::Int(n) => n.to_string(),
+                    Value::Float(f) => f.to_string(),
+                    Value::Bool(b) => b.to_string(),
+                    Value::Null => "null".to_string(),
+                    Value::Node(nid) => format!("v[{}]", nid.0),
+                    Value::Edge(eid) => format!("e[{}]", eid.0),
+                    other => format!("{other:?}"),
+                })
+                .collect();
+            format!("l[{}]", parts.join(",")).into_boxed_str()
+        }
+        Value::Map(m) => {
+            let parts: Vec<String> = m
+                .iter()
+                .map(|(k, v)| {
+                    let vs = match v {
+                        Value::Str(s) => s.to_string(),
+                        Value::Int(n) => n.to_string(),
+                        Value::Float(f) => f.to_string(),
+                        other => format!("{other:?}"),
+                    };
+                    format!("{k}={vs}")
+                })
+                .collect();
+            format!("{{{}}}", parts.join(", ")).into_boxed_str()
+        }
         _ => format!("{v:?}").into_boxed_str(),
     }
 }
@@ -1605,6 +2471,78 @@ fn split_compound_predicate(pred: &str) -> Option<(&str, &str, bool)> {
     None
 }
 
+/// Check whether an operator tree contains a `Distinct` node (shallow search).
+/// Used by `exec_repeat` to decide whether to enable cross-iteration dedup.
+fn operator_contains_distinct(op: &Operator) -> bool {
+    match op {
+        Operator::Distinct { .. } => true,
+        // Walk through wrappers that commonly sit between Repeat body root
+        // and the actual Distinct.
+        Operator::Project { child, .. }
+        | Operator::Filter { child, .. }
+        | Operator::Sort { child, .. }
+        | Operator::Limit { child, .. }
+        | Operator::Skip { child, .. }
+        | Operator::Expand { child, .. }
+        | Operator::GremlinSideEffect { child, .. }
+        | Operator::Coalesce { child, .. }
+        | Operator::GremlinSimplePath { child, .. }
+        | Operator::GremlinCyclicPath { child, .. } => operator_contains_distinct(child),
+        Operator::Apply { outer, inner } => {
+            operator_contains_distinct(outer) || operator_contains_distinct(inner)
+        }
+        Operator::LeftOuterApply {
+            preserved,
+            optional_pattern,
+        } => operator_contains_distinct(preserved) || operator_contains_distinct(optional_pattern),
+        Operator::Union { left, right, .. } => {
+            operator_contains_distinct(left) || operator_contains_distinct(right)
+        }
+        _ => false,
+    }
+}
+
+/// Returns `true` if the operator tree contains a barrier step (Sort, Aggregate,
+/// Distinct) that must see all input rows before producing output. When a repeat
+/// body contains barrier steps, batched seed processing must be disabled because
+/// each batch would run the barrier independently, producing incorrect results.
+fn operator_contains_barrier(op: &Operator) -> bool {
+    match op {
+        Operator::Sort { .. } | Operator::Aggregate { .. } | Operator::Distinct { .. } => true,
+        Operator::Project { child, .. }
+        | Operator::Filter { child, .. }
+        | Operator::Limit { child, .. }
+        | Operator::Skip { child, .. }
+        | Operator::Expand { child, .. }
+        | Operator::GremlinSideEffect { child, .. }
+        | Operator::Coalesce { child, .. }
+        | Operator::GremlinSimplePath { child, .. }
+        | Operator::GremlinCyclicPath { child, .. }
+        | Operator::GremlinGroup { child, .. }
+        | Operator::GremlinAggregate { child, .. } => operator_contains_barrier(child),
+        Operator::Apply { outer, inner } => {
+            operator_contains_barrier(outer) || operator_contains_barrier(inner)
+        }
+        Operator::LeftOuterApply {
+            preserved,
+            optional_pattern,
+        } => operator_contains_barrier(preserved) || operator_contains_barrier(optional_pattern),
+        Operator::Union { left, right, .. } => {
+            operator_contains_barrier(left) || operator_contains_barrier(right)
+        }
+        Operator::Repeat { body, .. } => operator_contains_barrier(body),
+        Operator::Choose {
+            if_true, if_false, ..
+        } => {
+            operator_contains_barrier(if_true)
+                || if_false
+                    .as_ref()
+                    .is_some_and(|f| operator_contains_barrier(f))
+        }
+        _ => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
@@ -1668,6 +2606,9 @@ mod tests {
             emit_before: false,
             emit_predicate: None,
             remap: Some(("m".to_string(), "n".to_string())),
+            times_before: false,
+            loop_label: None,
+            body_path_aliases: vec![],
             child: Box::new(Operator::NodeScan {
                 label: Some(Label::new("N")),
                 alias: Identifier::new("n"),
@@ -1700,6 +2641,9 @@ mod tests {
             emit_before: true,
             emit_predicate: None,
             remap: None,
+            times_before: false,
+            loop_label: None,
+            body_path_aliases: vec![],
             child: Box::new(Operator::NodeScan {
                 label: Some(Label::new("N")),
                 alias: Identifier::new("n"),
@@ -2128,6 +3072,10 @@ mod tests {
                 }),
             }),
             path_aliases: vec![Identifier::new("n"), Identifier::new("m")],
+            by_keys: vec![],
+            productive: false,
+            from_label: None,
+            to_label: None,
         };
 
         let mut budget = ExecutionBudget::unlimited();
@@ -2171,6 +3119,10 @@ mod tests {
                 Identifier::new("m"),
                 Identifier::new("o"),
             ],
+            by_keys: vec![],
+            productive: false,
+            from_label: None,
+            to_label: None,
         };
 
         let mut budget = ExecutionBudget::unlimited();
@@ -2198,6 +3150,10 @@ mod tests {
                 alias: Identifier::new("n"),
             }),
             path_aliases: vec![],
+            by_keys: vec![],
+            productive: false,
+            from_label: None,
+            to_label: None,
         };
 
         let mut budget = ExecutionBudget::unlimited();
@@ -2224,6 +3180,10 @@ mod tests {
                 alias: Identifier::new("n"),
             }),
             path_aliases: vec![Identifier::new("n")],
+            by_keys: vec![],
+            productive: false,
+            from_label: None,
+            to_label: None,
         };
 
         let mut budget = ExecutionBudget::unlimited();
@@ -2267,6 +3227,10 @@ mod tests {
                 }),
             }),
             path_aliases: vec![Identifier::new("n"), Identifier::new("m")],
+            by_keys: vec![],
+            productive: false,
+            from_label: None,
+            to_label: None,
         };
 
         let mut budget = ExecutionBudget::unlimited();

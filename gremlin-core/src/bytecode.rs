@@ -3,6 +3,20 @@
 use crate::types::GremlinValue;
 use serde::{Deserialize, Serialize};
 
+/// Gremlin Pop modifier for select() — controls which labeled value to return
+/// when a label has been assigned multiple times in the traversal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Pop {
+    /// Return the first value assigned to the label.
+    First,
+    /// Return the last (most recent) value assigned to the label.
+    Last,
+    /// Return all values as a list.
+    All,
+    /// Return a single value unwrapped, or a list if multiple values exist.
+    Mixed,
+}
+
 /// A Gremlin predicate for comparison operations.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Predicate {
@@ -73,7 +87,7 @@ pub enum GremlinStep {
     Label,
 
     // ── Map/select steps ─────────────────────────────────────────────────────
-    Select(Vec<String>),
+    Select(Option<Pop>, Vec<String>),
     As(String),
 
     // ── Aggregation steps ────────────────────────────────────────────────────
@@ -89,6 +103,8 @@ pub enum GremlinStep {
     Group(Option<String>),
     GroupCount(Option<String>),
     Fold,
+    /// `fold(seed, Operator)` — reduce with a seed value and binary operator.
+    FoldSeed(GremlinValue, String),
     Unfold,
 
     // ── Ordering & paging ────────────────────────────────────────────────────
@@ -122,12 +138,19 @@ pub enum GremlinStep {
     From(Vec<GremlinStep>),
     To(Vec<GremlinStep>),
     Drop,
+    /// `mergeV(searchMap)` — upsert vertex: find by criteria or create
+    MergeV(GremlinValue),
+    /// `mergeE(searchMap)` — upsert edge: find by criteria or create
+    MergeE(GremlinValue),
 
     // ── Path steps ───────────────────────────────────────────────────────────
     Path,
 
     // ── Repeat/branch steps ──────────────────────────────────────────────────
-    Repeat(Vec<GremlinStep>),
+    /// `repeat(body)` or `repeat("label", body)` — the optional label names the
+    /// loop scope so that `loops("label")` can read the correct counter in
+    /// nested repeat contexts.
+    Repeat(Option<Box<str>>, Vec<GremlinStep>),
     Times(i64),
     Until(Vec<GremlinStep>),
     Emit,
@@ -188,7 +211,9 @@ pub enum GremlinStep {
     /// `discard()` — consume traversal without returning results
     Discard,
     /// `loops()` — returns the number of loops in a repeat context
-    Loops,
+    /// `loops()` or `loops("label")` — returns the loop iteration counter.
+    /// When a label is provided, reads the counter for that specific repeat scope.
+    Loops(Option<Box<str>>),
     /// `index()` — pair each element with its positional index
     Index,
     /// `index().with(WithOptions.indexer, WithOptions.map)` — index as a Map
@@ -287,6 +312,32 @@ pub enum GremlinStep {
     Any(Predicate),
     /// `none(predicate)` — true if no elements satisfy predicate
     NonePred(Predicate),
+
+    // ── Unsupported steps (parsed but not compilable) ──────────────────────────
+    /// `tree()` or `tree(sideEffectKey)` — build a tree structure from traversal paths
+    Tree(Option<String>),
+    /// `subgraph(sideEffectKey)` — capture a subgraph of traversed elements
+    Subgraph(String),
+    /// `call(service, args...)` — external service call
+    Call(Vec<GremlinValue>),
+    /// `shortestPath()` — shortest path algorithm
+    ShortestPath,
+    /// `pageRank()` — page rank algorithm
+    PageRank,
+    /// `connectedComponent()` — connected component algorithm
+    ConnectedComponent,
+    /// `peerPressure()` — peer pressure algorithm
+    PeerPressure,
+    /// `io(file)` — file I/O operations
+    Io(String),
+    /// `asDate()` — convert to date
+    AsDate,
+    /// `dateAdd(unit, amount)` — date arithmetic
+    DateAdd(String, i64),
+    /// `dateDiff(traversal)` — date difference
+    DateDiff(Vec<GremlinStep>),
+    /// `toE(direction, labels...)` — edge-to-vertex step
+    ToE(Vec<GremlinValue>),
 
     // ── Predicate wrappers (used inside Is/Where) ────────────────────────────
     Eq(GremlinValue),
@@ -445,7 +496,7 @@ fn parse_step(name: &str, args: &[serde_json::Value]) -> Result<GremlinStep, Byt
         "properties" => Ok(GremlinStep::Properties(collect_string_args(args))),
         "id" => Ok(GremlinStep::Id),
         "label" => Ok(GremlinStep::Label),
-        "select" => Ok(GremlinStep::Select(collect_string_args(args))),
+        "select" => Ok(GremlinStep::Select(None, collect_string_args(args))),
         "as" => {
             let alias = args
                 .first()
@@ -577,7 +628,7 @@ fn parse_step(name: &str, args: &[serde_json::Value]) -> Result<GremlinStep, Byt
             Ok(GremlinStep::Sample(n))
         }
         "discard" => Ok(GremlinStep::Discard),
-        "loops" => Ok(GremlinStep::Loops),
+        "loops" => Ok(GremlinStep::Loops(None)),
         "sack" => Ok(GremlinStep::Sack),
         _ => Err(BytecodeError::UnknownStep(name.into())),
     }

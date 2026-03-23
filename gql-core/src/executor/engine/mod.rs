@@ -138,6 +138,14 @@ pub struct QueryExecutor<'a> {
     /// to the projected items.  This is required for Gremlin, where step
     /// labels set via `as()` must survive property projections.
     pub(crate) gremlin_mode: bool,
+    /// Gremlin side-effect store: holds values set by side-effect steps
+    /// (group("a"), groupCount("a"), aggregate("a")) so that cap() can
+    /// retrieve them even when downstream steps produce zero traversers.
+    pub(crate) gremlin_side_effects: std::cell::RefCell<HashMap<String, Value>>,
+    /// Shared dedup state for `Distinct` operators inside `Repeat`.
+    /// When set, `exec_distinct` uses (and updates) this set instead of
+    /// creating a fresh one, giving cross-iteration dedup semantics.
+    pub(crate) repeat_dedup_state: std::cell::RefCell<Option<std::collections::HashSet<String>>>,
 }
 
 impl<'a> QueryExecutor<'a> {
@@ -154,6 +162,8 @@ impl<'a> QueryExecutor<'a> {
             edge_cache: std::cell::RefCell::new(HashMap::new()),
             foreach_seed: std::cell::RefCell::new(None),
             gremlin_mode: false,
+            gremlin_side_effects: std::cell::RefCell::new(HashMap::new()),
+            repeat_dedup_state: std::cell::RefCell::new(None),
         }
     }
 
@@ -185,6 +195,8 @@ impl<'a> QueryExecutor<'a> {
             edge_cache: std::cell::RefCell::new(HashMap::new()),
             foreach_seed: std::cell::RefCell::new(None),
             gremlin_mode: false,
+            gremlin_side_effects: std::cell::RefCell::new(HashMap::new()),
+            repeat_dedup_state: std::cell::RefCell::new(None),
         }
     }
 
@@ -243,6 +255,28 @@ impl<'a> QueryExecutor<'a> {
     pub(crate) fn invalidate_property_cache(&self) {
         self.node_cache.borrow_mut().clear();
         self.edge_cache.borrow_mut().clear();
+    }
+
+    /// Extract a sort key from a value, resolving node/edge properties via graph store.
+    fn extract_sort_key_with_graph(&self, graph: &str, v: &Value, key: &str) -> Value {
+        match v {
+            Value::Map(m) => m.get(key).cloned().unwrap_or(Value::Null),
+            Value::Node(nid) => {
+                if let Ok(Some(data)) = self.cached_get_node(graph, *nid) {
+                    data.properties.get(key).cloned().unwrap_or(Value::Null)
+                } else {
+                    Value::Null
+                }
+            }
+            Value::Edge(eid) => {
+                if let Ok(Some(data)) = self.cached_get_edge(graph, *eid) {
+                    data.properties.get(key).cloned().unwrap_or(Value::Null)
+                } else {
+                    Value::Null
+                }
+            }
+            _ => Value::Null,
+        }
     }
 
     /// Execute `plan` against the named `graph`, enforcing `budget`.
@@ -356,6 +390,7 @@ impl<'a> QueryExecutor<'a> {
             Operator::GremlinGroup { .. } => self.exec_gremlin_group(cx, op),
             Operator::GremlinMapSlice { .. } => self.exec_gremlin_map_slice(cx, op),
             Operator::GremlinSimplePath { .. } => self.exec_gremlin_simple_path(cx, op),
+            Operator::GremlinCyclicPath { .. } => self.exec_gremlin_cyclic_path(cx, op),
             Operator::GremlinIndex { .. } => self.exec_gremlin_index(cx, op),
             Operator::GremlinProject { .. } => self.exec_gremlin_project(cx, op),
         }?;

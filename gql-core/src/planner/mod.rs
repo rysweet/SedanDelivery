@@ -9,6 +9,16 @@ use crate::error::GqlError;
 
 // ── Physical Plan Operators ───────────────────────────────────────────────────
 
+/// Pop modifier for Gremlin select() — controls which labeled value to
+/// return when a label has been assigned multiple times.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GremlinPop {
+    First,
+    Last,
+    All,
+    Mixed,
+}
+
 #[derive(Debug, Clone)]
 pub enum Operator {
     /// Produces exactly one empty row. Used as a leaf for bare `RETURN` (no MATCH).
@@ -79,6 +89,9 @@ pub enum Operator {
         child: Box<Operator>,
         /// When set, dedup by property value instead of full row (Gremlin `dedup().by(key)`).
         by_key: Option<String>,
+        /// ProductiveByStrategy: keep traversers with missing dedup property
+        /// instead of dropping them.
+        productive: bool,
     },
     Sort {
         items: Vec<(Expr, bool)>, // (expr, ascending)
@@ -208,6 +221,19 @@ pub enum Operator {
         /// After each body iteration, rename `body_out_alias` → `seed_alias`
         /// so the next iteration receives traversers under the expected key.
         remap: Option<(String, String)>,
+        /// When true, `times` was specified BEFORE `repeat()` (while-loop
+        /// semantics: check count before executing body).  When false,
+        /// `times` was specified AFTER `repeat()` (do-while semantics:
+        /// always execute the body at least once).
+        times_before: bool,
+        /// Optional label for named loop scoping (e.g., `repeat("a", body)`).
+        /// When set, the loop counter is stored under `__gremlin_loop_count_<label>`
+        /// so nested repeats can maintain independent counters.
+        loop_label: Option<Box<str>>,
+        /// Intermediate path aliases produced by the repeat body (excluding the
+        /// seed alias and body-output alias).  Used by the executor to accumulate
+        /// edge values in `__gremlin_path_acc` when the body is e.g. `outE().inV()`.
+        body_path_aliases: Vec<String>,
         child: Box<Operator>,
     },
     /// Gremlin choose() — conditional branching.
@@ -279,6 +305,15 @@ pub enum Operator {
         child: Box<Operator>,
         /// Ordered list of aliases that form the path elements.
         path_aliases: Vec<Identifier>,
+        /// Cycling by-modulator keys for path element transformation.
+        by_keys: Vec<String>,
+        /// When true (ProductiveByStrategy), preserve Null by-key
+        /// results instead of dropping the traverser.
+        productive: bool,
+        /// Optional label for `from()` — path starts at this label.
+        from_label: Option<String>,
+        /// Optional label for `to()` — path ends at this label.
+        to_label: Option<String>,
     },
     /// Gremlin match() — declarative pattern matching with named bindings.
     GremlinMatch {
@@ -296,6 +331,15 @@ pub enum Operator {
     GremlinSelect {
         /// (source_variable, output_key) pairs.
         keys: Vec<(Identifier, String)>,
+        /// When true, missing properties produce Null. When false (default),
+        /// missing properties cause the traverser to be dropped.
+        productive: bool,
+        /// Pop modifier: controls which value to return when a label has
+        /// been assigned multiple times (first, last, all, mixed).
+        pop: Option<GremlinPop>,
+        /// For each output key, the full list of variable aliases from
+        /// all as() assignments (ordered oldest-to-newest). Used by Pop.
+        label_stacks: Vec<(String, Vec<Identifier>)>,
         child: Box<Operator>,
     },
     /// Gremlin group()/groupCount() — collect traversers into a single Map.
@@ -341,6 +385,20 @@ pub enum Operator {
         child: Box<Operator>,
         /// Ordered list of aliases that form the path elements.
         path_aliases: Vec<Identifier>,
+        /// Optional label for `from()` — path checking starts at this label.
+        from_label: Option<String>,
+        /// Optional label for `to()` — path checking ends at this label.
+        to_label: Option<String>,
+    },
+    /// Gremlin cyclicPath() — filter to traversers with repeated objects in path.
+    GremlinCyclicPath {
+        child: Box<Operator>,
+        /// Ordered list of aliases that form the path elements.
+        path_aliases: Vec<Identifier>,
+        /// Optional label for `from()` — path checking starts at this label.
+        from_label: Option<String>,
+        /// Optional label for `to()` — path checking ends at this label.
+        to_label: Option<String>,
     },
     /// Gremlin index() — pair each element with its positional index.
     /// When `with_map` is true, produces a Map {index: element}; otherwise
@@ -358,6 +416,9 @@ pub enum Operator {
         child: Box<Operator>,
         /// Alias of the traverser feeding into project.
         current_alias: Identifier,
+        /// When true (ProductiveByStrategy), include Null values in the map
+        /// instead of omitting keys with no value.
+        productive: bool,
     },
 }
 
@@ -394,6 +455,7 @@ impl Operator {
             | Operator::GremlinSelect { child, .. }
             | Operator::GremlinMapSlice { child, .. }
             | Operator::GremlinSimplePath { child, .. }
+            | Operator::GremlinCyclicPath { child, .. }
             | Operator::GremlinIndex { child, .. } => vec![child],
 
             Operator::GremlinGroup {
@@ -496,6 +558,8 @@ pub enum AggFunction {
     Min,
     Max,
     Collect,
+    /// Like Collect but includes null values (used by Gremlin fold()).
+    CollectAll,
     StDev,
     StDevP,
     PercentileCont,
@@ -763,6 +827,7 @@ fn estimate_recursive(
         Operator::GremlinGroup { .. } => 1.0, // produces a single Map row
         Operator::GremlinMapSlice { child, .. }
         | Operator::GremlinSimplePath { child, .. }
+        | Operator::GremlinCyclicPath { child, .. }
         | Operator::GremlinIndex { child, .. }
         | Operator::GremlinProject { child, .. } => estimate_recursive(child, stats, estimates),
         Operator::Cap { .. } => 1.0,
@@ -1046,6 +1111,9 @@ fn collect_all_aliases(op: &Operator) -> Vec<String> {
             aliases.extend(collect_all_aliases(child));
         }
         Operator::GremlinSimplePath { child, .. } => {
+            aliases.extend(collect_all_aliases(child));
+        }
+        Operator::GremlinCyclicPath { child, .. } => {
             aliases.extend(collect_all_aliases(child));
         }
         Operator::GremlinIndex { child, .. } => {

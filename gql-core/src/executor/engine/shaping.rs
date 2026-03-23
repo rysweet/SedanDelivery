@@ -1,12 +1,13 @@
 //! Row-shaping operators: filter, project, distinct, sort, skip, limit.
 
+use crate::ast::Expr;
 use crate::error::GqlError;
 use crate::planner::Operator;
 use crate::types::Value;
 
 use super::helpers::{
     cmp_values, eval_count_expr, expr_to_column_name, gremlin_cmp_values, inject_parameters,
-    RowDedupSet,
+    row_key, RowDedupSet,
 };
 use super::{ExecContext, QueryExecutor, Row};
 
@@ -91,6 +92,37 @@ impl<'a> QueryExecutor<'a> {
                         new_row.insert(col_name, val);
                     }
                     Err(e) => {
+                        // In Gremlin mode, label_carry_items() may reference
+                        // step-alias variables (v_N, e_N) that are not present
+                        // in all row contexts (e.g., after multi-key select).
+                        // Skip these carry-forward items silently rather than
+                        // erroring — they are auxiliary and not critical.
+                        if self.gremlin_mode {
+                            if let Expr::Variable(id) = expr {
+                                let name = id.0.as_str();
+                                // loops() outside repeat context: default to 0
+                                if name == "__gremlin_loop_count" {
+                                    let col_name = match alias {
+                                        Some(a) => a.0.clone(),
+                                        None => name.to_string(),
+                                    };
+                                    new_row.insert(col_name, Value::Int(0));
+                                    continue;
+                                }
+                                if alias.as_ref() == Some(id) {
+                                    // Only skip step-alias carry-forward variables
+                                    // (v_N, e_N patterns from Gremlin compiler).
+                                    let is_step_alias = (name.starts_with("v_")
+                                        || name.starts_with("e_")
+                                        || name.starts_with("u_")
+                                        || name.starts_with("grp_"))
+                                        && name[2..].chars().all(|c| c.is_ascii_digit());
+                                    if is_step_alias {
+                                        continue;
+                                    }
+                                }
+                            }
+                        }
                         // If we already produced at least one row, treat
                         // this as a streaming error: return the partial
                         // rows and stash the error for the caller.
@@ -126,7 +158,12 @@ impl<'a> QueryExecutor<'a> {
         cx: &mut ExecContext<'_>,
         op: &Operator,
     ) -> Result<Vec<Row>, GqlError> {
-        let Operator::Distinct { child, by_key } = op else {
+        let Operator::Distinct {
+            child,
+            by_key,
+            productive,
+        } = op
+        else {
             debug_assert!(false, "expected Distinct operator");
             return Err(GqlError::Execution(
                 crate::error::ExecutionError::UnsupportedFeature {
@@ -139,7 +176,10 @@ impl<'a> QueryExecutor<'a> {
 
         if let Some(key) = by_key {
             use std::collections::HashSet;
-            let mut seen: HashSet<String> = HashSet::new();
+            // Use shared repeat-dedup state when inside a repeat loop, so that
+            // values seen in previous iterations are still filtered out.
+            let has_shared = self.repeat_dedup_state.borrow().is_some();
+            let mut local_seen: HashSet<String> = HashSet::new();
 
             // Multi-key dedup (keys separated by \x1f)
             if key.contains('\x1f') {
@@ -151,15 +191,21 @@ impl<'a> QueryExecutor<'a> {
                         .map(|l| row.get(*l).map(|v| v.canonical_key()).unwrap_or_default())
                         .collect::<Vec<_>>()
                         .join("\x1f");
-                    if seen.insert(composite) {
+                    let is_new = if has_shared {
+                        self.repeat_dedup_state
+                            .borrow_mut()
+                            .as_mut()
+                            .unwrap()
+                            .insert(composite)
+                    } else {
+                        local_seen.insert(composite)
+                    };
+                    if is_new {
                         out.push(row);
                     }
                 }
             } else if let Some(rest) = key.strip_prefix("__dedup_prop__") {
                 // Property-based dedup: extract property from the element.
-                // For Node/Edge values where the property doesn't exist,
-                // drop the traverser (non-productive by-modulation).
-                // For other value types, use empty string as dedup key.
                 let parts: Vec<&str> = rest.splitn(2, "__").collect();
                 let prop_name = parts.first().copied().unwrap_or("");
                 let alias = parts.get(1).copied().unwrap_or("");
@@ -168,12 +214,22 @@ impl<'a> QueryExecutor<'a> {
                     if let Some(val) = row.get(alias) {
                         let extracted = self.extract_property_from_value(cx.graph, val, prop_name);
                         let is_element = matches!(val, Value::Node(_) | Value::Edge(_));
-                        if extracted.is_none() && is_element {
+                        if extracted.is_none() && is_element && !*productive {
                             // Property missing on node/edge → drop traverser
+                            // (unless ProductiveByStrategy is active)
                             continue;
                         }
                         let dedup_val = extracted.map(|v| v.canonical_key()).unwrap_or_default();
-                        if seen.insert(dedup_val) {
+                        let is_new = if has_shared {
+                            self.repeat_dedup_state
+                                .borrow_mut()
+                                .as_mut()
+                                .unwrap()
+                                .insert(dedup_val)
+                        } else {
+                            local_seen.insert(dedup_val)
+                        };
+                        if is_new {
                             out.push(row);
                         }
                     }
@@ -186,17 +242,45 @@ impl<'a> QueryExecutor<'a> {
                         .get(key.as_str())
                         .map(property_aware_dedup_key)
                         .unwrap_or_default();
-                    if seen.insert(dedup_val) {
+                    let is_new = if has_shared {
+                        self.repeat_dedup_state
+                            .borrow_mut()
+                            .as_mut()
+                            .unwrap()
+                            .insert(dedup_val)
+                    } else {
+                        local_seen.insert(dedup_val)
+                    };
+                    if is_new {
                         out.push(row);
                     }
                 }
             }
         } else {
-            let mut seen = RowDedupSet::new();
-            for row in input {
-                cx.budget.check_or_err()?;
-                if seen.insert(&row) {
-                    out.push(row);
+            // Row-level dedup (no by_key)
+            let has_shared = self.repeat_dedup_state.borrow().is_some();
+            if has_shared {
+                // Use shared state with row canonical keys
+                for row in input {
+                    cx.budget.check_or_err()?;
+                    let rk = row_key(&row);
+                    let is_new = self
+                        .repeat_dedup_state
+                        .borrow_mut()
+                        .as_mut()
+                        .unwrap()
+                        .insert(rk);
+                    if is_new {
+                        out.push(row);
+                    }
+                }
+            } else {
+                let mut seen = RowDedupSet::new();
+                for row in input {
+                    cx.budget.check_or_err()?;
+                    if seen.insert(&row) {
+                        out.push(row);
+                    }
                 }
             }
         }
@@ -409,6 +493,7 @@ impl<'a> QueryExecutor<'a> {
             | Operator::GremlinGroup { .. }
             | Operator::GremlinMapSlice { .. }
             | Operator::GremlinSimplePath { .. }
+            | Operator::GremlinCyclicPath { .. }
             | Operator::GremlinIndex { .. }
             | Operator::GremlinProject { .. } => false,
         }
@@ -497,6 +582,7 @@ mod tests {
                 }),
             }),
             by_key: None,
+            productive: false,
         };
         let mut budget = ExecutionBudget::unlimited();
         let result = executor.execute("g", &plan, &mut budget).unwrap();

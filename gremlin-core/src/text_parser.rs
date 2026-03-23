@@ -60,6 +60,9 @@ pub fn parse_traversal(
     let reserved_keys = extract_reserved_keys_strategy(input);
     // SeedStrategy(seed: 999999) — extract seed value for deterministic random
     let seed_strategy = extract_seed_strategy(input);
+    // SubgraphStrategy — extract vertex/edge filter traversals
+    let subgraph_vertex_filter = extract_subgraph_vertex_filter(input, resolve_param);
+    let subgraph_edge_filter = extract_subgraph_edge_filter(input, resolve_param);
 
     // Strip strategy wrappers: g.withStrategies(...).V()... or g.withoutStrategies(...).V()...
     // Also strip g.withSideEffect(...) and g.withSack(...) and g.withComputer(...)
@@ -118,6 +121,14 @@ pub fn parse_traversal(
 
     for token in &tokens {
         parse_step_token(token, resolve_param, &mut steps)?;
+    }
+
+    // Apply SubgraphStrategy filters: inject vertex/edge filter steps
+    if let Some(ref vf_steps) = subgraph_vertex_filter {
+        steps = inject_subgraph_vertex_filter(steps, vf_steps);
+    }
+    if let Some(ref ef_steps) = subgraph_edge_filter {
+        steps = inject_subgraph_edge_filter(steps, ef_steps);
     }
 
     Ok(steps)
@@ -208,6 +219,158 @@ fn extract_reserved_keys_strategy(input: &str) -> Option<Vec<String>> {
     Some(extra_keys)
 }
 
+/// Extract the vertex filter traversal from SubgraphStrategy.
+/// e.g., `SubgraphStrategy(vertices: __.has("name", P.within("josh", "lop", "ripple")))`
+/// Returns the parsed filter steps if found.
+fn extract_subgraph_vertex_filter(
+    input: &str,
+    resolve_param: &dyn Fn(&str) -> Option<GremlinValue>,
+) -> Option<Vec<GremlinStep>> {
+    if !input.contains("SubgraphStrategy") {
+        return None;
+    }
+    let start = input.find("SubgraphStrategy(")?;
+    let after = &input[start + "SubgraphStrategy(".len()..];
+
+    // Find "vertices:" parameter
+    let vpos = after.find("vertices:")?;
+    let rest = after[vpos + "vertices:".len()..].trim_start();
+
+    // Extract the traversal text up to the matching close or next parameter
+    let traversal_text = extract_balanced_traversal(rest)?;
+
+    // Parse the filter traversal
+    parse_inner_traversal(&traversal_text, resolve_param).ok()
+}
+
+/// Extract a balanced traversal expression from a position in a string.
+/// Handles nested parentheses and stops at `,` or `)` at depth 0.
+fn extract_balanced_traversal(input: &str) -> Option<String> {
+    let input = input.trim_start();
+    let mut depth = 0i32;
+    let mut end = 0;
+    let chars: Vec<char> = input.chars().collect();
+
+    for (i, &ch) in chars.iter().enumerate() {
+        match ch {
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' => {
+                if depth == 0 {
+                    end = i;
+                    break;
+                }
+                depth -= 1;
+            }
+            ',' if depth == 0 => {
+                end = i;
+                break;
+            }
+            _ => {}
+        }
+        end = i + 1;
+    }
+
+    let text = input[..end].trim().trim_end_matches(',').trim();
+    if text.is_empty() {
+        return None;
+    }
+    Some(text.to_string())
+}
+
+/// Extract the edge filter traversal from SubgraphStrategy.
+/// e.g., `SubgraphStrategy(edges: __.hasLabel("created"))`
+fn extract_subgraph_edge_filter(
+    input: &str,
+    resolve_param: &dyn Fn(&str) -> Option<GremlinValue>,
+) -> Option<Vec<GremlinStep>> {
+    if !input.contains("SubgraphStrategy") {
+        return None;
+    }
+    let start = input.find("SubgraphStrategy(")?;
+    let after = &input[start + "SubgraphStrategy(".len()..];
+
+    // Find "edges:" parameter
+    let epos = after.find("edges:")?;
+    let rest = after[epos + "edges:".len()..].trim_start();
+
+    let traversal_text = extract_balanced_traversal(rest)?;
+    parse_inner_traversal(&traversal_text, resolve_param).ok()
+}
+
+/// Inject SubgraphStrategy vertex filter steps after V() and vertex-producing navigation steps.
+fn inject_subgraph_vertex_filter(
+    steps: Vec<GremlinStep>,
+    filter_steps: &[GremlinStep],
+) -> Vec<GremlinStep> {
+    let mut result = Vec::with_capacity(steps.len() * 2);
+
+    for step in steps {
+        let needs_vertex_filter = matches!(
+            step,
+            GremlinStep::V(_)
+                | GremlinStep::Out(_)
+                | GremlinStep::In(_)
+                | GremlinStep::Both(_)
+                | GremlinStep::InV
+                | GremlinStep::OutV
+                | GremlinStep::BothV
+                | GremlinStep::OtherV
+        );
+
+        result.push(step);
+
+        if needs_vertex_filter {
+            result.push(GremlinStep::Where(filter_steps.to_vec()));
+        }
+    }
+
+    result
+}
+
+/// Inject SubgraphStrategy edge filter steps after edge-producing steps.
+/// For vertex-navigation steps (out/in/both), decompose them to use
+/// edge traversal with filter: out() → outE().where(filter).inV()
+fn inject_subgraph_edge_filter(
+    steps: Vec<GremlinStep>,
+    filter_steps: &[GremlinStep],
+) -> Vec<GremlinStep> {
+    let mut result = Vec::with_capacity(steps.len() * 3);
+
+    for step in steps {
+        match &step {
+            // Edge-producing steps: inject filter after
+            GremlinStep::E(_)
+            | GremlinStep::OutE(_)
+            | GremlinStep::InE(_)
+            | GremlinStep::BothE(_) => {
+                result.push(step);
+                result.push(GremlinStep::Where(filter_steps.to_vec()));
+            }
+            // Vertex-navigation steps: decompose to edge traversal with filter
+            GremlinStep::Out(labels) => {
+                result.push(GremlinStep::OutE(labels.clone()));
+                result.push(GremlinStep::Where(filter_steps.to_vec()));
+                result.push(GremlinStep::InV);
+            }
+            GremlinStep::In(labels) => {
+                result.push(GremlinStep::InE(labels.clone()));
+                result.push(GremlinStep::Where(filter_steps.to_vec()));
+                result.push(GremlinStep::OutV);
+            }
+            GremlinStep::Both(labels) => {
+                result.push(GremlinStep::BothE(labels.clone()));
+                result.push(GremlinStep::Where(filter_steps.to_vec()));
+                result.push(GremlinStep::OtherV);
+            }
+            _ => {
+                result.push(step);
+            }
+        }
+    }
+
+    result
+}
+
 /// Extract the initial value from `g.withSack(value)` if present.
 fn extract_with_sack_value(
     input: &str,
@@ -257,17 +420,35 @@ fn parse_literal_value(
     s: &str,
     resolve_param: &dyn Fn(&str) -> Option<GremlinValue>,
 ) -> Option<GremlinValue> {
+    // Integer with type suffix: 0b (byte), 0s (short), 0i (int), 0L/0l (long), 0n (BigInteger)
     if let Some(stripped) = s
         .strip_suffix('b')
+        .or_else(|| s.strip_suffix('B'))
         .or_else(|| s.strip_suffix('s'))
+        .or_else(|| s.strip_suffix('S'))
         .or_else(|| s.strip_suffix('i'))
+        .or_else(|| s.strip_suffix('I'))
         .or_else(|| s.strip_suffix('l'))
+        .or_else(|| s.strip_suffix('L'))
+        .or_else(|| s.strip_suffix('n'))
+        .or_else(|| s.strip_suffix('N'))
     {
         if let Ok(v) = stripped.parse::<i64>() {
             return Some(GremlinValue::Integer(v));
         }
+        // BigInteger values too large for i64: parse as f64 for approximate arithmetic
+        if let Ok(v) = stripped.parse::<f64>() {
+            return Some(GremlinValue::Float(v));
+        }
     }
-    if let Some(stripped) = s.strip_suffix('d').or_else(|| s.strip_suffix('f')) {
+    if let Some(stripped) = s
+        .strip_suffix('d')
+        .or_else(|| s.strip_suffix('D'))
+        .or_else(|| s.strip_suffix('f'))
+        .or_else(|| s.strip_suffix('F'))
+        .or_else(|| s.strip_suffix('m'))
+        .or_else(|| s.strip_suffix('M'))
+    {
         if let Ok(v) = stripped.parse::<f64>() {
             return Some(GremlinValue::Float(v));
         }
@@ -281,6 +462,17 @@ fn parse_literal_value(
     let unquoted = s.trim_matches('"').trim_matches('\'');
     if unquoted != s {
         return Some(GremlinValue::String(unquoted.to_string()));
+    }
+    // Boolean literals
+    if s == "true" {
+        return Some(GremlinValue::Bool(true));
+    }
+    if s == "false" {
+        return Some(GremlinValue::Bool(false));
+    }
+    // Null literal
+    if s == "null" {
+        return Some(GremlinValue::Null);
     }
     resolve_param(s).or(None)
 }
@@ -654,27 +846,42 @@ fn parse_step_token(
         "label" => out.push(GremlinStep::Label),
         "select" => {
             let args = parse_string_arg_list(args_str)?;
-            // Filter out Pop.* arguments (Pop.first, Pop.last, Pop.all, Pop.mixed)
+            // Extract Pop.* modifier if present (must be qualified with Pop. prefix)
+            let mut pop = None;
             let filtered: Vec<String> = args
                 .into_iter()
-                .filter(|a| !a.starts_with("Pop."))
+                .filter(|a| match a.as_str() {
+                    "Pop.first" => {
+                        pop = Some(crate::bytecode::Pop::First);
+                        false
+                    }
+                    "Pop.last" => {
+                        pop = Some(crate::bytecode::Pop::Last);
+                        false
+                    }
+                    "Pop.all" => {
+                        pop = Some(crate::bytecode::Pop::All);
+                        false
+                    }
+                    "Pop.mixed" => {
+                        pop = Some(crate::bytecode::Pop::Mixed);
+                        false
+                    }
+                    _ => true,
+                })
                 .collect();
-            out.push(GremlinStep::Select(filtered));
+            out.push(GremlinStep::Select(pop, filtered));
         }
         "as" => {
             let args = parse_string_arg_list(args_str)?;
-            if let Some(alias) = args.into_iter().next() {
+            for alias in args {
                 out.push(GremlinStep::As(alias));
             }
         }
         "count" => {
-            let args = parse_arg_list(args_str, resolve_param)?;
-            let is_local = args
-                .iter()
-                .any(|a| matches!(a, GremlinValue::String(s) if s == "Scope.local"));
-            if is_local {
+            if args_str.contains("local") || args_str.contains("Scope.local") {
                 // count(local) — count elements in the list/map value
-                out.push(GremlinStep::StringOpLocal("gremlin_length_local".into()));
+                out.push(GremlinStep::StringOpLocal("gremlin_count_local".into()));
             } else {
                 out.push(GremlinStep::Count);
             }
@@ -717,11 +924,24 @@ fn parse_step_token(
             let key = args.into_iter().next();
             out.push(GremlinStep::GroupCount(key));
         }
-        "fold" => out.push(GremlinStep::Fold),
+        "fold" => {
+            let args = parse_arg_list(args_str, resolve_param)?;
+            if args.len() >= 2 {
+                // fold(seed, Operator.op) — reduce with binary operator
+                let seed = args[0].clone();
+                let op_str = match &args[1] {
+                    GremlinValue::String(s) => s.clone(),
+                    _ => "sum".to_string(),
+                };
+                out.push(GremlinStep::FoldSeed(seed, op_str));
+            } else {
+                out.push(GremlinStep::Fold);
+            }
+        }
         "unfold" => out.push(GremlinStep::Unfold),
         "order" => {
             // Detect Scope.local
-            if args_str.contains("Scope.local") {
+            if args_str.contains("Scope.local") || args_str.contains("local") {
                 out.push(GremlinStep::SortLocal);
             } else {
                 out.push(GremlinStep::Order);
@@ -731,9 +951,9 @@ fn parse_step_token(
         "limit" => {
             let args = parse_arg_list(args_str, resolve_param)?;
             // Detect Scope.local
-            let is_local = args
-                .iter()
-                .any(|a| matches!(a, GremlinValue::String(s) if s == "Scope.local"));
+            let is_local = args.iter().any(
+                |a| matches!(a, GremlinValue::String(s) if s == "Scope.local" || s == "local"),
+            );
             // limit(n) or limit(Scope.global, n) — skip Scope arg
             let n = args.iter().find_map(|a| {
                 if let GremlinValue::Integer(v) = a {
@@ -753,9 +973,9 @@ fn parse_step_token(
         "range" => {
             let args = parse_arg_list(args_str, resolve_param)?;
             // Detect Scope.local
-            let is_local = args
-                .iter()
-                .any(|a| matches!(a, GremlinValue::String(s) if s == "Scope.local"));
+            let is_local = args.iter().any(
+                |a| matches!(a, GremlinValue::String(s) if s == "Scope.local" || s == "local"),
+            );
             // Collect integer args
             let ints: Vec<i64> = args
                 .iter()
@@ -848,7 +1068,7 @@ fn parse_step_token(
                     // Convert to: select("a").is(pred) effectively
                     // Emit as Where with a select + is pattern
                     out.push(GremlinStep::Where(vec![
-                        GremlinStep::Select(vec![label]),
+                        GremlinStep::Select(None, vec![label]),
                         GremlinStep::Is(pred),
                     ]));
                 } else {
@@ -912,8 +1132,25 @@ fn parse_step_token(
         "drop" => out.push(GremlinStep::Drop),
         "path" => out.push(GremlinStep::Path),
         "repeat" => {
-            let inner = parse_inner_traversal(args_str, resolve_param)?;
-            out.push(GremlinStep::Repeat(inner));
+            // repeat(body) or repeat("label", body)
+            let trimmed = args_str.trim();
+            if trimmed.starts_with('"') || trimmed.starts_with('\'') {
+                // repeat("label", body) — extract the label and body
+                let quote = trimmed.as_bytes()[0] as char;
+                if let Some(end_quote) = trimmed[1..].find(quote) {
+                    let label = &trimmed[1..1 + end_quote];
+                    let rest = trimmed[1 + end_quote + 1..].trim();
+                    let rest = rest.strip_prefix(',').unwrap_or(rest).trim();
+                    let inner = parse_inner_traversal(rest, resolve_param)?;
+                    out.push(GremlinStep::Repeat(Some(label.into()), inner));
+                } else {
+                    let inner = parse_inner_traversal(args_str, resolve_param)?;
+                    out.push(GremlinStep::Repeat(None, inner));
+                }
+            } else {
+                let inner = parse_inner_traversal(args_str, resolve_param)?;
+                out.push(GremlinStep::Repeat(None, inner));
+            }
         }
         "times" => {
             let args = parse_arg_list(args_str, resolve_param)?;
@@ -1035,9 +1272,9 @@ fn parse_step_token(
         }
         "skip" => {
             let args = parse_arg_list(args_str, resolve_param)?;
-            let is_local = args
-                .iter()
-                .any(|a| matches!(a, GremlinValue::String(s) if s == "Scope.local"));
+            let is_local = args.iter().any(
+                |a| matches!(a, GremlinValue::String(s) if s == "Scope.local" || s == "local"),
+            );
             let n = args.iter().find_map(|a| {
                 if let GremlinValue::Integer(v) = a {
                     Some(*v)
@@ -1107,9 +1344,9 @@ fn parse_step_token(
         "barrier" => out.push(GremlinStep::Barrier),
         "sample" => {
             let args = parse_arg_list(args_str, resolve_param)?;
-            let is_local = args
-                .iter()
-                .any(|a| matches!(a, GremlinValue::String(s) if s == "Scope.local"));
+            let is_local = args.iter().any(
+                |a| matches!(a, GremlinValue::String(s) if s == "Scope.local" || s == "local"),
+            );
             let n = args
                 .iter()
                 .find_map(|a| {
@@ -1127,7 +1364,21 @@ fn parse_step_token(
             }
         }
         "discard" => out.push(GremlinStep::Discard),
-        "loops" => out.push(GremlinStep::Loops),
+        "loops" => {
+            // loops() or loops("label")
+            let trimmed = args_str.trim();
+            if trimmed.starts_with('"') || trimmed.starts_with('\'') {
+                let quote = trimmed.as_bytes()[0] as char;
+                if let Some(end_quote) = trimmed[1..].find(quote) {
+                    let label = &trimmed[1..1 + end_quote];
+                    out.push(GremlinStep::Loops(Some(label.into())));
+                } else {
+                    out.push(GremlinStep::Loops(None));
+                }
+            } else {
+                out.push(GremlinStep::Loops(None));
+            }
+        }
         "local" => {
             // local(traversal) — apply traversal to each element locally
             // Semantically similar to map(traversal)
@@ -1454,11 +1705,81 @@ fn parse_step_token(
             }
         }
         // Steps still unsupported (provider-specific or not applicable)
-        "profile" | "iterate" | "explain" | "tree" | "subgraph" | "asDate" | "dateAdd"
-        | "dateDiff" | "fail" | "read" | "write" | "mergeV" | "mergeE" | "connectedComponent"
-        | "shortestPath" | "pageRank" | "peerPressure" | "call" => {
-            // Unsupported steps — record as unknown so the runner can skip
+        "profile" | "iterate" | "explain" | "fail" => {
             return Err(TextParseError::UnknownStep(name.to_string()));
+        }
+        // Unsupported but parseable — compile to CompileError::UnsupportedStep
+        "read" | "write" => {
+            out.push(GremlinStep::Io(String::new()));
+        }
+        "tree" => {
+            let args = parse_string_arg_list(args_str)?;
+            out.push(GremlinStep::Tree(args.into_iter().next()));
+        }
+        "subgraph" => {
+            let args = parse_string_arg_list(args_str)?;
+            let key = args.into_iter().next().unwrap_or_default();
+            out.push(GremlinStep::Subgraph(key));
+        }
+        "call" => {
+            let args = parse_arg_list(args_str, resolve_param)?;
+            out.push(GremlinStep::Call(args));
+        }
+        "shortestPath" => {
+            out.push(GremlinStep::ShortestPath);
+        }
+        "pageRank" => {
+            out.push(GremlinStep::PageRank);
+        }
+        "connectedComponent" => {
+            out.push(GremlinStep::ConnectedComponent);
+        }
+        "peerPressure" => {
+            out.push(GremlinStep::PeerPressure);
+        }
+        "io" => {
+            let args = parse_string_arg_list(args_str)?;
+            let file = args.into_iter().next().unwrap_or_default();
+            out.push(GremlinStep::Io(file));
+        }
+        "asDate" => {
+            out.push(GremlinStep::AsDate);
+        }
+        "dateAdd" => {
+            let args = parse_arg_list(args_str, resolve_param)?;
+            let unit = match args.first() {
+                Some(GremlinValue::String(s)) => s.clone(),
+                _ => String::new(),
+            };
+            let amount = match args.get(1) {
+                Some(GremlinValue::Integer(n)) => *n,
+                _ => 0,
+            };
+            out.push(GremlinStep::DateAdd(unit, amount));
+        }
+        "dateDiff" => {
+            let inner = parse_inner_traversal(args_str, resolve_param)?;
+            out.push(GremlinStep::DateDiff(inner));
+        }
+        "toE" => {
+            let args = parse_arg_list(args_str, resolve_param)?;
+            out.push(GremlinStep::ToE(args));
+        }
+        "mergeV" => {
+            let args = parse_arg_list(args_str, resolve_param)?;
+            let search = args
+                .into_iter()
+                .next()
+                .unwrap_or(GremlinValue::Map(IndexMap::new()));
+            out.push(GremlinStep::MergeV(search));
+        }
+        "mergeE" => {
+            let args = parse_arg_list(args_str, resolve_param)?;
+            let search = args
+                .into_iter()
+                .next()
+                .unwrap_or(GremlinValue::Map(IndexMap::new()));
+            out.push(GremlinStep::MergeE(search));
         }
         _ => {
             return Err(TextParseError::UnknownStep(name.to_string()));
@@ -1830,7 +2151,7 @@ fn try_parse_predicate_call(
         // Build compound predicate from chain
         let mut or_groups: Vec<Vec<Predicate>> = vec![vec![]];
         for (op, part) in &chain_parts {
-            let pred = try_parse_predicate_single(part, resolve_param)?;
+            let pred = try_parse_predicate_call(part, resolve_param)?;
             if *op == "or" {
                 or_groups.push(vec![pred]);
             } else {
@@ -2161,7 +2482,7 @@ fn parse_from_to_traversal(
     // If it's a quoted string, it's a step label reference
     if s.starts_with('"') {
         let label = unquote(s);
-        return Ok(vec![GremlinStep::Select(vec![label])]);
+        return Ok(vec![GremlinStep::Select(None, vec![label])]);
     }
     // Handle to(Direction.OUT, "label") / to(Direction.IN, "label") / to(Direction.BOTH, "label")
     // These are equivalent to out("label") / in("label") / both("label")
@@ -2181,7 +2502,7 @@ fn parse_from_to_traversal(
     // Otherwise parse as a full traversal
     let inner = parse_inner_traversal(s, resolve_param)?;
     if inner.is_empty() {
-        Ok(vec![GremlinStep::Select(vec![])])
+        Ok(vec![GremlinStep::Select(None, vec![])])
     } else {
         Ok(inner)
     }
@@ -2490,6 +2811,11 @@ fn parse_single_value(
         return Ok(GremlinValue::String(s.to_string()));
     }
 
+    // Merge.* — merge step option tokens
+    if s.starts_with("Merge.") {
+        return Ok(GremlinValue::String(s.to_string()));
+    }
+
     // Pick.none — default branch marker for choose/option
     if s == "Pick.none" {
         return Ok(GremlinValue::String("none".to_string()));
@@ -2520,6 +2846,8 @@ fn unquote(s: &str) -> String {
         s[1..s.len() - 1]
             .replace("\\\"", "\"")
             .replace("\\\\", "\\")
+    } else if s.starts_with('\'') && s.ends_with('\'') && s.len() >= 2 {
+        s[1..s.len() - 1].replace("\\'", "'").replace("\\\\", "\\")
     } else {
         s.to_string()
     }
@@ -2661,7 +2989,7 @@ mod tests {
         let steps =
             parse_traversal(r#"g.V().repeat(__.out()).times(2).count()"#, &no_params).unwrap();
         assert!(steps.len() >= 4);
-        assert!(matches!(steps[1], GremlinStep::Repeat(_)));
+        assert!(matches!(steps[1], GremlinStep::Repeat(_, _)));
         assert_eq!(steps[2], GremlinStep::Times(2));
         assert_eq!(steps[3], GremlinStep::Count);
     }
@@ -2675,6 +3003,9 @@ mod tests {
         .unwrap();
         assert_eq!(steps[1], GremlinStep::As("a".into()));
         assert_eq!(steps[3], GremlinStep::As("b".into()));
-        assert_eq!(steps[4], GremlinStep::Select(vec!["a".into(), "b".into()]));
+        assert_eq!(
+            steps[4],
+            GremlinStep::Select(None, vec!["a".into(), "b".into()])
+        );
     }
 }

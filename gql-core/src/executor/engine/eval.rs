@@ -23,6 +23,38 @@ fn format_value(v: &Value) -> String {
     }
 }
 
+/// Wrap a property value for `valueMap()` output.
+///
+/// Single scalar values are wrapped in `List([v])`.
+/// Multi-valued vertex properties (stored as `List` of `Map`s with a "value"
+/// key) are flattened to `List` of the extracted values.
+/// Plain lists (no Maps with "value") are kept as-is.
+fn valuemap_wrap_property(v: Value) -> Value {
+    match v {
+        Value::List(items) => {
+            if items
+                .iter()
+                .all(|item| matches!(item, Value::Map(m) if m.contains_key("value")))
+                && !items.is_empty()
+            {
+                // Multi-valued vertex property with meta-properties: extract values
+                let values = items
+                    .into_iter()
+                    .map(|item| match item {
+                        Value::Map(m) => m.get("value").cloned().unwrap_or(Value::Null),
+                        other => other,
+                    })
+                    .collect();
+                Value::List(values)
+            } else {
+                // Plain list property — already a list of values
+                Value::List(items)
+            }
+        }
+        single => Value::List(vec![single]),
+    }
+}
+
 impl<'a> QueryExecutor<'a> {
     /// Build a `FilterRow` (borrowed string-key map) from an owned `Row`.
     ///
@@ -86,15 +118,31 @@ impl<'a> QueryExecutor<'a> {
                     Value::Point(_) => {
                         crate::executor::filter::temporal_property_access(&obj_val, key.as_str())
                     }
-                    other => Err(GqlError::Execution(ExecutionError::TypeMismatch {
-                        expected: "Node, Relationship, or Map".to_string(),
-                        actual: other.type_name().to_string(),
-                    })),
+                    _ => {
+                        if self.gremlin_mode {
+                            Ok(Value::Null)
+                        } else {
+                            Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                                expected: "Node, Relationship, or Map".to_string(),
+                                actual: obj_val.type_name().to_string(),
+                            }))
+                        }
+                    }
                 }
             }
             Expr::Variable(id) => {
                 if let Some(v) = row.get(id.0.as_str()) {
                     Ok(v.clone())
+                } else if self.gremlin_mode && id.0.starts_with("__gremlin_agg_") {
+                    // Aggregate columns may not be carried through intermediate
+                    // steps (e.g. .out() after .aggregate()).  Fall back to the
+                    // side-effect store which persists across all steps.
+                    let se = self.gremlin_side_effects.borrow();
+                    if let Some(v) = se.get(id.0.as_str()) {
+                        Ok(v.clone())
+                    } else {
+                        eval_expr(expr, ctx)
+                    }
                 } else {
                     eval_expr(expr, ctx)
                 }
@@ -637,14 +685,26 @@ impl<'a> QueryExecutor<'a> {
                         }
                     }
                     "gremlin_other_v" => {
-                        // Return the opposite endpoint of an edge from
-                        // the traversal source. We don't track the source
-                        // direction, so return endNode as default (works
-                        // for outE().otherV() which is the common case).
-                        match evaled_args.into_iter().next() {
-                            Some(Value::Edge(edge_id)) => {
+                        // Return the opposite endpoint of an edge relative to
+                        // the traversal source vertex. Args: (edge, source_vertex).
+                        let mut args_it = evaled_args.into_iter();
+                        let edge_val = args_it.next().unwrap_or(Value::Null);
+                        let src_val = args_it.next().unwrap_or(Value::Null);
+                        match edge_val {
+                            Value::Edge(edge_id) => {
                                 match self.cached_get_edge(graph, edge_id)? {
-                                    Some(data) => Ok(Value::Node(data.dst)),
+                                    Some(data) => {
+                                        if let Value::Node(src_nid) = src_val {
+                                            if src_nid == data.src {
+                                                Ok(Value::Node(data.dst))
+                                            } else {
+                                                Ok(Value::Node(data.src))
+                                            }
+                                        } else {
+                                            // No source info — default to dst
+                                            Ok(Value::Node(data.dst))
+                                        }
+                                    }
                                     None => Ok(Value::Null),
                                 }
                             }
@@ -697,7 +757,7 @@ impl<'a> QueryExecutor<'a> {
                                             if keys.is_empty() || keys.iter().any(|fk| fk == &k) {
                                                 wrapped.insert(
                                                     k.into_boxed_str(),
-                                                    Value::List(vec![v]),
+                                                    valuemap_wrap_property(v),
                                                 );
                                             }
                                         }
@@ -727,7 +787,7 @@ impl<'a> QueryExecutor<'a> {
                                             if keys.is_empty() || keys.iter().any(|fk| fk == &k) {
                                                 wrapped.insert(
                                                     k.into_boxed_str(),
-                                                    Value::List(vec![v]),
+                                                    valuemap_wrap_property(v),
                                                 );
                                             }
                                         }
@@ -742,10 +802,106 @@ impl<'a> QueryExecutor<'a> {
                                     .filter(|(k, _)| {
                                         keys.is_empty() || keys.iter().any(|fk| fk.as_str() == &**k)
                                     })
-                                    .map(|(k, v)| (k, Value::List(vec![v])))
+                                    .map(|(k, v)| (k, valuemap_wrap_property(v)))
                                     .collect();
                                 Ok(Value::Map(wrapped))
                             }
+                            Some(other) => Ok(other),
+                            None => Ok(Value::Null),
+                        }
+                    }
+                    "gremlin_elementmap" => {
+                        // elementMap(): like valueMap but unwrapped, always with t[id]/t[label].
+                        // For edges also includes D[OUT] and D[IN] direction maps.
+                        // Args: element [, key1, key2, ...]
+                        let mut args_iter = evaled_args.into_iter();
+                        let element = args_iter.next();
+                        let keys: Vec<String> = args_iter
+                            .filter_map(|v| match v {
+                                Value::Str(s) => Some(s.to_string()),
+                                Value::Null => None,
+                                _ => None,
+                            })
+                            .collect();
+                        match element {
+                            Some(Value::Node(node_id)) => {
+                                match self.cached_get_node(graph, node_id)? {
+                                    Some(data) => {
+                                        let mut m: indexmap::IndexMap<Box<str>, Value> =
+                                            indexmap::IndexMap::new();
+                                        m.insert("t[id]".into(), Value::Int(node_id.0 as i64));
+                                        let label_str = data
+                                            .labels
+                                            .first()
+                                            .map(|l| l.to_string())
+                                            .unwrap_or_default();
+                                        m.insert("t[label]".into(), Value::Str(label_str.into()));
+                                        for (k, v) in data.properties.into_iter() {
+                                            if keys.is_empty() || keys.iter().any(|fk| fk == &k) {
+                                                m.insert(k.into_boxed_str(), v);
+                                            }
+                                        }
+                                        Ok(Value::Map(m))
+                                    }
+                                    None => Ok(Value::Map(indexmap::IndexMap::new())),
+                                }
+                            }
+                            Some(Value::Edge(edge_id)) => {
+                                match self.cached_get_edge(graph, edge_id)? {
+                                    Some(data) => {
+                                        let mut m: indexmap::IndexMap<Box<str>, Value> =
+                                            indexmap::IndexMap::new();
+                                        m.insert("t[id]".into(), Value::Int(edge_id.0 as i64));
+                                        m.insert(
+                                            "t[label]".into(),
+                                            Value::Str(data.rel_type.as_str().into()),
+                                        );
+                                        for (k, v) in data.properties.into_iter() {
+                                            if keys.is_empty() || keys.iter().any(|fk| fk == &k) {
+                                                m.insert(k.into_boxed_str(), v);
+                                            }
+                                        }
+                                        // D[OUT] / D[IN] direction endpoint maps
+                                        if let Some(src_data) =
+                                            self.cached_get_node(graph, data.src)?
+                                        {
+                                            let mut out_m: indexmap::IndexMap<Box<str>, Value> =
+                                                indexmap::IndexMap::new();
+                                            out_m.insert(
+                                                "t[id]".into(),
+                                                Value::Int(data.src.0 as i64),
+                                            );
+                                            let l = src_data
+                                                .labels
+                                                .first()
+                                                .map(|l| l.to_string())
+                                                .unwrap_or_default();
+                                            out_m.insert("t[label]".into(), Value::Str(l.into()));
+                                            m.insert("D[OUT]".into(), Value::Map(out_m));
+                                        }
+                                        if let Some(dst_data) =
+                                            self.cached_get_node(graph, data.dst)?
+                                        {
+                                            let mut in_m: indexmap::IndexMap<Box<str>, Value> =
+                                                indexmap::IndexMap::new();
+                                            in_m.insert(
+                                                "t[id]".into(),
+                                                Value::Int(data.dst.0 as i64),
+                                            );
+                                            let l = dst_data
+                                                .labels
+                                                .first()
+                                                .map(|l| l.to_string())
+                                                .unwrap_or_default();
+                                            in_m.insert("t[label]".into(), Value::Str(l.into()));
+                                            m.insert("D[IN]".into(), Value::Map(in_m));
+                                        }
+                                        Ok(Value::Map(m))
+                                    }
+                                    None => Ok(Value::Map(indexmap::IndexMap::new())),
+                                }
+                            }
+                            Some(Value::Map(m)) => Ok(Value::Map(m)),
                             Some(other) => Ok(other),
                             None => Ok(Value::Null),
                         }
@@ -798,6 +954,34 @@ impl<'a> QueryExecutor<'a> {
                             Some(other) => Ok(Value::List(vec![other])),
                         }
                     }
+                    "gremlin_values_keys" => {
+                        // values("k1", "k2") — return list of values for specific keys
+                        let mut args_iter = evaled_args.into_iter();
+                        let element = args_iter.next().unwrap_or(Value::Null);
+                        let keys: Vec<String> = args_iter
+                            .filter_map(|v| match v {
+                                Value::Str(s) => Some(s.to_string()),
+                                _ => None,
+                            })
+                            .collect();
+                        let props: Vec<(String, Value)> = match &element {
+                            Value::Node(node_id) => match self.cached_get_node(graph, *node_id)? {
+                                Some(data) => data.properties.into_iter().collect(),
+                                None => Vec::new(),
+                            },
+                            Value::Edge(edge_id) => match self.cached_get_edge(graph, *edge_id)? {
+                                Some(data) => data.properties.into_iter().collect(),
+                                None => Vec::new(),
+                            },
+                            _ => Vec::new(),
+                        };
+                        let vals: Vec<Value> = props
+                            .into_iter()
+                            .filter(|(k, _)| keys.iter().any(|fk| fk == k))
+                            .map(|(_, v)| v)
+                            .collect();
+                        Ok(Value::List(vals))
+                    }
                     "gremlin_properties_entries" => {
                         // properties(): return list of Maps with ~key, ~value, ~element.
                         // First arg is the element; remaining args are optional key filters.
@@ -823,24 +1007,63 @@ impl<'a> QueryExecutor<'a> {
                             }
                             _ => Vec::new(),
                         };
+                        let mut prop_idx: i64 = 0;
                         let entries: Vec<Value> = props
                             .into_iter()
                             .filter(|(k, _)| {
                                 key_filters.is_empty() || key_filters.iter().any(|f| f == k)
                             })
-                            .enumerate()
-                            .map(|(idx, (k, v))| {
+                            .flat_map(|(k, v)| {
                                 let elem_base = match &element {
                                     Value::Node(nid) => nid.0 as i64 * 1000,
                                     Value::Edge(eid) => eid.0 as i64 * 1000,
                                     _ => 0,
                                 };
+                                // Multi-valued vertex property (List of Maps with "value" key):
+                                // explode into individual property entries.
+                                if let Value::List(ref items) = v {
+                                    if !items.is_empty()
+                                        && items.iter().all(|item| {
+                                            matches!(item, Value::Map(m) if m.contains_key("value"))
+                                        })
+                                    {
+                                        let result: Vec<Value> = items
+                                            .iter()
+                                            .map(|item| {
+                                                let main_val = match item {
+                                                    Value::Map(m) => {
+                                                        m.get("value")
+                                                            .cloned()
+                                                            .unwrap_or(Value::Null)
+                                                    }
+                                                    other => other.clone(),
+                                                };
+                                                let mut m = indexmap::IndexMap::new();
+                                                m.insert(
+                                                    Box::from("~id"),
+                                                    Value::Int(elem_base + prop_idx),
+                                                );
+                                                m.insert(
+                                                    Box::from("~key"),
+                                                    Value::Str(k.clone().into_boxed_str()),
+                                                );
+                                                m.insert(Box::from("~value"), main_val);
+                                                m.insert(Box::from("~element"), element.clone());
+                                                prop_idx += 1;
+                                                Value::Map(m)
+                                            })
+                                            .collect();
+                                        return result;
+                                    }
+                                }
+                                // Single-valued property: one entry.
                                 let mut m = indexmap::IndexMap::new();
-                                m.insert(Box::from("~id"), Value::Int(elem_base + idx as i64));
+                                m.insert(Box::from("~id"), Value::Int(elem_base + prop_idx));
                                 m.insert(Box::from("~key"), Value::Str(k.into_boxed_str()));
                                 m.insert(Box::from("~value"), v);
                                 m.insert(Box::from("~element"), element.clone());
-                                Value::Map(m)
+                                prop_idx += 1;
+                                vec![Value::Map(m)]
                             })
                             .collect();
                         Ok(Value::List(entries))
@@ -1002,6 +1225,61 @@ impl<'a> QueryExecutor<'a> {
                             Ok(Value::Null)
                         } else {
                             Ok(Value::Str(result.into()))
+                        }
+                    }
+                    "gremlin_sort_local" => {
+                        // Graph-aware sort for lists containing nodes/edges.
+                        // For pure value lists (ints, floats, strings), delegate to
+                        // the filter version to preserve existing behavior.
+                        let needs_graph = match evaled_args.first() {
+                            Some(Value::List(items)) => items
+                                .iter()
+                                .any(|v| matches!(v, Value::Node(_) | Value::Edge(_))),
+                            _ => false,
+                        };
+                        if !needs_graph {
+                            eval_function_with_vals(name, evaled_args)
+                        } else {
+                            let mut vals_iter = evaled_args.into_iter();
+                            let list_val = vals_iter.next().unwrap_or(Value::Null);
+                            let by_key = match vals_iter.next() {
+                                Some(Value::Str(s)) if !s.is_empty() => Some(s),
+                                _ => None,
+                            };
+                            let descending = matches!(
+                                vals_iter.next(),
+                                Some(Value::Str(s)) if s.as_ref() == "desc"
+                            );
+                            match list_val {
+                                Value::List(mut items) => {
+                                    if let Some(ref key) = by_key {
+                                        items.sort_by(|a, b| {
+                                            let a_prop = self
+                                                .extract_sort_key_with_graph(graph, a, key);
+                                            let b_prop = self
+                                                .extract_sort_key_with_graph(graph, b, key);
+                                            let ord = crate::executor::engine::helpers::gremlin_cmp_values(
+                                                &a_prop, &b_prop,
+                                            );
+                                            if descending { ord.reverse() } else { ord }
+                                        });
+                                        // Remove items lacking the sort property
+                                        items.retain(|item| {
+                                            !matches!(
+                                                self.extract_sort_key_with_graph(graph, item, key,),
+                                                Value::Null
+                                            )
+                                        });
+                                    } else {
+                                        items.sort_by(|a, b| {
+                                            let ord = crate::executor::engine::helpers::gremlin_cmp_values(a, b);
+                                            if descending { ord.reverse() } else { ord }
+                                        });
+                                    }
+                                    Ok(Value::List(items))
+                                }
+                                other => Ok(other),
+                            }
                         }
                     }
                     _ => eval_function_with_vals(name, evaled_args),

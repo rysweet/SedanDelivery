@@ -10,6 +10,7 @@ mod expr_naming;
 pub(crate) use self::arithmetic::{eval_binary_values, value_to_expr};
 pub use self::comparison::cmp_values;
 pub use self::comparison::gremlin_cmp_values;
+pub(crate) use self::dedup::row_key;
 pub(crate) use self::dedup::RowDedupSet;
 pub(crate) use self::expr_naming::expr_to_column_name;
 
@@ -237,6 +238,7 @@ pub(crate) fn discover_operator_aliases(op: &Operator) -> Vec<String> {
         | Operator::GremlinGroup { .. }
         | Operator::GremlinMapSlice { .. }
         | Operator::GremlinSimplePath { .. }
+        | Operator::GremlinCyclicPath { .. }
         | Operator::GremlinIndex { .. }
         | Operator::GremlinProject { .. } => {}
     }
