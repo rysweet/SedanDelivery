@@ -27,6 +27,7 @@ impl<'a> QueryExecutor<'a> {
             emit_predicate,
             remap,
             times_before,
+            loop_label,
             child,
         } = op
         else {
@@ -35,6 +36,14 @@ impl<'a> QueryExecutor<'a> {
                 feature: "internal: expected Repeat operator".into(),
             }));
         };
+
+        // Loop counter key: __gremlin_loop_count (unlabeled) or
+        // __gremlin_loop_count_<label> (labeled). Always inject the generic
+        // counter too so that unlabeled loops() reads the innermost repeat.
+        let labeled_counter_key = loop_label
+            .as_ref()
+            .map(|l| format!("__gremlin_loop_count_{l}"));
+        let generic_counter_key = "__gremlin_loop_count".to_string();
 
         let mut current = self.exec_operator(cx, child)?;
         let mut collected: Vec<Row> = Vec::new();
@@ -69,7 +78,14 @@ impl<'a> QueryExecutor<'a> {
         // total_seeds × branching_factor. This prevents OOM on exponential
         // growth patterns (e.g., repeat(both()).until(loops().is(40)) where
         // each iteration multiplies traversers by the graph's branching factor).
+        //
+        // When the body contains barrier steps (Sort, Aggregate, Distinct),
+        // batching is disabled because barriers must see all rows at once to
+        // produce correct results (e.g., order().tail(2) must sort ALL
+        // traversers, not each batch independently).
         const BATCH_SIZE: usize = 10_000;
+        let body_has_barriers = operator_contains_barrier(body);
+        let effective_batch = if body_has_barriers { usize::MAX } else { BATCH_SIZE };
 
         for iteration in 0..max_iterations {
             cx.budget.check_or_err()?;
@@ -77,10 +93,10 @@ impl<'a> QueryExecutor<'a> {
             // Inject loop counter into current rows so emit predicates and
             // until conditions that reference loops() can see the value.
             for row in &mut current {
-                row.insert(
-                    "__gremlin_loop_count".to_string(),
-                    Value::Int(iteration as i64),
-                );
+                row.insert(generic_counter_key.clone(), Value::Int(iteration as i64));
+                if let Some(lk) = &labeled_counter_key {
+                    row.insert(lk.clone(), Value::Int(iteration as i64));
+                }
             }
 
             // Pre-emit: collect traversers before body execution.
@@ -98,7 +114,7 @@ impl<'a> QueryExecutor<'a> {
                 indexmap::IndexMap<Box<str>, Value>,
             > = std::collections::HashMap::new();
 
-            for batch_start in (0..current.len()).step_by(BATCH_SIZE) {
+            for batch_start in (0..current.len()).step_by(effective_batch) {
                 cx.budget.check_or_err()?;
                 let batch_end = (batch_start + BATCH_SIZE).min(current.len());
                 let batch = &current[batch_start..batch_end];
@@ -108,9 +124,12 @@ impl<'a> QueryExecutor<'a> {
                 for row in batch {
                     let mut seed_row = row.clone();
                     seed_row.insert(
-                        "__gremlin_loop_count".to_string(),
+                        generic_counter_key.clone(),
                         Value::Int(iteration as i64),
                     );
+                    if let Some(lk) = &labeled_counter_key {
+                        seed_row.insert(lk.clone(), Value::Int(iteration as i64));
+                    }
                     if let Some(key) = seed_key {
                         if let Some(seed_val) = row.get(key).cloned() {
                             let mut acc = match row.get("__gremlin_path_acc") {
@@ -226,9 +245,12 @@ impl<'a> QueryExecutor<'a> {
             // traverser has completed N+1 loops.
             for row in &mut current {
                 row.insert(
-                    "__gremlin_loop_count".to_string(),
+                    generic_counter_key.clone(),
                     Value::Int((iteration + 1) as i64),
                 );
+                if let Some(lk) = &labeled_counter_key {
+                    row.insert(lk.clone(), Value::Int((iteration + 1) as i64));
+                }
             }
 
             // Post-emit: collect body results after execution.
@@ -2463,6 +2485,50 @@ fn operator_contains_distinct(op: &Operator) -> bool {
     }
 }
 
+/// Returns `true` if the operator tree contains a barrier step (Sort, Aggregate,
+/// Distinct) that must see all input rows before producing output. When a repeat
+/// body contains barrier steps, batched seed processing must be disabled because
+/// each batch would run the barrier independently, producing incorrect results.
+fn operator_contains_barrier(op: &Operator) -> bool {
+    match op {
+        Operator::Sort { .. } | Operator::Aggregate { .. } | Operator::Distinct { .. } => true,
+        Operator::Project { child, .. }
+        | Operator::Filter { child, .. }
+        | Operator::Limit { child, .. }
+        | Operator::Skip { child, .. }
+        | Operator::Expand { child, .. }
+        | Operator::GremlinSideEffect { child, .. }
+        | Operator::Coalesce { child, .. }
+        | Operator::GremlinSimplePath { child, .. }
+        | Operator::GremlinCyclicPath { child, .. }
+        | Operator::GremlinGroup { child, .. }
+        | Operator::GremlinAggregate { child, .. } => operator_contains_barrier(child),
+        Operator::Apply { outer, inner } => {
+            operator_contains_barrier(outer) || operator_contains_barrier(inner)
+        }
+        Operator::LeftOuterApply {
+            preserved,
+            optional_pattern,
+        } => {
+            operator_contains_barrier(preserved)
+                || operator_contains_barrier(optional_pattern)
+        }
+        Operator::Union { left, right, .. } => {
+            operator_contains_barrier(left) || operator_contains_barrier(right)
+        }
+        Operator::Repeat { body, .. } => operator_contains_barrier(body),
+        Operator::Choose {
+            if_true, if_false, ..
+        } => {
+            operator_contains_barrier(if_true)
+                || if_false
+                    .as_ref()
+                    .is_some_and(|f| operator_contains_barrier(f))
+        }
+        _ => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
@@ -2527,6 +2593,7 @@ mod tests {
             emit_predicate: None,
             remap: Some(("m".to_string(), "n".to_string())),
             times_before: false,
+            loop_label: None,
             child: Box::new(Operator::NodeScan {
                 label: Some(Label::new("N")),
                 alias: Identifier::new("n"),
@@ -2560,6 +2627,7 @@ mod tests {
             emit_predicate: None,
             remap: None,
             times_before: false,
+            loop_label: None,
             child: Box::new(Operator::NodeScan {
                 label: Some(Label::new("N")),
                 alias: Identifier::new("n"),

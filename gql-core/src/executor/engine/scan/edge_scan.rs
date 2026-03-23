@@ -51,18 +51,10 @@ impl<'a> QueryExecutor<'a> {
                     let mut out_entries =
                         self.store.out_edges_by_type(cx.graph, src_id, &type_strs)?;
                     let in_entries = self.store.in_edges_by_type(cx.graph, src_id, &type_strs)?;
-                    // Deduplicate: for self-loops (src==dst), the same edge
-                    // appears in both out_edges and in_edges. Keep only unique
-                    // (edge_id, neighbor_id) pairs.
-                    let mut seen_edges: HashSet<(u64, u64)> = HashSet::new();
-                    for e in &out_entries {
-                        seen_edges.insert((e.edge_id.0, e.neighbor_id.0));
-                    }
-                    for e in in_entries {
-                        if seen_edges.insert((e.edge_id.0, e.neighbor_id.0)) {
-                            out_entries.push(e);
-                        }
-                    }
+                    // For both()/bothE(), concatenate outgoing and incoming
+                    // edges. Self-loop edges intentionally appear twice (once
+                    // from each direction), matching Gremlin semantics.
+                    out_entries.extend(in_entries);
                     out_entries
                 }
             };

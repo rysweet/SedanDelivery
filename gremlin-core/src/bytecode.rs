@@ -147,7 +147,10 @@ pub enum GremlinStep {
     Path,
 
     // ── Repeat/branch steps ──────────────────────────────────────────────────
-    Repeat(Vec<GremlinStep>),
+    /// `repeat(body)` or `repeat("label", body)` — the optional label names the
+    /// loop scope so that `loops("label")` can read the correct counter in
+    /// nested repeat contexts.
+    Repeat(Option<Box<str>>, Vec<GremlinStep>),
     Times(i64),
     Until(Vec<GremlinStep>),
     Emit,
@@ -208,7 +211,9 @@ pub enum GremlinStep {
     /// `discard()` — consume traversal without returning results
     Discard,
     /// `loops()` — returns the number of loops in a repeat context
-    Loops,
+    /// `loops()` or `loops("label")` — returns the loop iteration counter.
+    /// When a label is provided, reads the counter for that specific repeat scope.
+    Loops(Option<Box<str>>),
     /// `index()` — pair each element with its positional index
     Index,
     /// `index().with(WithOptions.indexer, WithOptions.map)` — index as a Map
@@ -623,7 +628,7 @@ fn parse_step(name: &str, args: &[serde_json::Value]) -> Result<GremlinStep, Byt
             Ok(GremlinStep::Sample(n))
         }
         "discard" => Ok(GremlinStep::Discard),
-        "loops" => Ok(GremlinStep::Loops),
+        "loops" => Ok(GremlinStep::Loops(None)),
         "sack" => Ok(GremlinStep::Sack),
         _ => Err(BytecodeError::UnknownStep(name.into())),
     }

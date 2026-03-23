@@ -226,6 +226,10 @@ pub enum Operator {
         /// `times` was specified AFTER `repeat()` (do-while semantics:
         /// always execute the body at least once).
         times_before: bool,
+        /// Optional label for named loop scoping (e.g., `repeat("a", body)`).
+        /// When set, the loop counter is stored under `__gremlin_loop_count_<label>`
+        /// so nested repeats can maintain independent counters.
+        loop_label: Option<Box<str>>,
         child: Box<Operator>,
     },
     /// Gremlin choose() — conditional branching.

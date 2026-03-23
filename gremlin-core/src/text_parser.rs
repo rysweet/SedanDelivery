@@ -1129,8 +1129,25 @@ fn parse_step_token(
         "drop" => out.push(GremlinStep::Drop),
         "path" => out.push(GremlinStep::Path),
         "repeat" => {
-            let inner = parse_inner_traversal(args_str, resolve_param)?;
-            out.push(GremlinStep::Repeat(inner));
+            // repeat(body) or repeat("label", body)
+            let trimmed = args_str.trim();
+            if trimmed.starts_with('"') || trimmed.starts_with('\'') {
+                // repeat("label", body) — extract the label and body
+                let quote = trimmed.as_bytes()[0] as char;
+                if let Some(end_quote) = trimmed[1..].find(quote) {
+                    let label = &trimmed[1..1 + end_quote];
+                    let rest = trimmed[1 + end_quote + 1..].trim();
+                    let rest = rest.strip_prefix(',').unwrap_or(rest).trim();
+                    let inner = parse_inner_traversal(rest, resolve_param)?;
+                    out.push(GremlinStep::Repeat(Some(label.into()), inner));
+                } else {
+                    let inner = parse_inner_traversal(args_str, resolve_param)?;
+                    out.push(GremlinStep::Repeat(None, inner));
+                }
+            } else {
+                let inner = parse_inner_traversal(args_str, resolve_param)?;
+                out.push(GremlinStep::Repeat(None, inner));
+            }
         }
         "times" => {
             let args = parse_arg_list(args_str, resolve_param)?;
@@ -1344,7 +1361,21 @@ fn parse_step_token(
             }
         }
         "discard" => out.push(GremlinStep::Discard),
-        "loops" => out.push(GremlinStep::Loops),
+        "loops" => {
+            // loops() or loops("label")
+            let trimmed = args_str.trim();
+            if trimmed.starts_with('"') || trimmed.starts_with('\'') {
+                let quote = trimmed.as_bytes()[0] as char;
+                if let Some(end_quote) = trimmed[1..].find(quote) {
+                    let label = &trimmed[1..1 + end_quote];
+                    out.push(GremlinStep::Loops(Some(label.into())));
+                } else {
+                    out.push(GremlinStep::Loops(None));
+                }
+            } else {
+                out.push(GremlinStep::Loops(None));
+            }
+        }
         "local" => {
             // local(traversal) — apply traversal to each element locally
             // Semantically similar to map(traversal)
@@ -2955,7 +2986,7 @@ mod tests {
         let steps =
             parse_traversal(r#"g.V().repeat(__.out()).times(2).count()"#, &no_params).unwrap();
         assert!(steps.len() >= 4);
-        assert!(matches!(steps[1], GremlinStep::Repeat(_)));
+        assert!(matches!(steps[1], GremlinStep::Repeat(_, _)));
         assert_eq!(steps[2], GremlinStep::Times(2));
         assert_eq!(steps[3], GremlinStep::Count);
     }
