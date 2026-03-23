@@ -29,7 +29,7 @@ jobs:
           cargo --version
 
       - name: Cache cargo registry
-        uses: actions/cache@v5
+        uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5
         with:
           path: |
             ~/.cargo/registry
@@ -124,7 +124,7 @@ jobs:
           rustup default stable
 
       - name: Cache cargo registry
-        uses: actions/cache@v5
+        uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5
         with:
           path: |
             ~/.cargo/registry
@@ -186,7 +186,7 @@ jobs:
           rustup default stable
 
       - name: Cache cargo registry
-        uses: actions/cache@v5
+        uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5
         with:
           path: |
             ~/.cargo/registry
@@ -226,7 +226,7 @@ jobs:
         run: cargo tarpaulin -p gql-core --lib --out xml --output-dir coverage/ --fail-under 70 -- --test-threads 1
 
       - name: Upload coverage to GitHub
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
         with:
           name: coverage-report
           path: coverage/
@@ -249,7 +249,7 @@ jobs:
           rustup default stable
 
       - name: Cache cargo registry
-        uses: actions/cache@v5
+        uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5
         with:
           path: |
             ~/.cargo/registry
@@ -317,14 +317,14 @@ jobs:
 
       - name: Upload baseline artifact
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
         with:
           name: benchmark-baseline
           path: baseline.txt
           retention-days: 90
 
       - name: Upload benchmark results
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
         with:
           name: benchmark-results
           path: bench-*.txt
@@ -342,7 +342,7 @@ jobs:
           rustup default 1.89.0
           rustc --version
       - name: Cache cargo
-        uses: actions/cache@v5
+        uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5
         with:
           path: |
             ~/.cargo/registry
