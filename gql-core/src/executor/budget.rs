@@ -178,6 +178,12 @@ impl ExecutionBudget {
         self.rows_produced
     }
 
+    /// Returns the configured maximum row limit.
+    #[inline]
+    pub fn max_rows(&self) -> usize {
+        self.max_rows
+    }
+
     /// Returns the remaining time before the deadline.
     #[inline]
     pub fn remaining(&self) -> Option<Duration> {

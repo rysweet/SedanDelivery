@@ -63,6 +63,14 @@ impl<'a> QueryExecutor<'a> {
             None => 256,
         };
 
+        // Batch size for streaming seed processing. When `current` exceeds
+        // this threshold, seeds are fed to the body in chunks to cap peak
+        // memory at BATCH_SIZE × branching_factor instead of
+        // total_seeds × branching_factor. This prevents OOM on exponential
+        // growth patterns (e.g., repeat(both()).until(loops().is(40)) where
+        // each iteration multiplies traversers by the graph's branching factor).
+        const BATCH_SIZE: usize = 10_000;
+
         for iteration in 0..max_iterations {
             cx.budget.check_or_err()?;
 
@@ -81,84 +89,91 @@ impl<'a> QueryExecutor<'a> {
                 self.collect_emitted(cx, &current, emit_predicate, &mut collected)?;
             }
 
-            // Batch mode: prepare all seed rows, then execute body once.
-            // This gives correct Gremlin semantics for limit/sample/dedup
-            // inside the repeat body (they apply per-iteration, not per-traverser).
-            let mut seeds: Vec<Row> = Vec::with_capacity(current.len());
-            for row in &current {
-                let mut seed_row = row.clone();
-                // Inject loop iteration counter so loops() can read it.
-                seed_row.insert(
-                    "__gremlin_loop_count".to_string(),
-                    Value::Int(iteration as i64),
-                );
-                // Accumulate path history: push the current seed value
-                // before the body modifies it.
-                if let Some(key) = seed_key {
-                    if let Some(seed_val) = row.get(key).cloned() {
-                        let mut acc = match row.get("__gremlin_path_acc") {
-                            Some(Value::List(l)) => l.clone(),
-                            _ => vec![],
-                        };
-                        acc.push(seed_val);
-                        seed_row.insert("__gremlin_path_acc".to_string(), Value::List(acc));
-                    }
-                }
-                if let Some((from, _)) = remap {
-                    seed_row.remove(from.as_str());
-                }
-                seeds.push(seed_row);
-            }
-
-            self.foreach_seed.borrow_mut().replace(seeds);
-            let body_rows = self.exec_operator(cx, body)?;
-            self.foreach_seed.borrow_mut().take();
-
-            // Process body results: separate sentinel rows (side-effects)
-            // from regular traverser rows.
+            // Execute the repeat body with batched streaming: process seeds
+            // in chunks of BATCH_SIZE to cap peak memory. Each batch is
+            // independently fed to the body operator and results are merged.
             let mut next: Vec<Row> = Vec::new();
             let mut iteration_agg_maps: std::collections::HashMap<
                 String,
                 indexmap::IndexMap<Box<str>, Value>,
             > = std::collections::HashMap::new();
-            for body_row in body_rows {
-                if let Some(key) = seed_key {
-                    if !body_row.contains_key(key)
-                        && remap
-                            .as_ref()
-                            .is_none_or(|(from, _)| !body_row.contains_key(from.as_str()))
-                    {
-                        // Sentinel row without traverser alias — merge
-                        // side-effect agg columns.
-                        for (k, v) in &body_row {
-                            if k.starts_with("__gremlin_agg_") {
-                                if let Value::Map(m) = v {
-                                    let acc = iteration_agg_maps.entry(k.clone()).or_default();
-                                    for (mk, mv) in m {
-                                        let e = acc.entry(mk.clone()).or_insert(Value::Int(0));
-                                        match (e.clone(), mv) {
-                                            (Value::Int(a), Value::Int(b)) => {
-                                                *e = Value::Int(a + b)
+
+            for batch_start in (0..current.len()).step_by(BATCH_SIZE) {
+                cx.budget.check_or_err()?;
+                let batch_end = (batch_start + BATCH_SIZE).min(current.len());
+                let batch = &current[batch_start..batch_end];
+
+                // Prepare seed rows for this batch.
+                let mut seeds: Vec<Row> = Vec::with_capacity(batch.len());
+                for row in batch {
+                    let mut seed_row = row.clone();
+                    seed_row.insert(
+                        "__gremlin_loop_count".to_string(),
+                        Value::Int(iteration as i64),
+                    );
+                    if let Some(key) = seed_key {
+                        if let Some(seed_val) = row.get(key).cloned() {
+                            let mut acc = match row.get("__gremlin_path_acc") {
+                                Some(Value::List(l)) => l.clone(),
+                                _ => vec![],
+                            };
+                            acc.push(seed_val);
+                            seed_row
+                                .insert("__gremlin_path_acc".to_string(), Value::List(acc));
+                        }
+                    }
+                    if let Some((from, _)) = remap {
+                        seed_row.remove(from.as_str());
+                    }
+                    seeds.push(seed_row);
+                }
+
+                self.foreach_seed.borrow_mut().replace(seeds);
+                let body_rows = self.exec_operator(cx, body)?;
+                self.foreach_seed.borrow_mut().take();
+
+                // Separate traverser rows from side-effect sentinel rows.
+                for body_row in body_rows {
+                    if let Some(key) = seed_key {
+                        if !body_row.contains_key(key)
+                            && remap
+                                .as_ref()
+                                .is_none_or(|(from, _)| !body_row.contains_key(from.as_str()))
+                        {
+                            for (k, v) in &body_row {
+                                if k.starts_with("__gremlin_agg_") {
+                                    if let Value::Map(m) = v {
+                                        let acc =
+                                            iteration_agg_maps.entry(k.clone()).or_default();
+                                        for (mk, mv) in m {
+                                            let e = acc
+                                                .entry(mk.clone())
+                                                .or_insert(Value::Int(0));
+                                            match (e.clone(), mv) {
+                                                (Value::Int(a), Value::Int(b)) => {
+                                                    *e = Value::Int(a + b)
+                                                }
+                                                (Value::Float(a), Value::Float(b)) => {
+                                                    *e = Value::Float(a + b)
+                                                }
+                                                (_, new_v) => *e = new_v.clone(),
                                             }
-                                            (Value::Float(a), Value::Float(b)) => {
-                                                *e = Value::Float(a + b)
-                                            }
-                                            (_, new_v) => *e = new_v.clone(),
                                         }
                                     }
-                                }
-                                for nr in &mut next {
-                                    nr.entry(k.clone()).or_insert_with(|| v.clone());
+                                    for nr in &mut next {
+                                        nr.entry(k.clone()).or_insert_with(|| v.clone());
+                                    }
                                 }
                             }
+                            continue;
                         }
-                        continue;
                     }
+                    cx.budget.record_row();
+                    next.push(body_row);
                 }
-                next.push(body_row);
             }
 
-            // Collect agg maps from the single batch body-run.
+            // Merge side-effect agg maps from body results.
             if let Some(first) = next.first() {
                 for (k, v) in first {
                     if k.starts_with("__gremlin_agg_") {
@@ -189,10 +204,6 @@ impl<'a> QueryExecutor<'a> {
 
             if next.is_empty() {
                 body_exhausted = true;
-                // Body produced no results — stop iterating.
-                // When emit is false, remaining traversers are never output:
-                // - No until: they simply exhausted the body.
-                // - With until: they never satisfied the exit condition.
                 if !*emit {
                     return Ok(collected);
                 }
@@ -209,10 +220,10 @@ impl<'a> QueryExecutor<'a> {
             }
 
             current = next;
+            cx.budget.check_or_err()?;
 
             // Update loop count: after body execution in iteration N, the
-            // traverser has completed N+1 loops. Gremlin's loops() function
-            // returns the number of completed body executions.
+            // traverser has completed N+1 loops.
             for row in &mut current {
                 row.insert(
                     "__gremlin_loop_count".to_string(),
@@ -221,7 +232,6 @@ impl<'a> QueryExecutor<'a> {
             }
 
             // Post-emit: collect body results after execution.
-            // Only when emit is true but emit_before is false (emit() after repeat()).
             if *emit && !*emit_before {
                 self.collect_emitted(cx, &current, emit_predicate, &mut collected)?;
             }
@@ -235,7 +245,6 @@ impl<'a> QueryExecutor<'a> {
                     let result = self.exec_operator(cx, until_op)?;
                     self.foreach_seed.borrow_mut().take();
                     if !result.is_empty() {
-                        // This traverser matched until — collect it
                         collected.push(row);
                     } else {
                         continuing.push(row);
@@ -256,15 +265,13 @@ impl<'a> QueryExecutor<'a> {
         }
 
         // Add final traversers when appropriate:
-        // - Non-emit mode with times (no until): add final current (loop count satisfied)
-        // - Non-emit mode with until: don't add (traversers never matched exit condition)
+        // - Non-emit mode with times (no until): add final current
+        // - Non-emit mode with until: don't add (never matched exit condition)
         // - Pre-emit with times (body not exhausted): add final current
-        // - Post-emit or body exhausted: don't add (already collected in loop)
+        // - Post-emit or body exhausted: don't add (already collected)
         let add_final = if *emit {
             *emit_before && !body_exhausted
         } else {
-            // With an until condition, only add remaining if times is also set
-            // (traversers completed the required iterations even without matching until).
             until.is_none() || times.is_some()
         };
         if add_final {

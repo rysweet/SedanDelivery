@@ -14,13 +14,15 @@ use cucumber::{given, then, when, World};
 
 use gql_core::executor::{ExecutionBudget, QueryExecutor, QueryResult};
 
-/// Budget for TCK tests — needs a higher row limit than the default 10M
-/// because the grateful dead graph with `repeat(out()).times(3)` produces
-/// ~14.5M intermediate rows.
+/// Budget for TCK tests — bounded row limit to prevent OOM kills on
+/// exponential repeat/path queries (e.g., repeat(both()).until(loops().is(40))
+/// on the grateful dead graph). The grateful graph has 808 nodes and 8049 edges;
+/// some queries like repeat(both("followedBy")).times(2) produce ~2.6M intermediate
+/// rows. 5M gives headroom while still preventing catastrophic explosions.
 fn tck_budget() -> ExecutionBudget {
     ExecutionBudget::new(
         std::time::Duration::from_secs(120),
-        20_000_000,
+        5_000_000,
     )
 }
 use gql_core::storage::{EdgeId, GraphStore, InMemoryGraphStore, NodeId};
@@ -212,7 +214,7 @@ async fn given_crew_graph(world: &mut GremlinWorld) {
 
 #[given("the sink graph")]
 async fn given_sink_graph(world: &mut GremlinWorld) {
-    // The sink graph: one vertex "loop" with label "loops" and a self-edge "self".
+    // The sink graph: one vertex "loop" with label "loops" and a single self-edge "self".
     let store = InMemoryGraphStore::new();
     store.create_graph("sink").unwrap();
     let mut props = HashMap::new();
@@ -220,10 +222,7 @@ async fn given_sink_graph(world: &mut GremlinWorld) {
     let loop_v = store
         .create_node("sink", vec!["loops".to_string()], props)
         .unwrap();
-    // Two self-edges
-    store
-        .create_edge("sink", loop_v, loop_v, "self".to_string(), HashMap::new())
-        .unwrap();
+    // One self-edge: bothE returns it twice (both directions), in/out return once.
     store
         .create_edge("sink", loop_v, loop_v, "self".to_string(), HashMap::new())
         .unwrap();
