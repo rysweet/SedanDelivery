@@ -158,7 +158,12 @@ impl<'a> QueryExecutor<'a> {
         cx: &mut ExecContext<'_>,
         op: &Operator,
     ) -> Result<Vec<Row>, GqlError> {
-        let Operator::Distinct { child, by_key, productive } = op else {
+        let Operator::Distinct {
+            child,
+            by_key,
+            productive,
+        } = op
+        else {
             debug_assert!(false, "expected Distinct operator");
             return Err(GqlError::Execution(
                 crate::error::ExecutionError::UnsupportedFeature {

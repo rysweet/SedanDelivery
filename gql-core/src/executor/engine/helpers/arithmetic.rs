@@ -215,44 +215,42 @@ pub(crate) fn eval_binary_values(
         // BinaryOp::In must be handled directly because value_to_expr loses
         // Node/Edge values (converts them to Null), breaking membership tests
         // against lists of graph elements.
-        BinaryOp::In => {
-            match rv {
-                Value::Null => Ok(Value::Null),
-                Value::List(items) => {
-                    if lv.is_null() {
-                        if items.is_empty() {
-                            Ok(Value::Bool(false))
-                        } else {
-                            Ok(Value::Null)
-                        }
+        BinaryOp::In => match rv {
+            Value::Null => Ok(Value::Null),
+            Value::List(items) => {
+                if lv.is_null() {
+                    if items.is_empty() {
+                        Ok(Value::Bool(false))
                     } else {
-                        let mut found_null = false;
-                        for item in &items {
-                            match lv.cypher_eq(item) {
-                                Some(true) => return Ok(Value::Bool(true)),
-                                None => found_null = true,
-                                Some(false) => {}
-                            }
-                        }
-                        if found_null {
-                            Ok(Value::Null)
-                        } else {
-                            Ok(Value::Bool(false))
+                        Ok(Value::Null)
+                    }
+                } else {
+                    let mut found_null = false;
+                    for item in &items {
+                        match lv.cypher_eq(item) {
+                            Some(true) => return Ok(Value::Bool(true)),
+                            None => found_null = true,
+                            Some(false) => {}
                         }
                     }
-                }
-                _ => {
-                    let left_lit = value_to_expr(&lv);
-                    let right_lit = value_to_expr(&rv);
-                    let rebuilt = Expr::BinaryOp {
-                        op,
-                        left: Box::new(left_lit),
-                        right: Box::new(right_lit),
-                    };
-                    eval_expr(&rebuilt, ctx)
+                    if found_null {
+                        Ok(Value::Null)
+                    } else {
+                        Ok(Value::Bool(false))
+                    }
                 }
             }
-        }
+            _ => {
+                let left_lit = value_to_expr(&lv);
+                let right_lit = value_to_expr(&rv);
+                let rebuilt = Expr::BinaryOp {
+                    op,
+                    left: Box::new(left_lit),
+                    right: Box::new(right_lit),
+                };
+                eval_expr(&rebuilt, ctx)
+            }
+        },
         _ => {
             let left_lit = value_to_expr(&lv);
             let right_lit = value_to_expr(&rv);

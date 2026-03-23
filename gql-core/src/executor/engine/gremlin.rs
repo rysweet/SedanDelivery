@@ -28,6 +28,7 @@ impl<'a> QueryExecutor<'a> {
             remap,
             times_before,
             loop_label,
+            body_path_aliases,
             child,
         } = op
         else {
@@ -85,7 +86,11 @@ impl<'a> QueryExecutor<'a> {
         // traversers, not each batch independently).
         const BATCH_SIZE: usize = 10_000;
         let body_has_barriers = operator_contains_barrier(body);
-        let effective_batch = if body_has_barriers { usize::MAX } else { BATCH_SIZE };
+        let effective_batch = if body_has_barriers {
+            usize::MAX
+        } else {
+            BATCH_SIZE
+        };
 
         for iteration in 0..max_iterations {
             cx.budget.check_or_err()?;
@@ -123,10 +128,7 @@ impl<'a> QueryExecutor<'a> {
                 let mut seeds: Vec<Row> = Vec::with_capacity(batch.len());
                 for row in batch {
                     let mut seed_row = row.clone();
-                    seed_row.insert(
-                        generic_counter_key.clone(),
-                        Value::Int(iteration as i64),
-                    );
+                    seed_row.insert(generic_counter_key.clone(), Value::Int(iteration as i64));
                     if let Some(lk) = &labeled_counter_key {
                         seed_row.insert(lk.clone(), Value::Int(iteration as i64));
                     }
@@ -137,12 +139,17 @@ impl<'a> QueryExecutor<'a> {
                                 _ => vec![],
                             };
                             acc.push(seed_val);
-                            seed_row
-                                .insert("__gremlin_path_acc".to_string(), Value::List(acc));
+                            seed_row.insert("__gremlin_path_acc".to_string(), Value::List(acc));
                         }
                     }
                     if let Some((from, _)) = remap {
                         seed_row.remove(from.as_str());
+                    }
+                    // Remove intermediate body path aliases from seed rows
+                    // to avoid edge isomorphism conflicts in the next body
+                    // execution (e.g., stale e_2 from a previous outE).
+                    for alias in body_path_aliases {
+                        seed_row.remove(alias.as_str());
                     }
                     seeds.push(seed_row);
                 }
@@ -162,12 +169,9 @@ impl<'a> QueryExecutor<'a> {
                             for (k, v) in &body_row {
                                 if k.starts_with("__gremlin_agg_") {
                                     if let Value::Map(m) = v {
-                                        let acc =
-                                            iteration_agg_maps.entry(k.clone()).or_default();
+                                        let acc = iteration_agg_maps.entry(k.clone()).or_default();
                                         for (mk, mv) in m {
-                                            let e = acc
-                                                .entry(mk.clone())
-                                                .or_insert(Value::Int(0));
+                                            let e = acc.entry(mk.clone()).or_insert(Value::Int(0));
                                             match (e.clone(), mv) {
                                                 (Value::Int(a), Value::Int(b)) => {
                                                     *e = Value::Int(a + b)
@@ -227,6 +231,25 @@ impl<'a> QueryExecutor<'a> {
                     return Ok(collected);
                 }
                 break;
+            }
+
+            // Accumulate intermediate body path aliases (e.g., edge values from
+            // outE) into __gremlin_path_acc so path() sees them.
+            if !body_path_aliases.is_empty() {
+                for row in &mut next {
+                    let vals: Vec<Value> = body_path_aliases
+                        .iter()
+                        .filter_map(|alias| row.get(alias.as_str()).cloned())
+                        .collect();
+                    if !vals.is_empty() {
+                        let mut acc = match row.get("__gremlin_path_acc") {
+                            Some(Value::List(l)) => l.clone(),
+                            _ => vec![],
+                        };
+                        acc.extend(vals);
+                        row.insert("__gremlin_path_acc".to_string(), Value::List(acc));
+                    }
+                }
             }
 
             // Remap body output alias back to seed alias for the next iteration.
@@ -2092,19 +2115,13 @@ impl<'a> QueryExecutor<'a> {
         let find_idx = |label: &str, from_end: bool| -> Option<usize> {
             // Direct match against path_aliases (works for non-accumulator paths)
             if from_end {
-                path_aliases
-                    .iter()
-                    .rposition(|a| a.as_str() == label)
+                path_aliases.iter().rposition(|a| a.as_str() == label)
             } else {
-                path_aliases
-                    .iter()
-                    .position(|a| a.as_str() == label)
+                path_aliases.iter().position(|a| a.as_str() == label)
             }
         };
 
-        let start = from_label
-            .and_then(|l| find_idx(l, false))
-            .unwrap_or(0);
+        let start = from_label.and_then(|l| find_idx(l, false)).unwrap_or(0);
         let end = to_label
             .and_then(|l| find_idx(l, true))
             .map(|i| i + 1)
@@ -2509,10 +2526,7 @@ fn operator_contains_barrier(op: &Operator) -> bool {
         Operator::LeftOuterApply {
             preserved,
             optional_pattern,
-        } => {
-            operator_contains_barrier(preserved)
-                || operator_contains_barrier(optional_pattern)
-        }
+        } => operator_contains_barrier(preserved) || operator_contains_barrier(optional_pattern),
         Operator::Union { left, right, .. } => {
             operator_contains_barrier(left) || operator_contains_barrier(right)
         }
@@ -2594,6 +2608,7 @@ mod tests {
             remap: Some(("m".to_string(), "n".to_string())),
             times_before: false,
             loop_label: None,
+            body_path_aliases: vec![],
             child: Box::new(Operator::NodeScan {
                 label: Some(Label::new("N")),
                 alias: Identifier::new("n"),
@@ -2628,6 +2643,7 @@ mod tests {
             remap: None,
             times_before: false,
             loop_label: None,
+            body_path_aliases: vec![],
             child: Box::new(Operator::NodeScan {
                 label: Some(Label::new("N")),
                 alias: Identifier::new("n"),

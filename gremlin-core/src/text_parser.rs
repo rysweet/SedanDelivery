@@ -339,7 +339,10 @@ fn inject_subgraph_edge_filter(
     for step in steps {
         match &step {
             // Edge-producing steps: inject filter after
-            GremlinStep::E(_) | GremlinStep::OutE(_) | GremlinStep::InE(_) | GremlinStep::BothE(_) => {
+            GremlinStep::E(_)
+            | GremlinStep::OutE(_)
+            | GremlinStep::InE(_)
+            | GremlinStep::BothE(_) => {
                 result.push(step);
                 result.push(GremlinStep::Where(filter_steps.to_vec()));
             }

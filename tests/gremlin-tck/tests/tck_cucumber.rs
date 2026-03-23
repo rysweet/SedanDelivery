@@ -20,10 +20,7 @@ use gql_core::executor::{ExecutionBudget, QueryExecutor, QueryResult};
 /// some queries like repeat(both("followedBy")).times(2) produce ~2.6M intermediate
 /// rows. 5M gives headroom while still preventing catastrophic explosions.
 fn tck_budget() -> ExecutionBudget {
-    ExecutionBudget::new(
-        std::time::Duration::from_secs(120),
-        5_000_000,
-    )
+    ExecutionBudget::new(std::time::Duration::from_secs(120), 5_000_000)
 }
 use gql_core::storage::{EdgeId, GraphStore, InMemoryGraphStore, NodeId};
 use gql_core::types::Value;

@@ -230,6 +230,10 @@ pub enum Operator {
         /// When set, the loop counter is stored under `__gremlin_loop_count_<label>`
         /// so nested repeats can maintain independent counters.
         loop_label: Option<Box<str>>,
+        /// Intermediate path aliases produced by the repeat body (excluding the
+        /// seed alias and body-output alias).  Used by the executor to accumulate
+        /// edge values in `__gremlin_path_acc` when the body is e.g. `outE().inV()`.
+        body_path_aliases: Vec<String>,
         child: Box<Operator>,
     },
     /// Gremlin choose() — conditional branching.

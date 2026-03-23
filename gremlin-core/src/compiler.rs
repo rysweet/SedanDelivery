@@ -129,7 +129,9 @@ impl GremlinCompiler {
             // sub-traversal projections.
             path_tracking: Vec::new(),
             edge_src_vertex: self.edge_src_vertex.clone(),
-            needs_path_tracking: false,
+            // Propagate path-tracking need so sub-traversals (repeat body,
+            // optional body, etc.) carry __gremlin_path_acc through Projects.
+            needs_path_tracking: self.needs_path_tracking,
             needs_label_stacks: self.needs_label_stacks,
             aggregate_keys: self.aggregate_keys.clone(),
         }
@@ -162,6 +164,13 @@ impl GremlinCompiler {
                 if seen.insert(ident.0.as_str().to_owned()) {
                     items.push((Expr::Variable(ident.clone()), Some(ident.clone())));
                 }
+            }
+            // Carry __gremlin_path_acc through Projects so the repeat-body
+            // execution preserves the path accumulator.
+            let acc_key = "__gremlin_path_acc";
+            if seen.insert(acc_key.to_owned()) {
+                let acc_ident = Identifier::new(acc_key);
+                items.push((Expr::Variable(acc_ident.clone()), Some(acc_ident)));
             }
         }
         items
@@ -443,15 +452,13 @@ impl GremlinCompiler {
                 }
                 // Preserve pending_path through from()/to() modifiers so
                 // subsequent by() modulations are still accumulated.
-                let is_path_from_to = matches!(
-                    step,
-                    GremlinStep::From(_) | GremlinStep::To(_)
-                ) && matches!(
-                    &current,
-                    Some(Operator::GremlinPath { .. })
-                        | Some(Operator::GremlinSimplePath { .. })
-                        | Some(Operator::GremlinCyclicPath { .. })
-                );
+                let is_path_from_to = matches!(step, GremlinStep::From(_) | GremlinStep::To(_))
+                    && matches!(
+                        &current,
+                        Some(Operator::GremlinPath { .. })
+                            | Some(Operator::GremlinSimplePath { .. })
+                            | Some(Operator::GremlinCyclicPath { .. })
+                    );
                 if !is_path_from_to {
                     pending_path = false;
                     path_by_keys.clear();
@@ -2817,11 +2824,12 @@ impl GremlinCompiler {
                         // Check if the sub-traversal ends with as("label")
                         // referencing an already-bound variable.  If so, the
                         // endpoint must be constrained to match that binding.
-                        let endpoint_target = if let Some(GremlinStep::As(label)) = steps_slice.last() {
-                            self.alias_map.get(label).cloned()
-                        } else {
-                            None
-                        };
+                        let endpoint_target =
+                            if let Some(GremlinStep::As(label)) = steps_slice.last() {
+                                self.alias_map.get(label).cloned()
+                            } else {
+                                None
+                            };
 
                         let inner_op = sub.compile_seeded(steps_slice, &seed_alias)?;
                         self.absorb(&sub);
@@ -2881,8 +2889,12 @@ impl GremlinCompiler {
                             child: Box::new(apply),
                         });
                     } else {
-                        let inner_pred =
-                            steps_to_predicate(inner_steps, &current_alias, &self.alias_map, &self.aggregate_keys);
+                        let inner_pred = steps_to_predicate(
+                            inner_steps,
+                            &current_alias,
+                            &self.alias_map,
+                            &self.aggregate_keys,
+                        );
                         let predicate = if is_not {
                             // Wrap in COALESCE so that Null (from cross-type
                             // comparison) becomes false before negation. This
@@ -3374,6 +3386,21 @@ impl GremlinCompiler {
                     let mut sub = self.sub_compiler();
                     let body = sub.compile_seeded(body_steps, &current_alias)?;
                     let body_out_alias = sub.last_alias.clone();
+                    // Collect intermediate body path aliases (between seed and
+                    // body-output) so the executor can accumulate edge values
+                    // in __gremlin_path_acc for patterns like outE().inV().
+                    let body_pa: Vec<String> = if self.needs_path_tracking {
+                        sub.path_tracking
+                            .iter()
+                            .filter(|id| {
+                                id.as_str() != seed_alias.as_str()
+                                    && id.as_str() != body_out_alias.as_str()
+                            })
+                            .map(|id| id.as_str().to_string())
+                            .collect()
+                    } else {
+                        vec![]
+                    };
                     self.absorb(&sub);
                     // Apply any pending emit/until that appeared before the repeat
                     let emit_val = pending_emit;
@@ -3414,6 +3441,7 @@ impl GremlinCompiler {
                         remap,
                         times_before: times_before_val,
                         loop_label: label.clone(),
+                        body_path_aliases: body_pa,
                         child: Box::new(child),
                     });
                 }
@@ -3984,13 +4012,17 @@ impl GremlinCompiler {
                         // Endpoint constraint: if the sub-traversal ends with
                         // as("label") referencing a bound match variable, the
                         // result must equal that variable's value.
-                        let endpoint_target = if let Some(GremlinStep::As(label)) = compile_steps.last() {
-                            // Look up the label in the match label_map (use
-                            // the alias that was bound by the join patterns).
-                            label_map.iter().find(|(l, _)| l == label).map(|(_, a)| a.clone())
-                        } else {
-                            None
-                        };
+                        let endpoint_target =
+                            if let Some(GremlinStep::As(label)) = compile_steps.last() {
+                                // Look up the label in the match label_map (use
+                                // the alias that was bound by the join patterns).
+                                label_map
+                                    .iter()
+                                    .find(|(l, _)| l == label)
+                                    .map(|(_, a)| a.clone())
+                            } else {
+                                None
+                            };
 
                         let inner_op = sub.compile_seeded(compile_steps, &seed_alias)?;
                         self.absorb(&sub);
@@ -4333,13 +4365,25 @@ impl GremlinCompiler {
                     let mut sub = self.sub_compiler();
                     let opt_op = sub.compile_seeded(opt_steps, &current_alias)?;
                     self.absorb(&sub);
+                    // Merge sub-compiler's path tracking into local path_aliases
+                    // so path()/simplePath() see intermediate aliases from the
+                    // optional body (e.g., out() inside optional).
+                    for alias in &sub.path_tracking {
+                        if !path_aliases.contains(alias) {
+                            path_aliases.push(alias.clone());
+                        }
+                    }
                     current_alias = sub.last_alias.clone();
                     current = Some(Operator::Coalesce {
                         alternatives: vec![opt_op, Operator::SingleRow],
                         child: Box::new(child),
                     });
-                    path_aliases.push(current_alias.clone());
-                    self.path_tracking.push(current_alias.clone());
+                    if !path_aliases.contains(&current_alias) {
+                        path_aliases.push(current_alias.clone());
+                    }
+                    if !self.path_tracking.contains(&current_alias) {
+                        self.path_tracking.push(current_alias.clone());
+                    }
                 }
 
                 GremlinStep::SimplePath => {
@@ -4394,6 +4438,14 @@ impl GremlinCompiler {
                     let mut sub = self.sub_compiler();
                     let map_op = sub.compile_seeded(map_steps, &current_alias)?;
                     self.absorb(&sub);
+                    // Merge sub-compiler's path tracking into local path_aliases
+                    // so path()/simplePath() see aliases from the map body
+                    // (e.g., local(out().in().simplePath()).path()).
+                    for alias in &sub.path_tracking {
+                        if !path_aliases.contains(alias) {
+                            path_aliases.push(alias.clone());
+                        }
+                    }
                     current_alias = sub.last_alias.clone();
                     current = Some(Operator::Apply {
                         outer: Box::new(child),
@@ -4418,7 +4470,12 @@ impl GremlinCompiler {
                     // filter(traversal) — keep traversers where sub-traversal is true
                     let child = current.take().ok_or(CompileError::MissingChild)?;
                     // Try to extract a predicate from the inner steps
-                    let pred = steps_to_predicate(filter_steps, &current_alias, &self.alias_map, &self.aggregate_keys);
+                    let pred = steps_to_predicate(
+                        filter_steps,
+                        &current_alias,
+                        &self.alias_map,
+                        &self.aggregate_keys,
+                    );
                     // If steps_to_predicate returned true (couldn't convert) and
                     // there are actual steps, fall back to sub-traversal existence
                     // check via Apply + Count + Filter (same pattern as Where).
@@ -5654,7 +5711,9 @@ impl GremlinCompiler {
         if all_simple {
             let preds: Vec<Expr> = branches
                 .iter()
-                .map(|branch| steps_to_predicate(branch, current_alias, &self.alias_map, &self.aggregate_keys))
+                .map(|branch| {
+                    steps_to_predicate(branch, current_alias, &self.alias_map, &self.aggregate_keys)
+                })
                 .collect();
             let default = if conn_op == BinaryOp::And {
                 Expr::Bool(true)
@@ -5682,7 +5741,12 @@ impl GremlinCompiler {
             let mut result = child;
             for branch in branches {
                 if is_simple_predicate_steps(branch) {
-                    let pred = steps_to_predicate(branch, current_alias, &self.alias_map, &self.aggregate_keys);
+                    let pred = steps_to_predicate(
+                        branch,
+                        current_alias,
+                        &self.alias_map,
+                        &self.aggregate_keys,
+                    );
                     result = Operator::Filter {
                         predicate: pred,
                         child: Box::new(result),
@@ -5698,7 +5762,12 @@ impl GremlinCompiler {
             let mut result = child;
             for branch in branches {
                 if is_simple_predicate_steps(branch) {
-                    let pred = steps_to_predicate(branch, current_alias, &self.alias_map, &self.aggregate_keys);
+                    let pred = steps_to_predicate(
+                        branch,
+                        current_alias,
+                        &self.alias_map,
+                        &self.aggregate_keys,
+                    );
                     let cnt_alias = self.next_alias("ocnt");
                     // Wrap in a project that produces 1 if pred is true, 0 if false.
                     cnt_aliases.push((cnt_alias, Some(pred)));
@@ -7998,10 +8067,10 @@ mod tests {
         let mut compiler = GremlinCompiler::new();
         let steps = vec![
             GremlinStep::V(None),
-            GremlinStep::Repeat(None, vec![
-                GremlinStep::V(None),
-                GremlinStep::Out(vec!["knows".into()]),
-            ]),
+            GremlinStep::Repeat(
+                None,
+                vec![GremlinStep::V(None), GremlinStep::Out(vec!["knows".into()])],
+            ),
             GremlinStep::Times(3),
         ];
         let op = compiler.compile(&steps).unwrap();
