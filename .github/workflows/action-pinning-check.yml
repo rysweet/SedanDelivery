@@ -1,0 +1,91 @@
+name: Enforce Action SHA Pinning
+
+on:
+  pull_request:
+    branches: [main, integration]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check-pinning:
+    name: Action SHA Pinning
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout PR with base ref
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          fetch-depth: 0
+
+      - name: Detect workflow file changes
+        id: changed
+        run: |
+          # Get workflow files added or modified in this PR
+          git fetch origin ${{ github.base_ref }} --depth=1 2>/dev/null || true
+          FILES=$(git diff --name-only --diff-filter=ACMR origin/${{ github.base_ref }}...HEAD -- '.github/workflows/*.yml' 2>/dev/null || true)
+          if [ -z "$FILES" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "No workflow files changed in this PR — skipping scan."
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            echo "Workflow files changed in this PR:"
+            echo "$FILES"
+          fi
+
+      - name: Check for unpinned GitHub Actions
+        if: steps.changed.outputs.skip != 'true'
+        shell: bash
+        run: |
+          FAILED=0
+          CHECKED=0
+
+          # Only scan workflow files that exist (changed or new)
+          for file in .github/workflows/*.yml; do
+            [ -f "$file" ] || continue
+
+            while IFS= read -r ref; do
+              [ -z "$ref" ] && continue
+              CHECKED=$((CHECKED + 1))
+
+              action="${ref%%@*}"
+              version="${ref#*@}"
+              version="${version%% *}"
+
+              # Skip local actions (./path)
+              case "$action" in ./*) continue ;; esac
+
+              # Pass if version is a 40-char hex SHA
+              if printf '%s' "$version" | grep -qxE '[0-9a-f]{40}'; then
+                continue
+              fi
+
+              FAILED=$((FAILED + 1))
+              lineno=$(grep -nF "$ref" "$file" | head -1 | cut -d: -f1)
+              echo "::error file=${file},line=${lineno}::Unpinned action: ${action}@${version} — pin to a commit SHA (e.g., ${action}@<sha> # ${version})"
+            done <<EOF
+          $(awk '/^[[:space:]]+uses:[[:space:]]/ && !/^[[:space:]]*#/ { sub(/.*uses:[[:space:]]*/, ""); sub(/[[:space:]]*$/, ""); print }' "$file")
+          EOF
+          done
+
+          echo ""
+          echo "Scanned ${CHECKED} action references across all workflow files."
+
+          if [ "$FAILED" -gt 0 ]; then
+            echo ""
+            echo "❌ ${FAILED} unpinned action reference(s) found."
+            echo ""
+            echo "All 'uses:' references must be pinned to a full 40-character commit SHA."
+            echo "This prevents supply chain attacks via force-pushed tags."
+            echo ""
+            echo "  Before: uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6"
+            echo "  After:  uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6"
+            echo ""
+            echo "Resolve a tag to its SHA with:"
+            echo "  gh api repos/OWNER/ACTION/git/ref/tags/TAG --jq '.object.sha'"
+            exit 1
+          fi
+
+          echo "✅ All action references are SHA-pinned."
