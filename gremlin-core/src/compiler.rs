@@ -81,6 +81,9 @@ pub struct GremlinCompiler {
     /// Path aliases from the outer (parent) scope. Set when compiling inside
     /// local()/map() so that tree() can access the full traversal path.
     outer_path_aliases: Vec<Identifier>,
+    /// Tracks the numeric subtype set by `AsNumberTyped("byte"/"short")`.
+    /// Used by `Is(IsType(..))` to correctly resolve type checks at compile time.
+    numeric_subtype: Option<String>,
 }
 
 impl Default for GremlinCompiler {
@@ -110,6 +113,7 @@ impl GremlinCompiler {
             aggregate_keys: HashSet::new(),
             set_keys: HashSet::new(),
             outer_path_aliases: Vec::new(),
+            numeric_subtype: None,
         }
     }
 
@@ -144,6 +148,7 @@ impl GremlinCompiler {
             aggregate_keys: self.aggregate_keys.clone(),
             set_keys: self.set_keys.clone(),
             outer_path_aliases: Vec::new(),
+            numeric_subtype: None,
         }
     }
 
@@ -434,6 +439,16 @@ impl GremlinCompiler {
         for step in steps {
             // Save alias before step to detect changes for path tracking
             let pre_step_alias = current_alias.clone();
+            // Clear numeric subtype on value-changing steps; Is/As/filter steps preserve it.
+            if !matches!(
+                step,
+                GremlinStep::Is(_)
+                    | GremlinStep::As(_)
+                    | GremlinStep::By(..)
+                    | GremlinStep::ByTraversal(..)
+            ) {
+                self.numeric_subtype = None;
+            }
             // When we leave the addE/mergeE modifier group (from/to/property/option),
             // fill in any __src/__dst placeholders that were never overridden.
             if adde_traverser.is_some()
@@ -2052,8 +2067,23 @@ impl GremlinCompiler {
                         // by() after dedup() — dedup by specific property
                         if !key.is_empty() {
                             if let Some(Operator::Distinct { ref mut by_key, .. }) = current {
-                                *by_key =
-                                    Some(format!("__dedup_prop__{}__{}", key, current_alias.0));
+                                if let Some(ref existing) = *by_key {
+                                    if existing.contains('\x1f') {
+                                        // Multi-key dedup: apply property to each label
+                                        let new_key = existing
+                                            .split('\x1f')
+                                            .map(|l| format!("__dedup_prop__{}__{}", key, l))
+                                            .collect::<Vec<_>>()
+                                            .join("\x1f");
+                                        *by_key = Some(new_key);
+                                    } else {
+                                        *by_key =
+                                            Some(format!("__dedup_prop__{}__{}", key, existing));
+                                    }
+                                } else {
+                                    *by_key =
+                                        Some(format!("__dedup_prop__{}__{}", key, current_alias.0));
+                                }
                             }
                         }
                         dedup_by_consumed = true;
@@ -2825,7 +2855,15 @@ impl GremlinCompiler {
                     // Use predicate mode only when ALL inner steps are simple
                     // predicate-convertible steps. Otherwise use traversal mode
                     // (sub-traversal existence check via Apply + Count + Filter).
+                    // When there are multiple Select steps, they need chaining
+                    // (output of one feeds into the next), so use sub-traversal
+                    // mode instead of predicate mode.
+                    let select_count = inner_steps
+                        .iter()
+                        .filter(|s| matches!(s, GremlinStep::Select(..)))
+                        .count();
                     let can_be_predicate = !inner_steps.is_empty()
+                        && select_count <= 1
                         && inner_steps.iter().all(|s| {
                             matches!(
                                 s,
@@ -2993,7 +3031,20 @@ impl GremlinCompiler {
 
                 GremlinStep::Is(predicate) => {
                     let child = current.take().ok_or(CompileError::MissingChild)?;
-                    let pred_expr = predicate_to_expr(predicate, &current_alias);
+                    let pred_expr =
+                        if let Predicate::IsType(GremlinValue::String(expected)) = predicate {
+                            if let Some(ref subtype) = self.numeric_subtype {
+                                if subtype == expected {
+                                    Expr::Bool(true)
+                                } else {
+                                    Expr::Bool(false)
+                                }
+                            } else {
+                                predicate_to_expr(predicate, &current_alias)
+                            }
+                        } else {
+                            predicate_to_expr(predicate, &current_alias)
+                        };
                     current = Some(Operator::Filter {
                         predicate: pred_expr,
                         child: Box::new(child),
@@ -5342,6 +5393,7 @@ impl GremlinCompiler {
                         child: Box::new(child),
                     });
                     current_alias = alias;
+                    self.numeric_subtype = Some(target_type.clone());
                 }
 
                 GremlinStep::AsBool => {
@@ -5375,7 +5427,7 @@ impl GremlinCompiler {
                     let alias = self.next_alias("type");
                     let mut items = vec![(
                         Expr::FunctionCall {
-                            name: SmolStr::new("gremlin_typeOf"),
+                            name: SmolStr::new("gremlin_typeof"),
                             args: vec![Expr::Variable(current_alias.clone())],
                             distinct: false,
                         },

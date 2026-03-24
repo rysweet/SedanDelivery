@@ -192,13 +192,37 @@ impl<'a> QueryExecutor<'a> {
             // Multi-key dedup (keys separated by \x1f)
             if key.contains('\x1f') {
                 let labels: Vec<&str> = key.split('\x1f').collect();
+                let any_has_prop = labels.iter().any(|l| l.starts_with("__dedup_prop__"));
                 for row in input {
                     cx.budget.check_or_err()?;
+                    let mut drop_traverser = false;
                     let composite: String = labels
                         .iter()
-                        .map(|l| row.get(*l).map(|v| v.canonical_key()).unwrap_or_default())
+                        .map(|l| {
+                            if let Some(rest) = l.strip_prefix("__dedup_prop__") {
+                                let parts: Vec<&str> = rest.splitn(2, "__").collect();
+                                let prop_name = parts.first().copied().unwrap_or("");
+                                let alias = parts.get(1).copied().unwrap_or("");
+                                if let Some(val) = row.get(alias) {
+                                    let extracted =
+                                        self.extract_property_from_value(cx.graph, val, prop_name);
+                                    let is_element = matches!(val, Value::Node(_) | Value::Edge(_));
+                                    if extracted.is_none() && is_element && !*productive {
+                                        drop_traverser = true;
+                                    }
+                                    extracted.map(|v| v.canonical_key()).unwrap_or_default()
+                                } else {
+                                    String::new()
+                                }
+                            } else {
+                                row.get(*l).map(|v| v.canonical_key()).unwrap_or_default()
+                            }
+                        })
                         .collect::<Vec<_>>()
                         .join("\x1f");
+                    if drop_traverser && any_has_prop {
+                        continue;
+                    }
                     let is_new = if has_shared {
                         self.repeat_dedup_state
                             .borrow_mut()
