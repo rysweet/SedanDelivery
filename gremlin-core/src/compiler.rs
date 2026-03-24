@@ -3906,6 +3906,7 @@ impl GremlinCompiler {
                     let child = current.take().ok_or(CompileError::MissingChild)?;
                     let mut compiled_patterns = Vec::with_capacity(patterns.len());
                     let mut all_alias_pairs: Vec<(String, Identifier)> = Vec::new();
+                    let mut pattern_labels_list: Vec<Vec<(String, Identifier)>> = Vec::new();
                     // Separate filter patterns (not/where) from join patterns.
                     // Filter patterns are applied as post-filters after the match join.
                     let mut filter_pattern_steps: Vec<Vec<GremlinStep>> = Vec::new();
@@ -3935,6 +3936,12 @@ impl GremlinCompiler {
                                 None
                             }
                         });
+
+                        // Track whether the seed label is already bound
+                        let seed_already_bound = first_as_label
+                            .as_ref()
+                            .map(|l| sub.alias_map.contains_key(l))
+                            .unwrap_or(false);
 
                         let compiled = if let Some(ref label) = first_as_label {
                             if let Some(existing_alias) = sub.alias_map.get(label).cloned() {
@@ -3968,6 +3975,30 @@ impl GremlinCompiler {
                             sub.compile_with_seed(pattern_steps, current_alias.clone())?
                         };
 
+                        // Determine per-pattern produced labels: all labels
+                        // EXCEPT the seed label when it was already bound AND
+                        // its alias collides with another label (Repeat remap).
+                        let produced: Vec<(String, Identifier)> = sub
+                            .alias_map
+                            .iter()
+                            .filter(|(label, alias)| {
+                                if seed_already_bound && first_as_label.as_ref() == Some(label) {
+                                    // If the seed alias is shared with another
+                                    // label, exclude seed — its value may be
+                                    // overwritten by the pattern (e.g. Repeat).
+                                    let shared = sub
+                                        .alias_map
+                                        .iter()
+                                        .any(|(l, a)| l != *label && a.as_str() == alias.as_str());
+                                    !shared
+                                } else {
+                                    true
+                                }
+                            })
+                            .map(|(l, a)| (l.clone(), a.clone()))
+                            .collect();
+                        pattern_labels_list.push(produced);
+
                         for (k, v) in &sub.alias_map {
                             self.alias_map.entry(k.clone()).or_insert_with(|| v.clone());
                         }
@@ -3985,6 +4016,7 @@ impl GremlinCompiler {
                     let match_result_alias = self.next_alias("match");
                     current = Some(Operator::GremlinMatch {
                         patterns: compiled_patterns,
+                        pattern_labels: pattern_labels_list,
                         label_map: label_map.clone(),
                         result_alias: match_result_alias.clone(),
                         child: Box::new(child),
