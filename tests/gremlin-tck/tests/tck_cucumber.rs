@@ -476,6 +476,17 @@ async fn then_result_empty(world: &mut GremlinWorld) {
 #[then(expr = "the result should have a count of {int}")]
 async fn then_result_count(world: &mut GremlinWorld, expected: usize) {
     let result = expect_ok(world);
+    // When the result is a single row containing a Map (from group(), groupCount()),
+    // "count of N" checks the map's entry count, not the row count.
+    if result.rows.len() == 1 {
+        let row = &result.rows[0];
+        let alias = &world.result_alias;
+        if let Some(Value::Map(m)) = row.get(alias) {
+            if m.len() == expected {
+                return;
+            }
+        }
+    }
     assert_eq!(
         result.rows.len(),
         expected,
