@@ -5273,7 +5273,7 @@ impl GremlinCompiler {
                     let alias = self.next_alias("str");
                     let mut items = vec![(
                         Expr::FunctionCall {
-                            name: SmolStr::new("gremlin_asString"),
+                            name: SmolStr::new("gremlin_asstring"),
                             args: vec![Expr::Variable(current_alias.clone())],
                             distinct: false,
                         },
