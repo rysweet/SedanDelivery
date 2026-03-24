@@ -14,6 +14,7 @@ pub(crate) use self::dedup::row_key;
 pub(crate) use self::dedup::RowDedupSet;
 pub(crate) use self::expr_naming::expr_to_column_name;
 
+use indexmap::IndexMap;
 use std::collections::HashMap;
 
 use crate::ast::{Direction, Expr};
@@ -275,7 +276,7 @@ pub(crate) fn eval_count_expr(expr: &Expr, params: &Row) -> Result<usize, GqlErr
     }
 }
 
-/// Evaluate a property map `[(key, Expr)]` into a `HashMap<String, Value>`.
+/// Evaluate a property map `[(key, Expr)]` into an `IndexMap<String, Value>`.
 ///
 /// Supports parameter map expansion: when a property entry has an empty key (`""`)
 /// and its value is an `Expr::Parameter`, the parameter is resolved and expected to
@@ -286,8 +287,8 @@ pub(crate) fn eval_prop_map(
     pairs: &[(String, Expr)],
     row: &Row,
     ctx: &FilterRow<'_>,
-) -> Result<HashMap<String, Value>, GqlError> {
-    let mut map = HashMap::new();
+) -> Result<IndexMap<String, Value>, GqlError> {
+    let mut map = IndexMap::new();
     for (key, expr) in pairs {
         if key.is_empty() {
             // Sentinel: parameter map expansion.
@@ -377,17 +378,15 @@ mod tests {
         let store = InMemoryGraphStore::new();
         store.create_graph("g").unwrap();
         let n = store
-            .create_node("g", vec!["A".to_string()], std::collections::HashMap::new())
+            .create_node(
+                "g",
+                vec!["A".to_string()],
+                std::collections::IndexMap::new(),
+            )
             .unwrap();
         // Create a self-loop: (n)-[:SELF]->(n)
         let eid = store
-            .create_edge(
-                "g",
-                n,
-                n,
-                "SELF".to_string(),
-                std::collections::HashMap::new(),
-            )
+            .create_edge("g", n, n, "SELF".to_string(), indexmap::IndexMap::new())
             .unwrap();
 
         let entries = get_adj_entries(&store, "g", n, &Direction::Undirected, &[]).unwrap();

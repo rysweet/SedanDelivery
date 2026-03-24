@@ -8,7 +8,7 @@
 //!
 //! Reference: <https://github.com/ldbc/ldbc_snb_interactive_v2_impls/tree/main/cypher>
 
-use std::collections::HashMap;
+use indexmap::IndexMap;
 use std::time::Duration;
 
 use gql_core::ast::{BinaryOp, Direction, Expr, Identifier, Label, RelType};
@@ -22,7 +22,7 @@ use super::loader::{build, GRAPH};
 
 // ── Test helper ───────────────────────────────────────────────────────────────
 
-fn run(store: &InMemoryGraphStore, cypher: &str) -> Vec<HashMap<String, Value>> {
+fn run(store: &InMemoryGraphStore, cypher: &str) -> Vec<IndexMap<String, Value>> {
     let ast = parse_query(cypher).expect("parse error");
     let planner = QueryPlanner::new(store, GRAPH);
     let plan = planner.plan(&ast).expect("plan error");
@@ -34,7 +34,7 @@ fn run(store: &InMemoryGraphStore, cypher: &str) -> Vec<HashMap<String, Value>> 
         .rows
 }
 
-fn names(rows: &[HashMap<String, Value>], col: &str) -> Vec<String> {
+fn names(rows: &[IndexMap<String, Value>], col: &str) -> Vec<String> {
     rows.iter()
         .filter_map(|r| match r.get(col) {
             Some(Value::Str(s)) => Some(s.to_string()),
@@ -43,7 +43,7 @@ fn names(rows: &[HashMap<String, Value>], col: &str) -> Vec<String> {
         .collect()
 }
 
-fn ints(rows: &[HashMap<String, Value>], col: &str) -> Vec<i64> {
+fn ints(rows: &[IndexMap<String, Value>], col: &str) -> Vec<i64> {
     rows.iter()
         .filter_map(|r| match r.get(col) {
             Some(Value::Int(i)) => Some(*i),

@@ -4,6 +4,7 @@ use std::collections::HashMap;
 
 use gql_core::storage::{EdgeId, GraphStore, NodeId};
 use gql_core::types::Value;
+use indexmap::IndexMap;
 
 use crate::error::ApiError;
 use crate::state::AppState;
@@ -66,10 +67,10 @@ pub fn json_to_value(v: serde_json::Value) -> Result<Value, ApiError> {
     }
 }
 
-/// Convert a `serde_json::Map` of property values into a `HashMap<String, Value>`.
+/// Convert a `serde_json::Map` of property values into an `IndexMap<String, Value>`.
 pub fn json_map_to_props(
     map: serde_json::Map<String, serde_json::Value>,
-) -> Result<HashMap<String, Value>, ApiError> {
+) -> Result<IndexMap<String, Value>, ApiError> {
     map.into_iter()
         .map(|(k, v)| {
             let val = json_to_value(v)?;
@@ -421,27 +422,27 @@ mod tests {
         store.create_graph("g").unwrap();
 
         let n1 = store
-            .create_node("g", vec!["Person".to_string()], HashMap::new())
+            .create_node("g", vec!["Person".to_string()], IndexMap::new())
             .unwrap();
         let n2 = store
             .create_node(
                 "g",
                 vec!["Person".to_string(), "Employee".to_string()],
-                HashMap::new(),
+                IndexMap::new(),
             )
             .unwrap();
         let n3 = store
-            .create_node("g", vec!["Company".to_string()], HashMap::new())
+            .create_node("g", vec!["Company".to_string()], IndexMap::new())
             .unwrap();
 
         store
-            .create_edge("g", n1, n2, "KNOWS".to_string(), HashMap::new())
+            .create_edge("g", n1, n2, "KNOWS".to_string(), IndexMap::new())
             .unwrap();
         store
-            .create_edge("g", n2, n3, "WORKS_AT".to_string(), HashMap::new())
+            .create_edge("g", n2, n3, "WORKS_AT".to_string(), IndexMap::new())
             .unwrap();
         store
-            .create_edge("g", n1, n3, "KNOWS".to_string(), HashMap::new())
+            .create_edge("g", n1, n3, "KNOWS".to_string(), IndexMap::new())
             .unwrap();
 
         let (labels, rels) = compute_schema_counts(&store, "g").unwrap();

@@ -6,7 +6,7 @@
 //!             marko-[created,0.4]->lop, josh-[created,1.0]->ripple,
 //!             josh-[created,0.4]->lop, peter-[created,0.2]->lop
 
-use std::collections::HashMap;
+use indexmap::IndexMap;
 
 use gql_core::storage::{EdgeId, GraphStore, InMemoryGraphStore, NodeId};
 use gql_core::types::Value;
@@ -167,22 +167,22 @@ pub fn create_modern_graph() -> (InMemoryGraphStore, ModernGraphIds) {
 
 // ── Property helpers ───────────────────────────────────────────────────────────
 
-fn person_props(name: &str, age: i64) -> HashMap<String, Value> {
-    let mut props = HashMap::new();
+fn person_props(name: &str, age: i64) -> IndexMap<String, Value> {
+    let mut props = IndexMap::new();
     props.insert("name".to_string(), Value::Str(name.into()));
     props.insert("age".to_string(), Value::Int(age));
     props
 }
 
-fn software_props(name: &str, lang: &str) -> HashMap<String, Value> {
-    let mut props = HashMap::new();
+fn software_props(name: &str, lang: &str) -> IndexMap<String, Value> {
+    let mut props = IndexMap::new();
     props.insert("name".to_string(), Value::Str(name.into()));
     props.insert("lang".to_string(), Value::Str(lang.into()));
     props
 }
 
-fn weight_props(weight: f64) -> HashMap<String, Value> {
-    let mut props = HashMap::new();
+fn weight_props(weight: f64) -> IndexMap<String, Value> {
+    let mut props = IndexMap::new();
     props.insert("weight".to_string(), Value::Float(weight));
     props
 }

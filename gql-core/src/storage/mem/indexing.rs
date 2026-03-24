@@ -242,7 +242,7 @@ pub(crate) fn drop_index_impl(
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
+    use indexmap::IndexMap;
 
     use crate::storage::mem::test_helpers::{make_indexed_store, make_store};
     use crate::storage::{GraphStore, RangeQuery};
@@ -274,11 +274,11 @@ mod tests {
     #[test]
     fn indexed_eq_query() {
         let store = make_indexed_store();
-        let p1 = HashMap::from([("age".to_string(), Value::Int(30))]);
+        let p1 = IndexMap::from([("age".to_string(), Value::Int(30))]);
         let a = store
             .create_node("test", vec!["Person".to_string()], p1)
             .unwrap();
-        let p2 = HashMap::from([("age".to_string(), Value::Int(25))]);
+        let p2 = IndexMap::from([("age".to_string(), Value::Int(25))]);
         let _b = store
             .create_node("test", vec!["Person".to_string()], p2)
             .unwrap();
@@ -296,7 +296,7 @@ mod tests {
         let ages = vec![10, 20, 30, 40, 50];
         let mut ids = Vec::new();
         for age in &ages {
-            let p = HashMap::from([("age".to_string(), Value::Int(*age))]);
+            let p = IndexMap::from([("age".to_string(), Value::Int(*age))]);
             ids.push(
                 store
                     .create_node("test", vec!["Person".to_string()], p)
@@ -336,7 +336,7 @@ mod tests {
         let ages = vec![10, 20, 30, 40, 50];
         let mut ids = Vec::new();
         for age in &ages {
-            let p = HashMap::from([("age".to_string(), Value::Int(*age))]);
+            let p = IndexMap::from([("age".to_string(), Value::Int(*age))]);
             ids.push(
                 store
                     .create_node("test", vec!["Person".to_string()], p)
@@ -383,7 +383,7 @@ mod tests {
         let names = vec!["Alice", "Albert", "Bob", "Charlie"];
         let mut ids = Vec::new();
         for name in &names {
-            let p = HashMap::from([("name".to_string(), Value::Str((*name).into()))]);
+            let p = IndexMap::from([("name".to_string(), Value::Str((*name).into()))]);
             ids.push(
                 store
                     .create_node("test", vec!["Person".to_string()], p)
@@ -406,11 +406,11 @@ mod tests {
     #[test]
     fn index_backfill_existing_nodes() {
         let store = make_store();
-        let p1 = HashMap::from([("age".to_string(), Value::Int(30))]);
+        let p1 = IndexMap::from([("age".to_string(), Value::Int(30))]);
         let a = store
             .create_node("test", vec!["Person".to_string()], p1)
             .unwrap();
-        let p2 = HashMap::from([("age".to_string(), Value::Int(25))]);
+        let p2 = IndexMap::from([("age".to_string(), Value::Int(25))]);
         let _b = store
             .create_node("test", vec!["Person".to_string()], p2)
             .unwrap();
@@ -427,7 +427,7 @@ mod tests {
     #[test]
     fn index_maintained_on_property_update() {
         let store = make_indexed_store();
-        let p = HashMap::from([("age".to_string(), Value::Int(30))]);
+        let p = IndexMap::from([("age".to_string(), Value::Int(30))]);
         let a = store
             .create_node("test", vec!["Person".to_string()], p)
             .unwrap();
@@ -436,7 +436,7 @@ mod tests {
             .set_node_properties(
                 "test",
                 a,
-                HashMap::from([("age".to_string(), Value::Int(40))]),
+                IndexMap::from([("age".to_string(), Value::Int(40))]),
             )
             .unwrap();
 
@@ -456,7 +456,7 @@ mod tests {
     #[test]
     fn index_maintained_on_property_replace() {
         let store = make_indexed_store();
-        let p = HashMap::from([("age".to_string(), Value::Int(30))]);
+        let p = IndexMap::from([("age".to_string(), Value::Int(30))]);
         let a = store
             .create_node("test", vec!["Person".to_string()], p)
             .unwrap();
@@ -465,7 +465,7 @@ mod tests {
             .replace_node_properties(
                 "test",
                 a,
-                HashMap::from([("age".to_string(), Value::Int(50))]),
+                IndexMap::from([("age".to_string(), Value::Int(50))]),
             )
             .unwrap();
 
@@ -487,7 +487,7 @@ mod tests {
     #[test]
     fn index_maintained_on_property_remove() {
         let store = make_indexed_store();
-        let p = HashMap::from([("age".to_string(), Value::Int(30))]);
+        let p = IndexMap::from([("age".to_string(), Value::Int(30))]);
         let a = store
             .create_node("test", vec!["Person".to_string()], p)
             .unwrap();
@@ -504,7 +504,7 @@ mod tests {
     #[test]
     fn index_maintained_on_node_delete() {
         let store = make_indexed_store();
-        let p = HashMap::from([("age".to_string(), Value::Int(30))]);
+        let p = IndexMap::from([("age".to_string(), Value::Int(30))]);
         let a = store
             .create_node("test", vec!["Person".to_string()], p)
             .unwrap();
@@ -521,7 +521,7 @@ mod tests {
     #[test]
     fn drop_index_cleans_btreemap() {
         let store = make_indexed_store();
-        let p = HashMap::from([("age".to_string(), Value::Int(30))]);
+        let p = IndexMap::from([("age".to_string(), Value::Int(30))]);
         store
             .create_node("test", vec!["Person".to_string()], p)
             .unwrap();
@@ -540,7 +540,7 @@ mod tests {
         // Create a node without the indexed label, then add it.
         // The property index should pick up the node.
         let store = make_indexed_store(); // has index on Person.age and Person.name
-        let p = HashMap::from([("age".to_string(), Value::Int(42))]);
+        let p = IndexMap::from([("age".to_string(), Value::Int(42))]);
         let a = store
             .create_node("test", vec!["Animal".to_string()], p)
             .unwrap();
@@ -569,7 +569,7 @@ mod tests {
         // Create a node with the indexed label, then remove it.
         // The property index should no longer find the node.
         let store = make_indexed_store();
-        let p = HashMap::from([("age".to_string(), Value::Int(55))]);
+        let p = IndexMap::from([("age".to_string(), Value::Int(55))]);
         let a = store
             .create_node("test", vec!["Person".to_string()], p)
             .unwrap();
@@ -600,15 +600,15 @@ mod tests {
         // and uses the index (not a fallback scan).
         let store = make_store();
         // Insert nodes BEFORE creating the index to test backfill.
-        let p1 = HashMap::from([("name".to_string(), Value::Str("Alice".into()))]);
+        let p1 = IndexMap::from([("name".to_string(), Value::Str("Alice".into()))]);
         let alice = store
             .create_node("test", vec!["Person".to_string()], p1)
             .unwrap();
-        let p2 = HashMap::from([("name".to_string(), Value::Str("Bob".into()))]);
+        let p2 = IndexMap::from([("name".to_string(), Value::Str("Bob".into()))]);
         let _bob = store
             .create_node("test", vec!["Person".to_string()], p2)
             .unwrap();
-        let p3 = HashMap::from([("name".to_string(), Value::Str("Alice".into()))]);
+        let p3 = IndexMap::from([("name".to_string(), Value::Str("Alice".into()))]);
         let _other = store
             .create_node("test", vec!["Company".to_string()], p3)
             .unwrap();
@@ -624,7 +624,7 @@ mod tests {
         assert_eq!(result, vec![alice]);
 
         // Insert another node AFTER creating the index.
-        let p4 = HashMap::from([("name".to_string(), Value::Str("Alice".into()))]);
+        let p4 = IndexMap::from([("name".to_string(), Value::Str("Alice".into()))]);
         let alice2 = store
             .create_node("test", vec!["Person".to_string()], p4)
             .unwrap();

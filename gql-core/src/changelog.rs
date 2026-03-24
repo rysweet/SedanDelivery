@@ -34,7 +34,7 @@
 //!
 //! All events are written to the Valkey stream `__sd2:changelog`.
 
-use std::collections::HashMap;
+use indexmap::IndexMap;
 use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
@@ -67,11 +67,11 @@ pub fn changelog_stream_for_graph(graph: &str) -> String {
 
 // ── Property map helpers ──────────────────────────────────────────────────────
 
-/// Convert a `HashMap<String, Value>` to a JSON object map using the
+/// Convert a `IndexMap<String, Value>` to a JSON object map using the
 /// canonical tagged-string encoding.  Values that fail serialisation
 /// (non-finite floats) are logged and dropped — the storage layer already
 /// rejects these, so this only triggers on truly corrupted data.
-fn props_to_json_map(props: &HashMap<String, Value>) -> JsonMap<String, JsonValue> {
+fn props_to_json_map(props: &IndexMap<String, Value>) -> JsonMap<String, JsonValue> {
     let mut m = JsonMap::with_capacity(props.len());
     for (k, v) in props {
         match value_to_json(v) {
@@ -86,9 +86,9 @@ fn props_to_json_map(props: &HashMap<String, Value>) -> JsonMap<String, JsonValu
     m
 }
 
-/// Convert a JSON object map back to `HashMap<String, Value>`.
+/// Convert a JSON object map back to `IndexMap<String, Value>`.
 /// Values that cannot be decoded are logged and skipped.
-pub fn json_map_to_props(m: &JsonMap<String, JsonValue>) -> HashMap<String, Value> {
+pub fn json_map_to_props(m: &JsonMap<String, JsonValue>) -> IndexMap<String, Value> {
     m.iter()
         .filter_map(|(k, v)| match json_to_value(v) {
             Some(val) => Some((k.clone(), val)),
@@ -391,7 +391,7 @@ impl<S: GraphStore + 'static> GraphStore for ChangeLogStore<S> {
         &self,
         graph: &str,
         labels: Vec<String>,
-        properties: HashMap<String, Value>,
+        properties: IndexMap<String, Value>,
     ) -> Result<NodeId, StorageError> {
         let id = self
             .inner
@@ -411,7 +411,7 @@ impl<S: GraphStore + 'static> GraphStore for ChangeLogStore<S> {
         src: NodeId,
         dst: NodeId,
         rel_type: String,
-        properties: HashMap<String, Value>,
+        properties: IndexMap<String, Value>,
     ) -> Result<EdgeId, StorageError> {
         let id = self
             .inner
@@ -431,7 +431,7 @@ impl<S: GraphStore + 'static> GraphStore for ChangeLogStore<S> {
         &self,
         graph: &str,
         id: NodeId,
-        properties: HashMap<String, Value>,
+        properties: IndexMap<String, Value>,
     ) -> Result<(), StorageError> {
         self.inner
             .set_node_properties(graph, id, properties.clone())?;
@@ -447,7 +447,7 @@ impl<S: GraphStore + 'static> GraphStore for ChangeLogStore<S> {
         &self,
         graph: &str,
         id: NodeId,
-        properties: HashMap<String, Value>,
+        properties: IndexMap<String, Value>,
     ) -> Result<(), StorageError> {
         self.inner
             .replace_node_properties(graph, id, properties.clone())?;
@@ -463,7 +463,7 @@ impl<S: GraphStore + 'static> GraphStore for ChangeLogStore<S> {
         &self,
         graph: &str,
         id: EdgeId,
-        properties: HashMap<String, Value>,
+        properties: IndexMap<String, Value>,
     ) -> Result<(), StorageError> {
         self.inner
             .set_edge_properties(graph, id, properties.clone())?;
@@ -479,7 +479,7 @@ impl<S: GraphStore + 'static> GraphStore for ChangeLogStore<S> {
         &self,
         graph: &str,
         id: EdgeId,
-        properties: HashMap<String, Value>,
+        properties: IndexMap<String, Value>,
     ) -> Result<(), StorageError> {
         self.inner
             .replace_edge_properties(graph, id, properties.clone())?;
@@ -644,7 +644,7 @@ mod tests {
         store.create_graph("g").unwrap();
         let _ = store.drain_events(); // discard create_graph event
 
-        let mut props = HashMap::new();
+        let mut props = IndexMap::new();
         props.insert("name".into(), Value::Str("Alice".into()));
         let id = store
             .create_node("g", vec!["Person".into()], props)
@@ -684,7 +684,7 @@ mod tests {
     fn failed_write_emits_no_event() {
         let store = make_store();
         // create_node on non-existent graph should fail
-        let result = store.create_node("nonexistent", vec![], HashMap::new());
+        let result = store.create_node("nonexistent", vec![], IndexMap::new());
         assert!(result.is_err());
         assert!(store.drain_events().is_empty());
     }

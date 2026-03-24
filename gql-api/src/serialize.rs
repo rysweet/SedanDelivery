@@ -1,5 +1,6 @@
 //! Serialisation helpers: convert gql-core types to `serde_json::Value`.
 
+use indexmap::IndexMap;
 use std::collections::HashMap;
 
 use serde_json::{json, Map, Value as Json};
@@ -64,8 +65,8 @@ pub fn value_to_json(v: &Value) -> Json {
     }
 }
 
-/// Serialise a property map (`HashMap<String, Value>`) to a JSON object.
-pub fn props_to_json(props: &HashMap<String, Value>) -> Json {
+/// Serialise a property map (`IndexMap<String, Value>`) to a JSON object.
+pub fn props_to_json(props: &IndexMap<String, Value>) -> Json {
     let obj: Map<String, Json> = props
         .iter()
         .map(|(k, v)| (k.clone(), value_to_json(v)))
@@ -438,7 +439,7 @@ mod tests {
 
     #[test]
     fn props_to_json_mixed_types() {
-        let mut props = HashMap::new();
+        let mut props = IndexMap::new();
         props.insert("name".to_string(), Value::Str("Alice".into()));
         props.insert("age".to_string(), Value::Int(30));
         props.insert("active".to_string(), Value::Bool(true));
@@ -452,7 +453,7 @@ mod tests {
 
     #[test]
     fn props_to_json_nested_list() {
-        let mut props = HashMap::new();
+        let mut props = IndexMap::new();
         props.insert(
             "tags".to_string(),
             Value::List(vec![Value::Str("a".into()), Value::Str("b".into())]),
@@ -465,7 +466,7 @@ mod tests {
 
     #[test]
     fn node_to_json_basic() {
-        let mut props = HashMap::new();
+        let mut props = IndexMap::new();
         props.insert("name".to_string(), Value::Str("Bob".into()));
         let node = NodeData {
             id: NodeId(7),
@@ -483,7 +484,7 @@ mod tests {
         let node = NodeData {
             id: NodeId(0),
             labels: vec![],
-            properties: HashMap::new(),
+            properties: IndexMap::new(),
         };
         let result = node_to_json(&node);
         assert_eq!(result["id"], json!("0"));
@@ -495,7 +496,7 @@ mod tests {
 
     #[test]
     fn edge_to_json_basic() {
-        let mut props = HashMap::new();
+        let mut props = IndexMap::new();
         props.insert("weight".to_string(), Value::Float(0.75));
         let edge = EdgeData {
             id: EdgeId(42),
@@ -519,7 +520,7 @@ mod tests {
             rel_type: "FOLLOWS".to_string(),
             src: NodeId(10),
             dst: NodeId(20),
-            properties: HashMap::new(),
+            properties: IndexMap::new(),
         };
         let result = edge_to_json(&edge);
         assert_eq!(result["id"], json!("1"));
@@ -584,10 +585,10 @@ mod tests {
     fn row_to_json_resolves_edge_reference() {
         let store = InMemoryGraphStore::new();
         store.create_graph("g").unwrap();
-        let n1 = store.create_node("g", vec![], HashMap::new()).unwrap();
-        let n2 = store.create_node("g", vec![], HashMap::new()).unwrap();
+        let n1 = store.create_node("g", vec![], IndexMap::new()).unwrap();
+        let n2 = store.create_node("g", vec![], IndexMap::new()).unwrap();
         let edge_id = store
-            .create_edge("g", n1, n2, "KNOWS".to_string(), HashMap::new())
+            .create_edge("g", n1, n2, "KNOWS".to_string(), IndexMap::new())
             .unwrap();
 
         let mut row = HashMap::new();
@@ -623,13 +624,13 @@ mod tests {
         let store = InMemoryGraphStore::new();
         store.create_graph("g").unwrap();
         let n1 = store
-            .create_node("g", vec!["A".to_string()], HashMap::new())
+            .create_node("g", vec!["A".to_string()], IndexMap::new())
             .unwrap();
         let n2 = store
-            .create_node("g", vec!["B".to_string()], HashMap::new())
+            .create_node("g", vec!["B".to_string()], IndexMap::new())
             .unwrap();
         let e = store
-            .create_edge("g", n1, n2, "REL".to_string(), HashMap::new())
+            .create_edge("g", n1, n2, "REL".to_string(), IndexMap::new())
             .unwrap();
 
         let mut row = HashMap::new();
@@ -654,7 +655,7 @@ mod tests {
         let store = InMemoryGraphStore::new();
         store.create_graph("g").unwrap();
         let nid = store
-            .create_node("g", vec!["X".to_string()], HashMap::new())
+            .create_node("g", vec!["X".to_string()], IndexMap::new())
             .unwrap();
 
         let mut row = HashMap::new();

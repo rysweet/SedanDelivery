@@ -535,6 +535,7 @@ mod tests {
     use crate::executor::budget::ExecutionBudget;
     use crate::planner::Operator;
     use crate::storage::{GraphStore, InMemoryGraphStore};
+    use indexmap::IndexMap;
     use std::collections::HashMap;
 
     fn make_store() -> InMemoryGraphStore {
@@ -550,7 +551,7 @@ mod tests {
         p.insert("x".to_string(), Value::Int(10));
         store.create_node("g", vec!["N".to_string()], p).unwrap();
         store
-            .create_node("g", vec!["N".to_string()], HashMap::new())
+            .create_node("g", vec!["N".to_string()], IndexMap::new())
             .unwrap();
         let executor = QueryExecutor::new(&store);
         let plan = Operator::Filter {
@@ -576,10 +577,10 @@ mod tests {
     fn distinct_removes_duplicates() {
         let store = make_store();
         store
-            .create_node("g", vec!["N".to_string()], HashMap::new())
+            .create_node("g", vec!["N".to_string()], IndexMap::new())
             .unwrap();
         store
-            .create_node("g", vec!["N".to_string()], HashMap::new())
+            .create_node("g", vec!["N".to_string()], IndexMap::new())
             .unwrap();
         let executor = QueryExecutor::new(&store);
         let plan = Operator::Distinct {
@@ -640,7 +641,7 @@ mod tests {
     fn limit_and_skip() {
         let store = make_store();
         for _ in 0..5 {
-            store.create_node("g", vec![], HashMap::new()).unwrap();
+            store.create_node("g", vec![], IndexMap::new()).unwrap();
         }
         let executor = QueryExecutor::new(&store);
         let plan = Operator::Limit {
@@ -668,7 +669,7 @@ mod tests {
         let total_nodes = 1000;
         for _ in 0..total_nodes {
             store
-                .create_node("g", vec!["N".to_string()], HashMap::new())
+                .create_node("g", vec!["N".to_string()], IndexMap::new())
                 .unwrap();
         }
         let executor = QueryExecutor::new(&store);
@@ -777,7 +778,7 @@ mod tests {
         let total_nodes = 200;
         for _ in 0..total_nodes {
             store
-                .create_node("g", vec!["N".to_string()], HashMap::new())
+                .create_node("g", vec!["N".to_string()], IndexMap::new())
                 .unwrap();
         }
         let executor = QueryExecutor::new(&store);

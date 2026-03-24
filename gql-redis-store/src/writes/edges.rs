@@ -1,6 +1,6 @@
 // writes/edges.rs -- Edge write operations for RedisGraphStore.
 
-use std::collections::HashMap;
+use indexmap::IndexMap;
 
 use gql_core::error::StorageError;
 use gql_core::serde_value::props_to_json;
@@ -17,7 +17,7 @@ use crate::{LockedRedisConn, RedisGraphStore};
 
 use super::helpers::{clean_fanout_props, extract_injected_id};
 
-fn validate_property_keys(properties: &HashMap<String, Value>) -> Result<(), StorageError> {
+fn validate_property_keys(properties: &IndexMap<String, Value>) -> Result<(), StorageError> {
     for key in properties.keys() {
         validate_property_key(key)?;
     }
@@ -96,7 +96,7 @@ impl RedisGraphStore {
         src: NodeId,
         dst: NodeId,
         rel_type: String,
-        properties: HashMap<String, Value>,
+        properties: IndexMap<String, Value>,
     ) -> Result<EdgeId, StorageError> {
         validate_property_keys(&properties)?;
         self.with_graph_write_lock(graph, WRITE_LOCK_TTL_MS, 3, 50, |conn| {
@@ -192,7 +192,7 @@ impl RedisGraphStore {
         &self,
         graph: &str,
         id: EdgeId,
-        properties: HashMap<String, Value>,
+        properties: IndexMap<String, Value>,
     ) -> Result<(), StorageError> {
         validate_property_keys(&properties)?;
         self.with_graph_write_lock(graph, WRITE_LOCK_TTL_MS, 3, 50, |conn| {
@@ -221,7 +221,7 @@ impl RedisGraphStore {
         &self,
         graph: &str,
         id: EdgeId,
-        properties: HashMap<String, Value>,
+        properties: IndexMap<String, Value>,
     ) -> Result<(), StorageError> {
         validate_property_keys(&properties)?;
         self.with_graph_write_lock(graph, WRITE_LOCK_TTL_MS, 3, 50, |conn| {
@@ -288,7 +288,7 @@ impl RedisGraphStore {
     pub fn batch_create_edges(
         &self,
         graph: &str,
-        edges: Vec<(NodeId, NodeId, String, HashMap<String, Value>)>,
+        edges: Vec<(NodeId, NodeId, String, IndexMap<String, Value>)>,
     ) -> Result<Vec<EdgeId>, StorageError> {
         if edges.is_empty() {
             return Ok(Vec::new());
@@ -417,7 +417,7 @@ mod tests {
     use crate::keys::{decode_adj, encode_adj};
     use gql_core::storage::{EdgeId, NodeId};
     use gql_core::types::Value;
-    use std::collections::HashMap;
+    use indexmap::IndexMap;
 
     use super::validate_property_keys;
 
@@ -452,7 +452,7 @@ mod tests {
 
     #[test]
     fn validate_edge_property_keys_rejects_null_byte() {
-        let mut props = HashMap::new();
+        let mut props = IndexMap::new();
         props.insert("co\x00st".to_string(), Value::Int(5));
         let result = validate_property_keys(&props);
         assert!(
@@ -467,9 +467,9 @@ mod tests {
     fn extract_edge_id_from_properties() {
         use super::super::helpers::extract_injected_id;
         use gql_core::types::Value;
-        use std::collections::HashMap;
+        use indexmap::IndexMap;
 
-        let mut props = HashMap::new();
+        let mut props = IndexMap::new();
         props.insert("_sd2_eid".to_string(), Value::Int(99));
         let result = extract_injected_id(&props, "_sd2_eid").unwrap();
         assert_eq!(result, Some(99));
@@ -479,9 +479,9 @@ mod tests {
     fn extract_edge_id_negative_fails() {
         use super::super::helpers::extract_injected_id;
         use gql_core::types::Value;
-        use std::collections::HashMap;
+        use indexmap::IndexMap;
 
-        let mut props = HashMap::new();
+        let mut props = IndexMap::new();
         props.insert("_sd2_eid".to_string(), Value::Int(-1));
         assert!(extract_injected_id(&props, "_sd2_eid").is_err());
     }

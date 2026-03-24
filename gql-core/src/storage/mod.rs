@@ -2,8 +2,8 @@ pub mod mem;
 
 pub use mem::InMemoryGraphStore;
 
+use indexmap::IndexMap;
 use std::any::Any;
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::error::StorageError;
@@ -31,7 +31,7 @@ pub struct EdgeId(pub u64);
 pub struct NodeData {
     pub id: NodeId,
     pub labels: Vec<String>,
-    pub properties: HashMap<String, Value>,
+    pub properties: IndexMap<String, Value>,
 }
 
 /// The data for a single edge as returned from storage.
@@ -41,7 +41,7 @@ pub struct EdgeData {
     pub rel_type: String,
     pub src: NodeId,
     pub dst: NodeId,
-    pub properties: HashMap<String, Value>,
+    pub properties: IndexMap<String, Value>,
 }
 
 /// An adjacency list entry returned by `out_edges` / `in_edges`.
@@ -214,7 +214,7 @@ pub trait GraphStore: Send + Sync {
         &self,
         graph: &str,
         labels: Vec<String>,
-        properties: HashMap<String, Value>,
+        properties: IndexMap<String, Value>,
     ) -> Result<NodeId, StorageError>;
 
     fn create_edge(
@@ -223,7 +223,7 @@ pub trait GraphStore: Send + Sync {
         src: NodeId,
         dst: NodeId,
         rel_type: String,
-        properties: HashMap<String, Value>,
+        properties: IndexMap<String, Value>,
     ) -> Result<EdgeId, StorageError>;
 
     /// Merge-update node properties: overlays given keys onto existing properties.
@@ -232,7 +232,7 @@ pub trait GraphStore: Send + Sync {
         &self,
         graph: &str,
         id: NodeId,
-        properties: HashMap<String, Value>,
+        properties: IndexMap<String, Value>,
     ) -> Result<(), StorageError>;
 
     /// Full-replace node properties: removes ALL existing properties, sets exactly the given ones.
@@ -241,7 +241,7 @@ pub trait GraphStore: Send + Sync {
         &self,
         graph: &str,
         id: NodeId,
-        properties: HashMap<String, Value>,
+        properties: IndexMap<String, Value>,
     ) -> Result<(), StorageError>;
 
     /// Merge-update edge properties. Implements Cypher `SET r += {…}` semantics.
@@ -249,7 +249,7 @@ pub trait GraphStore: Send + Sync {
         &self,
         graph: &str,
         id: EdgeId,
-        properties: HashMap<String, Value>,
+        properties: IndexMap<String, Value>,
     ) -> Result<(), StorageError>;
 
     /// Full-replace edge properties. Implements Cypher `SET r = {…}` semantics.
@@ -257,7 +257,7 @@ pub trait GraphStore: Send + Sync {
         &self,
         graph: &str,
         id: EdgeId,
-        properties: HashMap<String, Value>,
+        properties: IndexMap<String, Value>,
     ) -> Result<(), StorageError>;
 
     fn remove_node_property(&self, graph: &str, id: NodeId, key: &str) -> Result<(), StorageError>;

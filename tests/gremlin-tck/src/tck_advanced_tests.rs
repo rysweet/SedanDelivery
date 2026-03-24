@@ -5,7 +5,7 @@
 //! categories that are not covered by the existing tck_tests, tck_map_tests,
 //! or tck_mutation_tests modules.
 
-use std::collections::HashMap;
+use indexmap::IndexMap;
 use std::time::Duration;
 
 use gql_core::executor::{ExecutionBudget, QueryExecutor, QueryResult};
@@ -20,7 +20,7 @@ fn unlimited() -> ExecutionBudget {
     ExecutionBudget::new(Duration::from_secs(3600), usize::MAX)
 }
 
-fn run_query(query: &str) -> Vec<HashMap<String, Value>> {
+fn run_query(query: &str) -> Vec<IndexMap<String, Value>> {
     let (store, _ids) = create_modern_graph();
     run_on(&store, query).rows
 }

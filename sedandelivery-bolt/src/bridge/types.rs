@@ -225,7 +225,7 @@ pub fn path_to_bolt(
 /// Convert a gql-core property map to a `BoltValue::Map`.
 ///
 /// Only scalar values appear in property maps (no Node/Edge/Path references).
-pub fn props_to_bolt_map(props: &HashMap<String, Value>) -> BoltValue {
+pub fn props_to_bolt_map(props: &IndexMap<String, Value>) -> BoltValue {
     let entries: Vec<(String, BoltValue)> = props
         .iter()
         .map(|(k, v)| (k.clone(), scalar_value_to_bolt(v)))
@@ -727,7 +727,7 @@ mod tests {
 
     #[test]
     fn empty_props_map() {
-        let props = HashMap::new();
+        let props = IndexMap::new();
         let bolt = props_to_bolt_map(&props);
         assert_eq!(bolt, BoltValue::Map(vec![]));
     }
@@ -740,7 +740,7 @@ mod tests {
             .create_node(
                 "test",
                 vec!["Person".to_string()],
-                HashMap::from([("name".to_string(), Value::Str("Alice".into()))]),
+                IndexMap::from([("name".to_string(), Value::Str("Alice".into()))]),
             )
             .unwrap();
 
@@ -773,10 +773,10 @@ mod tests {
     fn edge_to_bolt_returns_structure() {
         let store = InMemoryGraphStore::new();
         store.create_graph("test").unwrap();
-        let n1 = store.create_node("test", vec![], HashMap::new()).unwrap();
-        let n2 = store.create_node("test", vec![], HashMap::new()).unwrap();
+        let n1 = store.create_node("test", vec![], IndexMap::new()).unwrap();
+        let n2 = store.create_node("test", vec![], IndexMap::new()).unwrap();
         let eid = store
-            .create_edge("test", n1, n2, "KNOWS".to_string(), HashMap::new())
+            .create_edge("test", n1, n2, "KNOWS".to_string(), IndexMap::new())
             .unwrap();
 
         let bolt = edge_to_bolt(eid, &store, "test");
@@ -796,10 +796,10 @@ mod tests {
     fn path_to_bolt_simple() {
         let store = InMemoryGraphStore::new();
         store.create_graph("test").unwrap();
-        let n1 = store.create_node("test", vec![], HashMap::new()).unwrap();
-        let n2 = store.create_node("test", vec![], HashMap::new()).unwrap();
+        let n1 = store.create_node("test", vec![], IndexMap::new()).unwrap();
+        let n2 = store.create_node("test", vec![], IndexMap::new()).unwrap();
         let e1 = store
-            .create_edge("test", n1, n2, "KNOWS".to_string(), HashMap::new())
+            .create_edge("test", n1, n2, "KNOWS".to_string(), IndexMap::new())
             .unwrap();
 
         let bolt = path_to_bolt(&[n1, n2], &[e1], &store, "test");

@@ -80,7 +80,7 @@ impl<'a> QueryExecutor<'a> {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
+    use indexmap::IndexMap;
 
     use crate::ast::{Expr, Identifier, Label};
     use crate::executor::budget::ExecutionBudget;
@@ -229,7 +229,7 @@ mod tests {
         // MATCH (a:Start) FOREACH (x IN [1,2] | CREATE (:N {val: x})) RETURN a
         // The FOREACH should see the matched node, and the RETURN should still see 'a'.
         let store = make_store();
-        let mut props = HashMap::new();
+        let mut props = IndexMap::new();
         props.insert("name".to_string(), Value::Str("root".into()));
         store
             .create_node("g", vec!["Start".to_string()], props)

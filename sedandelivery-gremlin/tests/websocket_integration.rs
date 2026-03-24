@@ -4,7 +4,7 @@
 //! connects via `tokio-tungstenite`, sends a GraphSON bytecode request,
 //! and verifies the response.
 
-use std::collections::HashMap;
+use indexmap::IndexMap;
 use std::sync::Arc;
 
 use gql_core::storage::{GraphStore, InMemoryGraphStore};
@@ -182,22 +182,22 @@ fn create_modern_graph_store() -> InMemoryGraphStore {
     store
 }
 
-fn person_props(name: &str, age: i64) -> HashMap<String, Value> {
-    let mut props = HashMap::new();
+fn person_props(name: &str, age: i64) -> IndexMap<String, Value> {
+    let mut props = IndexMap::new();
     props.insert("name".into(), Value::Str(name.into()));
     props.insert("age".into(), Value::Int(age));
     props
 }
 
-fn software_props(name: &str, lang: &str) -> HashMap<String, Value> {
-    let mut props = HashMap::new();
+fn software_props(name: &str, lang: &str) -> IndexMap<String, Value> {
+    let mut props = IndexMap::new();
     props.insert("name".into(), Value::Str(name.into()));
     props.insert("lang".into(), Value::Str(lang.into()));
     props
 }
 
-fn weight_props(weight: f64) -> HashMap<String, Value> {
-    let mut props = HashMap::new();
+fn weight_props(weight: f64) -> IndexMap<String, Value> {
+    let mut props = IndexMap::new();
     props.insert("weight".into(), Value::Float(weight));
     props
 }

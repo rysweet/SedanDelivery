@@ -1571,6 +1571,7 @@ mod tests {
     use super::*;
     use crate::ast::{BinaryOp, Identifier};
     use crate::storage::{GraphStore, InMemoryGraphStore};
+    use indexmap::IndexMap;
     use std::collections::HashMap;
 
     fn make_store() -> InMemoryGraphStore {
@@ -1582,7 +1583,7 @@ mod tests {
     #[test]
     fn eval_property_on_node() {
         let store = make_store();
-        let mut props = HashMap::new();
+        let mut props = IndexMap::new();
         props.insert("name".to_string(), Value::Str("Alice".into()));
         let nid = store
             .create_node("g", vec!["Person".to_string()], props)
@@ -1604,9 +1605,9 @@ mod tests {
     #[test]
     fn eval_property_on_edge() {
         let store = make_store();
-        let a = store.create_node("g", vec![], HashMap::new()).unwrap();
-        let b = store.create_node("g", vec![], HashMap::new()).unwrap();
-        let mut props = HashMap::new();
+        let a = store.create_node("g", vec![], IndexMap::new()).unwrap();
+        let b = store.create_node("g", vec![], IndexMap::new()).unwrap();
+        let mut props = IndexMap::new();
         props.insert("weight".to_string(), Value::Int(42));
         let eid = store
             .create_edge("g", a, b, "R".to_string(), props)
@@ -1704,7 +1705,7 @@ mod tests {
     fn eval_has_label_on_node() {
         let store = make_store();
         let nid = store
-            .create_node("g", vec!["Person".to_string()], HashMap::new())
+            .create_node("g", vec!["Person".to_string()], IndexMap::new())
             .unwrap();
 
         let executor = QueryExecutor::new(&store);
@@ -1732,7 +1733,7 @@ mod tests {
     #[test]
     fn eval_function_id() {
         let store = make_store();
-        let nid = store.create_node("g", vec![], HashMap::new()).unwrap();
+        let nid = store.create_node("g", vec![], IndexMap::new()).unwrap();
 
         let executor = QueryExecutor::new(&store);
         let mut row = Row::new();
@@ -1752,7 +1753,7 @@ mod tests {
     fn eval_function_labels() {
         let store = make_store();
         let nid = store
-            .create_node("g", vec!["A".to_string(), "B".to_string()], HashMap::new())
+            .create_node("g", vec!["A".to_string(), "B".to_string()], IndexMap::new())
             .unwrap();
 
         let executor = QueryExecutor::new(&store);
@@ -1777,10 +1778,10 @@ mod tests {
     #[test]
     fn eval_function_type() {
         let store = make_store();
-        let a = store.create_node("g", vec![], HashMap::new()).unwrap();
-        let b = store.create_node("g", vec![], HashMap::new()).unwrap();
+        let a = store.create_node("g", vec![], IndexMap::new()).unwrap();
+        let b = store.create_node("g", vec![], IndexMap::new()).unwrap();
         let eid = store
-            .create_edge("g", a, b, "KNOWS".to_string(), HashMap::new())
+            .create_edge("g", a, b, "KNOWS".to_string(), IndexMap::new())
             .unwrap();
 
         let executor = QueryExecutor::new(&store);
@@ -1800,7 +1801,7 @@ mod tests {
     #[test]
     fn eval_function_properties() {
         let store = make_store();
-        let mut props = HashMap::new();
+        let mut props = IndexMap::new();
         props.insert("name".to_string(), Value::Str("Alice".into()));
         let nid = store
             .create_node("g", vec!["Person".to_string()], props)
@@ -1828,7 +1829,7 @@ mod tests {
     #[test]
     fn eval_function_keys() {
         let store = make_store();
-        let mut props = HashMap::new();
+        let mut props = IndexMap::new();
         props.insert("a".to_string(), Value::Int(1));
         props.insert("b".to_string(), Value::Int(2));
         let nid = store.create_node("g", vec![], props).unwrap();
@@ -2001,10 +2002,10 @@ mod tests {
     #[test]
     fn eval_startnode_endnode() {
         let store = make_store();
-        let a = store.create_node("g", vec![], HashMap::new()).unwrap();
-        let b = store.create_node("g", vec![], HashMap::new()).unwrap();
+        let a = store.create_node("g", vec![], IndexMap::new()).unwrap();
+        let b = store.create_node("g", vec![], IndexMap::new()).unwrap();
         let eid = store
-            .create_edge("g", a, b, "R".to_string(), HashMap::new())
+            .create_edge("g", a, b, "R".to_string(), IndexMap::new())
             .unwrap();
 
         let executor = QueryExecutor::new(&store);
@@ -2037,10 +2038,10 @@ mod tests {
     #[test]
     fn eval_nodes_and_relationships_on_path() {
         let store = make_store();
-        let a = store.create_node("g", vec![], HashMap::new()).unwrap();
-        let b = store.create_node("g", vec![], HashMap::new()).unwrap();
+        let a = store.create_node("g", vec![], IndexMap::new()).unwrap();
+        let b = store.create_node("g", vec![], IndexMap::new()).unwrap();
         let eid = store
-            .create_edge("g", a, b, "R".to_string(), HashMap::new())
+            .create_edge("g", a, b, "R".to_string(), IndexMap::new())
             .unwrap();
 
         let executor = QueryExecutor::new(&store);
@@ -2079,10 +2080,10 @@ mod tests {
     #[test]
     fn eval_length_on_path() {
         let store = make_store();
-        let a = store.create_node("g", vec![], HashMap::new()).unwrap();
-        let b = store.create_node("g", vec![], HashMap::new()).unwrap();
+        let a = store.create_node("g", vec![], IndexMap::new()).unwrap();
+        let b = store.create_node("g", vec![], IndexMap::new()).unwrap();
         let eid = store
-            .create_edge("g", a, b, "R".to_string(), HashMap::new())
+            .create_edge("g", a, b, "R".to_string(), IndexMap::new())
             .unwrap();
 
         let executor = QueryExecutor::new(&store);
@@ -2222,10 +2223,10 @@ mod tests {
     #[test]
     fn eval_function_id_on_edge() {
         let store = make_store();
-        let a = store.create_node("g", vec![], HashMap::new()).unwrap();
-        let b = store.create_node("g", vec![], HashMap::new()).unwrap();
+        let a = store.create_node("g", vec![], IndexMap::new()).unwrap();
+        let b = store.create_node("g", vec![], IndexMap::new()).unwrap();
         let eid = store
-            .create_edge("g", a, b, "KNOWS".to_string(), HashMap::new())
+            .create_edge("g", a, b, "KNOWS".to_string(), IndexMap::new())
             .unwrap();
 
         let executor = QueryExecutor::new(&store);
@@ -2246,7 +2247,7 @@ mod tests {
     fn eval_function_labels_multi() {
         let store = make_store();
         let nid = store
-            .create_node("g", vec!["A".to_string(), "B".to_string()], HashMap::new())
+            .create_node("g", vec!["A".to_string(), "B".to_string()], IndexMap::new())
             .unwrap();
 
         let executor = QueryExecutor::new(&store);

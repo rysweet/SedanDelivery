@@ -6,7 +6,7 @@
 //!  - §3.1 Large graph loading and statistics accuracy
 //!  - §3.2 Execution budget enforcement (row limit, timeout)
 
-use std::collections::HashMap;
+use indexmap::IndexMap;
 use std::time::Duration;
 
 use gql_core::error::{ExecutionError, GqlError};
@@ -25,7 +25,7 @@ fn make_store() -> InMemoryGraphStore {
 }
 
 /// Run a query with no budget limits and return rows.
-fn run_query(store: &InMemoryGraphStore, query: &str) -> Vec<HashMap<String, Value>> {
+fn run_query(store: &InMemoryGraphStore, query: &str) -> Vec<IndexMap<String, Value>> {
     let ast = parse_query(query).expect("parse error");
     let planner = QueryPlanner::new(store, "test");
     let plan = planner.plan(&ast).expect("plan error");
@@ -45,7 +45,7 @@ fn test_load_10k_nodes_with_properties() {
     let store = make_store();
     let n: usize = 10_000;
     for i in 0..n {
-        let props = HashMap::from([
+        let props = IndexMap::from([
             ("i".to_string(), Value::Int(i as i64)),
             ("label".to_string(), Value::Str(format!("node_{i}").into())),
         ]);
@@ -75,7 +75,7 @@ fn test_graph_stats_accurate_at_scale() {
             .create_node(
                 "test",
                 vec!["N".to_string()],
-                HashMap::from([("i".to_string(), Value::Int(i as i64))]),
+                IndexMap::from([("i".to_string(), Value::Int(i as i64))]),
             )
             .unwrap();
         ids.push(id);
@@ -89,7 +89,7 @@ fn test_graph_stats_accurate_at_scale() {
                 ids[i],
                 ids[i + 1],
                 "NEXT".to_string(),
-                HashMap::new(),
+                IndexMap::new(),
             )
             .unwrap();
     }
@@ -111,7 +111,7 @@ fn test_all_node_ids_returns_complete_set() {
             .create_node(
                 "test",
                 vec!["N".to_string()],
-                HashMap::from([("i".to_string(), Value::Int(i as i64))]),
+                IndexMap::from([("i".to_string(), Value::Int(i as i64))]),
             )
             .unwrap();
         expected.insert(id);
@@ -142,7 +142,7 @@ fn test_label_scan_at_scale() {
             .create_node(
                 "test",
                 vec![label.to_string()],
-                HashMap::from([("i".to_string(), Value::Int(i))]),
+                IndexMap::from([("i".to_string(), Value::Int(i))]),
             )
             .unwrap();
     }
@@ -167,7 +167,7 @@ fn test_row_limit_enforced() {
             .create_node(
                 "test",
                 vec!["N".to_string()],
-                HashMap::from([("i".to_string(), Value::Int(i))]),
+                IndexMap::from([("i".to_string(), Value::Int(i))]),
             )
             .unwrap();
     }
@@ -202,7 +202,7 @@ fn test_cartesian_product_budget_enforced() {
             .create_node(
                 "test",
                 vec!["X".to_string()],
-                HashMap::from([("i".to_string(), Value::Int(i))]),
+                IndexMap::from([("i".to_string(), Value::Int(i))]),
             )
             .unwrap();
     }
@@ -235,7 +235,7 @@ fn test_expired_budget_returns_timeout_error() {
             .create_node(
                 "test",
                 vec!["N".to_string()],
-                HashMap::from([("i".to_string(), Value::Int(i))]),
+                IndexMap::from([("i".to_string(), Value::Int(i))]),
             )
             .unwrap();
     }
@@ -276,18 +276,18 @@ fn test_single_hop_traversal_at_scale() {
             .create_node(
                 "test",
                 vec!["Src".to_string()],
-                HashMap::from([("i".to_string(), Value::Int(i))]),
+                IndexMap::from([("i".to_string(), Value::Int(i))]),
             )
             .unwrap();
         let dst = store
             .create_node(
                 "test",
                 vec!["Dst".to_string()],
-                HashMap::from([("i".to_string(), Value::Int(i))]),
+                IndexMap::from([("i".to_string(), Value::Int(i))]),
             )
             .unwrap();
         store
-            .create_edge("test", src, dst, "LINK".to_string(), HashMap::new())
+            .create_edge("test", src, dst, "LINK".to_string(), IndexMap::new())
             .unwrap();
     }
 

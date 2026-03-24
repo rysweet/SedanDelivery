@@ -524,7 +524,7 @@ mod tests {
     use crate::executor::budget::ExecutionBudget;
     use crate::storage::{GraphStore, InMemoryGraphStore};
 
-    use std::collections::HashMap;
+    use indexmap::IndexMap;
 
     fn make_store() -> InMemoryGraphStore {
         let store = InMemoryGraphStore::new();
@@ -535,7 +535,7 @@ mod tests {
     #[test]
     fn produce_results_with_property() {
         let store = make_store();
-        let mut props = HashMap::new();
+        let mut props = IndexMap::new();
         props.insert("name".to_string(), Value::Str("Alice".into()));
         store
             .create_node("g", vec!["Person".to_string()], props)
@@ -564,7 +564,7 @@ mod tests {
     #[test]
     fn produce_results_empty_columns() {
         let store = make_store();
-        store.create_node("g", vec![], HashMap::new()).unwrap();
+        store.create_node("g", vec![], IndexMap::new()).unwrap();
 
         let executor = QueryExecutor::new(&store);
         let plan = Operator::ProduceResults {
@@ -582,7 +582,7 @@ mod tests {
     #[test]
     fn produce_results_star() {
         let store = make_store();
-        let mut props = HashMap::new();
+        let mut props = IndexMap::new();
         props.insert("x".to_string(), Value::Int(1));
         store
             .create_node("g", vec!["N".to_string()], props)
@@ -605,7 +605,7 @@ mod tests {
     #[test]
     fn unwind_list() {
         let store = make_store();
-        store.create_node("g", vec![], HashMap::new()).unwrap();
+        store.create_node("g", vec![], IndexMap::new()).unwrap();
 
         let executor = QueryExecutor::new(&store);
         let plan = Operator::Unwind {
@@ -626,7 +626,7 @@ mod tests {
     #[test]
     fn unwind_null_produces_zero_rows() {
         let store = make_store();
-        store.create_node("g", vec![], HashMap::new()).unwrap();
+        store.create_node("g", vec![], IndexMap::new()).unwrap();
 
         let executor = QueryExecutor::new(&store);
         let plan = Operator::Unwind {
@@ -645,7 +645,7 @@ mod tests {
     #[test]
     fn unwind_empty_list() {
         let store = make_store();
-        store.create_node("g", vec![], HashMap::new()).unwrap();
+        store.create_node("g", vec![], IndexMap::new()).unwrap();
 
         let executor = QueryExecutor::new(&store);
         let plan = Operator::Unwind {
@@ -664,7 +664,7 @@ mod tests {
     #[test]
     fn unwind_non_list_wraps_scalar() {
         let store = make_store();
-        store.create_node("g", vec![], HashMap::new()).unwrap();
+        store.create_node("g", vec![], IndexMap::new()).unwrap();
 
         let executor = QueryExecutor::new(&store);
         let plan = Operator::Unwind {
@@ -688,10 +688,10 @@ mod tests {
     fn union_all_concatenates() {
         let store = make_store();
         store
-            .create_node("g", vec!["Person".to_string()], HashMap::new())
+            .create_node("g", vec!["Person".to_string()], IndexMap::new())
             .unwrap();
         store
-            .create_node("g", vec!["Movie".to_string()], HashMap::new())
+            .create_node("g", vec!["Movie".to_string()], IndexMap::new())
             .unwrap();
 
         let executor = QueryExecutor::new(&store);
@@ -715,7 +715,7 @@ mod tests {
     fn union_deduplicates() {
         let store = make_store();
         store
-            .create_node("g", vec!["Both".to_string()], HashMap::new())
+            .create_node("g", vec!["Both".to_string()], IndexMap::new())
             .unwrap();
 
         let executor = QueryExecutor::new(&store);

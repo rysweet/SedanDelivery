@@ -1,6 +1,6 @@
 // indexing.rs — Property index management for RedisGraphStore.
 
-use std::collections::HashMap;
+use indexmap::IndexMap;
 
 use redis::ConnectionLike;
 
@@ -48,7 +48,7 @@ impl RedisGraphStore {
         graph: &str,
         node_id: u64,
         labels: &[String],
-        properties: &HashMap<String, Value>,
+        properties: &IndexMap<String, Value>,
     ) -> Result<(), StorageError> {
         conn.renew_lock()?;
         let indexes = self.active_indexes(conn.as_mut(), graph)?;
@@ -98,7 +98,7 @@ impl RedisGraphStore {
         graph: &str,
         node_id: u64,
         labels: &[String],
-        properties: &HashMap<String, Value>,
+        properties: &IndexMap<String, Value>,
     ) -> Result<(), StorageError> {
         conn.renew_lock()?;
         let indexes = self.active_indexes(conn.as_mut(), graph)?;

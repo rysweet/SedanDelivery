@@ -23,6 +23,7 @@ mod match_planner;
 mod mutation_planner;
 mod result_planner;
 
+use indexmap::IndexMap;
 use std::collections::HashMap;
 
 use crate::ast::{Clause, Query, ReturnClause};
@@ -1507,11 +1508,11 @@ mod tests {
         store.create_graph("g").unwrap();
         store.create_index("g", "Person", "name").unwrap();
 
-        let p1 = HashMap::from([("name".to_string(), Value::Str("Alice".into()))]);
+        let p1 = IndexMap::from([("name".to_string(), Value::Str("Alice".into()))]);
         let alice = store
             .create_node("g", vec!["Person".to_string()], p1)
             .unwrap();
-        let p2 = HashMap::from([("name".to_string(), Value::Str("Bob".into()))]);
+        let p2 = IndexMap::from([("name".to_string(), Value::Str("Bob".into()))]);
         let _bob = store
             .create_node("g", vec!["Person".to_string()], p2)
             .unwrap();

@@ -1494,6 +1494,7 @@ name = "gql-cli"
 version = "0.1.0"
 dependencies = [
  "gql-core",
+ "indexmap",
  "tracing",
 ]
 
@@ -1526,6 +1527,7 @@ name = "gql-fabric-store"
 version = "0.1.0"
 dependencies = [
  "gql-core",
+ "indexmap",
  "serde_json",
  "tracing",
  "ureq",
@@ -1547,6 +1549,7 @@ version = "0.1.0"
 dependencies = [
  "criterion",
  "gql-core",
+ "indexmap",
  "metrics",
  "metrics-exporter-prometheus",
  "r2d2",

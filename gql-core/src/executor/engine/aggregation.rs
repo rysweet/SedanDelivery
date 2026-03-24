@@ -1,5 +1,6 @@
 //! Aggregation operator and state for the query executor.
 
+use indexmap::IndexMap;
 use std::collections::HashMap;
 
 use crate::ast::Expr;
@@ -616,7 +617,7 @@ mod tests {
         let store = make_store();
         for _ in 0..3 {
             store
-                .create_node("g", vec!["P".to_string()], HashMap::new())
+                .create_node("g", vec!["P".to_string()], IndexMap::new())
                 .unwrap();
         }
         let executor = QueryExecutor::new(&store);

@@ -1,5 +1,6 @@
 //! MERGE and MERGE RELATIONSHIP operator implementations.
 
+use indexmap::IndexMap;
 use std::collections::{HashMap, HashSet};
 
 use crate::ast::{Direction, Expr};
@@ -200,7 +201,7 @@ impl<'a> QueryExecutor<'a> {
                 // Not found: CREATE the node with inline properties
                 let label_strings: Vec<String> =
                     labels.iter().map(|l| l.as_str().to_string()).collect();
-                let create_props: HashMap<String, Value> = prop_vals.iter().cloned().collect();
+                let create_props: IndexMap<String, Value> = prop_vals.iter().cloned().collect();
                 let non_null_prop_keys: Vec<String> = create_props
                     .iter()
                     .filter(|(_, v)| !v.is_null())
@@ -335,7 +336,7 @@ impl<'a> QueryExecutor<'a> {
                 }
             } else {
                 // NOT FOUND: create the edge with properties.
-                let prop_map: HashMap<String, Value> = prop_vals.into_iter().collect();
+                let prop_map: IndexMap<String, Value> = prop_vals.into_iter().collect();
                 let non_null_edge_keys: Vec<String> = prop_map
                     .iter()
                     .filter(|(_, v)| !v.is_null())
@@ -402,7 +403,7 @@ mod tests {
     fn merge_matches_existing() {
         let store = make_store();
         store
-            .create_node("g", vec!["P".to_string()], HashMap::new())
+            .create_node("g", vec!["P".to_string()], IndexMap::new())
             .unwrap();
         let executor = QueryExecutor::new(&store);
         let plan = Operator::Merge {
@@ -424,7 +425,7 @@ mod tests {
         // Create 5 nodes with the same label.
         for _ in 0..5 {
             store
-                .create_node("g", vec!["P".to_string()], HashMap::new())
+                .create_node("g", vec!["P".to_string()], IndexMap::new())
                 .unwrap();
         }
         let executor = QueryExecutor::new(&store);
@@ -475,7 +476,7 @@ mod tests {
     fn merge_on_match_sets_property() {
         let store = make_store();
         let nid = store
-            .create_node("g", vec!["P".to_string()], HashMap::new())
+            .create_node("g", vec!["P".to_string()], IndexMap::new())
             .unwrap();
         let executor = QueryExecutor::new(&store);
         let plan = Operator::Merge {
@@ -523,7 +524,7 @@ mod tests {
     #[test]
     fn merge_with_properties_finds_existing() {
         let store = make_store();
-        let mut props = HashMap::new();
+        let mut props = IndexMap::new();
         props.insert("name".to_string(), Value::Str("Alice".into()));
         store
             .create_node("g", vec!["P".to_string()], props)
@@ -567,10 +568,10 @@ mod tests {
     fn merge_rel_creates_when_not_found() {
         let store = make_store();
         let _a = store
-            .create_node("g", vec!["N".to_string()], HashMap::new())
+            .create_node("g", vec!["N".to_string()], IndexMap::new())
             .unwrap();
         let _b = store
-            .create_node("g", vec!["N".to_string()], HashMap::new())
+            .create_node("g", vec!["N".to_string()], IndexMap::new())
             .unwrap();
         let executor = QueryExecutor::new(&store);
         let plan = Operator::MergeRelationship {
@@ -605,13 +606,13 @@ mod tests {
     fn merge_rel_matches_existing() {
         let store = make_store();
         let a = store
-            .create_node("g", vec!["A".to_string()], HashMap::new())
+            .create_node("g", vec!["A".to_string()], IndexMap::new())
             .unwrap();
         let b = store
-            .create_node("g", vec!["B".to_string()], HashMap::new())
+            .create_node("g", vec!["B".to_string()], IndexMap::new())
             .unwrap();
         store
-            .create_edge("g", a, b, "R".to_string(), HashMap::new())
+            .create_edge("g", a, b, "R".to_string(), IndexMap::new())
             .unwrap();
 
         let executor = QueryExecutor::new(&store);

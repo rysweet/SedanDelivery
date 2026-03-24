@@ -6,6 +6,7 @@
 //! Fallback: if the compiler returns `UnsupportedStep`, translate bytecode
 //! to Cypher and run through parse → plan → execute.
 
+use indexmap::IndexMap;
 use std::collections::HashMap;
 
 use gql_core::error::{ExecutionError, GqlError};

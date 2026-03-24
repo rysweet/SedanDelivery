@@ -1,5 +1,6 @@
 // writes/helpers.rs -- Pure helper functions shared across write sub-modules.
 
+use indexmap::IndexMap;
 use std::collections::HashMap;
 
 use gql_core::error::StorageError;
@@ -13,7 +14,7 @@ use gql_core::types::Value;
 ///
 /// This is used for both `_sd2_id` (node IDs) and `_sd2_eid` (edge IDs).
 pub(crate) fn extract_injected_id(
-    properties: &HashMap<String, Value>,
+    properties: &IndexMap<String, Value>,
     key: &str,
 ) -> Result<Option<u64>, StorageError> {
     if let Some(Value::Int(i)) = properties.get(key) {
@@ -33,7 +34,9 @@ pub(crate) fn extract_injected_id(
 ///
 /// These keys are used for cross-cluster ID coordination and must not be
 /// persisted as user-visible properties.
-pub(crate) fn clean_fanout_props(mut properties: HashMap<String, Value>) -> HashMap<String, Value> {
+pub(crate) fn clean_fanout_props(
+    mut properties: IndexMap<String, Value>,
+) -> IndexMap<String, Value> {
     properties.remove("_sd2_id");
     properties.remove("_sd2_eid");
     properties
@@ -47,21 +50,21 @@ mod tests {
 
     #[test]
     fn extract_positive_int() {
-        let mut props = HashMap::new();
+        let mut props = IndexMap::new();
         props.insert("_sd2_id".to_string(), Value::Int(100));
         assert_eq!(extract_injected_id(&props, "_sd2_id").unwrap(), Some(100));
     }
 
     #[test]
     fn extract_zero() {
-        let mut props = HashMap::new();
+        let mut props = IndexMap::new();
         props.insert("_sd2_id".to_string(), Value::Int(0));
         assert_eq!(extract_injected_id(&props, "_sd2_id").unwrap(), Some(0));
     }
 
     #[test]
     fn extract_negative_returns_error() {
-        let mut props = HashMap::new();
+        let mut props = IndexMap::new();
         props.insert("_sd2_id".to_string(), Value::Int(-10));
         let err = extract_injected_id(&props, "_sd2_id").unwrap_err();
         let msg = format!("{err}");
@@ -70,27 +73,27 @@ mod tests {
 
     #[test]
     fn extract_absent_key_returns_none() {
-        let props = HashMap::new();
+        let props = IndexMap::new();
         assert_eq!(extract_injected_id(&props, "_sd2_id").unwrap(), None);
     }
 
     #[test]
     fn extract_non_int_type_returns_none() {
-        let mut props = HashMap::new();
+        let mut props = IndexMap::new();
         props.insert("_sd2_id".to_string(), Value::Str("hello".into()));
         assert_eq!(extract_injected_id(&props, "_sd2_id").unwrap(), None);
     }
 
     #[test]
     fn extract_bool_type_returns_none() {
-        let mut props = HashMap::new();
+        let mut props = IndexMap::new();
         props.insert("_sd2_id".to_string(), Value::Bool(true));
         assert_eq!(extract_injected_id(&props, "_sd2_id").unwrap(), None);
     }
 
     #[test]
     fn extract_max_u64_via_i64() {
-        let mut props = HashMap::new();
+        let mut props = IndexMap::new();
         // i64::MAX as the largest representable positive value.
         props.insert("_sd2_eid".to_string(), Value::Int(i64::MAX));
         assert_eq!(
@@ -103,7 +106,7 @@ mod tests {
 
     #[test]
     fn clean_removes_both_internal_keys() {
-        let mut props = HashMap::new();
+        let mut props = IndexMap::new();
         props.insert("_sd2_id".to_string(), Value::Int(1));
         props.insert("_sd2_eid".to_string(), Value::Int(2));
         props.insert("name".to_string(), Value::Str("Bob".into()));
@@ -116,7 +119,7 @@ mod tests {
 
     #[test]
     fn clean_noop_when_no_internal_keys() {
-        let mut props = HashMap::new();
+        let mut props = IndexMap::new();
         props.insert("x".to_string(), Value::Int(1));
         let original_len = props.len();
         let cleaned = clean_fanout_props(props);
@@ -131,7 +134,7 @@ mod tests {
 
     #[test]
     fn clean_only_internal_keys() {
-        let mut props = HashMap::new();
+        let mut props = IndexMap::new();
         props.insert("_sd2_id".to_string(), Value::Int(1));
         props.insert("_sd2_eid".to_string(), Value::Int(2));
         let cleaned = clean_fanout_props(props);

@@ -1,3 +1,4 @@
+use indexmap::IndexMap;
 use std::collections::HashMap;
 
 use gql_core::planner::collect_graph_statistics;
@@ -17,7 +18,7 @@ fn unique_graph(prefix: &str) -> String {
     format!("{prefix}-{}", Uuid::new_v4().simple())
 }
 
-fn props(entries: &[(&str, Value)]) -> HashMap<String, Value> {
+fn props(entries: &[(&str, Value)]) -> IndexMap<String, Value> {
     entries
         .iter()
         .map(|(key, value)| ((*key).to_string(), value.clone()))
@@ -65,7 +66,7 @@ fn cluster_mode_pipelined_reads_and_index_backfill_succeed() {
     );
 
     let knows = store
-        .create_edge(&graph, alice, bob, "KNOWS".to_string(), HashMap::new())
+        .create_edge(&graph, alice, bob, "KNOWS".to_string(), IndexMap::new())
         .expect("create_edge should succeed in cluster mode");
     let edges = store
         .get_edges_batch(&graph, &[knows])
@@ -187,7 +188,7 @@ fn cluster_mode_graph_metadata_reads_are_cluster_safe() {
         )
         .expect("second create_node should succeed");
     store
-        .create_edge(&graph, alice, bob, "KNOWS".to_string(), HashMap::new())
+        .create_edge(&graph, alice, bob, "KNOWS".to_string(), IndexMap::new())
         .expect("create_edge should succeed");
 
     let stats = store

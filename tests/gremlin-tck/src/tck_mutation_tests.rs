@@ -4,7 +4,7 @@
 //! Each test mirrors a Gremlin traversal expressed as an equivalent Cypher query
 //! executed through the gql-core pipeline against the "modern" graph fixture.
 
-use std::collections::HashMap;
+use indexmap::IndexMap;
 use std::time::Duration;
 
 use gql_core::executor::{ExecutionBudget, QueryExecutor, QueryResult};
@@ -20,7 +20,7 @@ fn unlimited() -> ExecutionBudget {
 }
 
 /// Helper: parse → plan → execute a Cypher query against a fresh modern graph.
-fn run_query(query: &str) -> Vec<HashMap<String, Value>> {
+fn run_query(query: &str) -> Vec<IndexMap<String, Value>> {
     let (store, _ids) = create_modern_graph();
     run_on(&store, query).rows
 }

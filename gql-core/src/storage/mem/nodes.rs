@@ -2,6 +2,7 @@
 //!
 //! Contains: create, get, delete, set/replace properties, add/remove labels.
 
+use indexmap::IndexMap;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -16,7 +17,7 @@ pub(crate) fn create_node_impl(
     store: &InMemoryGraphStore,
     graph: &str,
     labels: Vec<String>,
-    properties: HashMap<String, Value>,
+    properties: IndexMap<String, Value>,
 ) -> Result<NodeId, StorageError> {
     let mut guard = store.write()?;
     let map = Arc::make_mut(&mut guard);
@@ -65,7 +66,7 @@ pub(crate) fn set_node_properties_impl(
     store: &InMemoryGraphStore,
     graph: &str,
     id: NodeId,
-    properties: HashMap<String, Value>,
+    properties: IndexMap<String, Value>,
 ) -> Result<(), StorageError> {
     let mut guard = store.write()?;
     let map = Arc::make_mut(&mut guard);
@@ -90,7 +91,7 @@ pub(crate) fn set_node_properties_impl(
         .ok_or(StorageError::NodeNotFound { id: id.0 })?;
     // Remove old index entries for changed keys, then insert new ones.
     let labels = node.labels.clone();
-    let old_props: HashMap<String, Value> = properties
+    let old_props: IndexMap<String, Value> = properties
         .keys()
         .filter_map(|k| node.properties.get(k).map(|v| (k.clone(), v.clone())))
         .collect();
@@ -112,7 +113,7 @@ pub(crate) fn replace_node_properties_impl(
     store: &InMemoryGraphStore,
     graph: &str,
     id: NodeId,
-    properties: HashMap<String, Value>,
+    properties: IndexMap<String, Value>,
 ) -> Result<(), StorageError> {
     let mut guard = store.write()?;
     let map = Arc::make_mut(&mut guard);
@@ -160,7 +161,7 @@ pub(crate) fn remove_node_property_impl(
         .ok_or(StorageError::NodeNotFound { id: id.0 })?;
     if let Some(old_val) = node.properties.remove(key) {
         let labels = node.labels.clone();
-        let old_props = HashMap::from([(key.to_string(), old_val)]);
+        let old_props = IndexMap::from([(key.to_string(), old_val)]);
         g.index_remove(id.0, &labels, &old_props);
     }
     Ok(())
@@ -333,7 +334,7 @@ mod tests {
     #[test]
     fn node_create_read_delete_roundtrip() {
         let store = make_store();
-        let mut props = HashMap::new();
+        let mut props = IndexMap::new();
         props.insert("name".to_string(), Value::Str("Alice".into()));
         let id = store
             .create_node("test", vec!["Person".to_string()], props.clone())
@@ -354,10 +355,10 @@ mod tests {
     #[test]
     fn delete_node_without_detach_fails_if_has_edges() {
         let store = make_store();
-        let a = store.create_node("test", vec![], HashMap::new()).unwrap();
-        let b = store.create_node("test", vec![], HashMap::new()).unwrap();
+        let a = store.create_node("test", vec![], IndexMap::new()).unwrap();
+        let b = store.create_node("test", vec![], IndexMap::new()).unwrap();
         store
-            .create_edge("test", a, b, "R".to_string(), HashMap::new())
+            .create_edge("test", a, b, "R".to_string(), IndexMap::new())
             .unwrap();
 
         let result = store.delete_node("test", a, false);
@@ -367,10 +368,10 @@ mod tests {
     #[test]
     fn delete_node_with_detach_removes_edges() {
         let store = make_store();
-        let a = store.create_node("test", vec![], HashMap::new()).unwrap();
-        let b = store.create_node("test", vec![], HashMap::new()).unwrap();
+        let a = store.create_node("test", vec![], IndexMap::new()).unwrap();
+        let b = store.create_node("test", vec![], IndexMap::new()).unwrap();
         let eid = store
-            .create_edge("test", a, b, "R".to_string(), HashMap::new())
+            .create_edge("test", a, b, "R".to_string(), IndexMap::new())
             .unwrap();
 
         store.delete_node("test", a, true).unwrap();
@@ -382,13 +383,13 @@ mod tests {
     #[test]
     fn detach_delete_cleans_both_directions() {
         let store = make_store();
-        let a = store.create_node("test", vec![], HashMap::new()).unwrap();
-        let b = store.create_node("test", vec![], HashMap::new()).unwrap();
+        let a = store.create_node("test", vec![], IndexMap::new()).unwrap();
+        let b = store.create_node("test", vec![], IndexMap::new()).unwrap();
         let e1 = store
-            .create_edge("test", a, b, "A_TO_B".to_string(), HashMap::new())
+            .create_edge("test", a, b, "A_TO_B".to_string(), IndexMap::new())
             .unwrap();
         let e2 = store
-            .create_edge("test", b, a, "B_TO_A".to_string(), HashMap::new())
+            .create_edge("test", b, a, "B_TO_A".to_string(), IndexMap::new())
             .unwrap();
 
         store.delete_node("test", a, true).unwrap();
@@ -402,9 +403,9 @@ mod tests {
     #[test]
     fn set_and_remove_node_properties() {
         let store = make_store();
-        let id = store.create_node("test", vec![], HashMap::new()).unwrap();
+        let id = store.create_node("test", vec![], IndexMap::new()).unwrap();
 
-        let mut props = HashMap::new();
+        let mut props = IndexMap::new();
         props.insert("x".to_string(), Value::Int(1));
         store.set_node_properties("test", id, props).unwrap();
 
@@ -420,7 +421,7 @@ mod tests {
     fn add_and_remove_labels() {
         let store = make_store();
         let id = store
-            .create_node("test", vec!["A".to_string()], HashMap::new())
+            .create_node("test", vec!["A".to_string()], IndexMap::new())
             .unwrap();
 
         store
@@ -444,8 +445,8 @@ mod tests {
     #[test]
     fn batch_fetch_nodes() {
         let store = make_store();
-        let a = store.create_node("test", vec![], HashMap::new()).unwrap();
-        let b = store.create_node("test", vec![], HashMap::new()).unwrap();
+        let a = store.create_node("test", vec![], IndexMap::new()).unwrap();
+        let b = store.create_node("test", vec![], IndexMap::new()).unwrap();
         let fake = NodeId(9999);
 
         let results = store.get_nodes_batch("test", &[a, fake, b]).unwrap();
@@ -458,8 +459,8 @@ mod tests {
     #[test]
     fn all_node_ids_returns_all() {
         let store = make_store();
-        let a = store.create_node("test", vec![], HashMap::new()).unwrap();
-        let b = store.create_node("test", vec![], HashMap::new()).unwrap();
+        let a = store.create_node("test", vec![], IndexMap::new()).unwrap();
+        let b = store.create_node("test", vec![], IndexMap::new()).unwrap();
         let mut ids = store.all_node_ids("test").unwrap();
         ids.sort();
         assert_eq!(ids, vec![a, b]);

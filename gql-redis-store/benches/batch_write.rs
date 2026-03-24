@@ -7,13 +7,13 @@ use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use gql_core::storage::GraphStore;
 use gql_core::types::Value;
 use gql_redis_store::RedisGraphStore;
-use std::collections::HashMap;
+use indexmap::IndexMap;
 
 const NODE_COUNT: usize = 1_000;
 
-fn make_node(i: usize) -> (Vec<String>, HashMap<String, Value>) {
+fn make_node(i: usize) -> (Vec<String>, IndexMap<String, Value>) {
     let labels = vec!["BenchNode".to_string()];
-    let props = HashMap::from([
+    let props = IndexMap::from([
         ("index".to_string(), Value::Int(i as i64)),
         ("name".to_string(), Value::Str(format!("node_{i}").into())),
     ]);

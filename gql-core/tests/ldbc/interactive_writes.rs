@@ -6,7 +6,7 @@
 //!
 //! Reference: https://ldbcouncil.org/benchmarks/snb/
 
-use std::collections::HashMap;
+use indexmap::IndexMap;
 use std::time::Duration;
 
 use gql_core::executor::{ExecutionBudget, QueryExecutor};
@@ -19,7 +19,7 @@ use super::loader::{build, GRAPH};
 
 // ── Helper ────────────────────────────────────────────────────────────────────
 
-fn run(store: &InMemoryGraphStore, cypher: &str) -> Vec<HashMap<String, Value>> {
+fn run(store: &InMemoryGraphStore, cypher: &str) -> Vec<IndexMap<String, Value>> {
     let ast = parse_query(cypher).expect("parse error");
     let planner = QueryPlanner::new(store, GRAPH);
     let plan = planner.plan(&ast).expect("plan error");

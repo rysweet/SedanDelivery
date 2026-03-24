@@ -27,6 +27,7 @@
 //! - `edge`              → JSON `{"_type":"edge","_id":N,"_rel":"T","_src":S,"_dst":D,"_props":{...}}`
 //! - `path`              → JSON `{"_type":"path","nodes":[...],"edges":[...]}`
 
+use indexmap::IndexMap;
 use std::collections::HashMap;
 use std::time::Duration;
 
@@ -183,7 +184,7 @@ fn compat_map_encodes_as_json_object() {
 #[test]
 fn compat_node_returned_as_tagged_string() {
     let store = make_store("c-node");
-    let mut props = HashMap::new();
+    let mut props = IndexMap::new();
     props.insert("name".to_string(), Value::Str("Alice".into()));
     props.insert("age".to_string(), Value::Int(30));
     let node_id = store
@@ -202,7 +203,7 @@ fn compat_node_returned_as_tagged_string() {
 #[test]
 fn compat_node_property_projection_returns_scalar() {
     let store = make_store("c-nodeprop");
-    let mut props = HashMap::new();
+    let mut props = IndexMap::new();
     props.insert("name".to_string(), Value::Str("Alice".into()));
     props.insert("age".to_string(), Value::Int(30));
     store
@@ -227,13 +228,13 @@ fn compat_node_property_projection_returns_scalar() {
 fn compat_edge_returned_as_tagged_string() {
     let store = make_store("c-edge");
     let src = store
-        .create_node("c-edge", vec!["A".to_string()], HashMap::new())
+        .create_node("c-edge", vec!["A".to_string()], IndexMap::new())
         .unwrap();
     let dst = store
-        .create_node("c-edge", vec!["B".to_string()], HashMap::new())
+        .create_node("c-edge", vec!["B".to_string()], IndexMap::new())
         .unwrap();
     let edge_id = store
-        .create_edge("c-edge", src, dst, "LINK".to_string(), HashMap::new())
+        .create_edge("c-edge", src, dst, "LINK".to_string(), IndexMap::new())
         .unwrap();
 
     let rows = serialize_query(&store, "c-edge", "MATCH (a:A)-[r:LINK]->(b:B) RETURN r");
@@ -248,10 +249,10 @@ fn compat_edge_returned_as_tagged_string() {
 fn compat_edge_property_projection_returns_scalar() {
     let store = make_store("c-eprop");
     let src = store
-        .create_node("c-eprop", vec!["A".to_string()], HashMap::new())
+        .create_node("c-eprop", vec!["A".to_string()], IndexMap::new())
         .unwrap();
     let dst = store
-        .create_node("c-eprop", vec!["B".to_string()], HashMap::new())
+        .create_node("c-eprop", vec!["B".to_string()], IndexMap::new())
         .unwrap();
     let mut eprops = HashMap::new();
     eprops.insert("weight".to_string(), Value::Int(5));
@@ -280,18 +281,18 @@ fn compat_path_serialised_with_tagged_keys() {
         .create_node(
             "c-path",
             vec!["X".to_string()],
-            HashMap::from([("v".to_string(), Value::Int(1))]),
+            IndexMap::from([("v".to_string(), Value::Int(1))]),
         )
         .unwrap();
     let n2 = store
         .create_node(
             "c-path",
             vec!["X".to_string()],
-            HashMap::from([("v".to_string(), Value::Int(2))]),
+            IndexMap::from([("v".to_string(), Value::Int(2))]),
         )
         .unwrap();
     store
-        .create_edge("c-path", n1, n2, "NEXT".to_string(), HashMap::new())
+        .create_edge("c-path", n1, n2, "NEXT".to_string(), IndexMap::new())
         .unwrap();
 
     // A 2-hop variable-length match produces path values when using named paths.
@@ -334,7 +335,7 @@ fn compat_exec_error_includes_budget_fields() {
             .create_node(
                 "c-budget",
                 vec!["N".to_string()],
-                HashMap::from([("i".to_string(), Value::Int(i))]),
+                IndexMap::from([("i".to_string(), Value::Int(i))]),
             )
             .unwrap();
     }

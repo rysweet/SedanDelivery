@@ -2923,10 +2923,10 @@ mod tests {
         pc.insert("name".to_string(), Value::Str("C".into()));
         let _c = store.create_node("g", vec!["N".to_string()], pc).unwrap();
         store
-            .create_edge("g", a, b, "NEXT".to_string(), HashMap::new())
+            .create_edge("g", a, b, "NEXT".to_string(), IndexMap::new())
             .unwrap();
         store
-            .create_edge("g", b, _c, "NEXT".to_string(), HashMap::new())
+            .create_edge("g", b, _c, "NEXT".to_string(), IndexMap::new())
             .unwrap();
         store
     }
@@ -3071,7 +3071,7 @@ mod tests {
     fn choose_without_else_passes_through() {
         let store = make_store();
         store
-            .create_node("g", vec!["A".to_string()], HashMap::new())
+            .create_node("g", vec!["A".to_string()], IndexMap::new())
             .unwrap();
 
         let executor = QueryExecutor::new(&store);
@@ -3114,7 +3114,7 @@ mod tests {
     fn coalesce_returns_first_nonempty() {
         let store = make_store();
         store
-            .create_node("g", vec!["A".to_string()], HashMap::new())
+            .create_node("g", vec!["A".to_string()], IndexMap::new())
             .unwrap();
 
         let executor = QueryExecutor::new(&store);
@@ -3151,7 +3151,7 @@ mod tests {
     fn coalesce_uses_first_match_when_multiple_succeed() {
         let store = make_store();
         store
-            .create_node("g", vec!["A".to_string()], HashMap::new())
+            .create_node("g", vec!["A".to_string()], IndexMap::new())
             .unwrap();
 
         let executor = QueryExecutor::new(&store);
@@ -3184,7 +3184,7 @@ mod tests {
     #[test]
     fn side_effect_passes_input_through() {
         let store = make_store();
-        let mut props = HashMap::new();
+        let mut props = IndexMap::new();
         props.insert("name".to_string(), Value::Str("root".into()));
         store
             .create_node("g", vec!["A".to_string()], props)
@@ -3374,7 +3374,7 @@ mod tests {
     #[test]
     fn aggregate_cap_single_node() {
         let store = make_store();
-        let mut props = HashMap::new();
+        let mut props = IndexMap::new();
         props.insert("name".to_string(), Value::Str("solo".into()));
         store
             .create_node("g", vec!["X".to_string()], props)
@@ -3496,7 +3496,7 @@ mod tests {
     fn path_with_no_aliases_returns_empty_paths() {
         let store = make_store();
         store
-            .create_node("g", vec!["A".to_string()], HashMap::new())
+            .create_node("g", vec!["A".to_string()], IndexMap::new())
             .unwrap();
 
         let executor = QueryExecutor::new(&store);
@@ -3523,10 +3523,10 @@ mod tests {
     fn path_single_step() {
         let store = make_store();
         store
-            .create_node("g", vec!["A".to_string()], HashMap::new())
+            .create_node("g", vec!["A".to_string()], IndexMap::new())
             .unwrap();
         store
-            .create_node("g", vec!["A".to_string()], HashMap::new())
+            .create_node("g", vec!["A".to_string()], IndexMap::new())
             .unwrap();
 
         let executor = QueryExecutor::new(&store);

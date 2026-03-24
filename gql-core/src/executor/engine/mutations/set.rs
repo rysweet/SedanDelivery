@@ -1,5 +1,6 @@
 //! SET and REMOVE operator implementations.
 
+use indexmap::IndexMap;
 use std::collections::HashMap;
 
 use crate::error::{ExecutionError, GqlError};
@@ -155,7 +156,7 @@ impl<'a> QueryExecutor<'a> {
                         actual: prop_val.type_name().to_string(),
                     }));
                 }
-                let mut props = HashMap::new();
+                let mut props = IndexMap::new();
                 props.insert(key.clone(), prop_val);
                 match val {
                     Value::Node(node_id) => {
@@ -188,20 +189,20 @@ impl<'a> QueryExecutor<'a> {
                     Value::Map(m) => m
                         .into_iter()
                         .map(|(k, v)| (k.to_string(), v))
-                        .collect::<HashMap<String, Value>>(),
-                    Value::Null => HashMap::new(),
+                        .collect::<IndexMap<String, Value>>(),
+                    Value::Null => IndexMap::new(),
                     Value::Node(src_node_id) => {
                         // SET a = b where b is a Node: copy all properties from b
                         match self.store.get_node(graph, src_node_id)? {
                             Some(node_data) => node_data.properties,
-                            None => HashMap::new(),
+                            None => IndexMap::new(),
                         }
                     }
                     Value::Edge(src_edge_id) => {
                         // SET r = r2 where r2 is a Relationship: copy all properties from r2
                         match self.store.get_edge(graph, src_edge_id)? {
                             Some(edge_data) => edge_data.properties,
-                            None => HashMap::new(),
+                            None => IndexMap::new(),
                         }
                     }
                     other => {
@@ -283,7 +284,7 @@ mod tests {
     fn set_property() {
         let store = make_store();
         let nid = store
-            .create_node("g", vec!["P".to_string()], HashMap::new())
+            .create_node("g", vec!["P".to_string()], IndexMap::new())
             .unwrap();
         let executor = QueryExecutor::new(&store);
         let plan = Operator::Set {
@@ -314,7 +315,7 @@ mod tests {
     #[test]
     fn remove_property() {
         let store = make_store();
-        let mut props = HashMap::new();
+        let mut props = IndexMap::new();
         props.insert("x".to_string(), Value::Int(1));
         let nid = store
             .create_node("g", vec!["P".to_string()], props)
@@ -345,7 +346,7 @@ mod tests {
         let store = make_store();
         // Create and then delete a node so the NodeId becomes stale.
         let nid = store
-            .create_node("g", vec!["P".to_string()], HashMap::new())
+            .create_node("g", vec!["P".to_string()], IndexMap::new())
             .unwrap();
         store.delete_node("g", nid, true).unwrap();
 
@@ -373,13 +374,13 @@ mod tests {
         use crate::ast::{Direction, RelType};
         let store = make_store();
         let a = store
-            .create_node("g", vec!["N".to_string()], HashMap::new())
+            .create_node("g", vec!["N".to_string()], IndexMap::new())
             .unwrap();
         let b = store
-            .create_node("g", vec!["N".to_string()], HashMap::new())
+            .create_node("g", vec!["N".to_string()], IndexMap::new())
             .unwrap();
         let eid = store
-            .create_edge("g", a, b, "R".to_string(), HashMap::new())
+            .create_edge("g", a, b, "R".to_string(), IndexMap::new())
             .unwrap();
         let executor = QueryExecutor::new(&store);
         let plan = Operator::Set {
@@ -410,7 +411,7 @@ mod tests {
     #[test]
     fn set_null_property_removes_it() {
         let store = make_store();
-        let mut props = HashMap::new();
+        let mut props = IndexMap::new();
         props.insert("x".to_string(), Value::Int(42));
         let nid = store
             .create_node("g", vec!["P".to_string()], props)
@@ -440,7 +441,7 @@ mod tests {
     fn set_labels() {
         let store = make_store();
         let nid = store
-            .create_node("g", vec!["P".to_string()], HashMap::new())
+            .create_node("g", vec!["P".to_string()], IndexMap::new())
             .unwrap();
         let executor = QueryExecutor::new(&store);
         let plan = Operator::Set {
@@ -465,7 +466,7 @@ mod tests {
     fn remove_labels() {
         let store = make_store();
         let nid = store
-            .create_node("g", vec!["P".to_string(), "Q".to_string()], HashMap::new())
+            .create_node("g", vec!["P".to_string(), "Q".to_string()], IndexMap::new())
             .unwrap();
         let executor = QueryExecutor::new(&store);
         let plan = Operator::Remove {
@@ -489,7 +490,7 @@ mod tests {
     #[test]
     fn set_map_merge_preserves_existing() {
         let store = make_store();
-        let mut props = HashMap::new();
+        let mut props = IndexMap::new();
         props.insert("name".to_string(), Value::Str("Alice".into()));
         let nid = store
             .create_node("g", vec!["P".to_string()], props)
@@ -519,7 +520,7 @@ mod tests {
     #[test]
     fn set_map_replace_removes_old() {
         let store = make_store();
-        let mut props = HashMap::new();
+        let mut props = IndexMap::new();
         props.insert("name".to_string(), Value::Str("Alice".into()));
         props.insert("age".to_string(), Value::Int(30));
         let nid = store

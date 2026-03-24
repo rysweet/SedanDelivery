@@ -3,6 +3,7 @@
 //! GET  /graphs/{name}/export
 //! POST /graphs/{name}/import
 
+use indexmap::IndexMap;
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
@@ -232,7 +233,7 @@ async fn import_handler(
         let batch_size = redis_batch_size();
         // Collect stable IDs so we can build the id_map after batch creation.
         let mut stable_ids: Vec<Option<String>> = Vec::with_capacity(body.nodes.len());
-        let mut batch: Vec<(Vec<String>, HashMap<String, gql_core::types::Value>)> =
+        let mut batch: Vec<(Vec<String>, IndexMap<String, gql_core::types::Value>)> =
             Vec::with_capacity(batch_size);
 
         for import_node in body.nodes.into_iter() {

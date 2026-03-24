@@ -439,7 +439,7 @@ mod tests {
     use crate::executor::engine::MutationStats;
     use crate::planner::Operator;
     use crate::storage::{GraphStore, InMemoryGraphStore};
-    use std::collections::HashMap;
+    use indexmap::IndexMap;
 
     fn make_store() -> InMemoryGraphStore {
         let store = InMemoryGraphStore::new();
@@ -460,13 +460,13 @@ mod tests {
     fn expand_outgoing() {
         let store = make_store();
         let a = store
-            .create_node("g", vec!["N".to_string()], HashMap::new())
+            .create_node("g", vec!["N".to_string()], IndexMap::new())
             .unwrap();
         let b = store
-            .create_node("g", vec!["N".to_string()], HashMap::new())
+            .create_node("g", vec!["N".to_string()], IndexMap::new())
             .unwrap();
         store
-            .create_edge("g", a, b, "R".to_string(), HashMap::new())
+            .create_edge("g", a, b, "R".to_string(), IndexMap::new())
             .unwrap();
         let executor = QueryExecutor::new(&store);
         let plan = Operator::Expand {
@@ -489,13 +489,13 @@ mod tests {
     fn expand_incoming() {
         let store = make_store();
         let a = store
-            .create_node("g", vec!["N".to_string()], HashMap::new())
+            .create_node("g", vec!["N".to_string()], IndexMap::new())
             .unwrap();
         let b = store
-            .create_node("g", vec!["N".to_string()], HashMap::new())
+            .create_node("g", vec!["N".to_string()], IndexMap::new())
             .unwrap();
         store
-            .create_edge("g", a, b, "R".to_string(), HashMap::new())
+            .create_edge("g", a, b, "R".to_string(), IndexMap::new())
             .unwrap();
         let plan = Operator::Expand {
             direction: Direction::Incoming,
@@ -518,13 +518,13 @@ mod tests {
     fn expand_no_matching_type() {
         let store = make_store();
         let a = store
-            .create_node("g", vec!["N".to_string()], HashMap::new())
+            .create_node("g", vec!["N".to_string()], IndexMap::new())
             .unwrap();
         let b = store
-            .create_node("g", vec!["N".to_string()], HashMap::new())
+            .create_node("g", vec!["N".to_string()], IndexMap::new())
             .unwrap();
         store
-            .create_edge("g", a, b, "R".to_string(), HashMap::new())
+            .create_edge("g", a, b, "R".to_string(), IndexMap::new())
             .unwrap();
         let plan = Operator::Expand {
             direction: Direction::Outgoing,
@@ -546,19 +546,19 @@ mod tests {
     fn expand_isomorphism_prevents_edge_reuse() {
         let store = make_store();
         let a = store
-            .create_node("g", vec!["N".to_string()], HashMap::new())
+            .create_node("g", vec!["N".to_string()], IndexMap::new())
             .unwrap();
         let b = store
-            .create_node("g", vec!["N".to_string()], HashMap::new())
+            .create_node("g", vec!["N".to_string()], IndexMap::new())
             .unwrap();
         let c = store
-            .create_node("g", vec!["N".to_string()], HashMap::new())
+            .create_node("g", vec!["N".to_string()], IndexMap::new())
             .unwrap();
         let e1 = store
-            .create_edge("g", a, b, "R".to_string(), HashMap::new())
+            .create_edge("g", a, b, "R".to_string(), IndexMap::new())
             .unwrap();
         let _e2 = store
-            .create_edge("g", b, c, "R".to_string(), HashMap::new())
+            .create_edge("g", b, c, "R".to_string(), IndexMap::new())
             .unwrap();
 
         let plan = Operator::Expand {
@@ -589,13 +589,13 @@ mod tests {
     fn expand_outer_edge_vars_allows_reuse_across_scopes() {
         let store = make_store();
         let a = store
-            .create_node("g", vec!["N".to_string()], HashMap::new())
+            .create_node("g", vec!["N".to_string()], IndexMap::new())
             .unwrap();
         let b = store
-            .create_node("g", vec!["N".to_string()], HashMap::new())
+            .create_node("g", vec!["N".to_string()], IndexMap::new())
             .unwrap();
         let e1 = store
-            .create_edge("g", a, b, "R".to_string(), HashMap::new())
+            .create_edge("g", a, b, "R".to_string(), IndexMap::new())
             .unwrap();
 
         let mut input_row = Row::new();
@@ -646,19 +646,19 @@ mod tests {
     fn varlen_expand_chain() {
         let store = make_store();
         let a = store
-            .create_node("g", vec!["N".to_string()], HashMap::new())
+            .create_node("g", vec!["N".to_string()], IndexMap::new())
             .unwrap();
         let b = store
-            .create_node("g", vec!["N".to_string()], HashMap::new())
+            .create_node("g", vec!["N".to_string()], IndexMap::new())
             .unwrap();
         let c = store
-            .create_node("g", vec!["N".to_string()], HashMap::new())
+            .create_node("g", vec!["N".to_string()], IndexMap::new())
             .unwrap();
         store
-            .create_edge("g", a, b, "R".to_string(), HashMap::new())
+            .create_edge("g", a, b, "R".to_string(), IndexMap::new())
             .unwrap();
         store
-            .create_edge("g", b, c, "R".to_string(), HashMap::new())
+            .create_edge("g", b, c, "R".to_string(), IndexMap::new())
             .unwrap();
         let executor = QueryExecutor::new(&store);
         let plan = Operator::VarLenExpand {
@@ -688,13 +688,19 @@ mod tests {
         for _ in 0..6 {
             nodes.push(
                 store
-                    .create_node("g", vec!["N".to_string()], HashMap::new())
+                    .create_node("g", vec!["N".to_string()], IndexMap::new())
                     .unwrap(),
             );
         }
         for i in 0..5 {
             store
-                .create_edge("g", nodes[i], nodes[i + 1], "R".to_string(), HashMap::new())
+                .create_edge(
+                    "g",
+                    nodes[i],
+                    nodes[i + 1],
+                    "R".to_string(),
+                    IndexMap::new(),
+                )
                 .unwrap();
         }
         let executor = QueryExecutor::new(&store);
@@ -747,19 +753,19 @@ mod tests {
     fn varlen_expand_rel_variable_mode() {
         let store = make_store();
         let a = store
-            .create_node("g", vec!["N".to_string()], HashMap::new())
+            .create_node("g", vec!["N".to_string()], IndexMap::new())
             .unwrap();
         let b = store
-            .create_node("g", vec!["N".to_string()], HashMap::new())
+            .create_node("g", vec!["N".to_string()], IndexMap::new())
             .unwrap();
         let c = store
-            .create_node("g", vec!["N".to_string()], HashMap::new())
+            .create_node("g", vec!["N".to_string()], IndexMap::new())
             .unwrap();
         let e1 = store
-            .create_edge("g", a, b, "R".to_string(), HashMap::new())
+            .create_edge("g", a, b, "R".to_string(), IndexMap::new())
             .unwrap();
         let e2 = store
-            .create_edge("g", b, c, "R".to_string(), HashMap::new())
+            .create_edge("g", b, c, "R".to_string(), IndexMap::new())
             .unwrap();
         let executor = QueryExecutor::new(&store);
         let plan = Operator::VarLenExpand {
@@ -793,13 +799,13 @@ mod tests {
     fn varlen_expand_min_zero() {
         let store = make_store();
         let a = store
-            .create_node("g", vec!["N".to_string()], HashMap::new())
+            .create_node("g", vec!["N".to_string()], IndexMap::new())
             .unwrap();
         let b = store
-            .create_node("g", vec!["N".to_string()], HashMap::new())
+            .create_node("g", vec!["N".to_string()], IndexMap::new())
             .unwrap();
         store
-            .create_edge("g", a, b, "R".to_string(), HashMap::new())
+            .create_edge("g", a, b, "R".to_string(), IndexMap::new())
             .unwrap();
         let executor = QueryExecutor::new(&store);
         let plan = Operator::VarLenExpand {
@@ -826,16 +832,16 @@ mod tests {
     fn varlen_expand_cycle_edge_isomorphism() {
         let store = make_store();
         let a = store
-            .create_node("g", vec!["N".to_string()], HashMap::new())
+            .create_node("g", vec!["N".to_string()], IndexMap::new())
             .unwrap();
         let b = store
-            .create_node("g", vec!["N".to_string()], HashMap::new())
+            .create_node("g", vec!["N".to_string()], IndexMap::new())
             .unwrap();
         store
-            .create_edge("g", a, b, "R".to_string(), HashMap::new())
+            .create_edge("g", a, b, "R".to_string(), IndexMap::new())
             .unwrap();
         store
-            .create_edge("g", b, a, "R".to_string(), HashMap::new())
+            .create_edge("g", b, a, "R".to_string(), IndexMap::new())
             .unwrap();
         let executor = QueryExecutor::new(&store);
         let plan = Operator::VarLenExpand {
@@ -862,13 +868,13 @@ mod tests {
     fn shortest_path_finds_path() {
         let store = make_store();
         let a = store
-            .create_node("g", vec!["N".to_string()], HashMap::new())
+            .create_node("g", vec!["N".to_string()], IndexMap::new())
             .unwrap();
         let b = store
-            .create_node("g", vec!["N".to_string()], HashMap::new())
+            .create_node("g", vec!["N".to_string()], IndexMap::new())
             .unwrap();
         store
-            .create_edge("g", a, b, "R".to_string(), HashMap::new())
+            .create_edge("g", a, b, "R".to_string(), IndexMap::new())
             .unwrap();
         let mut start_row = Row::new();
         start_row.insert("src".to_string(), Value::Node(a));
@@ -907,13 +913,19 @@ mod tests {
         for _ in 0..4 {
             nodes.push(
                 store
-                    .create_node("g", vec!["N".to_string()], HashMap::new())
+                    .create_node("g", vec!["N".to_string()], IndexMap::new())
                     .unwrap(),
             );
         }
         for i in 0..3 {
             store
-                .create_edge("g", nodes[i], nodes[i + 1], "R".to_string(), HashMap::new())
+                .create_edge(
+                    "g",
+                    nodes[i],
+                    nodes[i + 1],
+                    "R".to_string(),
+                    IndexMap::new(),
+                )
                 .unwrap();
         }
         let mut start_row = Row::new();
@@ -963,10 +975,10 @@ mod tests {
     fn shortest_path_no_path_returns_empty() {
         let store = make_store();
         let a = store
-            .create_node("g", vec!["N".to_string()], HashMap::new())
+            .create_node("g", vec!["N".to_string()], IndexMap::new())
             .unwrap();
         let b = store
-            .create_node("g", vec!["N".to_string()], HashMap::new())
+            .create_node("g", vec!["N".to_string()], IndexMap::new())
             .unwrap();
         // No edge between a and b
         let mut start_row = Row::new();
@@ -1003,10 +1015,10 @@ mod tests {
     fn expand_self_loop() {
         let store = make_store();
         let a = store
-            .create_node("g", vec!["N".to_string()], HashMap::new())
+            .create_node("g", vec!["N".to_string()], IndexMap::new())
             .unwrap();
         store
-            .create_edge("g", a, a, "R".to_string(), HashMap::new())
+            .create_edge("g", a, a, "R".to_string(), IndexMap::new())
             .unwrap();
         let plan = Operator::Expand {
             direction: Direction::Outgoing,
