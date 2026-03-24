@@ -937,6 +937,18 @@ impl<'a> QueryExecutor<'a> {
                 row.insert(key.clone(), cap_value);
             }
         }
+        // For multi-key cap, also create a combined Map value so that
+        // downstream unfold() can iterate over the {key: value} entries.
+        if keys.len() > 1 {
+            let mut map: IndexMap<Box<str>, Value> = IndexMap::new();
+            for key in keys {
+                if let Some(v) = row.get(key.as_str()) {
+                    map.insert(key.clone().into(), v.clone());
+                }
+            }
+            let map_alias = keys.join("_");
+            row.insert(map_alias, Value::Map(map));
+        }
         Ok(vec![row])
     }
 
@@ -1739,6 +1751,16 @@ impl<'a> QueryExecutor<'a> {
                     // Fallback: aggregate sideeffect columns are stored
                     // with a __gremlin_agg_ prefix.
                     Some(v.clone())
+                } else if let Some(v) = self
+                    .gremlin_side_effects
+                    .borrow()
+                    .get(&format!("__gremlin_agg_{}", output_key))
+                    .cloned()
+                {
+                    // Fallback: check the global side-effect store.
+                    // Inside local(), the seed row doesn't carry the
+                    // aggregate column, but the store accumulates it.
+                    Some(v)
                 } else {
                     // For select() after group(): the row may contain a Map value.
                     // Try looking up output_key as a map key in any Map values in the row.
@@ -2042,8 +2064,11 @@ impl<'a> QueryExecutor<'a> {
             // a previous repeat iteration so counts accumulate.
             let map_val = {
                 let mut merged = result_map;
-                if let Some(first) = output.first() {
-                    if let Some(Value::Map(existing)) = first.get(&agg_col) {
+                let has_row_existing = output.first().and_then(|f| f.get(&agg_col)).is_some();
+                if has_row_existing {
+                    // Row carries forward the accumulated map (repeat case).
+                    if let Some(Value::Map(existing)) = output.first().and_then(|f| f.get(&agg_col))
+                    {
                         for (ek, ev) in existing {
                             let entry = merged.entry(ek.clone()).or_insert(Value::Int(0));
                             match (entry.clone(), ev) {
@@ -2057,6 +2082,26 @@ impl<'a> QueryExecutor<'a> {
                             }
                         }
                     }
+                } else {
+                    // Fallback: merge with global side-effect store.
+                    // Inside local(), seed rows don't carry the column,
+                    // but the store accumulates across iterations.
+                    let se = self.gremlin_side_effects.borrow();
+                    if let Some(Value::Map(existing)) = se.get(&agg_col) {
+                        for (ek, ev) in existing {
+                            let entry = merged.entry(ek.clone()).or_insert(Value::Int(0));
+                            match (entry.clone(), ev) {
+                                (Value::Int(a), Value::Int(b)) => *entry = Value::Int(a + b),
+                                (Value::Float(a), Value::Float(b)) => *entry = Value::Float(a + b),
+                                (Value::List(mut a), Value::List(b)) => {
+                                    a.extend(b.iter().cloned());
+                                    *entry = Value::List(a);
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                    drop(se);
                 }
                 Value::Map(merged)
             };
