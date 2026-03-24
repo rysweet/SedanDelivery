@@ -387,11 +387,12 @@ impl GraphStore for InMemoryGraphStore {
     fn find_nodes_by_label(&self, graph: &str, label: &str) -> Result<Vec<NodeId>, StorageError> {
         let snap = self.read_snapshot()?;
         let g = Self::require_graph(&snap, graph)?;
-        let ids = g
+        let mut ids: Vec<NodeId> = g
             .label_index
             .get(label)
             .map(|s| s.iter().copied().map(NodeId).collect())
             .unwrap_or_default();
+        ids.sort_by_key(|id| id.0);
         Ok(ids)
     }
 
@@ -511,7 +512,9 @@ impl GraphStore for InMemoryGraphStore {
     fn all_node_ids(&self, graph: &str) -> Result<Vec<NodeId>, StorageError> {
         let snap = self.read_snapshot()?;
         let g = Self::require_graph(&snap, graph)?;
-        Ok(g.nodes.keys().copied().map(NodeId).collect())
+        let mut ids: Vec<NodeId> = g.nodes.keys().copied().map(NodeId).collect();
+        ids.sort_by_key(|id| id.0);
+        Ok(ids)
     }
 
     fn all_edge_ids(&self, graph: &str) -> Result<Vec<EdgeId>, StorageError> {

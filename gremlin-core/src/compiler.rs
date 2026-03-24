@@ -451,13 +451,20 @@ impl GremlinCompiler {
                 sample_by_consumed = false;
                 pending_valuemap = false;
                 valuemap_by_consumed = false;
-                // Flush accumulated path by-keys into the GremlinPath operator
+                // Flush accumulated path by-keys into the GremlinPath/CyclicPath operator
                 if pending_path && !path_by_keys.is_empty() {
-                    if let Some(Operator::GremlinPath {
-                        ref mut by_keys, ..
-                    }) = current
-                    {
-                        *by_keys = path_by_keys.clone();
+                    match &mut current {
+                        Some(Operator::GremlinPath {
+                            ref mut by_keys, ..
+                        }) => {
+                            *by_keys = path_by_keys.clone();
+                        }
+                        Some(Operator::GremlinCyclicPath {
+                            ref mut by_keys, ..
+                        }) => {
+                            *by_keys = path_by_keys.clone();
+                        }
+                        _ => {}
                     }
                 }
                 // Preserve pending_path through from()/to() modifiers so
@@ -4449,9 +4456,12 @@ impl GremlinCompiler {
                     current = Some(Operator::GremlinCyclicPath {
                         child: Box::new(child),
                         path_aliases: path_aliases.clone(),
+                        by_keys: vec![],
                         from_label: None,
                         to_label: None,
                     });
+                    pending_path = true;
+                    path_by_keys.clear();
                 }
 
                 GremlinStep::Coin(probability) => {
@@ -5657,13 +5667,20 @@ impl GremlinCompiler {
             }
         }
 
-        // Flush accumulated path by-keys into the GremlinPath operator
+        // Flush accumulated path by-keys into the GremlinPath/CyclicPath operator
         if pending_path && !path_by_keys.is_empty() {
-            if let Some(Operator::GremlinPath {
-                ref mut by_keys, ..
-            }) = current
-            {
-                *by_keys = path_by_keys;
+            match &mut current {
+                Some(Operator::GremlinPath {
+                    ref mut by_keys, ..
+                }) => {
+                    *by_keys = path_by_keys;
+                }
+                Some(Operator::GremlinCyclicPath {
+                    ref mut by_keys, ..
+                }) => {
+                    *by_keys = path_by_keys;
+                }
+                _ => {}
             }
         }
 
