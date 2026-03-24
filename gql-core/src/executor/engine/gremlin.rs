@@ -1354,9 +1354,11 @@ impl<'a> QueryExecutor<'a> {
     ) -> Result<Vec<Row>, GqlError> {
         let Operator::GremlinMatch {
             patterns,
+            pattern_labels,
             label_map,
             result_alias,
             child,
+            ..
         } = op
         else {
             debug_assert!(false, "expected GremlinMatch operator");
@@ -1397,20 +1399,44 @@ impl<'a> QueryExecutor<'a> {
         for row in &input {
             cx.budget.check_or_err()?;
 
-            // Normalize input row so label names are used as keys.
-            let mut current_bindings = vec![normalize(row)];
+            // Start with the raw input row. Each pattern adds its labels
+            // through per-pattern normalization rather than using the
+            // global reverse_map (which may have alias collisions).
+            let mut current_bindings = vec![row.clone()];
 
-            for pattern in patterns {
+            for (pattern_idx, pattern) in patterns.iter().enumerate() {
                 let mut next_bindings = Vec::new();
+
+                // Build per-pattern reverse map from produced labels only.
+                // This avoids extracting the seed label's value from the
+                // pattern output when the seed was overwritten internally
+                // (e.g. by a Repeat step).
+                let p_labels = pattern_labels.get(pattern_idx);
+                let p_reverse: Option<std::collections::HashMap<&str, &str>> = p_labels.map(|pl| {
+                    pl.iter()
+                        .map(|(label, alias)| (alias.0.as_str(), label.as_str()))
+                        .collect()
+                });
 
                 for binding in &current_bindings {
                     cx.budget.check_or_err()?;
                     // Seed: the pattern expects internal alias names, so we
                     // need to provide the binding with both label and internal
                     // alias keys. Build a denormalized seed row.
+                    // Avoid overwriting an alias already set for a different
+                    // label (e.g. Repeat remap makes "a" and "b" share v_0;
+                    // we keep the first label's value).
                     let mut seed = binding.clone();
+                    let mut alias_owner: std::collections::HashMap<&str, &str> =
+                        std::collections::HashMap::new();
                     for (label, alias) in label_map {
                         if let Some(v) = binding.get(label.as_str()) {
+                            if let Some(prev_label) = alias_owner.get(alias.0.as_str()) {
+                                if *prev_label != label.as_str() {
+                                    continue;
+                                }
+                            }
+                            alias_owner.insert(alias.0.as_str(), label.as_str());
                             seed.insert(alias.0.to_string(), v.clone());
                         }
                     }
@@ -1419,10 +1445,20 @@ impl<'a> QueryExecutor<'a> {
                     let pattern_rows = self.exec_operator(cx, pattern)?;
                     self.foreach_seed.borrow_mut().take();
 
-                    // Normalize pattern results, then merge on shared label
-                    // keys, checking consistency.
+                    // Normalize pattern results using per-pattern produced
+                    // labels, then merge on shared label keys for consistency.
                     for p_row in pattern_rows {
-                        let norm = normalize(&p_row);
+                        let norm = if let Some(ref pr) = p_reverse {
+                            let mut n = Row::new();
+                            for (k, v) in &p_row {
+                                if let Some(label) = pr.get(k.as_str()) {
+                                    n.insert((*label).to_string(), v.clone());
+                                }
+                            }
+                            n
+                        } else {
+                            normalize(&p_row)
+                        };
                         let mut merged = binding.clone();
                         let mut consistent = true;
                         for (k, v) in &norm {
@@ -1607,6 +1643,20 @@ impl<'a> QueryExecutor<'a> {
 
                                 if let Some(v) = resolved {
                                     new_row.insert(output_key.clone(), v);
+                                    continue;
+                                }
+
+                                // Handle tilde-prefixed transformation keys
+                                // (e.g., ~unfold_values_fold:name, ~toupper:prop)
+                                // via resolve_prop_on_value instead of raw
+                                // property access.
+                                if prop_name.starts_with('~') {
+                                    let r = self.resolve_prop_on_value(cx, prop_name, node_val);
+                                    if !*productive && matches!(r, Value::Null) {
+                                        all_found = false;
+                                        break;
+                                    }
+                                    new_row.insert(output_key.clone(), r);
                                     continue;
                                 }
 
@@ -3349,6 +3399,7 @@ mod tests {
         let executor = QueryExecutor::new(&store);
 
         let plan = Operator::GremlinMatch {
+            pattern_labels: vec![],
             label_map: vec![],
             result_alias: Identifier::new("__match_result"),
             patterns: vec![Operator::Expand {
@@ -3380,6 +3431,7 @@ mod tests {
         let executor = QueryExecutor::new(&store);
 
         let plan = Operator::GremlinMatch {
+            pattern_labels: vec![],
             label_map: vec![],
             result_alias: Identifier::new("__match_result"),
             patterns: vec![],
@@ -3400,6 +3452,7 @@ mod tests {
         let executor = QueryExecutor::new(&store);
 
         let plan = Operator::GremlinMatch {
+            pattern_labels: vec![],
             label_map: vec![],
             result_alias: Identifier::new("__match_result"),
             patterns: vec![
@@ -3441,6 +3494,7 @@ mod tests {
 
         // Match: a->b via NEXT, and a->b via NONEXISTENT (no such edges)
         let plan = Operator::GremlinMatch {
+            pattern_labels: vec![],
             label_map: vec![],
             result_alias: Identifier::new("__match_result"),
             patterns: vec![
@@ -3482,6 +3536,7 @@ mod tests {
         let executor = QueryExecutor::new(&store);
 
         let plan = Operator::GremlinMatch {
+            pattern_labels: vec![],
             label_map: vec![],
             result_alias: Identifier::new("__match_result"),
             patterns: vec![Operator::Expand {
