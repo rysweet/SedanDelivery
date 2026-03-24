@@ -1374,10 +1374,16 @@ impl<'a> QueryExecutor<'a> {
         }
 
         // Build reverse map: internal_alias → label_name.
-        let reverse_map: std::collections::HashMap<&str, &str> = label_map
-            .iter()
-            .map(|(label, alias)| (alias.0.as_str(), label.as_str()))
-            .collect();
+        // Use or_insert to keep the FIRST label for each alias. When
+        // Repeat remap causes two labels to share an alias, the earlier
+        // binding is correct for initial row normalization.
+        let mut reverse_map: std::collections::HashMap<&str, &str> =
+            std::collections::HashMap::new();
+        for (label, alias) in label_map {
+            reverse_map
+                .entry(alias.0.as_str())
+                .or_insert(label.as_str());
+        }
 
         // Normalize a row: replace internal aliases with label names.
         // This ensures consistent keys across patterns for merging.
@@ -1485,14 +1491,26 @@ impl<'a> QueryExecutor<'a> {
             for binding in current_bindings {
                 let mut result_row = Row::new();
                 let mut map_entries = indexmap::IndexMap::new();
+                // Track which alias columns have been set and by which label,
+                // so alias collisions (Repeat remap) don't overwrite.
+                let mut alias_set: std::collections::HashMap<&str, &str> =
+                    std::collections::HashMap::new();
                 for (k, v) in &binding {
                     // Include label columns and also re-insert internal alias
                     // keys so downstream steps (select, dedup) can find them.
                     result_row.insert(k.clone(), v.clone());
                     for (label, alias) in label_map {
                         if label == k {
+                            if let Some(prev) = alias_set.get(alias.0.as_str()) {
+                                if *prev != label.as_str() {
+                                    continue;
+                                }
+                            }
+                            alias_set.insert(alias.0.as_str(), label.as_str());
                             result_row.insert(alias.0.to_string(), v.clone());
-                            map_entries.insert(Box::from(label.as_str()), v.clone());
+                            map_entries
+                                .entry(Box::from(label.as_str()))
+                                .or_insert_with(|| v.clone());
                         }
                     }
                 }
