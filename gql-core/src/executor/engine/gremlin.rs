@@ -2312,7 +2312,8 @@ impl<'a> QueryExecutor<'a> {
     }
 
     /// Execute `GremlinCyclicPath` — filter traversers whose path contains
-    /// at least one repeated object (by node/edge identity).
+    /// at least one repeated object (by node/edge identity, or by property
+    /// value when `by_keys` is specified).
     pub(crate) fn exec_gremlin_cyclic_path(
         &self,
         cx: &mut ExecContext<'_>,
@@ -2321,6 +2322,7 @@ impl<'a> QueryExecutor<'a> {
         let Operator::GremlinCyclicPath {
             child,
             path_aliases,
+            by_keys,
             from_label,
             to_label,
         } = op
@@ -2345,15 +2347,38 @@ impl<'a> QueryExecutor<'a> {
                 to_label.as_deref(),
             );
 
-            for val in &path_values {
-                let key = match val {
-                    Value::Node(nid) => format!("n:{}", nid.0),
-                    Value::Edge(eid) => format!("e:{}", eid.0),
-                    other => format!("v:{other:?}"),
-                };
-                if !seen.insert(key) {
-                    has_cycle = true;
-                    break;
+            if by_keys.is_empty() {
+                // Default: compare by object identity (node/edge ID).
+                for val in &path_values {
+                    let key = match val {
+                        Value::Node(nid) => format!("n:{}", nid.0),
+                        Value::Edge(eid) => format!("e:{}", eid.0),
+                        other => format!("v:{other:?}"),
+                    };
+                    if !seen.insert(key) {
+                        has_cycle = true;
+                        break;
+                    }
+                }
+            } else {
+                // by() modulation: compare by property value.
+                let mut skip_row = false;
+                for (i, val) in path_values.iter().enumerate() {
+                    let by_key = &by_keys[i % by_keys.len()];
+                    let projected = self.apply_path_by_key(cx, by_key, val);
+                    if matches!(projected, Value::Null) {
+                        // Drop traverser when property is missing.
+                        skip_row = true;
+                        break;
+                    }
+                    let key = format!("{projected:?}");
+                    if !seen.insert(key) {
+                        has_cycle = true;
+                        break;
+                    }
+                }
+                if skip_row {
+                    continue;
                 }
             }
             if has_cycle {

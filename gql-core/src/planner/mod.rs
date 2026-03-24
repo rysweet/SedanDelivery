@@ -414,6 +414,8 @@ pub enum Operator {
         child: Box<Operator>,
         /// Ordered list of aliases that form the path elements.
         path_aliases: Vec<Identifier>,
+        /// Cycling by-modulator keys for path element comparison.
+        by_keys: Vec<String>,
         /// Optional label for `from()` — path checking starts at this label.
         from_label: Option<String>,
         /// Optional label for `to()` — path checking ends at this label.
