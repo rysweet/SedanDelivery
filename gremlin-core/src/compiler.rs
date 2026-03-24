@@ -6047,9 +6047,41 @@ impl GremlinCompiler {
         negate: bool,
     ) -> Result<Operator, CompileError> {
         let mut sub = self.sub_compiler();
-        let inner_op = sub.compile_seeded(steps, seed_alias)?;
+
+        // If the sub-traversal starts with as("label") referencing an
+        // already-bound variable, seed from that variable's alias.
+        let (actual_seed, steps_slice) = match steps.first() {
+            Some(GremlinStep::As(label)) if self.alias_map.contains_key(label) => {
+                (self.alias_map[label].clone(), &steps[1..])
+            }
+            _ => (seed_alias.clone(), steps),
+        };
+
+        // If the sub-traversal ends with as("label") referencing an
+        // already-bound variable, constrain the endpoint to match.
+        let endpoint_target = if let Some(GremlinStep::As(label)) = steps_slice.last() {
+            self.alias_map.get(label).cloned()
+        } else {
+            None
+        };
+
+        let inner_op = sub.compile_seeded(steps_slice, &actual_seed)?;
         self.absorb(&sub);
         let sub_alias = sub.last_alias.clone();
+
+        let inner_op = if let Some(target_alias) = endpoint_target {
+            Operator::Filter {
+                predicate: Expr::BinaryOp {
+                    op: BinaryOp::Eq,
+                    left: Box::new(Expr::Variable(sub_alias.clone())),
+                    right: Box::new(Expr::Variable(target_alias)),
+                },
+                child: Box::new(inner_op),
+            }
+        } else {
+            inner_op
+        };
+
         let cnt_alias = self.next_alias("acnt");
         let count_op = Operator::Aggregate {
             keys: vec![],
