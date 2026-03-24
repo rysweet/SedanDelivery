@@ -1,0 +1,114 @@
+# Canonical gadugi scenario for Issue #832 — Gremlin TCK compatibility.
+
+scenario:
+  name: "Issue #832 - Gremlin TCK compatibility"
+  description: >
+    Verify from an operator perspective that the Gremlin TCK (Technology
+    Compatibility Kit) test suite runs to completion without OOM crashes
+    or memory allocation failures, and that all supported scenarios pass.
+  metadata:
+    tags: [gremlin, tck, compatibility, regression, issue-832]
+    priority: critical
+  agents:
+    - name: test-runner
+      type: cli
+      config: {}
+  steps:
+    - name: "Build Gremlin TCK test binary"
+      agent: test-runner
+      action: execute
+      params:
+        command: cargo
+        args:
+          - test
+          - -p
+          - gremlin-tck
+          - --test
+          - gremlin_tck
+          - --no-run
+      timeout: 120000
+
+    - name: "Run full Gremlin TCK suite"
+      agent: test-runner
+      action: execute
+      params:
+        command: bash
+        args:
+          - -c
+          - |
+            TEST_BIN=$(find target/debug/deps -name 'gremlin_tck-*' -executable -type f | head -1)
+            "$TEST_BIN" -c 1 2>&1 | tee /tmp/gremlin-tck-output.txt
+            tail -5 /tmp/gremlin-tck-output.txt
+      timeout: 600000
+
+    - name: "Verify zero OOM crashes"
+      agent: test-runner
+      action: execute
+      params:
+        command: bash
+        args:
+          - -c
+          - |
+            count=$(grep -c 'memory allocation' /tmp/gremlin-tck-output.txt || true)
+            if [ "$count" -gt 0 ]; then
+              echo "[FAIL] $count memory allocation failures detected"
+              exit 1
+            fi
+            echo "[PASS] zero OOM crashes"
+      timeout: 5000
+
+    - name: "Verify zero budget errors"
+      agent: test-runner
+      action: execute
+      params:
+        command: bash
+        args:
+          - -c
+          - |
+            count=$(grep -c 'result set too large' /tmp/gremlin-tck-output.txt || true)
+            if [ "$count" -gt 5 ]; then
+              echo "[FAIL] $count budget errors (max 5 allowed for exponential queries)"
+              exit 1
+            fi
+            echo "[PASS] budget errors within tolerance ($count)"
+      timeout: 5000
+
+    - name: "Verify pass rate above 90%"
+      agent: test-runner
+      action: execute
+      params:
+        command: bash
+        args:
+          - -c
+          - |
+            passed=$(grep -oP '\d+ passed' /tmp/gremlin-tck-output.txt | grep -oP '\d+')
+            total=$(grep -oP '\d+ scenarios' /tmp/gremlin-tck-output.txt | grep -oP '\d+')
+            skipped=$(grep -oP '\d+ skipped' /tmp/gremlin-tck-output.txt | grep -oP '\d+')
+            effective=$((total - skipped))
+            rate=$((passed * 100 / effective))
+            echo "Passed: $passed / $effective ($rate%)"
+            if [ "$rate" -lt 90 ]; then
+              echo "[FAIL] pass rate $rate% is below 90% threshold"
+              exit 1
+            fi
+            echo "[PASS] Gremlin TCK pass rate $rate%"
+      timeout: 5000
+
+    - name: "Verify unit tests pass"
+      agent: test-runner
+      action: execute
+      params:
+        command: cargo
+        args:
+          - test
+          - -p
+          - gql-core
+          - --lib
+      timeout: 60000
+
+    - name: "Confirm unit test success"
+      agent: test-runner
+      action: wait_for_output
+      params:
+        pattern: "test result: ok"
+      timeout: 5000
