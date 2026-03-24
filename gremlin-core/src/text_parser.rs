@@ -879,6 +879,7 @@ fn parse_step_token(
                     }
                     _ => true,
                 })
+                .map(|a| resolve_constant_traversal(&a))
                 .collect();
             out.push(GremlinStep::Select(pop, filtered));
         }
@@ -2940,6 +2941,20 @@ fn unquote(s: &str) -> String {
     } else {
         s.to_string()
     }
+}
+
+/// Resolve `__.constant("X")` or `constant("X")` traversal patterns to the
+/// literal string "X". Used by select() to support traversal-based keys.
+fn resolve_constant_traversal(s: &str) -> String {
+    let inner = s
+        .strip_prefix("__.constant(")
+        .or_else(|| s.strip_prefix("constant("));
+    if let Some(rest) = inner {
+        if let Some(body) = rest.strip_suffix(')') {
+            return unquote(body.trim());
+        }
+    }
+    s.to_string()
 }
 
 /// Normalize a GType name to the Gremlin type string used by typeOf().

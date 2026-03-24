@@ -467,6 +467,11 @@ impl GremlinCompiler {
                         }) => {
                             *by_keys = path_by_keys.clone();
                         }
+                        Some(Operator::GremlinSimplePath {
+                            ref mut by_keys, ..
+                        }) => {
+                            *by_keys = path_by_keys.clone();
+                        }
                         _ => {}
                     }
                 }
@@ -4474,6 +4479,7 @@ impl GremlinCompiler {
                     current = Some(Operator::GremlinSimplePath {
                         child: Box::new(child),
                         path_aliases: path_aliases.clone(),
+                        by_keys: vec![],
                         from_label: None,
                         to_label: None,
                     });

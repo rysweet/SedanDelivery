@@ -2281,6 +2281,7 @@ impl<'a> QueryExecutor<'a> {
         let Operator::GremlinSimplePath {
             child,
             path_aliases,
+            by_keys,
             from_label,
             to_label,
         } = op
@@ -2305,15 +2306,35 @@ impl<'a> QueryExecutor<'a> {
                 to_label.as_deref(),
             );
 
-            for val in &path_values {
-                let key = match val {
-                    Value::Node(nid) => format!("n:{}", nid.0),
-                    Value::Edge(eid) => format!("e:{}", eid.0),
-                    other => format!("v:{other:?}"),
-                };
-                if !seen.insert(key) {
+            if by_keys.is_empty() {
+                for val in &path_values {
+                    let key = match val {
+                        Value::Node(nid) => format!("n:{}", nid.0),
+                        Value::Edge(eid) => format!("e:{}", eid.0),
+                        other => format!("v:{other:?}"),
+                    };
+                    if !seen.insert(key) {
+                        is_simple = false;
+                        break;
+                    }
+                }
+            } else {
+                let mut skip_row = false;
+                for (i, val) in path_values.iter().enumerate() {
+                    let by_key = &by_keys[i % by_keys.len()];
+                    let projected = self.apply_path_by_key(cx, by_key, val);
+                    if matches!(projected, Value::Null) {
+                        skip_row = true;
+                        break;
+                    }
+                    let key = format!("{projected:?}");
+                    if !seen.insert(key) {
+                        is_simple = false;
+                        break;
+                    }
+                }
+                if skip_row {
                     is_simple = false;
-                    break;
                 }
             }
             if is_simple {
