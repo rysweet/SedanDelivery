@@ -29,6 +29,7 @@ impl<'a> QueryExecutor<'a> {
             times_before,
             loop_label,
             body_path_aliases,
+            pop_origins,
             child,
         } = op
         else {
@@ -49,6 +50,17 @@ impl<'a> QueryExecutor<'a> {
         let mut current = self.exec_operator(cx, child)?;
         let mut collected: Vec<Row> = Vec::new();
         let mut body_exhausted = false;
+
+        // Preserve original seed values for Pop.first support: copy the
+        // original alias value into the shadow column before any remap
+        // overwrites it.
+        for (shadow, original) in pop_origins {
+            for row in &mut current {
+                if let Some(val) = row.get(original.as_str()).cloned() {
+                    row.insert(shadow.clone(), val);
+                }
+            }
+        }
 
         // Determine the seed alias name from remap (used for path tracking).
         let seed_key = remap.as_ref().map(|(_, to)| to.as_str());
@@ -2927,6 +2939,7 @@ mod tests {
             times_before: false,
             loop_label: None,
             body_path_aliases: vec![],
+            pop_origins: vec![],
             child: Box::new(Operator::NodeScan {
                 label: Some(Label::new("N")),
                 alias: Identifier::new("n"),
@@ -2962,6 +2975,7 @@ mod tests {
             times_before: false,
             loop_label: None,
             body_path_aliases: vec![],
+            pop_origins: vec![],
             child: Box::new(Operator::NodeScan {
                 label: Some(Label::new("N")),
                 alias: Identifier::new("n"),
