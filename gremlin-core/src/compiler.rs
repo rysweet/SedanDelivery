@@ -2840,7 +2840,15 @@ impl GremlinCompiler {
                     // Use predicate mode only when ALL inner steps are simple
                     // predicate-convertible steps. Otherwise use traversal mode
                     // (sub-traversal existence check via Apply + Count + Filter).
+                    // When there are multiple Select steps, they need chaining
+                    // (output of one feeds into the next), so use sub-traversal
+                    // mode instead of predicate mode.
+                    let select_count = inner_steps
+                        .iter()
+                        .filter(|s| matches!(s, GremlinStep::Select(..)))
+                        .count();
                     let can_be_predicate = !inner_steps.is_empty()
+                        && select_count <= 1
                         && inner_steps.iter().all(|s| {
                             matches!(
                                 s,
