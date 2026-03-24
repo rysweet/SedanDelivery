@@ -1133,11 +1133,33 @@ fn parse_step_token(
         }
         "from" => {
             let inner = parse_from_to_traversal(args_str, resolve_param)?;
-            out.push(GremlinStep::From(inner));
+            // Direction.OUT/IN/BOTH produces direct traversal steps —
+            // emit them without the From() wrapper.
+            if inner.len() == 1
+                && matches!(
+                    &inner[0],
+                    GremlinStep::Out(_) | GremlinStep::In(_) | GremlinStep::Both(_)
+                )
+            {
+                out.extend(inner);
+            } else {
+                out.push(GremlinStep::From(inner));
+            }
         }
         "to" => {
             let inner = parse_from_to_traversal(args_str, resolve_param)?;
-            out.push(GremlinStep::To(inner));
+            // Direction.OUT/IN/BOTH produces direct traversal steps —
+            // emit them without the To() wrapper.
+            if inner.len() == 1
+                && matches!(
+                    &inner[0],
+                    GremlinStep::Out(_) | GremlinStep::In(_) | GremlinStep::Both(_)
+                )
+            {
+                out.extend(inner);
+            } else {
+                out.push(GremlinStep::To(inner));
+            }
         }
         "drop" => out.push(GremlinStep::Drop),
         "path" => out.push(GremlinStep::Path),
@@ -1401,6 +1423,26 @@ fn parse_step_token(
             if args.len() >= 2 {
                 // First arg: the option key (Pick.none maps to "none" string)
                 let token = args[0].clone();
+                // Reject traversals as Pick tokens (e.g., option(is("marko"), ...)).
+                // Only predicates (P.eq, P.neq, etc.) and values are allowed.
+                if let GremlinValue::String(ref s) = token {
+                    let lower = s.to_lowercase();
+                    if lower.starts_with("is(")
+                        || lower.starts_with("haslabel(")
+                        || lower.starts_with("has(")
+                        || lower.starts_with("out(")
+                        || lower.starts_with("in(")
+                        || lower.starts_with("both(")
+                        || lower.starts_with("values(")
+                        || lower.starts_with("identity(")
+                        || (s.starts_with("__") && s.contains('('))
+                    {
+                        return Err(TextParseError::Expected {
+                            expected: "Traversal is not allowed as a Pick token".into(),
+                            found: s.clone(),
+                        });
+                    }
+                }
                 // Remaining args contain the traversal steps.
                 // Parse the original args_str to extract the traversal part.
                 let inner_traversal = parse_option_traversal(args_str, resolve_param)?;
@@ -1772,8 +1814,42 @@ fn parse_step_token(
             out.push(GremlinStep::DateDiff(inner));
         }
         "toE" => {
-            let args = parse_arg_list(args_str, resolve_param)?;
-            out.push(GremlinStep::ToE(args));
+            // toE(Direction.OUT, "label") → outE("label"), etc.
+            let raw_args = split_top_level_args(args_str);
+            if !raw_args.is_empty() {
+                let first = raw_args[0].trim();
+                if first.starts_with("Direction.")
+                    || first == "OUT"
+                    || first == "IN"
+                    || first == "BOTH"
+                {
+                    let labels: Vec<String> =
+                        raw_args[1..].iter().map(|a| unquote(a.trim())).collect();
+                    // Resolve parameters in labels
+                    let labels: Vec<String> = labels
+                        .into_iter()
+                        .map(|l| {
+                            if let Some(GremlinValue::String(s)) = resolve_param(&l) {
+                                s
+                            } else {
+                                l
+                            }
+                        })
+                        .collect();
+                    match first {
+                        "Direction.OUT" | "OUT" => out.push(GremlinStep::OutE(labels)),
+                        "Direction.IN" | "IN" => out.push(GremlinStep::InE(labels)),
+                        "Direction.BOTH" | "BOTH" => out.push(GremlinStep::BothE(labels)),
+                        _ => out.push(GremlinStep::BothE(labels)),
+                    }
+                } else {
+                    let args = parse_arg_list(args_str, resolve_param)?;
+                    out.push(GremlinStep::ToE(args));
+                }
+            } else {
+                let args = parse_arg_list(args_str, resolve_param)?;
+                out.push(GremlinStep::ToE(args));
+            }
         }
         "mergeV" => {
             let args = parse_arg_list(args_str, resolve_param)?;
@@ -3018,4 +3094,22 @@ mod tests {
             GremlinStep::Select(None, vec!["a".into(), "b".into()])
         );
     }
+}
+
+#[test]
+fn debug_to_direction_out() {
+    let resolve = |name: &str| -> Option<GremlinValue> {
+        if name == "vid1" {
+            Some(GremlinValue::Integer(1))
+        } else {
+            None
+        }
+    };
+    let steps = parse_traversal(r#"g.V(vid1).to(Direction.OUT, "knows")"#, &resolve).unwrap();
+    for (i, step) in steps.iter().enumerate() {
+        eprintln!("Step {}: {:?}", i, step);
+    }
+    assert_eq!(steps.len(), 2);
+    assert!(matches!(&steps[0], GremlinStep::V(Some(_))));
+    assert!(matches!(&steps[1], GremlinStep::Out(_)));
 }
