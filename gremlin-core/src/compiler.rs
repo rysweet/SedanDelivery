@@ -5582,6 +5582,7 @@ impl GremlinCompiler {
                         | GremlinStep::ReservedKeysVerificationStrategy(_)
                         | GremlinStep::EdgeLabelVerificationStrategy
                         | GremlinStep::Property(..)
+                        | GremlinStep::Inject(_)
                 );
                 // Don't re-add aliases that are already explicitly tracked
                 let already_tracked = path_aliases.last() == Some(&current_alias);
