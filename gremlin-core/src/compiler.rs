@@ -3793,6 +3793,10 @@ impl GremlinCompiler {
                     // Update current_alias so subsequent steps reference the right column.
                     if keys.len() == 1 {
                         current_alias = Identifier::new(keys[0].clone());
+                    } else {
+                        // Multi-key cap: the executor creates a combined Map
+                        // under a joined alias so unfold() can iterate entries.
+                        current_alias = Identifier::new(keys.join("_"));
                     }
                 }
 
@@ -3897,9 +3901,7 @@ impl GremlinCompiler {
                         } else {
                             // Source step: just unwind
                             current = Some(injected);
-                            current_alias = alias.clone();
-                            path_aliases.push(alias.clone());
-                            self.path_tracking.push(alias);
+                            current_alias = alias;
                         }
                     }
                 }
@@ -5580,6 +5582,7 @@ impl GremlinCompiler {
                         | GremlinStep::ReservedKeysVerificationStrategy(_)
                         | GremlinStep::EdgeLabelVerificationStrategy
                         | GremlinStep::Property(..)
+                        | GremlinStep::Inject(_)
                 );
                 // Don't re-add aliases that are already explicitly tracked
                 let already_tracked = path_aliases.last() == Some(&current_alias);
@@ -5595,7 +5598,7 @@ impl GremlinCompiler {
             current_alias = alias;
         }
 
-        // Flush pending select by-mods when by() was the last step.
+        // Flush pending select by-mods (handles by(T.key) as last step)
         if pending_select && !select_by_mods.is_empty() {
             if let Some(Operator::GremlinSelect { ref mut keys, .. }) = current {
                 for (i, (src_var, _)) in keys.iter_mut().enumerate() {
@@ -7296,6 +7299,10 @@ fn extract_by_traversal_key(steps: &[GremlinStep]) -> String {
         }
         [GremlinStep::Unfold, GremlinStep::Values(keys), GremlinStep::Fold] if keys.len() == 1 => {
             format!("~unfold_values_fold:{}", keys[0])
+        }
+        // tail(local, N).values("prop") — for a single element, tail is identity
+        [GremlinStep::TailLocal(_), GremlinStep::Values(keys)] if keys.len() == 1 => {
+            keys[0].clone()
         }
         _ => String::new(),
     }
