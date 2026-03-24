@@ -1399,10 +1399,8 @@ impl<'a> QueryExecutor<'a> {
         for row in &input {
             cx.budget.check_or_err()?;
 
-            // Start with the raw input row. Each pattern adds its labels
-            // through per-pattern normalization rather than using the
-            // global reverse_map (which may have alias collisions).
-            let mut current_bindings = vec![row.clone()];
+            // Normalize input row so label names are used as keys.
+            let mut current_bindings = vec![normalize(row)];
 
             for (pattern_idx, pattern) in patterns.iter().enumerate() {
                 let mut next_bindings = Vec::new();
