@@ -1133,11 +1133,33 @@ fn parse_step_token(
         }
         "from" => {
             let inner = parse_from_to_traversal(args_str, resolve_param)?;
-            out.push(GremlinStep::From(inner));
+            // Direction.OUT/IN/BOTH produces direct traversal steps —
+            // emit them without the From() wrapper.
+            if inner.len() == 1
+                && matches!(
+                    &inner[0],
+                    GremlinStep::Out(_) | GremlinStep::In(_) | GremlinStep::Both(_)
+                )
+            {
+                out.extend(inner);
+            } else {
+                out.push(GremlinStep::From(inner));
+            }
         }
         "to" => {
             let inner = parse_from_to_traversal(args_str, resolve_param)?;
-            out.push(GremlinStep::To(inner));
+            // Direction.OUT/IN/BOTH produces direct traversal steps —
+            // emit them without the To() wrapper.
+            if inner.len() == 1
+                && matches!(
+                    &inner[0],
+                    GremlinStep::Out(_) | GremlinStep::In(_) | GremlinStep::Both(_)
+                )
+            {
+                out.extend(inner);
+            } else {
+                out.push(GremlinStep::To(inner));
+            }
         }
         "drop" => out.push(GremlinStep::Drop),
         "path" => out.push(GremlinStep::Path),

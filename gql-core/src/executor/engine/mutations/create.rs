@@ -93,12 +93,11 @@ impl<'a> QueryExecutor<'a> {
                         .get(&src_alias.0)
                         .copied()
                         .or_else(|| {
-                            row.get(&src_alias.0).and_then(|v| {
-                                if let Value::Node(id) = v {
-                                    Some(*id)
-                                } else {
-                                    None
-                                }
+                            row.get(&src_alias.0).and_then(|v| match v {
+                                Value::Node(id) => Some(*id),
+                                // Side-effect bindings store vertex IDs as integers
+                                Value::Int(n) => Some(NodeId(*n as u64)),
+                                _ => None,
                             })
                         })
                         .ok_or_else(|| undefined_var(&src_alias.0))?;
@@ -107,12 +106,11 @@ impl<'a> QueryExecutor<'a> {
                         .get(&dst_alias.0)
                         .copied()
                         .or_else(|| {
-                            row.get(&dst_alias.0).and_then(|v| {
-                                if let Value::Node(id) = v {
-                                    Some(*id)
-                                } else {
-                                    None
-                                }
+                            row.get(&dst_alias.0).and_then(|v| match v {
+                                Value::Node(id) => Some(*id),
+                                // Side-effect bindings store vertex IDs as integers
+                                Value::Int(n) => Some(NodeId(*n as u64)),
+                                _ => None,
                             })
                         })
                         .ok_or_else(|| undefined_var(&dst_alias.0))?;
