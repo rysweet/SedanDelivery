@@ -225,6 +225,18 @@ pub fn gremlin_cmp_values(a: &Value, b: &Value) -> std::cmp::Ordering {
         }
     }
 
+    // Lists: use gremlin_cmp_values recursively so that nested property
+    // maps, vertices, etc. follow Gremlin orderability within list elements.
+    if let (Value::List(x), Value::List(y)) = (a, b) {
+        for (ea, eb) in x.iter().zip(y.iter()) {
+            let ord = gremlin_cmp_values(ea, eb);
+            if ord != std::cmp::Ordering::Equal {
+                return ord;
+            }
+        }
+        return x.len().cmp(&y.len());
+    }
+
     // Delegate same-type comparison to the existing logic.
     cmp_values(a, b)
 }
