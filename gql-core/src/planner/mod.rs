@@ -234,6 +234,12 @@ pub enum Operator {
         /// seed alias and body-output alias).  Used by the executor to accumulate
         /// edge values in `__gremlin_path_acc` when the body is e.g. `outE().inV()`.
         body_path_aliases: Vec<String>,
+        /// Shadow aliases for Pop.first support.  Each pair is
+        /// `(shadow_alias, original_alias)`: the executor copies the original
+        /// seed value into the shadow column before the first iteration so that
+        /// `select(Pop.first, label)` can retrieve the initial binding even
+        /// after remap overwrites the original alias.
+        pop_origins: Vec<(String, String)>,
         child: Box<Operator>,
     },
     /// Gremlin choose() — conditional branching.

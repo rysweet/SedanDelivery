@@ -196,11 +196,14 @@ impl GremlinCompiler {
         for (k, v) in &sub.alias_map {
             self.alias_map.entry(k.clone()).or_insert_with(|| v.clone());
         }
-        // Merge label stacks from sub-compiler
+        // Merge label stacks from sub-compiler (extend, dedup by alias name)
         for (k, v) in &sub.label_stacks {
-            self.label_stacks
-                .entry(k.clone())
-                .or_insert_with(|| v.clone());
+            let parent_stack = self.label_stacks.entry(k.clone()).or_default();
+            for alias in v {
+                if !parent_stack.iter().any(|a| a.as_str() == alias.as_str()) {
+                    parent_stack.push(alias.clone());
+                }
+            }
         }
         // Merge new reductions from sub-compiler
         for (k, v) in &sub.reductions {
@@ -3400,6 +3403,30 @@ impl GremlinCompiler {
                     }
                     let child = current.take().ok_or(CompileError::MissingChild)?;
                     let seed_alias = current_alias.clone();
+
+                    // Pre-scan: when Pop-select is downstream, check if the
+                    // body re-binds any existing label.  Create shadow aliases
+                    // so the executor can preserve original bindings for
+                    // Pop.first.
+                    let mut pop_origins: Vec<(String, String)> = Vec::new();
+                    if self.needs_label_stacks {
+                        for step in body_steps.iter() {
+                            if let GremlinStep::As(lbl) = step {
+                                if let Some(orig) = self.alias_map.get(lbl).cloned() {
+                                    let shadow = self.next_alias("pop_orig");
+                                    self.label_stacks
+                                        .entry(lbl.clone())
+                                        .or_default()
+                                        .insert(0, shadow.clone());
+                                    pop_origins.push((
+                                        shadow.as_str().to_string(),
+                                        orig.as_str().to_string(),
+                                    ));
+                                }
+                            }
+                        }
+                    }
+
                     let mut sub = self.sub_compiler();
                     let body = sub.compile_seeded(body_steps, &current_alias)?;
                     let body_out_alias = sub.last_alias.clone();
@@ -3459,6 +3486,7 @@ impl GremlinCompiler {
                         times_before: times_before_val,
                         loop_label: label.clone(),
                         body_path_aliases: body_pa,
+                        pop_origins,
                         child: Box::new(child),
                     });
                 }
