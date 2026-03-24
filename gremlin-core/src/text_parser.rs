@@ -2487,10 +2487,12 @@ fn parse_collection_step_arg(
     if s == "null" {
         return Ok(vec![GremlinStep::Constant(GremlinValue::Null)]);
     }
-    // Detect list literal [...]
+    // Detect list or map literal [...]
     if s.starts_with('[') && s.ends_with(']') {
-        if let Ok(vals) = parse_arg_list(&s[1..s.len() - 1], resolve_param) {
-            return Ok(vec![GremlinStep::Inject(vec![GremlinValue::List(vals)])]);
+        // Use parse_single_value which correctly distinguishes [k:v] maps
+        // from [a,b,c] lists by checking for top-level colons.
+        if let Ok(val) = parse_single_value(s, resolve_param) {
+            return Ok(vec![GremlinStep::Inject(vec![val])]);
         }
     }
     // Detect simple numeric/boolean literals (not a traversal)
