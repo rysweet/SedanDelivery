@@ -4245,21 +4245,18 @@ impl GremlinCompiler {
                 }
 
                 GremlinStep::Tail(n) => {
-                    // tail(n): reverse → limit(n) → reverse
+                    // tail(n): take last n rows (preserving existing order).
+                    // Uses a gremlin_tail marker so the executor skips early-
+                    // termination and takes from the end of the materialized
+                    // result set rather than the beginning.
                     let child = current.take().ok_or(CompileError::MissingChild)?;
-                    let reversed = Operator::Sort {
-                        items: vec![(Expr::Variable(current_alias.clone()), false)],
-                        gremlin_order: true,
+                    current = Some(Operator::Limit {
+                        count: Expr::FunctionCall {
+                            name: SmolStr::new("gremlin_tail"),
+                            args: vec![Expr::Integer(*n)],
+                            distinct: false,
+                        },
                         child: Box::new(child),
-                    };
-                    let limited = Operator::Limit {
-                        count: Expr::Integer(*n),
-                        child: Box::new(reversed),
-                    };
-                    current = Some(Operator::Sort {
-                        items: vec![(Expr::Variable(current_alias.clone()), true)],
-                        gremlin_order: true,
-                        child: Box::new(limited),
                     });
                 }
 

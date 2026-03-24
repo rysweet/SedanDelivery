@@ -403,6 +403,19 @@ impl<'a> QueryExecutor<'a> {
                 },
             ));
         };
+
+        // Detect gremlin_tail(n): take the last n rows preserving current
+        // order, instead of the first n.
+        if let Expr::FunctionCall { name, args, .. } = count {
+            if name.as_str() == "gremlin_tail" {
+                let n = eval_count_expr(&args[0], &self.parameters)?;
+                let input = self.exec_operator(cx, child)?;
+                let skip = input.len().saturating_sub(n);
+                cx.budget.check_or_err()?;
+                return Ok(input.into_iter().skip(skip).collect());
+            }
+        }
+
         let n = eval_count_expr(count, &self.parameters)?;
 
         // Early termination optimisation: tell leaf scan operators to stop
