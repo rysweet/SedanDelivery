@@ -1884,6 +1884,19 @@ impl<'a> QueryExecutor<'a> {
 
                 match val {
                     Some(v) => {
+                        // Select-from-Map: when the resolved value is a Map
+                        // containing the output key, extract the Map entry.
+                        // This implements Gremlin's behavior where select(key)
+                        // on a Map traverser acts as a Map key selector.
+                        let v = if keys.len() == 1 {
+                            if let Value::Map(ref m) = v {
+                                m.get(output_key.as_str()).cloned().unwrap_or(v)
+                            } else {
+                                v
+                            }
+                        } else {
+                            v
+                        };
                         new_row.insert(output_key.clone(), v);
                     }
                     None => {
