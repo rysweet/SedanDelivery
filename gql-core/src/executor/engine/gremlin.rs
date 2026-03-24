@@ -1610,6 +1610,20 @@ impl<'a> QueryExecutor<'a> {
                                     continue;
                                 }
 
+                                // Handle tilde-prefixed transformation keys
+                                // (e.g., ~unfold_values_fold:name, ~toupper:prop)
+                                // via resolve_prop_on_value instead of raw
+                                // property access.
+                                if prop_name.starts_with('~') {
+                                    let r = self.resolve_prop_on_value(cx, prop_name, node_val);
+                                    if !*productive && matches!(r, Value::Null) {
+                                        all_found = false;
+                                        break;
+                                    }
+                                    new_row.insert(output_key.clone(), r);
+                                    continue;
+                                }
+
                                 // Resolve property from the node/edge
                                 let prop_expr = Expr::Property(
                                     Box::new(Expr::Variable(Identifier::new(real_var))),
