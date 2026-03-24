@@ -81,6 +81,9 @@ pub struct GremlinCompiler {
     /// Path aliases from the outer (parent) scope. Set when compiling inside
     /// local()/map() so that tree() can access the full traversal path.
     outer_path_aliases: Vec<Identifier>,
+    /// Tracks the numeric subtype set by `AsNumberTyped("byte"/"short")`.
+    /// Used by `Is(IsType(..))` to correctly resolve type checks at compile time.
+    numeric_subtype: Option<String>,
 }
 
 impl Default for GremlinCompiler {
@@ -110,6 +113,7 @@ impl GremlinCompiler {
             aggregate_keys: HashSet::new(),
             set_keys: HashSet::new(),
             outer_path_aliases: Vec::new(),
+            numeric_subtype: None,
         }
     }
 
@@ -144,6 +148,7 @@ impl GremlinCompiler {
             aggregate_keys: self.aggregate_keys.clone(),
             set_keys: self.set_keys.clone(),
             outer_path_aliases: Vec::new(),
+            numeric_subtype: None,
         }
     }
 
@@ -434,6 +439,16 @@ impl GremlinCompiler {
         for step in steps {
             // Save alias before step to detect changes for path tracking
             let pre_step_alias = current_alias.clone();
+            // Clear numeric subtype on value-changing steps; Is/As/filter steps preserve it.
+            if !matches!(
+                step,
+                GremlinStep::Is(_)
+                    | GremlinStep::As(_)
+                    | GremlinStep::By(..)
+                    | GremlinStep::ByTraversal(..)
+            ) {
+                self.numeric_subtype = None;
+            }
             // When we leave the addE/mergeE modifier group (from/to/property/option),
             // fill in any __src/__dst placeholders that were never overridden.
             if adde_traverser.is_some()
@@ -2993,7 +3008,20 @@ impl GremlinCompiler {
 
                 GremlinStep::Is(predicate) => {
                     let child = current.take().ok_or(CompileError::MissingChild)?;
-                    let pred_expr = predicate_to_expr(predicate, &current_alias);
+                    let pred_expr =
+                        if let Predicate::IsType(GremlinValue::String(expected)) = predicate {
+                            if let Some(ref subtype) = self.numeric_subtype {
+                                if subtype == expected {
+                                    Expr::Bool(true)
+                                } else {
+                                    Expr::Bool(false)
+                                }
+                            } else {
+                                predicate_to_expr(predicate, &current_alias)
+                            }
+                        } else {
+                            predicate_to_expr(predicate, &current_alias)
+                        };
                     current = Some(Operator::Filter {
                         predicate: pred_expr,
                         child: Box::new(child),
@@ -5342,6 +5370,7 @@ impl GremlinCompiler {
                         child: Box::new(child),
                     });
                     current_alias = alias;
+                    self.numeric_subtype = Some(target_type.clone());
                 }
 
                 GremlinStep::AsBool => {
