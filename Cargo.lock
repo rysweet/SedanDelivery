@@ -1578,6 +1578,7 @@ dependencies = [
  "gql-core",
  "gremlin-core",
  "indexmap",
+ "jiff",
  "tokio",
 ]
 

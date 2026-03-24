@@ -1028,6 +1028,29 @@ pub fn eval_function_with_vals(name: &str, vals: Vec<Value>) -> Result<Value, Gq
             }
             Ok(Value::Str(result.into()))
         }
+        "gremlin_make_datetime" => {
+            // Parse an ISO datetime string into Value::DateTime
+            match vals.first() {
+                Some(Value::Str(s)) => {
+                    if let Ok(ts) = s.as_ref().parse::<jiff::Timestamp>() {
+                        let tz = jiff::tz::TimeZone::UTC;
+                        Ok(Value::DateTime(Box::new(ts.to_zoned(tz))))
+                    } else {
+                        Ok(Value::Str(s.clone()))
+                    }
+                }
+                _ => Ok(Value::Null),
+            }
+        }
+        "gremlin_make_uuid" => {
+            // Wrap a UUID string with a recognizable tag for ordering
+            match vals.first() {
+                Some(Value::Str(s)) => {
+                    Ok(Value::Str(format!("~uuid:{}", s).into()))
+                }
+                _ => Ok(Value::Null),
+            }
+        }
         "gremlin_asstring" => match vals.first() {
             Some(Value::Str(s)) => Ok(Value::Str(s.clone())),
             Some(Value::Int(n)) => Ok(Value::Str(n.to_string().into())),

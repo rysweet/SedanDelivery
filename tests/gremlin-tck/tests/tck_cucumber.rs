@@ -871,6 +871,23 @@ fn parse_tck_value(
         }
     }
 
+    // dt[2023-01-01T00:00:00Z] → DateTime
+    if let Some(rest) = s.strip_prefix("dt[") {
+        if let Some(inner) = rest.strip_suffix(']') {
+            if let Ok(ts) = inner.parse::<jiff::Timestamp>() {
+                let tz = jiff::tz::TimeZone::UTC;
+                return Value::DateTime(Box::new(ts.to_zoned(tz)));
+            }
+        }
+    }
+
+    // uuid[5100808b-...] → tagged UUID string
+    if let Some(rest) = s.strip_prefix("uuid[") {
+        if let Some(inner) = rest.strip_suffix(']') {
+            return Value::Str(format!("~uuid:{inner}").into());
+        }
+    }
+
     // null
     if s == "null" {
         return Value::Null;
@@ -1438,6 +1455,7 @@ fn values_match_ctx(
             false
         }
         (Value::Str(a), Value::Str(e)) => a == e,
+        (Value::DateTime(a), Value::DateTime(e)) => a.timestamp() == e.timestamp(),
         (Value::Bool(a), Value::Bool(e)) => a == e,
         (Value::Null, Value::Null) => true,
         (Value::List(a), Value::List(e)) => {

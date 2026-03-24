@@ -243,6 +243,8 @@ pub enum GremlinStep {
     ReservedKeysVerificationStrategy(Vec<String>),
     /// Flag indicating EdgeLabelVerificationStrategy(throwException:true) is active
     EdgeLabelVerificationStrategy,
+    /// Flag indicating ConnectiveStrategy is disabled via withoutStrategies
+    WithoutConnectiveStrategy,
     /// `dedup(Scope.local)` — deduplicate elements within a list
     DedupLocal(Vec<String>),
 

@@ -331,8 +331,16 @@ impl GremlinCompiler {
             return Ok(initial_op.unwrap_or(Operator::SingleRow));
         }
 
-        // Preprocess infix and()/or() with no arguments into proper branching forms.
-        let preprocessed = preprocess_infix_connectives(steps);
+        // Preprocess infix and()/or() with no arguments into proper branching
+        // forms — unless ConnectiveStrategy was explicitly disabled.
+        let has_without_connective = steps
+            .iter()
+            .any(|s| matches!(s, GremlinStep::WithoutConnectiveStrategy));
+        let preprocessed = if has_without_connective {
+            steps.to_vec()
+        } else {
+            preprocess_infix_connectives(steps)
+        };
         let steps = &preprocessed;
 
         // Pre-scan: detect if any step uses path tracking (path, simplePath, cyclicPath).
@@ -3946,7 +3954,9 @@ impl GremlinCompiler {
                         } else {
                             // Source step: just unwind
                             current = Some(injected);
-                            current_alias = alias;
+                            current_alias = alias.clone();
+                            path_aliases.push(alias);
+                            self.path_tracking.push(current_alias.clone());
                         }
                     }
                 }
@@ -4817,6 +4827,10 @@ impl GremlinCompiler {
                     self.edge_label_verify = true;
                 }
 
+                GremlinStep::WithoutConnectiveStrategy => {
+                    // Handled during preprocessing; no compiler state needed.
+                }
+
                 GremlinStep::DedupLocal(keys) => {
                     let child = current.take().ok_or(CompileError::MissingChild)?;
                     let alias = self.next_alias("dedup_local");
@@ -5669,6 +5683,7 @@ impl GremlinCompiler {
                         | GremlinStep::SeedStrategy(_)
                         | GremlinStep::ReservedKeysVerificationStrategy(_)
                         | GremlinStep::EdgeLabelVerificationStrategy
+                        | GremlinStep::WithoutConnectiveStrategy
                         | GremlinStep::Property(..)
                         | GremlinStep::Inject(_)
                 );
@@ -6366,7 +6381,23 @@ fn gremlin_value_to_expr(gv: &GremlinValue) -> Expr {
         GremlinValue::Bool(b) => Expr::Bool(*b),
         GremlinValue::Integer(i) => Expr::Integer(*i),
         GremlinValue::Float(f) => Expr::Float(*f),
-        GremlinValue::String(s) => Expr::Str(s.clone().into_boxed_str()),
+        GremlinValue::String(s) => {
+            if let Some(iso) = s.strip_prefix("__gremlin_dt__:") {
+                Expr::FunctionCall {
+                    name: SmolStr::new("gremlin_make_datetime"),
+                    args: vec![Expr::Str(iso.to_string().into_boxed_str())],
+                    distinct: false,
+                }
+            } else if let Some(uuid) = s.strip_prefix("__gremlin_uuid__:") {
+                Expr::FunctionCall {
+                    name: SmolStr::new("gremlin_make_uuid"),
+                    args: vec![Expr::Str(uuid.to_string().into_boxed_str())],
+                    distinct: false,
+                }
+            } else {
+                Expr::Str(s.clone().into_boxed_str())
+            }
+        }
         GremlinValue::List(items) => Expr::List(items.iter().map(gremlin_value_to_expr).collect()),
         GremlinValue::Map(entries) => Expr::MapLiteral(
             entries

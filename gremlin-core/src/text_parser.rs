@@ -56,6 +56,8 @@ pub fn parse_traversal(
         && input.contains("EdgeLabelVerificationStrategy")
         && input.contains("throwException: true")
         && !input.contains("withoutStrategies(EdgeLabelVerificationStrategy");
+    // ConnectiveStrategy: disabled when withoutStrategies(ConnectiveStrategy) is present
+    let without_connective = input.contains("withoutStrategies(ConnectiveStrategy");
     // ReservedKeysVerificationStrategy(throwException: true, keys: {...})
     let reserved_keys = extract_reserved_keys_strategy(input);
     // SeedStrategy(seed: 999999) — extract seed value for deterministic random
@@ -114,6 +116,9 @@ pub fn parse_traversal(
     }
     if edge_label_verify {
         steps.push(GremlinStep::EdgeLabelVerificationStrategy);
+    }
+    if without_connective {
+        steps.push(GremlinStep::WithoutConnectiveStrategy);
     }
     if let Some(seed) = seed_strategy {
         steps.push(GremlinStep::SeedStrategy(seed));
@@ -2914,6 +2919,22 @@ fn parse_single_value(
     // GType.* — Gremlin type constants
     if let Some(gtype) = s.strip_prefix("GType.") {
         return Ok(GremlinValue::String(format!("GType.{gtype}")));
+    }
+
+    // datetime("2023-01-01T00:00:00Z") — ISO datetime literal
+    if let Some(rest) = s.strip_prefix("datetime(") {
+        if let Some(inner) = rest.strip_suffix(')') {
+            let iso_str = inner.trim().trim_matches('"').trim_matches('\'');
+            return Ok(GremlinValue::String(format!("__gremlin_dt__:{iso_str}")));
+        }
+    }
+
+    // UUID("5100808b-...") — UUID literal
+    if let Some(rest) = s.strip_prefix("UUID(") {
+        if let Some(inner) = rest.strip_suffix(')') {
+            let uuid_str = inner.trim().trim_matches('"').trim_matches('\'');
+            return Ok(GremlinValue::String(format!("__gremlin_uuid__:{uuid_str}")));
+        }
     }
 
     // Parameter reference (bare identifier like vid1, xx1)
