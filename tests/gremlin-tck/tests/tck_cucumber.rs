@@ -17,10 +17,11 @@ use gql_core::executor::{ExecutionBudget, QueryExecutor, QueryResult};
 /// Budget for TCK tests — bounded row limit to prevent OOM kills on
 /// exponential repeat/path queries (e.g., repeat(both()).until(loops().is(40))
 /// on the grateful dead graph). The grateful graph has 808 nodes and 8049 edges;
-/// some queries like repeat(out()).times(3) produce ~14.5M intermediate rows.
-/// 20M gives headroom while still preventing catastrophic explosions.
+/// some queries like repeat(out()).times(3) produce ~14.5M final rows with
+/// additional intermediate rows from inner scans. 50M gives headroom while
+/// still preventing catastrophic explosions.
 fn tck_budget() -> ExecutionBudget {
-    ExecutionBudget::new(std::time::Duration::from_secs(120), 20_000_000)
+    ExecutionBudget::new(std::time::Duration::from_secs(120), 50_000_000)
 }
 use gql_core::storage::{EdgeId, GraphStore, InMemoryGraphStore, NodeId};
 use gql_core::types::Value;

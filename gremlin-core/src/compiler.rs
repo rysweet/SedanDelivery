@@ -5714,6 +5714,11 @@ impl GremlinCompiler {
                 }) => {
                     *by_keys = path_by_keys;
                 }
+                Some(Operator::GremlinSimplePath {
+                    ref mut by_keys, ..
+                }) => {
+                    *by_keys = path_by_keys;
+                }
                 _ => {}
             }
         }

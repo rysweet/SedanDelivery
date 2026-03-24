@@ -1604,27 +1604,26 @@ impl<'a> QueryExecutor<'a> {
             for binding in current_bindings {
                 let mut result_row = Row::new();
                 let mut map_entries = indexmap::IndexMap::new();
-                // Track which alias columns have been set and by which label,
-                // so alias collisions (Repeat remap) don't overwrite.
-                let mut alias_set: std::collections::HashMap<&str, &str> =
-                    std::collections::HashMap::new();
+                // Insert label columns from binding.
                 for (k, v) in &binding {
-                    // Include label columns and also re-insert internal alias
-                    // keys so downstream steps (select, dedup) can find them.
                     result_row.insert(k.clone(), v.clone());
-                    for (label, alias) in label_map {
-                        if label == k {
-                            if let Some(prev) = alias_set.get(alias.0.as_str()) {
-                                if *prev != label.as_str() {
-                                    continue;
-                                }
-                            }
-                            alias_set.insert(alias.0.as_str(), label.as_str());
-                            result_row.insert(alias.0.to_string(), v.clone());
-                            map_entries
-                                .entry(Box::from(label.as_str()))
-                                .or_insert_with(|| v.clone());
-                        }
+                    map_entries
+                        .entry(Box::from(k.as_str()))
+                        .or_insert_with(|| v.clone());
+                }
+                // Set alias columns deterministically: iterate label_map
+                // in order (pattern-1 entries first, then pattern-2, etc.)
+                // so the FIRST label claiming an alias wins.  This avoids
+                // non-deterministic HashMap iteration reordering the labels
+                // when two labels share an alias (Repeat remap).
+                let mut alias_set = std::collections::HashSet::new();
+                for (label, alias) in label_map {
+                    if alias_set.contains(alias.0.as_str()) {
+                        continue;
+                    }
+                    if let Some(v) = binding.get(label.as_str()) {
+                        alias_set.insert(alias.0.as_str());
+                        result_row.insert(alias.0.to_string(), v.clone());
                     }
                 }
                 result_row.insert(result_alias.0.to_string(), Value::Map(map_entries));
