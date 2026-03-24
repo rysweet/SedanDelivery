@@ -2570,7 +2570,7 @@ fn parse_from_to_traversal(
 ) -> Result<Vec<GremlinStep>, TextParseError> {
     let s = args_str.trim();
     // If it's a quoted string, it's a step label reference
-    if s.starts_with('"') {
+    if s.starts_with('"') || s.starts_with('\'') {
         let label = unquote(s);
         return Ok(vec![GremlinStep::Select(None, vec![label])]);
     }
