@@ -1455,6 +1455,7 @@ fn values_match_ctx(
             false
         }
         (Value::Str(a), Value::Str(e)) => a == e,
+        (Value::DateTime(a), Value::DateTime(e)) => a.timestamp() == e.timestamp(),
         (Value::Bool(a), Value::Bool(e)) => a == e,
         (Value::Null, Value::Null) => true,
         (Value::List(a), Value::List(e)) => {

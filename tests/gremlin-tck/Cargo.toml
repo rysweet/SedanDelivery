@@ -8,6 +8,7 @@ publish = false
 gql-core     = { path = "../../gql-core" }
 gremlin-core = { path = "../../gremlin-core" }
 indexmap      = { workspace = true }
+jiff          = { workspace = true }
 
 [dev-dependencies]
 cucumber  = { workspace = true }
