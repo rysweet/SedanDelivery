@@ -53,6 +53,9 @@ pub struct GremlinWorld {
     edge_names: HashMap<String, EdgeId>,
     /// Parameters defined by `using the parameter` steps.
     parameters: HashMap<String, GremlinValue>,
+    /// Side-effects defined by `using the side effect` steps.
+    /// Tuple: (value, is_set_semantics).
+    side_effects: HashMap<String, (GremlinValue, bool)>,
     /// The raw Gremlin traversal text from the `traversal of` step.
     traversal_text: String,
     /// Parsed steps (populated during `when iterated`).
@@ -319,8 +322,39 @@ async fn given_parameter(world: &mut GremlinWorld, param_name: String, definitio
 
 #[given(regex = r"using the side effect (\w+) defined as (.+)")]
 async fn given_side_effect(world: &mut GremlinWorld, name: String, definition: String) {
-    let value = resolve_parameter_definition(&definition, &world.vertex_names, &world.edge_names);
-    world.parameters.insert(name, value);
+    let trimmed = definition.trim().trim_matches('"');
+    // Detect set notation: s[] or s[item1,item2,...]
+    let (value, is_set) = if let Some(rest) = trimmed.strip_prefix("s[") {
+        if let Some(inner) = rest.strip_suffix(']') {
+            if inner.trim().is_empty() {
+                (GremlinValue::List(Vec::new()), true)
+            } else {
+                let items = inner
+                    .split(',')
+                    .map(|item| {
+                        resolve_parameter_definition(
+                            item.trim(),
+                            &world.vertex_names,
+                            &world.edge_names,
+                        )
+                    })
+                    .collect();
+                (GremlinValue::List(items), true)
+            }
+        } else {
+            (
+                resolve_parameter_definition(&definition, &world.vertex_names, &world.edge_names),
+                false,
+            )
+        }
+    } else {
+        (
+            resolve_parameter_definition(&definition, &world.vertex_names, &world.edge_names),
+            false,
+        )
+    };
+    world.parameters.insert(name.clone(), value.clone());
+    world.side_effects.insert(name, (value, is_set));
 }
 
 // ── When steps ────────────────────────────────────────────────────────────────
@@ -349,13 +383,33 @@ fn execute_traversal(world: &mut GremlinWorld) {
     };
 
     // Parse
-    let steps = match text_parser::parse_traversal(&world.traversal_text, &resolve) {
+    let mut steps = match text_parser::parse_traversal(&world.traversal_text, &resolve) {
         Ok(s) => s,
         Err(e) => {
             world.outcome = Some(TraversalOutcome::Err(format!("parse error: {e}")));
             return;
         }
     };
+
+    // Inject WithSideEffect steps for externally-defined side effects
+    // (those from "using the side effect ..." Gherkin steps) that are not
+    // already present in the parsed traversal.
+    for (name, (value, is_set)) in &world.side_effects {
+        let already_present = steps
+            .iter()
+            .any(|s| matches!(s, GremlinStep::WithSideEffect(k, _, _) if k == name));
+        if !already_present {
+            let operator = if *is_set {
+                Some("set".to_string())
+            } else {
+                None
+            };
+            steps.insert(
+                0,
+                GremlinStep::WithSideEffect(name.clone(), value.clone(), operator),
+            );
+        }
+    }
 
     world.parsed_steps = steps.clone();
 

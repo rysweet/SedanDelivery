@@ -101,12 +101,20 @@ impl<'a> QueryExecutor<'a> {
                             if let Expr::Variable(id) = expr {
                                 let name = id.0.as_str();
                                 // loops() outside repeat context: default to 0
-                                if name == "__gremlin_loop_count" {
+                                if name == "__gremlin_loop_count"
+                                    || name.starts_with("__gremlin_loop_count_")
+                                {
                                     let col_name = match alias {
                                         Some(a) => a.0.clone(),
                                         None => name.to_string(),
                                     };
                                     new_row.insert(col_name, Value::Int(0));
+                                    continue;
+                                }
+                                // path_acc outside repeat context: skip silently.
+                                // The path executor handles missing path_acc by
+                                // falling back to path_aliases.
+                                if name == "__gremlin_path_acc" {
                                     continue;
                                 }
                                 if alias.as_ref() == Some(id) {

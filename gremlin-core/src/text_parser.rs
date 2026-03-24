@@ -610,6 +610,16 @@ fn extract_with_side_effects(
             };
             // Try to parse the value — handle sets like {"alice"}, lists like ["x","y"], etc.
             if let Some(val) = parse_side_effect_value(val_str.trim(), resolve_param) {
+                // If the value used set notation ({...}), mark with "set" operator
+                // so the compiler tracks set semantics for this key.
+                let operator = if operator.is_none()
+                    && val_str.trim().starts_with('{')
+                    && val_str.trim().ends_with('}')
+                {
+                    Some("set".to_string())
+                } else {
+                    operator
+                };
                 results.push((key_str.to_string(), val, operator));
             }
         }

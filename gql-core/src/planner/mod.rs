@@ -299,6 +299,9 @@ pub enum Operator {
         by_traversal: Option<(Box<Operator>, Identifier)>,
         /// When true (ProductiveByStrategy), include null values for missing properties.
         productive: bool,
+        /// When true, the side-effect was initialized as a Set (e.g. `withSideEffect("a", {})`).
+        /// Aggregate deduplicates values instead of appending duplicates.
+        set_semantics: bool,
     },
     /// Gremlin path() — extract path from traverser aliases.
     GremlinPath {
