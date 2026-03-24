@@ -2067,8 +2067,23 @@ impl GremlinCompiler {
                         // by() after dedup() — dedup by specific property
                         if !key.is_empty() {
                             if let Some(Operator::Distinct { ref mut by_key, .. }) = current {
-                                *by_key =
-                                    Some(format!("__dedup_prop__{}__{}", key, current_alias.0));
+                                if let Some(ref existing) = *by_key {
+                                    if existing.contains('\x1f') {
+                                        // Multi-key dedup: apply property to each label
+                                        let new_key = existing
+                                            .split('\x1f')
+                                            .map(|l| format!("__dedup_prop__{}__{}", key, l))
+                                            .collect::<Vec<_>>()
+                                            .join("\x1f");
+                                        *by_key = Some(new_key);
+                                    } else {
+                                        *by_key =
+                                            Some(format!("__dedup_prop__{}__{}", key, existing));
+                                    }
+                                } else {
+                                    *by_key =
+                                        Some(format!("__dedup_prop__{}__{}", key, current_alias.0));
+                                }
                             }
                         }
                         dedup_by_consumed = true;
