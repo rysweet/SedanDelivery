@@ -322,8 +322,12 @@ pub enum Operator {
     GremlinMatch {
         /// Each pattern is a compiled sub-traversal that binds variables.
         patterns: Vec<Operator>,
+        /// Per-pattern produced labels: labels whose values should be
+        /// extracted from the pattern output (excludes seed labels that
+        /// the pattern consumed but may have overwritten internally).
+        pattern_labels: Vec<Vec<(String, Identifier)>>,
         /// Maps step labels (e.g. "a", "b") to internal aliases (e.g. v_1).
-        /// Used to rename output rows from internal aliases to label names.
+        /// Used to inject seed values when executing each pattern.
         label_map: Vec<(String, Identifier)>,
         /// The output alias for the Map result value.
         result_alias: Identifier,
