@@ -1303,11 +1303,7 @@ impl<'a> QueryExecutor<'a> {
                         Some(other) => eval_function_with_vals("keys", vec![other]),
                         None => Ok(Value::Null),
                     },
-                    "gremlin_column_value" => match evaled_args.into_iter().next() {
-                        Some(Value::Map(m)) if m.len() == 1 => Ok(m.into_values().next().unwrap()),
-                        Some(other) => eval_function_with_vals("values", vec![other]),
-                        None => Ok(Value::Null),
-                    },
+                    "gremlin_column_value" => eval_function_with_vals("values", evaled_args),
                     _ => eval_function_with_vals(name, evaled_args),
                 }
             }
