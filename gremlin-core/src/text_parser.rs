@@ -1423,19 +1423,20 @@ fn parse_step_token(
             if args.len() >= 2 {
                 // First arg: the option key (Pick.none maps to "none" string)
                 let token = args[0].clone();
-                // Reject traversals as Pick tokens (e.g., option(is("marko"), ...)).
-                // Only predicates (P.eq, P.neq, etc.) and values are allowed.
+                // Reject bare traversal steps as Pick tokens (e.g., option(is("marko"), ...)).
+                // Only predicates (P.eq, P.neq, etc.), values, and __.traversal() are allowed.
+                // Note: __.prefixed traversals (like __.hasLabel("software")) are valid for branch().
                 if let GremlinValue::String(ref s) = token {
                     let lower = s.to_lowercase();
-                    if lower.starts_with("is(")
-                        || lower.starts_with("haslabel(")
-                        || lower.starts_with("has(")
-                        || lower.starts_with("out(")
-                        || lower.starts_with("in(")
-                        || lower.starts_with("both(")
-                        || lower.starts_with("values(")
-                        || lower.starts_with("identity(")
-                        || (s.starts_with("__") && s.contains('('))
+                    if !s.starts_with("__")
+                        && (lower.starts_with("is(")
+                            || lower.starts_with("haslabel(")
+                            || lower.starts_with("has(")
+                            || lower.starts_with("out(")
+                            || lower.starts_with("in(")
+                            || lower.starts_with("both(")
+                            || lower.starts_with("values(")
+                            || lower.starts_with("identity("))
                     {
                         return Err(TextParseError::Expected {
                             expected: "Traversal is not allowed as a Pick token".into(),
