@@ -1307,14 +1307,8 @@ impl<'a> QueryExecutor<'a> {
                 _ => val.clone(),
             },
             _ => {
-                // Property access — try Map fields first, then Node/Edge properties
+                // Property access
                 match val {
-                    Value::Map(m) => {
-                        if let Some(v) = m.get(key) {
-                            return v.clone();
-                        }
-                        Value::Null
-                    }
                     Value::Node(nid) => {
                         if let Ok(Some(node)) = self.store.get_node(cx.graph, *nid) {
                             if let Some(v) = node.properties.get(key) {
