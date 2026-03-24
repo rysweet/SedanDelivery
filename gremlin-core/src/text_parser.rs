@@ -1114,19 +1114,37 @@ fn parse_step_token(
         }
         "property" => {
             let args = parse_arg_list(args_str, resolve_param)?;
-            if args.len() >= 2 {
-                // Check for property(Cardinality.xxx, Map) pattern — expand Map
-                // into individual property steps.
-                let is_cardinality = matches!(&args[0],
-                    GremlinValue::String(s) if s.starts_with("Cardinality.") || s == "single" || s == "list" || s == "set"
-                );
-                if is_cardinality && matches!(&args[1], GremlinValue::Map(_)) {
+            let is_cardinality = |v: &GremlinValue| -> bool {
+                matches!(v, GremlinValue::String(s)
+                    if s.starts_with("Cardinality.") || s == "single" || s == "list" || s == "set")
+            };
+            if args.len() == 1 {
+                // property(Map) — expand map entries into individual property steps
+                if let GremlinValue::Map(map) = &args[0] {
+                    for (k, v) in map {
+                        out.push(GremlinStep::Property(k.clone(), v.clone()));
+                    }
+                }
+                // property(null) — no-op
+            } else if args.len() >= 2 && is_cardinality(&args[0]) {
+                if matches!(&args[1], GremlinValue::Map(_)) {
+                    // property(Cardinality, Map) — expand map
                     if let GremlinValue::Map(map) = &args[1] {
                         for (k, v) in map {
                             out.push(GremlinStep::Property(k.clone(), v.clone()));
                         }
                     }
+                } else if args.len() >= 3 {
+                    // property(Cardinality, key, value) — skip cardinality
+                    if let GremlinValue::String(key) = &args[1] {
+                        out.push(GremlinStep::Property(key.clone(), args[2].clone()));
+                    }
                 } else if let GremlinValue::String(key) = &args[0] {
+                    // Bare "list"/"set"/"single" used as property key, not cardinality
+                    out.push(GremlinStep::Property(key.clone(), args[1].clone()));
+                }
+            } else if args.len() >= 2 {
+                if let GremlinValue::String(key) = &args[0] {
                     out.push(GremlinStep::Property(key.clone(), args[1].clone()));
                 }
             }
@@ -2891,6 +2909,18 @@ fn parse_single_value(
     }
     if s == "T.id" || s == "t[id]" {
         return Ok(GremlinValue::String("~id".to_string()));
+    }
+
+    // Cardinality.xxx(value) — extract the inner value
+    if s.starts_with("Cardinality.") {
+        if let Some(paren_start) = s.find('(') {
+            if s.ends_with(')') {
+                let inner = s[paren_start + 1..s.len() - 1].trim();
+                return parse_single_value(inner, resolve_param);
+            }
+        }
+        // Bare Cardinality.set / Cardinality.single — keep as token
+        return Ok(GremlinValue::String(s.to_string()));
     }
 
     // Scope.local, Scope.global
