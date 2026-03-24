@@ -3041,3 +3041,21 @@ mod tests {
         );
     }
 }
+
+#[test]
+fn debug_to_direction_out() {
+    let resolve = |name: &str| -> Option<GremlinValue> {
+        if name == "vid1" {
+            Some(GremlinValue::Integer(1))
+        } else {
+            None
+        }
+    };
+    let steps = parse_traversal(r#"g.V(vid1).to(Direction.OUT, "knows")"#, &resolve).unwrap();
+    for (i, step) in steps.iter().enumerate() {
+        eprintln!("Step {}: {:?}", i, step);
+    }
+    assert_eq!(steps.len(), 2);
+    assert!(matches!(&steps[0], GremlinStep::V(Some(_))));
+    assert!(matches!(&steps[1], GremlinStep::Out(_)));
+}

@@ -8402,3 +8402,14 @@ mod tests {
         );
     }
 }
+
+#[test]
+fn debug_compile_v_id_out() {
+    let mut compiler = GremlinCompiler::new();
+    let steps = vec![
+        GremlinStep::V(Some(vec![GremlinValue::Integer(1)])),
+        GremlinStep::Out(vec!["knows".into()]),
+    ];
+    let op = compiler.compile(&steps).unwrap();
+    eprintln!("Compiled op: {:#?}", op);
+}
