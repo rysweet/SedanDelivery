@@ -2861,7 +2861,6 @@ fn operator_contains_barrier(op: &Operator) -> bool {
         Operator::Sort { .. } | Operator::Aggregate { .. } | Operator::Distinct { .. } => true,
         Operator::Project { child, .. }
         | Operator::Filter { child, .. }
-        | Operator::Limit { child, .. }
         | Operator::Skip { child, .. }
         | Operator::Expand { child, .. }
         | Operator::GremlinSideEffect { child, .. }
@@ -2870,6 +2869,14 @@ fn operator_contains_barrier(op: &Operator) -> bool {
         | Operator::GremlinCyclicPath { child, .. }
         | Operator::GremlinGroup { child, .. }
         | Operator::GremlinAggregate { child, .. } => operator_contains_barrier(child),
+        // gremlin_tail limits need all rows → treat as barrier.
+        Operator::Limit { count, child } => {
+            if matches!(count, Expr::FunctionCall { name, .. } if name.as_str() == "gremlin_tail") {
+                true
+            } else {
+                operator_contains_barrier(child)
+            }
+        }
         Operator::Apply { outer, inner } => {
             operator_contains_barrier(outer) || operator_contains_barrier(inner)
         }

@@ -1483,10 +1483,10 @@ pub fn eval_function_with_vals(name: &str, vals: Vec<Value>) -> Result<Value, Gq
                     actual: "Map".into(),
                 })),
                 (Value::Map(l), Value::Map(r)) => {
-                    // Map merge: combine maps
+                    // Map merge: right side wins on key collisions (TinkerPop semantics)
                     let mut result = l.clone();
                     for (k, v) in r.iter() {
-                        result.entry(k.clone()).or_insert_with(|| v.clone());
+                        result.insert(k.clone(), v.clone());
                     }
                     Ok(Value::Map(result))
                 }
