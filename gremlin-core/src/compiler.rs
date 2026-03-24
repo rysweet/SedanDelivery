@@ -7295,6 +7295,10 @@ fn extract_by_traversal_key(steps: &[GremlinStep]) -> String {
         [GremlinStep::Unfold, GremlinStep::Values(keys), GremlinStep::Fold] if keys.len() == 1 => {
             format!("~unfold_values_fold:{}", keys[0])
         }
+        // tail(local, N).values("prop") — for a single element, tail is identity
+        [GremlinStep::TailLocal(_), GremlinStep::Values(keys)] if keys.len() == 1 => {
+            keys[0].clone()
+        }
         _ => String::new(),
     }
 }
