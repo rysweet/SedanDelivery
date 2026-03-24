@@ -4648,6 +4648,8 @@ impl GremlinCompiler {
                         "div" | "divide" => BinaryOp::Div,
                         "and" => BinaryOp::And,
                         "or" => BinaryOp::Or,
+                        "and" => BinaryOp::And,
+                        "or" => BinaryOp::Or,
                         "assign" => {
                             let mut items = vec![
                                 (Expr::Variable(current_alias.clone()), Some(sack_var)),

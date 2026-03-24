@@ -2893,6 +2893,18 @@ fn parse_single_value(
         return Ok(GremlinValue::String("~id".to_string()));
     }
 
+    // Cardinality.xxx(value) — extract the inner value
+    if s.starts_with("Cardinality.") {
+        if let Some(paren_start) = s.find('(') {
+            if s.ends_with(')') {
+                let inner = s[paren_start + 1..s.len() - 1].trim();
+                return parse_single_value(inner, resolve_param);
+            }
+        }
+        // Bare Cardinality.set / Cardinality.single — keep as token
+        return Ok(GremlinValue::String(s.to_string()));
+    }
+
     // Scope.local, Scope.global
     if s.starts_with("Scope.") || s.starts_with("Column.") || s.starts_with("Order.") {
         return Ok(GremlinValue::String(s.to_string()));
