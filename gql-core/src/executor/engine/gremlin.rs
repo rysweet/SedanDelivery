@@ -462,6 +462,10 @@ impl<'a> QueryExecutor<'a> {
     /// Execute `ChooseMap` — value-based dispatch.
     /// Evaluate the selector for each input row, compare the result against
     /// option values, and route to the matching branch.
+    ///
+    /// Uses batch execution: all rows matching a given option are collected
+    /// and executed together so that aggregating steps (fold, count, limit)
+    /// operate on the collective stream.
     pub(crate) fn exec_choose_map(
         &self,
         cx: &mut ExecContext<'_>,
@@ -484,6 +488,34 @@ impl<'a> QueryExecutor<'a> {
         let input = self.exec_operator(cx, child)?;
         let mut out = Vec::with_capacity(input.len());
 
+        // Phase 1: Classify each input row — determine which option(s) it matches.
+        // For each row, store (matched_option_indices, is_unproductive).
+        let mut option_batches: Vec<Vec<Row>> = vec![Vec::new(); options.len()];
+        let mut default_rows: Vec<Row> = Vec::new();
+        let mut unproductive_rows: Vec<Row> = Vec::new();
+        let mut identity_rows: Vec<Row> = Vec::new();
+
+        // Find default and unproductive option indices.
+        let mut default_idx: Option<usize> = None;
+        let mut unproductive_idx: Option<usize> = None;
+        for (idx, (match_val, _, _)) in options.iter().enumerate() {
+            match match_val {
+                None => {
+                    if default_idx.is_none() {
+                        default_idx = Some(idx);
+                    }
+                }
+                Some(Value::Str(s))
+                    if s.as_ref() == "Pick.unproductive" || s.as_ref() == "unproductive" =>
+                {
+                    if unproductive_idx.is_none() {
+                        unproductive_idx = Some(idx);
+                    }
+                }
+                _ => {}
+            }
+        }
+
         for row in input {
             cx.budget.check_or_err()?;
 
@@ -492,7 +524,6 @@ impl<'a> QueryExecutor<'a> {
             let sel_rows = self.exec_operator(cx, selector)?;
             self.foreach_seed.borrow_mut().take();
 
-            // Check if the selector was unproductive (returned no rows or only nulls).
             let selector_unproductive = sel_rows.is_empty()
                 || sel_rows.first().is_none_or(|r| {
                     r.get(selector_alias.0.as_str())
@@ -500,9 +531,6 @@ impl<'a> QueryExecutor<'a> {
                         && r.values().all(|v| matches!(v, Value::Null))
                 });
 
-            // Extract the selector's result value using the known alias.
-            // Unwrap single-element lists (e.g. labels() returns List(["person"])) to
-            // a scalar so option matching works against plain string values.
             let sel_value = sel_rows
                 .first()
                 .and_then(|r| r.get(selector_alias.0.as_str()).cloned())
@@ -512,66 +540,28 @@ impl<'a> QueryExecutor<'a> {
                     other => other,
                 });
 
-            // When the selector is unproductive (e.g. values("age") on a vertex
-            // without "age"), look for an "unproductive" option branch. If none
-            // exists, the traverser passes through as identity.
             if selector_unproductive {
-                let mut unproductive_branch = None;
-                let mut unproductive_alias = None;
-                for (match_val, branch, branch_alias) in options.iter() {
-                    if let Some(Value::Str(s)) = match_val {
-                        if s.as_ref() == "Pick.unproductive" || s.as_ref() == "unproductive" {
-                            unproductive_branch = Some(branch);
-                            unproductive_alias = branch_alias.as_ref();
-                            break;
-                        }
-                    }
-                }
-                if let Some(branch) = unproductive_branch {
-                    self.foreach_seed.borrow_mut().replace(vec![row]);
-                    let branch_rows = self.exec_operator(cx, branch)?;
-                    self.foreach_seed.borrow_mut().take();
-                    for mut brow in branch_rows {
-                        if let (Some(out_a), Some(src_a)) = (output_alias, unproductive_alias) {
-                            if let Some(val) = brow.get(src_a.0.as_str()).cloned() {
-                                brow.insert(out_a.0.to_string(), val);
-                            }
-                        }
-                        out.push(brow);
-                    }
+                if unproductive_idx.is_some() {
+                    unproductive_rows.push(row);
                 } else {
-                    // No unproductive branch → identity (pass through)
-                    out.push(row);
+                    identity_rows.push(row);
                 }
                 continue;
             }
 
-            // Find ALL matching option branches (Gremlin allows multiple
-            // options with the same key — all matching branches execute).
-            let mut matched_branches: Vec<(&Operator, Option<&crate::ast::Identifier>)> =
-                Vec::new();
-            let mut default_branch: Option<&Operator> = None;
-            let mut default_alias: Option<&crate::ast::Identifier> = None;
-            for (match_val, branch, branch_alias) in options {
+            // Find matching option(s).
+            let mut matched_any = false;
+            for (idx, (match_val, _, _)) in options.iter().enumerate() {
                 match match_val {
-                    None => {
-                        // Keep only the first default (Pick.none) branch;
-                        // subsequent option(Pick.none, ...) entries are ignored
-                        // per TinkerPop semantics.
-                        if default_branch.is_none() {
-                            default_branch = Some(branch);
-                            default_alias = branch_alias.as_ref();
-                        }
-                    }
+                    None => {} // default handled below
                     Some(v) => {
-                        // Skip "unproductive" sentinel (handled above)
                         if let Value::Str(s) = v {
                             if s.as_ref() == "Pick.unproductive" || s.as_ref() == "unproductive" {
                                 continue;
                             }
-                            // Pick.any — always matches (wildcard)
                             if s.as_ref() == "Pick.any" || s.as_ref() == "any" {
-                                matched_branches.push((branch, branch_alias.as_ref()));
+                                option_batches[idx].push(row.clone());
+                                matched_any = true;
                                 continue;
                             }
                         }
@@ -582,7 +572,6 @@ impl<'a> QueryExecutor<'a> {
                             | (Some(Value::Float(b)), Some(Value::Int(a))) => {
                                 (*a as f64 - b).abs() < 1e-9
                             }
-                            // Predicate matching: option value encodes a predicate string
                             (Some(sel), Some(Value::Str(pred_str)))
                                 if pred_str.starts_with("P.") =>
                             {
@@ -592,12 +581,10 @@ impl<'a> QueryExecutor<'a> {
                             _ => false,
                         };
                         if matches {
-                            // For predicate-based matching (P.*), only the
-                            // first match fires (if-else-if semantics). For
-                            // exact-value matching, all matching options fire.
+                            option_batches[idx].push(row.clone());
+                            matched_any = true;
                             let is_predicate_match =
                                 matches!(v, Value::Str(s) if s.starts_with("P."));
-                            matched_branches.push((branch, branch_alias.as_ref()));
                             if is_predicate_match {
                                 break;
                             }
@@ -606,31 +593,72 @@ impl<'a> QueryExecutor<'a> {
                 }
             }
 
-            if matched_branches.is_empty() {
-                if let Some(branch) = default_branch {
-                    matched_branches.push((branch, default_alias));
-                }
-            }
-
-            if !matched_branches.is_empty() {
-                for (branch, branch_alias) in &matched_branches {
-                    self.foreach_seed.borrow_mut().replace(vec![row.clone()]);
-                    let branch_rows = self.exec_operator(cx, branch)?;
-                    self.foreach_seed.borrow_mut().take();
-                    for mut brow in branch_rows {
-                        if let (Some(out_a), Some(src_a)) = (output_alias, branch_alias) {
-                            if let Some(val) = brow.get(src_a.0.as_str()).cloned() {
-                                brow.insert(out_a.0.to_string(), val);
-                            }
-                        }
-                        out.push(brow);
-                    }
-                }
-            } else {
-                // No branch matches and no default → identity (pass through)
-                out.push(row);
+            if !matched_any {
+                default_rows.push(row);
             }
         }
+
+        // Phase 2: Batch-execute each option branch.
+        for (idx, (_, branch, branch_alias)) in options.iter().enumerate() {
+            let batch = &option_batches[idx];
+            if batch.is_empty() {
+                continue;
+            }
+            self.foreach_seed.borrow_mut().replace(batch.clone());
+            let branch_rows = self.exec_operator(cx, branch)?;
+            self.foreach_seed.borrow_mut().take();
+            for mut brow in branch_rows {
+                if let (Some(out_a), Some(src_a)) = (output_alias, branch_alias.as_ref()) {
+                    if let Some(val) = brow.get(src_a.0.as_str()).cloned() {
+                        brow.insert(out_a.0.to_string(), val);
+                    }
+                }
+                out.push(brow);
+            }
+        }
+
+        // Execute unproductive rows through unproductive branch.
+        if !unproductive_rows.is_empty() {
+            if let Some(idx) = unproductive_idx {
+                let (_, branch, branch_alias) = &options[idx];
+                self.foreach_seed.borrow_mut().replace(unproductive_rows);
+                let branch_rows = self.exec_operator(cx, branch)?;
+                self.foreach_seed.borrow_mut().take();
+                for mut brow in branch_rows {
+                    if let (Some(out_a), Some(src_a)) = (output_alias, branch_alias.as_ref()) {
+                        if let Some(val) = brow.get(src_a.0.as_str()).cloned() {
+                            brow.insert(out_a.0.to_string(), val);
+                        }
+                    }
+                    out.push(brow);
+                }
+            }
+        }
+
+        // Execute default rows through default branch.
+        if !default_rows.is_empty() {
+            if let Some(idx) = default_idx {
+                let (_, branch, branch_alias) = &options[idx];
+                self.foreach_seed.borrow_mut().replace(default_rows);
+                let branch_rows = self.exec_operator(cx, branch)?;
+                self.foreach_seed.borrow_mut().take();
+                for mut brow in branch_rows {
+                    if let (Some(out_a), Some(src_a)) = (output_alias, branch_alias.as_ref()) {
+                        if let Some(val) = brow.get(src_a.0.as_str()).cloned() {
+                            brow.insert(out_a.0.to_string(), val);
+                        }
+                    }
+                    out.push(brow);
+                }
+            } else {
+                // No default branch → identity (pass through)
+                out.extend(default_rows);
+            }
+        }
+
+        // Identity pass-through for unproductive rows without an unproductive branch.
+        out.extend(identity_rows);
+
         Ok(out)
     }
 
