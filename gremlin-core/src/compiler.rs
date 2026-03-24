@@ -5404,7 +5404,7 @@ impl GremlinCompiler {
                     let alias = self.next_alias("type");
                     let mut items = vec![(
                         Expr::FunctionCall {
-                            name: SmolStr::new("gremlin_typeOf"),
+                            name: SmolStr::new("gremlin_typeof"),
                             args: vec![Expr::Variable(current_alias.clone())],
                             distinct: false,
                         },
