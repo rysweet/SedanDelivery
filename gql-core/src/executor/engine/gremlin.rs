@@ -900,6 +900,7 @@ impl<'a> QueryExecutor<'a> {
             by_keys,
             by_traversal,
             productive,
+            set_semantics,
         } = op
         else {
             debug_assert!(false, "expected GremlinAggregate operator");
@@ -988,9 +989,28 @@ impl<'a> QueryExecutor<'a> {
         {
             let mut se = self.gremlin_side_effects.borrow_mut();
             if let Some(Value::List(existing)) = se.get_mut(&agg_col) {
-                existing.extend(collected.iter().cloned());
+                if *set_semantics {
+                    for v in &collected {
+                        if !existing.contains(v) {
+                            existing.push(v.clone());
+                        }
+                    }
+                } else {
+                    existing.extend(collected.iter().cloned());
+                }
             } else {
-                se.insert(agg_col.clone(), Value::List(collected.clone()));
+                let stored = if *set_semantics {
+                    let mut deduped = Vec::new();
+                    for v in &collected {
+                        if !deduped.contains(v) {
+                            deduped.push(v.clone());
+                        }
+                    }
+                    deduped
+                } else {
+                    collected.clone()
+                };
+                se.insert(agg_col.clone(), Value::List(stored));
             }
         }
         if input.is_empty() {
@@ -1008,10 +1028,29 @@ impl<'a> QueryExecutor<'a> {
         for row in &mut input {
             if let Some(Value::List(existing)) = row.get(&agg_col).cloned() {
                 let mut merged = existing;
-                merged.extend(collected.iter().cloned());
+                if *set_semantics {
+                    for v in &collected {
+                        if !merged.contains(v) {
+                            merged.push(v.clone());
+                        }
+                    }
+                } else {
+                    merged.extend(collected.iter().cloned());
+                }
                 row.insert(agg_col.clone(), Value::List(merged));
             } else {
-                row.insert(agg_col.clone(), Value::List(collected.clone()));
+                let stored = if *set_semantics {
+                    let mut deduped = Vec::new();
+                    for v in &collected {
+                        if !deduped.contains(v) {
+                            deduped.push(v.clone());
+                        }
+                    }
+                    deduped
+                } else {
+                    collected.clone()
+                };
+                row.insert(agg_col.clone(), Value::List(stored));
             }
         }
 
@@ -2903,6 +2942,7 @@ mod tests {
                 by_keys: vec![],
                 by_traversal: None,
                 productive: false,
+                set_semantics: false,
             }),
         };
 
@@ -2941,6 +2981,7 @@ mod tests {
                 by_keys: vec![],
                 by_traversal: None,
                 productive: false,
+                set_semantics: false,
             }),
         };
 
@@ -2969,6 +3010,7 @@ mod tests {
             by_keys: vec![],
             by_traversal: None,
             productive: false,
+            set_semantics: false,
         };
 
         let mut budget = ExecutionBudget::unlimited();
@@ -3001,6 +3043,7 @@ mod tests {
                 by_keys: vec![],
                 by_traversal: None,
                 productive: false,
+                set_semantics: false,
             }),
         };
 
@@ -3039,6 +3082,7 @@ mod tests {
                 by_keys: vec![],
                 by_traversal: None,
                 productive: false,
+                set_semantics: false,
             }),
         };
 

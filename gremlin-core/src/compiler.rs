@@ -75,6 +75,9 @@ pub struct GremlinCompiler {
     /// Keys registered by aggregate() steps, used by within/without to
     /// resolve side-effect references without polluting alias_map.
     aggregate_keys: HashSet<String>,
+    /// Side-effect keys initialized with Set semantics (e.g. `withSideEffect("a", {})`).
+    /// Aggregate steps targeting these keys deduplicate values.
+    set_keys: HashSet<String>,
 }
 
 impl Default for GremlinCompiler {
@@ -102,6 +105,7 @@ impl GremlinCompiler {
             needs_path_tracking: false,
             needs_label_stacks: false,
             aggregate_keys: HashSet::new(),
+            set_keys: HashSet::new(),
         }
     }
 
@@ -134,6 +138,7 @@ impl GremlinCompiler {
             needs_path_tracking: self.needs_path_tracking,
             needs_label_stacks: self.needs_label_stacks,
             aggregate_keys: self.aggregate_keys.clone(),
+            set_keys: self.set_keys.clone(),
         }
     }
 
@@ -3754,6 +3759,7 @@ impl GremlinCompiler {
 
                 GremlinStep::Aggregate(key) => {
                     let child = current.take().ok_or(CompileError::MissingChild)?;
+                    let is_set = self.set_keys.contains(key);
                     current = Some(Operator::GremlinAggregate {
                         key: key.clone(),
                         child: Box::new(child),
@@ -3761,6 +3767,7 @@ impl GremlinCompiler {
                         by_keys: vec![],
                         by_traversal: None,
                         productive: self.productive_by,
+                        set_semantics: is_set,
                     });
                     // Track aggregate keys separately for within/without
                     // resolution (not in alias_map to avoid conflicts).
@@ -4664,11 +4671,15 @@ impl GremlinCompiler {
                     self.alias_map.insert(key.clone(), se_alias.clone());
                     // Store the literal value for compile-time key resolution
                     self.side_effect_values.insert(key.clone(), val.clone());
+                    // Track set-semantics keys (initialized via `{...}` notation)
+                    if reduce_op.as_deref() == Some("set") {
+                        self.set_keys.insert(key.clone());
+                    }
                     // For reduce operators, store in compiler state for Cap to use.
                     // Still inject the initial value as a column so downstream
                     // select/where can resolve it (e.g., where(within('a'))).
                     if let Some(op) = reduce_op {
-                        if op != "assign" {
+                        if op != "assign" && op != "set" {
                             let init_val = match val {
                                 GremlinValue::Integer(n) => *n as f64,
                                 GremlinValue::Float(f) => *f,
