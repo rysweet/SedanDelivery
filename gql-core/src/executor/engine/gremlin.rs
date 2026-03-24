@@ -1306,14 +1306,6 @@ impl<'a> QueryExecutor<'a> {
                 Value::Edge(eid) => Value::Int(eid.0 as i64),
                 _ => val.clone(),
             },
-            "~key" | "T.key" | "key" => match val {
-                Value::Map(m) => m.get("~key").cloned().unwrap_or_else(|| val.clone()),
-                _ => val.clone(),
-            },
-            "~value" | "T.value" | "value" => match val {
-                Value::Map(m) => m.get("~value").cloned().unwrap_or_else(|| val.clone()),
-                _ => val.clone(),
-            },
             _ => {
                 // Property access
                 match val {

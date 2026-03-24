@@ -102,20 +102,7 @@ pub fn cmp_values(a: &Value, b: &Value) -> std::cmp::Ordering {
         }
         // Same-rank types without a natural total order — use deterministic
         // ordering so that ORDER BY never silently treats distinct values as equal.
-        (Value::Map(x), Value::Map(y)) => {
-            // Compare maps entry-by-entry in iteration order, then by size.
-            for ((ka, va), (kb, vb)) in x.iter().zip(y.iter()) {
-                let ko = ka.as_ref().cmp(kb.as_ref());
-                if ko != Equal {
-                    return ko;
-                }
-                let vo = cmp_values(va, vb);
-                if vo != Equal {
-                    return vo;
-                }
-            }
-            x.len().cmp(&y.len())
-        }
+        (Value::Map(x), Value::Map(y)) => x.len().cmp(&y.len()),
         (Value::Node(x), Value::Node(y)) => x.cmp(y),
         (Value::Edge(x), Value::Edge(y)) => x.cmp(y),
         (
