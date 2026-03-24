@@ -3897,7 +3897,9 @@ impl GremlinCompiler {
                         } else {
                             // Source step: just unwind
                             current = Some(injected);
-                            current_alias = alias;
+                            current_alias = alias.clone();
+                            path_aliases.push(alias.clone());
+                            self.path_tracking.push(alias);
                         }
                     }
                 }
