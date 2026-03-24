@@ -5595,6 +5595,21 @@ impl GremlinCompiler {
             current_alias = alias;
         }
 
+        // Flush pending select by-mods when by() was the last step.
+        if pending_select && !select_by_mods.is_empty() {
+            if let Some(Operator::GremlinSelect { ref mut keys, .. }) = current {
+                for (i, (src_var, _)) in keys.iter_mut().enumerate() {
+                    let mod_key = &select_by_mods[i % select_by_mods.len()];
+                    if !mod_key.is_empty() {
+                        *src_var = Identifier::new(format!("__prop_{}__{}", mod_key, src_var.0));
+                    }
+                }
+                if keys.len() == 1 && !select_by_mods.is_empty() {
+                    current_alias = Identifier::new(keys[0].1.clone());
+                }
+            }
+        }
+
         // Flush accumulated path by-keys into the GremlinPath operator
         if pending_path && !path_by_keys.is_empty() {
             if let Some(Operator::GremlinPath {
