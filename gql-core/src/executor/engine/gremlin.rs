@@ -380,23 +380,24 @@ impl<'a> QueryExecutor<'a> {
         let input = self.exec_operator(cx, child)?;
         let mut out = Vec::with_capacity(input.len());
 
+        // Phase 1: Classify each input row as true, false, or pass-through.
+        let mut true_rows: Vec<Row> = Vec::new();
+        let mut false_rows: Vec<Row> = Vec::new();
+
         for row in input {
             cx.budget.check_or_err()?;
 
-            // Evaluate predicate: if it produces rows, the condition is true.
             self.foreach_seed.borrow_mut().replace(vec![row.clone()]);
             let pred_result = self.exec_operator(cx, predicate)?;
             self.foreach_seed.borrow_mut().take();
 
             let is_true = !pred_result.is_empty();
-            let branch = if is_true {
-                if_true
-            } else if let Some(f) = if_false {
-                f
+            if is_true {
+                true_rows.push(row);
+            } else if if_false.is_some() {
+                false_rows.push(row);
             } else {
                 // No else branch — pass through unchanged.
-                // Copy the seed alias value to the output alias so subsequent
-                // steps can find the traverser under the unified alias.
                 if let (Some(out_alias), Some(fa)) = (output_alias, false_alias) {
                     let mut prow = row;
                     if let Some(val) = prow.get(fa.0.as_str()).cloned() {
@@ -406,17 +407,17 @@ impl<'a> QueryExecutor<'a> {
                 } else {
                     out.push(row);
                 }
-                continue;
-            };
+            }
+        }
 
-            self.foreach_seed.borrow_mut().replace(vec![row]);
-            let branch_rows = self.exec_operator(cx, branch)?;
+        // Phase 2: Batch-execute true branch with all true rows.
+        if !true_rows.is_empty() {
+            self.foreach_seed.borrow_mut().replace(true_rows);
+            let branch_rows = self.exec_operator(cx, if_true)?;
             self.foreach_seed.borrow_mut().take();
 
-            // Copy branch-specific result column to the unified output alias.
             if let Some(out_alias) = output_alias {
-                let src = if is_true { true_alias } else { false_alias };
-                if let Some(src_alias) = src {
+                if let Some(src_alias) = true_alias {
                     for mut brow in branch_rows {
                         if let Some(val) = brow.get(src_alias.0.as_str()).cloned() {
                             brow.insert(out_alias.0.to_string(), val);
@@ -430,6 +431,31 @@ impl<'a> QueryExecutor<'a> {
                 out.extend(branch_rows);
             }
         }
+
+        // Phase 3: Batch-execute false branch with all false rows.
+        if !false_rows.is_empty() {
+            if let Some(f) = if_false {
+                self.foreach_seed.borrow_mut().replace(false_rows);
+                let branch_rows = self.exec_operator(cx, f)?;
+                self.foreach_seed.borrow_mut().take();
+
+                if let Some(out_alias) = output_alias {
+                    if let Some(src_alias) = false_alias {
+                        for mut brow in branch_rows {
+                            if let Some(val) = brow.get(src_alias.0.as_str()).cloned() {
+                                brow.insert(out_alias.0.to_string(), val);
+                            }
+                            out.push(brow);
+                        }
+                    } else {
+                        out.extend(branch_rows);
+                    }
+                } else {
+                    out.extend(branch_rows);
+                }
+            }
+        }
+
         Ok(out)
     }
 
