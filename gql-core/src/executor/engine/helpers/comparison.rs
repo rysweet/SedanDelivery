@@ -166,6 +166,8 @@ pub fn gremlin_cmp_values(a: &Value, b: &Value) -> std::cmp::Ordering {
             Value::LocalDateTime(_) => 6,
             Value::DateTime(_) => 7,
             Value::Duration(_) => 8,
+            // UUID strings (tagged with ~uuid: prefix) rank between String and Vertex
+            Value::Str(s) if s.starts_with("~uuid:") => 12,
             Value::Str(_) => 10,
             Value::Bytes(_) => 11,
             Value::Node(_) => 20,
