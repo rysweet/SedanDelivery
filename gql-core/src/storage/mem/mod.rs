@@ -137,13 +137,16 @@ impl GraphInner {
     }
 
     pub(crate) fn next_node_id(&mut self, graph_name: &str) -> Result<u64, StorageError> {
-        self.node_seq = self
-            .node_seq
+        // Shared counter: both nodes and edges draw from edge_seq so the
+        // modern-graph gets vertex IDs 1-6 and edge IDs 7-12 (TinkerPop compat).
+        self.edge_seq = self
+            .edge_seq
             .checked_add(1)
             .ok_or_else(|| StorageError::IdOverflow {
                 graph: graph_name.to_string(),
             })?;
-        Ok(self.node_seq)
+        self.node_seq = self.edge_seq;
+        Ok(self.edge_seq)
     }
 
     pub(crate) fn has_index(&self, label: &str, property: &str) -> bool {
