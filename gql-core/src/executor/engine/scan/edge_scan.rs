@@ -109,27 +109,34 @@ impl<'a> QueryExecutor<'a> {
                 // Note: named path variables (Value::Path) are NOT checked here because
                 // edges from paths in previous MATCH clauses can be reused independently.
                 // Also exclude outer-scope edge variables (from previous WITH/MATCH scopes).
+                //
+                // In Gremlin mode, edge isomorphism is disabled — Gremlin traversals
+                // allow revisiting the same edge from different directions.
                 let eid = adj.edge_id;
-                let edge_already_used = row.iter().any(|(key, v)| {
-                    // Don't count the current alias as "already used"
-                    if Some(key.as_str()) == current_alias {
-                        return false;
-                    }
-                    // Don't count outer-scope edges (from previous MATCH clauses)
-                    if outer_edge_vars.contains(key.as_str()) {
-                        return false;
-                    }
-                    match v {
-                        Value::Edge(e) => *e == eid,
-                        Value::List(items) => items
-                            .iter()
-                            .any(|item| matches!(item, Value::Edge(e) if *e == eid)),
-                        // Named path variables are NOT subject to edge isomorphism
-                        // across MATCH clauses — only relationship variables are.
-                        Value::Path { .. } => false,
-                        _ => false,
-                    }
-                });
+                let edge_already_used = if self.gremlin_mode {
+                    false
+                } else {
+                    row.iter().any(|(key, v)| {
+                        // Don't count the current alias as "already used"
+                        if Some(key.as_str()) == current_alias {
+                            return false;
+                        }
+                        // Don't count outer-scope edges (from previous MATCH clauses)
+                        if outer_edge_vars.contains(key.as_str()) {
+                            return false;
+                        }
+                        match v {
+                            Value::Edge(e) => *e == eid,
+                            Value::List(items) => items
+                                .iter()
+                                .any(|item| matches!(item, Value::Edge(e) if *e == eid)),
+                            // Named path variables are NOT subject to edge isomorphism
+                            // across MATCH clauses — only relationship variables are.
+                            Value::Path { .. } => false,
+                            _ => false,
+                        }
+                    })
+                };
                 if edge_already_used {
                     continue;
                 }
