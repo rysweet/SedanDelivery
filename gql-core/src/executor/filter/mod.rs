@@ -1762,13 +1762,22 @@ pub fn eval_function_with_vals(name: &str, vals: Vec<Value>) -> Result<Value, Gq
         }
         "gremlin_column_values" => match vals.first() {
             Some(Value::Map(m)) => {
-                Ok(m.values().next().cloned().unwrap_or(Value::Null))
+                Ok(Value::List(m.values().cloned().collect()))
             }
+            Some(Value::List(items)) => Ok(Value::List(items.clone())),
             other => Ok(other.cloned().unwrap_or(Value::Null)),
         },
         "gremlin_column_keys" => match vals.first() {
             Some(Value::Map(m)) => {
-                Ok(m.keys().next().map(|k| Value::Str(k.clone())).unwrap_or(Value::Null))
+                Ok(Value::List(m.keys().map(|k| Value::Str(k.clone())).collect()))
+            }
+            Some(Value::List(items)) => {
+                // For a list, keys are the indices
+                Ok(Value::List(
+                    (0..items.len())
+                        .map(|i| Value::Int(i as i64))
+                        .collect(),
+                ))
             }
             other => Ok(other.cloned().unwrap_or(Value::Null)),
         },

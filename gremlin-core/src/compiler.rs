@@ -3042,6 +3042,21 @@ impl GremlinCompiler {
                             } else {
                                 predicate_to_expr(predicate, &current_alias)
                             }
+                        } else if let Some(label_expr) =
+                            predicate_label_ref(predicate, &self.alias_map, &self.aggregate_keys)
+                        {
+                            let op = predicate_to_binary_op(predicate);
+                            Expr::BinaryOp {
+                                op,
+                                left: Box::new(Expr::Variable(current_alias.clone())),
+                                right: Box::new(label_expr),
+                            }
+                        } else if predicate_has_label_refs(predicate, &self.alias_map) {
+                            predicate_to_label_aware_expr(
+                                predicate,
+                                &Expr::Variable(current_alias.clone()),
+                                &self.alias_map,
+                            )
                         } else {
                             predicate_to_expr(predicate, &current_alias)
                         };
