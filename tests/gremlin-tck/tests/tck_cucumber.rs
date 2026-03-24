@@ -1035,7 +1035,7 @@ fn find_top_level_char(s: &str, target: char) -> Option<usize> {
 }
 
 /// Get the "result" value from a row — uses the result_alias for deterministic access.
-fn row_result_value<'a>(row: &'a IndexMap<String, Value>, result_alias: &str) -> Option<&'a Value> {
+fn row_result_value<'a>(row: &'a HashMap<String, Value>, result_alias: &str) -> Option<&'a Value> {
     // Use the compiler's result alias for deterministic column selection.
     if !result_alias.is_empty() {
         if let Some(v) = row.get(result_alias) {
@@ -1074,7 +1074,7 @@ fn assert_results_match_unordered(
 
     // If the result is a single row containing a List (from cap/fold), unpack it
     // into individual values for comparison, matching TinkerPop semantics.
-    let unpacked_rows: Vec<IndexMap<String, Value>>;
+    let unpacked_rows: Vec<HashMap<String, Value>>;
     let effective_result = if result.rows.len() == 1 && expected.len() > 1 {
         if let Some(Value::List(items)) = row_result_value(&result.rows[0], &world.result_alias) {
             // Unpack the list into individual rows
@@ -1086,7 +1086,7 @@ fn assert_results_match_unordered(
             unpacked_rows = items
                 .iter()
                 .map(|v| {
-                    let mut row: IndexMap<String, Value> = HashMap::new();
+                    let mut row: HashMap<String, Value> = HashMap::new();
                     row.insert(key.clone(), v.clone());
                     row
                 })
@@ -1107,7 +1107,7 @@ fn assert_results_match_unordered(
                     result.rows[0].keys().next().unwrap().clone()
                 };
                 unpacked_rows = vec![{
-                    let mut row: IndexMap<String, Value> = HashMap::new();
+                    let mut row: HashMap<String, Value> = HashMap::new();
                     row.insert(key, items[0].clone());
                     row
                 }];
@@ -1194,7 +1194,7 @@ fn assert_results_match_ordered(
     // If the result is a single row containing a List but we expect multiple
     // rows, unpack the list into individual rows (matching TinkerPop semantics
     // for fold/order(local) results).
-    let unpacked_rows: Vec<IndexMap<String, Value>>;
+    let unpacked_rows: Vec<HashMap<String, Value>>;
     let effective_result = if result.rows.len() == 1 && expected.len() > 1 {
         if let Some(Value::List(items)) = row_result_value(&result.rows[0], &world.result_alias) {
             let key = if !world.result_alias.is_empty() {
@@ -1205,7 +1205,7 @@ fn assert_results_match_ordered(
             unpacked_rows = items
                 .iter()
                 .map(|v| {
-                    let mut row: IndexMap<String, Value> = HashMap::new();
+                    let mut row: HashMap<String, Value> = HashMap::new();
                     row.insert(key.clone(), v.clone());
                     row
                 })

@@ -1282,9 +1282,9 @@ impl GremlinCompiler {
                             || keys[0] == "values")
                     {
                         let fn_name = if keys[0] == "Column.keys" || keys[0] == "keys" {
-                            "keys"
+                            "gremlin_column_key"
                         } else {
-                            "values"
+                            "gremlin_column_value"
                         };
                         let alias = self.next_alias(fn_name);
                         current = Some(Operator::Project {

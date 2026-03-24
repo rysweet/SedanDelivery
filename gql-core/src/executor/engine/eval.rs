@@ -1282,6 +1282,32 @@ impl<'a> QueryExecutor<'a> {
                             }
                         }
                     }
+                    "gremlin_asstring" => {
+                        if let Some(Value::Edge(eid)) = evaled_args.first() {
+                            if let Ok(Some(edge)) = self.store.get_edge(graph, *eid) {
+                                return Ok(Value::Str(
+                                    format!(
+                                        "e[{}][{}-{}->{}]",
+                                        eid.0, edge.src.0, edge.rel_type, edge.dst.0
+                                    )
+                                    .into(),
+                                ));
+                            }
+                        }
+                        eval_function_with_vals(name, evaled_args)
+                    }
+                    "gremlin_column_key" => match evaled_args.into_iter().next() {
+                        Some(Value::Map(m)) if m.len() == 1 => {
+                            Ok(Value::Str(m.keys().next().unwrap().clone()))
+                        }
+                        Some(other) => eval_function_with_vals("keys", vec![other]),
+                        None => Ok(Value::Null),
+                    },
+                    "gremlin_column_value" => match evaled_args.into_iter().next() {
+                        Some(Value::Map(m)) if m.len() == 1 => Ok(m.into_values().next().unwrap()),
+                        Some(other) => eval_function_with_vals("values", vec![other]),
+                        None => Ok(Value::Null),
+                    },
                     _ => eval_function_with_vals(name, evaled_args),
                 }
             }
