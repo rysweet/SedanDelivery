@@ -223,12 +223,13 @@ async fn given_sink_graph(world: &mut GremlinWorld) {
         .create_node("sink", vec!["loops".to_string()], props)
         .unwrap();
     // One self-edge: bothE returns it twice (both directions), in/out return once.
-    store
+    let self_eid = store
         .create_edge("sink", loop_v, loop_v, "self".to_string(), HashMap::new())
         .unwrap();
     world.store = Some(Arc::new(store));
     world.graph_name = "sink".into();
     world.vertex_names.insert("loop".into(), loop_v);
+    world.edge_names.insert("loop-self->loop".into(), self_eid);
 }
 
 #[given("an unsupported test")]
