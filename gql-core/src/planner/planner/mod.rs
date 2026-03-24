@@ -1621,6 +1621,7 @@ mod tests {
             | Operator::GremlinSideEffect { child, .. }
             | Operator::GremlinAggregate { child, .. }
             | Operator::GremlinPath { child, .. }
+            | Operator::GremlinTree { child, .. }
             | Operator::Cap { child, .. } => vec![child],
             Operator::ForEach { body, child, .. } | Operator::Repeat { body, child, .. } => {
                 vec![child, body]

@@ -493,6 +493,7 @@ impl<'a> QueryExecutor<'a> {
             | Operator::Coalesce { .. }
             | Operator::GremlinSideEffect { .. }
             | Operator::GremlinAggregate { .. }
+            | Operator::GremlinTree { .. }
             | Operator::GremlinPath { .. }
             | Operator::GremlinMatch { .. }
             | Operator::Cap { .. }

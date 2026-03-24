@@ -224,6 +224,9 @@ pub(crate) fn discover_operator_aliases(op: &Operator) -> Vec<String> {
         Operator::GremlinPath { .. } => {
             aliases.push("path".to_string());
         }
+        Operator::GremlinTree { alias, .. } => {
+            aliases.push(alias.0.clone());
+        }
         Operator::GremlinMatch { child, .. } => {
             aliases.extend(discover_operator_aliases(child));
         }

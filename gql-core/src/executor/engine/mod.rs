@@ -385,6 +385,7 @@ impl<'a> QueryExecutor<'a> {
             Operator::Cap { .. } => self.exec_cap(cx, op),
             Operator::GremlinAggregate { .. } => self.exec_gremlin_aggregate(cx, op),
             Operator::GremlinPath { .. } => self.exec_gremlin_path(cx, op),
+            Operator::GremlinTree { .. } => self.exec_gremlin_tree(cx, op),
             Operator::GremlinMatch { .. } => self.exec_gremlin_match(cx, op),
             Operator::GremlinSelect { .. } => self.exec_gremlin_select(cx, op),
             Operator::GremlinGroup { .. } => self.exec_gremlin_group(cx, op),

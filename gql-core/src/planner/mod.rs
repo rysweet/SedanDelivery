@@ -318,6 +318,18 @@ pub enum Operator {
         /// Optional label for `to()` — path ends at this label.
         to_label: Option<String>,
     },
+    /// Gremlin tree() — build a tree structure from traversal paths.
+    GremlinTree {
+        child: Box<Operator>,
+        /// Ordered list of aliases that form the path elements for each traverser.
+        path_aliases: Vec<Identifier>,
+        /// Optional side-effect key. When set, the tree is accumulated as a
+        /// side-effect and traversers pass through. When None, tree() is a barrier
+        /// that emits a single tree Map.
+        side_effect_key: Option<String>,
+        /// Output column name (used in barrier mode).
+        alias: Identifier,
+    },
     /// Gremlin match() — declarative pattern matching with named bindings.
     GremlinMatch {
         /// Each pattern is a compiled sub-traversal that binds variables.
@@ -459,6 +471,7 @@ impl Operator {
             | Operator::Cap { child, .. }
             | Operator::GremlinAggregate { child, .. }
             | Operator::GremlinPath { child, .. }
+            | Operator::GremlinTree { child, .. }
             | Operator::GremlinSelect { child, .. }
             | Operator::GremlinMapSlice { child, .. }
             | Operator::GremlinSimplePath { child, .. }
@@ -824,6 +837,12 @@ fn estimate_recursive(
         Operator::GremlinSideEffect { child, .. } => estimate_recursive(child, stats, estimates),
         Operator::GremlinAggregate { child, .. } => estimate_recursive(child, stats, estimates),
         Operator::GremlinPath { child, .. } => estimate_recursive(child, stats, estimates),
+        Operator::GremlinTree {
+            side_effect_key: Some(_),
+            child,
+            ..
+        } => estimate_recursive(child, stats, estimates),
+        Operator::GremlinTree { .. } => 1.0, // barrier mode: produces a single Map row
         Operator::GremlinMatch { child, .. } => estimate_recursive(child, stats, estimates),
         Operator::GremlinSelect { child, .. } => estimate_recursive(child, stats, estimates),
         Operator::GremlinGroup {
@@ -1102,6 +1121,9 @@ fn collect_all_aliases(op: &Operator) -> Vec<String> {
         }
         Operator::GremlinPath { .. } => {
             aliases.push("path".to_string());
+        }
+        Operator::GremlinTree { alias, .. } => {
+            aliases.push(alias.0.clone());
         }
         Operator::GremlinMatch { child, .. } => {
             aliases.extend(collect_all_aliases(child));

@@ -78,6 +78,9 @@ pub struct GremlinCompiler {
     /// Side-effect keys initialized with Set semantics (e.g. `withSideEffect("a", {})`).
     /// Aggregate steps targeting these keys deduplicate values.
     set_keys: HashSet<String>,
+    /// Path aliases from the outer (parent) scope. Set when compiling inside
+    /// local()/map() so that tree() can access the full traversal path.
+    outer_path_aliases: Vec<Identifier>,
 }
 
 impl Default for GremlinCompiler {
@@ -106,6 +109,7 @@ impl GremlinCompiler {
             needs_label_stacks: false,
             aggregate_keys: HashSet::new(),
             set_keys: HashSet::new(),
+            outer_path_aliases: Vec::new(),
         }
     }
 
@@ -139,6 +143,7 @@ impl GremlinCompiler {
             needs_label_stacks: self.needs_label_stacks,
             aggregate_keys: self.aggregate_keys.clone(),
             set_keys: self.set_keys.clone(),
+            outer_path_aliases: Vec::new(),
         }
     }
 
@@ -4479,6 +4484,9 @@ impl GremlinCompiler {
                     // map(traversal) — apply sub-traversal to each traverser
                     let child = current.take().ok_or(CompileError::MissingChild)?;
                     let mut sub = self.sub_compiler();
+                    // Pass parent path_aliases so tree() inside local() can
+                    // access the full traversal path.
+                    sub.outer_path_aliases = path_aliases.clone();
                     let map_op = sub.compile_seeded(map_steps, &current_alias)?;
                     self.absorb(&sub);
                     // Merge sub-compiler's path tracking into local path_aliases
@@ -5522,8 +5530,28 @@ impl GremlinCompiler {
                 }
 
                 // Unsupported steps — parsed successfully but not compilable
-                GremlinStep::Tree(_) => {
-                    return Err(CompileError::UnsupportedStep("tree".into()));
+                GremlinStep::Tree(key) => {
+                    let child = current.take().ok_or(CompileError::MissingChild)?;
+                    // Use outer path aliases when inside local()/map(),
+                    // otherwise use the current path_aliases.
+                    let tree_path_aliases = if !self.outer_path_aliases.is_empty() {
+                        self.outer_path_aliases.clone()
+                    } else {
+                        path_aliases.clone()
+                    };
+                    let alias = self.next_alias("tree");
+                    current = Some(Operator::GremlinTree {
+                        child: Box::new(child),
+                        path_aliases: tree_path_aliases,
+                        side_effect_key: key.clone(),
+                        alias: alias.clone(),
+                    });
+                    if let Some(k) = key {
+                        self.aggregate_keys.insert(k.clone());
+                    } else {
+                        // Barrier mode: tree becomes the new traverser value
+                        current_alias = alias;
+                    }
                 }
                 GremlinStep::Subgraph(_) => {
                     return Err(CompileError::UnsupportedStep("subgraph".into()));
@@ -5547,7 +5575,23 @@ impl GremlinCompiler {
                     return Err(CompileError::UnsupportedStep("io".into()));
                 }
                 GremlinStep::AsDate => {
-                    return Err(CompileError::UnsupportedStep("asDate".into()));
+                    // asDate() — convert epoch-millis integer to Date value.
+                    let child = current.take().ok_or(CompileError::MissingChild)?;
+                    let alias = self.next_alias("date");
+                    let mut items = vec![(
+                        Expr::FunctionCall {
+                            name: SmolStr::new("gremlin_asdate"),
+                            args: vec![Expr::Variable(current_alias.clone())],
+                            distinct: false,
+                        },
+                        Some(alias.clone()),
+                    )];
+                    items.extend(self.label_carry_items());
+                    current = Some(Operator::Project {
+                        items,
+                        child: Box::new(child),
+                    });
+                    current_alias = alias;
                 }
                 GremlinStep::DateAdd(..) => {
                     return Err(CompileError::UnsupportedStep("dateAdd".into()));
@@ -5947,6 +5991,9 @@ fn steps_need_path_tracking(steps: &[GremlinStep]) -> bool {
     for step in steps {
         match step {
             GremlinStep::Path | GremlinStep::SimplePath | GremlinStep::CyclicPath => {
+                return true;
+            }
+            GremlinStep::Tree(_) => {
                 return true;
             }
             GremlinStep::Repeat(_, inner)
