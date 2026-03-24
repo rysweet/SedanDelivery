@@ -2004,8 +2004,6 @@ pub fn eval_function_with_vals(name: &str, vals: Vec<Value>) -> Result<Value, Gq
                     let matches = actual_type == expected
                         || (expected == "long" && actual_type == "integer")
                         || (expected == "int" && actual_type == "integer")
-                        || (expected == "short" && actual_type == "integer")
-                        || (expected == "byte" && actual_type == "integer")
                         || (expected == "bigint" && actual_type == "integer")
                         || (expected == "biginteger" && actual_type == "integer")
                         || (expected == "bigdecimal" && actual_type == "double")
