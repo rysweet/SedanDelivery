@@ -7,7 +7,7 @@
 // Tests requiring a running Redis are marked `#[ignore]` and can be run
 // explicitly with `cargo test -- --include-ignored`.
 
-use std::collections::HashMap;
+use indexmap::IndexMap;
 use std::sync::mpsc;
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
@@ -75,7 +75,7 @@ fn unique_graph(prefix: &str) -> String {
     format!("{prefix}-{}", Uuid::new_v4().simple())
 }
 
-fn props(entries: &[(&str, Value)]) -> HashMap<String, Value> {
+fn props(entries: &[(&str, Value)]) -> IndexMap<String, Value> {
     entries
         .iter()
         .map(|(key, value)| ((*key).to_string(), value.clone()))
@@ -321,7 +321,7 @@ fn ci8_delete_graph_end_to_end() {
         )
         .expect("second create_node should succeed");
     store
-        .create_edge(&graph, alice, bob, "KNOWS".to_string(), HashMap::new())
+        .create_edge(&graph, alice, bob, "KNOWS".to_string(), IndexMap::new())
         .expect("create_edge should succeed");
     store
         .create_index(&graph, "Person", "name")
@@ -408,7 +408,7 @@ fn ci8_delete_graph_end_to_end() {
     );
     assert!(
         matches!(
-            store.create_node(&graph, vec!["Bad\x00Label".to_string()], HashMap::new()),
+            store.create_node(&graph, vec!["Bad\x00Label".to_string()], IndexMap::new()),
             Err(StorageError::ConstraintViolation { .. })
         ),
         "create_node should reject invalid labels through the live write path"

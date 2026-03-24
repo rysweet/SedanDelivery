@@ -1,5 +1,6 @@
 //! CREATE operator implementation.
 
+use indexmap::IndexMap;
 use std::collections::HashMap;
 
 use crate::ast::Direction;
@@ -56,7 +57,7 @@ impl<'a> QueryExecutor<'a> {
                     let props_raw = eval_prop_map(cx.graph, self, prop_exprs, &row, &ctx)?;
                     // In Cypher, setting a property to null on CREATE
                     // does not store it — filter out null values.
-                    let props: HashMap<String, Value> = props_raw
+                    let props: IndexMap<String, Value> = props_raw
                         .into_iter()
                         .filter(|(_, v)| !v.is_null())
                         .collect();
@@ -83,7 +84,7 @@ impl<'a> QueryExecutor<'a> {
                 {
                     let ctx = self.build_filter_ctx(cx.graph, &row)?;
                     // Filter out null-valued properties (same as for nodes).
-                    let props: HashMap<String, Value> =
+                    let props: IndexMap<String, Value> =
                         eval_prop_map(cx.graph, self, prop_exprs, &row, &ctx)?
                             .into_iter()
                             .filter(|(_, v)| !v.is_null())
@@ -397,7 +398,7 @@ mod tests {
         let store = make_store();
         // Pre-create a node
         let existing = store
-            .create_node("g", vec!["P".to_string()], HashMap::new())
+            .create_node("g", vec!["P".to_string()], IndexMap::new())
             .unwrap();
 
         let executor = QueryExecutor::new(&store);

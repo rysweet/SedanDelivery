@@ -3,6 +3,7 @@
 // Each `*_impl` function is called by the GraphStore trait impl in mod.rs.
 // The `*_query` functions are pure Cypher builders, testable without Fabric.
 
+use indexmap::IndexMap;
 use std::collections::HashMap;
 
 use serde_json::{json, Value as JValue};
@@ -138,7 +139,7 @@ pub(super) fn create_edge_impl(
     src: NodeId,
     dst: NodeId,
     rel_type: String,
-    properties: HashMap<String, Value>,
+    properties: IndexMap<String, Value>,
 ) -> Result<EdgeId, StorageError> {
     let id = if let Some(Value::Int(i)) = properties.get(PROP_EDGE_ID) {
         if *i < 0 {
@@ -175,7 +176,7 @@ pub(super) fn set_edge_properties_impl(
     store: &FabricGraphStore,
     graph: &str,
     id: EdgeId,
-    properties: HashMap<String, Value>,
+    properties: IndexMap<String, Value>,
 ) -> Result<(), StorageError> {
     let props = user_props_to_json(&properties);
     store.statement(
@@ -189,7 +190,7 @@ pub(super) fn replace_edge_properties_impl(
     store: &FabricGraphStore,
     graph: &str,
     id: EdgeId,
-    properties: HashMap<String, Value>,
+    properties: IndexMap<String, Value>,
 ) -> Result<(), StorageError> {
     let edge = store
         .get_edge(graph, id)?

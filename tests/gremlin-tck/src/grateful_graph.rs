@@ -5,6 +5,7 @@
 //!
 //! Auto-generated from TinkerPop grateful-dead.xml — do not edit by hand.
 
+use indexmap::IndexMap;
 use std::collections::HashMap;
 
 use gql_core::storage::{GraphStore, InMemoryGraphStore, NodeId};
@@ -8905,7 +8906,7 @@ pub fn create_grateful_graph() -> (InMemoryGraphStore, GratefulGraphIds) {
     let mut name_to_id = HashMap::new();
 
     for &(name, song_type, performances) in &SONGS {
-        let mut props = HashMap::new();
+        let mut props = IndexMap::new();
         props.insert("name".to_string(), Value::Str(name.into()));
         props.insert("songType".to_string(), Value::Str(song_type.into()));
         props.insert("performances".to_string(), Value::Int(performances));
@@ -8918,7 +8919,7 @@ pub fn create_grateful_graph() -> (InMemoryGraphStore, GratefulGraphIds) {
 
     let mut artist_ids = Vec::with_capacity(ARTISTS.len());
     for &name in &ARTISTS {
-        let mut props = HashMap::new();
+        let mut props = IndexMap::new();
         props.insert("name".to_string(), Value::Str(name.into()));
         let id = store
             .create_node("grateful", vec!["artist".to_string()], props)
@@ -8928,7 +8929,7 @@ pub fn create_grateful_graph() -> (InMemoryGraphStore, GratefulGraphIds) {
     }
 
     for &(src, dst, weight) in &FOLLOWED_BY {
-        let mut props = HashMap::new();
+        let mut props = IndexMap::new();
         props.insert("weight".to_string(), Value::Int(weight));
         store
             .create_edge(
@@ -8948,7 +8949,7 @@ pub fn create_grateful_graph() -> (InMemoryGraphStore, GratefulGraphIds) {
                 song_ids[song as usize],
                 artist_ids[artist as usize],
                 "sungBy".to_string(),
-                HashMap::new(),
+                IndexMap::new(),
             )
             .unwrap();
     }
@@ -8960,7 +8961,7 @@ pub fn create_grateful_graph() -> (InMemoryGraphStore, GratefulGraphIds) {
                 song_ids[song as usize],
                 artist_ids[artist as usize],
                 "writtenBy".to_string(),
-                HashMap::new(),
+                IndexMap::new(),
             )
             .unwrap();
     }

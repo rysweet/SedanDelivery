@@ -3,7 +3,7 @@
 // Typical use: FanoutStore { stores: [RedisGraphStore, InMemoryGraphStore] }
 // ensures all writes reach both backends while reads always come from Redis.
 
-use std::collections::HashMap;
+use indexmap::IndexMap;
 
 use gql_core::error::StorageError;
 use gql_core::storage::{
@@ -147,7 +147,7 @@ impl GraphStore for FanoutStore {
         &self,
         graph: &str,
         labels: Vec<String>,
-        properties: HashMap<String, Value>,
+        properties: IndexMap<String, Value>,
     ) -> Result<NodeId, StorageError> {
         // Assign ID from the primary store, then tell secondaries exactly which
         // ID to use by injecting `_sd2_id` into the property map.  This keeps
@@ -204,7 +204,7 @@ impl GraphStore for FanoutStore {
         src: NodeId,
         dst: NodeId,
         rel_type: String,
-        properties: HashMap<String, Value>,
+        properties: IndexMap<String, Value>,
     ) -> Result<EdgeId, StorageError> {
         let id =
             self.stores[0].create_edge(graph, src, dst, rel_type.clone(), properties.clone())?;
@@ -257,7 +257,7 @@ impl GraphStore for FanoutStore {
         &self,
         graph: &str,
         id: NodeId,
-        properties: HashMap<String, Value>,
+        properties: IndexMap<String, Value>,
     ) -> Result<(), StorageError> {
         self.write_all(|s| s.set_node_properties(graph, id, properties.clone()))
     }
@@ -266,7 +266,7 @@ impl GraphStore for FanoutStore {
         &self,
         graph: &str,
         id: NodeId,
-        properties: HashMap<String, Value>,
+        properties: IndexMap<String, Value>,
     ) -> Result<(), StorageError> {
         self.write_all(|s| s.replace_node_properties(graph, id, properties.clone()))
     }
@@ -275,7 +275,7 @@ impl GraphStore for FanoutStore {
         &self,
         graph: &str,
         id: EdgeId,
-        properties: HashMap<String, Value>,
+        properties: IndexMap<String, Value>,
     ) -> Result<(), StorageError> {
         self.write_all(|s| s.set_edge_properties(graph, id, properties.clone()))
     }
@@ -284,7 +284,7 @@ impl GraphStore for FanoutStore {
         &self,
         graph: &str,
         id: EdgeId,
-        properties: HashMap<String, Value>,
+        properties: IndexMap<String, Value>,
     ) -> Result<(), StorageError> {
         self.write_all(|s| s.replace_edge_properties(graph, id, properties.clone()))
     }
@@ -457,7 +457,7 @@ mod tests {
             &self,
             g: &str,
             labels: Vec<String>,
-            properties: HashMap<String, Value>,
+            properties: IndexMap<String, Value>,
         ) -> Result<NodeId, StorageError> {
             self.0.create_node(g, labels, properties)
         }
@@ -467,7 +467,7 @@ mod tests {
             src: NodeId,
             dst: NodeId,
             rel_type: String,
-            properties: HashMap<String, Value>,
+            properties: IndexMap<String, Value>,
         ) -> Result<EdgeId, StorageError> {
             self.0.create_edge(g, src, dst, rel_type, properties)
         }
@@ -475,7 +475,7 @@ mod tests {
             &self,
             g: &str,
             id: NodeId,
-            properties: HashMap<String, Value>,
+            properties: IndexMap<String, Value>,
         ) -> Result<(), StorageError> {
             self.0.set_node_properties(g, id, properties)
         }
@@ -483,7 +483,7 @@ mod tests {
             &self,
             g: &str,
             id: NodeId,
-            properties: HashMap<String, Value>,
+            properties: IndexMap<String, Value>,
         ) -> Result<(), StorageError> {
             self.0.replace_node_properties(g, id, properties)
         }
@@ -491,7 +491,7 @@ mod tests {
             &self,
             g: &str,
             id: EdgeId,
-            properties: HashMap<String, Value>,
+            properties: IndexMap<String, Value>,
         ) -> Result<(), StorageError> {
             self.0.set_edge_properties(g, id, properties)
         }
@@ -499,7 +499,7 @@ mod tests {
             &self,
             g: &str,
             id: EdgeId,
-            properties: HashMap<String, Value>,
+            properties: IndexMap<String, Value>,
         ) -> Result<(), StorageError> {
             self.0.replace_edge_properties(g, id, properties)
         }
@@ -672,7 +672,7 @@ mod tests {
             &self,
             g: &str,
             labels: Vec<String>,
-            properties: HashMap<String, Value>,
+            properties: IndexMap<String, Value>,
         ) -> Result<NodeId, StorageError> {
             self.should_fail()?;
             self.inner.create_node(g, labels, properties)
@@ -683,7 +683,7 @@ mod tests {
             src: NodeId,
             dst: NodeId,
             rel_type: String,
-            properties: HashMap<String, Value>,
+            properties: IndexMap<String, Value>,
         ) -> Result<EdgeId, StorageError> {
             self.should_fail()?;
             self.inner.create_edge(g, src, dst, rel_type, properties)
@@ -692,7 +692,7 @@ mod tests {
             &self,
             g: &str,
             id: NodeId,
-            properties: HashMap<String, Value>,
+            properties: IndexMap<String, Value>,
         ) -> Result<(), StorageError> {
             self.should_fail()?;
             self.inner.set_node_properties(g, id, properties)
@@ -701,7 +701,7 @@ mod tests {
             &self,
             g: &str,
             id: NodeId,
-            properties: HashMap<String, Value>,
+            properties: IndexMap<String, Value>,
         ) -> Result<(), StorageError> {
             self.should_fail()?;
             self.inner.replace_node_properties(g, id, properties)
@@ -710,7 +710,7 @@ mod tests {
             &self,
             g: &str,
             id: EdgeId,
-            properties: HashMap<String, Value>,
+            properties: IndexMap<String, Value>,
         ) -> Result<(), StorageError> {
             self.should_fail()?;
             self.inner.set_edge_properties(g, id, properties)
@@ -719,7 +719,7 @@ mod tests {
             &self,
             g: &str,
             id: EdgeId,
-            properties: HashMap<String, Value>,
+            properties: IndexMap<String, Value>,
         ) -> Result<(), StorageError> {
             self.should_fail()?;
             self.inner.replace_edge_properties(g, id, properties)
@@ -812,7 +812,7 @@ mod tests {
         let store = FanoutStore::new(vec![mem_store()]);
         store.create_graph("g").unwrap();
         let node_id = store
-            .create_node("g", vec!["Person".into()], HashMap::new())
+            .create_node("g", vec!["Person".into()], IndexMap::new())
             .unwrap();
         let node = store.get_node("g", node_id).unwrap();
         assert!(node.is_some(), "node should exist after creation");
@@ -854,7 +854,7 @@ mod tests {
         let fanout = FanoutStore::new(vec![primary_box, secondary_box]);
 
         fanout.create_graph("g").unwrap();
-        let mut props = HashMap::new();
+        let mut props = IndexMap::new();
         props.insert("name".to_string(), Value::Str("Alice".into()));
         let node_id = fanout
             .create_node("g", vec!["Person".into()], props)
@@ -902,13 +902,13 @@ mod tests {
 
         fanout.create_graph("g").unwrap();
         let a = fanout
-            .create_node("g", vec!["Person".into()], HashMap::new())
+            .create_node("g", vec!["Person".into()], IndexMap::new())
             .unwrap();
         let b = fanout
-            .create_node("g", vec!["Person".into()], HashMap::new())
+            .create_node("g", vec!["Person".into()], IndexMap::new())
             .unwrap();
 
-        let mut edge_props = HashMap::new();
+        let mut edge_props = IndexMap::new();
         edge_props.insert("since".to_string(), Value::Int(2020));
         let edge_id = fanout
             .create_edge("g", a, b, "KNOWS".to_string(), edge_props)
@@ -953,7 +953,7 @@ mod tests {
 
         fanout.create_graph("g").unwrap();
         let node_id = fanout
-            .create_node("g", vec!["Person".into()], HashMap::new())
+            .create_node("g", vec!["Person".into()], IndexMap::new())
             .unwrap();
 
         // Verify node exists on both before deletion.
@@ -990,13 +990,13 @@ mod tests {
 
         fanout.create_graph("g").unwrap();
         let a = fanout
-            .create_node("g", vec!["Person".into()], HashMap::new())
+            .create_node("g", vec!["Person".into()], IndexMap::new())
             .unwrap();
         let b = fanout
-            .create_node("g", vec!["Person".into()], HashMap::new())
+            .create_node("g", vec!["Person".into()], IndexMap::new())
             .unwrap();
         let edge_id = fanout
-            .create_edge("g", a, b, "KNOWS".to_string(), HashMap::new())
+            .create_edge("g", a, b, "KNOWS".to_string(), IndexMap::new())
             .unwrap();
 
         // Verify edge exists on primary.
@@ -1021,10 +1021,10 @@ mod tests {
 
         fanout.create_graph("g").unwrap();
         let node_id = fanout
-            .create_node("g", vec!["Person".into()], HashMap::new())
+            .create_node("g", vec!["Person".into()], IndexMap::new())
             .unwrap();
 
-        let mut props = HashMap::new();
+        let mut props = IndexMap::new();
         props.insert("age".to_string(), Value::Int(30));
         fanout.set_node_properties("g", node_id, props).unwrap();
 
@@ -1045,14 +1045,14 @@ mod tests {
 
         fanout.create_graph("g").unwrap();
         let node_id = fanout
-            .create_node("g", vec!["Person".into()], HashMap::new())
+            .create_node("g", vec!["Person".into()], IndexMap::new())
             .unwrap();
 
         // Force the secondary out of sync first so write_all will mutate the
         // primary and then fail on the secondary.
         secondary_ref.delete_node("g", node_id, true).unwrap();
 
-        let mut props = HashMap::new();
+        let mut props = IndexMap::new();
         props.insert("age".to_string(), Value::Int(30));
         let result = fanout.set_node_properties("g", node_id, props);
         assert!(
@@ -1076,7 +1076,7 @@ mod tests {
 
         fanout.create_graph("g").unwrap();
         let node_id = fanout
-            .create_node("g", vec!["Person".into()], HashMap::new())
+            .create_node("g", vec!["Person".into()], IndexMap::new())
             .unwrap();
 
         // Force the secondary out of sync first so write_all will mutate the
@@ -1111,13 +1111,13 @@ mod tests {
 
         fanout.create_graph("g").unwrap();
         let a = fanout
-            .create_node("g", vec!["Person".into()], HashMap::new())
+            .create_node("g", vec!["Person".into()], IndexMap::new())
             .unwrap();
         let b = fanout
-            .create_node("g", vec!["Person".into()], HashMap::new())
+            .create_node("g", vec!["Person".into()], IndexMap::new())
             .unwrap();
         fanout
-            .create_edge("g", a, b, "KNOWS".to_string(), HashMap::new())
+            .create_edge("g", a, b, "KNOWS".to_string(), IndexMap::new())
             .unwrap();
 
         // list_graphs
@@ -1281,7 +1281,7 @@ mod tests {
                 &self,
                 g: &str,
                 labels: Vec<String>,
-                properties: HashMap<String, Value>,
+                properties: IndexMap<String, Value>,
             ) -> Result<NodeId, StorageError> {
                 self.0.create_node(g, labels, properties)
             }
@@ -1291,7 +1291,7 @@ mod tests {
                 src: NodeId,
                 dst: NodeId,
                 rel_type: String,
-                properties: HashMap<String, Value>,
+                properties: IndexMap<String, Value>,
             ) -> Result<EdgeId, StorageError> {
                 self.0.create_edge(g, src, dst, rel_type, properties)
             }
@@ -1299,7 +1299,7 @@ mod tests {
                 &self,
                 g: &str,
                 id: NodeId,
-                properties: HashMap<String, Value>,
+                properties: IndexMap<String, Value>,
             ) -> Result<(), StorageError> {
                 self.0.set_node_properties(g, id, properties)
             }
@@ -1307,7 +1307,7 @@ mod tests {
                 &self,
                 g: &str,
                 id: NodeId,
-                properties: HashMap<String, Value>,
+                properties: IndexMap<String, Value>,
             ) -> Result<(), StorageError> {
                 self.0.replace_node_properties(g, id, properties)
             }
@@ -1315,7 +1315,7 @@ mod tests {
                 &self,
                 g: &str,
                 id: EdgeId,
-                properties: HashMap<String, Value>,
+                properties: IndexMap<String, Value>,
             ) -> Result<(), StorageError> {
                 self.0.set_edge_properties(g, id, properties)
             }
@@ -1323,7 +1323,7 @@ mod tests {
                 &self,
                 g: &str,
                 id: EdgeId,
-                properties: HashMap<String, Value>,
+                properties: IndexMap<String, Value>,
             ) -> Result<(), StorageError> {
                 self.0.replace_edge_properties(g, id, properties)
             }
@@ -1409,7 +1409,7 @@ mod tests {
         failing_inner.enable_failures();
 
         // Attempt to create a node — should fail because secondary fails.
-        let result = fanout.create_node("g", vec!["Person".into()], HashMap::new());
+        let result = fanout.create_node("g", vec!["Person".into()], IndexMap::new());
         assert!(
             result.is_err(),
             "create_node should fail when secondary fails"
@@ -1518,7 +1518,7 @@ mod tests {
                 &self,
                 g: &str,
                 l: Vec<String>,
-                p: HashMap<String, Value>,
+                p: IndexMap<String, Value>,
             ) -> Result<NodeId, StorageError> {
                 self.0.create_node(g, l, p)
             }
@@ -1528,7 +1528,7 @@ mod tests {
                 s: NodeId,
                 d: NodeId,
                 t: String,
-                p: HashMap<String, Value>,
+                p: IndexMap<String, Value>,
             ) -> Result<EdgeId, StorageError> {
                 self.0.create_edge(g, s, d, t, p)
             }
@@ -1536,7 +1536,7 @@ mod tests {
                 &self,
                 g: &str,
                 id: NodeId,
-                p: HashMap<String, Value>,
+                p: IndexMap<String, Value>,
             ) -> Result<(), StorageError> {
                 self.0.set_node_properties(g, id, p)
             }
@@ -1544,7 +1544,7 @@ mod tests {
                 &self,
                 g: &str,
                 id: NodeId,
-                p: HashMap<String, Value>,
+                p: IndexMap<String, Value>,
             ) -> Result<(), StorageError> {
                 self.0.replace_node_properties(g, id, p)
             }
@@ -1552,7 +1552,7 @@ mod tests {
                 &self,
                 g: &str,
                 id: EdgeId,
-                p: HashMap<String, Value>,
+                p: IndexMap<String, Value>,
             ) -> Result<(), StorageError> {
                 self.0.set_edge_properties(g, id, p)
             }
@@ -1560,7 +1560,7 @@ mod tests {
                 &self,
                 g: &str,
                 id: EdgeId,
-                p: HashMap<String, Value>,
+                p: IndexMap<String, Value>,
             ) -> Result<(), StorageError> {
                 self.0.replace_edge_properties(g, id, p)
             }
@@ -1637,17 +1637,17 @@ mod tests {
 
         // Create two nodes (secondary is not failing yet, so this succeeds).
         let a = fanout
-            .create_node("g", vec!["Person".into()], HashMap::new())
+            .create_node("g", vec!["Person".into()], IndexMap::new())
             .unwrap();
         let b = fanout
-            .create_node("g", vec!["Person".into()], HashMap::new())
+            .create_node("g", vec!["Person".into()], IndexMap::new())
             .unwrap();
 
         // Enable failures on secondary.
         failing_inner.enable_failures();
 
         // Attempt to create an edge — should fail.
-        let result = fanout.create_edge("g", a, b, "KNOWS".to_string(), HashMap::new());
+        let result = fanout.create_edge("g", a, b, "KNOWS".to_string(), IndexMap::new());
         assert!(
             result.is_err(),
             "create_edge should fail when secondary fails"
@@ -1680,7 +1680,7 @@ mod tests {
         fanout.create_graph("g").unwrap();
         late_ref.delete_graph("g").unwrap();
 
-        let result = fanout.create_node("g", vec!["Person".into()], HashMap::new());
+        let result = fanout.create_node("g", vec!["Person".into()], IndexMap::new());
         assert!(
             result.is_err(),
             "create_node should fail when a later secondary is out of sync"
@@ -1709,15 +1709,15 @@ mod tests {
 
         fanout.create_graph("g").unwrap();
         let a = fanout
-            .create_node("g", vec!["Person".into()], HashMap::new())
+            .create_node("g", vec!["Person".into()], IndexMap::new())
             .unwrap();
         let b = fanout
-            .create_node("g", vec!["Person".into()], HashMap::new())
+            .create_node("g", vec!["Person".into()], IndexMap::new())
             .unwrap();
 
         late_ref.delete_graph("g").unwrap();
 
-        let result = fanout.create_edge("g", a, b, "KNOWS".to_string(), HashMap::new());
+        let result = fanout.create_edge("g", a, b, "KNOWS".to_string(), IndexMap::new());
         assert!(
             result.is_err(),
             "create_edge should fail when a later secondary is out of sync"
@@ -1807,7 +1807,7 @@ mod tests {
 
         fanout.create_graph("g").unwrap();
         let node_id = fanout
-            .create_node("g", vec!["Person".into()], HashMap::new())
+            .create_node("g", vec!["Person".into()], IndexMap::new())
             .unwrap();
 
         fanout

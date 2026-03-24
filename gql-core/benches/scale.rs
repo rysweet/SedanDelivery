@@ -9,7 +9,7 @@ use gql_core::parser::parse_query;
 use gql_core::planner::QueryPlanner;
 use gql_core::storage::{GraphStore, InMemoryGraphStore};
 use gql_core::types::Value;
-use std::collections::HashMap;
+use indexmap::IndexMap;
 use std::time::Duration;
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
@@ -18,7 +18,7 @@ fn make_labeled_store(n: usize) -> InMemoryGraphStore {
     let store = InMemoryGraphStore::default();
     store.create_graph("scale").unwrap();
     for i in 0..n {
-        let props = HashMap::from([("i".to_string(), Value::Int(i as i64))]);
+        let props = IndexMap::from([("i".to_string(), Value::Int(i as i64))]);
         store
             .create_node("scale", vec!["Node".to_string()], props)
             .unwrap();
@@ -45,7 +45,7 @@ fn bench_load_nodes(c: &mut Criterion) {
                 let store = InMemoryGraphStore::default();
                 store.create_graph("scale").unwrap();
                 for i in 0..size {
-                    let props = HashMap::from([("i".to_string(), Value::Int(i as i64))]);
+                    let props = IndexMap::from([("i".to_string(), Value::Int(i as i64))]);
                     store
                         .create_node("scale", vec!["Node".to_string()], props)
                         .unwrap();
@@ -89,14 +89,14 @@ fn bench_e2e_path_1hop(c: &mut Criterion) {
     let store = InMemoryGraphStore::default();
     store.create_graph("scale").unwrap();
     let mut prev = store
-        .create_node("scale", vec!["Ch".to_string()], HashMap::new())
+        .create_node("scale", vec!["Ch".to_string()], IndexMap::new())
         .unwrap();
     for _ in 0..199 {
         let next = store
-            .create_node("scale", vec!["Ch".to_string()], HashMap::new())
+            .create_node("scale", vec!["Ch".to_string()], IndexMap::new())
             .unwrap();
         store
-            .create_edge("scale", prev, next, "NEXT".to_string(), HashMap::new())
+            .create_edge("scale", prev, next, "NEXT".to_string(), IndexMap::new())
             .unwrap();
         prev = next;
     }
@@ -111,7 +111,7 @@ fn bench_e2e_filter_at_scale(c: &mut Criterion) {
     let store = InMemoryGraphStore::default();
     store.create_graph("scale").unwrap();
     for i in 0..5_000i64 {
-        let props = HashMap::from([
+        let props = IndexMap::from([
             ("i".to_string(), Value::Int(i)),
             ("hot".to_string(), Value::Bool(i % 20 == 0)),
         ]);
@@ -130,7 +130,7 @@ fn bench_e2e_aggregation_at_scale(c: &mut Criterion) {
     let store = InMemoryGraphStore::default();
     store.create_graph("scale").unwrap();
     for i in 0..3_000i64 {
-        let props = HashMap::from([("bucket".to_string(), Value::Int(i % 10))]);
+        let props = IndexMap::from([("bucket".to_string(), Value::Int(i % 10))]);
         store
             .create_node("scale", vec!["N".to_string()], props)
             .unwrap();

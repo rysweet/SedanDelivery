@@ -8,6 +8,7 @@ mod tests {
     use crate::planner::{CreatePattern, Operator, SetItem};
     use crate::storage::{GraphStore, InMemoryGraphStore};
     use crate::types::Value;
+    use indexmap::IndexMap;
     use std::collections::HashMap;
 
     fn make_store() -> InMemoryGraphStore {
@@ -20,10 +21,10 @@ mod tests {
     fn node_scan_no_label() {
         let store = make_store();
         store
-            .create_node("g", vec!["Person".into()], HashMap::new())
+            .create_node("g", vec!["Person".into()], IndexMap::new())
             .unwrap();
         store
-            .create_node("g", vec!["Movie".into()], HashMap::new())
+            .create_node("g", vec!["Movie".into()], IndexMap::new())
             .unwrap();
         let executor = QueryExecutor::new(&store);
         let plan = Operator::NodeScan {
@@ -39,10 +40,10 @@ mod tests {
     fn node_scan_with_label() {
         let store = make_store();
         store
-            .create_node("g", vec!["Person".into()], HashMap::new())
+            .create_node("g", vec!["Person".into()], IndexMap::new())
             .unwrap();
         store
-            .create_node("g", vec!["Movie".into()], HashMap::new())
+            .create_node("g", vec!["Movie".into()], IndexMap::new())
             .unwrap();
         let executor = QueryExecutor::new(&store);
         let plan = Operator::NodeScan {
@@ -57,7 +58,7 @@ mod tests {
     #[test]
     fn filter_operator() {
         let store = make_store();
-        let mut props = HashMap::new();
+        let mut props = IndexMap::new();
         props.insert("age".to_string(), Value::Int(30));
         store
             .create_node("g", vec!["Person".into()], props)
@@ -91,13 +92,13 @@ mod tests {
     fn expand_operator() {
         let store = make_store();
         let alice = store
-            .create_node("g", vec!["Person".into()], HashMap::new())
+            .create_node("g", vec!["Person".into()], IndexMap::new())
             .unwrap();
         let bob = store
-            .create_node("g", vec!["Person".into()], HashMap::new())
+            .create_node("g", vec!["Person".into()], IndexMap::new())
             .unwrap();
         store
-            .create_edge("g", alice, bob, "KNOWS".into(), HashMap::new())
+            .create_edge("g", alice, bob, "KNOWS".into(), IndexMap::new())
             .unwrap();
         let executor = QueryExecutor::new(&store);
         let plan = Operator::Expand {
@@ -142,7 +143,7 @@ mod tests {
     #[test]
     fn set_property() {
         let store = make_store();
-        let mut props = HashMap::new();
+        let mut props = IndexMap::new();
         props.insert("name".to_string(), Value::Str("Alice".into()));
         let node_id = store
             .create_node("g", vec!["Person".into()], props)
@@ -174,7 +175,7 @@ mod tests {
     fn set_labels() {
         let store = make_store();
         let node_id = store
-            .create_node("g", vec!["Person".into()], HashMap::new())
+            .create_node("g", vec!["Person".into()], IndexMap::new())
             .unwrap();
         let executor = QueryExecutor::new(&store);
         let plan = Operator::Set {
@@ -198,7 +199,7 @@ mod tests {
     #[test]
     fn set_map_merge() {
         let store = make_store();
-        let mut props = HashMap::new();
+        let mut props = IndexMap::new();
         props.insert("name".to_string(), Value::Str("Alice".into()));
         let node_id = store
             .create_node("g", vec!["Person".into()], props)
@@ -229,7 +230,7 @@ mod tests {
     #[test]
     fn remove_property() {
         let store = make_store();
-        let mut props = HashMap::new();
+        let mut props = IndexMap::new();
         props.insert("name".to_string(), Value::Str("Alice".into()));
         props.insert("age".to_string(), Value::Int(30));
         let node_id = store
@@ -264,7 +265,7 @@ mod tests {
             .create_node(
                 "g",
                 vec!["Person".into(), "Employee".into()],
-                HashMap::new(),
+                IndexMap::new(),
             )
             .unwrap();
         let executor = QueryExecutor::new(&store);
@@ -289,13 +290,13 @@ mod tests {
     fn delete_node_detach() {
         let store = make_store();
         let a = store
-            .create_node("g", vec!["Person".into()], HashMap::new())
+            .create_node("g", vec!["Person".into()], IndexMap::new())
             .unwrap();
         let b = store
-            .create_node("g", vec!["Person".into()], HashMap::new())
+            .create_node("g", vec!["Person".into()], IndexMap::new())
             .unwrap();
         store
-            .create_edge("g", a, b, "KNOWS".into(), HashMap::new())
+            .create_edge("g", a, b, "KNOWS".into(), IndexMap::new())
             .unwrap();
         let executor = QueryExecutor::new(&store);
         let plan = Operator::Delete {
@@ -326,7 +327,7 @@ mod tests {
                 alias: Identifier::new("n"),
             }),
         };
-        store.create_node("g", vec![], HashMap::new()).unwrap();
+        store.create_node("g", vec![], IndexMap::new()).unwrap();
         let mut budget = ExecutionBudget::unlimited();
         let result = executor.execute("g", &plan, &mut budget).unwrap();
         assert_eq!(result.stats.nodes_deleted, 0);
@@ -336,13 +337,13 @@ mod tests {
     fn delete_edge() {
         let store = make_store();
         let a = store
-            .create_node("g", vec!["N".into()], HashMap::new())
+            .create_node("g", vec!["N".into()], IndexMap::new())
             .unwrap();
         let b = store
-            .create_node("g", vec!["N".into()], HashMap::new())
+            .create_node("g", vec!["N".into()], IndexMap::new())
             .unwrap();
         let eid = store
-            .create_edge("g", a, b, "R".into(), HashMap::new())
+            .create_edge("g", a, b, "R".into(), IndexMap::new())
             .unwrap();
         let executor = QueryExecutor::new(&store);
         let plan = Operator::Delete {
@@ -398,7 +399,7 @@ mod tests {
     #[test]
     fn merge_matches_existing() {
         let store = make_store();
-        let mut props = HashMap::new();
+        let mut props = IndexMap::new();
         props.insert("name".to_string(), Value::Str("Alice".into()));
         let existing = store
             .create_node("g", vec!["Person".into()], props)
@@ -447,10 +448,10 @@ mod tests {
     fn union_all_concatenates() {
         let store = make_store();
         store
-            .create_node("g", vec!["Person".into()], HashMap::new())
+            .create_node("g", vec!["Person".into()], IndexMap::new())
             .unwrap();
         store
-            .create_node("g", vec!["Movie".into()], HashMap::new())
+            .create_node("g", vec!["Movie".into()], IndexMap::new())
             .unwrap();
         let executor = QueryExecutor::new(&store);
         let plan = Operator::Union {
@@ -473,7 +474,7 @@ mod tests {
     fn union_deduplicates() {
         let store = make_store();
         store
-            .create_node("g", vec!["Both".into()], HashMap::new())
+            .create_node("g", vec!["Both".into()], IndexMap::new())
             .unwrap();
         let executor = QueryExecutor::new(&store);
         let plan = Operator::Union {
@@ -496,13 +497,13 @@ mod tests {
     fn left_outer_apply_with_match() {
         let store = make_store();
         let a = store
-            .create_node("g", vec!["Person".into()], HashMap::new())
+            .create_node("g", vec!["Person".into()], IndexMap::new())
             .unwrap();
         let b = store
-            .create_node("g", vec!["Person".into()], HashMap::new())
+            .create_node("g", vec!["Person".into()], IndexMap::new())
             .unwrap();
         store
-            .create_edge("g", a, b, "KNOWS".into(), HashMap::new())
+            .create_edge("g", a, b, "KNOWS".into(), IndexMap::new())
             .unwrap();
         let executor = QueryExecutor::new(&store);
         let plan = Operator::LeftOuterApply {
@@ -531,7 +532,7 @@ mod tests {
     fn left_outer_apply_no_match_produces_nulls() {
         let store = make_store();
         store
-            .create_node("g", vec!["Person".into()], HashMap::new())
+            .create_node("g", vec!["Person".into()], IndexMap::new())
             .unwrap();
         let executor = QueryExecutor::new(&store);
         let plan = Operator::LeftOuterApply {
@@ -561,10 +562,10 @@ mod tests {
     fn apply_combines_outer_inner() {
         let store = make_store();
         store
-            .create_node("g", vec!["A".into()], HashMap::new())
+            .create_node("g", vec!["A".into()], IndexMap::new())
             .unwrap();
         store
-            .create_node("g", vec!["B".into()], HashMap::new())
+            .create_node("g", vec!["B".into()], IndexMap::new())
             .unwrap();
         let executor = QueryExecutor::new(&store);
         let plan = Operator::Apply {
@@ -588,7 +589,7 @@ mod tests {
     fn apply_empty_inner_passes_outer() {
         let store = make_store();
         store
-            .create_node("g", vec!["A".into()], HashMap::new())
+            .create_node("g", vec!["A".into()], IndexMap::new())
             .unwrap();
         let executor = QueryExecutor::new(&store);
         let plan = Operator::Apply {
@@ -616,7 +617,7 @@ mod tests {
         p2.insert("age".to_string(), Value::Int(25));
         store.create_node("g", vec!["Person".into()], p2).unwrap();
         store
-            .create_node("g", vec!["Person".into()], HashMap::new())
+            .create_node("g", vec!["Person".into()], IndexMap::new())
             .unwrap();
         let executor = QueryExecutor::new(&store);
         let plan = Operator::IndexScan {
@@ -634,7 +635,7 @@ mod tests {
     fn index_scan_empty_result() {
         let store = make_store();
         store
-            .create_node("g", vec!["Person".into()], HashMap::new())
+            .create_node("g", vec!["Person".into()], IndexMap::new())
             .unwrap();
         let executor = QueryExecutor::new(&store);
         let plan = Operator::IndexScan {
@@ -652,7 +653,7 @@ mod tests {
     fn node_by_id_seek_found() {
         let store = make_store();
         let node_id = store
-            .create_node("g", vec!["Person".into()], HashMap::new())
+            .create_node("g", vec!["Person".into()], IndexMap::new())
             .unwrap();
         let executor = QueryExecutor::new(&store);
         let plan = Operator::NodeByIdSeek {

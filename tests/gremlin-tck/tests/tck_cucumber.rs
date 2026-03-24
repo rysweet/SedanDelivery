@@ -6,6 +6,7 @@
 //! Gremlin pipeline: text parser → GremlinStep bytecode → GremlinCompiler → Operator
 //! → QueryExecutor.
 
+use indexmap::IndexMap;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -218,14 +219,14 @@ async fn given_sink_graph(world: &mut GremlinWorld) {
     // The sink graph: one vertex "loop" with label "loops" and a single self-edge "self".
     let store = InMemoryGraphStore::new();
     store.create_graph("sink").unwrap();
-    let mut props = HashMap::new();
+    let mut props = IndexMap::new();
     props.insert("name".to_string(), Value::Str("loop".into()));
     let loop_v = store
         .create_node("sink", vec!["loops".to_string()], props)
         .unwrap();
     // One self-edge: bothE returns it twice (both directions), in/out return once.
     let self_eid = store
-        .create_edge("sink", loop_v, loop_v, "self".to_string(), HashMap::new())
+        .create_edge("sink", loop_v, loop_v, "self".to_string(), IndexMap::new())
         .unwrap();
     world.store = Some(Arc::new(store));
     world.graph_name = "sink".into();

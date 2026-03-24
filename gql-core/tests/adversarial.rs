@@ -8,7 +8,7 @@
 //!  - §3.3 Execution limits (row budget, varlen depth, regex size)
 //!  - §3.3 Safe handling of edge-case inputs (empty query, integer overflow, unicode)
 
-use std::collections::HashMap;
+use indexmap::IndexMap;
 use std::time::Duration;
 
 use gql_core::error::{ExecutionError, GqlError, ParseError};
@@ -26,7 +26,7 @@ fn make_store() -> InMemoryGraphStore {
     store
 }
 
-fn run_query(store: &InMemoryGraphStore, query: &str) -> Vec<HashMap<String, Value>> {
+fn run_query(store: &InMemoryGraphStore, query: &str) -> Vec<IndexMap<String, Value>> {
     let ast = parse_query(query).expect("parse error");
     let planner = QueryPlanner::new(store, "test");
     let plan = planner.plan(&ast).expect("plan error");
@@ -134,7 +134,7 @@ fn test_cartesian_product_budget_enforced() {
             .create_node(
                 "test",
                 vec!["A".to_string()],
-                HashMap::from([("i".to_string(), Value::Int(i))]),
+                IndexMap::from([("i".to_string(), Value::Int(i))]),
             )
             .unwrap();
     }
@@ -170,14 +170,14 @@ fn test_unbounded_varlen_terminates_on_deep_chain() {
     // Chain of 50 nodes: 0→1→2→…→49.
     // The default varlen_max_depth is 30, so paths of length > 30 exceed the limit.
     let mut prev = store
-        .create_node("test", vec!["C".to_string()], HashMap::new())
+        .create_node("test", vec!["C".to_string()], IndexMap::new())
         .unwrap();
     for _ in 0..49 {
         let next = store
-            .create_node("test", vec!["C".to_string()], HashMap::new())
+            .create_node("test", vec!["C".to_string()], IndexMap::new())
             .unwrap();
         store
-            .create_edge("test", prev, next, "N".to_string(), HashMap::new())
+            .create_edge("test", prev, next, "N".to_string(), IndexMap::new())
             .unwrap();
         prev = next;
     }
@@ -266,13 +266,13 @@ fn test_explicit_varlen_bound_within_limit() {
     for _ in 0..10 {
         ids.push(
             store
-                .create_node("test", vec!["Ch".to_string()], HashMap::new())
+                .create_node("test", vec!["Ch".to_string()], IndexMap::new())
                 .unwrap(),
         );
     }
     for i in 0..9 {
         store
-            .create_edge("test", ids[i], ids[i + 1], "N".to_string(), HashMap::new())
+            .create_edge("test", ids[i], ids[i + 1], "N".to_string(), IndexMap::new())
             .unwrap();
     }
 

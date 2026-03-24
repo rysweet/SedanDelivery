@@ -8,6 +8,7 @@
 //!
 //! Property-based tests at the bottom use proptest to validate invariants.
 
+use indexmap::IndexMap;
 use std::collections::HashMap;
 use std::time::Duration;
 
@@ -175,7 +176,7 @@ fn test_match_relationship() {
             alice_id,
             bob_id,
             "KNOWS".to_string(),
-            HashMap::new(),
+            IndexMap::new(),
         )
         .unwrap();
 
@@ -309,7 +310,7 @@ fn test_where_filter() {
     let store = make_store();
 
     for (name, age) in &[("Alice", 30i64), ("Bob", 17), ("Charlie", 25)] {
-        let mut props = HashMap::new();
+        let mut props = IndexMap::new();
         props.insert("name".to_string(), Value::Str((*name).into()));
         props.insert("age".to_string(), Value::Int(*age));
         store
@@ -401,7 +402,7 @@ fn test_limit_skip() {
 
     // Create 10 nodes with sequential integers.
     for i in 0..10i64 {
-        let mut props = HashMap::new();
+        let mut props = IndexMap::new();
         props.insert("i".to_string(), Value::Int(i));
         store
             .create_node("test", vec!["Item".to_string()], props)
@@ -472,7 +473,7 @@ fn test_aggregate_count() {
     let store = make_store();
 
     for name in &["Alice", "Bob", "Charlie"] {
-        let mut props = HashMap::new();
+        let mut props = IndexMap::new();
         props.insert("name".to_string(), Value::Str((*name).into()));
         store
             .create_node("test", vec!["Person".to_string()], props)
@@ -533,13 +534,13 @@ fn test_distinct() {
 
     // Two nodes with the same label value.
     for _ in 0..3 {
-        let mut props = HashMap::new();
+        let mut props = IndexMap::new();
         props.insert("dept".to_string(), Value::Str("Engineering".into()));
         store
             .create_node("test", vec!["Employee".to_string()], props)
             .unwrap();
     }
-    let mut props = HashMap::new();
+    let mut props = IndexMap::new();
     props.insert("dept".to_string(), Value::Str("Marketing".into()));
     store
         .create_node("test", vec!["Employee".to_string()], props)
@@ -728,7 +729,7 @@ fn test_budget_row_limit() {
     let store = make_store();
 
     for i in 0..10i64 {
-        let mut props = HashMap::new();
+        let mut props = IndexMap::new();
         props.insert("i".to_string(), Value::Int(i));
         store
             .create_node("test", vec!["Item".to_string()], props)
@@ -777,7 +778,7 @@ fn test_optional_match() {
             bob_id,
             alice_id,
             "KNOWS".to_string(),
-            HashMap::new(),
+            IndexMap::new(),
         )
         .unwrap();
 
@@ -825,7 +826,7 @@ fn test_optional_match_no_match() {
     let store = make_store();
 
     // Carol has no KNOWS edges at all.
-    let mut props = HashMap::new();
+    let mut props = IndexMap::new();
     props.insert("name".to_string(), Value::Str("Carol".into()));
     store
         .create_node("test", vec!["Person".to_string()], props)
@@ -891,7 +892,7 @@ fn test_merge_node_on_match_set() {
     let store = make_store();
 
     // Pre-create Alice.
-    let mut props = HashMap::new();
+    let mut props = IndexMap::new();
     props.insert("name".to_string(), Value::Str("Alice".into()));
     store
         .create_node("test", vec!["Person".to_string()], props)
@@ -973,7 +974,7 @@ fn test_merge_relationship() {
 fn test_set_property() {
     let store = make_store();
 
-    let mut props = HashMap::new();
+    let mut props = IndexMap::new();
     props.insert("name".to_string(), Value::Str("Alice".into()));
     store
         .create_node("test", vec!["Person".to_string()], props)
@@ -998,7 +999,7 @@ fn test_set_property() {
 fn test_set_map_merge() {
     let store = make_store();
 
-    let mut props = HashMap::new();
+    let mut props = IndexMap::new();
     props.insert("name".to_string(), Value::Str("Bob".into()));
     props.insert("age".to_string(), Value::Int(25));
     store
@@ -1037,7 +1038,7 @@ fn test_set_map_merge() {
 fn test_remove_property_and_label() {
     let store = make_store();
 
-    let mut props = HashMap::new();
+    let mut props = IndexMap::new();
     props.insert("name".to_string(), Value::Str("Dave".into()));
     props.insert("tmp".to_string(), Value::Int(99));
     store
@@ -1105,7 +1106,7 @@ fn test_delete_node_and_relationship() {
         .unwrap();
 
     store
-        .create_edge("test", a_id, b_id, "KNOWS".to_string(), HashMap::new())
+        .create_edge("test", a_id, b_id, "KNOWS".to_string(), IndexMap::new())
         .unwrap();
 
     // Delete the relationship first.
@@ -1127,10 +1128,10 @@ fn test_delete_node_and_relationship() {
     // Use DETACH DELETE to remove Frank and any of his edges atomically.
     // First add an edge back so there's something to detach.
     let c_id = store
-        .create_node("test", vec!["Person".to_string()], HashMap::new())
+        .create_node("test", vec!["Person".to_string()], IndexMap::new())
         .unwrap();
     store
-        .create_edge("test", b_id, c_id, "KNOWS".to_string(), HashMap::new())
+        .create_edge("test", b_id, c_id, "KNOWS".to_string(), IndexMap::new())
         .unwrap();
 
     let q_detach = parse_query("MATCH (p:Person {name: 'Frank'}) DETACH DELETE p").unwrap();
@@ -1204,7 +1205,7 @@ fn test_union_deduplication() {
 
     // Two persons with same name — UNION should deduplicate.
     for _ in 0..2 {
-        let mut props = HashMap::new();
+        let mut props = IndexMap::new();
         props.insert("name".to_string(), Value::Str("Alice".into()));
         store
             .create_node("test", vec!["Person".to_string()], props)
@@ -1233,7 +1234,7 @@ fn test_union_deduplication() {
 fn test_union_all_no_deduplication() {
     let store = make_store();
 
-    let mut props = HashMap::new();
+    let mut props = IndexMap::new();
     props.insert("name".to_string(), Value::Str("Alice".into()));
     store
         .create_node("test", vec!["Person".to_string()], props)
@@ -1279,10 +1280,10 @@ fn test_varlen_paths() {
         .unwrap();
 
     store
-        .create_edge("test", a, b, "KNOWS".to_string(), HashMap::new())
+        .create_edge("test", a, b, "KNOWS".to_string(), IndexMap::new())
         .unwrap();
     store
-        .create_edge("test", b, c, "KNOWS".to_string(), HashMap::new())
+        .create_edge("test", b, c, "KNOWS".to_string(), IndexMap::new())
         .unwrap();
 
     // Paths of length 1 to 2: A->B (len 1), B->C (len 1), A->C (len 2).
@@ -1317,24 +1318,24 @@ fn test_shortest_path_operator() {
     let store = make_store();
 
     let a = store
-        .create_node("test", vec!["Person".to_string()], HashMap::new())
+        .create_node("test", vec!["Person".to_string()], IndexMap::new())
         .unwrap();
     let b = store
-        .create_node("test", vec!["Person".to_string()], HashMap::new())
+        .create_node("test", vec!["Person".to_string()], IndexMap::new())
         .unwrap();
     let c = store
-        .create_node("test", vec!["Person".to_string()], HashMap::new())
+        .create_node("test", vec!["Person".to_string()], IndexMap::new())
         .unwrap();
 
     // Two paths A->B->C (length 2) and A->C (length 1); shortest should be A->C.
     store
-        .create_edge("test", a, b, "KNOWS".to_string(), HashMap::new())
+        .create_edge("test", a, b, "KNOWS".to_string(), IndexMap::new())
         .unwrap();
     store
-        .create_edge("test", b, c, "KNOWS".to_string(), HashMap::new())
+        .create_edge("test", b, c, "KNOWS".to_string(), IndexMap::new())
         .unwrap();
     store
-        .create_edge("test", a, c, "KNOWS".to_string(), HashMap::new())
+        .create_edge("test", a, c, "KNOWS".to_string(), IndexMap::new())
         .unwrap();
 
     // Provide src and dst as outer context rows (unused directly; plan2 uses NodeScan).
@@ -1415,7 +1416,7 @@ fn test_call_procedure() {
     let mut registry = ProcedureRegistry::new();
     registry.register(proc);
 
-    let params: HashMap<String, Value> = HashMap::new();
+    let params: IndexMap<String, Value> = HashMap::new();
     let q = parse_query("CALL math.double(2) YIELD doubled RETURN doubled").unwrap();
     let planner = QueryPlanner::with_context(&store, "test", &registry, &params);
     let plan = planner.plan(&q).unwrap();
@@ -1439,7 +1440,7 @@ fn test_with_clause_chaining() {
     let store = make_store();
 
     for (name, age) in &[("Alice", 30i64), ("Bob", 17i64), ("Carol", 25i64)] {
-        let mut props = HashMap::new();
+        let mut props = IndexMap::new();
         props.insert("name".to_string(), Value::Str((*name).into()));
         props.insert("age".to_string(), Value::Int(*age));
         store
@@ -1501,7 +1502,7 @@ fn test_exists_subquery() {
             alice_id,
             bob_id,
             "KNOWS".to_string(),
-            HashMap::new(),
+            IndexMap::new(),
         )
         .unwrap();
 
@@ -1528,7 +1529,7 @@ fn test_case_simple_expression() {
     let store = make_store();
 
     for (name, score) in &[("Alice", 90i64), ("Bob", 55i64)] {
-        let mut props = HashMap::new();
+        let mut props = IndexMap::new();
         props.insert("name".to_string(), Value::Str((*name).into()));
         props.insert("score".to_string(), Value::Int(*score));
         store
@@ -1571,7 +1572,7 @@ fn test_case_simple_expression() {
 fn test_case_value_expression() {
     let store = make_store();
 
-    let mut props = HashMap::new();
+    let mut props = IndexMap::new();
     props.insert("status".to_string(), Value::Int(2));
     store
         .create_node("test", vec!["Item".to_string()], props)
@@ -1635,7 +1636,7 @@ fn test_parameter_injection() {
     let store = make_store();
 
     for name in &["Alice", "Bob", "Charlie"] {
-        let mut props = HashMap::new();
+        let mut props = IndexMap::new();
         props.insert("name".to_string(), Value::Str((*name).into()));
         store
             .create_node("test", vec!["Person".to_string()], props)
@@ -1668,20 +1669,20 @@ fn test_path_variable() {
     let store = make_store();
 
     let a = store
-        .create_node("test", vec!["Person".to_string()], HashMap::new())
+        .create_node("test", vec!["Person".to_string()], IndexMap::new())
         .unwrap();
     let b = store
-        .create_node("test", vec!["Person".to_string()], HashMap::new())
+        .create_node("test", vec!["Person".to_string()], IndexMap::new())
         .unwrap();
     let c = store
-        .create_node("test", vec!["Person".to_string()], HashMap::new())
+        .create_node("test", vec!["Person".to_string()], IndexMap::new())
         .unwrap();
 
     store
-        .create_edge("test", a, b, "KNOWS".to_string(), HashMap::new())
+        .create_edge("test", a, b, "KNOWS".to_string(), IndexMap::new())
         .unwrap();
     store
-        .create_edge("test", b, c, "KNOWS".to_string(), HashMap::new())
+        .create_edge("test", b, c, "KNOWS".to_string(), IndexMap::new())
         .unwrap();
 
     let q = parse_query(
@@ -1729,7 +1730,7 @@ fn test_aggregation_group_by() {
         ("Dave", "HR"),
         ("Eve", "Eng"),
     ] {
-        let mut props = HashMap::new();
+        let mut props = IndexMap::new();
         props.insert("name".to_string(), Value::Str((*name).into()));
         props.insert("dept".to_string(), Value::Str((*dept).into()));
         store
@@ -1956,7 +1957,7 @@ fn test_merge_with_parameter_map() {
 /// built-ins are handled dynamically by the executor).
 fn exec_builtin(store: &InMemoryGraphStore, query: &str) -> gql_core::executor::QueryResult {
     let registry = ProcedureRegistry::new();
-    let params: HashMap<String, Value> = HashMap::new();
+    let params: IndexMap<String, Value> = HashMap::new();
     let q = parse_query(query).unwrap();
     let planner = QueryPlanner::with_context(store, "test", &registry, &params);
     let plan = planner.plan(&q).unwrap();
@@ -1974,7 +1975,7 @@ fn test_call_db_labels_returns_labels() {
     assert_eq!(result.rows.len(), 0, "no labels in empty graph");
 
     // Create nodes with labels.
-    let mut props = HashMap::new();
+    let mut props = IndexMap::new();
     props.insert("name".to_string(), Value::Str("Alice".into()));
     store
         .create_node("test", vec!["Person".to_string()], props)
@@ -1983,14 +1984,14 @@ fn test_call_db_labels_returns_labels() {
         .create_node(
             "test",
             vec!["Company".to_string()],
-            HashMap::from([("name".to_string(), Value::Str("Acme".into()))]),
+            IndexMap::from([("name".to_string(), Value::Str("Acme".into()))]),
         )
         .unwrap();
     store
         .create_node(
             "test",
             vec!["Person".to_string()],
-            HashMap::from([("name".to_string(), Value::Str("Bob".into()))]),
+            IndexMap::from([("name".to_string(), Value::Str("Bob".into()))]),
         )
         .unwrap();
 
@@ -2012,7 +2013,7 @@ fn test_call_db_labels_with_yield() {
         .create_node(
             "test",
             vec!["Animal".to_string()],
-            HashMap::from([("type".to_string(), Value::Str("Dog".into()))]),
+            IndexMap::from([("type".to_string(), Value::Str("Dog".into()))]),
         )
         .unwrap();
 
@@ -2034,22 +2035,22 @@ fn test_call_db_relationship_types() {
 
     // Create nodes and edges.
     let n1 = store
-        .create_node("test", vec!["Person".to_string()], HashMap::new())
+        .create_node("test", vec!["Person".to_string()], IndexMap::new())
         .unwrap();
     let n2 = store
-        .create_node("test", vec!["Person".to_string()], HashMap::new())
+        .create_node("test", vec!["Person".to_string()], IndexMap::new())
         .unwrap();
     let n3 = store
-        .create_node("test", vec!["Company".to_string()], HashMap::new())
+        .create_node("test", vec!["Company".to_string()], IndexMap::new())
         .unwrap();
     store
-        .create_edge("test", n1, n2, "KNOWS".to_string(), HashMap::new())
+        .create_edge("test", n1, n2, "KNOWS".to_string(), IndexMap::new())
         .unwrap();
     store
-        .create_edge("test", n1, n3, "WORKS_AT".to_string(), HashMap::new())
+        .create_edge("test", n1, n3, "WORKS_AT".to_string(), IndexMap::new())
         .unwrap();
     store
-        .create_edge("test", n2, n3, "WORKS_AT".to_string(), HashMap::new())
+        .create_edge("test", n2, n3, "WORKS_AT".to_string(), IndexMap::new())
         .unwrap();
 
     let result = exec_builtin(&store, "CALL db.relationshipTypes()");
@@ -2073,7 +2074,7 @@ fn test_call_db_property_keys() {
         .create_node(
             "test",
             vec!["Person".to_string()],
-            HashMap::from([
+            IndexMap::from([
                 ("name".to_string(), Value::Str("Alice".into())),
                 ("age".to_string(), Value::Int(30)),
             ]),
@@ -2083,7 +2084,7 @@ fn test_call_db_property_keys() {
         .create_node(
             "test",
             vec!["Person".to_string()],
-            HashMap::from([("name".to_string(), Value::Str("Bob".into()))]),
+            IndexMap::from([("name".to_string(), Value::Str("Bob".into()))]),
         )
         .unwrap();
     store
@@ -2092,7 +2093,7 @@ fn test_call_db_property_keys() {
             n1,
             n2,
             "KNOWS".to_string(),
-            HashMap::from([("since".to_string(), Value::Int(2020))]),
+            IndexMap::from([("since".to_string(), Value::Int(2020))]),
         )
         .unwrap();
 
@@ -2149,7 +2150,7 @@ fn test_call_dbms_components_with_yield() {
 fn test_call_unknown_procedure_returns_error() {
     let store = make_store();
     let registry = ProcedureRegistry::new();
-    let params: HashMap<String, Value> = HashMap::new();
+    let params: IndexMap<String, Value> = HashMap::new();
     let q = parse_query("CALL db.nonexistent()").unwrap();
     let planner = QueryPlanner::with_context(&store, "test", &registry, &params);
     let result = planner.plan(&q);
@@ -2172,7 +2173,7 @@ fn test_call_db_labels_yield_filters_columns() {
         .create_node(
             "test",
             vec!["Fruit".to_string()],
-            HashMap::from([("color".to_string(), Value::Str("red".into()))]),
+            IndexMap::from([("color".to_string(), Value::Str("red".into()))]),
         )
         .unwrap();
 
@@ -2191,13 +2192,13 @@ fn test_call_db_schema_visualization() {
     let store = make_store();
 
     let n1 = store
-        .create_node("test", vec!["Person".to_string()], HashMap::new())
+        .create_node("test", vec!["Person".to_string()], IndexMap::new())
         .unwrap();
     let n2 = store
-        .create_node("test", vec!["Company".to_string()], HashMap::new())
+        .create_node("test", vec!["Company".to_string()], IndexMap::new())
         .unwrap();
     store
-        .create_edge("test", n1, n2, "WORKS_AT".to_string(), HashMap::new())
+        .create_edge("test", n1, n2, "WORKS_AT".to_string(), IndexMap::new())
         .unwrap();
 
     let result = exec_builtin(&store, "CALL db.schema.visualization()");
@@ -2256,25 +2257,25 @@ fn build_shortest_path_graph() -> InMemoryGraphStore {
 
     // A->B, B->D, A->C, C->D, A->D
     store
-        .create_edge("test", _a, _b, "R".to_string(), HashMap::new())
+        .create_edge("test", _a, _b, "R".to_string(), IndexMap::new())
         .unwrap();
     store
-        .create_edge("test", _b, _d, "R".to_string(), HashMap::new())
+        .create_edge("test", _b, _d, "R".to_string(), IndexMap::new())
         .unwrap();
     store
-        .create_edge("test", _a, _c, "R".to_string(), HashMap::new())
+        .create_edge("test", _a, _c, "R".to_string(), IndexMap::new())
         .unwrap();
     store
-        .create_edge("test", _c, _d, "R".to_string(), HashMap::new())
+        .create_edge("test", _c, _d, "R".to_string(), IndexMap::new())
         .unwrap();
     store
-        .create_edge("test", _a, _d, "R".to_string(), HashMap::new())
+        .create_edge("test", _a, _d, "R".to_string(), IndexMap::new())
         .unwrap();
 
     store
 }
 
-fn exec_query(store: &InMemoryGraphStore, query: &str) -> Vec<HashMap<String, Value>> {
+fn exec_query(store: &InMemoryGraphStore, query: &str) -> Vec<IndexMap<String, Value>> {
     let q = parse_query(query).unwrap();
     let planner = QueryPlanner::new(store, "test");
     let plan = planner.plan(&q).unwrap();
@@ -2344,16 +2345,16 @@ fn test_all_shortest_paths_returns_multiple() {
         .unwrap();
 
     store
-        .create_edge("test", x, m1, "R".to_string(), HashMap::new())
+        .create_edge("test", x, m1, "R".to_string(), IndexMap::new())
         .unwrap();
     store
-        .create_edge("test", m1, y, "R".to_string(), HashMap::new())
+        .create_edge("test", m1, y, "R".to_string(), IndexMap::new())
         .unwrap();
     store
-        .create_edge("test", x, m2, "R".to_string(), HashMap::new())
+        .create_edge("test", x, m2, "R".to_string(), IndexMap::new())
         .unwrap();
     store
-        .create_edge("test", m2, y, "R".to_string(), HashMap::new())
+        .create_edge("test", m2, y, "R".to_string(), IndexMap::new())
         .unwrap();
 
     let rows = exec_query(
@@ -2407,7 +2408,7 @@ fn test_shortest_path_self_loop() {
         .create_node("test", vec!["N".to_string()], a_props)
         .unwrap();
     store
-        .create_edge("test", a, a, "R".to_string(), HashMap::new())
+        .create_edge("test", a, a, "R".to_string(), IndexMap::new())
         .unwrap();
 
     // shortestPath from a to a: the BFS requires depth > 0, so the self-loop edge counts as 1 hop.

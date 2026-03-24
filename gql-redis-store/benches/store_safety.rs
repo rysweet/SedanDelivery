@@ -8,7 +8,7 @@ use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Through
 use gql_core::storage::GraphStore;
 use gql_core::types::Value;
 use gql_redis_store::RedisGraphStore;
-use std::collections::HashMap;
+use indexmap::IndexMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
@@ -97,18 +97,18 @@ fn labels(values: &[&str]) -> Vec<String> {
     values.iter().map(|value| (*value).to_string()).collect()
 }
 
-fn node_props(i: usize) -> HashMap<String, Value> {
-    HashMap::from([
+fn node_props(i: usize) -> IndexMap<String, Value> {
+    IndexMap::from([
         ("index".to_string(), Value::Int(i as i64)),
         ("name".to_string(), Value::Str(format!("node_{i}").into())),
         ("partition".to_string(), Value::Int((i % 32) as i64)),
     ])
 }
 
-fn make_batched_seed_node(i: usize) -> (Vec<String>, HashMap<String, Value>) {
+fn make_batched_seed_node(i: usize) -> (Vec<String>, IndexMap<String, Value>) {
     (
         labels(&["BenchIndexed", "BenchRegistry"]),
-        HashMap::from([
+        IndexMap::from([
             ("index".to_string(), Value::Int(i as i64)),
             ("name".to_string(), Value::Str(format!("seed_{i}").into())),
             ("bucket".to_string(), Value::Int((i % 64) as i64)),
@@ -137,7 +137,7 @@ fn seed_delete_graph(store: &RedisGraphStore, graph: &str, count: usize) {
                 edge[0],
                 edge[1],
                 "LINKS_TO".to_string(),
-                HashMap::new(),
+                IndexMap::new(),
             )
             .unwrap();
     }

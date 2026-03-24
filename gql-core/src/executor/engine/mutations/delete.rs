@@ -177,7 +177,7 @@ mod tests {
     use crate::executor::budget::ExecutionBudget;
     use crate::planner::Operator;
     use crate::storage::{GraphStore, InMemoryGraphStore};
-    use std::collections::HashMap;
+    use indexmap::IndexMap;
 
     fn make_store() -> InMemoryGraphStore {
         let store = InMemoryGraphStore::new();
@@ -189,13 +189,13 @@ mod tests {
     fn delete_detach() {
         let store = make_store();
         let a = store
-            .create_node("g", vec!["N".to_string()], HashMap::new())
+            .create_node("g", vec!["N".to_string()], IndexMap::new())
             .unwrap();
         let b = store
-            .create_node("g", vec!["N".to_string()], HashMap::new())
+            .create_node("g", vec!["N".to_string()], IndexMap::new())
             .unwrap();
         store
-            .create_edge("g", a, b, "R".to_string(), HashMap::new())
+            .create_edge("g", a, b, "R".to_string(), IndexMap::new())
             .unwrap();
         let executor = QueryExecutor::new(&store);
         let plan = Operator::Delete {
@@ -215,7 +215,7 @@ mod tests {
     fn delete_null_is_noop() {
         let store = make_store();
         store
-            .create_node("g", vec!["P".to_string()], HashMap::new())
+            .create_node("g", vec!["P".to_string()], IndexMap::new())
             .unwrap();
         let executor = QueryExecutor::new(&store);
         let plan = Operator::Delete {
@@ -238,13 +238,13 @@ mod tests {
     fn delete_edge_only() {
         let store = make_store();
         let a = store
-            .create_node("g", vec!["N".to_string()], HashMap::new())
+            .create_node("g", vec!["N".to_string()], IndexMap::new())
             .unwrap();
         let b = store
-            .create_node("g", vec!["N".to_string()], HashMap::new())
+            .create_node("g", vec!["N".to_string()], IndexMap::new())
             .unwrap();
         let eid = store
-            .create_edge("g", a, b, "R".to_string(), HashMap::new())
+            .create_edge("g", a, b, "R".to_string(), IndexMap::new())
             .unwrap();
         let executor = QueryExecutor::new(&store);
         let plan = Operator::Delete {
@@ -276,7 +276,7 @@ mod tests {
     fn delete_type_mismatch_returns_error() {
         let store = make_store();
         store
-            .create_node("g", vec!["P".to_string()], HashMap::new())
+            .create_node("g", vec!["P".to_string()], IndexMap::new())
             .unwrap();
         let executor = QueryExecutor::new(&store);
         // Try to delete an integer, which should fail
@@ -297,15 +297,15 @@ mod tests {
     fn detach_delete_counts_edges() {
         let store = make_store();
         let a = store
-            .create_node("g", vec!["N".to_string()], HashMap::new())
+            .create_node("g", vec!["N".to_string()], IndexMap::new())
             .unwrap();
         let b = store
-            .create_node("g", vec!["M".to_string()], HashMap::new())
+            .create_node("g", vec!["M".to_string()], IndexMap::new())
             .unwrap();
         // Create 3 edges from a to b
         for _ in 0..3 {
             store
-                .create_edge("g", a, b, "R".to_string(), HashMap::new())
+                .create_edge("g", a, b, "R".to_string(), IndexMap::new())
                 .unwrap();
         }
         let executor = QueryExecutor::new(&store);
@@ -330,10 +330,10 @@ mod tests {
     fn delete_already_deleted_node_is_noop() {
         let store = make_store();
         let _a = store
-            .create_node("g", vec!["N".to_string()], HashMap::new())
+            .create_node("g", vec!["N".to_string()], IndexMap::new())
             .unwrap();
         let _b = store
-            .create_node("g", vec!["N".to_string()], HashMap::new())
+            .create_node("g", vec!["N".to_string()], IndexMap::new())
             .unwrap();
         // Both have label N, so deleting all N nodes will try to delete both.
         // But if we delete them in sequence, the second deletion should be a no-op.
@@ -355,13 +355,13 @@ mod tests {
     fn delete_node_without_detach_with_edges_fails() {
         let store = make_store();
         let a = store
-            .create_node("g", vec!["N".to_string()], HashMap::new())
+            .create_node("g", vec!["N".to_string()], IndexMap::new())
             .unwrap();
         let b = store
-            .create_node("g", vec!["M".to_string()], HashMap::new())
+            .create_node("g", vec!["M".to_string()], IndexMap::new())
             .unwrap();
         store
-            .create_edge("g", a, b, "R".to_string(), HashMap::new())
+            .create_edge("g", a, b, "R".to_string(), IndexMap::new())
             .unwrap();
         let executor = QueryExecutor::new(&store);
         let plan = Operator::Delete {

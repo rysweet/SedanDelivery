@@ -1,5 +1,6 @@
 //! Node scanning operators: NodeScan, IndexScan, NodeByIdSeek.
 
+use indexmap::IndexMap;
 use std::collections::HashMap;
 
 use crate::error::{ExecutionError, GqlError};
@@ -238,10 +239,10 @@ mod tests {
     fn node_scan_all_nodes() {
         let store = make_store();
         store
-            .create_node("g", vec!["A".to_string()], HashMap::new())
+            .create_node("g", vec!["A".to_string()], IndexMap::new())
             .unwrap();
         store
-            .create_node("g", vec!["B".to_string()], HashMap::new())
+            .create_node("g", vec!["B".to_string()], IndexMap::new())
             .unwrap();
         let executor = QueryExecutor::new(&store);
         let plan = Operator::NodeScan {
@@ -257,10 +258,10 @@ mod tests {
     fn node_scan_with_label_filter() {
         let store = make_store();
         store
-            .create_node("g", vec!["Person".to_string()], HashMap::new())
+            .create_node("g", vec!["Person".to_string()], IndexMap::new())
             .unwrap();
         store
-            .create_node("g", vec!["Movie".to_string()], HashMap::new())
+            .create_node("g", vec!["Movie".to_string()], IndexMap::new())
             .unwrap();
         let executor = QueryExecutor::new(&store);
         let plan = Operator::NodeScan {
@@ -289,7 +290,7 @@ mod tests {
     fn node_scan_nonexistent_label() {
         let store = make_store();
         store
-            .create_node("g", vec!["Person".to_string()], HashMap::new())
+            .create_node("g", vec!["Person".to_string()], IndexMap::new())
             .unwrap();
         let executor = QueryExecutor::new(&store);
         let plan = Operator::NodeScan {
@@ -305,7 +306,7 @@ mod tests {
     fn node_scan_binds_correct_alias() {
         let store = make_store();
         let nid = store
-            .create_node("g", vec!["P".to_string()], HashMap::new())
+            .create_node("g", vec!["P".to_string()], IndexMap::new())
             .unwrap();
         let executor = QueryExecutor::new(&store);
         let plan = Operator::NodeScan {
@@ -325,7 +326,7 @@ mod tests {
         let store = make_store();
         for _ in 0..3 {
             store
-                .create_node("g", vec!["N".to_string()], HashMap::new())
+                .create_node("g", vec!["N".to_string()], IndexMap::new())
                 .unwrap();
         }
 
@@ -367,7 +368,7 @@ mod tests {
             .create_node("g", vec!["Person".to_string()], p1)
             .unwrap();
         store
-            .create_node("g", vec!["Person".to_string()], HashMap::new())
+            .create_node("g", vec!["Person".to_string()], IndexMap::new())
             .unwrap();
         let executor = QueryExecutor::new(&store);
         let plan = Operator::IndexScan {
@@ -385,7 +386,7 @@ mod tests {
     fn index_scan_empty_when_no_property() {
         let store = make_store();
         store
-            .create_node("g", vec!["P".to_string()], HashMap::new())
+            .create_node("g", vec!["P".to_string()], IndexMap::new())
             .unwrap();
         let executor = QueryExecutor::new(&store);
         let plan = Operator::IndexScan {
@@ -403,7 +404,7 @@ mod tests {
     fn node_by_id_seek_found() {
         let store = make_store();
         let node_id = store
-            .create_node("g", vec!["Person".to_string()], HashMap::new())
+            .create_node("g", vec!["Person".to_string()], IndexMap::new())
             .unwrap();
         let executor = QueryExecutor::new(&store);
         let plan = Operator::NodeByIdSeek {
@@ -445,7 +446,7 @@ mod tests {
     fn node_scan_with_outer_rows_merges_context() {
         let store = make_store();
         let nid = store
-            .create_node("g", vec!["P".to_string()], HashMap::new())
+            .create_node("g", vec!["P".to_string()], IndexMap::new())
             .unwrap();
 
         let mut outer = Row::new();

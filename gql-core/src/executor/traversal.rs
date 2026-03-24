@@ -199,7 +199,7 @@ impl<'s> Iterator for BfsTraversal<'s> {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
+    use indexmap::IndexMap;
 
     use super::*;
     use crate::ast::Direction;
@@ -211,11 +211,11 @@ mod tests {
         store.create_graph("g").unwrap();
         let mut ids = Vec::new();
         for _ in 0..n {
-            ids.push(store.create_node("g", vec![], HashMap::new()).unwrap());
+            ids.push(store.create_node("g", vec![], IndexMap::new()).unwrap());
         }
         for i in 0..n - 1 {
             store
-                .create_edge("g", ids[i], ids[i + 1], "NEXT".to_string(), HashMap::new())
+                .create_edge("g", ids[i], ids[i + 1], "NEXT".to_string(), IndexMap::new())
                 .unwrap();
         }
         (store, ids)
@@ -270,18 +270,18 @@ mod tests {
     fn bfs_cycle_avoidance() {
         let store = InMemoryGraphStore::new();
         store.create_graph("g").unwrap();
-        let a = store.create_node("g", vec![], HashMap::new()).unwrap();
-        let b = store.create_node("g", vec![], HashMap::new()).unwrap();
-        let c = store.create_node("g", vec![], HashMap::new()).unwrap();
+        let a = store.create_node("g", vec![], IndexMap::new()).unwrap();
+        let b = store.create_node("g", vec![], IndexMap::new()).unwrap();
+        let c = store.create_node("g", vec![], IndexMap::new()).unwrap();
         // a -> b -> c -> a (cycle)
         store
-            .create_edge("g", a, b, "R".to_string(), HashMap::new())
+            .create_edge("g", a, b, "R".to_string(), IndexMap::new())
             .unwrap();
         store
-            .create_edge("g", b, c, "R".to_string(), HashMap::new())
+            .create_edge("g", b, c, "R".to_string(), IndexMap::new())
             .unwrap();
         store
-            .create_edge("g", c, a, "R".to_string(), HashMap::new())
+            .create_edge("g", c, a, "R".to_string(), IndexMap::new())
             .unwrap();
 
         let mut budget = ExecutionBudget::unlimited();
@@ -319,15 +319,15 @@ mod tests {
     fn bfs_undirected() {
         let store = InMemoryGraphStore::new();
         store.create_graph("g").unwrap();
-        let a = store.create_node("g", vec![], HashMap::new()).unwrap();
-        let b = store.create_node("g", vec![], HashMap::new()).unwrap();
-        let c = store.create_node("g", vec![], HashMap::new()).unwrap();
+        let a = store.create_node("g", vec![], IndexMap::new()).unwrap();
+        let b = store.create_node("g", vec![], IndexMap::new()).unwrap();
+        let c = store.create_node("g", vec![], IndexMap::new()).unwrap();
         // a -> b, c -> b (b has incoming from both a and c)
         store
-            .create_edge("g", a, b, "R".to_string(), HashMap::new())
+            .create_edge("g", a, b, "R".to_string(), IndexMap::new())
             .unwrap();
         store
-            .create_edge("g", c, b, "R".to_string(), HashMap::new())
+            .create_edge("g", c, b, "R".to_string(), IndexMap::new())
             .unwrap();
 
         let mut budget = ExecutionBudget::unlimited();
@@ -346,15 +346,15 @@ mod tests {
     fn bfs_rel_type_filter() {
         let store = InMemoryGraphStore::new();
         store.create_graph("g").unwrap();
-        let a = store.create_node("g", vec![], HashMap::new()).unwrap();
-        let b = store.create_node("g", vec![], HashMap::new()).unwrap();
-        let c = store.create_node("g", vec![], HashMap::new()).unwrap();
+        let a = store.create_node("g", vec![], IndexMap::new()).unwrap();
+        let b = store.create_node("g", vec![], IndexMap::new()).unwrap();
+        let c = store.create_node("g", vec![], IndexMap::new()).unwrap();
 
         store
-            .create_edge("g", a, b, "KNOWS".to_string(), HashMap::new())
+            .create_edge("g", a, b, "KNOWS".to_string(), IndexMap::new())
             .unwrap();
         store
-            .create_edge("g", a, c, "LIKES".to_string(), HashMap::new())
+            .create_edge("g", a, c, "LIKES".to_string(), IndexMap::new())
             .unwrap();
 
         let mut budget = ExecutionBudget::unlimited();
@@ -431,7 +431,7 @@ mod tests {
     fn bfs_isolated_node_yields_start_only() {
         let store = InMemoryGraphStore::new();
         store.create_graph("g").unwrap();
-        let a = store.create_node("g", vec![], HashMap::new()).unwrap();
+        let a = store.create_node("g", vec![], IndexMap::new()).unwrap();
         let mut budget = ExecutionBudget::unlimited();
         let trav = BfsTraversal::new(&store, "g", a, Direction::Outgoing, &[], 10, &mut budget);
         let results: Vec<_> = trav.map(|r| r.unwrap()).collect();
@@ -444,22 +444,22 @@ mod tests {
     fn bfs_diamond_each_node_once() {
         let store = InMemoryGraphStore::new();
         store.create_graph("g").unwrap();
-        let a = store.create_node("g", vec![], HashMap::new()).unwrap();
-        let b = store.create_node("g", vec![], HashMap::new()).unwrap();
-        let c = store.create_node("g", vec![], HashMap::new()).unwrap();
-        let d = store.create_node("g", vec![], HashMap::new()).unwrap();
+        let a = store.create_node("g", vec![], IndexMap::new()).unwrap();
+        let b = store.create_node("g", vec![], IndexMap::new()).unwrap();
+        let c = store.create_node("g", vec![], IndexMap::new()).unwrap();
+        let d = store.create_node("g", vec![], IndexMap::new()).unwrap();
         // a -> b, a -> c, b -> d, c -> d
         store
-            .create_edge("g", a, b, "R".to_string(), HashMap::new())
+            .create_edge("g", a, b, "R".to_string(), IndexMap::new())
             .unwrap();
         store
-            .create_edge("g", a, c, "R".to_string(), HashMap::new())
+            .create_edge("g", a, c, "R".to_string(), IndexMap::new())
             .unwrap();
         store
-            .create_edge("g", b, d, "R".to_string(), HashMap::new())
+            .create_edge("g", b, d, "R".to_string(), IndexMap::new())
             .unwrap();
         store
-            .create_edge("g", c, d, "R".to_string(), HashMap::new())
+            .create_edge("g", c, d, "R".to_string(), IndexMap::new())
             .unwrap();
 
         let mut budget = ExecutionBudget::unlimited();

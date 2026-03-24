@@ -9,6 +9,7 @@
 //!  - §2.4 Label add / remove / multi-label invariants
 //!  - §2.5 Node and edge ID uniqueness and stability
 
+use indexmap::IndexMap;
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
@@ -28,7 +29,7 @@ fn make_store() -> InMemoryGraphStore {
 }
 
 /// Run any Cypher query (read or write) and return its rows.
-fn run_query(store: &InMemoryGraphStore, query: &str) -> Vec<HashMap<String, Value>> {
+fn run_query(store: &InMemoryGraphStore, query: &str) -> Vec<IndexMap<String, Value>> {
     let ast = parse_query(query).expect("parse error");
     let planner = QueryPlanner::new(store, "test");
     let plan = planner.plan(&ast).expect("plan error");
@@ -86,14 +87,14 @@ fn test_detach_delete_removes_all_connected_edges() {
 
     // Star graph: 1 center + 5 leaf nodes.
     let center = store
-        .create_node("test", vec!["Center".to_string()], HashMap::new())
+        .create_node("test", vec!["Center".to_string()], IndexMap::new())
         .unwrap();
     for _ in 0..5 {
         let leaf = store
-            .create_node("test", vec!["Leaf".to_string()], HashMap::new())
+            .create_node("test", vec!["Leaf".to_string()], IndexMap::new())
             .unwrap();
         store
-            .create_edge("test", center, leaf, "LINK".to_string(), HashMap::new())
+            .create_edge("test", center, leaf, "LINK".to_string(), IndexMap::new())
             .unwrap();
     }
 
@@ -376,7 +377,7 @@ fn test_node_ids_are_unique_across_creates() {
     let n = 300;
     let mut seen = HashSet::new();
     for i in 0..n {
-        let props = HashMap::from([("i".to_string(), Value::Int(i as i64))]);
+        let props = IndexMap::from([("i".to_string(), Value::Int(i as i64))]);
         let id = store
             .create_node("test", vec!["N".to_string()], props)
             .unwrap();
@@ -390,17 +391,17 @@ fn test_node_ids_are_unique_across_creates() {
 fn test_edge_ids_are_unique_across_creates() {
     let store = make_store();
     let src = store
-        .create_node("test", vec!["A".to_string()], HashMap::new())
+        .create_node("test", vec!["A".to_string()], IndexMap::new())
         .unwrap();
     let dst = store
-        .create_node("test", vec!["B".to_string()], HashMap::new())
+        .create_node("test", vec!["B".to_string()], IndexMap::new())
         .unwrap();
 
     let n = 200;
     let mut seen = HashSet::new();
     for _ in 0..n {
         let id = store
-            .create_edge("test", src, dst, "R".to_string(), HashMap::new())
+            .create_edge("test", src, dst, "R".to_string(), IndexMap::new())
             .unwrap();
         assert!(seen.insert(id), "edge ID {id:?} was duplicated");
     }
@@ -416,21 +417,21 @@ fn test_id_stable_after_other_deletions() {
         .create_node(
             "test",
             vec!["T".to_string()],
-            HashMap::from([("i".to_string(), Value::Int(1))]),
+            IndexMap::from([("i".to_string(), Value::Int(1))]),
         )
         .unwrap();
     let id_b = store
         .create_node(
             "test",
             vec!["T".to_string()],
-            HashMap::from([("i".to_string(), Value::Int(2))]),
+            IndexMap::from([("i".to_string(), Value::Int(2))]),
         )
         .unwrap();
     let id_c = store
         .create_node(
             "test",
             vec!["T".to_string()],
-            HashMap::from([("i".to_string(), Value::Int(3))]),
+            IndexMap::from([("i".to_string(), Value::Int(3))]),
         )
         .unwrap();
 
@@ -467,7 +468,7 @@ fn test_id_function_returns_correct_id() {
         .create_node(
             "test",
             vec!["X".to_string()],
-            HashMap::from([("v".to_string(), Value::Int(7))]),
+            IndexMap::from([("v".to_string(), Value::Int(7))]),
         )
         .unwrap();
 

@@ -2,7 +2,7 @@
 //!
 //! Contains: create, get, delete, set/replace properties.
 
-use std::collections::HashMap;
+use indexmap::IndexMap;
 use std::sync::Arc;
 
 use crate::error::StorageError;
@@ -18,7 +18,7 @@ pub(crate) fn create_edge_impl(
     src: NodeId,
     dst: NodeId,
     rel_type: String,
-    properties: HashMap<String, Value>,
+    properties: IndexMap<String, Value>,
 ) -> Result<EdgeId, StorageError> {
     let mut guard = store.write()?;
     let map = Arc::make_mut(&mut guard);
@@ -80,7 +80,7 @@ pub(crate) fn set_edge_properties_impl(
     store: &InMemoryGraphStore,
     graph: &str,
     id: EdgeId,
-    properties: HashMap<String, Value>,
+    properties: IndexMap<String, Value>,
 ) -> Result<(), StorageError> {
     let mut guard = store.write()?;
     let map = Arc::make_mut(&mut guard);
@@ -100,7 +100,7 @@ pub(crate) fn replace_edge_properties_impl(
     store: &InMemoryGraphStore,
     graph: &str,
     id: EdgeId,
-    properties: HashMap<String, Value>,
+    properties: IndexMap<String, Value>,
 ) -> Result<(), StorageError> {
     let mut guard = store.write()?;
     let map = Arc::make_mut(&mut guard);
@@ -169,7 +169,7 @@ pub(crate) fn delete_edge_impl(
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
+    use indexmap::IndexMap;
 
     use crate::storage::mem::test_helpers::make_store;
     use crate::storage::{EdgeId, GraphStore, NodeId};
@@ -178,9 +178,9 @@ mod tests {
     #[test]
     fn edge_create_read_delete_roundtrip() {
         let store = make_store();
-        let a = store.create_node("test", vec![], HashMap::new()).unwrap();
-        let b = store.create_node("test", vec![], HashMap::new()).unwrap();
-        let mut props = HashMap::new();
+        let a = store.create_node("test", vec![], IndexMap::new()).unwrap();
+        let b = store.create_node("test", vec![], IndexMap::new()).unwrap();
+        let mut props = IndexMap::new();
         props.insert("weight".to_string(), Value::Float(1.5));
         let eid = store
             .create_edge("test", a, b, "KNOWS".to_string(), props)
@@ -202,9 +202,9 @@ mod tests {
     #[test]
     fn create_edge_requires_existing_nodes() {
         let store = make_store();
-        let a = store.create_node("test", vec![], HashMap::new()).unwrap();
+        let a = store.create_node("test", vec![], IndexMap::new()).unwrap();
         let bad = NodeId(9999);
-        let result = store.create_edge("test", a, bad, "R".to_string(), HashMap::new());
+        let result = store.create_edge("test", a, bad, "R".to_string(), IndexMap::new());
         assert!(matches!(
             result,
             Err(crate::error::StorageError::NodeNotFound { .. })
@@ -214,10 +214,10 @@ mod tests {
     #[test]
     fn batch_fetch_edges() {
         let store = make_store();
-        let a = store.create_node("test", vec![], HashMap::new()).unwrap();
-        let b = store.create_node("test", vec![], HashMap::new()).unwrap();
+        let a = store.create_node("test", vec![], IndexMap::new()).unwrap();
+        let b = store.create_node("test", vec![], IndexMap::new()).unwrap();
         let eid = store
-            .create_edge("test", a, b, "R".to_string(), HashMap::new())
+            .create_edge("test", a, b, "R".to_string(), IndexMap::new())
             .unwrap();
         let fake = EdgeId(9999);
 

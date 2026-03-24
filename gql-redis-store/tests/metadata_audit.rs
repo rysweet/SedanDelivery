@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use indexmap::IndexMap;
 
 use gql_core::storage::GraphStore;
 use gql_core::types::Value;
@@ -32,7 +32,7 @@ fn unique_graph(prefix: &str) -> String {
     format!("{prefix}-{}", Uuid::new_v4().simple())
 }
 
-fn props(entries: &[(&str, Value)]) -> HashMap<String, Value> {
+fn props(entries: &[(&str, Value)]) -> IndexMap<String, Value> {
     entries
         .iter()
         .map(|(key, value)| ((*key).to_string(), value.clone()))
@@ -143,7 +143,7 @@ fn metadata_audit_repairs_stale_reltype_registry_member() {
         )
         .expect("target node should be created");
     store
-        .create_edge(&graph, alice, bob, "KNOWS".to_string(), HashMap::new())
+        .create_edge(&graph, alice, bob, "KNOWS".to_string(), IndexMap::new())
         .expect("edge should be created");
 
     let registry_key = reltypes_registry_key(&graph);

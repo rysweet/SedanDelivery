@@ -1,6 +1,6 @@
 // writes/nodes.rs -- Node write operations for RedisGraphStore.
 
-use std::collections::HashMap;
+use indexmap::IndexMap;
 
 use gql_core::error::StorageError;
 use gql_core::serde_value::props_to_json;
@@ -23,7 +23,7 @@ fn validate_labels(labels: &[String]) -> Result<(), StorageError> {
     Ok(())
 }
 
-fn validate_property_keys(properties: &HashMap<String, Value>) -> Result<(), StorageError> {
+fn validate_property_keys(properties: &IndexMap<String, Value>) -> Result<(), StorageError> {
     for key in properties.keys() {
         validate_property_key(key)?;
     }
@@ -44,7 +44,7 @@ impl RedisGraphStore {
         &self,
         graph: &str,
         labels: Vec<String>,
-        properties: HashMap<String, Value>,
+        properties: IndexMap<String, Value>,
     ) -> Result<NodeId, StorageError> {
         validate_labels(&labels)?;
         validate_property_keys(&properties)?;
@@ -137,7 +137,7 @@ impl RedisGraphStore {
         &self,
         graph: &str,
         id: NodeId,
-        properties: HashMap<String, Value>,
+        properties: IndexMap<String, Value>,
     ) -> Result<(), StorageError> {
         validate_property_keys(&properties)?;
         self.with_graph_write_lock(graph, WRITE_LOCK_TTL_MS, 3, 50, |conn| {
@@ -171,7 +171,7 @@ impl RedisGraphStore {
         &self,
         graph: &str,
         id: NodeId,
-        properties: HashMap<String, Value>,
+        properties: IndexMap<String, Value>,
     ) -> Result<(), StorageError> {
         validate_property_keys(&properties)?;
         self.with_graph_write_lock(graph, WRITE_LOCK_TTL_MS, 3, 50, |conn| {
@@ -454,7 +454,7 @@ impl RedisGraphStore {
     pub fn batch_create_nodes(
         &self,
         graph: &str,
-        nodes: Vec<(Vec<String>, HashMap<String, Value>)>,
+        nodes: Vec<(Vec<String>, IndexMap<String, Value>)>,
     ) -> Result<Vec<NodeId>, StorageError> {
         if nodes.is_empty() {
             return Ok(Vec::new());
@@ -491,7 +491,7 @@ impl RedisGraphStore {
 
             // Pre-serialize all nodes and build the pipeline.
             let mut pipe = conn.pipeline();
-            let mut node_meta: Vec<(u64, Vec<String>, HashMap<String, Value>)> =
+            let mut node_meta: Vec<(u64, Vec<String>, IndexMap<String, Value>)> =
                 Vec::with_capacity(nodes.len());
 
             for (i, (labels, properties)) in nodes.into_iter().enumerate() {
@@ -573,7 +573,7 @@ mod tests {
 
     #[test]
     fn extract_injected_id_present_positive() {
-        let mut props = HashMap::new();
+        let mut props = IndexMap::new();
         props.insert("_sd2_id".to_string(), Value::Int(42));
         let result = extract_injected_id(&props, "_sd2_id").unwrap();
         assert_eq!(result, Some(42));
@@ -581,7 +581,7 @@ mod tests {
 
     #[test]
     fn extract_injected_id_present_zero() {
-        let mut props = HashMap::new();
+        let mut props = IndexMap::new();
         props.insert("_sd2_id".to_string(), Value::Int(0));
         let result = extract_injected_id(&props, "_sd2_id").unwrap();
         assert_eq!(result, Some(0));
@@ -589,7 +589,7 @@ mod tests {
 
     #[test]
     fn extract_injected_id_present_negative_fails() {
-        let mut props = HashMap::new();
+        let mut props = IndexMap::new();
         props.insert("_sd2_id".to_string(), Value::Int(-5));
         let result = extract_injected_id(&props, "_sd2_id");
         assert!(result.is_err());
@@ -597,14 +597,14 @@ mod tests {
 
     #[test]
     fn extract_injected_id_absent() {
-        let props = HashMap::new();
+        let props = IndexMap::new();
         let result = extract_injected_id(&props, "_sd2_id").unwrap();
         assert_eq!(result, None);
     }
 
     #[test]
     fn extract_injected_id_wrong_type_ignored() {
-        let mut props = HashMap::new();
+        let mut props = IndexMap::new();
         props.insert("_sd2_id".to_string(), Value::Str("not_an_int".into()));
         // Non-Int values are not matched, so returns None.
         let result = extract_injected_id(&props, "_sd2_id").unwrap();
@@ -615,7 +615,7 @@ mod tests {
 
     #[test]
     fn clean_fanout_props_removes_internal_keys() {
-        let mut props = HashMap::new();
+        let mut props = IndexMap::new();
         props.insert("_sd2_id".to_string(), Value::Int(1));
         props.insert("_sd2_eid".to_string(), Value::Int(2));
         props.insert("name".to_string(), Value::Str("Alice".into()));
@@ -627,7 +627,7 @@ mod tests {
 
     #[test]
     fn clean_fanout_props_noop_when_no_internal_keys() {
-        let mut props = HashMap::new();
+        let mut props = IndexMap::new();
         props.insert("age".to_string(), Value::Int(30));
         let cleaned = clean_fanout_props(props);
         assert_eq!(cleaned.len(), 1);
@@ -636,7 +636,7 @@ mod tests {
 
     #[test]
     fn clean_fanout_props_empty_map() {
-        let props = HashMap::new();
+        let props = IndexMap::new();
         let cleaned = clean_fanout_props(props);
         assert!(cleaned.is_empty());
     }
@@ -653,7 +653,7 @@ mod tests {
 
     #[test]
     fn validate_property_keys_rejects_null_byte() {
-        let mut props = HashMap::new();
+        let mut props = IndexMap::new();
         props.insert("na\x00me".to_string(), Value::Int(1));
         let result = validate_property_keys(&props);
         assert!(

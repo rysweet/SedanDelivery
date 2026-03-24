@@ -149,8 +149,8 @@ async fn metrics_handler(State(state): State<HealthState>) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use indexmap::IndexMap;
     use std::any::Any;
-    use std::collections::HashMap;
 
     use gql_core::error::StorageError;
     use gql_core::storage::{
@@ -262,7 +262,7 @@ mod tests {
             &self,
             graph: &str,
             labels: Vec<String>,
-            properties: HashMap<String, Value>,
+            properties: IndexMap<String, Value>,
         ) -> Result<NodeId, StorageError> {
             self.0.create_node(graph, labels, properties)
         }
@@ -272,7 +272,7 @@ mod tests {
             src: NodeId,
             dst: NodeId,
             rel_type: String,
-            properties: HashMap<String, Value>,
+            properties: IndexMap<String, Value>,
         ) -> Result<EdgeId, StorageError> {
             self.0.create_edge(graph, src, dst, rel_type, properties)
         }
@@ -280,7 +280,7 @@ mod tests {
             &self,
             graph: &str,
             id: NodeId,
-            properties: HashMap<String, Value>,
+            properties: IndexMap<String, Value>,
         ) -> Result<(), StorageError> {
             self.0.set_node_properties(graph, id, properties)
         }
@@ -288,7 +288,7 @@ mod tests {
             &self,
             graph: &str,
             id: NodeId,
-            properties: HashMap<String, Value>,
+            properties: IndexMap<String, Value>,
         ) -> Result<(), StorageError> {
             self.0.replace_node_properties(graph, id, properties)
         }
@@ -296,7 +296,7 @@ mod tests {
             &self,
             graph: &str,
             id: EdgeId,
-            properties: HashMap<String, Value>,
+            properties: IndexMap<String, Value>,
         ) -> Result<(), StorageError> {
             self.0.set_edge_properties(graph, id, properties)
         }
@@ -304,7 +304,7 @@ mod tests {
             &self,
             graph: &str,
             id: EdgeId,
-            properties: HashMap<String, Value>,
+            properties: IndexMap<String, Value>,
         ) -> Result<(), StorageError> {
             self.0.replace_edge_properties(graph, id, properties)
         }

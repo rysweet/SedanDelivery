@@ -14,6 +14,7 @@ pub(crate) mod admin;
 pub(crate) mod edges;
 pub(crate) mod nodes;
 
+use indexmap::IndexMap;
 use std::collections::HashMap;
 
 use serde_json::{json, Value as JValue};
@@ -328,7 +329,7 @@ impl GraphStore for FabricGraphStore {
         &self,
         graph: &str,
         labels: Vec<String>,
-        properties: HashMap<String, Value>,
+        properties: IndexMap<String, Value>,
     ) -> Result<NodeId, StorageError> {
         let id = if let Some(Value::Int(i)) = properties.get(PROP_NODE_ID) {
             if *i < 0 {
@@ -361,7 +362,7 @@ impl GraphStore for FabricGraphStore {
         &self,
         graph: &str,
         id: NodeId,
-        properties: HashMap<String, Value>,
+        properties: IndexMap<String, Value>,
     ) -> Result<(), StorageError> {
         let props = user_props_to_json(&properties);
         self.statement(
@@ -375,7 +376,7 @@ impl GraphStore for FabricGraphStore {
         &self,
         graph: &str,
         id: NodeId,
-        properties: HashMap<String, Value>,
+        properties: IndexMap<String, Value>,
     ) -> Result<(), StorageError> {
         let mut props = user_props_to_json(&properties);
         props.insert(PROP_GRAPH.into(), json!(graph));
@@ -485,7 +486,7 @@ impl GraphStore for FabricGraphStore {
         src: NodeId,
         dst: NodeId,
         rel_type: String,
-        properties: HashMap<String, Value>,
+        properties: IndexMap<String, Value>,
     ) -> Result<EdgeId, StorageError> {
         edges::create_edge_impl(self, graph, src, dst, rel_type, properties)
     }
@@ -494,7 +495,7 @@ impl GraphStore for FabricGraphStore {
         &self,
         graph: &str,
         id: EdgeId,
-        properties: HashMap<String, Value>,
+        properties: IndexMap<String, Value>,
     ) -> Result<(), StorageError> {
         edges::set_edge_properties_impl(self, graph, id, properties)
     }
@@ -503,7 +504,7 @@ impl GraphStore for FabricGraphStore {
         &self,
         graph: &str,
         id: EdgeId,
-        properties: HashMap<String, Value>,
+        properties: IndexMap<String, Value>,
     ) -> Result<(), StorageError> {
         edges::replace_edge_properties_impl(self, graph, id, properties)
     }

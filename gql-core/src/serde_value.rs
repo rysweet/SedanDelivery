@@ -24,7 +24,7 @@
 //!
 //! Non-finite floats (NaN, Infinity, -Infinity) return `StorageError::Serialization`.
 
-use std::collections::HashMap;
+use indexmap::IndexMap;
 
 use serde_json::Value as JsonValue;
 
@@ -293,7 +293,7 @@ pub fn json_to_value(j: &JsonValue) -> Option<Value> {
 }
 
 /// Serialize a property map to a JSON string.
-pub fn props_to_json(props: &HashMap<String, Value>) -> Result<String, StorageError> {
+pub fn props_to_json(props: &IndexMap<String, Value>) -> Result<String, StorageError> {
     let mut obj = serde_json::Map::new();
     for (k, v) in props {
         obj.insert(k.clone(), value_to_json(v)?);
@@ -303,7 +303,7 @@ pub fn props_to_json(props: &HashMap<String, Value>) -> Result<String, StorageEr
 }
 
 /// Deserialize a JSON string into a property map.
-pub fn json_to_props(s: &str) -> Result<HashMap<String, Value>, StorageError> {
+pub fn json_to_props(s: &str) -> Result<IndexMap<String, Value>, StorageError> {
     let j: JsonValue = serde_json::from_str(s).map_err(|e| StorageError::Serialization {
         msg: format!("failed to parse props JSON: {e}"),
     })?;
@@ -416,7 +416,7 @@ mod tests {
 
     #[test]
     fn props_round_trip() {
-        let mut props = HashMap::new();
+        let mut props = IndexMap::new();
         props.insert("name".into(), Value::Str("Alice".into()));
         props.insert("age".into(), Value::Int(30));
 
@@ -468,7 +468,7 @@ mod tests {
 
     #[test]
     fn empty_props_round_trip() {
-        let props = HashMap::new();
+        let props = IndexMap::new();
         let json_str = props_to_json(&props).unwrap();
         assert_eq!(json_str, "{}");
         let back = json_to_props(&json_str).unwrap();
@@ -509,7 +509,7 @@ mod tests {
         let store = InMemoryGraphStore::new();
         store.create_graph("test").unwrap();
 
-        let mut props = HashMap::new();
+        let mut props = IndexMap::new();
         props.insert("_sd2_id".to_string(), Value::Int(-1));
 
         let result = store.create_node("test", vec!["Label".into()], props);
@@ -530,13 +530,13 @@ mod tests {
 
         // Create two nodes first
         let n1 = store
-            .create_node("test", vec!["A".into()], HashMap::new())
+            .create_node("test", vec!["A".into()], IndexMap::new())
             .unwrap();
         let n2 = store
-            .create_node("test", vec!["B".into()], HashMap::new())
+            .create_node("test", vec!["B".into()], IndexMap::new())
             .unwrap();
 
-        let mut props = HashMap::new();
+        let mut props = IndexMap::new();
         props.insert("_sd2_eid".to_string(), Value::Int(-5));
 
         let result = store.create_edge("test", n1, n2, "KNOWS".into(), props);

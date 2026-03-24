@@ -11,7 +11,7 @@ use gql_core::{
     storage::{validate_graph_name, GraphStore, InMemoryGraphStore},
     types::Value,
 };
-use std::collections::HashMap;
+use indexmap::IndexMap;
 
 fn run_query(
     store: &InMemoryGraphStore,
@@ -52,7 +52,7 @@ fn main() {
         .create_node(
             graph,
             vec!["Person".into()],
-            HashMap::from([
+            IndexMap::from([
                 ("name".into(), Value::Str("Alice".into())),
                 ("age".into(), Value::Int(30)),
             ]),
@@ -64,7 +64,7 @@ fn main() {
         .create_node(
             graph,
             vec!["Person".into()],
-            HashMap::from([
+            IndexMap::from([
                 ("name".into(), Value::Str("Bob".into())),
                 ("age".into(), Value::Int(25)),
             ]),
@@ -76,7 +76,7 @@ fn main() {
         .create_node(
             graph,
             vec!["Organization".into()],
-            HashMap::from([("name".into(), Value::Str("Acme Corp".into()))]),
+            IndexMap::from([("name".into(), Value::Str("Acme Corp".into()))]),
         )
         .expect("create Corp failed");
     println!("  ✓ Created node Acme Corp (id={})", corp_id.0);
@@ -88,7 +88,7 @@ fn main() {
             alice_id,
             bob_id,
             "KNOWS".into(),
-            HashMap::from([("since".into(), Value::Int(2020))]),
+            IndexMap::from([("since".into(), Value::Int(2020))]),
         )
         .expect("create KNOWS failed");
     println!("  ✓ Created edge Alice-[:KNOWS]->Bob (id={})", knows_id.0);
@@ -99,7 +99,7 @@ fn main() {
             alice_id,
             corp_id,
             "WORKS_AT".into(),
-            HashMap::from([("role".into(), Value::Str("Engineer".into()))]),
+            IndexMap::from([("role".into(), Value::Str("Engineer".into()))]),
         )
         .expect("create WORKS_AT failed");
     println!(

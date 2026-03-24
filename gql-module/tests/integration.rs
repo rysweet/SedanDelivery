@@ -19,7 +19,7 @@
 //! REDIS_URL=redis://127.0.0.1:6379 cargo test -p gql-module --test integration
 //! ```
 
-use std::collections::HashMap;
+use indexmap::IndexMap;
 use std::time::Duration;
 
 use gql_core::executor::{ExecutionBudget, QueryExecutor};
@@ -128,7 +128,7 @@ fn test_list_graphs() {
 fn test_gql_query_returns_json_rows() {
     let store = InMemoryGraphStore::default();
     store.create_graph("qgraph").unwrap();
-    let mut props = HashMap::new();
+    let mut props = IndexMap::new();
     props.insert("name".to_string(), Value::Str("Alice".into()));
     props.insert("age".to_string(), Value::Int(30));
     store
@@ -161,7 +161,7 @@ fn test_gql_query_multiple_rows_ordered() {
     let store = InMemoryGraphStore::default();
     store.create_graph("multi").unwrap();
     for name in &["Charlie", "Alice", "Bob"] {
-        let mut props = HashMap::new();
+        let mut props = IndexMap::new();
         props.insert("name".to_string(), Value::Str((*name).into()));
         store
             .create_node("multi", vec!["Person".to_string()], props)
@@ -206,7 +206,7 @@ fn test_gql_mutate_create_reports_stats() {
 fn test_gql_mutate_delete_reports_stats() {
     let store = InMemoryGraphStore::default();
     store.create_graph("dgraph").unwrap();
-    let mut props = HashMap::new();
+    let mut props = IndexMap::new();
     props.insert("name".to_string(), Value::Str("Temp".into()));
     store
         .create_node("dgraph", vec!["X".to_string()], props)
@@ -342,7 +342,7 @@ fn test_multiple_queries_same_store() {
     let store = InMemoryGraphStore::default();
     store.create_graph("concurrent").unwrap();
     for i in 0..10i64 {
-        let mut props = HashMap::new();
+        let mut props = IndexMap::new();
         props.insert("i".to_string(), Value::Int(i));
         store
             .create_node("concurrent", vec!["N".to_string()], props)

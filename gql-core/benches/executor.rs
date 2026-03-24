@@ -11,7 +11,7 @@ use gql_core::parser::parse_query;
 use gql_core::planner::QueryPlanner;
 use gql_core::storage::{GraphStore, InMemoryGraphStore};
 use gql_core::types::Value;
-use std::collections::HashMap;
+use indexmap::IndexMap;
 use std::time::Duration;
 
 // ── Setup helpers ──────────────────────────────────────────────────────────────
@@ -20,7 +20,7 @@ fn make_person_store(n: usize) -> InMemoryGraphStore {
     let store = InMemoryGraphStore::default();
     store.create_graph("bench").unwrap();
     for i in 0..n {
-        let props = HashMap::from([
+        let props = IndexMap::from([
             ("name".to_string(), Value::Str(format!("person_{i}").into())),
             ("age".to_string(), Value::Int((i % 100) as i64)),
         ]);
@@ -115,18 +115,18 @@ fn bench_expand_star_graph(c: &mut Criterion) {
     let store = InMemoryGraphStore::default();
     store.create_graph("bench").unwrap();
     let hub = store
-        .create_node("bench", vec!["Hub".to_string()], HashMap::new())
+        .create_node("bench", vec!["Hub".to_string()], IndexMap::new())
         .unwrap();
     for i in 0..1_000i64 {
         let leaf = store
             .create_node(
                 "bench",
                 vec!["Leaf".to_string()],
-                HashMap::from([("i".to_string(), Value::Int(i))]),
+                IndexMap::from([("i".to_string(), Value::Int(i))]),
             )
             .unwrap();
         store
-            .create_edge("bench", hub, leaf, "LINK".to_string(), HashMap::new())
+            .create_edge("bench", hub, leaf, "LINK".to_string(), IndexMap::new())
             .unwrap();
     }
 
@@ -140,14 +140,14 @@ fn bench_expand_chain(c: &mut Criterion) {
     let store = InMemoryGraphStore::default();
     store.create_graph("bench").unwrap();
     let mut prev = store
-        .create_node("bench", vec!["Ch".to_string()], HashMap::new())
+        .create_node("bench", vec!["Ch".to_string()], IndexMap::new())
         .unwrap();
     for _ in 0..499 {
         let next = store
-            .create_node("bench", vec!["Ch".to_string()], HashMap::new())
+            .create_node("bench", vec!["Ch".to_string()], IndexMap::new())
             .unwrap();
         store
-            .create_edge("bench", prev, next, "N".to_string(), HashMap::new())
+            .create_edge("bench", prev, next, "N".to_string(), IndexMap::new())
             .unwrap();
         prev = next;
     }
@@ -170,7 +170,7 @@ fn bench_e2e_friends_of_friends(c: &mut Criterion) {
                 .create_node(
                     "bench",
                     vec!["Person".to_string()],
-                    HashMap::from([("i".to_string(), Value::Int(i))]),
+                    IndexMap::from([("i".to_string(), Value::Int(i))]),
                 )
                 .unwrap(),
         );
@@ -179,7 +179,7 @@ fn bench_e2e_friends_of_friends(c: &mut Criterion) {
         for j in 1..=5 {
             let dst = ids[(i + j) % 100];
             store
-                .create_edge("bench", ids[i], dst, "KNOWS".to_string(), HashMap::new())
+                .create_edge("bench", ids[i], dst, "KNOWS".to_string(), IndexMap::new())
                 .unwrap();
         }
     }
@@ -226,7 +226,7 @@ fn make_rich_person_store(n: usize) -> InMemoryGraphStore {
     let store = InMemoryGraphStore::default();
     store.create_graph("bench").unwrap();
     for i in 0..n {
-        let props = HashMap::from([
+        let props = IndexMap::from([
             ("name".to_string(), Value::Str(format!("person_{i}").into())),
             ("age".to_string(), Value::Int((i % 100) as i64)),
             (
@@ -320,14 +320,14 @@ fn bench_union(c: &mut Criterion) {
             .create_node(
                 "bench",
                 vec!["A".to_string()],
-                HashMap::from([("i".to_string(), Value::Int(i))]),
+                IndexMap::from([("i".to_string(), Value::Int(i))]),
             )
             .unwrap();
         store
             .create_node(
                 "bench",
                 vec!["B".to_string()],
-                HashMap::from([("i".to_string(), Value::Int(i))]),
+                IndexMap::from([("i".to_string(), Value::Int(i))]),
             )
             .unwrap();
     }
@@ -351,14 +351,14 @@ fn bench_varlen_paths(c: &mut Criterion) {
     let store = InMemoryGraphStore::default();
     store.create_graph("bench").unwrap();
     let mut prev = store
-        .create_node("bench", vec!["VL".to_string()], HashMap::new())
+        .create_node("bench", vec!["VL".to_string()], IndexMap::new())
         .unwrap();
     for _ in 0..99 {
         let next = store
-            .create_node("bench", vec!["VL".to_string()], HashMap::new())
+            .create_node("bench", vec!["VL".to_string()], IndexMap::new())
             .unwrap();
         store
-            .create_edge("bench", prev, next, "NEXT".to_string(), HashMap::new())
+            .create_edge("bench", prev, next, "NEXT".to_string(), IndexMap::new())
             .unwrap();
         prev = next;
     }
@@ -375,7 +375,7 @@ fn bench_aggregate_many_groups(c: &mut Criterion) {
     let store = InMemoryGraphStore::default();
     store.create_graph("bench").unwrap();
     for i in 0..10_000usize {
-        let props = HashMap::from([
+        let props = IndexMap::from([
             (
                 "group".to_string(),
                 Value::Str(format!("g_{}", i % 1_000).into()),
@@ -399,7 +399,7 @@ fn bench_wide_multi_prop_access(c: &mut Criterion) {
     let store = InMemoryGraphStore::default();
     store.create_graph("bench").unwrap();
     for i in 0..10_000i64 {
-        let props = HashMap::from([
+        let props = IndexMap::from([
             ("a".to_string(), Value::Int(i)),
             ("b".to_string(), Value::Int(i * 2)),
             ("c".to_string(), Value::Str(format!("c_{i}").into())),
@@ -427,7 +427,7 @@ fn bench_merge(c: &mut Criterion) {
             store.create_graph("bench").unwrap();
             for i in 0..100i64 {
                 let props =
-                    HashMap::from([("name".to_string(), Value::Str(format!("node_{i}").into()))]);
+                    IndexMap::from([("name".to_string(), Value::Str(format!("node_{i}").into()))]);
                 store
                     .create_node("bench", vec!["Label".to_string()], props)
                     .unwrap();

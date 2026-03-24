@@ -42,7 +42,7 @@ pub use fanout::FanoutStore;
 /// limit must be deleted in parts or via an offline tool.
 pub const MAX_NODES_FOR_DELETE: usize = 100_000;
 
-use std::collections::HashMap;
+use indexmap::IndexMap;
 use std::env;
 use std::ops::{Deref, DerefMut};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -919,7 +919,7 @@ impl GraphStore for RedisGraphStore {
         &self,
         graph: &str,
         labels: Vec<String>,
-        properties: HashMap<String, Value>,
+        properties: IndexMap<String, Value>,
     ) -> Result<NodeId, StorageError> {
         self.create_node_impl(graph, labels, properties)
     }
@@ -930,7 +930,7 @@ impl GraphStore for RedisGraphStore {
         src: NodeId,
         dst: NodeId,
         rel_type: String,
-        properties: HashMap<String, Value>,
+        properties: IndexMap<String, Value>,
     ) -> Result<EdgeId, StorageError> {
         self.create_edge_impl(graph, src, dst, rel_type, properties)
     }
@@ -939,7 +939,7 @@ impl GraphStore for RedisGraphStore {
         &self,
         graph: &str,
         id: NodeId,
-        properties: HashMap<String, Value>,
+        properties: IndexMap<String, Value>,
     ) -> Result<(), StorageError> {
         self.set_node_properties_impl(graph, id, properties)
     }
@@ -948,7 +948,7 @@ impl GraphStore for RedisGraphStore {
         &self,
         graph: &str,
         id: NodeId,
-        properties: HashMap<String, Value>,
+        properties: IndexMap<String, Value>,
     ) -> Result<(), StorageError> {
         self.replace_node_properties_impl(graph, id, properties)
     }
@@ -957,7 +957,7 @@ impl GraphStore for RedisGraphStore {
         &self,
         graph: &str,
         id: EdgeId,
-        properties: HashMap<String, Value>,
+        properties: IndexMap<String, Value>,
     ) -> Result<(), StorageError> {
         self.set_edge_properties_impl(graph, id, properties)
     }
@@ -966,7 +966,7 @@ impl GraphStore for RedisGraphStore {
         &self,
         graph: &str,
         id: EdgeId,
-        properties: HashMap<String, Value>,
+        properties: IndexMap<String, Value>,
     ) -> Result<(), StorageError> {
         self.replace_edge_properties_impl(graph, id, properties)
     }

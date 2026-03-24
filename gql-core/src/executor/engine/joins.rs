@@ -198,6 +198,7 @@ mod tests {
     use crate::executor::engine::MutationStats;
     use crate::storage::{GraphStore, InMemoryGraphStore};
 
+    use indexmap::IndexMap;
     use std::collections::HashMap;
 
     fn make_store() -> InMemoryGraphStore {
@@ -252,13 +253,13 @@ mod tests {
     fn left_outer_apply_with_matching_right() {
         let store = make_store();
         let a = store
-            .create_node("g", vec!["Person".to_string()], HashMap::new())
+            .create_node("g", vec!["Person".to_string()], IndexMap::new())
             .unwrap();
         let b = store
-            .create_node("g", vec!["Person".to_string()], HashMap::new())
+            .create_node("g", vec!["Person".to_string()], IndexMap::new())
             .unwrap();
         store
-            .create_edge("g", a, b, "KNOWS".to_string(), HashMap::new())
+            .create_edge("g", a, b, "KNOWS".to_string(), IndexMap::new())
             .unwrap();
 
         let executor = QueryExecutor::new(&store);
@@ -290,7 +291,7 @@ mod tests {
     fn left_outer_apply_no_match_produces_nulls() {
         let store = make_store();
         store
-            .create_node("g", vec!["Person".to_string()], HashMap::new())
+            .create_node("g", vec!["Person".to_string()], IndexMap::new())
             .unwrap();
 
         let executor = QueryExecutor::new(&store);
@@ -321,10 +322,10 @@ mod tests {
     fn apply_combines_outer_inner() {
         let store = make_store();
         store
-            .create_node("g", vec!["A".to_string()], HashMap::new())
+            .create_node("g", vec!["A".to_string()], IndexMap::new())
             .unwrap();
         store
-            .create_node("g", vec!["B".to_string()], HashMap::new())
+            .create_node("g", vec!["B".to_string()], IndexMap::new())
             .unwrap();
 
         let executor = QueryExecutor::new(&store);
@@ -349,7 +350,7 @@ mod tests {
     fn apply_empty_inner_yields_no_rows() {
         let store = make_store();
         store
-            .create_node("g", vec!["A".to_string()], HashMap::new())
+            .create_node("g", vec!["A".to_string()], IndexMap::new())
             .unwrap();
 
         let executor = QueryExecutor::new(&store);
@@ -374,10 +375,10 @@ mod tests {
         // where compatible variables match.
         let store = make_store();
         store
-            .create_node("g", vec!["X".to_string()], HashMap::new())
+            .create_node("g", vec!["X".to_string()], IndexMap::new())
             .unwrap();
         store
-            .create_node("g", vec!["X".to_string()], HashMap::new())
+            .create_node("g", vec!["X".to_string()], IndexMap::new())
             .unwrap();
 
         let executor = QueryExecutor::new(&store);

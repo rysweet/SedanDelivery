@@ -17,6 +17,7 @@ mod indexing;
 mod nodes;
 mod query;
 
+use indexmap::IndexMap;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, RwLock};
 
@@ -136,13 +137,16 @@ impl GraphInner {
     }
 
     pub(crate) fn next_node_id(&mut self, graph_name: &str) -> Result<u64, StorageError> {
-        self.node_seq = self
-            .node_seq
+        // Shared counter: both nodes and edges draw from edge_seq so the
+        // modern-graph gets vertex IDs 1-6 and edge IDs 7-12 (TinkerPop compat).
+        self.edge_seq = self
+            .edge_seq
             .checked_add(1)
             .ok_or_else(|| StorageError::IdOverflow {
                 graph: graph_name.to_string(),
             })?;
-        Ok(self.node_seq)
+        self.node_seq = self.edge_seq;
+        Ok(self.edge_seq)
     }
 
     pub(crate) fn has_index(&self, label: &str, property: &str) -> bool {
@@ -155,7 +159,7 @@ impl GraphInner {
         &mut self,
         raw_id: u64,
         labels: &[String],
-        props: &HashMap<String, Value>,
+        props: &IndexMap<String, Value>,
     ) {
         for idx in &self.indexes {
             if labels.contains(&idx.label) {
@@ -175,7 +179,7 @@ impl GraphInner {
         &mut self,
         raw_id: u64,
         labels: &[String],
-        props: &HashMap<String, Value>,
+        props: &IndexMap<String, Value>,
     ) {
         for idx in &self.indexes {
             if labels.contains(&idx.label) {
@@ -200,7 +204,7 @@ impl GraphInner {
     pub(crate) fn check_uniqueness_constraints(
         &self,
         labels: &[String],
-        properties: &HashMap<String, Value>,
+        properties: &IndexMap<String, Value>,
         exclude_node_id: Option<u64>,
     ) -> Result<(), StorageError> {
         for constraint in &self.constraints {
@@ -527,7 +531,7 @@ impl GraphStore for InMemoryGraphStore {
         &self,
         graph: &str,
         labels: Vec<String>,
-        properties: HashMap<String, Value>,
+        properties: IndexMap<String, Value>,
     ) -> Result<NodeId, StorageError> {
         nodes::create_node_impl(self, graph, labels, properties)
     }
@@ -538,7 +542,7 @@ impl GraphStore for InMemoryGraphStore {
         src: NodeId,
         dst: NodeId,
         rel_type: String,
-        properties: HashMap<String, Value>,
+        properties: IndexMap<String, Value>,
     ) -> Result<EdgeId, StorageError> {
         edges::create_edge_impl(self, graph, src, dst, rel_type, properties)
     }
@@ -547,7 +551,7 @@ impl GraphStore for InMemoryGraphStore {
         &self,
         graph: &str,
         id: NodeId,
-        properties: HashMap<String, Value>,
+        properties: IndexMap<String, Value>,
     ) -> Result<(), StorageError> {
         nodes::set_node_properties_impl(self, graph, id, properties)
     }
@@ -556,7 +560,7 @@ impl GraphStore for InMemoryGraphStore {
         &self,
         graph: &str,
         id: NodeId,
-        properties: HashMap<String, Value>,
+        properties: IndexMap<String, Value>,
     ) -> Result<(), StorageError> {
         nodes::replace_node_properties_impl(self, graph, id, properties)
     }
@@ -565,7 +569,7 @@ impl GraphStore for InMemoryGraphStore {
         &self,
         graph: &str,
         id: EdgeId,
-        properties: HashMap<String, Value>,
+        properties: IndexMap<String, Value>,
     ) -> Result<(), StorageError> {
         edges::set_edge_properties_impl(self, graph, id, properties)
     }
@@ -574,7 +578,7 @@ impl GraphStore for InMemoryGraphStore {
         &self,
         graph: &str,
         id: EdgeId,
-        properties: HashMap<String, Value>,
+        properties: IndexMap<String, Value>,
     ) -> Result<(), StorageError> {
         edges::replace_edge_properties_impl(self, graph, id, properties)
     }
@@ -853,13 +857,13 @@ mod tests {
     fn graph_stats_correct() {
         let store = make_store();
         let a = store
-            .create_node("test", vec!["Person".to_string()], HashMap::new())
+            .create_node("test", vec!["Person".to_string()], IndexMap::new())
             .unwrap();
         let b = store
-            .create_node("test", vec!["Person".to_string()], HashMap::new())
+            .create_node("test", vec!["Person".to_string()], IndexMap::new())
             .unwrap();
         store
-            .create_edge("test", a, b, "KNOWS".to_string(), HashMap::new())
+            .create_edge("test", a, b, "KNOWS".to_string(), IndexMap::new())
             .unwrap();
 
         let stats = store.graph_stats("test").unwrap();
@@ -872,7 +876,7 @@ mod tests {
     #[test]
     fn snapshot_creates_independent_copy() {
         let store = make_store();
-        let mut props = HashMap::new();
+        let mut props = IndexMap::new();
         props.insert("name".to_string(), Value::Str("Alice".into()));
         let id = store
             .create_node("test", vec!["Person".to_string()], props)
@@ -883,7 +887,7 @@ mod tests {
         let node = snap.get_node("test", id).unwrap().unwrap();
         assert_eq!(node.properties["name"], Value::Str("Alice".into()));
 
-        snap.create_node("test", vec!["Extra".to_string()], HashMap::new())
+        snap.create_node("test", vec!["Extra".to_string()], IndexMap::new())
             .unwrap();
         let snap_stats = snap.graph_stats("test").unwrap();
         let orig_stats = store.graph_stats("test").unwrap();
@@ -903,12 +907,12 @@ mod tests {
     fn merge_from_overwrites_existing_graph() {
         let store = make_store();
         store
-            .create_node("test", vec!["Original".to_string()], HashMap::new())
+            .create_node("test", vec!["Original".to_string()], IndexMap::new())
             .unwrap();
         assert_eq!(store.graph_stats("test").unwrap().node_count, 1);
 
         let snap = store.snapshot(&["test"]).unwrap();
-        snap.create_node("test", vec!["Added".to_string()], HashMap::new())
+        snap.create_node("test", vec!["Added".to_string()], IndexMap::new())
             .unwrap();
         assert_eq!(snap.graph_stats("test").unwrap().node_count, 2);
 
@@ -922,7 +926,7 @@ mod tests {
         let other = InMemoryGraphStore::new();
         other.create_graph("new_graph").unwrap();
         other
-            .create_node("new_graph", vec![], HashMap::new())
+            .create_node("new_graph", vec![], IndexMap::new())
             .unwrap();
 
         store.merge_from(&other).unwrap();
@@ -951,7 +955,7 @@ mod tests {
             .create_constraint("test", "Person", "email", ConstraintType::Unique)
             .unwrap();
 
-        let mut props = HashMap::new();
+        let mut props = IndexMap::new();
         props.insert("email".to_string(), Value::Str("alice@example.com".into()));
         store
             .create_node("test", vec!["Person".to_string()], props.clone())
@@ -1018,7 +1022,7 @@ mod tests {
     #[test]
     fn constraint_creation_fails_with_existing_duplicates() {
         let store = make_store();
-        let mut props = HashMap::new();
+        let mut props = IndexMap::new();
         props.insert("email".to_string(), Value::Str("alice@example.com".into()));
         store
             .create_node("test", vec!["Person".to_string()], props.clone())
@@ -1053,7 +1057,7 @@ mod tests {
             .create_constraint("test", "Person", "email", ConstraintType::Unique)
             .unwrap();
 
-        let mut props = HashMap::new();
+        let mut props = IndexMap::new();
         props.insert("email".to_string(), Value::Str("alice@example.com".into()));
         store
             .create_node("test", vec!["Person".to_string()], props.clone())
@@ -1074,7 +1078,7 @@ mod tests {
             .create_constraint("test", "Person", "email", ConstraintType::Unique)
             .unwrap();
 
-        let mut props = HashMap::new();
+        let mut props = IndexMap::new();
         props.insert("email".to_string(), Value::Str("alice@example.com".into()));
         store
             .create_node("test", vec!["Person".to_string()], props.clone())

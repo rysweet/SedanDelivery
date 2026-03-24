@@ -1,5 +1,6 @@
 // Row-to-domain parsing: convert Fabric JSON rows into NodeData / EdgeData / AdjEntry.
 
+use indexmap::IndexMap;
 use std::collections::HashMap;
 
 use serde_json::Value as JValue;
@@ -93,12 +94,12 @@ impl FabricGraphStore {
 }
 
 /// Extract user-visible properties, stripping all `_sd2_*` internal keys.
-pub(crate) fn extract_user_props(props: &JValue) -> HashMap<String, Value> {
+pub(crate) fn extract_user_props(props: &JValue) -> IndexMap<String, Value> {
     let obj = match props.as_object() {
         Some(o) => o,
-        None => return HashMap::new(),
+        None => return IndexMap::new(),
     };
-    let mut result = HashMap::new();
+    let mut result = IndexMap::new();
     for (k, v) in obj
         .iter()
         .filter(|(k, _)| !k.starts_with("_sd2") && !k.starts_with("__SD2"))
@@ -117,7 +118,7 @@ pub(crate) fn extract_user_props(props: &JValue) -> HashMap<String, Value> {
 
 /// Convert a user property map to JSON, skipping internal SD2 keys.
 /// Non-finite floats are silently converted to JSON null.
-pub(crate) fn user_props_to_json(props: &HashMap<String, Value>) -> HashMap<String, JValue> {
+pub(crate) fn user_props_to_json(props: &IndexMap<String, Value>) -> HashMap<String, JValue> {
     props
         .iter()
         .filter(|(k, _)| !k.starts_with("_sd2") && !k.starts_with("__SD2"))
@@ -218,7 +219,7 @@ mod tests {
 
     #[test]
     fn user_props_to_json_filters_internal_keys() {
-        let mut props = HashMap::new();
+        let mut props = IndexMap::new();
         props.insert("name".to_string(), Value::Str("Carol".into()));
         props.insert("_sd2_id".to_string(), Value::Int(7));
         props.insert("__SD2graph".to_string(), Value::Str("g".into()));
@@ -229,14 +230,14 @@ mod tests {
 
     #[test]
     fn user_props_to_json_empty() {
-        let props = HashMap::new();
+        let props = IndexMap::new();
         let result = user_props_to_json(&props);
         assert!(result.is_empty());
     }
 
     #[test]
     fn user_props_to_json_non_finite_float_becomes_null() {
-        let mut props = HashMap::new();
+        let mut props = IndexMap::new();
         props.insert("x".to_string(), Value::Float(f64::NAN));
         let result = user_props_to_json(&props);
         assert!(result["x"].is_null());

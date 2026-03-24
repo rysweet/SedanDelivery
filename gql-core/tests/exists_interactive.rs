@@ -6,7 +6,7 @@ use gql_core::parser::parse_query;
 use gql_core::planner::QueryPlanner;
 use gql_core::storage::{GraphStore, InMemoryGraphStore};
 use gql_core::types::Value;
-use std::collections::HashMap;
+use indexmap::IndexMap;
 
 fn setup_graph() -> InMemoryGraphStore {
     let store = InMemoryGraphStore::default();
@@ -16,7 +16,7 @@ fn setup_graph() -> InMemoryGraphStore {
         .create_node(
             "test",
             vec!["Person".into()],
-            HashMap::from([
+            IndexMap::from([
                 ("name".into(), Value::Str("Alice".into())),
                 ("age".into(), Value::Int(30)),
             ]),
@@ -26,7 +26,7 @@ fn setup_graph() -> InMemoryGraphStore {
         .create_node(
             "test",
             vec!["Person".into()],
-            HashMap::from([
+            IndexMap::from([
                 ("name".into(), Value::Str("Bob".into())),
                 ("age".into(), Value::Int(25)),
             ]),
@@ -36,7 +36,7 @@ fn setup_graph() -> InMemoryGraphStore {
         .create_node(
             "test",
             vec!["Person".into()],
-            HashMap::from([
+            IndexMap::from([
                 ("name".into(), Value::Str("Charlie".into())),
                 ("age".into(), Value::Int(20)),
             ]),
@@ -44,12 +44,12 @@ fn setup_graph() -> InMemoryGraphStore {
         .unwrap();
 
     store
-        .create_edge("test", alice, bob, "KNOWS".into(), HashMap::new())
+        .create_edge("test", alice, bob, "KNOWS".into(), IndexMap::new())
         .unwrap();
     store
 }
 
-fn run_query(store: &InMemoryGraphStore, query: &str) -> Vec<HashMap<String, Value>> {
+fn run_query(store: &InMemoryGraphStore, query: &str) -> Vec<IndexMap<String, Value>> {
     let ast = parse_query(query).expect("parse error");
     let planner = QueryPlanner::new(store, "test");
     let plan = planner.plan(&ast).expect("plan error");

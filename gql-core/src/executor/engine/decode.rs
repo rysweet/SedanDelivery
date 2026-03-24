@@ -78,7 +78,7 @@ mod tests {
     use crate::planner::Operator;
     use crate::storage::{GraphStore, InMemoryGraphStore};
     use crate::types::Value;
-    use std::collections::HashMap;
+    use indexmap::IndexMap;
 
     fn make_store() -> InMemoryGraphStore {
         let store = InMemoryGraphStore::new();
@@ -90,19 +90,19 @@ mod tests {
     fn varlen_expand_linear_chain() {
         let store = make_store();
         let a = store
-            .create_node("g", vec!["N".into()], HashMap::new())
+            .create_node("g", vec!["N".into()], IndexMap::new())
             .unwrap();
         let b = store
-            .create_node("g", vec!["N".into()], HashMap::new())
+            .create_node("g", vec!["N".into()], IndexMap::new())
             .unwrap();
         let c = store
-            .create_node("g", vec!["N".into()], HashMap::new())
+            .create_node("g", vec!["N".into()], IndexMap::new())
             .unwrap();
         store
-            .create_edge("g", a, b, "R".into(), HashMap::new())
+            .create_edge("g", a, b, "R".into(), IndexMap::new())
             .unwrap();
         store
-            .create_edge("g", b, c, "R".into(), HashMap::new())
+            .create_edge("g", b, c, "R".into(), IndexMap::new())
             .unwrap();
         let executor = QueryExecutor::new(&store);
         let plan = Operator::VarLenExpand {
@@ -135,13 +135,13 @@ mod tests {
     fn varlen_expand_min_zero_includes_self() {
         let store = make_store();
         let a = store
-            .create_node("g", vec!["N".into()], HashMap::new())
+            .create_node("g", vec!["N".into()], IndexMap::new())
             .unwrap();
         let b = store
-            .create_node("g", vec!["N".into()], HashMap::new())
+            .create_node("g", vec!["N".into()], IndexMap::new())
             .unwrap();
         store
-            .create_edge("g", a, b, "R".into(), HashMap::new())
+            .create_edge("g", a, b, "R".into(), IndexMap::new())
             .unwrap();
         let executor = QueryExecutor::new(&store);
         let plan = Operator::VarLenExpand {
@@ -168,16 +168,16 @@ mod tests {
     fn varlen_expand_avoids_cycles() {
         let store = make_store();
         let a = store
-            .create_node("g", vec!["N".into()], HashMap::new())
+            .create_node("g", vec!["N".into()], IndexMap::new())
             .unwrap();
         let b = store
-            .create_node("g", vec!["N".into()], HashMap::new())
+            .create_node("g", vec!["N".into()], IndexMap::new())
             .unwrap();
         store
-            .create_edge("g", a, b, "R".into(), HashMap::new())
+            .create_edge("g", a, b, "R".into(), IndexMap::new())
             .unwrap();
         store
-            .create_edge("g", b, a, "R".into(), HashMap::new())
+            .create_edge("g", b, a, "R".into(), IndexMap::new())
             .unwrap();
         let executor = QueryExecutor::new(&store);
         let plan = Operator::VarLenExpand {
@@ -205,22 +205,22 @@ mod tests {
     fn shortest_path_finds_path() {
         let store = make_store();
         let a = store
-            .create_node("g", vec!["N".into()], HashMap::new())
+            .create_node("g", vec!["N".into()], IndexMap::new())
             .unwrap();
         let b = store
-            .create_node("g", vec!["N".into()], HashMap::new())
+            .create_node("g", vec!["N".into()], IndexMap::new())
             .unwrap();
         let c = store
-            .create_node("g", vec!["N".into()], HashMap::new())
+            .create_node("g", vec!["N".into()], IndexMap::new())
             .unwrap();
         store
-            .create_edge("g", a, b, "R".into(), HashMap::new())
+            .create_edge("g", a, b, "R".into(), IndexMap::new())
             .unwrap();
         store
-            .create_edge("g", b, c, "R".into(), HashMap::new())
+            .create_edge("g", b, c, "R".into(), IndexMap::new())
             .unwrap();
         store
-            .create_edge("g", a, c, "R".into(), HashMap::new())
+            .create_edge("g", a, c, "R".into(), IndexMap::new())
             .unwrap();
         let mut start_row = Row::new();
         start_row.insert("src".to_string(), Value::Node(a));
@@ -260,28 +260,28 @@ mod tests {
     fn shortest_path_all_paths() {
         let store = make_store();
         let a = store
-            .create_node("g", vec!["N".into()], HashMap::new())
+            .create_node("g", vec!["N".into()], IndexMap::new())
             .unwrap();
         let b = store
-            .create_node("g", vec!["N".into()], HashMap::new())
+            .create_node("g", vec!["N".into()], IndexMap::new())
             .unwrap();
         let c = store
-            .create_node("g", vec!["N".into()], HashMap::new())
+            .create_node("g", vec!["N".into()], IndexMap::new())
             .unwrap();
         let d = store
-            .create_node("g", vec!["N".into()], HashMap::new())
+            .create_node("g", vec!["N".into()], IndexMap::new())
             .unwrap();
         store
-            .create_edge("g", a, b, "R".into(), HashMap::new())
+            .create_edge("g", a, b, "R".into(), IndexMap::new())
             .unwrap();
         store
-            .create_edge("g", b, c, "R".into(), HashMap::new())
+            .create_edge("g", b, c, "R".into(), IndexMap::new())
             .unwrap();
         store
-            .create_edge("g", a, d, "R".into(), HashMap::new())
+            .create_edge("g", a, d, "R".into(), IndexMap::new())
             .unwrap();
         store
-            .create_edge("g", d, c, "R".into(), HashMap::new())
+            .create_edge("g", d, c, "R".into(), IndexMap::new())
             .unwrap();
         let mut start_row = Row::new();
         start_row.insert("src".to_string(), Value::Node(a));
@@ -319,10 +319,10 @@ mod tests {
     fn shortest_path_no_path_exists() {
         let store = make_store();
         let a = store
-            .create_node("g", vec!["N".into()], HashMap::new())
+            .create_node("g", vec!["N".into()], IndexMap::new())
             .unwrap();
         let b = store
-            .create_node("g", vec!["N".into()], HashMap::new())
+            .create_node("g", vec!["N".into()], IndexMap::new())
             .unwrap();
         let mut start_row = Row::new();
         start_row.insert("src".to_string(), Value::Node(a));
@@ -418,7 +418,7 @@ mod tests {
     #[test]
     fn unwind_list() {
         let store = make_store();
-        store.create_node("g", vec![], HashMap::new()).unwrap();
+        store.create_node("g", vec![], IndexMap::new()).unwrap();
         let executor = QueryExecutor::new(&store);
         let plan = Operator::Unwind {
             list_expr: Expr::List(vec![Expr::Integer(1), Expr::Integer(2), Expr::Integer(3)]),
@@ -438,7 +438,7 @@ mod tests {
     #[test]
     fn unwind_null_produces_zero_rows() {
         let store = make_store();
-        store.create_node("g", vec![], HashMap::new()).unwrap();
+        store.create_node("g", vec![], IndexMap::new()).unwrap();
         let executor = QueryExecutor::new(&store);
         let plan = Operator::Unwind {
             list_expr: Expr::Null,
@@ -456,7 +456,7 @@ mod tests {
     #[test]
     fn unwind_empty_list_produces_zero_rows() {
         let store = make_store();
-        store.create_node("g", vec![], HashMap::new()).unwrap();
+        store.create_node("g", vec![], IndexMap::new()).unwrap();
         let executor = QueryExecutor::new(&store);
         let plan = Operator::Unwind {
             list_expr: Expr::List(vec![]),

@@ -251,7 +251,7 @@ pub fn create_crew_graph() -> (InMemoryGraphStore, CrewGraphIds) {
             gremlin,
             tinkergraph,
             "traverses".to_string(),
-            HashMap::new(),
+            IndexMap::new(),
         )
         .unwrap();
 
@@ -283,8 +283,8 @@ pub fn create_crew_graph() -> (InMemoryGraphStore, CrewGraphIds) {
 
 // ── Property helpers ───────────────────────────────────────────────────────────
 
-fn person_props(name: &str, locations: &[(&str, i64, Option<i64>)]) -> HashMap<String, Value> {
-    let mut props = HashMap::new();
+fn person_props(name: &str, locations: &[(&str, i64, Option<i64>)]) -> IndexMap<String, Value> {
+    let mut props = IndexMap::new();
     props.insert("name".to_string(), Value::Str(name.into()));
 
     // Encode multi-valued location with startTime/endTime meta-properties
@@ -306,20 +306,20 @@ fn person_props(name: &str, locations: &[(&str, i64, Option<i64>)]) -> HashMap<S
     props
 }
 
-fn software_props(name: &str) -> HashMap<String, Value> {
-    let mut props = HashMap::new();
+fn software_props(name: &str) -> IndexMap<String, Value> {
+    let mut props = IndexMap::new();
     props.insert("name".to_string(), Value::Str(name.into()));
     props
 }
 
-fn since_props(since: i64) -> HashMap<String, Value> {
-    let mut props = HashMap::new();
+fn since_props(since: i64) -> IndexMap<String, Value> {
+    let mut props = IndexMap::new();
     props.insert("since".to_string(), Value::Int(since));
     props
 }
 
-fn skill_props(skill: i64) -> HashMap<String, Value> {
-    let mut props = HashMap::new();
+fn skill_props(skill: i64) -> IndexMap<String, Value> {
+    let mut props = IndexMap::new();
     props.insert("skill".to_string(), Value::Int(skill));
     props
 }

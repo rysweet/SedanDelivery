@@ -12,7 +12,7 @@
 //! 1 STUDY_AT, 4 HAS_MEMBER, 3 CONTAINER_OF, 6 HAS_CREATOR, 3 REPLY_OF,
 //! 4 LIKES, 6 HAS_TAG, 3 HAS_INTEREST, 2 HAS_TYPE.
 
-use std::collections::HashMap;
+use indexmap::IndexMap;
 
 use gql_core::storage::{GraphStore, InMemoryGraphStore, NodeId};
 use gql_core::types::Value;
@@ -80,7 +80,7 @@ pub struct LdbcIds {
 
 fn node(store: &InMemoryGraphStore, labels: &[&str], props: &[(&str, Value)]) -> NodeId {
     let labels: Vec<String> = labels.iter().map(|s| s.to_string()).collect();
-    let properties: HashMap<String, Value> = props
+    let properties: IndexMap<String, Value> = props
         .iter()
         .map(|(k, v)| (k.to_string(), v.clone()))
         .collect();
@@ -88,7 +88,7 @@ fn node(store: &InMemoryGraphStore, labels: &[&str], props: &[(&str, Value)]) ->
 }
 
 fn edge(store: &InMemoryGraphStore, src: NodeId, dst: NodeId, rel: &str, props: &[(&str, Value)]) {
-    let properties: HashMap<String, Value> = props
+    let properties: IndexMap<String, Value> = props
         .iter()
         .map(|(k, v)| (k.to_string(), v.clone()))
         .collect();

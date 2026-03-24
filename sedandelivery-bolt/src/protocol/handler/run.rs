@@ -884,6 +884,7 @@ async fn handle_explain(
 mod tests {
     use super::*;
 
+    use indexmap::IndexMap;
     use std::any::Any;
     use std::collections::HashMap;
     use std::sync::atomic::AtomicU64;
@@ -985,7 +986,7 @@ mod tests {
             &self,
             graph: &str,
             labels: Vec<String>,
-            properties: HashMap<String, Value>,
+            properties: IndexMap<String, Value>,
         ) -> Result<NodeId, gql_core::error::StorageError> {
             self.inner.create_node(graph, labels, properties)
         }
@@ -996,7 +997,7 @@ mod tests {
             src: NodeId,
             dst: NodeId,
             rel_type: String,
-            properties: HashMap<String, Value>,
+            properties: IndexMap<String, Value>,
         ) -> Result<EdgeId, gql_core::error::StorageError> {
             self.inner
                 .create_edge(graph, src, dst, rel_type, properties)
@@ -1006,7 +1007,7 @@ mod tests {
             &self,
             graph: &str,
             id: NodeId,
-            properties: HashMap<String, Value>,
+            properties: IndexMap<String, Value>,
         ) -> Result<(), gql_core::error::StorageError> {
             self.inner.set_node_properties(graph, id, properties)
         }
@@ -1015,7 +1016,7 @@ mod tests {
             &self,
             graph: &str,
             id: NodeId,
-            properties: HashMap<String, Value>,
+            properties: IndexMap<String, Value>,
         ) -> Result<(), gql_core::error::StorageError> {
             self.inner.replace_node_properties(graph, id, properties)
         }
@@ -1024,7 +1025,7 @@ mod tests {
             &self,
             graph: &str,
             id: EdgeId,
-            properties: HashMap<String, Value>,
+            properties: IndexMap<String, Value>,
         ) -> Result<(), gql_core::error::StorageError> {
             self.inner.set_edge_properties(graph, id, properties)
         }
@@ -1033,7 +1034,7 @@ mod tests {
             &self,
             graph: &str,
             id: EdgeId,
-            properties: HashMap<String, Value>,
+            properties: IndexMap<String, Value>,
         ) -> Result<(), gql_core::error::StorageError> {
             self.inner.replace_edge_properties(graph, id, properties)
         }

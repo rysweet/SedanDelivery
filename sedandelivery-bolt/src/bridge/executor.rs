@@ -594,7 +594,7 @@ mod tests {
         let store = InMemoryGraphStore::new();
         store.create_graph("test").unwrap();
         let nid = store
-            .create_node("test", vec!["Person".to_string()], HashMap::new())
+            .create_node("test", vec!["Person".to_string()], IndexMap::new())
             .unwrap();
 
         let bolt = value_to_bolt(&Value::Node(nid), &store, "test");
@@ -609,10 +609,10 @@ mod tests {
     fn value_to_bolt_resolves_edge() {
         let store = InMemoryGraphStore::new();
         store.create_graph("test").unwrap();
-        let n1 = store.create_node("test", vec![], HashMap::new()).unwrap();
-        let n2 = store.create_node("test", vec![], HashMap::new()).unwrap();
+        let n1 = store.create_node("test", vec![], IndexMap::new()).unwrap();
+        let n2 = store.create_node("test", vec![], IndexMap::new()).unwrap();
         let eid = store
-            .create_edge("test", n1, n2, "KNOWS".to_string(), HashMap::new())
+            .create_edge("test", n1, n2, "KNOWS".to_string(), IndexMap::new())
             .unwrap();
 
         let bolt = value_to_bolt(&Value::Edge(eid), &store, "test");

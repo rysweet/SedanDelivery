@@ -3,7 +3,7 @@
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use gql_core::storage::{GraphStore, InMemoryGraphStore, RangeQuery};
 use gql_core::types::Value;
-use std::collections::HashMap;
+use indexmap::IndexMap;
 
 fn make_store(n: usize, indexed: bool) -> InMemoryGraphStore {
     let store = InMemoryGraphStore::default();
@@ -13,7 +13,7 @@ fn make_store(n: usize, indexed: bool) -> InMemoryGraphStore {
         store.create_index("bench", "Person", "name").unwrap();
     }
     for i in 0..n {
-        let props = HashMap::from([
+        let props = IndexMap::from([
             ("age".to_string(), Value::Int((i % 100) as i64)),
             (
                 "name".to_string(),

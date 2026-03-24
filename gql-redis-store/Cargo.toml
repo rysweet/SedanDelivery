@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 gql-core   = { path = "../gql-core" }
+indexmap    = { workspace = true }
 serde_json = { workspace = true }
 # Pure Redis client — works with standalone Redis, Valkey, and Azure Cache for Redis.
 # redis-module (cdylib) is only in gql-module; not here.

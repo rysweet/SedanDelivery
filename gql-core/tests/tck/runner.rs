@@ -32,7 +32,7 @@
 //!   - `the side effects should be:` (table)
 //!   - `no side effects`
 
-use std::collections::HashMap;
+use indexmap::IndexMap;
 use std::sync::Arc;
 
 use cucumber::gherkin;
@@ -70,7 +70,7 @@ pub struct GqlWorld {
     /// Counter used to generate unique graph names.
     graph_counter: usize,
     /// Query parameters set by `And parameters are:`.
-    parameters: HashMap<String, Value>,
+    parameters: IndexMap<String, Value>,
     /// Procedure registry set by `And there exists a procedure ...`.
     registry: ProcedureRegistry,
 }
