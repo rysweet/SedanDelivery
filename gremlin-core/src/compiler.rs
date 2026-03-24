@@ -3793,6 +3793,10 @@ impl GremlinCompiler {
                     // Update current_alias so subsequent steps reference the right column.
                     if keys.len() == 1 {
                         current_alias = Identifier::new(keys[0].clone());
+                    } else {
+                        // Multi-key cap: the executor creates a combined Map
+                        // under a joined alias so unfold() can iterate entries.
+                        current_alias = Identifier::new(keys.join("_"));
                     }
                 }
 

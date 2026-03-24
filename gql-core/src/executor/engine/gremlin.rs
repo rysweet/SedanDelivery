@@ -937,6 +937,18 @@ impl<'a> QueryExecutor<'a> {
                 row.insert(key.clone(), cap_value);
             }
         }
+        // For multi-key cap, also create a combined Map value so that
+        // downstream unfold() can iterate over the {key: value} entries.
+        if keys.len() > 1 {
+            let mut map: IndexMap<Box<str>, Value> = IndexMap::new();
+            for key in keys {
+                if let Some(v) = row.get(key.as_str()) {
+                    map.insert(key.clone().into(), v.clone());
+                }
+            }
+            let map_alias = keys.join("_");
+            row.insert(map_alias, Value::Map(map));
+        }
         Ok(vec![row])
     }
 
