@@ -1105,6 +1105,29 @@ pub fn eval_function_with_vals(name: &str, vals: Vec<Value>) -> Result<Value, Gq
             Some(other) => Ok(Value::Str(format!("{:?}", other).into())),
             None => Ok(Value::Null),
         },
+        "gremlin_asdate" => {
+            // asDate() — convert epoch-millis integer to Date value
+            match vals.first() {
+                Some(Value::Int(millis)) => {
+                    let secs = millis / 1000;
+                    let nanos = ((millis % 1000) * 1_000_000) as i32;
+                    let ts = jiff::Timestamp::new(secs, nanos).unwrap_or(jiff::Timestamp::UNIX_EPOCH);
+                    let dt = ts.to_zoned(jiff::tz::TimeZone::UTC);
+                    Ok(Value::DateTime(Box::new(dt)))
+                }
+                Some(Value::Float(f)) => {
+                    let millis = *f as i64;
+                    let secs = millis / 1000;
+                    let nanos = ((millis % 1000) * 1_000_000) as i32;
+                    let ts = jiff::Timestamp::new(secs, nanos).unwrap_or(jiff::Timestamp::UNIX_EPOCH);
+                    let dt = ts.to_zoned(jiff::tz::TimeZone::UTC);
+                    Ok(Value::DateTime(Box::new(dt)))
+                }
+                Some(Value::DateTime(d)) => Ok(Value::DateTime(d.clone())),
+                Some(Value::Null) => Ok(Value::Null),
+                _ => Ok(Value::Null),
+            }
+        }
         "gremlin_asstring_local" => {
             // asString(Scope.local): convert list elements to strings
             fn value_to_str(v: &Value) -> Result<Value, GqlError> {
@@ -1198,6 +1221,10 @@ pub fn eval_function_with_vals(name: &str, vals: Vec<Value>) -> Result<Value, Gq
                 }
             }
             Some(Value::Bool(b)) => Ok(Value::Int(if *b { 1 } else { 0 })),
+            Some(Value::DateTime(dt)) => {
+                // DateTime → epoch millis
+                Ok(Value::Int(dt.timestamp().as_millisecond()))
+            }
             Some(Value::Null) => Ok(Value::Null),
             Some(Value::List(_)) => Err(GqlError::Execution(ExecutionError::TypeMismatch {
                 expected: "Can't parse type ArrayList as number.".into(),
@@ -1961,7 +1988,8 @@ pub fn eval_function_with_vals(name: &str, vals: Vec<Value>) -> Result<Value, Gq
                         || (expected == "bigdecimal" && actual_type == "double")
                         || (expected == "float" && actual_type == "double")
                         || (expected == "set" && actual_type == "list")
-                        || (expected == "path" && actual_type == "list");
+                        || (expected == "path" && actual_type == "list")
+                        || (expected == "tree" && actual_type == "map");
                     Ok(Value::Bool(matches))
                 }
                 _ => Ok(Value::Bool(false)),
