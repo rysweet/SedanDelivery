@@ -1121,19 +1121,31 @@ fn parse_step_token(
         "property" => {
             let args = parse_arg_list(args_str, resolve_param)?;
             if args.len() >= 2 {
-                // Check for property(Cardinality.xxx, Map) pattern — expand Map
-                // into individual property steps.
+                // Check for property(Cardinality.xxx, ...) pattern
                 let is_cardinality = matches!(&args[0],
                     GremlinValue::String(s) if s.starts_with("Cardinality.") || s == "single" || s == "list" || s == "set"
                 );
                 if is_cardinality && matches!(&args[1], GremlinValue::Map(_)) {
+                    // property(Cardinality.xxx, Map) — expand Map entries
                     if let GremlinValue::Map(map) = &args[1] {
                         for (k, v) in map {
                             out.push(GremlinStep::Property(k.clone(), v.clone()));
                         }
                     }
+                } else if is_cardinality && args.len() >= 3 {
+                    // property(Cardinality.xxx, key, value) — skip cardinality
+                    if let GremlinValue::String(key) = &args[1] {
+                        out.push(GremlinStep::Property(key.clone(), args[2].clone()));
+                    }
                 } else if let GremlinValue::String(key) = &args[0] {
                     out.push(GremlinStep::Property(key.clone(), args[1].clone()));
+                }
+            } else if args.len() == 1 {
+                // property(Map) — expand Map entries into individual property steps
+                if let GremlinValue::Map(map) = &args[0] {
+                    for (k, v) in map {
+                        out.push(GremlinStep::Property(k.clone(), v.clone()));
+                    }
                 }
             }
         }
