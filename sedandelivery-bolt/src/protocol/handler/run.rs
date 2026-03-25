@@ -455,17 +455,38 @@ async fn acquire_write_semaphore(
 
 // -- Success response construction -------------------------------------------
 
-/// Build the SUCCESS response after a successful query execution.
+/// Pre-converted query result data produced inside `spawn_blocking`.
+///
+/// Grouping the fields into a struct avoids unwieldy tuple returns from
+/// the blocking closure and makes the call sites self-documenting.
+struct ConvertedResult {
+    columns: Vec<String>,
+    records: Vec<Vec<BoltValue>>,
+    query_type: String,
+    stats: BoltMap,
+    trailing_err: Option<gql_core::error::GqlError>,
+}
+
+/// Build the SUCCESS response from pre-converted query results.
+///
+/// The caller is responsible for running `result_to_records` inside
+/// `spawn_blocking` (where synchronous store I/O is safe) and passing
+/// the converted data here.  This function only touches session state
+/// and Bolt message construction — no blocking I/O.
 fn build_success_response(
     session: &mut Session,
-    qr: gql_core::executor::QueryResult,
-    effective_store: &Arc<dyn GraphStore>,
+    cr: ConvertedResult,
     graph: &str,
     run_metadata: BoltMap,
     profile_plan: Option<BoltValue>,
 ) -> Result<Vec<ServerMessage>, ProtocolError> {
-    let (records, query_type, stats, trailing_err) =
-        bridge::executor::result_to_records(&qr, &**effective_store, graph);
+    let ConvertedResult {
+        columns,
+        records,
+        query_type,
+        stats,
+        trailing_err,
+    } = cr;
     let write_backed_bookmark = stats.iter().any(|(k, _)| {
         matches!(
             k.as_str(),
@@ -487,8 +508,7 @@ fn build_success_response(
     // for deferred FAILURE emission during PULL.
     let trailing_error = trailing_err.map(|e| bridge::errors::gql_error_to_bolt(&e));
 
-    let fields: Vec<BoltValue> = qr
-        .columns
+    let fields: Vec<BoltValue> = columns
         .iter()
         .map(|c: &String| BoltValue::String(c.clone()))
         .collect();
@@ -742,7 +762,7 @@ pub(crate) async fn handle_run(
         let result = tokio::task::spawn_blocking(move || {
             let store_ref = &*store_for_profile;
             let graph_ref = &graph_for_profile;
-            bridge::executor::execute_query_with_profiling(
+            let (qr, profile_plan) = bridge::executor::execute_query_with_profiling(
                 store_ref,
                 graph_ref,
                 &query_for_profile,
@@ -754,16 +774,31 @@ pub(crate) async fn handle_run(
                         .map(|gs| gql_core::planner::estimate_cardinality(plan, &gs));
                     operator_to_profile_plan_map(plan, 0, est.as_ref(), profile_stats)
                 },
-            )
+            )?;
+            // Convert results to Bolt records inside the blocking context.
+            // result_to_records calls store.get_node()/get_edge() which perform
+            // synchronous Redis I/O — running on the async runtime would block
+            // Tokio worker threads and starve connection acceptance under load.
+            let (records, query_type, stats, trailing_err) =
+                bridge::executor::result_to_records(&qr, store_ref, graph_ref);
+            Ok((
+                ConvertedResult {
+                    columns: qr.columns,
+                    records,
+                    query_type,
+                    stats,
+                    trailing_err,
+                },
+                profile_plan,
+            ))
         })
         .await
         .map_err(|e| ProtocolError::Internal(format!("blocking task join error: {}", e)))?;
 
         match result {
-            Ok((qr, profile_plan)) => build_success_response(
+            Ok((cr, profile_plan)) => build_success_response(
                 session,
-                qr,
-                &effective_store,
+                cr,
                 &graph,
                 run_metadata,
                 Some(profile_plan),
@@ -780,22 +815,37 @@ pub(crate) async fn handle_run(
             }
         }
     } else {
-        // Normal (non-PROFILE) execution
+        // Normal (non-PROFILE) execution.
+        // Both query execution AND result-to-Bolt conversion run inside
+        // spawn_blocking so that synchronous Redis I/O in value_to_bolt
+        // (store.get_node / store.get_edge) never blocks Tokio worker
+        // threads.  This is the fix for issue #953: under concurrent MERGE
+        // load the previous code blocked all workers during result
+        // conversion, starving new-connection handshakes ("early eof").
         let result = tokio::task::spawn_blocking(move || {
-            bridge::executor::execute_query(
+            let qr = bridge::executor::execute_query(
                 &*store,
                 &graph_clone,
                 &query_clone,
                 value_params,
                 timeout_ms,
-            )
+            )?;
+            let (records, query_type, stats, trailing_err) =
+                bridge::executor::result_to_records(&qr, &*store, &graph_clone);
+            Ok(ConvertedResult {
+                columns: qr.columns,
+                records,
+                query_type,
+                stats,
+                trailing_err,
+            })
         })
         .await
         .map_err(|e| ProtocolError::Internal(format!("blocking task join error: {}", e)))?;
 
         match result {
-            Ok(qr) => {
-                build_success_response(session, qr, &effective_store, &graph, run_metadata, None)
+            Ok(cr) => {
+                build_success_response(session, cr, &graph, run_metadata, None)
             }
             Err(gql_err) => {
                 let (code, message) = bridge::errors::gql_error_to_bolt(&gql_err);
@@ -826,17 +876,21 @@ async fn handle_explain(
     let g = graph.to_string();
     let q = actual_query.to_string();
     let p = value_params;
-    let plan_result =
-        tokio::task::spawn_blocking(move || bridge::executor::plan_query(&*store, &g, &q, p))
-            .await
-            .map_err(|e| ProtocolError::Internal(e.to_string()))?;
+    // Both planning and statistics collection run inside spawn_blocking
+    // because collect_graph_statistics calls the store (synchronous Redis
+    // I/O) and must not block Tokio worker threads.
+    let plan_result = tokio::task::spawn_blocking(move || {
+        let operator = bridge::executor::plan_query(&*store, &g, &q, p)?;
+        let estimates = gql_core::planner::collect_graph_statistics(&*store, &g)
+            .ok()
+            .map(|gs| gql_core::planner::estimate_cardinality(&operator, &gs));
+        Ok((operator, estimates))
+    })
+    .await
+    .map_err(|e| ProtocolError::Internal(e.to_string()))?;
 
     match plan_result {
-        Ok(operator) => {
-            let estimates =
-                gql_core::planner::collect_graph_statistics(effective_store.as_ref(), graph)
-                    .ok()
-                    .map(|gs| gql_core::planner::estimate_cardinality(&operator, &gs));
+        Ok((operator, estimates)) => {
             let plan_map = operator_to_plan_map(&operator, false, 0, estimates.as_ref());
             let plan_notifications = detect_notifications(&operator);
             let qid = session.allocate_qid()?;

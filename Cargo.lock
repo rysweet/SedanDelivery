@@ -3709,6 +3709,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "sedan-cypher-embedded"
+version = "0.1.0"
+dependencies = [
+ "sedan-gql-embedded",
+]
+
+[[package]]
+name = "sedan-gql-embedded"
+version = "0.1.0"
+dependencies = [
+ "gql-core",
+ "indexmap",
+]
+
+[[package]]
+name = "sedan-gremlin-embedded"
+version = "0.1.0"
+dependencies = [
+ "gql-core",
+ "gremlin-core",
+ "indexmap",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "sedandelivery-bolt"
 version = "0.1.0"
 dependencies = [
