@@ -118,10 +118,10 @@ pub async fn handle_message(
             params,
             extra,
         } => run::handle_run(session, query, params, extra).await,
-        ClientMessage::Pull(extra) => pull::handle_pull(session, extra),
-        ClientMessage::Discard(extra) => pull::handle_discard(session, extra),
-        ClientMessage::Begin(extra) => transaction::handle_begin(session, extra),
-        ClientMessage::Commit => transaction::handle_commit(session),
+        ClientMessage::Pull(extra) => pull::handle_pull(session, extra).await,
+        ClientMessage::Discard(extra) => pull::handle_discard(session, extra).await,
+        ClientMessage::Begin(extra) => transaction::handle_begin(session, extra).await,
+        ClientMessage::Commit => transaction::handle_commit(session).await,
         ClientMessage::Rollback => transaction::handle_rollback(session),
         ClientMessage::Reset => transaction::handle_reset(session),
         ClientMessage::Goodbye => {
@@ -238,8 +238,9 @@ mod tests {
         run::handle_run(&mut s1, "RETURN 1 AS n".to_string(), vec![], vec![])
             .await
             .unwrap();
-        let pull_result =
-            pull::handle_pull(&mut s1, bolt_map! { "n" => BoltValue::Int(-1) }).unwrap();
+        let pull_result = pull::handle_pull(&mut s1, bolt_map! { "n" => BoltValue::Int(-1) })
+            .await
+            .unwrap();
         let bookmark = match pull_result.last().unwrap() {
             ServerMessage::Success(meta) => meta.get_str("bookmark").unwrap().to_string(),
             other => panic!("expected Success, got {:?}", other),
@@ -253,6 +254,7 @@ mod tests {
                 "bookmarks" => BoltValue::List(vec![BoltValue::String(bookmark)])
             },
         )
+        .await
         .unwrap();
         assert_eq!(begin_result.len(), 1);
         assert!(matches!(&begin_result[0], ServerMessage::Success(_)));
@@ -271,7 +273,9 @@ mod tests {
         run::handle_run(&mut s1, "RETURN 1 AS n".to_string(), vec![], vec![])
             .await
             .unwrap();
-        let r1 = pull::handle_pull(&mut s1, bolt_map! { "n" => BoltValue::Int(-1) }).unwrap();
+        let r1 = pull::handle_pull(&mut s1, bolt_map! { "n" => BoltValue::Int(-1) })
+            .await
+            .unwrap();
         let bm1 = match r1.last().unwrap() {
             ServerMessage::Success(m) => m.get_str("bookmark").unwrap().to_string(),
             other => panic!("expected Success, got {:?}", other),
@@ -281,7 +285,9 @@ mod tests {
         run::handle_run(&mut s2, "RETURN 2 AS n".to_string(), vec![], vec![])
             .await
             .unwrap();
-        let r2 = pull::handle_pull(&mut s2, bolt_map! { "n" => BoltValue::Int(-1) }).unwrap();
+        let r2 = pull::handle_pull(&mut s2, bolt_map! { "n" => BoltValue::Int(-1) })
+            .await
+            .unwrap();
         let bm2 = match r2.last().unwrap() {
             ServerMessage::Success(m) => m.get_str("bookmark").unwrap().to_string(),
             other => panic!("expected Success, got {:?}", other),
@@ -294,12 +300,12 @@ mod tests {
 
     // -- COMMIT bookmark tests -----------------------------------------------
 
-    #[test]
-    fn commit_returns_bookmark() {
+    #[tokio::test]
+    async fn commit_returns_bookmark() {
         let mut session = make_ready_session();
         session.state = ServerState::TxReady;
 
-        let result = transaction::handle_commit(&mut session).unwrap();
+        let result = transaction::handle_commit(&mut session).await.unwrap();
         assert_eq!(result.len(), 1);
         match &result[0] {
             ServerMessage::Success(meta) => {
@@ -311,14 +317,14 @@ mod tests {
         assert_eq!(session.state, ServerState::Ready);
     }
 
-    #[test]
-    fn commit_clears_tx_metadata() {
+    #[tokio::test]
+    async fn commit_clears_tx_metadata() {
         let mut session = make_ready_session();
         session.state = ServerState::TxReady;
         session.tx_metadata = vec![("key".to_string(), BoltValue::String("val".to_string()))];
         session.tx_timeout = Some(5000);
 
-        transaction::handle_commit(&mut session).unwrap();
+        transaction::handle_commit(&mut session).await.unwrap();
         assert!(session.tx_metadata.is_empty());
         assert!(session.tx_timeout.is_none());
     }
@@ -395,15 +401,17 @@ mod tests {
 
     // -- BEGIN tests ---------------------------------------------------------
 
-    #[test]
-    fn begin_with_invalid_bookmark_returns_failure() {
+    #[tokio::test]
+    async fn begin_with_invalid_bookmark_returns_failure() {
         let mut session = make_ready_session();
         let extra: BoltMap = vec![(
             "bookmarks".to_string(),
             BoltValue::List(vec![BoltValue::String("invalid_bookmark".to_string())]),
         )];
 
-        let result = transaction::handle_begin(&mut session, extra).unwrap();
+        let result = transaction::handle_begin(&mut session, extra)
+            .await
+            .unwrap();
         assert_eq!(result.len(), 1);
         match &result[0] {
             ServerMessage::Failure(meta) => {
@@ -415,22 +423,24 @@ mod tests {
         assert_eq!(session.state, ServerState::Failed);
     }
 
-    #[test]
-    fn begin_with_valid_sedan_bookmark_succeeds() {
+    #[tokio::test]
+    async fn begin_with_valid_sedan_bookmark_succeeds() {
         let mut session = make_ready_session();
         let extra: BoltMap = vec![(
             "bookmarks".to_string(),
             BoltValue::List(vec![BoltValue::String("sedan:tx:1".to_string())]),
         )];
 
-        let result = transaction::handle_begin(&mut session, extra).unwrap();
+        let result = transaction::handle_begin(&mut session, extra)
+            .await
+            .unwrap();
         assert_eq!(result.len(), 1);
         assert!(matches!(&result[0], ServerMessage::Success(_)));
         assert_eq!(session.state, ServerState::TxReady);
     }
 
-    #[test]
-    fn begin_with_valid_neo4j_bookmark_succeeds() {
+    #[tokio::test]
+    async fn begin_with_valid_neo4j_bookmark_succeeds() {
         let mut session = make_ready_session();
         let extra: BoltMap = vec![(
             "bookmarks".to_string(),
@@ -439,30 +449,36 @@ mod tests {
             )]),
         )];
 
-        let result = transaction::handle_begin(&mut session, extra).unwrap();
+        let result = transaction::handle_begin(&mut session, extra)
+            .await
+            .unwrap();
         assert_eq!(result.len(), 1);
         assert!(matches!(&result[0], ServerMessage::Success(_)));
         assert_eq!(session.state, ServerState::TxReady);
     }
 
-    #[test]
-    fn begin_with_no_bookmarks_succeeds() {
+    #[tokio::test]
+    async fn begin_with_no_bookmarks_succeeds() {
         let mut session = make_ready_session();
         let extra: BoltMap = vec![];
 
-        let result = transaction::handle_begin(&mut session, extra).unwrap();
+        let result = transaction::handle_begin(&mut session, extra)
+            .await
+            .unwrap();
         assert_eq!(result.len(), 1);
         assert!(matches!(&result[0], ServerMessage::Success(_)));
         assert_eq!(session.state, ServerState::TxReady);
     }
 
-    #[test]
-    fn begin_stores_tx_metadata() {
+    #[tokio::test]
+    async fn begin_stores_tx_metadata() {
         let mut session = make_ready_session();
         let inner: BoltMap = vec![("app".to_string(), BoltValue::String("test".to_string()))];
         let extra: BoltMap = vec![("tx_metadata".to_string(), BoltValue::Map(inner.clone()))];
 
-        transaction::handle_begin(&mut session, extra).unwrap();
+        transaction::handle_begin(&mut session, extra)
+            .await
+            .unwrap();
         assert_eq!(session.tx_metadata, inner);
     }
 
@@ -520,7 +536,9 @@ mod tests {
             "RUN failed: {:?}",
             run_result
         );
-        pull::handle_pull(session, bolt_map! { "n" => BoltValue::Int(-1) }).unwrap()
+        pull::handle_pull(session, bolt_map! { "n" => BoltValue::Int(-1) })
+            .await
+            .unwrap()
     }
 
     #[tokio::test]
@@ -528,7 +546,9 @@ mod tests {
         let mut session = make_ready_session();
         assert!(session.tx_store.is_none());
 
-        transaction::handle_begin(&mut session, vec![]).unwrap();
+        transaction::handle_begin(&mut session, vec![])
+            .await
+            .unwrap();
         assert!(session.tx_store.is_some());
         assert_eq!(session.state, ServerState::TxReady);
     }
@@ -536,17 +556,21 @@ mod tests {
     #[tokio::test]
     async fn commit_clears_tx_store() {
         let mut session = make_ready_session();
-        transaction::handle_begin(&mut session, vec![]).unwrap();
+        transaction::handle_begin(&mut session, vec![])
+            .await
+            .unwrap();
         assert!(session.tx_store.is_some());
 
-        transaction::handle_commit(&mut session).unwrap();
+        transaction::handle_commit(&mut session).await.unwrap();
         assert!(session.tx_store.is_none());
     }
 
     #[tokio::test]
     async fn rollback_clears_tx_store() {
         let mut session = make_ready_session();
-        transaction::handle_begin(&mut session, vec![]).unwrap();
+        transaction::handle_begin(&mut session, vec![])
+            .await
+            .unwrap();
         assert!(session.tx_store.is_some());
 
         transaction::handle_rollback(&mut session).unwrap();
@@ -556,7 +580,9 @@ mod tests {
     #[tokio::test]
     async fn reset_clears_tx_store() {
         let mut session = make_ready_session();
-        transaction::handle_begin(&mut session, vec![]).unwrap();
+        transaction::handle_begin(&mut session, vec![])
+            .await
+            .unwrap();
         assert!(session.tx_store.is_some());
 
         transaction::handle_reset(&mut session).unwrap();
@@ -568,7 +594,9 @@ mod tests {
         let mut session = make_ready_session();
 
         // BEGIN, CREATE inside the TX, then read it back within the same TX.
-        transaction::handle_begin(&mut session, vec![]).unwrap();
+        transaction::handle_begin(&mut session, vec![])
+            .await
+            .unwrap();
         run_and_pull(&mut session, "CREATE (:TxNode {val: 42})").await;
 
         let pull_msgs = run_and_pull(&mut session, "MATCH (n:TxNode) RETURN count(n) AS c").await;
@@ -588,7 +616,7 @@ mod tests {
         let (mut s1, mut s2) = make_shared_sessions();
 
         // Session 1: BEGIN, CREATE, ROLLBACK
-        transaction::handle_begin(&mut s1, vec![]).unwrap();
+        transaction::handle_begin(&mut s1, vec![]).await.unwrap();
         run_and_pull(&mut s1, "CREATE (:RollbackNode {val: 1})").await;
         transaction::handle_rollback(&mut s1).unwrap();
 
@@ -612,9 +640,9 @@ mod tests {
         let (mut s1, mut s2) = make_shared_sessions();
 
         // Session 1: BEGIN, CREATE, COMMIT
-        transaction::handle_begin(&mut s1, vec![]).unwrap();
+        transaction::handle_begin(&mut s1, vec![]).await.unwrap();
         run_and_pull(&mut s1, "CREATE (:CommitNode {val: 2})").await;
-        transaction::handle_commit(&mut s1).unwrap();
+        transaction::handle_commit(&mut s1).await.unwrap();
 
         // Session 2: the node should be visible.
         let pull_msgs = run_and_pull(&mut s2, "MATCH (n:CommitNode) RETURN count(n) AS c").await;
@@ -634,7 +662,9 @@ mod tests {
     #[tokio::test]
     async fn commit_refreshes_last_write_at_for_snapshot_transactions() {
         let mut session = make_ready_session();
-        transaction::handle_begin(&mut session, vec![]).unwrap();
+        transaction::handle_begin(&mut session, vec![])
+            .await
+            .unwrap();
         session.last_write_at = Some(
             std::time::Instant::now()
                 - crate::protocol::handler::session::READ_AFTER_WRITE_WINDOW
@@ -647,7 +677,7 @@ mod tests {
             gql_core::storage::ReadConsistency::TopologyDefault
         );
 
-        transaction::handle_commit(&mut session).unwrap();
+        transaction::handle_commit(&mut session).await.unwrap();
         assert_eq!(
             session.read_consistency(),
             gql_core::storage::ReadConsistency::SessionFreshPrimary
@@ -686,7 +716,7 @@ mod tests {
         .await
         .unwrap();
 
-        let discard_messages = pull::handle_discard(&mut s1, vec![]).unwrap();
+        let discard_messages = pull::handle_discard(&mut s1, vec![]).await.unwrap();
         let bookmark = match &discard_messages[0] {
             ServerMessage::Success(meta) => {
                 let stats = meta
@@ -736,7 +766,7 @@ mod tests {
         .await
         .unwrap();
 
-        let summary = pull::handle_discard(&mut s1, vec![]).unwrap();
+        let summary = pull::handle_discard(&mut s1, vec![]).await.unwrap();
         let bookmark = match &summary[0] {
             ServerMessage::Success(meta) => meta
                 .get_str("bookmark")
@@ -771,7 +801,7 @@ mod tests {
             .await
             .unwrap();
 
-        let summary = pull::handle_discard(&mut s1, vec![]).unwrap();
+        let summary = pull::handle_discard(&mut s1, vec![]).await.unwrap();
         let bookmark = match &summary[0] {
             ServerMessage::Success(meta) => meta
                 .get_str("bookmark")
@@ -798,12 +828,14 @@ mod tests {
         );
     }
 
-    #[test]
-    fn discard_with_missing_explicit_qid_returns_client_failure() {
+    #[tokio::test]
+    async fn discard_with_missing_explicit_qid_returns_client_failure() {
         let mut session = make_ready_session();
 
         let messages =
-            pull::handle_discard(&mut session, bolt_map! { "qid" => BoltValue::Int(99) }).unwrap();
+            pull::handle_discard(&mut session, bolt_map! { "qid" => BoltValue::Int(99) })
+                .await
+                .unwrap();
 
         assert_eq!(session.state, ServerState::Failed);
         assert_eq!(messages.len(), 1);
@@ -819,8 +851,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn discard_preserves_trailing_error_failure_parity() {
+    #[tokio::test]
+    async fn discard_preserves_trailing_error_failure_parity() {
         let mut session = make_ready_session();
         session.state = ServerState::Streaming;
         session.pending_results.insert(
@@ -845,8 +877,9 @@ mod tests {
             },
         );
 
-        let messages =
-            pull::handle_discard(&mut session, bolt_map! { "qid" => BoltValue::Int(7) }).unwrap();
+        let messages = pull::handle_discard(&mut session, bolt_map! { "qid" => BoltValue::Int(7) })
+            .await
+            .unwrap();
 
         assert_eq!(session.state, ServerState::Failed);
         assert!(session.pending_results.is_empty());
@@ -868,7 +901,7 @@ mod tests {
         let (mut s1, mut s2) = make_shared_sessions();
 
         // Session 1: BEGIN, CREATE (but do NOT commit yet)
-        transaction::handle_begin(&mut s1, vec![]).unwrap();
+        transaction::handle_begin(&mut s1, vec![]).await.unwrap();
         run_and_pull(&mut s1, "CREATE (:IsolatedNode {val: 3})").await;
 
         // Session 2: the node should NOT be visible because s1 has not committed.
@@ -913,7 +946,9 @@ mod tests {
             .await
             .unwrap();
         // Pull to clear the first result
-        pull::handle_pull(&mut session, bolt_map! { "n" => BoltValue::Int(-1) }).unwrap();
+        pull::handle_pull(&mut session, bolt_map! { "n" => BoltValue::Int(-1) })
+            .await
+            .unwrap();
 
         // Second RUN
         let r2 = run::handle_run(&mut session, "RETURN 2 AS m".to_string(), vec![], vec![])
@@ -935,7 +970,9 @@ mod tests {
     async fn pull_uses_qid_from_extra() {
         let mut session = make_ready_session();
         // Begin a TX so we can have multiple concurrent results.
-        transaction::handle_begin(&mut session, vec![]).unwrap();
+        transaction::handle_begin(&mut session, vec![])
+            .await
+            .unwrap();
 
         // First RUN (qid=0)
         let r1 = run::handle_run(&mut session, "RETURN 1 AS n".to_string(), vec![], vec![])
@@ -960,6 +997,7 @@ mod tests {
             &mut session,
             bolt_map! { "n" => BoltValue::Int(-1), "qid" => BoltValue::Int(qid0) },
         )
+        .await
         .unwrap();
         let record0 = pull0.iter().find(|m| matches!(m, ServerMessage::Record(_)));
         assert!(record0.is_some(), "expected record from qid0");
@@ -972,6 +1010,7 @@ mod tests {
             &mut session,
             bolt_map! { "n" => BoltValue::Int(-1), "qid" => BoltValue::Int(qid1) },
         )
+        .await
         .unwrap();
         let record1 = pull1.iter().find(|m| matches!(m, ServerMessage::Record(_)));
         assert!(record1.is_some(), "expected record from qid1");
@@ -993,8 +1032,9 @@ mod tests {
         run::handle_run(&mut session, "RETURN 1 AS n".to_string(), vec![], extra)
             .await
             .unwrap();
-        let pull_result =
-            pull::handle_pull(&mut session, bolt_map! { "n" => BoltValue::Int(-1) }).unwrap();
+        let pull_result = pull::handle_pull(&mut session, bolt_map! { "n" => BoltValue::Int(-1) })
+            .await
+            .unwrap();
         let success = pull_result.last().unwrap();
         match success {
             ServerMessage::Success(meta) => {
@@ -1011,7 +1051,9 @@ mod tests {
     async fn run_rejects_when_pending_results_at_cap() {
         let mut session = make_ready_session();
         // Begin a TX so multiple pending results can coexist.
-        transaction::handle_begin(&mut session, vec![]).unwrap();
+        transaction::handle_begin(&mut session, vec![])
+            .await
+            .unwrap();
 
         // Default cap is 16 (DEFAULT_MAX_PENDING_RESULTS).
         let cap: usize = 16;
@@ -1057,7 +1099,9 @@ mod tests {
     async fn run_succeeds_after_pulling_pending_result() {
         let mut session = make_ready_session();
         // Begin a TX so multiple pending results can coexist.
-        transaction::handle_begin(&mut session, vec![]).unwrap();
+        transaction::handle_begin(&mut session, vec![])
+            .await
+            .unwrap();
 
         // Default cap is 16.
         let cap: usize = 16;
@@ -1073,6 +1117,7 @@ mod tests {
             &mut session,
             bolt_map! { "n" => BoltValue::Int(-1), "qid" => BoltValue::Int(0) },
         )
+        .await
         .unwrap();
 
         assert_eq!(session.pending_results.len(), cap - 1);
@@ -1106,8 +1151,9 @@ mod tests {
             .unwrap();
         assert!(matches!(&result[0], ServerMessage::Success(_)));
 
-        let pull_result =
-            pull::handle_pull(&mut session, bolt_map! { "n" => BoltValue::Int(-1) }).unwrap();
+        let pull_result = pull::handle_pull(&mut session, bolt_map! { "n" => BoltValue::Int(-1) })
+            .await
+            .unwrap();
         let record = pull_result
             .iter()
             .find(|m| matches!(m, ServerMessage::Record(_)));
@@ -1138,8 +1184,9 @@ mod tests {
         .unwrap();
         assert!(matches!(&result[0], ServerMessage::Success(_)));
 
-        let pull_result =
-            pull::handle_pull(&mut session, bolt_map! { "n" => BoltValue::Int(-1) }).unwrap();
+        let pull_result = pull::handle_pull(&mut session, bolt_map! { "n" => BoltValue::Int(-1) })
+            .await
+            .unwrap();
         let record = pull_result
             .iter()
             .find(|m| matches!(m, ServerMessage::Record(_)));
@@ -1170,8 +1217,9 @@ mod tests {
         .unwrap();
         assert!(matches!(&result[0], ServerMessage::Success(_)));
 
-        let pull_result =
-            pull::handle_pull(&mut session, bolt_map! { "n" => BoltValue::Int(-1) }).unwrap();
+        let pull_result = pull::handle_pull(&mut session, bolt_map! { "n" => BoltValue::Int(-1) })
+            .await
+            .unwrap();
         let record = pull_result
             .iter()
             .find(|m| matches!(m, ServerMessage::Record(_)));
@@ -1257,7 +1305,9 @@ mod tests {
         let mut session = make_ready_session();
 
         // BEGIN -> CREATE -> ROLLBACK
-        transaction::handle_begin(&mut session, vec![]).unwrap();
+        transaction::handle_begin(&mut session, vec![])
+            .await
+            .unwrap();
         run_and_pull(&mut session, "CREATE (:Temp {val: 1})").await;
         transaction::handle_rollback(&mut session).unwrap();
         assert_eq!(session.state, ServerState::Ready);
@@ -1277,8 +1327,9 @@ mod tests {
             result
         );
 
-        let pull_msgs =
-            pull::handle_pull(&mut session, bolt_map! { "n" => BoltValue::Int(-1) }).unwrap();
+        let pull_msgs = pull::handle_pull(&mut session, bolt_map! { "n" => BoltValue::Int(-1) })
+            .await
+            .unwrap();
         let record = pull_msgs
             .iter()
             .find(|m| matches!(m, ServerMessage::Record(_)));
@@ -1293,7 +1344,9 @@ mod tests {
         let mut session = make_ready_session();
 
         // BEGIN -> CREATE -> ROLLBACK
-        transaction::handle_begin(&mut session, vec![]).unwrap();
+        transaction::handle_begin(&mut session, vec![])
+            .await
+            .unwrap();
         run_and_pull(&mut session, "CREATE (:Ghost {val: 99})").await;
         transaction::handle_rollback(&mut session).unwrap();
 
@@ -1381,8 +1434,9 @@ mod tests {
         )
         .await
         .unwrap();
-        let pull_result =
-            pull::handle_pull(&mut session, bolt_map! { "n" => BoltValue::Int(-1) }).unwrap();
+        let pull_result = pull::handle_pull(&mut session, bolt_map! { "n" => BoltValue::Int(-1) })
+            .await
+            .unwrap();
         let success = pull_result.last().unwrap();
         match success {
             ServerMessage::Success(meta) => {
@@ -1427,8 +1481,9 @@ mod tests {
             run_result
         );
 
-        let pull_result =
-            pull::handle_pull(&mut session, bolt_map! { "n" => BoltValue::Int(-1) }).unwrap();
+        let pull_result = pull::handle_pull(&mut session, bolt_map! { "n" => BoltValue::Int(-1) })
+            .await
+            .unwrap();
 
         // Should have RECORD messages (the actual query results)
         let records: Vec<_> = pull_result
@@ -1480,8 +1535,9 @@ mod tests {
         .unwrap();
         assert!(matches!(&run_result[0], ServerMessage::Success(_)));
 
-        let pull_result =
-            pull::handle_pull(&mut session, bolt_map! { "n" => BoltValue::Int(-1) }).unwrap();
+        let pull_result = pull::handle_pull(&mut session, bolt_map! { "n" => BoltValue::Int(-1) })
+            .await
+            .unwrap();
 
         // Should have 1 record
         let records: Vec<_> = pull_result
@@ -1525,7 +1581,9 @@ mod tests {
         .await
         .unwrap();
         assert!(matches!(run_result[0], ServerMessage::Success(_)));
-        pull::handle_pull(&mut nodejs_session, bolt_map! { "n" => BoltValue::Int(-1) }).unwrap();
+        pull::handle_pull(&mut nodejs_session, bolt_map! { "n" => BoltValue::Int(-1) })
+            .await
+            .unwrap();
 
         // .NET driver: MATCH with db: "" (empty string — the bug trigger)
         let run_result = run::handle_run(
@@ -1539,6 +1597,7 @@ mod tests {
         assert!(matches!(run_result[0], ServerMessage::Success(_)));
         let pull_result =
             pull::handle_pull(&mut dotnet_session, bolt_map! { "n" => BoltValue::Int(-1) })
+                .await
                 .unwrap();
 
         let records: Vec<_> = pull_result
@@ -1568,7 +1627,9 @@ mod tests {
         )
         .await
         .unwrap();
-        pull::handle_pull(&mut nodejs_session, bolt_map! { "n" => BoltValue::Int(-1) }).unwrap();
+        pull::handle_pull(&mut nodejs_session, bolt_map! { "n" => BoltValue::Int(-1) })
+            .await
+            .unwrap();
 
         // .NET driver: MATCH with no db field (omitted entirely)
         run::handle_run(
@@ -1581,6 +1642,7 @@ mod tests {
         .unwrap();
         let pull_result =
             pull::handle_pull(&mut dotnet_session, bolt_map! { "n" => BoltValue::Int(-1) })
+                .await
                 .unwrap();
 
         let records: Vec<_> = pull_result
@@ -1609,7 +1671,9 @@ mod tests {
         )
         .await
         .unwrap();
-        pull::handle_pull(&mut nodejs_session, bolt_map! { "n" => BoltValue::Int(-1) }).unwrap();
+        pull::handle_pull(&mut nodejs_session, bolt_map! { "n" => BoltValue::Int(-1) })
+            .await
+            .unwrap();
 
         // .NET driver: MATCH with db: null (BoltValue::Null)
         run::handle_run(
@@ -1622,6 +1686,7 @@ mod tests {
         .unwrap();
         let pull_result =
             pull::handle_pull(&mut dotnet_session, bolt_map! { "n" => BoltValue::Int(-1) })
+                .await
                 .unwrap();
 
         let records: Vec<_> = pull_result

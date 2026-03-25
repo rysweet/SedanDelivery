@@ -584,7 +584,7 @@ pub(crate) async fn handle_run(
         session.state = ServerState::Failed;
         return Ok(vec![failure]);
     }
-    if let Some(age) = recent_bookmark_age(&extra, &session.global_bookmark) {
+    if let Some(age) = recent_bookmark_age(&extra, &session.global_bookmark).await {
         tracing::debug!(
             age_ms = age.as_millis(),
             "rehydrated session freshness from recent bookmark"
@@ -878,15 +878,15 @@ async fn handle_explain(
         let estimates = gql_core::planner::collect_graph_statistics(&*store, &g)
             .ok()
             .map(|gs| gql_core::planner::estimate_cardinality(&operator, &gs));
-        Ok((operator, estimates))
+        let plan_map = operator_to_plan_map(&operator, false, 0, estimates.as_ref());
+        let plan_notifications = detect_notifications(&operator);
+        Ok((plan_map, plan_notifications))
     })
     .await
     .map_err(|e| ProtocolError::Internal(e.to_string()))?;
 
     match plan_result {
-        Ok((operator, estimates)) => {
-            let plan_map = operator_to_plan_map(&operator, false, 0, estimates.as_ref());
-            let plan_notifications = detect_notifications(&operator);
+        Ok((plan_map, plan_notifications)) => {
             let qid = session.allocate_qid()?;
             session.pending_results.insert(
                 qid,
@@ -1224,8 +1224,8 @@ mod tests {
         let global_bookmark = Arc::new(crate::bookmark::BookmarkCounter::InMemory(AtomicU64::new(
             0,
         )));
-        let bookmark = crate::protocol::handler::next_bookmark(global_bookmark.as_ref());
-        crate::protocol::handler::record_write_bookmark(global_bookmark.as_ref(), &bookmark);
+        let bookmark = crate::protocol::handler::next_bookmark(&global_bookmark).await;
+        crate::protocol::handler::record_write_bookmark(&global_bookmark, &bookmark).await;
         let mut session = ready_session_with_store_and_bookmark(store, global_bookmark);
 
         let _ = handle_run(

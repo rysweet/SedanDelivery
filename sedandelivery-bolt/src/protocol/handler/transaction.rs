@@ -68,7 +68,9 @@ pub(crate) async fn handle_begin(
 ///
 /// Merges the copy-on-write snapshot back into the main store, releases the
 /// write lock, produces a bookmark, and transitions to `Ready`.
-pub(crate) async fn handle_commit(session: &mut Session) -> Result<Vec<ServerMessage>, ProtocolError> {
+pub(crate) async fn handle_commit(
+    session: &mut Session,
+) -> Result<Vec<ServerMessage>, ProtocolError> {
     // Merge the snapshot back into the main store so that committed mutations
     // become visible to other sessions.
     if let Some(ref tx_store) = session.tx_store {
@@ -83,9 +85,9 @@ pub(crate) async fn handle_commit(session: &mut Session) -> Result<Vec<ServerMes
     // Release the write lock if held.
     session.write_permit = None;
 
-    let bookmark = next_bookmark(&session.global_bookmark);
+    let bookmark = next_bookmark(&session.global_bookmark).await;
     if committed_write {
-        record_write_bookmark(&session.global_bookmark, &bookmark);
+        record_write_bookmark(&session.global_bookmark, &bookmark).await;
     }
     session.state = ServerState::Ready;
     session.tx_metadata = Vec::new();
@@ -228,8 +230,8 @@ mod tests {
         assert_eq!(session.read_consistency(), ReadConsistency::TopologyDefault);
     }
 
-    #[test]
-    fn read_only_commit_bookmark_does_not_rehydrate_freshness() {
+    #[tokio::test]
+    async fn read_only_commit_bookmark_does_not_rehydrate_freshness() {
         let global_bookmark = Arc::new(crate::bookmark::BookmarkCounter::InMemory(AtomicU64::new(
             9_100_000_000_000,
         )));
@@ -237,7 +239,7 @@ mod tests {
         writer.global_bookmark = Arc::clone(&global_bookmark);
         writer.state = ServerState::TxReady;
 
-        let commit_messages = handle_commit(&mut writer).unwrap();
+        let commit_messages = handle_commit(&mut writer).await.unwrap();
         let bookmark = match &commit_messages[0] {
             ServerMessage::Success(meta) => meta
                 .get_str("bookmark")
@@ -255,6 +257,7 @@ mod tests {
                 "bookmarks" => BoltValue::List(vec![BoltValue::String(bookmark)])
             },
         )
+        .await
         .unwrap();
 
         assert_eq!(reader.read_consistency(), ReadConsistency::TopologyDefault);
