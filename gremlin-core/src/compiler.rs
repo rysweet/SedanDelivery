@@ -3675,7 +3675,7 @@ impl GremlinCompiler {
                         } else {
                             current_alias.clone()
                         };
-                        self.alias_counter = sub.alias_counter;
+                        self.absorb(&sub);
 
                         // Create a unified output alias for choose branches.
                         let choose_alias = self.next_alias("ch");
