@@ -44,6 +44,9 @@ pub fn parse_traversal(
     // Extract withSideEffect values before stripping
     let side_effects = extract_with_side_effects(input, resolve_param);
 
+    // Detect withBulk(false) before stripping
+    let with_bulk_false = input.contains("withBulk(false)");
+
     // Detect strategy flags before stripping
     let productive_by = input.contains("ProductiveByStrategy")
         && !input.contains("withoutStrategies(ProductiveByStrategy");
@@ -100,8 +103,13 @@ pub fn parse_traversal(
     }
 
     // Emit WithSack as first step if present
-    if let Some(init_val) = sack_init {
-        steps.push(GremlinStep::WithSack(init_val));
+    if let Some((init_val, merge_op)) = sack_init {
+        steps.push(GremlinStep::WithSack(init_val, merge_op));
+    }
+
+    // Emit WithBulkFalse if present
+    if with_bulk_false {
+        steps.push(GremlinStep::WithBulkFalse);
     }
 
     // Emit strategy flags
@@ -376,11 +384,11 @@ fn inject_subgraph_edge_filter(
     result
 }
 
-/// Extract the initial value from `g.withSack(value)` if present.
+/// Extract the initial value and optional merge operator from `g.withSack(value[, Operator.op])`.
 fn extract_with_sack_value(
     input: &str,
     resolve_param: &dyn Fn(&str) -> Option<GremlinValue>,
-) -> Option<GremlinValue> {
+) -> Option<(GremlinValue, Option<String>)> {
     let prefix = "g.withSack(";
     if !input.starts_with(prefix) {
         if let Some(pos) = input.find(".withSack(") {
@@ -396,7 +404,7 @@ fn extract_with_sack_value(
 fn parse_sack_arg(
     after: &str,
     resolve_param: &dyn Fn(&str) -> Option<GremlinValue>,
-) -> Option<GremlinValue> {
+) -> Option<(GremlinValue, Option<String>)> {
     let mut depth = 1;
     let mut end = 0;
     for (i, c) in after.char_indices() {
@@ -416,9 +424,36 @@ fn parse_sack_arg(
         return None;
     }
     let arg_str = after[..end].trim();
-    // Only take first arg (before comma) — ignore split/merge operators
     let first_arg = arg_str.split(',').next().unwrap_or(arg_str).trim();
-    parse_literal_value(first_arg, resolve_param)
+    let merge_op = {
+        let rest = &arg_str[first_arg.len()..];
+        if let Some(after_comma) = rest.strip_prefix(',') {
+            extract_operator_name(after_comma.trim())
+        } else {
+            None
+        }
+    };
+    parse_literal_value(first_arg, resolve_param).map(|v| (v, merge_op))
+}
+
+/// Extract operator name from strings like "Operator.sum", "Operator.mult", etc.
+fn extract_operator_name(s: &str) -> Option<String> {
+    let s = s.trim();
+    if let Some(rest) = s.strip_prefix("Operator.") {
+        let name = rest
+            .split(|c: char| !c.is_alphanumeric() && c != '_')
+            .next()?;
+        if !name.is_empty() {
+            return Some(name.to_string());
+        }
+    }
+    let known = ["sum", "minus", "mult", "div", "min", "max", "assign"];
+    for op in &known {
+        if s.starts_with(op) {
+            return Some((*op).to_string());
+        }
+    }
+    None
 }
 
 fn parse_literal_value(
@@ -1121,19 +1156,31 @@ fn parse_step_token(
         "property" => {
             let args = parse_arg_list(args_str, resolve_param)?;
             if args.len() >= 2 {
-                // Check for property(Cardinality.xxx, Map) pattern — expand Map
-                // into individual property steps.
+                // Check for property(Cardinality.xxx, ...) pattern
                 let is_cardinality = matches!(&args[0],
                     GremlinValue::String(s) if s.starts_with("Cardinality.") || s == "single" || s == "list" || s == "set"
                 );
                 if is_cardinality && matches!(&args[1], GremlinValue::Map(_)) {
+                    // property(Cardinality.xxx, Map) — expand Map entries
                     if let GremlinValue::Map(map) = &args[1] {
                         for (k, v) in map {
                             out.push(GremlinStep::Property(k.clone(), v.clone()));
                         }
                     }
+                } else if is_cardinality && args.len() >= 3 {
+                    // property(Cardinality.xxx, key, value) — skip cardinality
+                    if let GremlinValue::String(key) = &args[1] {
+                        out.push(GremlinStep::Property(key.clone(), args[2].clone()));
+                    }
                 } else if let GremlinValue::String(key) = &args[0] {
                     out.push(GremlinStep::Property(key.clone(), args[1].clone()));
+                }
+            } else if args.len() == 1 {
+                // property(Map) — expand Map entries into individual property steps
+                if let GremlinValue::Map(map) = &args[0] {
+                    for (k, v) in map {
+                        out.push(GremlinStep::Property(k.clone(), v.clone()));
+                    }
                 }
             }
         }
@@ -1379,7 +1426,13 @@ fn parse_step_token(
                 out.push(GremlinStep::None);
             }
         }
-        "barrier" => out.push(GremlinStep::Barrier),
+        "barrier" => {
+            if args_str.contains("normSack") || args_str.contains("Barrier.normSack") {
+                out.push(GremlinStep::BarrierNormSack);
+            } else {
+                out.push(GremlinStep::Barrier);
+            }
+        }
         "sample" => {
             let args = parse_arg_list(args_str, resolve_param)?;
             let is_local = args.iter().any(

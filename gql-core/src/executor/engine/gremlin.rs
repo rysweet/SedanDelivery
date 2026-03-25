@@ -1,8 +1,9 @@
 //! Gremlin traversal operator implementations.
 
-use crate::ast::{Expr, Identifier};
+use crate::ast::{Direction, Expr, Identifier};
 use crate::error::{ExecutionError, GqlError};
 use crate::planner::Operator;
+use crate::storage::NodeId;
 use crate::types::Value;
 use indexmap::IndexMap;
 
@@ -84,6 +85,26 @@ impl<'a> QueryExecutor<'a> {
             Some(n) => n,
             None => 256,
         };
+
+        // Vertex-counting fast path
+        if let Some(result) = self.try_repeat_counting(
+            cx,
+            body,
+            child,
+            *times,
+            max_iterations,
+            until,
+            *emit,
+            *emit_before,
+            emit_predicate,
+            remap,
+            *times_before,
+            loop_label,
+            &body_path_aliases,
+            pop_origins,
+        )? {
+            return Ok(result);
+        }
 
         // Batch size for streaming seed processing. When `current` exceeds
         // this threshold, seeds are fed to the body in chunks to cap peak
@@ -366,8 +387,247 @@ impl<'a> QueryExecutor<'a> {
         Ok(())
     }
 
+    /// Vertex-counting fast path for repeat(Expand).times(N).
+    #[allow(clippy::too_many_arguments)]
+    fn try_repeat_counting(
+        &self,
+        cx: &mut ExecContext<'_>,
+        body: &Operator,
+        child: &Operator,
+        times: Option<usize>,
+        max_iterations: usize,
+        until: &Option<Box<Operator>>,
+        emit: bool,
+        emit_before: bool,
+        emit_predicate: &Option<Box<Operator>>,
+        remap: &Option<(String, String)>,
+        times_before: bool,
+        loop_label: &Option<Box<str>>,
+        _body_path_aliases: &[String],
+        pop_origins: &[(String, String)],
+    ) -> Result<Option<Vec<Row>>, GqlError> {
+        let expand_info = match extract_simple_expand(body) {
+            Some(info) => info,
+            None => return Ok(None),
+        };
+        if body_contains_simple_path(body) {
+            return Ok(None);
+        }
+
+        let (direction, rel_types, src_alias, dst_alias) = expand_info;
+        let type_strs: Vec<String> = rel_types.iter().map(|rt| rt.0.to_string()).collect();
+        let type_refs: Vec<&str> = type_strs.iter().map(|s| s.as_str()).collect();
+
+        let seeds = self.exec_operator(cx, child)?;
+        if seeds.is_empty() {
+            return Ok(Some(Vec::new()));
+        }
+
+        let seed_key = remap.as_ref().map(|(_, to)| to.as_str());
+        let src_alias_str = src_alias.0.as_str();
+
+        // Simple mode: no emit, no until
+        if !emit && until.is_none() && emit_predicate.is_none() {
+            let mut vertex_counts: IndexMap<NodeId, (Row, i128)> = IndexMap::new();
+            for row in &seeds {
+                let alias_key = seed_key.unwrap_or(src_alias_str);
+                if let Some(Value::Node(nid)) = row.get(alias_key) {
+                    let entry = vertex_counts
+                        .entry(*nid)
+                        .or_insert_with(|| (row.clone(), 0));
+                    entry.1 += 1;
+                }
+            }
+
+            for _iteration in 0..max_iterations {
+                cx.budget.check_or_err()?;
+                let mut next: IndexMap<NodeId, (Row, i128)> = IndexMap::new();
+                for (nid, (_row, count)) in &vertex_counts {
+                    let entries = super::helpers::get_adj_entries(
+                        self.store, cx.graph, *nid, &direction, &type_refs,
+                    )?;
+                    for adj in &entries {
+                        let entry = next.entry(adj.neighbor_id).or_insert_with(|| {
+                            let mut r = Row::new();
+                            r.insert(dst_alias.0.clone(), Value::Node(adj.neighbor_id));
+                            (r, 0)
+                        });
+                        entry.1 += count;
+                    }
+                }
+                vertex_counts = next;
+            }
+
+            let remap_alias = remap.as_ref().map(|(_, to)| to.as_str());
+            let mut result = Vec::with_capacity(vertex_counts.len());
+            for (nid, (mut row, count)) in vertex_counts {
+                let out_key = remap_alias.unwrap_or(dst_alias.0.as_str());
+                row.insert(out_key.to_string(), Value::Node(nid));
+                if count > 1 {
+                    row.insert("__gremlin_bulk".to_string(), Value::Int(count as i64));
+                }
+                if let Some(sk) = seed_key {
+                    row.insert(sk.to_string(), Value::Node(nid));
+                }
+                result.push(row);
+            }
+            return Ok(Some(result));
+        }
+
+        // Emit + until mode
+        if emit || until.is_some() {
+            let labeled_counter_key = loop_label
+                .as_ref()
+                .map(|l| format!("__gremlin_loop_count_{l}"));
+            let generic_counter_key = "__gremlin_loop_count".to_string();
+
+            let mut vertex_counts: IndexMap<NodeId, (Row, i128)> = IndexMap::new();
+            for row in &seeds {
+                let alias_key = seed_key.unwrap_or(src_alias_str);
+                if let Some(Value::Node(nid)) = row.get(alias_key) {
+                    let entry = vertex_counts
+                        .entry(*nid)
+                        .or_insert_with(|| (row.clone(), 0));
+                    entry.1 += 1;
+                }
+            }
+
+            for (shadow, original) in pop_origins {
+                for (_nid, (row, _)) in vertex_counts.iter_mut() {
+                    if let Some(val) = row.get(original.as_str()).cloned() {
+                        row.insert(shadow.clone(), val);
+                    }
+                }
+            }
+
+            let mut collected: Vec<Row> = Vec::new();
+
+            for iteration in 0..max_iterations {
+                cx.budget.check_or_err()?;
+
+                for (_nid, (row, _)) in vertex_counts.iter_mut() {
+                    row.insert(generic_counter_key.clone(), Value::Int(iteration as i64));
+                    if let Some(lk) = &labeled_counter_key {
+                        row.insert(lk.clone(), Value::Int(iteration as i64));
+                    }
+                }
+
+                if emit && emit_before {
+                    for (_nid, (row, count)) in &vertex_counts {
+                        let mut r = row.clone();
+                        if *count > 1 {
+                            r.insert("__gremlin_bulk".to_string(), Value::Int(*count as i64));
+                        }
+                        if let Some(pred_op) = emit_predicate {
+                            self.foreach_seed.borrow_mut().replace(vec![r.clone()]);
+                            let result = self.exec_operator(cx, pred_op)?;
+                            self.foreach_seed.borrow_mut().take();
+                            if !result.is_empty() {
+                                collected.push(r);
+                            }
+                        } else {
+                            collected.push(r);
+                        }
+                    }
+                }
+
+                if let Some(until_op) = until {
+                    if times_before || iteration > 0 {
+                        let mut remaining: IndexMap<NodeId, (Row, i128)> = IndexMap::new();
+                        for (nid, (row, count)) in &vertex_counts {
+                            self.foreach_seed.borrow_mut().replace(vec![row.clone()]);
+                            let result = self.exec_operator(cx, until_op)?;
+                            self.foreach_seed.borrow_mut().take();
+                            if !result.is_empty() {
+                                if !emit || !emit_before {
+                                    let mut r = row.clone();
+                                    if *count > 1 {
+                                        r.insert(
+                                            "__gremlin_bulk".to_string(),
+                                            Value::Int(*count as i64),
+                                        );
+                                    }
+                                    collected.push(r);
+                                }
+                            } else {
+                                remaining.insert(*nid, (row.clone(), *count));
+                            }
+                        }
+                        vertex_counts = remaining;
+                        if vertex_counts.is_empty() {
+                            break;
+                        }
+                    }
+                }
+
+                let mut next: IndexMap<NodeId, (Row, i128)> = IndexMap::new();
+                for (nid, (_row, count)) in &vertex_counts {
+                    let entries = super::helpers::get_adj_entries(
+                        self.store, cx.graph, *nid, &direction, &type_refs,
+                    )?;
+                    for adj in &entries {
+                        let entry = next.entry(adj.neighbor_id).or_insert_with(|| {
+                            let mut r = Row::new();
+                            r.insert(dst_alias.0.clone(), Value::Node(adj.neighbor_id));
+                            if let Some(sk) = seed_key {
+                                r.insert(sk.to_string(), Value::Node(adj.neighbor_id));
+                            }
+                            (r, 0)
+                        });
+                        entry.1 += count;
+                    }
+                }
+                vertex_counts = next;
+
+                if vertex_counts.is_empty() {
+                    break;
+                }
+
+                if emit && !emit_before {
+                    for (_nid, (row, count)) in &vertex_counts {
+                        let mut r = row.clone();
+                        if *count > 1 {
+                            r.insert("__gremlin_bulk".to_string(), Value::Int(*count as i64));
+                        }
+                        if let Some(pred_op) = emit_predicate {
+                            self.foreach_seed.borrow_mut().replace(vec![r.clone()]);
+                            let result = self.exec_operator(cx, pred_op)?;
+                            self.foreach_seed.borrow_mut().take();
+                            if !result.is_empty() {
+                                collected.push(r);
+                            }
+                        } else {
+                            collected.push(r);
+                        }
+                    }
+                }
+            }
+
+            if !emit || (!emit_before && until.is_none()) {
+                for (_nid, (mut row, count)) in vertex_counts {
+                    if count > 1 {
+                        row.insert("__gremlin_bulk".to_string(), Value::Int(count as i64));
+                    }
+                    collected.push(row);
+                }
+            } else if until.is_some() && !vertex_counts.is_empty() {
+                for (_nid, (mut row, count)) in vertex_counts {
+                    if count > 1 {
+                        row.insert("__gremlin_bulk".to_string(), Value::Int(count as i64));
+                    }
+                    collected.push(row);
+                }
+            }
+
+            return Ok(Some(collected));
+        }
+
+        Ok(None)
+    }
+
     /// Execute `Choose` — evaluate the predicate for each input row and route
     /// to `if_true` or `if_false` accordingly.
+
     pub(crate) fn exec_choose(
         &self,
         cx: &mut ExecContext<'_>,
@@ -2654,6 +2914,163 @@ impl<'a> QueryExecutor<'a> {
         }
         Ok(out)
     }
+
+    /// Execute `GremlinBarrier` — bulk synchronization with optional sack normalization.
+    pub(crate) fn exec_gremlin_barrier(
+        &self,
+        cx: &mut ExecContext<'_>,
+        op: &Operator,
+    ) -> Result<Vec<Row>, GqlError> {
+        let Operator::GremlinBarrier {
+            child,
+            current_alias,
+            out_alias,
+            norm_sack,
+            sack_merge_op,
+            with_bulk,
+        } = op
+        else {
+            debug_assert!(false, "expected GremlinBarrier operator");
+            return Err(GqlError::Execution(ExecutionError::UnsupportedFeature {
+                feature: "internal: expected GremlinBarrier operator".into(),
+            }));
+        };
+
+        let input = self.exec_operator(cx, child)?;
+
+        // If no merge and not normSack, pass-through
+        if !*norm_sack && sack_merge_op.is_none() {
+            let mut out = Vec::with_capacity(input.len());
+            for mut row in input {
+                if let Some(val) = row.get(current_alias.0.as_str()).cloned() {
+                    row.insert(out_alias.0.clone(), val);
+                }
+                out.push(row);
+            }
+            return Ok(out);
+        }
+
+        // normSack: divide each __sack by sum of all sacks
+        if *norm_sack {
+            let sum: f64 = input
+                .iter()
+                .filter_map(|row| {
+                    row.get("__sack").and_then(|v| match v {
+                        Value::Float(f) => Some(*f),
+                        Value::Int(i) => Some(*i as f64),
+                        _ => None,
+                    })
+                })
+                .sum();
+
+            let count = input.len();
+            let mut out = Vec::with_capacity(count);
+            for mut row in input {
+                if let Some(sack_val) = row.get("__sack").cloned() {
+                    let sack_f = match &sack_val {
+                        Value::Float(f) => *f,
+                        Value::Int(i) => *i as f64,
+                        _ => 0.0,
+                    };
+                    let normalized = if sum == 0.0 || sum.is_infinite() {
+                        1.0 / count as f64
+                    } else {
+                        sack_f / sum
+                    };
+                    row.insert("__sack".to_string(), Value::Float(normalized));
+                }
+                if let Some(val) = row.get(current_alias.0.as_str()).cloned() {
+                    row.insert(out_alias.0.clone(), val);
+                }
+                out.push(row);
+            }
+            return Ok(out);
+        }
+
+        // Merge mode: group by current_alias value, merge sacks
+        if let Some(merge_op) = sack_merge_op {
+            let mut groups: IndexMap<String, (Row, f64, i64)> = IndexMap::new();
+            for row in &input {
+                let key = row
+                    .get(current_alias.0.as_str())
+                    .map(|v| format!("{v:?}"))
+                    .unwrap_or_default();
+                let sack_f = row
+                    .get("__sack")
+                    .and_then(|v| match v {
+                        Value::Float(f) => Some(*f),
+                        Value::Int(i) => Some(*i as f64),
+                        _ => None,
+                    })
+                    .unwrap_or(0.0);
+                let entry = groups.entry(key).or_insert_with(|| (row.clone(), 0.0, 0));
+                entry.2 += 1;
+                match merge_op.as_str() {
+                    "sum" => entry.1 += sack_f,
+                    "mult" => {
+                        if entry.2 == 1 {
+                            entry.1 = sack_f;
+                        } else {
+                            entry.1 *= sack_f;
+                        }
+                    }
+                    "min" => {
+                        if entry.2 == 1 || sack_f < entry.1 {
+                            entry.1 = sack_f;
+                        }
+                    }
+                    "max" => {
+                        if entry.2 == 1 || sack_f > entry.1 {
+                            entry.1 = sack_f;
+                        }
+                    }
+                    "minus" => {
+                        if entry.2 == 1 {
+                            entry.1 = sack_f;
+                        } else {
+                            entry.1 -= sack_f;
+                        }
+                    }
+                    "div" => {
+                        if entry.2 == 1 {
+                            entry.1 = sack_f;
+                        } else if sack_f != 0.0 {
+                            entry.1 /= sack_f;
+                        }
+                    }
+                    _ => {
+                        entry.1 = sack_f;
+                    }
+                }
+            }
+
+            let mut out = Vec::new();
+            for (_key, (mut row, merged_sack, bulk)) in groups {
+                row.insert("__sack".to_string(), Value::Float(merged_sack));
+                if let Some(val) = row.get(current_alias.0.as_str()).cloned() {
+                    row.insert(out_alias.0.clone(), val);
+                }
+                if *with_bulk {
+                    for _ in 0..bulk {
+                        out.push(row.clone());
+                    }
+                } else {
+                    out.push(row);
+                }
+            }
+            return Ok(out);
+        }
+
+        // Fallback: pass-through
+        let mut out = Vec::with_capacity(input.len());
+        for mut row in input {
+            if let Some(val) = row.get(current_alias.0.as_str()).cloned() {
+                row.insert(out_alias.0.clone(), val);
+            }
+            out.push(row);
+        }
+        Ok(out)
+    }
 }
 
 /// Convert a Value to a string key for use in Gremlin group() Map output.
@@ -2890,7 +3307,10 @@ fn operator_contains_distinct(op: &Operator) -> bool {
 /// each batch would run the barrier independently, producing incorrect results.
 fn operator_contains_barrier(op: &Operator) -> bool {
     match op {
-        Operator::Sort { .. } | Operator::Aggregate { .. } | Operator::Distinct { .. } => true,
+        Operator::Sort { .. }
+        | Operator::Aggregate { .. }
+        | Operator::Distinct { .. }
+        | Operator::GremlinBarrier { .. } => true,
         Operator::Project { child, .. }
         | Operator::Filter { child, .. }
         | Operator::Skip { child, .. }
@@ -2928,6 +3348,44 @@ fn operator_contains_barrier(op: &Operator) -> bool {
                     .as_ref()
                     .is_some_and(|f| operator_contains_barrier(f))
         }
+        _ => false,
+    }
+}
+
+/// Extract direction, rel_types, src_alias, dst_alias from a simple Expand
+/// whose child is SingleRow.
+fn extract_simple_expand(
+    op: &Operator,
+) -> Option<(Direction, Vec<crate::ast::RelType>, Identifier, Identifier)> {
+    match op {
+        Operator::Expand {
+            direction,
+            rel_types,
+            src_alias,
+            dst_alias,
+            child,
+            ..
+        } if matches!(child.as_ref(), Operator::SingleRow) => Some((
+            direction.clone(),
+            rel_types.clone(),
+            src_alias.clone(),
+            dst_alias.clone(),
+        )),
+        Operator::Project { child, .. } | Operator::Filter { child, .. } => {
+            extract_simple_expand(child)
+        }
+        _ => None,
+    }
+}
+
+/// Returns true if the operator tree contains a GremlinSimplePath filter.
+fn body_contains_simple_path(op: &Operator) -> bool {
+    match op {
+        Operator::GremlinSimplePath { .. } => true,
+        Operator::Expand { child, .. }
+        | Operator::Project { child, .. }
+        | Operator::Filter { child, .. }
+        | Operator::GremlinCyclicPath { child, .. } => body_contains_simple_path(child),
         _ => false,
     }
 }

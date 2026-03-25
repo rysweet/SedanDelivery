@@ -449,6 +449,15 @@ pub enum Operator {
         /// instead of omitting keys with no value.
         productive: bool,
     },
+    /// Gremlin barrier() / barrier(normSack).
+    GremlinBarrier {
+        child: Box<Operator>,
+        current_alias: Identifier,
+        out_alias: Identifier,
+        norm_sack: bool,
+        sack_merge_op: Option<String>,
+        with_bulk: bool,
+    },
 }
 
 impl Operator {
@@ -486,7 +495,8 @@ impl Operator {
             | Operator::GremlinMapSlice { child, .. }
             | Operator::GremlinSimplePath { child, .. }
             | Operator::GremlinCyclicPath { child, .. }
-            | Operator::GremlinIndex { child, .. } => vec![child],
+            | Operator::GremlinIndex { child, .. }
+            | Operator::GremlinBarrier { child, .. } => vec![child],
 
             Operator::GremlinGroup {
                 child,
@@ -865,7 +875,8 @@ fn estimate_recursive(
         | Operator::GremlinSimplePath { child, .. }
         | Operator::GremlinCyclicPath { child, .. }
         | Operator::GremlinIndex { child, .. }
-        | Operator::GremlinProject { child, .. } => estimate_recursive(child, stats, estimates),
+        | Operator::GremlinProject { child, .. }
+        | Operator::GremlinBarrier { child, .. } => estimate_recursive(child, stats, estimates),
         Operator::Cap { .. } => 1.0,
     };
 
@@ -1168,8 +1179,9 @@ fn collect_all_aliases(op: &Operator) -> Vec<String> {
                 aliases.push(key.clone());
             }
         }
-        // SingleRow and ProduceResults have no aliases of their own
-        // (ProduceResults aliases come from its columns, already surfaced via child).
+        Operator::GremlinBarrier { child, .. } => {
+            aliases.extend(collect_all_aliases(child));
+        }
         Operator::SingleRow | Operator::ProduceResults { .. } => {}
     }
     aliases
