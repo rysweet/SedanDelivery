@@ -4057,7 +4057,25 @@ impl GremlinCompiler {
                     // label. Only the first new label gets the input; subsequent
                     // new labels enumerate via V(None).
                     let mut input_bound = false;
-                    for pattern_steps in patterns {
+                    // Flatten and() patterns: match(a, and(b, c)) → match(a, b, c)
+                    let mut flat_patterns: Vec<Vec<GremlinStep>> = Vec::new();
+                    fn flatten_match_patterns(
+                        patterns: &[Vec<GremlinStep>],
+                        out: &mut Vec<Vec<GremlinStep>>,
+                    ) {
+                        for p in patterns {
+                            if p.len() == 1 {
+                                if let Some(GremlinStep::And(branches)) = p.first() {
+                                    flatten_match_patterns(branches, out);
+                                    continue;
+                                }
+                            }
+                            out.push(p.clone());
+                        }
+                    }
+                    flatten_match_patterns(patterns, &mut flat_patterns);
+
+                    for pattern_steps in &flat_patterns {
                         // Detect filter-only patterns: a single Not or Where step
                         let is_filter = pattern_steps.len() == 1
                             && matches!(
@@ -4712,18 +4730,24 @@ impl GremlinCompiler {
                 }
 
                 GremlinStep::Barrier => {
-                    let child = current.take().ok_or(CompileError::MissingChild)?;
-                    let ca = current_alias.clone();
-                    let out = self.next_alias("barrier");
-                    current = Some(Operator::GremlinBarrier {
-                        child: Box::new(child),
-                        current_alias: ca.clone(),
-                        out_alias: out.clone(),
-                        norm_sack: false,
-                        sack_merge_op: pending_sack_merge_op.clone(),
-                        with_bulk: !with_bulk_false,
-                    });
-                    current_alias = out;
+                    // barrier() without sack merge: synchronization no-op.
+                    // Only generate GremlinBarrier when sack merge is active.
+                    if pending_sack_merge_op.is_some() {
+                        let child = current.take().ok_or(CompileError::MissingChild)?;
+                        let ca = current_alias.clone();
+                        let out = self.next_alias("barrier");
+                        current = Some(Operator::GremlinBarrier {
+                            child: Box::new(child),
+                            current_alias: ca.clone(),
+                            out_alias: out.clone(),
+                            norm_sack: false,
+                            sack_merge_op: pending_sack_merge_op.clone(),
+                            with_bulk: !with_bulk_false,
+                        });
+                        current_alias = out;
+                    } else if current.is_none() {
+                        return Err(CompileError::MissingChild);
+                    }
                 }
 
                 GremlinStep::BarrierNormSack => {
