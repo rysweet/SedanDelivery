@@ -1423,4 +1423,99 @@ mod tests {
             Some("test-db".to_string())
         );
     }
+
+    #[tokio::test]
+    async fn handle_run_merge_converts_results_in_blocking_context() {
+        let store = Arc::new(InMemoryGraphStore::new());
+        store.create_graph("neo4j").unwrap();
+        let store: Arc<dyn GraphStore> = store;
+        let mut session = ready_session_with_store(Arc::clone(&store));
+
+        let responses = handle_run(
+            &mut session,
+            "MERGE (n:Person {name: 'Alice'}) RETURN n".to_string(),
+            vec![],
+            vec![],
+        )
+        .await
+        .expect("MERGE should succeed");
+
+        assert_eq!(responses.len(), 1);
+        match &responses[0] {
+            ServerMessage::Success(meta) => {
+                let fields = meta
+                    .iter()
+                    .find(|(k, _)| k == "fields")
+                    .map(|(_, v)| v)
+                    .expect("SUCCESS should contain fields");
+                match fields {
+                    BoltValue::List(f) => {
+                        assert_eq!(f.len(), 1);
+                        assert_eq!(f[0], BoltValue::String("n".to_string()));
+                    }
+                    other => panic!("expected List, got {other:?}"),
+                }
+            }
+            other => panic!("expected SUCCESS, got {other:?}"),
+        }
+
+        assert_eq!(session.pending_results.len(), 1);
+        let pending = session.pending_results.values().next().unwrap();
+        assert_eq!(pending.records.len(), 1, "MERGE should produce one row");
+        let node_val = &pending.records[0][0];
+        match node_val {
+            BoltValue::Structure { tag, fields } => {
+                assert_eq!(*tag, crate::protocol::tags::TAG_NODE);
+                assert_eq!(fields.len(), 3);
+            }
+            other => panic!("expected Node structure, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn handle_run_create_edge_converts_both_nodes_and_edge() {
+        let store = Arc::new(InMemoryGraphStore::new());
+        store.create_graph("neo4j").unwrap();
+        let store: Arc<dyn GraphStore> = store;
+        let mut session = ready_session_with_store(Arc::clone(&store));
+
+        let responses = handle_run(
+            &mut session,
+            "CREATE (a:Person {name:'A'})-[r:KNOWS]->(b:Person {name:'B'}) RETURN a, r, b"
+                .to_string(),
+            vec![],
+            vec![],
+        )
+        .await
+        .expect("CREATE with relationship should succeed");
+
+        assert_eq!(responses.len(), 1);
+        let pending = session.pending_results.values().next().unwrap();
+        assert_eq!(pending.records.len(), 1);
+        let row = &pending.records[0];
+        assert_eq!(row.len(), 3);
+
+        match &row[0] {
+            BoltValue::Structure { tag, .. } => {
+                assert_eq!(*tag, crate::protocol::tags::TAG_NODE, "a should be a Node");
+            }
+            other => panic!("expected Node for 'a', got {other:?}"),
+        }
+        match &row[1] {
+            BoltValue::Structure { tag, .. } => {
+                assert_eq!(
+                    *tag,
+                    crate::protocol::tags::TAG_RELATIONSHIP,
+                    "r should be a Relationship"
+                );
+            }
+            other => panic!("expected Relationship for 'r', got {other:?}"),
+        }
+        match &row[2] {
+            BoltValue::Structure { tag, .. } => {
+                assert_eq!(*tag, crate::protocol::tags::TAG_NODE, "b should be a Node");
+            }
+            other => panic!("expected Node for 'b', got {other:?}"),
+        }
+    }
 }
