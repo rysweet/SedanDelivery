@@ -11,22 +11,28 @@ use super::helpers::{
 };
 use super::{ExecContext, QueryExecutor, Row};
 
-/// Compute a dedup key for a value, treating Gremlin edge property Maps specially:
+/// Compute a dedup key for a value, treating Gremlin property Maps specially:
 /// Edge property Maps (containing `~key`/`~value`/`~element` where element is an Edge)
 /// are compared by `~key` + `~value` only, ignoring `~element` (the parent edge).
-/// Vertex property Maps keep the `~element` in the comparison key since VertexProperty
-/// equality considers the parent vertex.
+/// Vertex property Maps (where element is a Node) are compared by `~key` + `~element`,
+/// ignoring `~id` (which is a per-access counter) and `~value` (two visits to the same
+/// property on the same vertex should dedup regardless of value representation).
 fn property_aware_dedup_key(v: &Value) -> String {
     if let Value::Map(m) = v {
         if m.contains_key("~key") && m.contains_key("~value") {
+            let key = m.get("~key").map(|v| v.canonical_key()).unwrap_or_default();
             // Edge properties: compare by key+value only
             if let Some(Value::Edge(_)) = m.get("~element") {
-                let key = m.get("~key").map(|v| v.canonical_key()).unwrap_or_default();
                 let val = m
                     .get("~value")
                     .map(|v| v.canonical_key())
                     .unwrap_or_default();
                 return format!("EdgeProp({key}, {val})");
+            }
+            // Vertex properties: compare by key+element (same property on same vertex)
+            if let Some(elem) = m.get("~element") {
+                let elem_key = elem.canonical_key();
+                return format!("VtxProp({key}, {elem_key})");
             }
         }
     }
