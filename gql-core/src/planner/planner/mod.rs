@@ -1623,7 +1623,8 @@ mod tests {
             | Operator::GremlinAggregate { child, .. }
             | Operator::GremlinPath { child, .. }
             | Operator::GremlinTree { child, .. }
-            | Operator::Cap { child, .. } => vec![child],
+            | Operator::Cap { child, .. }
+            | Operator::GremlinBarrier { child, .. } => vec![child],
             Operator::ForEach { body, child, .. } | Operator::Repeat { body, child, .. } => {
                 vec![child, body]
             }

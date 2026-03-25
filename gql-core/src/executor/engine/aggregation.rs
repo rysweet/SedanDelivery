@@ -457,6 +457,22 @@ impl<'a> QueryExecutor<'a> {
                     .map(|e| self.eval_with_storage(cx.graph, e, row, &ctx))
                     .transpose()?;
                 groups[idx].1[agg_idx].accumulate(func, arg_val, second_val, *distinct);
+                // __gremlin_bulk: when the row carries a bulk count > 1 and
+                // we're doing Count, add (bulk - 1) extra counts.
+                if matches!(func, AggFunction::Count) {
+                    if let Some(Value::Int(bulk)) = row.get("__gremlin_bulk") {
+                        if *bulk > 1 {
+                            for _ in 1..*bulk {
+                                groups[idx].1[agg_idx].accumulate(
+                                    func,
+                                    Value::Bool(true),
+                                    None,
+                                    *distinct,
+                                );
+                            }
+                        }
+                    }
+                }
             }
         }
 

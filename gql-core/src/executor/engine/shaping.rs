@@ -541,7 +541,8 @@ impl<'a> QueryExecutor<'a> {
             | Operator::GremlinSimplePath { .. }
             | Operator::GremlinCyclicPath { .. }
             | Operator::GremlinIndex { .. }
-            | Operator::GremlinProject { .. } => false,
+            | Operator::GremlinProject { .. }
+            | Operator::GremlinBarrier { .. } => false,
         }
     }
 

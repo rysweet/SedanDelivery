@@ -244,7 +244,8 @@ pub(crate) fn discover_operator_aliases(op: &Operator) -> Vec<String> {
         | Operator::GremlinSimplePath { .. }
         | Operator::GremlinCyclicPath { .. }
         | Operator::GremlinIndex { .. }
-        | Operator::GremlinProject { .. } => {}
+        | Operator::GremlinProject { .. }
+        | Operator::GremlinBarrier { .. } => {}
     }
     aliases
 }

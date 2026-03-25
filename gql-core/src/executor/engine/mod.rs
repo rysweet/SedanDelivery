@@ -395,6 +395,7 @@ impl<'a> QueryExecutor<'a> {
             Operator::GremlinCyclicPath { .. } => self.exec_gremlin_cyclic_path(cx, op),
             Operator::GremlinIndex { .. } => self.exec_gremlin_index(cx, op),
             Operator::GremlinProject { .. } => self.exec_gremlin_project(cx, op),
+            Operator::GremlinBarrier { .. } => self.exec_gremlin_barrier(cx, op),
         }?;
 
         // Record per-operator row counts when profiling is enabled.

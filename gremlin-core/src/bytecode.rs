@@ -204,6 +204,8 @@ pub enum GremlinStep {
     None,
     /// `barrier()` — bulk synchronization step
     Barrier,
+    /// barrier(Barrier.normSack)
+    BarrierNormSack,
     /// `sample(n)` — random sample of n traversers
     Sample(i64),
     /// `sample(Scope.local, n)` — sample elements within a list
@@ -225,13 +227,15 @@ pub enum GremlinStep {
     /// Operator string: "sum", "minus", "mult", "div", "assign"
     SackOp(String),
     /// `withSack(initValue)` — initialize the sack with a value
-    WithSack(GremlinValue),
+    WithSack(GremlinValue, Option<String>),
     /// `withSideEffect(key, value)` — register a named side-effect value
     /// The optional third field is a reduction operator (e.g., "sum", "minus")
     /// from `withSideEffect(key, init, Operator.op)`.
     WithSideEffect(String, GremlinValue, Option<String>),
     /// `option(token, traversal)` — option step for branch/choose
     Option(GremlinValue, Vec<GremlinStep>),
+    /// withBulk(false)
+    WithBulkFalse,
     /// Flag indicating ProductiveByStrategy is active
     ProductiveByStrategy,
     /// Flag indicating ReadOnlyStrategy is active — mutating steps must error
@@ -621,7 +625,17 @@ fn parse_step(name: &str, args: &[serde_json::Value]) -> Result<GremlinStep, Byt
             Ok(GremlinStep::Coin(p))
         }
         "none" => Ok(GremlinStep::None),
-        "barrier" => Ok(GremlinStep::Barrier),
+        "barrier" => {
+            let is_norm_sack = args.iter().any(|a| {
+                a.as_str()
+                    .is_some_and(|s| s.contains("normSack") || s.contains("Barrier.normSack"))
+            });
+            if is_norm_sack {
+                Ok(GremlinStep::BarrierNormSack)
+            } else {
+                Ok(GremlinStep::Barrier)
+            }
+        }
         "sample" => {
             let n = args
                 .first()

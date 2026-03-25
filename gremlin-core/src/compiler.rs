@@ -395,6 +395,8 @@ impl GremlinCompiler {
         let mut pending_until: Option<Vec<GremlinStep>> = None;
         let mut pending_times: Option<usize> = None;
         let mut pending_sack_init: Option<Expr> = None;
+        let mut pending_sack_merge_op: Option<String> = None;
+        let mut with_bulk_false: bool = false;
         // Track whether SackOp just ran, so that a following By() can rewrite the rhs
         let mut pending_sack_op = false;
         // Track whether the preceding step was project for by() modulation
@@ -4694,10 +4696,33 @@ impl GremlinCompiler {
                 }
 
                 GremlinStep::Barrier => {
-                    // barrier() — synchronization, no-op in our execution model
-                    if current.is_none() {
-                        return Err(CompileError::MissingChild);
-                    }
+                    let child = current.take().ok_or(CompileError::MissingChild)?;
+                    let ca = current_alias.clone();
+                    let out = self.next_alias("barrier");
+                    current = Some(Operator::GremlinBarrier {
+                        child: Box::new(child),
+                        current_alias: ca.clone(),
+                        out_alias: out.clone(),
+                        norm_sack: false,
+                        sack_merge_op: pending_sack_merge_op.clone(),
+                        with_bulk: !with_bulk_false,
+                    });
+                    current_alias = out;
+                }
+
+                GremlinStep::BarrierNormSack => {
+                    let child = current.take().ok_or(CompileError::MissingChild)?;
+                    let ca = current_alias.clone();
+                    let out = self.next_alias("barrier");
+                    current = Some(Operator::GremlinBarrier {
+                        child: Box::new(child),
+                        current_alias: ca.clone(),
+                        out_alias: out.clone(),
+                        norm_sack: true,
+                        sack_merge_op: pending_sack_merge_op.clone(),
+                        with_bulk: !with_bulk_false,
+                    });
+                    current_alias = out;
                 }
 
                 GremlinStep::Sample(n) => {
@@ -4817,11 +4842,13 @@ impl GremlinCompiler {
                     pending_sack_op = true;
                 }
 
-                GremlinStep::WithSack(val) => {
-                    // withSack(value) — initialize __sack on all traversers
-                    // This should be the first step; apply to whichever op follows
-                    // We'll inject it as a Project that adds __sack to each row
+                GremlinStep::WithSack(val, ref merge_op) => {
                     pending_sack_init = Some(gremlin_value_to_expr(val));
+                    pending_sack_merge_op = merge_op.clone();
+                }
+
+                GremlinStep::WithBulkFalse => {
+                    with_bulk_false = true;
                 }
 
                 GremlinStep::WithSideEffect(key, val, ref reduce_op) => {
@@ -5742,6 +5769,8 @@ impl GremlinCompiler {
                         | GremlinStep::EmitPred(_)
                         | GremlinStep::Option(..)
                         | GremlinStep::WithSideEffect(..)
+                        | GremlinStep::WithSack(..)
+                        | GremlinStep::WithBulkFalse
                         | GremlinStep::ProductiveByStrategy
                         | GremlinStep::ReadOnlyStrategy
                         | GremlinStep::SeedStrategy(_)
@@ -6345,7 +6374,8 @@ fn inject_sack_init(op: &mut Operator, init_expr: &Expr) {
         | Operator::GremlinMapSlice { child, .. }
         | Operator::ForEach { child, .. }
         | Operator::VarLenExpand { child, .. }
-        | Operator::Aggregate { child, .. } => {
+        | Operator::Aggregate { child, .. }
+        | Operator::GremlinBarrier { child, .. } => {
             inject_sack_init(child, init_expr);
         }
         Operator::Apply { outer, .. }
