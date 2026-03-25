@@ -4057,7 +4057,25 @@ impl GremlinCompiler {
                     // label. Only the first new label gets the input; subsequent
                     // new labels enumerate via V(None).
                     let mut input_bound = false;
-                    for pattern_steps in patterns {
+                    // Flatten and() patterns: match(a, and(b, c)) → match(a, b, c)
+                    let mut flat_patterns: Vec<Vec<GremlinStep>> = Vec::new();
+                    fn flatten_match_patterns(
+                        patterns: &[Vec<GremlinStep>],
+                        out: &mut Vec<Vec<GremlinStep>>,
+                    ) {
+                        for p in patterns {
+                            if p.len() == 1 {
+                                if let Some(GremlinStep::And(branches)) = p.first() {
+                                    flatten_match_patterns(branches, out);
+                                    continue;
+                                }
+                            }
+                            out.push(p.clone());
+                        }
+                    }
+                    flatten_match_patterns(patterns, &mut flat_patterns);
+
+                    for pattern_steps in &flat_patterns {
                         // Detect filter-only patterns: a single Not or Where step
                         let is_filter = pattern_steps.len() == 1
                             && matches!(
