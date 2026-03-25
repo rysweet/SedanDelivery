@@ -4712,18 +4712,24 @@ impl GremlinCompiler {
                 }
 
                 GremlinStep::Barrier => {
-                    let child = current.take().ok_or(CompileError::MissingChild)?;
-                    let ca = current_alias.clone();
-                    let out = self.next_alias("barrier");
-                    current = Some(Operator::GremlinBarrier {
-                        child: Box::new(child),
-                        current_alias: ca.clone(),
-                        out_alias: out.clone(),
-                        norm_sack: false,
-                        sack_merge_op: pending_sack_merge_op.clone(),
-                        with_bulk: !with_bulk_false,
-                    });
-                    current_alias = out;
+                    // barrier() without sack merge: synchronization no-op.
+                    // Only generate GremlinBarrier when sack merge is active.
+                    if pending_sack_merge_op.is_some() {
+                        let child = current.take().ok_or(CompileError::MissingChild)?;
+                        let ca = current_alias.clone();
+                        let out = self.next_alias("barrier");
+                        current = Some(Operator::GremlinBarrier {
+                            child: Box::new(child),
+                            current_alias: ca.clone(),
+                            out_alias: out.clone(),
+                            norm_sack: false,
+                            sack_merge_op: pending_sack_merge_op.clone(),
+                            with_bulk: !with_bulk_false,
+                        });
+                        current_alias = out;
+                    } else if current.is_none() {
+                        return Err(CompileError::MissingChild);
+                    }
                 }
 
                 GremlinStep::BarrierNormSack => {
@@ -6047,8 +6053,14 @@ impl GremlinCompiler {
                     cnt_aliases.push((cnt_alias, Some(pred)));
                 } else {
                     let mut sub = self.sub_compiler();
-                    let inner_op = sub.compile_seeded(branch, current_alias)?;
-                    self.absorb(&sub);
+                    let (actual_seed, steps_slice) = match branch.first() {
+                        Some(GremlinStep::As(label)) if self.alias_map.contains_key(label) => {
+                            (self.alias_map[label].clone(), &branch[1..])
+                        }
+                        _ => (current_alias.clone(), branch.as_slice()),
+                    };
+                    let inner_op = sub.compile_seeded(steps_slice, &actual_seed)?;
+                    self.alias_counter = sub.alias_counter;
                     let sub_alias = sub.last_alias.clone();
                     let cnt_alias = self.next_alias("ocnt");
                     let count_op = Operator::Aggregate {
