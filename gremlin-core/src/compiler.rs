@@ -3979,8 +3979,10 @@ impl GremlinCompiler {
                                 // values, then project to a common alias.
                                 let prev_alias = current_alias.clone();
                                 let union_alias = self.next_alias("inj");
-                                let mut left_items =
-                                    vec![(Expr::Variable(prev_alias), Some(union_alias.clone()))];
+                                let mut left_items = vec![(
+                                    Expr::Variable(prev_alias.clone()),
+                                    Some(union_alias.clone()),
+                                )];
                                 left_items.extend(self.label_carry_items());
                                 let left = Operator::Project {
                                     items: left_items,
@@ -4015,7 +4017,21 @@ impl GremlinCompiler {
                                     right: Box::new(right),
                                     all: true,
                                 });
-                                current_alias = union_alias;
+                                current_alias = union_alias.clone();
+                                // Replace prev_alias with union_alias in path
+                                // tracking so injected traversers contribute
+                                // to path() while original traversers don't
+                                // duplicate.
+                                if let Some(pos) =
+                                    path_aliases.iter().position(|a| *a == prev_alias)
+                                {
+                                    path_aliases[pos] = union_alias.clone();
+                                }
+                                if let Some(pos) =
+                                    self.path_tracking.iter().position(|a| *a == prev_alias)
+                                {
+                                    self.path_tracking[pos] = union_alias;
+                                }
                             }
                         } else {
                             // Source step: just unwind
