@@ -1707,7 +1707,26 @@ impl<'a> QueryExecutor<'a> {
                         let resolved = if let Some(rest) = var_name.strip_prefix("__prop_") {
                             if let Some(sep_pos) = rest.find("__") {
                                 let prop_name = &rest[..sep_pos];
-                                self.resolve_prop_on_value(cx, prop_name, &resolved)
+                                if let Some(n_str) = prop_name.strip_prefix("~limit_local:") {
+                                    let n = n_str.parse::<usize>().unwrap_or(0);
+                                    match resolved {
+                                        Value::List(items) => {
+                                            Value::List(items.into_iter().take(n).collect())
+                                        }
+                                        other => other,
+                                    }
+                                } else if let Some(n_str) = prop_name.strip_prefix("~tail_local:") {
+                                    let n = n_str.parse::<usize>().unwrap_or(0);
+                                    match resolved {
+                                        Value::List(items) => {
+                                            let skip = items.len().saturating_sub(n);
+                                            Value::List(items.into_iter().skip(skip).collect())
+                                        }
+                                        other => other,
+                                    }
+                                } else {
+                                    self.resolve_prop_on_value(cx, prop_name, &resolved)
+                                }
                             } else {
                                 resolved
                             }

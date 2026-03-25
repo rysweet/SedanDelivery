@@ -147,6 +147,8 @@ pub struct QueryExecutor<'a> {
     /// When set, `exec_distinct` uses (and updates) this set instead of
     /// creating a fresh one, giving cross-iteration dedup semantics.
     pub(crate) repeat_dedup_state: std::cell::RefCell<Option<std::collections::HashSet<String>>>,
+    /// Global property ID counter for Gremlin `properties()` step.
+    pub(crate) property_id_counter: std::cell::Cell<i64>,
 }
 
 impl<'a> QueryExecutor<'a> {
@@ -165,6 +167,7 @@ impl<'a> QueryExecutor<'a> {
             gremlin_mode: false,
             gremlin_side_effects: std::cell::RefCell::new(HashMap::new()),
             repeat_dedup_state: std::cell::RefCell::new(None),
+            property_id_counter: std::cell::Cell::new(0),
         }
     }
 
@@ -198,6 +201,7 @@ impl<'a> QueryExecutor<'a> {
             gremlin_mode: false,
             gremlin_side_effects: std::cell::RefCell::new(HashMap::new()),
             repeat_dedup_state: std::cell::RefCell::new(None),
+            property_id_counter: std::cell::Cell::new(0),
         }
     }
 

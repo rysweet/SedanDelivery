@@ -1003,24 +1003,77 @@ impl<'a> QueryExecutor<'a> {
                                 None => Vec::new(),
                             },
                             Value::Map(m) => {
-                                m.iter().map(|(k, v)| (k.to_string(), v.clone())).collect()
+                                if m.contains_key("~key") && m.contains_key("~value") {
+                                    if let Some(Value::Node(nid)) = m.get("~element") {
+                                        if let Some(Value::Str(prop_key)) = m.get("~key") {
+                                            if let Some(data) = self.cached_get_node(graph, *nid)? {
+                                                if let Some(Value::List(items)) =
+                                                    data.properties.get(prop_key.as_ref())
+                                                {
+                                                    let target_val = m.get("~value");
+                                                    for item in items {
+                                                        if let Value::Map(entry) = item {
+                                                            if entry.get("value") == target_val {
+                                                                return Ok(Value::List(
+                                                                    entry
+                                                                        .iter()
+                                                                        .filter(|(k, _)| {
+                                                                            k.as_ref() != "value"
+                                                                        })
+                                                                        .map(|(k, v)| {
+                                                                            let pid = self
+                                                                                .property_id_counter
+                                                                                .get();
+                                                                            self.property_id_counter
+                                                                                .set(pid + 1);
+                                                                            let mut mp =
+                                                                                indexmap::IndexMap::new();
+                                                                            mp.insert(
+                                                                                Box::from("~id"),
+                                                                                Value::Int(pid),
+                                                                            );
+                                                                            mp.insert(
+                                                                                Box::from("~key"),
+                                                                                Value::Str(
+                                                                                    k.clone(),
+                                                                                ),
+                                                                            );
+                                                                            mp.insert(
+                                                                                Box::from(
+                                                                                    "~value",
+                                                                                ),
+                                                                                v.clone(),
+                                                                            );
+                                                                            mp.insert(
+                                                                                Box::from(
+                                                                                    "~element",
+                                                                                ),
+                                                                                element.clone(),
+                                                                            );
+                                                                            Value::Map(mp)
+                                                                        })
+                                                                        .collect(),
+                                                                ));
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                    Vec::new()
+                                } else {
+                                    m.iter().map(|(k, v)| (k.to_string(), v.clone())).collect()
+                                }
                             }
                             _ => Vec::new(),
                         };
-                        let mut prop_idx: i64 = 0;
                         let entries: Vec<Value> = props
                             .into_iter()
                             .filter(|(k, _)| {
                                 key_filters.is_empty() || key_filters.iter().any(|f| f == k)
                             })
                             .flat_map(|(k, v)| {
-                                let elem_base = match &element {
-                                    Value::Node(nid) => nid.0 as i64 * 1000,
-                                    Value::Edge(eid) => eid.0 as i64 * 1000,
-                                    _ => 0,
-                                };
-                                // Multi-valued vertex property (List of Maps with "value" key):
-                                // explode into individual property entries.
                                 if let Value::List(ref items) = v {
                                     if !items.is_empty()
                                         && items.iter().all(|item| {
@@ -1038,31 +1091,29 @@ impl<'a> QueryExecutor<'a> {
                                                     }
                                                     other => other.clone(),
                                                 };
+                                                let pid = self.property_id_counter.get();
+                                                self.property_id_counter.set(pid + 1);
                                                 let mut m = indexmap::IndexMap::new();
-                                                m.insert(
-                                                    Box::from("~id"),
-                                                    Value::Int(elem_base + prop_idx),
-                                                );
+                                                m.insert(Box::from("~id"), Value::Int(pid));
                                                 m.insert(
                                                     Box::from("~key"),
                                                     Value::Str(k.clone().into_boxed_str()),
                                                 );
                                                 m.insert(Box::from("~value"), main_val);
                                                 m.insert(Box::from("~element"), element.clone());
-                                                prop_idx += 1;
                                                 Value::Map(m)
                                             })
                                             .collect();
                                         return result;
                                     }
                                 }
-                                // Single-valued property: one entry.
+                                let pid = self.property_id_counter.get();
+                                self.property_id_counter.set(pid + 1);
                                 let mut m = indexmap::IndexMap::new();
-                                m.insert(Box::from("~id"), Value::Int(elem_base + prop_idx));
+                                m.insert(Box::from("~id"), Value::Int(pid));
                                 m.insert(Box::from("~key"), Value::Str(k.into_boxed_str()));
                                 m.insert(Box::from("~value"), v);
                                 m.insert(Box::from("~element"), element.clone());
-                                prop_idx += 1;
                                 vec![Value::Map(m)]
                             })
                             .collect();
