@@ -103,7 +103,7 @@ impl<'a> QueryExecutor<'a> {
             &body_path_aliases,
             pop_origins,
         )? {
-            return Ok(result);
+            return Ok(expand_bulk_rows(result));
         }
 
         // Batch size for streaming seed processing. When `current` exceeds
@@ -3372,9 +3372,7 @@ fn extract_simple_expand(
             src_alias.clone(),
             dst_alias.clone(),
         )),
-        Operator::Project { child, .. } | Operator::Filter { child, .. } => {
-            extract_simple_expand(child)
-        }
+        Operator::Project { child, .. } => extract_simple_expand(child),
         _ => None,
     }
 }
@@ -3389,6 +3387,27 @@ fn body_contains_simple_path(op: &Operator) -> bool {
         | Operator::GremlinCyclicPath { child, .. } => body_contains_simple_path(child),
         _ => false,
     }
+}
+
+/// Expand rows that carry `__gremlin_bulk` into individual rows.
+///
+/// The vertex-counting fast path collapses identical destination nodes into
+/// a single row with a bulk count.  Downstream steps (tail, path, select,
+/// group-by-count, etc.) expect individual traverser rows, so we expand
+/// here at the fast-path boundary.
+fn expand_bulk_rows(rows: Vec<Row>) -> Vec<Row> {
+    let mut out = Vec::with_capacity(rows.len());
+    for mut row in rows {
+        if let Some(Value::Int(bulk)) = row.remove("__gremlin_bulk") {
+            let n = (bulk as usize).max(1);
+            for _ in 0..n {
+                out.push(row.clone());
+            }
+        } else {
+            out.push(row);
+        }
+    }
+    out
 }
 
 #[cfg(test)]
