@@ -3568,6 +3568,7 @@ impl GremlinCompiler {
                         loop_label: label.clone(),
                         body_path_aliases: body_pa,
                         pop_origins,
+                        needs_path: self.needs_path_tracking,
                         child: Box::new(child),
                     });
                 }

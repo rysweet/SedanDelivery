@@ -31,6 +31,7 @@ impl<'a> QueryExecutor<'a> {
             loop_label,
             body_path_aliases,
             pop_origins,
+            needs_path,
             child,
         } = op
         else {
@@ -86,24 +87,28 @@ impl<'a> QueryExecutor<'a> {
             None => 256,
         };
 
-        // Vertex-counting fast path
-        if let Some(result) = self.try_repeat_counting(
-            cx,
-            body,
-            child,
-            *times,
-            max_iterations,
-            until,
-            *emit,
-            *emit_before,
-            emit_predicate,
-            remap,
-            *times_before,
-            loop_label,
-            &body_path_aliases,
-            pop_origins,
-        )? {
-            return Ok(expand_bulk_rows(result));
+        // Vertex-counting fast path — skip when path tracking is needed
+        // because the fast path collapses traversers by destination NodeId
+        // and cannot maintain per-traverser path histories.
+        if !*needs_path {
+            if let Some(result) = self.try_repeat_counting(
+                cx,
+                body,
+                child,
+                *times,
+                max_iterations,
+                until,
+                *emit,
+                *emit_before,
+                emit_predicate,
+                remap,
+                *times_before,
+                loop_label,
+                &body_path_aliases,
+                pop_origins,
+            )? {
+                return Ok(expand_bulk_rows(result));
+            }
         }
 
         // Batch size for streaming seed processing. When `current` exceeds
@@ -406,7 +411,6 @@ impl<'a> QueryExecutor<'a> {
         _body_path_aliases: &[String],
         pop_origins: &[(String, String)],
     ) -> Result<Option<Vec<Row>>, GqlError> {
-        eprintln!("[TRC]");
         let expand_info = match extract_simple_expand(body) {
             Some(info) => info,
             None => return Ok(None),
@@ -3477,6 +3481,7 @@ mod tests {
             loop_label: None,
             body_path_aliases: vec![],
             pop_origins: vec![],
+            needs_path: false,
             child: Box::new(Operator::NodeScan {
                 label: Some(Label::new("N")),
                 alias: Identifier::new("n"),
@@ -3513,6 +3518,7 @@ mod tests {
             loop_label: None,
             body_path_aliases: vec![],
             pop_origins: vec![],
+            needs_path: false,
             child: Box::new(Operator::NodeScan {
                 label: Some(Label::new("N")),
                 alias: Identifier::new("n"),
