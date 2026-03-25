@@ -240,6 +240,10 @@ pub enum Operator {
         /// `select(Pop.first, label)` can retrieve the initial binding even
         /// after remap overwrites the original alias.
         pop_origins: Vec<(String, String)>,
+        /// When true, a downstream `path()` step requires per-traverser path
+        /// accumulation (`__gremlin_path_acc`).  The vertex-counting fast path
+        /// cannot provide this and must bail.
+        needs_path: bool,
         child: Box<Operator>,
     },
     /// Gremlin choose() — conditional branching.
