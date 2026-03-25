@@ -1,5 +1,8 @@
 //! PULL and DISCARD message handlers.
 
+use std::sync::Arc;
+
+use crate::bookmark::BookmarkCounter;
 use crate::message::types::ServerMessage;
 use crate::metrics as bolt_metrics;
 use crate::packstream::value::{BoltMap, BoltMapExt, BoltValue};
@@ -33,12 +36,12 @@ fn has_regular_updates(stats: &BoltMap) -> bool {
     })
 }
 
-fn complete_pending_query(session: &mut Session, qid: i64) -> Result<ServerMessage, ProtocolError> {
+async fn complete_pending_query(session: &mut Session, qid: i64) -> Result<ServerMessage, ProtocolError> {
     let mut pending = session.pending_results.remove(&qid).ok_or_else(|| {
         ProtocolError::Internal(format!("pending query {qid} missing during completion"))
     })?;
 
-    let bookmark = next_bookmark(&session.global_bookmark);
+    let bookmark = next_bookmark(&session.global_bookmark).await;
     let elapsed_ms = pending.start_time.elapsed().as_millis() as i64;
     let query_type = pending.query_type;
     let mut stats = pending.stats;
@@ -97,7 +100,8 @@ fn complete_pending_query(session: &mut Session, qid: i64) -> Result<ServerMessa
         record_write_bookmark(
             &session.global_bookmark,
             meta.get_str("bookmark").unwrap_or(""),
-        );
+        )
+        .await;
     }
     if has_regular_updates(&stats) && !stats.iter().any(|(k, _)| k == "contains-updates") {
         stats.push(("contains-updates".to_string(), BoltValue::Bool(true)));
@@ -146,7 +150,7 @@ fn complete_pending_query(session: &mut Session, qid: i64) -> Result<ServerMessa
 /// (defaulting to the most recent query). Emits `RECORD` messages followed
 /// by a `SUCCESS` (with `has_more`) or `FAILURE` (for trailing errors).
 #[tracing::instrument(name = "bolt.pull", skip_all)]
-pub(crate) fn handle_pull(
+pub(crate) async fn handle_pull(
     session: &mut Session,
     extra: BoltMap,
 ) -> Result<Vec<ServerMessage>, ProtocolError> {
@@ -219,7 +223,7 @@ pub(crate) fn handle_pull(
             "has_more" => BoltValue::Bool(true)
         }));
     } else {
-        messages.push(complete_pending_query(session, qid)?);
+        messages.push(complete_pending_query(session, qid).await?);
     }
 
     Ok(messages)
@@ -231,7 +235,7 @@ pub(crate) fn handle_pull(
 ///
 /// Removes the pending query identified by `qid` (defaulting to the most
 /// recent query) without streaming its records.
-pub(crate) fn handle_discard(
+pub(crate) async fn handle_discard(
     session: &mut Session,
     extra: BoltMap,
 ) -> Result<Vec<ServerMessage>, ProtocolError> {
@@ -264,5 +268,5 @@ pub(crate) fn handle_discard(
         })]);
     }
 
-    Ok(vec![complete_pending_query(session, qid)?])
+    Ok(vec![complete_pending_query(session, qid).await?])
 }

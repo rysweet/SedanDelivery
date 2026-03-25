@@ -17,7 +17,7 @@ use super::{
 ///
 /// Validates bookmarks, extracts transaction metadata and timeout, creates a
 /// copy-on-write snapshot of the target graph, and transitions to `TxReady`.
-pub(crate) fn handle_begin(
+pub(crate) async fn handle_begin(
     session: &mut Session,
     extra: BoltMap,
 ) -> Result<Vec<ServerMessage>, ProtocolError> {
@@ -25,7 +25,7 @@ pub(crate) fn handle_begin(
         session.state = ServerState::Failed;
         return Ok(vec![failure]);
     }
-    if let Some(age) = recent_bookmark_age(&extra, &session.global_bookmark) {
+    if let Some(age) = recent_bookmark_age(&extra, &session.global_bookmark).await {
         session.apply_recent_bookmark_age(age);
     }
 
@@ -68,7 +68,7 @@ pub(crate) fn handle_begin(
 ///
 /// Merges the copy-on-write snapshot back into the main store, releases the
 /// write lock, produces a bookmark, and transitions to `Ready`.
-pub(crate) fn handle_commit(session: &mut Session) -> Result<Vec<ServerMessage>, ProtocolError> {
+pub(crate) async fn handle_commit(session: &mut Session) -> Result<Vec<ServerMessage>, ProtocolError> {
     // Merge the snapshot back into the main store so that committed mutations
     // become visible to other sessions.
     if let Some(ref tx_store) = session.tx_store {

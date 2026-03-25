@@ -796,13 +796,9 @@ pub(crate) async fn handle_run(
         .map_err(|e| ProtocolError::Internal(format!("blocking task join error: {}", e)))?;
 
         match result {
-            Ok((cr, profile_plan)) => build_success_response(
-                session,
-                cr,
-                &graph,
-                run_metadata,
-                Some(profile_plan),
-            ),
+            Ok((cr, profile_plan)) => {
+                build_success_response(session, cr, &graph, run_metadata, Some(profile_plan))
+            }
             Err(gql_err) => {
                 let (code, message) = bridge::errors::gql_error_to_bolt(&gql_err);
                 bolt_metrics::error_recorded(&code);
@@ -844,9 +840,7 @@ pub(crate) async fn handle_run(
         .map_err(|e| ProtocolError::Internal(format!("blocking task join error: {}", e)))?;
 
         match result {
-            Ok(cr) => {
-                build_success_response(session, cr, &graph, run_metadata, None)
-            }
+            Ok(cr) => build_success_response(session, cr, &graph, run_metadata, None),
             Err(gql_err) => {
                 let (code, message) = bridge::errors::gql_error_to_bolt(&gql_err);
                 bolt_metrics::error_recorded(&code);
