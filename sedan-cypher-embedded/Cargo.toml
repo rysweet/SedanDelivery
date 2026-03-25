@@ -1,0 +1,11 @@
+[package]
+name    = "sedan-cypher-embedded"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Embeddable openCypher query engine — thin wrapper over sedan-gql-embedded"
+
+[dependencies]
+sedan-gql-embedded = { path = "../sedan-gql-embedded" }
+
+[dev-dependencies]
