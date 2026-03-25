@@ -1,8 +1,5 @@
 //! PULL and DISCARD message handlers.
 
-use std::sync::Arc;
-
-use crate::bookmark::BookmarkCounter;
 use crate::message::types::ServerMessage;
 use crate::metrics as bolt_metrics;
 use crate::packstream::value::{BoltMap, BoltMapExt, BoltValue};
@@ -36,7 +33,10 @@ fn has_regular_updates(stats: &BoltMap) -> bool {
     })
 }
 
-async fn complete_pending_query(session: &mut Session, qid: i64) -> Result<ServerMessage, ProtocolError> {
+async fn complete_pending_query(
+    session: &mut Session,
+    qid: i64,
+) -> Result<ServerMessage, ProtocolError> {
     let mut pending = session.pending_results.remove(&qid).ok_or_else(|| {
         ProtocolError::Internal(format!("pending query {qid} missing during completion"))
     })?;

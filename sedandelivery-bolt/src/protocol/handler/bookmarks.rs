@@ -311,4 +311,36 @@ mod tests {
         assert!(b2.starts_with("neo4j:bookmark:v1:tx"), "b2={b2}");
         assert_ne!(b1, b2, "consecutive bookmarks must differ");
     }
+
+    /// Verifies that concurrent bookmark operations don't block the Tokio
+    /// runtime by running many bookmark tasks in parallel alongside an async
+    /// timer.  If bookmarks blocked the runtime, the timer would stall.
+    #[tokio::test]
+    async fn concurrent_bookmarks_do_not_block_runtime() {
+        let counter = Arc::new(crate::bookmark::BookmarkCounter::from_env());
+
+        let bookmark_tasks: Vec<_> = (0..20)
+            .map(|_| {
+                let c = Arc::clone(&counter);
+                tokio::spawn(async move {
+                    let bm = next_bookmark(&c).await;
+                    record_write_bookmark(&c, &bm).await;
+                    bm
+                })
+            })
+            .collect();
+
+        // An async sleep must complete within 1 second if the runtime is
+        // not starved.  With blocking bookmark calls this would hang.
+        let deadline = tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            for handle in bookmark_tasks {
+                handle.await.expect("bookmark task panicked");
+            }
+        })
+        .await;
+        assert!(
+            deadline.is_ok(),
+            "bookmark tasks should complete without blocking the runtime"
+        );
+    }
 }

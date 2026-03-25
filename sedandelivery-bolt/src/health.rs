@@ -88,7 +88,12 @@ async fn health_handler(State(state): State<HealthState>) -> impl IntoResponse {
     let connections = state.active_connections.load(Ordering::Relaxed);
     let uptime_seconds = state.start_time.elapsed().as_secs();
 
-    match state.store.graph_exists("__health_probe") {
+    let store = Arc::clone(&state.store);
+    let probe_result = tokio::task::spawn_blocking(move || store.graph_exists("__health_probe"))
+        .await
+        .unwrap_or_else(|e| Err(gql_core::error::StorageError::Backend { msg: e.to_string() }));
+
+    match probe_result {
         Ok(_) => (
             StatusCode::OK,
             axum::Json(HealthResponse {
