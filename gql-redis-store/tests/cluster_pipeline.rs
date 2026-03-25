@@ -1,5 +1,4 @@
 use indexmap::IndexMap;
-use std::collections::HashMap;
 
 use gql_core::planner::collect_graph_statistics;
 use gql_core::storage::{GraphStore, RangeQuery};
@@ -115,7 +114,12 @@ fn cluster_mode_batch_and_cleanup_pipelines_succeed() {
     let edges = store
         .batch_create_edges(
             &graph,
-            vec![(nodes[0], nodes[1], "REPORTS_TO".to_string(), HashMap::new())],
+            vec![(
+                nodes[0],
+                nodes[1],
+                "REPORTS_TO".to_string(),
+                IndexMap::new(),
+            )],
         )
         .expect("batch_create_edges should succeed in cluster mode");
     assert_eq!(edges.len(), 1);

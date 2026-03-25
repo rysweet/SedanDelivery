@@ -139,6 +139,21 @@ pub(crate) fn key_graph_lock(g: &str) -> String {
     format!("G:{{{g}}}:write_lock")
 }
 
+/// Distributed write-lock key for mutating a single existing node.
+pub(crate) fn key_node_write_lock(g: &str, id: u64) -> String {
+    format!("G:{{{g}}}:write_lock:node:{id}")
+}
+
+/// Distributed write-lock key for mutating a single existing edge by ID.
+pub(crate) fn key_edge_id_write_lock(g: &str, id: u64) -> String {
+    format!("G:{{{g}}}:write_lock:edge:{id}")
+}
+
+/// Distributed write-lock key for creating a relationship between two nodes.
+pub(crate) fn key_edge_write_lock(g: &str, src: u64, dst: u64, rel_type: &str) -> String {
+    format!("G:{{{g}}}:write_lock:edge:{src}:{dst}:{rel_type}")
+}
+
 /// Registry key for graph names.  Uses a `__sd2_registry:` prefix that cannot
 /// collide with per-graph data keys (which all start with `G:`).  The key has
 /// no Redis Cluster hash tag, so it routes to its own slot; this is fine because
@@ -297,6 +312,27 @@ mod tests {
         assert!(!KEY_GRAPHS.starts_with("G:"));
     }
 
+    #[test]
+    fn key_node_write_lock_format() {
+        assert_eq!(key_node_write_lock("db", 7), "G:{db}:write_lock:node:7");
+    }
+
+    #[test]
+    fn key_edge_id_write_lock_format() {
+        assert_eq!(
+            key_edge_id_write_lock("db", 11),
+            "G:{db}:write_lock:edge:11"
+        );
+    }
+
+    #[test]
+    fn key_edge_write_lock_format() {
+        assert_eq!(
+            key_edge_write_lock("db", 1, 2, "KNOWS"),
+            "G:{db}:write_lock:edge:1:2:KNOWS"
+        );
+    }
+
     // ── All keys use the graph hash tag {g} for Redis Cluster ───────────────
 
     #[test]
@@ -316,6 +352,9 @@ mod tests {
         assert!(key_edges_set(g).contains(&tag));
         assert!(key_indexes(g).contains(&tag));
         assert!(key_graph_lock(g).contains(&tag));
+        assert!(key_node_write_lock(g, 1).contains(&tag));
+        assert!(key_edge_id_write_lock(g, 1).contains(&tag));
+        assert!(key_edge_write_lock(g, 1, 2, "R").contains(&tag));
         assert!(key_graph_deleting(g).contains(&tag));
         assert!(key_label_names(g).contains(&tag));
         assert!(key_reltype_names(g).contains(&tag));

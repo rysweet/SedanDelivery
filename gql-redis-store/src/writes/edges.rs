@@ -8,8 +8,8 @@ use gql_core::storage::{EdgeId, NodeId};
 use gql_core::types::Value;
 
 use crate::keys::{
-    encode_adj, key_edge, key_edge_seq, key_edges_set, key_in, key_out, key_reltype,
-    key_reltype_names,
+    encode_adj, key_edge, key_edge_id_write_lock, key_edge_seq, key_edge_write_lock, key_edges_set,
+    key_in, key_out, key_reltype, key_reltype_names,
 };
 use crate::lock::WRITE_LOCK_TTL_MS;
 use crate::validation::validate_property_key;
@@ -25,6 +25,90 @@ fn validate_property_keys(properties: &IndexMap<String, Value>) -> Result<(), St
 }
 
 impl RedisGraphStore {
+    fn create_edge_locked(
+        &self,
+        conn: &mut LockedRedisConn,
+        graph: &str,
+        src: NodeId,
+        dst: NodeId,
+        rel_type: String,
+        properties: IndexMap<String, Value>,
+    ) -> Result<EdgeId, StorageError> {
+        self.require_graph_on(conn.as_mut(), graph)?;
+        if self.read_node(conn.as_mut(), graph, src.0)?.is_none() {
+            return Err(StorageError::NodeNotFound { id: src.0 });
+        }
+        if self.read_node(conn.as_mut(), graph, dst.0)?.is_none() {
+            return Err(StorageError::NodeNotFound { id: dst.0 });
+        }
+
+        let id = match extract_injected_id(&properties, "_sd2_eid")? {
+            Some(id) => id,
+            None => {
+                let raw_id: i64 = redis::cmd("INCRBY")
+                    .arg(self.kp(key_edge_seq(graph)))
+                    .arg(1)
+                    .query(conn.as_mut())
+                    .map_err(crate::backend_storage_error)?;
+                if raw_id <= 0 {
+                    return Err(StorageError::IdOverflow {
+                        graph: graph.to_string(),
+                    });
+                }
+                raw_id as u64
+            }
+        };
+
+        let clean_props = clean_fanout_props(properties);
+        let edge_key = self.kp(key_edge(graph, id));
+        let props_json = props_to_json(&clean_props)?;
+        if conn.is_standalone() {
+            tracing::warn!(
+                graph = graph,
+                "create_edge pipeline executing without MULTI/EXEC atomicity (standalone mode); \
+                 a partial write is possible if the process crashes mid-pipeline. See ADR-005."
+            );
+        }
+        let out_member = encode_adj(EdgeId(id), dst, &rel_type);
+        let in_member = encode_adj(EdgeId(id), src, &rel_type);
+        let mut pipe = conn.pipeline();
+        pipe.cmd("SADD")
+            .arg(self.kp(key_reltype_names(graph)))
+            .arg(rel_type.as_str())
+            .ignore()
+            .cmd("SADD")
+            .arg(self.kp(key_edges_set(graph)))
+            .arg(id.to_string())
+            .ignore()
+            .cmd("SADD")
+            .arg(self.kp(key_reltype(graph, &rel_type)))
+            .arg(id.to_string())
+            .ignore()
+            .cmd("SADD")
+            .arg(self.kp(key_out(graph, src.0)))
+            .arg(out_member)
+            .ignore()
+            .cmd("SADD")
+            .arg(self.kp(key_in(graph, dst.0)))
+            .arg(in_member)
+            .ignore()
+            .cmd("HSET")
+            .arg(&edge_key)
+            .arg("src")
+            .arg(src.0.to_string())
+            .arg("dst")
+            .arg(dst.0.to_string())
+            .arg("rel_type")
+            .arg(&rel_type)
+            .arg("props")
+            .arg(&props_json)
+            .ignore();
+        conn.renew_lock()?;
+        pipe.query::<()>(conn)
+            .map_err(crate::backend_storage_error)?;
+        Ok(EdgeId(id))
+    }
+
     /// Delete an edge using an already-locked connection.
     ///
     /// This avoids dropping and re-acquiring the connection lock when called
@@ -99,89 +183,14 @@ impl RedisGraphStore {
         properties: IndexMap<String, Value>,
     ) -> Result<EdgeId, StorageError> {
         validate_property_keys(&properties)?;
-        self.with_graph_write_lock(graph, WRITE_LOCK_TTL_MS, 3, 50, |conn| {
-            self.require_graph_on(conn.as_mut(), graph)?;
-            // Verify src and dst exist.
-            if self.read_node(conn.as_mut(), graph, src.0)?.is_none() {
-                return Err(StorageError::NodeNotFound { id: src.0 });
-            }
-            if self.read_node(conn.as_mut(), graph, dst.0)?.is_none() {
-                return Err(StorageError::NodeNotFound { id: dst.0 });
-            }
-
-            // If FanoutStore injected _sd2_eid, use it instead of INCR.
-            let id = match extract_injected_id(&properties, "_sd2_eid")? {
-                Some(id) => id,
-                None => {
-                    let raw_id: i64 = redis::cmd("INCRBY")
-                        .arg(self.kp(key_edge_seq(graph)))
-                        .arg(1)
-                        .query(conn.as_mut())
-                        .map_err(crate::backend_storage_error)?;
-                    if raw_id <= 0 {
-                        return Err(StorageError::IdOverflow {
-                            graph: graph.to_string(),
-                        });
-                    }
-                    raw_id as u64
-                }
-            };
-
-            // Strip internal FanoutStore keys before storing.
-            let clean_props = clean_fanout_props(properties);
-
-            let edge_key = self.kp(key_edge(graph, id));
-            let props_json = props_to_json(&clean_props)?;
-            // Store edge hash and update all indexes in a single pipeline.
-            // MULTI/EXEC (.atomic()) is intentionally omitted — redis-rs
-            // ClusterConnection does not support it. All keys share the {graphname}
-            // hash tag (same cluster slot). See ADR-005.
-            if conn.is_standalone() {
-                tracing::warn!(
-                    graph = graph,
-                    "create_edge pipeline executing without MULTI/EXEC atomicity (standalone mode); \
-                     a partial write is possible if the process crashes mid-pipeline. See ADR-005."
-                );
-            }
-            let out_member = encode_adj(EdgeId(id), dst, &rel_type);
-            let in_member = encode_adj(EdgeId(id), src, &rel_type);
-            let mut pipe = conn.pipeline();
-            pipe.cmd("SADD")
-                .arg(self.kp(key_reltype_names(graph)))
-                .arg(rel_type.as_str())
-                .ignore()
-                .cmd("SADD")
-                .arg(self.kp(key_edges_set(graph)))
-                .arg(id.to_string())
-                .ignore()
-                .cmd("SADD")
-                .arg(self.kp(key_reltype(graph, &rel_type)))
-                .arg(id.to_string())
-                .ignore()
-                .cmd("SADD")
-                .arg(self.kp(key_out(graph, src.0)))
-                .arg(out_member)
-                .ignore()
-                .cmd("SADD")
-                .arg(self.kp(key_in(graph, dst.0)))
-                .arg(in_member)
-                .ignore()
-                .cmd("HSET")
-                .arg(&edge_key)
-                .arg("src")
-                .arg(src.0.to_string())
-                .arg("dst")
-                .arg(dst.0.to_string())
-                .arg("rel_type")
-                .arg(&rel_type)
-                .arg("props")
-                .arg(&props_json)
-                .ignore();
-            conn.renew_lock()?;
-            pipe.query::<()>(conn)
-                .map_err(crate::backend_storage_error)?;
-            Ok(EdgeId(id))
-        })
+        self.with_write_lock(
+            graph,
+            self.kp(key_edge_write_lock(graph, src.0, dst.0, &rel_type)),
+            WRITE_LOCK_TTL_MS,
+            3,
+            50,
+            |conn| self.create_edge_locked(conn, graph, src, dst, rel_type, properties),
+        )
     }
 
     /// Merge additional properties into an existing edge (SET semantics).
@@ -195,22 +204,29 @@ impl RedisGraphStore {
         properties: IndexMap<String, Value>,
     ) -> Result<(), StorageError> {
         validate_property_keys(&properties)?;
-        self.with_graph_write_lock(graph, WRITE_LOCK_TTL_MS, 3, 50, |conn| {
-            self.require_graph_on(conn.as_mut(), graph)?;
-            let edge = self
-                .read_edge(conn.as_mut(), graph, id.0)?
-                .ok_or(StorageError::EdgeNotFound { id: id.0 })?;
-            let mut merged = edge.properties;
-            merged.extend(properties);
-            let props_json = props_to_json(&merged)?;
-            conn.renew_lock()?;
-            redis::cmd("HSET")
-                .arg(self.kp(key_edge(graph, id.0)))
-                .arg("props")
-                .arg(&props_json)
-                .query::<()>(conn.as_mut())
-                .map_err(crate::backend_storage_error)
-        })
+        self.with_write_lock(
+            graph,
+            self.kp(key_edge_id_write_lock(graph, id.0)),
+            WRITE_LOCK_TTL_MS,
+            3,
+            50,
+            |conn| {
+                self.require_graph_on(conn.as_mut(), graph)?;
+                let edge = self
+                    .read_edge(conn.as_mut(), graph, id.0)?
+                    .ok_or(StorageError::EdgeNotFound { id: id.0 })?;
+                let mut merged = edge.properties;
+                merged.extend(properties);
+                let props_json = props_to_json(&merged)?;
+                conn.renew_lock()?;
+                redis::cmd("HSET")
+                    .arg(self.kp(key_edge(graph, id.0)))
+                    .arg("props")
+                    .arg(&props_json)
+                    .query::<()>(conn.as_mut())
+                    .map_err(crate::backend_storage_error)
+            },
+        )
     }
 
     /// Replace all properties on an existing edge (REPLACE semantics).
@@ -224,20 +240,27 @@ impl RedisGraphStore {
         properties: IndexMap<String, Value>,
     ) -> Result<(), StorageError> {
         validate_property_keys(&properties)?;
-        self.with_graph_write_lock(graph, WRITE_LOCK_TTL_MS, 3, 50, |conn| {
-            self.require_graph_on(conn.as_mut(), graph)?;
-            if self.read_edge(conn.as_mut(), graph, id.0)?.is_none() {
-                return Err(StorageError::EdgeNotFound { id: id.0 });
-            }
-            let props_json = props_to_json(&properties)?;
-            conn.renew_lock()?;
-            redis::cmd("HSET")
-                .arg(self.kp(key_edge(graph, id.0)))
-                .arg("props")
-                .arg(&props_json)
-                .query::<()>(conn.as_mut())
-                .map_err(crate::backend_storage_error)
-        })
+        self.with_write_lock(
+            graph,
+            self.kp(key_edge_id_write_lock(graph, id.0)),
+            WRITE_LOCK_TTL_MS,
+            3,
+            50,
+            |conn| {
+                self.require_graph_on(conn.as_mut(), graph)?;
+                if self.read_edge(conn.as_mut(), graph, id.0)?.is_none() {
+                    return Err(StorageError::EdgeNotFound { id: id.0 });
+                }
+                let props_json = props_to_json(&properties)?;
+                conn.renew_lock()?;
+                redis::cmd("HSET")
+                    .arg(self.kp(key_edge(graph, id.0)))
+                    .arg("props")
+                    .arg(&props_json)
+                    .query::<()>(conn.as_mut())
+                    .map_err(crate::backend_storage_error)
+            },
+        )
     }
 
     /// Remove a single property key from an edge.
@@ -251,30 +274,44 @@ impl RedisGraphStore {
         key: &str,
     ) -> Result<(), StorageError> {
         validate_property_key(key)?;
-        self.with_graph_write_lock(graph, WRITE_LOCK_TTL_MS, 3, 50, |conn| {
-            self.require_graph_on(conn.as_mut(), graph)?;
-            let edge = self
-                .read_edge(conn.as_mut(), graph, id.0)?
-                .ok_or(StorageError::EdgeNotFound { id: id.0 })?;
-            let mut props = edge.properties;
-            props.remove(key);
-            let props_json = props_to_json(&props)?;
-            conn.renew_lock()?;
-            redis::cmd("HSET")
-                .arg(self.kp(key_edge(graph, id.0)))
-                .arg("props")
-                .arg(&props_json)
-                .query::<()>(conn.as_mut())
-                .map_err(crate::backend_storage_error)
-        })
+        self.with_write_lock(
+            graph,
+            self.kp(key_edge_id_write_lock(graph, id.0)),
+            WRITE_LOCK_TTL_MS,
+            3,
+            50,
+            |conn| {
+                self.require_graph_on(conn.as_mut(), graph)?;
+                let edge = self
+                    .read_edge(conn.as_mut(), graph, id.0)?
+                    .ok_or(StorageError::EdgeNotFound { id: id.0 })?;
+                let mut props = edge.properties;
+                props.remove(key);
+                let props_json = props_to_json(&props)?;
+                conn.renew_lock()?;
+                redis::cmd("HSET")
+                    .arg(self.kp(key_edge(graph, id.0)))
+                    .arg("props")
+                    .arg(&props_json)
+                    .query::<()>(conn.as_mut())
+                    .map_err(crate::backend_storage_error)
+            },
+        )
     }
 
     /// Delete an edge by ID (public entry point that acquires its own connection).
     pub(crate) fn delete_edge_impl(&self, graph: &str, id: EdgeId) -> Result<(), StorageError> {
-        self.with_graph_write_lock(graph, WRITE_LOCK_TTL_MS, 3, 50, |conn| {
-            self.require_graph_on(conn.as_mut(), graph)?;
-            self.delete_edge_inner(conn, graph, id)
-        })
+        self.with_write_lock(
+            graph,
+            self.kp(key_edge_id_write_lock(graph, id.0)),
+            WRITE_LOCK_TTL_MS,
+            3,
+            50,
+            |conn| {
+                self.require_graph_on(conn.as_mut(), graph)?;
+                self.delete_edge_inner(conn, graph, id)
+            },
+        )
     }
 
     /// Batch-create multiple edges in a single Redis pipeline round-trip.

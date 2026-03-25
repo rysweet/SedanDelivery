@@ -810,8 +810,82 @@ fn ci11_graph_mutators_use_write_lock() {
     ] {
         let body = function_block(source, signature);
         assert!(
-            body.contains("with_graph_write_lock(") || body.contains("key_graph_lock("),
-            "{name} must participate in the per-graph write lock discipline"
+            body.contains("with_graph_write_lock(")
+                || body.contains("with_write_lock(")
+                || body.contains("key_graph_lock("),
+            "{name} must participate in the write lock discipline"
+        );
+    }
+}
+
+#[test]
+fn ci11b_hot_mutators_use_scoped_write_locks() {
+    for (name, source, signature, scoped_key) in [
+        (
+            "set_node_properties_impl",
+            NODES_SRC,
+            "pub(crate) fn set_node_properties_impl",
+            "key_node_write_lock(",
+        ),
+        (
+            "replace_node_properties_impl",
+            NODES_SRC,
+            "pub(crate) fn replace_node_properties_impl",
+            "key_node_write_lock(",
+        ),
+        (
+            "remove_node_property_impl",
+            NODES_SRC,
+            "pub(crate) fn remove_node_property_impl",
+            "key_node_write_lock(",
+        ),
+        (
+            "add_node_labels_impl",
+            NODES_SRC,
+            "pub(crate) fn add_node_labels_impl",
+            "key_node_write_lock(",
+        ),
+        (
+            "remove_node_labels_impl",
+            NODES_SRC,
+            "pub(crate) fn remove_node_labels_impl",
+            "key_node_write_lock(",
+        ),
+        (
+            "create_edge_impl",
+            EDGES_SRC,
+            "pub(crate) fn create_edge_impl",
+            "key_edge_write_lock(",
+        ),
+        (
+            "set_edge_properties_impl",
+            EDGES_SRC,
+            "pub(crate) fn set_edge_properties_impl",
+            "key_edge_id_write_lock(",
+        ),
+        (
+            "replace_edge_properties_impl",
+            EDGES_SRC,
+            "pub(crate) fn replace_edge_properties_impl",
+            "key_edge_id_write_lock(",
+        ),
+        (
+            "remove_edge_property_impl",
+            EDGES_SRC,
+            "pub(crate) fn remove_edge_property_impl",
+            "key_edge_id_write_lock(",
+        ),
+        (
+            "delete_edge_impl",
+            EDGES_SRC,
+            "pub(crate) fn delete_edge_impl",
+            "key_edge_id_write_lock(",
+        ),
+    ] {
+        let body = function_block(source, signature);
+        assert!(
+            body.contains(scoped_key),
+            "{name} should use scoped write locks instead of the graph-wide lock"
         );
     }
 }
@@ -855,11 +929,7 @@ fn ci12_locked_graph_mutators_validate_existence_on_locked_connection() {
             "pub(crate) fn create_node_impl",
         ),
         ("batch_create_nodes", NODES_SRC, "pub fn batch_create_nodes"),
-        (
-            "create_edge_impl",
-            EDGES_SRC,
-            "pub(crate) fn create_edge_impl",
-        ),
+        ("create_edge_locked", EDGES_SRC, "fn create_edge_locked"),
         (
             "set_edge_properties_impl",
             EDGES_SRC,
@@ -1132,9 +1202,9 @@ fn ci16_create_pipelines_register_manifests_before_primary_hash_write() {
             &["key_label_names(graph)", "key_nodes_set(graph)"][..],
         ),
         (
-            "create_edge_impl",
+            "create_edge_locked",
             EDGES_SRC,
-            "pub(crate) fn create_edge_impl",
+            "fn create_edge_locked",
             &["key_reltype_names(graph)", "key_edges_set(graph)"][..],
         ),
         (
@@ -1487,8 +1557,8 @@ fn ci22_successful_writes_require_successful_lock_release() {
         "write-lock release handling must treat lost ownership as an error, not a successful write"
     );
     assert!(
-        !function_block(LIB_SRC, "pub(crate) fn with_graph_write_lock").contains("return result;"),
-        "with_graph_write_lock must not return a successful write result before validating lock release"
+        !function_block(LIB_SRC, "pub(crate) fn with_write_lock").contains("return result;"),
+        "with_write_lock must not return a successful write result before validating lock release"
     );
 }
 
@@ -1578,16 +1648,16 @@ fn ci24_label_mutators_and_create_node_renew_before_primary_write() {
 
 #[test]
 fn ci25_edge_and_delete_mutators_renew_before_final_write() {
-    let create_edge_body = function_block(EDGES_SRC, "pub(crate) fn create_edge_impl");
+    let create_edge_body = function_block(EDGES_SRC, "fn create_edge_locked");
     let create_edge_renew_pos = create_edge_body
         .find("conn.renew_lock()?")
-        .expect("create_edge_impl must renew the write lock before its primary write pipeline");
+        .expect("create_edge_locked must renew the write lock before its primary write pipeline");
     let create_edge_query_pos = create_edge_body
         .find("pipe.query::<()>(conn)")
-        .expect("create_edge_impl must execute its primary write pipeline");
+        .expect("create_edge_locked must execute its primary write pipeline");
     assert!(
         create_edge_renew_pos < create_edge_query_pos,
-        "create_edge_impl must renew the write lock before executing its primary write pipeline"
+        "create_edge_locked must renew the write lock before executing its primary write pipeline"
     );
 
     let delete_edge_body = function_block(EDGES_SRC, "pub(crate) fn delete_edge_inner");

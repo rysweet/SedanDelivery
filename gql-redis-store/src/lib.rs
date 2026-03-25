@@ -613,10 +613,11 @@ impl RedisGraphStore {
         self.kp(KEY_GRAPHS.to_string())
     }
 
-    /// Acquire the per-graph write lock, run `f`, then release the lock.
-    pub(crate) fn with_graph_write_lock<T, F>(
+    /// Acquire a distributed write lock, run `f`, then release the lock.
+    pub(crate) fn with_write_lock<T, F>(
         &self,
         graph: &str,
+        lock_key: String,
         ttl_ms: u64,
         max_retries: u32,
         retry_delay_ms: u64,
@@ -625,7 +626,6 @@ impl RedisGraphStore {
     where
         F: FnOnce(&mut LockedRedisConn) -> Result<T, StorageError>,
     {
-        let lock_key = self.kp(key_graph_lock(graph));
         let mut work = Some(f);
         let lock_started_at = Instant::now();
         let mut saw_contention = false;
@@ -687,6 +687,28 @@ impl RedisGraphStore {
             });
         }
         unreachable!("write-lock retry loop must return or error");
+    }
+
+    /// Acquire the per-graph write lock, run `f`, then release the lock.
+    pub(crate) fn with_graph_write_lock<T, F>(
+        &self,
+        graph: &str,
+        ttl_ms: u64,
+        max_retries: u32,
+        retry_delay_ms: u64,
+        f: F,
+    ) -> Result<T, StorageError>
+    where
+        F: FnOnce(&mut LockedRedisConn) -> Result<T, StorageError>,
+    {
+        self.with_write_lock(
+            graph,
+            self.kp(key_graph_lock(graph)),
+            ttl_ms,
+            max_retries,
+            retry_delay_ms,
+            f,
+        )
     }
 
     /// Read a node hash from Redis; returns `None` if the key is absent.

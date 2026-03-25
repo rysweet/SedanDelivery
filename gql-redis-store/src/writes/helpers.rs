@@ -1,7 +1,6 @@
 // writes/helpers.rs -- Pure helper functions shared across write sub-modules.
 
 use indexmap::IndexMap;
-use std::collections::HashMap;
 
 use gql_core::error::StorageError;
 use gql_core::types::Value;
@@ -128,7 +127,7 @@ mod tests {
 
     #[test]
     fn clean_empty_map() {
-        let cleaned = clean_fanout_props(HashMap::new());
+        let cleaned = clean_fanout_props(IndexMap::new());
         assert!(cleaned.is_empty());
     }
 
