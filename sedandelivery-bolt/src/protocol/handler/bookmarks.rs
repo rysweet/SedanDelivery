@@ -1,5 +1,7 @@
 //! Bookmark formatting, validation, and parsing helpers.
 
+use std::sync::Arc;
+
 use crate::bookmark::BookmarkCounter;
 use crate::message::types::ServerMessage;
 use crate::packstream::value::{BoltMap, BoltMapExt, BoltValue};
@@ -19,14 +21,28 @@ pub(crate) fn format_bookmark(n: u64) -> String {
 }
 
 /// Increment the global bookmark counter and return a formatted bookmark string.
-pub(crate) fn next_bookmark(counter: &BookmarkCounter) -> String {
-    let n = counter.next();
+///
+/// Runs the counter increment inside `spawn_blocking` so that the synchronous
+/// Redis I/O (`INCR __sd2_bookmark`) in `BookmarkCounter::Redis` never blocks
+/// a Tokio worker thread.  For the `InMemory` variant the overhead is negligible.
+pub(crate) async fn next_bookmark(counter: &Arc<BookmarkCounter>) -> String {
+    let counter = Arc::clone(counter);
+    let n = tokio::task::spawn_blocking(move || counter.next())
+        .await
+        .expect("bookmark next task panicked");
     format_bookmark(n)
 }
 
-pub(crate) fn record_write_bookmark(counter: &BookmarkCounter, bookmark: &str) {
+/// Record the issuance timestamp for a write-backed bookmark.
+///
+/// Runs inside `spawn_blocking` to avoid blocking Tokio worker threads with
+/// the synchronous Redis `SET` in `BookmarkCounter::Redis`.
+pub(crate) async fn record_write_bookmark(counter: &Arc<BookmarkCounter>, bookmark: &str) {
     if let Some(tx_id) = bookmark_tx_id(bookmark) {
-        counter.record_issued_at(tx_id);
+        let counter = Arc::clone(counter);
+        tokio::task::spawn_blocking(move || counter.record_issued_at(tx_id))
+            .await
+            .expect("bookmark record_issued_at task panicked");
     }
 }
 
@@ -60,18 +76,32 @@ fn bookmark_tx_id(bookmark: &str) -> Option<u64> {
     bookmark.strip_prefix("sedan:tx:")?.parse().ok()
 }
 
-pub(crate) fn recent_bookmark_age(
+/// Look up the freshest recent bookmark age, running the (potentially
+/// blocking) `issued_age` calls inside `spawn_blocking`.
+pub(crate) async fn recent_bookmark_age(
     extra: &BoltMap,
-    counter: &BookmarkCounter,
+    counter: &Arc<BookmarkCounter>,
 ) -> Option<std::time::Duration> {
-    let freshest = bookmark_strings(extra)?
+    let tx_ids: Vec<u64> = bookmark_strings(extra)?
         .into_iter()
         .filter_map(bookmark_tx_id)
-        .filter_map(|tx_id| counter.issued_age(tx_id))
-        .filter(|age| *age < READ_AFTER_WRITE_WINDOW)
-        .min()?;
+        .collect();
 
-    Some(freshest)
+    if tx_ids.is_empty() {
+        return None;
+    }
+
+    let counter = Arc::clone(counter);
+    let window = READ_AFTER_WRITE_WINDOW;
+    tokio::task::spawn_blocking(move || {
+        tx_ids
+            .into_iter()
+            .filter_map(|tx_id| counter.issued_age(tx_id))
+            .filter(|age| *age < window)
+            .min()
+    })
+    .await
+    .expect("bookmark issued_age task panicked")
 }
 
 // -- Bookmark validation -----------------------------------------------------
@@ -271,12 +301,12 @@ mod tests {
         assert_eq!(format_bookmark(42), "neo4j:bookmark:v1:tx42");
     }
 
-    #[test]
-    fn next_bookmark_increments_counter() {
-        let counter = crate::bookmark::BookmarkCounter::from_env();
+    #[tokio::test]
+    async fn next_bookmark_increments_counter() {
+        let counter = Arc::new(crate::bookmark::BookmarkCounter::from_env());
         // We only verify that consecutive bookmarks are distinct and well-formed.
-        let b1 = next_bookmark(&counter);
-        let b2 = next_bookmark(&counter);
+        let b1 = next_bookmark(&counter).await;
+        let b2 = next_bookmark(&counter).await;
         assert!(b1.starts_with("neo4j:bookmark:v1:tx"), "b1={b1}");
         assert!(b2.starts_with("neo4j:bookmark:v1:tx"), "b2={b2}");
         assert_ne!(b1, b2, "consecutive bookmarks must differ");
