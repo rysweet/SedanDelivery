@@ -3646,7 +3646,7 @@ impl GremlinCompiler {
                         // 1-arg choose: value-based dispatch, options come from Option steps
                         let selector = sub.compile_seeded(pred_steps, &current_alias)?;
                         let sel_alias = sub.last_alias.clone();
-                        self.alias_counter = sub.alias_counter;
+                        self.absorb(&sub);
                         let choose_alias = self.next_alias("chm");
                         current = Some(Operator::ChooseMap {
                             selector: Box::new(selector),
