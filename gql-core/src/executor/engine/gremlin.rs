@@ -406,6 +406,7 @@ impl<'a> QueryExecutor<'a> {
         _body_path_aliases: &[String],
         pop_origins: &[(String, String)],
     ) -> Result<Option<Vec<Row>>, GqlError> {
+        eprintln!("[TRC]");
         let expand_info = match extract_simple_expand(body) {
             Some(info) => info,
             None => return Ok(None),

@@ -6047,8 +6047,14 @@ impl GremlinCompiler {
                     cnt_aliases.push((cnt_alias, Some(pred)));
                 } else {
                     let mut sub = self.sub_compiler();
-                    let inner_op = sub.compile_seeded(branch, current_alias)?;
-                    self.absorb(&sub);
+                    let (actual_seed, steps_slice) = match branch.first() {
+                        Some(GremlinStep::As(label)) if self.alias_map.contains_key(label) => {
+                            (self.alias_map[label].clone(), &branch[1..])
+                        }
+                        _ => (current_alias.clone(), branch.as_slice()),
+                    };
+                    let inner_op = sub.compile_seeded(steps_slice, &actual_seed)?;
+                    self.alias_counter = sub.alias_counter;
                     let sub_alias = sub.last_alias.clone();
                     let cnt_alias = self.next_alias("ocnt");
                     let count_op = Operator::Aggregate {
