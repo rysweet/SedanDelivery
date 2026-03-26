@@ -4,7 +4,7 @@ use crate::error::GqlError;
 use crate::planner::Operator;
 use crate::types::Value;
 
-use super::helpers::{discover_operator_aliases, inject_parameters};
+use super::helpers::discover_operator_aliases;
 use super::{ExecContext, QueryExecutor, Row};
 
 impl<'a> QueryExecutor<'a> {
@@ -22,7 +22,8 @@ impl<'a> QueryExecutor<'a> {
         }
         cx.budget.record_row();
         let mut row = Row::new();
-        inject_parameters(&mut row, &self.parameters);
+        // Parameters stay in executor-owned context so UNWIND/CREATE pipelines
+        // do not clone the full parameter payload into every intermediate row.
         // Propagate outer row columns so sub-traversals (Apply, Choose, etc.)
         // can reference parent-scope aliases like v_1.
         if !cx.outer_rows.is_empty() {
@@ -227,7 +228,7 @@ mod tests {
     }
 
     #[test]
-    fn single_row_includes_parameters() {
+    fn single_row_keeps_parameters_out_of_rows() {
         let store = make_store();
         let mut params = HashMap::new();
         params.insert("$name".to_string(), Value::Str("Alice".into()));
@@ -246,7 +247,7 @@ mod tests {
             .exec_single_row(&mut cx, &Operator::SingleRow)
             .unwrap();
         assert_eq!(result.len(), 1);
-        assert_eq!(result[0].get("$name"), Some(&Value::Str("Alice".into())));
+        assert_eq!(result[0].get("$name"), None);
     }
 
     #[test]

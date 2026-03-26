@@ -60,13 +60,16 @@ impl<'a> QueryExecutor<'a> {
     ///
     /// Pre-allocates the `HashMap` with the exact row size to avoid rehashing.
     pub(crate) fn build_filter_ctx<'r>(
-        &self,
+        &'r self,
         _graph: &str,
         row: &'r Row,
     ) -> Result<FilterRow<'r>, GqlError> {
-        let mut ctx = FilterRow::with_capacity(row.len());
+        let mut ctx = FilterRow::with_capacity(row.len() + self.parameters.len());
         for (k, v) in row {
             ctx.insert(k.as_str(), v);
+        }
+        for (k, v) in &self.parameters {
+            ctx.entry(k.as_str()).or_insert(v);
         }
         Ok(ctx)
     }

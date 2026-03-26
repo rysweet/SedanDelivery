@@ -247,6 +247,78 @@ mod tests {
     }
 
     #[test]
+    fn parameterized_unwind_create_does_not_retain_batch_parameter_in_rows() {
+        let store = make_store();
+        let mut params = std::collections::HashMap::new();
+
+        let mut first = IndexMap::new();
+        first.insert("name".into(), Value::Str("Alice".into()));
+        let mut second = IndexMap::new();
+        second.insert("name".into(), Value::Str("Bob".into()));
+
+        params.insert(
+            "resources".to_string(),
+            Value::List(vec![Value::Map(first), Value::Map(second)]),
+        );
+        params.insert("tenant".to_string(), Value::Str("acme".into()));
+
+        let registry = crate::procedure::ProcedureRegistry::new();
+        let executor = QueryExecutor::with_context(&store, &registry, params);
+        let plan = Operator::Create {
+            patterns: vec![CreatePattern {
+                nodes: vec![(
+                    Some(Identifier::new("n")),
+                    vec![Label::new("Person")],
+                    vec![
+                        (
+                            "name".to_string(),
+                            Expr::Property(
+                                Box::new(Expr::Variable(Identifier::new("resource"))),
+                                "name".into(),
+                            ),
+                        ),
+                        ("tenant".to_string(), Expr::Parameter("tenant".to_string())),
+                    ],
+                )],
+                edges: vec![],
+            }],
+            child: Some(Box::new(Operator::Unwind {
+                list_expr: Expr::Parameter("resources".to_string()),
+                alias: Identifier::new("resource"),
+                child: Box::new(Operator::SingleRow),
+            })),
+        };
+
+        let mut budget = ExecutionBudget::unlimited();
+        let result = executor.execute("g", &plan, &mut budget).unwrap();
+
+        assert_eq!(result.stats.nodes_created, 2);
+        assert_eq!(result.rows.len(), 2);
+        for row in &result.rows {
+            assert!(row.contains_key("resource"));
+            assert!(row.contains_key("n"));
+            assert!(!row.contains_key("$resources"));
+            assert!(!row.contains_key("$tenant"));
+        }
+
+        let node_ids = store.find_nodes_by_label("g", "Person").unwrap();
+        let mut names = Vec::new();
+        for node_id in node_ids {
+            let node = store.get_node("g", node_id).unwrap().unwrap();
+            names.push(node.properties.get("name").cloned().unwrap());
+            assert_eq!(
+                node.properties.get("tenant"),
+                Some(&Value::Str("acme".into()))
+            );
+        }
+        names.sort_by(|left, right| format!("{left:?}").cmp(&format!("{right:?}")));
+        assert_eq!(
+            names,
+            vec![Value::Str("Alice".into()), Value::Str("Bob".into())]
+        );
+    }
+
+    #[test]
     fn create_node_binds_variable_in_row() {
         let store = make_store();
         let executor = QueryExecutor::new(&store);
