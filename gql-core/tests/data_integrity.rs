@@ -29,7 +29,7 @@ fn make_store() -> InMemoryGraphStore {
 }
 
 /// Run any Cypher query (read or write) and return its rows.
-fn run_query(store: &InMemoryGraphStore, query: &str) -> Vec<IndexMap<String, Value>> {
+fn run_query(store: &InMemoryGraphStore, query: &str) -> Vec<HashMap<String, Value>> {
     let ast = parse_query(query).expect("parse error");
     let planner = QueryPlanner::new(store, "test");
     let plan = planner.plan(&ast).expect("plan error");

@@ -286,7 +286,7 @@ impl RedisGraphStore {
                     .read_edge(conn.as_mut(), graph, id.0)?
                     .ok_or(StorageError::EdgeNotFound { id: id.0 })?;
                 let mut props = edge.properties;
-                props.remove(key);
+                props.shift_remove(key);
                 let props_json = props_to_json(&props)?;
                 conn.renew_lock()?;
                 redis::cmd("HSET")

@@ -9,6 +9,7 @@
 //!  - §3.3 Safe handling of edge-case inputs (empty query, integer overflow, unicode)
 
 use indexmap::IndexMap;
+use std::collections::HashMap;
 use std::time::Duration;
 
 use gql_core::error::{ExecutionError, GqlError, ParseError};
@@ -26,7 +27,7 @@ fn make_store() -> InMemoryGraphStore {
     store
 }
 
-fn run_query(store: &InMemoryGraphStore, query: &str) -> Vec<IndexMap<String, Value>> {
+fn run_query(store: &InMemoryGraphStore, query: &str) -> Vec<HashMap<String, Value>> {
     let ast = parse_query(query).expect("parse error");
     let planner = QueryPlanner::new(store, "test");
     let plan = planner.plan(&ast).expect("plan error");

@@ -4,7 +4,6 @@
 //! CREATE INDEX, DROP INDEX, CREATE CONSTRAINT, DROP CONSTRAINT before
 //! they reach the gql-core parser (which only handles DML).
 
-use indexmap::IndexMap;
 use std::collections::HashMap;
 
 use gql_core::error::{GqlError, ParseError, StorageError};

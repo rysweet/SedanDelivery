@@ -42,21 +42,14 @@ impl<'a> QueryExecutor<'a> {
                 .ok_or_else(|| undefined_var(&src_alias.0))?;
             let src_id = extract_node_id(src_val, &src_alias.0)?;
 
-            let adj_entries = match direction {
-                Direction::Outgoing => {
-                    self.store.out_edges_by_type(cx.graph, src_id, &type_strs)?
-                }
-                Direction::Incoming => self.store.in_edges_by_type(cx.graph, src_id, &type_strs)?,
-                Direction::Undirected => {
-                    let mut out_entries =
-                        self.store.out_edges_by_type(cx.graph, src_id, &type_strs)?;
-                    let in_entries = self.store.in_edges_by_type(cx.graph, src_id, &type_strs)?;
-                    // For both()/bothE(), concatenate outgoing and incoming
-                    // edges. Self-loop edges intentionally appear twice (once
-                    // from each direction), matching Gremlin semantics.
-                    out_entries.extend(in_entries);
-                    out_entries
-                }
+            let adj_entries = if self.gremlin_mode && matches!(direction, Direction::Undirected) {
+                let mut out_entries = self.store.out_edges_by_type(cx.graph, src_id, &type_strs)?;
+                let in_entries = self.store.in_edges_by_type(cx.graph, src_id, &type_strs)?;
+                // Gremlin both()/bothE() should see self-loops once per direction.
+                out_entries.extend(in_entries);
+                out_entries
+            } else {
+                get_adj_entries(self.store, cx.graph, src_id, direction, &type_strs)?
             };
 
             // Hoist outer_edge_vars construction to the per-row level.
@@ -1034,6 +1027,32 @@ mod tests {
         let mut budget = ExecutionBudget::unlimited();
         let result = executor_result(&store, &plan, &mut budget);
         // Self-loop: a -> a, so expand from a finds 1 edge back to a
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].get("b"), Some(&Value::Node(a)));
+    }
+
+    #[test]
+    fn expand_undirected_self_loop_dedups_in_cypher_mode() {
+        let store = make_store();
+        let a = store
+            .create_node("g", vec!["N".to_string()], IndexMap::new())
+            .unwrap();
+        store
+            .create_edge("g", a, a, "R".to_string(), IndexMap::new())
+            .unwrap();
+        let plan = Operator::Expand {
+            direction: Direction::Undirected,
+            rel_types: vec![RelType::new("R")],
+            src_alias: Identifier::new("a"),
+            rel_alias: Some(Identifier::new("r")),
+            dst_alias: Identifier::new("b"),
+            child: Box::new(Operator::NodeScan {
+                label: Some(Label::new("N")),
+                alias: Identifier::new("a"),
+            }),
+        };
+        let mut budget = ExecutionBudget::unlimited();
+        let result = executor_result(&store, &plan, &mut budget);
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].get("b"), Some(&Value::Node(a)));
     }
