@@ -22,7 +22,7 @@
 # For more information: https://github.github.com/gh-aw/introduction/overview/
 #
 #
-# gh-aw-metadata: {"schema_version":"v1","frontmatter_hash":"0e9a7d28ef6745959fb7b425cee667568686a569c503b1d779c9ada3e281224c","compiler_version":"v0.53.2"}
+# gh-aw-metadata: {"schema_version":"v1","frontmatter_hash":"160c608d01588c6f735fa242f02c9b70200cae12c536f79d268d61ca6809bbd4","compiler_version":"v0.53.2"}
 
 name: "Repo Guardian"
 "on":
@@ -58,7 +58,7 @@ jobs:
       title: ${{ steps.sanitized.outputs.title }}
     steps:
       - name: Setup Scripts
-        uses: github/gh-aw/actions/setup@f1073c5498ee46fec1530555a7c953445417c69b # v0.56.2
+        uses: github/gh-aw/actions/setup@bd9c0ca491e6334a2797ef56ad6ee89958d54ab9 # v0.53.2
         with:
           destination: /opt/gh-aw/actions
       - name: Generate agentic run info
@@ -271,7 +271,7 @@ jobs:
       output_types: ${{ steps.collect_output.outputs.output_types }}
     steps:
       - name: Setup Scripts
-        uses: github/gh-aw/actions/setup@f1073c5498ee46fec1530555a7c953445417c69b # v0.56.2
+        uses: github/gh-aw/actions/setup@bd9c0ca491e6334a2797ef56ad6ee89958d54ab9 # v0.53.2
         with:
           destination: /opt/gh-aw/actions
       - name: Checkout repository
@@ -333,7 +333,7 @@ jobs:
           mkdir -p /tmp/gh-aw/safeoutputs
           mkdir -p /tmp/gh-aw/mcp-logs/safeoutputs
           cat > /opt/gh-aw/safeoutputs/config.json << 'GH_AW_SAFE_OUTPUTS_CONFIG_EOF'
-          {"missing_data":{},"missing_tool":{},"noop":{"max":1},"submit-review":{"description":"Submit a PR review with APPROVE or REQUEST_CHANGES action","inputs":{"action":{"default":null,"description":"Review action: 'approve' for passing PRs, 'request_changes' for PRs with violations","options":["approve","request_changes"],"required":true,"type":"choice"},"body":{"default":null,"description":"The review body text in markdown format","required":true,"type":"string"}}}}
+          {"missing_data":{},"missing_tool":{},"noop":{"max":1},"submit_review":{"description":"Submit a PR review with APPROVE or REQUEST_CHANGES action","inputs":{"action":{"default":null,"description":"Review action: 'approve' for passing PRs, 'request_changes' for PRs with violations","options":["approve","request_changes"],"required":true,"type":"choice"},"body":{"default":null,"description":"The review body text in markdown format","required":true,"type":"string"}}}}
           GH_AW_SAFE_OUTPUTS_CONFIG_EOF
           cat > /opt/gh-aw/safeoutputs/tools.json << 'GH_AW_SAFE_OUTPUTS_TOOLS_EOF'
           [
@@ -962,7 +962,7 @@ jobs:
       total_count: ${{ steps.missing_tool.outputs.total_count }}
     steps:
       - name: Setup Scripts
-        uses: github/gh-aw/actions/setup@f1073c5498ee46fec1530555a7c953445417c69b # v0.56.2
+        uses: github/gh-aw/actions/setup@bd9c0ca491e6334a2797ef56ad6ee89958d54ab9 # v0.53.2
         with:
           destination: /opt/gh-aw/actions
       - name: Download agent output artifact
@@ -1051,7 +1051,7 @@ jobs:
       matched_command: ''
     steps:
       - name: Setup Scripts
-        uses: github/gh-aw/actions/setup@f1073c5498ee46fec1530555a7c953445417c69b # v0.56.2
+        uses: github/gh-aw/actions/setup@bd9c0ca491e6334a2797ef56ad6ee89958d54ab9 # v0.53.2
         with:
           destination: /opt/gh-aw/actions
       - name: Check team membership for workflow
@@ -1086,7 +1086,7 @@ jobs:
       process_safe_outputs_temporary_id_map: ${{ steps.process_safe_outputs.outputs.temporary_id_map }}
     steps:
       - name: Setup Scripts
-        uses: github/gh-aw/actions/setup@f1073c5498ee46fec1530555a7c953445417c69b # v0.56.2
+        uses: github/gh-aw/actions/setup@bd9c0ca491e6334a2797ef56ad6ee89958d54ab9 # v0.53.2
         with:
           destination: /opt/gh-aw/actions
       - name: Download agent output artifact
@@ -1102,6 +1102,13 @@ jobs:
           mkdir -p /tmp/gh-aw/safeoutputs/
           find "/tmp/gh-aw/safeoutputs/" -type f -print
           echo "GH_AW_AGENT_OUTPUT=/tmp/gh-aw/safeoutputs/agent_output.json" >> "$GITHUB_ENV"
+      - name: Filter custom review safe output for manager
+        if: steps.download-agent-output.outcome == 'success'
+        run: |
+          TMP_OUTPUT="/tmp/gh-aw/safeoutputs/agent_output.safe-outputs.json"
+          jq 'if .items then .items |= map(select(.type != "submit_review")) else . end' \
+            "$GH_AW_AGENT_OUTPUT" > "$TMP_OUTPUT"
+          mv "$TMP_OUTPUT" "$GH_AW_AGENT_OUTPUT"
       - name: Process Safe Outputs
         id: process_safe_outputs
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
@@ -1221,7 +1228,6 @@ jobs:
             exit 1
           fi
         env:
-          GH_TOKEN: ${{ secrets.GH_AW_GITHUB_TOKEN || github.token }}
+          GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           REPO: ${{ github.repository }}
-

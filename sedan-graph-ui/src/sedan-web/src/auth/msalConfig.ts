@@ -1,13 +1,24 @@
 import { type Configuration, LogLevel } from '@azure/msal-browser'
 
+const isE2ETest = import.meta.env.VITE_E2E_TEST_AUTH === 'true'
+
 function requireEnv(name: string): string {
   const value = import.meta.env[name]
   if (!value) {
     // During unit tests (vitest), env vars may not be set. Use placeholder
     // values so module imports succeed. Tests that exercise auth should mock
     // this module.
-    if (import.meta.env.MODE === 'test' || import.meta.env.VITEST) {
-      return `test-placeholder-${name}`
+    if (import.meta.env.MODE === 'test' || import.meta.env.VITEST || isE2ETest) {
+      switch (name) {
+        case 'VITE_ENTRA_CLIENT_ID':
+          return '00000000-0000-0000-0000-000000000000'
+        case 'VITE_ENTRA_TENANT_ID':
+          return 'common'
+        case 'VITE_ENTRA_API_SCOPE':
+          return 'api://sedan-delivery/e2e'
+        default:
+          return `test-placeholder-${name}`
+      }
     }
     throw new Error(
       `${name} is required. Add it to .env.development (see .env.development.example).`,
