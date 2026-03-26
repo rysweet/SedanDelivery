@@ -617,7 +617,7 @@ mod tests {
         let store = InMemoryGraphStore::new();
         store.create_graph("test").unwrap();
         // Create two nodes with the same email
-        use std::collections::HashMap;
+        use indexmap::IndexMap;
         let mut props = IndexMap::new();
         props.insert("email".to_string(), Value::Str("alice@example.com".into()));
         store

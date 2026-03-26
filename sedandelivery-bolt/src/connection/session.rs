@@ -221,7 +221,6 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use indexmap::IndexMap;
     use std::collections::HashMap;
     use std::net::{IpAddr, Ipv4Addr};
 
