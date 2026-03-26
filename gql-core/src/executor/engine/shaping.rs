@@ -580,7 +580,6 @@ mod tests {
     use crate::planner::Operator;
     use crate::storage::{GraphStore, InMemoryGraphStore};
     use indexmap::IndexMap;
-    use std::collections::HashMap;
 
     fn make_store() -> InMemoryGraphStore {
         let store = InMemoryGraphStore::new();
@@ -591,7 +590,7 @@ mod tests {
     #[test]
     fn filter_keeps_matching() {
         let store = make_store();
-        let mut p = HashMap::new();
+        let mut p = IndexMap::new();
         p.insert("x".to_string(), Value::Int(10));
         store.create_node("g", vec!["N".to_string()], p).unwrap();
         store
@@ -647,7 +646,7 @@ mod tests {
     fn sort_ascending() {
         let store = make_store();
         for name in &["C", "A", "B"] {
-            let mut p = HashMap::new();
+            let mut p = IndexMap::new();
             p.insert("name".to_string(), Value::Str((*name).into()));
             store.create_node("g", vec!["P".to_string()], p).unwrap();
         }
@@ -747,7 +746,7 @@ mod tests {
         let store = make_store();
         let total_nodes = 500;
         for i in 0..total_nodes {
-            let mut p = HashMap::new();
+            let mut p = IndexMap::new();
             p.insert("i".to_string(), Value::Int(i));
             store.create_node("g", vec!["N".to_string()], p).unwrap();
         }
@@ -782,7 +781,7 @@ mod tests {
         let store = make_store();
         let total_nodes = 50;
         for i in 0..total_nodes {
-            let mut p = HashMap::new();
+            let mut p = IndexMap::new();
             p.insert("i".to_string(), Value::Int(i));
             store.create_node("g", vec!["N".to_string()], p).unwrap();
         }

@@ -7,6 +7,7 @@
 //!  - §3.2 Execution budget enforcement (row limit, timeout)
 
 use indexmap::IndexMap;
+use std::collections::HashMap;
 use std::time::Duration;
 
 use gql_core::error::{ExecutionError, GqlError};
@@ -25,7 +26,7 @@ fn make_store() -> InMemoryGraphStore {
 }
 
 /// Run a query with no budget limits and return rows.
-fn run_query(store: &InMemoryGraphStore, query: &str) -> Vec<IndexMap<String, Value>> {
+fn run_query(store: &InMemoryGraphStore, query: &str) -> Vec<HashMap<String, Value>> {
     let ast = parse_query(query).expect("parse error");
     let planner = QueryPlanner::new(store, "test");
     let plan = planner.plan(&ast).expect("plan error");

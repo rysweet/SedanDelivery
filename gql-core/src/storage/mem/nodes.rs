@@ -3,7 +3,6 @@
 //! Contains: create, get, delete, set/replace properties, add/remove labels.
 
 use indexmap::IndexMap;
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::error::StorageError;
@@ -38,8 +37,8 @@ pub(crate) fn create_node_impl(
 
     // Strip internal keys before storing
     let mut clean_props = properties;
-    clean_props.remove("_sd2_id");
-    clean_props.remove("_sd2_eid");
+    clean_props.shift_remove("_sd2_id");
+    clean_props.shift_remove("_sd2_eid");
 
     // Check uniqueness constraints before inserting.
     g.check_uniqueness_constraints(&labels, &clean_props, None)?;
@@ -159,7 +158,7 @@ pub(crate) fn remove_node_property_impl(
         .nodes
         .get_mut(&id.0)
         .ok_or(StorageError::NodeNotFound { id: id.0 })?;
-    if let Some(old_val) = node.properties.remove(key) {
+    if let Some(old_val) = node.properties.shift_remove(key) {
         let labels = node.labels.clone();
         let old_props = IndexMap::from([(key.to_string(), old_val)]);
         g.index_remove(id.0, &labels, &old_props);
@@ -325,7 +324,7 @@ pub(crate) fn delete_node_impl(
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
+    use indexmap::IndexMap;
 
     use crate::storage::mem::test_helpers::make_store;
     use crate::storage::{GraphStore, NodeId};

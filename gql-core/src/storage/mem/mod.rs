@@ -811,6 +811,7 @@ pub(crate) mod test_helpers {
 mod tests {
     use super::test_helpers::make_store;
     use super::*;
+    use indexmap::IndexMap;
 
     #[test]
     fn graph_not_found_errors() {
@@ -977,13 +978,13 @@ mod tests {
             .create_constraint("test", "Person", "email", ConstraintType::Unique)
             .unwrap();
 
-        let mut props1 = HashMap::new();
+        let mut props1 = IndexMap::new();
         props1.insert("email".to_string(), Value::Str("alice@example.com".into()));
         store
             .create_node("test", vec!["Person".to_string()], props1)
             .unwrap();
 
-        let mut props2 = HashMap::new();
+        let mut props2 = IndexMap::new();
         props2.insert("email".to_string(), Value::Str("bob@example.com".into()));
         store
             .create_node("test", vec!["Person".to_string()], props2)
@@ -997,20 +998,20 @@ mod tests {
             .create_constraint("test", "Person", "email", ConstraintType::Unique)
             .unwrap();
 
-        let mut props1 = HashMap::new();
+        let mut props1 = IndexMap::new();
         props1.insert("email".to_string(), Value::Str("alice@example.com".into()));
         store
             .create_node("test", vec!["Person".to_string()], props1)
             .unwrap();
 
-        let mut props2 = HashMap::new();
+        let mut props2 = IndexMap::new();
         props2.insert("email".to_string(), Value::Str("bob@example.com".into()));
         let id2 = store
             .create_node("test", vec!["Person".to_string()], props2)
             .unwrap();
 
         // Try to update id2's email to alice's email.
-        let mut update = HashMap::new();
+        let mut update = IndexMap::new();
         update.insert("email".to_string(), Value::Str("alice@example.com".into()));
         let result = store.set_node_properties("test", id2, update);
         assert!(matches!(

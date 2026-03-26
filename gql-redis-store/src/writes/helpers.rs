@@ -36,8 +36,8 @@ pub(crate) fn extract_injected_id(
 pub(crate) fn clean_fanout_props(
     mut properties: IndexMap<String, Value>,
 ) -> IndexMap<String, Value> {
-    properties.remove("_sd2_id");
-    properties.remove("_sd2_eid");
+    properties.shift_remove("_sd2_id");
+    properties.shift_remove("_sd2_eid");
     properties
 }
 

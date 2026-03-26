@@ -1,6 +1,5 @@
 //! Aggregation operator and state for the query executor.
 
-use indexmap::IndexMap;
 use std::collections::HashMap;
 
 use crate::ast::Expr;
@@ -515,6 +514,7 @@ mod tests {
     use crate::executor::budget::ExecutionBudget;
     use crate::planner::Operator;
     use crate::storage::{GraphStore, InMemoryGraphStore};
+    use indexmap::IndexMap;
 
     fn make_store() -> InMemoryGraphStore {
         let store = InMemoryGraphStore::new();

@@ -9,7 +9,6 @@ mod tests {
     use crate::storage::{GraphStore, InMemoryGraphStore};
     use crate::types::Value;
     use indexmap::IndexMap;
-    use std::collections::HashMap;
 
     fn make_store() -> InMemoryGraphStore {
         let store = InMemoryGraphStore::new();
@@ -63,7 +62,7 @@ mod tests {
         store
             .create_node("g", vec!["Person".into()], props)
             .unwrap();
-        let mut props2 = HashMap::new();
+        let mut props2 = IndexMap::new();
         props2.insert("age".to_string(), Value::Int(20));
         store
             .create_node("g", vec!["Person".into()], props2)
@@ -610,10 +609,10 @@ mod tests {
     #[test]
     fn index_scan_finds_nodes() {
         let store = make_store();
-        let mut p1 = HashMap::new();
+        let mut p1 = IndexMap::new();
         p1.insert("age".to_string(), Value::Int(30));
         store.create_node("g", vec!["Person".into()], p1).unwrap();
-        let mut p2 = HashMap::new();
+        let mut p2 = IndexMap::new();
         p2.insert("age".to_string(), Value::Int(25));
         store.create_node("g", vec!["Person".into()], p2).unwrap();
         store

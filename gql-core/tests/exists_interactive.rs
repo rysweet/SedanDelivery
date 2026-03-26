@@ -7,6 +7,7 @@ use gql_core::planner::QueryPlanner;
 use gql_core::storage::{GraphStore, InMemoryGraphStore};
 use gql_core::types::Value;
 use indexmap::IndexMap;
+use std::collections::HashMap;
 
 fn setup_graph() -> InMemoryGraphStore {
     let store = InMemoryGraphStore::default();
@@ -49,7 +50,7 @@ fn setup_graph() -> InMemoryGraphStore {
     store
 }
 
-fn run_query(store: &InMemoryGraphStore, query: &str) -> Vec<IndexMap<String, Value>> {
+fn run_query(store: &InMemoryGraphStore, query: &str) -> Vec<HashMap<String, Value>> {
     let ast = parse_query(query).expect("parse error");
     let planner = QueryPlanner::new(store, "test");
     let plan = planner.plan(&ast).expect("plan error");

@@ -1,6 +1,5 @@
 //! Node scanning operators: NodeScan, IndexScan, NodeByIdSeek.
 
-use indexmap::IndexMap;
 use std::collections::HashMap;
 
 use crate::error::{ExecutionError, GqlError};
@@ -228,6 +227,7 @@ mod tests {
     use crate::executor::engine::MutationStats;
     use crate::planner::Operator;
     use crate::storage::{GraphStore, InMemoryGraphStore};
+    use indexmap::IndexMap;
 
     fn make_store() -> InMemoryGraphStore {
         let store = InMemoryGraphStore::new();
@@ -362,7 +362,7 @@ mod tests {
     #[test]
     fn index_scan_finds_nodes() {
         let store = make_store();
-        let mut p1 = HashMap::new();
+        let mut p1 = IndexMap::new();
         p1.insert("age".to_string(), Value::Int(30));
         store
             .create_node("g", vec!["Person".to_string()], p1)

@@ -80,13 +80,13 @@ fn test_create_and_match() {
     let store = make_store();
 
     // Insert nodes directly into the store (bypassing the planner for setup).
-    let mut alice_props = HashMap::new();
+    let mut alice_props = IndexMap::new();
     alice_props.insert("name".to_string(), Value::Str("Alice".into()));
     store
         .create_node("test", vec!["Person".to_string()], alice_props)
         .unwrap();
 
-    let mut bob_props = HashMap::new();
+    let mut bob_props = IndexMap::new();
     bob_props.insert("name".to_string(), Value::Str("Bob".into()));
     store
         .create_node("test", vec!["Person".to_string()], bob_props)
@@ -158,13 +158,13 @@ fn test_create_and_match() {
 fn test_match_relationship() {
     let store = make_store();
 
-    let mut alice_props = HashMap::new();
+    let mut alice_props = IndexMap::new();
     alice_props.insert("name".to_string(), Value::Str("Alice".into()));
     let alice_id = store
         .create_node("test", vec!["Person".to_string()], alice_props)
         .unwrap();
 
-    let mut bob_props = HashMap::new();
+    let mut bob_props = IndexMap::new();
     bob_props.insert("name".to_string(), Value::Str("Bob".into()));
     let bob_id = store
         .create_node("test", vec!["Person".to_string()], bob_props)
@@ -760,13 +760,13 @@ fn test_optional_match() {
     let store = make_store();
 
     // Alice knows nobody outgoing; Bob knows Alice.
-    let mut alice_props = HashMap::new();
+    let mut alice_props = IndexMap::new();
     alice_props.insert("name".to_string(), Value::Str("Alice".into()));
     let alice_id = store
         .create_node("test", vec!["Person".to_string()], alice_props)
         .unwrap();
 
-    let mut bob_props = HashMap::new();
+    let mut bob_props = IndexMap::new();
     bob_props.insert("name".to_string(), Value::Str("Bob".into()));
     let bob_id = store
         .create_node("test", vec!["Person".to_string()], bob_props)
@@ -924,13 +924,13 @@ fn test_merge_node_on_match_set() {
 fn test_merge_relationship() {
     let store = make_store();
 
-    let mut alice_props = HashMap::new();
+    let mut alice_props = IndexMap::new();
     alice_props.insert("name".to_string(), Value::Str("Alice".into()));
     store
         .create_node("test", vec!["Person".to_string()], alice_props)
         .unwrap();
 
-    let mut bob_props = HashMap::new();
+    let mut bob_props = IndexMap::new();
     bob_props.insert("name".to_string(), Value::Str("Bob".into()));
     store
         .create_node("test", vec!["Person".to_string()], bob_props)
@@ -1093,13 +1093,13 @@ fn test_remove_property_and_label() {
 fn test_delete_node_and_relationship() {
     let store = make_store();
 
-    let mut a_props = HashMap::new();
+    let mut a_props = IndexMap::new();
     a_props.insert("name".to_string(), Value::Str("Eve".into()));
     let a_id = store
         .create_node("test", vec!["Person".to_string()], a_props)
         .unwrap();
 
-    let mut b_props = HashMap::new();
+    let mut b_props = IndexMap::new();
     b_props.insert("name".to_string(), Value::Str("Frank".into()));
     let b_id = store
         .create_node("test", vec!["Person".to_string()], b_props)
@@ -1261,19 +1261,19 @@ fn test_varlen_paths() {
     let store = make_store();
 
     // Chain: A -KNOWS-> B -KNOWS-> C
-    let mut p = HashMap::new();
+    let mut p = IndexMap::new();
     p.insert("name".to_string(), Value::Str("A".into()));
     let a = store
         .create_node("test", vec!["Person".to_string()], p)
         .unwrap();
 
-    let mut p = HashMap::new();
+    let mut p = IndexMap::new();
     p.insert("name".to_string(), Value::Str("B".into()));
     let b = store
         .create_node("test", vec!["Person".to_string()], p)
         .unwrap();
 
-    let mut p = HashMap::new();
+    let mut p = IndexMap::new();
     p.insert("name".to_string(), Value::Str("C".into()));
     let c = store
         .create_node("test", vec!["Person".to_string()], p)
@@ -1416,7 +1416,7 @@ fn test_call_procedure() {
     let mut registry = ProcedureRegistry::new();
     registry.register(proc);
 
-    let params: IndexMap<String, Value> = HashMap::new();
+    let params: HashMap<String, Value> = HashMap::new();
     let q = parse_query("CALL math.double(2) YIELD doubled RETURN doubled").unwrap();
     let planner = QueryPlanner::with_context(&store, "test", &registry, &params);
     let plan = planner.plan(&q).unwrap();
@@ -1483,13 +1483,13 @@ fn test_with_clause_chaining() {
 fn test_exists_subquery() {
     let store = make_store();
 
-    let mut alice_props = HashMap::new();
+    let mut alice_props = IndexMap::new();
     alice_props.insert("name".to_string(), Value::Str("Alice".into()));
     let alice_id = store
         .create_node("test", vec!["Person".to_string()], alice_props)
         .unwrap();
 
-    let mut bob_props = HashMap::new();
+    let mut bob_props = IndexMap::new();
     bob_props.insert("name".to_string(), Value::Str("Bob".into()));
     let bob_id = store
         .create_node("test", vec!["Person".to_string()], bob_props)
@@ -1957,7 +1957,7 @@ fn test_merge_with_parameter_map() {
 /// built-ins are handled dynamically by the executor).
 fn exec_builtin(store: &InMemoryGraphStore, query: &str) -> gql_core::executor::QueryResult {
     let registry = ProcedureRegistry::new();
-    let params: IndexMap<String, Value> = HashMap::new();
+    let params: HashMap<String, Value> = HashMap::new();
     let q = parse_query(query).unwrap();
     let planner = QueryPlanner::with_context(store, "test", &registry, &params);
     let plan = planner.plan(&q).unwrap();
@@ -2150,7 +2150,7 @@ fn test_call_dbms_components_with_yield() {
 fn test_call_unknown_procedure_returns_error() {
     let store = make_store();
     let registry = ProcedureRegistry::new();
-    let params: IndexMap<String, Value> = HashMap::new();
+    let params: HashMap<String, Value> = HashMap::new();
     let q = parse_query("CALL db.nonexistent()").unwrap();
     let planner = QueryPlanner::with_context(&store, "test", &registry, &params);
     let result = planner.plan(&q);
@@ -2231,25 +2231,25 @@ fn build_shortest_path_graph() -> InMemoryGraphStore {
     //   A -[R]-> B -[R]-> D
     //   A -[R]-> C -[R]-> D
     //   A -[R]-> D  (direct, 1 hop)
-    let mut a_props = HashMap::new();
+    let mut a_props = IndexMap::new();
     a_props.insert("name".to_string(), Value::Str("A".into()));
     let _a = store
         .create_node("test", vec!["N".to_string()], a_props)
         .unwrap();
 
-    let mut b_props = HashMap::new();
+    let mut b_props = IndexMap::new();
     b_props.insert("name".to_string(), Value::Str("B".into()));
     let _b = store
         .create_node("test", vec!["N".to_string()], b_props)
         .unwrap();
 
-    let mut c_props = HashMap::new();
+    let mut c_props = IndexMap::new();
     c_props.insert("name".to_string(), Value::Str("C".into()));
     let _c = store
         .create_node("test", vec!["N".to_string()], c_props)
         .unwrap();
 
-    let mut d_props = HashMap::new();
+    let mut d_props = IndexMap::new();
     d_props.insert("name".to_string(), Value::Str("D".into()));
     let _d = store
         .create_node("test", vec!["N".to_string()], d_props)
@@ -2323,22 +2323,22 @@ fn test_all_shortest_paths_returns_multiple() {
     //   X -[R]-> M2 -[R]-> Y
     // Both paths have length 2.
     let store = make_store();
-    let mut x_props = HashMap::new();
+    let mut x_props = IndexMap::new();
     x_props.insert("name".to_string(), Value::Str("X".into()));
     let x = store
         .create_node("test", vec!["N".to_string()], x_props)
         .unwrap();
-    let mut m1_props = HashMap::new();
+    let mut m1_props = IndexMap::new();
     m1_props.insert("name".to_string(), Value::Str("M1".into()));
     let m1 = store
         .create_node("test", vec!["N".to_string()], m1_props)
         .unwrap();
-    let mut m2_props = HashMap::new();
+    let mut m2_props = IndexMap::new();
     m2_props.insert("name".to_string(), Value::Str("M2".into()));
     let m2 = store
         .create_node("test", vec!["N".to_string()], m2_props)
         .unwrap();
-    let mut y_props = HashMap::new();
+    let mut y_props = IndexMap::new();
     y_props.insert("name".to_string(), Value::Str("Y".into()));
     let y = store
         .create_node("test", vec!["N".to_string()], y_props)
@@ -2381,12 +2381,12 @@ fn test_all_shortest_paths_returns_multiple() {
 fn test_shortest_path_no_path_exists() {
     let store = make_store();
     // Two disconnected nodes
-    let mut a_props = HashMap::new();
+    let mut a_props = IndexMap::new();
     a_props.insert("name".to_string(), Value::Str("Alone1".into()));
     store
         .create_node("test", vec!["N".to_string()], a_props)
         .unwrap();
-    let mut b_props = HashMap::new();
+    let mut b_props = IndexMap::new();
     b_props.insert("name".to_string(), Value::Str("Alone2".into()));
     store
         .create_node("test", vec!["N".to_string()], b_props)
@@ -2402,7 +2402,7 @@ fn test_shortest_path_no_path_exists() {
 #[test]
 fn test_shortest_path_self_loop() {
     let store = make_store();
-    let mut a_props = HashMap::new();
+    let mut a_props = IndexMap::new();
     a_props.insert("name".to_string(), Value::Str("Loop".into()));
     let a = store
         .create_node("test", vec!["N".to_string()], a_props)

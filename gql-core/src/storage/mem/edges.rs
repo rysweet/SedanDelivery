@@ -46,8 +46,8 @@ pub(crate) fn create_edge_impl(
 
     // Strip internal keys before storing
     let mut clean_props = properties;
-    clean_props.remove("_sd2_id");
-    clean_props.remove("_sd2_eid");
+    clean_props.shift_remove("_sd2_id");
+    clean_props.shift_remove("_sd2_eid");
 
     let edge = EdgeData {
         id: edge_id,
@@ -127,7 +127,7 @@ pub(crate) fn remove_edge_property_impl(
         .edges
         .get_mut(&id.0)
         .ok_or(StorageError::EdgeNotFound { id: id.0 })?;
-    edge.properties.remove(key);
+    edge.properties.shift_remove(key);
     Ok(())
 }
 

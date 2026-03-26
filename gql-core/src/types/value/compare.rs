@@ -62,4 +62,20 @@ mod tests {
         assert_eq!(Value::Int(42).cypher_eq(&Value::Int(42)), Some(true));
         assert_eq!(Value::Int(42).cypher_eq(&Value::Int(43)), Some(false));
     }
+
+    #[test]
+    fn string_number_cross_type_equality_is_false() {
+        assert_eq!(
+            Value::Str("1".into()).cypher_eq(&Value::Int(1)),
+            Some(false)
+        );
+        assert_eq!(
+            Value::Int(1).cypher_eq(&Value::Str("1".into())),
+            Some(false)
+        );
+        assert_eq!(
+            Value::Str("1.0".into()).cypher_eq(&Value::Float(1.0)),
+            Some(false)
+        );
+    }
 }

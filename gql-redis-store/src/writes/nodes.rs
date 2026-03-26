@@ -236,7 +236,7 @@ impl RedisGraphStore {
                 self.deindex_node_properties(conn, graph, id.0, &node.labels, &node.properties)?;
                 conn.renew_lock()?;
                 let mut props = node.properties;
-                props.remove(key);
+                props.shift_remove(key);
                 let props_json = props_to_json(&props)?;
                 redis::cmd("HSET")
                     .arg(self.kp(key_node(graph, id.0)))
