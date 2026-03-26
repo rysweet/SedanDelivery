@@ -160,12 +160,22 @@ impl RedisGraphStore {
                 let mut valid_ids = Vec::new();
                 let mut pipe = conn.pipeline();
                 for id_str in chunk {
-                    if let Ok(id) = id_str.parse::<u64>() {
-                        valid_ids.push(id_str.as_str());
-                        pipe.cmd("HMGET")
-                            .arg(self.kp(key_node(name, id)))
-                            .arg("labels")
-                            .arg("props");
+                    match id_str.parse::<u64>() {
+                        Ok(id) => {
+                            valid_ids.push(id_str.as_str());
+                            pipe.cmd("HMGET")
+                                .arg(self.kp(key_node(name, id)))
+                                .arg("labels")
+                                .arg("props");
+                        }
+                        Err(error) => {
+                            tracing::warn!(
+                                graph = %name,
+                                node_id = %id_str,
+                                %error,
+                                "delete_graph skipping malformed node ID from nodes manifest"
+                            );
+                        }
                     }
                 }
                 if valid_ids.is_empty() {
@@ -213,11 +223,21 @@ impl RedisGraphStore {
                 let mut pipe = conn.pipeline();
                 let mut has_cmds = false;
                 for id_str in chunk {
-                    if let Ok(id) = id_str.parse::<u64>() {
-                        pipe.cmd("HGET")
-                            .arg(self.kp(key_edge(name, id)))
-                            .arg("rel_type");
-                        has_cmds = true;
+                    match id_str.parse::<u64>() {
+                        Ok(id) => {
+                            pipe.cmd("HGET")
+                                .arg(self.kp(key_edge(name, id)))
+                                .arg("rel_type");
+                            has_cmds = true;
+                        }
+                        Err(error) => {
+                            tracing::warn!(
+                                graph = %name,
+                                edge_id = %id_str,
+                                %error,
+                                "delete_graph skipping malformed edge ID from edges manifest"
+                            );
+                        }
                     }
                 }
                 if !has_cmds {
@@ -250,17 +270,37 @@ impl RedisGraphStore {
 
             // Per-node keys: node hash + out-adjacency + in-adjacency.
             for id_str in &node_ids {
-                if let Ok(id) = id_str.parse::<u64>() {
-                    keys.push(self.kp(key_node(name, id)));
-                    keys.push(self.kp(key_out(name, id)));
-                    keys.push(self.kp(key_in(name, id)));
+                match id_str.parse::<u64>() {
+                    Ok(id) => {
+                        keys.push(self.kp(key_node(name, id)));
+                        keys.push(self.kp(key_out(name, id)));
+                        keys.push(self.kp(key_in(name, id)));
+                    }
+                    Err(error) => {
+                        tracing::warn!(
+                            graph = %name,
+                            node_id = %id_str,
+                            %error,
+                            "delete_graph omitting malformed node ID during key construction"
+                        );
+                    }
                 }
             }
 
             // Per-edge keys: edge hash.
             for id_str in &edge_ids {
-                if let Ok(id) = id_str.parse::<u64>() {
-                    keys.push(self.kp(key_edge(name, id)));
+                match id_str.parse::<u64>() {
+                    Ok(id) => {
+                        keys.push(self.kp(key_edge(name, id)));
+                    }
+                    Err(error) => {
+                        tracing::warn!(
+                            graph = %name,
+                            edge_id = %id_str,
+                            %error,
+                            "delete_graph omitting malformed edge ID during key construction"
+                        );
+                    }
                 }
             }
             for label in label_names {
@@ -454,6 +494,27 @@ mod tests {
             edge_count_guard < edge_manifest_fetch,
             "delete_graph_impl must preflight edge cardinality before loading the edge manifest"
         );
+    }
+
+    #[test]
+    fn delete_graph_logs_manifest_parse_failures_instead_of_silently_skipping() {
+        let source = include_str!("graphs.rs");
+        let delete_impl = source
+            .split("pub(crate) fn delete_graph_impl")
+            .nth(1)
+            .expect("delete_graph_impl should exist");
+
+        for expected in [
+            "delete_graph skipping malformed node ID from nodes manifest",
+            "delete_graph skipping malformed edge ID from edges manifest",
+            "delete_graph omitting malformed node ID during key construction",
+            "delete_graph omitting malformed edge ID during key construction",
+        ] {
+            assert!(
+                delete_impl.contains(expected),
+                "delete_graph_impl must log parse failures instead of silently skipping: {expected}"
+            );
+        }
     }
 }
 
