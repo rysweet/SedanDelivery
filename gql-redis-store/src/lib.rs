@@ -130,11 +130,15 @@ use connection::{
 };
 use keys::{decode_adj, key_edge, key_graph_deleting, key_graph_lock, key_node, KEY_GRAPHS};
 
+struct HeldRedisLock {
+    key: Box<str>,
+    token: Box<str>,
+}
+
 pub(crate) struct LockedRedisConn {
     conn: RedisConn,
     graph: Box<str>,
-    lock_key: Box<str>,
-    token: Box<str>,
+    locks: Vec<HeldRedisLock>,
     ttl_ms: u64,
     acquired_at: Instant,
 }
@@ -212,32 +216,53 @@ fn map_lock_release_result<T>(
 }
 
 impl LockedRedisConn {
-    fn new(conn: RedisConn, graph: &str, lock_key: String, token: String, ttl_ms: u64) -> Self {
+    fn new(conn: RedisConn, graph: &str, locks: Vec<(String, String)>, ttl_ms: u64) -> Self {
         Self {
             conn,
             graph: graph.into(),
-            lock_key: lock_key.into_boxed_str(),
-            token: token.into_boxed_str(),
+            locks: locks
+                .into_iter()
+                .map(|(key, token)| HeldRedisLock {
+                    key: key.into_boxed_str(),
+                    token: token.into_boxed_str(),
+                })
+                .collect(),
             ttl_ms,
             acquired_at: Instant::now(),
         }
     }
 
     pub(crate) fn renew_lock(&mut self) -> Result<(), StorageError> {
-        map_lock_renewal_result(
-            self.graph.as_ref(),
-            lock::renew(self.conn.as_mut(), &self.lock_key, &self.token, self.ttl_ms),
-        )
+        for held_lock in &self.locks {
+            map_lock_renewal_result(
+                self.graph.as_ref(),
+                lock::renew(
+                    self.conn.as_mut(),
+                    held_lock.key.as_ref(),
+                    held_lock.token.as_ref(),
+                    self.ttl_ms,
+                ),
+            )?;
+        }
+        Ok(())
     }
 
     fn finish<T>(mut self, result: Result<T, StorageError>) -> Result<T, StorageError> {
         metrics::histogram!(REDIS_WRITE_LOCK_HOLD_SECONDS)
             .record(self.acquired_at.elapsed().as_secs_f64());
-        map_lock_release_result(
-            self.graph.as_ref(),
-            lock::release(self.conn.as_mut(), &self.lock_key, &self.token),
-            result,
-        )
+        let mut result = result;
+        for held_lock in self.locks.iter().rev() {
+            result = map_lock_release_result(
+                self.graph.as_ref(),
+                lock::release(
+                    self.conn.as_mut(),
+                    held_lock.key.as_ref(),
+                    held_lock.token.as_ref(),
+                ),
+                result,
+            );
+        }
+        result
     }
 }
 
@@ -613,7 +638,48 @@ impl RedisGraphStore {
         self.kp(KEY_GRAPHS.to_string())
     }
 
-    /// Acquire a distributed write lock, run `f`, then release the lock.
+    fn try_acquire_write_locks(
+        &self,
+        conn: &mut RedisConn,
+        graph: &str,
+        lock_keys: &[String],
+        ttl_ms: u64,
+    ) -> Result<Option<Vec<(String, String)>>, StorageError> {
+        let mut held = Vec::with_capacity(lock_keys.len());
+        for lock_key in lock_keys {
+            match lock::acquire(conn.as_mut(), lock_key, ttl_ms) {
+                Ok(Some(token)) => held.push((lock_key.clone(), token)),
+                Ok(None) => {
+                    let mut cleanup = Ok(());
+                    while let Some((held_key, held_token)) = held.pop() {
+                        cleanup = map_lock_release_result(
+                            graph,
+                            lock::release(conn.as_mut(), &held_key, &held_token),
+                            cleanup,
+                        );
+                    }
+                    cleanup?;
+                    return Ok(None);
+                }
+                Err(err) => {
+                    let mut cleanup: Result<(), StorageError> = Err(err);
+                    while let Some((held_key, held_token)) = held.pop() {
+                        cleanup = map_lock_release_result(
+                            graph,
+                            lock::release(conn.as_mut(), &held_key, &held_token),
+                            cleanup,
+                        );
+                    }
+                    return cleanup
+                        .map(|_| unreachable!("cleanup after write-lock acquire failure"));
+                }
+            }
+        }
+        Ok(Some(held))
+    }
+
+    /// Acquire the graph write lock plus the requested scoped lock (if any),
+    /// run `f`, then release them in reverse order.
     pub(crate) fn with_write_lock<T, F>(
         &self,
         graph: &str,
@@ -629,6 +695,12 @@ impl RedisGraphStore {
         let mut work = Some(f);
         let lock_started_at = Instant::now();
         let mut saw_contention = false;
+        let graph_lock_key = self.kp(key_graph_lock(graph));
+        let lock_keys = if lock_key == graph_lock_key {
+            vec![lock_key]
+        } else {
+            vec![graph_lock_key, lock_key]
+        };
         metrics::counter!(REDIS_WRITE_LOCK_ACQUIRE_ATTEMPTS_TOTAL).increment(1);
         for attempt in 0..=max_retries {
             let mut conn = match self.conn() {
@@ -643,16 +715,15 @@ impl RedisGraphStore {
                     return Err(err);
                 }
             };
-            match lock::acquire(conn.as_mut(), &lock_key, ttl_ms) {
-                Ok(Some(token)) => {
+            match self.try_acquire_write_locks(&mut conn, graph, &lock_keys, ttl_ms) {
+                Ok(Some(locks)) => {
                     if saw_contention {
                         metrics::counter!(REDIS_WRITE_LOCK_ACQUIRE_CONTENTION_TOTAL).increment(1);
                     }
                     metrics::counter!(REDIS_WRITE_LOCK_ACQUIRE_SUCCESSES_TOTAL).increment(1);
                     metrics::histogram!(REDIS_WRITE_LOCK_ACQUIRE_WAIT_SECONDS)
                         .record(lock_started_at.elapsed().as_secs_f64());
-                    let mut locked_conn =
-                        LockedRedisConn::new(conn, graph, lock_key.clone(), token, ttl_ms);
+                    let mut locked_conn = LockedRedisConn::new(conn, graph, locks, ttl_ms);
                     let result = work
                         .take()
                         .expect("write-lock closure must execute at most once")(
@@ -683,7 +754,10 @@ impl RedisGraphStore {
             metrics::histogram!(REDIS_WRITE_LOCK_ACQUIRE_WAIT_SECONDS)
                 .record(lock_started_at.elapsed().as_secs_f64());
             return Err(StorageError::Backend {
-                msg: format!("write lock '{lock_key}' still contended after {max_retries} retries"),
+                msg: format!(
+                    "write locks '{}' still contended after {max_retries} retries",
+                    lock_keys.join(", ")
+                ),
             });
         }
         unreachable!("write-lock retry loop must return or error");

@@ -1075,6 +1075,89 @@ fn ci13_create_graph_participates_in_same_graph_write_lock() {
 }
 
 #[test]
+#[ignore = "requires a running Redis at REDIS_URL"]
+fn ci13b_scoped_mutators_participate_in_graph_write_lock() {
+    let store = standalone_store();
+    let graph = unique_graph("scoped-write-lock");
+    let url = standalone_redis_url();
+    let prefix = std::env::var("GQL_REDIS_KEY_PREFIX").unwrap_or_default();
+    let client = Client::open(url.as_str()).expect("redis client should initialize");
+    let mut conn = client
+        .get_connection()
+        .expect("redis connection should initialize");
+    let lock_key = format!("{prefix}G:{{{graph}}}:write_lock");
+
+    store.create_graph(&graph).expect("graph should be created");
+    let node_id = store
+        .create_node(
+            &graph,
+            vec!["Person".to_string()],
+            props(&[("name", Value::Str("Alice".into()))]),
+        )
+        .expect("seed node should be created");
+
+    let lock_result: Option<String> = redis::cmd("SET")
+        .arg(&lock_key)
+        .arg("test-token")
+        .arg("NX")
+        .arg("PX")
+        .arg(5_000)
+        .query(&mut conn)
+        .expect("manual lock should be set");
+    assert_eq!(lock_result.as_deref(), Some("OK"));
+
+    let (tx, rx) = mpsc::channel();
+    let graph_for_thread = graph.clone();
+    std::thread::spawn(move || {
+        let result = standalone_store().set_node_properties(
+            &graph_for_thread,
+            node_id,
+            props(&[("role", Value::Str("admin".into()))]),
+        );
+        tx.send(result)
+            .expect("set_node_properties result should be sent to the test thread");
+    });
+
+    std::thread::sleep(Duration::from_millis(150));
+    let pending_result = match rx.recv_timeout(Duration::from_millis(150)) {
+        Ok(result) => {
+            assert!(
+                result.is_err(),
+                "scoped mutators must not succeed while the same-graph write lock is held"
+            );
+            Some(result)
+        }
+        Err(mpsc::RecvTimeoutError::Timeout) => None,
+        Err(mpsc::RecvTimeoutError::Disconnected) => {
+            panic!("set_node_properties worker disconnected before reporting a result")
+        }
+    };
+
+    redis::cmd("DEL")
+        .arg(&lock_key)
+        .query::<()>(&mut conn)
+        .expect("manual lock should be released");
+
+    match pending_result {
+        Some(_) => store
+            .set_node_properties(
+                &graph,
+                node_id,
+                props(&[("role", Value::Str("admin".into()))]),
+            )
+            .expect("set_node_properties should succeed once the graph lock is released"),
+        None => rx
+            .recv_timeout(Duration::from_secs(3))
+            .expect("set_node_properties should complete after the lock is released")
+            .expect("set_node_properties should succeed after the lock is released"),
+    }
+
+    store
+        .delete_graph(&graph)
+        .expect("delete_graph should clean up the graph");
+}
+
+#[test]
 fn ci14_backend_errors_use_sanitizer() {
     for (name, source) in [
         ("connection.rs", CONNECTION_SRC),
