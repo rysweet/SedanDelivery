@@ -12,7 +12,7 @@ engine: claude
 
 safe-outputs:
   jobs:
-    submit-review:
+    submit_review:
       description: "Submit a PR review with APPROVE or REQUEST_CHANGES action"
       runs-on: ubuntu-latest
       permissions:
