@@ -1,6 +1,5 @@
 //! Row deduplication for DISTINCT and UNION operations.
 
-use indexmap::IndexMap;
 use std::collections::HashMap;
 
 use super::Row;

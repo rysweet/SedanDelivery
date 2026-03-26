@@ -1,7 +1,7 @@
 //! MERGE and MERGE RELATIONSHIP operator implementations.
 
 use indexmap::IndexMap;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 use crate::ast::{Direction, Expr};
 use crate::error::{ExecutionError, GqlError};

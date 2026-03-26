@@ -104,7 +104,7 @@ impl<'a> QueryExecutor<'a> {
                 remap,
                 *times_before,
                 loop_label,
-                &body_path_aliases,
+                body_path_aliases,
                 pop_origins,
             )? {
                 return Ok(expand_bulk_rows(result));
@@ -399,7 +399,7 @@ impl<'a> QueryExecutor<'a> {
         cx: &mut ExecContext<'_>,
         body: &Operator,
         child: &Operator,
-        times: Option<usize>,
+        _times: Option<usize>,
         max_iterations: usize,
         until: &Option<Box<Operator>>,
         emit: bool,
@@ -608,14 +608,7 @@ impl<'a> QueryExecutor<'a> {
                 }
             }
 
-            if !emit || (!emit_before && until.is_none()) {
-                for (_nid, (mut row, count)) in vertex_counts {
-                    if count > 1 {
-                        row.insert("__gremlin_bulk".to_string(), Value::Int(count as i64));
-                    }
-                    collected.push(row);
-                }
-            } else if until.is_some() && !vertex_counts.is_empty() {
+            if !vertex_counts.is_empty() && (!emit || !emit_before || until.is_some()) {
                 for (_nid, (mut row, count)) in vertex_counts {
                     if count > 1 {
                         row.insert("__gremlin_bulk".to_string(), Value::Int(count as i64));
@@ -632,7 +625,6 @@ impl<'a> QueryExecutor<'a> {
 
     /// Execute `Choose` — evaluate the predicate for each input row and route
     /// to `if_true` or `if_false` accordingly.
-
     pub(crate) fn exec_choose(
         &self,
         cx: &mut ExecContext<'_>,
@@ -3371,7 +3363,7 @@ fn extract_simple_expand(
             child,
             ..
         } if matches!(child.as_ref(), Operator::SingleRow) => Some((
-            direction.clone(),
+            *direction,
             rel_types.clone(),
             src_alias.clone(),
             dst_alias.clone(),
@@ -3416,7 +3408,7 @@ fn expand_bulk_rows(rows: Vec<Row>) -> Vec<Row> {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
+    use indexmap::IndexMap;
 
     use crate::ast::{Direction, Expr, Identifier, Label, RelType};
     use crate::executor::budget::ExecutionBudget;
@@ -3434,13 +3426,13 @@ mod tests {
     /// Build a linear chain A->B->C and return the store.
     fn make_chain() -> InMemoryGraphStore {
         let store = make_store();
-        let mut pa = HashMap::new();
+        let mut pa = IndexMap::new();
         pa.insert("name".to_string(), Value::Str("A".into()));
         let a = store.create_node("g", vec!["N".to_string()], pa).unwrap();
-        let mut pb = HashMap::new();
+        let mut pb = IndexMap::new();
         pb.insert("name".to_string(), Value::Str("B".into()));
         let b = store.create_node("g", vec!["N".to_string()], pb).unwrap();
-        let mut pc = HashMap::new();
+        let mut pc = IndexMap::new();
         pc.insert("name".to_string(), Value::Str("C".into()));
         let _c = store.create_node("g", vec!["N".to_string()], pc).unwrap();
         store
@@ -3542,10 +3534,10 @@ mod tests {
     fn choose_routes_based_on_predicate() {
         let store = make_store();
         // Create two nodes: one labeled "Yes", one labeled "No".
-        let mut py = HashMap::new();
+        let mut py = IndexMap::new();
         py.insert("tag".to_string(), Value::Str("yes".into()));
         store.create_node("g", vec!["Yes".to_string()], py).unwrap();
-        let mut pn = HashMap::new();
+        let mut pn = IndexMap::new();
         pn.insert("tag".to_string(), Value::Str("no".into()));
         store.create_node("g", vec!["No".to_string()], pn).unwrap();
 

@@ -20,7 +20,6 @@ mod shaping;
 
 mod gremlin;
 
-use indexmap::IndexMap;
 use std::collections::{HashMap, HashSet};
 
 use crate::error::GqlError;
@@ -421,6 +420,7 @@ mod tests {
     use crate::executor::budget::ExecutionBudget;
     use crate::planner::{AggFunction, Operator, SetItem};
     use crate::storage::InMemoryGraphStore;
+    use indexmap::IndexMap;
 
     fn make_store() -> InMemoryGraphStore {
         let store = InMemoryGraphStore::new();
@@ -1238,13 +1238,13 @@ mod tests {
     #[test]
     fn index_scan_finds_nodes() {
         let store = make_store();
-        let mut p1 = HashMap::new();
+        let mut p1 = IndexMap::new();
         p1.insert("age".to_string(), Value::Int(30));
         let _a = store
             .create_node("g", vec!["Person".to_string()], p1)
             .unwrap();
 
-        let mut p2 = HashMap::new();
+        let mut p2 = IndexMap::new();
         p2.insert("age".to_string(), Value::Int(25));
         let _b = store
             .create_node("g", vec!["Person".to_string()], p2)

@@ -1,7 +1,6 @@
 //! SET and REMOVE operator implementations.
 
 use indexmap::IndexMap;
-use std::collections::HashMap;
 
 use crate::error::{ExecutionError, GqlError};
 use crate::planner::{Operator, RemoveItem, SetItem};

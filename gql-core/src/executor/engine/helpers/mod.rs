@@ -379,11 +379,7 @@ mod tests {
         let store = InMemoryGraphStore::new();
         store.create_graph("g").unwrap();
         let n = store
-            .create_node(
-                "g",
-                vec!["A".to_string()],
-                std::collections::IndexMap::new(),
-            )
+            .create_node("g", vec!["A".to_string()], indexmap::IndexMap::new())
             .unwrap();
         // Create a self-loop: (n)-[:SELF]->(n)
         let eid = store

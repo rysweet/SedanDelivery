@@ -84,7 +84,6 @@ pub(crate) fn matches_range(prop_val: &Value, range: &RangeQuery<'_>) -> bool {
 #[cfg(test)]
 mod tests {
     use indexmap::IndexMap;
-    use std::collections::HashMap;
 
     use crate::storage::mem::test_helpers::make_store;
     use crate::storage::{GraphStore, RangeQuery};
@@ -119,13 +118,13 @@ mod tests {
     #[test]
     fn label_and_property_scan_eq() {
         let store = make_store();
-        let mut p1 = HashMap::new();
+        let mut p1 = IndexMap::new();
         p1.insert("age".to_string(), Value::Int(30));
         let a = store
             .create_node("test", vec!["Person".to_string()], p1)
             .unwrap();
 
-        let mut p2 = HashMap::new();
+        let mut p2 = IndexMap::new();
         p2.insert("age".to_string(), Value::Int(25));
         let _b = store
             .create_node("test", vec!["Person".to_string()], p2)
@@ -142,7 +141,7 @@ mod tests {
     fn label_and_property_scan_range() {
         let store = make_store();
         let make_person = |age: i64| {
-            let mut p = HashMap::new();
+            let mut p = IndexMap::new();
             p.insert("age".to_string(), Value::Int(age));
             p
         };
@@ -177,13 +176,13 @@ mod tests {
     #[test]
     fn label_and_property_scan_starts_with() {
         let store = make_store();
-        let mut p1 = HashMap::new();
+        let mut p1 = IndexMap::new();
         p1.insert("name".to_string(), Value::Str("Alice".into()));
         let a = store
             .create_node("test", vec!["Person".to_string()], p1)
             .unwrap();
 
-        let mut p2 = HashMap::new();
+        let mut p2 = IndexMap::new();
         p2.insert("name".to_string(), Value::Str("Bob".into()));
         let _b = store
             .create_node("test", vec!["Person".to_string()], p2)

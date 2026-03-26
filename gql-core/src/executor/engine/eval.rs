@@ -1648,7 +1648,6 @@ mod tests {
     use crate::ast::{BinaryOp, Identifier};
     use crate::storage::{GraphStore, InMemoryGraphStore};
     use indexmap::IndexMap;
-    use std::collections::HashMap;
 
     fn make_store() -> InMemoryGraphStore {
         let store = InMemoryGraphStore::new();

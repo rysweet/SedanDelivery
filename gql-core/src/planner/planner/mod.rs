@@ -23,7 +23,6 @@ mod match_planner;
 mod mutation_planner;
 mod result_planner;
 
-use indexmap::IndexMap;
 use std::collections::HashMap;
 
 use crate::ast::{Clause, Query, ReturnClause};
@@ -260,6 +259,7 @@ mod tests {
         UnwindClause, WithClause,
     };
     use crate::storage::InMemoryGraphStore;
+    use indexmap::IndexMap;
 
     fn make_store() -> InMemoryGraphStore {
         let store = InMemoryGraphStore::new();
@@ -1501,7 +1501,6 @@ mod tests {
         use crate::executor::budget::ExecutionBudget;
         use crate::executor::engine::QueryExecutor;
         use crate::types::Value;
-        use std::collections::HashMap;
 
         // Set up store with an index and data.
         let store = InMemoryGraphStore::new();
