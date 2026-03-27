@@ -32,8 +32,22 @@ env:
   IMAGE_BASE: ghcr.io/${{ github.repository_owner }}/sedandelivery
 
 jobs:
+  validate-publish-inputs:
+    name: Validate publish inputs
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v4.1.5
+
+      - name: Verify Dockerfile Cargo.lock guards
+        run: bash tests/test_dockerfile_cargo_lock.sh
+
+      - name: Validate Dockerfile publish structure
+        run: bash scripts/validate-dockerfiles.sh
+
   build-and-push:
     name: Build & Push (${{ matrix.image }})
+    needs: validate-publish-inputs
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false

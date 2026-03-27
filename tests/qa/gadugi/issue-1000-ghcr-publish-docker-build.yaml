@@ -1,0 +1,134 @@
+# Canonical gadugi scenario for Issue #1000 — ghcr-publish Docker build contract.
+#
+# This scenario validates the operator-facing workflow contract locally:
+# - the publish workflow refuses to start builds unless the Dockerfile validators pass
+# - every workflow-built Rust Dockerfile copies Cargo.lock
+# - every workspace Cargo.toml is present in the builder context
+# - the real cargo build steps use --locked
+# - PR CI runs real builder-stage Docker builds
+# - each builder stage completes successfully
+
+scenario:
+  name: "Issue #1000 - GHCR Docker build contract"
+  description: >
+    Verify from an operator perspective that the Docker build workflows and
+    Dockerfiles are reproducible and complete: ghcr-publish gates image builds
+    on the Dockerfile validators, PR CI runs real builder-stage Docker builds,
+    the Cargo.lock regression guard passes, the Dockerfile structure validator
+    passes, and all four workflow-built Rust builder stages complete
+    successfully without the Rust exit-101 failure.
+  metadata:
+    tags: [cli, docker, ghcr, regression, workflow, issue-1000]
+    priority: high
+    linked_docs:
+      - docs/concepts/docker-rust-reproducible-builds.md
+      - docs/howto/fix-docker-exit-101.md
+      - docs/reference/ghcr-publish-workflow.md
+  agents:
+    - name: cli-agent
+      type: cli
+      config: {}
+  steps:
+    - name: "Run Dockerfile validators and builder-stage builds"
+      agent: cli-agent
+      action: execute
+      params:
+        command: bash
+        args:
+          - -lc
+          - >
+            set -euo pipefail;
+             workflow=.github/workflows/ghcr-publish.yml;
+             ci=.github/workflows/ci.yml;
+             rg -n '^  validate-publish-inputs:' "$workflow";
+             echo "[PASS] publish validator job";
+             rg -n 'needs:\s+validate-publish-inputs' "$workflow";
+             echo "[PASS] build job waits for publish validator";
+             rg -n 'Build workflow Docker builder stages' "$ci";
+             rg -n 'docker build -f Dockerfile \. --target builder' "$ci";
+             rg -n 'docker build -f Dockerfile\.bolt \. --target builder' "$ci";
+             rg -n 'docker build -f Dockerfile\.sync \. --target builder' "$ci";
+             rg -n 'docker build -f Dockerfile\.api \. --target builder' "$ci";
+             echo "[PASS] PR CI runs builder-stage docker builds";
+             bash tests/test_dockerfile_cargo_lock.sh;
+             echo "[PASS] cargo lock validator";
+             bash scripts/validate-dockerfiles.sh;
+             echo "[PASS] dockerfile structure validator";
+             docker build -f Dockerfile . --target builder >/tmp/issue1000-dockerfile.log 2>&1;
+             echo "[PASS] Dockerfile builder stage";
+             docker build -f Dockerfile.bolt . --target builder >/tmp/issue1000-bolt.log 2>&1;
+             echo "[PASS] Dockerfile.bolt builder stage";
+             docker build -f Dockerfile.sync . --target builder >/tmp/issue1000-sync.log 2>&1;
+             echo "[PASS] Dockerfile.sync builder stage";
+             docker build -f Dockerfile.api . --target builder >/tmp/issue1000-api.log 2>&1;
+             echo "[PASS] Dockerfile.api builder stage";
+      timeout: 900000
+
+    - name: "Confirm ghcr-publish has a dedicated validator job"
+      agent: cli-agent
+      action: wait_for_output
+      params:
+        pattern: "\\[PASS\\]\\s+publish validator job"
+      timeout: 5000
+
+    - name: "Confirm image builds wait for the validator job"
+      agent: cli-agent
+      action: wait_for_output
+      params:
+        pattern: "\\[PASS\\]\\s+build job waits for publish validator"
+      timeout: 5000
+
+    - name: "Confirm Cargo.lock validator passed"
+      agent: cli-agent
+      action: wait_for_output
+      params:
+        pattern: "\\[PASS\\]\\s+cargo lock validator"
+      timeout: 5000
+
+    - name: "Confirm PR CI runs real builder-stage Docker builds"
+      agent: cli-agent
+      action: wait_for_output
+      params:
+        pattern: "\\[PASS\\]\\s+PR CI runs builder-stage docker builds"
+      timeout: 5000
+
+    - name: "Confirm Dockerfile structure validator passed"
+      agent: cli-agent
+      action: wait_for_output
+      params:
+        pattern: "\\[PASS\\]\\s+dockerfile structure validator"
+      timeout: 5000
+
+    - name: "Confirm base Dockerfile builder stage passed"
+      agent: cli-agent
+      action: wait_for_output
+      params:
+        pattern: "\\[PASS\\]\\s+Dockerfile builder stage"
+      timeout: 5000
+
+    - name: "Confirm Bolt Dockerfile builder stage passed"
+      agent: cli-agent
+      action: wait_for_output
+      params:
+        pattern: "\\[PASS\\]\\s+Dockerfile\\.bolt builder stage"
+      timeout: 5000
+
+    - name: "Confirm Sync Dockerfile builder stage passed"
+      agent: cli-agent
+      action: wait_for_output
+      params:
+        pattern: "\\[PASS\\]\\s+Dockerfile\\.sync builder stage"
+      timeout: 5000
+
+    - name: "Confirm API Dockerfile builder stage passed"
+      agent: cli-agent
+      action: wait_for_output
+      params:
+        pattern: "\\[PASS\\]\\s+Dockerfile\\.api builder stage"
+      timeout: 5000
+
+    - name: "Confirm validator exited with code 0"
+      agent: cli-agent
+      action: validate_exit_code
+      params:
+        text: "0"

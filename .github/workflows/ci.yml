@@ -21,6 +21,28 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v4.1.5
 
+      - name: Verify Dockerfile Cargo.lock guards
+        run: bash tests/test_dockerfile_cargo_lock.sh
+
+      - name: Validate Dockerfile publish structure
+        run: bash scripts/validate-dockerfiles.sh
+
+      - name: Build workflow Docker builder stages
+        run: |
+          docker build -f Dockerfile . --target builder >/tmp/dockerfile-builder.log 2>&1
+          docker build -f Dockerfile.bolt . --target builder >/tmp/dockerfile-bolt-builder.log 2>&1
+          docker build -f Dockerfile.sync . --target builder >/tmp/dockerfile-sync-builder.log 2>&1
+          docker build -f Dockerfile.api . --target builder >/tmp/dockerfile-api-builder.log 2>&1
+
+      # Docker builder stages each compile the full Rust workspace inside
+      # isolated containers. Combined with the host-side cargo checks that
+      # follow, the four sequential builds can exhaust GitHub-hosted runner
+      # disk (~14 GB). Pruning all Docker layers and build cache here frees
+      # that space so the subsequent cargo check --workspace can link
+      # proc-macro crates (e.g. enum-primitive-derive) without a Bus Error.
+      - name: Reclaim disk after Docker builds
+        run: docker system prune -af --volumes
+
       - name: Install Rust stable with rustfmt and clippy
         run: |
           rustup toolchain install stable --profile minimal --component rustfmt,clippy

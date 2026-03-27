@@ -18,23 +18,36 @@ WORKDIR /app
 # workspace and cargo resolves all crate dependencies before building).
 RUN apt-get update -q && apt-get install -y -q libclang-dev && rm -rf /var/lib/apt/lists/*
 
-# Copy workspace manifests for layer caching
-COPY Cargo.toml ./
-COPY gql-core/Cargo.toml             ./gql-core/
-COPY gql-redis-store/Cargo.toml      ./gql-redis-store/
-COPY gql-fabric-store/Cargo.toml     ./gql-fabric-store/
-COPY gql-module/Cargo.toml           ./gql-module/
-COPY gql-cli/Cargo.toml              ./gql-cli/
-COPY gql-api/Cargo.toml              ./gql-api/
-COPY sedandelivery-bolt/Cargo.toml           ./sedandelivery-bolt/
-COPY sedandelivery-fabric-sync/Cargo.toml    ./sedandelivery-fabric-sync/
-COPY tests/loadtest/Cargo.toml               ./tests/loadtest/
+# Copy workspace manifests and lockfile for layer caching.
+# Cargo.lock is committed — copy it for reproducible dependency resolution.
+# Fixes #1000: all workspace members must be present for cargo to load the workspace.
+COPY Cargo.toml Cargo.lock ./
+COPY gql-core/Cargo.toml              ./gql-core/
+COPY gql-redis-store/Cargo.toml       ./gql-redis-store/
+COPY gql-fabric-store/Cargo.toml      ./gql-fabric-store/
+COPY gql-module/Cargo.toml            ./gql-module/
+COPY gql-cli/Cargo.toml               ./gql-cli/
+COPY gql-api/Cargo.toml               ./gql-api/
+COPY sedandelivery-bolt/Cargo.toml    ./sedandelivery-bolt/
+COPY sedandelivery-fabric-sync/Cargo.toml ./sedandelivery-fabric-sync/
+COPY sedandelivery-gremlin/Cargo.toml ./sedandelivery-gremlin/
+COPY gremlin-core/Cargo.toml          ./gremlin-core/
+COPY sedan-gql-embedded/Cargo.toml    ./sedan-gql-embedded/
+COPY sedan-cypher-embedded/Cargo.toml ./sedan-cypher-embedded/
+COPY sedan-gremlin-embedded/Cargo.toml ./sedan-gremlin-embedded/
+COPY tests/loadtest/Cargo.toml        ./tests/loadtest/
+COPY tests/gremlin-tck/Cargo.toml     ./tests/gremlin-tck/
 
-# Stub sources so cargo can resolve the dependency graph
+# Stub sources so cargo can resolve the full workspace dependency graph.
+# Note: sedandelivery-bolt/src/main.rs must also be stubbed — it is a [[bin]]
+# target and cargo will error if the source file is entirely absent.
 RUN mkdir -p gql-core/src gql-redis-store/src gql-fabric-store/src \
              gql-module/src gql-cli/src gql-api/src \
              sedandelivery-bolt/src sedandelivery-bolt/benches \
-             sedandelivery-fabric-sync/src tests/loadtest/src && \
+             sedandelivery-fabric-sync/src \
+             sedandelivery-gremlin/src gremlin-core/src sedan-gql-embedded/src \
+             sedan-cypher-embedded/src sedan-gremlin-embedded/src \
+             tests/loadtest/src tests/gremlin-tck/src && \
     echo "pub fn stub() {}" > gql-core/src/lib.rs && \
     echo "pub fn stub() {}" > gql-redis-store/src/lib.rs && \
     echo "pub fn stub() {}" > gql-fabric-store/src/lib.rs && \
@@ -42,10 +55,18 @@ RUN mkdir -p gql-core/src gql-redis-store/src gql-fabric-store/src \
     echo "fn main() {}" > gql-cli/src/main.rs && \
     echo "fn main() {}" > gql-api/src/main.rs && \
     echo "pub fn stub() {}" > sedandelivery-bolt/src/lib.rs && \
+    echo "fn main() {}" > sedandelivery-bolt/src/main.rs && \
     echo "fn main() {}" > sedandelivery-bolt/benches/bolt_benchmarks.rs && \
     echo "fn main() {}" > sedandelivery-fabric-sync/src/main.rs && \
+    echo "pub fn stub() {}" > sedandelivery-gremlin/src/lib.rs && \
+    echo "fn main() {}" > sedandelivery-gremlin/src/main.rs && \
+    echo "pub fn stub() {}" > gremlin-core/src/lib.rs && \
+    echo "pub fn stub() {}" > sedan-gql-embedded/src/lib.rs && \
+    echo "pub fn stub() {}" > sedan-cypher-embedded/src/lib.rs && \
+    echo "pub fn stub() {}" > sedan-gremlin-embedded/src/lib.rs && \
     echo "fn main() {}" > tests/loadtest/src/main.rs && \
-    cargo build --release -p sedandelivery-fabric-sync 2>/dev/null || true
+    echo "pub fn stub() {}" > tests/gremlin-tck/src/lib.rs && \
+    cargo build --release -p sedandelivery-fabric-sync || true
 
 # Copy actual source (only crates sedandelivery-fabric-sync depends on)
 COPY gql-core/         ./gql-core/
@@ -53,10 +74,11 @@ COPY gql-redis-store/  ./gql-redis-store/
 COPY gql-fabric-store/ ./gql-fabric-store/
 COPY sedandelivery-fabric-sync/ ./sedandelivery-fabric-sync/
 
-# Build only the sync binary
+# Build only the sync binary.
+# --locked pins to committed Cargo.lock versions for reproducible builds (#1000).
 RUN touch gql-core/src/lib.rs gql-redis-store/src/lib.rs gql-fabric-store/src/lib.rs \
          sedandelivery-fabric-sync/src/main.rs && \
-    cargo build --release -p sedandelivery-fabric-sync && \
+    cargo build --release --locked -p sedandelivery-fabric-sync && \
     ls -lh target/release/sedandelivery-fabric-sync
 
 # ── Runtime ───────────────────────────────────────────────────────────────────

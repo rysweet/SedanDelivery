@@ -373,6 +373,12 @@ writing data, viewing in the Fabric portal, REST API access, and monitoring repl
 - `scripts/test-scale-down-drain.sh` — Graceful scale-down drain test (3 to 1 replicas under load)
 - `scripts/test-resharding-resilience.sh` — Redis Cluster resharding resilience test under write load
 
+## Docker Build
+
+- [**Docker + Rust Reproducible Builds**](concepts/docker-rust-reproducible-builds) — How `Cargo.lock` ensures deterministic builds, the layer-caching pre-warm pattern, and why exit code 101 means Cargo failure
+- [**Fix Docker Exit Code 101**](howto/fix-docker-exit-101) — Step-by-step diagnosis and fix for Cargo compilation failures in Docker
+- [**ghcr-publish Workflow Reference**](reference/ghcr-publish-workflow) — Build matrix, `Cargo.lock` requirements, `--locked` flag, and troubleshooting
+
 ## Source Code
 
 - [GitHub Repository](https://github.com/cloud-ecosystem-security/SedanDelivery)
