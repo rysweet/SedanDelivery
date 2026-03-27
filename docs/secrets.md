@@ -24,9 +24,9 @@ gh api repos/cloud-ecosystem-security/SedanDelivery/actions/secrets \
 |--------|---------|---------|----------|
 | `ANTHROPIC_API_KEY` | Claude API access for gh-aw agentic workflows | `secret-validation.lock.yml` (engine: claude) | On compromise or key rotation |
 | `COPILOT_GITHUB_TOKEN` | GitHub Copilot engine for gh-aw agentic workflows | `auto-pr-labeling.lock.yml`, `docs-validation.lock.yml`, `license-compliance-scan.lock.yml`, `mutation-testing.lock.yml`, `stale-pr-management.lock.yml`, `test-coverage-enforcement.lock.yml` | **Every 7 days** (EMU PAT limit) |
-| `GH_AW_GITHUB_TOKEN` | Fallback GitHub token for gh-aw MCP server and tools | Lock.yml workflows (fallback chain: `GH_AW_GITHUB_MCP_SERVER_TOKEN \|\| GH_AW_GITHUB_TOKEN \|\| GITHUB_TOKEN`) | Same as `COPILOT_GITHUB_TOKEN` |
-| `AZURE_CLIENT_ID` | Azure Service Principal app ID | `deploy.yml`, `secret-validation.lock.yml`, Fabric provisioning | When SP is recreated |
-| `AZURE_CLIENT_SECRET` | Azure Service Principal password | `deploy.yml`, `secret-validation.lock.yml`, Fabric sync sidecar | **Every 90 days** (Azure default expiry) |
+| `GH_AW_GITHUB_TOKEN` | Fallback GitHub token for gh-aw MCP server and tools, plus GHCR package-visibility updates before ACR mirroring | Lock.yml workflows (fallback chain: `GH_AW_GITHUB_MCP_SERVER_TOKEN \|\| GH_AW_GITHUB_TOKEN \|\| GITHUB_TOKEN`), `ghcr-publish.yml` | Same as `COPILOT_GITHUB_TOKEN` |
+| `AZURE_CLIENT_ID` | Azure Service Principal app ID | `deploy.yml`, `secret-validation.lock.yml`, `ghcr-publish.yml` ACR mirror, Fabric provisioning | When SP is recreated |
+| `AZURE_CLIENT_SECRET` | Azure Service Principal password | `deploy.yml`, `secret-validation.lock.yml`, `ghcr-publish.yml` ACR mirror, Fabric sync sidecar | **Every 90 days** (Azure default expiry) |
 | `AZURE_TENANT_ID` | Azure AD tenant ID | `deploy.yml`, `secret-validation.lock.yml`, Fabric provisioning | Never (stable identifier) |
 | `AZURE_SUBSCRIPTION_ID` | Azure subscription for resource deployment | `deploy.yml` | Never (stable identifier) |
 | `DEPLOY_BOLT_TLS_CERT_PEM` | PEM certificate chain for the public Bolt endpoint | `deploy.yml` → Container App secret `bolt-tls-cert` | On certificate renewal or chain change |
@@ -85,15 +85,30 @@ gh auth token | gh secret set COPILOT_GITHUB_TOKEN \
 
 ### GH_AW_GITHUB_TOKEN
 
-**What**: Fallback GitHub token for gh-aw internal operations (MCP server,
-safe-outputs, issue creation). The lock.yml workflows use a fallback chain:
-`GH_AW_GITHUB_MCP_SERVER_TOKEN || GH_AW_GITHUB_TOKEN || GITHUB_TOKEN`.
+**What**: GitHub token used for gh-aw internal operations (MCP server,
+safe-outputs, issue creation) and by `ghcr-publish.yml` to PATCH GHCR package
+visibility before the ACR mirror job runs. The lock.yml workflows use a fallback
+chain: `GH_AW_GITHUB_MCP_SERVER_TOKEN || GH_AW_GITHUB_TOKEN || GITHUB_TOKEN`.
 
-**Create**: Same as `COPILOT_GITHUB_TOKEN` — set to your current auth token:
+**Create**: Set this to a GitHub token whose identity can administer the
+SedanDelivery container packages in `cloud-ecosystem-security`. A token that is
+only suitable for Copilot API requests is not enough for the GHCR visibility
+PATCH. If your current `gh` login already has the necessary package-management
+access, you can set the secret directly:
 ```bash
 gh auth token | gh secret set GH_AW_GITHUB_TOKEN \
   --repo cloud-ecosystem-security/SedanDelivery
 ```
+
+You can smoke-check that access with:
+
+```bash
+gh api /orgs/cloud-ecosystem-security/packages/container/sedandelivery >/dev/null
+```
+
+If you use a PAT or automation token instead of your interactive `gh` session,
+grant whatever org/repo package-management permission your GitHub setup requires
+to change container package visibility for the SedanDelivery images.
 
 **Rotation**: Same 7-day cadence as `COPILOT_GITHUB_TOKEN`. Refresh both at
 the same time.
@@ -104,7 +119,8 @@ the same time.
 
 **What**: An Azure AD service principal with `Contributor` role on the
 subscription. Used by `deploy.yml` to provision infrastructure and deploy
-container apps.
+container apps, and by `ghcr-publish.yml` to authenticate to
+`sd2mainend655uvglnfeacr.azurecr.io` for manifest mirroring.
 
 **Create** (one-time):
 ```bash
@@ -125,6 +141,13 @@ gh secret set AZURE_CLIENT_ID     --body "<appId from output>"
 gh secret set AZURE_CLIENT_SECRET --body "<password from output>"
 gh secret set AZURE_TENANT_ID     --body "<tenant from output>"
 gh secret set AZURE_SUBSCRIPTION_ID --body "$SUBSCRIPTION_ID"
+
+# Grant ACR data-plane push rights required by ghcr-publish mirroring
+ACR_ID=$(az acr show -n sd2mainend655uvglnfeacr --query id -o tsv)
+az role assignment create \
+  --assignee "<appId from output>" \
+  --role AcrPush \
+  --scope "$ACR_ID"
 ```
 
 **Rotation**:
@@ -138,6 +161,11 @@ gh secret set AZURE_SUBSCRIPTION_ID --body "$SUBSCRIPTION_ID"
   ```
 - `AZURE_TENANT_ID`: Stable — never changes
 - `AZURE_SUBSCRIPTION_ID`: Stable — never changes
+
+`ghcr-publish.yml` needs both successful Azure login and `AcrPush` (or
+equivalent data-plane push rights) on `sd2mainend655uvglnfeacr`. Without that
+role, the login step can succeed while the later `docker buildx imagetools
+create` mirror step fails to publish manifests.
 
 ---
 
@@ -283,8 +311,10 @@ gh workflow run "secret-validation.lock.yml" \
 - **Never** log secret values in CI output (use `echo "::add-mask::$SECRET"`)
 - Store deployment secrets as Container App secrets via `secretref:` (not
   plain environment variables) — see PR #223
-- ACR authentication uses managed identity (`--registry-identity system`),
-  not admin credentials — see PR #226
+- Deploy/runtime ACR pulls use managed identity (`--registry-identity system`),
+  not admin credentials, while `ghcr-publish.yml` mirror pushes use the
+  `AZURE_CLIENT_ID` / `AZURE_CLIENT_SECRET` service principal secrets — see
+  PR #226 and the ACR mirror workflow reference
 - The `secret-validation` workflow runs daily to detect expiring or broken
   secrets before they cause deployment failures
 

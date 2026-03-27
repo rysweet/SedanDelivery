@@ -24,6 +24,7 @@ A Rust GQL/Cypher query engine — a clean-room, MIT/Apache-2.0-licensed replace
 - [Validation Guide](validation) — Full test suite: what was validated, how to re-run, CI tiers, benchmark baselines
 - [Authentication (Entra ID)](auth) — Configure JWT auth for the REST API
 - [Secrets Configuration](secrets) — Repository secrets inventory, creation, rotation, and monitoring
+- [ACR Mirror Workflow](reference/acr-mirror-workflow) — How `ghcr-publish` mirrors every published GHCR tag into `sd2mainend655uvglnfeacr.azurecr.io`
 - [Benchmarks](benchmarks) — How to run and interpret performance benchmarks
 
 ## Code Atlas

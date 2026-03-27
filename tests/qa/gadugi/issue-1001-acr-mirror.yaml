@@ -1,0 +1,275 @@
+# Canonical gadugi scenario for Issue #1001 — ACR mirror contract.
+#
+# This validates the operator-facing workflow semantics locally by checking the
+# ghcr-publish workflow for the GHCR package-publication gate, the required ACR
+# access contract, and the ACR mirror job over the exact published GHCR tag set.
+# This validates the static workflow contract plus a local file-driven mirror
+# loop that matches the workflow's artifact-consumption path.
+
+scenario:
+  name: "Issue #1001 - ACR mirror contract"
+  description: >
+    Verify that the ghcr-publish workflow requires GHCR package publication
+    before mirroring, logs in to the sd2mainend655uvglnfeacr registry with
+    repository secrets plus ACR push rights, derives the destination image from
+    matrix.image, mirrors the exact published GHCR tag set captured by
+    build-and-push into ACR with docker buildx imagetools create, and exercises
+    the same file-driven loop shape in a local smoke test.
+  metadata:
+    tags: [cli, workflow, acr, ghcr, regression, issue-1001]
+    priority: high
+    linked_docs:
+      - docs/reference/acr-mirror-workflow.md
+  agents:
+    - name: cli-agent
+      type: cli
+      config: {}
+  steps:
+    - name: "Check workflow mirror contract"
+      agent: cli-agent
+      action: execute
+      params:
+        command: bash
+        args:
+          - -lc
+          - >
+            set -euo pipefail;
+            file=.github/workflows/ghcr-publish.yml;
+            rg -n 'GH_TOKEN:\s+\$\{\{ secrets\.GH_AW_GITHUB_TOKEN \}\}' "$file";
+            echo "[PASS] GHCR public-package gate";
+            rg -n 'if \[ -z "\$GH_TOKEN" \]; then' "$file";
+            rg -n 'GH_AW_GITHUB_TOKEN is required to set GHCR package visibility\.' "$file";
+            rg -n 'exit 1' "$file";
+            echo "[PASS] GHCR public-package fail-fast guard";
+            rg -n 'mirror-to-acr:' "$file";
+            echo "[PASS] separate mirror job";
+            rg -n 'needs:\s+build-and-push' "$file";
+            echo "[PASS] mirror job waits for GHCR publish";
+            rg -n 'Log in to Azure Container Registry \(sd2mainend655uvglnfeacr\)' "$file";
+            echo "[PASS] ACR login step";
+            rg -n 'registry:\s+sd2mainend655uvglnfeacr\.azurecr\.io' "$file";
+            echo "[PASS] fixed ACR registry";
+            rg -n 'username:\s+\$\{\{ secrets\.AZURE_CLIENT_ID \}\}' "$file";
+            echo "[PASS] ACR client id secret";
+            rg -n 'password:\s+\$\{\{ secrets\.AZURE_CLIENT_SECRET \}\}' "$file";
+            echo "[PASS] ACR client secret";
+            doc=docs/reference/acr-mirror-workflow.md;
+            rg -n '`AcrPush` \(or equivalent data-plane push rights\)' "$doc";
+            echo "[PASS] ACR push permission documented";
+            rg -n 'IMAGE_BASE:\s+ghcr\.io/\$\{\{ github\.repository_owner \}\}/sedandelivery' "$file";
+            echo "[PASS] GHCR image base";
+             rg -n 'images:\s+\$\{\{ env\.IMAGE_BASE \}\}\$\{\{ matrix\.suffix \}\}' "$file";
+             echo "[PASS] metadata uses GHCR refs";
+             test "$(rg -c 'docker/metadata-action@' "$file")" -eq 1;
+             echo "[PASS] metadata is generated once during build";
+             rg -n 'type=raw,value=latest,enable=\{\{is_default_branch\}\}' "$file";
+             rg -n "type=raw,value=\{\{date 'YYYYMMDD'\}\},enable=\{\{is_default_branch\}\}" "$file";
+             rg -n 'type=semver,pattern=\{\{version\}\}' "$file";
+             rg -n 'type=semver,pattern=\{\{major\}\}\.\{\{minor\}\}' "$file";
+             rg -n 'type=sha,prefix=sha-' "$file";
+             echo "[PASS] metadata tag policy";
+             rg -n 'Persist published tag set' "$file";
+             rg -n "printf '%s\\\\n' \"\\$\\{\\{ steps\\.meta\\.outputs\\.tags \\}\\}\" > ghcr-tags\\.txt" "$file";
+             echo "[PASS] build job persists exact tag set";
+             rg -n 'Upload published tag set' "$file";
+             rg -n 'uses:\s+actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f' "$file";
+             rg -n 'name:\s+ghcr-tags-\$\{\{ matrix\.image \}\}' "$file";
+             echo "[PASS] build job uploads tag artifact";
+             rg -n 'Download published tag set' "$file";
+             rg -n 'uses:\s+actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3' "$file";
+             rg -n 'path:\s+/tmp/ghcr-tags' "$file";
+             echo "[PASS] mirror job downloads exact tag artifact";
+             rg -n 'Mirror image to sd2mainend655uvglnfeacr' "$file";
+             echo "[PASS] mirror step";
+             rg -n 'TAG_FILE=/tmp/ghcr-tags/ghcr-tags\.txt' "$file";
+             rg -n 'Published tag set artifact is missing or empty\.' "$file";
+             echo "[PASS] mirror step validates tag artifact";
+             rg -n 'ACR_IMAGE=\"sd2mainend655uvglnfeacr\.azurecr\.io/\$\{\{ matrix\.image \}\}\"' "$file";
+             echo "[PASS] destination image derives from matrix image";
+             rg -n 'docker buildx imagetools create' "$file";
+             echo "[PASS] imagetools manifest copy";
+             rg -n -- '--tag "\$\{ACR_IMAGE\}:\$\{tag\}"' "$file";
+             echo "[PASS] destination tag uses ACR image";
+             rg -n '\"\$\{src_tag\}\"' "$file";
+             echo "[PASS] source tag comes from artifact loop";
+             rg -n 'done < "\$TAG_FILE"' "$file";
+             echo "[PASS] mirrors all published tags";
+            SRC_PORT=$(python -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()');
+            DST_PORT=$(python -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()');
+            SRC_REG="acr-mirror-src-${SRC_PORT}";
+            DST_REG="acr-mirror-dst-${DST_PORT}";
+            cleanup() { docker rm -f "$SRC_REG" "$DST_REG" >/dev/null 2>&1 || true; };
+            trap cleanup EXIT;
+            docker run -d --name "$SRC_REG" -p "${SRC_PORT}:5000" registry:2 >/dev/null;
+            docker run -d --name "$DST_REG" -p "${DST_PORT}:5000" registry:2 >/dev/null;
+            for port in "$SRC_PORT" "$DST_PORT"; do
+              until curl -fsS "http://127.0.0.1:${port}/v2/" >/dev/null; do sleep 1; done;
+            done;
+            docker pull --quiet busybox:latest >/dev/null;
+             SRC_REF_SHA="localhost:${SRC_PORT}/source/sedandelivery:test-sha";
+             SRC_REF_LATEST="localhost:${SRC_PORT}/source/sedandelivery:latest";
+             TAG_DIR=/tmp/ghcr-tags;
+             TAG_FILE="${TAG_DIR}/ghcr-tags.txt";
+             mkdir -p "$TAG_DIR";
+             trap 'rm -rf "$TAG_DIR"; cleanup' EXIT;
+             docker tag busybox:latest "$SRC_REF_SHA";
+             docker tag busybox:latest "$SRC_REF_LATEST";
+             docker push "$SRC_REF_SHA" >/dev/null;
+             docker push "$SRC_REF_LATEST" >/dev/null;
+             printf '%s\n%s\n' "$SRC_REF_SHA" "$SRC_REF_LATEST" > "$TAG_FILE";
+             ACR_IMAGE="localhost:${DST_PORT}/dest/sedandelivery";
+             while IFS= read -r src_tag; do
+               [ -z "${src_tag}" ] && continue;
+               tag="${src_tag##*:}";
+               docker buildx imagetools create --tag "${ACR_IMAGE}:${tag}" "$src_tag" >/dev/null;
+             done < "$TAG_FILE";
+             docker buildx imagetools inspect "${ACR_IMAGE}:test-sha" >/dev/null;
+             docker buildx imagetools inspect "${ACR_IMAGE}:latest" >/dev/null;
+             echo "[PASS] local tag-file mirror smoke";
+      timeout: 120000
+
+    - name: "Confirm GHCR public-package gate exists"
+      agent: cli-agent
+      action: wait_for_output
+      params:
+        pattern: "\\[PASS\\]\\s+GHCR public-package gate"
+      timeout: 5000
+
+    - name: "Confirm GHCR public-package stage fails fast when token is absent"
+      agent: cli-agent
+      action: wait_for_output
+      params:
+        pattern: "\\[PASS\\]\\s+GHCR public-package fail-fast guard"
+      timeout: 5000
+
+    - name: "Confirm mirror happens in a separate job"
+      agent: cli-agent
+      action: wait_for_output
+      params:
+        pattern: "\\[PASS\\]\\s+separate mirror job"
+      timeout: 5000
+
+    - name: "Confirm mirror waits for GHCR publish completion"
+      agent: cli-agent
+      action: wait_for_output
+      params:
+        pattern: "\\[PASS\\]\\s+mirror job waits for GHCR publish"
+      timeout: 5000
+
+    - name: "Confirm ACR login step exists"
+      agent: cli-agent
+      action: wait_for_output
+      params:
+        pattern: "\\[PASS\\]\\s+ACR login step"
+      timeout: 5000
+
+    - name: "Confirm registry is fixed to target ACR"
+      agent: cli-agent
+      action: wait_for_output
+      params:
+        pattern: "\\[PASS\\]\\s+fixed ACR registry"
+      timeout: 5000
+
+    - name: "Confirm secret wiring exists"
+      agent: cli-agent
+      action: wait_for_output
+      params:
+        pattern: "\\[PASS\\]\\s+ACR client secret"
+      timeout: 5000
+
+    - name: "Confirm ACR push permission is documented"
+      agent: cli-agent
+      action: wait_for_output
+      params:
+        pattern: "\\[PASS\\]\\s+ACR push permission documented"
+      timeout: 5000
+
+    - name: "Confirm metadata source stays on GHCR refs"
+      agent: cli-agent
+      action: wait_for_output
+      params:
+        pattern: "\\[PASS\\]\\s+metadata uses GHCR refs"
+      timeout: 5000
+
+    - name: "Confirm metadata is only generated during build"
+      agent: cli-agent
+      action: wait_for_output
+      params:
+        pattern: "\\[PASS\\]\\s+metadata is generated once during build"
+      timeout: 5000
+
+    - name: "Confirm destination image stays aligned with matrix image"
+      agent: cli-agent
+      action: wait_for_output
+      params:
+        pattern: "\\[PASS\\]\\s+destination image derives from matrix image"
+      timeout: 5000
+
+    - name: "Confirm metadata tag policy includes all mirrored tag classes"
+      agent: cli-agent
+      action: wait_for_output
+      params:
+        pattern: "\\[PASS\\]\\s+metadata tag policy"
+      timeout: 5000
+
+    - name: "Confirm build job persists exact published tag set"
+      agent: cli-agent
+      action: wait_for_output
+      params:
+        pattern: "\\[PASS\\]\\s+build job persists exact tag set"
+      timeout: 5000
+
+    - name: "Confirm build job uploads tag artifact"
+      agent: cli-agent
+      action: wait_for_output
+      params:
+        pattern: "\\[PASS\\]\\s+build job uploads tag artifact"
+      timeout: 5000
+
+    - name: "Confirm mirror job downloads exact tag artifact"
+      agent: cli-agent
+      action: wait_for_output
+      params:
+        pattern: "\\[PASS\\]\\s+mirror job downloads exact tag artifact"
+      timeout: 5000
+
+    - name: "Confirm imagetools copy exists"
+      agent: cli-agent
+      action: wait_for_output
+      params:
+        pattern: "\\[PASS\\]\\s+imagetools manifest copy"
+      timeout: 5000
+
+    - name: "Confirm mirror validates the downloaded tag artifact"
+      agent: cli-agent
+      action: wait_for_output
+      params:
+        pattern: "\\[PASS\\]\\s+mirror step validates tag artifact"
+      timeout: 5000
+
+    - name: "Confirm mirror uses artifact-provided source refs"
+      agent: cli-agent
+      action: wait_for_output
+      params:
+        pattern: "\\[PASS\\]\\s+source tag comes from artifact loop"
+      timeout: 5000
+
+    - name: "Confirm all published tags are mirrored"
+      agent: cli-agent
+      action: wait_for_output
+      params:
+        pattern: "\\[PASS\\]\\s+mirrors all published tags"
+      timeout: 5000
+
+    - name: "Confirm local tag-file mirror smoke passed"
+      agent: cli-agent
+      action: wait_for_output
+      params:
+        pattern: "\\[PASS\\]\\s+local tag-file mirror smoke"
+      timeout: 5000
+
+    - name: "Confirm validator exited with code 0"
+      agent: cli-agent
+      action: validate_exit_code
+      params:
+        text: "0"
