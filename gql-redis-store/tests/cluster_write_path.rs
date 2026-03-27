@@ -881,11 +881,23 @@ fn ci11b_hot_mutators_use_scoped_write_locks() {
             "pub(crate) fn delete_edge_impl",
             "key_edge_id_write_lock(",
         ),
+        (
+            "batch_create_nodes",
+            NODES_SRC,
+            "pub fn batch_create_nodes",
+            "key_batch_node_write_lock(",
+        ),
+        (
+            "batch_create_edges",
+            EDGES_SRC,
+            "pub fn batch_create_edges",
+            "key_batch_edge_write_lock(",
+        ),
     ] {
         let body = function_block(source, signature);
         assert!(
             body.contains(scoped_key),
-            "{name} should use scoped write locks instead of the graph-wide lock"
+            "{name} should carry a dedicated scoped write-lock key for same-graph coordination"
         );
     }
 }
@@ -1155,6 +1167,212 @@ fn ci13b_scoped_mutators_participate_in_graph_write_lock() {
     store
         .delete_graph(&graph)
         .expect("delete_graph should clean up the graph");
+}
+
+#[test]
+#[ignore = "requires a running Redis at REDIS_URL"]
+fn ci13c_batch_create_nodes_waits_out_same_graph_write_lock() {
+    let _guard = metrics_guard();
+    let handle = metrics_handle();
+    let store = standalone_store();
+    let graph = unique_graph("batch-create-nodes-lock");
+    let prefix = std::env::var("GQL_REDIS_KEY_PREFIX").unwrap_or_default();
+    let client =
+        Client::open(standalone_redis_url().as_str()).expect("redis client should initialize");
+    let mut conn = client
+        .get_connection()
+        .expect("redis connection should initialize");
+    let lock_key = format!("{prefix}G:{{{graph}}}:write_lock");
+
+    store.create_graph(&graph).expect("graph should be created");
+
+    let lock_result: Option<String> = redis::cmd("SET")
+        .arg(&lock_key)
+        .arg("test-token")
+        .arg("NX")
+        .arg("PX")
+        .arg(5_000)
+        .query(&mut conn)
+        .expect("manual lock should be set");
+    assert_eq!(lock_result.as_deref(), Some("OK"));
+    let before_acquire_attempts =
+        metric_value(handle, "redis_write_lock_acquire_attempts_total", &[]);
+
+    let (started_tx, started_rx) = mpsc::channel();
+    let (tx, rx) = mpsc::channel();
+    let store_for_thread = store.clone();
+    let graph_for_thread = graph.clone();
+    std::thread::spawn(move || {
+        started_tx
+            .send(())
+            .expect("batch_create_nodes worker should signal readiness");
+        let result = store_for_thread.batch_create_nodes(
+            &graph_for_thread,
+            vec![
+                (
+                    vec!["Person".to_string()],
+                    props(&[("name", Value::Str("Alice".into()))]),
+                ),
+                (
+                    vec!["Person".to_string()],
+                    props(&[("name", Value::Str("Bob".into()))]),
+                ),
+            ],
+        );
+        tx.send(result)
+            .expect("batch_create_nodes result should be sent to the test thread");
+    });
+
+    started_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("batch_create_nodes worker should start before lock release");
+    wait_for_metric_at_least(
+        handle,
+        "redis_write_lock_acquire_attempts_total",
+        &[],
+        before_acquire_attempts + 1.0,
+    );
+    std::thread::sleep(Duration::from_millis(250));
+    match rx.recv_timeout(Duration::from_millis(150)) {
+        Err(mpsc::RecvTimeoutError::Timeout) => {}
+        Ok(result) => panic!(
+            "batch_create_nodes must wait for the same-graph write lock instead of finishing early: {result:?}"
+        ),
+        Err(mpsc::RecvTimeoutError::Disconnected) => {
+            panic!("batch_create_nodes worker disconnected before reporting a result")
+        }
+    }
+
+    redis::cmd("DEL")
+        .arg(&lock_key)
+        .query::<()>(&mut conn)
+        .expect("manual lock should be released");
+
+    let ids = rx
+        .recv_timeout(Duration::from_secs(3))
+        .expect("batch_create_nodes should complete after the lock is released")
+        .expect("batch_create_nodes should succeed after the lock is released");
+    assert_eq!(
+        ids.len(),
+        2,
+        "batch_create_nodes should return both allocated IDs"
+    );
+
+    store
+        .delete_graph(&graph)
+        .expect("delete_graph should clean up the recreated graph");
+}
+
+#[test]
+#[ignore = "requires a running Redis at REDIS_URL"]
+fn ci13d_batch_create_edges_waits_out_same_graph_write_lock() {
+    let _guard = metrics_guard();
+    let handle = metrics_handle();
+    let store = standalone_store();
+    let graph = unique_graph("batch-create-edges-lock");
+    let prefix = std::env::var("GQL_REDIS_KEY_PREFIX").unwrap_or_default();
+    let client =
+        Client::open(standalone_redis_url().as_str()).expect("redis client should initialize");
+    let mut conn = client
+        .get_connection()
+        .expect("redis connection should initialize");
+    let lock_key = format!("{prefix}G:{{{graph}}}:write_lock");
+
+    store.create_graph(&graph).expect("graph should be created");
+    let alice = store
+        .create_node(
+            &graph,
+            vec!["Person".to_string()],
+            props(&[("name", Value::Str("Alice".into()))]),
+        )
+        .expect("Alice seed node should be created");
+    let bob = store
+        .create_node(
+            &graph,
+            vec!["Person".to_string()],
+            props(&[("name", Value::Str("Bob".into()))]),
+        )
+        .expect("Bob seed node should be created");
+
+    let lock_result: Option<String> = redis::cmd("SET")
+        .arg(&lock_key)
+        .arg("test-token")
+        .arg("NX")
+        .arg("PX")
+        .arg(5_000)
+        .query(&mut conn)
+        .expect("manual lock should be set");
+    assert_eq!(lock_result.as_deref(), Some("OK"));
+    let before_acquire_attempts =
+        metric_value(handle, "redis_write_lock_acquire_attempts_total", &[]);
+
+    let (started_tx, started_rx) = mpsc::channel();
+    let (tx, rx) = mpsc::channel();
+    let store_for_thread = store.clone();
+    let graph_for_thread = graph.clone();
+    std::thread::spawn(move || {
+        started_tx
+            .send(())
+            .expect("batch_create_edges worker should signal readiness");
+        let result = store_for_thread.batch_create_edges(
+            &graph_for_thread,
+            vec![
+                (
+                    alice,
+                    bob,
+                    "KNOWS".to_string(),
+                    props(&[("since", Value::Int(2024))]),
+                ),
+                (
+                    bob,
+                    alice,
+                    "KNOWS".to_string(),
+                    props(&[("since", Value::Int(2025))]),
+                ),
+            ],
+        );
+        tx.send(result)
+            .expect("batch_create_edges result should be sent to the test thread");
+    });
+
+    started_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("batch_create_edges worker should start before lock release");
+    wait_for_metric_at_least(
+        handle,
+        "redis_write_lock_acquire_attempts_total",
+        &[],
+        before_acquire_attempts + 1.0,
+    );
+    std::thread::sleep(Duration::from_millis(250));
+    match rx.recv_timeout(Duration::from_millis(150)) {
+        Err(mpsc::RecvTimeoutError::Timeout) => {}
+        Ok(result) => panic!(
+            "batch_create_edges must wait for the same-graph write lock instead of finishing early: {result:?}"
+        ),
+        Err(mpsc::RecvTimeoutError::Disconnected) => {
+            panic!("batch_create_edges worker disconnected before reporting a result")
+        }
+    }
+
+    redis::cmd("DEL")
+        .arg(&lock_key)
+        .query::<()>(&mut conn)
+        .expect("manual lock should be released");
+
+    let ids = rx
+        .recv_timeout(Duration::from_secs(3))
+        .expect("batch_create_edges should complete after the lock is released")
+        .expect("batch_create_edges should succeed after the lock is released");
+    assert_eq!(
+        ids.len(),
+        2,
+        "batch_create_edges should return both allocated IDs"
+    );
+
+    store
+        .delete_graph(&graph)
+        .expect("delete_graph should clean up the recreated graph");
 }
 
 #[test]

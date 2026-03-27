@@ -121,6 +121,13 @@ pub fn renew(
 /// Write-lock TTL used by all read-modify-write operations (milliseconds).
 pub const WRITE_LOCK_TTL_MS: u64 = 5_000;
 
+/// Batch writes keep graph-level serialization but tolerate a longer lock wait.
+///
+/// Concurrent UNWIND CREATE requests can hold the same-graph write lock long
+/// enough that the default 3x50 ms retry window fails under normal load.
+pub const BATCH_WRITE_MAX_RETRIES: u32 = 12;
+pub const BATCH_WRITE_RETRY_DELAY_MS: u64 = 100;
+
 #[cfg(test)]
 mod tests {
     use super::*;

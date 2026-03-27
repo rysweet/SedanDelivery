@@ -154,6 +154,20 @@ pub(crate) fn key_edge_write_lock(g: &str, src: u64, dst: u64, rel_type: &str) -
     format!("G:{{{g}}}:write_lock:edge:{src}:{dst}:{rel_type}")
 }
 
+/// Distributed coordination key for batch-creating nodes. Used alongside the
+/// graph write lock so batch node operations can be identified separately while
+/// remaining in the same graph hash slot.
+pub(crate) fn key_batch_node_write_lock(g: &str) -> String {
+    format!("G:{{{g}}}:write_lock:batch_nodes")
+}
+
+/// Distributed coordination key for batch-creating edges. Used alongside the
+/// graph write lock so batch edge operations can be identified separately while
+/// remaining in the same graph hash slot.
+pub(crate) fn key_batch_edge_write_lock(g: &str) -> String {
+    format!("G:{{{g}}}:write_lock:batch_edges")
+}
+
 /// Registry key for graph names.  Uses a `__sd2_registry:` prefix that cannot
 /// collide with per-graph data keys (which all start with `G:`).  The key has
 /// no Redis Cluster hash tag, so it routes to its own slot; this is fine because
@@ -333,6 +347,22 @@ mod tests {
         );
     }
 
+    #[test]
+    fn key_batch_node_write_lock_format() {
+        assert_eq!(
+            key_batch_node_write_lock("db"),
+            "G:{db}:write_lock:batch_nodes"
+        );
+    }
+
+    #[test]
+    fn key_batch_edge_write_lock_format() {
+        assert_eq!(
+            key_batch_edge_write_lock("db"),
+            "G:{db}:write_lock:batch_edges"
+        );
+    }
+
     // ── All keys use the graph hash tag {g} for Redis Cluster ───────────────
 
     #[test]
@@ -355,6 +385,8 @@ mod tests {
         assert!(key_node_write_lock(g, 1).contains(&tag));
         assert!(key_edge_id_write_lock(g, 1).contains(&tag));
         assert!(key_edge_write_lock(g, 1, 2, "R").contains(&tag));
+        assert!(key_batch_node_write_lock(g).contains(&tag));
+        assert!(key_batch_edge_write_lock(g).contains(&tag));
         assert!(key_graph_deleting(g).contains(&tag));
         assert!(key_label_names(g).contains(&tag));
         assert!(key_reltype_names(g).contains(&tag));

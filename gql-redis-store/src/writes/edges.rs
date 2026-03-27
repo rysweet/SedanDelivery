@@ -8,10 +8,10 @@ use gql_core::storage::{EdgeId, NodeId};
 use gql_core::types::Value;
 
 use crate::keys::{
-    encode_adj, key_edge, key_edge_id_write_lock, key_edge_seq, key_edge_write_lock, key_edges_set,
-    key_in, key_out, key_reltype, key_reltype_names,
+    encode_adj, key_batch_edge_write_lock, key_edge, key_edge_id_write_lock, key_edge_seq,
+    key_edge_write_lock, key_edges_set, key_in, key_out, key_reltype, key_reltype_names,
 };
-use crate::lock::WRITE_LOCK_TTL_MS;
+use crate::lock::{BATCH_WRITE_MAX_RETRIES, BATCH_WRITE_RETRY_DELAY_MS, WRITE_LOCK_TTL_MS};
 use crate::validation::validate_property_key;
 use crate::{LockedRedisConn, RedisGraphStore};
 
@@ -333,119 +333,126 @@ impl RedisGraphStore {
         for (_, _, _, properties) in &edges {
             validate_property_keys(properties)?;
         }
-        self.with_graph_write_lock(graph, WRITE_LOCK_TTL_MS, 3, 50, |conn| {
-            self.require_graph_on(conn.as_mut(), graph)?;
+        self.with_write_lock(
+            graph,
+            self.kp(key_batch_edge_write_lock(graph)),
+            WRITE_LOCK_TTL_MS,
+            BATCH_WRITE_MAX_RETRIES,
+            BATCH_WRITE_RETRY_DELAY_MS,
+            |conn| {
+                self.require_graph_on(conn.as_mut(), graph)?;
 
-            // Verify all src and dst nodes exist before allocating IDs.
-            // Collect unique node IDs to minimize reads.
-            let mut unique_node_ids: std::collections::HashSet<u64> =
-                std::collections::HashSet::new();
-            for (src, dst, _, _) in &edges {
-                unique_node_ids.insert(src.0);
-                unique_node_ids.insert(dst.0);
-            }
-            for (index, &nid) in unique_node_ids.iter().enumerate() {
-                if index > 0 && index % 250 == 0 {
-                    conn.renew_lock()?;
+                // Verify all src and dst nodes exist before allocating IDs.
+                // Collect unique node IDs to minimize reads.
+                let mut unique_node_ids: std::collections::HashSet<u64> =
+                    std::collections::HashSet::new();
+                for (src, dst, _, _) in &edges {
+                    unique_node_ids.insert(src.0);
+                    unique_node_ids.insert(dst.0);
                 }
-                if self.read_node(conn.as_mut(), graph, nid)?.is_none() {
-                    return Err(StorageError::NodeNotFound { id: nid });
+                for (index, &nid) in unique_node_ids.iter().enumerate() {
+                    if index > 0 && index % 250 == 0 {
+                        conn.renew_lock()?;
+                    }
+                    if self.read_node(conn.as_mut(), graph, nid)?.is_none() {
+                        return Err(StorageError::NodeNotFound { id: nid });
+                    }
                 }
-            }
 
-            let count = i64::try_from(edges.len()).map_err(|_| {
-                crate::record_backend_error();
-                StorageError::Backend {
-                    msg: format!(
-                        "batch size {} exceeds i64::MAX, cannot allocate IDs",
-                        edges.len()
-                    ),
+                let count = i64::try_from(edges.len()).map_err(|_| {
+                    crate::record_backend_error();
+                    StorageError::Backend {
+                        msg: format!(
+                            "batch size {} exceeds i64::MAX, cannot allocate IDs",
+                            edges.len()
+                        ),
+                    }
+                })?;
+
+                // Allocate a contiguous block of IDs with a single INCRBY.
+                let end_id: i64 = redis::cmd("INCRBY")
+                    .arg(self.kp(key_edge_seq(graph)))
+                    .arg(count)
+                    .query(conn.as_mut())
+                    .map_err(crate::backend_storage_error)?;
+                if end_id <= 0 || end_id < count {
+                    return Err(StorageError::IdOverflow {
+                        graph: graph.to_string(),
+                    });
                 }
-            })?;
+                let start_id = (end_id - count + 1) as u64;
 
-            // Allocate a contiguous block of IDs with a single INCRBY.
-            let end_id: i64 = redis::cmd("INCRBY")
-                .arg(self.kp(key_edge_seq(graph)))
-                .arg(count)
-                .query(conn.as_mut())
-                .map_err(crate::backend_storage_error)?;
-            if end_id <= 0 || end_id < count {
-                return Err(StorageError::IdOverflow {
-                    graph: graph.to_string(),
-                });
-            }
-            let start_id = (end_id - count + 1) as u64;
+                // Pre-serialize all edges and build the pipeline.
+                let mut pipe = conn.pipeline();
+                let mut created_ids: Vec<EdgeId> = Vec::with_capacity(edges.len());
 
-            // Pre-serialize all edges and build the pipeline.
-            let mut pipe = conn.pipeline();
-            let mut created_ids: Vec<EdgeId> = Vec::with_capacity(edges.len());
+                for (i, (src, dst, rel_type, properties)) in edges.into_iter().enumerate() {
+                    if i > 0 && i % 250 == 0 {
+                        conn.renew_lock()?;
+                    }
+                    let id = start_id + i as u64;
+                    let eid = EdgeId(id);
 
-            for (i, (src, dst, rel_type, properties)) in edges.into_iter().enumerate() {
-                if i > 0 && i % 250 == 0 {
-                    conn.renew_lock()?;
+                    // Strip internal FanoutStore keys before storing.
+                    let clean_props = clean_fanout_props(properties);
+
+                    let edge_key = self.kp(key_edge(graph, id));
+                    let props_json = props_to_json(&clean_props)?;
+
+                    pipe.cmd("SADD")
+                        .arg(self.kp(key_reltype_names(graph)))
+                        .arg(rel_type.as_str())
+                        .ignore();
+                    pipe.cmd("SADD")
+                        .arg(self.kp(key_edges_set(graph)))
+                        .arg(id.to_string())
+                        .ignore();
+
+                    // SADD to reltype index.
+                    pipe.cmd("SADD")
+                        .arg(self.kp(key_reltype(graph, &rel_type)))
+                        .arg(id.to_string())
+                        .ignore();
+
+                    // SADD to out-adjacency on src.
+                    let out_member = encode_adj(eid, dst, &rel_type);
+                    pipe.cmd("SADD")
+                        .arg(self.kp(key_out(graph, src.0)))
+                        .arg(out_member)
+                        .ignore();
+
+                    // SADD to in-adjacency on dst.
+                    let in_member = encode_adj(eid, src, &rel_type);
+                    pipe.cmd("SADD")
+                        .arg(self.kp(key_in(graph, dst.0)))
+                        .arg(in_member)
+                        .ignore();
+
+                    // HSET edge hash last so the edge manifest and reltype registry
+                    // already know about the ID if the non-atomic pipeline fails.
+                    pipe.cmd("HSET")
+                        .arg(&edge_key)
+                        .arg("src")
+                        .arg(src.0.to_string())
+                        .arg("dst")
+                        .arg(dst.0.to_string())
+                        .arg("rel_type")
+                        .arg(&rel_type)
+                        .arg("props")
+                        .arg(&props_json)
+                        .ignore();
+
+                    created_ids.push(eid);
                 }
-                let id = start_id + i as u64;
-                let eid = EdgeId(id);
 
-                // Strip internal FanoutStore keys before storing.
-                let clean_props = clean_fanout_props(properties);
+                // Execute the entire pipeline in one round-trip.
+                conn.renew_lock()?;
+                pipe.query::<()>(conn)
+                    .map_err(crate::backend_storage_error)?;
 
-                let edge_key = self.kp(key_edge(graph, id));
-                let props_json = props_to_json(&clean_props)?;
-
-                pipe.cmd("SADD")
-                    .arg(self.kp(key_reltype_names(graph)))
-                    .arg(rel_type.as_str())
-                    .ignore();
-                pipe.cmd("SADD")
-                    .arg(self.kp(key_edges_set(graph)))
-                    .arg(id.to_string())
-                    .ignore();
-
-                // SADD to reltype index.
-                pipe.cmd("SADD")
-                    .arg(self.kp(key_reltype(graph, &rel_type)))
-                    .arg(id.to_string())
-                    .ignore();
-
-                // SADD to out-adjacency on src.
-                let out_member = encode_adj(eid, dst, &rel_type);
-                pipe.cmd("SADD")
-                    .arg(self.kp(key_out(graph, src.0)))
-                    .arg(out_member)
-                    .ignore();
-
-                // SADD to in-adjacency on dst.
-                let in_member = encode_adj(eid, src, &rel_type);
-                pipe.cmd("SADD")
-                    .arg(self.kp(key_in(graph, dst.0)))
-                    .arg(in_member)
-                    .ignore();
-
-                // HSET edge hash last so the edge manifest and reltype registry
-                // already know about the ID if the non-atomic pipeline fails.
-                pipe.cmd("HSET")
-                    .arg(&edge_key)
-                    .arg("src")
-                    .arg(src.0.to_string())
-                    .arg("dst")
-                    .arg(dst.0.to_string())
-                    .arg("rel_type")
-                    .arg(&rel_type)
-                    .arg("props")
-                    .arg(&props_json)
-                    .ignore();
-
-                created_ids.push(eid);
-            }
-
-            // Execute the entire pipeline in one round-trip.
-            conn.renew_lock()?;
-            pipe.query::<()>(conn)
-                .map_err(crate::backend_storage_error)?;
-
-            Ok(created_ids)
-        })
+                Ok(created_ids)
+            },
+        )
     }
 }
 

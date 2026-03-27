@@ -1,0 +1,92 @@
+# Canonical gadugi scenario for Issue #994 — batch_create_nodes/edges contention tolerance.
+#
+# This scenario validates the contributor-visible regression guard for the
+# batch helper fix: the Redis store must expose dedicated batch coordination
+# keys, preserve the hash-tag contract, and keep batch_create_nodes /
+# batch_create_edges alive long enough to succeed once the same-graph write
+# lock clears. It does not claim executor-level UNWIND/CREATE coverage.
+
+scenario:
+  name: "Issue #994 - Batch helpers tolerate same-graph lock contention"
+  description: >
+    Verify from a contributor perspective that gql-redis-store exposes
+    dedicated batch coordination keys for nodes and edges, keeps those keys in
+    the graph hash slot, and allows batch_create_nodes / batch_create_edges to
+    wait out transient same-graph write-lock contention instead of failing
+    early while another same-graph write holds the graph lock.
+  metadata:
+    tags: [cli, regression, unit, locking, redis-store, docker, issue-994]
+    priority: high
+  agents:
+    - name: cli-agent
+      type: cli
+      config: {}
+  steps:
+    - name: "Run gql-redis-store batch lock regression tests"
+      agent: cli-agent
+      action: execute
+      params:
+        command: bash
+        args:
+          - -lc
+          - >
+            set -euo pipefail;
+            cargo test -p gql-redis-store key_batch_node_write_lock_format -- --nocapture;
+            cargo test -p gql-redis-store key_batch_edge_write_lock_format -- --nocapture;
+            cargo test -p gql-redis-store all_graph_keys_contain_hash_tag -- --nocapture;
+            cargo test -p gql-redis-store --test cluster_write_path ci11b_hot_mutators_use_scoped_write_locks -- --nocapture;
+            container_id=$(docker run -d -p 6398:6379 redis:7-alpine);
+            cleanup(){ docker rm -f "$container_id" >/dev/null 2>&1 || true; };
+            trap cleanup EXIT;
+            sleep 2;
+            GQL_REDIS_URL=redis://127.0.0.1:6398/ cargo test -p gql-redis-store --test cluster_write_path ci13c_batch_create_nodes_waits_out_same_graph_write_lock -- --ignored --nocapture;
+            GQL_REDIS_URL=redis://127.0.0.1:6398/ cargo test -p gql-redis-store --test cluster_write_path ci13d_batch_create_edges_waits_out_same_graph_write_lock -- --ignored --nocapture
+      timeout: 300000
+
+    - name: "Confirm batch node write-lock key format test passes"
+      agent: cli-agent
+      action: wait_for_output
+      params:
+        pattern: "key_batch_node_write_lock_format.*ok"
+      timeout: 5000
+
+    - name: "Confirm batch edge write-lock key format test passes"
+      agent: cli-agent
+      action: wait_for_output
+      params:
+        pattern: "key_batch_edge_write_lock_format.*ok"
+      timeout: 5000
+
+    - name: "Confirm graph keys keep the hash-tag contract"
+      agent: cli-agent
+      action: wait_for_output
+      params:
+        pattern: "all_graph_keys_contain_hash_tag.*ok"
+      timeout: 5000
+
+    - name: "Confirm batch mutators still carry dedicated coordination keys"
+      agent: cli-agent
+      action: wait_for_output
+      params:
+        pattern: "ci11b_hot_mutators_use_scoped_write_locks.*ok"
+      timeout: 5000
+
+    - name: "Confirm batch node creation survives transient contention"
+      agent: cli-agent
+      action: wait_for_output
+      params:
+        pattern: "ci13c_batch_create_nodes_waits_out_same_graph_write_lock.*ok"
+      timeout: 5000
+
+    - name: "Confirm batch edge creation survives transient contention"
+      agent: cli-agent
+      action: wait_for_output
+      params:
+        pattern: "ci13d_batch_create_edges_waits_out_same_graph_write_lock.*ok"
+      timeout: 5000
+
+    - name: "Confirm cargo test exited with code 0"
+      agent: cli-agent
+      action: validate_exit_code
+      params:
+        text: "0"

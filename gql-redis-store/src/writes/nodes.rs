@@ -8,10 +8,10 @@ use gql_core::storage::NodeId;
 use gql_core::types::Value;
 
 use crate::keys::{
-    key_in, key_label, key_label_names, key_node, key_node_seq, key_node_write_lock, key_nodes_set,
-    key_out,
+    key_batch_node_write_lock, key_in, key_label, key_label_names, key_node, key_node_seq,
+    key_node_write_lock, key_nodes_set, key_out,
 };
-use crate::lock::WRITE_LOCK_TTL_MS;
+use crate::lock::{BATCH_WRITE_MAX_RETRIES, BATCH_WRITE_RETRY_DELAY_MS, WRITE_LOCK_TTL_MS};
 use crate::validation::{validate_label, validate_property_key};
 use crate::RedisGraphStore;
 
@@ -500,104 +500,111 @@ impl RedisGraphStore {
             validate_labels(labels)?;
             validate_property_keys(properties)?;
         }
-        self.with_graph_write_lock(graph, WRITE_LOCK_TTL_MS, 3, 50, |conn| {
-            self.require_graph_on(conn.as_mut(), graph)?;
+        self.with_write_lock(
+            graph,
+            self.kp(key_batch_node_write_lock(graph)),
+            WRITE_LOCK_TTL_MS,
+            BATCH_WRITE_MAX_RETRIES,
+            BATCH_WRITE_RETRY_DELAY_MS,
+            |conn| {
+                self.require_graph_on(conn.as_mut(), graph)?;
 
-            let count = i64::try_from(nodes.len()).map_err(|_| {
-                crate::record_backend_error();
-                StorageError::Backend {
-                    msg: format!(
-                        "batch size {} exceeds i64::MAX, cannot allocate IDs",
-                        nodes.len()
-                    ),
-                }
-            })?;
-
-            // Allocate a contiguous block of IDs with a single INCRBY.
-            let end_id: i64 = redis::cmd("INCRBY")
-                .arg(self.kp(key_node_seq(graph)))
-                .arg(count)
-                .query(conn.as_mut())
-                .map_err(crate::backend_storage_error)?;
-            if end_id <= 0 || end_id < count {
-                return Err(StorageError::IdOverflow {
-                    graph: graph.to_string(),
-                });
-            }
-            let start_id = (end_id - count + 1) as u64;
-
-            // Pre-serialize all nodes and build the pipeline.
-            let mut pipe = conn.pipeline();
-            let mut node_meta: Vec<(u64, Vec<String>, IndexMap<String, Value>)> =
-                Vec::with_capacity(nodes.len());
-
-            for (i, (labels, properties)) in nodes.into_iter().enumerate() {
-                if i > 0 && i % 250 == 0 {
-                    conn.renew_lock()?;
-                }
-                let id = start_id + i as u64;
-
-                // Strip internal FanoutStore keys before storing.
-                let clean_props = clean_fanout_props(properties);
-
-                let node_key = self.kp(key_node(graph, id));
-                let labels_json = serde_json::to_string(&labels)
-                    .map_err(|e| StorageError::Serialization { msg: e.to_string() })?;
-                let props_json = props_to_json(&clean_props)?;
-
-                // HSET node hash.
-                if !labels.is_empty() {
-                    let registry_key = self.kp(key_label_names(graph));
-                    let cmd = pipe.cmd("SADD");
-                    cmd.arg(&registry_key);
-                    for label in &labels {
-                        cmd.arg(label.as_str());
+                let count = i64::try_from(nodes.len()).map_err(|_| {
+                    crate::record_backend_error();
+                    StorageError::Backend {
+                        msg: format!(
+                            "batch size {} exceeds i64::MAX, cannot allocate IDs",
+                            nodes.len()
+                        ),
                     }
-                    cmd.ignore();
+                })?;
+
+                // Allocate a contiguous block of IDs with a single INCRBY.
+                let end_id: i64 = redis::cmd("INCRBY")
+                    .arg(self.kp(key_node_seq(graph)))
+                    .arg(count)
+                    .query(conn.as_mut())
+                    .map_err(crate::backend_storage_error)?;
+                if end_id <= 0 || end_id < count {
+                    return Err(StorageError::IdOverflow {
+                        graph: graph.to_string(),
+                    });
                 }
+                let start_id = (end_id - count + 1) as u64;
 
-                // SADD to all-nodes set.
-                pipe.cmd("SADD")
-                    .arg(self.kp(key_nodes_set(graph)))
-                    .arg(id.to_string())
-                    .ignore();
+                // Pre-serialize all nodes and build the pipeline.
+                let mut pipe = conn.pipeline();
+                let mut node_meta: Vec<(u64, Vec<String>, IndexMap<String, Value>)> =
+                    Vec::with_capacity(nodes.len());
 
-                // SADD to label indexes.
-                for label in &labels {
+                for (i, (labels, properties)) in nodes.into_iter().enumerate() {
+                    if i > 0 && i % 250 == 0 {
+                        conn.renew_lock()?;
+                    }
+                    let id = start_id + i as u64;
+
+                    // Strip internal FanoutStore keys before storing.
+                    let clean_props = clean_fanout_props(properties);
+
+                    let node_key = self.kp(key_node(graph, id));
+                    let labels_json = serde_json::to_string(&labels)
+                        .map_err(|e| StorageError::Serialization { msg: e.to_string() })?;
+                    let props_json = props_to_json(&clean_props)?;
+
+                    // HSET node hash.
+                    if !labels.is_empty() {
+                        let registry_key = self.kp(key_label_names(graph));
+                        let cmd = pipe.cmd("SADD");
+                        cmd.arg(&registry_key);
+                        for label in &labels {
+                            cmd.arg(label.as_str());
+                        }
+                        cmd.ignore();
+                    }
+
+                    // SADD to all-nodes set.
                     pipe.cmd("SADD")
-                        .arg(self.kp(key_label(graph, label)))
+                        .arg(self.kp(key_nodes_set(graph)))
                         .arg(id.to_string())
                         .ignore();
+
+                    // SADD to label indexes.
+                    for label in &labels {
+                        pipe.cmd("SADD")
+                            .arg(self.kp(key_label(graph, label)))
+                            .arg(id.to_string())
+                            .ignore();
+                    }
+
+                    // HSET node hash last so the node manifest and label registries
+                    // already know about the ID if the non-atomic pipeline fails.
+                    pipe.cmd("HSET")
+                        .arg(&node_key)
+                        .arg("labels")
+                        .arg(&labels_json)
+                        .arg("props")
+                        .arg(&props_json)
+                        .ignore();
+
+                    node_meta.push((id, labels, clean_props));
                 }
 
-                // HSET node hash last so the node manifest and label registries
-                // already know about the ID if the non-atomic pipeline fails.
-                pipe.cmd("HSET")
-                    .arg(&node_key)
-                    .arg("labels")
-                    .arg(&labels_json)
-                    .arg("props")
-                    .arg(&props_json)
-                    .ignore();
+                // Execute the main pipeline in one round-trip.
+                conn.renew_lock()?;
+                pipe.query::<()>(conn)
+                    .map_err(crate::backend_storage_error)?;
 
-                node_meta.push((id, labels, clean_props));
-            }
-
-            // Execute the main pipeline in one round-trip.
-            conn.renew_lock()?;
-            pipe.query::<()>(conn)
-                .map_err(crate::backend_storage_error)?;
-
-            // Property indexing pass (uses its own pipeline internally).
-            for (index, (id, labels, props)) in node_meta.iter().enumerate() {
-                if index > 0 && index % 100 == 0 {
-                    conn.renew_lock()?;
+                // Property indexing pass (uses its own pipeline internally).
+                for (index, (id, labels, props)) in node_meta.iter().enumerate() {
+                    if index > 0 && index % 100 == 0 {
+                        conn.renew_lock()?;
+                    }
+                    self.index_node_properties(conn, graph, *id, labels, props)?;
                 }
-                self.index_node_properties(conn, graph, *id, labels, props)?;
-            }
 
-            Ok(node_meta.iter().map(|(id, _, _)| NodeId(*id)).collect())
-        })
+                Ok(node_meta.iter().map(|(id, _, _)| NodeId(*id)).collect())
+            },
+        )
     }
 }
 
