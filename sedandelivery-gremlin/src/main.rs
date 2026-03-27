@@ -1,10 +1,11 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use gql_core::storage::GraphStore;
 use sedandelivery_gremlin::{connection, health};
 use tokio::net::TcpListener;
+use tokio::sync::Semaphore;
 
 /// Create the graph store based on environment configuration.
 ///
@@ -30,6 +31,18 @@ async fn main() {
 
     // ── Configuration ────────────────────────────────────────────────────
     let bind_addr = env_or("GREMLIN_BIND_ADDR", "0.0.0.0:8182");
+    let max_connections: usize =
+        gql_core::config::parse_env_range("GREMLIN_MAX_CONNECTIONS", 1024usize, 1, 65535);
+    let idle_timeout_secs: u64 =
+        gql_core::config::parse_env_range("GREMLIN_IDLE_TIMEOUT_SECS", 300u64, 1, 86400);
+    let max_lifetime_secs: u64 = gql_core::config::parse_env_range(
+        "GREMLIN_MAX_CONNECTION_LIFETIME_SECS",
+        1800u64,
+        0,
+        86400,
+    );
+    let idle_timeout = Duration::from_secs(idle_timeout_secs);
+    let max_lifetime = Duration::from_secs(max_lifetime_secs);
 
     // ── Store ────────────────────────────────────────────────────────────
     let store = create_store();
@@ -37,6 +50,7 @@ async fn main() {
 
     // ── Shared state ─────────────────────────────────────────────────────
     let active_connections = Arc::new(AtomicU64::new(0));
+    let connection_semaphore = Arc::new(Semaphore::new(max_connections));
     let start_time = Instant::now();
 
     // ── Health endpoint ──────────────────────────────────────────────────
@@ -79,15 +93,25 @@ async fn main() {
             }
         };
 
+        let permit = match Arc::clone(&connection_semaphore).acquire_owned().await {
+            Ok(permit) => permit,
+            Err(_) => {
+                tracing::info!("connection semaphore closed, shutting down");
+                break;
+            }
+        };
         let store = Arc::clone(&store);
         let active = Arc::clone(&active_connections);
         active.fetch_add(1, Ordering::Relaxed);
 
         tokio::spawn(async move {
+            let _permit = permit;
             let _guard = ConnectionGuard(Arc::clone(&active));
             tracing::debug!(%peer_addr, "new connection");
 
-            if let Err(e) = connection::handle_connection(stream, store).await {
+            if let Err(e) =
+                connection::handle_connection(stream, store, idle_timeout, max_lifetime).await
+            {
                 tracing::warn!(%peer_addr, "connection error: {e}");
             }
         });

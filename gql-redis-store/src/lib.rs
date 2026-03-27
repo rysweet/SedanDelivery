@@ -299,6 +299,12 @@ impl DerefMut for LockedRedisConn {
 /// - `GQL_REDIS_POOL_TIMEOUT_SECS` — checkout timeout (default 5)
 /// - `GQL_REDIS_IDLE_TIMEOUT_SECS` — idle connection reap timeout (default 300)
 /// - `GQL_REDIS_MIN_IDLE` — minimum warm connections kept in pool (default 1)
+/// - `GQL_REDIS_CONNECT_TIMEOUT_MS` — Redis TCP connect timeout (default 1000)
+/// - `GQL_REDIS_READ_TIMEOUT_MS` — Redis socket read timeout (default 5000)
+/// - `GQL_REDIS_WRITE_TIMEOUT_MS` — Redis socket write timeout (default 5000)
+/// - `GQL_REDIS_MAX_BATCH_SIZE` — refuse oversized batch writes (default 5000)
+/// - `GQL_REDIS_BATCH_PIPELINE_CHUNK_SIZE` — items per batch-write pipeline chunk (default 250)
+/// - `GQL_REDIS_MAX_DETACH_DELETE_EDGES` — refuse pathological supernode detach deletes (default 10000)
 ///
 /// Read-replica configuration:
 /// - `GQL_REDIS_REPLICA_URL` — comma-separated replica URLs for read routing
@@ -329,6 +335,12 @@ impl RedisGraphStore {
     /// and `GQL_REDIS_POOL_TIMEOUT_SECS` (default 5).
     /// Idle timeout and min-idle are read from `GQL_REDIS_IDLE_TIMEOUT_SECS` (default 300)
     /// and `GQL_REDIS_MIN_IDLE` (default 1).
+    /// Socket-level Redis timeouts are read from `GQL_REDIS_CONNECT_TIMEOUT_MS`
+    /// (default 1000), `GQL_REDIS_READ_TIMEOUT_MS` (default 5000), and
+    /// `GQL_REDIS_WRITE_TIMEOUT_MS` (default 5000).
+    /// Large batch and detach-delete guards are controlled by
+    /// `GQL_REDIS_MAX_BATCH_SIZE`, `GQL_REDIS_BATCH_PIPELINE_CHUNK_SIZE`, and
+    /// `GQL_REDIS_MAX_DETACH_DELETE_EDGES`.
     pub fn from_env() -> Result<Self, StorageError> {
         let prefix = env::var("GQL_REDIS_KEY_PREFIX").unwrap_or_default();
         let pool_size: u32 =
@@ -680,6 +692,10 @@ impl RedisGraphStore {
 
     /// Acquire the graph write lock plus the requested scoped lock (if any),
     /// run `f`, then release them in reverse order.
+    ///
+    /// This still serializes same-graph writes through the graph lock. The
+    /// scoped key is an additional ownership marker for hot mutators, not a
+    /// same-graph parallelism primitive.
     pub(crate) fn with_write_lock<T, F>(
         &self,
         graph: &str,

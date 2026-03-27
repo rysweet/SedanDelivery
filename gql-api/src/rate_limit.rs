@@ -46,6 +46,25 @@ pub fn build_limiter(rps: NonZeroU32) -> Arc<KeyedRateLimiter> {
     Arc::new(RateLimiter::dashmap(quota))
 }
 
+fn sweep_interval_secs() -> u64 {
+    static INTERVAL: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    *INTERVAL.get_or_init(|| {
+        gql_core::config::parse_env_range("GQL_API_RATE_LIMIT_SWEEP_SECS", 300u64, 1, 86_400)
+    })
+}
+
+pub fn spawn_limiter_sweeper(limiter: Arc<KeyedRateLimiter>) {
+    let interval_secs = sweep_interval_secs();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(interval_secs));
+        loop {
+            interval.tick().await;
+            limiter.retain_recent();
+            limiter.shrink_to_fit();
+        }
+    });
+}
+
 /// Axum middleware that enforces per-IP rate limiting.
 ///
 /// Requests to `/health` are exempt.

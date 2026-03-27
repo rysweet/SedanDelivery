@@ -15,7 +15,9 @@ use crate::lock::{BATCH_WRITE_MAX_RETRIES, BATCH_WRITE_RETRY_DELAY_MS, WRITE_LOC
 use crate::validation::validate_property_key;
 use crate::{LockedRedisConn, RedisGraphStore};
 
-use super::helpers::{clean_fanout_props, extract_injected_id};
+use super::helpers::{
+    batch_pipeline_chunk_size, clean_fanout_props, extract_injected_id, max_batch_size,
+};
 
 fn validate_property_keys(properties: &IndexMap<String, Value>) -> Result<(), StorageError> {
     for key in properties.keys() {
@@ -330,6 +332,16 @@ impl RedisGraphStore {
         if edges.is_empty() {
             return Ok(Vec::new());
         }
+        if edges.len() > max_batch_size() {
+            crate::record_backend_error();
+            return Err(StorageError::Backend {
+                msg: format!(
+                    "batch size {} exceeds GQL_REDIS_MAX_BATCH_SIZE={}",
+                    edges.len(),
+                    max_batch_size()
+                ),
+            });
+        }
         for (_, _, _, properties) in &edges {
             validate_property_keys(properties)?;
         }
@@ -382,73 +394,75 @@ impl RedisGraphStore {
                 }
                 let start_id = (end_id - count + 1) as u64;
 
-                // Pre-serialize all edges and build the pipeline.
-                let mut pipe = conn.pipeline();
+                // Pre-serialize all edges and build chunked pipelines.
                 let mut created_ids: Vec<EdgeId> = Vec::with_capacity(edges.len());
 
-                for (i, (src, dst, rel_type, properties)) in edges.into_iter().enumerate() {
-                    if i > 0 && i % 250 == 0 {
-                        conn.renew_lock()?;
+                let chunk_size = batch_pipeline_chunk_size();
+                let mut chunk_iter = edges.into_iter().enumerate();
+                loop {
+                    let chunk: Vec<_> = chunk_iter.by_ref().take(chunk_size).collect();
+                    if chunk.is_empty() {
+                        break;
                     }
-                    let id = start_id + i as u64;
-                    let eid = EdgeId(id);
 
-                    // Strip internal FanoutStore keys before storing.
-                    let clean_props = clean_fanout_props(properties);
+                    let mut pipe = conn.pipeline();
+                    for (offset, (i, (src, dst, rel_type, properties))) in
+                        chunk.into_iter().enumerate()
+                    {
+                        if offset > 0 && offset % 250 == 0 {
+                            conn.renew_lock()?;
+                        }
+                        let id = start_id + i as u64;
+                        let eid = EdgeId(id);
 
-                    let edge_key = self.kp(key_edge(graph, id));
-                    let props_json = props_to_json(&clean_props)?;
+                        let clean_props = clean_fanout_props(properties);
+                        let edge_key = self.kp(key_edge(graph, id));
+                        let props_json = props_to_json(&clean_props)?;
 
-                    pipe.cmd("SADD")
-                        .arg(self.kp(key_reltype_names(graph)))
-                        .arg(rel_type.as_str())
-                        .ignore();
-                    pipe.cmd("SADD")
-                        .arg(self.kp(key_edges_set(graph)))
-                        .arg(id.to_string())
-                        .ignore();
+                        pipe.cmd("SADD")
+                            .arg(self.kp(key_reltype_names(graph)))
+                            .arg(rel_type.as_str())
+                            .ignore();
+                        pipe.cmd("SADD")
+                            .arg(self.kp(key_edges_set(graph)))
+                            .arg(id.to_string())
+                            .ignore();
+                        pipe.cmd("SADD")
+                            .arg(self.kp(key_reltype(graph, &rel_type)))
+                            .arg(id.to_string())
+                            .ignore();
 
-                    // SADD to reltype index.
-                    pipe.cmd("SADD")
-                        .arg(self.kp(key_reltype(graph, &rel_type)))
-                        .arg(id.to_string())
-                        .ignore();
+                        let out_member = encode_adj(eid, dst, &rel_type);
+                        pipe.cmd("SADD")
+                            .arg(self.kp(key_out(graph, src.0)))
+                            .arg(out_member)
+                            .ignore();
 
-                    // SADD to out-adjacency on src.
-                    let out_member = encode_adj(eid, dst, &rel_type);
-                    pipe.cmd("SADD")
-                        .arg(self.kp(key_out(graph, src.0)))
-                        .arg(out_member)
-                        .ignore();
+                        let in_member = encode_adj(eid, src, &rel_type);
+                        pipe.cmd("SADD")
+                            .arg(self.kp(key_in(graph, dst.0)))
+                            .arg(in_member)
+                            .ignore();
 
-                    // SADD to in-adjacency on dst.
-                    let in_member = encode_adj(eid, src, &rel_type);
-                    pipe.cmd("SADD")
-                        .arg(self.kp(key_in(graph, dst.0)))
-                        .arg(in_member)
-                        .ignore();
+                        pipe.cmd("HSET")
+                            .arg(&edge_key)
+                            .arg("src")
+                            .arg(src.0.to_string())
+                            .arg("dst")
+                            .arg(dst.0.to_string())
+                            .arg("rel_type")
+                            .arg(&rel_type)
+                            .arg("props")
+                            .arg(&props_json)
+                            .ignore();
 
-                    // HSET edge hash last so the edge manifest and reltype registry
-                    // already know about the ID if the non-atomic pipeline fails.
-                    pipe.cmd("HSET")
-                        .arg(&edge_key)
-                        .arg("src")
-                        .arg(src.0.to_string())
-                        .arg("dst")
-                        .arg(dst.0.to_string())
-                        .arg("rel_type")
-                        .arg(&rel_type)
-                        .arg("props")
-                        .arg(&props_json)
-                        .ignore();
+                        created_ids.push(eid);
+                    }
 
-                    created_ids.push(eid);
+                    conn.renew_lock()?;
+                    pipe.query::<()>(conn)
+                        .map_err(crate::backend_storage_error)?;
                 }
-
-                // Execute the entire pipeline in one round-trip.
-                conn.renew_lock()?;
-                pipe.query::<()>(conn)
-                    .map_err(crate::backend_storage_error)?;
 
                 Ok(created_ids)
             },

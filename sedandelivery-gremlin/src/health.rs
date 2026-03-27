@@ -68,9 +68,10 @@ pub fn spawn_health_server(state: HealthState) {
 async fn health_handler(State(state): State<HealthState>) -> impl IntoResponse {
     let connections = state.active_connections.load(Ordering::Relaxed);
     let uptime_seconds = state.start_time.elapsed().as_secs();
+    let store = Arc::clone(&state.store);
 
-    match state.store.graph_exists("__health_probe") {
-        Ok(_) => (
+    match tokio::task::spawn_blocking(move || store.graph_exists("__health_probe")).await {
+        Ok(Ok(_)) => (
             StatusCode::OK,
             axum::Json(HealthResponse {
                 status: "ok",
@@ -79,13 +80,22 @@ async fn health_handler(State(state): State<HealthState>) -> impl IntoResponse {
                 error: None,
             }),
         ),
-        Err(e) => (
+        Ok(Err(e)) => (
             StatusCode::SERVICE_UNAVAILABLE,
             axum::Json(HealthResponse {
                 status: "degraded",
                 connections,
                 uptime_seconds,
                 error: Some(e.to_string()),
+            }),
+        ),
+        Err(e) => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            axum::Json(HealthResponse {
+                status: "degraded",
+                connections,
+                uptime_seconds,
+                error: Some(format!("health probe task panicked: {e}")),
             }),
         ),
     }

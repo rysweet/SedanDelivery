@@ -109,6 +109,10 @@ fn convert_params(
     Ok(result)
 }
 
+fn configured_budget() -> ExecutionBudget {
+    ExecutionBudget::from_config(gql_core::config::global())
+}
+
 // ── POST /graphs/{name}/query ─────────────────────────────────────────────────
 
 #[tracing::instrument(name = "gql.query", skip_all, fields(graph = %name))]
@@ -120,29 +124,12 @@ async fn query_handler(
     let name = body.database.as_ref().unwrap_or(&name);
     validate_graph_name(name).map_err(ApiError::from)?;
     reject_oversized_query(&body.cypher)?;
-    require_graph(&state, name)?;
+    require_graph(&state, name).await?;
 
     let store = Arc::clone(&state.store);
     let start = Instant::now();
-
-    // Query/mutate endpoints reuse the process-local plan cache; EXPLAIN and
-    // PROFILE intentionally re-plan so they reflect current operator/estimate
-    // state directly in their responses.
-    let cache = plan_cache::global();
-    let plan = if let Some((_cached_ast, cached_plan)) = cache.get(&body.cypher) {
-        metrics::counter!("plan_cache_hits_total").increment(1);
-        cached_plan
-    } else {
-        metrics::counter!("plan_cache_misses_total").increment(1);
-        let ast = parse_query(&body.cypher).map_err(|e| ApiError::bad_request(e.to_string()))?;
-        let planner = QueryPlanner::new(store.as_ref(), name);
-        let plan = planner
-            .plan(&ast)
-            .map_err(|e| ApiError::bad_request(e.to_string()))?;
-        cache.insert(&body.cypher, ast, plan.clone());
-        plan
-    };
-
+    let graph_name = name.to_string();
+    let cypher = body.cypher.clone();
     let params = convert_params(body.params.as_ref())?;
 
     // Propagate the current trace span ID as request_id into the executor budget.
@@ -150,37 +137,46 @@ async fn query_handler(
         .id()
         .map(|id| format!("{:x}", id.into_u64()));
 
-    // Move the Arc and the plan into spawn_blocking so CPU-bound execution
-    // does not block the Tokio async thread pool.
     let store_for_exec = Arc::clone(&store);
-    let name_for_exec = name.clone();
-    let result = tokio::task::spawn_blocking(move || {
+    let (columns, rows) = tokio::task::spawn_blocking(move || {
         static EMPTY_REG: std::sync::OnceLock<ProcedureRegistry> = std::sync::OnceLock::new();
         let registry = EMPTY_REG.get_or_init(ProcedureRegistry::new);
-        let mut budget = ExecutionBudget::default_budget();
+        let cache = plan_cache::global();
+        let plan = if let Some((_cached_ast, cached_plan)) = cache.get(&cypher) {
+            metrics::counter!("plan_cache_hits_total").increment(1);
+            cached_plan
+        } else {
+            metrics::counter!("plan_cache_misses_total").increment(1);
+            let ast = parse_query(&cypher).map_err(|e| ApiError::bad_request(e.to_string()))?;
+            let planner = QueryPlanner::new(store_for_exec.as_ref(), &graph_name);
+            let plan = planner
+                .plan(&ast)
+                .map_err(|e| ApiError::bad_request(e.to_string()))?;
+            cache.insert(&cypher, ast, plan.clone());
+            plan
+        };
+        let mut budget = configured_budget();
         if let Some(rid) = request_id {
             budget.set_request_id(rid);
         }
-        QueryExecutor::with_context(store_for_exec.as_ref(), registry, params).execute(
-            &name_for_exec,
-            &plan,
-            &mut budget,
-        )
+        let result = QueryExecutor::with_context(store_for_exec.as_ref(), registry, params)
+            .execute(&graph_name, &plan, &mut budget)
+            .map_err(ApiError::from)?;
+        let rows = result
+            .rows
+            .iter()
+            .map(|row| row_to_json(row, &result.columns, store_for_exec.as_ref(), &graph_name))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| ApiError::internal(format!("failed to serialize result: {e}")))?;
+        Ok::<_, ApiError>((result.columns, rows))
     })
     .await
     .map_err(|_| ApiError::internal("query executor panicked"))??;
 
     let elapsed_ms = start.elapsed().as_millis() as u64;
 
-    let rows: Vec<serde_json::Value> = result
-        .rows
-        .iter()
-        .map(|row| row_to_json(row, &result.columns, store.as_ref(), name))
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|e| ApiError::internal(format!("failed to serialize result: {e}")))?;
-
     Ok(Json(QueryResponse {
-        columns: result.columns,
+        columns,
         rows,
         elapsed_ms,
     }))
@@ -196,22 +192,26 @@ async fn explain_handler(
     let name = body.database.as_ref().unwrap_or(&name);
     validate_graph_name(name).map_err(ApiError::from)?;
     reject_oversized_query(&body.cypher)?;
-    require_graph(&state, name)?;
+    require_graph(&state, name).await?;
 
     let store = Arc::clone(&state.store);
+    let graph_name = name.to_string();
+    let cypher = body.cypher.clone();
+    let plan_json = tokio::task::spawn_blocking(move || {
+        let ast = parse_query(&cypher).map_err(|e| ApiError::bad_request(e.to_string()))?;
+        let planner = QueryPlanner::new(store.as_ref(), &graph_name);
+        let plan = planner
+            .plan(&ast)
+            .map_err(|e| ApiError::bad_request(e.to_string()))?;
 
-    let ast = parse_query(&body.cypher).map_err(|e| ApiError::bad_request(e.to_string()))?;
-    let planner = QueryPlanner::new(store.as_ref(), name);
-    let plan = planner
-        .plan(&ast)
-        .map_err(|e| ApiError::bad_request(e.to_string()))?;
+        let graph_stats = gql_core::planner::collect_graph_statistics(store.as_ref(), &graph_name)
+            .map_err(ApiError::from)?;
+        let estimates = gql_core::planner::estimate_cardinality(&plan, &graph_stats);
 
-    let store_ref = store.as_ref();
-    let graph_stats =
-        gql_core::planner::collect_graph_statistics(store_ref, name).map_err(ApiError::from)?;
-    let estimates = gql_core::planner::estimate_cardinality(&plan, &graph_stats);
-
-    let plan_json = operator_to_json(&plan, &estimates);
+        Ok::<_, ApiError>(operator_to_json(&plan, &estimates))
+    })
+    .await
+    .map_err(|_| ApiError::internal("explain executor panicked"))??;
 
     Ok(Json(ExplainResponse { plan: plan_json }))
 }
@@ -254,7 +254,7 @@ async fn profile_handler(
     let name = body.database.as_ref().unwrap_or(&name);
     validate_graph_name(name).map_err(ApiError::from)?;
     reject_oversized_query(&body.cypher)?;
-    require_graph(&state, name)?;
+    require_graph(&state, name).await?;
 
     let store = Arc::clone(&state.store);
     let start = Instant::now();
@@ -271,17 +271,17 @@ async fn profile_handler(
     // are only valid while the plan lives at the same memory location (i.e.,
     // before it is moved out of the closure).
     let store_for_exec = Arc::clone(&store);
-    let name_for_exec = name.clone();
+    let name_for_exec = name.to_string();
     let cypher = body.cypher.clone();
-    let (result, plan_json) = tokio::task::spawn_blocking(move || {
+    let (columns, rows, plan_json) = tokio::task::spawn_blocking(move || {
         static EMPTY_REG: std::sync::OnceLock<ProcedureRegistry> = std::sync::OnceLock::new();
         let registry = EMPTY_REG.get_or_init(ProcedureRegistry::new);
 
-        let ast = parse_query(&cypher)?;
+        let ast = parse_query(&cypher).map_err(|e| ApiError::bad_request(e.to_string()))?;
         let planner = QueryPlanner::new(store_for_exec.as_ref(), &name_for_exec);
-        let plan = planner.plan(&ast)?;
+        let plan = planner.plan(&ast).map_err(ApiError::from)?;
 
-        let mut budget = ExecutionBudget::default_budget();
+        let mut budget = configured_budget();
         budget.enable_profiling();
         if let Some(rid) = request_id {
             budget.set_request_id(rid);
@@ -297,22 +297,29 @@ async fn profile_handler(
         let estimates = gql_core::planner::estimate_cardinality(&plan, &graph_stats);
         let plan_json = operator_to_profile_json(&plan, &estimates, &profile_stats);
 
-        Ok::<_, gql_core::error::GqlError>((result, plan_json))
+        let rows = result
+            .rows
+            .iter()
+            .map(|row| {
+                row_to_json(
+                    row,
+                    &result.columns,
+                    store_for_exec.as_ref(),
+                    &name_for_exec,
+                )
+            })
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| ApiError::internal(format!("failed to serialize result: {e}")))?;
+
+        Ok::<_, ApiError>((result.columns, rows, plan_json))
     })
     .await
     .map_err(|_| ApiError::internal("profile executor panicked"))??;
 
     let elapsed_ms = start.elapsed().as_millis() as u64;
 
-    let rows: Vec<serde_json::Value> = result
-        .rows
-        .iter()
-        .map(|row| row_to_json(row, &result.columns, store.as_ref(), name))
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|e| ApiError::internal(format!("failed to serialize result: {e}")))?;
-
     Ok(Json(ProfileResponse {
-        columns: result.columns,
+        columns,
         rows,
         plan: plan_json,
         elapsed_ms,
@@ -369,25 +376,11 @@ async fn mutate_handler(
     let name = body.database.as_ref().unwrap_or(&name);
     validate_graph_name(name).map_err(ApiError::from)?;
     reject_oversized_query(&body.cypher)?;
-    require_graph(&state, name)?;
+    require_graph(&state, name).await?;
 
     let store = Arc::clone(&state.store);
-
-    let cache = plan_cache::global();
-    let plan = if let Some((_cached_ast, cached_plan)) = cache.get(&body.cypher) {
-        metrics::counter!("plan_cache_hits_total").increment(1);
-        cached_plan
-    } else {
-        metrics::counter!("plan_cache_misses_total").increment(1);
-        let ast = parse_query(&body.cypher).map_err(|e| ApiError::bad_request(e.to_string()))?;
-        let planner = QueryPlanner::new(store.as_ref(), name);
-        let plan = planner
-            .plan(&ast)
-            .map_err(|e| ApiError::bad_request(e.to_string()))?;
-        cache.insert(&body.cypher, ast, plan.clone());
-        plan
-    };
-
+    let graph_name = name.to_string();
+    let cypher = body.cypher.clone();
     let params = convert_params(body.params.as_ref())?;
 
     // Propagate the current trace span ID as request_id into the executor budget.
@@ -398,19 +391,31 @@ async fn mutate_handler(
     // Move the Arc and plan into spawn_blocking so CPU-bound execution
     // does not block the Tokio async thread pool.
     let store_for_exec = Arc::clone(&store);
-    let name_for_exec = name.clone();
+    let name_for_exec = graph_name;
     let result = tokio::task::spawn_blocking(move || {
         static EMPTY_REG: std::sync::OnceLock<ProcedureRegistry> = std::sync::OnceLock::new();
         let registry = EMPTY_REG.get_or_init(ProcedureRegistry::new);
-        let mut budget = ExecutionBudget::default_budget();
+        let cache = plan_cache::global();
+        let plan = if let Some((_cached_ast, cached_plan)) = cache.get(&cypher) {
+            metrics::counter!("plan_cache_hits_total").increment(1);
+            cached_plan
+        } else {
+            metrics::counter!("plan_cache_misses_total").increment(1);
+            let ast = parse_query(&cypher).map_err(|e| ApiError::bad_request(e.to_string()))?;
+            let planner = QueryPlanner::new(store_for_exec.as_ref(), &name_for_exec);
+            let plan = planner
+                .plan(&ast)
+                .map_err(|e| ApiError::bad_request(e.to_string()))?;
+            cache.insert(&cypher, ast, plan.clone());
+            plan
+        };
+        let mut budget = configured_budget();
         if let Some(rid) = request_id {
             budget.set_request_id(rid);
         }
-        QueryExecutor::with_context(store_for_exec.as_ref(), registry, params).execute(
-            &name_for_exec,
-            &plan,
-            &mut budget,
-        )
+        QueryExecutor::with_context(store_for_exec.as_ref(), registry, params)
+            .execute(&name_for_exec, &plan, &mut budget)
+            .map_err(ApiError::from)
     })
     .await
     .map_err(|_| ApiError::internal("mutate executor panicked"))??;

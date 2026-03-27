@@ -17,7 +17,9 @@ use crate::error::ApiError;
 use crate::models::{
     max_page_limit, CreateEdgeBody, EdgeListResponse, PaginationParams, UpdateEdgeBody,
 };
-use crate::routes::helpers::{json_map_to_props, parse_edge_id, parse_node_id, require_graph};
+use crate::routes::helpers::{
+    json_map_to_props, parse_edge_id, parse_node_id, require_graph, run_store_blocking,
+};
 use crate::serialize::edge_to_json;
 use crate::state::AppState;
 
@@ -48,23 +50,21 @@ async fn list_edges(
         )));
     }
     validate_graph_name(&name).map_err(ApiError::from)?;
-    require_graph(&state, &name)?;
-
-    let store = &state.store;
-    let all_ids = store.all_edge_ids(&name).map_err(ApiError::from)?;
-    let total = all_ids.len();
-
-    let page_ids: Vec<EdgeId> = all_ids
-        .into_iter()
-        .skip(params.offset)
-        .take(params.limit)
-        .collect();
-
-    let batch = store
-        .get_edges_batch(&name, &page_ids)
-        .map_err(ApiError::from)?;
-
-    let edges: Vec<serde_json::Value> = batch.iter().flatten().map(edge_to_json).collect();
+    require_graph(&state, &name).await?;
+    let graph_name = name.clone();
+    let limit = params.limit;
+    let offset = params.offset;
+    let (edges, total) = run_store_blocking(&state, move |store| {
+        let all_ids = store.all_edge_ids(&graph_name).map_err(ApiError::from)?;
+        let total = all_ids.len();
+        let page_ids: Vec<EdgeId> = all_ids.into_iter().skip(offset).take(limit).collect();
+        let batch = store
+            .get_edges_batch(&graph_name, &page_ids)
+            .map_err(ApiError::from)?;
+        let edges = batch.iter().flatten().map(edge_to_json).collect();
+        Ok((edges, total))
+    })
+    .await?;
 
     Ok(Json(EdgeListResponse { edges, total }))
 }
@@ -85,18 +85,20 @@ async fn create_edge(
         return Err(ApiError::bad_request("relationship type must not be empty"));
     }
 
-    require_graph(&state, &name)?;
-
-    let store = &state.store;
+    require_graph(&state, &name).await?;
     let props = json_map_to_props(body.properties)?;
-    let edge_id = store
-        .create_edge(&name, src_id, dst_id, body.rel_type, props)
-        .map_err(ApiError::from)?;
-
-    let edge = store
-        .get_edge(&name, edge_id)
-        .map_err(ApiError::from)?
-        .ok_or_else(|| ApiError::internal("edge created but cannot be retrieved"))?;
+    let graph_name = name.clone();
+    let rel_type = body.rel_type;
+    let edge = run_store_blocking(&state, move |store| {
+        let edge_id = store
+            .create_edge(&graph_name, src_id, dst_id, rel_type, props)
+            .map_err(ApiError::from)?;
+        store
+            .get_edge(&graph_name, edge_id)
+            .map_err(ApiError::from)?
+            .ok_or_else(|| ApiError::internal("edge created but cannot be retrieved"))
+    })
+    .await?;
 
     Ok((StatusCode::CREATED, Json(edge_to_json(&edge))))
 }
@@ -109,13 +111,16 @@ async fn get_edge(
 ) -> Result<Json<serde_json::Value>, ApiError> {
     validate_graph_name(&name).map_err(ApiError::from)?;
     let id = parse_edge_id(&id_str)?;
-    require_graph(&state, &name)?;
-
-    let edge = state
-        .store
-        .get_edge(&name, id)
-        .map_err(ApiError::from)?
-        .ok_or_else(|| ApiError::not_found(format!("edge {id_str} not found")))?;
+    require_graph(&state, &name).await?;
+    let graph_name = name.clone();
+    let id_lookup = id_str.clone();
+    let edge = run_store_blocking(&state, move |store| {
+        store
+            .get_edge(&graph_name, id)
+            .map_err(ApiError::from)?
+            .ok_or_else(|| ApiError::not_found(format!("edge {id_lookup} not found")))
+    })
+    .await?;
 
     Ok(Json(edge_to_json(&edge)))
 }
@@ -129,19 +134,19 @@ async fn update_edge(
 ) -> Result<Json<serde_json::Value>, ApiError> {
     validate_graph_name(&name).map_err(ApiError::from)?;
     let id = parse_edge_id(&id_str)?;
-    require_graph(&state, &name)?;
-
-    let store = &state.store;
-
+    require_graph(&state, &name).await?;
     let props = json_map_to_props(body.properties)?;
-    store
-        .set_edge_properties(&name, id, props)
-        .map_err(ApiError::from)?;
-
-    let updated = store
-        .get_edge(&name, id)
-        .map_err(ApiError::from)?
-        .ok_or_else(|| ApiError::internal("edge vanished after update"))?;
+    let graph_name = name.clone();
+    let updated = run_store_blocking(&state, move |store| {
+        store
+            .set_edge_properties(&graph_name, id, props)
+            .map_err(ApiError::from)?;
+        store
+            .get_edge(&graph_name, id)
+            .map_err(ApiError::from)?
+            .ok_or_else(|| ApiError::internal("edge vanished after update"))
+    })
+    .await?;
 
     Ok(Json(edge_to_json(&updated)))
 }
@@ -154,17 +159,21 @@ async fn delete_edge(
 ) -> Result<StatusCode, ApiError> {
     validate_graph_name(&name).map_err(ApiError::from)?;
     let id = parse_edge_id(&id_str)?;
-    require_graph(&state, &name)?;
-
-    state.store.delete_edge(&name, id).map_err(|e| {
-        use gql_core::error::StorageError;
-        match e {
-            StorageError::EdgeNotFound { .. } => {
-                ApiError::not_found(format!("edge {id_str} not found"))
+    require_graph(&state, &name).await?;
+    let graph_name = name.clone();
+    let id_lookup = id_str.clone();
+    run_store_blocking(&state, move |store| {
+        store.delete_edge(&graph_name, id).map_err(|e| {
+            use gql_core::error::StorageError;
+            match e {
+                StorageError::EdgeNotFound { .. } => {
+                    ApiError::not_found(format!("edge {id_lookup} not found"))
+                }
+                other => ApiError::from(other),
             }
-            other => ApiError::from(other),
-        }
-    })?;
+        })
+    })
+    .await?;
 
     Ok(StatusCode::NO_CONTENT)
 }

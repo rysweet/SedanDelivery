@@ -17,7 +17,7 @@ use crate::error::ApiError;
 use crate::models::{
     max_page_limit, CreateNodeBody, NodeListResponse, PaginationParams, UpdateNodeBody,
 };
-use crate::routes::helpers::{json_map_to_props, parse_node_id, require_graph};
+use crate::routes::helpers::{json_map_to_props, parse_node_id, require_graph, run_store_blocking};
 use crate::serialize::node_to_json;
 use crate::state::AppState;
 
@@ -48,23 +48,21 @@ async fn list_nodes(
         )));
     }
     validate_graph_name(&name).map_err(ApiError::from)?;
-    require_graph(&state, &name)?;
-
-    let store = &state.store;
-    let all_ids = store.all_node_ids(&name).map_err(ApiError::from)?;
-    let total = all_ids.len();
-
-    let page_ids: Vec<NodeId> = all_ids
-        .into_iter()
-        .skip(params.offset)
-        .take(params.limit)
-        .collect();
-
-    let batch = store
-        .get_nodes_batch(&name, &page_ids)
-        .map_err(ApiError::from)?;
-
-    let nodes: Vec<serde_json::Value> = batch.iter().flatten().map(node_to_json).collect();
+    require_graph(&state, &name).await?;
+    let graph_name = name.clone();
+    let limit = params.limit;
+    let offset = params.offset;
+    let (nodes, total) = run_store_blocking(&state, move |store| {
+        let all_ids = store.all_node_ids(&graph_name).map_err(ApiError::from)?;
+        let total = all_ids.len();
+        let page_ids: Vec<NodeId> = all_ids.into_iter().skip(offset).take(limit).collect();
+        let batch = store
+            .get_nodes_batch(&graph_name, &page_ids)
+            .map_err(ApiError::from)?;
+        let nodes = batch.iter().flatten().map(node_to_json).collect();
+        Ok((nodes, total))
+    })
+    .await?;
 
     Ok(Json(NodeListResponse { nodes, total }))
 }
@@ -77,18 +75,20 @@ async fn create_node(
     Json(body): Json<CreateNodeBody>,
 ) -> Result<(StatusCode, Json<serde_json::Value>), ApiError> {
     validate_graph_name(&name).map_err(ApiError::from)?;
-    require_graph(&state, &name)?;
-
-    let store = &state.store;
+    require_graph(&state, &name).await?;
     let props = json_map_to_props(body.properties)?;
-    let id = store
-        .create_node(&name, body.labels, props)
-        .map_err(ApiError::from)?;
-
-    let node = store
-        .get_node(&name, id)
-        .map_err(ApiError::from)?
-        .ok_or_else(|| ApiError::internal("node created but cannot be retrieved"))?;
+    let graph_name = name.clone();
+    let labels = body.labels;
+    let node = run_store_blocking(&state, move |store| {
+        let id = store
+            .create_node(&graph_name, labels, props)
+            .map_err(ApiError::from)?;
+        store
+            .get_node(&graph_name, id)
+            .map_err(ApiError::from)?
+            .ok_or_else(|| ApiError::internal("node created but cannot be retrieved"))
+    })
+    .await?;
 
     Ok((StatusCode::CREATED, Json(node_to_json(&node))))
 }
@@ -101,13 +101,16 @@ async fn get_node(
 ) -> Result<Json<serde_json::Value>, ApiError> {
     validate_graph_name(&name).map_err(ApiError::from)?;
     let id = parse_node_id(&id_str)?;
-    require_graph(&state, &name)?;
-
-    let node = state
-        .store
-        .get_node(&name, id)
-        .map_err(ApiError::from)?
-        .ok_or_else(|| ApiError::not_found(format!("node {id_str} not found")))?;
+    require_graph(&state, &name).await?;
+    let graph_name = name.clone();
+    let id_lookup = id_str.clone();
+    let node = run_store_blocking(&state, move |store| {
+        store
+            .get_node(&graph_name, id)
+            .map_err(ApiError::from)?
+            .ok_or_else(|| ApiError::not_found(format!("node {id_lookup} not found")))
+    })
+    .await?;
 
     Ok(Json(node_to_json(&node)))
 }
@@ -121,19 +124,19 @@ async fn update_node(
 ) -> Result<Json<serde_json::Value>, ApiError> {
     validate_graph_name(&name).map_err(ApiError::from)?;
     let id = parse_node_id(&id_str)?;
-    require_graph(&state, &name)?;
-
-    let store = &state.store;
-
+    require_graph(&state, &name).await?;
     let props = json_map_to_props(body.properties)?;
-    store
-        .set_node_properties(&name, id, props)
-        .map_err(ApiError::from)?;
-
-    let updated = store
-        .get_node(&name, id)
-        .map_err(ApiError::from)?
-        .ok_or_else(|| ApiError::internal("node vanished after update"))?;
+    let graph_name = name.clone();
+    let updated = run_store_blocking(&state, move |store| {
+        store
+            .set_node_properties(&graph_name, id, props)
+            .map_err(ApiError::from)?;
+        store
+            .get_node(&graph_name, id)
+            .map_err(ApiError::from)?
+            .ok_or_else(|| ApiError::internal("node vanished after update"))
+    })
+    .await?;
 
     Ok(Json(node_to_json(&updated)))
 }
@@ -146,17 +149,21 @@ async fn delete_node(
 ) -> Result<StatusCode, ApiError> {
     validate_graph_name(&name).map_err(ApiError::from)?;
     let id = parse_node_id(&id_str)?;
-    require_graph(&state, &name)?;
-
-    state.store.delete_node(&name, id, true).map_err(|e| {
-        use gql_core::error::StorageError;
-        match &e {
-            StorageError::NodeNotFound { .. } => {
-                ApiError::not_found(format!("node {id_str} not found"))
+    require_graph(&state, &name).await?;
+    let graph_name = name.clone();
+    let id_lookup = id_str.clone();
+    run_store_blocking(&state, move |store| {
+        store.delete_node(&graph_name, id, true).map_err(|e| {
+            use gql_core::error::StorageError;
+            match &e {
+                StorageError::NodeNotFound { .. } => {
+                    ApiError::not_found(format!("node {id_lookup} not found"))
+                }
+                _ => ApiError::from(e),
             }
-            _ => ApiError::from(e),
-        }
-    })?;
+        })
+    })
+    .await?;
 
     Ok(StatusCode::NO_CONTENT)
 }

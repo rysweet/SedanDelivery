@@ -1,0 +1,136 @@
+# Canonical gadugi scenario for Issue #511 — gql-api per-IP rate limiting.
+#
+# This validates the public HTTP contract locally without cloud or Redis:
+#   - gql-api starts in plaintext HTTP mode with in-memory storage
+#   - non-health requests are rate limited per client IP
+#   - ConnectInfo is wired correctly, so the limiter returns 429 rather than
+#     silently allowing traffic or failing with a 500 misconfiguration error
+#   - GET /health remains exempt
+
+scenario:
+  name: "Issue #511 - gql-api per-IP rate limiting"
+  description: >
+    Verifies from an operator and client perspective that gql-api enforces the
+    configured per-IP rate limit on normal HTTP routes, returns HTTP 429 once a
+    client exceeds the quota, and still serves GET /health without rate
+    limiting. This runs gql-api locally with in-memory storage and a low
+    requests-per-second budget so the external contract is exercised without
+    extra infrastructure.
+  metadata:
+    tags: [cli, api, security, rate-limit, regression, issue-511, issue-541]
+    priority: high
+  agents:
+    - name: cli-agent
+      type: cli
+      config: {}
+
+  steps:
+    - name: "A1 — Run local gql-api rate-limit contract"
+      agent: cli-agent
+      action: execute
+      params:
+        command: bash
+        args:
+          - -lc
+          - >
+            set -euo pipefail;
+            PORT=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()');
+            API_LOG=$(mktemp);
+            METRICS1=$(mktemp);
+            METRICS2=$(mktemp);
+            METRICS3=$(mktemp);
+            HEALTH_BODY=$(mktemp);
+            cleanup() {
+              if [[ -n "${API_PID:-}" ]]; then
+                kill "${API_PID}" >/dev/null 2>&1 || true;
+                wait "${API_PID}" 2>/dev/null || true;
+              fi;
+              rm -f "${API_LOG}" "${METRICS1}" "${METRICS2}" "${METRICS3}" "${HEALTH_BODY}";
+            };
+            trap cleanup EXIT;
+            env
+            -u GQL_REDIS_URL
+            -u GQL_REDIS_CLUSTER_NODES
+            -u ENVIRONMENT
+            -u GQL_API_TLS_CERT
+            -u GQL_API_TLS_KEY
+            -u GQL_API_ENTRA_TENANT_ID
+            -u GQL_API_ENTRA_CLIENT_ID
+            GQL_API_BIND_ADDR="127.0.0.1:${PORT}"
+            GQL_API_RATE_LIMIT_RPS=1
+            cargo run -p gql-api --quiet >"${API_LOG}" 2>&1 &
+            API_PID=$!;
+            for _ in $(seq 1 120); do
+              HEALTH_CODE=$(curl -s -o "${HEALTH_BODY}" -w '%{http_code}' "http://127.0.0.1:${PORT}/health" || true);
+              if [[ "${HEALTH_CODE}" == "200" ]]; then
+                break;
+              fi;
+              sleep 1;
+            done;
+            [[ "${HEALTH_CODE}" == "200" ]] || { echo "[FAIL] gql-api did not become healthy" >&2; cat "${API_LOG}" >&2; exit 1; };
+            echo "[PASS] gql-api started";
+            FIRST_CODE=$(curl -s -o "${METRICS1}" -w '%{http_code}' "http://127.0.0.1:${PORT}/metrics");
+            [[ "${FIRST_CODE}" == "200" ]] || { echo "[FAIL] first /metrics request returned ${FIRST_CODE}" >&2; cat "${METRICS1}" >&2; exit 1; };
+            echo "[PASS] first metrics request allowed";
+            SECOND_CODE=$(curl -s -o "${METRICS2}" -w '%{http_code}' "http://127.0.0.1:${PORT}/metrics");
+            [[ "${SECOND_CODE}" == "429" ]] || { echo "[FAIL] second /metrics request returned ${SECOND_CODE}" >&2; cat "${METRICS2}" >&2; exit 1; };
+            grep -q 'Too Many Requests' "${METRICS2}" || { echo "[FAIL] 429 body missing expected message" >&2; cat "${METRICS2}" >&2; exit 1; };
+            echo "[PASS] repeated metrics request rate limited";
+            echo "[PASS] connect info wired for rate limiter";
+            HEALTH_CODE=$(curl -s -o "${HEALTH_BODY}" -w '%{http_code}' "http://127.0.0.1:${PORT}/health");
+            [[ "${HEALTH_CODE}" == "200" ]] || { echo "[FAIL] /health returned ${HEALTH_CODE}" >&2; cat "${HEALTH_BODY}" >&2; exit 1; };
+            grep -q '"status":"ok"' "${HEALTH_BODY}" || { echo "[FAIL] /health body unexpected" >&2; cat "${HEALTH_BODY}" >&2; exit 1; };
+            echo "[PASS] health endpoint exempt";
+            sleep 2;
+            THIRD_CODE=$(curl -s -o "${METRICS3}" -w '%{http_code}' "http://127.0.0.1:${PORT}/metrics");
+            [[ "${THIRD_CODE}" == "200" ]] || { echo "[FAIL] post-refill /metrics request returned ${THIRD_CODE}" >&2; cat "${METRICS3}" >&2; exit 1; };
+            echo "[PASS] limiter refills after window";
+      timeout: 180000
+
+    - name: "A2 — Confirm gql-api started"
+      agent: cli-agent
+      action: wait_for_output
+      params:
+        pattern: "\\[PASS\\]\\s+gql-api started"
+      timeout: 5000
+
+    - name: "A3 — Confirm first metrics request is allowed"
+      agent: cli-agent
+      action: wait_for_output
+      params:
+        pattern: "\\[PASS\\]\\s+first metrics request allowed"
+      timeout: 5000
+
+    - name: "A4 — Confirm repeated metrics request is rate limited"
+      agent: cli-agent
+      action: wait_for_output
+      params:
+        pattern: "\\[PASS\\]\\s+repeated metrics request rate limited"
+      timeout: 5000
+
+    - name: "A5 — Confirm ConnectInfo is wired"
+      agent: cli-agent
+      action: wait_for_output
+      params:
+        pattern: "\\[PASS\\]\\s+connect info wired for rate limiter"
+      timeout: 5000
+
+    - name: "A6 — Confirm /health stays exempt"
+      agent: cli-agent
+      action: wait_for_output
+      params:
+        pattern: "\\[PASS\\]\\s+health endpoint exempt"
+      timeout: 5000
+
+    - name: "A7 — Confirm limiter refills after the window"
+      agent: cli-agent
+      action: wait_for_output
+      params:
+        pattern: "\\[PASS\\]\\s+limiter refills after window"
+      timeout: 5000
+
+    - name: "A8 — Confirm validator exited cleanly"
+      agent: cli-agent
+      action: validate_exit_code
+      params:
+        text: "0"

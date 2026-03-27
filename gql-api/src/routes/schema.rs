@@ -13,7 +13,7 @@ use gql_core::storage::validate_graph_name;
 
 use crate::error::ApiError;
 use crate::models::{LabelInfo, RelTypeInfo, SchemaResponse};
-use crate::routes::helpers::{compute_schema_counts, require_graph};
+use crate::routes::helpers::{compute_schema_counts_blocking, require_graph};
 use crate::state::AppState;
 
 pub fn router() -> Router<AppState> {
@@ -25,9 +25,9 @@ async fn schema_handler(
     Path(name): Path<String>,
 ) -> Result<Json<SchemaResponse>, ApiError> {
     validate_graph_name(&name).map_err(ApiError::from)?;
-    require_graph(&state, &name)?;
+    require_graph(&state, &name).await?;
 
-    let (label_counts, reltype_counts) = compute_schema_counts(state.store.as_ref(), &name)?;
+    let (label_counts, reltype_counts) = compute_schema_counts_blocking(&state, &name).await?;
 
     let mut labels: Vec<LabelInfo> = label_counts
         .into_iter()

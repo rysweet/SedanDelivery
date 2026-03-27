@@ -393,6 +393,10 @@ plaintext mode without `BOLT_REQUIRE_TLS`. This is safe only for:
 > and `DEPLOY_BOLT_TLS_KEY_PEM`. Without them, Bolt starts in plaintext mode
 > with a warning — it will **not** panic on startup.
 
+Do **not** set `BOLT_ALLOW_SELF_SIGNED` in production deploys. That override is
+only for local development when you intentionally use a self-signed test
+certificate; public deployments should present a CA-issued certificate instead.
+
 Retrieve the current Bolt password after deploy with:
 
 ```bash

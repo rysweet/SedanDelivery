@@ -16,7 +16,7 @@ use gql_redis_store::RedisGraphStore;
 
 use crate::error::ApiError;
 use crate::models::{ExportResponse, ImportBody, ImportResponse};
-use crate::routes::helpers::{json_map_to_props, require_graph};
+use crate::routes::helpers::{json_map_to_props, require_graph, run_store_blocking};
 use crate::serialize::{edge_to_json, node_to_json};
 use crate::state::AppState;
 
@@ -122,78 +122,74 @@ async fn export_handler(
     Path(name): Path<String>,
 ) -> Result<Json<ExportResponse>, ApiError> {
     validate_graph_name(&name).map_err(ApiError::from)?;
-    require_graph(&state, &name)?;
+    require_graph(&state, &name).await?;
 
-    let store = &state.store;
-
-    // Guard: check total element count before loading everything into memory.
-    // This uses graph_stats() which returns counts without fetching full data.
-    let stats = store.graph_stats(&name).map_err(ApiError::from)?;
-    let total_elements = stats.node_count.saturating_add(stats.edge_count);
-    let limit = max_export_elements();
-    if total_elements > limit {
-        return Err(ApiError::new(
-            axum::http::StatusCode::PAYLOAD_TOO_LARGE,
-            format!(
-                "graph '{name}' has {total_elements} elements (nodes + edges), \
-                 which exceeds the export limit of {limit}. \
-                 Set GQL_API_MAX_EXPORT_ELEMENTS to raise the limit."
-            ),
-        ));
-    }
-
-    // Export all nodes.
-    let all_node_ids = store.all_node_ids(&name).map_err(ApiError::from)?;
-    let node_batch = store
-        .get_nodes_batch(&name, &all_node_ids)
-        .map_err(ApiError::from)?;
-    let nodes: Vec<serde_json::Value> = node_batch.iter().flatten().map(node_to_json).collect();
-
-    // Export all edges.
-    let all_edge_ids = store.all_edge_ids(&name).map_err(ApiError::from)?;
-    let edge_batch = store
-        .get_edges_batch(&name, &all_edge_ids)
-        .map_err(ApiError::from)?;
-    let edges: Vec<serde_json::Value> = edge_batch.iter().flatten().map(edge_to_json).collect();
-
-    // Build schema summary inline from the already-fetched batches to avoid
-    // a redundant second scan of all nodes and edges.
-    let mut label_counts: HashMap<String, usize> = HashMap::new();
-    for node in node_batch.iter().flatten() {
-        for label in &node.labels {
-            *label_counts.entry(label.clone()).or_insert(0) += 1;
+    let graph_name = name.clone();
+    let response = run_store_blocking(&state, move |store| {
+        let stats = store.graph_stats(&graph_name).map_err(ApiError::from)?;
+        let total_elements = stats.node_count.saturating_add(stats.edge_count);
+        let limit = max_export_elements();
+        if total_elements > limit {
+            return Err(ApiError::new(
+                axum::http::StatusCode::PAYLOAD_TOO_LARGE,
+                format!(
+                    "graph '{graph_name}' has {total_elements} elements (nodes + edges), \
+                     which exceeds the export limit of {limit}. \
+                     Set GQL_API_MAX_EXPORT_ELEMENTS to raise the limit."
+                ),
+            ));
         }
-    }
-    let mut reltype_counts: HashMap<String, usize> = HashMap::new();
-    for edge in edge_batch.iter().flatten() {
-        *reltype_counts.entry(edge.rel_type.clone()).or_insert(0) += 1;
-    }
 
-    let schema_labels: Vec<serde_json::Value> = {
-        let mut v: Vec<(&String, &usize)> = label_counts.iter().collect();
-        v.sort_by_key(|(k, _)| k.as_str());
-        v.into_iter()
-            .map(|(k, c)| serde_json::json!({ "name": k, "count": c }))
-            .collect()
-    };
-    let schema_reltypes: Vec<serde_json::Value> = {
-        let mut v: Vec<(&String, &usize)> = reltype_counts.iter().collect();
-        v.sort_by_key(|(k, _)| k.as_str());
-        v.into_iter()
-            .map(|(k, c)| serde_json::json!({ "name": k, "count": c }))
-            .collect()
-    };
+        let all_node_ids = store.all_node_ids(&graph_name).map_err(ApiError::from)?;
+        let node_batch = store
+            .get_nodes_batch(&graph_name, &all_node_ids)
+            .map_err(ApiError::from)?;
+        let nodes: Vec<serde_json::Value> = node_batch.iter().flatten().map(node_to_json).collect();
 
-    let schema = serde_json::json!({
-        "labels": schema_labels,
-        "relationship_types": schema_reltypes,
-    });
+        let all_edge_ids = store.all_edge_ids(&graph_name).map_err(ApiError::from)?;
+        let edge_batch = store
+            .get_edges_batch(&graph_name, &all_edge_ids)
+            .map_err(ApiError::from)?;
+        let edges: Vec<serde_json::Value> = edge_batch.iter().flatten().map(edge_to_json).collect();
 
-    Ok(Json(ExportResponse {
-        nodes,
-        edges,
-        schema,
-    }))
+        let mut label_counts: HashMap<String, usize> = HashMap::new();
+        for node in node_batch.iter().flatten() {
+            for label in &node.labels {
+                *label_counts.entry(label.clone()).or_insert(0) += 1;
+            }
+        }
+        let mut reltype_counts: HashMap<String, usize> = HashMap::new();
+        for edge in edge_batch.iter().flatten() {
+            *reltype_counts.entry(edge.rel_type.clone()).or_insert(0) += 1;
+        }
+
+        let schema_labels: Vec<serde_json::Value> = {
+            let mut v: Vec<(&String, &usize)> = label_counts.iter().collect();
+            v.sort_by_key(|(k, _)| k.as_str());
+            v.into_iter()
+                .map(|(k, c)| serde_json::json!({ "name": k, "count": c }))
+                .collect()
+        };
+        let schema_reltypes: Vec<serde_json::Value> = {
+            let mut v: Vec<(&String, &usize)> = reltype_counts.iter().collect();
+            v.sort_by_key(|(k, _)| k.as_str());
+            v.into_iter()
+                .map(|(k, c)| serde_json::json!({ "name": k, "count": c }))
+                .collect()
+        };
+
+        Ok(ExportResponse {
+            nodes,
+            edges,
+            schema: serde_json::json!({
+                "labels": schema_labels,
+                "relationship_types": schema_reltypes,
+            }),
+        })
+    })
+    .await?;
+
+    Ok(Json(response))
 }
 
 // ── POST /graphs/{name}/import ────────────────────────────────────────────────
@@ -219,31 +215,41 @@ async fn import_handler(
         )));
     }
 
-    require_graph(&state, &name)?;
+    require_graph(&state, &name).await?;
+    let graph_name = name.clone();
+    let response = run_store_blocking(&state, move |store| {
+        let mut id_map: HashMap<String, gql_core::storage::NodeId> = HashMap::new();
+        let mut nodes_created: usize = 0;
 
-    let store = &state.store;
+        let redis_store = store.as_any().downcast_ref::<RedisGraphStore>();
+        if let Some(rs) = redis_store {
+            let batch_size = redis_batch_size();
+            let mut stable_ids: Vec<Option<String>> = Vec::with_capacity(body.nodes.len());
+            let mut batch: Vec<(Vec<String>, IndexMap<String, gql_core::types::Value>)> =
+                Vec::with_capacity(batch_size);
 
-    // Map from import ID string to newly-created NodeId, so edges can reference them.
-    let mut id_map: HashMap<String, gql_core::storage::NodeId> = HashMap::new();
-    let mut nodes_created: usize = 0;
+            for import_node in body.nodes.into_iter() {
+                stable_ids.push(import_node.id.clone());
+                let props = json_map_to_props(import_node.properties)?;
+                batch.push((import_node.labels, props));
 
-    // Try batched path if the store is a RedisGraphStore.
-    let redis_store = store.as_any().downcast_ref::<RedisGraphStore>();
-    if let Some(rs) = redis_store {
-        let batch_size = redis_batch_size();
-        // Collect stable IDs so we can build the id_map after batch creation.
-        let mut stable_ids: Vec<Option<String>> = Vec::with_capacity(body.nodes.len());
-        let mut batch: Vec<(Vec<String>, IndexMap<String, gql_core::types::Value>)> =
-            Vec::with_capacity(batch_size);
-
-        for import_node in body.nodes.into_iter() {
-            stable_ids.push(import_node.id.clone());
-            let props = json_map_to_props(import_node.properties)?;
-            batch.push((import_node.labels, props));
-
-            if batch.len() >= batch_size {
+                if batch.len() >= batch_size {
+                    let new_ids = rs
+                        .batch_create_nodes(&graph_name, std::mem::take(&mut batch))
+                        .map_err(ApiError::from)?;
+                    let offset = nodes_created;
+                    nodes_created += new_ids.len();
+                    for (i, new_id) in new_ids.into_iter().enumerate() {
+                        if let Some(ref stable_id) = stable_ids[offset + i] {
+                            id_map.insert(stable_id.clone(), new_id);
+                        }
+                        id_map.insert(new_id.0.to_string(), new_id);
+                    }
+                }
+            }
+            if !batch.is_empty() {
                 let new_ids = rs
-                    .batch_create_nodes(&name, std::mem::take(&mut batch))
+                    .batch_create_nodes(&graph_name, batch)
                     .map_err(ApiError::from)?;
                 let offset = nodes_created;
                 nodes_created += new_ids.len();
@@ -254,110 +260,95 @@ async fn import_handler(
                     id_map.insert(new_id.0.to_string(), new_id);
                 }
             }
-        }
-        // Flush remaining nodes.
-        if !batch.is_empty() {
-            let new_ids = rs
-                .batch_create_nodes(&name, batch)
-                .map_err(ApiError::from)?;
-            let offset = nodes_created;
-            nodes_created += new_ids.len();
-            for (i, new_id) in new_ids.into_iter().enumerate() {
-                if let Some(ref stable_id) = stable_ids[offset + i] {
+        } else {
+            for import_node in body.nodes {
+                let props = json_map_to_props(import_node.properties)?;
+                let new_id = store
+                    .create_node(&graph_name, import_node.labels, props)
+                    .map_err(ApiError::from)?;
+                nodes_created += 1;
+
+                if let Some(ref stable_id) = import_node.id {
                     id_map.insert(stable_id.clone(), new_id);
                 }
                 id_map.insert(new_id.0.to_string(), new_id);
             }
         }
-    } else {
-        // Fallback: sequential single-node creation for non-Redis stores.
-        for import_node in body.nodes {
-            let props = json_map_to_props(import_node.properties)?;
-            let new_id = store
-                .create_node(&name, import_node.labels, props)
-                .map_err(ApiError::from)?;
-            nodes_created += 1;
 
-            if let Some(ref stable_id) = import_node.id {
-                id_map.insert(stable_id.clone(), new_id);
-            }
-            id_map.insert(new_id.0.to_string(), new_id);
-        }
-    }
+        let mut edges_created: usize = 0;
+        let mut edge_warnings: Vec<String> = Vec::new();
 
-    // Attempt to create each edge; collect failures rather than aborting early.
-    let mut edges_created: usize = 0;
-    let mut edge_warnings: Vec<String> = Vec::new();
-
-    for import_edge in body.edges {
-        // Validate relationship type before touching the store.
-        if import_edge.rel_type.is_empty() {
-            edge_warnings.push(format!(
-                "skipped edge {}->{}: relationship type must not be empty",
-                import_edge.source, import_edge.target
-            ));
-            continue;
-        }
-
-        // Resolve source/target: first try the id_map, then parse as raw u64.
-        let src = match resolve_import_node_id(&import_edge.source, &id_map) {
-            Ok(id) => id,
-            Err(_) => {
+        for import_edge in body.edges {
+            if import_edge.rel_type.is_empty() {
                 edge_warnings.push(format!(
-                    "skipped edge {}->{}: cannot resolve source node reference '{}'",
-                    import_edge.source, import_edge.target, import_edge.source
-                ));
-                continue;
-            }
-        };
-        let dst = match resolve_import_node_id(&import_edge.target, &id_map) {
-            Ok(id) => id,
-            Err(_) => {
-                edge_warnings.push(format!(
-                    "skipped edge {}->{}: cannot resolve target node reference '{}'",
-                    import_edge.source, import_edge.target, import_edge.target
-                ));
-                continue;
-            }
-        };
-
-        let props = match json_map_to_props(import_edge.properties) {
-            Ok(p) => p,
-            Err(_) => {
-                edge_warnings.push(format!(
-                    "skipped edge {}->{}: invalid property value",
+                    "skipped edge {}->{}: relationship type must not be empty",
                     import_edge.source, import_edge.target
                 ));
                 continue;
             }
-        };
 
-        match store.create_edge(&name, src, dst, import_edge.rel_type, props) {
-            Ok(_) => edges_created += 1,
-            Err(e) => {
-                edge_warnings.push(format!(
-                    "skipped edge {}->{}: {}",
-                    import_edge.source, import_edge.target, e
-                ));
+            let src = match resolve_import_node_id(&import_edge.source, &id_map) {
+                Ok(id) => id,
+                Err(_) => {
+                    edge_warnings.push(format!(
+                        "skipped edge {}->{}: cannot resolve source node reference '{}'",
+                        import_edge.source, import_edge.target, import_edge.source
+                    ));
+                    continue;
+                }
+            };
+            let dst = match resolve_import_node_id(&import_edge.target, &id_map) {
+                Ok(id) => id,
+                Err(_) => {
+                    edge_warnings.push(format!(
+                        "skipped edge {}->{}: cannot resolve target node reference '{}'",
+                        import_edge.source, import_edge.target, import_edge.target
+                    ));
+                    continue;
+                }
+            };
+
+            let props = match json_map_to_props(import_edge.properties) {
+                Ok(p) => p,
+                Err(_) => {
+                    edge_warnings.push(format!(
+                        "skipped edge {}->{}: invalid property value",
+                        import_edge.source, import_edge.target
+                    ));
+                    continue;
+                }
+            };
+
+            match store.create_edge(&graph_name, src, dst, import_edge.rel_type, props) {
+                Ok(_) => edges_created += 1,
+                Err(e) => {
+                    edge_warnings.push(format!(
+                        "skipped edge {}->{}: {}",
+                        import_edge.source, import_edge.target, e
+                    ));
+                }
             }
         }
-    }
 
-    if !edge_warnings.is_empty() {
-        tracing::warn!(
-            graph = %name,
+        if !edge_warnings.is_empty() {
+            tracing::warn!(
+                graph = %graph_name,
+                nodes_created,
+                edges_created,
+                warnings = ?edge_warnings,
+                "import completed with partial edge failures"
+            );
+        }
+
+        Ok(ImportResponse {
             nodes_created,
             edges_created,
-            warnings = ?edge_warnings,
-            "import completed with partial edge failures"
-        );
-    }
+            warnings: edge_warnings,
+        })
+    })
+    .await?;
 
-    Ok(Json(ImportResponse {
-        nodes_created,
-        edges_created,
-        warnings: edge_warnings,
-    }))
+    Ok(Json(response))
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────

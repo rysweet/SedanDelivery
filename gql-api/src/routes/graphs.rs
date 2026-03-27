@@ -13,10 +13,10 @@ use axum::{Json, Router};
 use serde::Deserialize;
 
 use gql_core::storage::validate_graph_name;
-use gql_redis_store::RedisGraphStore;
 
 use crate::error::ApiError;
 use crate::models::{CreateGraphBody, GraphListResponse, GraphStatsResponse};
+use crate::routes::helpers::run_store_blocking;
 use crate::state::AppState;
 
 pub fn router() -> Router<AppState> {
@@ -37,7 +37,10 @@ struct AuditGraphQuery {
 // ── GET /graphs ───────────────────────────────────────────────────────────────
 
 async fn list_graphs(State(state): State<AppState>) -> Result<Json<GraphListResponse>, ApiError> {
-    let mut graphs = state.store.list_graphs().map_err(ApiError::from)?;
+    let mut graphs = run_store_blocking(&state, move |store| {
+        store.list_graphs().map_err(ApiError::from)
+    })
+    .await?;
     graphs.sort();
     Ok(Json(GraphListResponse { graphs }))
 }
@@ -49,14 +52,15 @@ async fn create_graph(
     Json(body): Json<CreateGraphBody>,
 ) -> Result<(StatusCode, Json<serde_json::Value>), ApiError> {
     validate_graph_name(&body.name).map_err(ApiError::from)?;
-
-    state
-        .store
-        .create_graph(&body.name)
-        .map_err(ApiError::from)?;
-    if let Ok(graphs) = state.store.list_graphs() {
-        crate::metrics::set_active_graphs(graphs.len());
-    }
+    let graph_name = body.name.clone();
+    run_store_blocking(&state, move |store| {
+        store.create_graph(&graph_name).map_err(ApiError::from)?;
+        if let Ok(graphs) = store.list_graphs() {
+            crate::metrics::set_active_graphs(graphs.len());
+        }
+        Ok(())
+    })
+    .await?;
 
     Ok((
         StatusCode::CREATED,
@@ -71,11 +75,15 @@ async fn delete_graph(
     Path(name): Path<String>,
 ) -> Result<StatusCode, ApiError> {
     validate_graph_name(&name).map_err(ApiError::from)?;
-
-    state.store.delete_graph(&name).map_err(ApiError::from)?;
-    if let Ok(graphs) = state.store.list_graphs() {
-        crate::metrics::set_active_graphs(graphs.len());
-    }
+    let graph_name = name.clone();
+    run_store_blocking(&state, move |store| {
+        store.delete_graph(&graph_name).map_err(ApiError::from)?;
+        if let Ok(graphs) = store.list_graphs() {
+            crate::metrics::set_active_graphs(graphs.len());
+        }
+        Ok(())
+    })
+    .await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -86,12 +94,16 @@ async fn graph_stats(
     Path(name): Path<String>,
 ) -> Result<Json<GraphStatsResponse>, ApiError> {
     validate_graph_name(&name).map_err(ApiError::from)?;
-
-    if !state.store.graph_exists(&name).map_err(ApiError::from)? {
-        return Err(ApiError::not_found(format!("graph '{name}' not found")));
-    }
-
-    let stats = state.store.graph_stats(&name).map_err(ApiError::from)?;
+    let graph_name = name.clone();
+    let stats = run_store_blocking(&state, move |store| {
+        if !store.graph_exists(&graph_name).map_err(ApiError::from)? {
+            return Err(ApiError::not_found(format!(
+                "graph '{graph_name}' not found"
+            )));
+        }
+        store.graph_stats(&graph_name).map_err(ApiError::from)
+    })
+    .await?;
     Ok(Json(GraphStatsResponse {
         node_count: stats.node_count,
         edge_count: stats.edge_count,
@@ -108,17 +120,24 @@ async fn audit_graph_metadata(
     Query(query): Query<AuditGraphQuery>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     validate_graph_name(&name).map_err(ApiError::from)?;
+    let graph_name = name.clone();
+    let repair = query.repair;
+    let report = run_store_blocking(&state, move |store| {
+        let Some(redis_store) = store
+            .as_any()
+            .downcast_ref::<gql_redis_store::RedisGraphStore>()
+        else {
+            return Err(ApiError::new(
+                StatusCode::NOT_IMPLEMENTED,
+                "graph metadata audit is only implemented for Redis-backed stores",
+            ));
+        };
 
-    let Some(redis_store) = state.store.as_any().downcast_ref::<RedisGraphStore>() else {
-        return Err(ApiError::new(
-            StatusCode::NOT_IMPLEMENTED,
-            "graph metadata audit is only implemented for Redis-backed stores",
-        ));
-    };
-
-    let report = redis_store
-        .audit_graph_metadata(&name, query.repair)
-        .map_err(ApiError::from)?;
+        redis_store
+            .audit_graph_metadata(&graph_name, repair)
+            .map_err(ApiError::from)
+    })
+    .await?;
 
     Ok(Json(serde_json::json!({
         "graph": report.graph,

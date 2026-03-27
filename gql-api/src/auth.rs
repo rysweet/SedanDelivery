@@ -70,6 +70,7 @@ struct JwksCacheInner {
 
 struct JwksCache {
     inner: RwLock<Option<JwksCacheInner>>,
+    refresh_lock: tokio::sync::Mutex<()>,
     refresh_ttl: Duration,
     retry_cooldown: Duration,
 }
@@ -95,10 +96,25 @@ impl JwksCache {
     fn new() -> Self {
         Self {
             inner: RwLock::new(None),
+            refresh_lock: tokio::sync::Mutex::new(()),
             refresh_ttl: env_duration_secs("GQL_API_JWKS_REFRESH_SECS", 86400),
             retry_cooldown: env_duration_secs("GQL_API_JWKS_RETRY_COOLDOWN_SECS", 60),
         }
     }
+}
+
+fn jwks_http_timeout() -> Duration {
+    env_duration_secs("GQL_API_JWKS_HTTP_TIMEOUT_SECS", 5)
+}
+
+fn jwks_http_agent() -> &'static ureq::Agent {
+    static AGENT: OnceLock<ureq::Agent> = OnceLock::new();
+    AGENT.get_or_init(|| {
+        ureq::Agent::config_builder()
+            .timeout_global(Some(jwks_http_timeout()))
+            .build()
+            .new_agent()
+    })
 }
 
 /// Fetch JWKS keys from the Entra ID discovery endpoint.
@@ -111,7 +127,8 @@ async fn fetch_jwks(tenant_id: &str) -> Result<Vec<JwksKey>, String> {
 
     let url_clone = url.clone();
     let keys = tokio::task::spawn_blocking(move || {
-        let mut resp = ureq::get(&url_clone)
+        let mut resp = jwks_http_agent()
+            .get(&url_clone)
             .call()
             .map_err(|e| format!("failed to fetch JWKS from {url_clone}: {e}"))?;
         let jwks: JwksResponse = resp
@@ -141,7 +158,6 @@ fn jwks_cache() -> &'static JwksCache {
 /// Returns `Err(String)` if the key cannot be found after a refresh attempt.
 async fn find_jwks_key(tenant_id: &str, kid: &str) -> Result<JwksKey, String> {
     let cache = jwks_cache();
-    let now = Instant::now();
 
     // Fast path: read lock — check if we have a non-expired key.
     {
@@ -150,7 +166,7 @@ async fn find_jwks_key(tenant_id: &str, kid: &str) -> Result<JwksKey, String> {
             .read()
             .map_err(|_| "JWKS cache lock poisoned".to_string())?;
         if let Some(ref inner) = *guard {
-            if now.duration_since(inner.fetched_at) < cache.refresh_ttl {
+            if Instant::now().duration_since(inner.fetched_at) < cache.refresh_ttl {
                 if let Some(key) = inner.keys.iter().find(|k| k.kid == kid && k.kty == "RSA") {
                     return Ok(key.clone());
                 }
@@ -158,14 +174,17 @@ async fn find_jwks_key(tenant_id: &str, kid: &str) -> Result<JwksKey, String> {
         }
     }
 
-    // Slow path: write lock — check again, then decide whether to fetch.
+    let _refresh_guard = cache.refresh_lock.lock().await;
+
+    // Slow path: re-check under the single-flight gate before deciding to fetch.
     {
         let guard = cache
             .inner
-            .write()
+            .read()
             .map_err(|_| "JWKS cache lock poisoned".to_string())?;
+        let now = Instant::now();
 
-        // Double-check: another thread may have refreshed while we waited.
+        // Double-check: another task may have refreshed while we waited.
         if let Some(ref inner) = *guard {
             if now.duration_since(inner.fetched_at) < cache.refresh_ttl {
                 if let Some(key) = inner.keys.iter().find(|k| k.kid == kid && k.kty == "RSA") {
@@ -181,17 +200,17 @@ async fn find_jwks_key(tenant_id: &str, kid: &str) -> Result<JwksKey, String> {
                 }
             }
         }
-        // Drop the write lock before the async fetch so we don't hold a
-        // std::sync::RwLockWriteGuard (which is !Send) across an .await point.
     }
 
-    // Fetch fresh keys outside any lock.
+    // Fetch fresh keys while holding the single-flight gate so concurrent cache
+    // misses do not stampede the identity provider or our blocking pool.
     match fetch_jwks(tenant_id).await {
         Ok(keys) => {
             let result = keys
                 .iter()
                 .find(|k| k.kid == kid && k.kty == "RSA")
                 .cloned();
+            let fetched_at = Instant::now();
             // Re-acquire write lock to store the fetched keys.
             let mut guard = cache
                 .inner
@@ -199,20 +218,21 @@ async fn find_jwks_key(tenant_id: &str, kid: &str) -> Result<JwksKey, String> {
                 .map_err(|_| "JWKS cache lock poisoned".to_string())?;
             *guard = Some(JwksCacheInner {
                 keys,
-                fetched_at: now,
-                last_retry_at: Some(now),
+                fetched_at,
+                last_retry_at: Some(fetched_at),
             });
             result.ok_or_else(|| format!("no matching JWKS key for kid={kid}"))
         }
         Err(e) => {
             crate::metrics::jwks_refresh_failure();
+            let retry_at = Instant::now();
             // If we have stale keys, update the retry timestamp and try them.
             let mut guard = cache
                 .inner
                 .write()
                 .map_err(|_| "JWKS cache lock poisoned".to_string())?;
             if let Some(ref mut inner) = *guard {
-                inner.last_retry_at = Some(now);
+                inner.last_retry_at = Some(retry_at);
                 if let Some(key) = inner.keys.iter().find(|k| k.kid == kid && k.kty == "RSA") {
                     tracing::warn!("JWKS refresh failed ({e}), using stale key for kid={kid}");
                     return Ok(key.clone());
@@ -434,6 +454,7 @@ mod tests {
     fn jwks_cache_initializes_empty() {
         let cache = JwksCache {
             inner: RwLock::new(None),
+            refresh_lock: tokio::sync::Mutex::new(()),
             refresh_ttl: Duration::from_secs(60),
             retry_cooldown: Duration::from_secs(5),
         };
@@ -445,6 +466,7 @@ mod tests {
     fn jwks_cache_ttl_expires_entries() {
         let cache = JwksCache {
             inner: RwLock::new(None),
+            refresh_lock: tokio::sync::Mutex::new(()),
             refresh_ttl: Duration::from_secs(0), // immediate expiry
             retry_cooldown: Duration::from_secs(0),
         };
@@ -483,6 +505,7 @@ mod tests {
     fn jwks_cache_cooldown_prevents_rapid_refetch() {
         let cache = JwksCache {
             inner: RwLock::new(None),
+            refresh_lock: tokio::sync::Mutex::new(()),
             refresh_ttl: Duration::from_secs(3600),
             retry_cooldown: Duration::from_secs(300), // 5 minutes
         };

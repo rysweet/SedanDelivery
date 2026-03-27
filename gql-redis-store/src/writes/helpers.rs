@@ -41,6 +41,21 @@ pub(crate) fn clean_fanout_props(
     properties
 }
 
+/// Maximum number of items accepted by batch create helpers before the store
+/// refuses the request instead of monopolising the graph write lock.
+pub(crate) fn max_batch_size() -> usize {
+    static SIZE: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *SIZE.get_or_init(|| gql_core::config::parse_env_min("GQL_REDIS_MAX_BATCH_SIZE", 5000usize, 1))
+}
+
+/// Number of batch create items serialized into each Redis pipeline chunk.
+pub(crate) fn batch_pipeline_chunk_size() -> usize {
+    static SIZE: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *SIZE.get_or_init(|| {
+        gql_core::config::parse_env_min("GQL_REDIS_BATCH_PIPELINE_CHUNK_SIZE", 250usize, 1)
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

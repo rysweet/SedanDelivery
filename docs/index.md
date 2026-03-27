@@ -94,7 +94,7 @@ See [ADR-004](ADR-004-distributed-redis) for the full architecture decision reco
 | `BOLT_PASSWORD` | — | Bolt auth password. Required in `ENVIRONMENT=production`; Azure Container Apps deploys auto-generate and reuse the `bolt-password` Container App secret |
 | `BOLT_TLS_CERT` | — | PEM certificate chain file for in-process Bolt TLS; must be set together with `BOLT_TLS_KEY`; Azure Container Apps deploys mount this as `/mnt/secrets/bolt-tls-cert` |
 | `BOLT_TLS_KEY` | — | PEM private key file for in-process Bolt TLS; must be set together with `BOLT_TLS_CERT`; Azure Container Apps deploys mount this as `/mnt/secrets/bolt-tls-key` |
-| `BOLT_REQUIRE_TLS` | `false` | Refuse startup unless in-process Bolt TLS is configured; Azure Container Apps deploys set this to `true` for the public Bolt endpoint |
+| `BOLT_REQUIRE_TLS` | unset | Set to `1` to refuse startup unless in-process Bolt TLS is configured; Azure Container Apps deploys set this for the public Bolt endpoint |
 | `BOLT_WS_ALLOWED_ORIGINS` | — | Comma-separated browser origins allowed to use Bolt over WebSocket; when set, a matching `Origin` header is required and `*` allows any origin |
 | `BOLT_MAX_CONNECTIONS` | `1024` | Max concurrent Bolt connections |
 | `BOLT_MAX_CONN_PER_IP` | `50` | Max concurrent connections from a single IP (DoS protection) |

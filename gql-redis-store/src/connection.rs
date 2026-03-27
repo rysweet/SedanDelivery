@@ -3,8 +3,10 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
-use redis::cluster::{ClusterClient, ClusterPipeline};
-use redis::{Client, ConnectionLike, FromRedisValue, RedisResult, ToRedisArgs};
+use redis::cluster::{ClusterClient, ClusterClientBuilder, ClusterConnection, ClusterPipeline};
+use redis::{
+    Client, Connection, ConnectionLike, FromRedisValue, RedisError, RedisResult, ToRedisArgs,
+};
 
 use gql_core::error::StorageError;
 
@@ -39,6 +41,141 @@ pub(crate) const DEFAULT_IDLE_TIMEOUT_SECS: u64 = 300;
 /// Default minimum idle connections.  Keeps at least this many connections
 /// warm so the first requests after an idle period avoid cold-connect latency.
 pub(crate) const DEFAULT_MIN_IDLE: u32 = 1;
+/// Default Redis TCP connect timeout in milliseconds.
+pub(crate) const DEFAULT_CONNECT_TIMEOUT_MS: u64 = 1000;
+/// Default Redis socket read timeout in milliseconds.
+pub(crate) const DEFAULT_READ_TIMEOUT_MS: u64 = 5000;
+/// Default Redis socket write timeout in milliseconds.
+pub(crate) const DEFAULT_WRITE_TIMEOUT_MS: u64 = 5000;
+
+#[derive(Debug, Clone, Copy)]
+struct RedisSocketTimeouts {
+    connect_timeout: Duration,
+    read_timeout: Duration,
+    write_timeout: Duration,
+}
+
+fn socket_connect_timeout_ms() -> u64 {
+    static CONNECT_TIMEOUT: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    *CONNECT_TIMEOUT.get_or_init(|| {
+        gql_core::config::parse_env_range(
+            "GQL_REDIS_CONNECT_TIMEOUT_MS",
+            DEFAULT_CONNECT_TIMEOUT_MS,
+            1,
+            300_000,
+        )
+    })
+}
+
+fn socket_read_timeout_ms() -> u64 {
+    static READ_TIMEOUT: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    *READ_TIMEOUT.get_or_init(|| {
+        gql_core::config::parse_env_range(
+            "GQL_REDIS_READ_TIMEOUT_MS",
+            DEFAULT_READ_TIMEOUT_MS,
+            1,
+            300_000,
+        )
+    })
+}
+
+fn socket_write_timeout_ms() -> u64 {
+    static WRITE_TIMEOUT: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    *WRITE_TIMEOUT.get_or_init(|| {
+        gql_core::config::parse_env_range(
+            "GQL_REDIS_WRITE_TIMEOUT_MS",
+            DEFAULT_WRITE_TIMEOUT_MS,
+            1,
+            300_000,
+        )
+    })
+}
+
+fn socket_timeouts() -> RedisSocketTimeouts {
+    RedisSocketTimeouts {
+        connect_timeout: Duration::from_millis(socket_connect_timeout_ms()),
+        read_timeout: Duration::from_millis(socket_read_timeout_ms()),
+        write_timeout: Duration::from_millis(socket_write_timeout_ms()),
+    }
+}
+
+fn closed_connection_error() -> RedisError {
+    RedisError::from(std::io::Error::from(std::io::ErrorKind::BrokenPipe))
+}
+
+#[derive(Clone)]
+pub(crate) struct TimeoutClientManager {
+    client: Client,
+    timeouts: RedisSocketTimeouts,
+}
+
+impl TimeoutClientManager {
+    fn new(client: Client, timeouts: RedisSocketTimeouts) -> Self {
+        Self { client, timeouts }
+    }
+}
+
+impl r2d2::ManageConnection for TimeoutClientManager {
+    type Connection = Connection;
+    type Error = RedisError;
+
+    fn connect(&self) -> Result<Self::Connection, Self::Error> {
+        let conn = self
+            .client
+            .get_connection_with_timeout(self.timeouts.connect_timeout)?;
+        conn.set_read_timeout(Some(self.timeouts.read_timeout))?;
+        conn.set_write_timeout(Some(self.timeouts.write_timeout))?;
+        Ok(conn)
+    }
+
+    fn is_valid(&self, conn: &mut Self::Connection) -> Result<(), Self::Error> {
+        if conn.check_connection() {
+            Ok(())
+        } else {
+            Err(closed_connection_error())
+        }
+    }
+
+    fn has_broken(&self, conn: &mut Self::Connection) -> bool {
+        !conn.is_open()
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct TimeoutClusterClientManager {
+    client: ClusterClient,
+    timeouts: RedisSocketTimeouts,
+}
+
+impl TimeoutClusterClientManager {
+    fn new(client: ClusterClient, timeouts: RedisSocketTimeouts) -> Self {
+        Self { client, timeouts }
+    }
+}
+
+impl r2d2::ManageConnection for TimeoutClusterClientManager {
+    type Connection = ClusterConnection;
+    type Error = RedisError;
+
+    fn connect(&self) -> Result<Self::Connection, Self::Error> {
+        let conn = self.client.get_connection()?;
+        conn.set_read_timeout(Some(self.timeouts.read_timeout))?;
+        conn.set_write_timeout(Some(self.timeouts.write_timeout))?;
+        Ok(conn)
+    }
+
+    fn is_valid(&self, conn: &mut Self::Connection) -> Result<(), Self::Error> {
+        if conn.check_connection() {
+            Ok(())
+        } else {
+            Err(closed_connection_error())
+        }
+    }
+
+    fn has_broken(&self, conn: &mut Self::Connection) -> bool {
+        !conn.is_open()
+    }
+}
 
 /// Connection pool supporting both standalone and Redis Cluster modes.
 ///
@@ -46,8 +183,8 @@ pub(crate) const DEFAULT_MIN_IDLE: u32 = 1;
 /// node URLs and auto-discovers the full cluster topology.
 #[derive(Clone)]
 pub(crate) enum RedisPool {
-    Standalone(r2d2::Pool<Client>),
-    Cluster(r2d2::Pool<ClusterClient>),
+    Standalone(r2d2::Pool<TimeoutClientManager>),
+    Cluster(r2d2::Pool<TimeoutClusterClientManager>),
 }
 
 /// A checked-out connection from either pool type.
@@ -55,8 +192,8 @@ pub(crate) enum RedisPool {
 /// Both `Connection` and `ClusterConnection` implement `redis::ConnectionLike`,
 /// so single-command operations work identically via [`RedisConn::as_mut`].
 pub(crate) enum RedisConn {
-    Standalone(r2d2::PooledConnection<Client>),
-    Cluster(Box<r2d2::PooledConnection<ClusterClient>>),
+    Standalone(r2d2::PooledConnection<TimeoutClientManager>),
+    Cluster(Box<r2d2::PooledConnection<TimeoutClusterClientManager>>),
 }
 
 /// Cluster-aware Redis pipeline wrapper.
@@ -165,12 +302,13 @@ impl RedisPool {
         min_idle: u32,
     ) -> Result<Self, StorageError> {
         let client = Client::open(url).map_err(crate::backend_storage_error)?;
+        let manager = TimeoutClientManager::new(client, socket_timeouts());
         let pool = r2d2::Pool::builder()
             .max_size(pool_size)
             .connection_timeout(Duration::from_secs(pool_timeout_secs))
             .idle_timeout(Some(Duration::from_secs(idle_timeout_secs)))
             .min_idle(Some(min_idle))
-            .build(client)
+            .build(manager)
             .map_err(crate::backend_storage_error)?;
         Ok(RedisPool::Standalone(pool))
     }
@@ -183,14 +321,19 @@ impl RedisPool {
         idle_timeout_secs: u64,
         min_idle: u32,
     ) -> Result<Self, StorageError> {
-        let client = ClusterClient::new(nodes.iter().map(|s| s.to_string()).collect::<Vec<_>>())
+        let timeouts = socket_timeouts();
+        let client = ClusterClientBuilder::new(nodes.iter().copied())
+            .connection_timeout(timeouts.connect_timeout)
+            .response_timeout(timeouts.read_timeout)
+            .build()
             .map_err(crate::backend_storage_error)?;
+        let manager = TimeoutClusterClientManager::new(client, timeouts);
         let pool = r2d2::Pool::builder()
             .max_size(pool_size)
             .connection_timeout(Duration::from_secs(pool_timeout_secs))
             .idle_timeout(Some(Duration::from_secs(idle_timeout_secs)))
             .min_idle(Some(min_idle))
-            .build(client)
+            .build(manager)
             .map_err(crate::backend_storage_error)?;
         Ok(RedisPool::Cluster(pool))
     }
@@ -287,7 +430,7 @@ impl RedisPool {
 /// distribution. The `READONLY` command is sent on each new connection
 /// to allow reads from Redis replicas.
 pub(crate) struct ReplicaPool {
-    pools: Vec<r2d2::Pool<Client>>,
+    pools: Vec<r2d2::Pool<TimeoutClientManager>>,
     next: AtomicUsize,
 }
 
@@ -321,14 +464,16 @@ impl ReplicaPool {
         // Distribute pool_size evenly across replicas (minimum 1 per replica).
         let per_replica = (pool_size / urls.len() as u32).max(1);
         let mut pools = Vec::with_capacity(urls.len());
+        let timeouts = socket_timeouts();
         for url in urls {
             let client = Client::open(*url).map_err(crate::backend_storage_error)?;
+            let manager = TimeoutClientManager::new(client, timeouts);
             let pool = r2d2::Pool::builder()
                 .max_size(per_replica)
                 .connection_timeout(Duration::from_secs(pool_timeout_secs))
                 .idle_timeout(Some(Duration::from_secs(idle_timeout_secs)))
                 .min_idle(Some(min_idle.min(per_replica)))
-                .build(client)
+                .build(manager)
                 .map_err(crate::backend_storage_error)?;
             pools.push(pool);
         }

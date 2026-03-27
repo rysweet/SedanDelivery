@@ -1320,11 +1320,22 @@ impl GremlinCompiler {
                         let select_keys: Vec<(Identifier, String)> = keys
                             .iter()
                             .map(|k| {
-                                let var = self
-                                    .alias_map
-                                    .get(k)
-                                    .cloned()
-                                    .unwrap_or_else(|| Identifier::new(k.clone()));
+                                let var = if let Some(label) = extract_select_traversal_label(k) {
+                                    let key_alias = self
+                                        .alias_map
+                                        .get(&label)
+                                        .cloned()
+                                        .unwrap_or_else(|| Identifier::new(label));
+                                    Identifier::new(format!(
+                                        "__map_select__{}__keyalias__{}",
+                                        current_alias.0, key_alias.0
+                                    ))
+                                } else {
+                                    self.alias_map
+                                        .get(k)
+                                        .cloned()
+                                        .unwrap_or_else(|| Identifier::new(k.clone()))
+                                };
                                 (var, k.clone())
                             })
                             .collect();
@@ -1345,12 +1356,7 @@ impl GremlinCompiler {
                         });
                         // Update current_alias if single key select
                         if keys.len() == 1 {
-                            let resolved = self
-                                .alias_map
-                                .get(&keys[0])
-                                .cloned()
-                                .unwrap_or_else(|| Identifier::new(keys[0].clone()));
-                            current_alias = resolved;
+                            current_alias = select_keys[0].0.clone();
                         } else {
                             // Multi-key: set alias to the Map output column name
                             current_alias = Identifier::new(keys.join("_"));
@@ -2055,8 +2061,20 @@ impl GremlinCompiler {
                             pending_group = false;
                         }
                     } else if pending_select {
-                        // by() after select() — collect modulation
-                        select_by_mods.push(key.clone());
+                        // by() after select() — normalize traversal-form
+                        // modulators like by(__.math("_+_")) into compact keys.
+                        if key.starts_with("__.") && key.contains('(') {
+                            let no_param = |_: &str| -> Option<GremlinValue> { None };
+                            if let Ok(sub_steps) =
+                                crate::text_parser::parse_inner_traversal(key, &no_param)
+                            {
+                                select_by_mods.push(extract_by_traversal_key(&sub_steps));
+                            } else {
+                                select_by_mods.push(key.clone());
+                            }
+                        } else {
+                            select_by_mods.push(key.clone());
+                        }
                     } else if pending_path {
                         // by() after path() — collect by-key for path element transformation
                         path_by_keys.push(key.to_string());
@@ -7598,6 +7616,7 @@ fn extract_by_traversal_key(steps: &[GremlinStep]) -> String {
         [GremlinStep::Values(keys)] if keys.len() == 1 => keys[0].clone(),
         [GremlinStep::Label] => "~label".to_string(),
         [GremlinStep::Id] => "~id".to_string(),
+        [GremlinStep::Math(expr)] => format!("~math:{expr}"),
         [GremlinStep::Values(keys), GremlinStep::ToUpper] if keys.len() == 1 => {
             format!("~toupper:{}", keys[0])
         }
@@ -7612,6 +7631,22 @@ fn extract_by_traversal_key(steps: &[GremlinStep]) -> String {
             keys[0].clone()
         }
         _ => String::new(),
+    }
+}
+
+fn extract_select_traversal_label(key: &str) -> Option<String> {
+    let inner = key
+        .strip_prefix("__.select(")
+        .or_else(|| key.strip_prefix("select("))?;
+    let body = inner.strip_suffix(')')?.trim();
+    if body.contains(',') {
+        return None;
+    }
+    let label = body.trim_matches(|c| c == '\'' || c == '"');
+    if label.is_empty() {
+        None
+    } else {
+        Some(label.to_string())
     }
 }
 
@@ -7717,6 +7752,22 @@ mod tests {
         let steps = vec![GremlinStep::V(None), GremlinStep::Count];
         let op = compiler.compile(&steps).unwrap();
         assert!(matches!(op, Operator::Aggregate { .. }));
+    }
+
+    #[test]
+    fn extract_by_traversal_key_supports_math() {
+        assert_eq!(
+            extract_by_traversal_key(&[GremlinStep::Math("_+_".into())]),
+            "~math:_+_"
+        );
+    }
+
+    #[test]
+    fn extract_select_traversal_label_supports_simple_select() {
+        assert_eq!(
+            extract_select_traversal_label(r#"__.select("a")"#).as_deref(),
+            Some("a")
+        );
     }
 
     #[test]

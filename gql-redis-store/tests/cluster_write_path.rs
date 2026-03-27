@@ -819,7 +819,7 @@ fn ci11_graph_mutators_use_write_lock() {
 }
 
 #[test]
-fn ci11b_hot_mutators_use_scoped_write_locks() {
+fn ci11b_hot_mutators_request_scoped_write_markers() {
     for (name, source, signature, scoped_key) in [
         (
             "set_node_properties_impl",
@@ -1088,7 +1088,7 @@ fn ci13_create_graph_participates_in_same_graph_write_lock() {
 
 #[test]
 #[ignore = "requires a running Redis at REDIS_URL"]
-fn ci13b_scoped_mutators_participate_in_graph_write_lock() {
+fn ci13b_scoped_mutators_remain_serialized_by_graph_write_lock() {
     let store = standalone_store();
     let graph = unique_graph("scoped-write-lock");
     let url = standalone_redis_url();
@@ -1135,7 +1135,7 @@ fn ci13b_scoped_mutators_participate_in_graph_write_lock() {
         Ok(result) => {
             assert!(
                 result.is_err(),
-                "scoped mutators must not succeed while the same-graph write lock is held"
+                "scoped mutators still serialize through the same-graph write lock"
             );
             Some(result)
         }
@@ -1780,7 +1780,7 @@ fn ci21_long_running_write_paths_renew_lock() {
             "create_index_impl",
             INDEXING_SRC,
             "pub(crate) fn create_index_impl",
-            &["smembers_or_scan_locked(", "conn.renew_lock()?"][..],
+            &["for_each_set_page_locked(", "conn.renew_lock()?"][..],
         ),
         (
             "index_node_properties",
@@ -1798,7 +1798,7 @@ fn ci21_long_running_write_paths_renew_lock() {
             "drop_index_impl",
             INDEXING_SRC,
             "pub(crate) fn drop_index_impl",
-            &["smembers_or_scan_locked(", "conn.renew_lock()?"][..],
+            &["for_each_set_page_locked(", "conn.renew_lock()?"][..],
         ),
         (
             "delete_graph_impl",

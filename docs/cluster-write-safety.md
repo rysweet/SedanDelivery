@@ -129,6 +129,11 @@ sets or batch loops. A write only reports success if it still proves lock
 ownership at release time; if the lease was lost, the caller sees
 `TransactionConflict` instead of a false success.
 
+Some hot mutators also take a narrower node/edge-scoped lock key, but that is
+currently an extra ownership marker layered on top of `G:{g}:write_lock`, not a
+same-graph concurrency feature. Writes within one graph still serialize through
+the per-graph lock today.
+
 `delete_graph` also uses a temporary marker:
 
 ```text

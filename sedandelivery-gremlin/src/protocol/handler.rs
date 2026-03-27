@@ -7,7 +7,7 @@ use crate::bridge;
 use crate::connection::GremlinSession;
 
 /// Handle a single text-frame Gremlin message and produce a response.
-pub fn handle_message(
+pub async fn handle_message(
     text: &str,
     session: &mut GremlinSession,
 ) -> Result<ResponseMessage, ProtocolError> {
@@ -24,7 +24,7 @@ pub fn handle_message(
 
     match req.op.as_str() {
         "authentication" => handle_authentication(&req, session),
-        "bytecode" => handle_bytecode(&req, session),
+        "bytecode" => handle_bytecode(&req, session).await,
         "eval" => Ok(ResponseMessage::error(
             req.request_id,
             StatusCode::ScriptEvaluationError,
@@ -96,7 +96,7 @@ fn extract_sasl_password(encoded: &str) -> Option<String> {
     None
 }
 
-fn handle_bytecode(
+async fn handle_bytecode(
     req: &RequestMessage,
     session: &GremlinSession,
 ) -> Result<ResponseMessage, ProtocolError> {
@@ -111,13 +111,23 @@ fn handle_bytecode(
         }
     };
 
-    match bridge::executor::execute_gremlin(&*session.store, &session.graph, bytecode_json) {
+    let store = std::sync::Arc::clone(&session.store);
+    let graph = session.graph.clone();
+    let bytecode = bytecode_json.clone();
+    let request_id = req.request_id;
+
+    match tokio::task::spawn_blocking(move || {
+        bridge::executor::execute_gremlin(&*store, &graph, &bytecode)
+    })
+    .await
+    .map_err(|e| ProtocolError::Internal(format!("gremlin execution task panicked: {e}")))?
+    {
         Ok(data) => Ok(ResponseMessage::success(
-            req.request_id,
+            request_id,
             serde_json::Value::Array(data),
         )),
         Err(e) => Ok(ResponseMessage::error(
-            req.request_id,
+            request_id,
             StatusCode::ServerError,
             e.to_string(),
         )),

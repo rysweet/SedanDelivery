@@ -174,7 +174,7 @@ create` mirror step fails to publish manifests.
 **What**: The PEM certificate chain and private key used by the public Bolt
 Container App. `deploy.yml` copies these GitHub environment secrets into Container App
 secrets (`bolt-tls-cert` / `bolt-tls-key`), mounts them at `/mnt/secrets`, and
-sets `BOLT_REQUIRE_TLS=true` so public TCP Bolt never runs plaintext.
+sets `BOLT_REQUIRE_TLS=1` so public TCP Bolt never runs plaintext.
 
 **Set**:
 ```bash

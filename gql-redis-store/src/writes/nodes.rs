@@ -1,10 +1,12 @@
 // writes/nodes.rs -- Node write operations for RedisGraphStore.
 
+use std::collections::HashSet;
+
 use indexmap::IndexMap;
 
 use gql_core::error::StorageError;
 use gql_core::serde_value::props_to_json;
-use gql_core::storage::NodeId;
+use gql_core::storage::{EdgeId, NodeId};
 use gql_core::types::Value;
 
 use crate::keys::{
@@ -12,10 +14,41 @@ use crate::keys::{
     key_node_write_lock, key_nodes_set, key_out,
 };
 use crate::lock::{BATCH_WRITE_MAX_RETRIES, BATCH_WRITE_RETRY_DELAY_MS, WRITE_LOCK_TTL_MS};
+use crate::reads::{for_each_set_page_locked, smembers_threshold};
 use crate::validation::{validate_label, validate_property_key};
 use crate::RedisGraphStore;
 
-use super::helpers::{clean_fanout_props, extract_injected_id};
+use super::helpers::{
+    batch_pipeline_chunk_size, clean_fanout_props, extract_injected_id, max_batch_size,
+};
+
+fn max_detach_delete_edges() -> usize {
+    static SIZE: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *SIZE.get_or_init(|| {
+        gql_core::config::parse_env_min("GQL_REDIS_MAX_DETACH_DELETE_EDGES", 10_000usize, 1)
+    })
+}
+
+fn insert_detach_edge_id_with_limit(
+    node_id: NodeId,
+    edge_ids: &mut HashSet<EdgeId>,
+    edge_id: EdgeId,
+    limit: usize,
+) -> Result<(), StorageError> {
+    edge_ids.insert(edge_id);
+    if edge_ids.len() > limit {
+        crate::record_backend_error();
+        return Err(StorageError::Backend {
+            msg: format!(
+                "DETACH DELETE for node {} exceeds GQL_REDIS_MAX_DETACH_DELETE_EDGES={} (adjacent edges: {})",
+                node_id.0,
+                limit,
+                edge_ids.len()
+            ),
+        });
+    }
+    Ok(())
+}
 
 fn validate_labels(labels: &[String]) -> Result<(), StorageError> {
     for label in labels {
@@ -409,15 +442,15 @@ impl RedisGraphStore {
                 .ok_or(StorageError::NodeNotFound { id: id.0 })?;
             // Check for relationships if not detaching.
             if !detach {
-                let out: Vec<String> = redis::cmd("SMEMBERS")
+                let out_count: u64 = redis::cmd("SCARD")
                     .arg(self.kp(key_out(graph, id.0)))
                     .query(conn.as_mut())
                     .map_err(crate::backend_storage_error)?;
-                let in_: Vec<String> = redis::cmd("SMEMBERS")
+                let in_count: u64 = redis::cmd("SCARD")
                     .arg(self.kp(key_in(graph, id.0)))
                     .query(conn.as_mut())
                     .map_err(crate::backend_storage_error)?;
-                if !out.is_empty() || !in_.is_empty() {
+                if out_count > 0 || in_count > 0 {
                     crate::record_backend_error();
                     return Err(StorageError::Backend {
                         msg: format!("node {} has relationships; use DETACH DELETE", id.0),
@@ -427,22 +460,56 @@ impl RedisGraphStore {
             if detach {
                 // Delete all adjacent edges first while holding the graph write
                 // lock so concurrent edge creation cannot race the adjacency scan.
-                let out_members: Vec<String> = redis::cmd("SMEMBERS")
-                    .arg(self.kp(key_out(graph, id.0)))
+                let out_key = self.kp(key_out(graph, id.0));
+                let in_key = self.kp(key_in(graph, id.0));
+                let out_count: u64 = redis::cmd("SCARD")
+                    .arg(&out_key)
                     .query(conn.as_mut())
                     .map_err(crate::backend_storage_error)?;
-                let in_members: Vec<String> = redis::cmd("SMEMBERS")
-                    .arg(self.kp(key_in(graph, id.0)))
+                let in_count: u64 = redis::cmd("SCARD")
+                    .arg(&in_key)
                     .query(conn.as_mut())
                     .map_err(crate::backend_storage_error)?;
-                let mut edge_ids: Vec<gql_core::storage::EdgeId> = Vec::new();
-                for m in out_members.iter().chain(in_members.iter()) {
-                    if let Some(adj) = crate::keys::decode_adj(m) {
-                        edge_ids.push(adj.edge_id);
+                let limit = max_detach_delete_edges();
+                let initial_capacity = usize::min(
+                    limit.saturating_add(1),
+                    out_count.saturating_add(in_count) as usize,
+                );
+                let mut edge_ids: HashSet<gql_core::storage::EdgeId> =
+                    HashSet::with_capacity(initial_capacity);
+                for_each_set_page_locked(
+                    conn,
+                    &out_key,
+                    smembers_threshold(),
+                    |_conn, members| {
+                        for member in members {
+                            if let Some(adj) = crate::keys::decode_adj(&member) {
+                                insert_detach_edge_id_with_limit(
+                                    id,
+                                    &mut edge_ids,
+                                    adj.edge_id,
+                                    limit,
+                                )?;
+                            }
+                        }
+                        Ok(())
+                    },
+                )?;
+                for_each_set_page_locked(conn, &in_key, smembers_threshold(), |_conn, members| {
+                    for member in members {
+                        if let Some(adj) = crate::keys::decode_adj(&member) {
+                            insert_detach_edge_id_with_limit(
+                                id,
+                                &mut edge_ids,
+                                adj.edge_id,
+                                limit,
+                            )?;
+                        }
                     }
-                }
+                    Ok(())
+                })?;
+                let mut edge_ids: Vec<EdgeId> = edge_ids.into_iter().collect();
                 edge_ids.sort_unstable();
-                edge_ids.dedup();
                 for (index, eid) in edge_ids.into_iter().enumerate() {
                     if index > 0 && index % 100 == 0 {
                         conn.renew_lock()?;
@@ -496,6 +563,16 @@ impl RedisGraphStore {
         if nodes.is_empty() {
             return Ok(Vec::new());
         }
+        if nodes.len() > max_batch_size() {
+            crate::record_backend_error();
+            return Err(StorageError::Backend {
+                msg: format!(
+                    "batch size {} exceeds GQL_REDIS_MAX_BATCH_SIZE={}",
+                    nodes.len(),
+                    max_batch_size()
+                ),
+            });
+        }
         for (labels, properties) in &nodes {
             validate_labels(labels)?;
             validate_property_keys(properties)?;
@@ -532,77 +609,82 @@ impl RedisGraphStore {
                 }
                 let start_id = (end_id - count + 1) as u64;
 
-                // Pre-serialize all nodes and build the pipeline.
-                let mut pipe = conn.pipeline();
-                let mut node_meta: Vec<(u64, Vec<String>, IndexMap<String, Value>)> =
-                    Vec::with_capacity(nodes.len());
+                let chunk_size = batch_pipeline_chunk_size();
+                let mut created_ids = Vec::with_capacity(nodes.len());
+                let mut chunk_iter = nodes.into_iter().enumerate();
 
-                for (i, (labels, properties)) in nodes.into_iter().enumerate() {
-                    if i > 0 && i % 250 == 0 {
-                        conn.renew_lock()?;
+                loop {
+                    let chunk: Vec<_> = chunk_iter.by_ref().take(chunk_size).collect();
+                    if chunk.is_empty() {
+                        break;
                     }
-                    let id = start_id + i as u64;
 
-                    // Strip internal FanoutStore keys before storing.
-                    let clean_props = clean_fanout_props(properties);
+                    let mut pipe = conn.pipeline();
+                    let mut node_meta: Vec<(u64, Vec<String>, IndexMap<String, Value>)> =
+                        Vec::with_capacity(chunk.len());
 
-                    let node_key = self.kp(key_node(graph, id));
-                    let labels_json = serde_json::to_string(&labels)
-                        .map_err(|e| StorageError::Serialization { msg: e.to_string() })?;
-                    let props_json = props_to_json(&clean_props)?;
-
-                    // HSET node hash.
-                    if !labels.is_empty() {
-                        let registry_key = self.kp(key_label_names(graph));
-                        let cmd = pipe.cmd("SADD");
-                        cmd.arg(&registry_key);
-                        for label in &labels {
-                            cmd.arg(label.as_str());
+                    for (offset, (i, (labels, properties))) in chunk.into_iter().enumerate() {
+                        if offset > 0 && offset % 250 == 0 {
+                            conn.renew_lock()?;
                         }
-                        cmd.ignore();
-                    }
+                        let id = start_id + i as u64;
 
-                    // SADD to all-nodes set.
-                    pipe.cmd("SADD")
-                        .arg(self.kp(key_nodes_set(graph)))
-                        .arg(id.to_string())
-                        .ignore();
+                        // Strip internal FanoutStore keys before storing.
+                        let clean_props = clean_fanout_props(properties);
 
-                    // SADD to label indexes.
-                    for label in &labels {
+                        let node_key = self.kp(key_node(graph, id));
+                        let labels_json = serde_json::to_string(&labels)
+                            .map_err(|e| StorageError::Serialization { msg: e.to_string() })?;
+                        let props_json = props_to_json(&clean_props)?;
+
+                        if !labels.is_empty() {
+                            let registry_key = self.kp(key_label_names(graph));
+                            let cmd = pipe.cmd("SADD");
+                            cmd.arg(&registry_key);
+                            for label in &labels {
+                                cmd.arg(label.as_str());
+                            }
+                            cmd.ignore();
+                        }
+
                         pipe.cmd("SADD")
-                            .arg(self.kp(key_label(graph, label)))
+                            .arg(self.kp(key_nodes_set(graph)))
                             .arg(id.to_string())
                             .ignore();
+
+                        for label in &labels {
+                            pipe.cmd("SADD")
+                                .arg(self.kp(key_label(graph, label)))
+                                .arg(id.to_string())
+                                .ignore();
+                        }
+
+                        pipe.cmd("HSET")
+                            .arg(&node_key)
+                            .arg("labels")
+                            .arg(&labels_json)
+                            .arg("props")
+                            .arg(&props_json)
+                            .ignore();
+
+                        node_meta.push((id, labels, clean_props));
                     }
 
-                    // HSET node hash last so the node manifest and label registries
-                    // already know about the ID if the non-atomic pipeline fails.
-                    pipe.cmd("HSET")
-                        .arg(&node_key)
-                        .arg("labels")
-                        .arg(&labels_json)
-                        .arg("props")
-                        .arg(&props_json)
-                        .ignore();
+                    conn.renew_lock()?;
+                    pipe.query::<()>(conn)
+                        .map_err(crate::backend_storage_error)?;
 
-                    node_meta.push((id, labels, clean_props));
-                }
-
-                // Execute the main pipeline in one round-trip.
-                conn.renew_lock()?;
-                pipe.query::<()>(conn)
-                    .map_err(crate::backend_storage_error)?;
-
-                // Property indexing pass (uses its own pipeline internally).
-                for (index, (id, labels, props)) in node_meta.iter().enumerate() {
-                    if index > 0 && index % 100 == 0 {
-                        conn.renew_lock()?;
+                    for (index, (id, labels, props)) in node_meta.iter().enumerate() {
+                        if index > 0 && index % 100 == 0 {
+                            conn.renew_lock()?;
+                        }
+                        self.index_node_properties(conn, graph, *id, labels, props)?;
                     }
-                    self.index_node_properties(conn, graph, *id, labels, props)?;
+
+                    created_ids.extend(node_meta.iter().map(|(id, _, _)| NodeId(*id)));
                 }
 
-                Ok(node_meta.iter().map(|(id, _, _)| NodeId(*id)).collect())
+                Ok(created_ids)
             },
         )
     }
@@ -612,6 +694,31 @@ impl RedisGraphStore {
 mod tests {
     use super::*;
     use crate::writes::helpers::{clean_fanout_props, extract_injected_id};
+
+    #[test]
+    fn insert_detach_edge_id_with_limit_allows_single_self_loop() {
+        let mut edge_ids = HashSet::new();
+        insert_detach_edge_id_with_limit(NodeId(42), &mut edge_ids, EdgeId(7), 1)
+            .expect("first self-loop edge should fit within the limit");
+        insert_detach_edge_id_with_limit(NodeId(42), &mut edge_ids, EdgeId(7), 1)
+            .expect("duplicate self-loop edge ID should not consume extra limit budget");
+        let mut collected: Vec<_> = edge_ids.into_iter().collect();
+        collected.sort_unstable();
+        assert_eq!(collected, vec![EdgeId(7)]);
+    }
+
+    #[test]
+    fn insert_detach_edge_id_with_limit_rejects_distinct_edges_over_limit() {
+        let mut edge_ids = HashSet::new();
+        insert_detach_edge_id_with_limit(NodeId(42), &mut edge_ids, EdgeId(7), 1)
+            .expect("first distinct edge should fit within the limit");
+        let err = insert_detach_edge_id_with_limit(NodeId(42), &mut edge_ids, EdgeId(8), 1)
+            .expect_err("two distinct adjacent edges should still trip a limit of one");
+        assert!(matches!(err, StorageError::Backend { .. }));
+        let mut collected: Vec<_> = edge_ids.into_iter().collect();
+        collected.sort_unstable();
+        assert_eq!(collected, vec![EdgeId(7), EdgeId(8)]);
+    }
 
     // ---- Pure logic tests for extract_injected_id ---------------------------
 

@@ -12,7 +12,7 @@ use tracing::{error, warn};
 
 use crate::apply::apply_event;
 use crate::parse_reply::{extract_entries, StreamEntry};
-use crate::{connect_with_retry, GROUP_NAME, SHUTDOWN};
+use crate::{connect_with_retry, RedisTimeouts, GROUP_NAME, SHUTDOWN};
 
 fn dlq_stream() -> String {
     std::env::var("SYNC_DLQ_STREAM").unwrap_or_else(|_| "__sd2:changelog:dlq".to_string())
@@ -30,6 +30,7 @@ pub(crate) fn run_sync_loop(
     block_ms: usize,
     max_retries: usize,
     streams: Vec<String>,
+    redis_timeouts: RedisTimeouts,
 ) {
     let mut consecutive_unresolved_batches = 0usize;
 
@@ -55,7 +56,7 @@ pub(crate) fn run_sync_loop(
                 );
                 break;
             }
-            if !reconnect_after_unresolved_batch(client, conn, "pending") {
+            if !reconnect_after_unresolved_batch(client, conn, "pending", redis_timeouts) {
                 break;
             }
             continue;
@@ -94,7 +95,12 @@ pub(crate) fn run_sync_loop(
                         );
                         break;
                     }
-                    if !reconnect_after_unresolved_batch(client, conn, "new-message") {
+                    if !reconnect_after_unresolved_batch(
+                        client,
+                        conn,
+                        "new-message",
+                        redis_timeouts,
+                    ) {
                         break;
                     }
                     continue;
@@ -103,7 +109,7 @@ pub(crate) fn run_sync_loop(
             }
             Err(e) => {
                 error!("XREADGROUP error: {e} — reconnecting");
-                match connect_with_retry(client) {
+                match connect_with_retry(client, redis_timeouts) {
                     Some(Ok(c)) => *conn = c,
                     Some(Err(e)) => {
                         error!("Giving up reconnection: {e}");
@@ -116,12 +122,17 @@ pub(crate) fn run_sync_loop(
     }
 }
 
-fn reconnect_after_unresolved_batch(client: &Client, conn: &mut Connection, phase: &str) -> bool {
+fn reconnect_after_unresolved_batch(
+    client: &Client,
+    conn: &mut Connection,
+    phase: &str,
+    redis_timeouts: RedisTimeouts,
+) -> bool {
     warn!(
         phase = phase,
         "Batch left unresolved after DLQ persistence failure — reconnecting before retry"
     );
-    match connect_with_retry(client) {
+    match connect_with_retry(client, redis_timeouts) {
         Some(Ok(c)) => {
             *conn = c;
             true

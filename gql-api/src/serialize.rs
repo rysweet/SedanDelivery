@@ -433,7 +433,7 @@ mod tests {
 
     #[test]
     fn props_to_json_empty() {
-        let props: HashMap<String, Value> = HashMap::new();
+        let props: IndexMap<String, Value> = IndexMap::new();
         assert_eq!(props_to_json(&props), json!({}));
     }
 
@@ -564,7 +564,7 @@ mod tests {
         store.create_graph("g").unwrap();
         let node_id = store
             .create_node("g", vec!["Person".to_string()], {
-                let mut p = HashMap::new();
+                let mut p = IndexMap::new();
                 p.insert("name".to_string(), Value::Str("Alice".into()));
                 p
             })

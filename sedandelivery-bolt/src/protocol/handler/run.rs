@@ -207,14 +207,58 @@ fn resolve_effective_store(session: &Session) -> Arc<dyn GraphStore> {
 /// These commands are not supported by the gql-core parser, so we intercept
 /// them before normal query execution. Returns `Some(response)` if the query
 /// was handled as admin, `None` if it should proceed through normal execution.
-fn intercept_admin_query(
+struct AdminInterceptSuccess {
+    columns: Vec<String>,
+    records: Vec<Vec<BoltValue>>,
+    query_type: String,
+    stats: BoltMap,
+    admin_stats: AdminStats,
+    admin_wrote: bool,
+}
+
+async fn intercept_admin_query(
     session: &mut Session,
-    store: &Arc<dyn GraphStore>,
+    store: Arc<dyn GraphStore>,
     graph: &str,
     trimmed: &str,
     extra: &BoltMap,
 ) -> Option<Result<Vec<ServerMessage>, ProtocolError>> {
-    let admin_result = bridge::admin::try_handle_admin(&**store, graph, trimmed)?;
+    let graph_name = graph.to_string();
+    let trimmed_query = trimmed.to_string();
+    let admin_result = match tokio::task::spawn_blocking(move || {
+        let admin_result = bridge::admin::try_handle_admin(&*store, &graph_name, &trimmed_query)?;
+        Some(admin_result.map(|ar| {
+            let (records, query_type, stats, _trailing) =
+                bridge::executor::result_to_records(&ar.query_result, &*store, &graph_name);
+            AdminInterceptSuccess {
+                columns: ar.query_result.columns,
+                records,
+                query_type,
+                stats,
+                admin_stats: AdminStats {
+                    indexes_added: ar.indexes_added,
+                    indexes_removed: ar.indexes_removed,
+                    constraints_added: ar.constraints_added,
+                    constraints_removed: ar.constraints_removed,
+                    system_updates: ar.system_updates,
+                },
+                admin_wrote: ar.system_updates > 0
+                    || ar.indexes_added > 0
+                    || ar.indexes_removed > 0
+                    || ar.constraints_added > 0
+                    || ar.constraints_removed > 0,
+            }
+        }))
+    })
+    .await
+    {
+        Ok(result) => result?,
+        Err(e) => {
+            return Some(Err(ProtocolError::Internal(format!(
+                "blocking admin task join error: {e}"
+            ))));
+        }
+    };
 
     Some(match admin_result {
         Ok(ar) => {
@@ -224,10 +268,7 @@ fn intercept_admin_query(
             } else {
                 run_metadata
             };
-            let (records, query_type, stats, _trailing) =
-                bridge::executor::result_to_records(&ar.query_result, &**store, graph);
             let fields: Vec<BoltValue> = ar
-                .query_result
                 .columns
                 .iter()
                 .map(|c: &String| BoltValue::String(c.clone()))
@@ -235,16 +276,11 @@ fn intercept_admin_query(
 
             // Determine query type: admin commands are "s" (system) when
             // they have system_updates, otherwise use the computed type.
-            let effective_type = if ar.system_updates > 0 {
+            let effective_type = if ar.admin_stats.system_updates > 0 {
                 "s".to_string()
             } else {
-                query_type
+                ar.query_type
             };
-            let admin_wrote = ar.system_updates > 0
-                || ar.indexes_added > 0
-                || ar.indexes_removed > 0
-                || ar.constraints_added > 0
-                || ar.constraints_removed > 0;
 
             let qid = match session.allocate_qid() {
                 Ok(q) => q,
@@ -252,16 +288,16 @@ fn intercept_admin_query(
             };
 
             // Track writes for read-after-write session pinning.
-            if effective_type.contains('w') || admin_wrote {
+            if effective_type.contains('w') || ar.admin_wrote {
                 session.record_successful_write();
             }
 
             session.pending_results.insert(
                 qid,
                 PendingQuery {
-                    records,
+                    records: ar.records,
                     query_type: effective_type,
-                    stats,
+                    stats: ar.stats,
                     cursor: 0,
                     start_time: std::time::Instant::now(),
                     metadata: combined_metadata,
@@ -270,14 +306,8 @@ fn intercept_admin_query(
                     graph: graph.to_string(),
                     notifications: vec![],
                     trailing_error: None,
-                    write_backed_bookmark: admin_wrote,
-                    admin_stats: Some(AdminStats {
-                        indexes_added: ar.indexes_added,
-                        indexes_removed: ar.indexes_removed,
-                        constraints_added: ar.constraints_added,
-                        constraints_removed: ar.constraints_removed,
-                        system_updates: ar.system_updates,
-                    }),
+                    write_backed_bookmark: ar.admin_wrote,
+                    admin_stats: Some(ar.admin_stats),
                 },
             );
 
@@ -314,26 +344,35 @@ fn intercept_admin_query(
 ///
 /// Returns `Some(failure_messages)` if the database doesn't exist, `None` if
 /// the check passes or doesn't apply.
-fn check_database_exists(
+async fn check_database_exists(
     session: &mut Session,
     extra: &BoltMap,
     graph: &str,
-) -> Option<Vec<ServerMessage>> {
+) -> Result<Option<Vec<ServerMessage>>, ProtocolError> {
     if extra.get_str("db").is_none() || graph == "neo4j" || graph == "system" {
-        return None;
+        return Ok(None);
     }
 
-    let main_store_has_neo4j = apply_read_consistency(session, Arc::clone(&session.store))
-        .graph_exists("neo4j")
-        .unwrap_or(false);
-    if !main_store_has_neo4j {
-        return None;
-    }
-
+    let main_store = apply_read_consistency(session, Arc::clone(&session.store));
     let check_store = resolve_effective_store(session);
-    let exists = check_store.graph_exists(graph).unwrap_or(false);
+    let graph_name = graph.to_string();
+    let (main_store_has_neo4j, exists) = tokio::task::spawn_blocking(move || {
+        let main_store_has_neo4j = main_store.graph_exists("neo4j").unwrap_or(false);
+        if !main_store_has_neo4j {
+            return (false, false);
+        }
+
+        (true, check_store.graph_exists(&graph_name).unwrap_or(false))
+    })
+    .await
+    .map_err(|e| ProtocolError::Internal(format!("blocking graph existence check failed: {e}")))?;
+
+    if !main_store_has_neo4j {
+        return Ok(None);
+    }
+
     if exists {
-        return None;
+        return Ok(None);
     }
 
     use gql_core::error::{GqlError, StorageError};
@@ -343,10 +382,10 @@ fn check_database_exists(
     let (code, message) = bridge::errors::gql_error_to_bolt(&err);
     bolt_metrics::error_recorded(&code);
     session.state = ServerState::Failed;
-    Some(vec![ServerMessage::Failure(bolt_map! {
+    Ok(Some(vec![ServerMessage::Failure(bolt_map! {
         "code" => BoltValue::String(code),
         "message" => BoltValue::String(message)
-    })])
+    })]))
 }
 
 // -- Write semaphore acquisition ---------------------------------------------
@@ -361,20 +400,7 @@ async fn acquire_write_semaphore(
     query: &str,
     extra: &BoltMap,
 ) -> Option<Vec<ServerMessage>> {
-    // NOTE: This is a string-heuristic for write detection. It can produce
-    // false positives (e.g. a property value containing "CREATE ") and false
-    // negatives (e.g. dynamically constructed write queries). A proper solution
-    // would require parsing the query AST, but this is acceptable for
-    // semaphore-based contention management where the worst case is an
-    // unnecessary lock acquisition or a missed lock on rare edge cases.
-    let is_write_query = {
-        let upper = query.to_uppercase();
-        upper.contains("CREATE ")
-            || upper.contains("MERGE ")
-            || upper.contains("DELETE ")
-            || upper.contains("SET ")
-            || upper.contains("REMOVE ")
-    };
+    let is_write_query = query_requires_write_permit(query);
     if !is_write_query || session.write_permit.is_some() {
         return None;
     }
@@ -384,10 +410,13 @@ async fn acquire_write_semaphore(
         ServerState::TxReady | ServerState::TxStreaming
     );
 
-    let timeout_ms = session.tx_timeout.or(extra
-        .get_int("tx_timeout")
-        .filter(|&v| v > 0)
-        .map(|v| v as u64));
+    let timeout_ms = session
+        .tx_timeout
+        .or(extra
+            .get_int("tx_timeout")
+            .filter(|&v| v > 0)
+            .map(|v| v as u64))
+        .or_else(|| in_explicit_tx.then_some(default_explicit_tx_write_timeout_ms()));
 
     if let Some(ms) = timeout_ms {
         let sem = Arc::clone(&session.write_semaphore);
@@ -426,31 +455,76 @@ async fn acquire_write_semaphore(
                 })])
             }
         }
-    } else if in_explicit_tx {
-        // Explicit transaction without timeout: acquire permit (may wait).
-        let sem = Arc::clone(&session.write_semaphore);
-        match sem.acquire_owned().await {
-            Ok(permit) => {
-                session.write_permit = Some(permit);
-                None
-            }
-            Err(_) => {
-                session.state = ServerState::Failed;
-                Some(vec![ServerMessage::Failure(bolt_map! {
-                    "code" => BoltValue::String(
-                        "Neo.TransientError.Transaction.LockClientStopped".to_string()
-                    ),
-                    "message" => BoltValue::String(
-                        "Server is shutting down".to_string()
-                    )
-                })])
-            }
-        }
     } else {
         // Autocommit write without tx_timeout -- skip semaphore entirely
         // for maximum concurrency. Redis handles atomicity at the command level.
         None
     }
+}
+
+fn default_explicit_tx_write_timeout_ms() -> u64 {
+    static TIMEOUT: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    *TIMEOUT.get_or_init(|| {
+        gql_core::config::parse_env_range("BOLT_DEFAULT_TX_TIMEOUT_MS", 30_000u64, 1, 300_000)
+    })
+}
+
+fn query_requires_write_permit(query: &str) -> bool {
+    const WRITE_KEYWORDS: &[&str] = &["CREATE", "MERGE", "DELETE", "SET", "REMOVE"];
+
+    let bytes = query.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\'' | b'"' | b'`' => {
+                let quote = bytes[i];
+                i += 1;
+                while i < bytes.len() {
+                    if bytes[i] == b'\\' && quote != b'`' {
+                        i += 2;
+                        continue;
+                    }
+                    if bytes[i] == quote {
+                        i += 1;
+                        break;
+                    }
+                    i += 1;
+                }
+            }
+            b'/' if i + 1 < bytes.len() && bytes[i + 1] == b'/' => {
+                i += 2;
+                while i < bytes.len() && bytes[i] != b'\n' {
+                    i += 1;
+                }
+            }
+            b'/' if i + 1 < bytes.len() && bytes[i + 1] == b'*' => {
+                i += 2;
+                while i + 1 < bytes.len() {
+                    if bytes[i] == b'*' && bytes[i + 1] == b'/' {
+                        i += 2;
+                        break;
+                    }
+                    i += 1;
+                }
+            }
+            b if b.is_ascii_alphabetic() => {
+                let start = i;
+                i += 1;
+                while i < bytes.len() && bytes[i].is_ascii_alphanumeric() {
+                    i += 1;
+                }
+                let token = &query[start..i];
+                if WRITE_KEYWORDS
+                    .iter()
+                    .any(|keyword| token.eq_ignore_ascii_case(keyword))
+                {
+                    return true;
+                }
+            }
+            _ => i += 1,
+        }
+    }
+    false
 }
 
 // -- Success response construction -------------------------------------------
@@ -679,13 +753,20 @@ pub(crate) async fn handle_run(
 
     // Try to handle as an admin/DDL query.
     let effective_store = resolve_effective_store(session);
-    if let Some(result) = intercept_admin_query(session, &effective_store, &graph, trimmed, &extra)
+    if let Some(result) = intercept_admin_query(
+        session,
+        Arc::clone(&effective_store),
+        &graph,
+        trimmed,
+        &extra,
+    )
+    .await
     {
         return result;
     }
 
     // Check that the target database exists (when explicitly specified).
-    if let Some(failure) = check_database_exists(session, &extra, &graph) {
+    if let Some(failure) = check_database_exists(session, &extra, &graph).await? {
         return Ok(failure);
     }
 

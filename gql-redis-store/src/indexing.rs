@@ -14,7 +14,7 @@ use crate::keys::{
     IDX_SEP,
 };
 use crate::lock::WRITE_LOCK_TTL_MS;
-use crate::reads::{smembers_or_scan_locked, smembers_threshold};
+use crate::reads::{for_each_set_page_locked, smembers_threshold};
 use crate::validation::{validate_label, validate_property_key};
 use crate::{LockedRedisConn, RedisGraphStore};
 
@@ -170,68 +170,67 @@ impl RedisGraphStore {
             self.require_graph_on(conn.as_mut(), graph)?;
             // Build the index from existing nodes before registering it so query
             // traffic never sees a partially-populated propidx set.
-            let node_ids = smembers_or_scan_locked(
-                conn,
-                &self.kp(key_label(graph, label)),
-                smembers_threshold(),
-            )?;
-
             let batch_size = index_batch_size();
-            for chunk in node_ids.chunks(batch_size) {
-                conn.renew_lock()?;
-                let mut valid_ids = Vec::new();
-                let mut read_pipe = conn.pipeline();
-                for id_str in chunk {
-                    if let Ok(id) = id_str.parse::<u64>() {
-                        valid_ids.push(id_str.as_str());
-                        read_pipe
-                            .cmd("HMGET")
-                            .arg(self.kp(key_node(graph, id)))
-                            .arg("labels")
-                            .arg("props");
+            let label_key = self.kp(key_label(graph, label));
+            let manifest_key = self.kp(key_propidx_manifest(graph));
+            for_each_set_page_locked(conn, &label_key, smembers_threshold(), |conn, node_ids| {
+                for chunk in node_ids.chunks(batch_size) {
+                    conn.renew_lock()?;
+                    let mut valid_ids = Vec::new();
+                    let mut read_pipe = conn.pipeline();
+                    for id_str in chunk {
+                        if let Ok(id) = id_str.parse::<u64>() {
+                            valid_ids.push(id_str.as_str());
+                            read_pipe
+                                .cmd("HMGET")
+                                .arg(self.kp(key_node(graph, id)))
+                                .arg("labels")
+                                .arg("props");
+                        }
                     }
-                }
-                if valid_ids.is_empty() {
-                    continue;
-                }
-                let raw: Vec<Vec<Option<String>>> = read_pipe
-                    .query(conn)
-                    .map_err(crate::backend_storage_error)?;
+                    if valid_ids.is_empty() {
+                        continue;
+                    }
+                    let raw: Vec<Vec<Option<String>>> = read_pipe
+                        .query(conn)
+                        .map_err(crate::backend_storage_error)?;
 
-                let mut write_pipe = conn.pipeline();
-                let mut has_cmds = false;
-                let manifest_key = self.kp(key_propidx_manifest(graph));
-                for (id_str, fields) in valid_ids.into_iter().zip(raw.iter()) {
-                    if let (Some(Some(_)), Some(Some(props_json))) = (fields.first(), fields.get(1))
-                    {
-                        if let Ok(properties) = json_to_props(props_json) {
-                            if let Some(val) = properties.get(property) {
-                                if !val.is_null() {
-                                    let vkey = value_to_index_key(val);
-                                    let propidx_key =
-                                        self.kp(key_propidx(graph, label, property, &vkey));
-                                    write_pipe
-                                        .cmd("SADD")
-                                        .arg(&manifest_key)
-                                        .arg(&propidx_key)
-                                        .ignore();
-                                    write_pipe
-                                        .cmd("SADD")
-                                        .arg(&propidx_key)
-                                        .arg(id_str)
-                                        .ignore();
-                                    has_cmds = true;
+                    let mut write_pipe = conn.pipeline();
+                    let mut has_cmds = false;
+                    for (id_str, fields) in valid_ids.into_iter().zip(raw.iter()) {
+                        if let (Some(Some(_)), Some(Some(props_json))) =
+                            (fields.first(), fields.get(1))
+                        {
+                            if let Ok(properties) = json_to_props(props_json) {
+                                if let Some(val) = properties.get(property) {
+                                    if !val.is_null() {
+                                        let vkey = value_to_index_key(val);
+                                        let propidx_key =
+                                            self.kp(key_propidx(graph, label, property, &vkey));
+                                        write_pipe
+                                            .cmd("SADD")
+                                            .arg(&manifest_key)
+                                            .arg(&propidx_key)
+                                            .ignore();
+                                        write_pipe
+                                            .cmd("SADD")
+                                            .arg(&propidx_key)
+                                            .arg(id_str)
+                                            .ignore();
+                                        has_cmds = true;
+                                    }
                                 }
                             }
                         }
                     }
+                    if has_cmds {
+                        write_pipe
+                            .query::<()>(conn)
+                            .map_err(crate::backend_storage_error)?;
+                    }
                 }
-                if has_cmds {
-                    write_pipe
-                        .query::<()>(conn)
-                        .map_err(crate::backend_storage_error)?;
-                }
-            }
+                Ok(())
+            })?;
 
             conn.renew_lock()?;
             redis::cmd("SADD")
@@ -263,46 +262,53 @@ impl RedisGraphStore {
 
             // Reconstruct propidx keys from the indexed label set. This stays on
             // slot-local graph keys and avoids cluster-unsafe SCAN.
-            let label_members = smembers_or_scan_locked(
+            let label_key = self.kp(key_label(graph, label));
+            for_each_set_page_locked(
                 conn,
-                &self.kp(key_label(graph, label)),
+                &label_key,
                 smembers_threshold(),
-            )?;
-            let mut keys_to_delete: Vec<String> = Vec::new();
-            for chunk in label_members.chunks(500) {
-                conn.renew_lock()?;
-                let mut pipe = conn.pipeline();
-                for id_str in chunk {
-                    if let Ok(id) = id_str.parse::<u64>() {
-                        pipe.cmd("HGET")
-                            .arg(self.kp(key_node(graph, id)))
-                            .arg("props");
-                    }
-                }
-                let results: Vec<Option<String>> =
-                    pipe.query(conn).map_err(crate::backend_storage_error)?;
-                for json in results.into_iter().flatten() {
-                    let props = json_to_props(&json)?;
-                    if let Some(val) = props.get(property) {
-                        if !val.is_null() {
-                            let vkey = value_to_index_key(val);
-                            keys_to_delete
-                                .push(self.kp(key_propidx(graph, label, property, &vkey)));
+                |conn, label_members| {
+                    // Delete each page's propidx keys immediately. Repeated DELs
+                    // across later pages are harmless, so we do not need a
+                    // cross-page accumulator here.
+                    let mut keys_to_delete: Vec<String> = Vec::new();
+                    for chunk in label_members.chunks(500) {
+                        conn.renew_lock()?;
+                        let mut pipe = conn.pipeline();
+                        for id_str in chunk {
+                            if let Ok(id) = id_str.parse::<u64>() {
+                                pipe.cmd("HGET")
+                                    .arg(self.kp(key_node(graph, id)))
+                                    .arg("props");
+                            }
+                        }
+                        let results: Vec<Option<String>> =
+                            pipe.query(conn).map_err(crate::backend_storage_error)?;
+                        for json in results.into_iter().flatten() {
+                            let props = json_to_props(&json)?;
+                            if let Some(val) = props.get(property) {
+                                if !val.is_null() {
+                                    let vkey = value_to_index_key(val);
+                                    keys_to_delete
+                                        .push(self.kp(key_propidx(graph, label, property, &vkey)));
+                                }
+                            }
                         }
                     }
-                }
-            }
-            keys_to_delete.sort_unstable();
-            keys_to_delete.dedup();
-            for chunk in keys_to_delete.chunks(100) {
-                conn.renew_lock()?;
-                let mut del = redis::cmd("DEL");
-                for key in chunk {
-                    del.arg(key.as_str());
-                }
-                del.query::<()>(conn.as_mut())
-                    .map_err(crate::backend_storage_error)?;
-            }
+                    keys_to_delete.sort_unstable();
+                    keys_to_delete.dedup();
+                    for chunk in keys_to_delete.chunks(100) {
+                        conn.renew_lock()?;
+                        let mut del = redis::cmd("DEL");
+                        for key in chunk {
+                            del.arg(key.as_str());
+                        }
+                        del.query::<()>(conn.as_mut())
+                            .map_err(crate::backend_storage_error)?;
+                    }
+                    Ok(())
+                },
+            )?;
             Ok(())
         })
     }

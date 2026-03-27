@@ -26,6 +26,13 @@ const GROUP_NAME: &str = "sedandelivery-fabric-sync";
 /// Graceful shutdown flag — set by SIGTERM/SIGINT handler.
 static SHUTDOWN: AtomicBool = AtomicBool::new(false);
 
+#[derive(Clone, Copy)]
+pub(crate) struct RedisTimeouts {
+    connect_timeout: Duration,
+    read_timeout: Duration,
+    write_timeout: Duration,
+}
+
 // ── Entry point ───────────────────────────────────────────────────────────────
 
 fn main() {
@@ -51,6 +58,7 @@ fn main() {
     let batch_size: usize = env_usize("SD2_SYNC_BATCH", 100);
     let block_ms: usize = env_usize("SD2_SYNC_BLOCK_MS", 1000);
     let max_retries: usize = env_usize("SD2_SYNC_MAX_RETRIES", 3);
+    let redis_timeouts = redis_timeouts(block_ms);
 
     let consumer_name = std::env::var("SD2_SYNC_CONSUMER").unwrap_or_else(|_| {
         hostname::get()
@@ -88,7 +96,7 @@ fn main() {
         }
     };
 
-    let mut conn = match connect_with_retry(&client) {
+    let mut conn = match connect_with_retry(&client, redis_timeouts) {
         Some(Ok(c)) => c,
         Some(Err(e)) => {
             error!("{e}");
@@ -124,6 +132,7 @@ fn main() {
         block_ms,
         max_retries,
         initial_streams,
+        redis_timeouts,
     );
 
     info!("sedandelivery-fabric-sync shutting down gracefully");
@@ -192,6 +201,34 @@ fn env_usize(key: &str, default: usize) -> usize {
     }
 }
 
+fn env_duration_ms(key: &str, default_ms: u64) -> Duration {
+    Duration::from_millis(match std::env::var(key) {
+        Err(_) => default_ms,
+        Ok(v) => v.parse().unwrap_or_else(|e| {
+            warn!("{key}=<invalid> is not a valid u64 ({e}), using default {default_ms}");
+            default_ms
+        }),
+    })
+}
+
+fn redis_timeouts(block_ms: usize) -> RedisTimeouts {
+    let default_read_ms = ((block_ms as u64) + 5_000).max(5_000);
+    RedisTimeouts {
+        connect_timeout: env_duration_ms("SD2_SYNC_REDIS_CONNECT_TIMEOUT_MS", 5_000),
+        read_timeout: env_duration_ms("SD2_SYNC_REDIS_READ_TIMEOUT_MS", default_read_ms),
+        write_timeout: env_duration_ms("SD2_SYNC_REDIS_WRITE_TIMEOUT_MS", 5_000),
+    }
+}
+
+fn apply_connection_timeouts(
+    conn: Connection,
+    timeouts: RedisTimeouts,
+) -> Result<Connection, redis::RedisError> {
+    conn.set_read_timeout(Some(timeouts.read_timeout))?;
+    conn.set_write_timeout(Some(timeouts.write_timeout))?;
+    Ok(conn)
+}
+
 fn redact_url_credentials(url: &str) -> String {
     let Some((scheme, remainder)) = url.split_once("://") else {
         return url.to_string();
@@ -215,18 +252,38 @@ fn redact_url_credentials(url: &str) -> String {
 /// Connect to Redis, retrying with exponential back-off.
 /// Returns `None` if SHUTDOWN is signalled during the retry loop.
 /// Returns `Some(Err(...))` if max retries are exhausted.
-fn connect_with_retry(client: &Client) -> Option<Result<Connection, String>> {
+fn connect_with_retry(
+    client: &Client,
+    timeouts: RedisTimeouts,
+) -> Option<Result<Connection, String>> {
     let max_attempts: usize = env_usize("SYNC_MAX_CONNECT_RETRIES", 100);
     let mut delay = Duration::from_millis(500);
     for attempt in 1..=max_attempts {
         if SHUTDOWN.load(Ordering::Relaxed) {
             return None;
         }
-        match client.get_connection() {
-            Ok(c) => {
-                info!("Connected to Valkey");
-                return Some(Ok(c));
-            }
+        match client.get_connection_with_timeout(timeouts.connect_timeout) {
+            Ok(c) => match apply_connection_timeouts(c, timeouts) {
+                Ok(c) => {
+                    info!(
+                        connect_timeout_ms = timeouts.connect_timeout.as_millis(),
+                        read_timeout_ms = timeouts.read_timeout.as_millis(),
+                        write_timeout_ms = timeouts.write_timeout.as_millis(),
+                        "Connected to Valkey"
+                    );
+                    return Some(Ok(c));
+                }
+                Err(e) => {
+                    warn!(
+                        attempt,
+                        max_attempts,
+                        "Redis connection timeout configuration failed: {e} — retrying in {}ms",
+                        delay.as_millis()
+                    );
+                    thread::sleep(delay);
+                    delay = (delay * 2).min(Duration::from_secs(30));
+                }
+            },
             Err(e) => {
                 warn!(
                     attempt,

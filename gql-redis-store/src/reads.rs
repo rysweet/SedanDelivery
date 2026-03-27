@@ -68,17 +68,17 @@ pub(crate) fn smembers_or_scan(
     Ok(members)
 }
 
-/// `smembers_or_scan`, but renews the caller's write lock between SSCAN pages.
-///
-/// Long-running write operations like index build and drop-index hold the graph
-/// write lock while walking large same-slot sets. Renewing between SSCAN pages
-/// prevents lease expiry from creating a false-success window for concurrent
-/// writers.
-pub(crate) fn smembers_or_scan_locked(
+/// Visit set members in bounded pages while renewing the caller's write lock
+/// between SSCAN batches.
+pub(crate) fn for_each_set_page_locked<F>(
     conn: &mut LockedRedisConn,
     key: &str,
     threshold: u64,
-) -> Result<Vec<String>, StorageError> {
+    mut visit: F,
+) -> Result<(), StorageError>
+where
+    F: FnMut(&mut LockedRedisConn, Vec<String>) -> Result<(), StorageError>,
+{
     let card: u64 = redis::cmd("SCARD")
         .arg(key)
         .query(conn.as_mut())
@@ -89,11 +89,10 @@ pub(crate) fn smembers_or_scan_locked(
             .arg(key)
             .query(conn.as_mut())
             .map_err(crate::backend_storage_error)?;
-        return Ok(members);
+        return visit(conn, members);
     }
 
     let mut cursor: u64 = 0;
-    let mut members = Vec::with_capacity(card as usize);
     loop {
         conn.renew_lock()?;
         let (next_cursor, batch): (u64, Vec<String>) = redis::cmd("SSCAN")
@@ -103,13 +102,13 @@ pub(crate) fn smembers_or_scan_locked(
             .arg(SSCAN_COUNT)
             .query(conn.as_mut())
             .map_err(crate::backend_storage_error)?;
-        members.extend(batch);
+        visit(conn, batch)?;
         cursor = next_cursor;
         if cursor == 0 {
             break;
         }
     }
-    Ok(members)
+    Ok(())
 }
 
 impl RedisGraphStore {

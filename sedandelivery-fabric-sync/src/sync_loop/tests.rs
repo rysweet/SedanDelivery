@@ -6,6 +6,14 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use gql_core::changelog::{ChangeEvent, CHANGELOG_STREAM};
 
+fn test_redis_timeouts() -> crate::RedisTimeouts {
+    crate::RedisTimeouts {
+        connect_timeout: std::time::Duration::from_secs(1),
+        read_timeout: std::time::Duration::from_secs(1),
+        write_timeout: std::time::Duration::from_secs(1),
+    }
+}
+
 fn read_resp_array(reader: &mut BufReader<TcpStream>) -> std::io::Result<Vec<String>> {
     let mut header = String::new();
     if reader.read_line(&mut header)? == 0 {
@@ -670,6 +678,7 @@ fn run_sync_loop_reconnects_after_unresolved_new_message_batch() {
         1,
         1,
         vec![CHANGELOG_STREAM.to_string()],
+        test_redis_timeouts(),
     );
 
     drop(conn);
@@ -736,6 +745,7 @@ fn run_sync_loop_stops_after_bounded_unresolved_reconnect_attempts() {
         1,
         1,
         vec![CHANGELOG_STREAM.to_string()],
+        test_redis_timeouts(),
     );
 
     drop(conn);

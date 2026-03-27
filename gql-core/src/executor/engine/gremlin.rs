@@ -1612,6 +1612,9 @@ impl<'a> QueryExecutor<'a> {
         if key.is_empty() {
             return val.clone();
         }
+        if let Some(expr) = key.strip_prefix("~math:") {
+            return eval_select_math_expr(expr, val);
+        }
         // Handle ~toupper:prop and ~tolower:prop
         if let Some(prop) = key.strip_prefix("~toupper:") {
             let inner = self.apply_path_by_key(cx, prop, val);
@@ -1712,6 +1715,28 @@ impl<'a> QueryExecutor<'a> {
         val: &Value,
     ) -> Value {
         self.apply_path_by_key(cx, prop_name, val)
+    }
+
+    fn resolve_map_select_value(&self, row: &Row, encoded: &str) -> Option<Value> {
+        let rest = encoded.strip_prefix("__map_select__")?;
+        let (map_alias, key_alias) = rest.split_once("__keyalias__")?;
+        let map_val = row.get(map_alias)?;
+        let key_val = row.get(key_alias)?;
+        let Value::Map(map) = map_val else {
+            return None;
+        };
+        let key = value_to_map_key(key_val);
+        map.get(key.as_ref()).cloned()
+    }
+
+    fn split_prop_accessor<'b>(&self, rest: &'b str) -> Option<(&'b str, &'b str)> {
+        if let Some(map_pos) = rest.find("__map_select__") {
+            if map_pos >= 2 {
+                return Some((&rest[..map_pos - 2], &rest[map_pos..]));
+            }
+        }
+        let sep_pos = rest.find("__")?;
+        Some((&rest[..sep_pos], &rest[sep_pos + 2..]))
     }
 
     /// For each input row, iterate through patterns. Each pattern is a
@@ -1962,8 +1987,7 @@ impl<'a> QueryExecutor<'a> {
                         // Apply by-modulation: if src_var has a __prop_ prefix,
                         // extract the property from the resolved value.
                         let resolved = if let Some(rest) = var_name.strip_prefix("__prop_") {
-                            if let Some(sep_pos) = rest.find("__") {
-                                let prop_name = &rest[..sep_pos];
+                            if let Some((prop_name, _real_var)) = self.split_prop_accessor(rest) {
                                 if let Some(n_str) = prop_name.strip_prefix("~limit_local:") {
                                     let n = n_str.parse::<usize>().unwrap_or(0);
                                     match resolved {
@@ -1997,11 +2021,15 @@ impl<'a> QueryExecutor<'a> {
 
                 // Handle property-accessor pattern: __prop_PROPNAME__VARNAME
                 if let Some(rest) = var_name.strip_prefix("__prop_") {
-                    if let Some(sep_pos) = rest.find("__") {
-                        let prop_name = &rest[..sep_pos];
-                        let real_var = &rest[sep_pos + 2..];
+                    if let Some((prop_name, real_var)) = self.split_prop_accessor(rest) {
                         let val = row.get(real_var);
-                        match val {
+                        let selected = if let Some(v) = self.resolve_map_select_value(row, real_var)
+                        {
+                            Some(v)
+                        } else {
+                            val.cloned()
+                        };
+                        match selected.as_ref() {
                             Some(node_val) => {
                                 // Handle special property names (~id, T.id, ~label, T.label)
                                 let resolved = if prop_name == "~id"
@@ -2121,7 +2149,9 @@ impl<'a> QueryExecutor<'a> {
                 }
 
                 // Try looking up in the row directly.
-                let val = if let Some(v) = row.get(var_name) {
+                let val = if let Some(v) = self.resolve_map_select_value(row, var_name) {
+                    Some(v)
+                } else if let Some(v) = row.get(var_name) {
                     Some(v.clone())
                 } else if let Some(v) = row.get(&format!("__gremlin_agg_{}", output_key)) {
                     // Fallback: aggregate sideeffect columns are stored
@@ -2225,12 +2255,9 @@ impl<'a> QueryExecutor<'a> {
                     for (src_var, output_key) in keys {
                         if let Some(v) = new_row.get(output_key.as_str()) {
                             out_row.insert(output_key.clone(), v.clone());
-                            // For Pop select, also update the source variable
-                            // so downstream steps using the compiler alias get
-                            // the Pop-resolved value.
-                            if pop.is_some() {
-                                out_row.insert(src_var.0.to_string(), v.clone());
-                            }
+                            // Always update the compiler source alias so
+                            // downstream steps operate on the selected value.
+                            out_row.insert(src_var.0.to_string(), v.clone());
                         }
                     }
                     inject_parameters(&mut out_row, &self.parameters);
@@ -3121,6 +3148,34 @@ fn value_to_map_key(v: &Value) -> Box<str> {
             format!("{{{}}}", parts.join(", ")).into_boxed_str()
         }
         _ => format!("{v:?}").into_boxed_str(),
+    }
+}
+
+fn eval_select_math_expr(expr: &str, current: &Value) -> Value {
+    fn as_f64(v: &Value) -> Option<f64> {
+        match v {
+            Value::Int(i) => Some(*i as f64),
+            Value::Float(f) => Some(*f),
+            _ => None,
+        }
+    }
+
+    let Some(current_num) = as_f64(current) else {
+        return current.clone();
+    };
+
+    let compact: String = expr.chars().filter(|c| !c.is_whitespace()).collect();
+    match compact.as_str() {
+        "_+_" => Value::Float(current_num + current_num),
+        "_-_" => Value::Float(0.0),
+        "_*_" => Value::Float(current_num * current_num),
+        "_/_" => Value::Float(if current_num != 0.0 { 1.0 } else { f64::NAN }),
+        "_%_" => Value::Float(if current_num != 0.0 {
+            current_num % current_num
+        } else {
+            f64::NAN
+        }),
+        _ => current.clone(),
     }
 }
 

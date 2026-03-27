@@ -21,28 +21,15 @@ pub(crate) fn format_bookmark(n: u64) -> String {
 }
 
 /// Increment the global bookmark counter and return a formatted bookmark string.
-///
-/// Runs the counter increment inside `spawn_blocking` so that the synchronous
-/// Redis I/O (`INCR __sd2_bookmark`) in `BookmarkCounter::Redis` never blocks
-/// a Tokio worker thread.  For the `InMemory` variant the overhead is negligible.
 pub(crate) async fn next_bookmark(counter: &Arc<BookmarkCounter>) -> String {
-    let counter = Arc::clone(counter);
-    let n = tokio::task::spawn_blocking(move || counter.next())
-        .await
-        .expect("bookmark next task panicked");
+    let n = counter.next().await;
     format_bookmark(n)
 }
 
 /// Record the issuance timestamp for a write-backed bookmark.
-///
-/// Runs inside `spawn_blocking` to avoid blocking Tokio worker threads with
-/// the synchronous Redis `SET` in `BookmarkCounter::Redis`.
 pub(crate) async fn record_write_bookmark(counter: &Arc<BookmarkCounter>, bookmark: &str) {
     if let Some(tx_id) = bookmark_tx_id(bookmark) {
-        let counter = Arc::clone(counter);
-        tokio::task::spawn_blocking(move || counter.record_issued_at(tx_id))
-            .await
-            .expect("bookmark record_issued_at task panicked");
+        counter.record_issued_at(tx_id).await;
     }
 }
 
@@ -76,8 +63,7 @@ fn bookmark_tx_id(bookmark: &str) -> Option<u64> {
     bookmark.strip_prefix("sedan:tx:")?.parse().ok()
 }
 
-/// Look up the freshest recent bookmark age, running the (potentially
-/// blocking) `issued_age` calls inside `spawn_blocking`.
+/// Look up the freshest recent bookmark age.
 pub(crate) async fn recent_bookmark_age(
     extra: &BoltMap,
     counter: &Arc<BookmarkCounter>,
@@ -91,17 +77,19 @@ pub(crate) async fn recent_bookmark_age(
         return None;
     }
 
-    let counter = Arc::clone(counter);
     let window = READ_AFTER_WRITE_WINDOW;
-    tokio::task::spawn_blocking(move || {
-        tx_ids
-            .into_iter()
-            .filter_map(|tx_id| counter.issued_age(tx_id))
-            .filter(|age| *age < window)
-            .min()
-    })
-    .await
-    .expect("bookmark issued_age task panicked")
+    let mut best_age: Option<std::time::Duration> = None;
+    for tx_id in tx_ids {
+        if let Some(age) = counter.issued_age(tx_id).await {
+            if age < window {
+                best_age = Some(match best_age {
+                    Some(current) => current.min(age),
+                    None => age,
+                });
+            }
+        }
+    }
+    best_age
 }
 
 // -- Bookmark validation -----------------------------------------------------

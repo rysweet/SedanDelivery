@@ -21,15 +21,16 @@ pub fn router() -> Router<AppState> {
 /// collide with real data.  We only care whether `graph_exists` succeeds or
 /// returns an error — the boolean result itself is ignored.
 async fn health_handler(State(state): State<AppState>) -> impl IntoResponse {
-    match state.store.graph_exists("__health_probe") {
-        Ok(_) => (
+    let store = std::sync::Arc::clone(&state.store);
+    match tokio::task::spawn_blocking(move || store.graph_exists("__health_probe")).await {
+        Ok(Ok(_)) => (
             StatusCode::OK,
             Json(HealthResponse {
                 status: "ok",
                 error: None,
             }),
         ),
-        Err(_e) => {
+        Ok(Err(_e)) => {
             // Do NOT expose the backend error message — it may contain
             // connection strings, internal paths, or store implementation
             // details.  Log it server-side for operators instead.
@@ -42,5 +43,12 @@ async fn health_handler(State(state): State<AppState>) -> impl IntoResponse {
                 }),
             )
         }
+        Err(_) => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(HealthResponse {
+                status: "degraded",
+                error: Some("health probe task panicked".to_string()),
+            }),
+        ),
     }
 }

@@ -278,9 +278,56 @@ fn read_private_key(reader: &mut BufReader<File>) -> Option<PrivateKeyDer<'stati
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::any::Any;
+    use std::path::{Path, PathBuf};
     use std::sync::{Mutex, MutexGuard};
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    fn unique_test_dir(name: &str) -> PathBuf {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time before unix epoch")
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "sedandelivery-bolt-{name}-{}-{suffix}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).expect("failed to create temp test dir");
+        dir
+    }
+
+    fn write_test_cert_and_key(dir: &Path) -> (PathBuf, PathBuf) {
+        let cert = rcgen::generate_simple_self_signed(vec!["localhost".to_string()])
+            .expect("failed to generate self-signed cert");
+        let cert_path = dir.join("test-cert.pem");
+        let key_path = dir.join("test-key.pem");
+        std::fs::write(&cert_path, cert.cert.pem()).expect("failed to write test cert");
+        std::fs::write(&key_path, cert.signing_key.serialize_pem())
+            .expect("failed to write test key");
+        (cert_path, key_path)
+    }
+
+    fn panic_message(payload: Box<dyn Any + Send>) -> String {
+        match payload.downcast::<String>() {
+            Ok(message) => *message,
+            Err(payload) => match payload.downcast::<&'static str>() {
+                Ok(message) => (*message).to_string(),
+                Err(_) => "non-string panic payload".to_string(),
+            },
+        }
+    }
+
+    fn expect_panic<F>(f: F, context: &str) -> String
+    where
+        F: FnOnce() -> Option<TlsAcceptor> + std::panic::UnwindSafe,
+    {
+        match std::panic::catch_unwind(f) {
+            Ok(_) => panic!("{context}"),
+            Err(payload) => panic_message(payload),
+        }
+    }
 
     struct TestEnv {
         prev_cert: Option<String>,
@@ -342,20 +389,8 @@ mod tests {
 
     #[test]
     fn returns_some_with_valid_cert_and_key() {
-        // Generate a self-signed certificate using rcgen
-        let cert = rcgen::generate_simple_self_signed(vec!["localhost".to_string()])
-            .expect("failed to generate self-signed cert");
-
-        let cert_pem = cert.cert.pem();
-        let key_pem = cert.signing_key.serialize_pem();
-
-        // Write to temp files
-        let tmp_dir = std::env::temp_dir().join("sedandelivery-bolt-tls-test");
-        std::fs::create_dir_all(&tmp_dir).unwrap();
-        let cert_path = tmp_dir.join("test-cert.pem");
-        let key_path = tmp_dir.join("test-key.pem");
-        std::fs::write(&cert_path, cert_pem).unwrap();
-        std::fs::write(&key_path, key_pem).unwrap();
+        let tmp_dir = unique_test_dir("valid-cert");
+        let (cert_path, key_path) = write_test_cert_and_key(&tmp_dir);
 
         let _env = TestEnv::set(
             Some(cert_path.to_str().unwrap()),
@@ -366,6 +401,73 @@ mod tests {
         assert!(
             result.is_some(),
             "expected Some(TlsAcceptor) with valid cert/key"
+        );
+
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+    }
+
+    #[test]
+    fn panics_when_cert_file_is_missing() {
+        let tmp_dir = unique_test_dir("missing-cert");
+        let missing_cert = tmp_dir.join("missing-cert.pem");
+        let (_, key_path) = write_test_cert_and_key(&tmp_dir);
+        let _env = TestEnv::set(
+            Some(missing_cert.to_str().unwrap()),
+            Some(key_path.to_str().unwrap()),
+        );
+
+        let message = expect_panic(load_tls_config, "missing cert file must panic");
+        assert!(
+            message.contains("failed to open TLS cert file"),
+            "unexpected panic message: {message}"
+        );
+
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+    }
+
+    #[test]
+    fn panics_when_key_file_is_missing() {
+        let tmp_dir = unique_test_dir("missing-key");
+        let (cert_path, _) = write_test_cert_and_key(&tmp_dir);
+        let missing_key = tmp_dir.join("missing-key.pem");
+        let _env = TestEnv::set(
+            Some(cert_path.to_str().unwrap()),
+            Some(missing_key.to_str().unwrap()),
+        );
+
+        let message = expect_panic(load_tls_config, "missing key file must panic");
+        assert!(
+            message.contains("failed to open TLS key file"),
+            "unexpected panic message: {message}"
+        );
+
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn panics_when_cert_file_is_unreadable() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp_dir = unique_test_dir("unreadable-cert");
+        let (cert_path, key_path) = write_test_cert_and_key(&tmp_dir);
+        let original_mode = std::fs::metadata(&cert_path)
+            .expect("cert metadata missing")
+            .permissions()
+            .mode();
+        std::fs::set_permissions(&cert_path, std::fs::Permissions::from_mode(0o000))
+            .expect("failed to remove cert permissions");
+        let _env = TestEnv::set(
+            Some(cert_path.to_str().unwrap()),
+            Some(key_path.to_str().unwrap()),
+        );
+
+        let message = expect_panic(load_tls_config, "unreadable cert file must panic");
+        std::fs::set_permissions(&cert_path, std::fs::Permissions::from_mode(original_mode))
+            .expect("failed to restore cert permissions");
+        assert!(
+            message.contains("failed to open TLS cert file"),
+            "unexpected panic message: {message}"
         );
 
         let _ = std::fs::remove_dir_all(&tmp_dir);

@@ -175,6 +175,7 @@ async fn main() {
     // Per-IP rate limiting — configurable via GQL_API_RATE_LIMIT_RPS (default 100).
     let rps = rate_limit::rps_from_env();
     let limiter = rate_limit::build_limiter(rps);
+    rate_limit::spawn_limiter_sweeper(Arc::clone(&limiter));
     info!("Per-IP rate limit: {rps} requests/second");
 
     // 100 concurrent requests per replica. KEDA scales min 1 → max 3 replicas,

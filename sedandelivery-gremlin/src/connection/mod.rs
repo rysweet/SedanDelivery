@@ -4,6 +4,7 @@
 //! read loop dispatching messages to the protocol handler.
 
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use futures_util::{SinkExt, StreamExt};
 use tokio::net::TcpStream;
@@ -53,6 +54,8 @@ impl GremlinSession {
 pub async fn handle_connection(
     stream: TcpStream,
     store: Arc<dyn GraphStore>,
+    idle_timeout: Duration,
+    max_lifetime: Duration,
 ) -> Result<(), ConnectionError> {
     let ws_stream = {
         let config = tokio_tungstenite::tungstenite::protocol::WebSocketConfig {
@@ -64,6 +67,7 @@ pub async fn handle_connection(
     let (mut sink, mut source) = ws_stream.split();
 
     let mut session = GremlinSession::new(store);
+    let started_at = Instant::now();
 
     // If GREMLIN_PASSWORD is set, the first message must authenticate.
     if session.requires_auth() {
@@ -74,12 +78,24 @@ pub async fn handle_connection(
         sink.send(Message::Text(json)).await?;
     }
 
-    while let Some(msg) = source.next().await {
-        let msg = msg?;
+    loop {
+        if max_lifetime != Duration::ZERO && started_at.elapsed() >= max_lifetime {
+            tracing::debug!("closing gremlin connection after max lifetime");
+            break;
+        }
+
+        let msg = match tokio::time::timeout(idle_timeout, source.next()).await {
+            Ok(Some(msg)) => msg?,
+            Ok(None) => break,
+            Err(_) => {
+                tracing::debug!("closing gremlin connection after idle timeout");
+                break;
+            }
+        };
 
         match msg {
             Message::Text(text) => {
-                let response = protocol::handler::handle_message(&text, &mut session)?;
+                let response = protocol::handler::handle_message(&text, &mut session).await?;
                 let json = serde_json::to_string(&response).map_err(|e| {
                     ConnectionError::Protocol(protocol::ProtocolError::Internal(e.to_string()))
                 })?;

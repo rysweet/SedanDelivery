@@ -39,7 +39,13 @@ async fn start_test_server() -> (JoinHandle<()>, u16) {
             };
             let store = Arc::clone(&store);
             tokio::spawn(async move {
-                let _ = sedandelivery_gremlin::connection::handle_connection(stream, store).await;
+                let _ = sedandelivery_gremlin::connection::handle_connection(
+                    stream,
+                    store,
+                    std::time::Duration::from_secs(300),
+                    std::time::Duration::from_secs(1800),
+                )
+                .await;
             });
         }
     });
