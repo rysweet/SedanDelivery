@@ -107,24 +107,31 @@ impl<'s> QueryPlanner<'s> {
         }
 
         // Build the node scan for the first node.
-        // If the node pattern has a label and a single equality property filter,
-        // check whether a matching index exists. If so, emit IndexScan directly
-        // (skipping the post-filter); otherwise fall back to NodeScan + Filter.
+        // If the node pattern has a label and at least one equality property
+        // filter, prefer a declared index when one exists; otherwise emit
+        // IndexScan on the first property and let the store fall back to a
+        // label+property scan. This keeps correlated MATCH lookups selective
+        // under UNWIND/APPLY even when no declared index exists without
+        // regressing multi-property patterns that already have a declared index.
         let mut index_consumed_prop: Option<smol_str::SmolStr> = None;
         let start_map_props = match &start.properties {
             Some(Properties::Map(m)) => Some(m.as_slice()),
             _ => None,
         };
         let mut op = if let (Some(label), Some(props)) = (&start_label, start_map_props) {
-            // Look for a single-property equality that maps to a literal value.
-            // We take the first one that has an index; remaining props become a Filter.
-            let indexes = self.store.list_indexes(self.graph).unwrap_or_default();
-            let indexed_prop = props.iter().find(|(prop_key, _val)| {
-                indexes
-                    .iter()
-                    .any(|idx| idx.label == label.as_str() && idx.property == prop_key.as_str())
-            });
-            if let Some((prop_key, prop_val)) = indexed_prop {
+            let selected_prop = self
+                .store
+                .list_indexes(self.graph)
+                .ok()
+                .and_then(|indexes| {
+                    props.iter().find(|(prop_key, _)| {
+                        indexes.iter().any(|idx| {
+                            idx.label == label.as_str() && idx.property == prop_key.as_str()
+                        })
+                    })
+                })
+                .or_else(|| props.first());
+            if let Some((prop_key, prop_val)) = selected_prop {
                 index_consumed_prop = Some(prop_key.clone());
                 Operator::IndexScan {
                     label: label.clone(),

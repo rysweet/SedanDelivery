@@ -1321,8 +1321,9 @@ mod tests {
     }
 
     #[test]
-    fn plan_node_scan_stays_node_scan_when_no_index() {
-        // No index created -- must fall back to NodeScan + Filter.
+    fn plan_exact_label_property_match_uses_selective_lookup_without_index() {
+        // No index created -- the planner still uses IndexScan because the
+        // store API falls back to a label+property scan when no index exists.
         let store = make_store(); // no indexes
         let planner = QueryPlanner::new(&store, "g");
         let query = Query {
@@ -1359,14 +1360,11 @@ mod tests {
         };
         let plan = planner.plan(&query).unwrap();
         assert!(
-            !plan_contains_index_scan(&plan),
-            "Expected NodeScan (not IndexScan) when no index exists, got: {plan:?}"
+            plan_contains_index_scan(&plan),
+            "Expected selective IndexScan even without a declared index, got: {plan:?}"
         );
-        // Should still have a Filter for the inline property predicate.
-        assert!(
-            plan_contains_filter(&plan),
-            "Expected Filter wrapping NodeScan when no index, got: {plan:?}"
-        );
+        // The exact-match property is consumed by the selective lookup, so no
+        // extra Filter wrapper is required for this one-property pattern.
     }
 
     // ── Operator tree search helpers ──────────────────────────────────────────

@@ -1,0 +1,158 @@
+# Canonical gadugi scenario for Issue #1011 — selective lookups under UNWIND.
+#
+# This validates the public gql-api contract locally without Redis:
+#   - gql-api starts with in-memory storage and a deliberately low row budget
+#   - top-level parameterized exact-match lookups still bind parameters
+#   - the reported UNWIND + MATCH + MATCH + MERGE batch finishes under the cap
+#   - the created LINK edges are observable through the public query endpoint
+
+scenario:
+  name: "Issue #1011 - selective lookup stays under row cap"
+  description: >
+    Verifies from an API client perspective that gql-api running locally with
+    in-memory storage and GQL_QUERY_MAX_ROWS=5000 can still resolve a
+    parameterized exact-match lookup and execute the reported
+    UNWIND + MATCH + MATCH + MERGE edge batch without tripping the
+    intermediate-row budget.
+  metadata:
+    tags: [cli, api, cypher, regression, issue-1011]
+    priority: high
+    linked_docs:
+      - docs/graph-visualizer/api-reference.md
+  agents:
+    - name: cli-agent
+      type: cli
+      config: {}
+
+  steps:
+    - name: "A1 — Run local selective-lookup regression contract"
+      agent: cli-agent
+      action: execute
+      params:
+        command: bash
+        args:
+          - -lc
+          - >
+            set -euo pipefail;
+            PORT=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()');
+            GRAPH_NAME="issue_1011_selective_lookup";
+            API_LOG=$(mktemp);
+            HEALTH_BODY=$(mktemp);
+            LOOKUP_BODY=$(mktemp);
+            LOOKUP_REQ=$(mktemp);
+            CORRELATED_BODY=$(mktemp);
+            CORRELATED_REQ=$(mktemp);
+            MUTATE_BODY=$(mktemp);
+            MUTATE_REQ=$(mktemp);
+            COUNT_BODY=$(mktemp);
+            COUNT_REQ=$(mktemp);
+            cleanup() {
+              if [[ -n "${API_PID:-}" ]]; then
+                kill "${API_PID}" >/dev/null 2>&1 || true;
+                wait "${API_PID}" 2>/dev/null || true;
+              fi;
+              rm -f "${API_LOG}" "${HEALTH_BODY}" "${LOOKUP_BODY}" "${LOOKUP_REQ}" "${CORRELATED_BODY}" "${CORRELATED_REQ}" "${MUTATE_BODY}" "${MUTATE_REQ}" "${COUNT_BODY}" "${COUNT_REQ}";
+            };
+            trap cleanup EXIT;
+            env
+            -u GQL_REDIS_URL
+            -u GQL_REDIS_CLUSTER_NODES
+            -u ENVIRONMENT
+            -u GQL_API_TLS_CERT
+            -u GQL_API_TLS_KEY
+            -u GQL_API_ENTRA_TENANT_ID
+            -u GQL_API_ENTRA_CLIENT_ID
+            GQL_API_BIND_ADDR="127.0.0.1:${PORT}"
+            GQL_API_RATE_LIMIT_RPS=10000
+            GQL_QUERY_MAX_ROWS=5000
+            cargo run -p gql-api --quiet >"${API_LOG}" 2>&1 &
+            API_PID=$!;
+            for _ in $(seq 1 120); do
+              HEALTH_CODE=$(curl -s -o "${HEALTH_BODY}" -w '%{http_code}' "http://127.0.0.1:${PORT}/health" || true);
+              if [[ "${HEALTH_CODE}" == "200" ]]; then
+                break;
+              fi;
+              sleep 1;
+            done;
+            [[ "${HEALTH_CODE}" == "200" ]] || { echo "[FAIL] gql-api did not become healthy" >&2; cat "${API_LOG}" >&2; exit 1; };
+            echo "[PASS] gql-api started with low row cap";
+            GRAPH_CODE=$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'content-type: application/json' -d "{\"name\":\"${GRAPH_NAME}\"}" "http://127.0.0.1:${PORT}/graphs");
+            [[ "${GRAPH_CODE}" == "201" ]] || { echo "[FAIL] creating graph returned ${GRAPH_CODE}" >&2; cat "${API_LOG}" >&2; exit 1; };
+            for i in $(seq 0 299); do
+              curl -fsS -o /dev/null -X POST -H 'content-type: application/json' -d "{\"labels\":[\"Node\"],\"properties\":{\"id\":${i}}}" "http://127.0.0.1:${PORT}/graphs/${GRAPH_NAME}/nodes";
+            done;
+            curl -fsS -o /dev/null -X POST -H 'content-type: application/json' -d '{"labels":["Host"],"properties":{"host":"neo4j.example.internal"}}' "http://127.0.0.1:${PORT}/graphs/${GRAPH_NAME}/nodes";
+            for i in $(seq 0 9); do
+              curl -fsS -o /dev/null -X POST -H 'content-type: application/json' -d "{\"labels\":[\"Foo\"],\"properties\":{\"id\":${i}}}" "http://127.0.0.1:${PORT}/graphs/${GRAPH_NAME}/nodes";
+              curl -fsS -o /dev/null -X POST -H 'content-type: application/json' -d "{\"labels\":[\"Bar\"],\"properties\":{\"id\":${i}}}" "http://127.0.0.1:${PORT}/graphs/${GRAPH_NAME}/nodes";
+            done;
+            echo "[PASS] seeded public API graph data";
+            python3 -c 'import json, sys; json.dump({"cypher": "MATCH (h:Host {host: $host}) RETURN h.host ORDER BY h.host", "params": {"host": "neo4j.example.internal"}}, open(sys.argv[1], "w"))' "${LOOKUP_REQ}";
+            LOOKUP_CODE=$(curl -s -o "${LOOKUP_BODY}" -w '%{http_code}' -X POST -H 'content-type: application/json' --data @"${LOOKUP_REQ}" "http://127.0.0.1:${PORT}/graphs/${GRAPH_NAME}/query");
+            [[ "${LOOKUP_CODE}" == "200" ]] || { echo "[FAIL] parameterized lookup returned ${LOOKUP_CODE}" >&2; cat "${LOOKUP_BODY}" >&2; exit 1; };
+            python3 -c 'import json, sys; body = json.load(open(sys.argv[1])); assert body["rows"] == [{"h.host": "neo4j.example.internal"}], body' "${LOOKUP_BODY}";
+            echo "[PASS] top-level parameterized exact-match lookup succeeded";
+            python3 -c 'import json, sys; json.dump({"cypher": "MATCH (a:Foo), (b:Bar {id: a.id}) RETURN count(b)"}, open(sys.argv[1], "w"))' "${CORRELATED_REQ}";
+            CORRELATED_CODE=$(curl -s -o "${CORRELATED_BODY}" -w '%{http_code}' -X POST -H 'content-type: application/json' --data @"${CORRELATED_REQ}" "http://127.0.0.1:${PORT}/graphs/${GRAPH_NAME}/query");
+            [[ "${CORRELATED_CODE}" == "200" ]] || { echo "[FAIL] correlated node-property lookup returned ${CORRELATED_CODE}" >&2; cat "${CORRELATED_BODY}" >&2; exit 1; };
+            python3 -c 'import json, sys; body = json.load(open(sys.argv[1])); assert body["rows"] == [{"count(b)": 10}], body' "${CORRELATED_BODY}";
+            echo "[PASS] correlated node-property lookup succeeded";
+            python3 -c 'import json, sys; edges = [{"src": i, "dst": i + 1} for i in range(10)]; json.dump({"cypher": "UNWIND $edges AS edge MATCH (src:Node {id: edge.src}), (dst:Node {id: edge.dst}) MERGE (src)-[:LINK]->(dst)", "params": {"edges": edges}}, open(sys.argv[1], "w"))' "${MUTATE_REQ}";
+            MUTATE_CODE=$(curl -s -o "${MUTATE_BODY}" -w '%{http_code}' -X POST -H 'content-type: application/json' --data @"${MUTATE_REQ}" "http://127.0.0.1:${PORT}/graphs/${GRAPH_NAME}/mutate");
+            [[ "${MUTATE_CODE}" == "200" ]] || { echo "[FAIL] UNWIND MATCH MERGE batch returned ${MUTATE_CODE}" >&2; cat "${MUTATE_BODY}" >&2; exit 1; };
+            python3 -c 'import json, sys; body = json.load(open(sys.argv[1])); assert body["edgesCreated"] == 10, body; assert body["nodesCreated"] == 0, body' "${MUTATE_BODY}";
+            echo "[PASS] selective lookup batch mutate stayed under row cap";
+            python3 -c 'import json, sys; json.dump({"cypher": "MATCH (:Node)-[r:LINK]->(:Node) RETURN count(r)"}, open(sys.argv[1], "w"))' "${COUNT_REQ}";
+            COUNT_CODE=$(curl -s -o "${COUNT_BODY}" -w '%{http_code}' -X POST -H 'content-type: application/json' --data @"${COUNT_REQ}" "http://127.0.0.1:${PORT}/graphs/${GRAPH_NAME}/query");
+            [[ "${COUNT_CODE}" == "200" ]] || { echo "[FAIL] LINK count query returned ${COUNT_CODE}" >&2; cat "${COUNT_BODY}" >&2; exit 1; };
+            python3 -c 'import json, sys; body = json.load(open(sys.argv[1])); assert body["rows"] == [{"count(r)": 10}], body' "${COUNT_BODY}";
+            echo "[PASS] linked edge count visible via public query API";
+      timeout: 300000
+
+    - name: "A2 — Confirm gql-api started"
+      agent: cli-agent
+      action: wait_for_output
+      params:
+        pattern: "\\[PASS\\]\\s+gql-api started with low row cap"
+      timeout: 5000
+
+    - name: "A3 — Confirm graph data was seeded through the public API"
+      agent: cli-agent
+      action: wait_for_output
+      params:
+        pattern: "\\[PASS\\]\\s+seeded public API graph data"
+      timeout: 5000
+
+    - name: "A4 — Confirm top-level parameterized lookup succeeds"
+      agent: cli-agent
+      action: wait_for_output
+      params:
+        pattern: "\\[PASS\\]\\s+top-level parameterized exact-match lookup succeeded"
+      timeout: 5000
+
+    - name: "A5 — Confirm UNWIND MATCH MERGE batch stays under row cap"
+      agent: cli-agent
+      action: wait_for_output
+      params:
+        pattern: "\\[PASS\\]\\s+selective lookup batch mutate stayed under row cap"
+      timeout: 5000
+
+    - name: "A6 — Confirm correlated node-property lookup succeeds"
+      agent: cli-agent
+      action: wait_for_output
+      params:
+        pattern: "\\[PASS\\]\\s+correlated node-property lookup succeeded"
+      timeout: 5000
+
+    - name: "A7 — Confirm LINK edges are visible through query API"
+      agent: cli-agent
+      action: wait_for_output
+      params:
+        pattern: "\\[PASS\\]\\s+linked edge count visible via public query API"
+      timeout: 5000
+
+    - name: "A8 — Confirm validator exited cleanly"
+      agent: cli-agent
+      action: validate_exit_code
+      params:
+        text: "0"

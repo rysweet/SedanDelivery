@@ -124,56 +124,122 @@ impl<'a> QueryExecutor<'a> {
             }));
         };
 
-        // When a concrete value expression is present, evaluate it and use
-        // RangeQuery::Eq for a precise index lookup. Otherwise fall back to
-        // scanning all nodes that have the property defined.
-        let evaluated_value: Option<Value> = if let Some(val_expr) = value {
-            let ctx: FilterRow<'_> = HashMap::new();
-            Some(eval_expr(val_expr, &ctx)?)
+        let base_rows: &[Row] = if cx.outer_rows.is_empty() {
+            &[]
         } else {
-            None
+            cx.outer_rows
         };
 
-        let range_query = match &evaluated_value {
-            Some(v) => RangeQuery::Eq(v),
-            None => RangeQuery::Gte(&Value::Null),
-        };
-
-        let node_ids = self.store.find_nodes_by_label_and_property(
-            cx.graph,
-            label.as_str(),
-            property,
-            range_query,
-        )?;
-
-        // Fallback: if the range query returns empty (Null comparison issue for
-        // existence scans), fall back to label scan with property existence check.
-        let effective_ids = if node_ids.is_empty() && evaluated_value.is_none() {
-            let all_label = self.store.find_nodes_by_label(cx.graph, label.as_str())?;
-            let mut with_prop = Vec::new();
-            for id in all_label {
-                if let Some(node) = self.store.get_node(cx.graph, id)? {
-                    if node.properties.contains_key(property.as_str()) {
-                        with_prop.push(id);
+        let resolve_ids = |evaluated_value: &Option<Value>| -> Result<Vec<NodeId>, GqlError> {
+            let range_query = match evaluated_value {
+                Some(v) => RangeQuery::Eq(v),
+                None => RangeQuery::Gte(&Value::Null),
+            };
+            let node_ids = self.store.find_nodes_by_label_and_property(
+                cx.graph,
+                label.as_str(),
+                property,
+                range_query,
+            )?;
+            if node_ids.is_empty() && evaluated_value.is_none() {
+                let all_label = self.store.find_nodes_by_label(cx.graph, label.as_str())?;
+                let mut with_prop = Vec::new();
+                for id in all_label {
+                    if let Some(node) = self.store.get_node(cx.graph, id)? {
+                        if node.properties.contains_key(property.as_str()) {
+                            with_prop.push(id);
+                        }
                     }
                 }
+                Ok(with_prop)
+            } else {
+                Ok(node_ids)
             }
-            with_prop
-        } else {
-            node_ids
         };
 
-        let mut rows = Vec::with_capacity(effective_ids.len());
-        for id in effective_ids {
+        let mut rows = Vec::new();
+        if base_rows.is_empty() {
+            let evaluated_value: Option<Value> = if let Some(val_expr) = value {
+                let empty_row = Row::new();
+                let ctx = self.build_filter_ctx(cx.graph, &empty_row)?;
+                Some(eval_expr(val_expr, &ctx)?)
+            } else {
+                None
+            };
+            let node_ids = resolve_ids(&evaluated_value)?;
+
+            for id in node_ids {
+                if cx.budget.reached_row_cap() {
+                    break;
+                }
+                cx.budget.check_or_err()?;
+                let mut row = Row::new();
+                row.insert(alias.0.clone(), Value::Node(id));
+                inject_parameters(&mut row, &self.parameters);
+                cx.budget.record_row();
+                cx.budget.record_leaf_row();
+                rows.push(row);
+            }
+            return Ok(rows);
+        }
+
+        for outer_row in base_rows {
             if cx.budget.reached_row_cap() {
                 break;
             }
             cx.budget.check_or_err()?;
-            let mut row = Row::new();
-            row.insert(alias.0.clone(), Value::Node(id));
-            cx.budget.record_row();
-            cx.budget.record_leaf_row();
-            rows.push(row);
+
+            let ctx = self.build_filter_ctx(cx.graph, outer_row)?;
+            let evaluated_value: Option<Value> = if let Some(val_expr) = value {
+                Some(self.eval_with_storage(cx.graph, val_expr, outer_row, &ctx)?)
+            } else {
+                None
+            };
+            let node_ids = resolve_ids(&evaluated_value)?;
+
+            for id in node_ids {
+                if cx.budget.reached_row_cap() {
+                    break;
+                }
+                cx.budget.check_or_err()?;
+                if !alias.0.starts_with("__anon") {
+                    if let Some(Value::Node(pre_bound_id)) = outer_row.get(alias.0.as_str()) {
+                        if *pre_bound_id != id {
+                            continue;
+                        }
+                    }
+                }
+                let mut row: Row = outer_row
+                    .iter()
+                    .filter(|(k, _)| !k.starts_with("__anon_rel_"))
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect();
+                row.insert(alias.0.clone(), Value::Node(id));
+                inject_parameters(&mut row, &self.parameters);
+                let outer_edge_keys: Vec<Value> = outer_row
+                    .iter()
+                    .filter(|(k, v)| {
+                        !k.starts_with("__anon_rel_")
+                            && !k.starts_with("__outer_edge_vars__")
+                            && matches!(v, Value::Edge(_))
+                    })
+                    .map(|(k, _)| Value::Str(k.clone().into_boxed_str()))
+                    .collect();
+                if !outer_edge_keys.is_empty() {
+                    let mut existing: Vec<Value> = match row.get("__outer_edge_vars__") {
+                        Some(Value::List(vs)) => vs.clone(),
+                        _ => vec![],
+                    };
+                    existing.extend(outer_edge_keys);
+                    row.insert("__outer_edge_vars__".to_string(), Value::List(existing));
+                }
+                cx.budget.record_row();
+                cx.budget.record_leaf_row();
+                rows.push(row);
+            }
+            if cx.budget.reached_row_cap() {
+                break;
+            }
         }
         Ok(rows)
     }
