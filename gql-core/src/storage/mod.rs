@@ -196,6 +196,35 @@ pub trait GraphStore: Send + Sync {
         rel_types: &[&str],
     ) -> Result<Vec<AdjEntry>, StorageError>;
 
+    /// Batch outgoing adjacency lookup aligned to `node_ids`.
+    ///
+    /// Default implementation preserves correctness by looping, but backends
+    /// should override this to pipeline or otherwise batch remote reads.
+    fn out_edges_by_type_batch(
+        &self,
+        graph: &str,
+        node_ids: &[NodeId],
+        rel_types: &[&str],
+    ) -> Result<Vec<Vec<AdjEntry>>, StorageError> {
+        node_ids
+            .iter()
+            .map(|node_id| self.out_edges_by_type(graph, *node_id, rel_types))
+            .collect()
+    }
+
+    /// Batch incoming adjacency lookup aligned to `node_ids`.
+    fn in_edges_by_type_batch(
+        &self,
+        graph: &str,
+        node_ids: &[NodeId],
+        rel_types: &[&str],
+    ) -> Result<Vec<Vec<AdjEntry>>, StorageError> {
+        node_ids
+            .iter()
+            .map(|node_id| self.in_edges_by_type(graph, *node_id, rel_types))
+            .collect()
+    }
+
     /// IDs of all outgoing edges (without neighbor data). Used by DETACH DELETE.
     fn out_edge_ids(&self, graph: &str, node_id: NodeId) -> Result<Vec<EdgeId>, StorageError>;
 

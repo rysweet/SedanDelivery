@@ -1008,6 +1008,24 @@ impl GraphStore for RedisGraphStore {
         self.in_edges_by_type_impl(graph, node_id, rel_types)
     }
 
+    fn out_edges_by_type_batch(
+        &self,
+        graph: &str,
+        node_ids: &[NodeId],
+        rel_types: &[&str],
+    ) -> Result<Vec<Vec<AdjEntry>>, StorageError> {
+        self.out_edges_by_type_batch_impl(graph, node_ids, rel_types)
+    }
+
+    fn in_edges_by_type_batch(
+        &self,
+        graph: &str,
+        node_ids: &[NodeId],
+        rel_types: &[&str],
+    ) -> Result<Vec<Vec<AdjEntry>>, StorageError> {
+        self.in_edges_by_type_batch_impl(graph, node_ids, rel_types)
+    }
+
     fn out_edge_ids(&self, graph: &str, node_id: NodeId) -> Result<Vec<EdgeId>, StorageError> {
         self.out_edge_ids_impl(graph, node_id)
     }

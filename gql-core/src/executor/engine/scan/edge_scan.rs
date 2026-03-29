@@ -1,6 +1,6 @@
 //! Edge traversal operators: Expand, VarLenExpand, ShortestPath.
 
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use crate::ast::Direction;
 use crate::error::{ExecutionError, GqlError};
@@ -10,6 +10,8 @@ use crate::types::Value;
 
 use crate::executor::engine::helpers::{extract_node_id, get_adj_entries, undefined_var};
 use crate::executor::engine::{BfsArena, ExecContext, QueryExecutor, Row};
+
+const EXPAND_BATCH_NODE_CHUNK_SIZE: usize = 256;
 
 impl<'a> QueryExecutor<'a> {
     pub(crate) fn exec_expand(
@@ -34,23 +36,64 @@ impl<'a> QueryExecutor<'a> {
         let input = self.exec_operator(cx, child)?;
         let type_strs: Vec<&str> = rel_types.iter().map(|r| r.as_str()).collect();
         let mut out = Vec::with_capacity(input.len());
+        let mut row_src_ids = Vec::with_capacity(input.len());
+        let mut unique_src_ids = Vec::new();
+        let mut seen_src_ids = HashSet::new();
 
-        for row in input {
+        for row in &input {
             cx.budget.check_or_err()?;
             let src_val = row
                 .get(src_alias.0.as_str())
                 .ok_or_else(|| undefined_var(&src_alias.0))?;
             let src_id = extract_node_id(src_val, &src_alias.0)?;
+            row_src_ids.push(src_id);
+            if seen_src_ids.insert(src_id) {
+                unique_src_ids.push(src_id);
+            }
+        }
 
-            let adj_entries = if self.gremlin_mode && matches!(direction, Direction::Undirected) {
-                let mut out_entries = self.store.out_edges_by_type(cx.graph, src_id, &type_strs)?;
-                let in_entries = self.store.in_edges_by_type(cx.graph, src_id, &type_strs)?;
-                // Gremlin both()/bothE() should see self-loops once per direction.
-                out_entries.extend(in_entries);
-                out_entries
-            } else {
-                get_adj_entries(self.store, cx.graph, src_id, direction, &type_strs)?
+        let mut adjacency_by_src: HashMap<NodeId, Vec<crate::storage::AdjEntry>> =
+            HashMap::with_capacity(unique_src_ids.len());
+        for node_chunk in unique_src_ids.chunks(EXPAND_BATCH_NODE_CHUNK_SIZE) {
+            cx.budget.check_or_err()?;
+            let chunk_batches = match direction {
+                Direction::Outgoing => self
+                    .store
+                    .out_edges_by_type_batch(cx.graph, node_chunk, &type_strs)?,
+                Direction::Incoming => self
+                    .store
+                    .in_edges_by_type_batch(cx.graph, node_chunk, &type_strs)?,
+                Direction::Undirected => {
+                    let mut out_batches = self
+                        .store
+                        .out_edges_by_type_batch(cx.graph, node_chunk, &type_strs)?;
+                    let in_batches = self
+                        .store
+                        .in_edges_by_type_batch(cx.graph, node_chunk, &type_strs)?;
+                    for (out_entries, in_entries) in out_batches.iter_mut().zip(in_batches) {
+                        if self.gremlin_mode {
+                            out_entries.extend(in_entries);
+                        } else {
+                            let seen_out_edges: HashSet<EdgeId> =
+                                out_entries.iter().map(|entry| entry.edge_id).collect();
+                            out_entries.extend(
+                                in_entries
+                                    .into_iter()
+                                    .filter(|entry| !seen_out_edges.contains(&entry.edge_id)),
+                            );
+                        }
+                    }
+                    out_batches
+                }
             };
+            for (src_id, adj_entries) in node_chunk.iter().copied().zip(chunk_batches) {
+                adjacency_by_src.insert(src_id, adj_entries);
+            }
+        }
+
+        for (row, src_id) in input.into_iter().zip(row_src_ids) {
+            cx.budget.check_or_err()?;
+            let adj_entries = adjacency_by_src.get(&src_id).cloned().unwrap_or_default();
 
             // Hoist outer_edge_vars construction to the per-row level.
             // This HashSet only depends on the row (not on individual adjacency
@@ -427,12 +470,18 @@ impl<'a> QueryExecutor<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ast::{Direction, Identifier, Label, RelType};
+    use crate::ast::{Direction, Expr, Identifier, Label, RelType};
     use crate::executor::budget::ExecutionBudget;
     use crate::executor::engine::MutationStats;
     use crate::planner::Operator;
-    use crate::storage::{GraphStore, InMemoryGraphStore};
+    use crate::storage::{
+        AdjEntry, EdgeData, EdgeId, GraphStats, GraphStore, InMemoryGraphStore, IndexDescriptor,
+        NodeData, NodeId, RangeQuery, ReadConsistency,
+    };
     use indexmap::IndexMap;
+    use std::any::Any;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
 
     fn make_store() -> InMemoryGraphStore {
         let store = InMemoryGraphStore::new();
@@ -447,6 +496,120 @@ mod tests {
     ) -> Vec<Row> {
         let executor = QueryExecutor::new(store);
         executor.execute("g", plan, budget).unwrap().rows
+    }
+
+    struct TrackingStore {
+        inner: Arc<InMemoryGraphStore>,
+        out_edges_by_type_calls: AtomicUsize,
+        out_edges_by_type_batch_calls: AtomicUsize,
+    }
+
+    impl TrackingStore {
+        fn new(inner: Arc<InMemoryGraphStore>) -> Self {
+            Self {
+                inner,
+                out_edges_by_type_calls: AtomicUsize::new(0),
+                out_edges_by_type_batch_calls: AtomicUsize::new(0),
+            }
+        }
+    }
+
+    macro_rules! delegate {
+        ($name:ident(&self) -> $ret:ty) => {
+            fn $name(&self) -> $ret {
+                self.inner.$name()
+            }
+        };
+        ($name:ident(&self, $($arg:ident : $ty:ty),+) -> $ret:ty) => {
+            fn $name(&self, $($arg: $ty),+) -> $ret {
+                self.inner.$name($($arg),+)
+            }
+        };
+    }
+
+    impl GraphStore for TrackingStore {
+        delegate!(get_node(&self, graph: &str, id: NodeId) -> Result<Option<NodeData>, crate::error::StorageError>);
+        delegate!(get_edge(&self, graph: &str, id: EdgeId) -> Result<Option<EdgeData>, crate::error::StorageError>);
+        delegate!(get_nodes_batch(&self, graph: &str, ids: &[NodeId]) -> Result<Vec<Option<NodeData>>, crate::error::StorageError>);
+        delegate!(get_edges_batch(&self, graph: &str, ids: &[EdgeId]) -> Result<Vec<Option<EdgeData>>, crate::error::StorageError>);
+        delegate!(find_nodes_by_label(&self, graph: &str, label: &str) -> Result<Vec<NodeId>, crate::error::StorageError>);
+
+        fn find_nodes_by_label_and_property(
+            &self,
+            graph: &str,
+            label: &str,
+            property: &str,
+            range: RangeQuery<'_>,
+        ) -> Result<Vec<NodeId>, crate::error::StorageError> {
+            self.inner
+                .find_nodes_by_label_and_property(graph, label, property, range)
+        }
+
+        delegate!(find_edges_by_type(&self, graph: &str, rel_type: &str) -> Result<Vec<EdgeId>, crate::error::StorageError>);
+        delegate!(out_edges(&self, graph: &str, node_id: NodeId) -> Result<Vec<AdjEntry>, crate::error::StorageError>);
+        delegate!(in_edges(&self, graph: &str, node_id: NodeId) -> Result<Vec<AdjEntry>, crate::error::StorageError>);
+
+        fn out_edges_by_type(
+            &self,
+            graph: &str,
+            node_id: NodeId,
+            rel_types: &[&str],
+        ) -> Result<Vec<AdjEntry>, crate::error::StorageError> {
+            self.out_edges_by_type_calls.fetch_add(1, Ordering::Relaxed);
+            self.inner.out_edges_by_type(graph, node_id, rel_types)
+        }
+
+        delegate!(in_edges_by_type(&self, graph: &str, node_id: NodeId, rel_types: &[&str]) -> Result<Vec<AdjEntry>, crate::error::StorageError>);
+
+        fn out_edges_by_type_batch(
+            &self,
+            graph: &str,
+            node_ids: &[NodeId],
+            rel_types: &[&str],
+        ) -> Result<Vec<Vec<AdjEntry>>, crate::error::StorageError> {
+            self.out_edges_by_type_batch_calls
+                .fetch_add(1, Ordering::Relaxed);
+            self.inner
+                .out_edges_by_type_batch(graph, node_ids, rel_types)
+        }
+
+        delegate!(in_edges_by_type_batch(&self, graph: &str, node_ids: &[NodeId], rel_types: &[&str]) -> Result<Vec<Vec<AdjEntry>>, crate::error::StorageError>);
+        delegate!(out_edge_ids(&self, graph: &str, node_id: NodeId) -> Result<Vec<EdgeId>, crate::error::StorageError>);
+        delegate!(in_edge_ids(&self, graph: &str, node_id: NodeId) -> Result<Vec<EdgeId>, crate::error::StorageError>);
+        delegate!(all_node_ids(&self, graph: &str) -> Result<Vec<NodeId>, crate::error::StorageError>);
+        delegate!(all_edge_ids(&self, graph: &str) -> Result<Vec<EdgeId>, crate::error::StorageError>);
+        delegate!(create_node(&self, graph: &str, labels: Vec<String>, properties: IndexMap<String, Value>) -> Result<NodeId, crate::error::StorageError>);
+        delegate!(create_edge(&self, graph: &str, src: NodeId, dst: NodeId, rel_type: String, properties: IndexMap<String, Value>) -> Result<EdgeId, crate::error::StorageError>);
+        delegate!(set_node_properties(&self, graph: &str, id: NodeId, properties: IndexMap<String, Value>) -> Result<(), crate::error::StorageError>);
+        delegate!(replace_node_properties(&self, graph: &str, id: NodeId, properties: IndexMap<String, Value>) -> Result<(), crate::error::StorageError>);
+        delegate!(set_edge_properties(&self, graph: &str, id: EdgeId, properties: IndexMap<String, Value>) -> Result<(), crate::error::StorageError>);
+        delegate!(replace_edge_properties(&self, graph: &str, id: EdgeId, properties: IndexMap<String, Value>) -> Result<(), crate::error::StorageError>);
+        delegate!(remove_node_property(&self, graph: &str, id: NodeId, key: &str) -> Result<(), crate::error::StorageError>);
+        delegate!(remove_edge_property(&self, graph: &str, id: EdgeId, key: &str) -> Result<(), crate::error::StorageError>);
+        delegate!(add_node_labels(&self, graph: &str, id: NodeId, labels: &[String]) -> Result<(), crate::error::StorageError>);
+        delegate!(remove_node_labels(&self, graph: &str, id: NodeId, labels: &[String]) -> Result<(), crate::error::StorageError>);
+        delegate!(delete_node(&self, graph: &str, id: NodeId, detach: bool) -> Result<(), crate::error::StorageError>);
+        delegate!(delete_edge(&self, graph: &str, id: EdgeId) -> Result<(), crate::error::StorageError>);
+        delegate!(list_indexes(&self, graph: &str) -> Result<Vec<IndexDescriptor>, crate::error::StorageError>);
+        delegate!(create_index(&self, graph: &str, label: &str, property: &str) -> Result<(), crate::error::StorageError>);
+        delegate!(drop_index(&self, graph: &str, label: &str, property: &str) -> Result<(), crate::error::StorageError>);
+        delegate!(create_graph(&self, name: &str) -> Result<(), crate::error::StorageError>);
+        delegate!(delete_graph(&self, name: &str) -> Result<(), crate::error::StorageError>);
+        delegate!(graph_exists(&self, name: &str) -> Result<bool, crate::error::StorageError>);
+        delegate!(list_graphs(&self) -> Result<Vec<String>, crate::error::StorageError>);
+        delegate!(graph_stats(&self, graph: &str) -> Result<GraphStats, crate::error::StorageError>);
+        delegate!(all_label_names(&self, graph: &str) -> Result<Vec<String>, crate::error::StorageError>);
+
+        fn with_read_consistency(
+            &self,
+            _consistency: ReadConsistency,
+        ) -> Option<Arc<dyn GraphStore>> {
+            None
+        }
+
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
     }
 
     #[test]
@@ -533,6 +696,138 @@ mod tests {
         let mut budget = ExecutionBudget::unlimited();
         let result = executor_result(&store, &plan, &mut budget);
         assert_eq!(result.len(), 0);
+    }
+
+    #[test]
+    fn expand_batches_adjacency_by_unique_source_node() {
+        let base = Arc::new(make_store());
+        let a = base
+            .create_node("g", vec!["N".to_string()], IndexMap::new())
+            .unwrap();
+        let b = base
+            .create_node("g", vec!["N".to_string()], IndexMap::new())
+            .unwrap();
+        let c = base
+            .create_node("g", vec!["N".to_string()], IndexMap::new())
+            .unwrap();
+        base.create_edge("g", a, b, "R".to_string(), IndexMap::new())
+            .unwrap();
+        base.create_edge("g", a, c, "R".to_string(), IndexMap::new())
+            .unwrap();
+
+        let store = TrackingStore::new(Arc::clone(&base));
+        let executor = QueryExecutor::new(&store);
+        let plan = Operator::Expand {
+            direction: Direction::Outgoing,
+            rel_types: vec![RelType::new("R")],
+            src_alias: Identifier::new("a"),
+            rel_alias: Some(Identifier::new("r")),
+            dst_alias: Identifier::new("b"),
+            child: Box::new(Operator::Apply {
+                outer: Box::new(Operator::Unwind {
+                    list_expr: Expr::List(vec![Expr::Integer(1), Expr::Integer(2)]),
+                    alias: Identifier::new("dup"),
+                    child: Box::new(Operator::SingleRow),
+                }),
+                inner: Box::new(Operator::NodeByIdSeek {
+                    id_expr: Expr::Integer(a.0 as i64),
+                    alias: Identifier::new("a"),
+                }),
+            }),
+        };
+        let mut budget = ExecutionBudget::unlimited();
+        let result = executor.execute("g", &plan, &mut budget).unwrap();
+
+        assert_eq!(result.rows.len(), 4);
+        assert_eq!(store.out_edges_by_type_calls.load(Ordering::Relaxed), 0);
+        assert_eq!(
+            store.out_edges_by_type_batch_calls.load(Ordering::Relaxed),
+            1
+        );
+    }
+
+    #[test]
+    fn expand_respects_budget_before_batched_adjacency_reads() {
+        let base = Arc::new(make_store());
+        let a = base
+            .create_node("g", vec!["N".to_string()], IndexMap::new())
+            .unwrap();
+        let b = base
+            .create_node("g", vec!["N".to_string()], IndexMap::new())
+            .unwrap();
+        base.create_edge("g", a, b, "R".to_string(), IndexMap::new())
+            .unwrap();
+
+        let store = TrackingStore::new(Arc::clone(&base));
+        let executor = QueryExecutor::new(&store);
+        let plan = Operator::Expand {
+            direction: Direction::Outgoing,
+            rel_types: vec![RelType::new("R")],
+            src_alias: Identifier::new("a"),
+            rel_alias: Some(Identifier::new("r")),
+            dst_alias: Identifier::new("b"),
+            child: Box::new(Operator::NodeByIdSeek {
+                id_expr: Expr::Integer(a.0 as i64),
+                alias: Identifier::new("a"),
+            }),
+        };
+        let mut budget = ExecutionBudget::new(std::time::Duration::from_secs(3600), 0);
+        let err = executor.execute("g", &plan, &mut budget).unwrap_err();
+
+        assert!(matches!(
+            err,
+            GqlError::Execution(ExecutionError::ResultSetTooLarge { .. })
+        ));
+        assert_eq!(
+            store.out_edges_by_type_batch_calls.load(Ordering::Relaxed),
+            0
+        );
+    }
+
+    #[test]
+    fn expand_batches_large_source_sets_in_chunks() {
+        let base = Arc::new(make_store());
+        for i in 0..300 {
+            let src = base
+                .create_node(
+                    "g",
+                    vec!["Seed".to_string()],
+                    IndexMap::from([("id".to_string(), Value::Int(i))]),
+                )
+                .unwrap();
+            let dst = base
+                .create_node(
+                    "g",
+                    vec!["Leaf".to_string()],
+                    IndexMap::from([("id".to_string(), Value::Int(i + 1000))]),
+                )
+                .unwrap();
+            base.create_edge("g", src, dst, "R".to_string(), IndexMap::new())
+                .unwrap();
+        }
+
+        let store = TrackingStore::new(Arc::clone(&base));
+        let executor = QueryExecutor::new(&store);
+        let plan = Operator::Expand {
+            direction: Direction::Outgoing,
+            rel_types: vec![RelType::new("R")],
+            src_alias: Identifier::new("a"),
+            rel_alias: Some(Identifier::new("r")),
+            dst_alias: Identifier::new("b"),
+            child: Box::new(Operator::NodeScan {
+                label: Some(Label::new("Seed")),
+                alias: Identifier::new("a"),
+            }),
+        };
+        let mut budget = ExecutionBudget::unlimited();
+        let result = executor.execute("g", &plan, &mut budget).unwrap();
+
+        assert_eq!(result.rows.len(), 300);
+        assert_eq!(store.out_edges_by_type_calls.load(Ordering::Relaxed), 0);
+        assert_eq!(
+            store.out_edges_by_type_batch_calls.load(Ordering::Relaxed),
+            2
+        );
     }
 
     #[test]

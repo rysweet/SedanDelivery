@@ -68,6 +68,30 @@ pub(crate) fn smembers_or_scan(
     Ok(members)
 }
 
+fn sscan_all_members(
+    conn: &mut dyn redis::ConnectionLike,
+    key: &str,
+    capacity: usize,
+) -> Result<Vec<String>, StorageError> {
+    let mut cursor: u64 = 0;
+    let mut members = Vec::with_capacity(capacity);
+    loop {
+        let (next_cursor, batch): (u64, Vec<String>) = redis::cmd("SSCAN")
+            .arg(key)
+            .arg(cursor)
+            .arg("COUNT")
+            .arg(SSCAN_COUNT)
+            .query(conn)
+            .map_err(crate::backend_storage_error)?;
+        members.extend(batch);
+        cursor = next_cursor;
+        if cursor == 0 {
+            break;
+        }
+    }
+    Ok(members)
+}
+
 /// Visit set members in bounded pages while renewing the caller's write lock
 /// between SSCAN batches.
 pub(crate) fn for_each_set_page_locked<F>(
@@ -514,6 +538,94 @@ impl RedisGraphStore {
             .into_iter()
             .filter(|e| rel_types.contains(&e.rel_type.as_str()))
             .collect())
+    }
+
+    pub(crate) fn out_edges_by_type_batch_impl(
+        &self,
+        graph: &str,
+        node_ids: &[NodeId],
+        rel_types: &[&str],
+    ) -> Result<Vec<Vec<AdjEntry>>, StorageError> {
+        self.adjacency_batch_impl(graph, node_ids, false, rel_types)
+    }
+
+    pub(crate) fn in_edges_by_type_batch_impl(
+        &self,
+        graph: &str,
+        node_ids: &[NodeId],
+        rel_types: &[&str],
+    ) -> Result<Vec<Vec<AdjEntry>>, StorageError> {
+        self.adjacency_batch_impl(graph, node_ids, true, rel_types)
+    }
+
+    fn adjacency_batch_impl(
+        &self,
+        graph: &str,
+        node_ids: &[NodeId],
+        incoming: bool,
+        rel_types: &[&str],
+    ) -> Result<Vec<Vec<AdjEntry>>, StorageError> {
+        if node_ids.is_empty() {
+            return Ok(vec![]);
+        }
+
+        let mut conn = self.route_read_for_graph(graph)?;
+        let threshold = smembers_threshold();
+        let keys: Vec<String> = node_ids
+            .iter()
+            .map(|node_id| {
+                let key = if incoming {
+                    key_in(graph, node_id.0)
+                } else {
+                    key_out(graph, node_id.0)
+                };
+                self.kp(key)
+            })
+            .collect();
+
+        let mut scard_pipe = conn.pipeline();
+        for key in &keys {
+            scard_pipe.cmd("SCARD").arg(key);
+        }
+        let cards: Vec<u64> = scard_pipe
+            .query(&mut conn)
+            .map_err(crate::backend_storage_error)?;
+
+        let mut results = vec![Vec::new(); node_ids.len()];
+        let mut small_indexes = Vec::new();
+        let mut small_pipe = conn.pipeline();
+        for (idx, (key, card)) in keys.iter().zip(&cards).enumerate() {
+            if *card <= threshold {
+                small_indexes.push(idx);
+                small_pipe.cmd("SMEMBERS").arg(key);
+            }
+        }
+
+        if !small_indexes.is_empty() {
+            let raw_batches: Vec<Vec<String>> = small_pipe
+                .query(&mut conn)
+                .map_err(crate::backend_storage_error)?;
+            for (batch_idx, row_idx) in small_indexes.into_iter().enumerate() {
+                let mut entries = Self::parse_adj_members(raw_batches[batch_idx].clone());
+                if !rel_types.is_empty() {
+                    entries.retain(|entry| rel_types.contains(&entry.rel_type.as_str()));
+                }
+                results[row_idx] = entries;
+            }
+        }
+
+        for (idx, (key, card)) in keys.iter().zip(&cards).enumerate() {
+            if *card > threshold {
+                let mut entries =
+                    Self::parse_adj_members(sscan_all_members(conn.as_mut(), key, *card as usize)?);
+                if !rel_types.is_empty() {
+                    entries.retain(|entry| rel_types.contains(&entry.rel_type.as_str()));
+                }
+                results[idx] = entries;
+            }
+        }
+
+        Ok(results)
     }
 
     pub(crate) fn out_edge_ids_impl(

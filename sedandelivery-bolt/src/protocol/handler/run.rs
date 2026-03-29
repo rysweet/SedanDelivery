@@ -1017,7 +1017,9 @@ mod tests {
     use std::any::Any;
     use std::collections::HashMap;
     use std::sync::atomic::AtomicU64;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
+    use gql_core::executor::{MutationStats, QueryResult};
     use gql_core::storage::{
         AdjEntry, EdgeData, EdgeId, GraphStats, GraphStore, InMemoryGraphStore, IndexDescriptor,
         NodeData, NodeId, RangeQuery, ReadConsistency,
@@ -1027,6 +1029,10 @@ mod tests {
     struct TrackingStore {
         inner: Arc<InMemoryGraphStore>,
         applied_consistency: Option<ReadConsistency>,
+        get_node_calls: AtomicUsize,
+        get_edge_calls: AtomicUsize,
+        get_nodes_batch_calls: AtomicUsize,
+        get_edges_batch_calls: AtomicUsize,
     }
 
     impl TrackingStore {
@@ -1034,6 +1040,10 @@ mod tests {
             Self {
                 inner: Arc::new(InMemoryGraphStore::new()),
                 applied_consistency: None,
+                get_node_calls: AtomicUsize::new(0),
+                get_edge_calls: AtomicUsize::new(0),
+                get_nodes_batch_calls: AtomicUsize::new(0),
+                get_edges_batch_calls: AtomicUsize::new(0),
             }
         }
     }
@@ -1052,14 +1062,30 @@ mod tests {
     }
 
     impl GraphStore for TrackingStore {
-        delegate!(get_node(&self, graph: &str, id: NodeId) -> Result<Option<NodeData>, gql_core::error::StorageError>);
-        delegate!(get_edge(&self, graph: &str, id: EdgeId) -> Result<Option<EdgeData>, gql_core::error::StorageError>);
+        fn get_node(
+            &self,
+            graph: &str,
+            id: NodeId,
+        ) -> Result<Option<NodeData>, gql_core::error::StorageError> {
+            self.get_node_calls.fetch_add(1, Ordering::Relaxed);
+            self.inner.get_node(graph, id)
+        }
+
+        fn get_edge(
+            &self,
+            graph: &str,
+            id: EdgeId,
+        ) -> Result<Option<EdgeData>, gql_core::error::StorageError> {
+            self.get_edge_calls.fetch_add(1, Ordering::Relaxed);
+            self.inner.get_edge(graph, id)
+        }
 
         fn get_nodes_batch(
             &self,
             graph: &str,
             ids: &[NodeId],
         ) -> Result<Vec<Option<NodeData>>, gql_core::error::StorageError> {
+            self.get_nodes_batch_calls.fetch_add(1, Ordering::Relaxed);
             self.inner.get_nodes_batch(graph, ids)
         }
 
@@ -1068,6 +1094,7 @@ mod tests {
             graph: &str,
             ids: &[EdgeId],
         ) -> Result<Vec<Option<EdgeData>>, gql_core::error::StorageError> {
+            self.get_edges_batch_calls.fetch_add(1, Ordering::Relaxed);
             self.inner.get_edges_batch(graph, ids)
         }
 
@@ -1225,6 +1252,10 @@ mod tests {
             Some(Arc::new(Self {
                 inner: Arc::clone(&self.inner),
                 applied_consistency: Some(consistency),
+                get_node_calls: AtomicUsize::new(0),
+                get_edge_calls: AtomicUsize::new(0),
+                get_nodes_batch_calls: AtomicUsize::new(0),
+                get_edges_batch_calls: AtomicUsize::new(0),
             }))
         }
 
@@ -1264,6 +1295,66 @@ mod tests {
             peer_ip: None,
             last_write_at: None,
         }
+    }
+
+    #[test]
+    fn result_to_records_prefetches_graph_entities_once() {
+        let store = TrackingStore::new();
+        store.inner.create_graph("neo4j").unwrap();
+        let a = store
+            .inner
+            .create_node("neo4j", vec!["N".to_string()], IndexMap::new())
+            .unwrap();
+        let b = store
+            .inner
+            .create_node("neo4j", vec!["N".to_string()], IndexMap::new())
+            .unwrap();
+        let e = store
+            .inner
+            .create_edge("neo4j", a, b, "R".to_string(), IndexMap::new())
+            .unwrap();
+
+        let result = QueryResult {
+            columns: vec!["n".to_string(), "r".to_string(), "p".to_string()],
+            rows: vec![
+                HashMap::from([
+                    ("n".to_string(), Value::Node(a)),
+                    ("r".to_string(), Value::Edge(e)),
+                    (
+                        "p".to_string(),
+                        Value::Path {
+                            nodes: vec![a, b],
+                            edges: vec![e],
+                        },
+                    ),
+                ]),
+                HashMap::from([
+                    ("n".to_string(), Value::Node(b)),
+                    ("r".to_string(), Value::Edge(e)),
+                    (
+                        "p".to_string(),
+                        Value::Path {
+                            nodes: vec![a, b],
+                            edges: vec![e],
+                        },
+                    ),
+                ]),
+            ],
+            stats: MutationStats::default(),
+            trailing_error: None,
+        };
+
+        let (records, query_type, stats_map, trailing_error) =
+            bridge::executor::result_to_records(&result, &store, "neo4j");
+
+        assert_eq!(records.len(), 2);
+        assert_eq!(query_type, "r");
+        assert!(stats_map.is_empty());
+        assert!(trailing_error.is_none());
+        assert_eq!(store.get_node_calls.load(Ordering::Relaxed), 0);
+        assert_eq!(store.get_edge_calls.load(Ordering::Relaxed), 0);
+        assert_eq!(store.get_nodes_batch_calls.load(Ordering::Relaxed), 1);
+        assert_eq!(store.get_edges_batch_calls.load(Ordering::Relaxed), 1);
     }
 
     #[test]

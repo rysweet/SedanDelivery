@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
 use gql_core::error::GqlError;
@@ -8,7 +8,7 @@ use gql_core::parser::parse_query;
 use gql_core::plan_cache;
 use gql_core::planner::QueryPlanner;
 use gql_core::procedure::{ProcedureDefinition, ProcedureParam, ProcedureRegistry};
-use gql_core::storage::GraphStore;
+use gql_core::storage::{EdgeId, GraphStore, NodeId};
 use gql_core::types::Value;
 use indexmap::IndexMap;
 
@@ -18,7 +18,10 @@ use crate::bridge::temporal::{
     decode_date, decode_datetime_offset, decode_datetime_zone_id, decode_duration,
     decode_local_datetime, decode_local_time, decode_time_with_offset,
 };
-use crate::bridge::types::{edge_to_bolt, node_to_bolt, path_to_bolt, scalar_value_to_bolt};
+use crate::bridge::types::{
+    edge_to_bolt_cached, node_to_bolt_cached, path_to_bolt_cached, scalar_value_to_bolt,
+    BoltGraphCache,
+};
 use crate::packstream::value::{BoltMap, BoltValue};
 use crate::protocol::tags;
 
@@ -184,6 +187,8 @@ pub fn result_to_records(
     store: &dyn GraphStore,
     graph: &str,
 ) -> (Vec<Vec<BoltValue>>, String, BoltMap, Option<GqlError>) {
+    let (node_ids, edge_ids) = collect_graph_entity_ids(result);
+    let cache = BoltGraphCache::prefetch(store, graph, &node_ids, &edge_ids);
     let records: Vec<Vec<BoltValue>> = result
         .rows
         .iter()
@@ -192,7 +197,7 @@ pub fn result_to_records(
                 .columns
                 .iter()
                 .map(|col| match row.get(col) {
-                    Some(val) => value_to_bolt(val, store, graph),
+                    Some(val) => value_to_bolt(val, &cache, store, graph),
                     None => BoltValue::Null,
                 })
                 .collect()
@@ -214,12 +219,84 @@ pub fn result_to_records(
 
 /// Convert a gql-core Value to a BoltValue, resolving graph entity references
 /// (Node, Edge, Path) against the store.
-fn value_to_bolt(val: &Value, store: &dyn GraphStore, graph: &str) -> BoltValue {
+fn value_to_bolt(
+    val: &Value,
+    cache: &BoltGraphCache,
+    store: &dyn GraphStore,
+    graph: &str,
+) -> BoltValue {
     match val {
-        Value::Node(id) => node_to_bolt(*id, store, graph),
-        Value::Edge(id) => edge_to_bolt(*id, store, graph),
-        Value::Path { nodes, edges } => path_to_bolt(nodes, edges, store, graph),
+        Value::Node(id) => node_to_bolt_cached(*id, cache, store, graph),
+        Value::Edge(id) => edge_to_bolt_cached(*id, cache, store, graph),
+        Value::Path { nodes, edges } => path_to_bolt_cached(nodes, edges, cache, store, graph),
         other => scalar_value_to_bolt(other),
+    }
+}
+
+fn collect_graph_entity_ids(result: &QueryResult) -> (Vec<NodeId>, Vec<EdgeId>) {
+    let mut seen_nodes = HashSet::new();
+    let mut seen_edges = HashSet::new();
+    let mut node_ids = Vec::new();
+    let mut edge_ids = Vec::new();
+
+    for row in &result.rows {
+        for col in &result.columns {
+            if let Some(value) = row.get(col) {
+                collect_value_graph_ids(
+                    value,
+                    &mut seen_nodes,
+                    &mut node_ids,
+                    &mut seen_edges,
+                    &mut edge_ids,
+                );
+            }
+        }
+    }
+
+    (node_ids, edge_ids)
+}
+
+fn collect_value_graph_ids(
+    value: &Value,
+    seen_nodes: &mut HashSet<NodeId>,
+    node_ids: &mut Vec<NodeId>,
+    seen_edges: &mut HashSet<EdgeId>,
+    edge_ids: &mut Vec<EdgeId>,
+) {
+    match value {
+        Value::Node(node_id) => {
+            if seen_nodes.insert(*node_id) {
+                node_ids.push(*node_id);
+            }
+        }
+        Value::Edge(edge_id) => {
+            if seen_edges.insert(*edge_id) {
+                edge_ids.push(*edge_id);
+            }
+        }
+        Value::Path { nodes, edges } => {
+            for node_id in nodes {
+                if seen_nodes.insert(*node_id) {
+                    node_ids.push(*node_id);
+                }
+            }
+            for edge_id in edges {
+                if seen_edges.insert(*edge_id) {
+                    edge_ids.push(*edge_id);
+                }
+            }
+        }
+        Value::List(items) => {
+            for item in items {
+                collect_value_graph_ids(item, seen_nodes, node_ids, seen_edges, edge_ids);
+            }
+        }
+        Value::Map(entries) => {
+            for item in entries.values() {
+                collect_value_graph_ids(item, seen_nodes, node_ids, seen_edges, edge_ids);
+            }
+        }
+        _ => {}
     }
 }
 
@@ -596,8 +673,9 @@ mod tests {
         let nid = store
             .create_node("test", vec!["Person".to_string()], IndexMap::new())
             .unwrap();
+        let cache = BoltGraphCache::prefetch(&store, "test", &[nid], &[]);
 
-        let bolt = value_to_bolt(&Value::Node(nid), &store, "test");
+        let bolt = value_to_bolt(&Value::Node(nid), &cache, &store, "test");
         if let BoltValue::Structure { tag, .. } = &bolt {
             assert_eq!(*tag, 0x4E);
         } else {
@@ -614,8 +692,9 @@ mod tests {
         let eid = store
             .create_edge("test", n1, n2, "KNOWS".to_string(), IndexMap::new())
             .unwrap();
+        let cache = BoltGraphCache::prefetch(&store, "test", &[n1, n2], &[eid]);
 
-        let bolt = value_to_bolt(&Value::Edge(eid), &store, "test");
+        let bolt = value_to_bolt(&Value::Edge(eid), &cache, &store, "test");
         if let BoltValue::Structure { tag, .. } = &bolt {
             assert_eq!(*tag, 0x52);
         } else {
@@ -627,11 +706,15 @@ mod tests {
     fn value_to_bolt_scalar_passthrough() {
         let store = InMemoryGraphStore::new();
         store.create_graph("test").unwrap();
+        let cache = BoltGraphCache::prefetch(&store, "test", &[], &[]);
         assert_eq!(
-            value_to_bolt(&Value::Int(42), &store, "test"),
+            value_to_bolt(&Value::Int(42), &cache, &store, "test"),
             BoltValue::Int(42)
         );
-        assert_eq!(value_to_bolt(&Value::Null, &store, "test"), BoltValue::Null);
+        assert_eq!(
+            value_to_bolt(&Value::Null, &cache, &store, "test"),
+            BoltValue::Null
+        );
     }
 
     #[test]

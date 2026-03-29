@@ -1,0 +1,210 @@
+scenario:
+  name: "Issue #1040 - batched read paths preserve Bolt query results"
+  description: >
+    Verifies from a Bolt client perspective that sedandelivery-bolt running
+    locally with in-memory storage still returns the correct node, relationship,
+    and path results after the structural read-batching refactor. The scenario
+    exercises multi-source expansion and full path materialization through the
+    public Bolt interface.
+  metadata:
+    tags: [cli, bolt, cypher, regression, issue-1040]
+    priority: high
+  agents:
+    - name: cli-agent
+      type: cli
+      config: {}
+
+  steps:
+    - name: "A1 — Run local batched-read Bolt contract"
+      agent: cli-agent
+      action: execute
+      params:
+        command: bash
+        args:
+          - -lc
+          - |
+            set -euo pipefail;
+            PORT=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()');
+            GRAPH_NAME="issue_1040_batched_reads";
+            BOLT_LOG=$(mktemp);
+            PY_SCRIPT=$(mktemp);
+            cleanup() {
+              if [[ -n "${BOLT_PID:-}" ]]; then
+                kill "${BOLT_PID}" >/dev/null 2>&1 || true;
+                wait "${BOLT_PID}" 2>/dev/null || true;
+              fi;
+              rm -f "${BOLT_LOG}" "${PY_SCRIPT}";
+            };
+            trap cleanup EXIT;
+            cat >"${PY_SCRIPT}" <<'PY'
+            import sys
+            import time
+            from pathlib import Path
+
+            port = int(sys.argv[1])
+            graph_name = sys.argv[2]
+            bolt_log = Path(sys.argv[3])
+
+            try:
+                from neo4j import GraphDatabase
+            except ImportError as exc:
+                raise SystemExit(f"[FAIL] neo4j driver is required for Bolt QA: {exc}")
+
+            uri = f"bolt://127.0.0.1:{port}"
+            password = "issue-1040-pass"
+
+            deadline = time.time() + 120
+            last_error = None
+            while time.time() < deadline:
+                try:
+                    driver = GraphDatabase.driver(uri, auth=("neo4j", password))
+                    with driver.session() as session:
+                        session.run("RETURN 1 AS ok").consume()
+                    driver.close()
+                    break
+                except Exception as exc:
+                    last_error = exc
+                    time.sleep(1)
+            else:
+                log_text = bolt_log.read_text() if bolt_log.exists() else ""
+                raise SystemExit(
+                    f"[FAIL] sedandelivery-bolt did not become ready: {last_error}\n{log_text}"
+                )
+
+            print("[PASS] sedandelivery-bolt accepted Bolt connections")
+
+            driver = GraphDatabase.driver(uri, auth=("neo4j", password))
+            try:
+                with driver.session() as session:
+                    try:
+                        session.run(f"DROP GRAPH {graph_name}").consume()
+                    except Exception:
+                        pass
+                    session.run(f"CREATE GRAPH {graph_name}").consume()
+                    session.run(
+                        f"USE {graph_name} "
+                        "CREATE "
+                        "(:Seed {id: 0}), (:Seed {id: 1}), "
+                        "(:Leaf {id: 10}), (:Leaf {id: 11}), (:Leaf {id: 12}), (:Leaf {id: 13})"
+                    ).consume()
+                    session.run(
+                        f"USE {graph_name} "
+                        "MATCH (s0:Seed {id: 0}), (s1:Seed {id: 1}), "
+                        "(l10:Leaf {id: 10}), (l11:Leaf {id: 11}), "
+                        "(l12:Leaf {id: 12}), (l13:Leaf {id: 13}) "
+                        "CREATE "
+                        "(s0)-[:LINK {seq: 0}]->(l10), "
+                        "(s0)-[:LINK {seq: 1}]->(l11), "
+                        "(s1)-[:LINK {seq: 0}]->(l12), "
+                        "(s1)-[:LINK {seq: 1}]->(l13)"
+                    ).consume()
+                    print("[PASS] seeded Bolt graph data")
+
+                    records = list(
+                        session.run(
+                            f"USE {graph_name} "
+                            "MATCH (s:Seed)-[r:LINK]->(l:Leaf) "
+                            "RETURN s, r, l ORDER BY s.id, r.seq"
+                        )
+                    )
+                    observed = [
+                        (
+                            record["s"]["id"],
+                            record["r"]["seq"],
+                            record["l"]["id"],
+                        )
+                        for record in records
+                    ]
+                    assert observed == [
+                        (0, 0, 10),
+                        (0, 1, 11),
+                        (1, 0, 12),
+                        (1, 1, 13),
+                    ], observed
+                    print("[PASS] Bolt node and relationship records stayed correct")
+
+                    path_records = list(
+                        session.run(
+                            f"USE {graph_name} "
+                            "MATCH p=(s:Seed)-[:LINK]->(l:Leaf) "
+                            "RETURN p ORDER BY s.id, l.id"
+                        )
+                    )
+                    paths = [record["p"] for record in path_records]
+                    assert len(paths) == 4, paths
+                    observed_paths = [
+                        (
+                            path.start_node["id"],
+                            path.relationships[0]["seq"],
+                            path.end_node["id"],
+                        )
+                        for path in paths
+                    ]
+                    assert observed_paths == [
+                        (0, 0, 10),
+                        (0, 1, 11),
+                        (1, 0, 12),
+                        (1, 1, 13),
+                    ], observed_paths
+                    print("[PASS] Bolt path results stayed correct")
+
+                    count_record = session.run(
+                        f"USE {graph_name} "
+                        "MATCH (s:Seed)-[:LINK]->(:Leaf) "
+                        "RETURN count(*) AS cnt"
+                    ).single()
+                    assert count_record["cnt"] == 4, count_record
+                    print("[PASS] multi-source expand still returned all rows")
+
+                    session.run(f"DROP GRAPH {graph_name}").consume()
+            finally:
+                driver.close()
+            PY
+            env -u GQL_REDIS_URL -u GQL_REDIS_CLUSTER_NODES -u GQL_REDIS_REPLICA_URL -u BOLT_TLS_CERT -u BOLT_TLS_KEY -u BOLT_REQUIRE_TLS \
+            BOLT_BIND_ADDR="127.0.0.1:${PORT}" \
+            BOLT_PASSWORD="issue-1040-pass" \
+            cargo run -p sedandelivery-bolt --quiet >"${BOLT_LOG}" 2>&1 &
+            BOLT_PID=$!;
+            python3 "${PY_SCRIPT}" "${PORT}" "${GRAPH_NAME}" "${BOLT_LOG}"
+      timeout: 300000
+
+    - name: "A2 — Confirm Bolt listener became ready"
+      agent: cli-agent
+      action: wait_for_output
+      params:
+        pattern: "\\[PASS\\]\\s+sedandelivery-bolt accepted Bolt connections"
+      timeout: 5000
+
+    - name: "A3 — Confirm graph data was seeded"
+      agent: cli-agent
+      action: wait_for_output
+      params:
+        pattern: "\\[PASS\\]\\s+seeded Bolt graph data"
+      timeout: 5000
+
+    - name: "A4 — Confirm node and relationship records stayed correct"
+      agent: cli-agent
+      action: wait_for_output
+      params:
+        pattern: "\\[PASS\\]\\s+Bolt node and relationship records stayed correct"
+      timeout: 5000
+
+    - name: "A5 — Confirm Bolt path results stayed correct"
+      agent: cli-agent
+      action: wait_for_output
+      params:
+        pattern: "\\[PASS\\]\\s+Bolt path results stayed correct"
+      timeout: 5000
+
+    - name: "A6 — Confirm multi-source expand still returned all rows"
+      agent: cli-agent
+      action: wait_for_output
+      params:
+        pattern: "\\[PASS\\]\\s+multi-source expand still returned all rows"
+      timeout: 5000
+
+    - name: "A7 — Confirm validator exited cleanly"
+      agent: cli-agent
+      action: validate_exit_code
+      params:
+        text: "0"

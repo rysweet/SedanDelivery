@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use gql_core::storage::{EdgeId, GraphStore, NodeId};
+use gql_core::storage::{EdgeData, EdgeId, GraphStore, NodeData, NodeId};
 use gql_core::types::value::{Crs, GeoPoint};
 use gql_core::types::Value;
 use indexmap::IndexMap;
@@ -19,6 +19,58 @@ fn u64_to_bolt_int(id: u64, context: &str) -> BoltValue {
             tracing::error!(id, context, "ID exceeds i64::MAX, cannot encode for Bolt");
             BoltValue::Null
         }
+    }
+}
+
+pub(crate) struct BoltGraphCache {
+    nodes: HashMap<NodeId, Option<NodeData>>,
+    edges: HashMap<EdgeId, Option<EdgeData>>,
+}
+
+impl BoltGraphCache {
+    pub(crate) fn prefetch(
+        store: &dyn GraphStore,
+        graph: &str,
+        node_ids: &[NodeId],
+        edge_ids: &[EdgeId],
+    ) -> Self {
+        let mut nodes = HashMap::with_capacity(node_ids.len());
+        if !node_ids.is_empty() {
+            match store.get_nodes_batch(graph, node_ids) {
+                Ok(batch) => {
+                    for (node_id, data) in node_ids.iter().copied().zip(batch) {
+                        nodes.insert(node_id, data);
+                    }
+                }
+                Err(e) => {
+                    tracing::error!(graph = graph, error = %e, "bolt prefetch: node batch lookup failed");
+                }
+            }
+        }
+
+        let mut edges = HashMap::with_capacity(edge_ids.len());
+        if !edge_ids.is_empty() {
+            match store.get_edges_batch(graph, edge_ids) {
+                Ok(batch) => {
+                    for (edge_id, data) in edge_ids.iter().copied().zip(batch) {
+                        edges.insert(edge_id, data);
+                    }
+                }
+                Err(e) => {
+                    tracing::error!(graph = graph, error = %e, "bolt prefetch: edge batch lookup failed");
+                }
+            }
+        }
+
+        Self { nodes, edges }
+    }
+
+    fn node(&self, id: NodeId) -> Option<&Option<NodeData>> {
+        self.nodes.get(&id)
+    }
+
+    fn edge(&self, id: EdgeId) -> Option<&Option<EdgeData>> {
+        self.edges.get(&id)
     }
 }
 
@@ -55,6 +107,31 @@ pub fn node_to_bolt(id: NodeId, store: &dyn GraphStore, graph: &str) -> BoltValu
     }
 }
 
+pub(crate) fn node_to_bolt_cached(
+    id: NodeId,
+    cache: &BoltGraphCache,
+    store: &dyn GraphStore,
+    graph: &str,
+) -> BoltValue {
+    match cache.node(id) {
+        Some(Some(data)) => {
+            let labels = BoltValue::List(
+                data.labels
+                    .iter()
+                    .map(|label| BoltValue::String(label.clone()))
+                    .collect(),
+            );
+            let props = props_to_bolt_map(&data.properties);
+            BoltValue::Structure {
+                tag: tags::TAG_NODE,
+                fields: vec![u64_to_bolt_int(id.0, "node_to_bolt_cached"), labels, props],
+            }
+        }
+        Some(None) => BoltValue::Null,
+        None => node_to_bolt(id, store, graph),
+    }
+}
+
 /// Convert an edge to a Bolt Structure (tag 0x52).
 ///
 /// Fields: [id: Int, startNodeId: Int, endNodeId: Int, type: String, properties: Map]
@@ -81,6 +158,31 @@ pub fn edge_to_bolt(id: EdgeId, store: &dyn GraphStore, graph: &str) -> BoltValu
             BoltValue::String(edge_data.rel_type.clone()),
             props,
         ],
+    }
+}
+
+pub(crate) fn edge_to_bolt_cached(
+    id: EdgeId,
+    cache: &BoltGraphCache,
+    store: &dyn GraphStore,
+    graph: &str,
+) -> BoltValue {
+    match cache.edge(id) {
+        Some(Some(data)) => {
+            let props = props_to_bolt_map(&data.properties);
+            BoltValue::Structure {
+                tag: tags::TAG_RELATIONSHIP,
+                fields: vec![
+                    u64_to_bolt_int(id.0, "edge_to_bolt_cached:id"),
+                    u64_to_bolt_int(data.src.0, "edge_to_bolt_cached:src"),
+                    u64_to_bolt_int(data.dst.0, "edge_to_bolt_cached:dst"),
+                    BoltValue::String(data.rel_type.clone()),
+                    props,
+                ],
+            }
+        }
+        Some(None) => BoltValue::Null,
+        None => edge_to_bolt(id, store, graph),
     }
 }
 
@@ -193,6 +295,116 @@ pub fn path_to_bolt(
                 tracing::error!(edge_id = edge_ids[i].0, graph = graph, error = %e, "path_to_bolt: store lookup failed when determining direction, defaulting to forward");
                 rel_1based
             }
+        };
+        indices.push(BoltValue::Int(rel_index));
+
+        let to_node = node_ids[i + 1];
+        let node_idx = match node_index_map.get(&to_node) {
+            Some(&idx) => idx as i64,
+            None => {
+                tracing::warn!(
+                    node_id = to_node.0,
+                    "node_index_map missing to_node in path encoding, falling back to index 0"
+                );
+                0
+            }
+        };
+        indices.push(BoltValue::Int(node_idx));
+    }
+
+    BoltValue::Structure {
+        tag: tags::TAG_PATH,
+        fields: vec![
+            BoltValue::List(bolt_unique_nodes),
+            BoltValue::List(unbound_rels),
+            BoltValue::List(indices),
+        ],
+    }
+}
+
+pub(crate) fn path_to_bolt_cached(
+    node_ids: &[NodeId],
+    edge_ids: &[EdgeId],
+    cache: &BoltGraphCache,
+    store: &dyn GraphStore,
+    graph: &str,
+) -> BoltValue {
+    let mut unique_nodes: Vec<NodeId> = Vec::new();
+    let mut node_index_map: HashMap<NodeId, usize> = HashMap::new();
+    for &nid in node_ids {
+        if let std::collections::hash_map::Entry::Vacant(entry) = node_index_map.entry(nid) {
+            entry.insert(unique_nodes.len());
+            unique_nodes.push(nid);
+        }
+    }
+
+    let bolt_unique_nodes: Vec<BoltValue> = unique_nodes
+        .iter()
+        .map(|&nid| node_to_bolt_cached(nid, cache, store, graph))
+        .collect();
+
+    let mut unbound_rels: Vec<BoltValue> = Vec::new();
+    let mut edge_rel_index: Vec<usize> = Vec::new();
+    let mut seen_edges: HashMap<EdgeId, usize> = HashMap::new();
+    for &eid in edge_ids {
+        if let Some(&idx) = seen_edges.get(&eid) {
+            edge_rel_index.push(idx);
+            continue;
+        }
+
+        let idx = unbound_rels.len();
+        seen_edges.insert(eid, idx);
+        edge_rel_index.push(idx);
+        let rel = match cache.edge(eid) {
+            Some(Some(data)) => BoltValue::Structure {
+                tag: tags::TAG_UNBOUND_RELATIONSHIP,
+                fields: vec![
+                    u64_to_bolt_int(eid.0, "path_to_bolt_cached:rel_id"),
+                    BoltValue::String(data.rel_type.clone()),
+                    props_to_bolt_map(&data.properties),
+                ],
+            },
+            Some(None) => {
+                tracing::warn!(
+                    edge_id = eid.0,
+                    graph = graph,
+                    "path_to_bolt_cached: edge not found in store, using empty relationship"
+                );
+                BoltValue::Structure {
+                    tag: tags::TAG_UNBOUND_RELATIONSHIP,
+                    fields: vec![
+                        u64_to_bolt_int(eid.0, "path_to_bolt_cached:rel_id"),
+                        BoltValue::String(String::new()),
+                        BoltValue::Map(vec![]),
+                    ],
+                }
+            }
+            None => return path_to_bolt(node_ids, edge_ids, store, graph),
+        };
+        unbound_rels.push(rel);
+    }
+
+    let mut indices: Vec<BoltValue> = Vec::new();
+    for i in 0..edge_ids.len() {
+        let rel_1based = (edge_rel_index[i] as i64) + 1;
+        let from_node = node_ids[i];
+        let rel_index = match cache.edge(edge_ids[i]) {
+            Some(Some(data)) => {
+                if data.src == from_node {
+                    rel_1based
+                } else {
+                    -rel_1based
+                }
+            }
+            Some(None) => {
+                tracing::warn!(
+                    edge_id = edge_ids[i].0,
+                    graph = graph,
+                    "path_to_bolt_cached: edge not found when determining direction, defaulting to forward"
+                );
+                rel_1based
+            }
+            None => return path_to_bolt(node_ids, edge_ids, store, graph),
         };
         indices.push(BoltValue::Int(rel_index));
 
