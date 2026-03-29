@@ -2313,7 +2313,7 @@ Key changes to `/home/azureuser/src/sd2/.github/workflows/deploy.yml`:
 # In the 'az containerapp create' command, change:
   --target-port 6379 \
   --transport tcp \
-  --exposed-port 6379 \
+  # omit --exposed-port so ACA uses targetPort by default \
 # To expose both ports, use additional TCP ingress.
 # Azure Container Apps supports a single ingress port, so we need to either:
 # Option A: Use two Container Apps (one for Redis, one for Bolt)
@@ -2324,7 +2324,7 @@ Key changes to `/home/azureuser/src/sd2/.github/workflows/deploy.yml`:
 # RECOMMENDED: Option B for v1 -- Bolt as primary external interface
   --target-port 7687 \
   --transport tcp \
-  --exposed-port 7687 \
+  # omit --exposed-port so ACA uses targetPort by default \
 
 # Add env vars:
   ENV_VAR_ARGS="... BOLT_ENABLED=true BOLT_BIND_ADDR=0.0.0.0:7687 BOLT_PASSWORD=secretref:valkey-password"

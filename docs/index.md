@@ -25,6 +25,9 @@ A Rust GQL/Cypher query engine — a clean-room, MIT/Apache-2.0-licensed replace
 - [Authentication (Entra ID)](auth) — Configure JWT auth for the REST API
 - [Secrets Configuration](secrets) — Repository secrets inventory, creation, rotation, and monitoring
 - [ACR Mirror Workflow](reference/acr-mirror-workflow) — How `ghcr-publish` mirrors every published GHCR tag into `sd2mainend655uvglnfeacr.azurecr.io`
+- [Bolt TLS Deploy Gate](reference/bolt-tls-deploy) — How `deploy.yml` validates TLS certificates before deploying `sedandelivery-bolt`; `BOLT_TLS_CERT_LOOKAHEAD_SECONDS` reference, integer validation guard, and failure semantics
+- [Rotate the Bolt TLS Certificate](howto/rotate-bolt-tls-cert) — When and how to rotate `DEPLOY_BOLT_TLS_CERT_PEM`; includes "When NOT to Rotate" guidance and `checkend 0` vs `checkend 86400` distinction
+- [Provision Bolt TLS Secrets](howto/provision-tls-secrets) — Initial provisioning of `DEPLOY_BOLT_TLS_CERT_PEM` and `DEPLOY_BOLT_TLS_KEY_PEM` for a new GitHub environment
 - [Benchmarks](benchmarks) — How to run and interpret performance benchmarks
 
 ## Code Atlas

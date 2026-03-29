@@ -266,10 +266,13 @@ run_bolt_probe() {
 check_deploy_workflow() {
     python3 - "$PROJECT_DIR/.github/workflows/deploy.yml" <<'PY'
 from pathlib import Path
+import subprocess
 import sys
 
 text = Path(sys.argv[1]).read_text()
 
+# COUPLING WARNING: Every string in required_snippets must appear VERBATIM in
+# deploy.yml. Update both files atomically. Never change one without the other.
 required_snippets = {
     "TLS cert GitHub secret": 'DEPLOY_BOLT_TLS_CERT_PEM: ${{ secrets.DEPLOY_BOLT_TLS_CERT_PEM }}',
     "TLS key GitHub secret": 'DEPLOY_BOLT_TLS_KEY_PEM: ${{ secrets.DEPLOY_BOLT_TLS_KEY_PEM }}',
@@ -286,17 +289,99 @@ required_snippets = {
     "bolt fqdn output": 'echo "bolt_fqdn=${BOLT_FQDN}" >> "$GITHUB_OUTPUT"',
     "mask multiline cert": 'mask_multiline_secret "${DEPLOY_BOLT_TLS_CERT_PEM}"',
     "mask multiline key": 'mask_multiline_secret "${DEPLOY_BOLT_TLS_KEY_PEM}"',
+    "non-branch expired cert fail closed": 'DEPLOY_BOLT_TLS_CERT_PEM is expired or not yet valid; provision a current certificate before deploying',
+    "fail closed on expired cert": 'DEPLOY_BOLT_TLS_CERT_PEM is expired or not yet valid; provision a current certificate before deploying',
+    "fail closed on missing certs": 'DEPLOY_BOLT_TLS_CERT_PEM and DEPLOY_BOLT_TLS_KEY_PEM must both be set; provision TLS secrets before deploying',
+    "driver smoke password lookup": 'Failed to resolve deployed bolt-password secret',
+    "driver smoke password mask": 'echo "::add-mask::${BOLT_PASSWORD}"',
+    "driver smoke pip install": 'python3 -m pip install --quiet neo4j',
+    "driver smoke connectivity": 'driver.verify_connectivity()',
+    "driver smoke query": 'session.run("RETURN 1 AS ok").single(strict=True)',
     "TLS driver example": '"bolt+ssc://${boltFqdn}:7687"',
     "trust override warning": 'This ACA-generated hostname does **not** provide production-authenticated',
+    "internal short-hostname comment": 'Use short hostname (app name) for internal Container Apps communication',
+    "cert freshness helper": 'cert_pem_is_current() {',
 }
 
 missing = [name for name, snippet in required_snippets.items() if snippet not in text]
 if missing:
     raise SystemExit("missing deploy workflow snippets: " + ", ".join(missing))
 
-for forbidden in ('auth=None', 'bolt://${fqdn}:7687'):
+# COUPLING WARNING: These patterns must NOT appear in deploy.yml.
+# Any match causes CI to fail as a regression guard against re-introducing
+# fallback/self-healing TLS behavior (issue #1021).
+for label, forbidden in (
+    ("no ephemeral cert generation", "openssl req -x509 -nodes -newkey"),
+    ("no fallback function", "generate_bolt_tls_fallback"),
+    ("no self-healing prose", "branch-environment fallback TLS"),
+    ("no pr fallback", "self-signed TLS material for pull_request"),
+    ("no insecure auth", "auth=None"),
+    ("no plaintext bolt fqdn", "bolt://${fqdn}:7687"),
+    ("no exposed redis port", "--exposed-port 6379"),
+    ("no exposed bolt port", "--exposed-port 7687"),
+):
     if forbidden in text:
-        raise SystemExit(f"forbidden insecure deploy workflow snippet still present: {forbidden}")
+        raise SystemExit(f"[{label}] forbidden pattern still present in deploy.yml: {forbidden!r}")
+
+tls_block_start = text.index("BOLT_TLS_ENABLED=false")
+tls_block_end = text.index("# Reuse the existing Bolt password", tls_block_start)
+tls_block = text[tls_block_start:tls_block_end].rstrip()
+
+
+def run_tls_case(name: str, *, cert_present: bool, cert_current: bool, expect_exit: int, expect_enabled: str | None) -> None:
+    cert_value = "configured-cert" if cert_present else ""
+    key_value = "configured-key" if cert_present else ""
+    harness = f"""set -euo pipefail
+mask_multiline_secret() {{ :; }}
+cert_pem_is_current() {{
+  if [[ "${{SIM_CERT_CURRENT}}" == "true" ]]; then
+    return 0
+  fi
+  return 1
+}}
+DEPLOY_BOLT_TLS_CERT_PEM="{cert_value}"
+DEPLOY_BOLT_TLS_KEY_PEM="{key_value}"
+SIM_CERT_CURRENT={"true" if cert_current else "false"}
+{tls_block}
+printf 'enabled=%s\\n' "${{BOLT_TLS_ENABLED}}"
+"""
+    result = subprocess.run(["bash", "-lc", harness], capture_output=True, text=True)
+    if result.returncode != expect_exit:
+        raise SystemExit(
+            f"{name}: expected exit {expect_exit}, got {result.returncode}\\nstdout:\\n{result.stdout}\\nstderr:\\n{result.stderr}"
+        )
+    if expect_enabled is not None and f"enabled={expect_enabled}" not in result.stdout:
+        raise SystemExit(f"{name}: missing enabled={expect_enabled} in stdout\\n{result.stdout}")
+
+
+run_tls_case(
+    "branch env missing certs fails closed",
+    cert_present=False,
+    cert_current=False,
+    expect_exit=1,
+    expect_enabled=None,
+)
+run_tls_case(
+    "branch env expired cert fails closed",
+    cert_present=True,
+    cert_current=False,
+    expect_exit=1,
+    expect_enabled=None,
+)
+run_tls_case(
+    "non-branch expired cert fails closed",
+    cert_present=True,
+    cert_current=False,
+    expect_exit=1,
+    expect_enabled=None,
+)
+run_tls_case(
+    "valid cert happy path",
+    cert_present=True,
+    cert_current=True,
+    expect_exit=0,
+    expect_enabled="true",
+)
 PY
 }
 

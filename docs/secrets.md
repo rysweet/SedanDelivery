@@ -190,9 +190,11 @@ gh secret set DEPLOY_BOLT_TLS_CERT_PEM --env "${BRANCH_ENV:-manual-deploy}" < bo
 gh secret set DEPLOY_BOLT_TLS_KEY_PEM  --env "${BRANCH_ENV:-manual-deploy}" < bolt-key.pem
 ```
 
-Production always reads GitHub environment `main`. Manual branch deploys fall
-back to `manual-deploy` when the sanitized branch name is empty, and PR deploys
-fall back to `pr-<number>`.
+Production always reads GitHub environment `main`. Branch and PR environments
+must have `DEPLOY_BOLT_TLS_CERT_PEM` and `DEPLOY_BOLT_TLS_KEY_PEM` configured
+as environment-scoped secrets before triggering a deploy.
+**There is no fallback. If either secret is absent or invalid, the deployment
+fails immediately. Plaintext mode does not exist.**
 
 **Rotation**:
 - `DEPLOY_BOLT_TLS_CERT_PEM`: Update whenever the certificate renews or the

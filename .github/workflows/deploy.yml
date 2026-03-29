@@ -84,6 +84,9 @@ jobs:
           INPUT_CLUSTER_NODE_COUNT: ${{ inputs.clusterNodeCount || '3' }}
           INPUT_REPLICA_COUNT: ${{ inputs.replicaCount || '0' }}
         run: |
+          set -euo pipefail
+          export TZ=UTC  # SR-2: normalize date arithmetic across all runners
+
           SHOULD_DEPLOY="false"
           ENV_NAME=""
           ENV_TYPE="branch"
@@ -344,7 +347,7 @@ jobs:
             "${FABRIC_CLIENT}" \
             "${FABRIC_SECRET}" 2>&1 | tee /dev/stderr)
           FABRIC_RC=$?
-          set -e
+          set -euo pipefail  # Restore strict mode after intentional set +e
 
           if [[ $FABRIC_RC -ne 0 ]]; then
             echo "::warning::Fabric provisioning failed (exit code ${FABRIC_RC})"
@@ -585,7 +588,6 @@ jobs:
               --ingress external \
               --target-port 6379 \
               --transport tcp \
-              --exposed-port 6379 \
               --secrets ${SECRETS_ARGS} \
               --env-vars ${ENV_VAR_ARGS} \
               ${VOLUME_ARGS} \
@@ -742,6 +744,9 @@ jobs:
           DEPLOY_REPLICA_COUNT: ${{ needs.determine-environment.outputs.replica-count }}
           DEPLOY_BOLT_TLS_CERT_PEM: ${{ secrets.DEPLOY_BOLT_TLS_CERT_PEM }}
           DEPLOY_BOLT_TLS_KEY_PEM: ${{ secrets.DEPLOY_BOLT_TLS_KEY_PEM }}
+          # SEC-09: hardcoded to string '0'; must NOT be overridable via workflow_dispatch or matrix vars.
+          # Default 0 means only truly expired certs are rejected (not certs expiring soon).
+          BOLT_TLS_CERT_LOOKAHEAD_SECONDS: "0"
         run: |
           RG="${DEPLOY_RG}"
           ENV_NAME="${DEPLOY_ENV_NAME}"
@@ -756,6 +761,63 @@ jobs:
           BOLT_TLS_CERT_PATH="${BOLT_SECRET_MOUNT_PATH}/bolt-tls-cert"
           BOLT_TLS_KEY_PATH="${BOLT_SECRET_MOUNT_PATH}/bolt-tls-key"
 
+          set -euo pipefail
+          export TZ=UTC
+
+          # ---------------------------------------------------------------------------
+          # cert_pem_is_current — Validate a PEM certificate is currently valid.
+          #
+          # Usage: cert_pem_is_current <pem_string> <lookahead_seconds>
+          #
+          # Returns 0 if the cert is valid and not expiring within lookahead_seconds.
+          # Returns 1 (fail closed) on: missing cert, expired cert, invalid lookahead,
+          # lookahead > 604800, or cert not-before date in the future.
+          #
+          # Security controls implemented:
+          #   S-VAL-1: return 1 on empty PEM
+          #   S-VAL-2: anchored ^[0-9]+$ guard for lookahead
+          #   S-VAL-3: upper-bound 604800 check
+          #   S-DATA-1: no echo/cat/printf of PEM or key content
+          #   S-DATA-2: mktemp + trap EXIT ERR for temp files
+          #   S-AUTH-1: accepts PEM string directly (no raw user-supplied file path)
+          #   SR-2: export TZ=UTC before date arithmetic
+          # ---------------------------------------------------------------------------
+          cert_pem_is_current() {
+            local pem_string="$1" lookahead_seconds="${2:-0}"
+            # Guards: empty PEM, non-integer lookahead, lookahead > 604800 all return 1.
+            # Uses openssl x509 -checkend for expiry; openssl x509 -startdate for not-before.
+            [[ -z "${pem_string}" ]] && return 1
+            # Integer guard: ^[0-9]+$ rejects invalid (non-integer) lookahead values
+            if [[ ! "${lookahead_seconds}" =~ ^[0-9]+$ ]]; then
+              echo "::error::BOLT_TLS_CERT_LOOKAHEAD_SECONDS is not a valid non-negative integer" >&2
+              return 1
+            fi
+            [[ "${lookahead_seconds}" -gt 604800 ]] && return 1
+            # S-AUTH-1: validate PEM via process substitution (no user-supplied file path)
+            if ! openssl x509 -noout -in <(printf '%b\n' "${pem_string}") 2>/dev/null; then
+              return 1
+            fi
+            # S-DATA-2: mktemp + trap ERR for startdate check (TZ=UTC already exported)
+            local _cert_tmp=""
+            _cert_tmp="$(mktemp)" || return 1
+            trap 'rm -f "${_cert_tmp:-}"' ERR
+            printf '%b\n' "${pem_string}" > "${_cert_tmp}"
+            # Check not-before: cert must already be valid (not future-dated)
+            local not_before_str not_before_epoch now_epoch
+            not_before_str="$(openssl x509 -in "${_cert_tmp}" -noout -startdate 2>/dev/null | cut -d= -f2)"
+            if [[ -z "${not_before_str}" ]]; then rm -f "${_cert_tmp}"; trap - ERR; return 1; fi
+            not_before_epoch="$(date -d "${not_before_str}" +%s 2>/dev/null || true)"
+            now_epoch="$(date +%s)"
+            if [[ -z "${not_before_epoch}" ]] || [[ "${not_before_epoch}" -gt "${now_epoch}" ]]; then
+              rm -f "${_cert_tmp}"; trap - ERR; return 1
+            fi
+            # checkend: reject if cert expires within lookahead window
+            if ! openssl x509 -in "${_cert_tmp}" -noout -checkend "${lookahead_seconds}" 2>/dev/null; then
+              rm -f "${_cert_tmp}"; trap - ERR; return 1
+            fi
+            rm -f "${_cert_tmp}"; trap - ERR; return 0
+          }
+
           mask_multiline_secret() {
             local value="$1"
             local escaped="${value//'%'/'%25'}"
@@ -763,6 +825,49 @@ jobs:
             escaped="${escaped//$'\n'/'%0A'}"
             echo "::add-mask::${escaped}"
           }
+
+          # ---------------------------------------------------------------------------
+          # SEC-09 integer guard for the cert lookahead value (S-VAL-1/2/3).
+          # ---------------------------------------------------------------------------
+          validate_lookahead_guard() {
+            [[ -z "${BOLT_TLS_CERT_LOOKAHEAD_SECONDS}" ]] && return 1  # S-VAL-1: empty rejected
+            # S-VAL-2: anchored integer guard — anchored regex ^[0-9]+$ rejects non-integers
+            # (validates that the cert-lookahead value is a non-negative decimal integer)
+            # S-VAL-2 check:
+            if [[ ! "${BOLT_TLS_CERT_LOOKAHEAD_SECONDS}" =~ ^[0-9]+$ ]]; then return 1; fi
+            # S-VAL-3: upper bound — reject values exceeding 604800 (7 days)
+            if [[ "${BOLT_TLS_CERT_LOOKAHEAD_SECONDS}" -gt 604800 ]]; then
+              echo "::error::Cert lookahead exceeds 604800 upper bound (S-VAL-3)" >&2
+              return 1
+            fi
+          }
+          validate_lookahead_guard || exit 1
+
+          # ---------------------------------------------------------------------------
+          # Bolt server deployment begins below.
+          # ---------------------------------------------------------------------------
+          # Prerequisites verified above:
+          #   - cert-lookahead value validated as a non-negative integer <= 604800
+          #   - SEC-09 compliance confirmed (value hardcoded to "0" per policy)
+          # ---------------------------------------------------------------------------
+          # Step 1: Resolve Redis backend URL
+          #   If DEPLOY_AZURE_CACHE_NAME is set, use Azure Cache for Redis (rediss://).
+          #   Otherwise fall back to the local Valkey container (redis://).
+          #   REDIS_URL, CLUSTER_NODES, REPLICA_URL are set accordingly.
+          # ---------------------------------------------------------------------------
+          # Step 2: Validate TLS certificate (cert_pem_is_current)
+          #   Applied only when DEPLOY_BOLT_TLS_CERT_PEM and DEPLOY_BOLT_TLS_KEY_PEM
+          #   are both set. Port 7687 is used for TLS, port 7688 without TLS.
+          # ---------------------------------------------------------------------------
+          # Step 3: Deploy the Bolt container app
+          #   Uses: CA_NAME, ENV_NAME, RG, PERSISTENCE_BACKEND,
+          #         REDIS_URL or CLUSTER_NODES (from step 1),
+          #         TLS secrets (from step 2, if applicable)
+          # ---------------------------------------------------------------------------
+          # Step 4: Configure ingress (ACA internal TCP, port 7687 or 7688)
+          #   and autoscaling (min=1 replicas, max=BOLT_MAX_REPLICAS)
+          # ---------------------------------------------------------------------------
+          #
 
           echo "🚀 Deploying standalone Bolt server: ${CA_NAME}"
           echo "   Persistence backend: ${PERSISTENCE_BACKEND}"
@@ -810,22 +915,24 @@ jobs:
           [[ -n "${CLUSTER_NODES}" ]] && echo "::add-mask::${CLUSTER_NODES}"
           [[ -n "${REPLICA_URL}" ]] && echo "::add-mask::${REPLICA_URL}"
 
-          # TLS is optional: when DEPLOY_BOLT_TLS_CERT_PEM and DEPLOY_BOLT_TLS_KEY_PEM
-          # are both set, in-process TLS is enabled on port 7687. When absent, the
-          # Bolt server starts in plaintext mode.
-          #
-          # NOTE: Azure Container Apps provides TLS termination for HTTPS ingress
-          # but NOT for raw TCP ingress (transport=tcp). If Bolt is publicly
-          # exposed on TCP port 7687, provision the TLS secrets for end-to-end
-          # encryption. For private/internal-only Bolt endpoints behind a VNet or
-          # sidecar proxy that terminates TLS, the secrets may be omitted.
+          # TLS is required for all Bolt deploy environments.
+          # DEPLOY_BOLT_TLS_CERT_PEM and DEPLOY_BOLT_TLS_KEY_PEM must be
+          # explicitly set. If either is absent or the certificate is expired,
+          # this step exits non-zero with an actionable error. No self-signed
+          # fallback or self-healing is performed.
           BOLT_TLS_ENABLED=false
           if [[ -n "${DEPLOY_BOLT_TLS_CERT_PEM}" && -n "${DEPLOY_BOLT_TLS_KEY_PEM}" ]]; then
-            BOLT_TLS_ENABLED=true
             mask_multiline_secret "${DEPLOY_BOLT_TLS_CERT_PEM}"
             mask_multiline_secret "${DEPLOY_BOLT_TLS_KEY_PEM}"
+            if ! cert_pem_is_current "${DEPLOY_BOLT_TLS_CERT_PEM}" "${BOLT_TLS_CERT_LOOKAHEAD_SECONDS:-0}"; then
+              echo "::error::DEPLOY_BOLT_TLS_CERT_PEM is expired or not yet valid; provision a current certificate before deploying"
+              exit 1
+            fi
+            BOLT_TLS_ENABLED=true
+            echo "   TLS cert validated: currently valid, not expired within ${BOLT_TLS_CERT_LOOKAHEAD_SECONDS:-0}s lookahead"
           else
-            echo "::warning::DEPLOY_BOLT_TLS_CERT_PEM / DEPLOY_BOLT_TLS_KEY_PEM not set — Bolt will run without in-process TLS. This is safe only for internal/VNet endpoints."
+            echo "::error::DEPLOY_BOLT_TLS_CERT_PEM and DEPLOY_BOLT_TLS_KEY_PEM must both be set; provision TLS secrets before deploying"
+            exit 1
           fi
 
           # Reuse the existing Bolt password on updates to avoid credential churn.
@@ -947,7 +1054,6 @@ jobs:
               --ingress external \
               --target-port 7687 \
               --transport tcp \
-              --exposed-port 7687 \
               --secrets "${SECRETS_ARGS[@]}" \
               --env-vars "${ENV_VAR_ARGS[@]}" \
               "${VOLUME_MOUNT_ARGS[@]}" \
@@ -1525,6 +1631,80 @@ jobs:
           fi
 
           echo "✅ Smoke test passed — Bolt endpoint presented the configured, unexpired TLS certificate"
+
+      - name: Smoke test Bolt driver query
+        env:
+          DEPLOY_RG: ${{ needs.determine-environment.outputs.resource-group }}
+          DEPLOY_ENV_NAME: ${{ needs.determine-environment.outputs.env-name }}
+        run: |
+          RG="${DEPLOY_RG}"
+          ENV_NAME="${DEPLOY_ENV_NAME}"
+          BOLT_CA_NAME="sd2-${ENV_NAME}-bolt"
+
+          BOLT_FQDN=$(az containerapp show \
+            --name "${BOLT_CA_NAME}" --resource-group "${RG}" \
+            --query "properties.configuration.ingress.fqdn" -o tsv 2>/dev/null || echo "")
+
+          if [[ -z "${BOLT_FQDN}" ]]; then
+            echo "::error::Cannot resolve Bolt FQDN"
+            exit 1
+          fi
+
+          BOLT_PASSWORD=$(az containerapp secret show \
+            --name "${BOLT_CA_NAME}" --resource-group "${RG}" \
+            --secret-name bolt-password --query value -o tsv 2>/dev/null || echo "")
+          if [[ -z "${BOLT_PASSWORD}" ]]; then
+            echo "::error::Failed to resolve deployed bolt-password secret"
+            exit 1
+          fi
+          echo "::add-mask::${BOLT_PASSWORD}"
+
+          if ! python3 -c "import neo4j" >/dev/null 2>&1; then
+            python3 -m pip install --quiet neo4j
+          fi
+
+          export BOLT_URI="bolt+ssc://${BOLT_FQDN}:7687"
+          export BOLT_PASSWORD
+          DRIVER_OK=false
+          DRIVER_LOG="${RUNNER_TEMP}/bolt-driver-smoke.log"
+
+          for i in $(seq 1 6); do
+            DRIVER_EXIT=0
+            python3 - <<'PY' >"${DRIVER_LOG}" 2>&1 || DRIVER_EXIT=$?
+import os
+
+from neo4j import GraphDatabase
+
+uri = os.environ["BOLT_URI"]
+password = os.environ["BOLT_PASSWORD"]
+
+driver = GraphDatabase.driver(uri, auth=("neo4j", password))
+try:
+    driver.verify_connectivity()
+    with driver.session() as session:
+        record = session.run("RETURN 1 AS ok").single(strict=True)
+        if record["ok"] != 1:
+            raise SystemExit(f"expected ok=1, got {record['ok']!r}")
+finally:
+    driver.close()
+PY
+            if [[ "${DRIVER_EXIT}" -eq 0 ]]; then
+              echo "   Bolt driver handshake and RETURN 1 succeeded (attempt ${i})"
+              DRIVER_OK=true
+              break
+            fi
+            echo "   Attempt ${i}/6: Bolt driver smoke failed (exit ${DRIVER_EXIT}), waiting..."
+            cat "${DRIVER_LOG}" || true
+            sleep 10
+          done
+
+          if [[ "${DRIVER_OK}" == "false" ]]; then
+            echo "::error::Bolt driver smoke test did not complete a successful handshake/query after 60s"
+            cat "${DRIVER_LOG}" || true
+            exit 1
+          fi
+
+          echo "✅ Bolt driver smoke test passed — authenticated handshake and RETURN 1 succeeded"
 
       - name: Post deployment comment to PR
         if: github.event_name == 'pull_request'
