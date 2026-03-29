@@ -171,6 +171,52 @@ fn cluster_mode_batch_and_cleanup_pipelines_succeed() {
 
 #[test]
 #[ignore = "requires GQL_REDIS_CLUSTER_NODES; run with `cargo test -p gql-redis-store --test cluster_pipeline -- --ignored --nocapture`"]
+fn cluster_mode_batch_create_edges_honors_injected_edge_ids() {
+    let store = cluster_store();
+
+    let graph = unique_graph("cluster-batch-injected-edge-id");
+    store.create_graph(&graph).expect("graph should be created");
+
+    let nodes = store
+        .batch_create_nodes(
+            &graph,
+            vec![
+                (
+                    vec!["Person".to_string()],
+                    props(&[("name", Value::Str("A".into()))]),
+                ),
+                (
+                    vec!["Person".to_string()],
+                    props(&[("name", Value::Str("B".into()))]),
+                ),
+            ],
+        )
+        .expect("batch_create_nodes should succeed");
+
+    let edges = store
+        .batch_create_edges(
+            &graph,
+            vec![(
+                nodes[0],
+                nodes[1],
+                "REPORTS_TO".to_string(),
+                props(&[("_sd2_eid", Value::Int(4242))]),
+            )],
+        )
+        .expect("batch_create_edges should honor injected edge IDs");
+    assert_eq!(edges, vec![gql_core::storage::EdgeId(4242)]);
+
+    let edge = store
+        .get_edge(&graph, edges[0])
+        .expect("get_edge should succeed")
+        .expect("edge should exist");
+    assert_eq!(edge.src, nodes[0]);
+    assert_eq!(edge.dst, nodes[1]);
+    assert_eq!(edge.rel_type, "REPORTS_TO");
+}
+
+#[test]
+#[ignore = "requires GQL_REDIS_CLUSTER_NODES; run with `cargo test -p gql-redis-store --test cluster_pipeline -- --ignored --nocapture`"]
 fn cluster_mode_graph_metadata_reads_are_cluster_safe() {
     let store = cluster_store();
 

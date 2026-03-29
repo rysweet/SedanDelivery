@@ -15,9 +15,7 @@ use crate::lock::{BATCH_WRITE_MAX_RETRIES, BATCH_WRITE_RETRY_DELAY_MS, WRITE_LOC
 use crate::validation::validate_property_key;
 use crate::{LockedRedisConn, RedisGraphStore};
 
-use super::helpers::{
-    batch_pipeline_chunk_size, clean_fanout_props, extract_injected_id, max_batch_size,
-};
+use super::helpers::{batch_pipeline_chunk_size, clean_fanout_props, extract_injected_id};
 
 fn validate_property_keys(properties: &IndexMap<String, Value>) -> Result<(), StorageError> {
     for key in properties.keys() {
@@ -332,15 +330,15 @@ impl RedisGraphStore {
         if edges.is_empty() {
             return Ok(Vec::new());
         }
-        if edges.len() > max_batch_size() {
-            crate::record_backend_error();
-            return Err(StorageError::Backend {
-                msg: format!(
-                    "batch size {} exceeds GQL_REDIS_MAX_BATCH_SIZE={}",
-                    edges.len(),
-                    max_batch_size()
-                ),
-            });
+        if edges
+            .iter()
+            .any(|(_, _, _, properties)| properties.contains_key("_sd2_eid"))
+        {
+            let mut created = Vec::with_capacity(edges.len());
+            for (src, dst, rel_type, properties) in edges {
+                created.push(self.create_edge_impl(graph, src, dst, rel_type, properties)?);
+            }
+            return Ok(created);
         }
         for (_, _, _, properties) in &edges {
             validate_property_keys(properties)?;

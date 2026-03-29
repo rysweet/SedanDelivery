@@ -302,7 +302,7 @@ impl DerefMut for LockedRedisConn {
 /// - `GQL_REDIS_CONNECT_TIMEOUT_MS` — Redis TCP connect timeout (default 1000)
 /// - `GQL_REDIS_READ_TIMEOUT_MS` — Redis socket read timeout (default 5000)
 /// - `GQL_REDIS_WRITE_TIMEOUT_MS` — Redis socket write timeout (default 5000)
-/// - `GQL_REDIS_MAX_BATCH_SIZE` — refuse oversized batch writes (default 5000)
+/// - `GQL_REDIS_MAX_BATCH_SIZE` — refuse oversized batch node writes (default 5000)
 /// - `GQL_REDIS_BATCH_PIPELINE_CHUNK_SIZE` — items per batch-write pipeline chunk (default 250)
 /// - `GQL_REDIS_MAX_DETACH_DELETE_EDGES` — refuse pathological supernode detach deletes (default 10000)
 ///
@@ -340,7 +340,10 @@ impl RedisGraphStore {
     /// `GQL_REDIS_WRITE_TIMEOUT_MS` (default 5000).
     /// Large batch and detach-delete guards are controlled by
     /// `GQL_REDIS_MAX_BATCH_SIZE`, `GQL_REDIS_BATCH_PIPELINE_CHUNK_SIZE`, and
-    /// `GQL_REDIS_MAX_DETACH_DELETE_EDGES`.
+    /// `GQL_REDIS_MAX_DETACH_DELETE_EDGES`. `batch_create_nodes` still refuses
+    /// oversized requests at `GQL_REDIS_MAX_BATCH_SIZE`; `batch_create_edges`
+    /// validates the full request and streams Redis writes in smaller internal
+    /// pipeline chunks under one graph write lock.
     pub fn from_env() -> Result<Self, StorageError> {
         let prefix = env::var("GQL_REDIS_KEY_PREFIX").unwrap_or_default();
         let pool_size: u32 =
@@ -1045,6 +1048,14 @@ impl GraphStore for RedisGraphStore {
         properties: IndexMap<String, Value>,
     ) -> Result<EdgeId, StorageError> {
         self.create_edge_impl(graph, src, dst, rel_type, properties)
+    }
+
+    fn batch_create_edges(
+        &self,
+        graph: &str,
+        edges: Vec<(NodeId, NodeId, String, IndexMap<String, Value>)>,
+    ) -> Result<Vec<EdgeId>, StorageError> {
+        RedisGraphStore::batch_create_edges(self, graph, edges)
     }
 
     fn set_node_properties(

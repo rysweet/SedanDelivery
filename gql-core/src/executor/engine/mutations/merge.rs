@@ -1,7 +1,7 @@
 //! MERGE and MERGE RELATIONSHIP operator implementations.
 
 use indexmap::IndexMap;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use crate::ast::{Direction, Expr};
 use crate::error::{ExecutionError, GqlError};
@@ -13,7 +13,191 @@ use crate::types::Value;
 use crate::executor::engine::helpers::{extract_node_id, inject_parameters, undefined_var};
 use crate::executor::engine::{ExecContext, QueryExecutor, Row};
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct PendingMergeEdgeKey {
+    src: NodeId,
+    dst: NodeId,
+    rel_type: String,
+    props_key: String,
+}
+
+enum PendingMergeEdgeSlot {
+    Ready(Vec<Row>),
+    Pending { row: Row, create_index: usize },
+}
+
+struct MergeRelBatchSpec<'a> {
+    src_alias: &'a crate::ast::Identifier,
+    dst_alias: &'a crate::ast::Identifier,
+    rel_alias: Option<&'a crate::ast::Identifier>,
+    rel_type: &'a crate::ast::RelType,
+    direction: Direction,
+    properties: &'a [(String, Expr)],
+}
+
 impl<'a> QueryExecutor<'a> {
+    fn merge_relationship_props_key(properties: &IndexMap<String, Value>) -> String {
+        let canonical_props = properties
+            .iter()
+            .map(|(k, v)| (k.clone().into_boxed_str(), v.clone()))
+            .collect();
+        Value::Map(canonical_props).canonical_key()
+    }
+
+    fn merge_relationship_props_map(prop_vals: Vec<(String, Value)>) -> IndexMap<String, Value> {
+        prop_vals.into_iter().collect()
+    }
+
+    fn exec_merge_rel_batch_creates(
+        &self,
+        cx: &mut ExecContext<'_>,
+        input: Vec<Row>,
+        spec: MergeRelBatchSpec<'_>,
+    ) -> Result<Vec<Row>, GqlError> {
+        let type_str = spec.rel_type.as_str();
+        let mut pending_creates: Vec<(NodeId, NodeId, String, IndexMap<String, Value>)> =
+            Vec::new();
+        let mut pending_non_null_keys: Vec<Vec<String>> = Vec::new();
+        let mut pending_by_key: HashMap<PendingMergeEdgeKey, usize> = HashMap::new();
+        let mut slots = Vec::with_capacity(input.len());
+
+        for mut row in input {
+            cx.budget.check_or_err()?;
+            let src_val = row
+                .get(spec.src_alias.0.as_str())
+                .ok_or_else(|| undefined_var(&spec.src_alias.0))?;
+            let src_id = extract_node_id(src_val, &spec.src_alias.0)?;
+
+            let dst_val = row
+                .get(spec.dst_alias.0.as_str())
+                .ok_or_else(|| undefined_var(&spec.dst_alias.0))?;
+            let dst_id = extract_node_id(dst_val, &spec.dst_alias.0)?;
+
+            let (real_src, real_dst) = match spec.direction {
+                Direction::Incoming => (dst_id, src_id),
+                _ => (src_id, dst_id),
+            };
+
+            let ctx = self.build_filter_ctx(cx.graph, &row)?;
+            let prop_vals = self.eval_merge_properties(cx.graph, spec.properties, &row, &ctx)?;
+            let prop_map = Self::merge_relationship_props_map(prop_vals);
+            let dedup_key = PendingMergeEdgeKey {
+                src: if matches!(spec.direction, Direction::Undirected) && real_src.0 > real_dst.0 {
+                    real_dst
+                } else {
+                    real_src
+                },
+                dst: if matches!(spec.direction, Direction::Undirected) && real_src.0 > real_dst.0 {
+                    real_src
+                } else {
+                    real_dst
+                },
+                rel_type: type_str.to_string(),
+                props_key: Self::merge_relationship_props_key(&prop_map),
+            };
+
+            if let Some(&create_index) = pending_by_key.get(&dedup_key) {
+                slots.push(PendingMergeEdgeSlot::Pending { row, create_index });
+                continue;
+            }
+
+            let existing_edges = self
+                .store
+                .out_edges_by_type(cx.graph, real_src, &[type_str])?;
+            let mut matching: Vec<_> = existing_edges
+                .into_iter()
+                .filter(|adj| adj.neighbor_id == real_dst)
+                .collect();
+            if matches!(spec.direction, Direction::Undirected) && matching.is_empty() {
+                let reverse_edges =
+                    self.store
+                        .out_edges_by_type(cx.graph, real_dst, &[type_str])?;
+                matching = reverse_edges
+                    .into_iter()
+                    .filter(|adj| adj.neighbor_id == real_src)
+                    .collect();
+            }
+
+            let matched_edges = if prop_map.is_empty() {
+                matching.iter().map(|adj| adj.edge_id).collect::<Vec<_>>()
+            } else {
+                let mut found_edges = Vec::new();
+                for adj in &matching {
+                    if let Some(edge_data) = self.store.get_edge(cx.graph, adj.edge_id)? {
+                        let all_match = prop_map.iter().all(|(k, v)| {
+                            edge_data
+                                .properties
+                                .get(k.as_str())
+                                .map(|ev| ev == v)
+                                .unwrap_or(false)
+                        });
+                        if all_match {
+                            found_edges.push(adj.edge_id);
+                        }
+                    }
+                }
+                found_edges
+            };
+
+            if matched_edges.is_empty() {
+                let create_index = pending_creates.len();
+                pending_non_null_keys.push(
+                    prop_map
+                        .iter()
+                        .filter(|(_, v)| !v.is_null())
+                        .map(|(k, _)| k.clone())
+                        .collect(),
+                );
+                pending_creates.push((real_src, real_dst, type_str.to_string(), prop_map));
+                pending_by_key.insert(dedup_key, create_index);
+                slots.push(PendingMergeEdgeSlot::Pending { row, create_index });
+                continue;
+            }
+
+            let mut ready_rows = Vec::with_capacity(matched_edges.len());
+            for edge_id in matched_edges {
+                cx.budget.check_or_err()?;
+                if let Some(alias) = spec.rel_alias {
+                    row.insert(alias.0.clone(), Value::Edge(edge_id));
+                }
+                cx.budget.record_row();
+                ready_rows.push(row.clone());
+            }
+            slots.push(PendingMergeEdgeSlot::Ready(ready_rows));
+        }
+
+        let mut created_edge_ids = Vec::new();
+        if !pending_creates.is_empty() {
+            created_edge_ids = self.store.batch_create_edges(cx.graph, pending_creates)?;
+            for (create_index, edge_id) in created_edge_ids.iter().enumerate() {
+                cx.stats.edges_created += 1;
+                cx.stats.edges_created_ids.insert(edge_id.0);
+                for key in &pending_non_null_keys[create_index] {
+                    cx.stats.props_seen.insert((true, edge_id.0, key.clone()));
+                }
+            }
+        }
+
+        let mut out = Vec::new();
+        for slot in slots {
+            match slot {
+                PendingMergeEdgeSlot::Ready(rows) => out.extend(rows),
+                PendingMergeEdgeSlot::Pending {
+                    mut row,
+                    create_index,
+                } => {
+                    let edge_id = created_edge_ids[create_index];
+                    if let Some(alias) = spec.rel_alias {
+                        row.insert(alias.0.clone(), Value::Edge(edge_id));
+                    }
+                    cx.budget.record_row();
+                    out.push(row);
+                }
+            }
+        }
+        Ok(out)
+    }
+
     /// Evaluate MERGE property expressions, expanding parameter maps and
     /// rejecting null values.  Shared by `exec_merge` and `exec_merge_rel`.
     pub(crate) fn eval_merge_properties(
@@ -254,6 +438,22 @@ impl<'a> QueryExecutor<'a> {
         };
         let input = self.exec_operator(cx, child)?;
         let type_str = rel_type.as_str();
+        if on_create.is_empty() && on_match.is_empty() {
+            let out = self.exec_merge_rel_batch_creates(
+                cx,
+                input,
+                MergeRelBatchSpec {
+                    src_alias,
+                    dst_alias,
+                    rel_alias: rel_alias.as_ref(),
+                    rel_type,
+                    direction: *direction,
+                    properties,
+                },
+            )?;
+            self.invalidate_property_cache();
+            return Ok(out);
+        }
         let mut out = Vec::with_capacity(input.len());
 
         for mut row in input {
@@ -297,15 +497,16 @@ impl<'a> QueryExecutor<'a> {
             // Filter by property constraints if any.
             let ctx = self.build_filter_ctx(cx.graph, &row)?;
             let prop_vals = self.eval_merge_properties(cx.graph, properties, &row, &ctx)?;
+            let prop_map = Self::merge_relationship_props_map(prop_vals);
 
-            let matched_edges: Vec<crate::storage::EdgeId> = if prop_vals.is_empty() {
+            let matched_edges: Vec<crate::storage::EdgeId> = if prop_map.is_empty() {
                 matching.iter().map(|adj| adj.edge_id).collect::<Vec<_>>()
             } else {
                 // Find ALL edges matching property constraints.
                 let mut found_edges = Vec::new();
                 for adj in &matching {
                     if let Some(edge_data) = self.store.get_edge(cx.graph, adj.edge_id)? {
-                        let all_match = prop_vals.iter().all(|(k, v)| {
+                        let all_match = prop_map.iter().all(|(k, v)| {
                             edge_data
                                 .properties
                                 .get(k.as_str())
@@ -336,7 +537,6 @@ impl<'a> QueryExecutor<'a> {
                 }
             } else {
                 // NOT FOUND: create the edge with properties.
-                let prop_map: IndexMap<String, Value> = prop_vals.into_iter().collect();
                 let non_null_edge_keys: Vec<String> = prop_map
                     .iter()
                     .filter(|(_, v)| !v.is_null())
@@ -641,6 +841,151 @@ mod tests {
         assert_eq!(
             result.stats.edges_created, 0,
             "existing edge should be matched, not created"
+        );
+    }
+
+    #[test]
+    fn merge_rel_batch_path_deduplicates_duplicate_input_rows() {
+        let store = make_store();
+        let a = store
+            .create_node("g", vec!["A".to_string()], IndexMap::new())
+            .unwrap();
+        let b = store
+            .create_node("g", vec!["B".to_string()], IndexMap::new())
+            .unwrap();
+
+        let executor = QueryExecutor::new(&store);
+        let plan = Operator::MergeRelationship {
+            src_alias: Identifier::new("a"),
+            dst_alias: Identifier::new("b"),
+            rel_alias: Some(Identifier::new("r")),
+            rel_type: RelType::new("R"),
+            direction: Direction::Outgoing,
+            properties: vec![],
+            on_create: vec![],
+            on_match: vec![],
+            child: Box::new(Operator::Unwind {
+                list_expr: Expr::List(vec![Expr::Integer(1), Expr::Integer(2)]),
+                alias: Identifier::new("dup"),
+                child: Box::new(Operator::Apply {
+                    outer: Box::new(Operator::NodeByIdSeek {
+                        id_expr: Expr::Integer(a.0 as i64),
+                        alias: Identifier::new("a"),
+                    }),
+                    inner: Box::new(Operator::NodeByIdSeek {
+                        id_expr: Expr::Integer(b.0 as i64),
+                        alias: Identifier::new("b"),
+                    }),
+                }),
+            }),
+        };
+
+        let mut budget = ExecutionBudget::unlimited();
+        let result = executor.execute("g", &plan, &mut budget).unwrap();
+        assert_eq!(result.stats.edges_created, 1);
+        assert_eq!(result.rows.len(), 2);
+
+        let edge_ids = store.find_edges_by_type("g", "R").unwrap();
+        assert_eq!(
+            edge_ids.len(),
+            1,
+            "duplicate MERGE rows must reuse one edge"
+        );
+
+        let rel_values: Vec<_> = result
+            .rows
+            .iter()
+            .map(|row| row.get("r").cloned().expect("merge should bind rel alias"))
+            .collect();
+        assert_eq!(rel_values[0], rel_values[1]);
+    }
+
+    #[test]
+    fn merge_rel_fast_and_slow_paths_share_duplicate_key_semantics() {
+        let store = make_store();
+        let a = store
+            .create_node("g", vec!["A".to_string()], IndexMap::new())
+            .unwrap();
+        let b = store
+            .create_node("g", vec!["B".to_string()], IndexMap::new())
+            .unwrap();
+        store
+            .create_edge(
+                "g",
+                a,
+                b,
+                "R".to_string(),
+                IndexMap::from([("dup".to_string(), Value::Int(2))]),
+            )
+            .unwrap();
+
+        let duplicate_key_props = vec![
+            ("dup".to_string(), Expr::Integer(1)),
+            ("dup".to_string(), Expr::Integer(2)),
+        ];
+
+        let fast_executor = QueryExecutor::new(&store);
+        let fast_plan = Operator::MergeRelationship {
+            src_alias: Identifier::new("a"),
+            dst_alias: Identifier::new("b"),
+            rel_alias: Some(Identifier::new("r")),
+            rel_type: RelType::new("R"),
+            direction: Direction::Outgoing,
+            properties: duplicate_key_props.clone(),
+            on_create: vec![],
+            on_match: vec![],
+            child: Box::new(Operator::Apply {
+                outer: Box::new(Operator::NodeByIdSeek {
+                    id_expr: Expr::Integer(a.0 as i64),
+                    alias: Identifier::new("a"),
+                }),
+                inner: Box::new(Operator::NodeByIdSeek {
+                    id_expr: Expr::Integer(b.0 as i64),
+                    alias: Identifier::new("b"),
+                }),
+            }),
+        };
+        let mut fast_budget = ExecutionBudget::unlimited();
+        let fast_result = fast_executor
+            .execute("g", &fast_plan, &mut fast_budget)
+            .unwrap();
+
+        let slow_executor = QueryExecutor::new(&store);
+        let slow_plan = Operator::MergeRelationship {
+            src_alias: Identifier::new("a"),
+            dst_alias: Identifier::new("b"),
+            rel_alias: Some(Identifier::new("r")),
+            rel_type: RelType::new("R"),
+            direction: Direction::Outgoing,
+            properties: duplicate_key_props,
+            on_create: vec![crate::planner::SetItem::Property {
+                alias: Identifier::new("r"),
+                key: "seen".to_string(),
+                value: Expr::Bool(true),
+            }],
+            on_match: vec![],
+            child: Box::new(Operator::Apply {
+                outer: Box::new(Operator::NodeByIdSeek {
+                    id_expr: Expr::Integer(a.0 as i64),
+                    alias: Identifier::new("a"),
+                }),
+                inner: Box::new(Operator::NodeByIdSeek {
+                    id_expr: Expr::Integer(b.0 as i64),
+                    alias: Identifier::new("b"),
+                }),
+            }),
+        };
+        let mut slow_budget = ExecutionBudget::unlimited();
+        let slow_result = slow_executor
+            .execute("g", &slow_plan, &mut slow_budget)
+            .unwrap();
+
+        assert_eq!(fast_result.stats.edges_created, 0);
+        assert_eq!(slow_result.stats.edges_created, 0);
+        assert_eq!(
+            fast_result.rows[0].get("r"),
+            slow_result.rows[0].get("r"),
+            "fast and slow MERGE paths must match the same existing edge"
         );
     }
 }

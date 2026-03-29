@@ -1,0 +1,137 @@
+# Canonical gadugi scenario for Issue #1036 — duplicate MERGE edge input.
+#
+# This validates the public gql-api contract locally without Redis:
+#   - gql-api starts with in-memory storage
+#   - duplicate UNWIND input rows for a pure relationship MERGE create only one edge
+#   - replaying the same MERGE matches the existing edge instead of creating another
+#   - the created relationship is visible through the public query endpoint
+
+scenario:
+  name: "Issue #1036 - duplicate MERGE relationship rows reuse one edge"
+  description: >
+    Verifies from an API client perspective that gql-api running locally with
+    in-memory storage can execute a duplicate-input relationship MERGE through
+    the public mutate endpoint, create exactly one relationship on the first
+    pass, create zero new relationships on replay, and expose the single LINK
+    edge through the public query endpoint.
+  metadata:
+    tags: [cli, api, cypher, regression, issue-1036]
+    priority: high
+    linked_docs:
+      - docs/graph-visualizer/api-reference.md
+  agents:
+    - name: cli-agent
+      type: cli
+      config: {}
+
+  steps:
+    - name: "A1 — Run local duplicate MERGE regression contract"
+      agent: cli-agent
+      action: execute
+      params:
+        command: bash
+        args:
+          - -lc
+          - >
+            set -euo pipefail;
+            PORT=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()');
+            GRAPH_NAME="issue_1036_merge_edge_batch";
+            API_LOG=$(mktemp);
+            HEALTH_BODY=$(mktemp);
+            FIRST_MUTATE_BODY=$(mktemp);
+            FIRST_MUTATE_REQ=$(mktemp);
+            SECOND_MUTATE_BODY=$(mktemp);
+            SECOND_MUTATE_REQ=$(mktemp);
+            COUNT_BODY=$(mktemp);
+            COUNT_REQ=$(mktemp);
+            cleanup() {
+              if [[ -n "${API_PID:-}" ]]; then
+                kill "${API_PID}" >/dev/null 2>&1 || true;
+                wait "${API_PID}" 2>/dev/null || true;
+              fi;
+              rm -f "${API_LOG}" "${HEALTH_BODY}" "${FIRST_MUTATE_BODY}" "${FIRST_MUTATE_REQ}" "${SECOND_MUTATE_BODY}" "${SECOND_MUTATE_REQ}" "${COUNT_BODY}" "${COUNT_REQ}";
+            };
+            trap cleanup EXIT;
+            env
+            -u GQL_REDIS_URL
+            -u GQL_REDIS_CLUSTER_NODES
+            -u ENVIRONMENT
+            -u GQL_API_TLS_CERT
+            -u GQL_API_TLS_KEY
+            -u GQL_API_ENTRA_TENANT_ID
+            -u GQL_API_ENTRA_CLIENT_ID
+            GQL_API_BIND_ADDR="127.0.0.1:${PORT}"
+            GQL_API_RATE_LIMIT_RPS=10000
+            cargo run -p gql-api --quiet >"${API_LOG}" 2>&1 &
+            API_PID=$!;
+            for _ in $(seq 1 120); do
+              HEALTH_CODE=$(curl -s -o "${HEALTH_BODY}" -w '%{http_code}' "http://127.0.0.1:${PORT}/health" || true);
+              if [[ "${HEALTH_CODE}" == "200" ]]; then
+                break;
+              fi;
+              sleep 1;
+            done;
+            [[ "${HEALTH_CODE}" == "200" ]] || { echo "[FAIL] gql-api did not become healthy" >&2; cat "${API_LOG}" >&2; exit 1; };
+            echo "[PASS] gql-api started for duplicate MERGE regression";
+            GRAPH_CODE=$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'content-type: application/json' -d "{\"name\":\"${GRAPH_NAME}\"}" "http://127.0.0.1:${PORT}/graphs");
+            [[ "${GRAPH_CODE}" == "201" ]] || { echo "[FAIL] creating graph returned ${GRAPH_CODE}" >&2; cat "${API_LOG}" >&2; exit 1; };
+            curl -fsS -o /dev/null -X POST -H 'content-type: application/json' -d '{"labels":["Node"],"properties":{"id":1}}' "http://127.0.0.1:${PORT}/graphs/${GRAPH_NAME}/nodes";
+            curl -fsS -o /dev/null -X POST -H 'content-type: application/json' -d '{"labels":["Node"],"properties":{"id":2}}' "http://127.0.0.1:${PORT}/graphs/${GRAPH_NAME}/nodes";
+            echo "[PASS] seeded source and destination nodes";
+            python3 -c 'import json, sys; pairs = [{"src": 1, "dst": 2}, {"src": 1, "dst": 2}]; json.dump({"cypher": "UNWIND $pairs AS pair MATCH (src:Node {id: pair.src}), (dst:Node {id: pair.dst}) MERGE (src)-[:LINK]->(dst)", "params": {"pairs": pairs}}, open(sys.argv[1], "w"))' "${FIRST_MUTATE_REQ}";
+            FIRST_MUTATE_CODE=$(curl -s -o "${FIRST_MUTATE_BODY}" -w '%{http_code}' -X POST -H 'content-type: application/json' --data @"${FIRST_MUTATE_REQ}" "http://127.0.0.1:${PORT}/graphs/${GRAPH_NAME}/mutate");
+            [[ "${FIRST_MUTATE_CODE}" == "200" ]] || { echo "[FAIL] first duplicate MERGE mutate returned ${FIRST_MUTATE_CODE}" >&2; cat "${FIRST_MUTATE_BODY}" >&2; exit 1; };
+            python3 -c 'import json, sys; body = json.load(open(sys.argv[1])); assert body["edgesCreated"] == 1, body; assert body["nodesCreated"] == 0, body' "${FIRST_MUTATE_BODY}";
+            echo "[PASS] duplicate MERGE input created exactly one relationship";
+            cp "${FIRST_MUTATE_REQ}" "${SECOND_MUTATE_REQ}";
+            SECOND_MUTATE_CODE=$(curl -s -o "${SECOND_MUTATE_BODY}" -w '%{http_code}' -X POST -H 'content-type: application/json' --data @"${SECOND_MUTATE_REQ}" "http://127.0.0.1:${PORT}/graphs/${GRAPH_NAME}/mutate");
+            [[ "${SECOND_MUTATE_CODE}" == "200" ]] || { echo "[FAIL] replay duplicate MERGE mutate returned ${SECOND_MUTATE_CODE}" >&2; cat "${SECOND_MUTATE_BODY}" >&2; exit 1; };
+            python3 -c 'import json, sys; body = json.load(open(sys.argv[1])); assert body["edgesCreated"] == 0, body; assert body["nodesCreated"] == 0, body' "${SECOND_MUTATE_BODY}";
+            echo "[PASS] replay matched existing relationship without creating another";
+            python3 -c 'import json, sys; json.dump({"cypher": "MATCH (:Node)-[r:LINK]->(:Node) RETURN count(r)"}, open(sys.argv[1], "w"))' "${COUNT_REQ}";
+            COUNT_CODE=$(curl -s -o "${COUNT_BODY}" -w '%{http_code}' -X POST -H 'content-type: application/json' --data @"${COUNT_REQ}" "http://127.0.0.1:${PORT}/graphs/${GRAPH_NAME}/query");
+            [[ "${COUNT_CODE}" == "200" ]] || { echo "[FAIL] LINK count query returned ${COUNT_CODE}" >&2; cat "${COUNT_BODY}" >&2; exit 1; };
+            python3 -c 'import json, sys; body = json.load(open(sys.argv[1])); assert body["rows"] == [{"count(r)": 1}], body' "${COUNT_BODY}";
+            echo "[PASS] public query API shows exactly one LINK relationship";
+      timeout: 300000
+
+    - name: "A2 — Confirm gql-api started"
+      agent: cli-agent
+      action: wait_for_output
+      params:
+        pattern: "\\[PASS\\]\\s+gql-api started for duplicate MERGE regression"
+      timeout: 5000
+
+    - name: "A3 — Confirm graph seed data was created"
+      agent: cli-agent
+      action: wait_for_output
+      params:
+        pattern: "\\[PASS\\]\\s+seeded source and destination nodes"
+      timeout: 5000
+
+    - name: "A4 — Confirm duplicate MERGE input creates one edge"
+      agent: cli-agent
+      action: wait_for_output
+      params:
+        pattern: "\\[PASS\\]\\s+duplicate MERGE input created exactly one relationship"
+      timeout: 5000
+
+    - name: "A5 — Confirm replay matches instead of recreating"
+      agent: cli-agent
+      action: wait_for_output
+      params:
+        pattern: "\\[PASS\\]\\s+replay matched existing relationship without creating another"
+      timeout: 5000
+
+    - name: "A6 — Confirm query API shows exactly one LINK edge"
+      agent: cli-agent
+      action: wait_for_output
+      params:
+        pattern: "\\[PASS\\]\\s+public query API shows exactly one LINK relationship"
+      timeout: 5000
+
+    - name: "A7 — Confirm validator exited cleanly"
+      agent: cli-agent
+      action: validate_exit_code
+      params:
+        text: "0"

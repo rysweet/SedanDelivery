@@ -210,6 +210,8 @@ Backend selection at startup (`gql-redis-store::create_store`):
 
 When `GQL_REDIS_REPLICA_URL` is also set, read methods are routed to a separate replica pool (round-robin across replicas with `READONLY` command). Writes always go to the primary pool. This provides eventual-consistency read scaling for read-heavy workloads.
 
+`GraphStore::batch_create_edges` preserves input order and correctness even when a backend must internally stream Redis work in smaller pipeline chunks to satisfy backend-specific write limits.
+
 Redis key schema uses `{graphname}` hash tags for cluster slot affinity:
 ```
 G:{graph}:node:{id}      -- node hash (labels JSON, props JSON)

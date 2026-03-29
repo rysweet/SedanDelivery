@@ -226,6 +226,26 @@ pub trait GraphStore: Send + Sync {
         properties: IndexMap<String, Value>,
     ) -> Result<EdgeId, StorageError>;
 
+    /// Batch-create multiple edges and return the allocated IDs in input order.
+    ///
+    /// Backends with efficient batched write paths should override this. The
+    /// default implementation preserves correctness by delegating to
+    /// [`GraphStore::create_edge`] one edge at a time. Backends that need to
+    /// respect lower-level write limits should internally split oversized
+    /// requests while preserving the overall input order and per-edge
+    /// semantics.
+    fn batch_create_edges(
+        &self,
+        graph: &str,
+        edges: Vec<(NodeId, NodeId, String, IndexMap<String, Value>)>,
+    ) -> Result<Vec<EdgeId>, StorageError> {
+        let mut created = Vec::with_capacity(edges.len());
+        for (src, dst, rel_type, properties) in edges {
+            created.push(self.create_edge(graph, src, dst, rel_type, properties)?);
+        }
+        Ok(created)
+    }
+
     /// Merge-update node properties: overlays given keys onto existing properties.
     /// Implements Cypher `SET n += {…}` semantics.
     fn set_node_properties(
