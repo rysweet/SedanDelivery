@@ -12,8 +12,6 @@
 //! queries (e.g. `properties("location").has("startTime", ...)`) require
 //! first-class multi-property support in the store.
 
-use std::collections::HashMap;
-
 use gql_core::storage::{EdgeId, GraphStore, InMemoryGraphStore, NodeId};
 use gql_core::types::Value;
 use indexmap::IndexMap;

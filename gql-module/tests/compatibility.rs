@@ -28,7 +28,6 @@
 //! - `path`              → JSON `{"_type":"path","nodes":[...],"edges":[...]}`
 
 use indexmap::IndexMap;
-use std::collections::HashMap;
 use std::time::Duration;
 
 use gql_core::executor::{ExecutionBudget, QueryExecutor};
@@ -254,7 +253,7 @@ fn compat_edge_property_projection_returns_scalar() {
     let dst = store
         .create_node("c-eprop", vec!["B".to_string()], IndexMap::new())
         .unwrap();
-    let mut eprops = HashMap::new();
+    let mut eprops = IndexMap::new();
     eprops.insert("weight".to_string(), Value::Int(5));
     store
         .create_edge("c-eprop", src, dst, "LINK".to_string(), eprops)

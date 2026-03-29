@@ -395,6 +395,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::approx_constant)]
     fn graphson_double_round_trip() {
         let gv = GremlinValue::Float(3.14);
         let json = to_graphson(&gv);

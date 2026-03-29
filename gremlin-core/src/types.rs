@@ -164,6 +164,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::approx_constant)]
     fn round_trip_scalars() {
         // Bool
         let v: Value = GremlinValue::Bool(true).into();

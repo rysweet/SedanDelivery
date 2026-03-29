@@ -1538,6 +1538,7 @@ name = "gql-module"
 version = "0.1.0"
 dependencies = [
  "gql-core",
+ "indexmap",
  "redis-module",
  "serde_json",
  "tracing",

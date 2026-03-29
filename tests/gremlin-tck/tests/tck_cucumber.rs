@@ -40,7 +40,7 @@ use gremlin_tck::modern_graph::{create_modern_graph, ModernGraphIds};
 /// Outcome of executing a Gremlin traversal.
 #[derive(Debug)]
 enum TraversalOutcome {
-    Ok(QueryResult),
+    Ok(Box<QueryResult>),
     Err(String),
 }
 
@@ -242,11 +242,7 @@ async fn given_unsupported(_world: &mut GremlinWorld) {
 #[given(regex = r"the graph initializer of")]
 async fn given_graph_initializer(world: &mut GremlinWorld, step: &gherkin::Step) {
     // Parse and execute the initializer Gremlin text
-    let docstring = step
-        .docstring
-        .as_ref()
-        .map(|d| d.clone())
-        .unwrap_or_default();
+    let docstring = step.docstring.clone().unwrap_or_default();
 
     let params = world.parameters.clone();
     let vertex_names = world.vertex_names.clone();
@@ -309,11 +305,7 @@ async fn given_graph_initializer(world: &mut GremlinWorld, step: &gherkin::Step)
 
 #[given(regex = r"(?i)the traversal of")]
 async fn given_traversal(world: &mut GremlinWorld, step: &gherkin::Step) {
-    let docstring = step
-        .docstring
-        .as_ref()
-        .map(|d| d.clone())
-        .unwrap_or_default();
+    let docstring = step.docstring.clone().unwrap_or_default();
     world.traversal_text = docstring.trim().to_string();
 }
 
@@ -433,7 +425,7 @@ fn execute_traversal(world: &mut GremlinWorld) {
     let mut budget = tck_budget();
     match executor.execute(&world.graph_name, &operator, &mut budget) {
         Ok(result) => {
-            world.outcome = Some(TraversalOutcome::Ok(result));
+            world.outcome = Some(TraversalOutcome::Ok(Box::new(result)));
         }
         Err(e) => {
             world.outcome = Some(TraversalOutcome::Err(format!("execution error: {e}")));
@@ -447,14 +439,14 @@ fn execute_traversal(world: &mut GremlinWorld) {
 async fn then_result_unordered(world: &mut GremlinWorld, step: &gherkin::Step) {
     let result = expect_ok(world);
     let expected = parse_expected_table(step, world);
-    assert_results_match_unordered(&result, &expected, world);
+    assert_results_match_unordered(result, &expected, world);
 }
 
 #[then(regex = r"(?i)the result should be ordered")]
 async fn then_result_ordered(world: &mut GremlinWorld, step: &gherkin::Step) {
     let result = expect_ok(world);
     let expected = parse_expected_table(step, world);
-    assert_results_match_ordered(&result, &expected, world);
+    assert_results_match_ordered(result, &expected, world);
 }
 
 #[then(regex = r"(?i)the result should be of")]
@@ -463,7 +455,7 @@ async fn then_result_of(world: &mut GremlinWorld, step: &gherkin::Step) {
     let expected = parse_expected_table(step, world);
     // "of" means actual results are a subset of the expected set,
     // not that all expected must be present.
-    assert_results_subset_of(&result, &expected, world);
+    assert_results_subset_of(result, &expected, world);
 }
 
 #[then(regex = r"(?i)the result should be empty")]
@@ -1290,10 +1282,10 @@ fn values_match_ctx(
         (Value::Int(a), Value::Float(e)) => (*a as f64 - e).abs() < 1e-9,
         (Value::Float(a), Value::Int(e)) => (a - *e as f64).abs() < 1e-9,
         // String representation match: Str("1") matches Int(1), etc.
-        (Value::Str(a), Value::Int(e)) => a.as_ref() == &e.to_string(),
+        (Value::Str(a), Value::Int(e)) => a.as_ref() == e.to_string(),
         (Value::Str(a), Value::Float(e)) => {
             // Handle both "1" and "1.0" matching Float(1.0)
-            if a.as_ref() == &e.to_string() {
+            if a.as_ref() == e.to_string() {
                 return true;
             }
             if let Ok(parsed) = a.parse::<f64>() {
@@ -1302,7 +1294,7 @@ fn values_match_ctx(
                 false
             }
         }
-        (Value::Str(a), Value::Bool(e)) => a.as_ref() == &e.to_string(),
+        (Value::Str(a), Value::Bool(e)) => a.as_ref() == e.to_string(),
         // List matching stringified list: List(["marko"]) matches Str("[\"marko\"]")
         (Value::List(items), Value::Str(expected_str)) => {
             let format_float = |f: &f64| -> String {
@@ -1362,7 +1354,7 @@ fn values_match_ctx(
                             matches!(a.get("~key"), Some(Value::Str(k)) if k.as_ref() == exp_key);
                         let elem_ok = match a.get("~element") {
                             Some(Value::Node(nid)) => {
-                                vertex_id_to_name.get(nid).map_or(false, |n| n == exp_owner)
+                                vertex_id_to_name.get(nid).is_some_and(|n| n == exp_owner)
                             }
                             _ => false,
                         };
@@ -1439,7 +1431,7 @@ fn values_match_ctx(
                                     .map(|(eid, name)| (name.clone(), *eid))
                                     .collect(),
                             );
-                            a.get(k).map_or(false, |actual_val| {
+                            a.get(k).is_some_and(|actual_val| {
                                 values_match_ctx(
                                     actual_val,
                                     &exp_val,
@@ -1507,7 +1499,7 @@ fn values_match_ctx(
                         if let Ok(id) = a_inner.parse::<u64>() {
                             vertex_id_to_name
                                 .get(&NodeId(id))
-                                .map_or(false, |name| name == e_inner)
+                                .is_some_and(|name| name == e_inner)
                         } else {
                             false
                         }
@@ -1518,7 +1510,7 @@ fn values_match_ctx(
                         if let Ok(id) = a_inner.parse::<u64>() {
                             edge_id_to_name
                                 .get(&EdgeId(id))
-                                .map_or(false, |name| name == e_inner)
+                                .is_some_and(|name| name == e_inner)
                         } else {
                             false
                         }
