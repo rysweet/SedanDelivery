@@ -1,9 +1,9 @@
 //! CREATE operator implementation.
 
 use indexmap::IndexMap;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
-use crate::ast::Direction;
+use crate::ast::{Direction, Expr};
 use crate::error::{ExecutionError, GqlError};
 use crate::planner::Operator;
 use crate::storage::NodeId;
@@ -11,6 +11,140 @@ use crate::types::Value;
 
 use crate::executor::engine::helpers::{eval_prop_map, inject_parameters, undefined_var};
 use crate::executor::engine::{ExecContext, QueryExecutor, Row};
+
+struct PendingCreateNode {
+    alias: Option<String>,
+    labels: Vec<String>,
+    non_null_prop_keys: Vec<String>,
+    props: IndexMap<String, Value>,
+}
+
+struct PendingCreateEdge {
+    alias: Option<String>,
+    non_null_prop_keys: Vec<String>,
+    src: NodeId,
+    dst: NodeId,
+    rel_type: String,
+    props: IndexMap<String, Value>,
+}
+
+fn expr_references_any_alias(expr: &Expr, aliases: &HashSet<String>) -> bool {
+    match expr {
+        Expr::Variable(id) => aliases.contains(id.0.as_str()),
+        Expr::Property(obj, key) => {
+            let _ = key;
+            expr_references_any_alias(obj, aliases)
+        }
+        Expr::BinaryOp { left, right, .. } => {
+            expr_references_any_alias(left, aliases) || expr_references_any_alias(right, aliases)
+        }
+        Expr::UnaryOp { expr, .. }
+        | Expr::IsNull(expr)
+        | Expr::IsNotNull(expr)
+        | Expr::HasLabel(expr, _) => expr_references_any_alias(expr, aliases),
+        Expr::FunctionCall { args, .. } | Expr::List(args) => args
+            .iter()
+            .any(|arg| expr_references_any_alias(arg, aliases)),
+        Expr::MapLiteral(entries) => entries
+            .iter()
+            .any(|(_, value)| expr_references_any_alias(value, aliases)),
+        Expr::Case {
+            subject,
+            alternatives,
+            default,
+        } => {
+            subject
+                .as_deref()
+                .is_some_and(|expr| expr_references_any_alias(expr, aliases))
+                || alternatives.iter().any(|(when, then)| {
+                    expr_references_any_alias(when, aliases)
+                        || expr_references_any_alias(then, aliases)
+                })
+                || default
+                    .as_deref()
+                    .is_some_and(|expr| expr_references_any_alias(expr, aliases))
+        }
+        Expr::Subscript(list, index) => {
+            expr_references_any_alias(list, aliases) || expr_references_any_alias(index, aliases)
+        }
+        Expr::Slice(list, start, end) => {
+            expr_references_any_alias(list, aliases)
+                || start
+                    .as_deref()
+                    .is_some_and(|expr| expr_references_any_alias(expr, aliases))
+                || end
+                    .as_deref()
+                    .is_some_and(|expr| expr_references_any_alias(expr, aliases))
+        }
+        Expr::ListComp {
+            variable,
+            list,
+            filter,
+            map,
+        } => {
+            if expr_references_any_alias(list, aliases) {
+                return true;
+            }
+            let scoped_aliases: HashSet<String> = aliases
+                .iter()
+                .filter(|alias| alias.as_str() != variable.0.as_str())
+                .cloned()
+                .collect();
+            filter
+                .as_deref()
+                .is_some_and(|expr| expr_references_any_alias(expr, &scoped_aliases))
+                || expr_references_any_alias(map, &scoped_aliases)
+        }
+        Expr::Reduce {
+            accumulator,
+            initial,
+            variable,
+            list,
+            expression,
+        } => {
+            if expr_references_any_alias(initial, aliases)
+                || expr_references_any_alias(list, aliases)
+            {
+                return true;
+            }
+            let scoped_aliases: HashSet<String> = aliases
+                .iter()
+                .filter(|alias| {
+                    alias.as_str() != accumulator.0.as_str()
+                        && alias.as_str() != variable.0.as_str()
+                })
+                .cloned()
+                .collect();
+            expr_references_any_alias(expression, &scoped_aliases)
+        }
+        Expr::ExistsSubquery {
+            where_clause,
+            full_query,
+            ..
+        } => {
+            where_clause
+                .as_deref()
+                .is_some_and(|expr| expr_references_any_alias(expr, aliases))
+                || full_query.is_some()
+        }
+        Expr::PatternExpr(_) => !aliases.is_empty(),
+        Expr::Integer(_)
+        | Expr::Float(_)
+        | Expr::Str(_)
+        | Expr::Bool(_)
+        | Expr::Null
+        | Expr::Parameter(_) => false,
+    }
+}
+
+fn prop_exprs_reference_any_alias(
+    prop_exprs: &[(String, Expr)],
+    aliases: &HashSet<String>,
+) -> bool {
+    prop_exprs
+        .iter()
+        .any(|(_, expr)| expr_references_any_alias(expr, aliases))
+}
 
 impl<'a> QueryExecutor<'a> {
     pub(crate) fn exec_create(
@@ -40,6 +174,48 @@ impl<'a> QueryExecutor<'a> {
             for pattern in patterns {
                 // Create nodes first, mapping alias -> NodeId.
                 let mut alias_to_id: HashMap<String, NodeId> = HashMap::new();
+                let mut pending_nodes: Vec<PendingCreateNode> = Vec::new();
+                let mut pending_aliases: HashSet<String> = HashSet::new();
+
+                let mut flush_pending_nodes = |row: &mut Row,
+                                               alias_to_id: &mut HashMap<String, NodeId>,
+                                               pending_nodes: &mut Vec<PendingCreateNode>,
+                                               pending_aliases: &mut HashSet<String>|
+                 -> Result<(), GqlError> {
+                    if pending_nodes.is_empty() {
+                        return Ok(());
+                    }
+
+                    let pending = std::mem::take(pending_nodes);
+                    let mut batch = Vec::with_capacity(pending.len());
+                    let mut metadata = Vec::with_capacity(pending.len());
+                    for pending_node in pending {
+                        batch.push((pending_node.labels.clone(), pending_node.props));
+                        metadata.push((
+                            pending_node.alias,
+                            pending_node.labels,
+                            pending_node.non_null_prop_keys,
+                        ));
+                    }
+
+                    let created_node_ids = self.store.batch_create_nodes(cx.graph, batch)?;
+                    for (node_id, (alias, labels, non_null_prop_keys)) in
+                        created_node_ids.into_iter().zip(metadata.into_iter())
+                    {
+                        cx.stats.nodes_created += 1;
+                        cx.stats.nodes_created_ids.insert(node_id.0);
+                        cx.stats.labels_seen.extend(labels);
+                        for key in non_null_prop_keys {
+                            cx.stats.props_seen.insert((false, node_id.0, key));
+                        }
+                        if let Some(alias) = alias {
+                            alias_to_id.insert(alias.clone(), node_id);
+                            row.insert(alias, Value::Node(node_id));
+                        }
+                    }
+                    pending_aliases.clear();
+                    Ok(())
+                };
 
                 for (alias, labels, prop_exprs) in &pattern.nodes {
                     // If the alias is a user-defined variable (not anonymous)
@@ -47,11 +223,27 @@ impl<'a> QueryExecutor<'a> {
                     // instead of creating a new node.
                     if let Some(a) = alias {
                         if !a.0.starts_with("__anon") {
+                            if pending_aliases.contains(a.0.as_str()) {
+                                flush_pending_nodes(
+                                    &mut row,
+                                    &mut alias_to_id,
+                                    &mut pending_nodes,
+                                    &mut pending_aliases,
+                                )?;
+                            }
                             if let Some(Value::Node(existing_id)) = row.get(a.0.as_str()) {
                                 alias_to_id.insert(a.0.clone(), *existing_id);
                                 continue;
                             }
                         }
+                    }
+                    if prop_exprs_reference_any_alias(prop_exprs, &pending_aliases) {
+                        flush_pending_nodes(
+                            &mut row,
+                            &mut alias_to_id,
+                            &mut pending_nodes,
+                            &mut pending_aliases,
+                        )?;
                     }
                     let ctx = self.build_filter_ctx(cx.graph, &row)?;
                     let props_raw = eval_prop_map(cx.graph, self, prop_exprs, &row, &ctx)?;
@@ -63,25 +255,80 @@ impl<'a> QueryExecutor<'a> {
                         .collect();
                     let label_strings: Vec<String> =
                         labels.iter().map(|l| l.as_str().to_string()).collect();
-                    let non_null_prop_keys: Vec<String> = props.keys().cloned().collect();
-                    let node_id = self
-                        .store
-                        .create_node(cx.graph, label_strings.clone(), props)?;
-                    cx.stats.nodes_created += 1;
-                    cx.stats.nodes_created_ids.insert(node_id.0);
-                    cx.stats.labels_seen.extend(label_strings);
-                    for k in non_null_prop_keys {
-                        cx.stats.props_seen.insert((false, node_id.0, k));
-                    }
-                    if let Some(a) = alias {
-                        alias_to_id.insert(a.0.clone(), node_id);
-                        row.insert(a.0.clone(), Value::Node(node_id));
+                    if let Some(alias) = alias.as_ref().map(|a| a.0.clone()) {
+                        pending_aliases.insert(alias.clone());
+                        pending_nodes.push(PendingCreateNode {
+                            alias: Some(alias),
+                            labels: label_strings,
+                            non_null_prop_keys: props.keys().cloned().collect::<Vec<_>>(),
+                            props,
+                        });
+                    } else {
+                        pending_nodes.push(PendingCreateNode {
+                            alias: None,
+                            labels: label_strings,
+                            non_null_prop_keys: props.keys().cloned().collect::<Vec<_>>(),
+                            props,
+                        });
                     }
                 }
 
+                flush_pending_nodes(
+                    &mut row,
+                    &mut alias_to_id,
+                    &mut pending_nodes,
+                    &mut pending_aliases,
+                )?;
+
                 // Create edges using the alias map for src/dst lookup.
+                let mut pending_edges: Vec<PendingCreateEdge> = Vec::new();
+                let mut pending_edge_aliases: HashSet<String> = HashSet::new();
+                let mut flush_pending_edges = |row: &mut Row,
+                                               pending_edges: &mut Vec<PendingCreateEdge>,
+                                               pending_edge_aliases: &mut HashSet<String>|
+                 -> Result<(), GqlError> {
+                    if pending_edges.is_empty() {
+                        return Ok(());
+                    }
+
+                    let pending = std::mem::take(pending_edges);
+                    let mut batch = Vec::with_capacity(pending.len());
+                    let mut metadata = Vec::with_capacity(pending.len());
+                    for pending_edge in pending {
+                        batch.push((
+                            pending_edge.src,
+                            pending_edge.dst,
+                            pending_edge.rel_type,
+                            pending_edge.props,
+                        ));
+                        metadata.push((pending_edge.alias, pending_edge.non_null_prop_keys));
+                    }
+
+                    let created_edge_ids = self.store.batch_create_edges(cx.graph, batch)?;
+                    for (edge_id, (alias, non_null_edge_keys)) in
+                        created_edge_ids.into_iter().zip(metadata.into_iter())
+                    {
+                        cx.stats.edges_created += 1;
+                        cx.stats.edges_created_ids.insert(edge_id.0);
+                        for key in non_null_edge_keys {
+                            cx.stats.props_seen.insert((true, edge_id.0, key));
+                        }
+                        if let Some(alias) = alias {
+                            row.insert(alias, Value::Edge(edge_id));
+                        }
+                    }
+                    pending_edge_aliases.clear();
+                    Ok(())
+                };
                 for (alias, src_alias, dst_alias, rel_type, direction, prop_exprs) in &pattern.edges
                 {
+                    if prop_exprs_reference_any_alias(prop_exprs, &pending_edge_aliases) {
+                        flush_pending_edges(
+                            &mut row,
+                            &mut pending_edges,
+                            &mut pending_edge_aliases,
+                        )?;
+                    }
                     let ctx = self.build_filter_ctx(cx.graph, &row)?;
                     // Filter out null-valued properties (same as for nodes).
                     let props: IndexMap<String, Value> =
@@ -125,27 +372,21 @@ impl<'a> QueryExecutor<'a> {
                         _ => (src_id, dst_id),
                     };
 
-                    let non_null_edge_keys: Vec<String> = props
-                        .iter()
-                        .filter(|(_, v)| !v.is_null())
-                        .map(|(k, _)| k.clone())
-                        .collect();
-                    let edge_id = self.store.create_edge(
-                        cx.graph,
-                        actual_src,
-                        actual_dst,
-                        rel_type.as_str().to_string(),
+                    let alias = alias.as_ref().map(|a| a.0.clone());
+                    if let Some(alias_name) = alias.as_ref() {
+                        pending_edge_aliases.insert(alias_name.clone());
+                    }
+                    pending_edges.push(PendingCreateEdge {
+                        alias,
+                        non_null_prop_keys: props.keys().cloned().collect::<Vec<_>>(),
+                        src: actual_src,
+                        dst: actual_dst,
+                        rel_type: rel_type.as_str().to_string(),
                         props,
-                    )?;
-                    cx.stats.edges_created += 1;
-                    cx.stats.edges_created_ids.insert(edge_id.0);
-                    for k in non_null_edge_keys {
-                        cx.stats.props_seen.insert((true, edge_id.0, k));
-                    }
-                    if let Some(a) = alias {
-                        row.insert(a.0.clone(), Value::Edge(edge_id));
-                    }
+                    });
                 }
+
+                flush_pending_edges(&mut row, &mut pending_edges, &mut pending_edge_aliases)?;
             }
             cx.budget.record_row();
             out.push(row);
@@ -422,6 +663,154 @@ mod tests {
         assert!(result.rows[0].contains_key("a"));
         assert!(result.rows[0].contains_key("b"));
         assert!(result.rows[0].contains_key("c"));
+    }
+
+    #[test]
+    fn create_reuses_pending_alias_in_same_pattern() {
+        use crate::ast::RelType;
+
+        let store = make_store();
+        let executor = QueryExecutor::new(&store);
+        let plan = Operator::Create {
+            patterns: vec![CreatePattern {
+                nodes: vec![
+                    (Some(Identifier::new("a")), vec![Label::new("P")], vec![]),
+                    (Some(Identifier::new("a")), vec![Label::new("P")], vec![]),
+                ],
+                edges: vec![(
+                    Some(Identifier::new("r")),
+                    Identifier::new("a"),
+                    Identifier::new("a"),
+                    RelType::new("SELF"),
+                    Direction::Outgoing,
+                    vec![],
+                )],
+            }],
+            child: None,
+        };
+
+        let mut budget = ExecutionBudget::unlimited();
+        let result = executor.execute("g", &plan, &mut budget).unwrap();
+
+        assert_eq!(
+            result.stats.nodes_created, 1,
+            "reusing the same alias in one CREATE pattern must not allocate two nodes"
+        );
+        assert_eq!(result.stats.edges_created, 1);
+
+        let a_id = match result.rows[0].get("a") {
+            Some(Value::Node(id)) => *id,
+            other => panic!("expected alias a to bind a node, got {other:?}"),
+        };
+        let edge_id = match result.rows[0].get("r") {
+            Some(Value::Edge(id)) => *id,
+            other => panic!("expected alias r to bind an edge, got {other:?}"),
+        };
+        let edge = store.get_edge("g", edge_id).unwrap().unwrap();
+        assert_eq!(edge.src, a_id);
+        assert_eq!(edge.dst, a_id);
+    }
+
+    #[test]
+    fn create_later_node_properties_can_reference_earlier_created_alias() {
+        let store = make_store();
+        let executor = QueryExecutor::new(&store);
+        let plan = Operator::Create {
+            patterns: vec![CreatePattern {
+                nodes: vec![
+                    (
+                        Some(Identifier::new("a")),
+                        vec![Label::new("Person")],
+                        vec![("name".to_string(), Expr::Str("Alice".into()))],
+                    ),
+                    (
+                        Some(Identifier::new("b")),
+                        vec![Label::new("Person")],
+                        vec![(
+                            "friend".to_string(),
+                            Expr::Property(
+                                Box::new(Expr::Variable(Identifier::new("a"))),
+                                "name".into(),
+                            ),
+                        )],
+                    ),
+                ],
+                edges: vec![],
+            }],
+            child: None,
+        };
+
+        let mut budget = ExecutionBudget::unlimited();
+        let result = executor.execute("g", &plan, &mut budget).unwrap();
+
+        assert_eq!(result.stats.nodes_created, 2);
+        let b_id = match result.rows[0].get("b") {
+            Some(Value::Node(id)) => *id,
+            other => panic!("expected alias b to bind a node, got {other:?}"),
+        };
+        let b_node = store.get_node("g", b_id).unwrap().unwrap();
+        assert_eq!(
+            b_node.properties.get("friend"),
+            Some(&Value::Str("Alice".into())),
+            "later CREATE node properties must see aliases created earlier in the same pattern"
+        );
+    }
+
+    #[test]
+    fn create_later_edge_properties_can_reference_earlier_created_alias() {
+        use crate::ast::RelType;
+
+        let store = make_store();
+        let executor = QueryExecutor::new(&store);
+        let plan = Operator::Create {
+            patterns: vec![CreatePattern {
+                nodes: vec![
+                    (Some(Identifier::new("a")), vec![Label::new("P")], vec![]),
+                    (Some(Identifier::new("b")), vec![Label::new("P")], vec![]),
+                    (Some(Identifier::new("c")), vec![Label::new("P")], vec![]),
+                ],
+                edges: vec![
+                    (
+                        Some(Identifier::new("r1")),
+                        Identifier::new("a"),
+                        Identifier::new("b"),
+                        RelType::new("KNOWS"),
+                        Direction::Outgoing,
+                        vec![("weight".to_string(), Expr::Integer(7))],
+                    ),
+                    (
+                        Some(Identifier::new("r2")),
+                        Identifier::new("b"),
+                        Identifier::new("c"),
+                        RelType::new("FOLLOWS"),
+                        Direction::Outgoing,
+                        vec![(
+                            "copied".to_string(),
+                            Expr::Property(
+                                Box::new(Expr::Variable(Identifier::new("r1"))),
+                                "weight".into(),
+                            ),
+                        )],
+                    ),
+                ],
+            }],
+            child: None,
+        };
+
+        let mut budget = ExecutionBudget::unlimited();
+        let result = executor.execute("g", &plan, &mut budget).unwrap();
+
+        assert_eq!(result.stats.edges_created, 2);
+        let r2_id = match result.rows[0].get("r2") {
+            Some(Value::Edge(id)) => *id,
+            other => panic!("expected alias r2 to bind an edge, got {other:?}"),
+        };
+        let r2 = store.get_edge("g", r2_id).unwrap().unwrap();
+        assert_eq!(
+            r2.properties.get("copied"),
+            Some(&Value::Int(7)),
+            "later CREATE edge properties must see aliases created earlier in the same pattern"
+        );
     }
 
     #[test]

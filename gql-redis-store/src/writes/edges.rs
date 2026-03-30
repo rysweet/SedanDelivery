@@ -15,7 +15,10 @@ use crate::lock::{BATCH_WRITE_MAX_RETRIES, BATCH_WRITE_RETRY_DELAY_MS, WRITE_LOC
 use crate::validation::validate_property_key;
 use crate::{LockedRedisConn, RedisGraphStore};
 
-use super::helpers::{batch_pipeline_chunk_size, clean_fanout_props, extract_injected_id};
+use super::helpers::{
+    batch_pipeline_chunk_size, clean_fanout_props, ensure_key_absent, extract_injected_id,
+    raise_sequence_floor,
+};
 
 fn validate_property_keys(properties: &IndexMap<String, Value>) -> Result<(), StorageError> {
     for key in properties.keys() {
@@ -43,7 +46,11 @@ impl RedisGraphStore {
         }
 
         let id = match extract_injected_id(&properties, "_sd2_eid")? {
-            Some(id) => id,
+            Some(id) => {
+                ensure_key_absent(conn.as_mut(), &self.kp(key_edge(graph, id)), "edge", id)?;
+                raise_sequence_floor(conn.as_mut(), &self.kp(key_edge_seq(graph)), id)?;
+                id
+            }
             None => {
                 let raw_id: i64 = redis::cmd("INCRBY")
                     .arg(self.kp(key_edge_seq(graph)))
@@ -360,12 +367,22 @@ impl RedisGraphStore {
                     unique_node_ids.insert(src.0);
                     unique_node_ids.insert(dst.0);
                 }
-                for (index, &nid) in unique_node_ids.iter().enumerate() {
-                    if index > 0 && index % 250 == 0 {
+                let unique_node_ids: Vec<NodeId> =
+                    unique_node_ids.into_iter().map(NodeId).collect();
+                let validation_chunk_size = batch_pipeline_chunk_size().min(250);
+                for (chunk_index, chunk) in
+                    unique_node_ids.chunks(validation_chunk_size).enumerate()
+                {
+                    if chunk_index > 0 {
                         conn.renew_lock()?;
                     }
-                    if self.read_node(conn.as_mut(), graph, nid)?.is_none() {
-                        return Err(StorageError::NodeNotFound { id: nid });
+                    let nodes = self.read_nodes_batch(conn, graph, chunk)?;
+                    if let Some((missing_index, _)) =
+                        nodes.iter().enumerate().find(|(_, node)| node.is_none())
+                    {
+                        return Err(StorageError::NodeNotFound {
+                            id: chunk[missing_index].0,
+                        });
                     }
                 }
 

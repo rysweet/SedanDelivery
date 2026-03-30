@@ -1,6 +1,7 @@
 // writes/helpers.rs -- Pure helper functions shared across write sub-modules.
 
 use indexmap::IndexMap;
+use redis::ConnectionLike;
 
 use gql_core::error::StorageError;
 use gql_core::types::Value;
@@ -41,8 +42,57 @@ pub(crate) fn clean_fanout_props(
     properties
 }
 
-/// Maximum number of items accepted by batch create helpers before the store
-/// refuses the request instead of monopolising the graph write lock.
+/// Ensure a Redis sequence key is at least `floor`.
+///
+/// FanoutStore can inject explicit `_sd2_id` / `_sd2_eid` values. When that
+/// happens, subsequent auto-ID allocation must start above the injected floor
+/// or later `INCRBY` calls can reuse an already-written ID.
+pub(crate) fn raise_sequence_floor(
+    conn: &mut dyn ConnectionLike,
+    seq_key: &str,
+    floor: u64,
+) -> Result<(), StorageError> {
+    let floor = i64::try_from(floor).map_err(|_| {
+        crate::record_backend_error();
+        StorageError::Backend {
+            msg: format!("sequence floor {floor} exceeds i64::MAX"),
+        }
+    })?;
+    let current: Option<i64> = redis::cmd("GET")
+        .arg(seq_key)
+        .query(conn)
+        .map_err(crate::backend_storage_error)?;
+    if current.unwrap_or(0) < floor {
+        redis::cmd("SET")
+            .arg(seq_key)
+            .arg(floor)
+            .query::<()>(conn)
+            .map_err(crate::backend_storage_error)?;
+    }
+    Ok(())
+}
+
+/// Reject an injected ID if the target Redis key already exists.
+pub(crate) fn ensure_key_absent(
+    conn: &mut dyn ConnectionLike,
+    key: &str,
+    entity: &str,
+    id: u64,
+) -> Result<(), StorageError> {
+    let exists: i64 = redis::cmd("EXISTS")
+        .arg(key)
+        .query(conn)
+        .map_err(crate::backend_storage_error)?;
+    if exists > 0 {
+        return Err(StorageError::ConstraintViolation {
+            msg: format!("injected {entity} ID {id} already exists"),
+        });
+    }
+    Ok(())
+}
+
+/// Maximum number of items streamed through each logical sub-batch of batch
+/// create helpers.
 pub(crate) fn max_batch_size() -> usize {
     static SIZE: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
     *SIZE.get_or_init(|| gql_core::config::parse_env_min("GQL_REDIS_MAX_BATCH_SIZE", 5000usize, 1))

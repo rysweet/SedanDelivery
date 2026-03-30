@@ -1,0 +1,120 @@
+scenario:
+  name: "Issue #1053 - Redis-backed CREATE and MERGE batching stays externally correct"
+  description: >
+    Verify from an external HTTP client perspective that gql-api backed by
+    Redis still returns correct visible results for a multi-pattern CREATE
+    mutation, alias-sensitive CREATE patterns, and duplicate-row MERGE after
+    the write-path batching refactor.
+  metadata:
+    tags: [cli, regression, api, redis, gql-api, batching, issue-1053]
+    priority: high
+  agents:
+    - name: cli-agent
+      type: cli
+      config: {}
+  steps:
+    - name: "Run Redis-backed gql-api batching smoke flow"
+      agent: cli-agent
+      action: execute
+      params:
+        command: bash
+        args:
+          - tests/qa/gadugi/issue-1053-redis-write-batching.sh
+      timeout: 360000
+
+    - name: "Confirm gql-api became healthy on the Redis-backed port"
+      agent: cli-agent
+      action: wait_for_output
+      params:
+        pattern: "API_HEALTH_OK"
+      timeout: 190000
+
+    - name: "Confirm the test graph was created"
+      agent: cli-agent
+      action: wait_for_output
+      params:
+        pattern: "GRAPH_CREATED"
+      timeout: 5000
+
+    - name: "Confirm multi-pattern CREATE returned the expected visible counts"
+      agent: cli-agent
+      action: wait_for_output
+      params:
+        pattern: "CREATE_MUTATION_OK"
+      timeout: 5000
+
+    - name: "Confirm duplicate-row MERGE collapsed to one visible node"
+      agent: cli-agent
+      action: wait_for_output
+      params:
+        pattern: "MERGE_MUTATION_OK"
+      timeout: 5000
+
+    - name: "Confirm same-pattern self-alias CREATE stayed correct"
+      agent: cli-agent
+      action: wait_for_output
+      params:
+        pattern: "SELF_ALIAS_CREATE_OK"
+      timeout: 5000
+
+    - name: "Confirm later edge properties could read earlier edge aliases"
+      agent: cli-agent
+      action: wait_for_output
+      params:
+        pattern: "EDGE_ALIAS_CREATE_OK"
+      timeout: 5000
+
+    - name: "Confirm graph stats show the expected total node and edge counts"
+      agent: cli-agent
+      action: wait_for_output
+      params:
+        pattern: "GRAPH_STATS_OK"
+      timeout: 5000
+
+    - name: "Confirm BatchPerson query count remained correct"
+      agent: cli-agent
+      action: wait_for_output
+      params:
+        pattern: "BATCH_NODE_COUNT_OK"
+      timeout: 5000
+
+    - name: "Confirm KNOWS edge query count remained correct"
+      agent: cli-agent
+      action: wait_for_output
+      params:
+        pattern: "EDGE_COUNT_OK"
+      timeout: 5000
+
+    - name: "Confirm MergeThing query count remained correct"
+      agent: cli-agent
+      action: wait_for_output
+      params:
+        pattern: "MERGE_NODE_COUNT_OK"
+      timeout: 5000
+
+    - name: "Confirm self-loop query count remained correct"
+      agent: cli-agent
+      action: wait_for_output
+      params:
+        pattern: "SELF_LOOP_COUNT_OK"
+      timeout: 5000
+
+    - name: "Confirm copied edge property remained externally visible"
+      agent: cli-agent
+      action: wait_for_output
+      params:
+        pattern: "EDGE_ALIAS_PROPERTY_OK"
+      timeout: 5000
+
+    - name: "Confirm the Redis-backed batching smoke flow finished cleanly"
+      agent: cli-agent
+      action: wait_for_output
+      params:
+        pattern: "QA_1053_CREATE_AND_MERGE_OK"
+      timeout: 5000
+
+    - name: "Confirm the scenario command exited with code 0"
+      agent: cli-agent
+      action: validate_exit_code
+      params:
+        text: "0"

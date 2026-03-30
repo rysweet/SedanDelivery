@@ -302,7 +302,7 @@ impl DerefMut for LockedRedisConn {
 /// - `GQL_REDIS_CONNECT_TIMEOUT_MS` — Redis TCP connect timeout (default 1000)
 /// - `GQL_REDIS_READ_TIMEOUT_MS` — Redis socket read timeout (default 5000)
 /// - `GQL_REDIS_WRITE_TIMEOUT_MS` — Redis socket write timeout (default 5000)
-/// - `GQL_REDIS_MAX_BATCH_SIZE` — refuse oversized batch node writes (default 5000)
+/// - `GQL_REDIS_MAX_BATCH_SIZE` — logical sub-batch size for large batch node writes (default 5000)
 /// - `GQL_REDIS_BATCH_PIPELINE_CHUNK_SIZE` — items per batch-write pipeline chunk (default 250)
 /// - `GQL_REDIS_MAX_DETACH_DELETE_EDGES` — refuse pathological supernode detach deletes (default 10000)
 ///
@@ -340,10 +340,10 @@ impl RedisGraphStore {
     /// `GQL_REDIS_WRITE_TIMEOUT_MS` (default 5000).
     /// Large batch and detach-delete guards are controlled by
     /// `GQL_REDIS_MAX_BATCH_SIZE`, `GQL_REDIS_BATCH_PIPELINE_CHUNK_SIZE`, and
-    /// `GQL_REDIS_MAX_DETACH_DELETE_EDGES`. `batch_create_nodes` still refuses
-    /// oversized requests at `GQL_REDIS_MAX_BATCH_SIZE`; `batch_create_edges`
-    /// validates the full request and streams Redis writes in smaller internal
-    /// pipeline chunks under one graph write lock.
+    /// `GQL_REDIS_MAX_DETACH_DELETE_EDGES`. `batch_create_nodes` and
+    /// `batch_create_edges` stream large requests through smaller internal
+    /// batches under one graph write lock instead of failing the whole request
+    /// once it crosses the pipeline-sized threshold.
     pub fn from_env() -> Result<Self, StorageError> {
         let prefix = env::var("GQL_REDIS_KEY_PREFIX").unwrap_or_default();
         let pool_size: u32 =
@@ -850,6 +850,61 @@ impl RedisGraphStore {
         }
     }
 
+    pub(crate) fn read_nodes_batch(
+        &self,
+        conn: &mut RedisConn,
+        graph: &str,
+        ids: &[NodeId],
+    ) -> Result<Vec<Option<NodeData>>, StorageError> {
+        if ids.is_empty() {
+            return Ok(vec![]);
+        }
+        let mut pipe = conn.pipeline();
+        for id in ids {
+            pipe.cmd("HMGET")
+                .arg(self.kp(key_node(graph, id.0)))
+                .arg("labels")
+                .arg("props");
+        }
+        let raw: Vec<Vec<Option<String>>> =
+            pipe.query(conn).map_err(crate::backend_storage_error)?;
+        let mut results = Vec::with_capacity(ids.len());
+        for (idx, fields) in raw.into_iter().enumerate() {
+            let id = ids[idx];
+            match (
+                &fields.first().and_then(|field| field.as_ref()),
+                &fields.get(1).and_then(|field| field.as_ref()),
+            ) {
+                (None, None) => results.push(None),
+                (Some(labels_json), Some(props_json)) => {
+                    let labels: Vec<String> = serde_json::from_str(labels_json).map_err(|e| {
+                        StorageError::Serialization {
+                            msg: format!("labels batch: {e}"),
+                        }
+                    })?;
+                    let properties = json_to_props(props_json)?;
+                    results.push(Some(NodeData {
+                        id,
+                        labels,
+                        properties,
+                    }));
+                }
+                _ => {
+                    tracing::error!(
+                        node_id = id.0,
+                        graph = graph,
+                        labels = ?fields.first().and_then(|field| field.as_ref()),
+                        props = ?fields.get(1).and_then(|field| field.as_ref()),
+                        "partial node data detected during batch read — treating entry as missing node to preserve sparse batch semantics"
+                    );
+                    record_backend_error();
+                    results.push(None);
+                }
+            }
+        }
+        Ok(results)
+    }
+
     /// Read an edge hash from Redis; returns `None` if the key is absent.
     pub(crate) fn read_edge(
         &self,
@@ -1055,6 +1110,14 @@ impl GraphStore for RedisGraphStore {
         properties: IndexMap<String, Value>,
     ) -> Result<NodeId, StorageError> {
         self.create_node_impl(graph, labels, properties)
+    }
+
+    fn batch_create_nodes(
+        &self,
+        graph: &str,
+        nodes: Vec<(Vec<String>, IndexMap<String, Value>)>,
+    ) -> Result<Vec<NodeId>, StorageError> {
+        RedisGraphStore::batch_create_nodes(self, graph, nodes)
     }
 
     fn create_edge(

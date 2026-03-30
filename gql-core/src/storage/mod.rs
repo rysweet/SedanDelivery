@@ -246,6 +246,23 @@ pub trait GraphStore: Send + Sync {
         properties: IndexMap<String, Value>,
     ) -> Result<NodeId, StorageError>;
 
+    /// Batch-create multiple nodes and return the allocated IDs in input order.
+    ///
+    /// Backends with efficient batched write paths should override this. The
+    /// default implementation preserves correctness by delegating to
+    /// [`GraphStore::create_node`] one node at a time.
+    fn batch_create_nodes(
+        &self,
+        graph: &str,
+        nodes: Vec<(Vec<String>, IndexMap<String, Value>)>,
+    ) -> Result<Vec<NodeId>, StorageError> {
+        let mut created = Vec::with_capacity(nodes.len());
+        for (labels, properties) in nodes {
+            created.push(self.create_node(graph, labels, properties)?);
+        }
+        Ok(created)
+    }
+
     fn create_edge(
         &self,
         graph: &str,

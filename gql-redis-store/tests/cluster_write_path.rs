@@ -1467,6 +1467,99 @@ fn ci15_read_entrypoints_validate_graph_existence() {
 }
 
 #[test]
+fn ci15b_batch_node_reads_use_cluster_safe_pipeline_wrapper() {
+    let helper_body = function_block(LIB_SRC, "pub(crate) fn read_nodes_batch");
+    assert!(
+        helper_body.contains("let mut pipe = conn.pipeline();"),
+        "read_nodes_batch must build pipelines through RedisConn::pipeline() so cluster reads use cluster_pipe()"
+    );
+    assert!(
+        !helper_body.contains("redis::pipe()"),
+        "read_nodes_batch must not use raw redis::pipe(), which is invalid for ClusterConnection"
+    );
+
+    let entry_body = function_block(READS_SRC, "pub(crate) fn get_nodes_batch_impl");
+    assert!(
+        entry_body.contains("self.read_nodes_batch(&mut conn, graph, ids)"),
+        "get_nodes_batch_impl should delegate to read_nodes_batch on the concrete RedisConn so the cluster-safe pipeline wrapper is preserved"
+    );
+
+    let edge_body = function_block(EDGES_SRC, "pub fn batch_create_edges");
+    assert!(
+        edge_body.contains("self.read_nodes_batch(conn, graph, chunk)?"),
+        "batch_create_edges must validate endpoint existence through the shared locked batch-read helper"
+    );
+}
+
+#[test]
+fn ci15c_batch_edge_validation_keeps_lock_renew_chunks_bounded() {
+    let edge_body = function_block(EDGES_SRC, "pub fn batch_create_edges");
+    assert!(
+        edge_body.contains("let validation_chunk_size = batch_pipeline_chunk_size().min(250);"),
+        "batch_create_edges must cap endpoint-validation chunks at 250 IDs so lock renewal cadence cannot silently stretch with larger pipeline chunks"
+    );
+    assert!(
+        edge_body.contains(".chunks(validation_chunk_size)"),
+        "batch_create_edges must validate endpoint existence in bounded chunks tied to validation_chunk_size"
+    );
+}
+
+#[test]
+fn ci15d_batch_create_nodes_streams_large_requests_in_internal_sub_batches() {
+    let node_body = function_block(NODES_SRC, "pub fn batch_create_nodes");
+    assert!(
+        !node_body.contains("batch size {} exceeds GQL_REDIS_MAX_BATCH_SIZE={}"),
+        "batch_create_nodes must not hard-fail large logical batches now that executor-side batching can legitimately exceed the Redis sub-batch size"
+    );
+    assert!(
+        node_body.contains("let logical_batch_size = max_batch_size();"),
+        "batch_create_nodes must derive an internal logical sub-batch size from GQL_REDIS_MAX_BATCH_SIZE"
+    );
+    assert!(
+        node_body.contains("node_iter.by_ref().take(logical_batch_size).collect()"),
+        "batch_create_nodes must stream large requests through max-sized logical sub-batches under one lock"
+    );
+}
+
+#[test]
+fn ci15e_batch_node_reads_treat_partial_hashes_as_missing_entries() {
+    let helper_body = function_block(LIB_SRC, "pub(crate) fn read_nodes_batch");
+    assert!(
+        helper_body.contains("partial node data detected during batch read"),
+        "read_nodes_batch must log partial node hashes as explicit corruption telemetry"
+    );
+    assert!(
+        helper_body.contains("record_backend_error();"),
+        "read_nodes_batch must increment backend error telemetry when it encounters a partial node hash"
+    );
+    assert!(
+        helper_body.contains("results.push(None);"),
+        "read_nodes_batch must preserve sparse batch-read semantics by treating partial node hashes as missing entries"
+    );
+}
+
+#[test]
+fn ci15f_batch_create_nodes_preserves_injected_sd2_ids() {
+    let node_body = function_block(NODES_SRC, "pub fn batch_create_nodes");
+    assert!(
+        node_body.contains("extract_injected_id(&properties, \"_sd2_id\")"),
+        "batch_create_nodes must still inspect each logical batch entry for injected _sd2_id values"
+    );
+    assert!(
+        node_body.contains("raise_sequence_floor("),
+        "batch_create_nodes must raise node_seq to the maximum injected _sd2_id before reserving auto IDs"
+    );
+    assert!(
+        node_body.contains("ensure_key_absent("),
+        "batch_create_nodes must reject injected _sd2_id values that would overwrite an existing node"
+    );
+    assert!(
+        node_body.contains("let assigned_batch: Vec<_> = logical_batch"),
+        "batch_create_nodes must precompute per-entry assigned IDs so mixed injected/auto batches preserve input order"
+    );
+}
+
+#[test]
 fn ci26_replica_graph_misses_retry_on_primary() {
     let route_body = function_block(LIB_SRC, "pub(crate) fn route_read_for_graph");
     assert!(
@@ -1594,6 +1687,470 @@ fn ci17_missing_graph_reads_return_graph_not_found() {
         store.list_indexes(&graph),
         Err(StorageError::GraphNotFound { .. })
     ));
+}
+
+#[test]
+#[ignore = "requires a running Redis at REDIS_URL"]
+fn ci17b_batch_reads_treat_partial_node_hashes_as_missing() {
+    let store = standalone_store();
+    let graph = unique_graph("partial-node-batch");
+    let prefix = std::env::var("GQL_REDIS_KEY_PREFIX").unwrap_or_default();
+    let client =
+        Client::open(standalone_redis_url().as_str()).expect("redis client should initialize");
+    let mut conn = client
+        .get_connection()
+        .expect("redis connection should initialize");
+    let partial_id = 42u64;
+    let node_key = format!("{prefix}G:{{{graph}}}:node:{partial_id}");
+    let nodes_key = format!("{prefix}G:{{{graph}}}:nodes");
+
+    store.create_graph(&graph).expect("graph should be created");
+    redis::cmd("SADD")
+        .arg(&nodes_key)
+        .arg(partial_id.to_string())
+        .query::<()>(&mut conn)
+        .expect("partial node ID should be recorded in the graph manifest");
+    redis::cmd("HSET")
+        .arg(&node_key)
+        .arg("labels")
+        .arg(r#"["Ghost"]"#)
+        .query::<()>(&mut conn)
+        .expect("partial node hash should be created");
+
+    let batch = store
+        .get_nodes_batch(&graph, &[gql_core::storage::NodeId(partial_id)])
+        .expect("batch read should preserve sparse missing-node semantics");
+    assert_eq!(batch.len(), 1);
+    assert!(
+        batch[0].is_none(),
+        "partial node hashes should appear as missing entries to batch-read callers"
+    );
+
+    let src = store
+        .create_node(
+            &graph,
+            vec!["Person".to_string()],
+            props(&[("name", Value::Str("Alice".into()))]),
+        )
+        .expect("source node should be created");
+    assert!(
+        matches!(
+            store.batch_create_edges(
+                &graph,
+                vec![(
+                    src,
+                    gql_core::storage::NodeId(partial_id),
+                    "LINK".to_string(),
+                    IndexMap::new(),
+                )],
+            ),
+            Err(StorageError::NodeNotFound { id }) if id == partial_id
+        ),
+        "edge endpoint validation should still map partial node hashes to NodeNotFound"
+    );
+
+    store
+        .delete_graph(&graph)
+        .expect("delete_graph should clean the graph after partial-node testing");
+    let remaining: i64 = redis::cmd("EXISTS")
+        .arg(&node_key)
+        .query(&mut conn)
+        .expect("partial node hash existence check should succeed");
+    assert_eq!(
+        remaining, 0,
+        "delete_graph should remove partial node hashes that were recorded in the graph manifest"
+    );
+}
+
+#[test]
+#[ignore = "requires a running Redis at REDIS_URL"]
+fn ci17c_batch_create_nodes_streams_runtime_requests_above_max_batch_size() {
+    let store = standalone_store();
+    let graph = unique_graph("large-batch-create");
+    let configured_max_batch_size = std::env::var("GQL_REDIS_MAX_BATCH_SIZE")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(5000usize);
+    let request_size = configured_max_batch_size + 1;
+    let mid_index = configured_max_batch_size / 2;
+
+    store.create_graph(&graph).expect("graph should be created");
+    let nodes: Vec<_> = (0..request_size)
+        .map(|ordinal| {
+            (
+                vec!["Person".to_string()],
+                props(&[("ordinal", Value::Int(ordinal as i64))]),
+            )
+        })
+        .collect();
+    let created = store
+        .batch_create_nodes(&graph, nodes)
+        .expect("batch_create_nodes should stream requests larger than one logical sub-batch");
+    assert_eq!(
+        created.len(),
+        request_size,
+        "all requested nodes should be created even when the request crosses GQL_REDIS_MAX_BATCH_SIZE"
+    );
+
+    let samples = store
+        .get_nodes_batch(
+            &graph,
+            &[
+                created[0],
+                created[mid_index],
+                *created.last().expect("at least one node"),
+            ],
+        )
+        .expect("batch read should succeed after large batch_create_nodes");
+    assert_eq!(samples.len(), 3);
+    assert_eq!(
+        samples[0]
+            .as_ref()
+            .and_then(|node| node.properties.get("ordinal")),
+        Some(&Value::Int(0)),
+        "first streamed node should preserve its ordinal property"
+    );
+    assert_eq!(
+        samples[1]
+            .as_ref()
+            .and_then(|node| node.properties.get("ordinal")),
+        Some(&Value::Int(mid_index as i64)),
+        "middle streamed node should preserve its ordinal property"
+    );
+    assert_eq!(
+        samples[2]
+            .as_ref()
+            .and_then(|node| node.properties.get("ordinal")),
+        Some(&Value::Int((request_size - 1) as i64)),
+        "last streamed node should preserve its ordinal property"
+    );
+
+    store
+        .delete_graph(&graph)
+        .expect("delete_graph should clean the graph after large batch_create_nodes");
+}
+
+#[test]
+#[ignore = "requires a running Redis at REDIS_URL"]
+fn ci17d_batch_create_nodes_raises_node_seq_floor_for_injected_ids() {
+    let store = standalone_store();
+    let graph = unique_graph("batch-injected-node-seq");
+
+    store.create_graph(&graph).expect("graph should be created");
+    let created = store
+        .batch_create_nodes(
+            &graph,
+            vec![
+                (
+                    vec!["Person".to_string()],
+                    props(&[
+                        ("_sd2_id", Value::Int(2)),
+                        ("name", Value::Str("explicit".into())),
+                    ]),
+                ),
+                (
+                    vec!["Person".to_string()],
+                    props(&[("name", Value::Str("auto".into()))]),
+                ),
+            ],
+        )
+        .expect("mixed injected/auto batch_create_nodes should succeed");
+    assert_eq!(
+        created,
+        vec![gql_core::storage::NodeId(2), gql_core::storage::NodeId(3)],
+        "auto IDs must be allocated above the injected _sd2_id floor"
+    );
+
+    let auto_after_batch = store
+        .create_node(
+            &graph,
+            vec!["Person".to_string()],
+            props(&[("name", Value::Str("later".into()))]),
+        )
+        .expect("later auto create should succeed");
+    assert_eq!(
+        auto_after_batch,
+        gql_core::storage::NodeId(4),
+        "node_seq must advance past the maximum injected ID in the batch"
+    );
+
+    let nodes = store
+        .get_nodes_batch(&graph, &[created[0], created[1], auto_after_batch])
+        .expect("batch read should succeed after injected-ID batch create");
+    assert_eq!(
+        nodes[0]
+            .as_ref()
+            .and_then(|node| node.properties.get("name")),
+        Some(&Value::Str("explicit".into()))
+    );
+    assert_eq!(
+        nodes[1]
+            .as_ref()
+            .and_then(|node| node.properties.get("name")),
+        Some(&Value::Str("auto".into()))
+    );
+    assert_eq!(
+        nodes[2]
+            .as_ref()
+            .and_then(|node| node.properties.get("name")),
+        Some(&Value::Str("later".into()))
+    );
+
+    store
+        .delete_graph(&graph)
+        .expect("delete_graph should clean the graph after injected-ID batch_create_nodes");
+}
+
+#[test]
+#[ignore = "requires a running Redis at REDIS_URL"]
+fn ci17e_create_node_raises_node_seq_floor_for_injected_ids() {
+    let store = standalone_store();
+    let graph = unique_graph("single-injected-node-seq");
+
+    store.create_graph(&graph).expect("graph should be created");
+    let explicit = store
+        .create_node(
+            &graph,
+            vec!["Person".to_string()],
+            props(&[
+                ("_sd2_id", Value::Int(2)),
+                ("name", Value::Str("explicit".into())),
+            ]),
+        )
+        .expect("injected create_node should succeed");
+    assert_eq!(explicit, gql_core::storage::NodeId(2));
+
+    let auto = store
+        .create_node(
+            &graph,
+            vec!["Person".to_string()],
+            props(&[("name", Value::Str("auto".into()))]),
+        )
+        .expect("subsequent auto create_node should succeed");
+    assert_eq!(
+        auto,
+        gql_core::storage::NodeId(3),
+        "single injected create must advance node_seq so later auto IDs do not collide"
+    );
+
+    store
+        .delete_graph(&graph)
+        .expect("delete_graph should clean the graph after injected create_node");
+}
+
+#[test]
+#[ignore = "requires a running Redis at REDIS_URL"]
+fn ci17f_create_edge_raises_edge_seq_floor_for_injected_ids() {
+    let store = standalone_store();
+    let graph = unique_graph("single-injected-edge-seq");
+
+    store.create_graph(&graph).expect("graph should be created");
+    let src = store
+        .create_node(
+            &graph,
+            vec!["Person".to_string()],
+            props(&[("name", Value::Str("Alice".into()))]),
+        )
+        .expect("source node should be created");
+    let dst = store
+        .create_node(
+            &graph,
+            vec!["Person".to_string()],
+            props(&[("name", Value::Str("Bob".into()))]),
+        )
+        .expect("destination node should be created");
+
+    let explicit = store
+        .create_edge(
+            &graph,
+            src,
+            dst,
+            "KNOWS".to_string(),
+            props(&[("_sd2_eid", Value::Int(2))]),
+        )
+        .expect("injected create_edge should succeed");
+    assert_eq!(explicit, gql_core::storage::EdgeId(2));
+
+    let auto = store
+        .create_edge(&graph, src, dst, "KNOWS".to_string(), IndexMap::new())
+        .expect("subsequent auto create_edge should succeed");
+    assert_eq!(
+        auto,
+        gql_core::storage::EdgeId(3),
+        "single injected create_edge must advance edge_seq so later auto IDs do not collide"
+    );
+
+    store
+        .delete_graph(&graph)
+        .expect("delete_graph should clean the graph after injected create_edge");
+}
+
+#[test]
+#[ignore = "requires a running Redis at REDIS_URL"]
+fn ci17g_large_batch_create_nodes_preserves_late_injected_ids_across_sub_batches() {
+    let store = standalone_store();
+    let graph = unique_graph("late-injected-node-seq");
+    let configured_max_batch_size = std::env::var("GQL_REDIS_MAX_BATCH_SIZE")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(5000usize);
+    let mid_index = configured_max_batch_size / 2;
+
+    store.create_graph(&graph).expect("graph should be created");
+    let mut nodes: Vec<_> = (0..configured_max_batch_size)
+        .map(|ordinal| {
+            (
+                vec!["Person".to_string()],
+                props(&[("ordinal", Value::Int(ordinal as i64))]),
+            )
+        })
+        .collect();
+    nodes.push((
+        vec!["Person".to_string()],
+        props(&[
+            ("_sd2_id", Value::Int(1)),
+            ("name", Value::Str("explicit".into())),
+        ]),
+    ));
+
+    let created = store
+        .batch_create_nodes(&graph, nodes)
+        .expect("late injected IDs should not collide with earlier auto-created sub-batches");
+    assert_eq!(created.len(), configured_max_batch_size + 1);
+    assert_eq!(
+        created[0],
+        gql_core::storage::NodeId(2),
+        "auto IDs in the first logical sub-batch must start above the request-wide injected floor"
+    );
+    assert_eq!(
+        created[configured_max_batch_size - 1],
+        gql_core::storage::NodeId((configured_max_batch_size + 1) as u64),
+        "the last auto-created node in the first logical sub-batch must keep its unique ID"
+    );
+    assert_eq!(
+        *created.last().expect("injected node should exist"),
+        gql_core::storage::NodeId(1),
+        "the later injected node must keep its explicit ID without overwriting earlier auto nodes"
+    );
+
+    let samples = store
+        .get_nodes_batch(
+            &graph,
+            &[
+                created[0],
+                created[mid_index],
+                created[configured_max_batch_size - 1],
+                *created.last().expect("injected node should exist"),
+            ],
+        )
+        .expect("batch read should succeed after late injected-ID batch_create_nodes");
+    assert_eq!(
+        samples[0]
+            .as_ref()
+            .and_then(|node| node.properties.get("ordinal")),
+        Some(&Value::Int(0))
+    );
+    assert_eq!(
+        samples[1]
+            .as_ref()
+            .and_then(|node| node.properties.get("ordinal")),
+        Some(&Value::Int(mid_index as i64))
+    );
+    assert_eq!(
+        samples[2]
+            .as_ref()
+            .and_then(|node| node.properties.get("ordinal")),
+        Some(&Value::Int((configured_max_batch_size - 1) as i64))
+    );
+    assert_eq!(
+        samples[3]
+            .as_ref()
+            .and_then(|node| node.properties.get("name")),
+        Some(&Value::Str("explicit".into()))
+    );
+
+    store
+        .delete_graph(&graph)
+        .expect("delete_graph should clean the graph after late injected-ID batch_create_nodes");
+}
+
+#[test]
+#[ignore = "requires a running Redis at REDIS_URL"]
+fn ci17h_create_node_rejects_injected_existing_id() {
+    let store = standalone_store();
+    let graph = unique_graph("existing-injected-node-id");
+
+    store.create_graph(&graph).expect("graph should be created");
+    let existing = store
+        .create_node(
+            &graph,
+            vec!["Person".to_string()],
+            props(&[("name", Value::Str("existing".into()))]),
+        )
+        .expect("seed node should be created");
+    assert_eq!(existing, gql_core::storage::NodeId(1));
+    assert!(
+        matches!(
+            store.create_node(
+                &graph,
+                vec!["Person".to_string()],
+                props(&[
+                    ("_sd2_id", Value::Int(1)),
+                    ("name", Value::Str("duplicate".into())),
+                ]),
+            ),
+            Err(StorageError::ConstraintViolation { .. })
+        ),
+        "injected node IDs must not overwrite an existing node hash"
+    );
+
+    store
+        .delete_graph(&graph)
+        .expect("delete_graph should clean the graph after injected node collision test");
+}
+
+#[test]
+#[ignore = "requires a running Redis at REDIS_URL"]
+fn ci17i_create_edge_rejects_injected_existing_id() {
+    let store = standalone_store();
+    let graph = unique_graph("existing-injected-edge-id");
+
+    store.create_graph(&graph).expect("graph should be created");
+    let src = store
+        .create_node(
+            &graph,
+            vec!["Person".to_string()],
+            props(&[("name", Value::Str("Alice".into()))]),
+        )
+        .expect("source node should be created");
+    let dst = store
+        .create_node(
+            &graph,
+            vec!["Person".to_string()],
+            props(&[("name", Value::Str("Bob".into()))]),
+        )
+        .expect("destination node should be created");
+    let existing = store
+        .create_edge(&graph, src, dst, "KNOWS".to_string(), IndexMap::new())
+        .expect("seed edge should be created");
+    assert_eq!(existing, gql_core::storage::EdgeId(1));
+    assert!(
+        matches!(
+            store.create_edge(
+                &graph,
+                src,
+                dst,
+                "KNOWS".to_string(),
+                props(&[("_sd2_eid", Value::Int(1))]),
+            ),
+            Err(StorageError::ConstraintViolation { .. })
+        ),
+        "injected edge IDs must not overwrite an existing edge hash"
+    );
+
+    store
+        .delete_graph(&graph)
+        .expect("delete_graph should clean the graph after injected edge collision test");
 }
 
 #[test]

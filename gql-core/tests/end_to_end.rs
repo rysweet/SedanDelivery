@@ -303,6 +303,31 @@ fn test_create_query() {
     );
 }
 
+#[test]
+fn test_create_query_allows_later_edge_properties_to_read_earlier_edge_aliases() {
+    let store = make_store();
+    let query = parse_query(
+        "CREATE (x:AliasEdge {name:\"x\"})-[r1:LINK {weight:7}]->(y:AliasEdge {name:\"y\"})-[r2:COPY {copied:r1.weight}]->(z:AliasEdge {name:\"z\"})",
+    )
+    .unwrap();
+    let plan = QueryPlanner::new(&store, "test").plan(&query).unwrap();
+
+    let executor = QueryExecutor::new(&store);
+    let mut budget = unlimited();
+    let result = executor.execute("test", &plan, &mut budget).unwrap();
+
+    assert_eq!(result.stats.nodes_created, 3);
+    assert_eq!(result.stats.edges_created, 2);
+
+    let edge_ids = store.all_edge_ids("test").unwrap();
+    let copied_values: Vec<_> = edge_ids
+        .iter()
+        .filter_map(|eid| store.get_edge("test", *eid).unwrap())
+        .filter_map(|edge| edge.properties.get("copied").cloned())
+        .collect();
+    assert_eq!(copied_values, vec![Value::Int(7)]);
+}
+
 // ── Test 4: WHERE filtering ───────────────────────────────────────────────────
 
 #[test]

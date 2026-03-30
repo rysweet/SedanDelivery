@@ -282,44 +282,7 @@ impl RedisGraphStore {
         ids: &[NodeId],
     ) -> Result<Vec<Option<NodeData>>, StorageError> {
         let mut conn = self.route_read_for_graph(graph)?;
-        if ids.is_empty() {
-            return Ok(vec![]);
-        }
-        let mut results = Vec::with_capacity(ids.len());
-        // Pipeline all HMGET commands.
-        let mut pipe = conn.pipeline();
-        for id in ids {
-            pipe.cmd("HMGET")
-                .arg(self.kp(key_node(graph, id.0)))
-                .arg("labels")
-                .arg("props");
-        }
-        let raw: Vec<Vec<Option<String>>> = pipe
-            .query(&mut conn)
-            .map_err(crate::backend_storage_error)?;
-        for (idx, fields) in raw.into_iter().enumerate() {
-            let id = ids[idx];
-            match (
-                &fields.first().and_then(|f| f.as_ref()),
-                &fields.get(1).and_then(|f| f.as_ref()),
-            ) {
-                (Some(labels_json), Some(props_json)) => {
-                    let labels: Vec<String> = serde_json::from_str(labels_json).map_err(|e| {
-                        StorageError::Serialization {
-                            msg: format!("labels batch: {e}"),
-                        }
-                    })?;
-                    let properties = json_to_props(props_json)?;
-                    results.push(Some(NodeData {
-                        id,
-                        labels,
-                        properties,
-                    }));
-                }
-                _ => results.push(None),
-            }
-        }
-        Ok(results)
+        self.read_nodes_batch(&mut conn, graph, ids)
     }
 
     pub(crate) fn get_edges_batch_impl(

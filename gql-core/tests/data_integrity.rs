@@ -227,6 +227,42 @@ fn test_merge_same_pattern_idempotent() {
     );
 }
 
+/// Duplicate MERGE rows in one query must not create duplicate nodes.
+#[test]
+fn test_merge_duplicate_rows_same_query_is_idempotent() {
+    let store = make_store();
+    run_query(
+        &store,
+        "UNWIND [1, 2] AS i MERGE (n:Thing {key:'x'}) RETURN i",
+    );
+    let rows = run_query(&store, "MATCH (n:Thing {key:'x'}) RETURN count(n) AS c");
+    assert_eq!(
+        rows[0]["c"],
+        Value::Int(1),
+        "duplicate MERGE rows in one query must create only one node"
+    );
+}
+
+/// Duplicate MERGE rows with ON CREATE / ON MATCH must still observe earlier row writes.
+#[test]
+fn test_merge_duplicate_rows_with_actions_preserve_row_order_semantics() {
+    let store = make_store();
+    run_query(
+        &store,
+        "UNWIND [1, 2] AS i \
+         MERGE (n:Thing {key:'x'}) \
+         ON CREATE SET n.created = i \
+         ON MATCH SET n.matched = i \
+         RETURN i",
+    );
+    let rows = run_query(
+        &store,
+        "MATCH (n:Thing {key:'x'}) RETURN n.created AS created, n.matched AS matched",
+    );
+    assert_eq!(rows[0]["created"], Value::Int(1));
+    assert_eq!(rows[0]["matched"], Value::Int(2));
+}
+
 // ── §2.3 Property Round-Trips ─────────────────────────────────────────────────
 
 /// Integer and float properties survive a write→read round-trip.
