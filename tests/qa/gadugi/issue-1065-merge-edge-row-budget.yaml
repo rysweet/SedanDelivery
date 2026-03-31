@@ -1,0 +1,144 @@
+# Canonical gadugi scenario for Issue #1065 — edge MERGE row budget regression.
+#
+# This validates the public gql-api contract locally without Redis:
+#   - gql-api starts with in-memory storage and a deliberately low row budget
+#   - MERGE creates 500 Resource nodes via the batch node MERGE path
+#   - UNWIND + MATCH + MERGE edge batch for 25 edges stays under the row cap
+#   - the created edges are observable through the public query endpoint
+#
+# With 500 nodes and batch=25, a Cartesian product explosion would produce
+# 500 × 500 × 25 = 6.25M rows — well above the 5000-row cap.
+
+scenario:
+  name: "Issue #1065 - edge MERGE stays under row budget after batch writes"
+  description: >
+    Verifies from an API client perspective that gql-api running locally with
+    in-memory storage and GQL_QUERY_MAX_ROWS=5000 can still resolve a
+    parameterized UNWIND + MATCH + MERGE edge batch without tripping the
+    intermediate-row budget after nodes were created via the batch MERGE path.
+  metadata:
+    tags: [cli, api, cypher, regression, issue-1065]
+    priority: critical
+    linked_docs:
+      - docs/graph-visualizer/api-reference.md
+  agents:
+    - name: cli-agent
+      type: cli
+      config: {}
+
+  steps:
+    - name: "A1 — Run local edge MERGE row-budget regression contract"
+      agent: cli-agent
+      action: execute
+      params:
+        command: bash
+        args:
+          - -lc
+          - >
+            set -euo pipefail;
+            PORT=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()');
+            GRAPH_NAME="issue_1065_edge_merge";
+            API_LOG=$(mktemp);
+            HEALTH_BODY=$(mktemp);
+            MERGE_NODES_BODY=$(mktemp);
+            MERGE_NODES_REQ=$(mktemp);
+            MERGE_EDGES_BODY=$(mktemp);
+            MERGE_EDGES_REQ=$(mktemp);
+            COUNT_BODY=$(mktemp);
+            COUNT_REQ=$(mktemp);
+            cleanup() {
+              if [[ -n "${API_PID:-}" ]]; then
+                kill "${API_PID}" >/dev/null 2>&1 || true;
+                wait "${API_PID}" 2>/dev/null || true;
+              fi;
+              rm -f "${API_LOG}" "${HEALTH_BODY}" "${MERGE_NODES_BODY}" "${MERGE_NODES_REQ}" "${MERGE_EDGES_BODY}" "${MERGE_EDGES_REQ}" "${COUNT_BODY}" "${COUNT_REQ}";
+            };
+            trap cleanup EXIT;
+            env
+            -u GQL_REDIS_URL
+            -u GQL_REDIS_CLUSTER_NODES
+            -u ENVIRONMENT
+            -u GQL_API_TLS_CERT
+            -u GQL_API_TLS_KEY
+            -u GQL_API_ENTRA_TENANT_ID
+            -u GQL_API_ENTRA_CLIENT_ID
+            GQL_API_BIND_ADDR="127.0.0.1:${PORT}"
+            GQL_API_RATE_LIMIT_RPS=10000
+            GQL_QUERY_MAX_ROWS=5000
+            cargo run -p gql-api --quiet >"${API_LOG}" 2>&1 &
+            API_PID=$!;
+            for _ in $(seq 1 120); do
+              HEALTH_CODE=$(curl -s -o "${HEALTH_BODY}" -w '%{http_code}' "http://127.0.0.1:${PORT}/health" || true);
+              if [[ "${HEALTH_CODE}" == "200" ]]; then
+                break;
+              fi;
+              sleep 1;
+            done;
+            [[ "${HEALTH_CODE}" == "200" ]] || { echo "[FAIL] gql-api did not become healthy" >&2; cat "${API_LOG}" >&2; exit 1; };
+            echo "[PASS] gql-api started with low row cap";
+            GRAPH_CODE=$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'content-type: application/json' -d "{\"name\":\"${GRAPH_NAME}\"}" "http://127.0.0.1:${PORT}/graphs");
+            [[ "${GRAPH_CODE}" == "201" ]] || { echo "[FAIL] creating graph returned ${GRAPH_CODE}" >&2; cat "${API_LOG}" >&2; exit 1; };
+            python3 -c '
+            import json, sys
+            nodes = [{"id": f"r{i}", "node_type": "TypeA"} for i in range(500)]
+            json.dump({
+              "cypher": "UNWIND $nodes AS node MERGE (n:Resource {id: node.id, node_type: node.node_type}) SET n.updated = true",
+              "params": {"nodes": nodes}
+            }, open(sys.argv[1], "w"))
+            ' "${MERGE_NODES_REQ}";
+            MERGE_NODES_CODE=$(curl -s -o "${MERGE_NODES_BODY}" -w '%{http_code}' -X POST -H 'content-type: application/json' --data @"${MERGE_NODES_REQ}" "http://127.0.0.1:${PORT}/graphs/${GRAPH_NAME}/mutate");
+            [[ "${MERGE_NODES_CODE}" == "200" ]] || { echo "[FAIL] node MERGE returned ${MERGE_NODES_CODE}" >&2; cat "${MERGE_NODES_BODY}" >&2; cat "${API_LOG}" >&2; exit 1; };
+            python3 -c 'import json, sys; body = json.load(open(sys.argv[1])); assert body["nodesCreated"] == 500, f"expected 500 nodes, got {body}"' "${MERGE_NODES_BODY}";
+            echo "[PASS] batch MERGE created 500 Resource nodes";
+            python3 -c '
+            import json, sys
+            edges = [{"sourceId": f"r{i*2}", "targetId": f"r{i*2+1}", "nodeType": "TypeA", "edgeId": f"e{i}"} for i in range(25)]
+            json.dump({
+              "cypher": "UNWIND $edges AS edge MATCH (a:Resource {id: edge.sourceId, node_type: edge.nodeType}), (b:Resource {id: edge.targetId, node_type: edge.nodeType}) MERGE (a)-[e:CONNECTS {edge_id: edge.edgeId}]->(b) SET e.created = true",
+              "params": {"edges": edges}
+            }, open(sys.argv[1], "w"))
+            ' "${MERGE_EDGES_REQ}";
+            MERGE_EDGES_CODE=$(curl -s -o "${MERGE_EDGES_BODY}" -w '%{http_code}' -X POST -H 'content-type: application/json' --data @"${MERGE_EDGES_REQ}" "http://127.0.0.1:${PORT}/graphs/${GRAPH_NAME}/mutate");
+            [[ "${MERGE_EDGES_CODE}" == "200" ]] || { echo "[FAIL] edge MERGE returned ${MERGE_EDGES_CODE}" >&2; cat "${MERGE_EDGES_BODY}" >&2; cat "${API_LOG}" >&2; exit 1; };
+            python3 -c 'import json, sys; body = json.load(open(sys.argv[1])); assert body["edgesCreated"] == 25, f"expected 25 edges, got {body}"' "${MERGE_EDGES_BODY}";
+            echo "[PASS] edge MERGE batch stayed under row cap (25 edges with 500 nodes)";
+            python3 -c 'import json, sys; json.dump({"cypher": "MATCH (:Resource)-[r:CONNECTS]->(:Resource) RETURN count(r)"}, open(sys.argv[1], "w"))' "${COUNT_REQ}";
+            COUNT_CODE=$(curl -s -o "${COUNT_BODY}" -w '%{http_code}' -X POST -H 'content-type: application/json' --data @"${COUNT_REQ}" "http://127.0.0.1:${PORT}/graphs/${GRAPH_NAME}/query");
+            [[ "${COUNT_CODE}" == "200" ]] || { echo "[FAIL] edge count query returned ${COUNT_CODE}" >&2; cat "${COUNT_BODY}" >&2; exit 1; };
+            python3 -c 'import json, sys; body = json.load(open(sys.argv[1])); assert body["rows"] == [{"count(r)": 25}], body' "${COUNT_BODY}";
+            echo "[PASS] 25 CONNECTS edges visible via query API";
+      timeout: 300000
+
+    - name: "A2 — Confirm gql-api started"
+      agent: cli-agent
+      action: wait_for_output
+      params:
+        pattern: "\\[PASS\\]\\s+gql-api started with low row cap"
+      timeout: 5000
+
+    - name: "A3 — Confirm batch MERGE created 500 Resource nodes"
+      agent: cli-agent
+      action: wait_for_output
+      params:
+        pattern: "\\[PASS\\]\\s+batch MERGE created 500 Resource nodes"
+      timeout: 5000
+
+    - name: "A4 — Confirm edge MERGE batch stayed under row cap"
+      agent: cli-agent
+      action: wait_for_output
+      params:
+        pattern: "\\[PASS\\]\\s+edge MERGE batch stayed under row cap"
+      timeout: 5000
+
+    - name: "A5 — Confirm edges are visible through query API"
+      agent: cli-agent
+      action: wait_for_output
+      params:
+        pattern: "\\[PASS\\]\\s+25 CONNECTS edges visible via query API"
+      timeout: 5000
+
+    - name: "A6 — Confirm validator exited cleanly"
+      agent: cli-agent
+      action: validate_exit_code
+      params:
+        text: "0"

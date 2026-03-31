@@ -2448,3 +2448,167 @@ fn test_shortest_path_self_loop() {
         "self-loop path has length 1"
     );
 }
+
+// ── Regression: issue #1065 — UNWIND + MATCH + MERGE must stay selective ──────
+
+/// Regression test for #1065: UNWIND $edges AS edge / MATCH two node patterns
+/// with property filters referencing the unwound map / MERGE edge — should NOT
+/// produce a Cartesian product of all nodes.
+///
+/// With 100 Resource nodes and 10 edges, a selective plan produces ~10 rows.
+/// A Cartesian product would produce 100 × 100 × 10 = 100 000 rows, blowing
+/// any reasonable budget.
+#[test]
+fn regression_1065_unwind_match_merge_edge_selective() {
+    let store = make_store();
+
+    // Create 100 Resource nodes with unique `id` and shared `node_type`.
+    for i in 0..100u32 {
+        let mut props = IndexMap::new();
+        props.insert("id".to_string(), Value::Str(format!("r{i}").into()));
+        props.insert("node_type".to_string(), Value::Str("TypeA".into()));
+        store
+            .create_node("test", vec!["Resource".to_string()], props)
+            .unwrap();
+    }
+
+    // 10 edges, each connecting a distinct pair of existing resources.
+    let edges: Vec<Value> = (0..10u32)
+        .map(|i| {
+            Value::Map(
+                vec![
+                    (
+                        "sourceId".to_string().into_boxed_str(),
+                        Value::Str(format!("r{}", i * 2).into()),
+                    ),
+                    (
+                        "targetId".to_string().into_boxed_str(),
+                        Value::Str(format!("r{}", i * 2 + 1).into()),
+                    ),
+                    (
+                        "nodeType".to_string().into_boxed_str(),
+                        Value::Str("TypeA".into()),
+                    ),
+                    (
+                        "edgeId".to_string().into_boxed_str(),
+                        Value::Str(format!("e{i}").into()),
+                    ),
+                ]
+                .into_iter()
+                .collect(),
+            )
+        })
+        .collect();
+
+    let mut params = HashMap::new();
+    params.insert("edges".to_string(), Value::List(edges));
+
+    let q = parse_query(
+        "UNWIND $edges AS edge \
+         MATCH (a:Resource {id: edge.sourceId, node_type: edge.nodeType}), \
+               (b:Resource {id: edge.targetId, node_type: edge.nodeType}) \
+         MERGE (a)-[e:CONNECTS {edge_id: edge.edgeId}]->(b) \
+         RETURN a.id AS src, b.id AS dst",
+    )
+    .unwrap();
+
+    let registry = ProcedureRegistry::new();
+    let planner = QueryPlanner::with_context(&store, "test", &registry, &params);
+    let plan = planner.plan(&q).unwrap();
+
+    // Verify the plan uses IndexScan (not NodeScan) for selective lookup.
+    let plan_debug = format!("{plan:?}");
+    assert!(
+        plan_debug.contains("IndexScan"),
+        "plan should use IndexScan for correlated MATCH property lookups, got: {plan_debug}"
+    );
+
+    let executor = QueryExecutor::with_context(&store, &registry, params);
+    // Budget: 500 rows is generous for 10 selective lookups.
+    // A Cartesian product (100^2 × 10 = 100 000) would blow this.
+    let mut budget = ExecutionBudget::new(Duration::from_secs(30), 500);
+    let result = executor.execute("test", &plan, &mut budget).unwrap();
+
+    assert_eq!(result.rows.len(), 10, "should produce one row per edge");
+    assert_eq!(result.stats.edges_created, 10, "should create 10 new edges");
+
+    // Verify budget usage is sane — well under 500.
+    assert!(
+        budget.rows_produced() < 200,
+        "selective plan should use far fewer than 200 intermediate rows, got {}",
+        budget.rows_produced()
+    );
+}
+
+/// Same as above but with 1000 nodes — confirms row production stays O(edges),
+/// not O(nodes^2 * edges).
+#[test]
+fn regression_1065_scales_linearly_with_large_graph() {
+    let store = make_store();
+
+    for i in 0..1000u32 {
+        let mut props = IndexMap::new();
+        props.insert("id".to_string(), Value::Str(format!("r{i}").into()));
+        props.insert("node_type".to_string(), Value::Str("TypeA".into()));
+        store
+            .create_node("test", vec!["Resource".to_string()], props)
+            .unwrap();
+    }
+
+    let edges: Vec<Value> = (0..25u32)
+        .map(|i| {
+            Value::Map(
+                vec![
+                    (
+                        "sourceId".to_string().into_boxed_str(),
+                        Value::Str(format!("r{}", i * 2).into()),
+                    ),
+                    (
+                        "targetId".to_string().into_boxed_str(),
+                        Value::Str(format!("r{}", i * 2 + 1).into()),
+                    ),
+                    (
+                        "nodeType".to_string().into_boxed_str(),
+                        Value::Str("TypeA".into()),
+                    ),
+                    (
+                        "edgeId".to_string().into_boxed_str(),
+                        Value::Str(format!("e{i}").into()),
+                    ),
+                ]
+                .into_iter()
+                .collect(),
+            )
+        })
+        .collect();
+
+    let mut params = HashMap::new();
+    params.insert("edges".to_string(), Value::List(edges));
+
+    let q = parse_query(
+        "UNWIND $edges AS edge \
+         MATCH (a:Resource {id: edge.sourceId, node_type: edge.nodeType}), \
+               (b:Resource {id: edge.targetId, node_type: edge.nodeType}) \
+         MERGE (a)-[e:CONNECTS {edge_id: edge.edgeId}]->(b) \
+         RETURN a.id AS src, b.id AS dst",
+    )
+    .unwrap();
+
+    let registry = ProcedureRegistry::new();
+    let planner = QueryPlanner::with_context(&store, "test", &registry, &params);
+    let plan = planner.plan(&q).unwrap();
+
+    let executor = QueryExecutor::with_context(&store, &registry, params);
+    // With 1000 nodes, a Cartesian product would be 1000^2 * 25 = 25M rows.
+    // Selective should be ~25 rows with modest overhead.
+    let mut budget = ExecutionBudget::new(Duration::from_secs(30), 1000);
+    let result = executor.execute("test", &plan, &mut budget).unwrap();
+
+    assert_eq!(result.rows.len(), 25);
+    assert_eq!(result.stats.edges_created, 25);
+    assert!(
+        budget.rows_produced() < 500,
+        "with 1000 nodes and 25 edges, selective plan should use < 500 intermediate rows, got {}",
+        budget.rows_produced()
+    );
+}
