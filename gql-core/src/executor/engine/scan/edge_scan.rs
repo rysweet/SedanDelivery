@@ -1369,6 +1369,44 @@ mod tests {
     }
 
     #[test]
+    fn expand_undirected_self_loop_doubles_in_gremlin_mode() {
+        let store = make_store();
+        let a = store
+            .create_node("g", vec!["N".to_string()], IndexMap::new())
+            .unwrap();
+        store
+            .create_edge("g", a, a, "R".to_string(), IndexMap::new())
+            .unwrap();
+        let plan = Operator::Expand {
+            direction: Direction::Undirected,
+            rel_types: vec![RelType::new("R")],
+            src_alias: Identifier::new("a"),
+            rel_alias: Some(Identifier::new("r")),
+            dst_alias: Identifier::new("b"),
+            child: Box::new(Operator::NodeScan {
+                label: Some(Label::new("N")),
+                alias: Identifier::new("a"),
+            }),
+        };
+        let executor = QueryExecutor::new(&store).with_gremlin_mode();
+        let mut budget = ExecutionBudget::unlimited();
+        let mut stats = MutationStats::default();
+        let mut cx = ExecContext {
+            graph: "g",
+            budget: &mut budget,
+            outer_rows: &[],
+            stats: &mut stats,
+        };
+        let rows = executor.exec_expand(&mut cx, &plan).unwrap();
+        // Gremlin mode: self-loop appears twice (once per direction)
+        assert_eq!(
+            rows.len(),
+            2,
+            "Gremlin mode should produce 2 results for undirected self-loop"
+        );
+    }
+
+    #[test]
     fn gremlin_expand_undirected_orders_marko_neighbors_created_before_knows() {
         let store = make_store();
 

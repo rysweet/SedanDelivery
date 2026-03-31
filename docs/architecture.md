@@ -210,7 +210,10 @@ Backend selection at startup (`gql-redis-store::create_store`):
 
 When `GQL_REDIS_REPLICA_URL` is also set, read methods are routed to a separate replica pool (round-robin across replicas with `READONLY` command). Writes always go to the primary pool. This provides eventual-consistency read scaling for read-heavy workloads.
 
-`GraphStore::batch_create_edges` preserves input order and correctness even when a backend must internally stream Redis work in smaller pipeline chunks to satisfy backend-specific write limits.
+The `GraphStore` trait exposes batch APIs with default loop-based implementations that backends override for efficiency:
+
+- **Batch writes**: `batch_create_nodes` and `batch_create_edges` preserve input order and correctness even when a backend must internally stream Redis work in smaller pipeline chunks to satisfy backend-specific write limits. The Redis backend pipelines HSET/SADD commands in configurable chunks (`GQL_REDIS_BATCH_PIPELINE_CHUNK_SIZE`, default 250) with lock renewal between chunks.
+- **Batch reads**: `out_edges_by_type_batch` and `in_edges_by_type_batch` batch adjacency lookups across multiple source nodes. The executor groups Expand operations into chunks of 256 nodes (`EXPAND_BATCH_NODE_CHUNK_SIZE`) and issues a single pipelined SMEMBERS/SSCAN per chunk to the Redis backend.
 
 Redis key schema uses `{graphname}` hash tags for cluster slot affinity:
 ```

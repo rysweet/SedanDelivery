@@ -75,6 +75,7 @@ impl<'a> QueryExecutor<'a> {
         spec: MergeRelBatchSpec<'_>,
     ) -> Result<Vec<Row>, GqlError> {
         let type_str = spec.rel_type.as_str();
+        let type_owned = type_str.to_string();
         let mut pending_creates: Vec<(NodeId, NodeId, String, IndexMap<String, Value>)> =
             Vec::new();
         let mut pending_non_null_keys: Vec<Vec<String>> = Vec::new();
@@ -112,7 +113,7 @@ impl<'a> QueryExecutor<'a> {
                 } else {
                     real_dst
                 },
-                rel_type: type_str.to_string(),
+                rel_type: type_owned.clone(),
                 props_key: Self::merge_relationship_props_key(&prop_map),
             };
 
