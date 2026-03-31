@@ -162,13 +162,13 @@ impl<'a> QueryExecutor<'a> {
         // redistribute so that downstream steps (and cap()) see the full
         // accumulated set even if some rows are later filtered out.
         if self.gremlin_mode && !out.is_empty() {
-            let mut agg_merged: std::collections::HashMap<String, Vec<Value>> =
+            let mut agg_accumulated: std::collections::HashMap<String, Vec<Value>> =
                 std::collections::HashMap::new();
             for row in &out {
                 for (k, v) in row {
                     if k.starts_with("__gremlin_agg_") {
                         if let Value::List(items) = v {
-                            agg_merged
+                            agg_accumulated
                                 .entry(k.clone())
                                 .or_default()
                                 .extend(items.iter().cloned());
@@ -176,10 +176,14 @@ impl<'a> QueryExecutor<'a> {
                     }
                 }
             }
-            if !agg_merged.is_empty() {
+            if !agg_accumulated.is_empty() {
                 for row in &mut out {
-                    for (k, merged) in &agg_merged {
-                        row.insert(k.clone(), Value::List(merged.clone()));
+                    for (k, accumulated) in &agg_accumulated {
+                        if let Some(stored) = self.gremlin_side_effects.borrow().get(k).cloned() {
+                            row.insert(k.clone(), stored);
+                        } else {
+                            row.insert(k.clone(), Value::List(accumulated.clone()));
+                        }
                     }
                 }
             }

@@ -70,17 +70,24 @@ impl<'a> QueryExecutor<'a> {
                     let in_batches = self
                         .store
                         .in_edges_by_type_batch(cx.graph, node_chunk, &type_strs)?;
-                    for (out_entries, in_entries) in out_batches.iter_mut().zip(in_batches) {
+                    for ((&src_node, out_entries), in_entries) in node_chunk
+                        .iter()
+                        .zip(out_batches.iter_mut())
+                        .zip(in_batches)
+                    {
+                        let seen_out_edges: HashSet<EdgeId> =
+                            out_entries.iter().map(|entry| entry.edge_id).collect();
+                        let gremlin = self.gremlin_mode;
+                        out_entries.extend(in_entries.into_iter().filter(|entry| {
+                            // In Gremlin mode, self-loop edges (neighbor == src)
+                            // must appear twice in bothE/both: once from
+                            // outgoing, once from incoming. In Cypher/GQL mode,
+                            // self-loops are deduped like other edges.
+                            (gremlin && entry.neighbor_id == src_node)
+                                || !seen_out_edges.contains(&entry.edge_id)
+                        }));
                         if self.gremlin_mode {
-                            out_entries.extend(in_entries);
-                        } else {
-                            let seen_out_edges: HashSet<EdgeId> =
-                                out_entries.iter().map(|entry| entry.edge_id).collect();
-                            out_entries.extend(
-                                in_entries
-                                    .into_iter()
-                                    .filter(|entry| !seen_out_edges.contains(&entry.edge_id)),
-                            );
+                            out_entries.sort_by(|left, right| left.rel_type.cmp(&right.rel_type));
                         }
                     }
                     out_batches
@@ -495,6 +502,15 @@ mod tests {
         budget: &mut ExecutionBudget,
     ) -> Vec<Row> {
         let executor = QueryExecutor::new(store);
+        executor.execute("g", plan, budget).unwrap().rows
+    }
+
+    fn executor_result_gremlin(
+        store: &InMemoryGraphStore,
+        plan: &Operator,
+        budget: &mut ExecutionBudget,
+    ) -> Vec<Row> {
+        let executor = QueryExecutor::new(store).with_gremlin_mode();
         executor.execute("g", plan, budget).unwrap().rows
     }
 
@@ -1350,5 +1366,67 @@ mod tests {
         let result = executor_result(&store, &plan, &mut budget);
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].get("b"), Some(&Value::Node(a)));
+    }
+
+    #[test]
+    fn gremlin_expand_undirected_orders_marko_neighbors_created_before_knows() {
+        let store = make_store();
+
+        let mut marko_props = IndexMap::new();
+        marko_props.insert("name".to_string(), Value::Str("marko".into()));
+        let marko = store
+            .create_node("g", vec!["Person".to_string()], marko_props)
+            .unwrap();
+
+        let mut vadas_props = IndexMap::new();
+        vadas_props.insert("name".to_string(), Value::Str("vadas".into()));
+        let vadas = store
+            .create_node("g", vec!["Person".to_string()], vadas_props)
+            .unwrap();
+
+        let mut lop_props = IndexMap::new();
+        lop_props.insert("name".to_string(), Value::Str("lop".into()));
+        let lop = store
+            .create_node("g", vec!["Software".to_string()], lop_props)
+            .unwrap();
+
+        let mut josh_props = IndexMap::new();
+        josh_props.insert("name".to_string(), Value::Str("josh".into()));
+        let josh = store
+            .create_node("g", vec!["Person".to_string()], josh_props)
+            .unwrap();
+
+        store
+            .create_edge("g", marko, vadas, "knows".to_string(), IndexMap::new())
+            .unwrap();
+        store
+            .create_edge("g", marko, josh, "knows".to_string(), IndexMap::new())
+            .unwrap();
+        store
+            .create_edge("g", marko, lop, "created".to_string(), IndexMap::new())
+            .unwrap();
+
+        let plan = Operator::Expand {
+            direction: Direction::Undirected,
+            rel_types: vec![],
+            src_alias: Identifier::new("a"),
+            rel_alias: None,
+            dst_alias: Identifier::new("b"),
+            child: Box::new(Operator::NodeByIdSeek {
+                id_expr: Expr::Integer(marko.0 as i64),
+                alias: Identifier::new("a"),
+            }),
+        };
+
+        let mut budget = ExecutionBudget::unlimited();
+        let result = executor_result_gremlin(&store, &plan, &mut budget);
+        let neighbors: Vec<_> = result
+            .iter()
+            .filter_map(|row| row.get("b").cloned())
+            .collect();
+        assert_eq!(
+            neighbors,
+            vec![Value::Node(lop), Value::Node(vadas), Value::Node(josh)]
+        );
     }
 }

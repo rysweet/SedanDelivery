@@ -148,6 +148,9 @@ pub struct QueryExecutor<'a> {
     pub(crate) repeat_dedup_state: std::cell::RefCell<Option<std::collections::HashSet<String>>>,
     /// Global property ID counter for Gremlin `properties()` step.
     pub(crate) property_id_counter: std::cell::Cell<i64>,
+    /// Stable per-traversal property ID interning so repeated logical
+    /// properties reuse the same synthetic id.
+    pub(crate) property_id_map: std::cell::RefCell<HashMap<String, i64>>,
 }
 
 impl<'a> QueryExecutor<'a> {
@@ -167,6 +170,7 @@ impl<'a> QueryExecutor<'a> {
             gremlin_side_effects: std::cell::RefCell::new(HashMap::new()),
             repeat_dedup_state: std::cell::RefCell::new(None),
             property_id_counter: std::cell::Cell::new(0),
+            property_id_map: std::cell::RefCell::new(HashMap::new()),
         }
     }
 
@@ -201,6 +205,7 @@ impl<'a> QueryExecutor<'a> {
             gremlin_side_effects: std::cell::RefCell::new(HashMap::new()),
             repeat_dedup_state: std::cell::RefCell::new(None),
             property_id_counter: std::cell::Cell::new(0),
+            property_id_map: std::cell::RefCell::new(HashMap::new()),
         }
     }
 
@@ -210,6 +215,16 @@ impl<'a> QueryExecutor<'a> {
     pub fn with_gremlin_mode(mut self) -> Self {
         self.gremlin_mode = true;
         self
+    }
+
+    pub(crate) fn intern_property_id(&self, logical_key: String) -> i64 {
+        if let Some(id) = self.property_id_map.borrow().get(&logical_key).copied() {
+            return id;
+        }
+        let id = self.property_id_counter.get();
+        self.property_id_counter.set(id + 1);
+        self.property_id_map.borrow_mut().insert(logical_key, id);
+        id
     }
 
     // ── Property access cache helpers ──────────────────────────────────────────
@@ -393,6 +408,7 @@ impl<'a> QueryExecutor<'a> {
             Operator::GremlinMatch { .. } => self.exec_gremlin_match(cx, op),
             Operator::GremlinSelect { .. } => self.exec_gremlin_select(cx, op),
             Operator::GremlinGroup { .. } => self.exec_gremlin_group(cx, op),
+            Operator::GremlinSample { .. } => self.exec_gremlin_sample(cx, op),
             Operator::GremlinMapSlice { .. } => self.exec_gremlin_map_slice(cx, op),
             Operator::GremlinSimplePath { .. } => self.exec_gremlin_simple_path(cx, op),
             Operator::GremlinCyclicPath { .. } => self.exec_gremlin_cyclic_path(cx, op),

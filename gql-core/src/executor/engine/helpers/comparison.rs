@@ -155,6 +155,10 @@ pub fn gremlin_cmp_values(a: &Value, b: &Value) -> std::cmp::Ordering {
         }
     }
 
+    fn is_tagged_set(v: &Value) -> bool {
+        matches!(v, Value::Map(m) if m.len() == 1 && matches!(m.get("~set"), Some(Value::List(_))))
+    }
+
     fn type_rank(v: &Value) -> u8 {
         match v {
             Value::Null => 0,
@@ -181,6 +185,7 @@ pub fn gremlin_cmp_values(a: &Value, b: &Value) -> std::cmp::Ordering {
                 22
             }
             Value::Path { .. } => 24,
+            Value::Map(m) if m.len() == 1 && matches!(m.get("~set"), Some(Value::List(_))) => 29,
             Value::List(_) => 30,
             Value::Map(_) => 31,
             Value::Point(_) => 32,
@@ -223,6 +228,28 @@ pub fn gremlin_cmp_values(a: &Value, b: &Value) -> std::cmp::Ordering {
             let vb = mb.get("~value").unwrap_or(&Value::Null);
             return gremlin_cmp_values(va, vb);
         }
+    }
+
+    if is_tagged_set(a) && is_tagged_set(b) {
+        if let (Value::Map(ma), Value::Map(mb)) = (a, b) {
+            let sa = ma.get("~set").unwrap_or(&Value::Null);
+            let sb = mb.get("~set").unwrap_or(&Value::Null);
+            return gremlin_cmp_values(sa, sb);
+        }
+    }
+
+    if let (Value::Map(ma), Value::Map(mb)) = (a, b) {
+        for ((ka, va), (kb, vb)) in ma.iter().zip(mb.iter()) {
+            let key_cmp = ka.cmp(kb);
+            if key_cmp != std::cmp::Ordering::Equal {
+                return key_cmp;
+            }
+            let value_cmp = gremlin_cmp_values(va, vb);
+            if value_cmp != std::cmp::Ordering::Equal {
+                return value_cmp;
+            }
+        }
+        return ma.len().cmp(&mb.len());
     }
 
     // Lists: use gremlin_cmp_values recursively so that nested property

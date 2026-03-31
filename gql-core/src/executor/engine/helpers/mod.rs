@@ -67,6 +67,7 @@ pub(crate) fn get_adj_entries(
                 in_.into_iter()
                     .filter(|e| !out_edge_ids.contains(&e.edge_id.0)),
             );
+            out.sort_by(|left, right| left.rel_type.cmp(&right.rel_type));
             out
         }
     };
@@ -240,6 +241,7 @@ pub(crate) fn discover_operator_aliases(op: &Operator) -> Vec<String> {
         | Operator::ProduceResults { .. }
         | Operator::GremlinSelect { .. }
         | Operator::GremlinGroup { .. }
+        | Operator::GremlinSample { .. }
         | Operator::GremlinMapSlice { .. }
         | Operator::GremlinSimplePath { .. }
         | Operator::GremlinCyclicPath { .. }

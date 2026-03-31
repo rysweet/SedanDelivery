@@ -123,6 +123,16 @@ impl<'a> QueryExecutor<'a> {
                 }
                 let ctx = self.build_filter_ctx(graph, row)?;
                 let prop_val = self.eval_with_storage(graph, value, row, &ctx)?;
+                let prop_val = if self.gremlin_mode {
+                    match prop_val {
+                        Value::Map(map) if map.contains_key("value") => {
+                            Value::List(vec![Value::Map(map)])
+                        }
+                        other => other,
+                    }
+                } else {
+                    prop_val
+                };
                 // SET n.prop = null means REMOVE the property (Cypher semantics)
                 if prop_val.is_null() {
                     match val {
@@ -141,15 +151,24 @@ impl<'a> QueryExecutor<'a> {
                 // Validate that the property value is a valid property type.
                 // Lists-of-maps are not allowed, but standalone Maps are
                 // permitted (needed for Gremlin @AllowMapPropertyValues).
-                fn is_invalid_prop_value(v: &Value) -> bool {
+                fn is_invalid_prop_value(v: &Value, gremlin_mode: bool) -> bool {
                     match v {
                         Value::List(items) => {
-                            items.iter().any(|item| matches!(item, Value::Map(_)))
+                            if gremlin_mode
+                                && !items.is_empty()
+                                && items.iter().all(
+                                    |item| matches!(item, Value::Map(map) if map.contains_key("value")),
+                                )
+                            {
+                                false
+                            } else {
+                                items.iter().any(|item| matches!(item, Value::Map(_)))
+                            }
                         }
                         _ => false,
                     }
                 }
-                if is_invalid_prop_value(&prop_val) {
+                if is_invalid_prop_value(&prop_val, self.gremlin_mode) {
                     return Err(GqlError::Execution(ExecutionError::TypeMismatch {
                         expected: "primitive property value (not Map or List of Maps)".to_string(),
                         actual: prop_val.type_name().to_string(),
@@ -257,6 +276,47 @@ impl<'a> QueryExecutor<'a> {
                 let node_id = extract_node_id(val, &alias.0)?;
                 let label_strings: Vec<String> =
                     labels.iter().map(|l| l.as_str().to_string()).collect();
+                self.store.add_node_labels(graph, node_id, &label_strings)?;
+                stats.labels_seen.extend(label_strings);
+            }
+            SetItem::DynamicLabels { alias, value } => {
+                let val = row
+                    .get(alias.0.as_str())
+                    .ok_or_else(|| undefined_var(&alias.0))?;
+                if val.is_null() {
+                    return Ok(());
+                }
+                let node_id = extract_node_id(val, &alias.0)?;
+                let ctx = self.build_filter_ctx(graph, row)?;
+                let label_val = self.eval_with_storage(graph, value, row, &ctx)?;
+                let label_strings: Vec<String> = match label_val {
+                    Value::Null => Vec::new(),
+                    Value::Str(label) => vec![label.into_string()],
+                    Value::List(items) => {
+                        let mut labels = Vec::with_capacity(items.len());
+                        for item in items {
+                            match item {
+                                Value::Str(label) => labels.push(label.into_string()),
+                                other => {
+                                    return Err(GqlError::Execution(
+                                        ExecutionError::TypeMismatch {
+                                            expected: "String or List<String> for dynamic labels"
+                                                .to_string(),
+                                            actual: other.type_name().to_string(),
+                                        },
+                                    ));
+                                }
+                            }
+                        }
+                        labels
+                    }
+                    other => {
+                        return Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                            expected: "String or List<String> for dynamic labels".to_string(),
+                            actual: other.type_name().to_string(),
+                        }));
+                    }
+                };
                 self.store.add_node_labels(graph, node_id, &label_strings)?;
                 stats.labels_seen.extend(label_strings);
             }

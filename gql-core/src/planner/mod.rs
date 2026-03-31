@@ -20,6 +20,15 @@ pub enum GremlinPop {
 }
 
 #[derive(Debug, Clone)]
+pub enum GremlinSelectTraversal {
+    /// Evaluate a compiled by(traversal) sub-traversal for the selected key.
+    Traversal {
+        op: Box<Operator>,
+        out_alias: Identifier,
+    },
+}
+
+#[derive(Debug, Clone)]
 pub enum Operator {
     /// Produces exactly one empty row. Used as a leaf for bare `RETURN` (no MATCH).
     SingleRow,
@@ -312,6 +321,9 @@ pub enum Operator {
         /// When true, the side-effect was initialized as a Set (e.g. `withSideEffect("a", {})`).
         /// Aggregate deduplicates values instead of appending duplicates.
         set_semantics: bool,
+        /// When true (Operator.assign), each aggregate call REPLACES the accumulated
+        /// list instead of appending to it. Only the last call's values survive to cap().
+        assign_semantics: bool,
     },
     /// Gremlin path() — extract path from traverser aliases.
     GremlinPath {
@@ -360,6 +372,8 @@ pub enum Operator {
     GremlinSelect {
         /// (source_variable, output_key) pairs.
         keys: Vec<(Identifier, String)>,
+        /// Optional by(traversal) modulators aligned to `keys`.
+        by_traversals: Vec<Option<GremlinSelectTraversal>>,
         /// When true, missing properties produce Null. When false (default),
         /// missing properties cause the traverser to be dropped.
         productive: bool,
@@ -393,9 +407,20 @@ pub enum Operator {
         value_traversal: Option<(Box<Operator>, Identifier)>,
         /// When true (ProductiveByStrategy), include null-keyed entries for missing properties.
         productive: bool,
+        /// When true, the group key is the traverser itself (no by() key modulator was applied).
+        /// Null traversers are valid group keys in this case and must NOT be skipped.
+        key_is_identity: bool,
         /// When true, the Collect agg was set explicitly by fold() (not default).
         /// Forces List result even for single-member groups.
         explicit_fold: bool,
+        child: Box<Operator>,
+    },
+    /// Gremlin `sample(n)` — barrier sampling of the traverser stream with an
+    /// optional weight/probability expression from a single by() modulator.
+    GremlinSample {
+        count: usize,
+        weight: Option<Expr>,
+        seed: Option<i64>,
         child: Box<Operator>,
     },
     /// Gremlin `range(Scope.local, lo, hi)` / `limit(Scope.local, n)` —
@@ -444,11 +469,15 @@ pub enum Operator {
     },
     /// Gremlin project() with by() modulation — evaluates sub-traversals per key.
     GremlinProject {
-        /// (key_name, sub_traversal_operator, output_alias_of_traversal) per entry.
-        entries: Vec<(String, Operator, Identifier)>,
+        /// (key_name, sub_traversal_operator, output_alias_of_traversal, by_is_identity) per entry.
+        /// `by_is_identity` is true when the by() modulator is empty (identity) — in that
+        /// case a Null result is the traverser itself being null and must be kept in the map.
+        entries: Vec<(String, Operator, Identifier, bool)>,
         child: Box<Operator>,
         /// Alias of the traverser feeding into project.
         current_alias: Identifier,
+        /// Alias holding the projected map after project() completes.
+        out_alias: Identifier,
         /// When true (ProductiveByStrategy), include Null values in the map
         /// instead of omitting keys with no value.
         productive: bool,
@@ -495,12 +524,26 @@ impl Operator {
             | Operator::GremlinAggregate { child, .. }
             | Operator::GremlinPath { child, .. }
             | Operator::GremlinTree { child, .. }
-            | Operator::GremlinSelect { child, .. }
+            | Operator::GremlinSample { child, .. }
             | Operator::GremlinMapSlice { child, .. }
             | Operator::GremlinSimplePath { child, .. }
             | Operator::GremlinCyclicPath { child, .. }
             | Operator::GremlinIndex { child, .. }
             | Operator::GremlinBarrier { child, .. } => vec![child],
+
+            Operator::GremlinSelect {
+                child,
+                by_traversals,
+                ..
+            } => {
+                let mut v = vec![child.as_ref()];
+                for entry in by_traversals {
+                    if let Some(GremlinSelectTraversal::Traversal { op, .. }) = entry {
+                        v.push(op.as_ref());
+                    }
+                }
+                v
+            }
 
             Operator::GremlinGroup {
                 child,
@@ -520,7 +563,7 @@ impl Operator {
 
             Operator::GremlinProject { entries, child, .. } => {
                 let mut v = vec![child.as_ref()];
-                for (_, op, _) in entries {
+                for (_, op, _, _) in entries {
                     v.push(op);
                 }
                 v
@@ -641,6 +684,10 @@ pub enum SetItem {
     Labels {
         alias: Identifier,
         labels: Vec<Label>,
+    },
+    DynamicLabels {
+        alias: Identifier,
+        value: Expr,
     },
     Map {
         alias: Identifier,
@@ -875,7 +922,8 @@ fn estimate_recursive(
             ..
         } => estimate_recursive(child, stats, estimates),
         Operator::GremlinGroup { .. } => 1.0, // produces a single Map row
-        Operator::GremlinMapSlice { child, .. }
+        Operator::GremlinSample { child, .. }
+        | Operator::GremlinMapSlice { child, .. }
         | Operator::GremlinSimplePath { child, .. }
         | Operator::GremlinCyclicPath { child, .. }
         | Operator::GremlinIndex { child, .. }
@@ -1161,6 +1209,9 @@ fn collect_all_aliases(op: &Operator) -> Vec<String> {
         Operator::GremlinGroup { alias, .. } => {
             aliases.push(alias.0.clone());
         }
+        Operator::GremlinSample { child, .. } => {
+            aliases.extend(collect_all_aliases(child));
+        }
         Operator::GremlinMapSlice { child, .. } => {
             aliases.extend(collect_all_aliases(child));
         }
@@ -1174,7 +1225,7 @@ fn collect_all_aliases(op: &Operator) -> Vec<String> {
             aliases.extend(collect_all_aliases(child));
         }
         Operator::GremlinProject { entries, .. } => {
-            for (key, _, _) in entries {
+            for (key, _, _, _) in entries {
                 aliases.push(key.clone());
             }
         }

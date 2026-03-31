@@ -29,6 +29,17 @@ fn property_aware_dedup_key(v: &Value) -> String {
                     .unwrap_or_default();
                 return format!("EdgeProp({key}, {val})");
             }
+            // Meta-properties of vertex properties expose the parent property
+            // as ~element. Dedup should collapse identical meta key/value pairs
+            // across different parent properties.
+            if matches!(m.get("~element"), Some(Value::Map(parent)) if parent.contains_key("~key") && parent.contains_key("~value"))
+            {
+                let val = m
+                    .get("~value")
+                    .map(|v| v.canonical_key())
+                    .unwrap_or_default();
+                return format!("MetaProp({key}, {val})");
+            }
             // Vertex properties: compare by key+element (same property on same vertex)
             if let Some(elem) = m.get("~element") {
                 let elem_key = elem.canonical_key();
@@ -123,14 +134,17 @@ impl<'a> QueryExecutor<'a> {
                                 if name == "__gremlin_path_acc" {
                                     continue;
                                 }
+                                if name.starts_with("__side_effect_") {
+                                    continue;
+                                }
                                 if alias.as_ref() == Some(id) {
-                                    // Only skip step-alias carry-forward variables
-                                    // (v_N, e_N patterns from Gremlin compiler).
-                                    let is_step_alias = (name.starts_with("v_")
-                                        || name.starts_with("e_")
-                                        || name.starts_with("u_")
-                                        || name.starts_with("grp_"))
-                                        && name[2..].chars().all(|c| c.is_ascii_digit());
+                                    let is_step_alias = name
+                                        .rsplit('_')
+                                        .next()
+                                        .map(|s| {
+                                            !s.is_empty() && s.chars().all(|c| c.is_ascii_digit())
+                                        })
+                                        .unwrap_or(false);
                                     if is_step_alias {
                                         continue;
                                     }
@@ -543,6 +557,7 @@ impl<'a> QueryExecutor<'a> {
             | Operator::ChooseMap { .. }
             | Operator::GremlinSelect { .. }
             | Operator::GremlinGroup { .. }
+            | Operator::GremlinSample { .. }
             | Operator::GremlinMapSlice { .. }
             | Operator::GremlinSimplePath { .. }
             | Operator::GremlinCyclicPath { .. }

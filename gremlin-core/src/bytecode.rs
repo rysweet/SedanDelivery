@@ -133,6 +133,7 @@ pub enum GremlinStep {
 
     // ── Mutation steps ───────────────────────────────────────────────────────
     AddV(String),
+    AddVTraversal(Vec<GremlinStep>),
     AddE(String),
     Property(String, GremlinValue),
     From(Vec<GremlinStep>),

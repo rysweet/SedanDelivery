@@ -1675,10 +1675,13 @@ mod tests {
             }
             Operator::GremlinProject { entries, child, .. } => {
                 let mut v = vec![child.as_ref()];
-                for (_, op, _) in entries {
+                for (_, op, _, _) in entries {
                     v.push(op);
                 }
                 v
+            }
+            Operator::GremlinSample { child, .. } => {
+                vec![child.as_ref()]
             }
         }
     }

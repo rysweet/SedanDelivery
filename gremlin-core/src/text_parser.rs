@@ -635,13 +635,7 @@ fn extract_with_side_effects(
                 let maybe_op = rest_str[lc + 1..].trim();
                 if maybe_op.starts_with("Operator.") {
                     let op_name = maybe_op.strip_prefix("Operator.").unwrap_or("sum");
-                    // Only split for operators that we actually reduce
-                    // "assign" just means "collect normally" — skip it
-                    if op_name == "assign" {
-                        (rest_str, None)
-                    } else {
-                        (&rest_str[..lc], Some(op_name.to_string()))
-                    }
+                    (&rest_str[..lc], Some(op_name.to_string()))
                 } else {
                     (rest_str, None)
                 }
@@ -690,14 +684,10 @@ fn parse_side_effect_value(
             .collect();
         return Some(GremlinValue::List(items));
     }
-    // Handle List notation: ["x","y"]
+    // Handle List or Map notation: ["x","y"] or [key:["val1"],key2:["val2"]]
+    // Delegate to parse_single_value which handles both list and map-with-colon syntax.
     if s.starts_with('[') && s.ends_with(']') {
-        let inner = &s[1..s.len() - 1];
-        let items: Vec<GremlinValue> = inner
-            .split(',')
-            .filter_map(|item| parse_literal_value(item.trim(), resolve_param))
-            .collect();
-        return Some(GremlinValue::List(items));
+        return parse_single_value(s, resolve_param).ok();
     }
     // Handle "Set" keyword: skip the operator arg
     if s == "Set" || s.starts_with("Operator.") {
@@ -805,6 +795,25 @@ fn parse_step_token(
     resolve_param: &dyn Fn(&str) -> Option<GremlinValue>,
     out: &mut Vec<GremlinStep>,
 ) -> Result<(), TextParseError> {
+    fn attach_property_meta(base: GremlinValue, meta_pairs: &[GremlinValue]) -> GremlinValue {
+        let mut map = match base {
+            GremlinValue::Map(map) if map.contains_key("value") => map,
+            other => {
+                let mut map = IndexMap::new();
+                map.insert("value".to_string(), other);
+                map
+            }
+        };
+        let mut idx = 0;
+        while idx + 1 < meta_pairs.len() {
+            if let GremlinValue::String(key) = &meta_pairs[idx] {
+                map.insert(key.clone(), meta_pairs[idx + 1].clone());
+            }
+            idx += 2;
+        }
+        GremlinValue::Map(map)
+    }
+
     let (name, args_str) = split_step_name_args(token);
 
     match name {
@@ -896,24 +905,25 @@ fn parse_step_token(
         "label" => out.push(GremlinStep::Label),
         "select" => {
             let args = parse_string_arg_list(args_str)?;
-            // Extract Pop.* modifier if present (must be qualified with Pop. prefix)
+            // Extract Pop modifier if present. TinkerPop text uses both
+            // Pop.first and bare first/last/all/mixed forms.
             let mut pop = None;
             let filtered: Vec<String> = args
                 .into_iter()
                 .filter(|a| match a.as_str() {
-                    "Pop.first" => {
+                    "Pop.first" | "first" => {
                         pop = Some(crate::bytecode::Pop::First);
                         false
                     }
-                    "Pop.last" => {
+                    "Pop.last" | "last" => {
                         pop = Some(crate::bytecode::Pop::Last);
                         false
                     }
-                    "Pop.all" => {
+                    "Pop.all" | "all" => {
                         pop = Some(crate::bytecode::Pop::All);
                         false
                     }
-                    "Pop.mixed" => {
+                    "Pop.mixed" | "mixed" => {
                         pop = Some(crate::bytecode::Pop::Mixed);
                         false
                     }
@@ -1144,9 +1154,20 @@ fn parse_step_token(
             out.push(GremlinStep::Or(inner_traversals));
         }
         "addV" => {
-            let args = parse_string_arg_list(args_str)?;
-            let label = args.into_iter().next().unwrap_or_default();
-            out.push(GremlinStep::AddV(label));
+            if args_str.contains('(') {
+                let inner = parse_inner_traversal(args_str, resolve_param)?;
+                if !inner.is_empty() {
+                    out.push(GremlinStep::AddVTraversal(inner));
+                } else {
+                    let args = parse_string_arg_list(args_str)?;
+                    let label = args.into_iter().next().unwrap_or_default();
+                    out.push(GremlinStep::AddV(label));
+                }
+            } else {
+                let args = parse_string_arg_list(args_str)?;
+                let label = args.into_iter().next().unwrap_or_default();
+                out.push(GremlinStep::AddV(label));
+            }
         }
         "addE" => {
             let args = parse_string_arg_list(args_str)?;
@@ -1170,10 +1191,20 @@ fn parse_step_token(
                 } else if is_cardinality && args.len() >= 3 {
                     // property(Cardinality.xxx, key, value) — skip cardinality
                     if let GremlinValue::String(key) = &args[1] {
-                        out.push(GremlinStep::Property(key.clone(), args[2].clone()));
+                        let value = if args.len() > 3 {
+                            attach_property_meta(args[2].clone(), &args[3..])
+                        } else {
+                            args[2].clone()
+                        };
+                        out.push(GremlinStep::Property(key.clone(), value));
                     }
                 } else if let GremlinValue::String(key) = &args[0] {
-                    out.push(GremlinStep::Property(key.clone(), args[1].clone()));
+                    let value = if args.len() > 2 {
+                        attach_property_meta(args[1].clone(), &args[2..])
+                    } else {
+                        args[1].clone()
+                    };
+                    out.push(GremlinStep::Property(key.clone(), value));
                 }
             } else if args.len() == 1 {
                 // property(Map) — expand Map entries into individual property steps
@@ -2802,7 +2833,7 @@ fn parse_single_value(
         return Ok(GremlinValue::Float(f64::NEG_INFINITY));
     }
 
-    // Set literal: {1, 2, 3} — deduplicated list
+    // Set literal: {1, 2, 3} — preserve set-ness via an internal tagged map.
     if s.starts_with('{') && s.ends_with('}') {
         let inner = &s[1..s.len() - 1];
         let items = parse_arg_list(inner, resolve_param)?;
@@ -2812,7 +2843,9 @@ fn parse_single_value(
                 deduped.push(item);
             }
         }
-        return Ok(GremlinValue::List(deduped));
+        let mut tagged = IndexMap::new();
+        tagged.insert("~set".to_string(), GremlinValue::List(deduped));
+        return Ok(GremlinValue::Map(tagged));
     }
 
     // List or Map literal: [1, 2, "a"] or ["key": "val", ...]
@@ -3123,6 +3156,37 @@ mod tests {
     }
 
     #[test]
+    fn parse_addv_traversal_label() {
+        let steps = parse_traversal(
+            r#"g.addV(__.V().has("name","marko").properties("name").key())"#,
+            &no_params,
+        )
+        .unwrap();
+        assert!(matches!(steps[0], GremlinStep::AddVTraversal(_)));
+    }
+
+    #[test]
+    fn parse_addv_property_with_meta_and_with() {
+        let steps = parse_traversal(
+            r#"g.addV().property("name","marko","since",2010).with("key","value")"#,
+            &no_params,
+        )
+        .unwrap();
+        assert_eq!(steps.len(), 2);
+        assert_eq!(steps[0], GremlinStep::AddV("".into()));
+        assert_eq!(
+            steps[1],
+            GremlinStep::Property(
+                "name".into(),
+                GremlinValue::Map(indexmap::indexmap! {
+                    "value".into() => GremlinValue::String("marko".into()),
+                    "since".into() => GremlinValue::Integer(2010),
+                })
+            )
+        );
+    }
+
+    #[test]
     fn parse_path_step() {
         let steps = parse_traversal(r#"g.V().out("knows").path()"#, &no_params).unwrap();
         assert_eq!(steps.len(), 3);
@@ -3184,6 +3248,29 @@ mod tests {
         assert_eq!(
             steps[4],
             GremlinStep::Select(None, vec!["a".into(), "b".into()])
+        );
+    }
+
+    #[test]
+    fn parse_select_bare_first_last_pop() {
+        let first_steps = parse_traversal(
+            r#"g.V().as("v").out().as("v").select(first, "v")"#,
+            &no_params,
+        )
+        .unwrap();
+        assert_eq!(
+            first_steps[4],
+            GremlinStep::Select(Some(crate::bytecode::Pop::First), vec!["v".into()])
+        );
+
+        let last_steps = parse_traversal(
+            r#"g.V().as("v").out().as("v").select(last, "v")"#,
+            &no_params,
+        )
+        .unwrap();
+        assert_eq!(
+            last_steps[4],
+            GremlinStep::Select(Some(crate::bytecode::Pop::Last), vec!["v".into()])
         );
     }
 }

@@ -25,6 +25,102 @@ use crate::ast::{Expr, Identifier};
 use crate::error::{ExecutionError, GqlError};
 use crate::types::Value;
 
+fn map_key_to_value(k: &str) -> Value {
+    use crate::storage::{EdgeId, NodeId};
+
+    fn split_top_level(input: &str, delimiter: char) -> Vec<&str> {
+        let mut parts = Vec::new();
+        let mut depth_paren = 0i32;
+        let mut depth_brace = 0i32;
+        let mut depth_bracket = 0i32;
+        let mut start = 0usize;
+        for (idx, ch) in input.char_indices() {
+            match ch {
+                '(' => depth_paren += 1,
+                ')' => depth_paren -= 1,
+                '{' => depth_brace += 1,
+                '}' => depth_brace -= 1,
+                '[' => depth_bracket += 1,
+                ']' => depth_bracket -= 1,
+                _ => {}
+            }
+            if ch == delimiter && depth_paren == 0 && depth_brace == 0 && depth_bracket == 0 {
+                parts.push(input[start..idx].trim());
+                start = idx + ch.len_utf8();
+            }
+        }
+        parts.push(input[start..].trim());
+        parts
+    }
+
+    fn parse_scalar(input: &str) -> Option<Value> {
+        if input == "null" {
+            return Some(Value::Null);
+        }
+        if input == "true" {
+            return Some(Value::Bool(true));
+        }
+        if input == "false" {
+            return Some(Value::Bool(false));
+        }
+        if let Ok(n) = input.parse::<i64>() {
+            return Some(Value::Int(n));
+        }
+        if input.contains(['.', 'e', 'E']) {
+            if let Ok(f) = input.parse::<f64>() {
+                return Some(Value::Float(f));
+            }
+        }
+        if let Some(num) = input
+            .strip_prefix("v[")
+            .and_then(|rest| rest.strip_suffix(']'))
+        {
+            if let Ok(n) = num.parse::<u64>() {
+                return Some(Value::Node(NodeId(n)));
+            }
+        }
+        if let Some(num) = input
+            .strip_prefix("e[")
+            .and_then(|rest| rest.strip_suffix(']'))
+        {
+            if let Ok(n) = num.parse::<u64>() {
+                return Some(Value::Edge(EdgeId(n)));
+            }
+        }
+        None
+    }
+
+    if let Some(value) = parse_scalar(k) {
+        return value;
+    }
+    if let Some(inner) = k.strip_prefix('{').and_then(|rest| rest.strip_suffix('}')) {
+        let mut map = IndexMap::new();
+        if !inner.trim().is_empty() {
+            for entry in split_top_level(inner, ',') {
+                if let Some((raw_key, raw_val)) = entry.split_once('=') {
+                    map.insert(
+                        raw_key.trim().to_string().into_boxed_str(),
+                        map_key_to_value(raw_val.trim()),
+                    );
+                }
+            }
+        }
+        return Value::Map(map);
+    }
+    if let Some(inner) = k.strip_prefix('[').and_then(|rest| rest.strip_suffix(']')) {
+        let values = if inner.trim().is_empty() {
+            Vec::new()
+        } else {
+            split_top_level(inner, ',')
+                .into_iter()
+                .map(map_key_to_value)
+                .collect()
+        };
+        return Value::List(values);
+    }
+    Value::Str(k.to_string().into_boxed_str())
+}
+
 // ── Re-exports for external consumers ─────────────────────────────────────────
 
 pub(crate) use self::collections::quantifier_result;
@@ -138,6 +234,15 @@ pub fn eval_expr<'r>(expr: &Expr, row: &Row<'r>) -> Result<Value, GqlError> {
             let obj = eval_expr(obj_expr, row)?;
             match obj {
                 Value::Null => Ok(Value::Null),
+                Value::Map(m) if key.starts_with("~select_map:") => {
+                    let mut selected = IndexMap::new();
+                    for field in key["~select_map:".len()..].split(',') {
+                        if let Some(value) = m.get(field) {
+                            selected.insert(field.to_string().into_boxed_str(), value.clone());
+                        }
+                    }
+                    Ok(Value::Map(selected))
+                }
                 Value::Map(m) => Ok(m.get(key.as_str()).cloned().unwrap_or(Value::Null)),
                 // For Node/Edge references, property access returns Null in Phase 0
                 // (the full executor hydrates node/edge data from storage before
@@ -305,6 +410,8 @@ pub fn eval_function_with_vals(name: &str, vals: Vec<Value>) -> Result<Value, Gq
         // ── Math functions ────────────────────────────────────────────────────
         "rand" => builtins::builtin_rand(vals),
         "java_random_next_double" => builtins::builtin_java_random_next_double(vals),
+        "gremlin_sample_weighted_key" => builtins::builtin_gremlin_sample_weighted_key(vals),
+        "gremlin_sample_local" => builtins::builtin_gremlin_sample_local(vals),
         "abs" => builtins::builtin_abs(vals),
         "ceil" => builtins::builtin_ceil(vals),
         "floor" => builtins::builtin_floor(vals),
@@ -1701,12 +1808,34 @@ pub fn eval_function_with_vals(name: &str, vals: Vec<Value>) -> Result<Value, Gq
             }
         }
         "gremlin_valuemap" => {
-            // Full valueMap: extract all properties and wrap in lists
+            // Full valueMap: extract all properties and wrap in lists.
+            // Multi-valued properties (stored as List of Maps with "value" key)
+            // are flattened to a list of the "value" fields, matching TinkerPop
+            // multi-property semantics.
             match vals.into_iter().next() {
                 Some(Value::Map(m)) => {
                     let wrapped: IndexMap<Box<str>, Value> = m
                         .into_iter()
-                        .map(|(k, v)| (k, Value::List(vec![v])))
+                        .map(|(k, v)| {
+                            // Detect multi-property: List of Maps with "value" key
+                            if let Value::List(ref items) = v {
+                                let all_maps_with_value = !items.is_empty()
+                                    && items.iter().all(|item| {
+                                        matches!(item, Value::Map(m) if m.contains_key("value"))
+                                    });
+                                if all_maps_with_value {
+                                    let extracted: Vec<Value> = items
+                                        .iter()
+                                        .filter_map(|item| match item {
+                                            Value::Map(m) => m.get("value").cloned(),
+                                            _ => None,
+                                        })
+                                        .collect();
+                                    return (k, Value::List(extracted));
+                                }
+                            }
+                            (k, Value::List(vec![v]))
+                        })
                         .collect();
                     Ok(Value::Map(wrapped))
                 }
@@ -1760,6 +1889,34 @@ pub fn eval_function_with_vals(name: &str, vals: Vec<Value>) -> Result<Value, Gq
                 Some(other) => Ok(Value::List(vec![other])),
             }
         }
+        "gremlin_column_key" | "gremlin_unfold_map_entry_key" => match vals.first() {
+            Some(Value::Map(m)) if m.len() == 1 => Ok(map_key_to_value(m.keys().next().unwrap())),
+            Some(other) => Ok(other.clone()),
+            None => Ok(Value::Null),
+        },
+        "gremlin_select_values" => match vals.first() {
+            Some(Value::Map(m)) if m.len() == 1 => {
+                let v = m.values().next().cloned().unwrap_or(Value::Null);
+                // Single-entry map: if the value is already a List (e.g.,
+                // from valueMap), wrap in an outer list to get correct
+                // select(values) semantics.  If scalar (e.g., unfolded
+                // groupCount entry), return it directly.
+                match v {
+                    Value::List(_) => Ok(Value::List(vec![v])),
+                    other => Ok(other),
+                }
+            }
+            Some(Value::Map(m)) => Ok(Value::List(m.values().cloned().collect())),
+            Some(Value::List(items)) => Ok(Value::List(items.clone())),
+            other => Ok(other.cloned().unwrap_or(Value::Null)),
+        },
+        "gremlin_column_value" | "gremlin_unfold_map_entry_value" => match vals.first() {
+            Some(Value::Map(m)) if m.len() == 1 => {
+                Ok(m.values().next().cloned().unwrap_or(Value::Null))
+            }
+            Some(other) => Ok(other.clone()),
+            None => Ok(Value::Null),
+        },
         "gremlin_column_values" => match vals.first() {
             Some(Value::Map(m)) => {
                 Ok(Value::List(m.values().cloned().collect()))

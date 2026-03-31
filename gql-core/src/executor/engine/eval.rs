@@ -23,6 +23,146 @@ fn format_value(v: &Value) -> String {
     }
 }
 
+fn map_key_to_value(k: &str) -> Value {
+    use crate::storage::{EdgeId, NodeId};
+    use indexmap::IndexMap;
+
+    fn split_top_level(input: &str, delimiter: char) -> Vec<&str> {
+        let mut parts = Vec::new();
+        let mut depth_paren = 0i32;
+        let mut depth_brace = 0i32;
+        let mut depth_bracket = 0i32;
+        let mut start = 0usize;
+        for (idx, ch) in input.char_indices() {
+            match ch {
+                '(' => depth_paren += 1,
+                ')' => depth_paren -= 1,
+                '{' => depth_brace += 1,
+                '}' => depth_brace -= 1,
+                '[' => depth_bracket += 1,
+                ']' => depth_bracket -= 1,
+                _ => {}
+            }
+            if ch == delimiter && depth_paren == 0 && depth_brace == 0 && depth_bracket == 0 {
+                parts.push(input[start..idx].trim());
+                start = idx + ch.len_utf8();
+            }
+        }
+        parts.push(input[start..].trim());
+        parts
+    }
+
+    fn parse_scalar(input: &str) -> Option<Value> {
+        if input == "null" {
+            return Some(Value::Null);
+        }
+        if input == "true" {
+            return Some(Value::Bool(true));
+        }
+        if input == "false" {
+            return Some(Value::Bool(false));
+        }
+        if let Ok(n) = input.parse::<i64>() {
+            return Some(Value::Int(n));
+        }
+        if input.contains(['.', 'e', 'E']) {
+            if let Ok(f) = input.parse::<f64>() {
+                return Some(Value::Float(f));
+            }
+        }
+        None
+    }
+
+    fn parse_value(input: &str) -> Value {
+        let input = input.trim();
+        if let Some(inner) = input.strip_prefix("v[").and_then(|s| s.strip_suffix(']')) {
+            if let Ok(id) = inner.parse::<u64>() {
+                return Value::Node(NodeId(id));
+            }
+        }
+        if let Some(inner) = input.strip_prefix("e[").and_then(|s| s.strip_suffix(']')) {
+            if let Ok(id) = inner.parse::<u64>() {
+                return Value::Edge(EdgeId(id));
+            }
+        }
+        if let Some(inner) = input
+            .strip_prefix("Node(NodeId(")
+            .and_then(|s| s.strip_suffix("))"))
+        {
+            if let Ok(id) = inner.parse::<u64>() {
+                return Value::Node(NodeId(id));
+            }
+        }
+        if let Some(inner) = input
+            .strip_prefix("Edge(EdgeId(")
+            .and_then(|s| s.strip_suffix("))"))
+        {
+            if let Ok(id) = inner.parse::<u64>() {
+                return Value::Edge(EdgeId(id));
+            }
+        }
+        if let Some(inner) = input.strip_prefix("l[").and_then(|s| s.strip_suffix(']')) {
+            if inner.is_empty() {
+                return Value::List(Vec::new());
+            }
+            return Value::List(
+                split_top_level(inner, ',')
+                    .into_iter()
+                    .map(parse_value)
+                    .collect(),
+            );
+        }
+        if let Some(inner) = input.strip_prefix('{').and_then(|s| s.strip_suffix('}')) {
+            let mut map = IndexMap::new();
+            if !inner.trim().is_empty() {
+                for pair in split_top_level(inner, ',') {
+                    let mut split_at = None;
+                    let mut depth_paren = 0i32;
+                    let mut depth_brace = 0i32;
+                    let mut depth_bracket = 0i32;
+                    for (idx, ch) in pair.char_indices() {
+                        match ch {
+                            '(' => depth_paren += 1,
+                            ')' => depth_paren -= 1,
+                            '{' => depth_brace += 1,
+                            '}' => depth_brace -= 1,
+                            '[' => depth_bracket += 1,
+                            ']' => depth_bracket -= 1,
+                            '=' if depth_paren == 0 && depth_brace == 0 && depth_bracket == 0 => {
+                                split_at = Some(idx);
+                                break;
+                            }
+                            _ => {}
+                        }
+                    }
+                    if let Some(idx) = split_at {
+                        let key = pair[..idx].trim();
+                        let value = pair[idx + 1..].trim();
+                        map.insert(key.to_string().into_boxed_str(), parse_value(value));
+                    }
+                }
+            }
+            return Value::Map(map);
+        }
+        if let Some(value) = parse_scalar(input) {
+            return value;
+        }
+        Value::Str(input.into())
+    }
+
+    if let Some(inner) = k.strip_prefix("v[").and_then(|s| s.strip_suffix(']')) {
+        if let Ok(id) = inner.parse::<u64>() {
+            return Value::Node(NodeId(id));
+        }
+    }
+    if let Some(inner) = k.strip_prefix("e[").and_then(|s| s.strip_suffix(']')) {
+        if let Ok(id) = inner.parse::<u64>() {
+            return Value::Edge(EdgeId(id));
+        }
+    }
+    parse_value(k)
+}
+
 /// Wrap a property value for `valueMap()` output.
 ///
 /// Single scalar values are wrapped in `List([v])`.
@@ -85,6 +225,9 @@ impl<'a> QueryExecutor<'a> {
         match expr {
             Expr::Property(obj_expr, key) => {
                 let obj_val = self.eval_with_storage(graph, obj_expr, row, ctx)?;
+                if self.gremlin_mode {
+                    return self.resolve_prop_on_value_for_filter(graph, key.as_str(), &obj_val);
+                }
                 match obj_val {
                     Value::Node(node_id) => match self.cached_get_node(graph, node_id)? {
                         Some(node_data) => Ok(node_data
@@ -144,7 +287,7 @@ impl<'a> QueryExecutor<'a> {
                     if let Some(v) = se.get(id.0.as_str()) {
                         Ok(v.clone())
                     } else {
-                        eval_expr(expr, ctx)
+                        Ok(Value::List(vec![]))
                     }
                 } else {
                     eval_expr(expr, ctx)
@@ -576,9 +719,9 @@ impl<'a> QueryExecutor<'a> {
                                 )),
                                 None => Ok(Value::List(vec![])),
                             },
-                            Value::Map(m) => Ok(Value::List(
-                                m.keys().map(|k| Value::Str(k.clone())).collect(),
-                            )),
+                            Value::Map(m) => {
+                                Ok(Value::List(m.keys().map(|k| map_key_to_value(k)).collect()))
+                            }
                             other => Err(GqlError::Execution(ExecutionError::TypeMismatch {
                                 expected: "Node, Relationship, or Map".to_string(),
                                 actual: other.type_name().to_string(),
@@ -976,6 +1119,39 @@ impl<'a> QueryExecutor<'a> {
                                 Some(data) => data.properties.into_iter().collect(),
                                 None => Vec::new(),
                             },
+                            Value::Map(m) => {
+                                if m.contains_key("~key") && m.contains_key("~value") {
+                                    if let Some(Value::Node(nid)) = m.get("~element") {
+                                        if let Some(Value::Str(prop_key)) = m.get("~key") {
+                                            if let Some(data) = self.cached_get_node(graph, *nid)? {
+                                                if let Some(Value::List(items)) =
+                                                    data.properties.get(prop_key.as_ref())
+                                                {
+                                                    let target_val = m.get("~value");
+                                                    for item in items {
+                                                        if let Value::Map(entry) = item {
+                                                            if entry.get("value") == target_val {
+                                                                let vals: Vec<Value> = keys
+                                                                    .iter()
+                                                                    .filter_map(|key| {
+                                                                        entry
+                                                                            .get(key.as_str())
+                                                                            .cloned()
+                                                                    })
+                                                                    .collect();
+                                                                return Ok(Value::List(vals));
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                    Vec::new()
+                                } else {
+                                    m.iter().map(|(k, v)| (k.to_string(), v.clone())).collect()
+                                }
+                            }
                             _ => Vec::new(),
                         };
                         let vals: Vec<Value> = props
@@ -1025,10 +1201,13 @@ impl<'a> QueryExecutor<'a> {
                                                                         })
                                                                         .map(|(k, v)| {
                                                                             let pid = self
-                                                                                .property_id_counter
-                                                                                .get();
-                                                                            self.property_id_counter
-                                                                                .set(pid + 1);
+                                                                                .intern_property_id(
+                                                                                    format!(
+                                                                                        "meta|{element:?}|{}|{target_val:?}|{}",
+                                                                                        prop_key.as_ref(),
+                                                                                        k.as_ref()
+                                                                                    ),
+                                                                                );
                                                                             let mut mp =
                                                                                 indexmap::IndexMap::new();
                                                                             mp.insert(
@@ -1085,7 +1264,8 @@ impl<'a> QueryExecutor<'a> {
                                     {
                                         let result: Vec<Value> = items
                                             .iter()
-                                            .map(|item| {
+                                            .enumerate()
+                                            .map(|(idx, item)| {
                                                 let main_val = match item {
                                                     Value::Map(m) => {
                                                         m.get("value")
@@ -1094,8 +1274,10 @@ impl<'a> QueryExecutor<'a> {
                                                     }
                                                     other => other.clone(),
                                                 };
-                                                let pid = self.property_id_counter.get();
-                                                self.property_id_counter.set(pid + 1);
+                                                let pid = self.intern_property_id(format!(
+                                                    "value|{element:?}|{}|{idx}|{main_val:?}",
+                                                    k.as_str()
+                                                ));
                                                 let mut m = indexmap::IndexMap::new();
                                                 m.insert(Box::from("~id"), Value::Int(pid));
                                                 m.insert(
@@ -1110,8 +1292,10 @@ impl<'a> QueryExecutor<'a> {
                                         return result;
                                     }
                                 }
-                                let pid = self.property_id_counter.get();
-                                self.property_id_counter.set(pid + 1);
+                                let pid = self.intern_property_id(format!(
+                                    "scalar|{element:?}|{}|{v:?}",
+                                    k.as_str()
+                                ));
                                 let mut m = indexmap::IndexMap::new();
                                 m.insert(Box::from("~id"), Value::Int(pid));
                                 m.insert(Box::from("~key"), Value::Str(k.into_boxed_str()));
@@ -1352,12 +1536,45 @@ impl<'a> QueryExecutor<'a> {
                     }
                     "gremlin_column_key" => match evaled_args.into_iter().next() {
                         Some(Value::Map(m)) if m.len() == 1 => {
-                            Ok(Value::Str(m.keys().next().unwrap().clone()))
+                            Ok(map_key_to_value(m.keys().next().unwrap()))
                         }
                         Some(other) => eval_function_with_vals("keys", vec![other]),
                         None => Ok(Value::Null),
                     },
-                    "gremlin_column_value" => eval_function_with_vals("values", evaled_args),
+                    "gremlin_select_values" => match evaled_args.into_iter().next() {
+                        Some(Value::Map(m)) if m.len() == 1 => {
+                            let v = m.values().next().cloned().unwrap_or(Value::Null);
+                            match v {
+                                Value::List(_) => Ok(Value::List(vec![v])),
+                                other => Ok(other),
+                            }
+                        }
+                        Some(Value::Map(m)) => Ok(Value::List(m.values().cloned().collect())),
+                        Some(Value::List(items)) => Ok(Value::List(items)),
+                        Some(other) => Ok(other),
+                        None => Ok(Value::Null),
+                    },
+                    "gremlin_column_value" => match evaled_args.into_iter().next() {
+                        Some(Value::Map(m)) if m.len() == 1 => {
+                            Ok(m.values().next().cloned().unwrap_or(Value::Null))
+                        }
+                        Some(other) => eval_function_with_vals("values", vec![other]),
+                        None => Ok(Value::Null),
+                    },
+                    "gremlin_unfold_map_entry_key" => match evaled_args.into_iter().next() {
+                        Some(Value::Map(m)) if m.len() == 1 => {
+                            Ok(map_key_to_value(m.keys().next().unwrap()))
+                        }
+                        Some(other) => eval_function_with_vals("keys", vec![other]),
+                        None => Ok(Value::Null),
+                    },
+                    "gremlin_unfold_map_entry_value" => match evaled_args.into_iter().next() {
+                        Some(Value::Map(m)) if m.len() == 1 => {
+                            Ok(m.values().next().cloned().unwrap_or(Value::Null))
+                        }
+                        Some(other) => eval_function_with_vals("values", vec![other]),
+                        None => Ok(Value::Null),
+                    },
                     _ => eval_function_with_vals(name, evaled_args),
                 }
             }

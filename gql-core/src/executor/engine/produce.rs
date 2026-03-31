@@ -495,8 +495,15 @@ impl<'a> QueryExecutor<'a> {
                 feature: "internal: expected Union operator".into(),
             }));
         };
+        let preserved_seed = self.foreach_seed.borrow().clone();
         let left_rows = self.exec_operator(cx, left)?;
+        if let Some(seed) = preserved_seed.clone() {
+            self.foreach_seed.borrow_mut().replace(seed);
+        }
         let right_rows = self.exec_operator(cx, right)?;
+        if let Some(seed) = preserved_seed {
+            self.foreach_seed.borrow_mut().replace(seed);
+        }
 
         let mut out = Vec::with_capacity(left_rows.len() + right_rows.len());
         if *all {

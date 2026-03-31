@@ -2,13 +2,44 @@
 
 use crate::ast::{Direction, Expr, Identifier};
 use crate::error::{ExecutionError, GqlError};
-use crate::planner::Operator;
+use crate::planner::{GremlinSelectTraversal, Operator};
 use crate::storage::NodeId;
 use crate::types::Value;
 use indexmap::IndexMap;
 
-use super::helpers::inject_parameters;
+use super::helpers::{gremlin_cmp_values, inject_parameters};
 use crate::executor::engine::{ExecContext, QueryExecutor, Row};
+
+struct JavaCompatibleRandom {
+    seed: u64,
+}
+
+impl JavaCompatibleRandom {
+    const MULTIPLIER: u64 = 0x5DEECE66D;
+    const ADDEND: u64 = 0xB;
+    const MASK: u64 = (1u64 << 48) - 1;
+
+    fn new(seed: i64) -> Self {
+        Self {
+            seed: ((seed as u64) ^ Self::MULTIPLIER) & Self::MASK,
+        }
+    }
+
+    fn next(&mut self, bits: u32) -> u32 {
+        self.seed = (self
+            .seed
+            .wrapping_mul(Self::MULTIPLIER)
+            .wrapping_add(Self::ADDEND))
+            & Self::MASK;
+        (self.seed >> (48 - bits)) as u32
+    }
+
+    fn next_double(&mut self) -> f64 {
+        let high = self.next(26) as u64;
+        let low = self.next(27) as u64;
+        ((high << 27) | low) as f64 / ((1u64 << 53) as f64)
+    }
+}
 
 impl<'a> QueryExecutor<'a> {
     /// Execute `Repeat` — run `body` repeatedly, either a fixed number of
@@ -90,11 +121,16 @@ impl<'a> QueryExecutor<'a> {
         // Vertex-counting fast path — skip when path tracking is needed
         // because the fast path collapses traversers by destination NodeId
         // and cannot maintain per-traverser path histories.
-        if !*needs_path {
+        if !*needs_path
+            && until.is_none()
+            && !*emit
+            && emit_predicate.is_none()
+            && pop_origins.is_empty()
+        {
             if let Some(result) = self.try_repeat_counting(
                 cx,
                 body,
-                child,
+                &current,
                 *times,
                 max_iterations,
                 until,
@@ -209,16 +245,7 @@ impl<'a> QueryExecutor<'a> {
                                     if let Value::Map(m) = v {
                                         let acc = iteration_agg_maps.entry(k.clone()).or_default();
                                         for (mk, mv) in m {
-                                            let e = acc.entry(mk.clone()).or_insert(Value::Int(0));
-                                            match (e.clone(), mv) {
-                                                (Value::Int(a), Value::Int(b)) => {
-                                                    *e = Value::Int(a + b)
-                                                }
-                                                (Value::Float(a), Value::Float(b)) => {
-                                                    *e = Value::Float(a + b)
-                                                }
-                                                (_, new_v) => *e = new_v.clone(),
-                                            }
+                                            merge_gremlin_map_entry(acc, mk, mv);
                                         }
                                     }
                                     for nr in &mut next {
@@ -241,12 +268,7 @@ impl<'a> QueryExecutor<'a> {
                         if let Value::Map(m) = v {
                             let acc = iteration_agg_maps.entry(k.clone()).or_default();
                             for (mk, mv) in m {
-                                let e = acc.entry(mk.clone()).or_insert(Value::Int(0));
-                                match (e.clone(), mv) {
-                                    (Value::Int(a), Value::Int(b)) => *e = Value::Int(a + b),
-                                    (Value::Float(a), Value::Float(b)) => *e = Value::Float(a + b),
-                                    (_, new_v) => *e = new_v.clone(),
-                                }
+                                merge_gremlin_map_entry(acc, mk, mv);
                             }
                         }
                     }
@@ -398,7 +420,10 @@ impl<'a> QueryExecutor<'a> {
         &self,
         cx: &mut ExecContext<'_>,
         body: &Operator,
-        child: &Operator,
+        // Pre-computed seeds from executing the child operator. Passed in to
+        // avoid re-executing child (which would fail when foreach_seed has
+        // already been consumed by the initial exec at the caller site).
+        precomputed_seeds: &[Row],
         _times: Option<usize>,
         max_iterations: usize,
         until: &Option<Box<Operator>>,
@@ -411,6 +436,9 @@ impl<'a> QueryExecutor<'a> {
         _body_path_aliases: &[String],
         pop_origins: &[(String, String)],
     ) -> Result<Option<Vec<Row>>, GqlError> {
+        if !pop_origins.is_empty() {
+            return Ok(None);
+        }
         let expand_info = match extract_simple_expand(body) {
             Some(info) => info,
             None => return Ok(None),
@@ -423,8 +451,7 @@ impl<'a> QueryExecutor<'a> {
         let type_strs: Vec<String> = rel_types.iter().map(|rt| rt.0.to_string()).collect();
         let type_refs: Vec<&str> = type_strs.iter().map(|s| s.as_str()).collect();
 
-        let seeds = self.exec_operator(cx, child)?;
-        if seeds.is_empty() {
+        if precomputed_seeds.is_empty() {
             return Ok(Some(Vec::new()));
         }
 
@@ -434,7 +461,7 @@ impl<'a> QueryExecutor<'a> {
         // Simple mode: no emit, no until
         if !emit && until.is_none() && emit_predicate.is_none() {
             let mut vertex_counts: IndexMap<NodeId, (Row, i128)> = IndexMap::new();
-            for row in &seeds {
+            for row in precomputed_seeds {
                 let alias_key = seed_key.unwrap_or(src_alias_str);
                 if let Some(Value::Node(nid)) = row.get(alias_key) {
                     let entry = vertex_counts
@@ -487,7 +514,7 @@ impl<'a> QueryExecutor<'a> {
             let generic_counter_key = "__gremlin_loop_count".to_string();
 
             let mut vertex_counts: IndexMap<NodeId, (Row, i128)> = IndexMap::new();
-            for row in &seeds {
+            for row in precomputed_seeds {
                 let alias_key = seed_key.unwrap_or(src_alias_str);
                 if let Some(Value::Node(nid)) = row.get(alias_key) {
                     let entry = vertex_counts
@@ -608,7 +635,18 @@ impl<'a> QueryExecutor<'a> {
                 }
             }
 
-            if !vertex_counts.is_empty() && (!emit || !emit_before || until.is_some()) {
+            // Mirror the slow-path add_final logic:
+            //   emit + pre-emit mode  → add remaining (not yet emitted)
+            //   emit + post-emit mode → DON'T add (already emitted in last iteration)
+            //   no-emit + no-until   → add final results
+            //   no-emit + until only → don't add (until-matched rows already collected)
+            //   no-emit + times      → add final (times terminates, add last batch)
+            let add_final = if emit {
+                emit_before // post-emit already collected final rows; pre-emit hasn't
+            } else {
+                until.is_none() || _times.is_some()
+            };
+            if !vertex_counts.is_empty() && add_final {
                 for (_nid, (mut row, count)) in vertex_counts {
                     if count > 1 {
                         row.insert("__gremlin_bulk".to_string(), Value::Int(count as i64));
@@ -841,6 +879,9 @@ impl<'a> QueryExecutor<'a> {
                             | (Some(Value::Float(b)), Some(Value::Int(a))) => {
                                 (*a as f64 - b).abs() < 1e-9
                             }
+                            (Some(sel), Some(Value::Str(token))) if token.starts_with("__.") => {
+                                self.eval_choose_map_traversal_option(cx.graph, token, sel)
+                            }
                             (Some(sel), Some(Value::Str(pred_str)))
                                 if pred_str.starts_with("P.") =>
                             {
@@ -962,7 +1003,12 @@ impl<'a> QueryExecutor<'a> {
                 self.foreach_seed.borrow_mut().take();
 
                 if !alt_rows.is_empty() {
-                    out.extend(alt_rows);
+                    for mut alt_row in alt_rows {
+                        for (key, value) in &row {
+                            alt_row.entry(key.clone()).or_insert_with(|| value.clone());
+                        }
+                        out.push(alt_row);
+                    }
                     matched = true;
                     break;
                 }
@@ -1037,8 +1083,20 @@ impl<'a> QueryExecutor<'a> {
             // Check the side-effect store first — it has the authoritative
             // accumulated value for aggregate() / local(aggregate()) patterns.
             let se_val = self.gremlin_side_effects.borrow().get(&agg_col).cloned();
-
             let agg_vals: Vec<&Value> = child_rows.iter().filter_map(|r| r.get(&agg_col)).collect();
+            if agg_col == "__gremlin_agg_x" {
+                append_gremlin_debug_log(&format!(
+                    "[cap:x] child_rows={} agg_vals={} stored={}",
+                    child_rows.len(),
+                    agg_vals.len(),
+                    match se_val.as_ref() {
+                        Some(Value::Map(m)) => format!("map:{}", m.len()),
+                        Some(Value::List(items)) => format!("list:{}", items.len()),
+                        Some(other) => other.type_name().to_string(),
+                        None => "none".to_string(),
+                    }
+                ));
+            }
             if agg_vals.is_empty() {
                 if let Some(stored) = se_val {
                     row.insert(key.clone(), stored);
@@ -1054,7 +1112,7 @@ impl<'a> QueryExecutor<'a> {
             let cap_value = if let Some(stored) = &se_val {
                 // For List aggregations, prefer the side-effect store which
                 // has the authoritative accumulated value (handles local(aggregate)).
-                if matches!(stored, Value::List(_)) {
+                if matches!(stored, Value::List(_) | Value::Map(_)) {
                     stored.clone()
                 } else if all_same {
                     first.clone()
@@ -1236,6 +1294,7 @@ impl<'a> QueryExecutor<'a> {
             by_traversal,
             productive,
             set_semantics,
+            assign_semantics,
         } = op
         else {
             debug_assert!(false, "expected GremlinAggregate operator");
@@ -1251,7 +1310,9 @@ impl<'a> QueryExecutor<'a> {
         // The initial value is stored in __side_effect_{key} column by the
         // compiler. Only pre-seed if the side-effect store has no entry yet.
         let mut collected: Vec<Value> = Vec::new();
-        {
+        if !*assign_semantics {
+            // Pre-seed from withSideEffect initial value on the very first call.
+            // Skipped for assign_semantics since assign REPLACES (not appends).
             let se = self.gremlin_side_effects.borrow();
             if se.contains_key(&agg_col) {
                 // Already seeded from a prior call — don't re-seed.
@@ -1285,27 +1346,13 @@ impl<'a> QueryExecutor<'a> {
                 // Multiple by() keys — collect a map of {key1: val1, key2: val2, ...}
                 let mut map = IndexMap::new();
                 for by_prop in by_keys {
-                    let prop_expr = Expr::Property(
-                        Box::new(Expr::Variable(value_alias.clone())),
-                        smol_str::SmolStr::new(by_prop),
-                    );
-                    let ctx = self.build_filter_ctx(cx.graph, row)?;
-                    let val = self
-                        .eval_with_storage(cx.graph, &prop_expr, row, &ctx)
-                        .unwrap_or(Value::Null);
+                    let val = self.eval_gremlin_by_key(cx, row, value_alias, by_prop);
                     map.insert(by_prop.clone().into_boxed_str(), val);
                 }
                 collected.push(Value::Map(map));
             } else if let Some(by_prop) = by_keys.first() {
                 // Single by("prop") modulation: resolve property from the node/edge value
-                let prop_expr = Expr::Property(
-                    Box::new(Expr::Variable(value_alias.clone())),
-                    smol_str::SmolStr::new(by_prop),
-                );
-                let ctx = self.build_filter_ctx(cx.graph, row)?;
-                let projected = self
-                    .eval_with_storage(cx.graph, &prop_expr, row, &ctx)
-                    .unwrap_or(Value::Null);
+                let projected = self.eval_gremlin_by_key(cx, row, value_alias, by_prop);
                 // Skip null values unless ProductiveByStrategy is active
                 if *productive || !matches!(projected, Value::Null) {
                     collected.push(projected);
@@ -1323,7 +1370,11 @@ impl<'a> QueryExecutor<'a> {
         // retrieve the full list even when downstream steps filter out rows.
         {
             let mut se = self.gremlin_side_effects.borrow_mut();
-            if let Some(Value::List(existing)) = se.get_mut(&agg_col) {
+            if *assign_semantics {
+                // Operator.assign: REPLACE the accumulated list with the current
+                // traverser's values. The last aggregate call wins.
+                se.insert(agg_col.clone(), Value::List(collected.clone()));
+            } else if let Some(Value::List(existing)) = se.get_mut(&agg_col) {
                 if *set_semantics {
                     for v in &collected {
                         if !existing.contains(v) {
@@ -1349,19 +1400,19 @@ impl<'a> QueryExecutor<'a> {
             }
         }
         if input.is_empty() {
-            // Even with no input, the side-effect must be accessible via cap().
-            let mut sentinel = Row::new();
-            let stored = self
-                .gremlin_side_effects
-                .borrow()
-                .get(&agg_col)
-                .cloned()
-                .unwrap_or(Value::List(collected));
-            sentinel.insert(agg_col, stored);
-            return Ok(vec![sentinel]);
+            // No traversers passed the filter (all edges already visited, etc.).
+            // The side-effect store was already updated above, so cap() can
+            // retrieve the accumulated value from gremlin_side_effects.
+            // Return an empty stream so that downstream steps (like otherV())
+            // inside a repeat body do not see a sentinel row that is missing
+            // intermediate step variables (e.g. the edge alias from bothE).
+            return Ok(vec![]);
         }
         for row in &mut input {
-            if let Some(Value::List(existing)) = row.get(&agg_col).cloned() {
+            if *assign_semantics {
+                // Operator.assign: REPLACE — row carries only the current values.
+                row.insert(agg_col.clone(), Value::List(collected.clone()));
+            } else if let Some(Value::List(existing)) = row.get(&agg_col).cloned() {
                 let mut merged = existing;
                 if *set_semantics {
                     for v in &collected {
@@ -1615,6 +1666,14 @@ impl<'a> QueryExecutor<'a> {
         if let Some(expr) = key.strip_prefix("~math:") {
             return eval_select_math_expr(expr, val);
         }
+        if let Some(rest) = key.strip_prefix("~select_map:") {
+            return self.select_map_fields(rest, val);
+        }
+        if let Some(rest) = key.strip_prefix("~in_values_min:") {
+            if let Some((rel_type, prop)) = rest.split_once(':') {
+                return self.resolve_in_values_min(cx, rel_type, prop, val);
+            }
+        }
         // Handle ~toupper:prop and ~tolower:prop
         if let Some(prop) = key.strip_prefix("~toupper:") {
             let inner = self.apply_path_by_key(cx, prop, val);
@@ -1717,6 +1776,169 @@ impl<'a> QueryExecutor<'a> {
         self.apply_path_by_key(cx, prop_name, val)
     }
 
+    pub(crate) fn resolve_prop_on_value_for_filter(
+        &self,
+        graph: &str,
+        prop_name: &str,
+        val: &Value,
+    ) -> Result<Value, GqlError> {
+        if prop_name.is_empty() {
+            return Ok(val.clone());
+        }
+        if let Some(rest) = prop_name.strip_prefix("~select_map:") {
+            return Ok(self.select_map_fields(rest, val));
+        }
+        if let Some(rest) = prop_name.strip_prefix("~in_values_min:") {
+            if let Some((rel_type, prop)) = rest.split_once(':') {
+                return self.resolve_in_values_min_for_filter(graph, rel_type, prop, val);
+            }
+        }
+        match prop_name {
+            "~label" | "T.label" | "label" => match val {
+                Value::Node(node_id) => Ok(match self.cached_get_node(graph, *node_id)? {
+                    Some(node_data) => node_data
+                        .labels
+                        .into_iter()
+                        .next()
+                        .map(|label| Value::Str(label.into_boxed_str()))
+                        .unwrap_or(Value::Null),
+                    None => Value::Null,
+                }),
+                Value::Edge(edge_id) => Ok(match self.cached_get_edge(graph, *edge_id)? {
+                    Some(edge_data) => Value::Str(edge_data.rel_type.into_boxed_str()),
+                    None => Value::Null,
+                }),
+                _ => Ok(val.clone()),
+            },
+            "~id" | "T.id" | "id" => Ok(match val {
+                Value::Node(nid) => Value::Int(nid.0 as i64),
+                Value::Edge(eid) => Value::Int(eid.0 as i64),
+                _ => val.clone(),
+            }),
+            "~key" | "T.key" | "key" => Ok(match val {
+                Value::Map(m) => m.get("~key").cloned().unwrap_or_else(|| val.clone()),
+                _ => val.clone(),
+            }),
+            "~value" | "T.value" | "value" => Ok(match val {
+                Value::Map(m) => m.get("~value").cloned().unwrap_or_else(|| val.clone()),
+                _ => val.clone(),
+            }),
+            _ => match val {
+                Value::Node(node_id) => Ok(match self.cached_get_node(graph, *node_id)? {
+                    Some(node_data) => node_data
+                        .properties
+                        .get(prop_name)
+                        .cloned()
+                        .unwrap_or(Value::Null),
+                    None => Value::Null,
+                }),
+                Value::Edge(edge_id) => Ok(match self.cached_get_edge(graph, *edge_id)? {
+                    Some(edge_data) => edge_data
+                        .properties
+                        .get(prop_name)
+                        .cloned()
+                        .unwrap_or(Value::Null),
+                    None => Value::Null,
+                }),
+                Value::Map(m) => Ok(m.get(prop_name).cloned().unwrap_or(Value::Null)),
+                _ => Ok(val.clone()),
+            },
+        }
+    }
+
+    fn resolve_in_values_min(
+        &self,
+        cx: &mut ExecContext<'_>,
+        rel_type: &str,
+        prop: &str,
+        val: &Value,
+    ) -> Value {
+        let Value::Node(node_id) = val else {
+            return Value::Null;
+        };
+
+        let rel_types = [rel_type];
+        let incoming = match self.store.in_edges_by_type(cx.graph, *node_id, &rel_types) {
+            Ok(entries) => entries,
+            Err(_) => return Value::Null,
+        };
+        if incoming.is_empty() {
+            return Value::Null;
+        }
+
+        let neighbor_ids: Vec<NodeId> = incoming.iter().map(|entry| entry.neighbor_id).collect();
+        let nodes = match self.store.get_nodes_batch(cx.graph, &neighbor_ids) {
+            Ok(nodes) => nodes,
+            Err(_) => return Value::Null,
+        };
+
+        let mut best: Option<Value> = None;
+        for node in nodes.into_iter().flatten() {
+            let Some(candidate) = node.properties.get(prop).cloned() else {
+                continue;
+            };
+            match &best {
+                Some(current) if gremlin_cmp_values(&candidate, current).is_ge() => {}
+                _ => best = Some(candidate),
+            }
+        }
+
+        best.unwrap_or(Value::Null)
+    }
+
+    fn resolve_in_values_min_for_filter(
+        &self,
+        graph: &str,
+        rel_type: &str,
+        prop: &str,
+        val: &Value,
+    ) -> Result<Value, GqlError> {
+        let Value::Node(node_id) = val else {
+            return Ok(Value::Null);
+        };
+
+        let rel_types = [rel_type];
+        let incoming = match self.store.in_edges_by_type(graph, *node_id, &rel_types) {
+            Ok(entries) => entries,
+            Err(_) => return Ok(Value::Null),
+        };
+        if incoming.is_empty() {
+            return Ok(Value::Null);
+        }
+
+        let neighbor_ids: Vec<NodeId> = incoming.iter().map(|entry| entry.neighbor_id).collect();
+        let nodes = match self.store.get_nodes_batch(graph, &neighbor_ids) {
+            Ok(nodes) => nodes,
+            Err(_) => return Ok(Value::Null),
+        };
+
+        let mut best: Option<Value> = None;
+        for node in nodes.into_iter().flatten() {
+            let Some(candidate) = node.properties.get(prop).cloned() else {
+                continue;
+            };
+            match &best {
+                Some(current) if gremlin_cmp_values(&candidate, current).is_ge() => {}
+                _ => best = Some(candidate),
+            }
+        }
+
+        Ok(best.unwrap_or(Value::Null))
+    }
+
+    fn select_map_fields(&self, fields: &str, val: &Value) -> Value {
+        let Value::Map(map) = val else {
+            return Value::Null;
+        };
+        let mut selected = IndexMap::new();
+        for field in fields.split(',') {
+            if let Some(value) = map.get(field) {
+                selected.insert(field.to_string().into_boxed_str(), value.clone());
+            }
+        }
+        Value::Map(selected)
+    }
+
     fn resolve_map_select_value(&self, row: &Row, encoded: &str) -> Option<Value> {
         let rest = encoded.strip_prefix("__map_select__")?;
         let (map_alias, key_alias) = rest.split_once("__keyalias__")?;
@@ -1737,6 +1959,56 @@ impl<'a> QueryExecutor<'a> {
         }
         let sep_pos = rest.find("__")?;
         Some((&rest[..sep_pos], &rest[sep_pos + 2..]))
+    }
+
+    fn apply_select_by_traversal(
+        &self,
+        cx: &mut ExecContext<'_>,
+        row: &Row,
+        src_var: &Identifier,
+        selected: Value,
+        traversal: &GremlinSelectTraversal,
+    ) -> Result<Value, GqlError> {
+        let GremlinSelectTraversal::Traversal { op, out_alias } = traversal;
+        let mut seed = row.clone();
+        seed.insert(src_var.0.to_string(), selected);
+        self.foreach_seed.borrow_mut().replace(vec![seed]);
+        let sub_rows = self.exec_operator(cx, op)?;
+        self.foreach_seed.borrow_mut().take();
+        Ok(sub_rows
+            .first()
+            .and_then(|sub_row| {
+                sub_row
+                    .get(out_alias.as_str())
+                    .or_else(|| sub_row.get(src_var.0.as_str()))
+                    .cloned()
+            })
+            .unwrap_or(Value::Null))
+    }
+
+    fn eval_gremlin_by_key(
+        &self,
+        cx: &mut ExecContext<'_>,
+        row: &Row,
+        value_alias: &Identifier,
+        by_key: &str,
+    ) -> Value {
+        if let Some(selected) = row.get(value_alias.as_str()) {
+            if by_key.starts_with('~') {
+                return self.resolve_prop_on_value(cx, by_key, selected);
+            }
+        }
+        let ctx = self.build_filter_ctx(cx.graph, row).ok();
+        let prop_expr = Expr::Property(
+            Box::new(Expr::Variable(value_alias.clone())),
+            smol_str::SmolStr::new(by_key),
+        );
+        if let Some(ctx) = ctx {
+            self.eval_with_storage(cx.graph, &prop_expr, row, &ctx)
+                .unwrap_or(Value::Null)
+        } else {
+            Value::Null
+        }
     }
 
     /// For each input row, iterate through patterns. Each pattern is a
@@ -1810,12 +2082,18 @@ impl<'a> QueryExecutor<'a> {
                 // This avoids extracting the seed label's value from the
                 // pattern output when the seed was overwritten internally
                 // (e.g. by a Repeat step).
+                // Multiple labels can share the same alias (e.g. repeat().as("b")
+                // maps "b" to the same alias as "a"), so we store Vec<label>.
                 let p_labels = pattern_labels.get(pattern_idx);
-                let p_reverse: Option<std::collections::HashMap<&str, &str>> = p_labels.map(|pl| {
-                    pl.iter()
-                        .map(|(label, alias)| (alias.0.as_str(), label.as_str()))
-                        .collect()
-                });
+                let p_reverse: Option<std::collections::HashMap<&str, Vec<&str>>> =
+                    p_labels.map(|pl| {
+                        let mut m: std::collections::HashMap<&str, Vec<&str>> =
+                            std::collections::HashMap::new();
+                        for (label, alias) in pl {
+                            m.entry(alias.0.as_str()).or_default().push(label.as_str());
+                        }
+                        m
+                    });
 
                 for binding in &current_bindings {
                     cx.budget.check_or_err()?;
@@ -1850,8 +2128,13 @@ impl<'a> QueryExecutor<'a> {
                         let norm = if let Some(ref pr) = p_reverse {
                             let mut n = Row::new();
                             for (k, v) in &p_row {
-                                if let Some(label) = pr.get(k.as_str()) {
-                                    n.insert((*label).to_string(), v.clone());
+                                if let Some(labels) = pr.get(k.as_str()) {
+                                    // Emit all labels sharing this alias (e.g.
+                                    // repeat().as("b") causes "a" and "b" to
+                                    // share the same column alias).
+                                    for label in labels {
+                                        n.insert((*label).to_string(), v.clone());
+                                    }
                                 }
                             }
                             n
@@ -1925,6 +2208,7 @@ impl<'a> QueryExecutor<'a> {
     ) -> Result<Vec<Row>, GqlError> {
         let Operator::GremlinSelect {
             keys,
+            by_traversals,
             productive,
             pop,
             label_stacks,
@@ -1948,8 +2232,9 @@ impl<'a> QueryExecutor<'a> {
             let mut all_found = true;
             let mut new_row = Row::new();
 
-            for (src_var, output_key) in keys {
+            for (idx, (src_var, output_key)) in keys.iter().enumerate() {
                 let var_name = src_var.0.as_str();
+                let by_traversal = by_traversals.get(idx).and_then(|entry| entry.as_ref());
 
                 // Pop modifier handling: when Pop is set and label_stacks has
                 // multiple aliases for this key, resolve values from all aliases.
@@ -1961,9 +2246,15 @@ impl<'a> QueryExecutor<'a> {
                         .map(|(_, v)| v.as_slice())
                         .unwrap_or(&[]);
                     if !stack.is_empty() {
-                        // Collect all values from the label stack
+                        // Repeat() uses synthetic pop_orig_* aliases to preserve
+                        // the original binding for Pop.first when a label is
+                        // rebound inside the loop body. Those shadow aliases
+                        // must not leak into Pop.all/last/mixed materialization.
                         let mut vals: Vec<Value> = Vec::new();
-                        for alias in stack {
+                        for alias in stack.iter().filter(|alias| {
+                            matches!(pop_mode, GremlinPop::First)
+                                || !alias.0.as_str().starts_with("pop_orig_")
+                        }) {
                             if let Some(v) = row.get(alias.0.as_str()) {
                                 vals.push(v.clone());
                             }
@@ -2014,6 +2305,17 @@ impl<'a> QueryExecutor<'a> {
                         } else {
                             resolved
                         };
+                        let resolved = if let Some(traversal) = by_traversal {
+                            self.apply_select_by_traversal(cx, row, src_var, resolved, traversal)?
+                        } else {
+                            resolved
+                        };
+                        let empty_local = matches!(&resolved, Value::List(items) if items.is_empty())
+                            || matches!(&resolved, Value::Map(map) if map.is_empty());
+                        if !*productive && empty_local {
+                            all_found = false;
+                            break;
+                        }
                         new_row.insert(output_key.clone(), resolved);
                         continue;
                     }
@@ -2074,6 +2376,13 @@ impl<'a> QueryExecutor<'a> {
                                 };
 
                                 if let Some(v) = resolved {
+                                    let v = if let Some(traversal) = by_traversal {
+                                        self.apply_select_by_traversal(
+                                            cx, row, src_var, v, traversal,
+                                        )?
+                                    } else {
+                                        v
+                                    };
                                     new_row.insert(output_key.clone(), v);
                                     continue;
                                 }
@@ -2084,6 +2393,13 @@ impl<'a> QueryExecutor<'a> {
                                 // property access.
                                 if prop_name.starts_with('~') {
                                     let r = self.resolve_prop_on_value(cx, prop_name, node_val);
+                                    let r = if let Some(traversal) = by_traversal {
+                                        self.apply_select_by_traversal(
+                                            cx, row, src_var, r, traversal,
+                                        )?
+                                    } else {
+                                        r
+                                    };
                                     if !*productive && matches!(r, Value::Null) {
                                         all_found = false;
                                         break;
@@ -2099,6 +2415,13 @@ impl<'a> QueryExecutor<'a> {
                                 );
                                 match self.eval_with_storage(cx.graph, &prop_expr, row, &ctx) {
                                     Ok(v) => {
+                                        let v = if let Some(traversal) = by_traversal {
+                                            self.apply_select_by_traversal(
+                                                cx, row, src_var, v, traversal,
+                                            )?
+                                        } else {
+                                            v
+                                        };
                                         if !*productive && matches!(v, Value::Null) {
                                             all_found = false;
                                             break;
@@ -2113,6 +2436,15 @@ impl<'a> QueryExecutor<'a> {
                                                 let v = m.get(prop_name).cloned();
                                                 match v {
                                                     Some(val) => {
+                                                        let val = if let Some(traversal) =
+                                                            by_traversal
+                                                        {
+                                                            self.apply_select_by_traversal(
+                                                                cx, row, src_var, val, traversal,
+                                                            )?
+                                                        } else {
+                                                            val
+                                                        };
                                                         new_row.insert(output_key.clone(), val);
                                                     }
                                                     None => {
@@ -2200,6 +2532,11 @@ impl<'a> QueryExecutor<'a> {
                             } else {
                                 v
                             }
+                        } else {
+                            v
+                        };
+                        let v = if let Some(traversal) = by_traversal {
+                            self.apply_select_by_traversal(cx, row, src_var, v, traversal)?
                         } else {
                             v
                         };
@@ -2292,6 +2629,7 @@ impl<'a> QueryExecutor<'a> {
             key_traversal,
             value_traversal,
             productive,
+            key_is_identity,
             explicit_fold,
             child,
         } = op
@@ -2309,6 +2647,24 @@ impl<'a> QueryExecutor<'a> {
         let mut groups: IndexMap<Box<str>, Vec<Value>> = IndexMap::new();
         // Also collect raw rows per group for value_traversal (which runs on group members)
         let mut group_rows: IndexMap<Box<str>, Vec<Row>> = IndexMap::new();
+
+        // Extract withSideEffect initial map from input rows so we can
+        // merge its entries into the final result_map after traversal completes.
+        // When group("a") follows withSideEffect("a", initialMap), the compiler
+        // injects the initial map into rows as __side_effect_a via a Project operator.
+        let se_initial_map: Option<IndexMap<Box<str>, Value>> = if let Some(key) = side_effect_key {
+            let se_col = format!("__side_effect_{key}");
+            let result = input.first().and_then(|row| {
+                if let Some(Value::Map(m)) = row.get(&se_col) {
+                    Some(m.clone())
+                } else {
+                    None
+                }
+            });
+            result
+        } else {
+            None
+        };
 
         // Check if value_expr differs from key_expr (i.e., a value-by modulation is present).
         let has_value_by = value_expr != key_expr || value_traversal.is_some();
@@ -2332,8 +2688,10 @@ impl<'a> QueryExecutor<'a> {
                     .unwrap_or(Value::Null)
             };
             // Skip rows where the group key evaluates to Null (unproductive by),
-            // unless ProductiveByStrategy is active.
-            if matches!(key_val, Value::Null) && !*productive {
+            // unless ProductiveByStrategy is active or the key is the identity
+            // (traverser itself). When key_is_identity is true, the traverser IS
+            // the key — a null traverser is a valid group key and must be counted.
+            if matches!(key_val, Value::Null) && !*productive && !*key_is_identity {
                 continue;
             }
 
@@ -2371,6 +2729,23 @@ impl<'a> QueryExecutor<'a> {
                     }
                 }
                 groups.insert(key_str.clone(), values);
+            }
+        }
+
+        // Merge withSideEffect initial values into groups.
+        // For keys already in groups (traversal matched): prepend initial values.
+        // For keys only in initial map (no matching vertex): use initial values as-is.
+        if let Some(init_map) = se_initial_map {
+            for (k, v) in init_map {
+                let init_vals: Vec<Value> = match v {
+                    Value::List(items) => items,
+                    other => vec![other],
+                };
+                let entry = groups.entry(k).or_default();
+                // Prepend so initial values come before traversal values.
+                let mut merged = init_vals;
+                merged.append(entry);
+                *entry = merged;
             }
         }
 
@@ -2420,10 +2795,11 @@ impl<'a> QueryExecutor<'a> {
                         if *explicit_fold {
                             // Explicit fold(): always produce a List
                             Value::List(values)
-                        } else if values.len() == 1
-                            && !matches!(values.first(), Some(Value::List(_)))
-                        {
-                            // Single scalar result (e.g. constant(1)): unwrap
+                        } else if values.len() == 1 {
+                            // Single result from value traversal: unwrap unconditionally.
+                            // This handles both scalar results (e.g., constant(1)) and
+                            // list results (e.g., select(Column.values) returning a List).
+                            // The value traversal already produced the final value.
                             values.into_iter().next().unwrap_or(Value::Null)
                         } else {
                             Value::List(values)
@@ -2467,13 +2843,36 @@ impl<'a> QueryExecutor<'a> {
             let agg_col = format!("__gremlin_agg_{key}");
             let mut output = input;
             if output.is_empty() {
-                // Even with no input, the side-effect must be accessible via cap().
+                // Even with no input, the side-effect must remain accessible via
+                // cap(). Preserve any previously accumulated named side-effect map
+                // instead of overwriting it with an empty map on an exhausted
+                // repeat() iteration.
+                let map_val = if let Some(Value::Map(existing)) =
+                    self.gremlin_side_effects.borrow().get(&agg_col).cloned()
+                {
+                    let mut merged = existing;
+                    for (mk, mv) in result_map {
+                        merged.insert(mk, mv);
+                    }
+                    Value::Map(merged)
+                } else {
+                    Value::Map(result_map)
+                };
                 let mut sentinel = Row::new();
-                sentinel.insert(agg_col.clone(), Value::Map(result_map.clone()));
+                sentinel.insert(agg_col.clone(), map_val.clone());
                 // Store in side-effect store for cap() retrieval
                 self.gremlin_side_effects
                     .borrow_mut()
-                    .insert(agg_col, Value::Map(result_map));
+                    .insert(agg_col, map_val);
+                if key == "x" {
+                    append_gremlin_debug_log(&format!(
+                        "[group:x] empty-input sentinel map-size={}",
+                        match sentinel.get("__gremlin_agg_x") {
+                            Some(Value::Map(m)) => m.len(),
+                            _ => 0,
+                        }
+                    ));
+                }
                 return Ok(vec![sentinel]);
             }
             // Merge new counts with any existing aggregation carried from
@@ -2486,38 +2885,15 @@ impl<'a> QueryExecutor<'a> {
                     if let Some(Value::Map(existing)) = output.first().and_then(|f| f.get(&agg_col))
                     {
                         for (ek, ev) in existing {
-                            let entry = merged.entry(ek.clone()).or_insert(Value::Int(0));
-                            match (entry.clone(), ev) {
-                                (Value::Int(a), Value::Int(b)) => *entry = Value::Int(a + b),
-                                (Value::Float(a), Value::Float(b)) => *entry = Value::Float(a + b),
-                                (Value::List(mut a), Value::List(b)) => {
-                                    a.extend(b.iter().cloned());
-                                    *entry = Value::List(a);
-                                }
-                                _ => {}
-                            }
+                            merge_gremlin_map_entry(&mut merged, ek, ev);
                         }
                     }
-                } else {
-                    // Fallback: merge with global side-effect store.
-                    // Inside local(), seed rows don't carry the column,
-                    // but the store accumulates across iterations.
-                    let se = self.gremlin_side_effects.borrow();
-                    if let Some(Value::Map(existing)) = se.get(&agg_col) {
-                        for (ek, ev) in existing {
-                            let entry = merged.entry(ek.clone()).or_insert(Value::Int(0));
-                            match (entry.clone(), ev) {
-                                (Value::Int(a), Value::Int(b)) => *entry = Value::Int(a + b),
-                                (Value::Float(a), Value::Float(b)) => *entry = Value::Float(a + b),
-                                (Value::List(mut a), Value::List(b)) => {
-                                    a.extend(b.iter().cloned());
-                                    *entry = Value::List(a);
-                                }
-                                _ => {}
-                            }
-                        }
+                } else if let Some(Value::Map(existing)) =
+                    self.gremlin_side_effects.borrow().get(&agg_col).cloned()
+                {
+                    for (ek, ev) in existing {
+                        merge_gremlin_map_entry(&mut merged, &ek, &ev);
                     }
-                    drop(se);
                 }
                 Value::Map(merged)
             };
@@ -2525,6 +2901,35 @@ impl<'a> QueryExecutor<'a> {
             self.gremlin_side_effects
                 .borrow_mut()
                 .insert(agg_col.clone(), map_val.clone());
+            if key == "x" {
+                let sample_keys = match &map_val {
+                    Value::Map(m) => m
+                        .keys()
+                        .take(6)
+                        .map(|k| k.to_string())
+                        .collect::<Vec<_>>()
+                        .join(" | "),
+                    _ => String::new(),
+                };
+                let sample_value = match &map_val {
+                    Value::Map(m) => m
+                        .values()
+                        .next()
+                        .map(|value| summarize_gremlin_value_shape(value, 3))
+                        .unwrap_or_default(),
+                    _ => String::new(),
+                };
+                append_gremlin_debug_log(&format!(
+                    "[group:x] output_rows={} map-size={} sample={} value={}",
+                    output.len(),
+                    match &map_val {
+                        Value::Map(m) => m.len(),
+                        _ => 0,
+                    },
+                    sample_keys,
+                    sample_value
+                ));
+            }
             for row in &mut output {
                 row.insert(agg_col.clone(), map_val.clone());
             }
@@ -2535,6 +2940,90 @@ impl<'a> QueryExecutor<'a> {
         out_row.insert(alias.0.clone(), Value::Map(result_map));
         cx.budget.record_row();
         Ok(vec![out_row])
+    }
+
+    /// Execute `GremlinSample` — barrier sampling of the traverser stream using
+    /// Gremlin's weighted roulette semantics.
+    pub(crate) fn exec_gremlin_sample(
+        &self,
+        cx: &mut ExecContext<'_>,
+        op: &Operator,
+    ) -> Result<Vec<Row>, GqlError> {
+        let Operator::GremlinSample {
+            count,
+            weight,
+            seed,
+            child,
+        } = op
+        else {
+            debug_assert!(false, "expected GremlinSample operator");
+            return Err(GqlError::Execution(ExecutionError::UnsupportedFeature {
+                feature: "internal: expected GremlinSample operator".into(),
+            }));
+        };
+
+        let input = self.exec_operator(cx, child)?;
+        let mut weighted_rows = Vec::with_capacity(input.len());
+        for row in input {
+            cx.budget.check_or_err()?;
+            let row_weight = if let Some(weight_expr) = weight {
+                let filter_ctx = self.build_filter_ctx(cx.graph, &row)?;
+                match self.eval_with_storage(cx.graph, weight_expr, &row, &filter_ctx)? {
+                    Value::Int(n) => n as f64,
+                    Value::Float(f) => f,
+                    Value::Null => continue,
+                    other => {
+                        return Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                            expected: "sample().by() numeric weight".into(),
+                            actual: other.type_name().to_string(),
+                        }))
+                    }
+                }
+            } else {
+                1.0
+            };
+            if row_weight.is_sign_negative() || !row_weight.is_finite() {
+                continue;
+            }
+            weighted_rows.push((row, row_weight));
+        }
+
+        if weighted_rows.len() <= *count {
+            return Ok(weighted_rows.into_iter().map(|(row, _)| row).collect());
+        }
+
+        let mut total_weight: f64 = weighted_rows.iter().map(|(_, weight)| *weight).sum();
+        let seed = seed.unwrap_or_else(|| {
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos() as i64
+        });
+        let mut rng = JavaCompatibleRandom::new(seed);
+        let mut sampled = Vec::with_capacity(*count);
+
+        while sampled.len() < *count && !weighted_rows.is_empty() {
+            let mut running_total_weight = total_weight;
+            let mut selected = None;
+            for (idx, (_, row_weight)) in weighted_rows.iter().enumerate() {
+                cx.budget.check_or_err()?;
+                let draw = rng.next_double();
+                if draw <= (*row_weight / running_total_weight.max(f64::MIN_POSITIVE)) {
+                    selected = Some(idx);
+                    break;
+                }
+                running_total_weight -= *row_weight;
+            }
+            if let Some(idx) = selected {
+                let (row, row_weight) = weighted_rows.remove(idx);
+                total_weight -= row_weight;
+                sampled.push(row);
+            } else {
+                break;
+            }
+        }
+
+        Ok(sampled)
     }
 
     /// Execute `GremlinMapSlice` — slice Map/List values in each row.
@@ -2838,13 +3327,18 @@ impl<'a> QueryExecutor<'a> {
                     row.insert(out_alias.0.clone(), Value::Map(map));
                     out.push(row);
                 } else {
-                    // Produce [element, index] pairs
-                    for (i, item) in items.iter().enumerate() {
-                        let pair = Value::List(vec![item.clone(), Value::Int(i as i64)]);
-                        let mut row = Row::new();
-                        row.insert(out_alias.0.clone(), pair);
-                        out.push(row);
-                    }
+                    // Produce a single row containing the list of [element, index] pairs.
+                    // TinkerPop index() on a folded list returns a list of pairs so that
+                    // subsequent unfold() yields each pair as a List value rather than
+                    // unfolding the pairs themselves.
+                    let pairs: Vec<Value> = items
+                        .iter()
+                        .enumerate()
+                        .map(|(i, item)| Value::List(vec![item.clone(), Value::Int(i as i64)]))
+                        .collect();
+                    let mut row = input[0].clone();
+                    row.insert(out_alias.0.clone(), Value::List(pairs));
+                    out.push(row);
                 }
                 return Ok(out);
             }
@@ -2887,6 +3381,7 @@ impl<'a> QueryExecutor<'a> {
             entries,
             child,
             current_alias,
+            out_alias,
             productive,
         } = op
         else {
@@ -2901,7 +3396,7 @@ impl<'a> QueryExecutor<'a> {
         for row in &input {
             cx.budget.check_or_err()?;
             let mut map = IndexMap::new();
-            for (key, sub_op, out_alias) in entries {
+            for (key, sub_op, out_alias, by_is_identity) in entries {
                 // Feed the current row as a seed and evaluate the sub-traversal
                 self.foreach_seed.borrow_mut().replace(vec![row.clone()]);
                 let sub_rows = self.exec_operator(cx, sub_op)?;
@@ -2920,20 +3415,22 @@ impl<'a> QueryExecutor<'a> {
                     Value::Null
                 };
                 // Omit keys where by-modulation produced Null (property
-                // doesn't exist), unless ProductiveByStrategy is active.
-                if matches!(val, Value::Null) && !*productive {
+                // doesn't exist), unless ProductiveByStrategy is active or
+                // the by() is the identity (empty by()). When by_is_identity
+                // is true, a null value means the traverser itself is null —
+                // this is a legitimate null that must appear in the result map.
+                if matches!(val, Value::Null) && !*productive && !by_is_identity {
                     continue;
                 }
                 map.insert(key.clone().into_boxed_str(), val);
             }
             // Store the projected Map as both individual columns and a combined Map
             let map_val = Value::Map(map.clone());
-            let mut out_row = Row::new();
+            let mut out_row = row.clone();
             for (k, v) in &map {
                 out_row.insert(k.to_string(), v.clone());
             }
-            // Also set the result on the current_alias so downstream steps find it
-            out_row.insert(current_alias.0.clone(), map_val);
+            out_row.insert(out_alias.0.clone(), map_val);
             out.push(out_row);
         }
         Ok(out)
@@ -3095,6 +3592,65 @@ impl<'a> QueryExecutor<'a> {
         }
         Ok(out)
     }
+
+    fn eval_choose_map_traversal_option(&self, graph: &str, token: &str, value: &Value) -> bool {
+        let Some(step) = token.strip_prefix("__.") else {
+            return false;
+        };
+        if step == "identity()" {
+            return !matches!(value, Value::Null);
+        }
+        if let Some(args) = step
+            .strip_prefix("hasLabel(")
+            .and_then(|rest| rest.strip_suffix(')'))
+        {
+            let parts = parse_gremlin_option_args(args);
+            let Some(label) = parts.first() else {
+                return false;
+            };
+            let label = trim_gremlin_option_string(label);
+            return match value {
+                Value::Node(node_id) => self
+                    .cached_get_node(graph, *node_id)
+                    .ok()
+                    .flatten()
+                    .is_some_and(|node| node.labels.iter().any(|l| l == label)),
+                _ => false,
+            };
+        }
+        if let Some(args) = step
+            .strip_prefix("has(")
+            .and_then(|rest| rest.strip_suffix(')'))
+        {
+            let parts = parse_gremlin_option_args(args);
+            if parts.is_empty() {
+                return false;
+            }
+            let key = trim_gremlin_option_string(&parts[0]);
+            let actual = match value {
+                Value::Node(node_id) => self
+                    .cached_get_node(graph, *node_id)
+                    .ok()
+                    .flatten()
+                    .and_then(|node| node.properties.get(key).cloned()),
+                Value::Edge(edge_id) => self
+                    .cached_get_edge(graph, *edge_id)
+                    .ok()
+                    .flatten()
+                    .and_then(|edge| edge.properties.get(key).cloned()),
+                Value::Map(map) => map.get(key).cloned(),
+                _ => None,
+            };
+            return if parts.len() == 1 {
+                actual.is_some_and(|v| !matches!(v, Value::Null))
+            } else if let Some(actual) = actual {
+                actual == parse_gremlin_option_value(&parts[1])
+            } else {
+                false
+            };
+        }
+        false
+    }
 }
 
 /// Convert a Value to a string key for use in Gremlin group() Map output.
@@ -3119,35 +3675,87 @@ fn value_to_map_key(v: &Value) -> Box<str> {
             // Gremlin list key format: l[elem1,elem2,...] (no spaces)
             let parts: Vec<String> = items
                 .iter()
-                .map(|item| match item {
-                    Value::Str(s) => s.to_string(),
-                    Value::Int(n) => n.to_string(),
-                    Value::Float(f) => f.to_string(),
-                    Value::Bool(b) => b.to_string(),
-                    Value::Null => "null".to_string(),
-                    Value::Node(nid) => format!("v[{}]", nid.0),
-                    Value::Edge(eid) => format!("e[{}]", eid.0),
-                    other => format!("{other:?}"),
-                })
+                .map(|item| value_to_map_key(item).to_string())
                 .collect();
             format!("l[{}]", parts.join(",")).into_boxed_str()
         }
         Value::Map(m) => {
             let parts: Vec<String> = m
                 .iter()
-                .map(|(k, v)| {
-                    let vs = match v {
-                        Value::Str(s) => s.to_string(),
-                        Value::Int(n) => n.to_string(),
-                        Value::Float(f) => f.to_string(),
-                        other => format!("{other:?}"),
-                    };
-                    format!("{k}={vs}")
-                })
+                .map(|(k, v)| format!("{k}={}", value_to_map_key(v)))
                 .collect();
             format!("{{{}}}", parts.join(", ")).into_boxed_str()
         }
         _ => format!("{v:?}").into_boxed_str(),
+    }
+}
+
+fn merge_gremlin_map_entry(map: &mut IndexMap<Box<str>, Value>, key: &str, incoming: &Value) {
+    match map.entry(Box::from(key)) {
+        indexmap::map::Entry::Vacant(entry) => {
+            entry.insert(incoming.clone());
+        }
+        indexmap::map::Entry::Occupied(mut entry) => match (entry.get().clone(), incoming) {
+            (Value::Int(a), Value::Int(b)) => {
+                entry.insert(Value::Int(a + b));
+            }
+            (Value::Float(a), Value::Float(b)) => {
+                entry.insert(Value::Float(a + b));
+            }
+            (Value::List(mut a), Value::List(b)) => {
+                a.extend(b.iter().cloned());
+                entry.insert(Value::List(a));
+            }
+            (_, other) => {
+                entry.insert(other.clone());
+            }
+        },
+    }
+}
+
+fn summarize_gremlin_value_shape(value: &Value, depth: usize) -> String {
+    if depth == 0 {
+        return "...".to_string();
+    }
+    match value {
+        Value::List(items) => {
+            let sample = items
+                .iter()
+                .take(3)
+                .map(|item| summarize_gremlin_value_shape(item, depth - 1))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("list(len={}, sample=[{}])", items.len(), sample)
+        }
+        Value::Map(entries) => {
+            let sample = entries
+                .iter()
+                .take(2)
+                .map(|(k, v)| format!("{k}:{}", summarize_gremlin_value_shape(v, depth - 1)))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("map(len={}, sample={{{}}})", entries.len(), sample)
+        }
+        Value::Node(nid) => format!("node({})", nid.0),
+        Value::Edge(eid) => format!("edge({})", eid.0),
+        Value::Str(s) => format!("str({s})"),
+        Value::Int(i) => format!("int({i})"),
+        Value::Float(f) => format!("float({f})"),
+        Value::Bool(b) => format!("bool({b})"),
+        Value::Null => "null".to_string(),
+        other => format!("{other:?}"),
+    }
+}
+
+fn append_gremlin_debug_log(line: &str) {
+    use std::io::Write;
+
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open("/tmp/sd-gremlin-debug.log")
+    {
+        let _ = writeln!(file, "{line}");
     }
 }
 
@@ -3283,6 +3891,57 @@ fn eval_gremlin_predicate(pred_str: &str, value: &Value) -> bool {
     }
 
     false
+}
+
+fn parse_gremlin_option_args(args: &str) -> Vec<String> {
+    let mut parts = Vec::new();
+    let mut current = String::new();
+    let mut in_single = false;
+    let mut in_double = false;
+    for ch in args.chars() {
+        match ch {
+            '\'' if !in_double => {
+                in_single = !in_single;
+                current.push(ch);
+            }
+            '"' if !in_single => {
+                in_double = !in_double;
+                current.push(ch);
+            }
+            ',' if !in_single && !in_double => {
+                parts.push(current.trim().to_string());
+                current.clear();
+            }
+            _ => current.push(ch),
+        }
+    }
+    if !current.trim().is_empty() {
+        parts.push(current.trim().to_string());
+    }
+    parts
+}
+
+fn trim_gremlin_option_string(s: &str) -> &str {
+    s.trim().trim_matches(|c| c == '"' || c == '\'')
+}
+
+fn parse_gremlin_option_value(raw: &str) -> Value {
+    let trimmed = trim_gremlin_option_string(raw);
+    if raw.trim().starts_with('"') || raw.trim().starts_with('\'') {
+        return Value::Str(trimmed.into());
+    }
+    if let Ok(i) = trimmed.parse::<i64>() {
+        return Value::Int(i);
+    }
+    if let Ok(f) = trimmed.parse::<f64>() {
+        return Value::Float(f);
+    }
+    match trimmed {
+        "true" => Value::Bool(true),
+        "false" => Value::Bool(false),
+        "null" => Value::Null,
+        _ => Value::Str(trimmed.into()),
+    }
 }
 
 /// Split a compound predicate like "between(26, 30).or(gt(34))" into
@@ -3678,6 +4337,63 @@ mod tests {
         assert!(!result.rows[0].contains_key("x"));
     }
 
+    #[test]
+    fn choose_map_matches_traversal_style_option_tokens() {
+        let store = make_store();
+        store
+            .create_node("g", vec!["Software".to_string()], IndexMap::new())
+            .unwrap();
+        let mut props = IndexMap::new();
+        props.insert("name".to_string(), Value::Str("vadas".into()));
+        store
+            .create_node("g", vec!["Person".to_string()], props)
+            .unwrap();
+
+        let executor = QueryExecutor::new(&store).with_gremlin_mode();
+        let plan = Operator::ChooseMap {
+            selector: Box::new(Operator::SingleRow),
+            selector_alias: Identifier::new("n"),
+            options: vec![
+                (
+                    Some(Value::Str(r#"__.hasLabel("Software")"#.into())),
+                    Box::new(Operator::Project {
+                        items: vec![(
+                            Expr::Str("software".into()),
+                            Some(Identifier::new("result")),
+                        )],
+                        child: Box::new(Operator::SingleRow),
+                    }),
+                    Some(Identifier::new("result")),
+                ),
+                (
+                    Some(Value::Str(r#"__.has("name","vadas")"#.into())),
+                    Box::new(Operator::Project {
+                        items: vec![(Expr::Str("vadas".into()), Some(Identifier::new("result")))],
+                        child: Box::new(Operator::SingleRow),
+                    }),
+                    Some(Identifier::new("result")),
+                ),
+            ],
+            child: Box::new(Operator::NodeScan {
+                label: None,
+                alias: Identifier::new("n"),
+            }),
+            output_alias: Some(Identifier::new("result")),
+        };
+
+        let mut budget = ExecutionBudget::unlimited();
+        let result = executor.execute("g", &plan, &mut budget).unwrap();
+        let mut values: Vec<_> = result
+            .rows
+            .iter()
+            .filter_map(|row| row.get("result").cloned())
+            .collect();
+        values.sort_by_key(|v| format!("{v:?}"));
+        assert_eq!(values.len(), 2);
+        assert!(values.contains(&Value::Str("software".into())));
+        assert!(values.contains(&Value::Str("vadas".into())));
+    }
+
     // ── Coalesce tests ───────────────────────────────────────────────────────
 
     #[test]
@@ -3826,6 +4542,7 @@ mod tests {
                 by_traversal: None,
                 productive: false,
                 set_semantics: false,
+                assign_semantics: false,
             }),
         };
 
@@ -3865,6 +4582,7 @@ mod tests {
                 by_traversal: None,
                 productive: false,
                 set_semantics: false,
+                assign_semantics: false,
             }),
         };
 
@@ -3894,6 +4612,7 @@ mod tests {
             by_traversal: None,
             productive: false,
             set_semantics: false,
+            assign_semantics: false,
         };
 
         let mut budget = ExecutionBudget::unlimited();
@@ -3927,6 +4646,7 @@ mod tests {
                 by_traversal: None,
                 productive: false,
                 set_semantics: false,
+                assign_semantics: false,
             }),
         };
 
@@ -3966,6 +4686,7 @@ mod tests {
                 by_traversal: None,
                 productive: false,
                 set_semantics: false,
+                assign_semantics: false,
             }),
         };
 

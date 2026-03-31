@@ -2,10 +2,50 @@
 
 use crate::error::{ExecutionError, GqlError};
 use crate::types::Value;
+use indexmap::IndexMap;
 
 use super::max_list_size;
 
 // ── Small helpers ─────────────────────────────────────────────────────────────
+
+struct JavaCompatibleRandom {
+    seed: u64,
+}
+
+impl JavaCompatibleRandom {
+    const MULTIPLIER: u64 = 0x5DEECE66D;
+    const ADDEND: u64 = 0xB;
+    const MASK: u64 = (1u64 << 48) - 1;
+
+    fn new(seed: i64) -> Self {
+        Self {
+            seed: ((seed as u64) ^ Self::MULTIPLIER) & Self::MASK,
+        }
+    }
+
+    fn next(&mut self, bits: u32) -> u32 {
+        self.seed = (self
+            .seed
+            .wrapping_mul(Self::MULTIPLIER)
+            .wrapping_add(Self::ADDEND))
+            & Self::MASK;
+        (self.seed >> (48 - bits)) as u32
+    }
+
+    fn next_int(&mut self, bound: usize) -> usize {
+        debug_assert!(bound > 0);
+        if bound.is_power_of_two() {
+            return ((bound as u64 * self.next(31) as u64) >> 31) as usize;
+        }
+        loop {
+            let bits = self.next(31) as usize;
+            let val = bits % bound;
+            if bits.wrapping_sub(val).wrapping_add(bound - 1) <= i32::MAX as usize {
+                return val;
+            }
+        }
+    }
+}
 
 pub(super) fn require_arity(name: &str, expected: usize, vals: &[Value]) -> Result<(), GqlError> {
     if vals.len() != expected {
@@ -100,6 +140,108 @@ pub(super) fn builtin_java_random_next_double(vals: Vec<Value>) -> Result<Value,
             Ok(Value::Float(val))
         })
     })
+}
+
+fn sample_next_double(seed: Option<i64>) -> Result<f64, GqlError> {
+    let value = match seed {
+        Some(seed) => builtin_java_random_next_double(vec![Value::Int(seed)])?,
+        None => builtin_rand(Vec::new())?,
+    };
+    match value {
+        Value::Float(f) => Ok(f),
+        other => type_error("sample_random", &other).and(Ok(0.0)),
+    }
+}
+
+pub(super) fn builtin_gremlin_sample_weighted_key(vals: Vec<Value>) -> Result<Value, GqlError> {
+    require_arity("gremlin_sample_weighted_key", 2, &vals)?;
+    let seed = match &vals[0] {
+        Value::Int(seed) => Some(*seed),
+        Value::Null => None,
+        other => return type_error("gremlin_sample_weighted_key", other),
+    };
+    let weight = match &vals[1] {
+        Value::Int(weight) if *weight > 0 => *weight as f64,
+        Value::Float(weight) if *weight > 0.0 => *weight,
+        Value::Null => return Ok(Value::Null),
+        Value::Int(_) | Value::Float(_) => return Ok(Value::Null),
+        other => return type_error("gremlin_sample_weighted_key", other),
+    };
+    let u = sample_next_double(seed)?.clamp(f64::MIN_POSITIVE, 1.0 - f64::EPSILON);
+    Ok(Value::Float(u.ln() / weight))
+}
+
+pub(super) fn builtin_gremlin_sample_local(vals: Vec<Value>) -> Result<Value, GqlError> {
+    require_arity("gremlin_sample_local", 3, &vals)?;
+    let count = match &vals[1] {
+        Value::Int(count) => *count,
+        other => {
+            return Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                expected: "gremlin_sample_local() count".into(),
+                actual: other.type_name().to_string(),
+            }))
+        }
+    };
+    let seed = match &vals[2] {
+        Value::Int(seed) => Some(*seed),
+        Value::Null => None,
+        other => return type_error("gremlin_sample_local", other),
+    };
+
+    if count <= 0 {
+        return Ok(match &vals[0] {
+            Value::List(_) => Value::List(Vec::new()),
+            Value::Map(_) => Value::Map(IndexMap::new()),
+            _ => Value::Null,
+        });
+    }
+
+    match &vals[0] {
+        Value::List(items) => {
+            if items.len() <= count as usize {
+                return Ok(Value::List(items.clone()));
+            }
+            let mut original = items.clone();
+            let mut target = Vec::with_capacity(count as usize);
+            if let Some(seed) = seed {
+                let mut random = JavaCompatibleRandom::new(seed);
+                while target.len() < count as usize {
+                    target.push(original.remove(random.next_int(original.len())));
+                }
+            } else {
+                while target.len() < count as usize {
+                    let idx = (sample_next_double(None)? * original.len() as f64).floor() as usize;
+                    target.push(original.remove(idx.min(original.len() - 1)));
+                }
+            }
+            Ok(Value::List(target))
+        }
+        Value::Map(map) => {
+            if map.len() <= count as usize {
+                return Ok(Value::Map(map.clone()));
+            }
+            let mut original: Vec<(Box<str>, Value)> = map
+                .iter()
+                .map(|(key, value)| (key.clone(), value.clone()))
+                .collect();
+            let mut out = IndexMap::new();
+            if let Some(seed) = seed {
+                let mut random = JavaCompatibleRandom::new(seed);
+                while out.len() < count as usize {
+                    let (key, value) = original.remove(random.next_int(original.len()));
+                    out.insert(key, value);
+                }
+            } else {
+                while out.len() < count as usize {
+                    let idx = (sample_next_double(None)? * original.len() as f64).floor() as usize;
+                    let (key, value) = original.remove(idx.min(original.len() - 1));
+                    out.insert(key, value);
+                }
+            }
+            Ok(Value::Map(out))
+        }
+        other => Ok(other.clone()),
+    }
 }
 
 pub(super) fn builtin_abs(vals: Vec<Value>) -> Result<Value, GqlError> {
@@ -696,11 +838,27 @@ pub(super) fn builtin_keys(vals: Vec<Value>) -> Result<Value, GqlError> {
         Value::Map(m) => Ok(Value::List(
             m.iter()
                 .filter(|(_, v)| !v.is_null())
-                .map(|(k, _)| Value::Str(k.clone()))
+                .map(|(k, _)| map_key_str_to_value(k))
                 .collect(),
         )),
         other => type_error("keys", other),
     }
+}
+
+fn map_key_str_to_value(k: &str) -> Value {
+    use crate::storage::{EdgeId, NodeId};
+
+    if let Some(inner) = k.strip_prefix("v[").and_then(|s| s.strip_suffix(']')) {
+        if let Ok(id) = inner.parse::<u64>() {
+            return Value::Node(NodeId(id));
+        }
+    }
+    if let Some(inner) = k.strip_prefix("e[").and_then(|s| s.strip_suffix(']')) {
+        if let Ok(id) = inner.parse::<u64>() {
+            return Value::Edge(EdgeId(id));
+        }
+    }
+    Value::Str(k.into())
 }
 
 pub(super) fn builtin_values(vals: Vec<Value>) -> Result<Value, GqlError> {

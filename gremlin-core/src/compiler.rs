@@ -8,7 +8,8 @@ use std::collections::{HashMap, HashSet};
 
 use gql_core::ast::{BinaryOp, Direction, Expr, Identifier, Label, RelType, UnaryOp};
 use gql_core::planner::{
-    AggFunction, CreateEdgeSpec, CreatePattern, GremlinPop, Operator, SetItem,
+    AggFunction, CreateEdgeSpec, CreatePattern, GremlinPop, GremlinSelectTraversal, Operator,
+    SetItem,
 };
 use gql_core::types::Value;
 use smol_str::SmolStr;
@@ -84,6 +85,17 @@ pub struct GremlinCompiler {
     /// Tracks the numeric subtype set by `AsNumberTyped("byte"/"short")`.
     /// Used by `Is(IsType(..))` to correctly resolve type checks at compile time.
     numeric_subtype: Option<String>,
+    /// When true, the seed element for this sub-traversal is a single-entry Map
+    /// produced by unfold() on a Map (i.e., a Map.Entry). In this context,
+    /// select(Column.keys/values) should extract the key/value directly rather
+    /// than returning a collection of all keys/values.
+    seed_is_map_entry: bool,
+}
+
+#[derive(Debug, Clone)]
+enum SelectByModulator {
+    Key(String),
+    Traversal(Vec<GremlinStep>),
 }
 
 impl Default for GremlinCompiler {
@@ -114,6 +126,26 @@ impl GremlinCompiler {
             set_keys: HashSet::new(),
             outer_path_aliases: Vec::new(),
             numeric_subtype: None,
+            seed_is_map_entry: false,
+        }
+    }
+
+    fn steps_have_independent_source(steps: &[GremlinStep]) -> bool {
+        match steps.first() {
+            Some(GremlinStep::V(_) | GremlinStep::E(_) | GremlinStep::Inject(_)) => true,
+            Some(GremlinStep::Union(branches)) => {
+                !branches.is_empty()
+                    && branches
+                        .iter()
+                        .all(|branch| Self::steps_have_independent_source(branch))
+            }
+            Some(GremlinStep::Coalesce(alternatives)) => {
+                !alternatives.is_empty()
+                    && alternatives
+                        .iter()
+                        .all(|alt| Self::steps_have_independent_source(alt))
+            }
+            _ => false,
         }
     }
 
@@ -149,6 +181,7 @@ impl GremlinCompiler {
             set_keys: self.set_keys.clone(),
             outer_path_aliases: Vec::new(),
             numeric_subtype: None,
+            seed_is_map_entry: false,
         }
     }
 
@@ -256,10 +289,7 @@ impl GremlinCompiler {
             return Ok(Operator::SingleRow);
         }
         // If the sub-traversal starts with its own source step, compile independently.
-        let has_source = matches!(
-            steps.first(),
-            Some(GremlinStep::V(_) | GremlinStep::E(_) | GremlinStep::Inject(_))
-        );
+        let has_source = Self::steps_have_independent_source(steps);
         if has_source {
             return self.compile(steps);
         }
@@ -322,6 +352,53 @@ impl GremlinCompiler {
         self.last_alias.0.as_str()
     }
 
+    fn apply_pending_select_mods(
+        &mut self,
+        current: &mut Option<Operator>,
+        current_alias: &mut Identifier,
+        select_by_mods: &[SelectByModulator],
+    ) -> Result<(), CompileError> {
+        if select_by_mods.is_empty() {
+            return Ok(());
+        }
+        if let Some(Operator::GremlinSelect {
+            keys,
+            by_traversals,
+            ..
+        }) = current
+        {
+            by_traversals.clear();
+            by_traversals.resize(keys.len(), None);
+            for (i, (src_var, _)) in keys.iter_mut().enumerate() {
+                let original_src_var = src_var.clone();
+                match &select_by_mods[i % select_by_mods.len()] {
+                    SelectByModulator::Key(mod_key) => {
+                        if !mod_key.is_empty() {
+                            *src_var = Identifier::new(format!(
+                                "__prop_{}__{}",
+                                mod_key, original_src_var.0
+                            ));
+                        }
+                    }
+                    SelectByModulator::Traversal(steps) => {
+                        let mut sub = self.sub_compiler();
+                        let sub_op = sub.compile_seeded(steps, &original_src_var)?;
+                        let sub_out_alias = sub.last_alias.clone();
+                        self.absorb(&sub);
+                        by_traversals[i] = Some(GremlinSelectTraversal::Traversal {
+                            op: Box::new(sub_op),
+                            out_alias: sub_out_alias,
+                        });
+                    }
+                }
+            }
+            if keys.len() == 1 {
+                *current_alias = Identifier::new(keys[0].1.clone());
+            }
+        }
+        Ok(())
+    }
+
     /// Core compilation: walks steps left-to-right, wrapping each into the
     /// operator tree. `initial_op` / `initial_alias` allow callers to seed
     /// the compilation with an existing operator and alias.
@@ -357,6 +434,10 @@ impl GremlinCompiler {
         if !self.needs_label_stacks {
             self.needs_label_stacks = steps_need_label_stacks(steps);
         }
+        // Pre-scan: collect aggregate() keys so that within()/without() predicates
+        // that reference a key defined LATER in the same step sequence (e.g. inside
+        // repeat() bodies) can resolve to __gremlin_agg_<key> at compile time.
+        collect_aggregate_keys_prescan(steps, &mut self.aggregate_keys);
 
         let mut current: Option<Operator> = initial_op;
         let mut current_alias = initial_alias.clone();
@@ -372,7 +453,7 @@ impl GremlinCompiler {
         // Track whether the preceding step was select for by() modulation
         let mut pending_select = false;
         // Collected by() modulations for select (applied cyclically)
-        let mut select_by_mods: Vec<String> = Vec::new();
+        let mut select_by_mods: Vec<SelectByModulator> = Vec::new();
         // Track whether the preceding step was dedup for by() modulation
         let mut pending_dedup = false;
         // Track whether dedup already consumed its single by() — second by() is an error
@@ -418,6 +499,8 @@ impl GremlinCompiler {
         // Track by() count for sample — only one allowed
         let mut pending_sample = false;
         let mut sample_by_consumed = false;
+        let mut pending_sample_count: i64 = 0;
+        let mut pending_sample_weight: Option<Expr> = None;
         // Track by() count for sack ops — only one allowed
         let mut pending_sack_by_consumed = false;
         // Track by() count for valueMap — only one allowed
@@ -429,10 +512,10 @@ impl GremlinCompiler {
         // Deferred output alias for ChooseMap — applied on the first non-Option step
         let mut pending_choose_output: Option<Identifier> = None;
         // Track where() label comparison for by() modulation.
-        // Stores (left_var, right_var) so by("key") can rewrite to property access.
-        let mut pending_where_by: Option<(Identifier, Identifier)> = None;
-        // How many by() modulations have been consumed for where-by (0=left, 1=right)
-        let mut where_by_count: u32 = 0;
+        // Stores the ordered traversal-ring targets: start key first, then
+        // referenced labels in encounter order.
+        let mut pending_where_by_targets: Vec<WhereByTarget> = Vec::new();
+        let mut pending_where_by_modulators: Vec<String> = Vec::new();
         // Track math() step for by() modulation of variable references
         let mut pending_math = false;
         let mut pending_math_expr: String = String::new();
@@ -473,12 +556,18 @@ impl GremlinCompiler {
             if !matches!(step, GremlinStep::By(..) | GremlinStep::ByTraversal(..)) {
                 aggregate_by_consumed = false;
                 dedup_by_consumed = false;
+                // dedup/group/aggregate/format by() modulators must immediately follow
+                // their step. Any intervening non-By step terminates the pending state.
+                pending_dedup = false;
+                pending_aggregate = false;
+                pending_format = false;
                 pending_sack_op = false;
                 pending_sack_by_consumed = false;
-                pending_sample = false;
-                sample_by_consumed = false;
                 pending_valuemap = false;
                 valuemap_by_consumed = false;
+                pending_group = false;
+                pending_group_is_count = false;
+                pending_group_by_count = 0;
                 // Flush accumulated path by-keys into the GremlinPath/CyclicPath operator
                 if pending_path && !path_by_keys.is_empty() {
                     match &mut current {
@@ -514,19 +603,21 @@ impl GremlinCompiler {
                     path_by_keys.clear();
                 }
                 pending_project = false;
-                // ProductiveByStrategy: wrap null-eq before clearing where_by
-                if self.productive_by && where_by_count > 0 {
-                    if let Some((ref left_id, ref right_id)) = pending_where_by {
-                        if let Some(Operator::Filter {
-                            ref mut predicate, ..
-                        }) = current
-                        {
-                            wrap_where_by_null_eq(predicate, left_id, right_id);
-                        }
+                if !pending_where_by_targets.is_empty() && !pending_where_by_modulators.is_empty() {
+                    if let Some(Operator::Filter {
+                        ref mut predicate, ..
+                    }) = current
+                    {
+                        finalize_where_by_modulation(
+                            predicate,
+                            &pending_where_by_targets,
+                            &pending_where_by_modulators,
+                            self.productive_by,
+                        );
                     }
                 }
-                pending_where_by = None;
-                where_by_count = 0;
+                pending_where_by_targets.clear();
+                pending_where_by_modulators.clear();
                 // Flush pending math without by() modulation — resolve side-effect variables
                 if pending_math {
                     let child = current.take().unwrap_or(Operator::SingleRow);
@@ -598,6 +689,20 @@ impl GremlinCompiler {
                     pending_order = false;
                     pending_order_local = false;
                 }
+                // Finalize pending sample once the optional by() window has closed.
+                if pending_sample {
+                    let child = current.take().unwrap_or(Operator::SingleRow);
+                    current = Some(Operator::GremlinSample {
+                        count: pending_sample_count as usize,
+                        weight: pending_sample_weight.clone(),
+                        seed: self.seed,
+                        child: Box::new(child),
+                    });
+                    pending_sample = false;
+                    sample_by_consumed = false;
+                    pending_sample_count = 0;
+                    pending_sample_weight = None;
+                }
                 // Finalize pending format with collected by() modulations
                 if pending_format && !format_by_aliases.is_empty() {
                     let child = current.take().unwrap_or(Operator::SingleRow);
@@ -633,20 +738,11 @@ impl GremlinCompiler {
                 pending_format = false;
                 // Apply collected select by() modulations cyclically
                 if pending_select && !select_by_mods.is_empty() {
-                    if let Some(Operator::GremlinSelect { ref mut keys, .. }) = current {
-                        for (i, (src_var, _)) in keys.iter_mut().enumerate() {
-                            let mod_key = &select_by_mods[i % select_by_mods.len()];
-                            if !mod_key.is_empty() {
-                                *src_var =
-                                    Identifier::new(format!("__prop_{}__{}", mod_key, src_var.0));
-                            }
-                        }
-                        // After by() projection, result lives under the output
-                        // key name, not the raw internal alias.
-                        if keys.len() == 1 && !select_by_mods.is_empty() {
-                            current_alias = Identifier::new(keys[0].1.clone());
-                        }
-                    }
+                    self.apply_pending_select_mods(
+                        &mut current,
+                        &mut current_alias,
+                        &select_by_mods,
+                    )?;
                 }
                 pending_select = false;
             }
@@ -679,7 +775,8 @@ impl GremlinCompiler {
                     });
                     let new_op = match &flat_ids {
                         Some(id_list) if id_list.len() == 1 => {
-                            let id_expr = gremlin_value_to_expr(id_list[0]);
+                            // Use id-aware conversion: string "1" → Integer(1)
+                            let id_expr = gremlin_value_to_id_expr(id_list[0]);
                             Operator::Filter {
                                 predicate: Expr::BinaryOp {
                                     op: BinaryOp::Eq,
@@ -694,8 +791,10 @@ impl GremlinCompiler {
                             }
                         }
                         Some(id_list) if !id_list.is_empty() => {
-                            let id_exprs: Vec<Expr> =
-                                id_list.iter().map(|v| gremlin_value_to_expr(v)).collect();
+                            let id_exprs: Vec<Expr> = id_list
+                                .iter()
+                                .map(|v| gremlin_value_to_id_expr(v))
+                                .collect();
                             Operator::Filter {
                                 predicate: Expr::BinaryOp {
                                     op: BinaryOp::In,
@@ -756,7 +855,8 @@ impl GremlinCompiler {
                     });
                     let new_op = match &flat_ids {
                         Some(id_list) if id_list.len() == 1 => {
-                            let id_expr = gremlin_value_to_expr(id_list[0]);
+                            // Use id-aware conversion: string "11" → Integer(11)
+                            let id_expr = gremlin_value_to_id_expr(id_list[0]);
                             Operator::Filter {
                                 predicate: Expr::BinaryOp {
                                     op: BinaryOp::Eq,
@@ -771,8 +871,10 @@ impl GremlinCompiler {
                             }
                         }
                         Some(id_list) if !id_list.is_empty() => {
-                            let id_exprs: Vec<Expr> =
-                                id_list.iter().map(|v| gremlin_value_to_expr(v)).collect();
+                            let id_exprs: Vec<Expr> = id_list
+                                .iter()
+                                .map(|v| gremlin_value_to_id_expr(v))
+                                .collect();
                             Operator::Filter {
                                 predicate: Expr::BinaryOp {
                                     op: BinaryOp::In,
@@ -840,15 +942,16 @@ impl GremlinCompiler {
 
                 GremlinStep::Has(key, value) => {
                     let child = current.take().ok_or(CompileError::MissingChild)?;
-                    let prop_expr = Expr::Property(
-                        Box::new(Expr::Variable(current_alias.clone())),
-                        SmolStr::new(key),
-                    );
+                    let prop_expr = gremlin_has_key_expr(key, &current_alias);
                     let predicate = match value {
                         Some(val) => Expr::BinaryOp {
                             op: BinaryOp::Eq,
                             left: Box::new(prop_expr),
-                            right: Box::new(gremlin_value_to_expr(val)),
+                            right: Box::new(if is_gremlin_id_key(key) {
+                                gremlin_value_to_id_expr(val)
+                            } else {
+                                gremlin_value_to_expr(val)
+                            }),
                         },
                         None => Expr::IsNotNull(Box::new(prop_expr)),
                     };
@@ -860,10 +963,7 @@ impl GremlinCompiler {
 
                 GremlinStep::HasPredicate(key, pred) => {
                     let child = current.take().ok_or(CompileError::MissingChild)?;
-                    let prop_expr = Expr::Property(
-                        Box::new(Expr::Variable(current_alias.clone())),
-                        SmolStr::new(key),
-                    );
+                    let prop_expr = gremlin_has_key_expr(key, &current_alias);
                     let predicate = predicate_to_prop_expr(pred, prop_expr);
                     current = Some(Operator::Filter {
                         predicate,
@@ -878,11 +978,21 @@ impl GremlinCompiler {
                         args: vec![Expr::Variable(current_alias.clone())],
                         distinct: false,
                     };
-                    // Flatten list parameters: hasId(id1, [id2, id3]) → hasId(id1, id2, id3)
+                    // Flatten list parameters: hasId(id1, [id2, id3]) → hasId(id1, id2, id3).
+                    // Also filter out null IDs: hasId(id, null) — TinkerPop semantics treat
+                    // null as "no match" so null values are silently dropped from the id set.
                     let mut flat_ids = Vec::new();
                     for id in ids {
                         match id {
-                            GremlinValue::List(inner) => flat_ids.extend(inner.iter().cloned()),
+                            GremlinValue::List(inner) => {
+                                flat_ids.extend(
+                                    inner
+                                        .iter()
+                                        .filter(|v| !matches!(v, GremlinValue::Null))
+                                        .cloned(),
+                                );
+                            }
+                            GremlinValue::Null => {} // skip null ids
                             other => flat_ids.push(other.clone()),
                         }
                     }
@@ -890,11 +1000,12 @@ impl GremlinCompiler {
                         Expr::BinaryOp {
                             op: BinaryOp::Eq,
                             left: Box::new(id_fn),
-                            right: Box::new(gremlin_value_to_expr(&flat_ids[0])),
+                            // Use id-aware conversion: string "1" → Integer(1)
+                            right: Box::new(gremlin_value_to_id_expr(&flat_ids[0])),
                         }
                     } else {
                         let id_exprs: Vec<Expr> =
-                            flat_ids.iter().map(gremlin_value_to_expr).collect();
+                            flat_ids.iter().map(gremlin_value_to_id_expr).collect();
                         Expr::BinaryOp {
                             op: BinaryOp::In,
                             left: Box::new(id_fn),
@@ -1298,24 +1409,102 @@ impl GremlinCompiler {
                             || keys[0] == "keys"
                             || keys[0] == "values")
                     {
-                        let fn_name = if keys[0] == "Column.keys" || keys[0] == "keys" {
-                            "gremlin_column_key"
+                        // Special case: path().select(Column.keys) — return the
+                        // path's step label sets as a List of Lists.  Each entry
+                        // is the sorted set of user labels for that path step;
+                        // steps with no labels are omitted (TinkerPop semantics).
+                        let is_keys = keys[0] == "Column.keys" || keys[0] == "keys";
+
+                        // Use Option so we can conditionally consume `child`
+                        // without Rust thinking it's always moved.
+                        let mut child_opt = Some(child);
+
+                        let handled_as_path_keys = if is_keys {
+                            if let Some(Operator::GremlinPath {
+                                ref path_aliases, ..
+                            }) = child_opt
+                            {
+                                // Invert alias_map: internal_alias → [user_label, ...]
+                                let mut alias_to_labels: HashMap<&str, Vec<&str>> = HashMap::new();
+                                for (label, alias) in &self.alias_map {
+                                    alias_to_labels
+                                        .entry(alias.as_str())
+                                        .or_default()
+                                        .push(label.as_str());
+                                }
+                                let label_sets: Vec<Expr> = path_aliases
+                                    .iter()
+                                    .filter_map(|alias| {
+                                        let mut lbls: Vec<&str> = alias_to_labels
+                                            .get(alias.as_str())
+                                            .cloned()
+                                            .unwrap_or_default();
+                                        if lbls.is_empty() {
+                                            None
+                                        } else {
+                                            lbls.sort_unstable();
+                                            Some(Expr::MapLiteral(vec![(
+                                                SmolStr::new("~set"),
+                                                Expr::List(
+                                                    lbls.iter()
+                                                        .map(|l| {
+                                                            Expr::Str(
+                                                                l.to_string().into_boxed_str(),
+                                                            )
+                                                        })
+                                                        .collect(),
+                                                ),
+                                            )]))
+                                        }
+                                    })
+                                    .collect();
+                                let alias = self.next_alias("path_keys");
+                                current = Some(Operator::Project {
+                                    items: vec![(Expr::List(label_sets), Some(alias.clone()))],
+                                    child: Box::new(child_opt.take().unwrap()),
+                                });
+                                current_alias = alias;
+                                true
+                            } else {
+                                false
+                            }
                         } else {
-                            "gremlin_column_value"
+                            false
                         };
-                        let alias = self.next_alias(fn_name);
-                        current = Some(Operator::Project {
-                            items: vec![(
+
+                        if !handled_as_path_keys {
+                            let child = child_opt.take().unwrap();
+                            let fn_name = if matches!(&child, Operator::Unwind { .. })
+                                || self.seed_is_map_entry
+                            {
+                                if keys[0] == "Column.keys" || keys[0] == "keys" {
+                                    "gremlin_unfold_map_entry_key"
+                                } else {
+                                    "gremlin_unfold_map_entry_value"
+                                }
+                            } else if keys[0] == "Column.keys" || keys[0] == "keys" {
+                                "gremlin_column_key"
+                            } else if self.seed_is_map_entry {
+                                "gremlin_column_value"
+                            } else {
+                                "gremlin_select_values"
+                            };
+                            let alias = self.next_alias(fn_name);
+                            let mut items = vec![(
                                 Expr::FunctionCall {
                                     name: SmolStr::new(fn_name),
                                     args: vec![Expr::Variable(current_alias.clone())],
                                     distinct: false,
                                 },
                                 Some(alias.clone()),
-                            )],
-                            child: Box::new(child),
-                        });
-                        current_alias = alias;
+                            )];
+                            items.extend(self.label_carry_items());
+                            current = Some(Operator::Project {
+                                items,
+                                child: Box::new(child),
+                            });
+                            current_alias = alias;
+                        } // end if !handled_as_path_keys
                     } else {
                         let select_keys: Vec<(Identifier, String)> = keys
                             .iter()
@@ -1363,6 +1552,7 @@ impl GremlinCompiler {
                         }
                         current = Some(Operator::GremlinSelect {
                             keys: select_keys,
+                            by_traversals: Vec::new(),
                             productive: self.productive_by,
                             pop: planner_pop,
                             label_stacks: stacks,
@@ -1634,6 +1824,7 @@ impl GremlinCompiler {
                         key_traversal: None,
                         value_traversal: None,
                         productive: self.productive_by,
+                        key_is_identity: true,
                         explicit_fold: false,
                         child: Box::new(child),
                     });
@@ -1711,6 +1902,10 @@ impl GremlinCompiler {
                         child: Box::new(child),
                     });
                     current_alias = alias;
+                    // After unfold, subsequent sub-traversals operate on
+                    // map entries — mark so select(Column.values) uses
+                    // the direct-extraction function.
+                    self.seed_is_map_entry = true;
                 }
 
                 GremlinStep::Order => {
@@ -1935,6 +2130,14 @@ impl GremlinCompiler {
                         if pending_group_by_count == 0 {
                             // First by() = group key
                             if !key.is_empty() {
+                                // A non-empty key means the group key is no longer the identity.
+                                if let Some(Operator::GremlinGroup {
+                                    ref mut key_is_identity,
+                                    ..
+                                }) = current
+                                {
+                                    *key_is_identity = false;
+                                }
                                 // Try parsing __.prefix strings as sub-traversals
                                 if key.starts_with("__.") && key.contains('(') {
                                     let no_param = |_: &str| -> Option<GremlinValue> { None };
@@ -2009,7 +2212,7 @@ impl GremlinCompiler {
                                 {
                                     if !sub_steps.is_empty() {
                                         let (proj_steps, trailing_agg) =
-                                            split_trailing_agg(&sub_steps);
+                                            split_trailing_group_value_agg(&sub_steps);
                                         if proj_steps.is_empty() {
                                             if let Some(Operator::GremlinGroup {
                                                 ref mut agg_fn,
@@ -2068,12 +2271,14 @@ impl GremlinCompiler {
                             if let Ok(sub_steps) =
                                 crate::text_parser::parse_inner_traversal(key, &no_param)
                             {
-                                select_by_mods.push(extract_by_traversal_key(&sub_steps));
+                                select_by_mods.push(SelectByModulator::Key(
+                                    extract_by_traversal_key(&sub_steps),
+                                ));
                             } else {
-                                select_by_mods.push(key.clone());
+                                select_by_mods.push(SelectByModulator::Key(key.clone()));
                             }
                         } else {
-                            select_by_mods.push(key.clone());
+                            select_by_mods.push(SelectByModulator::Key(key.clone()));
                         }
                     } else if pending_path {
                         // by() after path() — collect by-key for path element transformation
@@ -2186,6 +2391,7 @@ impl GremlinCompiler {
                                                         String,
                                                         Operator,
                                                         Identifier,
+                                                        bool,
                                                     )> = Vec::new();
                                                     for (i, (expr, alias_opt)) in
                                                         items.iter().enumerate()
@@ -2194,10 +2400,12 @@ impl GremlinCompiler {
                                                             break;
                                                         }
                                                         if i == project_by_count {
+                                                            // by(traversal) — not identity
                                                             entries.push((
                                                                 project_keys[i].clone(),
                                                                 sub_op.clone(),
                                                                 sub_out_alias.clone(),
+                                                                false,
                                                             ));
                                                         } else {
                                                             let prop_op = Operator::Project {
@@ -2209,6 +2417,11 @@ impl GremlinCompiler {
                                                                     Operator::SingleRow,
                                                                 ),
                                                             };
+                                                            // Prior entries may have been set by
+                                                            // empty by() (identity). We can't
+                                                            // recover that info here since it was
+                                                            // stored in items[i].0 type. Assume
+                                                            // non-identity for safety.
                                                             entries.push((
                                                                 project_keys[i].clone(),
                                                                 prop_op,
@@ -2220,13 +2433,16 @@ impl GremlinCompiler {
                                                                             &project_keys[i],
                                                                         )
                                                                     }),
+                                                                false,
                                                             ));
                                                         }
                                                     }
+                                                    let proj_alias = self.next_alias("proj");
                                                     current = Some(Operator::GremlinProject {
                                                         entries,
                                                         child: child.clone(),
                                                         current_alias: pre_project_alias.clone(),
+                                                        out_alias: proj_alias,
                                                         productive: self.productive_by,
                                                     });
                                                 }
@@ -2234,6 +2450,7 @@ impl GremlinCompiler {
                                                     entries: old_entries,
                                                     child,
                                                     current_alias: ca,
+                                                    out_alias,
                                                     ..
                                                 }) => {
                                                     let mut entries = old_entries.clone();
@@ -2242,12 +2459,14 @@ impl GremlinCompiler {
                                                             project_keys[project_by_count].clone(),
                                                             sub_op,
                                                             sub_out_alias,
+                                                            false, // by(traversal) — not identity
                                                         );
                                                     }
                                                     current = Some(Operator::GremlinProject {
                                                         entries,
                                                         child: child.clone(),
                                                         current_alias: ca.clone(),
+                                                        out_alias: out_alias.clone(),
                                                         productive: self.productive_by,
                                                     });
                                                 }
@@ -2256,6 +2475,13 @@ impl GremlinCompiler {
                                             project_by_count += 1;
                                             if project_by_count >= project_keys.len() {
                                                 pending_project = false;
+                                                if let Some(Operator::GremlinProject {
+                                                    out_alias: proj_alias,
+                                                    ..
+                                                }) = &current
+                                                {
+                                                    current_alias = proj_alias.clone();
+                                                }
                                             }
                                             // Skip the default handling below
                                         } else {
@@ -2323,7 +2549,8 @@ impl GremlinCompiler {
                                 {
                                     // Already converted to GremlinProject — update the entry
                                     if project_by_count < entries.len() {
-                                        let by_ex = if key.is_empty() {
+                                        let is_identity = key.is_empty();
+                                        let by_ex = if is_identity {
                                             Expr::Variable(pre_project_alias.clone())
                                         } else {
                                             make_by_expr(key, &pre_project_alias)
@@ -2341,53 +2568,61 @@ impl GremlinCompiler {
                                             project_keys[project_by_count].clone(),
                                             prop_op,
                                             Identifier::new(&project_keys[project_by_count]),
+                                            is_identity,
                                         );
                                     }
                                 }
                                 project_by_count += 1;
                                 if project_by_count >= project_keys.len() {
                                     pending_project = false;
-                                }
-                            }
-                        }
-                    } else if pending_where_by.is_some() {
-                        // by() after where("a", P.gt("b")) — rewrite filter predicate
-                        // to use property access. First by() rewrites BOTH sides,
-                        // second by() overwrites the RIGHT side only.
-                        if let Some((ref left_id, ref right_id)) = pending_where_by {
-                            if !key.is_empty() {
-                                if let Some(Operator::Filter {
-                                    ref mut predicate, ..
-                                }) = current
-                                {
-                                    if where_by_count == 0 {
-                                        // First by(): rewrite BOTH sides
-                                        rewrite_where_by_predicate(
-                                            predicate, left_id, right_id, key,
-                                        );
-                                    } else {
-                                        // Second by(): overwrite RIGHT side only
-                                        rewrite_where_by_side(predicate, right_id, key, false);
-                                    }
-                                }
-                            }
-                        }
-                        where_by_count += 1;
-                        if where_by_count >= 2 {
-                            // ProductiveByStrategy: wrap Eq comparisons so
-                            // null == null returns true instead of null.
-                            if self.productive_by {
-                                if let Some((ref left_id, ref right_id)) = pending_where_by {
-                                    if let Some(Operator::Filter {
-                                        ref mut predicate, ..
+                                    // If GremlinProject, update current_alias to its out_alias
+                                    if let Some(Operator::GremlinProject {
+                                        out_alias: ref proj_alias,
+                                        ..
                                     }) = current
                                     {
-                                        wrap_where_by_null_eq(predicate, left_id, right_id);
+                                        current_alias = proj_alias.clone();
+                                    }
+                                    // When all by() modulators are simple property keys, the
+                                    // operator stays as Operator::Project, which does NOT
+                                    // assemble the projected Map under current_alias.
+                                    // Add a map-assembly wrapper so downstream steps (e.g.
+                                    // merge(), combine()) receive a Map as the traverser
+                                    // instead of the original Node.  GremlinProject already
+                                    // handles this for traversal-based by().
+                                    if matches!(&current, Some(Operator::Project { .. }))
+                                        && !project_keys.is_empty()
+                                    {
+                                        let proj_alias = self.next_alias("proj");
+                                        let map_expr = Expr::MapLiteral(
+                                            project_keys
+                                                .iter()
+                                                .map(|k| {
+                                                    (
+                                                        SmolStr::new(k.as_str()),
+                                                        Expr::Variable(Identifier::new(k.as_str())),
+                                                    )
+                                                })
+                                                .collect(),
+                                        );
+                                        let inner = current.take().unwrap();
+                                        // Carry existing label aliases first, then
+                                        // place the map assembly last so it wins.
+                                        let mut items = self.label_carry_items();
+                                        items.push((map_expr, Some(proj_alias.clone())));
+                                        current = Some(Operator::Project {
+                                            items,
+                                            child: Box::new(inner),
+                                        });
+                                        current_alias = proj_alias;
                                     }
                                 }
                             }
-                            pending_where_by = None;
                         }
+                    } else if !pending_where_by_targets.is_empty() {
+                        // by() after where() records a traversal-ring modulator
+                        // and applies it only once the full by-list is known.
+                        pending_where_by_modulators.push(key.to_string());
                     } else if aggregate_by_consumed {
                         // Second by() after aggregate — error per Gremlin spec
                         return Err(CompileError::InvalidSequence(
@@ -2409,6 +2644,11 @@ impl GremlinCompiler {
                     // Track by() consumption for sample/sack/valueMap
                     if pending_sample && !sample_by_consumed {
                         sample_by_consumed = true;
+                        pending_sample_weight = Some(if key.is_empty() {
+                            Expr::Variable(current_alias.clone())
+                        } else {
+                            make_by_expr(key, &current_alias)
+                        });
                     }
                     if pending_sack_op && !pending_sack_by_consumed {
                         pending_sack_by_consumed = true;
@@ -2453,6 +2693,9 @@ impl GremlinCompiler {
                         if project_by_count < project_keys.len() {
                             // Compile the sub-traversal seeded with the pre-project alias
                             let mut sub = self.sub_compiler();
+                            if self.seed_is_map_entry {
+                                sub.seed_is_map_entry = true;
+                            }
                             let sub_op = sub.compile_seeded(sub_steps, &pre_project_alias)?;
                             let sub_out_alias = sub.last_alias.clone();
                             self.absorb(&sub);
@@ -2461,19 +2704,23 @@ impl GremlinCompiler {
                             match &current {
                                 Some(Operator::Project { items, child }) => {
                                     // Build GremlinProject entries from existing items
-                                    let mut entries: Vec<(String, Operator, Identifier)> =
+                                    let mut entries: Vec<(String, Operator, Identifier, bool)> =
                                         Vec::new();
                                     for (i, (_expr, alias_opt)) in items.iter().enumerate() {
                                         if i < project_keys.len() {
                                             if i == project_by_count {
-                                                // This is the by(traversal) entry
+                                                // This is the by(traversal) entry — not identity
                                                 entries.push((
                                                     project_keys[i].clone(),
                                                     sub_op.clone(),
                                                     sub_out_alias.clone(),
+                                                    false,
                                                 ));
                                             } else if i < project_by_count {
-                                                // Previously filled by By() — create identity project
+                                                // Previously filled by By() — check if identity.
+                                                // If items[i].0 is Expr::Variable it was empty by().
+                                                let is_ident =
+                                                    matches!(&items[i].0, Expr::Variable(_));
                                                 let prop_op = Operator::Project {
                                                     items: vec![(
                                                         items[i].0.clone(),
@@ -2487,6 +2734,7 @@ impl GremlinCompiler {
                                                     alias_opt.as_ref().cloned().unwrap_or_else(
                                                         || Identifier::new(&project_keys[i]),
                                                     ),
+                                                    is_ident,
                                                 ));
                                             } else {
                                                 // Not yet filled — default to property access
@@ -2503,14 +2751,17 @@ impl GremlinCompiler {
                                                     alias_opt.as_ref().cloned().unwrap_or_else(
                                                         || Identifier::new(&project_keys[i]),
                                                     ),
+                                                    false,
                                                 ));
                                             }
                                         }
                                     }
+                                    let proj_alias = self.next_alias("proj");
                                     current = Some(Operator::GremlinProject {
                                         entries,
                                         child: child.clone(),
                                         current_alias: pre_project_alias.clone(),
+                                        out_alias: proj_alias,
                                         productive: self.productive_by,
                                     });
                                 }
@@ -2518,6 +2769,7 @@ impl GremlinCompiler {
                                     entries: old_entries,
                                     child,
                                     current_alias: ca,
+                                    out_alias,
                                     ..
                                 }) => {
                                     let mut entries = old_entries.clone();
@@ -2526,12 +2778,14 @@ impl GremlinCompiler {
                                             project_keys[project_by_count].clone(),
                                             sub_op,
                                             sub_out_alias,
+                                            false, // by(traversal) — not identity
                                         );
                                     }
                                     current = Some(Operator::GremlinProject {
                                         entries,
                                         child: child.clone(),
                                         current_alias: ca.clone(),
+                                        out_alias: out_alias.clone(),
                                         productive: self.productive_by,
                                     });
                                 }
@@ -2540,6 +2794,13 @@ impl GremlinCompiler {
                             project_by_count += 1;
                             if project_by_count >= project_keys.len() {
                                 pending_project = false;
+                                if let Some(Operator::GremlinProject {
+                                    out_alias: proj_alias,
+                                    ..
+                                }) = &current
+                                {
+                                    current_alias = proj_alias.clone();
+                                }
                             }
                         }
                     }
@@ -2564,10 +2825,9 @@ impl GremlinCompiler {
                             });
                             pending_order = false;
                         } else if pending_select {
-                            // by(traversal) after select() — extract property key
-                            // from simple patterns like by(values('name'))
-                            let key = extract_by_traversal_key(sub_steps);
-                            select_by_mods.push(key);
+                            // by(traversal) after select() — preserve the
+                            // real traversal for per-key execution.
+                            select_by_mods.push(SelectByModulator::Traversal(sub_steps.to_vec()));
                         } else if pending_path {
                             // by(traversal) after path() — extract property key
                             // from patterns like by(values('name').toUpper())
@@ -2590,10 +2850,19 @@ impl GremlinCompiler {
                                 productive: self.productive_by,
                             });
                             pending_dedup = false;
+                        } else if !pending_where_by_targets.is_empty() {
+                            pending_where_by_modulators.push(extract_by_traversal_key(sub_steps));
                         } else if pending_group {
                             // by(traversal) after group() — compile sub-traversal for key or value
                             if pending_group_by_count == 0 {
-                                // First by(traversal) = group key
+                                // First by(traversal) = group key — traversal is not identity
+                                if let Some(Operator::GremlinGroup {
+                                    ref mut key_is_identity,
+                                    ..
+                                }) = current
+                                {
+                                    *key_is_identity = false;
+                                }
                                 let mut sub = self.sub_compiler();
                                 let sub_op = sub.compile_seeded(sub_steps, &pre_group_alias)?;
                                 let sub_out_alias = sub.last_alias.clone();
@@ -2609,7 +2878,8 @@ impl GremlinCompiler {
                             } else {
                                 // Second by(traversal) = value aggregation
                                 // Check for trailing agg step (count/sum/fold)
-                                let (proj_steps, trailing_agg) = split_trailing_agg(sub_steps);
+                                let (proj_steps, trailing_agg) =
+                                    split_trailing_group_value_agg(sub_steps);
 
                                 if proj_steps.is_empty() {
                                     if let Some(Operator::GremlinGroup {
@@ -2627,6 +2897,19 @@ impl GremlinCompiler {
                                     }
                                 } else {
                                     let mut sub = self.sub_compiler();
+                                    // If the element going into group() is a single-entry Map
+                                    // from unfold() (i.e., a Map.Entry), mark the sub-compiler
+                                    // so that select(Column.keys/values) uses map-entry semantics
+                                    // (returning the key/value directly, not a collection).
+                                    let outer_child_is_unwind = if let Some(
+                                        Operator::GremlinGroup { child, .. },
+                                    ) = &current
+                                    {
+                                        matches!(child.as_ref(), Operator::Unwind { .. })
+                                    } else {
+                                        false
+                                    };
+                                    sub.seed_is_map_entry = outer_child_is_unwind;
                                     let sub_op =
                                         sub.compile_seeded(proj_steps, &pre_group_alias)?;
                                     let sub_out_alias = sub.last_alias.clone();
@@ -2905,6 +3188,10 @@ impl GremlinCompiler {
                         // If the sub-traversal starts with as("label"), seed
                         // from that label's existing alias instead.
                         let mut sub = self.sub_compiler();
+                        // Propagate map-entry context for unfolded traversals
+                        if matches!(&child, Operator::Unwind { .. }) || self.seed_is_map_entry {
+                            sub.seed_is_map_entry = true;
+                        }
                         let (seed_alias, steps_slice) = match inner_steps.first() {
                             Some(GremlinStep::As(label)) if self.alias_map.contains_key(label) => {
                                 (self.alias_map[label].clone(), &inner_steps[1..])
@@ -2923,7 +3210,13 @@ impl GremlinCompiler {
                             };
 
                         let inner_op = sub.compile_seeded(steps_slice, &seed_alias)?;
-                        self.absorb(&sub);
+                        // For not()/where() sub-traversals, only advance the
+                        // alias counter (to avoid conflicts with outer scope).
+                        // Do NOT merge alias_map — internal aliases from inside
+                        // not()/where() must not pollute the outer scope, or
+                        // downstream Project operators will attempt to reference
+                        // those internal aliases on rows that don't carry them.
+                        self.alias_counter = sub.alias_counter;
                         let sub_result_alias = sub.last_alias.clone();
 
                         // If the endpoint is constrained, add a filter so only
@@ -3003,15 +3296,15 @@ impl GremlinCompiler {
                         } else {
                             inner_pred
                         };
-                        // Track label pair for by() modulation on where("a", P.gt("b")).by("age")
+                        // Track traversal-ring targets for by() modulation on where().
                         if !is_not {
-                            if let Some((left_id, right_id)) = extract_where_label_pair(
+                            if let Some(targets) = extract_where_by_targets(
                                 inner_steps,
                                 &self.alias_map,
                                 &current_alias,
                             ) {
-                                pending_where_by = Some((left_id, right_id));
-                                where_by_count = 0;
+                                pending_where_by_targets = targets;
+                                pending_where_by_modulators.clear();
                             }
                         }
                         current = Some(Operator::Filter {
@@ -3071,11 +3364,16 @@ impl GremlinCompiler {
                                 left: Box::new(Expr::Variable(current_alias.clone())),
                                 right: Box::new(label_expr),
                             }
-                        } else if predicate_has_label_refs(predicate, &self.alias_map) {
+                        } else if predicate_has_label_refs(
+                            predicate,
+                            &self.alias_map,
+                            &self.aggregate_keys,
+                        ) {
                             predicate_to_label_aware_expr(
                                 predicate,
                                 &Expr::Variable(current_alias.clone()),
                                 &self.alias_map,
+                                &self.aggregate_keys,
                             )
                         } else {
                             predicate_to_expr(predicate, &current_alias)
@@ -3104,6 +3402,39 @@ impl GremlinCompiler {
                     current = Some(Operator::Create {
                         patterns: vec![pattern],
                         child: current.map(Box::new),
+                    });
+                }
+
+                GremlinStep::AddVTraversal(label_steps) => {
+                    if self.read_only {
+                        return Err(CompileError::ReadOnlyViolation);
+                    }
+                    pending_properties.clear();
+                    let input = current.take().unwrap_or(Operator::SingleRow);
+                    let pre_add_alias = current_alias.clone();
+                    let mut sub = self.sub_compiler();
+                    let label_op = sub.compile_seeded(label_steps, &pre_add_alias)?;
+                    let label_alias = sub.last_alias.clone();
+                    self.absorb(&sub);
+
+                    let alias = self.next_alias("nv");
+                    current_alias = alias.clone();
+                    let create = Operator::Create {
+                        patterns: vec![CreatePattern {
+                            nodes: vec![(Some(alias.clone()), vec![], vec![])],
+                            edges: vec![],
+                        }],
+                        child: Some(Box::new(Operator::Apply {
+                            outer: Box::new(input),
+                            inner: Box::new(label_op),
+                        })),
+                    };
+                    current = Some(Operator::Set {
+                        items: vec![SetItem::DynamicLabels {
+                            alias: alias.clone(),
+                            value: Expr::Variable(label_alias),
+                        }],
+                        child: Box::new(create),
                     });
                 }
 
@@ -3402,7 +3733,7 @@ impl GremlinCompiler {
                                             args: vec![Expr::Variable(alias.clone())],
                                             distinct: false,
                                         }),
-                                        right: Box::new(gremlin_value_to_expr(&ids[0])),
+                                        right: Box::new(gremlin_value_to_id_expr(&ids[0])),
                                     },
                                     child: Box::new(Operator::NodeScan {
                                         label: None,
@@ -3775,13 +4106,9 @@ impl GremlinCompiler {
                             child: Box::new(child),
                         });
                     } else {
-                        // When the child is a real data-producing operator
-                        // (not SingleRow from a sub-traversal), embed it
-                        // directly into each branch so barrier steps (count,
-                        // fold, sum) aggregate ALL traversers, not per-row.
-                        // When the child is SingleRow, data comes from an
-                        // outer Apply scope — use the old per-row approach.
-                        let embed_child = !matches!(&child, Operator::SingleRow);
+                        let all_branches_have_source = branches
+                            .iter()
+                            .all(|s| Self::steps_have_independent_source(s));
 
                         // Compile each branch and track its result alias.
                         let mut branch_ops: Vec<Operator> = Vec::new();
@@ -3789,27 +4116,16 @@ impl GremlinCompiler {
                         let mut branch_path_trackings: Vec<Vec<Identifier>> = Vec::new();
                         for s in branches {
                             let mut sub = self.sub_compiler();
-                            let op = if embed_child {
-                                let has_source = matches!(
-                                    s.first(),
-                                    Some(
-                                        GremlinStep::V(_)
-                                            | GremlinStep::E(_)
-                                            | GremlinStep::Inject(_)
-                                    )
-                                );
-                                if has_source {
-                                    sub.compile_seeded(s, &current_alias)?
-                                } else {
-                                    sub.compile_from(
-                                        s,
-                                        Some(child.clone()),
-                                        current_alias.clone(),
-                                        path_aliases.clone(),
-                                    )?
-                                }
-                            } else {
+                            let has_source = Self::steps_have_independent_source(s);
+                            let op = if has_source {
                                 sub.compile_seeded(s, &current_alias)?
+                            } else {
+                                sub.compile_from(
+                                    s,
+                                    Some(child.clone()),
+                                    current_alias.clone(),
+                                    path_aliases.clone(),
+                                )?
                             };
                             branch_aliases.push(sub.last_alias.clone());
                             branch_path_trackings.push(sub.path_tracking.clone());
@@ -3870,16 +4186,14 @@ impl GremlinCompiler {
                             })
                             .unwrap_or(Operator::SingleRow);
 
-                        if embed_child {
-                            // Child is embedded — no Apply needed
-                            current = Some(union);
-                        } else {
-                            // Data comes from outer scope — use Apply
-                            current = Some(Operator::Apply {
-                                outer: Box::new(child),
-                                inner: Box::new(union),
-                            });
-                        }
+                        // Gremlin union() operates over the current traverser
+                        // stream. Even when that stream is provided through
+                        // SingleRow/foreach_seed (repeat(), choose(), local()),
+                        // wrapping the union in Apply would incorrectly force
+                        // per-row semantics and break barrier steps like
+                        // limit(), count(), and barrier() inside branches.
+                        let _ = all_branches_have_source;
+                        current = Some(union);
                         current_alias = union_alias;
                         path_aliases.push(current_alias.clone());
                         self.path_tracking.push(current_alias.clone());
@@ -3900,6 +4214,10 @@ impl GremlinCompiler {
                 GremlinStep::Aggregate(key) => {
                     let child = current.take().ok_or(CompileError::MissingChild)?;
                     let is_set = self.set_keys.contains(key);
+                    let is_assign = self
+                        .reductions
+                        .get(key)
+                        .is_some_and(|(op, _)| op == "assign");
                     current = Some(Operator::GremlinAggregate {
                         key: key.clone(),
                         child: Box::new(child),
@@ -3908,6 +4226,7 @@ impl GremlinCompiler {
                         by_traversal: None,
                         productive: self.productive_by,
                         set_semantics: is_set,
+                        assign_semantics: is_assign,
                     });
                     // Track aggregate keys separately for within/without
                     // resolution (not in alias_map to avoid conflicts).
@@ -4704,8 +5023,19 @@ impl GremlinCompiler {
                     // check via Apply + Count + Filter (same pattern as Where).
                     if pred == Expr::Bool(true) && !filter_steps.is_empty() {
                         let mut sub = self.sub_compiler();
+                        // If the child is an Unwind, the seed element is a map
+                        // entry — propagate this so select(Column.values) in
+                        // the sub-traversal extracts the value directly.
+                        if matches!(&child, Operator::Unwind { .. }) || self.seed_is_map_entry {
+                            sub.seed_is_map_entry = true;
+                        }
                         let inner_op = sub.compile_seeded(filter_steps, &current_alias)?;
-                        self.absorb(&sub);
+                        // filter(__...) is a scoped existence check. Labels and
+                        // aliases created only for the filter body must not
+                        // leak back into the outer traversal, or later
+                        // select(Pop...) steps can read those internal aliases
+                        // as if they were outer traverser bindings.
+                        self.alias_counter = sub.alias_counter;
                         let sub_result_alias = sub.last_alias.clone();
                         let cnt_alias = self.next_alias("fcnt");
                         let count_op = Operator::Aggregate {
@@ -4785,23 +5115,29 @@ impl GremlinCompiler {
                 }
 
                 GremlinStep::Sample(n) => {
-                    // sample(n) — approximated as limit(n) for deterministic tests
-                    let child = current.take().ok_or(CompileError::MissingChild)?;
-                    current = Some(Operator::Limit {
-                        count: Expr::Integer(*n),
-                        child: Box::new(child),
-                    });
+                    // sample(n) is lowered when we know whether a by() modulator follows.
                     pending_sample = true;
                     sample_by_consumed = false;
+                    pending_sample_count = *n;
+                    pending_sample_weight = None;
                 }
 
                 GremlinStep::SampleLocal(n) => {
-                    // sample(Scope.local, n) — approximated as limit(local, n)
+                    // sample(Scope.local, n) samples within the current list/map value.
                     let child = current.take().ok_or(CompileError::MissingChild)?;
-                    current = Some(Operator::GremlinMapSlice {
-                        alias: current_alias.clone(),
-                        lo: 0,
-                        hi: *n as usize,
+                    current = Some(Operator::Project {
+                        items: vec![(
+                            Expr::FunctionCall {
+                                name: SmolStr::new("gremlin_sample_local"),
+                                args: vec![
+                                    Expr::Variable(current_alias.clone()),
+                                    Expr::Integer(*n),
+                                    self.seed.map_or(Expr::Null, Expr::Integer),
+                                ],
+                                distinct: false,
+                            },
+                            Some(current_alias.clone()),
+                        )],
                         child: Box::new(child),
                     });
                 }
@@ -4928,7 +5264,12 @@ impl GremlinCompiler {
                     // Still inject the initial value as a column so downstream
                     // select/where can resolve it (e.g., where(within('a'))).
                     if let Some(op) = reduce_op {
-                        if op != "assign" && op != "set" {
+                        if op == "assign" {
+                            // Operator.assign: track via reductions so GremlinAggregate
+                            // can detect it. No numeric init needed.
+                            self.reductions.insert(key.clone(), (op.clone(), 0.0));
+                        } else if op != "set" {
+                            // "set" is tracked via set_keys, not reductions
                             let init_val = match val {
                                 GremlinValue::Integer(n) => *n as f64,
                                 GremlinValue::Float(f) => *f,
@@ -5855,17 +6196,7 @@ impl GremlinCompiler {
 
         // Flush pending select by-mods (handles by(T.key) as last step)
         if pending_select && !select_by_mods.is_empty() {
-            if let Some(Operator::GremlinSelect { ref mut keys, .. }) = current {
-                for (i, (src_var, _)) in keys.iter_mut().enumerate() {
-                    let mod_key = &select_by_mods[i % select_by_mods.len()];
-                    if !mod_key.is_empty() {
-                        *src_var = Identifier::new(format!("__prop_{}__{}", mod_key, src_var.0));
-                    }
-                }
-                if keys.len() == 1 && !select_by_mods.is_empty() {
-                    current_alias = Identifier::new(keys[0].1.clone());
-                }
-            }
+            self.apply_pending_select_mods(&mut current, &mut current_alias, &select_by_mods)?;
         }
 
         // Flush accumulated path by-keys into the GremlinPath/CyclicPath operator
@@ -5977,6 +6308,16 @@ impl GremlinCompiler {
             current_alias = alias;
         }
 
+        if pending_sample {
+            let child = current.take().unwrap_or(Operator::SingleRow);
+            current = Some(Operator::GremlinSample {
+                count: pending_sample_count as usize,
+                weight: pending_sample_weight,
+                seed: self.seed,
+                child: Box::new(child),
+            });
+        }
+
         // Finalize any remaining format with by() modulations
         if pending_format && !format_by_aliases.is_empty() {
             let child = current.take().unwrap_or(Operator::SingleRow);
@@ -6006,6 +6347,20 @@ impl GremlinCompiler {
                 child: Box::new(project),
             });
             current_alias = alias;
+        }
+
+        if !pending_where_by_targets.is_empty() && !pending_where_by_modulators.is_empty() {
+            if let Some(Operator::Filter {
+                ref mut predicate, ..
+            }) = current
+            {
+                finalize_where_by_modulation(
+                    predicate,
+                    &pending_where_by_targets,
+                    &pending_where_by_modulators,
+                    self.productive_by,
+                );
+            }
         }
 
         self.last_alias = current_alias;
@@ -6178,18 +6533,27 @@ impl GremlinCompiler {
         self.absorb(&sub);
         let sub_alias = sub.last_alias.clone();
 
-        let inner_op = if let Some(target_alias) = endpoint_target {
-            Operator::Filter {
-                predicate: Expr::BinaryOp {
-                    op: BinaryOp::Eq,
-                    left: Box::new(Expr::Variable(sub_alias.clone())),
-                    right: Box::new(Expr::Variable(target_alias)),
-                },
-                child: Box::new(inner_op),
-            }
-        } else {
-            inner_op
-        };
+        if let Some(target_alias) = endpoint_target {
+            // The traversal ends with as("label") where label is already bound.
+            // Place the endpoint equality Filter AFTER the Apply so that both
+            // the traversal result (sub_alias) and the bound value (target_alias)
+            // are available in the same row.  Placing it inside the Aggregate
+            // chain would lose target_alias (Aggregate creates a fresh row).
+            let apply = Operator::Apply {
+                outer: Box::new(child),
+                inner: Box::new(inner_op),
+            };
+            let cmp_op = if negate { BinaryOp::Neq } else { BinaryOp::Eq };
+            let predicate = Expr::BinaryOp {
+                op: cmp_op,
+                left: Box::new(Expr::Variable(sub_alias)),
+                right: Box::new(Expr::Variable(target_alias)),
+            };
+            return Ok(Operator::Filter {
+                predicate,
+                child: Box::new(apply),
+            });
+        }
 
         let cnt_alias = self.next_alias("acnt");
         let count_op = Operator::Aggregate {
@@ -6318,6 +6682,40 @@ fn steps_need_label_stacks(steps: &[GremlinStep]) -> bool {
         }
     }
     false
+}
+
+/// Pre-scan a step sequence to collect all aggregate() key names and insert
+/// them into `keys`. This allows within()/without() predicates that reference
+/// an aggregate key defined LATER in the same step sequence (e.g. inside
+/// repeat bodies) to resolve to __gremlin_agg_<key> at compile time rather
+/// than treating the key as a literal string value.
+fn collect_aggregate_keys_prescan(steps: &[GremlinStep], keys: &mut HashSet<String>) {
+    for step in steps {
+        match step {
+            GremlinStep::Aggregate(key) => {
+                keys.insert(key.clone());
+            }
+            GremlinStep::Repeat(_, inner)
+            | GremlinStep::FlatMap(inner)
+            | GremlinStep::Map(inner)
+            | GremlinStep::Not(inner)
+            | GremlinStep::Where(inner) => {
+                collect_aggregate_keys_prescan(inner, keys);
+            }
+            GremlinStep::And(branches)
+            | GremlinStep::Or(branches)
+            | GremlinStep::Union(branches) => {
+                for branch in branches {
+                    collect_aggregate_keys_prescan(branch, keys);
+                }
+            }
+            GremlinStep::Choose(if_branch, else_branch, _) => {
+                collect_aggregate_keys_prescan(if_branch, keys);
+                collect_aggregate_keys_prescan(else_branch, keys);
+            }
+            _ => {}
+        }
+    }
 }
 
 /// Preprocess a step list to handle infix `and()`/`or()` with no arguments.
@@ -6565,6 +6963,41 @@ fn rewrite_create_alias(op: &mut Operator, placeholder: &str, replacement: &Iden
     }
 }
 
+/// Convert a `GremlinValue` to an `Expr` literal for use in ID-comparison
+/// contexts (V(id), E(id), hasId(id)).
+///
+/// TinkerPop allows string representations of numeric IDs: when a vertex
+/// is looked up as `V("1")`, the string `"1"` should match the numeric node id
+/// `1`. This helper tries to parse the string as an i64 and emits
+/// `Expr::Integer` so the downstream filter `id(v) == 1` succeeds.
+fn gremlin_value_to_id_expr(gv: &GremlinValue) -> Expr {
+    if let GremlinValue::String(s) = gv {
+        if let Ok(n) = s.parse::<i64>() {
+            return Expr::Integer(n);
+        }
+    }
+    gremlin_value_to_expr(gv)
+}
+
+fn is_gremlin_id_key(key: &str) -> bool {
+    matches!(key, "~id" | "T.id" | "t[id]")
+}
+
+fn gremlin_has_key_expr(key: &str, current_alias: &Identifier) -> Expr {
+    if is_gremlin_id_key(key) {
+        Expr::FunctionCall {
+            name: SmolStr::new("id"),
+            args: vec![Expr::Variable(current_alias.clone())],
+            distinct: false,
+        }
+    } else {
+        Expr::Property(
+            Box::new(Expr::Variable(current_alias.clone())),
+            SmolStr::new(key),
+        )
+    }
+}
+
 /// Convert a `GremlinValue` to an `Expr` literal.
 fn gremlin_value_to_expr(gv: &GremlinValue) -> Expr {
     match gv {
@@ -6635,6 +7068,13 @@ fn split_trailing_agg(steps: &[GremlinStep]) -> (&[GremlinStep], Option<AggFunct
     }
 }
 
+fn split_trailing_group_value_agg(steps: &[GremlinStep]) -> (&[GremlinStep], Option<AggFunction>) {
+    match steps.last() {
+        Some(GremlinStep::Fold) => (steps, None),
+        _ => split_trailing_agg(steps),
+    }
+}
+
 /// Build an `Expr` from a `by(key)` modulator key string and the current alias.
 /// Handles T.id, T.label, Column.keys/values, common traversal patterns, and property names.
 fn make_by_expr(key: &str, current_alias: &Identifier) -> Expr {
@@ -6675,6 +7115,21 @@ fn make_by_expr(key: &str, current_alias: &Identifier) -> Expr {
     } else if key == "~value" || key == "T.value" || key == "t[value]" {
         Expr::FunctionCall {
             name: SmolStr::new("gremlin_property_value"),
+            args: vec![Expr::Variable(current_alias.clone())],
+            distinct: false,
+        }
+    } else if key == "Column.keys" || key == "column.keys" {
+        // Extract the key from a single-entry Map produced by unfold() on a Map.
+        // gremlin_unfold_map_entry_key returns a scalar Str for single-entry maps.
+        Expr::FunctionCall {
+            name: SmolStr::new("gremlin_unfold_map_entry_key"),
+            args: vec![Expr::Variable(current_alias.clone())],
+            distinct: false,
+        }
+    } else if key == "Column.values" || key == "column.values" {
+        // Extract the value from a single-entry Map produced by unfold() on a Map.
+        Expr::FunctionCall {
+            name: SmolStr::new("gremlin_unfold_map_entry_value"),
             args: vec![Expr::Variable(current_alias.clone())],
             distinct: false,
         }
@@ -6841,28 +7296,56 @@ fn steps_to_predicate(
                 _ => (false, pred),
             };
             if let Some(label_expr) = predicate_label_ref(inner_pred, alias_map, aggregate_keys) {
-                let op = predicate_to_binary_op(inner_pred);
-                let cmp = Expr::BinaryOp {
-                    op,
-                    left: Box::new(Expr::Variable(alias.clone())),
-                    right: Box::new(label_expr),
-                };
-                return if negated {
-                    Expr::UnaryOp {
-                        op: UnaryOp::Not,
-                        expr: Box::new(cmp),
+                let result = match inner_pred {
+                    // within("key") / without("key") — membership test against the
+                    // stored list.  within → alias IN key; without → NOT(alias IN key).
+                    Predicate::Within(_) | Predicate::Without(_) => {
+                        let is_without = matches!(inner_pred, Predicate::Without(_));
+                        let cmp = Expr::BinaryOp {
+                            op: BinaryOp::In,
+                            left: Box::new(Expr::Variable(alias.clone())),
+                            right: Box::new(label_expr),
+                        };
+                        // Negate for Without or when the outer predicate was negated
+                        // (XOR so double-negation resolves correctly).
+                        if is_without ^ negated {
+                            Expr::UnaryOp {
+                                op: UnaryOp::Not,
+                                expr: Box::new(cmp),
+                            }
+                        } else {
+                            cmp
+                        }
                     }
-                } else {
-                    cmp
+                    // eq("a") / neq("a") / gt("a") etc. — direct comparison against
+                    // the labeled value.
+                    _ => {
+                        let op = predicate_to_binary_op(inner_pred);
+                        let cmp = Expr::BinaryOp {
+                            op,
+                            left: Box::new(Expr::Variable(alias.clone())),
+                            right: Box::new(label_expr),
+                        };
+                        if negated {
+                            Expr::UnaryOp {
+                                op: UnaryOp::Not,
+                                expr: Box::new(cmp),
+                            }
+                        } else {
+                            cmp
+                        }
+                    }
                 };
+                return result;
             }
             // Also try predicate_has_label_refs + predicate_to_label_aware_expr
             // for compound predicates like P.not(P.neq("a"))
-            if predicate_has_label_refs(pred, alias_map) {
+            if predicate_has_label_refs(pred, alias_map, aggregate_keys) {
                 return predicate_to_label_aware_expr(
                     pred,
                     &Expr::Variable(alias.clone()),
                     alias_map,
+                    aggregate_keys,
                 );
             }
         }
@@ -6871,6 +7354,15 @@ fn steps_to_predicate(
 
     // Two-step pattern: Values(["key"]) + Is(pred) → property predicate
     if steps.len() == 2 {
+        // loops("label").is(pred) and loops().is(pred) must target the
+        // executor-injected loop counter columns, not the current traverser.
+        if let (GremlinStep::Loops(label), GremlinStep::Is(pred)) = (&steps[0], &steps[1]) {
+            let loop_var = match label {
+                Some(l) => Identifier::new(format!("__gremlin_loop_count_{l}")),
+                None => Identifier::new("__gremlin_loop_count"),
+            };
+            return predicate_to_expr(pred, &loop_var);
+        }
         if let (GremlinStep::Values(keys), GremlinStep::Is(pred)) = (&steps[0], &steps[1]) {
             if keys.len() == 1 {
                 let prop_expr = Expr::Property(
@@ -6913,28 +7405,56 @@ fn steps_to_predicate(
         // This handles where("a", P.eq("b"))
         if let (GremlinStep::Select(_, keys), GremlinStep::Is(pred)) = (&steps[0], &steps[1]) {
             if keys.len() == 1 {
-                let src_var = alias_map
-                    .get(&keys[0])
-                    .cloned()
-                    .unwrap_or_else(|| Identifier::new(keys[0].clone()));
+                let src_expr = if keys[0] == "keys" || keys[0] == "Column.keys" {
+                    Expr::FunctionCall {
+                        name: SmolStr::new("gremlin_unfold_map_entry_key"),
+                        args: vec![Expr::Variable(alias.clone())],
+                        distinct: false,
+                    }
+                } else if keys[0] == "values" || keys[0] == "Column.values" {
+                    Expr::FunctionCall {
+                        name: SmolStr::new("gremlin_unfold_map_entry_value"),
+                        args: vec![Expr::Variable(alias.clone())],
+                        distinct: false,
+                    }
+                } else {
+                    Expr::Variable(
+                        alias_map
+                            .get(&keys[0])
+                            .cloned()
+                            .unwrap_or_else(|| Identifier::new(keys[0].clone())),
+                    )
+                };
                 if let Some(label_expr) = predicate_label_ref(pred, alias_map, aggregate_keys) {
                     let op = predicate_to_binary_op(pred);
                     return Expr::BinaryOp {
                         op,
-                        left: Box::new(Expr::Variable(src_var)),
+                        left: Box::new(src_expr.clone()),
                         right: Box::new(label_expr),
+                    };
+                }
+                if let Some(column_name) = predicate_string_ref(pred) {
+                    let op = predicate_to_binary_op(pred);
+                    return Expr::BinaryOp {
+                        op,
+                        left: Box::new(src_expr.clone()),
+                        right: Box::new(Expr::Variable(Identifier::new(column_name))),
                     };
                 }
                 // For compound predicates (Or/And/Not) that reference labels,
                 // build the expression resolving each label to its variable.
-                if predicate_has_label_refs(pred, alias_map) {
+                if predicate_has_label_refs(pred, alias_map, aggregate_keys) {
                     return predicate_to_label_aware_expr(
                         pred,
-                        &Expr::Variable(src_var),
+                        &src_expr,
                         alias_map,
+                        aggregate_keys,
                     );
                 }
-                return predicate_to_expr(pred, &src_var);
+                if let Expr::Variable(src_var) = src_expr {
+                    return predicate_to_expr(pred, &src_var);
+                }
+                return predicate_to_prop_expr(pred, src_expr);
             }
         }
     }
@@ -7315,8 +7835,24 @@ fn predicate_to_prop_expr(pred: &Predicate, prop_expr: Expr) -> Expr {
     }
 }
 
+fn predicate_string_ref(pred: &Predicate) -> Option<&str> {
+    match pred {
+        Predicate::Eq(GremlinValue::String(s))
+        | Predicate::Neq(GremlinValue::String(s))
+        | Predicate::Gt(GremlinValue::String(s))
+        | Predicate::Gte(GremlinValue::String(s))
+        | Predicate::Lt(GremlinValue::String(s))
+        | Predicate::Lte(GremlinValue::String(s)) => Some(s.as_str()),
+        _ => None,
+    }
+}
+
 /// Check if any leaf predicate in a compound predicate references a known label.
-fn predicate_has_label_refs(pred: &Predicate, alias_map: &HashMap<String, Identifier>) -> bool {
+fn predicate_has_label_refs(
+    pred: &Predicate,
+    alias_map: &HashMap<String, Identifier>,
+    aggregate_keys: &HashSet<String>,
+) -> bool {
     match pred {
         Predicate::Eq(GremlinValue::String(s))
         | Predicate::Neq(GremlinValue::String(s))
@@ -7324,20 +7860,31 @@ fn predicate_has_label_refs(pred: &Predicate, alias_map: &HashMap<String, Identi
         | Predicate::Gte(GremlinValue::String(s))
         | Predicate::Lt(GremlinValue::String(s))
         | Predicate::Lte(GremlinValue::String(s)) => alias_map.contains_key(s.as_str()),
-        Predicate::Or(preds) | Predicate::And(preds) => {
-            preds.iter().any(|p| predicate_has_label_refs(p, alias_map))
+        // within("key") / without("key") with a single string arg that names
+        // an aggregate side-effect or alias counts as a label reference.
+        Predicate::Within(vals) | Predicate::Without(vals) if vals.len() == 1 => {
+            if let GremlinValue::String(s) = &vals[0] {
+                alias_map.contains_key(s.as_str()) || aggregate_keys.contains(s.as_str())
+            } else {
+                false
+            }
         }
-        Predicate::Not(inner) => predicate_has_label_refs(inner, alias_map),
+        Predicate::Or(preds) | Predicate::And(preds) => preds
+            .iter()
+            .any(|p| predicate_has_label_refs(p, alias_map, aggregate_keys)),
+        Predicate::Not(inner) => predicate_has_label_refs(inner, alias_map, aggregate_keys),
         _ => false,
     }
 }
 
 /// Build a comparison expression for a compound predicate where each leaf
-/// may reference a different label. Resolves each label to its variable.
+/// may reference a different label or aggregate side-effect key.
+/// Resolves each label/key to its variable.
 fn predicate_to_label_aware_expr(
     pred: &Predicate,
     left: &Expr,
     alias_map: &HashMap<String, Identifier>,
+    aggregate_keys: &HashSet<String>,
 ) -> Expr {
     match pred {
         Predicate::Eq(GremlinValue::String(s))
@@ -7358,27 +7905,102 @@ fn predicate_to_label_aware_expr(
                 right: Box::new(right),
             }
         }
+        // within("key") where "key" is an aggregate side-effect: left IN __gremlin_agg_key
+        Predicate::Within(vals) if vals.len() == 1 => {
+            if let GremlinValue::String(s) = &vals[0] {
+                if let Some(id) = alias_map.get(s.as_str()) {
+                    return Expr::BinaryOp {
+                        op: BinaryOp::In,
+                        left: Box::new(left.clone()),
+                        right: Box::new(Expr::Variable(id.clone())),
+                    };
+                }
+                if aggregate_keys.contains(s.as_str()) {
+                    return Expr::BinaryOp {
+                        op: BinaryOp::In,
+                        left: Box::new(left.clone()),
+                        right: Box::new(Expr::Variable(Identifier::new(format!(
+                            "__gremlin_agg_{s}"
+                        )))),
+                    };
+                }
+            }
+            predicate_to_prop_expr(pred, left.clone())
+        }
+        // without("key") where "key" is an aggregate side-effect: NOT (left IN __gremlin_agg_key)
+        Predicate::Without(vals) if vals.len() == 1 => {
+            if let GremlinValue::String(s) = &vals[0] {
+                if let Some(id) = alias_map.get(s.as_str()) {
+                    return Expr::UnaryOp {
+                        op: gql_core::ast::UnaryOp::Not,
+                        expr: Box::new(Expr::BinaryOp {
+                            op: BinaryOp::In,
+                            left: Box::new(left.clone()),
+                            right: Box::new(Expr::Variable(id.clone())),
+                        }),
+                    };
+                }
+                if aggregate_keys.contains(s.as_str()) {
+                    return Expr::UnaryOp {
+                        op: gql_core::ast::UnaryOp::Not,
+                        expr: Box::new(Expr::BinaryOp {
+                            op: BinaryOp::In,
+                            left: Box::new(left.clone()),
+                            right: Box::new(Expr::Variable(Identifier::new(format!(
+                                "__gremlin_agg_{s}"
+                            )))),
+                        }),
+                    };
+                }
+            }
+            predicate_to_prop_expr(pred, left.clone())
+        }
         Predicate::Or(preds) => {
             let mut iter = preds.iter();
-            let first = predicate_to_label_aware_expr(iter.next().unwrap(), left, alias_map);
+            let first = predicate_to_label_aware_expr(
+                iter.next().unwrap(),
+                left,
+                alias_map,
+                aggregate_keys,
+            );
             iter.fold(first, |acc, p| Expr::BinaryOp {
                 op: BinaryOp::Or,
                 left: Box::new(acc),
-                right: Box::new(predicate_to_label_aware_expr(p, left, alias_map)),
+                right: Box::new(predicate_to_label_aware_expr(
+                    p,
+                    left,
+                    alias_map,
+                    aggregate_keys,
+                )),
             })
         }
         Predicate::And(preds) => {
             let mut iter = preds.iter();
-            let first = predicate_to_label_aware_expr(iter.next().unwrap(), left, alias_map);
+            let first = predicate_to_label_aware_expr(
+                iter.next().unwrap(),
+                left,
+                alias_map,
+                aggregate_keys,
+            );
             iter.fold(first, |acc, p| Expr::BinaryOp {
                 op: BinaryOp::And,
                 left: Box::new(acc),
-                right: Box::new(predicate_to_label_aware_expr(p, left, alias_map)),
+                right: Box::new(predicate_to_label_aware_expr(
+                    p,
+                    left,
+                    alias_map,
+                    aggregate_keys,
+                )),
             })
         }
         Predicate::Not(inner) => Expr::UnaryOp {
             op: gql_core::ast::UnaryOp::Not,
-            expr: Box::new(predicate_to_label_aware_expr(inner, left, alias_map)),
+            expr: Box::new(predicate_to_label_aware_expr(
+                inner,
+                left,
+                alias_map,
+                aggregate_keys,
+            )),
         },
         _ => predicate_to_prop_expr(pred, left.clone()),
     }
@@ -7458,57 +8080,64 @@ fn predicate_to_binary_op(pred: &Predicate) -> BinaryOp {
     }
 }
 
-/// Extract the left/right variable identifiers from a `Where([Select(["a"]), Is(pred)])`
-/// pattern where the predicate references another label. Returns `(left_var, right_var)`.
-/// Extract the string label from a simple or compound predicate.
-/// For compound predicates (Or/And), returns the label only if all
-/// sub-predicates reference the same label.
-fn extract_predicate_label(pred: &Predicate) -> Option<&str> {
-    match pred {
-        Predicate::Eq(GremlinValue::String(s))
-        | Predicate::Neq(GremlinValue::String(s))
-        | Predicate::Gt(GremlinValue::String(s))
-        | Predicate::Gte(GremlinValue::String(s))
-        | Predicate::Lt(GremlinValue::String(s))
-        | Predicate::Lte(GremlinValue::String(s)) => Some(s.as_str()),
-        Predicate::Or(preds) | Predicate::And(preds) => {
-            let mut common_label: Option<&str> = None;
-            for p in preds {
-                let label = extract_predicate_label(p)?;
-                if let Some(existing) = common_label {
-                    if existing != label {
-                        return None;
-                    }
-                } else {
-                    common_label = Some(label);
-                }
-            }
-            common_label
+#[derive(Clone)]
+enum WhereByTarget {
+    Identifier(Identifier),
+    MapEntryKey(Identifier),
+    MapEntryValue(Identifier),
+}
+
+impl WhereByTarget {
+    fn matches_variable(&self, variable: &Identifier) -> bool {
+        match self {
+            WhereByTarget::Identifier(id)
+            | WhereByTarget::MapEntryKey(id)
+            | WhereByTarget::MapEntryValue(id) => id == variable,
         }
-        Predicate::Not(inner) => extract_predicate_label(inner),
-        _ => None,
+    }
+
+    fn to_expr(&self) -> Expr {
+        match self {
+            WhereByTarget::Identifier(id) => Expr::Variable(id.clone()),
+            WhereByTarget::MapEntryKey(id) => Expr::FunctionCall {
+                name: SmolStr::new("gremlin_unfold_map_entry_key"),
+                args: vec![Expr::Variable(id.clone())],
+                distinct: false,
+            },
+            WhereByTarget::MapEntryValue(id) => Expr::FunctionCall {
+                name: SmolStr::new("gremlin_unfold_map_entry_value"),
+                args: vec![Expr::Variable(id.clone())],
+                distinct: false,
+            },
+        }
     }
 }
 
-fn extract_where_label_pair(
+fn extract_where_by_targets(
     steps: &[GremlinStep],
     alias_map: &HashMap<String, Identifier>,
     current_alias: &Identifier,
-) -> Option<(Identifier, Identifier)> {
+) -> Option<Vec<WhereByTarget>> {
     // Pattern 1: Select(["a"]) + Is(pred("b")) → where("a", P.gt("b"))
     if steps.len() == 2 {
         if let (GremlinStep::Select(_, keys), GremlinStep::Is(pred)) = (&steps[0], &steps[1]) {
             if keys.len() == 1 {
-                let left = alias_map
-                    .get(&keys[0])
-                    .cloned()
-                    .unwrap_or_else(|| Identifier::new(keys[0].clone()));
-                if let Some(rl) = extract_predicate_label(pred) {
-                    let right = alias_map
-                        .get(rl)
-                        .cloned()
-                        .unwrap_or_else(|| Identifier::new(rl));
-                    return Some((left, right));
+                let left = if keys[0] == "keys" || keys[0] == "Column.keys" {
+                    WhereByTarget::MapEntryKey(current_alias.clone())
+                } else if keys[0] == "values" || keys[0] == "Column.values" {
+                    WhereByTarget::MapEntryValue(current_alias.clone())
+                } else {
+                    WhereByTarget::Identifier(
+                        alias_map
+                            .get(&keys[0])
+                            .cloned()
+                            .unwrap_or_else(|| Identifier::new(keys[0].clone())),
+                    )
+                };
+                let mut targets = vec![left];
+                collect_predicate_labels_in_order(pred, alias_map, &mut targets);
+                if targets.len() > 1 {
+                    return Some(targets);
                 }
             }
         }
@@ -7516,71 +8145,131 @@ fn extract_where_label_pair(
     // Pattern 2: Is(pred("a")) → where(P.gt("a")) compares current vs label
     if steps.len() == 1 {
         if let GremlinStep::Is(pred) = &steps[0] {
-            if let Some(l) = extract_predicate_label(pred) {
-                if alias_map.contains_key(l) {
-                    let right = alias_map[l].clone();
-                    return Some((current_alias.clone(), right));
-                }
+            let mut targets = vec![WhereByTarget::Identifier(current_alias.clone())];
+            collect_predicate_labels_in_order(pred, alias_map, &mut targets);
+            if targets.len() > 1 {
+                return Some(targets);
             }
         }
     }
     None
 }
 
-/// Rewrite a where predicate to use property access. Transforms:
-/// `left_var > right_var` → `left_var.key > right_var.key`
-/// Handles compound predicates (And/Or) recursively.
-fn rewrite_where_by_predicate(
-    predicate: &mut Expr,
-    left_id: &Identifier,
-    right_id: &Identifier,
-    key: &str,
+fn collect_predicate_labels_in_order(
+    pred: &Predicate,
+    alias_map: &HashMap<String, Identifier>,
+    targets: &mut Vec<WhereByTarget>,
 ) {
-    rewrite_where_by_side(predicate, left_id, key, true);
-    rewrite_where_by_side(predicate, right_id, key, false);
-}
-
-/// Rewrite one side of a where-label predicate to use property access.
-/// `is_left` controls whether to rewrite the left or right operand.
-/// Recursively handles compound predicates (And/Or).
-fn rewrite_where_by_side(predicate: &mut Expr, target_id: &Identifier, key: &str, is_left: bool) {
-    if let Expr::BinaryOp { op, left, right } = predicate {
-        if matches!(op, BinaryOp::And | BinaryOp::Or) {
-            // Compound predicate: recurse into both branches
-            rewrite_where_by_side(left, target_id, key, is_left);
-            rewrite_where_by_side(right, target_id, key, is_left);
-        } else {
-            let operand = if is_left { left } else { right };
-            if let Expr::Variable(ref v) = **operand {
-                if v == target_id {
-                    **operand = Expr::Property(
-                        Box::new(Expr::Variable(target_id.clone())),
-                        SmolStr::new(key),
-                    );
+    match pred {
+        Predicate::Eq(GremlinValue::String(s))
+        | Predicate::Neq(GremlinValue::String(s))
+        | Predicate::Gt(GremlinValue::String(s))
+        | Predicate::Gte(GremlinValue::String(s))
+        | Predicate::Lt(GremlinValue::String(s))
+        | Predicate::Lte(GremlinValue::String(s)) => {
+            if let Some(id) = alias_map.get(s.as_str()) {
+                if !targets
+                    .iter()
+                    .any(|existing| matches!(existing, WhereByTarget::Identifier(existing_id) if existing_id == id))
+                {
+                    targets.push(WhereByTarget::Identifier(id.clone()));
                 }
             }
-            // Also check if the side was already rewritten to Property — overwrite
-            if let Expr::Property(ref inner, _) = **operand {
-                if let Expr::Variable(ref v) = **inner {
-                    if v == target_id {
-                        **operand = Expr::Property(
-                            Box::new(Expr::Variable(target_id.clone())),
-                            SmolStr::new(key),
-                        );
+        }
+        Predicate::Within(vals) | Predicate::Without(vals) if vals.len() == 1 => {
+            if let GremlinValue::String(s) = &vals[0] {
+                if let Some(id) = alias_map.get(s.as_str()) {
+                    if !targets
+                        .iter()
+                        .any(|existing| matches!(existing, WhereByTarget::Identifier(existing_id) if existing_id == id))
+                    {
+                        targets.push(WhereByTarget::Identifier(id.clone()));
                     }
                 }
             }
         }
+        Predicate::Or(preds) | Predicate::And(preds) => {
+            for inner in preds {
+                collect_predicate_labels_in_order(inner, alias_map, targets);
+            }
+        }
+        Predicate::Not(inner) => collect_predicate_labels_in_order(inner, alias_map, targets),
+        _ => {}
+    }
+}
+
+fn finalize_where_by_modulation(
+    predicate: &mut Expr,
+    targets: &[WhereByTarget],
+    modulators: &[String],
+    productive_by: bool,
+) {
+    if targets.is_empty() || modulators.is_empty() {
+        return;
+    }
+
+    for (index, target_id) in targets.iter().enumerate() {
+        let key = &modulators[index % modulators.len()];
+        rewrite_where_by_target(predicate, target_id, key);
+    }
+
+    if productive_by {
+        wrap_where_by_null_eq(predicate);
+    }
+}
+
+fn rewrite_where_by_target(predicate: &mut Expr, target: &WhereByTarget, key: &str) {
+    match predicate {
+        Expr::BinaryOp { left, right, .. } => {
+            rewrite_where_by_expr(left, target, key);
+            rewrite_where_by_expr(right, target, key);
+        }
+        Expr::UnaryOp { expr, .. } => rewrite_where_by_expr(expr, target, key),
+        Expr::IsNull(expr) => rewrite_where_by_expr(expr, target, key),
+        _ => {}
+    }
+}
+
+fn rewrite_where_by_expr(expr: &mut Expr, target: &WhereByTarget, key: &str) {
+    match expr {
+        Expr::Variable(v) if target.matches_variable(v) => {
+            let base = target.to_expr();
+            *expr = if key.is_empty() {
+                base
+            } else {
+                Expr::Property(Box::new(base), SmolStr::new(key))
+            };
+        }
+        Expr::Property(inner, _) => {
+            if matches!(inner.as_ref(), Expr::Variable(v) if target.matches_variable(v)) {
+                let base = target.to_expr();
+                *expr = if key.is_empty() {
+                    base
+                } else {
+                    Expr::Property(Box::new(base), SmolStr::new(key))
+                };
+            } else {
+                rewrite_where_by_expr(inner, target, key);
+            }
+        }
+        Expr::BinaryOp { left, right, .. } => {
+            rewrite_where_by_expr(left, target, key);
+            rewrite_where_by_expr(right, target, key);
+        }
+        Expr::UnaryOp { expr: inner, .. } | Expr::IsNull(inner) => {
+            rewrite_where_by_expr(inner, target, key);
+        }
+        _ => {}
     }
 }
 
 /// ProductiveByStrategy: for each Eq comparison leaf in a where-by predicate,
 /// add `OR (left IS NULL AND right IS NULL)` so that null == null passes.
-fn wrap_where_by_null_eq(predicate: &mut Expr, _left_id: &Identifier, _right_id: &Identifier) {
+fn wrap_where_by_null_eq(predicate: &mut Expr) {
     if let Expr::BinaryOp { op, left, right } = predicate {
         if matches!(op, BinaryOp::And | BinaryOp::Or) {
-            wrap_where_by_null_eq(left, _left_id, _right_id);
-            wrap_where_by_null_eq(right, _left_id, _right_id);
+            wrap_where_by_null_eq(left);
+            wrap_where_by_null_eq(right);
         } else if matches!(op, BinaryOp::Eq) {
             // Transform: (L == R) → (L == R) OR (L IS NULL AND R IS NULL)
             let left_clone = left.clone();
@@ -7606,9 +8295,11 @@ fn wrap_where_by_null_eq(predicate: &mut Expr, _left_id: &Identifier, _right_id:
 ///   `[Values(["name"])]`               → `"name"`
 ///   `[Label]`                           → `"~label"`
 ///   `[Id]`                              → `"~id"`
+///   `[Select(_, ["src","tgt"])]`       → `"~select_map:src,tgt"`
 ///   `[Values(["name"]), ToUpper]`       → `"~toupper:name"`
 ///   `[Values(["name"]), ToLower]`       → `"~tolower:name"`
 ///   `[Unfold, Values(["name"]), Fold]`  → `"~unfold_values_fold:name"`
+///   `[In(["created"]), Values(["age"]), Min]` → `"~in_values_min:created:age"`
 ///
 /// Returns empty string for unrecognized patterns (identity behavior).
 fn extract_by_traversal_key(steps: &[GremlinStep]) -> String {
@@ -7616,6 +8307,11 @@ fn extract_by_traversal_key(steps: &[GremlinStep]) -> String {
         [GremlinStep::Values(keys)] if keys.len() == 1 => keys[0].clone(),
         [GremlinStep::Label] => "~label".to_string(),
         [GremlinStep::Id] => "~id".to_string(),
+        [GremlinStep::Select(_, keys)] if keys.len() > 1 => {
+            format!("~select_map:{}", keys.join(","))
+        }
+        [GremlinStep::LimitLocal(n)] => format!("~limit_local:{n}"),
+        [GremlinStep::TailLocal(n)] => format!("~tail_local:{n}"),
         [GremlinStep::Math(expr)] => format!("~math:{expr}"),
         [GremlinStep::Values(keys), GremlinStep::ToUpper] if keys.len() == 1 => {
             format!("~toupper:{}", keys[0])
@@ -7625,6 +8321,11 @@ fn extract_by_traversal_key(steps: &[GremlinStep]) -> String {
         }
         [GremlinStep::Unfold, GremlinStep::Values(keys), GremlinStep::Fold] if keys.len() == 1 => {
             format!("~unfold_values_fold:{}", keys[0])
+        }
+        [GremlinStep::In(labels), GremlinStep::Values(keys), GremlinStep::Min]
+            if labels.len() == 1 && keys.len() == 1 =>
+        {
+            format!("~in_values_min:{}:{}", labels[0], keys[0])
         }
         // tail(local, N).values("prop") — for a single element, tail is identity
         [GremlinStep::TailLocal(_), GremlinStep::Values(keys)] if keys.len() == 1 => {
@@ -7699,6 +8400,26 @@ mod tests {
     }
 
     #[test]
+    fn compile_v_with_string_id_normalizes_to_integer() {
+        let mut compiler = GremlinCompiler::new();
+        let op = compiler
+            .compile(&[GremlinStep::V(Some(vec![GremlinValue::String("1".into())]))])
+            .unwrap();
+        if let Operator::Filter { predicate, .. } = &op {
+            assert!(matches!(
+                predicate,
+                Expr::BinaryOp {
+                    op: BinaryOp::Eq,
+                    right,
+                    ..
+                } if matches!(right.as_ref(), Expr::Integer(1))
+            ));
+        } else {
+            panic!("expected Filter");
+        }
+    }
+
+    #[test]
     fn compile_has_filter() {
         let mut compiler = GremlinCompiler::new();
         let steps = vec![
@@ -7759,6 +8480,29 @@ mod tests {
         assert_eq!(
             extract_by_traversal_key(&[GremlinStep::Math("_+_".into())]),
             "~math:_+_"
+        );
+    }
+
+    #[test]
+    fn extract_by_traversal_key_supports_in_values_min() {
+        assert_eq!(
+            extract_by_traversal_key(&[
+                GremlinStep::In(vec!["created".into()]),
+                GremlinStep::Values(vec!["age".into()]),
+                GremlinStep::Min,
+            ]),
+            "~in_values_min:created:age"
+        );
+    }
+
+    #[test]
+    fn extract_by_traversal_key_supports_multi_select_map() {
+        assert_eq!(
+            extract_by_traversal_key(&[GremlinStep::Select(
+                None,
+                vec!["src".into(), "tgt".into()],
+            )]),
+            "~select_map:src,tgt"
         );
     }
 
@@ -7891,6 +8635,28 @@ mod tests {
     }
 
     #[test]
+    fn compile_e_with_string_id_normalizes_to_integer() {
+        let mut compiler = GremlinCompiler::new();
+        let op = compiler
+            .compile(&[GremlinStep::E(Some(vec![GremlinValue::String(
+                "42".into(),
+            )]))])
+            .unwrap();
+        if let Operator::Filter { predicate, .. } = &op {
+            assert!(matches!(
+                predicate,
+                Expr::BinaryOp {
+                    op: BinaryOp::Eq,
+                    right,
+                    ..
+                } if matches!(right.as_ref(), Expr::Integer(42))
+            ));
+        } else {
+            panic!("expected Filter");
+        }
+    }
+
+    #[test]
     fn compile_e_with_multiple_ids() {
         let mut compiler = GremlinCompiler::new();
         let op = compiler
@@ -7930,6 +8696,53 @@ mod tests {
                     ..
                 }
             ));
+        }
+    }
+
+    #[test]
+    fn compile_has_id_string_normalizes_to_integer() {
+        let mut compiler = GremlinCompiler::new();
+        let steps = vec![
+            GremlinStep::V(None),
+            GremlinStep::HasId(vec![GremlinValue::String("7".into())]),
+        ];
+        let op = compiler.compile(&steps).unwrap();
+        if let Operator::Filter { predicate, .. } = &op {
+            assert!(matches!(
+                predicate,
+                Expr::BinaryOp {
+                    op: BinaryOp::Eq,
+                    right,
+                    ..
+                } if matches!(right.as_ref(), Expr::Integer(7))
+            ));
+        } else {
+            panic!("expected Filter");
+        }
+    }
+
+    #[test]
+    fn compile_has_tid_string_uses_id_function_and_integer_rhs() {
+        let mut compiler = GremlinCompiler::new();
+        let steps = vec![
+            GremlinStep::V(None),
+            GremlinStep::Has("~id".into(), Some(GremlinValue::String("10".into()))),
+        ];
+        let op = compiler.compile(&steps).unwrap();
+        if let Operator::Filter { predicate, .. } = &op {
+            assert!(matches!(
+                predicate,
+                Expr::BinaryOp {
+                    op: BinaryOp::Eq,
+                    left,
+                    right,
+                } if matches!(
+                    left.as_ref(),
+                    Expr::FunctionCall { name, .. } if name.as_str() == "id"
+                ) && matches!(right.as_ref(), Expr::Integer(10))
+            ));
+        } else {
+            panic!("expected Filter");
         }
     }
 
@@ -8308,6 +9121,26 @@ mod tests {
     }
 
     #[test]
+    fn compile_select_by_traversal_records_sub_traversal() {
+        let mut compiler = GremlinCompiler::new();
+        let steps = vec![
+            GremlinStep::V(None),
+            GremlinStep::As("a".into()),
+            GremlinStep::Select(None, vec!["a".into()]),
+            GremlinStep::ByTraversal(vec![GremlinStep::Values(vec!["name".into()])], false),
+        ];
+        let op = compiler.compile(&steps).unwrap();
+        if let Operator::GremlinSelect { by_traversals, .. } = &op {
+            assert!(matches!(
+                by_traversals.first(),
+                Some(Some(GremlinSelectTraversal::Traversal { .. }))
+            ));
+        } else {
+            panic!("expected GremlinSelect");
+        }
+    }
+
+    #[test]
     fn compile_where_filter() {
         let mut compiler = GremlinCompiler::new();
         let steps = vec![
@@ -8319,6 +9152,116 @@ mod tests {
         ];
         let op = compiler.compile(&steps).unwrap();
         assert!(matches!(op, Operator::Filter { .. }));
+    }
+
+    #[test]
+    fn finalize_where_by_modulation_cycles_targets() {
+        let a = Identifier::new("a");
+        let b = Identifier::new("b");
+        let c = Identifier::new("c");
+        let d = Identifier::new("d");
+        let mut predicate = Expr::BinaryOp {
+            op: BinaryOp::And,
+            left: Box::new(Expr::BinaryOp {
+                op: BinaryOp::Or,
+                left: Box::new(Expr::BinaryOp {
+                    op: BinaryOp::Lt,
+                    left: Box::new(Expr::Variable(a.clone())),
+                    right: Box::new(Expr::Variable(b.clone())),
+                }),
+                right: Box::new(Expr::BinaryOp {
+                    op: BinaryOp::Gt,
+                    left: Box::new(Expr::Variable(a.clone())),
+                    right: Box::new(Expr::Variable(c.clone())),
+                }),
+            }),
+            right: Box::new(Expr::BinaryOp {
+                op: BinaryOp::Neq,
+                left: Box::new(Expr::Variable(a.clone())),
+                right: Box::new(Expr::Variable(d.clone())),
+            }),
+        };
+
+        finalize_where_by_modulation(
+            &mut predicate,
+            &[
+                WhereByTarget::Identifier(a.clone()),
+                WhereByTarget::Identifier(b.clone()),
+                WhereByTarget::Identifier(c.clone()),
+                WhereByTarget::Identifier(d.clone()),
+            ],
+            &[
+                "age".to_string(),
+                "weight".to_string(),
+                "~in_values_min:created:age".to_string(),
+            ],
+            false,
+        );
+
+        let Expr::BinaryOp { left, right, .. } = &predicate else {
+            panic!("expected top-level binary op");
+        };
+        let Expr::BinaryOp {
+            left: first,
+            right: second,
+            ..
+        } = left.as_ref()
+        else {
+            panic!("expected OR branch");
+        };
+        let Expr::BinaryOp {
+            left: first_left,
+            right: first_right,
+            ..
+        } = first.as_ref()
+        else {
+            panic!("expected first comparison");
+        };
+        assert_eq!(
+            *first_left.clone(),
+            Expr::Property(Box::new(Expr::Variable(a.clone())), SmolStr::new("age"))
+        );
+        assert_eq!(
+            *first_right.clone(),
+            Expr::Property(Box::new(Expr::Variable(b.clone())), SmolStr::new("weight"))
+        );
+
+        let Expr::BinaryOp {
+            left: second_left,
+            right: second_right,
+            ..
+        } = second.as_ref()
+        else {
+            panic!("expected second comparison");
+        };
+        assert_eq!(
+            *second_left.clone(),
+            Expr::Property(Box::new(Expr::Variable(a.clone())), SmolStr::new("age"))
+        );
+        assert_eq!(
+            *second_right.clone(),
+            Expr::Property(
+                Box::new(Expr::Variable(c.clone())),
+                SmolStr::new("~in_values_min:created:age")
+            )
+        );
+
+        let Expr::BinaryOp {
+            left: third_left,
+            right: third_right,
+            ..
+        } = right.as_ref()
+        else {
+            panic!("expected third comparison");
+        };
+        assert_eq!(
+            *third_left.clone(),
+            Expr::Property(Box::new(Expr::Variable(a)), SmolStr::new("age"))
+        );
+        assert_eq!(
+            *third_right.clone(),
+            Expr::Property(Box::new(Expr::Variable(d)), SmolStr::new("age"))
+        );
     }
 
     #[test]
@@ -8435,6 +9378,21 @@ mod tests {
     }
 
     #[test]
+    fn loops_is_predicate_targets_loop_counter_column() {
+        let pred = steps_to_predicate(
+            &[
+                GremlinStep::Loops(Some("a".into())),
+                GremlinStep::Is(Predicate::Eq(GremlinValue::Integer(0))),
+            ],
+            &Identifier::new("v_1"),
+            &HashMap::new(),
+            &HashSet::new(),
+        );
+        let rendered = format!("{pred:?}");
+        assert!(rendered.contains("__gremlin_loop_count_a"));
+    }
+
+    #[test]
     fn compile_inject() {
         let mut compiler = GremlinCompiler::new();
         let steps = vec![GremlinStep::Inject(vec![
@@ -8471,6 +9429,56 @@ mod tests {
             ]),
         ];
         let op = compiler.compile(&steps).unwrap();
+        assert!(matches!(op, Operator::Union { .. }));
+    }
+
+    #[test]
+    fn compile_top_level_union_with_source_branches_without_apply() {
+        let mut compiler = GremlinCompiler::new();
+        let steps = vec![GremlinStep::Union(vec![
+            vec![
+                GremlinStep::V(None),
+                GremlinStep::Out(vec![]),
+                GremlinStep::Out(vec![]),
+            ],
+            vec![
+                GremlinStep::V(None),
+                GremlinStep::HasLabel(vec!["software".into()]),
+            ],
+        ])];
+        let op = compiler.compile(&steps).unwrap();
+        assert!(matches!(op, Operator::Union { .. }));
+    }
+
+    #[test]
+    fn compile_nested_union_path_does_not_leak_seed_alias_into_path_acc() {
+        let resolve = |_name: &str| -> Option<GremlinValue> { None };
+        let steps = crate::text_parser::parse_traversal(
+            r#"g.union(__.union(__.V().out().out()), __.V().hasLabel("software")).path().by("name")"#,
+            &resolve,
+        )
+        .unwrap();
+        let mut compiler = GremlinCompiler::new();
+        let op = compiler.compile(&steps).unwrap();
+        let rendered = format!("{op:#?}");
+        assert!(!rendered.contains("\"__gremlin_v\""));
+    }
+
+    #[test]
+    fn compile_seeded_union_uses_stream_semantics_not_apply() {
+        let mut compiler = GremlinCompiler::new();
+        let op = compiler
+            .compile_seeded(
+                &[GremlinStep::Union(vec![
+                    vec![
+                        GremlinStep::Constant(GremlinValue::String("y".into())),
+                        GremlinStep::Limit(1),
+                    ],
+                    vec![GremlinStep::Identity],
+                ])],
+                &Identifier::new("n"),
+            )
+            .unwrap();
         assert!(matches!(op, Operator::Union { .. }));
     }
 
