@@ -175,7 +175,7 @@ impl<'src> Parser<'src> {
         }
 
         // Parse optional `[...]` bracket block.
-        let (variable, rel_types, range, properties, where_clause) = if self
+        let (variable, rel_types, dyn_rel_type, range, properties, where_clause) = if self
             .at(&TokenKind::LBracket)
         {
             self.advance(); // consume [
@@ -194,11 +194,29 @@ impl<'src> Parser<'src> {
                 _ => None,
             };
 
-            // Optional rel types `:A|B|C`.
-            let types = if self.at(&TokenKind::Colon) {
-                self.parse_rel_type_list()?
+            // Optional rel types `:A|B|C` or dynamic `:$expr`.
+            //
+            // When the token sequence is `:$`, the `$` acts as a "dynamic
+            // expression" sigil — the remainder is parsed as a general
+            // expression that evaluates to the relationship type string at
+            // runtime.  This enables batch MERGE with mixed types (#1078):
+            //
+            //   MERGE (a)-[e:$edge.relType {edge_id: edge.edgeId}]->(b)
+            //
+            // The `$` is consumed but NOT fed to `parse_expr` (it is not a
+            // parameter reference); the next tokens form a normal expression
+            // (variable, property access, function call, etc.).
+            let (types, dyn_rel_type) = if self.at(&TokenKind::Colon) {
+                if self.peek2() == &TokenKind::DollarSign {
+                    self.advance(); // consume ':'
+                    self.advance(); // consume '$' (dynamic-type sigil)
+                    let expr = self.parse_expr()?;
+                    (Vec::new(), Some(expr))
+                } else {
+                    (self.parse_rel_type_list()?, None)
+                }
             } else {
-                Vec::new()
+                (Vec::new(), None)
             };
 
             // Optional range `*min..max`.
@@ -227,10 +245,10 @@ impl<'src> Parser<'src> {
             };
 
             self.expect(&TokenKind::RBracket)?;
-            (var, types, range, props, wc)
+            (var, types, dyn_rel_type, range, props, wc)
         } else {
             // No bracket block — anonymous untyped relationship.
-            (None, Vec::new(), None, None, None)
+            (None, Vec::new(), None, None, None, None)
         };
 
         // Determine direction by what follows.
@@ -260,6 +278,7 @@ impl<'src> Parser<'src> {
             range,
             properties,
             where_clause,
+            dynamic_rel_type: dyn_rel_type,
         };
 
         let node = self.parse_node_pattern()?;

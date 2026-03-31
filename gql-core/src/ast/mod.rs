@@ -535,6 +535,10 @@ pub struct RelPattern {
     pub range: Option<RangeQuantifier>,
     pub properties: Option<Properties>,
     pub where_clause: Option<Expr>,
+    /// When the parser encounters a `$param` as the relationship type
+    /// (e.g. `MERGE (a)-[r:$type]->(b)`), the expression is stored here.
+    /// The planner uses this to emit a dynamic `Expr` instead of a literal type.
+    pub dynamic_rel_type: Option<Expr>,
 }
 
 /// Variable-length quantifier `*min..max`. Both bounds are optional.

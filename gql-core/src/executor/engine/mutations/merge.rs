@@ -42,7 +42,7 @@ struct MergeRelBatchSpec<'a> {
     src_alias: &'a crate::ast::Identifier,
     dst_alias: &'a crate::ast::Identifier,
     rel_alias: Option<&'a crate::ast::Identifier>,
-    rel_type: &'a crate::ast::RelType,
+    rel_type: &'a Expr,
     direction: Direction,
     properties: &'a [(String, Expr)],
 }
@@ -74,8 +74,11 @@ impl<'a> QueryExecutor<'a> {
         input: Vec<Row>,
         spec: MergeRelBatchSpec<'_>,
     ) -> Result<Vec<Row>, GqlError> {
-        let type_str = spec.rel_type.as_str();
-        let type_owned = type_str.to_string();
+        // Pre-extract literal type string for the common case (avoids per-row eval).
+        let static_type: Option<&str> = match spec.rel_type {
+            Expr::Str(s) => Some(s),
+            _ => None,
+        };
         let mut pending_creates: Vec<(NodeId, NodeId, String, IndexMap<String, Value>)> =
             Vec::new();
         let mut pending_non_null_keys: Vec<Vec<String>> = Vec::new();
@@ -100,6 +103,24 @@ impl<'a> QueryExecutor<'a> {
             };
 
             let ctx = self.build_filter_ctx(cx.graph, &row)?;
+
+            // Evaluate rel type: use static literal when available, else eval per-row.
+            let type_owned: String = if let Some(s) = static_type {
+                s.to_string()
+            } else {
+                let type_val = self.eval_with_storage(cx.graph, spec.rel_type, &row, &ctx)?;
+                match type_val {
+                    Value::Str(s) => s.to_string(),
+                    other => {
+                        return Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                            expected: "String for relationship type".to_string(),
+                            actual: other.type_name().to_string(),
+                        }));
+                    }
+                }
+            };
+            let type_str: &str = &type_owned;
+
             let prop_vals = self.eval_merge_properties(cx.graph, spec.properties, &row, &ctx)?;
             let prop_map = Self::merge_relationship_props_map(prop_vals);
             let dedup_key = PendingMergeEdgeKey {
@@ -609,7 +630,6 @@ impl<'a> QueryExecutor<'a> {
             }));
         };
         let input = self.exec_operator(cx, child)?;
-        let type_str = rel_type.as_str();
         if on_create.is_empty() && on_match.is_empty() {
             let out = self.exec_merge_rel_batch_creates(
                 cx,
@@ -626,6 +646,13 @@ impl<'a> QueryExecutor<'a> {
             self.invalidate_property_cache();
             return Ok(out);
         }
+
+        // Pre-extract literal type string for the common case.
+        let static_type: Option<&str> = match rel_type {
+            Expr::Str(s) => Some(s),
+            _ => None,
+        };
+
         let mut out = Vec::with_capacity(input.len());
 
         for mut row in input {
@@ -645,6 +672,24 @@ impl<'a> QueryExecutor<'a> {
                 Direction::Incoming => (dst_id, src_id),
                 _ => (src_id, dst_id),
             };
+
+            // Evaluate rel type: use static literal when available, else eval per-row.
+            let ctx = self.build_filter_ctx(cx.graph, &row)?;
+            let type_owned: String = if let Some(s) = static_type {
+                s.to_string()
+            } else {
+                let type_val = self.eval_with_storage(cx.graph, rel_type, &row, &ctx)?;
+                match type_val {
+                    Value::Str(s) => s.to_string(),
+                    other => {
+                        return Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                            expected: "String for relationship type".to_string(),
+                            actual: other.type_name().to_string(),
+                        }));
+                    }
+                }
+            };
+            let type_str: &str = &type_owned;
 
             // Find existing edges of this type between src and dst.
             // For undirected patterns, check BOTH directions (a->b and b->a).
@@ -667,7 +712,6 @@ impl<'a> QueryExecutor<'a> {
             }
 
             // Filter by property constraints if any.
-            let ctx = self.build_filter_ctx(cx.graph, &row)?;
             let prop_vals = self.eval_merge_properties(cx.graph, properties, &row, &ctx)?;
             let prop_map = Self::merge_relationship_props_map(prop_vals);
 
@@ -743,7 +787,9 @@ impl<'a> QueryExecutor<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ast::{Direction, Expr, Identifier, Label, RelType};
+    #[allow(unused_imports)]
+    use crate::ast::RelType;
+    use crate::ast::{Direction, Expr, Identifier, Label};
     use crate::executor::budget::ExecutionBudget;
     use crate::planner::{Operator, SetItem};
     use crate::storage::{GraphStore, InMemoryGraphStore};
@@ -950,7 +996,7 @@ mod tests {
             src_alias: Identifier::new("a"),
             dst_alias: Identifier::new("b"),
             rel_alias: Some(Identifier::new("r")),
-            rel_type: RelType::new("KNOWS"),
+            rel_type: Expr::Str("KNOWS".into()),
             direction: Direction::Outgoing,
             properties: vec![],
             on_create: vec![],
@@ -992,7 +1038,7 @@ mod tests {
             src_alias: Identifier::new("a"),
             dst_alias: Identifier::new("b"),
             rel_alias: Some(Identifier::new("r")),
-            rel_type: RelType::new("R"),
+            rel_type: Expr::Str("R".into()),
             direction: Direction::Outgoing,
             properties: vec![],
             on_create: vec![],
@@ -1031,7 +1077,7 @@ mod tests {
             src_alias: Identifier::new("a"),
             dst_alias: Identifier::new("b"),
             rel_alias: Some(Identifier::new("r")),
-            rel_type: RelType::new("R"),
+            rel_type: Expr::Str("R".into()),
             direction: Direction::Outgoing,
             properties: vec![],
             on_create: vec![],
@@ -1101,7 +1147,7 @@ mod tests {
             src_alias: Identifier::new("a"),
             dst_alias: Identifier::new("b"),
             rel_alias: Some(Identifier::new("r")),
-            rel_type: RelType::new("R"),
+            rel_type: Expr::Str("R".into()),
             direction: Direction::Outgoing,
             properties: duplicate_key_props.clone(),
             on_create: vec![],
@@ -1127,7 +1173,7 @@ mod tests {
             src_alias: Identifier::new("a"),
             dst_alias: Identifier::new("b"),
             rel_alias: Some(Identifier::new("r")),
-            rel_type: RelType::new("R"),
+            rel_type: Expr::Str("R".into()),
             direction: Direction::Outgoing,
             properties: duplicate_key_props,
             on_create: vec![crate::planner::SetItem::Property {

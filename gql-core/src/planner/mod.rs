@@ -155,11 +155,16 @@ pub enum Operator {
         child: Option<Box<Operator>>,
     },
     /// MERGE (a)-[r:TYPE {props}]->(b) — relationship merge.
+    ///
+    /// `rel_type` is an expression that evaluates to the relationship type string.
+    /// For literal types this is `Expr::Str("TYPE")`, but it can also be a
+    /// parameter reference (`Expr::Parameter`) or any expression that evaluates
+    /// to a string, enabling dynamic relationship types in batch MERGE.
     MergeRelationship {
         src_alias: Identifier,
         dst_alias: Identifier,
         rel_alias: Option<Identifier>,
-        rel_type: RelType,
+        rel_type: Expr,
         direction: Direction,
         properties: Vec<(String, Expr)>,
         on_create: Vec<SetItem>,

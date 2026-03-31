@@ -3526,16 +3526,16 @@ impl GremlinCompiler {
 
                     let src = Identifier::new("__src");
                     let dst = Identifier::new("__dst");
-                    let rel_type = if rel_type_str.is_empty() {
-                        RelType::new("__default")
+                    let rel_type_expr = if rel_type_str.is_empty() {
+                        Expr::Str("__default".into())
                     } else {
-                        RelType::new(rel_type_str.as_str())
+                        Expr::Str(rel_type_str.as_str().into())
                     };
                     current = Some(Operator::MergeRelationship {
                         src_alias: src,
                         dst_alias: dst,
                         rel_alias: Some(rel_alias),
-                        rel_type,
+                        rel_type: rel_type_expr,
                         direction: Direction::Outgoing,
                         properties,
                         on_create: vec![],
