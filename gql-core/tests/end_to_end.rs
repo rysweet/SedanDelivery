@@ -2612,3 +2612,249 @@ fn regression_1065_scales_linearly_with_large_graph() {
         budget.rows_produced()
     );
 }
+
+// ── Batch MERGE edge throughput tests (issue #1078) ─────────────────────────
+
+#[test]
+fn test_batch_merge_edges_creates_and_matches() {
+    // Verifies that batch MERGE correctly creates new edges AND matches
+    // existing ones without duplication, even with 50+ edges.
+    let store = make_store();
+
+    // Create 60 nodes.
+    for _ in 0..60 {
+        store
+            .create_node("test", vec!["Person".to_string()], Default::default())
+            .unwrap();
+    }
+
+    // Pre-create 20 edges: node i -> node i+1 for i in 1..=20.
+    for i in 1u64..=20 {
+        store
+            .create_edge(
+                "test",
+                gql_core::storage::NodeId(i),
+                gql_core::storage::NodeId(i + 1),
+                "KNOWS".to_string(),
+                Default::default(),
+            )
+            .unwrap();
+    }
+
+    // Build UNWIND list of 50 edges: pairs (i, i+1) for i in 1..=50.
+    // First 20 already exist, so only 30 should be created.
+    let edges: Vec<Value> = (1u64..=50)
+        .map(|i| {
+            Value::Map(
+                vec![
+                    ("src".to_string().into_boxed_str(), Value::Int(i as i64)),
+                    (
+                        "dst".to_string().into_boxed_str(),
+                        Value::Int((i + 1) as i64),
+                    ),
+                ]
+                .into_iter()
+                .collect(),
+            )
+        })
+        .collect();
+
+    let mut params = HashMap::new();
+    params.insert("edges".to_string(), Value::List(edges));
+
+    let q = parse_query(
+        "UNWIND $edges AS e \
+         MATCH (a:Person), (b:Person) \
+         WHERE id(a) = e.src AND id(b) = e.dst \
+         MERGE (a)-[r:KNOWS]->(b) \
+         RETURN id(a) AS src, id(b) AS dst",
+    )
+    .unwrap();
+
+    let registry = ProcedureRegistry::new();
+    let planner = QueryPlanner::with_context(&store, "test", &registry, &params);
+    let plan = planner.plan(&q).unwrap();
+
+    let executor = QueryExecutor::with_context(&store, &registry, params);
+    let mut budget = ExecutionBudget::new(Duration::from_secs(30), 500_000);
+    let result = executor.execute("test", &plan, &mut budget).unwrap();
+
+    // All 50 rows should produce results.
+    assert_eq!(result.rows.len(), 50);
+    // Only 30 new edges should be created (edges 21..=50).
+    assert_eq!(
+        result.stats.edges_created, 30,
+        "Expected 30 new edges (20 pre-existing matched), got {}",
+        result.stats.edges_created
+    );
+}
+
+#[test]
+fn test_batch_merge_edges_with_properties() {
+    // Verifies property-matching works correctly in batch MERGE.
+    let store = make_store();
+
+    // Create 10 nodes.
+    for _ in 0..10 {
+        store
+            .create_node("test", vec!["Item".to_string()], Default::default())
+            .unwrap();
+    }
+
+    // Pre-create edges with specific properties.
+    let mut props = IndexMap::new();
+    props.insert("weight".to_string(), Value::Int(42));
+    store
+        .create_edge(
+            "test",
+            gql_core::storage::NodeId(1),
+            gql_core::storage::NodeId(2),
+            "LINKS".to_string(),
+            props,
+        )
+        .unwrap();
+
+    // MERGE 5 edges: (1)->(2) with weight=42 should match, others should create.
+    let edges: Vec<Value> = vec![
+        // This one matches the pre-existing edge.
+        Value::Map(
+            vec![
+                ("src".to_string().into_boxed_str(), Value::Int(1)),
+                ("dst".to_string().into_boxed_str(), Value::Int(2)),
+                ("w".to_string().into_boxed_str(), Value::Int(42)),
+            ]
+            .into_iter()
+            .collect(),
+        ),
+        // Different weight => should create.
+        Value::Map(
+            vec![
+                ("src".to_string().into_boxed_str(), Value::Int(1)),
+                ("dst".to_string().into_boxed_str(), Value::Int(2)),
+                ("w".to_string().into_boxed_str(), Value::Int(99)),
+            ]
+            .into_iter()
+            .collect(),
+        ),
+        // New pair => should create.
+        Value::Map(
+            vec![
+                ("src".to_string().into_boxed_str(), Value::Int(3)),
+                ("dst".to_string().into_boxed_str(), Value::Int(4)),
+                ("w".to_string().into_boxed_str(), Value::Int(1)),
+            ]
+            .into_iter()
+            .collect(),
+        ),
+        // New pair => should create.
+        Value::Map(
+            vec![
+                ("src".to_string().into_boxed_str(), Value::Int(5)),
+                ("dst".to_string().into_boxed_str(), Value::Int(6)),
+                ("w".to_string().into_boxed_str(), Value::Int(2)),
+            ]
+            .into_iter()
+            .collect(),
+        ),
+        // New pair => should create.
+        Value::Map(
+            vec![
+                ("src".to_string().into_boxed_str(), Value::Int(7)),
+                ("dst".to_string().into_boxed_str(), Value::Int(8)),
+                ("w".to_string().into_boxed_str(), Value::Int(3)),
+            ]
+            .into_iter()
+            .collect(),
+        ),
+    ];
+
+    let mut params = HashMap::new();
+    params.insert("edges".to_string(), Value::List(edges));
+
+    let q = parse_query(
+        "UNWIND $edges AS e \
+         MATCH (a:Item), (b:Item) \
+         WHERE id(a) = e.src AND id(b) = e.dst \
+         MERGE (a)-[r:LINKS {weight: e.w}]->(b) \
+         RETURN id(a) AS src, id(b) AS dst",
+    )
+    .unwrap();
+
+    let registry = ProcedureRegistry::new();
+    let planner = QueryPlanner::with_context(&store, "test", &registry, &params);
+    let plan = planner.plan(&q).unwrap();
+
+    let executor = QueryExecutor::with_context(&store, &registry, params);
+    let mut budget = ExecutionBudget::new(Duration::from_secs(30), 10_000);
+    let result = executor.execute("test", &plan, &mut budget).unwrap();
+
+    assert_eq!(result.rows.len(), 5);
+    // 1 matched (weight=42), 4 created.
+    assert_eq!(
+        result.stats.edges_created, 4,
+        "Expected 4 new edges (1 matched by property), got {}",
+        result.stats.edges_created
+    );
+}
+
+#[test]
+fn test_batch_merge_dedup_identical_rows() {
+    // When multiple rows produce the same (src, dst, type, props) key,
+    // only one edge should be created and all rows should reference it.
+    let store = make_store();
+
+    for _ in 0..4 {
+        store
+            .create_node("test", vec!["X".to_string()], Default::default())
+            .unwrap();
+    }
+
+    // 10 identical MERGE requests for the same edge.
+    let edges: Vec<Value> = (0..10)
+        .map(|_| {
+            Value::Map(
+                vec![
+                    ("src".to_string().into_boxed_str(), Value::Int(1)),
+                    ("dst".to_string().into_boxed_str(), Value::Int(2)),
+                ]
+                .into_iter()
+                .collect(),
+            )
+        })
+        .collect();
+
+    let mut params = HashMap::new();
+    params.insert("edges".to_string(), Value::List(edges));
+
+    let q = parse_query(
+        "UNWIND $edges AS e \
+         MATCH (a:X), (b:X) \
+         WHERE id(a) = e.src AND id(b) = e.dst \
+         MERGE (a)-[r:REL]->(b) \
+         RETURN id(r) AS rid",
+    )
+    .unwrap();
+
+    let registry = ProcedureRegistry::new();
+    let planner = QueryPlanner::with_context(&store, "test", &registry, &params);
+    let plan = planner.plan(&q).unwrap();
+
+    let executor = QueryExecutor::with_context(&store, &registry, params);
+    let mut budget = ExecutionBudget::new(Duration::from_secs(30), 10_000);
+    let result = executor.execute("test", &plan, &mut budget).unwrap();
+
+    // All 10 rows should get results.
+    assert_eq!(result.rows.len(), 10);
+    // Only 1 edge should be created (the rest are dedup'd).
+    assert_eq!(
+        result.stats.edges_created, 1,
+        "Expected exactly 1 edge created for 10 identical MERGE requests, got {}",
+        result.stats.edges_created
+    );
+
+    // All rows should reference the same edge ID.
+    let first_rid = &result.rows[0]["rid"];
+    for row in &result.rows {
+        assert_eq!(&row["rid"], first_rid);
+    }
+}

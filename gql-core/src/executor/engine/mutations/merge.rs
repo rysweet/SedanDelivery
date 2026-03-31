@@ -7,7 +7,7 @@ use crate::ast::{Direction, Expr};
 use crate::error::{ExecutionError, GqlError};
 use crate::executor::filter::Row as FilterRow;
 use crate::planner::Operator;
-use crate::storage::NodeId;
+use crate::storage::{AdjEntry, EdgeId, NodeId};
 use crate::types::Value;
 
 use crate::executor::engine::helpers::{extract_node_id, inject_parameters, undefined_var};
@@ -76,13 +76,21 @@ impl<'a> QueryExecutor<'a> {
     ) -> Result<Vec<Row>, GqlError> {
         let type_str = spec.rel_type.as_str();
         let type_owned = type_str.to_string();
-        let mut pending_creates: Vec<(NodeId, NodeId, String, IndexMap<String, Value>)> =
-            Vec::new();
-        let mut pending_non_null_keys: Vec<Vec<String>> = Vec::new();
-        let mut pending_by_key: HashMap<PendingMergeEdgeKey, usize> = HashMap::new();
-        let mut slots = Vec::with_capacity(input.len());
+        let is_undirected = matches!(spec.direction, Direction::Undirected);
 
-        for mut row in input {
+        // ── Phase 1: Evaluate all rows, collect specs and dedup keys ─────────
+        struct RowSpec {
+            row: Row,
+            real_src: NodeId,
+            real_dst: NodeId,
+            prop_map: IndexMap<String, Value>,
+            dedup_key: PendingMergeEdgeKey,
+        }
+
+        let mut row_specs = Vec::with_capacity(input.len());
+        let mut unique_src_set: HashSet<NodeId> = HashSet::new();
+
+        for row in input {
             cx.budget.check_or_err()?;
             let src_val = row
                 .get(spec.src_alias.0.as_str())
@@ -103,12 +111,12 @@ impl<'a> QueryExecutor<'a> {
             let prop_vals = self.eval_merge_properties(cx.graph, spec.properties, &row, &ctx)?;
             let prop_map = Self::merge_relationship_props_map(prop_vals);
             let dedup_key = PendingMergeEdgeKey {
-                src: if matches!(spec.direction, Direction::Undirected) && real_src.0 > real_dst.0 {
+                src: if is_undirected && real_src.0 > real_dst.0 {
                     real_dst
                 } else {
                     real_src
                 },
-                dst: if matches!(spec.direction, Direction::Undirected) && real_src.0 > real_dst.0 {
+                dst: if is_undirected && real_src.0 > real_dst.0 {
                     real_src
                 } else {
                     real_dst
@@ -117,78 +125,226 @@ impl<'a> QueryExecutor<'a> {
                 props_key: Self::merge_relationship_props_key(&prop_map),
             };
 
-            if let Some(&create_index) = pending_by_key.get(&dedup_key) {
-                slots.push(PendingMergeEdgeSlot::Pending { row, create_index });
+            unique_src_set.insert(real_src);
+            row_specs.push(RowSpec {
+                row,
+                real_src,
+                real_dst,
+                prop_map,
+                dedup_key,
+            });
+        }
+
+        // ── Phase 2: Batch-fetch forward adjacency for all unique sources ────
+        let unique_srcs: Vec<NodeId> = unique_src_set.iter().copied().collect();
+        let batch_adj = self
+            .store
+            .out_edges_by_type_batch(cx.graph, &unique_srcs, &[type_str])?;
+        let mut adj_by_src: HashMap<NodeId, Vec<AdjEntry>> =
+            HashMap::with_capacity(unique_srcs.len());
+        for (i, adjs) in batch_adj.into_iter().enumerate() {
+            adj_by_src.insert(unique_srcs[i], adjs);
+        }
+
+        // ── Phase 3: First resolution pass (forward edges) ──────────────────
+        // For each unique dedup_key, find matching adjacency entries.
+        // Track which undirected keys need a reverse lookup.
+        let mut pending_creates: Vec<(NodeId, NodeId, String, IndexMap<String, Value>)> =
+            Vec::new();
+        let mut pending_non_null_keys: Vec<Vec<String>> = Vec::new();
+        let mut pending_by_key: HashMap<PendingMergeEdgeKey, usize> = HashMap::new();
+        // Maps dedup_key index -> matching AdjEntry list (forward pass).
+        // None means "needs reverse check" (undirected only).
+        struct UniqueKeyResult {
+            real_src: NodeId,
+            real_dst: NodeId,
+            prop_map: IndexMap<String, Value>,
+            forward_matching: Vec<AdjEntry>,
+        }
+        let mut unique_key_results: Vec<UniqueKeyResult> = Vec::new();
+        let mut unique_key_index: HashMap<PendingMergeEdgeKey, usize> = HashMap::new();
+        let mut needs_reverse: Vec<usize> = Vec::new();
+
+        for rs in &row_specs {
+            if unique_key_index.contains_key(&rs.dedup_key) {
+                continue;
+            }
+            let idx = unique_key_results.len();
+            unique_key_index.insert(rs.dedup_key.clone(), idx);
+
+            let empty = Vec::new();
+            let src_adjs = adj_by_src.get(&rs.real_src).unwrap_or(&empty);
+            let forward_matching: Vec<AdjEntry> = src_adjs
+                .iter()
+                .filter(|adj| adj.neighbor_id == rs.real_dst)
+                .cloned()
+                .collect();
+
+            if is_undirected && forward_matching.is_empty() {
+                needs_reverse.push(idx);
+            }
+
+            unique_key_results.push(UniqueKeyResult {
+                real_src: rs.real_src,
+                real_dst: rs.real_dst,
+                prop_map: rs.prop_map.clone(),
+                forward_matching,
+            });
+        }
+
+        // ── Phase 4: Batch-fetch reverse adjacency for undirected misses ─────
+        if !needs_reverse.is_empty() {
+            // Collect unique reverse-source nodes (real_dst of rows that had no forward match).
+            let mut reverse_src_set: HashSet<NodeId> = HashSet::new();
+            for &idx in &needs_reverse {
+                reverse_src_set.insert(unique_key_results[idx].real_dst);
+            }
+            // Only fetch nodes we haven't already fetched.
+            let reverse_srcs: Vec<NodeId> = reverse_src_set
+                .into_iter()
+                .filter(|nid| !adj_by_src.contains_key(nid))
+                .collect();
+            if !reverse_srcs.is_empty() {
+                let reverse_batch =
+                    self.store
+                        .out_edges_by_type_batch(cx.graph, &reverse_srcs, &[type_str])?;
+                for (i, adjs) in reverse_batch.into_iter().enumerate() {
+                    adj_by_src.insert(reverse_srcs[i], adjs);
+                }
+            }
+            // Now resolve reverse matches.
+            for &idx in &needs_reverse {
+                let ukr = &mut unique_key_results[idx];
+                if !ukr.forward_matching.is_empty() {
+                    continue;
+                }
+                let empty = Vec::new();
+                let dst_adjs = adj_by_src.get(&ukr.real_dst).unwrap_or(&empty);
+                let reverse_matching: Vec<AdjEntry> = dst_adjs
+                    .iter()
+                    .filter(|adj| adj.neighbor_id == ukr.real_src)
+                    .cloned()
+                    .collect();
+                ukr.forward_matching = reverse_matching;
+            }
+        }
+
+        // ── Phase 5: Property-match pass with batched edge reads ─────────────
+        // For unique keys with non-empty props, collect edge IDs that need
+        // property verification, then batch-fetch them.
+        let has_any_props = row_specs.iter().any(|rs| !rs.prop_map.is_empty());
+
+        // Maps unique_key_index -> final matched EdgeIds.
+        let mut matched_edges_by_key: Vec<Vec<EdgeId>> =
+            Vec::with_capacity(unique_key_results.len());
+
+        if has_any_props {
+            // Collect all candidate edge IDs across all unique keys that have props.
+            let mut all_candidate_edge_ids: Vec<EdgeId> = Vec::new();
+            // For each unique key, store (start, count) into all_candidate_edge_ids.
+            let mut candidate_ranges: Vec<(usize, usize)> =
+                Vec::with_capacity(unique_key_results.len());
+
+            for ukr in &unique_key_results {
+                if ukr.prop_map.is_empty() {
+                    // No property filter needed; all matching edges are valid.
+                    candidate_ranges.push((0, 0)); // sentinel: empty prop_map
+                } else {
+                    let start = all_candidate_edge_ids.len();
+                    for adj in &ukr.forward_matching {
+                        all_candidate_edge_ids.push(adj.edge_id);
+                    }
+                    candidate_ranges.push((start, ukr.forward_matching.len()));
+                }
+            }
+
+            // Batch-fetch all candidate edges at once.
+            let all_edge_data = if all_candidate_edge_ids.is_empty() {
+                Vec::new()
+            } else {
+                self.store
+                    .get_edges_batch(cx.graph, &all_candidate_edge_ids)?
+            };
+
+            // Resolve matches for each unique key.
+            for (ki, ukr) in unique_key_results.iter().enumerate() {
+                if ukr.prop_map.is_empty() {
+                    matched_edges_by_key
+                        .push(ukr.forward_matching.iter().map(|adj| adj.edge_id).collect());
+                } else {
+                    let (start, count) = candidate_ranges[ki];
+                    let mut found = Vec::new();
+                    for i in start..start + count {
+                        if let Some(edge_data) = &all_edge_data[i] {
+                            let all_match = ukr.prop_map.iter().all(|(k, v)| {
+                                edge_data
+                                    .properties
+                                    .get(k.as_str())
+                                    .map(|ev| ev == v)
+                                    .unwrap_or(false)
+                            });
+                            if all_match {
+                                found.push(all_candidate_edge_ids[i]);
+                            }
+                        }
+                    }
+                    matched_edges_by_key.push(found);
+                }
+            }
+        } else {
+            // Fast path: no properties to check.
+            for ukr in &unique_key_results {
+                matched_edges_by_key
+                    .push(ukr.forward_matching.iter().map(|adj| adj.edge_id).collect());
+            }
+        }
+
+        // ── Phase 6: Build slots (same logic as before, using cached results) ─
+        let mut slots = Vec::with_capacity(row_specs.len());
+
+        for rs in row_specs {
+            if let Some(&create_index) = pending_by_key.get(&rs.dedup_key) {
+                slots.push(PendingMergeEdgeSlot::Pending {
+                    row: rs.row,
+                    create_index,
+                });
                 continue;
             }
 
-            // One store round-trip per unique (src, dst, type, props) key;
-            // the dedup HashMap above prevents redundant calls for identical keys.
-            let existing_edges = self
-                .store
-                .out_edges_by_type(cx.graph, real_src, &[type_str])?;
-            let mut matching: Vec<_> = existing_edges
-                .into_iter()
-                .filter(|adj| adj.neighbor_id == real_dst)
-                .collect();
-            if matches!(spec.direction, Direction::Undirected) && matching.is_empty() {
-                let reverse_edges =
-                    self.store
-                        .out_edges_by_type(cx.graph, real_dst, &[type_str])?;
-                matching = reverse_edges
-                    .into_iter()
-                    .filter(|adj| adj.neighbor_id == real_src)
-                    .collect();
-            }
+            let ki = unique_key_index[&rs.dedup_key];
+            let matched = &matched_edges_by_key[ki];
 
-            let matched_edges = if prop_map.is_empty() {
-                matching.iter().map(|adj| adj.edge_id).collect::<Vec<_>>()
-            } else {
-                let mut found_edges = Vec::new();
-                for adj in &matching {
-                    if let Some(edge_data) = self.store.get_edge(cx.graph, adj.edge_id)? {
-                        let all_match = prop_map.iter().all(|(k, v)| {
-                            edge_data
-                                .properties
-                                .get(k.as_str())
-                                .map(|ev| ev == v)
-                                .unwrap_or(false)
-                        });
-                        if all_match {
-                            found_edges.push(adj.edge_id);
-                        }
-                    }
-                }
-                found_edges
-            };
-
-            if matched_edges.is_empty() {
+            if matched.is_empty() {
                 let create_index = pending_creates.len();
                 pending_non_null_keys.push(
-                    prop_map
+                    rs.prop_map
                         .iter()
                         .filter(|(_, v)| !v.is_null())
                         .map(|(k, _)| k.clone())
                         .collect(),
                 );
-                pending_creates.push((real_src, real_dst, type_str.to_string(), prop_map));
-                pending_by_key.insert(dedup_key, create_index);
-                slots.push(PendingMergeEdgeSlot::Pending { row, create_index });
-                continue;
-            }
-
-            let mut ready_rows = Vec::with_capacity(matched_edges.len());
-            for edge_id in matched_edges {
-                cx.budget.check_or_err()?;
-                if let Some(alias) = spec.rel_alias {
-                    row.insert(alias.0.clone(), Value::Edge(edge_id));
+                pending_creates.push((rs.real_src, rs.real_dst, type_str.to_string(), rs.prop_map));
+                pending_by_key.insert(rs.dedup_key, create_index);
+                slots.push(PendingMergeEdgeSlot::Pending {
+                    row: rs.row,
+                    create_index,
+                });
+            } else {
+                let mut ready_rows = Vec::with_capacity(matched.len());
+                let mut row = rs.row;
+                for &edge_id in matched {
+                    cx.budget.check_or_err()?;
+                    if let Some(alias) = spec.rel_alias {
+                        row.insert(alias.0.clone(), Value::Edge(edge_id));
+                    }
+                    cx.budget.record_row();
+                    ready_rows.push(row.clone());
                 }
-                cx.budget.record_row();
-                ready_rows.push(row.clone());
+                slots.push(PendingMergeEdgeSlot::Ready(ready_rows));
             }
-            slots.push(PendingMergeEdgeSlot::Ready(ready_rows));
         }
 
+        // ── Phase 7: Batch-create missing edges ─────────────────────────────
         let mut created_edge_ids = Vec::new();
         if !pending_creates.is_empty() {
             created_edge_ids = self.store.batch_create_edges(cx.graph, pending_creates)?;
@@ -746,7 +902,13 @@ mod tests {
     use crate::ast::{Direction, Expr, Identifier, Label, RelType};
     use crate::executor::budget::ExecutionBudget;
     use crate::planner::{Operator, SetItem};
-    use crate::storage::{GraphStore, InMemoryGraphStore};
+    use crate::storage::{
+        AdjEntry, EdgeData, EdgeId, GraphStats, GraphStore, InMemoryGraphStore, IndexDescriptor,
+        NodeData, NodeId, RangeQuery, ReadConsistency,
+    };
+    use std::any::Any;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
 
     fn make_store() -> InMemoryGraphStore {
         let store = InMemoryGraphStore::new();
@@ -1158,6 +1320,215 @@ mod tests {
             fast_result.rows[0].get("r"),
             slow_result.rows[0].get("r"),
             "fast and slow MERGE paths must match the same existing edge"
+        );
+    }
+
+    // ── TrackingStore for verifying batch call usage ─────────────────────────
+
+    struct TrackingStore {
+        inner: Arc<InMemoryGraphStore>,
+        out_edges_by_type_calls: AtomicUsize,
+        out_edges_by_type_batch_calls: AtomicUsize,
+        get_edges_batch_calls: AtomicUsize,
+    }
+
+    impl TrackingStore {
+        fn new(inner: Arc<InMemoryGraphStore>) -> Self {
+            Self {
+                inner,
+                out_edges_by_type_calls: AtomicUsize::new(0),
+                out_edges_by_type_batch_calls: AtomicUsize::new(0),
+                get_edges_batch_calls: AtomicUsize::new(0),
+            }
+        }
+    }
+
+    macro_rules! delegate {
+        ($name:ident(&self) -> $ret:ty) => {
+            fn $name(&self) -> $ret {
+                self.inner.$name()
+            }
+        };
+        ($name:ident(&self, $($arg:ident : $ty:ty),+) -> $ret:ty) => {
+            fn $name(&self, $($arg: $ty),+) -> $ret {
+                self.inner.$name($($arg),+)
+            }
+        };
+    }
+
+    impl GraphStore for TrackingStore {
+        delegate!(get_node(&self, graph: &str, id: NodeId) -> Result<Option<NodeData>, crate::error::StorageError>);
+        delegate!(get_edge(&self, graph: &str, id: EdgeId) -> Result<Option<EdgeData>, crate::error::StorageError>);
+        delegate!(get_nodes_batch(&self, graph: &str, ids: &[NodeId]) -> Result<Vec<Option<NodeData>>, crate::error::StorageError>);
+
+        fn get_edges_batch(
+            &self,
+            graph: &str,
+            ids: &[EdgeId],
+        ) -> Result<Vec<Option<EdgeData>>, crate::error::StorageError> {
+            self.get_edges_batch_calls.fetch_add(1, Ordering::Relaxed);
+            self.inner.get_edges_batch(graph, ids)
+        }
+
+        delegate!(find_nodes_by_label(&self, graph: &str, label: &str) -> Result<Vec<NodeId>, crate::error::StorageError>);
+
+        fn find_nodes_by_label_and_property(
+            &self,
+            graph: &str,
+            label: &str,
+            property: &str,
+            range: RangeQuery<'_>,
+        ) -> Result<Vec<NodeId>, crate::error::StorageError> {
+            self.inner
+                .find_nodes_by_label_and_property(graph, label, property, range)
+        }
+
+        delegate!(find_edges_by_type(&self, graph: &str, rel_type: &str) -> Result<Vec<EdgeId>, crate::error::StorageError>);
+        delegate!(out_edges(&self, graph: &str, node_id: NodeId) -> Result<Vec<AdjEntry>, crate::error::StorageError>);
+        delegate!(in_edges(&self, graph: &str, node_id: NodeId) -> Result<Vec<AdjEntry>, crate::error::StorageError>);
+
+        fn out_edges_by_type(
+            &self,
+            graph: &str,
+            node_id: NodeId,
+            rel_types: &[&str],
+        ) -> Result<Vec<AdjEntry>, crate::error::StorageError> {
+            self.out_edges_by_type_calls.fetch_add(1, Ordering::Relaxed);
+            self.inner.out_edges_by_type(graph, node_id, rel_types)
+        }
+
+        delegate!(in_edges_by_type(&self, graph: &str, node_id: NodeId, rel_types: &[&str]) -> Result<Vec<AdjEntry>, crate::error::StorageError>);
+
+        fn out_edges_by_type_batch(
+            &self,
+            graph: &str,
+            node_ids: &[NodeId],
+            rel_types: &[&str],
+        ) -> Result<Vec<Vec<AdjEntry>>, crate::error::StorageError> {
+            self.out_edges_by_type_batch_calls
+                .fetch_add(1, Ordering::Relaxed);
+            self.inner
+                .out_edges_by_type_batch(graph, node_ids, rel_types)
+        }
+
+        delegate!(in_edges_by_type_batch(&self, graph: &str, node_ids: &[NodeId], rel_types: &[&str]) -> Result<Vec<Vec<AdjEntry>>, crate::error::StorageError>);
+        delegate!(out_edge_ids(&self, graph: &str, node_id: NodeId) -> Result<Vec<EdgeId>, crate::error::StorageError>);
+        delegate!(in_edge_ids(&self, graph: &str, node_id: NodeId) -> Result<Vec<EdgeId>, crate::error::StorageError>);
+        delegate!(all_node_ids(&self, graph: &str) -> Result<Vec<NodeId>, crate::error::StorageError>);
+        delegate!(all_edge_ids(&self, graph: &str) -> Result<Vec<EdgeId>, crate::error::StorageError>);
+        delegate!(create_node(&self, graph: &str, labels: Vec<String>, properties: IndexMap<String, Value>) -> Result<NodeId, crate::error::StorageError>);
+        delegate!(create_edge(&self, graph: &str, src: NodeId, dst: NodeId, rel_type: String, properties: IndexMap<String, Value>) -> Result<EdgeId, crate::error::StorageError>);
+        delegate!(set_node_properties(&self, graph: &str, id: NodeId, properties: IndexMap<String, Value>) -> Result<(), crate::error::StorageError>);
+        delegate!(replace_node_properties(&self, graph: &str, id: NodeId, properties: IndexMap<String, Value>) -> Result<(), crate::error::StorageError>);
+        delegate!(set_edge_properties(&self, graph: &str, id: EdgeId, properties: IndexMap<String, Value>) -> Result<(), crate::error::StorageError>);
+        delegate!(replace_edge_properties(&self, graph: &str, id: EdgeId, properties: IndexMap<String, Value>) -> Result<(), crate::error::StorageError>);
+        delegate!(remove_node_property(&self, graph: &str, id: NodeId, key: &str) -> Result<(), crate::error::StorageError>);
+        delegate!(remove_edge_property(&self, graph: &str, id: EdgeId, key: &str) -> Result<(), crate::error::StorageError>);
+        delegate!(add_node_labels(&self, graph: &str, id: NodeId, labels: &[String]) -> Result<(), crate::error::StorageError>);
+        delegate!(remove_node_labels(&self, graph: &str, id: NodeId, labels: &[String]) -> Result<(), crate::error::StorageError>);
+        delegate!(delete_node(&self, graph: &str, id: NodeId, detach: bool) -> Result<(), crate::error::StorageError>);
+        delegate!(delete_edge(&self, graph: &str, id: EdgeId) -> Result<(), crate::error::StorageError>);
+        delegate!(list_indexes(&self, graph: &str) -> Result<Vec<IndexDescriptor>, crate::error::StorageError>);
+        delegate!(create_index(&self, graph: &str, label: &str, property: &str) -> Result<(), crate::error::StorageError>);
+        delegate!(drop_index(&self, graph: &str, label: &str, property: &str) -> Result<(), crate::error::StorageError>);
+        delegate!(create_graph(&self, name: &str) -> Result<(), crate::error::StorageError>);
+        delegate!(delete_graph(&self, name: &str) -> Result<(), crate::error::StorageError>);
+        delegate!(graph_exists(&self, name: &str) -> Result<bool, crate::error::StorageError>);
+        delegate!(list_graphs(&self) -> Result<Vec<String>, crate::error::StorageError>);
+        delegate!(graph_stats(&self, graph: &str) -> Result<GraphStats, crate::error::StorageError>);
+        delegate!(all_label_names(&self, graph: &str) -> Result<Vec<String>, crate::error::StorageError>);
+
+        fn with_read_consistency(
+            &self,
+            _consistency: ReadConsistency,
+        ) -> Option<Arc<dyn GraphStore>> {
+            None
+        }
+
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
+    }
+
+    #[test]
+    fn merge_rel_batch_uses_batch_adjacency_lookup() {
+        // Verify that exec_merge_rel_batch_creates uses out_edges_by_type_batch
+        // instead of per-row out_edges_by_type calls.
+        let base = Arc::new(InMemoryGraphStore::new());
+        base.create_graph("g").unwrap();
+
+        // Create 20 nodes.
+        let mut node_ids = Vec::new();
+        for _ in 0..20 {
+            node_ids.push(
+                base.create_node("g", vec!["N".to_string()], IndexMap::new())
+                    .unwrap(),
+            );
+        }
+
+        // Pre-create 5 edges so some MERGEs match.
+        for i in 0..5 {
+            base.create_edge(
+                "g",
+                node_ids[i],
+                node_ids[i + 1],
+                "R".to_string(),
+                IndexMap::new(),
+            )
+            .unwrap();
+        }
+
+        let store = TrackingStore::new(Arc::clone(&base));
+        let executor = QueryExecutor::new(&store);
+
+        use crate::executor::engine::MutationStats;
+
+        let mut budget = ExecutionBudget::unlimited();
+        let mut stats = MutationStats::default();
+        let outer_rows: Vec<Row> = vec![];
+        let mut cx = ExecContext {
+            graph: "g",
+            budget: &mut budget,
+            outer_rows: &outer_rows,
+            stats: &mut stats,
+        };
+
+        let mut input_rows = Vec::new();
+        for i in 0..15 {
+            let mut row = Row::new();
+            row.insert("a".to_string(), Value::Node(node_ids[i]));
+            row.insert("b".to_string(), Value::Node(node_ids[i + 1]));
+            input_rows.push(row);
+        }
+
+        let spec = MergeRelBatchSpec {
+            src_alias: &Identifier::new("a"),
+            dst_alias: &Identifier::new("b"),
+            rel_alias: Some(&Identifier::new("r")),
+            rel_type: &RelType::new("R"),
+            direction: Direction::Outgoing,
+            properties: &[],
+        };
+
+        let result = executor
+            .exec_merge_rel_batch_creates(&mut cx, input_rows, spec)
+            .unwrap();
+
+        // All 15 rows should produce output.
+        assert_eq!(result.len(), 15);
+        // 10 new edges created (pairs 5..15).
+        assert_eq!(cx.stats.edges_created, 10);
+
+        // The batch path should be used: at least 1 batch call, zero single calls.
+        let single_calls = store.out_edges_by_type_calls.load(Ordering::Relaxed);
+        let batch_calls = store.out_edges_by_type_batch_calls.load(Ordering::Relaxed);
+        assert_eq!(
+            single_calls, 0,
+            "Expected 0 single out_edges_by_type calls, got {single_calls}"
+        );
+        assert!(
+            batch_calls >= 1,
+            "Expected at least 1 batch call, got {batch_calls}"
         );
     }
 }
