@@ -201,7 +201,6 @@ fn test_match_relationship() {
                             range: None,
                             properties: None,
                             where_clause: None,
-                            dynamic_rel_type: None,
                         },
                         node: NodePattern {
                             variable: Some(Identifier::new("b")),
@@ -680,7 +679,6 @@ fn test_create_and_traverse() {
                             range: None,
                             properties: None,
                             where_clause: None,
-                            dynamic_rel_type: None,
                         },
                         node: NodePattern {
                             variable: Some(Identifier::new("b")),
@@ -2612,155 +2610,5 @@ fn regression_1065_scales_linearly_with_large_graph() {
         budget.rows_produced() < 500,
         "with 1000 nodes and 25 edges, selective plan should use < 500 intermediate rows, got {}",
         budget.rows_produced()
-    );
-}
-
-/// Issue #1078: batch MERGE with mixed relationship types via dynamic `$param`.
-///
-/// Verifies that `MERGE (a)-[e:$edge.relType {edge_id: edge.edgeId}]->(b)` correctly
-/// evaluates the rel_type per-row, creating edges of different types in a single
-/// UNWIND query instead of requiring one query per type.
-#[test]
-fn issue_1078_merge_rel_dynamic_type_from_param() {
-    let store = make_store();
-
-    // Create 4 nodes.
-    for i in 0..4u32 {
-        let mut props = IndexMap::new();
-        props.insert("id".to_string(), Value::Str(format!("n{i}").into()));
-        store
-            .create_node("test", vec!["Node".to_string()], props)
-            .unwrap();
-    }
-
-    // 4 edges with MIXED relationship types.
-    let edges: Vec<Value> = vec![
-        ("n0", "n1", "KNOWS", "e0"),
-        ("n1", "n2", "LIKES", "e1"),
-        ("n2", "n3", "KNOWS", "e2"),
-        ("n0", "n3", "FOLLOWS", "e3"),
-    ]
-    .into_iter()
-    .map(|(src, dst, rt, eid)| {
-        Value::Map(
-            vec![
-                ("src".to_string().into_boxed_str(), Value::Str(src.into())),
-                ("dst".to_string().into_boxed_str(), Value::Str(dst.into())),
-                (
-                    "relType".to_string().into_boxed_str(),
-                    Value::Str(rt.into()),
-                ),
-                (
-                    "edgeId".to_string().into_boxed_str(),
-                    Value::Str(eid.into()),
-                ),
-            ]
-            .into_iter()
-            .collect(),
-        )
-    })
-    .collect();
-
-    let mut params = HashMap::new();
-    params.insert("edges".to_string(), Value::List(edges));
-
-    let q = parse_query(
-        "UNWIND $edges AS edge \
-         MATCH (a:Node {id: edge.src}), (b:Node {id: edge.dst}) \
-         MERGE (a)-[e:$edge.relType {edge_id: edge.edgeId}]->(b) \
-         RETURN a.id AS src, b.id AS dst, type(e) AS relType",
-    )
-    .unwrap();
-
-    let registry = ProcedureRegistry::new();
-    let planner = QueryPlanner::with_context(&store, "test", &registry, &params);
-    let plan = planner.plan(&q).unwrap();
-
-    let executor = QueryExecutor::with_context(&store, &registry, params);
-    let mut budget = ExecutionBudget::new(Duration::from_secs(30), 500);
-    let result = executor.execute("test", &plan, &mut budget).unwrap();
-
-    assert_eq!(result.rows.len(), 4, "should produce one row per edge");
-    assert_eq!(result.stats.edges_created, 4, "should create 4 new edges");
-
-    // Verify each edge has the correct dynamic type.
-    let mut type_counts: HashMap<String, usize> = HashMap::new();
-    for row in &result.rows {
-        if let Some(Value::Str(rt)) = row.get("relType") {
-            *type_counts.entry(rt.to_string()).or_insert(0) += 1;
-        }
-    }
-    assert_eq!(type_counts.get("KNOWS"), Some(&2), "expected 2 KNOWS edges");
-    assert_eq!(type_counts.get("LIKES"), Some(&1), "expected 1 LIKES edge");
-    assert_eq!(
-        type_counts.get("FOLLOWS"),
-        Some(&1),
-        "expected 1 FOLLOWS edge"
-    );
-}
-
-/// Issue #1078: verify that running the same dynamic-type MERGE twice is idempotent.
-#[test]
-fn issue_1078_merge_rel_dynamic_type_idempotent() {
-    let store = make_store();
-
-    for i in 0..2u32 {
-        let mut props = IndexMap::new();
-        props.insert("id".to_string(), Value::Str(format!("n{i}").into()));
-        store
-            .create_node("test", vec!["Node".to_string()], props)
-            .unwrap();
-    }
-
-    let edges: Vec<Value> = vec![("n0", "n1", "KNOWS", "e0")]
-        .into_iter()
-        .map(|(src, dst, rt, eid)| {
-            Value::Map(
-                vec![
-                    ("src".to_string().into_boxed_str(), Value::Str(src.into())),
-                    ("dst".to_string().into_boxed_str(), Value::Str(dst.into())),
-                    (
-                        "relType".to_string().into_boxed_str(),
-                        Value::Str(rt.into()),
-                    ),
-                    (
-                        "edgeId".to_string().into_boxed_str(),
-                        Value::Str(eid.into()),
-                    ),
-                ]
-                .into_iter()
-                .collect(),
-            )
-        })
-        .collect();
-
-    let q_str = "UNWIND $edges AS edge \
-         MATCH (a:Node {id: edge.src}), (b:Node {id: edge.dst}) \
-         MERGE (a)-[e:$edge.relType {edge_id: edge.edgeId}]->(b) \
-         RETURN a.id AS src, b.id AS dst";
-
-    let registry = ProcedureRegistry::new();
-
-    // First run: creates the edge.
-    let params1 = HashMap::from([("edges".to_string(), Value::List(edges.clone()))]);
-    let q = parse_query(q_str).unwrap();
-    let planner = QueryPlanner::with_context(&store, "test", &registry, &params1);
-    let plan = planner.plan(&q).unwrap();
-    let executor = QueryExecutor::with_context(&store, &registry, params1);
-    let mut budget = ExecutionBudget::new(Duration::from_secs(30), 500);
-    let r1 = executor.execute("test", &plan, &mut budget).unwrap();
-    assert_eq!(r1.stats.edges_created, 1);
-
-    // Second run: should match existing edge, not create a new one.
-    let params2 = HashMap::from([("edges".to_string(), Value::List(edges))]);
-    let q2 = parse_query(q_str).unwrap();
-    let planner2 = QueryPlanner::with_context(&store, "test", &registry, &params2);
-    let plan2 = planner2.plan(&q2).unwrap();
-    let executor2 = QueryExecutor::with_context(&store, &registry, params2);
-    let mut budget2 = ExecutionBudget::new(Duration::from_secs(30), 500);
-    let r2 = executor2.execute("test", &plan2, &mut budget2).unwrap();
-    assert_eq!(
-        r2.stats.edges_created, 0,
-        "second MERGE should match existing edge"
     );
 }

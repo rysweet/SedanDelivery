@@ -653,9 +653,7 @@ impl ValidationContext {
 
         for step in &mc.pattern.steps {
             let rel = &step.rel;
-            // Allow empty rel_types when a dynamic_rel_type expression is present
-            // (e.g. `MERGE (a)-[e:$relType]->(b)` from issue #1078).
-            if rel.rel_types.is_empty() && rel.dynamic_rel_type.is_none() {
+            if rel.rel_types.is_empty() {
                 return Err(plan_error_semantic(
                     "MERGE requires exactly one relationship type",
                 ));

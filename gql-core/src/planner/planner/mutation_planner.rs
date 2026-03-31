@@ -278,19 +278,12 @@ impl<'s> QueryPlanner<'s> {
         } else {
             step.rel.variable.clone()
         };
-        let rel_type_expr = match step.rel.rel_types.first() {
-            Some(rt) => crate::ast::Expr::Str(rt.as_str().into()),
-            None => crate::ast::Expr::Str("".into()),
-        };
-        // If the rel type list has a single empty-string entry AND the relationship
-        // pattern has a `__rel_type_expr__` stashed by the parser (dynamic $param),
-        // use that expression instead. The parser stores this in
-        // `rel.dynamic_rel_type` when it encounters `$param` as the type.
-        let rel_type_expr = if let Some(ref dyn_expr) = step.rel.dynamic_rel_type {
-            dyn_expr.clone()
-        } else {
-            rel_type_expr
-        };
+        let rel_type = step
+            .rel
+            .rel_types
+            .first()
+            .cloned()
+            .unwrap_or_else(|| crate::ast::RelType::new(""));
         let direction = step.rel.direction;
         let properties = properties_to_prop_pairs(step.rel.properties.as_ref());
 
@@ -301,7 +294,7 @@ impl<'s> QueryPlanner<'s> {
             src_alias: src_alias.clone(),
             dst_alias: dst_alias.clone(),
             rel_alias: rel_alias.clone(),
-            rel_type: rel_type_expr,
+            rel_type,
             direction,
             properties,
             on_create,

@@ -1072,7 +1072,6 @@ mod tests {
                                 range: None,
                                 properties: None,
                                 where_clause: None,
-                                dynamic_rel_type: None,
                             },
                             node: NodePattern {
                                 variable: Some(Identifier::new("m")),
