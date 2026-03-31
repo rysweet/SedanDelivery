@@ -1484,8 +1484,6 @@ impl GremlinCompiler {
                                 }
                             } else if keys[0] == "Column.keys" || keys[0] == "keys" {
                                 "gremlin_column_key"
-                            } else if self.seed_is_map_entry {
-                                "gremlin_column_value"
                             } else {
                                 "gremlin_select_values"
                             };
@@ -3858,6 +3856,9 @@ impl GremlinCompiler {
                     }
 
                     let mut sub = self.sub_compiler();
+                    if self.seed_is_map_entry {
+                        sub.seed_is_map_entry = true;
+                    }
                     let body = sub.compile_seeded(body_steps, &current_alias)?;
                     let body_out_alias = sub.last_alias.clone();
                     // Collect intermediate body path aliases (between seed and

@@ -122,6 +122,8 @@ impl<'a> QueryExecutor<'a> {
                 continue;
             }
 
+            // One store round-trip per unique (src, dst, type, props) key;
+            // the dedup HashMap above prevents redundant calls for identical keys.
             let existing_edges = self
                 .store
                 .out_edges_by_type(cx.graph, real_src, &[type_str])?;
@@ -371,7 +373,8 @@ impl<'a> QueryExecutor<'a> {
                 for cand_id in &candidates {
                     cx.budget.check_or_err()?;
                     let node_id = NodeId(*cand_id);
-                    if prop_vals.is_empty() || check_props.is_empty() {
+                    // Single-property case: already matched by indexed lookup above.
+                    if check_props.is_empty() {
                         matched_ids.push(node_id);
                     } else if let Ok(Some(node_data)) = self.store.get_node(cx.graph, node_id) {
                         let all_match = check_props.iter().all(|(key, expected)| {

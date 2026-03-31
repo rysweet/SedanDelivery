@@ -593,6 +593,8 @@ impl RedisGraphStore {
             |conn| {
                 self.require_graph_on(conn.as_mut(), graph)?;
 
+                // Lock was just acquired by `with_write_lock`; the first
+                // 250 EXISTS calls run within the initial TTL window.
                 let mut seen_injected_ids = HashSet::new();
                 let mut max_injected_id: Option<u64> = None;
                 for (index, (_, _, injected_id)) in nodes.iter().enumerate() {
@@ -701,6 +703,9 @@ impl RedisGraphStore {
                             Vec::with_capacity(chunk.len());
 
                         for (offset, (id, labels, properties)) in chunk.into_iter().enumerate() {
+                            // Mid-loop renewal only activates if chunk size is
+                            // configured above 250; the primary safeguard is the
+                            // conn.renew_lock() call before pipe.query() below.
                             if offset > 0 && offset % 250 == 0 {
                                 conn.renew_lock()?;
                             }

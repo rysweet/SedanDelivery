@@ -48,6 +48,7 @@ pub struct EdgeData {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AdjEntry {
     pub edge_id: EdgeId,
+    /// The node at the other end of the edge (destination for out-edges, source for in-edges).
     pub neighbor_id: NodeId,
     pub rel_type: String,
 }

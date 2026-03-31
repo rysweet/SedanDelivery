@@ -25,7 +25,7 @@ use crate::ast::{Expr, Identifier};
 use crate::error::{ExecutionError, GqlError};
 use crate::types::Value;
 
-fn map_key_to_value(k: &str) -> Value {
+pub(crate) fn map_key_to_value(k: &str) -> Value {
     use crate::storage::{EdgeId, NodeId};
 
     fn split_top_level(input: &str, delimiter: char) -> Vec<&str> {
@@ -85,6 +85,22 @@ fn map_key_to_value(k: &str) -> Value {
         {
             if let Ok(n) = num.parse::<u64>() {
                 return Some(Value::Edge(EdgeId(n)));
+            }
+        }
+        if let Some(inner) = input
+            .strip_prefix("Node(NodeId(")
+            .and_then(|s| s.strip_suffix("))"))
+        {
+            if let Ok(id) = inner.parse::<u64>() {
+                return Some(Value::Node(NodeId(id)));
+            }
+        }
+        if let Some(inner) = input
+            .strip_prefix("Edge(EdgeId(")
+            .and_then(|s| s.strip_suffix("))"))
+        {
+            if let Ok(id) = inner.parse::<u64>() {
+                return Some(Value::Edge(EdgeId(id)));
             }
         }
         None

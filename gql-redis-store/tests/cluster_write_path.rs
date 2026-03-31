@@ -1560,6 +1560,36 @@ fn ci15f_batch_create_nodes_preserves_injected_sd2_ids() {
 }
 
 #[test]
+fn ci15g_batch_create_nodes_rejects_duplicate_injected_ids() {
+    let node_body = function_block(NODES_SRC, "pub fn batch_create_nodes");
+    assert!(
+        node_body.contains("seen_injected_ids"),
+        "batch_create_nodes must track seen injected IDs to detect duplicates within a single batch"
+    );
+    assert!(
+        node_body.contains("ConstraintViolation"),
+        "batch_create_nodes must raise a ConstraintViolation when duplicate injected _sd2_id values appear"
+    );
+}
+
+#[test]
+fn ci15h_batch_create_nodes_handles_mixed_injected_and_auto_ids() {
+    let node_body = function_block(NODES_SRC, "pub fn batch_create_nodes");
+    assert!(
+        node_body.contains("auto_id_count"),
+        "batch_create_nodes must count how many entries need auto-assigned IDs"
+    );
+    assert!(
+        node_body.contains("injected_id"),
+        "batch_create_nodes must identify entries with injected IDs"
+    );
+    assert!(
+        node_body.contains("INCRBY"),
+        "batch_create_nodes must use INCRBY to reserve a contiguous range of auto-assigned IDs"
+    );
+}
+
+#[test]
 fn ci26_replica_graph_misses_retry_on_primary() {
     let route_body = function_block(LIB_SRC, "pub(crate) fn route_read_for_graph");
     assert!(

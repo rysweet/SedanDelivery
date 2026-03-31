@@ -337,6 +337,9 @@ impl RedisGraphStore {
         if edges.is_empty() {
             return Ok(Vec::new());
         }
+        // All-or-nothing fallback: if any edge carries an injected `_sd2_eid`,
+        // the entire batch falls back to single-item creation so each edge can
+        // claim its injected ID via the sequential create_edge_impl path.
         if edges
             .iter()
             .any(|(_, _, _, properties)| properties.contains_key("_sd2_eid"))
@@ -424,11 +427,15 @@ impl RedisGraphStore {
                     for (offset, (i, (src, dst, rel_type, properties))) in
                         chunk.into_iter().enumerate()
                     {
+                        // Mid-loop renewal only activates if chunk size is
+                        // configured above 250; the primary safeguard is the
+                        // conn.renew_lock() call before pipe.query() below.
                         if offset > 0 && offset % 250 == 0 {
                             conn.renew_lock()?;
                         }
                         let id = start_id + i as u64;
                         let eid = EdgeId(id);
+                        let id_str = id.to_string();
 
                         let clean_props = clean_fanout_props(properties);
                         let edge_key = self.kp(key_edge(graph, id));
@@ -440,11 +447,11 @@ impl RedisGraphStore {
                             .ignore();
                         pipe.cmd("SADD")
                             .arg(self.kp(key_edges_set(graph)))
-                            .arg(id.to_string())
+                            .arg(&id_str)
                             .ignore();
                         pipe.cmd("SADD")
                             .arg(self.kp(key_reltype(graph, &rel_type)))
-                            .arg(id.to_string())
+                            .arg(&id_str)
                             .ignore();
 
                         let out_member = encode_adj(eid, dst, &rel_type);

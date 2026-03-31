@@ -100,7 +100,8 @@ impl<'a> QueryExecutor<'a> {
 
         for (row, src_id) in input.into_iter().zip(row_src_ids) {
             cx.budget.check_or_err()?;
-            let adj_entries = adjacency_by_src.get(&src_id).cloned().unwrap_or_default();
+            let empty_adj: Vec<_> = Vec::new();
+            let adj_entries = adjacency_by_src.get(&src_id).unwrap_or(&empty_adj);
 
             // Hoist outer_edge_vars construction to the per-row level.
             // This HashSet only depends on the row (not on individual adjacency

@@ -53,6 +53,9 @@ impl FanoutStore {
     }
 }
 
+// Note: batch_create_nodes and batch_create_edges use the default trait
+// implementation (single-item delegation) because FanoutStore's cross-backend
+// rollback logic operates at the individual create level.
 impl GraphStore for FanoutStore {
     fn get_node(&self, graph: &str, id: NodeId) -> Result<Option<NodeData>, StorageError> {
         self.read(|s| s.get_node(graph, id))
