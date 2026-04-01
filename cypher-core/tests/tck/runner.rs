@@ -996,17 +996,6 @@ fn parse_tck_rel_pattern(s: &str) -> Value {
     Value::Map(map)
 }
 
-/// Parsed representation of a TCK path pattern.
-/// Stores the expected node patterns and edge patterns in order.
-#[derive(Debug)]
-#[allow(dead_code)]
-struct TckPathPattern {
-    /// Node patterns (labels + properties) in path order
-    node_patterns: Vec<indexmap::IndexMap<Box<str>, Value>>,
-    /// Edge patterns (type + properties) in path order, with direction
-    edge_patterns: Vec<(indexmap::IndexMap<Box<str>, Value>, PathDir)>,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum PathDir {
     Forward,  // ->
@@ -1934,36 +1923,6 @@ fn normalize_duration_str(s: &str) -> String {
         return "PT0S".to_string();
     }
     s.to_string()
-}
-
-/// Create a sortable string representation of a Value for list-order-ignoring comparisons.
-#[allow(dead_code)]
-#[allow(clippy::only_used_in_recursion)]
-fn format_value_for_compare(v: &Value, world: &GqlWorld) -> String {
-    match v {
-        Value::Null => "null".to_string(),
-        Value::Bool(b) => format!("bool:{b}"),
-        Value::Int(n) => format!("int:{n}"),
-        Value::Float(f) => format!("float:{f}"),
-        Value::Str(s) => format!("str:{s}"),
-        Value::List(items) => {
-            let inner: Vec<String> = items
-                .iter()
-                .map(|i| format_value_for_compare(i, world))
-                .collect();
-            format!("list:[{}]", inner.join(","))
-        }
-        Value::Map(m) => {
-            let inner: Vec<String> = m
-                .iter()
-                .map(|(k, v)| format!("{k}:{}", format_value_for_compare(v, world)))
-                .collect();
-            format!("map:{{{}}}", inner.join(","))
-        }
-        Value::Node(id) => format!("node:{}", id.0),
-        Value::Edge(id) => format!("edge:{}", id.0),
-        _ => format!("{v}"),
-    }
 }
 
 /// Format rows for debug output, resolving node/edge IDs.

@@ -211,7 +211,6 @@ impl<'a> QueryExecutor<'a> {
 
     /// Enable Gremlin mode: `Project` operators preserve all input columns
     /// so that step labels set via `as()` survive property projections.
-    #[allow(dead_code)]
     pub fn with_gremlin_mode(mut self) -> Self {
         self.gremlin_mode = true;
         self

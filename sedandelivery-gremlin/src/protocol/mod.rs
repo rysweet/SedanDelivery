@@ -11,7 +11,6 @@ pub enum ProtocolError {
     MalformedRequest(String),
 
     #[error("execution error: {0}")]
-    #[allow(dead_code)]
     Execution(String),
 
     #[error("internal error: {0}")]

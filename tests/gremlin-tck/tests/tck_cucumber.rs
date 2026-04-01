@@ -1266,12 +1266,6 @@ fn normalize_map_key(key: &str) -> std::borrow::Cow<'_, str> {
     std::borrow::Cow::Borrowed(key)
 }
 
-/// Compare two Values for TCK-style equality (without context).
-#[allow(dead_code)]
-fn values_match(actual: &Value, expected: &Value) -> bool {
-    values_match_ctx(actual, expected, &HashMap::new(), &HashMap::new())
-}
-
 /// Compare two Values with vertex/edge name context for map key resolution.
 fn values_match_ctx(
     actual: &Value,

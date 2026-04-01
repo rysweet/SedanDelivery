@@ -19,7 +19,6 @@ pub mod health;
 pub mod message;
 pub mod metrics;
 pub mod packstream;
-pub mod per_ip_guard;
 pub mod protocol;
 pub mod redis_memory_reporter;
 pub mod tls;
