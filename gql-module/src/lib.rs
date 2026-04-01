@@ -11,24 +11,21 @@
 // Safety: every command handler uses std::panic::catch_unwind to prevent a
 // panic from killing the Redis/Valkey process (and all connected clients).
 //
-// Architecture: graph data is stored in-process via InMemoryGraphStore wrapped
-// in a ChangeLogStore.  The ChangeLogStore records every write as a ChangeEvent
-// that is flushed to the Valkey stream `__sd2:changelog` after each successful
-// write command (when GQL_FABRIC_CHANGELOG=1 is set).
+// Architecture: graph data is stored in Redis via ModuleRedisStore which uses
+// ctx.call() (the Valkey Module internal dispatch) to execute Redis commands.
+// This avoids the TCP loopback deadlock that prevents a regular RedisGraphStore
+// from working inside a module, while using the EXACT same key schema so that
+// the Bolt server, REST API, and GQL module all read/write the same data.
 //
-// The loopback-deadlock explanation still applies: we cannot use a TCP-based
-// RedisGraphStore from within the module.  The XADD calls to __sd2:changelog
-// go through the module's Context (internal dispatch), not a TCP socket.
-//
-// Persistence: InMemoryGraphStore data lives in heap memory for the lifetime of
-// the module process. Valkey's RDB/AOF does not currently serialise that graph
-// state because the module has not implemented Redis save/load hooks yet
-// (tracked as a follow-up). The changelog stream is for external replication,
-// not local restart recovery.
+// ModuleRedisStore is wrapped in a ChangeLogStore that records every write as
+// a ChangeEvent flushed to the __sd2:changelog Valkey stream after each
+// successful write command (when GQL_FABRIC_CHANGELOG=1 is set).
 //
 // Changelog: set GQL_FABRIC_CHANGELOG=1 (or GQL_FABRIC_ENDPOINT=<url>) at
 // module load time to enable async replication to Microsoft Fabric via the
 // sedandelivery-fabric-sync sidecar service.
+
+mod module_store;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::OnceLock;
@@ -41,15 +38,21 @@ use gql_core::executor::{ExecutionBudget, QueryExecutor};
 use gql_core::parser::parse_query;
 use gql_core::planner::QueryPlanner;
 use gql_core::serde_value::value_to_json;
-use gql_core::storage::{GraphStore, InMemoryGraphStore};
+use gql_core::storage::GraphStore;
+
+use module_store::ModuleRedisStore;
 
 // -- Global engine state --
 
 /// The global store, initialised once at module load.
 ///
-/// `ChangeLogStore` wraps `InMemoryGraphStore` and records write operations
+/// `ChangeLogStore` wraps `ModuleRedisStore` and records write operations
 /// for optional replication to the __sd2:changelog Valkey stream.
-static STORE: OnceLock<ChangeLogStore<InMemoryGraphStore>> = OnceLock::new();
+///
+/// `ModuleRedisStore` uses the Valkey Module API (ctx.call()) instead of TCP
+/// connections, avoiding the loopback deadlock while sharing the same Redis key
+/// schema as `RedisGraphStore`.
+static STORE: OnceLock<ChangeLogStore<ModuleRedisStore>> = OnceLock::new();
 
 /// Set to `true` at module init when `GQL_FABRIC_CHANGELOG=1` or any
 /// `GQL_FABRIC_ENDPOINT` variable is present.  When false, drain_events()
@@ -59,12 +62,28 @@ static CHANGELOG_ENABLED: AtomicBool = AtomicBool::new(false);
 /// Acquire a reference to the store.  Returns a RedisError if not initialised.
 fn with_store<F, T>(f: F) -> RedisResult<T>
 where
-    F: FnOnce(&ChangeLogStore<InMemoryGraphStore>) -> RedisResult<T>,
+    F: FnOnce(&ChangeLogStore<ModuleRedisStore>) -> RedisResult<T>,
 {
     match STORE.get() {
         Some(store) => f(store),
         None => Err(RedisError::Str("GQL module not initialised")),
     }
+}
+
+// -- Context lifecycle --
+
+/// Set the module context for ModuleRedisStore so that GraphStore methods can
+/// call Redis commands via ctx.call(). Must be called at the start of every
+/// command handler; `clear_module_context` must be called at the end.
+fn set_module_context(ctx: &Context) {
+    ModuleRedisStore::set_context(ctx);
+}
+
+/// Clear the stashed context after a command handler completes. This prevents
+/// a stale pointer from being used by a subsequent command (though in practice
+/// Valkey dispatches commands sequentially on the same thread).
+fn clear_module_context() {
+    ModuleRedisStore::clear_context();
 }
 
 // -- Changelog helpers --
@@ -139,7 +158,7 @@ fn module_init(_ctx: &Context, _args: &[redis_module::RedisString]) -> redis_mod
         );
     }
 
-    let store = ChangeLogStore::new(InMemoryGraphStore::new());
+    let store = ChangeLogStore::new(ModuleRedisStore::new());
     if STORE.set(store).is_err() {
         tracing::warn!("GQL module: STORE already initialised (double module_init?)");
     }
@@ -190,8 +209,9 @@ fn serialize_rows(result: &gql_core::executor::QueryResult) -> Vec<RedisValue> {
 ///
 /// Executes a Cypher read (or mixed) query. Returns an Array of JSON-encoded
 /// rows, one element per row.
-fn cmd_gql_query(_ctx: &Context, args: Vec<redis_module::RedisString>) -> RedisResult {
-    std::panic::catch_unwind(|| {
+fn cmd_gql_query(ctx: &Context, args: Vec<redis_module::RedisString>) -> RedisResult {
+    set_module_context(ctx);
+    let result = std::panic::catch_unwind(|| {
         let mut args = args.into_iter().skip(1); // skip command name
         let graph = args.next_string()?;
         let query = args.next_string()?;
@@ -232,7 +252,9 @@ fn cmd_gql_query(_ctx: &Context, args: Vec<redis_module::RedisString>) -> RedisR
             Ok(RedisValue::Array(serialize_rows(&result)))
         })
     })
-    .unwrap_or_else(|_| Err(RedisError::Str("GQL.QUERY: internal panic")))
+    .unwrap_or_else(|_| Err(RedisError::Str("GQL.QUERY: internal panic")));
+    clear_module_context();
+    result
 }
 
 // -- Command: GQL.MUTATE --
@@ -241,6 +263,7 @@ fn cmd_gql_query(_ctx: &Context, args: Vec<redis_module::RedisString>) -> RedisR
 ///
 /// Executes a write (mutating) query. Returns "OK" followed by stats.
 fn cmd_gql_mutate(ctx: &Context, args: Vec<redis_module::RedisString>) -> RedisResult {
+    set_module_context(ctx);
     let result = std::panic::catch_unwind(|| {
         let mut args = args.into_iter().skip(1);
         let graph = args.next_string()?;
@@ -294,12 +317,14 @@ fn cmd_gql_mutate(ctx: &Context, args: Vec<redis_module::RedisString>) -> RedisR
         tracing::warn!("GQL.MUTATE: panic in discard_changelog: {e:?}");
     }
 
+    clear_module_context();
     result
 }
 
 // -- Command: GQL.CREATE-GRAPH --
 
 fn cmd_gql_create_graph(ctx: &Context, args: Vec<redis_module::RedisString>) -> RedisResult {
+    set_module_context(ctx);
     let result = std::panic::catch_unwind(|| {
         let mut args = args.into_iter().skip(1);
         let graph = args.next_string()?;
@@ -326,12 +351,14 @@ fn cmd_gql_create_graph(ctx: &Context, args: Vec<redis_module::RedisString>) -> 
         tracing::warn!("GQL.CREATE-GRAPH: panic in discard_changelog: {e:?}");
     }
 
+    clear_module_context();
     result
 }
 
 // -- Command: GQL.DELETE-GRAPH --
 
 fn cmd_gql_delete_graph(ctx: &Context, args: Vec<redis_module::RedisString>) -> RedisResult {
+    set_module_context(ctx);
     let result = std::panic::catch_unwind(|| {
         let mut args = args.into_iter().skip(1);
         let graph = args.next_string()?;
@@ -358,13 +385,15 @@ fn cmd_gql_delete_graph(ctx: &Context, args: Vec<redis_module::RedisString>) -> 
         tracing::warn!("GQL.DELETE-GRAPH: panic in discard_changelog: {e:?}");
     }
 
+    clear_module_context();
     result
 }
 
 // -- Command: GQL.LIST-GRAPHS --
 
-fn cmd_gql_list_graphs(_ctx: &Context, args: Vec<redis_module::RedisString>) -> RedisResult {
-    std::panic::catch_unwind(|| {
+fn cmd_gql_list_graphs(ctx: &Context, args: Vec<redis_module::RedisString>) -> RedisResult {
+    set_module_context(ctx);
+    let result = std::panic::catch_unwind(|| {
         let mut args = args.into_iter().skip(1);
         args.done()?;
 
@@ -376,13 +405,16 @@ fn cmd_gql_list_graphs(_ctx: &Context, args: Vec<redis_module::RedisString>) -> 
             Ok(RedisValue::Array(values))
         })
     })
-    .unwrap_or_else(|_| Err(RedisError::Str("GQL.LIST-GRAPHS: internal panic")))
+    .unwrap_or_else(|_| Err(RedisError::Str("GQL.LIST-GRAPHS: internal panic")));
+    clear_module_context();
+    result
 }
 
 // -- Command: GQL.EXPLAIN --
 
-fn cmd_gql_explain(_ctx: &Context, args: Vec<redis_module::RedisString>) -> RedisResult {
-    std::panic::catch_unwind(|| {
+fn cmd_gql_explain(ctx: &Context, args: Vec<redis_module::RedisString>) -> RedisResult {
+    set_module_context(ctx);
+    let result = std::panic::catch_unwind(|| {
         let mut args = args.into_iter().skip(1);
         let graph = args.next_string()?;
         let query = args.next_string()?;
@@ -399,7 +431,9 @@ fn cmd_gql_explain(_ctx: &Context, args: Vec<redis_module::RedisString>) -> Redi
             Ok(RedisValue::BulkString(format!("{plan:#?}")))
         })
     })
-    .unwrap_or_else(|_| Err(RedisError::Str("GQL.EXPLAIN: internal panic")))
+    .unwrap_or_else(|_| Err(RedisError::Str("GQL.EXPLAIN: internal panic")));
+    clear_module_context();
+    result
 }
 
 // -- Module registration --
