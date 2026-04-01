@@ -15,6 +15,7 @@ members = [
     "sedan-gremlin-embedded",
     "tests/loadtest",
     "tests/gremlin-tck",
+    "gql-engine",
 ]
 resolver = "2"
 

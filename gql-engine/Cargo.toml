@@ -1,0 +1,18 @@
+[package]
+name    = "gql-engine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+default    = []
+test-utils = ["cypher-core/test-utils"]
+
+[dependencies]
+cypher-core = { path = "../cypher-core" }
+thiserror   = { workspace = true }
+smol_str    = { workspace = true }
+tracing     = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }

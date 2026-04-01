@@ -24,6 +24,7 @@ COPY sedandelivery-bolt/Cargo.toml    ./sedandelivery-bolt/
 COPY sedandelivery-fabric-sync/Cargo.toml ./sedandelivery-fabric-sync/
 COPY sedandelivery-gremlin/Cargo.toml ./sedandelivery-gremlin/
 COPY gremlin-core/Cargo.toml          ./gremlin-core/
+COPY gql-engine/Cargo.toml            ./gql-engine/
 COPY sedan-gql-embedded/Cargo.toml    ./sedan-gql-embedded/
 COPY sedan-cypher-embedded/Cargo.toml ./sedan-cypher-embedded/
 COPY sedan-gremlin-embedded/Cargo.toml ./sedan-gremlin-embedded/
@@ -36,7 +37,7 @@ COPY tests/gremlin-tck/Cargo.toml     ./tests/gremlin-tck/
 # workspace (which caused exit code 101 in #1000).
 RUN mkdir -p cypher-core/src sd2-redis-store/src gql-fabric-store/src sd2-redis-module/src gql-cli/src sd2-api/src \
              sedandelivery-bolt/src sedandelivery-bolt/benches sedandelivery-fabric-sync/src \
-             sedandelivery-gremlin/src gremlin-core/src sedan-gql-embedded/src \
+             sedandelivery-gremlin/src gremlin-core/src gql-engine/src sedan-gql-embedded/src \
              sedan-cypher-embedded/src sedan-gremlin-embedded/src \
              tests/loadtest/src tests/gremlin-tck/src && \
     echo "pub fn stub() {}" > cypher-core/src/lib.rs && \
@@ -52,6 +53,7 @@ RUN mkdir -p cypher-core/src sd2-redis-store/src gql-fabric-store/src sd2-redis-
     echo "pub fn stub() {}" > sedandelivery-gremlin/src/lib.rs && \
     echo "fn main() {}" > sedandelivery-gremlin/src/main.rs && \
     echo "pub fn stub() {}" > gremlin-core/src/lib.rs && \
+    echo "pub fn stub() {}" > gql-engine/src/lib.rs && \
     echo "pub fn stub() {}" > sedan-gql-embedded/src/lib.rs && \
     echo "pub fn stub() {}" > sedan-cypher-embedded/src/lib.rs && \
     echo "pub fn stub() {}" > sedan-gremlin-embedded/src/lib.rs && \
@@ -66,6 +68,7 @@ COPY gql-fabric-store/ ./gql-fabric-store/
 COPY sd2-redis-module/ ./sd2-redis-module/
 COPY gql-cli/ ./gql-cli/
 COPY sd2-api/ ./sd2-api/
+COPY gql-engine/ ./gql-engine/
 
 # Build the Redis module .so
 # --locked ensures the exact dependency versions from Cargo.lock are used,

@@ -1491,6 +1491,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "gql-engine"
+version = "0.1.0"
+dependencies = [
+ "cypher-core",
+ "proptest",
+ "smol_str",
+ "thiserror 2.0.18",
+ "tracing",
+]
+
+[[package]]
 name = "gql-fabric-store"
 version = "0.1.0"
 dependencies = [
