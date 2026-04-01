@@ -1,6 +1,8 @@
+pub mod cached;
 pub mod mem;
 pub mod persistent;
 
+pub use cached::CachedGraphStore;
 pub use mem::InMemoryGraphStore;
 pub use persistent::{PersistentConfig, PersistentGraphStore, SyncMode};
 
