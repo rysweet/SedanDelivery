@@ -30,7 +30,7 @@ scenario:
         args:
           - test
           - -p
-          - gql-redis-store
+          - sd2-redis-store
           - writes::graphs::tests
           - --
           - --nocapture
@@ -65,7 +65,7 @@ scenario:
         args:
           - test
           - -p
-          - gql-redis-store
+          - sd2-redis-store
           - --test
           - cluster_write_path
           - --
@@ -95,7 +95,7 @@ scenario:
         command: bash
         args:
           - -c
-          - "! grep -q 'cmd(\"SCAN\")' gql-redis-store/src/writes/graphs.rs && echo 'PASS: No SCAN in delete_graph' || (echo 'FAIL: SCAN found in delete_graph' && exit 1)"
+          - "! grep -q 'cmd(\"SCAN\")' sd2-redis-store/src/writes/graphs.rs && echo 'PASS: No SCAN in delete_graph' || (echo 'FAIL: SCAN found in delete_graph' && exit 1)"
       timeout: 10000
 
     - name: "Confirm SCAN not present in source"
@@ -112,7 +112,7 @@ scenario:
         command: bash
         args:
           - -c
-          - "! grep -rq 'pipe\\.atomic()\\|\\.atomic()' gql-redis-store/src/writes/nodes.rs gql-redis-store/src/writes/edges.rs gql-redis-store/src/writes/graphs.rs && echo 'PASS: No .atomic() in write pipelines' || (echo 'FAIL: .atomic() found' && exit 1)"
+          - "! grep -rq 'pipe\\.atomic()\\|\\.atomic()' sd2-redis-store/src/writes/nodes.rs sd2-redis-store/src/writes/edges.rs sd2-redis-store/src/writes/graphs.rs && echo 'PASS: No .atomic() in write pipelines' || (echo 'FAIL: .atomic() found' && exit 1)"
       timeout: 10000
 
     - name: "Confirm .atomic() not in write pipelines"

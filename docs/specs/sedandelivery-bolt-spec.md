@@ -2173,7 +2173,7 @@ instances. A node created via `GQL.MUTATE` is NOT visible via Bolt, and vice ver
 **Future (v2):** Shared storage via one of:
 - (a) sedandelivery-bolt connects to Valkey via Redis protocol and uses RedisGraphStore
 - (b) Both processes share a memory-mapped store
-- (c) sedandelivery-bolt replaces gql-module entirely (Bolt-only architecture)
+- (c) sedandelivery-bolt replaces sd2-redis-module entirely (Bolt-only architecture)
 
 For v1, option (c) is the recommended migration path: run sedandelivery-bolt as the
 primary interface, remove the Redis module entirely.
@@ -2195,53 +2195,53 @@ RUN apt-get update -q && apt-get install -y -q libclang-dev && rm -rf /var/lib/a
 # Copy workspace manifests for layer caching
 COPY Cargo.toml ./
 COPY cypher-core/Cargo.toml ./cypher-core/
-COPY gql-redis-store/Cargo.toml ./gql-redis-store/
-COPY gql-module/Cargo.toml ./gql-module/
+COPY sd2-redis-store/Cargo.toml ./sd2-redis-store/
+COPY sd2-redis-module/Cargo.toml ./sd2-redis-module/
 COPY gql-fabric-store/Cargo.toml ./gql-fabric-store/
 COPY gql-cli/Cargo.toml ./gql-cli/
-COPY gql-api/Cargo.toml ./gql-api/
+COPY sd2-api/Cargo.toml ./sd2-api/
 COPY sedandelivery-bolt/Cargo.toml ./sedandelivery-bolt/
 
 # Create stub source files
-RUN mkdir -p cypher-core/src gql-redis-store/src gql-fabric-store/src \
-    gql-module/src gql-cli/src gql-api/src sedandelivery-bolt/src && \
+RUN mkdir -p cypher-core/src sd2-redis-store/src gql-fabric-store/src \
+    sd2-redis-module/src gql-cli/src sd2-api/src sedandelivery-bolt/src && \
     echo "pub fn stub() {}" > cypher-core/src/lib.rs && \
-    echo "pub fn stub() {}" > gql-redis-store/src/lib.rs && \
+    echo "pub fn stub() {}" > sd2-redis-store/src/lib.rs && \
     echo "pub fn stub() {}" > gql-fabric-store/src/lib.rs && \
-    echo "pub fn stub() {}" > gql-module/src/lib.rs && \
+    echo "pub fn stub() {}" > sd2-redis-module/src/lib.rs && \
     echo "fn main() {}" > gql-cli/src/main.rs && \
-    echo "fn main() {}" > gql-api/src/main.rs && \
+    echo "fn main() {}" > sd2-api/src/main.rs && \
     echo "fn main() {}" > sedandelivery-bolt/src/main.rs && \
-    cargo build --release -p gql-module 2>/dev/null || true
+    cargo build --release -p sd2-redis-module 2>/dev/null || true
 
 # Copy actual source
 COPY cypher-core/ ./cypher-core/
-COPY gql-redis-store/ ./gql-redis-store/
+COPY sd2-redis-store/ ./sd2-redis-store/
 COPY gql-fabric-store/ ./gql-fabric-store/
-COPY gql-module/ ./gql-module/
+COPY sd2-redis-module/ ./sd2-redis-module/
 COPY gql-cli/ ./gql-cli/
-COPY gql-api/ ./gql-api/
+COPY sd2-api/ ./sd2-api/
 COPY sedandelivery-bolt/ ./sedandelivery-bolt/
 
 # Build all binaries
-RUN touch cypher-core/src/lib.rs gql-redis-store/src/lib.rs \
-    gql-fabric-store/src/lib.rs gql-module/src/lib.rs \
-    gql-api/src/main.rs sedandelivery-bolt/src/main.rs && \
-    cargo build --release -p gql-module && \
-    cargo build --release -p gql-api && \
+RUN touch cypher-core/src/lib.rs sd2-redis-store/src/lib.rs \
+    gql-fabric-store/src/lib.rs sd2-redis-module/src/lib.rs \
+    sd2-api/src/main.rs sedandelivery-bolt/src/main.rs && \
+    cargo build --release -p sd2-redis-module && \
+    cargo build --release -p sd2-api && \
     cargo build --release -p sedandelivery-bolt && \
-    ls -lh target/release/libgql_module.so \
-           target/release/gql-api \
+    ls -lh target/release/libsd2_redis_module.so \
+           target/release/sd2-api \
            target/release/sedandelivery-bolt
 
 # -- Runtime --
 FROM valkey/valkey:8.1-bookworm AS runtime
 
-COPY --from=builder /app/target/release/libgql_module.so /usr/local/lib/libgql_module.so
+COPY --from=builder /app/target/release/libsd2_redis_module.so /usr/local/lib/libsd2_redis_module.so
 COPY --from=builder /app/target/release/sedandelivery-bolt /usr/local/bin/sedandelivery-bolt
 
 RUN mkdir -p /etc/valkey /data && \
-    echo "loadmodule /usr/local/lib/libgql_module.so" > /etc/valkey/valkey-gql.conf && \
+    echo "loadmodule /usr/local/lib/libsd2_redis_module.so" > /etc/valkey/valkey-gql.conf && \
     echo "bind 0.0.0.0" >> /etc/valkey/valkey-gql.conf && \
     echo "protected-mode yes" >> /etc/valkey/valkey-gql.conf && \
     echo "loglevel notice" >> /etc/valkey/valkey-gql.conf && \
@@ -2342,7 +2342,7 @@ only a single ingress port per Container App. To expose both 6379 and 7687:
 |---|---|---|---|
 | Valkey (Redis) | 6379 | RESP | Internal to CAE |
 | sedandelivery-bolt (Bolt) | 7687 | Bolt/TCP | External (client-facing) |
-| gql-api (HTTP) | 3001 | HTTP | External (UI-facing) |
+| sd2-api (HTTP) | 3001 | HTTP | External (UI-facing) |
 
 ---
 

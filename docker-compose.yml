@@ -72,7 +72,7 @@ services:
       retries: 10
       start_period: 15s
 
-  gql-api:
+  sd2-api:
     build:
       context: .
       dockerfile: Dockerfile.api

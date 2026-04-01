@@ -3,7 +3,7 @@ using SedanDelivery.Api.Models;
 namespace SedanDelivery.Api.Services;
 
 /// <summary>
-/// Abstraction over the Rust gql-api HTTP client.
+/// Abstraction over the Rust sd2-api HTTP client.
 /// Enables mocking in unit tests without needing a live HTTP server.
 /// </summary>
 public interface IGqlApiClient

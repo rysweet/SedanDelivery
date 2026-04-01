@@ -23,25 +23,25 @@ The workspace contains 8 crates. Arrows point from dependent to dependency.
 graph TD
     cypher-core["cypher-core<br/><i>Parser, planner, executor, storage trait</i>"]
 
-    gql-redis-store["gql-redis-store<br/><i>Redis/Valkey GraphStore + FanoutStore</i>"]
+    sd2-redis-store["sd2-redis-store<br/><i>Redis/Valkey GraphStore + FanoutStore</i>"]
     gql-fabric-store["gql-fabric-store<br/><i>Microsoft Fabric GraphStore</i>"]
 
-    gql-module["gql-module<br/><i>Valkey/Redis loadable module (.so)</i>"]
+    sd2-redis-module["sd2-redis-module<br/><i>Valkey/Redis loadable module (.so)</i>"]
     gql-cli["gql-cli<br/><i>Interactive CLI demo</i>"]
-    gql-api["gql-api<br/><i>HTTP REST API (axum)</i>"]
+    sd2-api["sd2-api<br/><i>HTTP REST API (axum)</i>"]
     sedandelivery-bolt["sedandelivery-bolt<br/><i>Bolt v4.4 TCP server</i>"]
     sedandelivery-fabric-sync["sedandelivery-fabric-sync<br/><i>Changelog replication to Fabric</i>"]
 
-    gql-redis-store --> cypher-core
+    sd2-redis-store --> cypher-core
     gql-fabric-store --> cypher-core
-    gql-module --> cypher-core
+    sd2-redis-module --> cypher-core
     gql-cli --> cypher-core
-    gql-api --> cypher-core
-    gql-api --> gql-redis-store
+    sd2-api --> cypher-core
+    sd2-api --> sd2-redis-store
     sedandelivery-bolt --> cypher-core
-    sedandelivery-bolt --> gql-redis-store
+    sedandelivery-bolt --> sd2-redis-store
     sedandelivery-fabric-sync --> cypher-core
-    sedandelivery-fabric-sync --> gql-redis-store
+    sedandelivery-fabric-sync --> sd2-redis-store
     sedandelivery-fabric-sync --> gql-fabric-store
 ```
 
@@ -203,7 +203,7 @@ classDiagram
     FanoutStore o-- GraphStore : wraps 1..N
 ```
 
-Backend selection at startup (`gql-redis-store::create_store`):
+Backend selection at startup (`sd2-redis-store::create_store`):
 1. `GQL_REDIS_CLUSTER_NODES` set -- `RedisGraphStore` in cluster mode (auto-discovers topology from seed nodes)
 2. `GQL_REDIS_URL` set -- `RedisGraphStore` in standalone mode (also used for Azure Cache for Redis with `rediss://` TLS URLs)
 3. Neither set -- `InMemoryGraphStore` (volatile, for local dev/tests)
@@ -245,11 +245,11 @@ graph TD
         end
 
         subgraph APIContainer["sd2-main-api"]
-            API_SRV["gql-api<br/><b>REST API Server</b><br/>HTTP :3001 / HTTPS :3443"]
+            API_SRV["sd2-api<br/><b>REST API Server</b><br/>HTTP :3001 / HTTPS :3443"]
         end
 
         subgraph RedisContainer["sd2-main-redis"]
-            VALKEY["Valkey 8.1<br/>+ gql-module (.so)<br/><b>Graph Storage</b><br/>Redis :6379"]
+            VALKEY["Valkey 8.1<br/>+ sd2-redis-module (.so)<br/><b>Graph Storage</b><br/>Redis :6379"]
         end
 
         subgraph SyncContainer["sd2-main-fabric-sync<br/><i>(optional)</i>"]
@@ -290,13 +290,13 @@ graph TD
 | Container | Image | Purpose | Scalable |
 |-----------|-------|---------|----------|
 | `sd2-main-bolt` | `sedandelivery-bolt` | Bolt v4.4 protocol server. Neo4j drivers connect here. | Yes (stateless) |
-| `sd2-main-api` | `gql-api` | REST API with auth, rate limiting, metrics. | Yes (stateless) |
-| `sd2-main-redis` | `sedandelivery` (Valkey + gql-module) | Graph storage engine. All data lives here. | No (single primary) |
+| `sd2-main-api` | `sd2-api` | REST API with auth, rate limiting, metrics. | Yes (stateless) |
+| `sd2-main-redis` | `sedandelivery` (Valkey + sd2-redis-module) | Graph storage engine. All data lives here. | No (single primary) |
 | `sd2-main-fabric-sync` | `sedandelivery-fabric-sync` | Replicates changes to Microsoft Fabric. | No (single consumer) |
 
 **Connection patterns:**
 - **Bolt clients** connect to the Bolt server via TCP, TLS, or WebSocket on port 7687
-- **REST clients** connect to gql-api via HTTP/HTTPS on port 3001/3443
+- **REST clients** connect to sd2-api via HTTP/HTTPS on port 3001/3443
 - Both servers connect to Valkey via `GQL_REDIS_URL` using an r2d2 connection pool (or via `GQL_REDIS_CLUSTER_NODES` for cluster mode, or `rediss://` for Azure Cache with TLS)
 - When `GQL_REDIS_REPLICA_URL` is set, read-only operations are routed to a separate replica pool (round-robin), while writes go to the primary
 - The Fabric sync sidecar reads from per-graph Redis Streams (`__sd2:changelog:{graph}`) and pushes to Fabric via HTTPS
@@ -359,7 +359,7 @@ SedanDelivery/
       plan_cache.rs              Query plan cache (hash map + clear-on-capacity eviction)
       types/value/               Value type system (display, convert, compare)
 
-  gql-redis-store/             Redis/Valkey storage backend
+  sd2-redis-store/             Redis/Valkey storage backend
     src/
       lib.rs                     RedisGraphStore implementation
       fanout.rs                  FanoutStore (create rollback only; other writes may diverge)
@@ -378,10 +378,10 @@ SedanDelivery/
       parsing.rs                 Fabric JSON response parsing
       sanitize.rs                Cypher injection prevention
 
-  gql-module/                  Valkey/Redis loadable module (.so)
+  sd2-redis-module/                  Valkey/Redis loadable module (.so)
     src/lib.rs                   GQL.QUERY, GQL.MUTATE, GQL.CREATE-GRAPH, etc.
 
-  gql-api/                     HTTP REST API
+  sd2-api/                     HTTP REST API
     src/
       main.rs                    axum server setup (HTTP or TLS)
       routes/                    Endpoint handlers (nodes, edges, query, indexes, etc.)

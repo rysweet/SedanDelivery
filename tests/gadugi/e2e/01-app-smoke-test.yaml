@@ -6,7 +6,7 @@ scenario:
   timeout: 30s
 
   prerequisites:
-    - "gql-api running on http://localhost:3001"
+    - "sd2-api running on http://localhost:3001"
     - "SedanDelivery.Api running on http://localhost:5000"
     - "sedan-web running on http://localhost:5173"
 

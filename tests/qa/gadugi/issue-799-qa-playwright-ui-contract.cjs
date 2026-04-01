@@ -131,9 +131,9 @@ async function main() {
   try {
     const health = await api.get(`${API_BASE}/health`);
     if (health.status() !== 200) {
-      throw new Error(`gql-api health check failed with ${health.status()}`);
+      throw new Error(`sd2-api health check failed with ${health.status()}`);
     }
-    console.log('PASS: gql-api health check ok');
+    console.log('PASS: sd2-api health check ok');
 
     await deleteGraph(api, GRAPH_NAME);
     await deleteGraph(api, DETAIL_GRAPH_NAME);

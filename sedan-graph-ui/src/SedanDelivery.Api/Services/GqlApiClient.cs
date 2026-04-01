@@ -5,7 +5,7 @@ using SedanDelivery.Api.Models;
 namespace SedanDelivery.Api.Services;
 
 /// <summary>
-/// Typed HTTP client that wraps all endpoints exposed by the Rust gql-api service.
+/// Typed HTTP client that wraps all endpoints exposed by the Rust sd2-api service.
 /// All methods are virtual so that they can be mocked in tests.
 /// All methods throw <see cref="HttpRequestException"/> when the upstream returns a
 /// non-success status code, including the upstream error body in the message.
@@ -22,7 +22,7 @@ public class GqlApiClient : IGqlApiClient
 
     // ── Graphs ────────────────────────────────────────────────────────────────
 
-    /// <summary>Returns all graphs known to the gql-api.</summary>
+    /// <summary>Returns all graphs known to the sd2-api.</summary>
     public virtual async Task<List<GraphInfo>> GetGraphsAsync(CancellationToken ct = default)
     {
         var response = await _http.GetAsync("/graphs", ct);
@@ -248,7 +248,7 @@ public class GqlApiClient : IGqlApiClient
 
         var body = await response.Content.ReadAsStringAsync();
         throw new HttpRequestException(
-            $"gql-api returned {(int)response.StatusCode} {response.ReasonPhrase}: {body}",
+            $"sd2-api returned {(int)response.StatusCode} {response.ReasonPhrase}: {body}",
             inner: null,
             statusCode: response.StatusCode);
     }

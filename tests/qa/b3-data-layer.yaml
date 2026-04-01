@@ -226,7 +226,7 @@ scenarios:
   - scenario: 3
     name: "Per-graph changelog stream isolation"
     description: >
-      When GQL_FABRIC_CHANGELOG=1, the gql-module writes change events to
+      When GQL_FABRIC_CHANGELOG=1, the sd2-redis-module writes change events to
       per-graph streams (__sd2:changelog:{graphname}) instead of a single
       global stream. The hash tag {graphname} ensures the stream key lands
       on the same Redis Cluster slot as the graph data, avoiding cross-slot
@@ -234,7 +234,7 @@ scenarios:
       via SMEMBERS on the graph registry and subscribes to all of them plus
       the legacy __sd2:changelog stream for backward compatibility.
     prerequisites:
-      - "GQL_FABRIC_CHANGELOG=1 set on the gql-module (Redis server)"
+      - "GQL_FABRIC_CHANGELOG=1 set on the sd2-redis-module (Redis server)"
     setup:
       - action: bolt_query
         client: A
@@ -255,7 +255,7 @@ scenarios:
         action: redis_command
         command: "XLEN __sd2:changelog:{graph_a}"
         expected: >
-          At least 1 entry. The emit_changelog() function in gql-module
+          At least 1 entry. The emit_changelog() function in sd2-redis-module
           calls changelog_stream_for_graph(event.graph_name()), which returns
           "__sd2:changelog:{graph_a}". The XADD goes to this per-graph key.
 

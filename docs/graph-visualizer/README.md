@@ -15,8 +15,8 @@ WebGL (Sigma.js v3) and handles datasets of 100,000+ nodes at interactive frame 
 Three commands start the full stack locally using .NET Aspire:
 
 ```bash
-# 1. Start the Rust gql-api (port 3001)
-cargo run -p gql-api
+# 1. Start the Rust sd2-api (port 3001)
+cargo run -p sd2-api
 
 # 2. Start the Aspire orchestrator — launches the .NET BFF automatically
 cd sedan-graph-ui && dotnet run --project src/SedanDelivery.AppHost
@@ -44,7 +44,7 @@ SedanDelivery.Api (port 5000)     ← .NET 8 BFF
        |
        | HTTP JSON (GQL_API_URL)
        v
-gql-api (port 3001)               ← Rust / Axum
+sd2-api (port 3001)               ← Rust / Axum
   - REST CRUD for graphs, nodes, edges
   - Cypher query and mutate
   - Schema, neighbors, export/import
@@ -61,7 +61,7 @@ injects service URLs and streams logs from all processes to the Aspire dashboard
 
 ## Components
 
-### gql-api (Rust, port 3001)
+### sd2-api (Rust, port 3001)
 
 HTTP REST service built with Axum. Wraps the cypher-core library and exposes all
 graph operations over JSON. Every named graph lives as an `InMemoryGraphStore`
@@ -78,7 +78,7 @@ See [API Reference](./api-reference.md) for the complete endpoint list.
 
 ### SedanDelivery.Api (.NET 10, port 5000)
 
-Backend-for-Frontend (BFF) that proxies all requests to gql-api with:
+Backend-for-Frontend (BFF) that proxies all requests to sd2-api with:
 - CORS policy allowing the Vite dev server (`localhost:5173`) and any origins in
   the `CORS_ORIGINS` environment variable
 - Sliding-window rate limiting: 100 requests per 60 seconds per IP on `/query`
@@ -90,7 +90,7 @@ Backend-for-Frontend (BFF) that proxies all requests to gql-api with:
 ### SedanDelivery.AppHost (.NET Aspire)
 
 Orchestrates all services as a single distributed application:
-- Registers `gql-api` as an `ExecutableResource` on port 3001
+- Registers `sd2-api` as an `ExecutableResource` on port 3001
 - Injects `GQL_API_URL=http://localhost:3001` into the .NET API
 - Registers the Vite dev server as an `NpmApp` on port 5173 (excluded from
   the Azure manifest — the SPA is deployed separately or served as static files)
@@ -133,5 +133,5 @@ Single-page application built with Vite. Key dependencies:
 
 - [Getting Started](./getting-started.md) — Prerequisites, local setup, first walkthrough
 - [User Guide](./user-guide.md) — All UI features, keyboard shortcuts, Cypher editor
-- [API Reference](./api-reference.md) — Complete gql-api endpoint reference
+- [API Reference](./api-reference.md) — Complete sd2-api endpoint reference
 - [Deployment](./deployment.md) — Azure Container Apps deployment with Aspire

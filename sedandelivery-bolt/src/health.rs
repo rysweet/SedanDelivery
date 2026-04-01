@@ -134,7 +134,7 @@ struct HealthResponseTest {
 }
 
 async fn metrics_handler(State(state): State<HealthState>) -> Response {
-    // Sync the backend error counter from gql-redis-store into Prometheus
+    // Sync the backend error counter from sd2-redis-store into Prometheus
     // so it appears in the /metrics output on every scrape.
     crate::metrics::sync_backend_error_gauge();
     let body = state.prometheus_handle.render();

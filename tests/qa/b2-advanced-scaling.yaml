@@ -135,7 +135,7 @@ teardown:
 ---
 
 # Scenario 3: HTTP API Concurrency Limiting
-# Verifies gql-api respects GQL_API_MAX_CONCURRENCY and returns 503 when exceeded.
+# Verifies sd2-api respects GQL_API_MAX_CONCURRENCY and returns 503 when exceeded.
 name: "GQL-API Concurrent Request Limiting (ConcurrencyLimitLayer)"
 description: >
   Send more concurrent HTTP requests than GQL_API_MAX_CONCURRENCY allows.
@@ -147,7 +147,7 @@ env:
 
 setup:
   - action: start_server
-    binary: gql-api
+    binary: sd2-api
     env:
       GQL_API_MAX_CONCURRENCY: "3"
       GQL_API_BIND_ADDR: "0.0.0.0:3001"
@@ -217,11 +217,11 @@ steps:
     expected: "Metric name matches the constant in sedandelivery-bolt/src/metrics.rs"
 
   - step: 4
-    description: "KEDA ScaledObject for gql-api references a valid metric"
+    description: "KEDA ScaledObject for sd2-api references a valid metric"
     action: grep_file
     file: "infra/keda-scaledobjects.yaml"
-    pattern: "gql_api_http_concurrent_requests"
-    expected: "Metric name is present for the gql-api scaler trigger"
+    pattern: "sd2_api_http_concurrent_requests"
+    expected: "Metric name is present for the sd2-api scaler trigger"
 
   - step: 5
     description: "Bolt scaler maxReplicaCount matches Bicep boltMaxReplicas upper bound"
@@ -248,5 +248,5 @@ steps:
     description: "GQL-API ScaledObject targets the correct deployment name"
     action: grep_file
     file: "infra/keda-scaledobjects.yaml"
-    pattern: "name: gql-api"
-    expected: "scaleTargetRef.name matches the gql-api deployment"
+    pattern: "name: sd2-api"
+    expected: "scaleTargetRef.name matches the sd2-api deployment"

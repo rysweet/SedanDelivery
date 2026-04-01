@@ -5,8 +5,8 @@ on:
   pull_request:
     branches: [main]
     paths:
-      - "gql-redis-store/**"
-      - "gql-module/**"
+      - "sd2-redis-store/**"
+      - "sd2-redis-module/**"
       - "docker-compose*.yml"
 
 permissions:
@@ -59,8 +59,8 @@ jobs:
         env:
           GQL_REDIS_URL: redis://localhost:6379
         run: |
-          cargo test -p gql-redis-store
-          cargo test -p gql-redis-store --test cluster_write_path -- --ignored ci8_delete_graph_end_to_end --nocapture
+          cargo test -p sd2-redis-store
+          cargo test -p sd2-redis-store --test cluster_write_path -- --ignored ci8_delete_graph_end_to_end --nocapture
 
       - name: Build sedandelivery-bolt (release)
         run: cargo build --release -p sedandelivery-bolt
@@ -158,8 +158,8 @@ jobs:
         env:
           GQL_REDIS_CLUSTER_NODES: redis://127.0.0.1:7000,redis://127.0.0.1:7001,redis://127.0.0.1:7002
         run: |
-          cargo test -p gql-redis-store
-          cargo test -p gql-redis-store --test cluster_pipeline -- --ignored --nocapture
+          cargo test -p sd2-redis-store
+          cargo test -p sd2-redis-store --test cluster_pipeline -- --ignored --nocapture
 
       - name: Build sedandelivery-bolt (release)
         run: cargo build --release -p sedandelivery-bolt
@@ -246,7 +246,7 @@ jobs:
         env:
           GQL_REDIS_URL: redis://localhost:6379
           GQL_REDIS_REPLICA_URL: redis://localhost:6380,redis://localhost:6381
-        run: cargo test -p gql-redis-store
+        run: cargo test -p sd2-redis-store
 
       - name: Build sedandelivery-bolt (release)
         run: cargo build --release -p sedandelivery-bolt
@@ -347,10 +347,10 @@ jobs:
           done
 
       - name: Build redis-store tests
-        run: cargo test -p gql-redis-store --no-run
+        run: cargo test -p sd2-redis-store --no-run
 
       - name: Run redis-store tests (TLS)
         env:
           GQL_REDIS_URL: rediss://localhost:6380
           SSL_CERT_FILE: /tmp/redis-tls/ca.crt
-        run: cargo test -p gql-redis-store
+        run: cargo test -p sd2-redis-store

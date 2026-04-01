@@ -11,11 +11,11 @@ Cargo workspace with 8 crates:
 | Crate | Type | Purpose |
 |-------|------|---------|
 | `cypher-core` | lib | Parser, planner, executor, `GraphStore` trait, `Value` types |
-| `gql-redis-store` | lib | Redis-backed `GraphStore` implementation |
+| `sd2-redis-store` | lib | Redis-backed `GraphStore` implementation |
 | `gql-fabric-store` | lib | Microsoft Fabric-backed `GraphStore` implementation |
-| `gql-module` | cdylib | Redis module entry point (`redis_module!` macro) |
+| `sd2-redis-module` | cdylib | Redis module entry point (`redis_module!` macro) |
 | `gql-cli` | bin | Standalone REPL for development and debugging |
-| `gql-api` | bin | HTTP REST API server |
+| `sd2-api` | bin | HTTP REST API server |
 | `sedandelivery-bolt` | bin | Neo4j Bolt v4.4 protocol server (compatible with all Neo4j drivers) |
 | `sedandelivery-fabric-sync` | bin | Fabric replication sidecar (streams changelog to Microsoft Fabric Graph Database) |
 
@@ -51,7 +51,7 @@ Cargo workspace with 8 crates:
 
 ### Redis Module Development
 
-- `gql-module` is a `cdylib` -- it produces `libgql_module.so` loaded via `loadmodule`
+- `sd2-redis-module` is a `cdylib` -- it produces `libsd2_redis_module.so` loaded via `loadmodule`
 - Command handlers run on Redis's main thread; keep them fast
 - libclang is required at build time for `redis-module` bindgen
 - The Dockerfile builds the module in a multi-stage build and packages it with Valkey 8.1

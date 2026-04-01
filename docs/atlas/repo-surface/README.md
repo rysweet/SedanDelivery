@@ -16,13 +16,13 @@ graph TD
     
     subgraph core_crates["Core Engine Crates"]
         GQL_CORE["cypher-core/<br/><i>Parser, planner, executor,<br/>GraphStore trait, Value types</i>"]
-        GQL_REDIS["gql-redis-store/<br/><i>Redis/Valkey GraphStore impl<br/>+ FanoutStore</i>"]
+        GQL_REDIS["sd2-redis-store/<br/><i>Redis/Valkey GraphStore impl<br/>+ FanoutStore</i>"]
         GQL_FABRIC["gql-fabric-store/<br/><i>Microsoft Fabric<br/>GraphStore impl</i>"]
     end
 
     subgraph entry_points["Entry Point Crates"]
-        GQL_MODULE["gql-module/<br/><i>Valkey/Redis loadable<br/>module (.so cdylib)</i>"]
-        GQL_API["gql-api/<br/><i>HTTP REST API<br/>(axum, port 3001)</i>"]
+        GQL_MODULE["sd2-redis-module/<br/><i>Valkey/Redis loadable<br/>module (.so cdylib)</i>"]
+        GQL_API["sd2-api/<br/><i>HTTP REST API<br/>(axum, port 3001)</i>"]
         BOLT["sedandelivery-bolt/<br/><i>Neo4j Bolt v4.4<br/>TCP server (port 7687)</i>"]
         SYNC["sedandelivery-fabric-sync/<br/><i>Changelog replication<br/>to Fabric</i>"]
         CLI["gql-cli/<br/><i>Interactive REPL<br/>for development</i>"]

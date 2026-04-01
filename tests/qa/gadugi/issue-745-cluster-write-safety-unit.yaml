@@ -7,7 +7,7 @@
 scenario:
   name: "Issue #745 - Cluster write safety unit contract (Scenario 1: simple)"
   description: >
-    Verify from a contributor perspective that the gql-redis-store crate exposes
+    Verify from a contributor perspective that the sd2-redis-store crate exposes
     the expected cluster-safety constants and functions (MAX_NODES_FOR_DELETE,
     backend_error_msg), and that pipeline construction never injects MULTI/EXEC
     into write paths.  This validates the direct code-level fixes for #745.
@@ -19,7 +19,7 @@ scenario:
       type: cli
       config: {}
   steps:
-    - name: "Run gql-redis-store unit test suite"
+    - name: "Run sd2-redis-store unit test suite"
       agent: cli-agent
       action: execute
       params:
@@ -27,7 +27,7 @@ scenario:
         args:
           - test
           - -p
-          - gql-redis-store
+          - sd2-redis-store
           - --
           - --nocapture
       timeout: 120000

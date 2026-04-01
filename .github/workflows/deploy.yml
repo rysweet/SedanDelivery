@@ -441,7 +441,7 @@ jobs:
           echo "✅ sedandelivery-bolt image pushed: ${ACR_SERVER}/sedandelivery-bolt:${IMAGE_TAG}"
           echo "bolt_image_tag=${IMAGE_TAG}" >> "$GITHUB_OUTPUT"
 
-      - name: Build and push gql-api image via ACR Tasks
+      - name: Build and push sd2-api image via ACR Tasks
         id: build-api
         env:
           GH_SHA: ${{ github.sha }}
@@ -450,17 +450,17 @@ jobs:
           ACR_SERVER="${{ steps.provision.outputs.acr_server }}"
           IMAGE_TAG="${GH_SHA}"
 
-          echo "🐳 Building gql-api (REST API server) via ACR Tasks..."
+          echo "🐳 Building sd2-api (REST API server) via ACR Tasks..."
 
           az acr build \
             --registry "${ACR_NAME}" \
-            --image "gql-api:${IMAGE_TAG}" \
-            --image "gql-api:latest" \
+            --image "sd2-api:${IMAGE_TAG}" \
+            --image "sd2-api:latest" \
             --file Dockerfile.api \
             --platform linux/amd64 \
             .
 
-          echo "✅ gql-api image pushed: ${ACR_SERVER}/gql-api:${IMAGE_TAG}"
+          echo "✅ sd2-api image pushed: ${ACR_SERVER}/sd2-api:${IMAGE_TAG}"
           echo "api_image_tag=${IMAGE_TAG}" >> "$GITHUB_OUTPUT"
 
       - name: Provision Entra ID API scope (idempotent)
@@ -557,7 +557,7 @@ jobs:
           fi
 
           # Fabric Graph Database env vars (opt-in via ENABLE_FABRIC).
-          # GQL_FABRIC_CHANGELOG=1 tells gql-module to write to __sd2:changelog;
+          # GQL_FABRIC_CHANGELOG=1 tells sd2-redis-module to write to __sd2:changelog;
           # the Fabric credentials are only needed by sedandelivery-fabric-sync sidecar.
           if [[ "${DEPLOY_HAS_FABRIC}" == "true" ]]; then
             ENV_VAR_ARGS="${ENV_VAR_ARGS} GQL_FABRIC_CHANGELOG=1"
@@ -1153,7 +1153,7 @@ jobs:
           echo "bolt_ca_name=${CA_NAME}" >> "$GITHUB_OUTPUT"
           echo "✅ Bolt Container App deployed: ${CA_NAME}"
 
-      - name: Deploy gql-api REST API Container App
+      - name: Deploy sd2-api REST API Container App
         id: deploy-api
         env:
           DEPLOY_RG: ${{ needs.determine-environment.outputs.resource-group }}
@@ -1170,10 +1170,10 @@ jobs:
           CAE_NAME="${DEPLOY_CAE_NAME}"
           ACR_SERVER="${DEPLOY_ACR_SERVER}"
           ACR_NAME="${DEPLOY_ACR_NAME}"
-          IMAGE="${ACR_SERVER}/gql-api:${DEPLOY_API_IMAGE_TAG}"
+          IMAGE="${ACR_SERVER}/sd2-api:${DEPLOY_API_IMAGE_TAG}"
           CA_NAME="sd2-${ENV_NAME}-api"
 
-          echo "🚀 Deploying gql-api REST API: ${CA_NAME}"
+          echo "🚀 Deploying sd2-api REST API: ${CA_NAME}"
 
           # Build env vars — auth is always enabled in deployed environments
           ENV_VAR_ARGS="ENVIRONMENT=production"
@@ -1183,7 +1183,7 @@ jobs:
           ENV_VAR_ARGS="${ENV_VAR_ARGS} GQL_API_ALLOWED_ORIGINS=*"
 
           create_api_app() {
-            echo "🆕 Creating gql-api container app..."
+            echo "🆕 Creating sd2-api container app..."
             ACR_ACCESS_TOKEN=$(az acr login --name "${ACR_NAME}" --expose-token --query accessToken -o tsv)
             if [[ -z "${ACR_ACCESS_TOKEN}" ]]; then
               echo "::error::Failed to obtain ACR access token for ${ACR_NAME}"
@@ -1269,7 +1269,7 @@ jobs:
 
           # Idempotent create-or-update
           if az containerapp show --name "${CA_NAME}" --resource-group "${RG}" >/dev/null 2>&1; then
-            echo "🔄 Updating existing gql-api container app..."
+            echo "🔄 Updating existing sd2-api container app..."
             ensure_api_registry_identity_auth
             UPDATE_OK=true
             az containerapp update \
@@ -1279,7 +1279,7 @@ jobs:
               --set-env-vars ${ENV_VAR_ARGS} \
               --output none || UPDATE_OK=false
             if [[ "${UPDATE_OK}" == "false" ]]; then
-              echo "⚠️  Update failed — deleting and recreating gql-api..."
+              echo "⚠️  Update failed — deleting and recreating sd2-api..."
               az containerapp delete --name "${CA_NAME}" --resource-group "${RG}" --yes --output none 2>/dev/null || true
               create_api_app
               ensure_api_registry_identity_auth
@@ -1294,7 +1294,7 @@ jobs:
             --query "properties.configuration.ingress.fqdn" -o tsv 2>/dev/null || echo "")
           echo "api_ca_name=${CA_NAME}" >> "$GITHUB_OUTPUT"
           echo "api_fqdn=${API_FQDN}" >> "$GITHUB_OUTPUT"
-          echo "✅ gql-api Container App deployed: ${CA_NAME} (https://${API_FQDN})"
+          echo "✅ sd2-api Container App deployed: ${CA_NAME} (https://${API_FQDN})"
 
       - name: Deploy sedandelivery-fabric-sync sidecar Container App
         id: deploy-sync

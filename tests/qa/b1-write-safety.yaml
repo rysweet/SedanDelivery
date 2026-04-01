@@ -24,7 +24,7 @@ scenarios:
     name: "Concurrent Bolt clients writing to the same node -- no lost updates"
     description: >
       Two clients connect independently and both SET properties on the same
-      node. Because gql-redis-store acquires a per-graph distributed lock
+      node. Because sd2-redis-store acquires a per-graph distributed lock
       before every property mutation (read-node, merge, write-back), the
       writes are serialised. After both complete, the node must have ALL
       properties from both clients -- nothing is silently overwritten.

@@ -310,7 +310,7 @@ describe('API client request bodies', () => {
     vi.unstubAllGlobals()
   })
 
-  it('serializes query requests using gql-api field names', async () => {
+  it('serializes query requests using sd2-api field names', async () => {
     fetchMock.mockResolvedValue(
       jsonResponse(200, {
         columns: [],
@@ -332,7 +332,7 @@ describe('API client request bodies', () => {
     }))
   })
 
-  it('serializes mutation requests using gql-api field names', async () => {
+  it('serializes mutation requests using sd2-api field names', async () => {
     fetchMock.mockResolvedValue(
       jsonResponse(200, {
         nodesCreated: 1,

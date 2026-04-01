@@ -137,7 +137,7 @@ metadata is unavailable on the receiving Bolt process, routing falls back to
 
 ### `RedisGraphStore::with_read_consistency_mode(...)`
 
-**Location:** `gql-redis-store/src/lib.rs`
+**Location:** `sd2-redis-store/src/lib.rs`
 
 Returns a cloned `RedisGraphStore` with the requested `ReadConsistency`.
 

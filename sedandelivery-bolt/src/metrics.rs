@@ -80,12 +80,12 @@ pub fn record_redis_evictions(total: u64) {
     gauge!(REDIS_EVICTIONS).set(total as f64);
 }
 
-/// Sync the `gql_redis_store::backend_error_count()` atomic counter into
+/// Sync the `sd2_redis_store::backend_error_count()` atomic counter into
 /// the Prometheus gauge so `/metrics` exposes the current total.
 ///
 /// Called periodically by the pool stats reporter or on each scrape.
 pub fn sync_backend_error_gauge() {
-    let count = gql_redis_store::backend_error_count();
+    let count = sd2_redis_store::backend_error_count();
     gauge!(BACKEND_ERRORS_TOTAL).set(count as f64);
 }
 

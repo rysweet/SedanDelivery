@@ -25,12 +25,12 @@ digraph runtime_topology {
 
         subgraph cluster_api {
             label="sd2-main-api (scalable)"
-            api_srv [label="gql-api\nREST API\nHTTP :3001 / HTTPS :3443" fillcolor="#A5D6A7" shape=component]
+            api_srv [label="sd2-api\nREST API\nHTTP :3001 / HTTPS :3443" fillcolor="#A5D6A7" shape=component]
         }
 
         subgraph cluster_redis {
             label="sd2-main-redis (single primary)"
-            valkey [label="Valkey 8.1\n+ gql-module .so\nRedis :6379" fillcolor="#A5D6A7" shape=cylinder]
+            valkey [label="Valkey 8.1\n+ sd2-redis-module .so\nRedis :6379" fillcolor="#A5D6A7" shape=cylinder]
         }
 
         subgraph cluster_sync {

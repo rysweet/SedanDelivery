@@ -27,7 +27,7 @@ That means the workflow covers:
 
 | Matrix image | Dockerfile | Published image | Purpose |
 |--------------|------------|-----------------|---------|
-| `sedandelivery` | `Dockerfile` | `ghcr.io/<owner>/sedandelivery` | Valkey + gql-module Redis extension |
+| `sedandelivery` | `Dockerfile` | `ghcr.io/<owner>/sedandelivery` | Valkey + sd2-redis-module Redis extension |
 | `sedandelivery-bolt` | `Dockerfile.bolt` | `ghcr.io/<owner>/sedandelivery-bolt` | Standalone Bolt protocol server |
 | `sedandelivery-fabric-sync` | `Dockerfile.sync` | `ghcr.io/<owner>/sedandelivery-fabric-sync` | Fabric Graph replication sidecar |
 | `sedandelivery-sync` | `Dockerfile.sync` | `ghcr.io/<owner>/sedandelivery-sync` | Compatibility alias for the Fabric sync sidecar |

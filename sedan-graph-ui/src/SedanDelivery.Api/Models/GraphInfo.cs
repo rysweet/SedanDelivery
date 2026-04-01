@@ -3,7 +3,7 @@ using System.Text.Json.Serialization;
 namespace SedanDelivery.Api.Models;
 
 /// <summary>
-/// Summary information about a graph stored in the gql-api.
+/// Summary information about a graph stored in the sd2-api.
 /// </summary>
 public record GraphInfo(
     [property: JsonPropertyName("name")] string Name,

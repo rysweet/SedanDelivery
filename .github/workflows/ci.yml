@@ -60,7 +60,7 @@ jobs:
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.toml') }}
           restore-keys: ${{ runner.os }}-cargo-
 
-      # redis-module (used by gql-redis-store and gql-module) requires libclang
+      # redis-module (used by sd2-redis-store and sd2-redis-module) requires libclang
       # for its bindgen build script.
       - name: Install libclang (required by redis-module bindgen)
         run: sudo apt-get update -q && sudo apt-get install -y -q libclang-dev
@@ -173,10 +173,10 @@ jobs:
         run: cargo test -p cypher-core --test ldbc
 
       - name: Run Redis module simulation tests
-        run: cargo test -p gql-module --test integration
+        run: cargo test -p sd2-redis-module --test integration
 
       - name: Run FalkorDB compatibility tests
-        run: cargo test -p gql-module --test compatibility
+        run: cargo test -p sd2-redis-module --test compatibility
 
       - name: Testkit smoke test (sedandelivery-bolt)
         run: |
@@ -184,7 +184,7 @@ jobs:
           # Run only the passing testkit tests; allowed to fail in CI
           bash sedandelivery-bolt/tests/testkit/run_testkit.sh --passing-only || true
 
-  # ── Tier 3b: Valkey integration (load gql-module.so via Docker) ────────────
+  # ── Tier 3b: Valkey integration (load sd2-redis-module.so via Docker) ────────────
   valkey-integration:
     name: Valkey Module Integration
     runs-on: ubuntu-latest
@@ -223,7 +223,7 @@ jobs:
       - name: Run protocol tests against plain Valkey
         env:
           REDIS_URL: redis://127.0.0.1:6379
-        run: cargo test -p gql-module --test integration -- test_redis_protocol_skipped_without_url
+        run: cargo test -p sd2-redis-module --test integration -- test_redis_protocol_skipped_without_url
 
   # ── Code Coverage (Tier 4 element, runs on every push) ─────────────────────
   coverage:
@@ -238,7 +238,7 @@ jobs:
           rustup toolchain install stable --profile minimal
           rustup default stable
 
-      - name: Install libclang (required by gql-module bindgen)
+      - name: Install libclang (required by sd2-redis-module bindgen)
         run: sudo apt-get update -q && sudo apt-get install -y -q libclang-dev
 
       - name: Install cargo-tarpaulin

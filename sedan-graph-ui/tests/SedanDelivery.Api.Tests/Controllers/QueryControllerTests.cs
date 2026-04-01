@@ -147,7 +147,7 @@ public sealed class QueryControllerTests : IClassFixture<WebApplicationFactory<P
                     It.IsAny<QueryRequest>(),
                     It.IsAny<CancellationToken>()))
                 .ThrowsAsync(new HttpRequestException(
-                    "gql-api returned 404 Not Found",
+                    "sd2-api returned 404 Not Found",
                     inner: null,
                     statusCode: HttpStatusCode.NotFound));
         });
@@ -174,7 +174,7 @@ public sealed class QueryControllerTests : IClassFixture<WebApplicationFactory<P
                     It.IsAny<QueryRequest>(),
                     It.IsAny<CancellationToken>()))
                 .ThrowsAsync(new HttpRequestException(
-                    "gql-api returned 400 Bad Request: syntax error near MATC",
+                    "sd2-api returned 400 Bad Request: syntax error near MATC",
                     inner: null,
                     statusCode: HttpStatusCode.BadRequest));
         });

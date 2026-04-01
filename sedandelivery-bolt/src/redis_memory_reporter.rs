@@ -8,7 +8,7 @@ use std::time::Duration;
 /// Spawn a background task that polls Redis memory metrics every `interval`.
 ///
 /// Connects to Redis using `url`, polls `INFO memory` + `INFO stats` via
-/// [`gql_redis_store::redis_memory_metrics::poll_once`], emits Prometheus
+/// [`sd2_redis_store::redis_memory_metrics::poll_once`], emits Prometheus
 /// gauges for `used_memory` / `maxmemory` / `evicted_keys`, and logs warnings
 /// when Redis is under memory pressure (>= 90% of maxmemory) or when eviction
 /// has occurred since the last poll.
@@ -27,7 +27,7 @@ pub fn spawn_redis_memory_reporter(url: String, interval: Duration) -> tokio::ta
         loop {
             match client.get_connection() {
                 Ok(mut conn) => {
-                    match gql_redis_store::redis_memory_metrics::poll_once(&mut conn) {
+                    match sd2_redis_store::redis_memory_metrics::poll_once(&mut conn) {
                         Ok(info) => {
                             tracing::debug!(
                                 used_memory_bytes = info.used_memory,

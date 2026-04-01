@@ -16,9 +16,9 @@ api_port=$(pick_free_port)
 api_url="http://127.0.0.1:${api_port}"
 redis_url="redis://127.0.0.1:${redis_port}"
 startup_timeout_secs="${GQL_API_STARTUP_TIMEOUT_SECS:-180}"
-tmp_dir=$(mktemp -d /tmp/gql-api-1053.XXXXXX)
-api_log="${tmp_dir}/gql-api.log"
-health_log="${tmp_dir}/gql-api-health.json"
+tmp_dir=$(mktemp -d /tmp/sd2-api-1053.XXXXXX)
+api_log="${tmp_dir}/sd2-api.log"
+health_log="${tmp_dir}/sd2-api-health.json"
 create_graph_log="${tmp_dir}/create-graph.json"
 create_log="${tmp_dir}/create.json"
 merge_log="${tmp_dir}/merge.json"
@@ -48,7 +48,7 @@ trap cleanup EXIT
 sleep 2
 GQL_REDIS_URL="$redis_url" \
 GQL_API_BIND_ADDR="127.0.0.1:${api_port}" \
-cargo run -p gql-api >"$api_log" 2>&1 &
+cargo run -p sd2-api >"$api_log" 2>&1 &
 api_pid=$!
 
 for i in $(seq 1 "$startup_timeout_secs"); do

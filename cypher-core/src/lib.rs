@@ -1,5 +1,5 @@
 // cypher-core: Pure GQL/Cypher engine — no Redis dependency.
-// Crates depending on this: gql-redis-store, gql-module, gql-cli.
+// Crates depending on this: sd2-redis-store, sd2-redis-module, gql-cli.
 
 pub mod ast;
 pub mod changelog;

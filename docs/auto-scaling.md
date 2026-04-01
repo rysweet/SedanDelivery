@@ -114,7 +114,7 @@ This configures:
 |--------|--------|-----------|----------|
 | Bolt server | `sedandelivery_bolt_connections_active` (avg) | 100 per replica | 1-10 |
 | Bolt server | `sedandelivery_bolt_query_duration_seconds` (p95) | 500ms | 1-10 |
-| REST API | `gql_api_http_concurrent_requests` (avg) | 100 per replica | 1-3 |
+| REST API | `sd2_api_http_concurrent_requests` (avg) | 100 per replica | 1-3 |
 
 Both ScaledObjects use Azure Workload Identity for authentication against the Prometheus endpoint. The polling interval is 30 seconds for Bolt and 15 seconds for the API. Cooldown periods are 60 seconds and 30 seconds respectively.
 
@@ -482,7 +482,7 @@ If KEDA ScaledObjects are applied, remove them first:
 
 ```bash
 kubectl delete scaledobject sedandelivery-bolt-scaler -n sedandelivery
-kubectl delete scaledobject gql-api-scaler -n sedandelivery
+kubectl delete scaledobject sd2-api-scaler -n sedandelivery
 ```
 
 ## Configuration Reference

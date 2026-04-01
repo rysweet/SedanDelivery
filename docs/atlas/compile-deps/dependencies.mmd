@@ -1,10 +1,10 @@
 graph TD
     subgraph workspace["Workspace Crates"]
         cypher_core["cypher-core<br/><i>lib</i>"]
-        gql_redis["gql-redis-store<br/><i>lib</i>"]
+        gql_redis["sd2-redis-store<br/><i>lib</i>"]
         gql_fabric["gql-fabric-store<br/><i>lib</i>"]
-        gql_module["gql-module<br/><i>cdylib</i>"]
-        gql_api["gql-api<br/><i>bin</i>"]
+        sd2_redis_module["sd2-redis-module<br/><i>cdylib</i>"]
+        sd2_api["sd2-api<br/><i>bin</i>"]
         gql_cli["gql-cli<br/><i>bin</i>"]
         bolt["sedandelivery-bolt<br/><i>bin</i>"]
         sync["sedandelivery-fabric-sync<br/><i>bin</i>"]
@@ -25,10 +25,10 @@ graph TD
 
     gql_redis --> cypher_core
     gql_fabric --> cypher_core
-    gql_module --> cypher_core
+    sd2_redis_module --> cypher_core
     gql_cli --> cypher_core
-    gql_api --> cypher_core
-    gql_api --> gql_redis
+    sd2_api --> cypher_core
+    sd2_api --> gql_redis
     bolt --> cypher_core
     bolt --> gql_redis
     sync --> cypher_core
@@ -41,8 +41,8 @@ graph TD
     gql_redis --> redis_crate
     gql_redis --> r2d2_crate
     gql_fabric --> reqwest_crate
-    gql_module --> redis_module_crate
-    gql_api --> axum_crate
+    sd2_redis_module --> redis_module_crate
+    sd2_api --> axum_crate
     bolt --> tokio_crate
     sync --> tokio_crate
     cypher_core --> tracing_crate

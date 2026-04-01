@@ -106,11 +106,11 @@ cargo test -p cypher-core --test ldbc
 pass "ldbc"
 
 step "Tier 3: Redis module integration (18 tests)"
-cargo test -p gql-module --test integration
+cargo test -p sd2-redis-module --test integration
 pass "module integration"
 
 step "Tier 3: FalkorDB compatibility (28 tests)"
-cargo test -p gql-module --test compatibility
+cargo test -p sd2-redis-module --test compatibility
 pass "compatibility"
 
 if $WITH_TCK; then

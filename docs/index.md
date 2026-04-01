@@ -71,9 +71,9 @@ SedanDelivery supports multiple storage backends via the `GraphStore` trait:
 | Backend | Crate | Use Case |
 |---------|-------|----------|
 | `InMemoryGraphStore` | `cypher-core` | Default in-module store, tests |
-| `RedisGraphStore` | `gql-redis-store` | External Redis/Valkey via TCP |
+| `RedisGraphStore` | `sd2-redis-store` | External Redis/Valkey via TCP |
 | `FabricGraphStore` | `gql-fabric-store` | Microsoft Fabric Graph Database |
-| `FanoutStore` | `gql-redis-store` | Write to multiple backends simultaneously |
+| `FanoutStore` | `sd2-redis-store` | Write to multiple backends simultaneously |
 
 ### Distributed Mode (ADR-004)
 
@@ -143,7 +143,7 @@ See [ADR-004](ADR-004-distributed-redis) for the full architecture decision reco
 | `GQL_FABRIC_TIMEOUT_SECS` | `10` | HTTP timeout for Fabric API calls |
 | `VALKEY_PASSWORD` | — | Password for Valkey authentication (injected at runtime) |
 
-### gql-api (REST API)
+### sd2-api (REST API)
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -201,7 +201,7 @@ See [ADR-004](ADR-004-distributed-redis) for the full architecture decision reco
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | — | When set, enables OpenTelemetry OTLP trace export (used by both `gql-api` and `sedandelivery-bolt`) |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | — | When set, enables OpenTelemetry OTLP trace export (used by both `sd2-api` and `sedandelivery-bolt`) |
 
 ## Bolt Protocol (Recommended)
 

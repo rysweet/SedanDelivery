@@ -12,7 +12,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-API_BIN="${API_BIN:-$PROJECT_DIR/target/debug/gql-api}"
+API_BIN="${API_BIN:-$PROJECT_DIR/target/debug/sd2-api}"
 
 log_info() { echo "[INFO] $*"; }
 log_pass() { echo "[PASS] $*"; }
@@ -189,8 +189,8 @@ REDIS_API_PORT="${REDIS_API_PORT:-$(pick_free_port 13001)}"
 MEMORY_API_PORT="${MEMORY_API_PORT:-$(pick_free_port 13002)}"
 
 REDIS_PID_FILE="$WORK_DIR/redis.pid"
-REDIS_API_LOG="$WORK_DIR/gql-api-redis.log"
-MEMORY_API_LOG="$WORK_DIR/gql-api-memory.log"
+REDIS_API_LOG="$WORK_DIR/sd2-api-redis.log"
+MEMORY_API_LOG="$WORK_DIR/sd2-api-memory.log"
 REDIS_URL="redis://127.0.0.1:${REDIS_PORT}/"
 REDIS_API_BASE="http://127.0.0.1:${REDIS_API_PORT}"
 MEMORY_API_BASE="http://127.0.0.1:${MEMORY_API_PORT}"
@@ -226,11 +226,11 @@ show_logs_on_error() {
     local line="$1"
     log_fail "Validator failed at line $line"
     if [ -f "$REDIS_API_LOG" ]; then
-        log_info "Redis-backed gql-api log tail:"
+        log_info "Redis-backed sd2-api log tail:"
         tail -50 "$REDIS_API_LOG" >&2 || true
     fi
     if [ -f "$MEMORY_API_LOG" ]; then
-        log_info "In-memory gql-api log tail:"
+        log_info "In-memory sd2-api log tail:"
         tail -50 "$MEMORY_API_LOG" >&2 || true
     fi
 }
@@ -239,8 +239,8 @@ trap cleanup EXIT
 trap 'show_logs_on_error $LINENO' ERR
 
 if [ ! -x "$API_BIN" ]; then
-    echo "ERROR: gql-api binary not found at $API_BIN" >&2
-    echo "Build it first with: cargo build -p gql-api" >&2
+    echo "ERROR: sd2-api binary not found at $API_BIN" >&2
+    echo "Build it first with: cargo build -p sd2-api" >&2
     exit 1
 fi
 
@@ -281,7 +281,7 @@ if ! wait_for_redis "$REDIS_PORT" 30; then
 fi
 load_redis_pid 1 || true
 
-log_info "Starting Redis-backed gql-api on port $REDIS_API_PORT"
+log_info "Starting Redis-backed sd2-api on port $REDIS_API_PORT"
 GQL_API_BIND_ADDR="127.0.0.1:${REDIS_API_PORT}" \
 GQL_REDIS_URL="$REDIS_URL" \
 RUST_LOG="${RUST_LOG:-warn}" \
@@ -289,19 +289,19 @@ RUST_LOG="${RUST_LOG:-warn}" \
 REDIS_API_PID=$!
 
 if ! wait_for_http "$REDIS_API_BASE/health" 60; then
-    log_fail "Redis-backed gql-api did not become healthy"
+    log_fail "Redis-backed sd2-api did not become healthy"
     tail -50 "$REDIS_API_LOG" >&2 || true
     exit 1
 fi
 
-log_info "Starting in-memory gql-api on port $MEMORY_API_PORT"
+log_info "Starting in-memory sd2-api on port $MEMORY_API_PORT"
 GQL_API_BIND_ADDR="127.0.0.1:${MEMORY_API_PORT}" \
 RUST_LOG="${RUST_LOG:-warn}" \
 "$API_BIN" >"$MEMORY_API_LOG" 2>&1 &
 MEMORY_API_PID=$!
 
 if ! wait_for_http "$MEMORY_API_BASE/health" 60; then
-    log_fail "In-memory gql-api did not become healthy"
+    log_fail "In-memory sd2-api did not become healthy"
     tail -50 "$MEMORY_API_LOG" >&2 || true
     exit 1
 fi

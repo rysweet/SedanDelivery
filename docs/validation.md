@@ -29,10 +29,10 @@ cargo test -p cypher-core --test data_integrity       # mutation correctness
 cargo test -p cypher-core --test adversarial          # DoS / malformed inputs
 cargo test -p cypher-core --test stress               # scale + budget enforcement
 cargo test -p cypher-core --test ldbc                 # LDBC SNB benchmark queries
-cargo test -p gql-api --test api_integration explain_endpoint_returns_plan -- --exact
-cargo test -p gql-api --test api_integration profile_returns_results_and_plan_with_row_counts -- --exact
-cargo test -p gql-module --test integration        # module command pipeline
-cargo test -p gql-module --test compatibility      # wire format / serialization
+cargo test -p sd2-api --test api_integration explain_endpoint_returns_plan -- --exact
+cargo test -p sd2-api --test api_integration profile_returns_results_and_plan_with_row_counts -- --exact
+cargo test -p sd2-redis-module --test integration        # module command pipeline
+cargo test -p sd2-redis-module --test compatibility      # wire format / serialization
 cargo test -p cypher-core --test tck                  # openCypher TCK (3903 scenarios)
 cargo bench -p cypher-core -- --test                  # compile + smoke-run benchmarks
 ```
@@ -46,8 +46,8 @@ entry points:
 
 ```bash
 cargo test -p cypher-core --lib plan_cache
-cargo test -p gql-api --test api_integration explain_endpoint_returns_plan -- --exact
-cargo test -p gql-api --test api_integration profile_returns_results_and_plan_with_row_counts -- --exact
+cargo test -p sd2-api --test api_integration explain_endpoint_returns_plan -- --exact
+cargo test -p sd2-api --test api_integration profile_returns_results_and_plan_with_row_counts -- --exact
 ```
 
 `/query` and `/mutate` use the process-local plan cache. `/explain` and
@@ -62,8 +62,8 @@ estimate state directly.
 |-------|------|-------|----------------|
 | cypher-core unit | `cypher-core/src/**` | 678 | Individual functions: parser, planner, executor, storage, budget, config |
 | sedandelivery-bolt unit | `sedandelivery-bolt/src/**` | 399 | PackStream codec, message framing, Bolt state machine, bridge layer |
-| gql-api unit | `gql-api/src/**` | 115 | API handler pure functions |
-| gql-redis-store unit | `gql-redis-store/src/**` | 59 | Redis storage layer logic |
+| sd2-api unit | `sd2-api/src/**` | 115 | API handler pure functions |
+| sd2-redis-store unit | `sd2-redis-store/src/**` | 59 | Redis storage layer logic |
 | gql-fabric-store unit | `gql-fabric-store/src/**` | 45 | Fabric storage layer logic |
 | sedandelivery-bolt integration | `sedandelivery-bolt/tests/integration/` | 178 | Python neo4j driver: CRUD, transactions, paths, concurrency |
 | End-to-end | `tests/end_to_end.rs` | 42 | Full pipeline: parse → plan → execute → result |
@@ -72,8 +72,8 @@ estimate state directly.
 | **Stress** | `tests/stress.rs` | 8 | 10 K node load, `all_node_ids`, label scan at scale, budget enforcement |
 | **Adversarial** | `tests/adversarial.rs` | 11 | 300-level deep expression, 1.1 MiB query, cartesian product budget, varlen termination, division-by-zero |
 | **LDBC SNB** | `tests/ldbc/` | 37 | IC1–IC14 complex read queries (BFS, temporal, geographic, aggregation); IU1–8 inserts; ID1–8 deletes; ShortestPath operator |
-| **Module integration** | `gql-module/tests/integration.rs` | 18 | GQL.QUERY / GQL.MUTATE pipeline, graph lifecycle, stats format, multi-graph isolation |
-| **Compatibility** | `gql-module/tests/compatibility.rs` | 28 | JSON wire format: null, bool, int, float, string, list, map, node, edge, path encodings; column ordering |
+| **Module integration** | `sd2-redis-module/tests/integration.rs` | 18 | GQL.QUERY / GQL.MUTATE pipeline, graph lifecycle, stats format, multi-graph isolation |
+| **Compatibility** | `sd2-redis-module/tests/compatibility.rs` | 28 | JSON wire format: null, bool, int, float, string, list, map, node, edge, path encodings; column ordering |
 | **TCK compliance** | `tests/tck/` | 3903 | 100% openCypher TCK (all 195 feature files, 3903 scenarios, 16 031 steps) |
 | **Benchmarks** | `benches/` | 26 | Performance baselines (see [benchmarks.md](benchmarks.md)) |
 | **Total (excluding TCK)** | | **1,673** | |
@@ -122,8 +122,8 @@ Validates the query pipeline and mutation correctness on every proposed change.
 cargo test -p cypher-core --test tck          # 3903 scenarios
 cargo test -p cypher-core --test stress
 cargo test -p cypher-core --test ldbc
-cargo test -p gql-module --test integration
-cargo test -p gql-module --test compatibility
+cargo test -p sd2-redis-module --test integration
+cargo test -p sd2-redis-module --test compatibility
 ```
 Full compliance and scale validation after merge.
 
@@ -225,7 +225,7 @@ schema using a synthetic dataset:
 - **ID1–ID8**: all 8 LDBC delete operations with cascade correctness.
 - **Write atomicity**: no dangling edges after cascaded delete.
 
-### Module integration (`gql-module/tests/integration.rs`)
+### Module integration (`sd2-redis-module/tests/integration.rs`)
 
 Proves the Redis module command pipeline works end-to-end (using the same
 code path as the module handlers, without requiring a live Redis):
@@ -237,7 +237,7 @@ code path as the module handlers, without requiring a live Redis):
 - In-process state persists across multiple commands.
 - Multiple named graphs are fully isolated.
 
-### Compatibility (`gql-module/tests/compatibility.rs`)
+### Compatibility (`sd2-redis-module/tests/compatibility.rs`)
 
 Proves the JSON wire format used by GQL.QUERY / GQL.MUTATE:
 

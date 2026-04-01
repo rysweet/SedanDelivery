@@ -49,7 +49,7 @@ if [[ -z "$STREAM_LEN" || "$STREAM_LEN" == "(nil)" ]]; then
   echo ""
   echo "Stream '${STREAM}' not found."
   echo "This means either:"
-  echo "  - GQL_FABRIC_CHANGELOG=1 is not set on the gql-module"
+  echo "  - GQL_FABRIC_CHANGELOG=1 is not set on the sd2-redis-module"
   echo "  - No write operations have been executed yet"
   exit 2
 fi

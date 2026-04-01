@@ -1,19 +1,19 @@
 scenario:
   name: "Issue #1053 - Redis-backed CREATE and MERGE batching stays externally correct"
   description: >
-    Verify from an external HTTP client perspective that gql-api backed by
+    Verify from an external HTTP client perspective that sd2-api backed by
     Redis still returns correct visible results for a multi-pattern CREATE
     mutation, alias-sensitive CREATE patterns, and duplicate-row MERGE after
     the write-path batching refactor.
   metadata:
-    tags: [cli, regression, api, redis, gql-api, batching, issue-1053]
+    tags: [cli, regression, api, redis, sd2-api, batching, issue-1053]
     priority: high
   agents:
     - name: cli-agent
       type: cli
       config: {}
   steps:
-    - name: "Run Redis-backed gql-api batching smoke flow"
+    - name: "Run Redis-backed sd2-api batching smoke flow"
       agent: cli-agent
       action: execute
       params:
@@ -22,7 +22,7 @@ scenario:
           - tests/qa/gadugi/issue-1053-redis-write-batching.sh
       timeout: 360000
 
-    - name: "Confirm gql-api became healthy on the Redis-backed port"
+    - name: "Confirm sd2-api became healthy on the Redis-backed port"
       agent: cli-agent
       action: wait_for_output
       params:

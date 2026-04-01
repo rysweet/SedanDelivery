@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Configure the existing Entra ID SPA app registration to also serve as the
-# gql-api JWT audience. This allows the frontend's access token to authenticate
+# sd2-api JWT audience. This allows the frontend's access token to authenticate
 # against the backend API — single app registration, no extra secrets.
 #
 # Idempotent: safe to run multiple times. Only adds the API scope if missing.

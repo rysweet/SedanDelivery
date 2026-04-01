@@ -7,7 +7,7 @@ This tutorial walks you through every feature of the Graph Visualizer using a pr
 
 ```bash
 # Run locally (three commands):
-cargo run --release -p gql-api &
+cargo run --release -p sd2-api &
 ./scripts/seed-demo-graph.sh
 cd sedan-graph-ui/src/sedan-web && VITE_PROXY_TARGET=http://localhost:3001 VITE_PROXY_REWRITE=true npm run dev
 

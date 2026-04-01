@@ -42,7 +42,7 @@ Adopt a **routing-safe cluster design** built on five rules:
 
 ### 1. Dispatch pipelines by connection type at the execution boundary
 
-`gql-redis-store` now uses a `RedisPipeline` abstraction from
+`sd2-redis-store` now uses a `RedisPipeline` abstraction from
 `RedisConn::pipeline()`:
 
 - standalone mode -> `redis::pipe()`
@@ -175,14 +175,14 @@ The accepted design was validated with:
 ### Store tests
 
 ```bash
-cargo test -p gql-redis-store
+cargo test -p sd2-redis-store
 ```
 
 ### Real cluster integration tests
 
 ```bash
 GQL_REDIS_CLUSTER_NODES="redis://127.0.0.1:7100,redis://127.0.0.1:7101,redis://127.0.0.1:7102" \
-  cargo test -p gql-redis-store --test cluster_pipeline -- --ignored --nocapture
+  cargo test -p sd2-redis-store --test cluster_pipeline -- --ignored --nocapture
 ```
 
 ### Public Bolt smoke against the cluster compose profile

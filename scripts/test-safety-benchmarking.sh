@@ -273,7 +273,7 @@ run_capture \
     "$BENCH_TIMEOUT_SECS" \
     env -u GQL_REDIS_CLUSTER_NODES -u REDIS_URL \
     GQL_REDIS_URL="redis://:${VALKEY_PASSWORD}@127.0.0.1:${STANDALONE_REDIS_PORT}" \
-    cargo bench -p gql-redis-store --bench store_safety -- store_safety_lock/create_graph/standalone
+    cargo bench -p sd2-redis-store --bench store_safety -- store_safety_lock/create_graph/standalone
 grep -F "store_safety_lock/create_graph/standalone" "$STANDALONE_BENCH_LOCK" >/dev/null
 STANDALONE_LOCK_MEDIAN="$(benchmark_median "$STANDALONE_BENCH_LOCK")"
 log_pass "Standalone store benchmark emitted create_graph/standalone (median ${STANDALONE_LOCK_MEDIAN})"
@@ -284,7 +284,7 @@ run_capture \
     "$BENCH_TIMEOUT_SECS" \
     env -u GQL_REDIS_CLUSTER_NODES -u REDIS_URL \
     GQL_REDIS_URL="redis://:${VALKEY_PASSWORD}@127.0.0.1:${STANDALONE_REDIS_PORT}" \
-    cargo bench -p gql-redis-store --bench store_safety -- store_safety_index/standalone/1000
+    cargo bench -p sd2-redis-store --bench store_safety -- store_safety_index/standalone/1000
 grep -F "store_safety_index/standalone/1000" "$STANDALONE_BENCH_INDEX" >/dev/null
 STANDALONE_INDEX_MEDIAN="$(benchmark_median "$STANDALONE_BENCH_INDEX")"
 log_pass "Standalone store benchmark emitted index/standalone/1000 (median ${STANDALONE_INDEX_MEDIAN})"
@@ -346,7 +346,7 @@ run_capture \
     "$CLUSTER_BENCH_LOCK" \
     "$BENCH_TIMEOUT_SECS" \
     env GQL_REDIS_CLUSTER_NODES="$CLUSTER_NODES" \
-    cargo bench -p gql-redis-store --bench store_safety -- store_safety_lock/create_graph/cluster
+    cargo bench -p sd2-redis-store --bench store_safety -- store_safety_lock/create_graph/cluster
 grep -F "store_safety_lock/create_graph/cluster" "$CLUSTER_BENCH_LOCK" >/dev/null
 CLUSTER_LOCK_MEDIAN="$(benchmark_median "$CLUSTER_BENCH_LOCK")"
 log_pass "Cluster store benchmark emitted create_graph/cluster (median ${CLUSTER_LOCK_MEDIAN})"
@@ -356,7 +356,7 @@ run_capture \
     "$CLUSTER_BENCH_INDEX" \
     "$BENCH_TIMEOUT_SECS" \
     env GQL_REDIS_CLUSTER_NODES="$CLUSTER_NODES" \
-    cargo bench -p gql-redis-store --bench store_safety -- store_safety_index/cluster/1000
+    cargo bench -p sd2-redis-store --bench store_safety -- store_safety_index/cluster/1000
 grep -F "store_safety_index/cluster/1000" "$CLUSTER_BENCH_INDEX" >/dev/null
 CLUSTER_INDEX_MEDIAN="$(benchmark_median "$CLUSTER_BENCH_INDEX")"
 log_pass "Cluster store benchmark emitted index/cluster/1000 (median ${CLUSTER_INDEX_MEDIAN})"

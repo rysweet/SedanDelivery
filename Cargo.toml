@@ -1,11 +1,11 @@
 [workspace]
 members = [
     "cypher-core",
-    "gql-redis-store",
+    "sd2-redis-store",
     "gql-fabric-store",
-    "gql-module",
+    "sd2-redis-module",
     "gql-cli",
-    "gql-api",
+    "sd2-api",
     "sedandelivery-bolt",
     "sedandelivery-fabric-sync",
     "sedandelivery-gremlin",

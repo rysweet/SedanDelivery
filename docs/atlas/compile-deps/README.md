@@ -13,10 +13,10 @@ Cargo workspace dependency graph for SedanDelivery — 8 crates plus a loadtest 
 graph TD
     subgraph workspace["Workspace Crates"]
         cypher_core["cypher-core<br/><i>lib</i>"]
-        gql_redis["gql-redis-store<br/><i>lib</i>"]
+        gql_redis["sd2-redis-store<br/><i>lib</i>"]
         gql_fabric["gql-fabric-store<br/><i>lib</i>"]
-        gql_module["gql-module<br/><i>cdylib</i>"]
-        gql_api["gql-api<br/><i>bin</i>"]
+        sd2_redis_module["sd2-redis-module<br/><i>cdylib</i>"]
+        sd2_api["sd2-api<br/><i>bin</i>"]
         gql_cli["gql-cli<br/><i>bin</i>"]
         bolt["sedandelivery-bolt<br/><i>bin</i>"]
         sync["sedandelivery-fabric-sync<br/><i>bin</i>"]
@@ -25,10 +25,10 @@ graph TD
 
     gql_redis -->|"depends on"| cypher_core
     gql_fabric -->|"depends on"| cypher_core
-    gql_module -->|"depends on"| cypher_core
+    sd2_redis_module -->|"depends on"| cypher_core
     gql_cli -->|"depends on"| cypher_core
-    gql_api -->|"depends on"| cypher_core
-    gql_api -->|"depends on"| gql_redis
+    sd2_api -->|"depends on"| cypher_core
+    sd2_api -->|"depends on"| gql_redis
     bolt -->|"depends on"| cypher_core
     bolt -->|"depends on"| gql_redis
     sync -->|"depends on"| cypher_core
@@ -65,12 +65,12 @@ See [dependencies.mmd](dependencies.mmd) and [dependencies.dot](dependencies.dot
 | Crate | Key Dependencies |
 |-------|-----------------|
 | cypher-core | regex, typed-arena, jiff, smol_str, petgraph, indexmap |
-| gql-redis-store | redis, r2d2, cypher-core |
+| sd2-redis-store | redis, r2d2, cypher-core |
 | gql-fabric-store | reqwest, cypher-core |
-| gql-module | redis-module (bindgen, requires libclang), cypher-core |
-| gql-api | axum, tower, tower-http, hyper, cypher-core, gql-redis-store |
-| sedandelivery-bolt | tokio, cypher-core, gql-redis-store |
-| sedandelivery-fabric-sync | tokio, cypher-core, gql-redis-store, gql-fabric-store |
+| sd2-redis-module | redis-module (bindgen, requires libclang), cypher-core |
+| sd2-api | axum, tower, tower-http, hyper, cypher-core, sd2-redis-store |
+| sedandelivery-bolt | tokio, cypher-core, sd2-redis-store |
+| sedandelivery-fabric-sync | tokio, cypher-core, sd2-redis-store, gql-fabric-store |
 
 ### Dev/Test Dependencies
 

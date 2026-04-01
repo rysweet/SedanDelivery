@@ -5,7 +5,7 @@ title: Redis Key Schema
 
 # Redis Key Schema
 
-Complete reference for every Redis key used by `gql-redis-store`.
+Complete reference for every Redis key used by `sd2-redis-store`.
 
 ## Contents
 

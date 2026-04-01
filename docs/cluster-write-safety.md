@@ -58,7 +58,7 @@ failed until the metadata and cleanup paths were made cluster-safe too.
 
 ### 1. Cluster-aware pipeline dispatch
 
-`gql-redis-store/src/connection.rs` now exposes a `RedisPipeline` wrapper via
+`sd2-redis-store/src/connection.rs` now exposes a `RedisPipeline` wrapper via
 `RedisConn::pipeline()`.
 
 - Standalone mode executes through `redis::pipe()`
@@ -251,7 +251,7 @@ Redis-backed deployments now emit write-lock lifecycle telemetry on the
 existing `/metrics` surfaces:
 
 - Bolt: `http://<host>:<BOLT_HEALTH_PORT>/metrics`
-- gql-api: `http://<host>:<GQL_API_PORT>/metrics`
+- sd2-api: `http://<host>:<GQL_API_PORT>/metrics`
 
 The metrics intentionally use only low-cardinality labels. There is no graph
 name, tenant, or user label on any of these series.
@@ -307,8 +307,8 @@ manifests:
 
 | Guarded manifest | Limit source | Current value |
 |------------------|-------------|---------------|
-| Node IDs (`G:{g}:nodes`) | `gql_redis_store::MAX_NODES_FOR_DELETE` | `100_000` |
-| Edge IDs (`G:{g}:edges`) | `gql_redis_store::MAX_NODES_FOR_DELETE` | `100_000` |
+| Node IDs (`G:{g}:nodes`) | `sd2_redis_store::MAX_NODES_FOR_DELETE` | `100_000` |
+| Edge IDs (`G:{g}:edges`) | `sd2_redis_store::MAX_NODES_FOR_DELETE` | `100_000` |
 
 No `_deleting` marker is set and no graph metadata is removed when the size
 guard fires, so the graph remains fully intact and visible.
@@ -363,7 +363,7 @@ The final `#745` fix was validated at three layers:
 ### Store-level tests
 
 ```bash
-cargo test -p gql-redis-store
+cargo test -p sd2-redis-store
 ```
 
 ### Real cluster regression tests
@@ -373,7 +373,7 @@ Run `tests/cluster_pipeline.rs` against a real cluster exposed via
 
 ```bash
 GQL_REDIS_CLUSTER_NODES="redis://127.0.0.1:7100,redis://127.0.0.1:7101,redis://127.0.0.1:7102" \
-  cargo test -p gql-redis-store --test cluster_pipeline -- --ignored --nocapture
+  cargo test -p sd2-redis-store --test cluster_pipeline -- --ignored --nocapture
 ```
 
 These tests cover:

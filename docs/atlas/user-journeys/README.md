@@ -114,7 +114,7 @@ See [journey-rest-crud.mmd](journey-rest-crud.mmd).
 sequenceDiagram
     actor Client as Redis Client
     participant Redis as Valkey 8.1<br/>main thread
-    participant Module as gql-module<br/>libgql_module.so
+    participant Module as sd2-redis-module<br/>libsd2_redis_module.so
     participant QE as QueryExecutor<br/>cypher-core
     participant Store as InMemoryGraphStore
 

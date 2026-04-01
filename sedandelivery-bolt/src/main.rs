@@ -12,9 +12,9 @@ use cypher_core::storage::GraphStore;
 
 /// Create the graph store based on environment configuration.
 ///
-/// Delegates to [`gql_redis_store::create_store::create_store`].
+/// Delegates to [`sd2_redis_store::create_store::create_store`].
 fn create_store() -> Arc<dyn GraphStore> {
-    gql_redis_store::create_store::create_store()
+    sd2_redis_store::create_store::create_store()
 }
 
 /// Validate that BOLT_PASSWORD is present in production mode.

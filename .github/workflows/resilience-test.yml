@@ -6,7 +6,7 @@ on:
     branches: [main]
     paths:
       - "cypher-core/**"
-      - "gql-redis-store/**"
+      - "sd2-redis-store/**"
       - "sedandelivery-bolt/**"
       - "tests/loadtest/**"
       - "scripts/build-prebuilt-bolt-image.sh"
@@ -20,7 +20,7 @@ on:
     branches: [main]
     paths:
       - "cypher-core/**"
-      - "gql-redis-store/**"
+      - "sd2-redis-store/**"
       - "sedandelivery-bolt/**"
       - "tests/loadtest/**"
       - "scripts/build-prebuilt-bolt-image.sh"

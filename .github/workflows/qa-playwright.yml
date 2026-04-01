@@ -8,9 +8,9 @@ on:
       - ".github/workflows/qa-playwright.yml"
       - "Cargo.toml"
       - "Cargo.lock"
-      - "gql-api/**"
+      - "sd2-api/**"
       - "cypher-core/**"
-      - "gql-redis-store/**"
+      - "sd2-redis-store/**"
       - "sedan-graph-ui/src/sedan-web/**"
   push:
     branches: [main]
@@ -18,9 +18,9 @@ on:
       - ".github/workflows/qa-playwright.yml"
       - "Cargo.toml"
       - "Cargo.lock"
-      - "gql-api/**"
+      - "sd2-api/**"
       - "cypher-core/**"
-      - "gql-redis-store/**"
+      - "sd2-redis-store/**"
       - "sedan-graph-ui/src/sedan-web/**"
 
 concurrency:
@@ -75,18 +75,18 @@ jobs:
         working-directory: sedan-graph-ui/src/sedan-web
         run: npx playwright install --with-deps chromium
 
-      - name: Build gql-api
-        run: cargo build -p gql-api
+      - name: Build sd2-api
+        run: cargo build -p sd2-api
 
-      - name: Start gql-api
+      - name: Start sd2-api
         env:
           GQL_API_BIND_ADDR: 127.0.0.1:3001
           GQL_API_ALLOWED_ORIGINS: http://localhost:5175
         run: |
-          ./target/debug/gql-api > "$RUNNER_TEMP/gql-api.log" 2>&1 &
-          echo $! > "$RUNNER_TEMP/gql-api.pid"
+          ./target/debug/sd2-api > "$RUNNER_TEMP/sd2-api.log" 2>&1 &
+          echo $! > "$RUNNER_TEMP/sd2-api.pid"
 
-      - name: Wait for gql-api
+      - name: Wait for sd2-api
         run: |
           for i in $(seq 1 60); do
             if curl --silent --fail http://127.0.0.1:3001/health >/dev/null; then
@@ -94,8 +94,8 @@ jobs:
             fi
             sleep 1
           done
-          echo "gql-api failed to become healthy"
-          cat "$RUNNER_TEMP/gql-api.log"
+          echo "sd2-api failed to become healthy"
+          cat "$RUNNER_TEMP/sd2-api.log"
           exit 1
 
       - name: Run Playwright tests
@@ -107,9 +107,9 @@ jobs:
       - name: Stop background services
         if: always()
         run: |
-          if [ -f "$RUNNER_TEMP/gql-api.pid" ]; then
-            kill "$(cat "$RUNNER_TEMP/gql-api.pid")" 2>/dev/null || true
-            wait "$(cat "$RUNNER_TEMP/gql-api.pid")" 2>/dev/null || true
+          if [ -f "$RUNNER_TEMP/sd2-api.pid" ]; then
+            kill "$(cat "$RUNNER_TEMP/sd2-api.pid")" 2>/dev/null || true
+            wait "$(cat "$RUNNER_TEMP/sd2-api.pid")" 2>/dev/null || true
           fi
 
       - name: Upload Playwright artifacts
@@ -122,4 +122,4 @@ jobs:
           path: |
             sedan-graph-ui/src/sedan-web/playwright-report/
             sedan-graph-ui/src/sedan-web/test-results/
-            ${{ runner.temp }}/gql-api.log
+            ${{ runner.temp }}/sd2-api.log

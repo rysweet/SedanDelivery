@@ -1,6 +1,6 @@
 scenario:
-  name: "API Contract Validation — gql-api REST endpoints"
-  description: "Validates the Rust gql-api HTTP contract directly, verifying all endpoints return correct status codes and shapes"
+  name: "API Contract Validation — sd2-api REST endpoints"
+  description: "Validates the Rust sd2-api HTTP contract directly, verifying all endpoints return correct status codes and shapes"
   type: web
   tags: [e2e, api, contract]
   timeout: 120s

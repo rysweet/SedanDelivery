@@ -8,7 +8,7 @@
 #
 # The scenario targets the same local harness used by the repaired
 # qa-playwright workflow:
-#   - gql-api on http://127.0.0.1:3001
+#   - sd2-api on http://127.0.0.1:3001
 #   - Vite SPA on http://127.0.0.1:5175 with VITE_E2E_TEST_AUTH=true
 
 scenario:
@@ -44,11 +44,11 @@ scenario:
           - tests/qa/gadugi/issue-799-qa-playwright-ui-contract.cjs
       timeout: 180000
 
-    - name: "A2 — Confirm gql-api local harness is reachable"
+    - name: "A2 — Confirm sd2-api local harness is reachable"
       agent: cli-agent
       action: wait_for_output
       params:
-        pattern: "PASS: gql-api health check ok"
+        pattern: "PASS: sd2-api health check ok"
       timeout: 5000
 
     - name: "A3 — Confirm fixtures seeded"

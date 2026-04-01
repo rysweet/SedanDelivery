@@ -35,10 +35,10 @@ graph LR
     end
 
     subgraph consumers["Consumer Crates"]
-        redis_store["gql-redis-store"]
+        redis_store["sd2-redis-store"]
         fabric_store["gql-fabric-store"]
-        module["gql-module"]
-        api["gql-api"]
+        module["sd2-redis-module"]
+        api["sd2-api"]
         bolt["sedandelivery-bolt"]
         sync["sedandelivery-fabric-sync"]
         cli["gql-cli"]
@@ -130,9 +130,9 @@ Crates importing from 3+ siblings (potential high coupling):
 
 | Crate | Imports From | Count |
 |-------|-------------|-------|
-| sedandelivery-fabric-sync | cypher-core, gql-redis-store, gql-fabric-store | 3 |
-| gql-api | cypher-core, gql-redis-store | 2 |
-| sedandelivery-bolt | cypher-core, gql-redis-store | 2 |
+| sedandelivery-fabric-sync | cypher-core, sd2-redis-store, gql-fabric-store | 3 |
+| sd2-api | cypher-core, sd2-redis-store | 2 |
+| sedandelivery-bolt | cypher-core, sd2-redis-store | 2 |
 
 **Verdict:** `sedandelivery-fabric-sync` has the highest coupling (3 workspace deps), which
 is expected — it bridges Redis and Fabric stores. No excessive coupling detected.

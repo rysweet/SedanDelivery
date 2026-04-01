@@ -9,7 +9,7 @@
 scenario:
   name: "Issue #994 - Batch helpers tolerate same-graph lock contention"
   description: >
-    Verify from a contributor perspective that gql-redis-store exposes
+    Verify from a contributor perspective that sd2-redis-store exposes
     dedicated batch coordination keys for nodes and edges, keeps those keys in
     the graph hash slot, and allows batch_create_nodes / batch_create_edges to
     wait out transient same-graph write-lock contention instead of failing
@@ -22,7 +22,7 @@ scenario:
       type: cli
       config: {}
   steps:
-    - name: "Run gql-redis-store batch lock regression tests"
+    - name: "Run sd2-redis-store batch lock regression tests"
       agent: cli-agent
       action: execute
       params:
@@ -31,16 +31,16 @@ scenario:
           - -lc
           - >
             set -euo pipefail;
-            cargo test -p gql-redis-store key_batch_node_write_lock_format -- --nocapture;
-            cargo test -p gql-redis-store key_batch_edge_write_lock_format -- --nocapture;
-            cargo test -p gql-redis-store all_graph_keys_contain_hash_tag -- --nocapture;
-            cargo test -p gql-redis-store --test cluster_write_path ci11b_hot_mutators_use_scoped_write_locks -- --nocapture;
+            cargo test -p sd2-redis-store key_batch_node_write_lock_format -- --nocapture;
+            cargo test -p sd2-redis-store key_batch_edge_write_lock_format -- --nocapture;
+            cargo test -p sd2-redis-store all_graph_keys_contain_hash_tag -- --nocapture;
+            cargo test -p sd2-redis-store --test cluster_write_path ci11b_hot_mutators_use_scoped_write_locks -- --nocapture;
             container_id=$(docker run -d -p 6398:6379 redis:7-alpine);
             cleanup(){ docker rm -f "$container_id" >/dev/null 2>&1 || true; };
             trap cleanup EXIT;
             sleep 2;
-            GQL_REDIS_URL=redis://127.0.0.1:6398/ cargo test -p gql-redis-store --test cluster_write_path ci13c_batch_create_nodes_waits_out_same_graph_write_lock -- --ignored --nocapture;
-            GQL_REDIS_URL=redis://127.0.0.1:6398/ cargo test -p gql-redis-store --test cluster_write_path ci13d_batch_create_edges_waits_out_same_graph_write_lock -- --ignored --nocapture
+            GQL_REDIS_URL=redis://127.0.0.1:6398/ cargo test -p sd2-redis-store --test cluster_write_path ci13c_batch_create_nodes_waits_out_same_graph_write_lock -- --ignored --nocapture;
+            GQL_REDIS_URL=redis://127.0.0.1:6398/ cargo test -p sd2-redis-store --test cluster_write_path ci13d_batch_create_edges_waits_out_same_graph_write_lock -- --ignored --nocapture
       timeout: 300000
 
     - name: "Confirm batch node write-lock key format test passes"

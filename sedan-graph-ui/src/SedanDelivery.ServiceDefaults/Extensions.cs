@@ -104,7 +104,7 @@ public static class Extensions
     /// </summary>
     public static WebApplication MapDefaultEndpoints(this WebApplication app)
     {
-        // /health – readiness probe: includes gql-api checks (tagged "ready") and self
+        // /health – readiness probe: includes sd2-api checks (tagged "ready") and self
         app.MapHealthChecks("/health", new HealthCheckOptions
         {
             Predicate = check => check.Tags.Contains("ready") || check.Tags.Contains("live")

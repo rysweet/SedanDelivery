@@ -1,6 +1,6 @@
 # Authentication
 
-The `gql-api` REST API supports [Microsoft Entra ID](https://learn.microsoft.com/entra/identity/) (formerly Azure AD) JWT authentication.
+The `sd2-api` REST API supports [Microsoft Entra ID](https://learn.microsoft.com/entra/identity/) (formerly Azure AD) JWT authentication.
 
 ## Quick start
 
@@ -10,14 +10,14 @@ export GQL_API_ENTRA_TENANT_ID="your-tenant-id"
 export GQL_API_ENTRA_CLIENT_ID="your-client-id"
 
 # Start the API — auth is now enforced
-cargo run -p gql-api
+cargo run -p sd2-api
 ```
 
 All requests except `GET /health` require a valid `Authorization: Bearer <jwt>` header.
 
 ## How it works
 
-1. At startup, `gql-api` fetches JWKS signing keys from `https://login.microsoftonline.com/{tenant}/discovery/v2.0/keys`
+1. At startup, `sd2-api` fetches JWKS signing keys from `https://login.microsoftonline.com/{tenant}/discovery/v2.0/keys`
 2. Every request (except `/health`) must include an `Authorization: Bearer <token>` header
 3. The middleware validates:
    - **Signature**: RS256 against the JWKS key matching the token's `kid`
@@ -41,7 +41,7 @@ When `ENVIRONMENT=production`, both variables are **required** — the API will 
 
 1. Go to [Azure Portal > App registrations](https://portal.azure.com/#view/Microsoft_AAD_RegisteredApps)
 2. Click **New registration**
-3. Name: `sedan-gql-api` (or your choice)
+3. Name: `sedan-sd2-api` (or your choice)
 4. Supported account types: **Single tenant** (recommended)
 5. Click **Register**
 6. Copy the **Application (client) ID** → set as `GQL_API_ENTRA_CLIENT_ID`
@@ -67,7 +67,7 @@ For local development, simply do not set the Entra env vars:
 
 ```bash
 # No auth — all requests allowed
-cargo run -p gql-api
+cargo run -p sd2-api
 ```
 
 ## Troubleshooting

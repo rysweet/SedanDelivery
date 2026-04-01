@@ -48,11 +48,11 @@ builder.Services.AddRateLimiter(options =>
 });
 
 // ── Typed HttpClient: GqlApiClient ─────────────────────────────────────────
-// gql-api Rust service listens on port 3001 by default.
+// sd2-api Rust service listens on port 3001 by default.
 // Aspire injects GQL_API_URL when running under AppHost.
 var gqlApiUrl = builder.Configuration["GQL_API_URL"]
     ?? throw new InvalidOperationException(
-        "GQL_API_URL is required. Set it to the gql-api base URL (e.g. http://localhost:3001). " +
+        "GQL_API_URL is required. Set it to the sd2-api base URL (e.g. http://localhost:3001). " +
         "When running under .NET Aspire this is injected automatically.");
 
 builder.Services.AddHttpClient<IGqlApiClient, GqlApiClient>(client =>
@@ -63,14 +63,14 @@ builder.Services.AddHttpClient<IGqlApiClient, GqlApiClient>(client =>
 });
 
 // ── Health checks ──────────────────────────────────────────────────────────
-// Add gql-api connectivity check to the readiness probe.
+// Add sd2-api connectivity check to the readiness probe.
 // The "self" liveness check is already registered in AddServiceDefaults.
 if (!string.IsNullOrEmpty(gqlApiUrl))
 {
     builder.Services.AddHealthChecks()
         .AddUrlGroup(
             new Uri(gqlApiUrl.TrimEnd('/') + "/health"),
-            name: "gql-api",
+            name: "sd2-api",
             tags: ["ready"],
             timeout: TimeSpan.FromSeconds(5));
 }
@@ -135,7 +135,7 @@ builder.Services.AddOpenApi(options =>
         document.Info.Title = "SedanDelivery Graph API";
         document.Info.Version = "v1";
         document.Info.Description =
-            "BFF that proxies graph operations to the Rust gql-api service.";
+            "BFF that proxies graph operations to the Rust sd2-api service.";
         return Task.CompletedTask;
     });
 });

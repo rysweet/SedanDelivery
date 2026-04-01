@@ -1,4 +1,4 @@
-// keys.rs -- Key schema helpers mirroring gql-redis-store/src/keys.rs.
+// keys.rs -- Key schema helpers mirroring sd2-redis-store/src/keys.rs.
 //
 // The key format uses Redis Cluster hash tags ({graph}) so all keys for a
 // given graph land in the same hash slot.  The optional key_prefix is prepended
@@ -42,7 +42,7 @@ pub fn key_reltype_names(prefix: &str, graph: &str) -> String {
     prefixed(prefix, &format!("G:{{{graph}}}:_reltypes"))
 }
 
-// -- Adjacency encoding (mirrors gql-redis-store/src/keys.rs) -----------------
+// -- Adjacency encoding (mirrors sd2-redis-store/src/keys.rs) -----------------
 
 /// Encode an adjacency set member: "{edge_id}:{neighbor_id}:{rel_type}"
 pub fn encode_adj(edge_id: u64, neighbor_id: u64, rel_type: &str) -> String {

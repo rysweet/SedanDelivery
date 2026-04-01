@@ -1,13 +1,13 @@
 ---
 title: Graph Visualizer API Reference
-description: Complete reference for the gql-api Rust HTTP service (port 3001)
+description: Complete reference for the sd2-api Rust HTTP service (port 3001)
 type: reference
 updated: 2026-02-27
 ---
 
 # API Reference
 
-This document covers the gql-api Rust service that runs on port 3001. The
+This document covers the sd2-api Rust service that runs on port 3001. The
 `.NET BFF` (`SedanDelivery.Api`, port 5000) proxies these same endpoints at
 `/api/*` with added CORS and rate limiting. Unless you are building a custom
 integration, prefer the BFF at port 5000.
@@ -530,7 +530,7 @@ payload and does not exist in the graph
 
 ## Rate Limits
 
-Rate limits are enforced by the .NET BFF only. Direct calls to gql-api on port
+Rate limits are enforced by the .NET BFF only. Direct calls to sd2-api on port
 3001 are not rate-limited.
 
 | Endpoint pattern | Policy | Limit |

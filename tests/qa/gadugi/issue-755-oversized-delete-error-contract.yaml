@@ -3,17 +3,17 @@
 # This scenario validates the full error-contract chain introduced by WS-F (#755):
 #
 #   StorageError::DeleteGraphTooLarge  (cypher-core)
-#     → emitted by delete_graph_impl  (gql-redis-store)
+#     → emitted by delete_graph_impl  (sd2-redis-store)
 #     → HTTP 413 with { "error": "graph_too_large_for_delete", "message": "..." }
-#         (gql-api)
+#         (sd2-api)
 #     → Neo.ClientError.Database.DeleteGraphTooLarge
 #         (sedandelivery-bolt)
 #
 # Four sub-scenarios are grouped here:
 #
 #   A — cypher-core: variant exists, all fields correct, message format verified
-#   B — gql-redis-store: delete_graph_impl emits typed error (not generic Backend)
-#   C — gql-api: HTTP 413 mapping; response does NOT leak counts or limits
+#   B — sd2-redis-store: delete_graph_impl emits typed error (not generic Backend)
+#   C — sd2-api: HTTP 413 mapping; response does NOT leak counts or limits
 #   D — sedandelivery-bolt: correct Bolt error code; legacy string absent
 #
 # The bash grep guard in sub-scenario D double-checks the source directly,
@@ -27,8 +27,8 @@ scenario:
     Verifies that delete_graph refusals for graphs exceeding the node/edge size
     limit surface a typed, matchable StorageError::DeleteGraphTooLarge variant
     through every layer of the stack: storage error definition (cypher-core),
-    delete_graph source emission (gql-redis-store), HTTP 413 API response
-    (gql-api), and Bolt client-error code (sedandelivery-bolt).  Also verifies
+    delete_graph source emission (sd2-redis-store), HTTP 413 API response
+    (sd2-api), and Bolt client-error code (sedandelivery-bolt).  Also verifies
     that the legacy StorageError::Backend message ("exceeding MAX_NODES_FOR_DELETE")
     has been removed from the implementation body.
   metadata:
@@ -102,9 +102,9 @@ scenario:
         pattern: "delete_graph_too_large_count_and_limit_accessible.*ok"
       timeout: 5000
 
-    # ── Sub-scenario B: gql-redis-store source-contract tests ────────────────
+    # ── Sub-scenario B: sd2-redis-store source-contract tests ────────────────
 
-    - name: "B1 — Run gql-redis-store WS-F source-contract tests"
+    - name: "B1 — Run sd2-redis-store WS-F source-contract tests"
       agent: cli-agent
       action: execute
       params:
@@ -112,7 +112,7 @@ scenario:
         args:
           - test
           - -p
-          - gql-redis-store
+          - sd2-redis-store
           - --lib
           - ws_f_typed_error_source_contract_tests
           - --
@@ -154,9 +154,9 @@ scenario:
         pattern: "delete_graph_sets_deleting_marker_before_per_graph_del.*ok"
       timeout: 5000
 
-    # ── Sub-scenario C: gql-api HTTP 413 mapping ──────────────────────────────
+    # ── Sub-scenario C: sd2-api HTTP 413 mapping ──────────────────────────────
 
-    - name: "C1 — Run gql-api error-mapping tests"
+    - name: "C1 — Run sd2-api error-mapping tests"
       agent: cli-agent
       action: execute
       params:
@@ -164,7 +164,7 @@ scenario:
         args:
           - test
           - -p
-          - gql-api
+          - sd2-api
           - --lib
           - ws_f_delete_graph_too_large_api_tests
           - --

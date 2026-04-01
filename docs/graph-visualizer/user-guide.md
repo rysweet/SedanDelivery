@@ -154,7 +154,7 @@ right shows all labels and properties as editable fields.
 - For nodes, add or remove labels using the label chip list at the top of the
   panel.
 
-Changes are sent to gql-api immediately when you confirm. There is no "unsaved
+Changes are sent to sd2-api immediately when you confirm. There is no "unsaved
 state" in the Inspector — each edit is a PUT request.
 
 ### Via context menu

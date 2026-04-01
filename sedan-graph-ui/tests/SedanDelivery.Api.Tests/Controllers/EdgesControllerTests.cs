@@ -102,7 +102,7 @@ public sealed class EdgesControllerTests : IClassFixture<WebApplicationFactory<P
         {
             mock.Setup(c => c.GetEdgesAsync("missing-graph", It.IsAny<CancellationToken>()))
                 .ThrowsAsync(new HttpRequestException(
-                    "gql-api returned 404 Not Found",
+                    "sd2-api returned 404 Not Found",
                     inner: null,
                     statusCode: HttpStatusCode.NotFound));
         });
@@ -243,7 +243,7 @@ public sealed class EdgesControllerTests : IClassFixture<WebApplicationFactory<P
         {
             mock.Setup(c => c.GetEdgeAsync("test-graph", "no-such-edge", It.IsAny<CancellationToken>()))
                 .ThrowsAsync(new HttpRequestException(
-                    "gql-api returned 404 Not Found",
+                    "sd2-api returned 404 Not Found",
                     inner: null,
                     statusCode: HttpStatusCode.NotFound));
         });
@@ -325,7 +325,7 @@ public sealed class EdgesControllerTests : IClassFixture<WebApplicationFactory<P
         {
             mock.Setup(c => c.DeleteEdgeAsync("test-graph", "ghost-edge", It.IsAny<CancellationToken>()))
                 .ThrowsAsync(new HttpRequestException(
-                    "gql-api returned 404 Not Found",
+                    "sd2-api returned 404 Not Found",
                     inner: null,
                     statusCode: HttpStatusCode.NotFound));
         });

@@ -4,7 +4,7 @@ digraph api_contracts {
     compound=true
 
     subgraph cluster_rest {
-        label="gql-api — REST API :3001"
+        label="sd2-api — REST API :3001"
         style=filled fillcolor="#E8F5E9"
 
         subgraph cluster_health {
@@ -79,7 +79,7 @@ digraph api_contracts {
     }
 
     subgraph cluster_redis {
-        label="gql-module — Redis Commands"
+        label="sd2-redis-module — Redis Commands"
         style=filled fillcolor="#FFF3E0"
 
         gql_query [label="GQL.QUERY\ngraph cypher" fillcolor="#FFE0B2"]

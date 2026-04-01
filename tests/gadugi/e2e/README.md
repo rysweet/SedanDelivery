@@ -16,7 +16,7 @@ End-to-end test scenarios for the SedanDelivery Graph Visualizer SPA using the
 | `07-export-import.yaml` | Export dialog, JSON format, import dialog | export, import |
 | `08-toolbar-interactions.yaml` | Mode switch, layout, fit view, disabled undo | toolbar |
 | `09-error-handling.yaml` | Invalid names, bad Cypher, toast notifications | errors |
-| `10-api-contract-validation.yaml` | Direct gql-api HTTP contract validation | api, contract |
+| `10-api-contract-validation.yaml` | Direct sd2-api HTTP contract validation | api, contract |
 
 ## Prerequisites
 
@@ -24,7 +24,7 @@ Start the full stack:
 
 ```bash
 # Terminal 1: Rust API
-cd /path/to/repo && cargo run -p gql-api
+cd /path/to/repo && cargo run -p sd2-api
 
 # Terminal 2: .NET BFF
 cd sedan-graph-ui && GQL_API_URL=http://localhost:3001 dotnet run --project src/SedanDelivery.Api

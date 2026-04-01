@@ -93,7 +93,7 @@ public sealed class ExportControllerTests : IClassFixture<WebApplicationFactory<
         {
             mock.Setup(c => c.ExportGraphAsync("missing-graph", It.IsAny<CancellationToken>()))
                 .ThrowsAsync(new HttpRequestException(
-                    "gql-api returned 404 Not Found",
+                    "sd2-api returned 404 Not Found",
                     inner: null,
                     statusCode: HttpStatusCode.NotFound));
         });
@@ -195,7 +195,7 @@ public sealed class ExportControllerTests : IClassFixture<WebApplicationFactory<
                     It.IsAny<ImportGraph>(),
                     It.IsAny<CancellationToken>()))
                 .ThrowsAsync(new HttpRequestException(
-                    "gql-api returned 404 Not Found",
+                    "sd2-api returned 404 Not Found",
                     inner: null,
                     statusCode: HttpStatusCode.NotFound));
         });

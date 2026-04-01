@@ -1482,39 +1482,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "gql-api"
-version = "0.1.0"
-dependencies = [
- "axum",
- "cypher-core",
- "governor",
- "gql-redis-store",
- "http",
- "http-body-util",
- "indexmap",
- "jiff",
- "jsonwebtoken",
- "metrics",
- "metrics-exporter-prometheus",
- "opentelemetry",
- "opentelemetry-otlp",
- "opentelemetry_sdk",
- "rcgen",
- "rustls",
- "rustls-pemfile",
- "serde",
- "serde_json",
- "tokio",
- "tokio-rustls",
- "tower",
- "tower-http",
- "tracing",
- "tracing-opentelemetry",
- "tracing-subscriber",
- "ureq",
-]
-
-[[package]]
 name = "gql-cli"
 version = "0.1.0"
 dependencies = [
@@ -1532,34 +1499,6 @@ dependencies = [
  "serde_json",
  "tracing",
  "ureq",
-]
-
-[[package]]
-name = "gql-module"
-version = "0.1.0"
-dependencies = [
- "cypher-core",
- "indexmap",
- "redis-module",
- "serde_json",
- "tracing",
-]
-
-[[package]]
-name = "gql-redis-store"
-version = "0.1.0"
-dependencies = [
- "criterion",
- "cypher-core",
- "indexmap",
- "metrics",
- "metrics-exporter-prometheus",
- "r2d2",
- "redis",
- "serde_json",
- "tokio",
- "tracing",
- "uuid",
 ]
 
 [[package]]
@@ -3650,6 +3589,67 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
 
 [[package]]
+name = "sd2-api"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "cypher-core",
+ "governor",
+ "http",
+ "http-body-util",
+ "indexmap",
+ "jiff",
+ "jsonwebtoken",
+ "metrics",
+ "metrics-exporter-prometheus",
+ "opentelemetry",
+ "opentelemetry-otlp",
+ "opentelemetry_sdk",
+ "rcgen",
+ "rustls",
+ "rustls-pemfile",
+ "sd2-redis-store",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-rustls",
+ "tower",
+ "tower-http",
+ "tracing",
+ "tracing-opentelemetry",
+ "tracing-subscriber",
+ "ureq",
+]
+
+[[package]]
+name = "sd2-redis-module"
+version = "0.1.0"
+dependencies = [
+ "cypher-core",
+ "indexmap",
+ "redis-module",
+ "serde_json",
+ "tracing",
+]
+
+[[package]]
+name = "sd2-redis-store"
+version = "0.1.0"
+dependencies = [
+ "criterion",
+ "cypher-core",
+ "indexmap",
+ "metrics",
+ "metrics-exporter-prometheus",
+ "r2d2",
+ "redis",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "sealed"
 version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3745,7 +3745,6 @@ dependencies = [
  "cypher-core",
  "dashmap",
  "futures-util",
- "gql-redis-store",
  "http",
  "http-body-util",
  "indexmap",
@@ -3759,6 +3758,7 @@ dependencies = [
  "redis",
  "rustls",
  "rustls-pemfile",
+ "sd2-redis-store",
  "serde",
  "serde_json",
  "socket2",
@@ -3796,9 +3796,9 @@ dependencies = [
  "axum",
  "cypher-core",
  "futures-util",
- "gql-redis-store",
  "gremlin-core",
  "indexmap",
+ "sd2-redis-store",
  "serde",
  "serde_json",
  "thiserror 2.0.18",

@@ -12,6 +12,8 @@ worktrees/
 
 # Amplihack runtime directories (auto-generated)
 .claude/logs/
+.amplihack/kuzu_db
+.amplihack/kuzu_db.wal
 
 # SCIP index files
 index.scip

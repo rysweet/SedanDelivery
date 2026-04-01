@@ -15,11 +15,11 @@ RUN apt-get update -q && apt-get install -y -q libclang-dev && rm -rf /var/lib/a
 # locked dependency resolution inside Docker. Fixes #1000.
 COPY Cargo.toml Cargo.lock ./
 COPY cypher-core/Cargo.toml              ./cypher-core/
-COPY gql-redis-store/Cargo.toml       ./gql-redis-store/
-COPY gql-module/Cargo.toml            ./gql-module/
+COPY sd2-redis-store/Cargo.toml       ./sd2-redis-store/
+COPY sd2-redis-module/Cargo.toml            ./sd2-redis-module/
 COPY gql-fabric-store/Cargo.toml      ./gql-fabric-store/
 COPY gql-cli/Cargo.toml               ./gql-cli/
-COPY gql-api/Cargo.toml               ./gql-api/
+COPY sd2-api/Cargo.toml               ./sd2-api/
 COPY sedandelivery-bolt/Cargo.toml    ./sedandelivery-bolt/
 COPY sedandelivery-fabric-sync/Cargo.toml ./sedandelivery-fabric-sync/
 COPY sedandelivery-gremlin/Cargo.toml ./sedandelivery-gremlin/
@@ -34,17 +34,17 @@ COPY tests/gremlin-tck/Cargo.toml     ./tests/gremlin-tck/
 # graph during the dependency pre-caching layer. All workspace members listed
 # in Cargo.toml must have at least a stub source or cargo cannot load the
 # workspace (which caused exit code 101 in #1000).
-RUN mkdir -p cypher-core/src gql-redis-store/src gql-fabric-store/src gql-module/src gql-cli/src gql-api/src \
+RUN mkdir -p cypher-core/src sd2-redis-store/src gql-fabric-store/src sd2-redis-module/src gql-cli/src sd2-api/src \
              sedandelivery-bolt/src sedandelivery-bolt/benches sedandelivery-fabric-sync/src \
              sedandelivery-gremlin/src gremlin-core/src sedan-gql-embedded/src \
              sedan-cypher-embedded/src sedan-gremlin-embedded/src \
              tests/loadtest/src tests/gremlin-tck/src && \
     echo "pub fn stub() {}" > cypher-core/src/lib.rs && \
-    echo "pub fn stub() {}" > gql-redis-store/src/lib.rs && \
+    echo "pub fn stub() {}" > sd2-redis-store/src/lib.rs && \
     echo "pub fn stub() {}" > gql-fabric-store/src/lib.rs && \
-    echo "pub fn stub() {}" > gql-module/src/lib.rs && \
+    echo "pub fn stub() {}" > sd2-redis-module/src/lib.rs && \
     echo "fn main() {}" > gql-cli/src/main.rs && \
-    echo "fn main() {}" > gql-api/src/main.rs && \
+    echo "fn main() {}" > sd2-api/src/main.rs && \
     echo "pub fn stub() {}" > sedandelivery-bolt/src/lib.rs && \
     echo "fn main() {}" > sedandelivery-bolt/src/main.rs && \
     echo "fn main() {}" > sedandelivery-bolt/benches/bolt_benchmarks.rs && \
@@ -57,33 +57,33 @@ RUN mkdir -p cypher-core/src gql-redis-store/src gql-fabric-store/src gql-module
     echo "pub fn stub() {}" > sedan-gremlin-embedded/src/lib.rs && \
     echo "fn main() {}" > tests/loadtest/src/main.rs && \
     echo "pub fn stub() {}" > tests/gremlin-tck/src/lib.rs && \
-    cargo build --release -p gql-module || true
+    cargo build --release -p sd2-redis-module || true
 
 # Copy actual source code
 COPY cypher-core/ ./cypher-core/
-COPY gql-redis-store/ ./gql-redis-store/
+COPY sd2-redis-store/ ./sd2-redis-store/
 COPY gql-fabric-store/ ./gql-fabric-store/
-COPY gql-module/ ./gql-module/
+COPY sd2-redis-module/ ./sd2-redis-module/
 COPY gql-cli/ ./gql-cli/
-COPY gql-api/ ./gql-api/
+COPY sd2-api/ ./sd2-api/
 
 # Build the Redis module .so
 # --locked ensures the exact dependency versions from Cargo.lock are used,
 # making the build reproducible and preventing surprise failures from
 # upstream crate changes (root cause of #1000).
-RUN touch cypher-core/src/lib.rs gql-redis-store/src/lib.rs gql-fabric-store/src/lib.rs gql-module/src/lib.rs && \
-    cargo build --release --locked -p gql-module && \
-    ls -lh target/release/libgql_module.so
+RUN touch cypher-core/src/lib.rs sd2-redis-store/src/lib.rs gql-fabric-store/src/lib.rs sd2-redis-module/src/lib.rs && \
+    cargo build --release --locked -p sd2-redis-module && \
+    ls -lh target/release/libsd2_redis_module.so
 
 # ── Runtime ───────────────────────────────────────────────────────────────────
 FROM valkey/valkey:8.1-bookworm AS runtime
 
 # Copy the compiled module
-COPY --from=builder /app/target/release/libgql_module.so /usr/local/lib/libgql_module.so
+COPY --from=builder /app/target/release/libsd2_redis_module.so /usr/local/lib/libsd2_redis_module.so
 
 # Write static Valkey config (password injected at runtime via VALKEY_PASSWORD)
 RUN mkdir -p /etc/valkey /data && \
-    echo "loadmodule /usr/local/lib/libgql_module.so" > /etc/valkey/valkey-gql.conf && \
+    echo "loadmodule /usr/local/lib/libsd2_redis_module.so" > /etc/valkey/valkey-gql.conf && \
     echo "bind 0.0.0.0" >> /etc/valkey/valkey-gql.conf && \
     echo "protected-mode yes" >> /etc/valkey/valkey-gql.conf && \
     echo "loglevel notice" >> /etc/valkey/valkey-gql.conf && \

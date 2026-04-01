@@ -8,9 +8,9 @@ scenarios:
     description: Verify rediss:// TLS connection to Azure Cache
     steps:
       - action: verify-file-exists
-        path: gql-redis-store/src/connection.rs
+        path: sd2-redis-store/src/connection.rs
       - action: shell
-        command: grep -c 'rediss://' gql-redis-store/src/connection.rs gql-redis-store/src/lib.rs
+        command: grep -c 'rediss://' sd2-redis-store/src/connection.rs sd2-redis-store/src/lib.rs
     acceptance:
       - "TLS connection support exists in code"
 
@@ -19,7 +19,7 @@ scenarios:
     steps:
       - action: shell
         command: |
-          pool_size=$(grep 'DEFAULT_POOL_SIZE' gql-redis-store/src/connection.rs | grep -oP '\d+')
+          pool_size=$(grep 'DEFAULT_POOL_SIZE' sd2-redis-store/src/connection.rs | grep -oP '\d+')
           echo "Pool size: $pool_size"
           test "$pool_size" -le 85 || { echo "WARN: 3 replicas x $pool_size = $((pool_size * 3)) exceeds C1 256 limit"; exit 1; }
           echo "3 replicas x $pool_size = $((pool_size * 3)) connections (within C1 256 limit)"

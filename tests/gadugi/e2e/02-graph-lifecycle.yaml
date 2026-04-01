@@ -6,7 +6,7 @@ scenario:
   timeout: 60s
 
   prerequisites:
-    - "Application stack is running (gql-api :3001, API :5000, SPA :5173)"
+    - "Application stack is running (sd2-api :3001, API :5000, SPA :5173)"
 
   steps:
     # Phase 1: Create a graph

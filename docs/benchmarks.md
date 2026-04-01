@@ -3,7 +3,7 @@
 SedanDelivery now ships four benchmark surfaces:
 
 - `cypher-core/benches/` for parser/planner/executor baselines
-- `gql-redis-store/benches/` for Redis safety-tax baselines
+- `sd2-redis-store/benches/` for Redis safety-tax baselines
 - `sedandelivery-bolt/benches/` for Bolt wire and routing microbenchmarks
 - `tests/loadtest/` for outside-in topology comparisons over the public Bolt path
 
@@ -29,14 +29,14 @@ cargo bench -p cypher-core -- --output-format html
 # Report is written to target/criterion/report/index.html
 ```
 
-### `gql-redis-store` safety-tax suite
+### `sd2-redis-store` safety-tax suite
 
 ```bash
 # Standalone Redis/Valkey:
 export VALKEY_PASSWORD='change-me-for-local-dev'
 docker compose up -d --build
 GQL_REDIS_URL="redis://:${VALKEY_PASSWORD}@127.0.0.1:6379" \
-  cargo bench -p gql-redis-store --bench store_safety
+  cargo bench -p sd2-redis-store --bench store_safety
 
 # Cluster mode: keep the cluster inside Docker, then run the bench from a
 # disposable Rust container attached to the compose network.
@@ -49,7 +49,7 @@ docker run --rm \
   -w /workspace \
   -e STORE_SAFETY_ALLOW_REMOTE=1 \
   -e GQL_REDIS_CLUSTER_NODES="redis://:${VALKEY_PASSWORD}@redis-node-1:6379,redis://:${VALKEY_PASSWORD}@redis-node-2:6379,redis://:${VALKEY_PASSWORD}@redis-node-3:6379,redis://:${VALKEY_PASSWORD}@redis-node-4:6379,redis://:${VALKEY_PASSWORD}@redis-node-5:6379,redis://:${VALKEY_PASSWORD}@redis-node-6:6379" \
-  rust:bookworm bash -lc 'cargo bench -p gql-redis-store --bench store_safety'
+  rust:bookworm bash -lc 'cargo bench -p sd2-redis-store --bench store_safety'
 ```
 
 `store_safety` refuses non-local targets by default because it repeatedly
@@ -143,7 +143,7 @@ confidence interval.
 | `e2e_filter_5k` | Selective filter (5% hit rate) on 5 000 nodes |
 | `e2e_aggregation_3k` | Group-by on 3 000 nodes, 10 buckets |
 
-### `gql-redis-store/benches/store_safety.rs` — post-#745 safety-tax paths
+### `sd2-redis-store/benches/store_safety.rs` — post-#745 safety-tax paths
 
 | Benchmark | Measures |
 |-----------|---------|
@@ -282,7 +282,7 @@ means the loadtest ran to completion with its assertions satisfied.
 
 ### `GQL_REDIS_CLUSTER_NODES` validation
 
-The `store_safety` benchmark suite (`gql-redis-store/benches/store_safety.rs`)
+The `store_safety` benchmark suite (`sd2-redis-store/benches/store_safety.rs`)
 reads `GQL_REDIS_CLUSTER_NODES` to choose between standalone and cluster mode.
 Before attempting to connect, it validates the variable:
 

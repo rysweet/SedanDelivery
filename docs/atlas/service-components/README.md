@@ -64,16 +64,16 @@ graph TD
 
 See [cypher-core.mmd](cypher-core.mmd) for the Mermaid source.
 
-## gql-redis-store — Redis Storage Backend
+## sd2-redis-store — Redis Storage Backend
 
-![gql-redis-store](gql-redis-store.svg)
+![sd2-redis-store](sd2-redis-store.svg)
 
 <details>
 <summary>Mermaid source</summary>
 
 ```mermaid
 graph TD
-    subgraph gql_redis["gql-redis-store"]
+    subgraph gql_redis["sd2-redis-store"]
         lib["lib.rs\nRedisGraphStore\nGraphStore impl"]
         create_store_mod["create_store.rs\nBackend selection\nfrom env vars"]
         connection["connection.rs\nr2d2 pool, replica\nrouting, stats"]
@@ -100,7 +100,7 @@ graph TD
 
 </details>
 
-See [gql-redis-store.mmd](gql-redis-store.mmd) for the Mermaid source.
+See [sd2-redis-store.mmd](sd2-redis-store.mmd) for the Mermaid source.
 
 ## sedandelivery-bolt — Bolt Protocol Server
 
@@ -160,16 +160,16 @@ graph TD
 
 See [sedandelivery-bolt.mmd](sedandelivery-bolt.mmd) for the Mermaid source.
 
-## gql-api — REST API Server
+## sd2-api — REST API Server
 
-![gql-api](gql-api.svg)
+![sd2-api](sd2-api.svg)
 
 <details>
 <summary>Mermaid source</summary>
 
 ```mermaid
 graph TD
-    subgraph api_crate["gql-api"]
+    subgraph api_crate["sd2-api"]
         api_main["main.rs\naxum server setup"]
         
         subgraph routes_mod["routes/"]
@@ -202,7 +202,7 @@ graph TD
 
 </details>
 
-See [gql-api.mmd](gql-api.mmd) for the Mermaid source.
+See [sd2-api.mmd](sd2-api.mmd) for the Mermaid source.
 
 ## gql-fabric-store — Fabric Storage Backend
 

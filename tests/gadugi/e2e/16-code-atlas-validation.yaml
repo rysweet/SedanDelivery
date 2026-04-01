@@ -72,20 +72,20 @@ scenarios:
     steps:
       - action: shell
         command: |
-          structs=$(grep -c 'pub struct.*Response' gql-api/src/models.rs)
-          camel=$(grep -B1 'pub struct.*Response' gql-api/src/models.rs | grep -c 'camelCase')
+          structs=$(grep -c 'pub struct.*Response' sd2-api/src/models.rs)
+          camel=$(grep -B1 'pub struct.*Response' sd2-api/src/models.rs | grep -c 'camelCase')
           echo "Response structs: $structs, with camelCase: $camel"
           # HealthResponse may not need it (single field), so allow 1 difference
           test "$camel" -ge "$((structs - 1))" || { echo "Not all response structs have camelCase"; exit 1; }
 
-  - name: gql-api-in-compose
-    description: gql-api service exists in docker-compose.yml
+  - name: sd2-api-in-compose
+    description: sd2-api service exists in docker-compose.yml
     steps:
       - action: shell
         command: |
-          grep -q 'gql-api' docker-compose.yml || { echo "gql-api not in docker-compose.yml"; exit 1; }
-          grep -q 'profile' docker-compose.yml || { echo "gql-api not behind a profile"; exit 1; }
-          echo "gql-api service in docker-compose.yml behind profile ✓"
+          grep -q 'sd2-api' docker-compose.yml || { echo "sd2-api not in docker-compose.yml"; exit 1; }
+          grep -q 'profile' docker-compose.yml || { echo "sd2-api not behind a profile"; exit 1; }
+          echo "sd2-api service in docker-compose.yml behind profile ✓"
 
   - name: undocumented-envvars-gap-closed
     description: Previously undocumented env vars now appear in docs
@@ -115,4 +115,4 @@ scenarios:
     description: All modified crates compile cleanly
     steps:
       - action: shell
-        command: cargo check -p sedandelivery-bolt -p gql-api -p gql-cli 2>&1 | tail -1
+        command: cargo check -p sedandelivery-bolt -p sd2-api -p gql-cli 2>&1 | tail -1

@@ -177,7 +177,7 @@ the same layers again.
 ### 1. Crate test suite
 
 ```bash
-cargo test -p gql-redis-store
+cargo test -p sd2-redis-store
 ```
 
 ### 2. Real cluster integration tests
@@ -186,7 +186,7 @@ Expose a host-visible Redis Cluster and point `GQL_REDIS_CLUSTER_NODES` at it:
 
 ```bash
 GQL_REDIS_CLUSTER_NODES="redis://127.0.0.1:7100,redis://127.0.0.1:7101,redis://127.0.0.1:7102" \
-  cargo test -p gql-redis-store --test cluster_pipeline -- --ignored --nocapture
+  cargo test -p sd2-redis-store --test cluster_pipeline -- --ignored --nocapture
 ```
 
 `tests/cluster_pipeline.rs` covers:

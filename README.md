@@ -251,12 +251,12 @@ This gives you low-latency reads from the co-located Valkey container and a dura
 
 See [docs/FABRIC_TUTORIAL.md](docs/FABRIC_TUTORIAL.md) for the complete walkthrough: writing data, querying in Fabric, REST API access, and monitoring replication.
 
-## REST API (`gql-api`)
+## REST API (`sd2-api`)
 
 A standalone HTTP API for graph operations (CRUD, Cypher queries, export/import):
 
 ```bash
-cargo run -p gql-api   # listens on 0.0.0.0:3001
+cargo run -p sd2-api   # listens on 0.0.0.0:3001
 ```
 
 **Authentication**: Set `GQL_API_ENTRA_TENANT_ID` and `GQL_API_ENTRA_CLIENT_ID` to enable Entra ID JWT auth. All requests (except `/health`) require a valid `Authorization: Bearer <token>` header. See [docs/auth.md](docs/auth.md) for setup.
@@ -304,8 +304,8 @@ bash scripts/validate.sh --tck     # include TCK 3903 scenarios (~3 min extra)
 |-------|-------|------------------|
 | cypher-core unit | 678 | Parser, planner, executor, storage, budget, config |
 | sedandelivery-bolt unit | 399 | PackStream codec, message framing, Bolt state machine, bridge layer |
-| gql-api unit | 115 | API handler pure functions |
-| gql-redis-store unit | 59 | Redis storage layer logic |
+| sd2-api unit | 115 | API handler pure functions |
+| sd2-redis-store unit | 59 | Redis storage layer logic |
 | gql-fabric-store unit | 45 | Fabric storage layer logic |
 | sedandelivery-bolt integration | 178 | Python neo4j driver: CRUD, transactions, paths, concurrency |
 | End-to-end + pipeline | 42 | Full parse → plan → execute → result |

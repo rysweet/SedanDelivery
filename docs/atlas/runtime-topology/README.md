@@ -28,11 +28,11 @@ flowchart LR
         end
 
         subgraph api_container["sd2-main-api"]
-            api_srv["gql-api<br/>REST API<br/>HTTP :3001 / HTTPS :3443"]
+            api_srv["sd2-api<br/>REST API<br/>HTTP :3001 / HTTPS :3443"]
         end
 
         subgraph redis_container["sd2-main-redis"]
-            valkey["Valkey 8.1<br/>+ gql-module .so<br/>Redis :6379"]
+            valkey["Valkey 8.1<br/>+ sd2-redis-module .so<br/>Redis :6379"]
         end
 
         subgraph sync_container["sd2-main-fabric-sync<br/>(optional)"]
@@ -99,7 +99,7 @@ See [topology.mmd](topology.mmd) and [topology.dot](topology.dot) for diagram so
 ## Connection Patterns
 
 - **Bolt clients** → TCP/TLS/WebSocket → `sedandelivery-bolt:7687`
-- **REST clients** → HTTP/HTTPS → `gql-api:3001/3443`
+- **REST clients** → HTTP/HTTPS → `sd2-api:3001/3443`
 - **Bolt/API servers** → `GQL_REDIS_URL` (r2d2 pool) → `Valkey:6379`
 - **Cluster mode** → `GQL_REDIS_CLUSTER_NODES` → multiple Redis nodes
 - **Replica reads** → `GQL_REDIS_REPLICA_URL` → round-robin across replicas

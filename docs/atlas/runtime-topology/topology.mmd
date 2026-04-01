@@ -13,11 +13,11 @@ flowchart LR
         end
 
         subgraph api_container["sd2-main-api"]
-            api_srv["gql-api<br/>REST API<br/>HTTP :3001 / HTTPS :3443"]
+            api_srv["sd2-api<br/>REST API<br/>HTTP :3001 / HTTPS :3443"]
         end
 
         subgraph redis_container["sd2-main-redis"]
-            valkey["Valkey 8.1<br/>+ gql-module .so<br/>Redis :6379"]
+            valkey["Valkey 8.1<br/>+ sd2-redis-module .so<br/>Redis :6379"]
         end
 
         subgraph sync_container["sd2-main-fabric-sync"]

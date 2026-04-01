@@ -1,7 +1,7 @@
 # API Contracts
 
 Exhaustive inventory of all API entry points across SedanDelivery's three network interfaces:
-REST API (gql-api), Bolt Protocol (sedandelivery-bolt), and Redis Module commands (gql-module).
+REST API (sd2-api), Bolt Protocol (sedandelivery-bolt), and Redis Module commands (sd2-redis-module).
 
 ## API Surface Diagram
 
@@ -12,7 +12,7 @@ REST API (gql-api), Bolt Protocol (sedandelivery-bolt), and Redis Module command
 
 ```mermaid
 flowchart TD
-    subgraph rest_api["gql-api — REST API :3001"]
+    subgraph rest_api["sd2-api — REST API :3001"]
         subgraph health_routes["Health"]
             GET_health["GET /health"]
             GET_metrics["GET /metrics"]
@@ -86,7 +86,7 @@ flowchart TD
         GOODBYE["GOODBYE (0x02) — close"]
     end
 
-    subgraph redis_cmds["gql-module — Redis Commands"]
+    subgraph redis_cmds["sd2-redis-module — Redis Commands"]
         GQL_QUERY["GQL.QUERY graph cypher"]
         GQL_MUTATE["GQL.MUTATE graph cypher"]
         GQL_CREATE["GQL.CREATE-GRAPH graph"]

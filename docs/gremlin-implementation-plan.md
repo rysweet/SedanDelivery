@@ -259,7 +259,7 @@ SedanDelivery/
 ```
 sedandelivery-gremlin
 ├── cypher-core          (bytecode, compiler, executor)
-├── gql-redis-store   (storage backend)
+├── sd2-redis-store   (storage backend)
 ├── tokio + tokio-tungstenite (async + WebSocket)
 ├── serde_json        (GraphSON v3)
 ├── uuid              (request IDs)

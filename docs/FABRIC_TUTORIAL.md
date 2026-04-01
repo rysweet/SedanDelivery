@@ -13,7 +13,7 @@ For the complete technical data flow documentation, see
 - [1. Deploy SedanDelivery with Fabric Graph](#1-deploy-sedandelivery-with-fabric-graph)
 - [2. Write graph data](#2-write-graph-data)
 - [3. Sync to Fabric via OneLake](#3-sync-to-fabric-via-onelake)
-- [4. Query Fabric Graph via GQL API](#4-query-fabric-graph-via-gql-api)
+- [4. Query Fabric Graph via GQL API](#4-query-fabric-graph-via-sd2-api)
 - [5. Monitor replication](#5-monitor-replication)
 - [Troubleshooting](#troubleshooting)
 

@@ -1,0 +1,23 @@
+[package]
+name    = "sd2-redis-module"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+name       = "sd2_redis_module"
+
+[dependencies]
+cypher-core        = { path = "../cypher-core" }
+indexmap         = { workspace = true }
+serde_json      = { workspace = true }
+tracing         = { workspace = true }
+redis-module    = "2.0"
+
+[dev-dependencies]
+
+# Note: redis dev-dependency omitted because redis-0.27 does not build on
+# Rust 1.89 (pattern exhaustiveness issues in aio::runtime).
+# Protocol tests against a live Valkey instance use the redis crate from
+# sd2-redis-store and are run separately when REDIS_URL is set.

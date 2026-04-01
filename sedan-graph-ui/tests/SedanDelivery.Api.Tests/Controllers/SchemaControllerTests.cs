@@ -109,7 +109,7 @@ public sealed class SchemaControllerTests : IClassFixture<WebApplicationFactory<
         {
             mock.Setup(c => c.GetSchemaAsync("missing-graph", It.IsAny<CancellationToken>()))
                 .ThrowsAsync(new HttpRequestException(
-                    "gql-api returned 404 Not Found",
+                    "sd2-api returned 404 Not Found",
                     inner: null,
                     statusCode: HttpStatusCode.NotFound));
         });
@@ -195,7 +195,7 @@ public sealed class SchemaControllerTests : IClassFixture<WebApplicationFactory<
                     "no-such-node",
                     It.IsAny<CancellationToken>()))
                 .ThrowsAsync(new HttpRequestException(
-                    "gql-api returned 404 Not Found",
+                    "sd2-api returned 404 Not Found",
                     inner: null,
                     statusCode: HttpStatusCode.NotFound));
         });

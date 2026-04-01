@@ -1,5 +1,5 @@
 graph TD
-    subgraph gql_redis["gql-redis-store"]
+    subgraph gql_redis["sd2-redis-store"]
         lib["lib.rs\nRedisGraphStore"]
         create_store_mod["create_store.rs\nBackend selection"]
         connection["connection.rs\nr2d2 pool, replicas"]

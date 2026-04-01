@@ -3,9 +3,9 @@ name: "CodeQL Configuration"
 # Analyze all Rust source code; exclude test fixtures
 paths:
   - cypher-core
-  - gql-redis-store
+  - sd2-redis-store
   - gql-fabric-store
-  - gql-module
+  - sd2-redis-module
   - gql-cli
 
 paths-ignore:

@@ -101,7 +101,7 @@ public sealed class NodesControllerTests : IClassFixture<WebApplicationFactory<P
         {
             mock.Setup(c => c.GetNodesAsync("missing-graph", It.IsAny<CancellationToken>()))
                 .ThrowsAsync(new HttpRequestException(
-                    "gql-api returned 404 Not Found",
+                    "sd2-api returned 404 Not Found",
                     inner: null,
                     statusCode: HttpStatusCode.NotFound));
         });
@@ -234,7 +234,7 @@ public sealed class NodesControllerTests : IClassFixture<WebApplicationFactory<P
         {
             mock.Setup(c => c.GetNodeAsync("test-graph", "no-such-node", It.IsAny<CancellationToken>()))
                 .ThrowsAsync(new HttpRequestException(
-                    "gql-api returned 404 Not Found",
+                    "sd2-api returned 404 Not Found",
                     inner: null,
                     statusCode: HttpStatusCode.NotFound));
         });
@@ -313,7 +313,7 @@ public sealed class NodesControllerTests : IClassFixture<WebApplicationFactory<P
         {
             mock.Setup(c => c.DeleteNodeAsync("test-graph", "ghost-node", It.IsAny<CancellationToken>()))
                 .ThrowsAsync(new HttpRequestException(
-                    "gql-api returned 404 Not Found",
+                    "sd2-api returned 404 Not Found",
                     inner: null,
                     statusCode: HttpStatusCode.NotFound));
         });

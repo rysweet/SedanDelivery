@@ -1,0 +1,44 @@
+[package]
+name    = "sd2-api"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "sd2-api"
+path = "src/main.rs"
+
+[dependencies]
+axum          = { version = "0.8", features = ["json", "http1", "tokio", "query"] }
+tokio         = { workspace = true }
+serde         = { workspace = true }
+serde_json    = { workspace = true }
+tracing       = { workspace = true }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "registry"] }
+tracing-opentelemetry = { workspace = true }
+opentelemetry = { workspace = true }
+opentelemetry_sdk = { workspace = true }
+opentelemetry-otlp = { workspace = true }
+cypher-core        = { path = "../cypher-core" }
+sd2-redis-store = { path = "../sd2-redis-store" }
+tower         = { version = "0.5", features = ["limit"] }
+tower-http    = { version = "0.6", features = ["cors", "trace"] }
+indexmap      = { workspace = true }
+jiff          = { workspace = true }
+jsonwebtoken  = { version = "10", features = ["rust_crypto"] }
+ureq          = { version = "3", features = ["json"] }
+governor      = "0.10"
+metrics       = "0.24"
+metrics-exporter-prometheus = "0.18"
+tokio-rustls  = "0.26"
+rustls         = { version = "0.23", features = ["ring"] }
+rustls-pemfile = "2"
+
+[dev-dependencies]
+tower          = { version = "0.5", features = ["util"] }
+http             = "1"
+http-body-util = "0.1"
+serde_json     = { workspace = true }
+cypher-core       = { path = "../cypher-core" }
+tokio          = { workspace = true, features = ["macros", "rt-multi-thread"] }
+rcgen          = "0.14"

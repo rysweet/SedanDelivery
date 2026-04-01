@@ -7,15 +7,15 @@ digraph repo_surface {
         label="Core Engine Crates"
         style=filled fillcolor="#E8F4FD"
         cypher_core [label="cypher-core\nParser, planner, executor\nGraphStore trait, Value types" fillcolor="#AED6F1"]
-        gql_redis [label="gql-redis-store\nRedis/Valkey GraphStore\n+ FanoutStore" fillcolor="#AED6F1"]
+        gql_redis [label="sd2-redis-store\nRedis/Valkey GraphStore\n+ FanoutStore" fillcolor="#AED6F1"]
         gql_fabric [label="gql-fabric-store\nMicrosoft Fabric\nGraphStore" fillcolor="#AED6F1"]
     }
 
     subgraph cluster_entry {
         label="Entry Point Crates"
         style=filled fillcolor="#E8F8E8"
-        gql_module [label="gql-module\nValkey/Redis module (.so)" fillcolor="#A9DFBF"]
-        gql_api [label="gql-api\nHTTP REST API (axum)\nport 3001" fillcolor="#A9DFBF"]
+        sd2_redis_module [label="sd2-redis-module\nValkey/Redis module (.so)" fillcolor="#A9DFBF"]
+        sd2_api [label="sd2-api\nHTTP REST API (axum)\nport 3001" fillcolor="#A9DFBF"]
         bolt [label="sedandelivery-bolt\nBolt v4.4 TCP server\nport 7687" fillcolor="#A9DFBF"]
         sync [label="sedandelivery-fabric-sync\nChangelog replication" fillcolor="#A9DFBF"]
         cli [label="gql-cli\nInteractive REPL" fillcolor="#A9DFBF"]

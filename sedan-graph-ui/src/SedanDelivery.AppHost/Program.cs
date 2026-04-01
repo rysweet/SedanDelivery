@@ -2,8 +2,8 @@ using Aspire.Hosting;
 
 var builder = DistributedApplication.CreateBuilder(args);
 
-// gql-api Rust service listens on port 3001.
-// In development it is expected to already be running (`cargo run -p gql-api`).
+// sd2-api Rust service listens on port 3001.
+// In development it is expected to already be running (`cargo run -p sd2-api`).
 // We model it as an executable resource so Aspire tracks and surfaces its
 // endpoint in the dashboard.
 var worktreeRoot = Path.GetFullPath(
@@ -11,11 +11,11 @@ var worktreeRoot = Path.GetFullPath(
 
 var gqlApiPath = Path.Combine(worktreeRoot, "run.sh");
 
-// Register the Rust gql-api as an executable resource on port 3001.
+// Register the Rust sd2-api as an executable resource on port 3001.
 // ExecutableResource does not implement IResourceWithConnectionString so we
 // wire the URL via WithEnvironment using the Aspire endpoint reference.
 var gqlApi = builder
-    .AddExecutable("gql-api", gqlApiPath, workingDirectory: worktreeRoot)
+    .AddExecutable("sd2-api", gqlApiPath, workingDirectory: worktreeRoot)
     .WithHttpEndpoint(port: 3001, name: "http");
 
 // Register the BFF API project and inject GQL_API_URL so GqlApiClient
@@ -25,7 +25,7 @@ var api = builder
     .AddProject<Projects.SedanDelivery_Api>("sedan-api")
     .WithEnvironment(ctx =>
     {
-        // Resolve the gql-api endpoint URL through Aspire service discovery.
+        // Resolve the sd2-api endpoint URL through Aspire service discovery.
         // In dev this produces http://localhost:3001; in cloud it uses the
         // Aspire-assigned address for the container/process.
         var gqlEndpoint = gqlApi.GetEndpoint("http");

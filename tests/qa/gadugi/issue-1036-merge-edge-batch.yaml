@@ -1,7 +1,7 @@
 # Canonical gadugi scenario for Issue #1036 — duplicate MERGE edge input.
 #
-# This validates the public gql-api contract locally without Redis:
-#   - gql-api starts with in-memory storage
+# This validates the public sd2-api contract locally without Redis:
+#   - sd2-api starts with in-memory storage
 #   - duplicate UNWIND input rows for a pure relationship MERGE create only one edge
 #   - replaying the same MERGE matches the existing edge instead of creating another
 #   - the created relationship is visible through the public query endpoint
@@ -9,7 +9,7 @@
 scenario:
   name: "Issue #1036 - duplicate MERGE relationship rows reuse one edge"
   description: >
-    Verifies from an API client perspective that gql-api running locally with
+    Verifies from an API client perspective that sd2-api running locally with
     in-memory storage can execute a duplicate-input relationship MERGE through
     the public mutate endpoint, create exactly one relationship on the first
     pass, create zero new relationships on replay, and expose the single LINK
@@ -62,7 +62,7 @@ scenario:
             -u GQL_API_ENTRA_CLIENT_ID
             GQL_API_BIND_ADDR="127.0.0.1:${PORT}"
             GQL_API_RATE_LIMIT_RPS=10000
-            cargo run -p gql-api --quiet >"${API_LOG}" 2>&1 &
+            cargo run -p sd2-api --quiet >"${API_LOG}" 2>&1 &
             API_PID=$!;
             for _ in $(seq 1 120); do
               HEALTH_CODE=$(curl -s -o "${HEALTH_BODY}" -w '%{http_code}' "http://127.0.0.1:${PORT}/health" || true);
@@ -71,8 +71,8 @@ scenario:
               fi;
               sleep 1;
             done;
-            [[ "${HEALTH_CODE}" == "200" ]] || { echo "[FAIL] gql-api did not become healthy" >&2; cat "${API_LOG}" >&2; exit 1; };
-            echo "[PASS] gql-api started for duplicate MERGE regression";
+            [[ "${HEALTH_CODE}" == "200" ]] || { echo "[FAIL] sd2-api did not become healthy" >&2; cat "${API_LOG}" >&2; exit 1; };
+            echo "[PASS] sd2-api started for duplicate MERGE regression";
             GRAPH_CODE=$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'content-type: application/json' -d "{\"name\":\"${GRAPH_NAME}\"}" "http://127.0.0.1:${PORT}/graphs");
             [[ "${GRAPH_CODE}" == "201" ]] || { echo "[FAIL] creating graph returned ${GRAPH_CODE}" >&2; cat "${API_LOG}" >&2; exit 1; };
             curl -fsS -o /dev/null -X POST -H 'content-type: application/json' -d '{"labels":["Node"],"properties":{"id":1}}' "http://127.0.0.1:${PORT}/graphs/${GRAPH_NAME}/nodes";
@@ -95,11 +95,11 @@ scenario:
             echo "[PASS] public query API shows exactly one LINK relationship";
       timeout: 300000
 
-    - name: "A2 — Confirm gql-api started"
+    - name: "A2 — Confirm sd2-api started"
       agent: cli-agent
       action: wait_for_output
       params:
-        pattern: "\\[PASS\\]\\s+gql-api started for duplicate MERGE regression"
+        pattern: "\\[PASS\\]\\s+sd2-api started for duplicate MERGE regression"
       timeout: 5000
 
     - name: "A3 — Confirm graph seed data was created"

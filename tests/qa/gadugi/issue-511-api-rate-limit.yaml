@@ -1,19 +1,19 @@
-# Canonical gadugi scenario for Issue #511 — gql-api per-IP rate limiting.
+# Canonical gadugi scenario for Issue #511 — sd2-api per-IP rate limiting.
 #
 # This validates the public HTTP contract locally without cloud or Redis:
-#   - gql-api starts in plaintext HTTP mode with in-memory storage
+#   - sd2-api starts in plaintext HTTP mode with in-memory storage
 #   - non-health requests are rate limited per client IP
 #   - ConnectInfo is wired correctly, so the limiter returns 429 rather than
 #     silently allowing traffic or failing with a 500 misconfiguration error
 #   - GET /health remains exempt
 
 scenario:
-  name: "Issue #511 - gql-api per-IP rate limiting"
+  name: "Issue #511 - sd2-api per-IP rate limiting"
   description: >
-    Verifies from an operator and client perspective that gql-api enforces the
+    Verifies from an operator and client perspective that sd2-api enforces the
     configured per-IP rate limit on normal HTTP routes, returns HTTP 429 once a
     client exceeds the quota, and still serves GET /health without rate
-    limiting. This runs gql-api locally with in-memory storage and a low
+    limiting. This runs sd2-api locally with in-memory storage and a low
     requests-per-second budget so the external contract is exercised without
     extra infrastructure.
   metadata:
@@ -25,7 +25,7 @@ scenario:
       config: {}
 
   steps:
-    - name: "A1 — Run local gql-api rate-limit contract"
+    - name: "A1 — Run local sd2-api rate-limit contract"
       agent: cli-agent
       action: execute
       params:
@@ -58,7 +58,7 @@ scenario:
             -u GQL_API_ENTRA_CLIENT_ID
             GQL_API_BIND_ADDR="127.0.0.1:${PORT}"
             GQL_API_RATE_LIMIT_RPS=1
-            cargo run -p gql-api --quiet >"${API_LOG}" 2>&1 &
+            cargo run -p sd2-api --quiet >"${API_LOG}" 2>&1 &
             API_PID=$!;
             for _ in $(seq 1 120); do
               HEALTH_CODE=$(curl -s -o "${HEALTH_BODY}" -w '%{http_code}' "http://127.0.0.1:${PORT}/health" || true);
@@ -67,8 +67,8 @@ scenario:
               fi;
               sleep 1;
             done;
-            [[ "${HEALTH_CODE}" == "200" ]] || { echo "[FAIL] gql-api did not become healthy" >&2; cat "${API_LOG}" >&2; exit 1; };
-            echo "[PASS] gql-api started";
+            [[ "${HEALTH_CODE}" == "200" ]] || { echo "[FAIL] sd2-api did not become healthy" >&2; cat "${API_LOG}" >&2; exit 1; };
+            echo "[PASS] sd2-api started";
             FIRST_CODE=$(curl -s -o "${METRICS1}" -w '%{http_code}' "http://127.0.0.1:${PORT}/metrics");
             [[ "${FIRST_CODE}" == "200" ]] || { echo "[FAIL] first /metrics request returned ${FIRST_CODE}" >&2; cat "${METRICS1}" >&2; exit 1; };
             echo "[PASS] first metrics request allowed";
@@ -87,11 +87,11 @@ scenario:
             echo "[PASS] limiter refills after window";
       timeout: 180000
 
-    - name: "A2 — Confirm gql-api started"
+    - name: "A2 — Confirm sd2-api started"
       agent: cli-agent
       action: wait_for_output
       params:
-        pattern: "\\[PASS\\]\\s+gql-api started"
+        pattern: "\\[PASS\\]\\s+sd2-api started"
       timeout: 5000
 
     - name: "A3 — Confirm first metrics request is allowed"

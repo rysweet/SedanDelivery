@@ -14,10 +14,10 @@ graph LR
     end
 
     subgraph consumers["Consumer Crates"]
-        redis_store["gql-redis-store"]
+        redis_store["sd2-redis-store"]
         fabric_store["gql-fabric-store"]
-        module["gql-module"]
-        api["gql-api"]
+        module["sd2-redis-module"]
+        api["sd2-api"]
         bolt["sedandelivery-bolt"]
         sync["sedandelivery-fabric-sync"]
         cli["gql-cli"]

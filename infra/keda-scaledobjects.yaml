@@ -58,13 +58,13 @@ spec:
 apiVersion: keda.sh/v1alpha1
 kind: ScaledObject
 metadata:
-  name: gql-api-scaler
+  name: sd2-api-scaler
   namespace: sedandelivery
   annotations:
     scaledobject.keda.sh/transfer-hpa-ownership: "true"
 spec:
   scaleTargetRef:
-    name: gql-api
+    name: sd2-api
   minReplicaCount: 1
   maxReplicaCount: 3
   cooldownPeriod: 30
@@ -75,9 +75,9 @@ spec:
       metricType: AverageValue
       metadata:
         serverAddress: https://$(AZURE_MONITOR_PROMETHEUS_ENDPOINT)
-        metricName: gql_api_http_concurrent_requests
+        metricName: sd2_api_http_concurrent_requests
         threshold: "100"
-        query: avg(gql_api_http_concurrent_requests)
+        query: avg(sd2_api_http_concurrent_requests)
         authModes: "workloadIdentity"
       authenticationRef:
         name: azure-managed-prometheus-auth

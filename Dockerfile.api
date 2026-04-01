@@ -1,6 +1,6 @@
 # Dockerfile.api — standalone REST API server for SedanDelivery
 #
-# This image runs gql-api as an independent HTTP service. It uses
+# This image runs sd2-api as an independent HTTP service. It uses
 # InMemoryGraphStore by default (for dev/demo) or can connect to a
 # shared Redis/Valkey backend for multi-service deployments.
 #
@@ -9,11 +9,11 @@
 # requests (except GET /health) require a valid Entra ID JWT.
 #
 # Usage:
-#   docker build -f Dockerfile.api -t gql-api .
+#   docker build -f Dockerfile.api -t sd2-api .
 #   docker run -p 3001:3001 \
 #     -e GQL_API_ENTRA_TENANT_ID=... \
 #     -e GQL_API_ENTRA_CLIENT_ID=... \
-#     gql-api
+#     sd2-api
 
 # ── Builder ──────────────────────────────────────────────────────────────────
 FROM rust:1.89-bookworm AS builder
@@ -25,11 +25,11 @@ WORKDIR /app
 # Keep every workspace member manifest present so cargo can load the full workspace.
 COPY Cargo.toml Cargo.lock ./
 COPY cypher-core/Cargo.toml              ./cypher-core/
-COPY gql-redis-store/Cargo.toml       ./gql-redis-store/
-COPY gql-module/Cargo.toml            ./gql-module/
+COPY sd2-redis-store/Cargo.toml       ./sd2-redis-store/
+COPY sd2-redis-module/Cargo.toml            ./sd2-redis-module/
 COPY gql-fabric-store/Cargo.toml      ./gql-fabric-store/
 COPY gql-cli/Cargo.toml               ./gql-cli/
-COPY gql-api/Cargo.toml               ./gql-api/
+COPY sd2-api/Cargo.toml               ./sd2-api/
 COPY sedandelivery-bolt/Cargo.toml    ./sedandelivery-bolt/
 COPY sedandelivery-fabric-sync/Cargo.toml ./sedandelivery-fabric-sync/
 COPY sedandelivery-gremlin/Cargo.toml ./sedandelivery-gremlin/
@@ -42,20 +42,20 @@ COPY tests/gremlin-tck/Cargo.toml     ./tests/gremlin-tck/
 
 # Create stub source files so cargo can resolve the full workspace dependency
 # graph during the dependency pre-caching layer.
-RUN mkdir -p cypher-core/src gql-redis-store/src gql-redis-store/benches gql-fabric-store/src gql-module/src gql-cli/src gql-api/src \
+RUN mkdir -p cypher-core/src sd2-redis-store/src sd2-redis-store/benches gql-fabric-store/src sd2-redis-module/src gql-cli/src sd2-api/src \
              sedandelivery-bolt/src sedandelivery-bolt/benches sedandelivery-fabric-sync/src \
              sedandelivery-gremlin/src gremlin-core/src sedan-gql-embedded/src \
              sedan-cypher-embedded/src sedan-gremlin-embedded/src \
              tests/loadtest/src tests/gremlin-tck/src && \
     echo "pub fn stub() {}" > cypher-core/src/lib.rs && \
-    echo "pub fn stub() {}" > gql-redis-store/src/lib.rs && \
-    echo "fn main() {}" > gql-redis-store/benches/batch_write.rs && \
-    echo "fn main() {}" > gql-redis-store/benches/store_safety.rs && \
+    echo "pub fn stub() {}" > sd2-redis-store/src/lib.rs && \
+    echo "fn main() {}" > sd2-redis-store/benches/batch_write.rs && \
+    echo "fn main() {}" > sd2-redis-store/benches/store_safety.rs && \
     echo "pub fn stub() {}" > gql-fabric-store/src/lib.rs && \
-    echo "pub fn stub() {}" > gql-module/src/lib.rs && \
+    echo "pub fn stub() {}" > sd2-redis-module/src/lib.rs && \
     echo "fn main() {}" > gql-cli/src/main.rs && \
-    echo "pub fn stub() {}" > gql-api/src/lib.rs && \
-    echo "fn main() {}" > gql-api/src/main.rs && \
+    echo "pub fn stub() {}" > sd2-api/src/lib.rs && \
+    echo "fn main() {}" > sd2-api/src/main.rs && \
     echo "pub fn stub() {}" > sedandelivery-bolt/src/lib.rs && \
     echo "fn main() {}" > sedandelivery-bolt/src/main.rs && \
     echo "fn main() {}" > sedandelivery-bolt/benches/bolt_benchmarks.rs && \
@@ -68,18 +68,18 @@ RUN mkdir -p cypher-core/src gql-redis-store/src gql-redis-store/benches gql-fab
     echo "pub fn stub() {}" > sedan-gremlin-embedded/src/lib.rs && \
     echo "fn main() {}" > tests/loadtest/src/main.rs && \
     echo "pub fn stub() {}" > tests/gremlin-tck/src/lib.rs && \
-    cargo build --release -p gql-api 2>/dev/null || true
+    cargo build --release -p sd2-api 2>/dev/null || true
 
 # Copy actual source code
 COPY cypher-core/ ./cypher-core/
-COPY gql-redis-store/ ./gql-redis-store/
-COPY gql-api/ ./gql-api/
+COPY sd2-redis-store/ ./sd2-redis-store/
+COPY sd2-api/ ./sd2-api/
 
 # Build the api binary.
 # --locked pins to the committed Cargo.lock versions for reproducible builds.
-RUN touch cypher-core/src/lib.rs gql-redis-store/src/lib.rs gql-api/src/lib.rs gql-api/src/main.rs && \
-    cargo build --release --locked -p gql-api && \
-    ls -lh target/release/gql-api
+RUN touch cypher-core/src/lib.rs sd2-redis-store/src/lib.rs sd2-api/src/lib.rs sd2-api/src/main.rs && \
+    cargo build --release --locked -p sd2-api && \
+    ls -lh target/release/sd2-api
 
 # ── Runtime ───────────────────────────────────────────────────────────────────
 FROM debian:bookworm-slim AS runtime
@@ -89,7 +89,7 @@ RUN apt-get update -q && \
     apt-get install -y -q --no-install-recommends ca-certificates curl && \
     rm -rf /var/lib/apt/lists/*
 
-COPY --from=builder /app/target/release/gql-api /usr/local/bin/gql-api
+COPY --from=builder /app/target/release/sd2-api /usr/local/bin/sd2-api
 
 # HTTP API port
 EXPOSE 3001
@@ -101,4 +101,4 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
 RUN useradd --system --no-create-home api
 USER api
 
-ENTRYPOINT ["gql-api"]
+ENTRYPOINT ["sd2-api"]

@@ -8,10 +8,10 @@ digraph compile_deps {
         style=filled fillcolor="#E8F4FD"
 
         cypher_core [label="cypher-core\n(lib)" fillcolor="#AED6F1" penwidth=2]
-        gql_redis [label="gql-redis-store\n(lib)" fillcolor="#AED6F1"]
+        gql_redis [label="sd2-redis-store\n(lib)" fillcolor="#AED6F1"]
         gql_fabric [label="gql-fabric-store\n(lib)" fillcolor="#AED6F1"]
-        gql_module [label="gql-module\n(cdylib)" fillcolor="#A9DFBF"]
-        gql_api [label="gql-api\n(bin)" fillcolor="#A9DFBF"]
+        sd2_redis_module [label="sd2-redis-module\n(cdylib)" fillcolor="#A9DFBF"]
+        sd2_api [label="sd2-api\n(bin)" fillcolor="#A9DFBF"]
         gql_cli [label="gql-cli\n(bin)" fillcolor="#A9DFBF"]
         bolt [label="sedandelivery-bolt\n(bin)" fillcolor="#A9DFBF"]
         sync [label="sedandelivery-\nfabric-sync\n(bin)" fillcolor="#A9DFBF"]
@@ -36,10 +36,10 @@ digraph compile_deps {
     // Internal deps
     gql_redis -> cypher_core [color="#2980B9" penwidth=2]
     gql_fabric -> cypher_core [color="#2980B9" penwidth=2]
-    gql_module -> cypher_core [color="#2980B9" penwidth=2]
+    sd2_redis_module -> cypher_core [color="#2980B9" penwidth=2]
     gql_cli -> cypher_core [color="#2980B9" penwidth=2]
-    gql_api -> cypher_core [color="#2980B9" penwidth=2]
-    gql_api -> gql_redis [color="#2980B9"]
+    sd2_api -> cypher_core [color="#2980B9" penwidth=2]
+    sd2_api -> gql_redis [color="#2980B9"]
     bolt -> cypher_core [color="#2980B9" penwidth=2]
     bolt -> gql_redis [color="#2980B9"]
     sync -> cypher_core [color="#2980B9" penwidth=2]
@@ -54,8 +54,8 @@ digraph compile_deps {
     gql_redis -> redis_crate [style=dashed color="#888"]
     gql_redis -> r2d2_crate [style=dashed color="#888"]
     gql_fabric -> reqwest_crate [style=dashed color="#888"]
-    gql_module -> redis_module_crate [style=dashed color="#888"]
-    gql_api -> axum_crate [style=dashed color="#888"]
+    sd2_redis_module -> redis_module_crate [style=dashed color="#888"]
+    sd2_api -> axum_crate [style=dashed color="#888"]
     bolt -> tokio_crate [style=dashed color="#888"]
     sync -> tokio_crate [style=dashed color="#888"]
 }

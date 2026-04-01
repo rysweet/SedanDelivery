@@ -126,16 +126,16 @@
 <path fill="none" stroke="#000000" stroke-dasharray="5,2" d="M429,-170.75C429,-144.46 429,-94.13 429,-62.69"/>
 <polygon fill="#000000" stroke="#000000" points="432.5,-62.43 429,-52.43 425.5,-62.43 432.5,-62.43"/>
 </g>
-<!-- gql_module -->
+<!-- sd2_redis_module -->
 <g id="node4" class="node">
-<title>gql_module</title>
+<title>sd2_redis_module</title>
 <polygon fill="#a9dfbf" stroke="black" points="551,-207 487,-207 487,-171 551,-171 551,-207"/>
 <text text-anchor="middle" x="519" y="-192" font-family="Times,serif" font-size="10.00">gql&#45;module</text>
 <text text-anchor="middle" x="519" y="-181" font-family="Times,serif" font-size="10.00">(cdylib)</text>
 </g>
-<!-- gql_module&#45;&gt;cypher_core -->
+<!-- sd2_redis_module&#45;&gt;cypher_core -->
 <g id="edge3" class="edge">
-<title>gql_module&#45;&gt;cypher_core</title>
+<title>sd2_redis_module&#45;&gt;cypher_core</title>
 <path fill="none" stroke="#2980b9" stroke-width="2" d="M486.99,-174.03C483.98,-172.93 480.95,-171.9 478,-171 398.42,-146.8 301.97,-130.7 250.18,-123.09"/>
 <polygon fill="#2980b9" stroke="#2980b9" stroke-width="2" points="250.53,-119.6 240.14,-121.63 249.53,-126.53 250.53,-119.6"/>
 </g>
@@ -146,28 +146,28 @@
 <text text-anchor="middle" x="509" y="-37" font-family="Times,serif" font-size="10.00">redis&#45;module</text>
 <text text-anchor="middle" x="509" y="-26" font-family="Times,serif" font-size="10.00">(bindgen)</text>
 </g>
-<!-- gql_module&#45;&gt;redis_module_crate -->
+<!-- sd2_redis_module&#45;&gt;redis_module_crate -->
 <g id="edge19" class="edge">
-<title>gql_module&#45;&gt;redis_module_crate</title>
+<title>sd2_redis_module&#45;&gt;redis_module_crate</title>
 <path fill="none" stroke="#000000" stroke-dasharray="5,2" d="M517.87,-170.75C516.15,-144.46 512.86,-94.13 510.81,-62.69"/>
 <polygon fill="#000000" stroke="#000000" points="514.28,-62.18 510.14,-52.43 507.3,-62.63 514.28,-62.18"/>
 </g>
-<!-- gql_api -->
+<!-- sd2_api -->
 <g id="node5" class="node">
-<title>gql_api</title>
+<title>sd2_api</title>
 <polygon fill="#a9dfbf" stroke="black" points="253,-281.5 199,-281.5 199,-245.5 253,-245.5 253,-281.5"/>
 <text text-anchor="middle" x="226" y="-266.5" font-family="Times,serif" font-size="10.00">gql&#45;api</text>
 <text text-anchor="middle" x="226" y="-255.5" font-family="Times,serif" font-size="10.00">(bin)</text>
 </g>
-<!-- gql_api&#45;&gt;cypher_core -->
+<!-- sd2_api&#45;&gt;cypher_core -->
 <g id="edge5" class="edge">
-<title>gql_api&#45;&gt;cypher_core</title>
+<title>sd2_api&#45;&gt;cypher_core</title>
 <path fill="none" stroke="#2980b9" stroke-width="2" d="M198.76,-259.86C167.2,-255.18 116.51,-242.29 93,-207 84.13,-193.68 84.27,-184.41 93,-171 111.21,-143.04 147.88,-129.73 175.92,-123.45"/>
 <polygon fill="#2980b9" stroke="#2980b9" stroke-width="2" points="176.7,-126.86 185.81,-121.44 175.31,-120 176.7,-126.86"/>
 </g>
-<!-- gql_api&#45;&gt;gql_redis -->
+<!-- sd2_api&#45;&gt;gql_redis -->
 <g id="edge6" class="edge">
-<title>gql_api&#45;&gt;gql_redis</title>
+<title>sd2_api&#45;&gt;gql_redis</title>
 <path fill="none" stroke="#2980b9" d="M247.09,-245.32C258.73,-235.84 273.35,-223.93 286.05,-213.58"/>
 <polygon fill="#2980b9" stroke="#2980b9" points="288.52,-216.09 294.06,-207.06 284.1,-210.66 288.52,-216.09"/>
 </g>
@@ -177,9 +177,9 @@
 <polygon fill="#fad7a0" stroke="black" points="616,-52 562,-52 562,-16 616,-16 616,-52"/>
 <text text-anchor="middle" x="589" y="-31.5" font-family="Times,serif" font-size="10.00">axum</text>
 </g>
-<!-- gql_api&#45;&gt;axum_crate -->
+<!-- sd2_api&#45;&gt;axum_crate -->
 <g id="edge20" class="edge">
-<title>gql_api&#45;&gt;axum_crate</title>
+<title>sd2_api&#45;&gt;axum_crate</title>
 <path fill="none" stroke="#000000" stroke-dasharray="5,2" d="M253.41,-246.67C256.57,-245.26 259.81,-244 263,-243 326.46,-223.17 511.91,-252.91 560,-207 599.07,-169.7 597.77,-100.86 593.39,-62.55"/>
 <polygon fill="#000000" stroke="#000000" points="596.8,-61.63 592.04,-52.16 589.86,-62.53 596.8,-61.63"/>
 </g>

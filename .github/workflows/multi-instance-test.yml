@@ -5,7 +5,7 @@ on:
   pull_request:
     branches: [main]
     paths:
-      - "gql-redis-store/**"
+      - "sd2-redis-store/**"
       - "sedandelivery-bolt/**"
       - "cypher-core/**"
       - "docker-compose.scale-test.yml"

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# seed-demo-graph.sh — Seed a rich supply-chain demo graph via gql-api REST endpoints.
+# seed-demo-graph.sh — Seed a rich supply-chain demo graph via sd2-api REST endpoints.
 #
 # Usage:
 #   ./scripts/seed-demo-graph.sh                    # defaults to http://localhost:3001

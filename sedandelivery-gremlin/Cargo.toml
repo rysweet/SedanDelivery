@@ -10,7 +10,7 @@ path = "src/main.rs"
 
 [dependencies]
 cypher-core        = { path = "../cypher-core" }
-gql-redis-store = { path = "../gql-redis-store" }
+sd2-redis-store = { path = "../sd2-redis-store" }
 gremlin-core    = { path = "../gremlin-core" }
 tokio            = { workspace = true }
 tokio-tungstenite = "0.24"

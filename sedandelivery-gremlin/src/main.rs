@@ -9,9 +9,9 @@ use tokio::sync::Semaphore;
 
 /// Create the graph store based on environment configuration.
 ///
-/// Delegates to [`gql_redis_store::create_store::create_store`].
+/// Delegates to [`sd2_redis_store::create_store::create_store`].
 fn create_store() -> Arc<dyn GraphStore> {
-    gql_redis_store::create_store::create_store()
+    sd2_redis_store::create_store::create_store()
 }
 
 fn env_or(name: &str, default: &str) -> String {

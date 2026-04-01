@@ -14,7 +14,7 @@ all three services locally, and loading your first graph.
 
 | Tool | Minimum version | Purpose |
 |---|---|---|
-| Rust toolchain (`cargo`) | 1.77 | Build and run gql-api |
+| Rust toolchain (`cargo`) | 1.77 | Build and run sd2-api |
 | .NET SDK | 10.0 | Run SedanDelivery.Api and AppHost |
 | Node.js | 20 LTS | Run the Vite dev server |
 | npm | 10 | Install SPA dependencies |
@@ -59,12 +59,12 @@ streams logs from all services to a single dashboard.
 
 Open three terminal windows.
 
-**Terminal 1 — gql-api (Rust)**
+**Terminal 1 — sd2-api (Rust)**
 
 ```bash
 # From the repository root
-cargo run -p gql-api
-# Output: INFO gql-api listening on 0.0.0.0:3001
+cargo run -p sd2-api
+# Output: INFO sd2-api listening on 0.0.0.0:3001
 ```
 
 **Terminal 2 — SedanDelivery.Api (.NET BFF)**
@@ -89,9 +89,9 @@ Aspire starts the .NET BFF automatically and streams structured logs from all
 registered services to the Aspire dashboard at `http://localhost:15888`.
 
 ```bash
-# Terminal 1 — gql-api must still be started separately
+# Terminal 1 — sd2-api must still be started separately
 # (Aspire tracks it but does not build Rust binaries)
-cargo run -p gql-api
+cargo run -p sd2-api
 
 # Terminal 2 — Aspire orchestrator
 cd sedan-graph-ui
@@ -110,7 +110,7 @@ live logs for all services.
 With all three services running, confirm each layer responds:
 
 ```bash
-# gql-api health check
+# sd2-api health check
 curl http://localhost:3001/health
 # {"status":"ok","version":"0.1.0","demo_graph_exists":false}
 
@@ -232,7 +232,7 @@ file contains all nodes and edges in the standard format:
 
 | Variable | Default | Description |
 |---|---|---|
-| `GQL_API_URL` | `http://localhost:3001` | URL the .NET BFF uses to reach gql-api |
+| `GQL_API_URL` | `http://localhost:3001` | URL the .NET BFF uses to reach sd2-api |
 | `CORS_ORIGINS` | _(empty)_ | Comma-separated extra origins the BFF allows |
 | `VITE_API_URL` | _(empty, same origin)_ | Base URL the SPA uses to reach the BFF |
 
@@ -248,24 +248,24 @@ The Sigma.js WebGL context requires hardware-accelerated rendering. Confirm your
 browser has WebGL enabled at `about:gpu`. Chrome and Firefox both support WebGL by
 default; some CI/CD environments may not.
 
-**`cargo run -p gql-api` fails to compile**
+**`cargo run -p sd2-api` fails to compile**
 
 Run `rustup update stable` to ensure your toolchain is current. The project
 requires Rust 1.77 or later.
 
 **BFF returns `503` on every request**
 
-The BFF cannot reach gql-api. Check that `cargo run -p gql-api` is running and
+The BFF cannot reach sd2-api. Check that `cargo run -p sd2-api` is running and
 that `GQL_API_URL` points to the correct address. When running inside Docker or
 Aspire containers, `localhost` in the BFF refers to the container, not the host.
 
 **Rate limit errors (HTTP 429)**
 
 The `/query` and `/mutate` BFF endpoints allow 100 requests per 60-second window
-per IP. Slow down automated scripts or run gql-api directly on port 3001.
+per IP. Slow down automated scripts or run sd2-api directly on port 3001.
 
 ## Next Steps
 
 - [User Guide](./user-guide.md) — Full UI reference, keyboard shortcuts, schema view
-- [API Reference](./api-reference.md) — Direct access to gql-api endpoints
+- [API Reference](./api-reference.md) — Direct access to sd2-api endpoints
 - [Deployment](./deployment.md) — Build container images and deploy to Azure
