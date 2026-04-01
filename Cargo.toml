@@ -9,6 +9,7 @@ members = [
     "sedandelivery-bolt",
     "sedandelivery-fabric-sync",
     "sedandelivery-gremlin",
+    "sedandelivery-gremlin-server",
     "gremlin-core",
     "sedan-gql-embedded",
     "sedan-cypher-embedded",

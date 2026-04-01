@@ -29,6 +29,7 @@ COPY sd2-api/Cargo.toml               ./sd2-api/
 COPY sedandelivery-bolt/Cargo.toml    ./sedandelivery-bolt/
 COPY sedandelivery-fabric-sync/Cargo.toml ./sedandelivery-fabric-sync/
 COPY sedandelivery-gremlin/Cargo.toml ./sedandelivery-gremlin/
+COPY sedandelivery-gremlin-server/Cargo.toml ./sedandelivery-gremlin-server/
 COPY gremlin-core/Cargo.toml          ./gremlin-core/
 COPY gql-engine/Cargo.toml            ./gql-engine/
 COPY sedan-gql-embedded/Cargo.toml    ./sedan-gql-embedded/
@@ -41,7 +42,7 @@ COPY tests/gremlin-tck/Cargo.toml     ./tests/gremlin-tck/
 # libclang not needed for bolt (only needed for sd2-redis-module redis-module bindgen).
 RUN mkdir -p cypher-core/src sd2-redis-store/src gql-fabric-store/src sd2-redis-module/src gql-cli/src sd2-api/src \
              sedandelivery-bolt/src sedandelivery-bolt/benches sedandelivery-fabric-sync/src \
-             sedandelivery-gremlin/src gremlin-core/src gql-engine/src sedan-gql-embedded/src \
+             sedandelivery-gremlin/src sedandelivery-gremlin-server/src gremlin-core/src gql-engine/src sedan-gql-embedded/src \
              sedan-cypher-embedded/src sedan-gremlin-embedded/src \
              tests/loadtest/src tests/gremlin-tck/src && \
     echo "pub fn stub() {}" > cypher-core/src/lib.rs && \
@@ -56,6 +57,7 @@ RUN mkdir -p cypher-core/src sd2-redis-store/src gql-fabric-store/src sd2-redis-
     echo "fn main() {}" > sedandelivery-fabric-sync/src/main.rs && \
     echo "pub fn stub() {}" > sedandelivery-gremlin/src/lib.rs && \
     echo "fn main() {}" > sedandelivery-gremlin/src/main.rs && \
+    echo "fn main() {}" > sedandelivery-gremlin-server/src/main.rs && \
     echo "pub fn stub() {}" > gremlin-core/src/lib.rs && \
     echo "pub fn stub() {}" > gql-engine/src/lib.rs && \
     echo "pub fn stub() {}" > sedan-gql-embedded/src/lib.rs && \

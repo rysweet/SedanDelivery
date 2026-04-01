@@ -1,0 +1,23 @@
+[package]
+name = "sedandelivery-gremlin-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "sedandelivery-gremlin-server"
+path = "src/main.rs"
+
+[dependencies]
+cypher-core    = { path = "../cypher-core" }
+sd2-redis-store = { path = "../sd2-redis-store" }
+gremlin-core   = { path = "../gremlin-core" }
+tokio          = { workspace = true }
+tokio-tungstenite = "0.24"
+serde          = { workspace = true }
+serde_json     = { workspace = true }
+tracing        = { workspace = true }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+uuid           = { version = "1", features = ["v4"] }
+futures-util   = "0.3"
+indexmap        = { workspace = true }

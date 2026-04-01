@@ -3821,6 +3821,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "sedandelivery-gremlin-server"
+version = "0.1.0"
+dependencies = [
+ "cypher-core",
+ "futures-util",
+ "gremlin-core",
+ "indexmap",
+ "sd2-redis-store",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-tungstenite 0.24.0",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
 name = "semver"
 version = "1.0.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
