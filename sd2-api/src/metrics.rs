@@ -132,8 +132,9 @@ mod tests {
         ] {
             assert!(!name.is_empty(), "metric name must not be empty");
             assert!(
-                name.chars().all(|c| c.is_ascii_lowercase() || c == '_'),
-                "metric name '{name}' contains invalid characters (only [a-z_] allowed)"
+                name.chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_'),
+                "metric name '{name}' contains invalid characters (only [a-z0-9_] allowed)"
             );
         }
     }

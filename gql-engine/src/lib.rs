@@ -206,8 +206,8 @@ mod tests {
         // Full execution requires cypher-core support for WITH *, expr AS x
         // which is tracked as a future enhancement.
         let gql = parser::parse_gql("MATCH (n:Person) LET x = n.name RETURN n");
-        if gql.is_err() {
-            let err = format!("{:?}", gql.unwrap_err());
+        if let Err(e) = gql {
+            let err = format!("{e:?}");
             // Expected: cypher-core doesn't support WITH *, yet
             assert!(
                 err.contains("Syntax") || err.contains("Comma"),

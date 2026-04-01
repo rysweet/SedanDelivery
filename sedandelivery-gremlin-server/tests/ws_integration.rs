@@ -122,13 +122,21 @@ async fn eval_add_vertex_and_query() {
     let (mut sink, mut source) = connect(port).await;
 
     // Add a vertex
-    let resp =
-        send_eval(&mut sink, &mut source, r#"g.addV("person").property("name","alice")"#).await;
+    let resp = send_eval(
+        &mut sink,
+        &mut source,
+        r#"g.addV("person").property("name","alice")"#,
+    )
+    .await;
     assert_eq!(resp["status"]["code"], 200, "addV failed: {resp}");
 
     // Query the vertex
-    let resp =
-        send_eval(&mut sink, &mut source, r#"g.V().has("person","name","alice").count()"#).await;
+    let resp = send_eval(
+        &mut sink,
+        &mut source,
+        r#"g.V().has("person","name","alice").count()"#,
+    )
+    .await;
     assert_eq!(resp["status"]["code"], 200);
 }
 
@@ -153,9 +161,7 @@ async fn eval_missing_gremlin_arg_returns_499() {
         "op": "eval",
         "args": {}
     });
-    sink.send(Message::Text(request.to_string()))
-        .await
-        .unwrap();
+    sink.send(Message::Text(request.to_string())).await.unwrap();
 
     let msg = tokio::time::timeout(Duration::from_secs(10), source.next())
         .await
@@ -179,9 +185,7 @@ async fn close_op_returns_204() {
         "op": "close",
         "args": {}
     });
-    sink.send(Message::Text(request.to_string()))
-        .await
-        .unwrap();
+    sink.send(Message::Text(request.to_string())).await.unwrap();
 
     let msg = tokio::time::timeout(Duration::from_secs(10), source.next())
         .await
@@ -205,9 +209,7 @@ async fn unsupported_op_returns_500() {
         "op": "bytecode",
         "args": {}
     });
-    sink.send(Message::Text(request.to_string()))
-        .await
-        .unwrap();
+    sink.send(Message::Text(request.to_string())).await.unwrap();
 
     let msg = tokio::time::timeout(Duration::from_secs(10), source.next())
         .await
@@ -285,9 +287,7 @@ async fn ping_gets_pong() {
     let (ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
     let (mut sink, mut source) = ws.split();
 
-    sink.send(Message::Ping(vec![1, 2, 3]))
-        .await
-        .unwrap();
+    sink.send(Message::Ping(vec![1, 2, 3])).await.unwrap();
 
     let msg = tokio::time::timeout(Duration::from_secs(5), source.next())
         .await
@@ -309,9 +309,7 @@ async fn multiple_requests_on_same_connection() {
             "op": "eval",
             "args": {"gremlin": "g.V().count()"}
         });
-        sink.send(Message::Text(request.to_string()))
-            .await
-            .unwrap();
+        sink.send(Message::Text(request.to_string())).await.unwrap();
 
         let msg = tokio::time::timeout(Duration::from_secs(10), source.next())
             .await

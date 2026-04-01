@@ -148,7 +148,7 @@ fn gremlin_err(msg: impl Into<String>) -> GqlError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cypher_core::storage::{InMemoryGraphStore, NodeId, EdgeId};
+    use cypher_core::storage::{EdgeId, InMemoryGraphStore, NodeId};
     use cypher_core::types::Value;
 
     // ── value_to_gremlin conversion ─────────────────────────────────────
@@ -173,8 +173,14 @@ mod tests {
 
     #[test]
     fn value_to_gremlin_bool() {
-        assert_eq!(value_to_gremlin(&Value::Bool(true)), GremlinValue::Bool(true));
-        assert_eq!(value_to_gremlin(&Value::Bool(false)), GremlinValue::Bool(false));
+        assert_eq!(
+            value_to_gremlin(&Value::Bool(true)),
+            GremlinValue::Bool(true)
+        );
+        assert_eq!(
+            value_to_gremlin(&Value::Bool(false)),
+            GremlinValue::Bool(false)
+        );
     }
 
     #[test]
@@ -272,8 +278,7 @@ mod tests {
     #[test]
     fn execute_gremlin_count_empty_graph() {
         let store = InMemoryGraphStore::new();
-        let result =
-            execute_gremlin_text(&store, "default", "g.V().count()", &HashMap::new());
+        let result = execute_gremlin_text(&store, "default", "g.V().count()", &HashMap::new());
         let data = result.unwrap();
         // Empty graph should return count of 0
         assert_eq!(data.len(), 1);
@@ -296,8 +301,7 @@ mod tests {
     #[test]
     fn execute_gremlin_invalid_query_returns_error() {
         let store = InMemoryGraphStore::new();
-        let result =
-            execute_gremlin_text(&store, "default", "g.INVALID_STEP()", &HashMap::new());
+        let result = execute_gremlin_text(&store, "default", "g.INVALID_STEP()", &HashMap::new());
         assert!(result.is_err(), "invalid step should produce an error");
     }
 
@@ -322,15 +326,17 @@ mod tests {
             r#"g.V().has("person","name",name)"#,
             &bindings,
         );
-        assert!(result.is_ok(), "query with bindings should succeed: {result:?}");
+        assert!(
+            result.is_ok(),
+            "query with bindings should succeed: {result:?}"
+        );
     }
 
     #[test]
     fn execute_gremlin_creates_graph_on_demand() {
         let store = InMemoryGraphStore::new();
         assert!(!store.graph_exists("new_graph").unwrap());
-        let result =
-            execute_gremlin_text(&store, "new_graph", "g.V().count()", &HashMap::new());
+        let result = execute_gremlin_text(&store, "new_graph", "g.V().count()", &HashMap::new());
         assert!(result.is_ok());
         assert!(store.graph_exists("new_graph").unwrap());
     }

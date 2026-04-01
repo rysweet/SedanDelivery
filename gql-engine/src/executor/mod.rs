@@ -33,15 +33,7 @@ pub fn execute_gql(
     graph: &str,
 ) -> Result<QueryResult, GqlExecutionError> {
     let executor = QueryExecutor::new(store);
-    let mut budget = ExecutionBudget::default_budget();
-    let result = executor.execute(graph, &plan.operator, &mut budget)?;
-
-    // Enforce MANDATORY MATCH: error if zero rows returned.
-    if plan.mandatory_match && result.rows.is_empty() {
-        return Err(GqlExecutionError::MandatoryMatchEmpty);
-    }
-
-    Ok(result)
+    run_and_enforce(plan, &executor, graph)
 }
 
 /// Execute a planned GQL query with procedure registry and parameters.
@@ -53,10 +45,18 @@ pub fn execute_gql_with_context(
     parameters: HashMap<String, Value>,
 ) -> Result<QueryResult, GqlExecutionError> {
     let executor = QueryExecutor::with_context(store, registry, parameters);
+    run_and_enforce(plan, &executor, graph)
+}
+
+/// Run the operator tree and enforce GQL-specific constraints (e.g. MANDATORY MATCH).
+fn run_and_enforce(
+    plan: &GqlPlan,
+    executor: &QueryExecutor<'_>,
+    graph: &str,
+) -> Result<QueryResult, GqlExecutionError> {
     let mut budget = ExecutionBudget::default_budget();
     let result = executor.execute(graph, &plan.operator, &mut budget)?;
 
-    // Enforce MANDATORY MATCH: error if zero rows returned.
     if plan.mandatory_match && result.rows.is_empty() {
         return Err(GqlExecutionError::MandatoryMatchEmpty);
     }

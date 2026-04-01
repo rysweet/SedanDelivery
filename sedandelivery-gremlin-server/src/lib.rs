@@ -47,8 +47,7 @@ pub async fn handle_connection(
             Message::Binary(data) => match protocol::parse_binary_frame(data) {
                 Ok(text) => text.to_string(),
                 Err(e) => {
-                    let resp =
-                        protocol::ResponseMessage::error(uuid::Uuid::new_v4(), 498, e);
+                    let resp = protocol::ResponseMessage::error(uuid::Uuid::new_v4(), 498, e);
                     let json = serde_json::to_string(&resp)?;
                     sink.send(Message::Text(json)).await?;
                     continue;
@@ -65,8 +64,7 @@ pub async fn handle_connection(
         let req = match protocol::parse_request(&json_text) {
             Ok(req) => req,
             Err(e) => {
-                let resp =
-                    protocol::ResponseMessage::error(uuid::Uuid::new_v4(), 498, e);
+                let resp = protocol::ResponseMessage::error(uuid::Uuid::new_v4(), 498, e);
                 let json = serde_json::to_string(&resp)?;
                 sink.send(Message::Text(json)).await?;
                 continue;

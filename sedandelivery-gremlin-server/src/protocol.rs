@@ -149,7 +149,8 @@ mod tests {
     #[test]
     fn parse_binary_application_json() {
         let mime = b"application/json";
-        let payload = b"{\"requestId\":\"00000000-0000-0000-0000-000000000002\",\"op\":\"eval\",\"args\":{}}";
+        let payload =
+            b"{\"requestId\":\"00000000-0000-0000-0000-000000000002\",\"op\":\"eval\",\"args\":{}}";
         let mut frame = vec![mime.len() as u8];
         frame.extend_from_slice(mime);
         frame.extend_from_slice(payload);

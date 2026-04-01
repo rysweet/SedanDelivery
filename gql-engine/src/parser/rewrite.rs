@@ -9,6 +9,29 @@
 
 use super::{GqlMetadata, PathMode, PathSearch};
 
+/// Keywords that start a new clause — used to delimit expression collection.
+const CLAUSE_KEYWORDS: &[&str] = &[
+    "MATCH",
+    "RETURN",
+    "WHERE",
+    "FILTER",
+    "CREATE",
+    "INSERT",
+    "DELETE",
+    "SET",
+    "REMOVE",
+    "WITH",
+    "UNWIND",
+    "LET",
+    "FOR",
+    "ORDER",
+    "LIMIT",
+    "SKIP",
+    "OFFSET",
+    "MANDATORY",
+    "OPTIONAL",
+];
+
 /// Normalise GQL source into cypher-core–compatible source.
 ///
 /// Substitutions (case-insensitive, whole-word):
@@ -73,41 +96,10 @@ pub fn normalise_gql_source(src: &str) -> String {
                     i += 1;
                 }
                 // Collect expression tokens until next clause keyword or end
-                let clause_keywords = [
-                    "MATCH",
-                    "RETURN",
-                    "WHERE",
-                    "FILTER",
-                    "CREATE",
-                    "INSERT",
-                    "DELETE",
-                    "SET",
-                    "REMOVE",
-                    "WITH",
-                    "UNWIND",
-                    "LET",
-                    "FOR",
-                    "ORDER",
-                    "LIMIT",
-                    "SKIP",
-                    "OFFSET",
-                    "MANDATORY",
-                    "OPTIONAL",
-                ];
-                let mut expr_tokens = Vec::new();
-                while i < tokens.len() {
-                    let tok_upper = tokens[i].text.to_ascii_uppercase();
-                    if clause_keywords.contains(&tok_upper.as_str()) {
-                        break;
-                    }
-                    expr_tokens.push(tokens[i].text);
-                    i += 1;
-                }
-                let expr_str: String = expr_tokens.concat();
-                let expr_trimmed = expr_str.trim();
+                let expr_trimmed = collect_until_clause(&tokens, &mut i);
                 // GQL LET adds to scope (doesn't replace), so use WITH *, ...
                 result.push_str("WITH *, ");
-                result.push_str(expr_trimmed);
+                result.push_str(&expr_trimmed);
                 result.push_str(" AS ");
                 result.push_str(var_name);
                 result.push(' ');
@@ -140,40 +132,9 @@ pub fn normalise_gql_source(src: &str) -> String {
                     i += 1;
                 }
                 // Collect list expression tokens until next clause keyword
-                let clause_keywords = [
-                    "MATCH",
-                    "RETURN",
-                    "WHERE",
-                    "FILTER",
-                    "CREATE",
-                    "INSERT",
-                    "DELETE",
-                    "SET",
-                    "REMOVE",
-                    "WITH",
-                    "UNWIND",
-                    "LET",
-                    "FOR",
-                    "ORDER",
-                    "LIMIT",
-                    "SKIP",
-                    "OFFSET",
-                    "MANDATORY",
-                    "OPTIONAL",
-                ];
-                let mut expr_tokens = Vec::new();
-                while i < tokens.len() {
-                    let tok_upper = tokens[i].text.to_ascii_uppercase();
-                    if clause_keywords.contains(&tok_upper.as_str()) {
-                        break;
-                    }
-                    expr_tokens.push(tokens[i].text);
-                    i += 1;
-                }
-                let expr_str: String = expr_tokens.concat();
-                let expr_trimmed = expr_str.trim();
+                let expr_trimmed = collect_until_clause(&tokens, &mut i);
                 result.push_str("UNWIND ");
-                result.push_str(expr_trimmed);
+                result.push_str(&expr_trimmed);
                 result.push_str(" AS ");
                 result.push_str(var_name);
                 result.push(' ');
@@ -272,6 +233,21 @@ pub fn normalise_gql_source(src: &str) -> String {
     }
 
     result
+}
+
+/// Collect tokens until a clause keyword is encountered, returning the trimmed expression.
+fn collect_until_clause(tokens: &[RewriteToken<'_>], i: &mut usize) -> String {
+    let mut expr_tokens = Vec::new();
+    while *i < tokens.len() {
+        let tok_upper = tokens[*i].text.to_ascii_uppercase();
+        if CLAUSE_KEYWORDS.contains(&tok_upper.as_str()) {
+            break;
+        }
+        expr_tokens.push(tokens[*i].text);
+        *i += 1;
+    }
+    let expr_str: String = expr_tokens.concat();
+    expr_str.trim().to_owned()
 }
 
 /// Extract GQL-specific metadata from the source before normalisation.
