@@ -210,7 +210,7 @@ fn process_entries(
             }
         };
 
-        let event: gql_core::changelog::ChangeEvent = match serde_json::from_str(event_json) {
+        let event: cypher_core::changelog::ChangeEvent = match serde_json::from_str(event_json) {
             Ok(e) => e,
             Err(err) => {
                 warn!(entry_id = %entry_id, "failed to deserialise ChangeEvent: {err} — skipping");

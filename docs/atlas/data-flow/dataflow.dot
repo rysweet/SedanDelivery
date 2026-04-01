@@ -13,7 +13,7 @@ digraph data_flow {
     }
 
     subgraph cluster_pipeline {
-        label="Query Pipeline — gql-core"
+        label="Query Pipeline — cypher-core"
         style=filled fillcolor="#F3E5F5"
 
         lexer [label="Lexer\nCypher → tokens" fillcolor="#E1BEE7"]

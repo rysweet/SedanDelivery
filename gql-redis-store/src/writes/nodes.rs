@@ -4,10 +4,10 @@ use std::collections::HashSet;
 
 use indexmap::IndexMap;
 
-use gql_core::error::StorageError;
-use gql_core::serde_value::props_to_json;
-use gql_core::storage::{EdgeId, NodeId};
-use gql_core::types::Value;
+use cypher_core::error::StorageError;
+use cypher_core::serde_value::props_to_json;
+use cypher_core::storage::{EdgeId, NodeId};
+use cypher_core::types::Value;
 
 use crate::keys::{
     key_batch_node_write_lock, key_in, key_label, key_label_names, key_node, key_node_seq,
@@ -26,7 +26,7 @@ use super::helpers::{
 fn max_detach_delete_edges() -> usize {
     static SIZE: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
     *SIZE.get_or_init(|| {
-        gql_core::config::parse_env_min("GQL_REDIS_MAX_DETACH_DELETE_EDGES", 10_000usize, 1)
+        cypher_core::config::parse_env_min("GQL_REDIS_MAX_DETACH_DELETE_EDGES", 10_000usize, 1)
     })
 }
 
@@ -485,7 +485,7 @@ impl RedisGraphStore {
                     limit.saturating_add(1),
                     out_count.saturating_add(in_count) as usize,
                 );
-                let mut edge_ids: HashSet<gql_core::storage::EdgeId> =
+                let mut edge_ids: HashSet<cypher_core::storage::EdgeId> =
                     HashSet::with_capacity(initial_capacity);
                 for_each_set_page_locked(
                     conn,

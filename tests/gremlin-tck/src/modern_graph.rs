@@ -8,8 +8,8 @@
 
 use indexmap::IndexMap;
 
-use gql_core::storage::{EdgeId, GraphStore, InMemoryGraphStore, NodeId};
-use gql_core::types::Value;
+use cypher_core::storage::{EdgeId, GraphStore, InMemoryGraphStore, NodeId};
+use cypher_core::types::Value;
 
 /// Vertex IDs returned after building the modern graph, for convenient
 /// reference in tests that need to assert on specific nodes.

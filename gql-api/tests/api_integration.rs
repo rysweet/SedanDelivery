@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use axum::body::Body;
 use axum::Router;
-use gql_core::storage::{GraphStore, InMemoryGraphStore};
+use cypher_core::storage::{GraphStore, InMemoryGraphStore};
 use http::{Method, Request, StatusCode};
 use http_body_util::BodyExt;
 use serde_json::{json, Value};

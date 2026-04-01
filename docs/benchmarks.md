@@ -2,30 +2,30 @@
 
 SedanDelivery now ships four benchmark surfaces:
 
-- `gql-core/benches/` for parser/planner/executor baselines
+- `cypher-core/benches/` for parser/planner/executor baselines
 - `gql-redis-store/benches/` for Redis safety-tax baselines
 - `sedandelivery-bolt/benches/` for Bolt wire and routing microbenchmarks
 - `tests/loadtest/` for outside-in topology comparisons over the public Bolt path
 
 ## Running benchmarks
 
-### `gql-core` engine suites
+### `cypher-core` engine suites
 
 ```bash
 # Run all three suites (takes ~2–5 min):
-cargo bench -p gql-core
+cargo bench -p cypher-core
 
 # Run a single suite:
-cargo bench -p gql-core --bench parser
-cargo bench -p gql-core --bench executor
-cargo bench -p gql-core --bench scale
+cargo bench -p cypher-core --bench parser
+cargo bench -p cypher-core --bench executor
+cargo bench -p cypher-core --bench scale
 
 # Run a single named benchmark (substring match):
-cargo bench -p gql-core --bench executor -- node_scan
-cargo bench -p gql-core --bench executor -- e2e_friends_of_friends
+cargo bench -p cypher-core --bench executor -- node_scan
+cargo bench -p cypher-core --bench executor -- e2e_friends_of_friends
 
 # Generate an HTML report (opens in browser):
-cargo bench -p gql-core -- --output-format html
+cargo bench -p cypher-core -- --output-format html
 # Report is written to target/criterion/report/index.html
 ```
 
@@ -212,10 +212,10 @@ latency; the meaningful topology cost shows up in the outside-in load tests.
 
 ```bash
 # Save the current results as the baseline named "main":
-cargo bench -p gql-core -- --save-baseline main
+cargo bench -p cypher-core -- --save-baseline main
 
 # Later, compare against the saved baseline:
-cargo bench -p gql-core -- --baseline main
+cargo bench -p cypher-core -- --baseline main
 
 # Criterion will flag regressions with "Performance has regressed":
 # node_scan/1000   change: [+12.34% +13.01% +13.70%] (p = 0.00)
@@ -331,7 +331,7 @@ surface failed and which had not yet run.
 The `Performance Benchmarks` job runs on every push to `main` and uploads
 results as a GitHub Actions artifact named `benchmark-results`.
 
-That job currently covers the stable `gql-core` suites only. The Redis
+That job currently covers the stable `cypher-core` suites only. The Redis
 `store_safety` and outside-in load tests remain manual/advisory for now; they
 should inform reviews, but they are not required merge gates until their
 baseline variance is better understood.
@@ -358,7 +358,7 @@ the last `main` artifact:
 gh run download --name benchmark-results --dir baseline/
 
 # Run benchmarks and save output
-cargo bench -p gql-core -- --output-format bencher 2>&1 | tee current.txt
+cargo bench -p cypher-core -- --output-format bencher 2>&1 | tee current.txt
 
 # Compare: lines where % change > 10%
 diff baseline/bench-executor.txt current.txt   # rough comparison

@@ -11,12 +11,12 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
-use gql_core::ast::{BinaryOp, Direction, Expr, Identifier, Label, RelType};
-use gql_core::executor::{ExecutionBudget, QueryExecutor};
-use gql_core::parser::parse_query;
-use gql_core::planner::{Operator, QueryPlanner};
-use gql_core::storage::InMemoryGraphStore;
-use gql_core::types::Value;
+use cypher_core::ast::{BinaryOp, Direction, Expr, Identifier, Label, RelType};
+use cypher_core::executor::{ExecutionBudget, QueryExecutor};
+use cypher_core::parser::parse_query;
+use cypher_core::planner::{Operator, QueryPlanner};
+use cypher_core::storage::InMemoryGraphStore;
+use cypher_core::types::Value;
 
 use super::loader::{build, GRAPH};
 

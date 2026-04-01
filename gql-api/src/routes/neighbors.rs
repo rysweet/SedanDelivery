@@ -8,7 +8,7 @@ use axum::extract::{Path, Query, State};
 use axum::routing::get;
 use axum::{Json, Router};
 
-use gql_core::storage::{validate_graph_name, NodeId};
+use cypher_core::storage::{validate_graph_name, NodeId};
 
 use crate::error::ApiError;
 use crate::models::{max_page_limit, NeighborParams};

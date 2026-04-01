@@ -2,7 +2,7 @@
 #
 # This scenario validates the full error-contract chain introduced by WS-F (#755):
 #
-#   StorageError::DeleteGraphTooLarge  (gql-core)
+#   StorageError::DeleteGraphTooLarge  (cypher-core)
 #     → emitted by delete_graph_impl  (gql-redis-store)
 #     → HTTP 413 with { "error": "graph_too_large_for_delete", "message": "..." }
 #         (gql-api)
@@ -11,7 +11,7 @@
 #
 # Four sub-scenarios are grouped here:
 #
-#   A — gql-core: variant exists, all fields correct, message format verified
+#   A — cypher-core: variant exists, all fields correct, message format verified
 #   B — gql-redis-store: delete_graph_impl emits typed error (not generic Backend)
 #   C — gql-api: HTTP 413 mapping; response does NOT leak counts or limits
 #   D — sedandelivery-bolt: correct Bolt error code; legacy string absent
@@ -26,7 +26,7 @@ scenario:
   description: >
     Verifies that delete_graph refusals for graphs exceeding the node/edge size
     limit surface a typed, matchable StorageError::DeleteGraphTooLarge variant
-    through every layer of the stack: storage error definition (gql-core),
+    through every layer of the stack: storage error definition (cypher-core),
     delete_graph source emission (gql-redis-store), HTTP 413 API response
     (gql-api), and Bolt client-error code (sedandelivery-bolt).  Also verifies
     that the legacy StorageError::Backend message ("exceeding MAX_NODES_FOR_DELETE")
@@ -43,9 +43,9 @@ scenario:
 
   steps:
 
-    # ── Sub-scenario A: gql-core variant contract ─────────────────────────────
+    # ── Sub-scenario A: cypher-core variant contract ─────────────────────────────
 
-    - name: "A1 — Run gql-core WS-F contract tests"
+    - name: "A1 — Run cypher-core WS-F contract tests"
       agent: cli-agent
       action: execute
       params:
@@ -53,7 +53,7 @@ scenario:
         args:
           - test
           - -p
-          - gql-core
+          - cypher-core
           - --lib
           - ws_f_delete_graph_too_large_tests
           - --

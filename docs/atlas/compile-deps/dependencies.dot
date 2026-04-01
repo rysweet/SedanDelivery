@@ -7,7 +7,7 @@ digraph compile_deps {
         label="Cargo Workspace"
         style=filled fillcolor="#E8F4FD"
 
-        gql_core [label="gql-core\n(lib)" fillcolor="#AED6F1" penwidth=2]
+        cypher_core [label="cypher-core\n(lib)" fillcolor="#AED6F1" penwidth=2]
         gql_redis [label="gql-redis-store\n(lib)" fillcolor="#AED6F1"]
         gql_fabric [label="gql-fabric-store\n(lib)" fillcolor="#AED6F1"]
         gql_module [label="gql-module\n(cdylib)" fillcolor="#A9DFBF"]
@@ -34,23 +34,23 @@ digraph compile_deps {
     }
 
     // Internal deps
-    gql_redis -> gql_core [color="#2980B9" penwidth=2]
-    gql_fabric -> gql_core [color="#2980B9" penwidth=2]
-    gql_module -> gql_core [color="#2980B9" penwidth=2]
-    gql_cli -> gql_core [color="#2980B9" penwidth=2]
-    gql_api -> gql_core [color="#2980B9" penwidth=2]
+    gql_redis -> cypher_core [color="#2980B9" penwidth=2]
+    gql_fabric -> cypher_core [color="#2980B9" penwidth=2]
+    gql_module -> cypher_core [color="#2980B9" penwidth=2]
+    gql_cli -> cypher_core [color="#2980B9" penwidth=2]
+    gql_api -> cypher_core [color="#2980B9" penwidth=2]
     gql_api -> gql_redis [color="#2980B9"]
-    bolt -> gql_core [color="#2980B9" penwidth=2]
+    bolt -> cypher_core [color="#2980B9" penwidth=2]
     bolt -> gql_redis [color="#2980B9"]
-    sync -> gql_core [color="#2980B9" penwidth=2]
+    sync -> cypher_core [color="#2980B9" penwidth=2]
     sync -> gql_redis [color="#2980B9"]
     sync -> gql_fabric [color="#2980B9"]
-    loadtest -> gql_core [color="#2980B9"]
+    loadtest -> cypher_core [color="#2980B9"]
 
     // External deps
-    gql_core -> petgraph_crate [style=dashed color="#888"]
-    gql_core -> serde_crate [style=dashed color="#888"]
-    gql_core -> tracing_crate [style=dashed color="#888"]
+    cypher_core -> petgraph_crate [style=dashed color="#888"]
+    cypher_core -> serde_crate [style=dashed color="#888"]
+    cypher_core -> tracing_crate [style=dashed color="#888"]
     gql_redis -> redis_crate [style=dashed color="#888"]
     gql_redis -> r2d2_crate [style=dashed color="#888"]
     gql_fabric -> reqwest_crate [style=dashed color="#888"]

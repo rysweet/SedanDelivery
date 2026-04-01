@@ -34,7 +34,7 @@ mod store;
 
 use std::sync::Mutex;
 
-use gql_core::error::StorageError;
+use cypher_core::error::StorageError;
 
 use auth::TokenCache;
 
@@ -49,7 +49,7 @@ pub(crate) const SEQ_LABEL: &str = "__SD2Seq";
 
 // ── Main struct ───────────────────────────────────────────────────────────────
 
-/// A [`GraphStore`](gql_core::storage::GraphStore) backed by Microsoft Fabric Graph Database via its REST API.
+/// A [`GraphStore`](cypher_core::storage::GraphStore) backed by Microsoft Fabric Graph Database via its REST API.
 pub struct FabricGraphStore {
     /// Base URL, e.g. `https://api.fabric.microsoft.com/v1/workspaces/{ws}/graphDatabases/{db}`.
     pub(crate) endpoint: String,

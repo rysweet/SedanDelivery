@@ -12,14 +12,14 @@ use axum::http::StatusCode;
 use axum::routing::post;
 use axum::{Json, Router};
 
-use gql_core::executor::{ExecutionBudget, QueryExecutor};
-use gql_core::parser::parse_query;
-use gql_core::plan_cache;
-use gql_core::planner::QueryPlanner;
-use gql_core::procedure::ProcedureRegistry;
-use gql_core::serde_value::json_to_value;
-use gql_core::storage::validate_graph_name;
-use gql_core::types::Value;
+use cypher_core::executor::{ExecutionBudget, QueryExecutor};
+use cypher_core::parser::parse_query;
+use cypher_core::plan_cache;
+use cypher_core::planner::QueryPlanner;
+use cypher_core::procedure::ProcedureRegistry;
+use cypher_core::serde_value::json_to_value;
+use cypher_core::storage::validate_graph_name;
+use cypher_core::types::Value;
 
 use crate::error::ApiError;
 use crate::models::{CypherBody, ExplainResponse, MutateResponse, ProfileResponse, QueryResponse};
@@ -110,7 +110,7 @@ fn convert_params(
 }
 
 fn configured_budget() -> ExecutionBudget {
-    ExecutionBudget::from_config(gql_core::config::global())
+    ExecutionBudget::from_config(cypher_core::config::global())
 }
 
 // ── POST /graphs/{name}/query ─────────────────────────────────────────────────
@@ -204,9 +204,10 @@ async fn explain_handler(
             .plan(&ast)
             .map_err(|e| ApiError::bad_request(e.to_string()))?;
 
-        let graph_stats = gql_core::planner::collect_graph_statistics(store.as_ref(), &graph_name)
-            .map_err(ApiError::from)?;
-        let estimates = gql_core::planner::estimate_cardinality(&plan, &graph_stats);
+        let graph_stats =
+            cypher_core::planner::collect_graph_statistics(store.as_ref(), &graph_name)
+                .map_err(ApiError::from)?;
+        let estimates = cypher_core::planner::estimate_cardinality(&plan, &graph_stats);
 
         Ok::<_, ApiError>(operator_to_json(&plan, &estimates))
     })
@@ -218,8 +219,8 @@ async fn explain_handler(
 
 /// Convert an operator tree to a JSON plan tree with estimated rows.
 fn operator_to_json(
-    op: &gql_core::planner::Operator,
-    estimates: &std::collections::HashMap<*const gql_core::planner::Operator, f64>,
+    op: &cypher_core::planner::Operator,
+    estimates: &std::collections::HashMap<*const cypher_core::planner::Operator, f64>,
 ) -> serde_json::Value {
     let op_type = format!("{:?}", op)
         .split(['(', '{'])
@@ -228,7 +229,7 @@ fn operator_to_json(
         .trim()
         .to_string();
     let estimated_rows = estimates
-        .get(&(op as *const gql_core::planner::Operator))
+        .get(&(op as *const cypher_core::planner::Operator))
         .copied()
         .unwrap_or(1.0);
     let children: Vec<serde_json::Value> = op
@@ -292,9 +293,11 @@ async fn profile_handler(
 
         // Build the annotated plan JSON while the plan is still in place
         // (pointer addresses match the profile stats keys).
-        let graph_stats =
-            gql_core::planner::collect_graph_statistics(store_for_exec.as_ref(), &name_for_exec)?;
-        let estimates = gql_core::planner::estimate_cardinality(&plan, &graph_stats);
+        let graph_stats = cypher_core::planner::collect_graph_statistics(
+            store_for_exec.as_ref(),
+            &name_for_exec,
+        )?;
+        let estimates = cypher_core::planner::estimate_cardinality(&plan, &graph_stats);
         let plan_json = operator_to_profile_json(&plan, &estimates, &profile_stats);
 
         let rows = result
@@ -329,9 +332,9 @@ async fn profile_handler(
 /// Convert an operator tree to a JSON plan tree with both estimated and actual
 /// row counts. Used by the PROFILE endpoint.
 fn operator_to_profile_json(
-    op: &gql_core::planner::Operator,
-    estimates: &std::collections::HashMap<*const gql_core::planner::Operator, f64>,
-    profile_stats: &Option<HashMap<usize, gql_core::executor::OperatorProfileStats>>,
+    op: &cypher_core::planner::Operator,
+    estimates: &std::collections::HashMap<*const cypher_core::planner::Operator, f64>,
+    profile_stats: &Option<HashMap<usize, cypher_core::executor::OperatorProfileStats>>,
 ) -> serde_json::Value {
     let op_type = format!("{:?}", op)
         .split(['(', '{'])
@@ -340,11 +343,11 @@ fn operator_to_profile_json(
         .trim()
         .to_string();
     let estimated_rows = estimates
-        .get(&(op as *const gql_core::planner::Operator))
+        .get(&(op as *const cypher_core::planner::Operator))
         .copied()
         .unwrap_or(1.0);
 
-    let op_addr = op as *const gql_core::planner::Operator as usize;
+    let op_addr = op as *const cypher_core::planner::Operator as usize;
     let (actual_rows, db_hits) = profile_stats
         .as_ref()
         .and_then(|stats| stats.get(&op_addr))

@@ -302,7 +302,7 @@ bash scripts/validate.sh --tck     # include TCK 3903 scenarios (~3 min extra)
 
 | Layer | Count | What it validates |
 |-------|-------|------------------|
-| gql-core unit | 678 | Parser, planner, executor, storage, budget, config |
+| cypher-core unit | 678 | Parser, planner, executor, storage, budget, config |
 | sedandelivery-bolt unit | 399 | PackStream codec, message framing, Bolt state machine, bridge layer |
 | gql-api unit | 115 | API handler pure functions |
 | gql-redis-store unit | 59 | Redis storage layer logic |

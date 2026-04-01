@@ -1,10 +1,10 @@
-//! Bridge between the Gremlin protocol and gql-core.
+//! Bridge between the Gremlin protocol and cypher-core.
 //!
-//! Translates Gremlin bytecode into gql-core execution and converts
+//! Translates Gremlin bytecode into cypher-core execution and converts
 //! results back to GraphSON values.
 
-use gql_core::error::{GqlError, StorageError};
-use gql_core::storage::GraphStore;
+use cypher_core::error::{GqlError, StorageError};
+use cypher_core::storage::GraphStore;
 
 /// Ensure a graph exists, tolerating race conditions.
 pub(crate) fn ensure_graph_exists(store: &dyn GraphStore, graph: &str) -> Result<(), GqlError> {

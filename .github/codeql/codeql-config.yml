@@ -2,7 +2,7 @@ name: "CodeQL Configuration"
 
 # Analyze all Rust source code; exclude test fixtures
 paths:
-  - gql-core
+  - cypher-core
   - gql-redis-store
   - gql-fabric-store
   - gql-module

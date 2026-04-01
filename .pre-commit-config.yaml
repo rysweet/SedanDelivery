@@ -15,7 +15,7 @@ repos:
         pass_filenames: false
       - id: cargo-test
         name: cargo test (unit tests)
-        entry: cargo test -p gql-core --lib
+        entry: cargo test -p cypher-core --lib
         language: system
         types: [rust]
         pass_filenames: false
@@ -26,6 +26,6 @@ repos:
         pass_filenames: false
       - id: no-todo-fixme
         name: no TODO/FIXME in source
-        entry: bash -c '! grep -rn "TODO\|FIXME\|HACK" gql-core/src/ --include="*.rs"'
+        entry: bash -c '! grep -rn "TODO\|FIXME\|HACK" cypher-core/src/ --include="*.rs"'
         language: system
         pass_filenames: false

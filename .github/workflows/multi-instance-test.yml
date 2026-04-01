@@ -7,7 +7,7 @@ on:
     paths:
       - "gql-redis-store/**"
       - "sedandelivery-bolt/**"
-      - "gql-core/**"
+      - "cypher-core/**"
       - "docker-compose.scale-test.yml"
       - "tests/test_multi_instance.py"
       - "scripts/test-multi-instance.sh"

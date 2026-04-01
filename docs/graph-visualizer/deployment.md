@@ -38,7 +38,7 @@ sedan-api  (Azure Container App, port 5000)
        | HTTP  (GQL_API_URL → internal Container Apps FQDN)
        v
 gql-api    (Azure Container App, port 3001)
-  Rust/Axum — gql-core InMemoryGraphStore
+  Rust/Axum — cypher-core InMemoryGraphStore
 ```
 
 Both Container Apps are in the same Container Apps Environment and communicate

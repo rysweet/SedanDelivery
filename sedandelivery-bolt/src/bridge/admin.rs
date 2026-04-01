@@ -2,15 +2,15 @@
 //!
 //! Intercepts queries like CREATE DATABASE, DROP DATABASE, SHOW DATABASES,
 //! CREATE INDEX, DROP INDEX, CREATE CONSTRAINT, DROP CONSTRAINT before
-//! they reach the gql-core parser (which only handles DML).
+//! they reach the cypher-core parser (which only handles DML).
 
 use std::collections::HashMap;
 
-use gql_core::error::{GqlError, ParseError, StorageError};
-use gql_core::executor::{MutationStats, QueryResult};
-use gql_core::plan_cache;
-use gql_core::storage::GraphStore;
-use gql_core::types::Value;
+use cypher_core::error::{GqlError, ParseError, StorageError};
+use cypher_core::executor::{MutationStats, QueryResult};
+use cypher_core::plan_cache;
+use cypher_core::storage::GraphStore;
+use cypher_core::types::Value;
 
 use super::ensure_graph_exists;
 
@@ -326,7 +326,7 @@ fn handle_create_constraint(
             "FOR (n:<Label>) REQUIRE n.<prop> IS UNIQUE or ON (n:<Label>) ASSERT n.<prop> IS UNIQUE in CREATE CONSTRAINT"
         ))?;
 
-    use gql_core::storage::ConstraintType;
+    use cypher_core::storage::ConstraintType;
     store
         .create_constraint(graph, &label, &property, ConstraintType::Unique)
         .map_err(GqlError::from)?;
@@ -520,7 +520,7 @@ fn parse_index_for_on(upper: &str) -> Option<(String, String)> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gql_core::storage::InMemoryGraphStore;
+    use cypher_core::storage::InMemoryGraphStore;
 
     #[test]
     fn extract_simple_identifier_basic() {

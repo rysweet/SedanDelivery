@@ -1,10 +1,10 @@
-//! Bridge between the Bolt protocol and gql-core.
+//! Bridge between the Bolt protocol and cypher-core.
 //!
-//! Translates Bolt values into gql-core `Value` types, executes Cypher
-//! queries via gql-core, and converts results back to Bolt records.
+//! Translates Bolt values into cypher-core `Value` types, executes Cypher
+//! queries via cypher-core, and converts results back to Bolt records.
 
-use gql_core::error::{GqlError, StorageError};
-use gql_core::storage::GraphStore;
+use cypher_core::error::{GqlError, StorageError};
+use cypher_core::storage::GraphStore;
 
 /// Ensure a graph exists, tolerating replica-lag false negatives.
 ///

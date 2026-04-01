@@ -12,7 +12,7 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::get;
 use axum::Router;
-use gql_core::storage::GraphStore;
+use cypher_core::storage::GraphStore;
 use serde::Serialize;
 
 /// Shared state for the health server.

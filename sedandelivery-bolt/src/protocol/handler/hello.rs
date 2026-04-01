@@ -41,7 +41,9 @@ return count";
 /// Configurable via `BOLT_AUTH_MAX_ATTEMPTS` env var (default: 10).
 fn max_failures_per_ip() -> u32 {
     static VAL: OnceLock<u32> = OnceLock::new();
-    *VAL.get_or_init(|| gql_core::config::parse_env_range("BOLT_AUTH_MAX_ATTEMPTS", 10, 1, 10000))
+    *VAL.get_or_init(|| {
+        cypher_core::config::parse_env_range("BOLT_AUTH_MAX_ATTEMPTS", 10, 1, 10000)
+    })
 }
 
 /// Seconds after which an entry is considered stale and eligible for sweep.
@@ -49,7 +51,7 @@ fn max_failures_per_ip() -> u32 {
 fn stale_after_secs() -> u64 {
     static VAL: OnceLock<u64> = OnceLock::new();
     *VAL.get_or_init(|| {
-        gql_core::config::parse_env_range("BOLT_AUTH_WINDOW_SECS", 3600u64, 1, 86400)
+        cypher_core::config::parse_env_range("BOLT_AUTH_WINDOW_SECS", 3600u64, 1, 86400)
     })
 }
 
@@ -438,7 +440,7 @@ mod tests {
     use std::collections::HashMap;
     use std::sync::Arc;
 
-    use gql_core::storage::InMemoryGraphStore;
+    use cypher_core::storage::InMemoryGraphStore;
 
     fn auth_session(ip: IpAddr) -> Session {
         Session {

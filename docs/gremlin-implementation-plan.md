@@ -11,7 +11,7 @@
 
 Gremlin support will be added as a **new protocol frontend** that compiles Gremlin bytecode to SedanDelivery's existing `Operator` execution tree, reusing ~80% of current infrastructure. The implementation requires:
 
-- **`gql-core/src/gremlin/`** — Bytecode deserializer, Step IR, and Compiler (inside existing crate)
+- **`cypher-core/src/gremlin/`** — Bytecode deserializer, Step IR, and Compiler (inside existing crate)
 - **`sedandelivery-gremlin/`** — New crate for WebSocket protocol server on port 8182
 - **5 new Operator variants** — `Repeat`, `Choose`, `Coalesce`, `SideEffect`, `Cap`
 - **Traversers encoded as Rows** — using `__gremlin_head__`, `__gremlin_path__`, `__gremlin_sack__` keys
@@ -60,7 +60,7 @@ TinkerPop Driver → WebSocket (port 8182)
 | Decision | A1 | A2 | A3 | Final | Confidence |
 |----------|:--:|:--:|:--:|-------|:----------:|
 | Bytecode-first (no eval Phase 1) | ✅ | — | ✅ | **Bytecode only, eval Phase 3** | Very High |
-| Gremlin IR in gql-core module | ✅ | — | ❌ | **gql-core/src/gremlin/** | High |
+| Gremlin IR in cypher-core module | ✅ | — | ❌ | **cypher-core/src/gremlin/** | High |
 | Protocol server as separate crate | ❌ | — | ✅ | **sedandelivery-gremlin/** | High |
 | Compile to existing Operator tree | ✅ | ❌ | — | **Yes + 5 new operators** | High |
 | Traverser as Row (not new type) | ✅ | ✅ | — | **Row with `__gremlin_*` keys** | Very High |
@@ -82,8 +82,8 @@ TinkerPop Driver → WebSocket (port 8182)
 **Conflict: 13 new operators (A2) vs 4 new operators (A1)**  
 Resolution: **5 new operators**. A2's `GremlinEdgeScan`, `GremlinEdgeVertex`, `GremlinMap`, `GremlinSelect`, `GremlinGroup`, `GremlinPath`, `GremlinBarrier`, `GremlinSack` all map to existing operators (`Expand`, `Project`, `Aggregate`, etc.). Only `Repeat`, `Choose`, `Coalesce`, `SideEffect`, and `Cap` are genuinely new computational patterns.
 
-**Conflict: Gremlin frontend in gql-core (A1) vs new crate (A3)**  
-Resolution: **Both are right, for different components**. The compiler must live in `gql-core` (needs direct `Operator` construction). The protocol server mirrors `sedandelivery-bolt/` as a separate crate. This follows the existing architecture exactly.
+**Conflict: Gremlin frontend in cypher-core (A1) vs new crate (A3)**  
+Resolution: **Both are right, for different components**. The compiler must live in `cypher-core` (needs direct `Operator` construction). The protocol server mirrors `sedandelivery-bolt/` as a separate crate. This follows the existing architecture exactly.
 
 **Conflict: Mutations in Phase 2 (A1) vs Phase 4 (A2)**  
 Resolution: **Phase 2**. Gremlin mutations (`addV`, `addE`, `drop`, `property`) map directly to existing `Create`, `Delete`, and `Set` operators. No new execution complexity.
@@ -98,13 +98,13 @@ Resolution: **Phase 2**. Gremlin mutations (`addV`, `addE`, `drop`, `property`) 
 
 | Deliverable | Location | Description |
 |-------------|----------|-------------|
-| Gremlin IR types | `gql-core/src/gremlin/ir.rs` | `GremlinStep` enum (~65 variants), `TraversalFlags`, `HasArgs`, `Predicate`, `ByModulator` |
-| Bytecode deserializer | `gql-core/src/gremlin/bytecode.rs` | GraphSON v3 bytecode object → `Vec<GremlinStep>`, modulator absorption pass |
-| Value conversion | `sedandelivery-gremlin/src/bridge/types.rs` | `GremlinValue ↔ gql_core::Value` bidirectional |
+| Gremlin IR types | `cypher-core/src/gremlin/ir.rs` | `GremlinStep` enum (~65 variants), `TraversalFlags`, `HasArgs`, `Predicate`, `ByModulator` |
+| Bytecode deserializer | `cypher-core/src/gremlin/bytecode.rs` | GraphSON v3 bytecode object → `Vec<GremlinStep>`, modulator absorption pass |
+| Value conversion | `sedandelivery-gremlin/src/bridge/types.rs` | `GremlinValue ↔ cypher_core::Value` bidirectional |
 | GraphSON v3 codec | `sedandelivery-gremlin/src/codec/graphson.rs` | Request decode, response encode (serde_json) |
 | WebSocket listener | `sedandelivery-gremlin/src/main.rs` | Accept connections on port 8182, return error for all requests |
 
-**Exit criteria**: `cargo test -p gql-core --lib` passes; `sedandelivery-gremlin` binds port 8182; bytecode round-trip test passes.
+**Exit criteria**: `cargo test -p cypher-core --lib` passes; `sedandelivery-gremlin` binds port 8182; bytecode round-trip test passes.
 
 ---
 
@@ -213,7 +213,7 @@ Mutate:     addV(), addE(), property(), drop(), from(), to()
 
 ```
 SedanDelivery/
-├── gql-core/
+├── cypher-core/
 │   └── src/
 │       ├── lib.rs                          # add: pub mod gremlin;
 │       ├── gremlin/                        # NEW — Gremlin language frontend
@@ -244,7 +244,7 @@ SedanDelivery/
 │       │   ├── graphson.rs                 # GraphSON v3 (serde_json)
 │       │   └── graphbinary.rs              # GraphBinary v1 (Phase 3)
 │       ├── bridge/
-│       │   ├── executor.rs                 # Bytecode → gql-core pipeline
+│       │   ├── executor.rs                 # Bytecode → cypher-core pipeline
 │       │   └── types.rs                    # GremlinValue ↔ Value conversion
 │       ├── message.rs                      # Request/Response types
 │       ├── tls.rs                          # TLS (reuse bolt's pattern)
@@ -258,7 +258,7 @@ SedanDelivery/
 **Dependency graph**:
 ```
 sedandelivery-gremlin
-├── gql-core          (bytecode, compiler, executor)
+├── cypher-core          (bytecode, compiler, executor)
 ├── gql-redis-store   (storage backend)
 ├── tokio + tokio-tungstenite (async + WebSocket)
 ├── serde_json        (GraphSON v3)
@@ -273,7 +273,7 @@ sedandelivery-gremlin
 ### 4a. Gremlin Step IR
 
 ```rust
-// gql-core/src/gremlin/ir.rs
+// cypher-core/src/gremlin/ir.rs
 
 /// A single Gremlin step after bytecode deserialization.
 /// Modulators (.by(), .from(), .to(), .as()) are absorbed into parent steps
@@ -365,7 +365,7 @@ pub const GREMLIN_SACK: &str = "__gremlin_sack__";  // Per-traverser accumulator
 ### 4c. Side Effect State
 
 ```rust
-// gql-core/src/gremlin/side_effect.rs
+// cypher-core/src/gremlin/side_effect.rs
 
 pub struct SideEffectState {
     channels: HashMap<String, Vec<Value>>,
@@ -390,7 +390,7 @@ pub struct ExecContext<'a> {
 ### 4d. Path Tracking
 
 ```rust
-// gql-core/src/gremlin/path.rs
+// cypher-core/src/gremlin/path.rs
 
 #[derive(Debug, Clone)]
 pub struct PathEntry {
@@ -469,7 +469,7 @@ impl TraversalPath {
 ## 6. New Operators
 
 ```rust
-// Added to gql-core/src/planner/mod.rs Operator enum
+// Added to cypher-core/src/planner/mod.rs Operator enum
 
 /// Gremlin repeat/until/emit loop.
 /// For simple repeat(out()).times(N): compiler emits VarLenExpand as fast-path.
@@ -569,7 +569,7 @@ Server controls batch size (default 64 results per frame).
 
 ## 8. Value Type Mapping
 
-| Gremlin Type | GremlinValue | gql-core Value | Notes |
+| Gremlin Type | GremlinValue | cypher-core Value | Notes |
 |:-------------|:-------------|:---------------|:------|
 | `g:Int32` | `Int32(i32)` | `Int(i64)` | Widen |
 | `g:Int64` | `Int64(i64)` | `Int(i64)` | Direct |
@@ -610,17 +610,17 @@ Server controls batch size (default 64 results per frame).
 
 | File | Change | Scope |
 |------|--------|-------|
-| `gql-core/src/lib.rs` | Add `pub mod gremlin;` | 1 line |
-| `gql-core/src/planner/mod.rs` | Add 5 Operator variants + `SideEffectOp` enum | ~30 lines |
-| `gql-core/src/executor/engine/mod.rs` | Add `gremlin_side_effects` to ExecContext; add 5 match arms in `exec_operator()` | ~20 lines in mod.rs |
-| `gql-core/src/plan_cache.rs` | Extend `CachedAst` enum for Gremlin plans | ~15 lines |
+| `cypher-core/src/lib.rs` | Add `pub mod gremlin;` | 1 line |
+| `cypher-core/src/planner/mod.rs` | Add 5 Operator variants + `SideEffectOp` enum | ~30 lines |
+| `cypher-core/src/executor/engine/mod.rs` | Add `gremlin_side_effects` to ExecContext; add 5 match arms in `exec_operator()` | ~20 lines in mod.rs |
+| `cypher-core/src/plan_cache.rs` | Extend `CachedAst` enum for Gremlin plans | ~15 lines |
 | `Cargo.toml` (workspace) | Add `sedandelivery-gremlin` to members | 1 line |
 
 ### Files Unchanged
 
-- `gql-core/src/parser/` — Cypher parser untouched
-- `gql-core/src/ast/` — Cypher AST untouched  
-- `gql-core/src/storage/` — GraphStore trait untouched
-- `gql-core/src/types/` — Value enum untouched
+- `cypher-core/src/parser/` — Cypher parser untouched
+- `cypher-core/src/ast/` — Cypher AST untouched  
+- `cypher-core/src/storage/` — GraphStore trait untouched
+- `cypher-core/src/types/` — Value enum untouched
 - `sedandelivery-bolt/` — Bolt server completely untouched
 - All existing tests continue to pass

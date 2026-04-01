@@ -1,15 +1,15 @@
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
-use gql_core::error::GqlError;
-use gql_core::executor::budget::{OperatorProfileStats, DEFAULT_MAX_ROWS};
-use gql_core::executor::{ExecutionBudget, MutationStats, QueryExecutor, QueryResult};
-use gql_core::parser::parse_query;
-use gql_core::plan_cache;
-use gql_core::planner::QueryPlanner;
-use gql_core::procedure::{ProcedureDefinition, ProcedureParam, ProcedureRegistry};
-use gql_core::storage::{EdgeId, GraphStore, NodeId};
-use gql_core::types::Value;
+use cypher_core::error::GqlError;
+use cypher_core::executor::budget::{OperatorProfileStats, DEFAULT_MAX_ROWS};
+use cypher_core::executor::{ExecutionBudget, MutationStats, QueryExecutor, QueryResult};
+use cypher_core::parser::parse_query;
+use cypher_core::plan_cache;
+use cypher_core::planner::QueryPlanner;
+use cypher_core::procedure::{ProcedureDefinition, ProcedureParam, ProcedureRegistry};
+use cypher_core::storage::{EdgeId, GraphStore, NodeId};
+use cypher_core::types::Value;
 use indexmap::IndexMap;
 
 use super::ensure_graph_exists;
@@ -102,7 +102,7 @@ pub fn execute_query_with_profiling<T>(
     params: HashMap<String, Value>,
     timeout_ms: Option<u64>,
     plan_annotator: impl FnOnce(
-        &gql_core::planner::Operator,
+        &cypher_core::planner::Operator,
         Option<&HashMap<usize, OperatorProfileStats>>,
     ) -> T,
 ) -> Result<(QueryResult, T), GqlError> {
@@ -160,7 +160,7 @@ pub fn plan_query(
     graph: &str,
     query: &str,
     params: HashMap<String, Value>,
-) -> Result<gql_core::planner::Operator, GqlError> {
+) -> Result<cypher_core::planner::Operator, GqlError> {
     ensure_graph_exists(store, graph)?;
 
     let ast = parse_query(query)?;
@@ -217,7 +217,7 @@ pub fn result_to_records(
 
 // ── Value conversion (full: scalars + graph entities) ────────────────────────
 
-/// Convert a gql-core Value to a BoltValue, resolving graph entity references
+/// Convert a cypher-core Value to a BoltValue, resolving graph entity references
 /// (Node, Edge, Path) against the store.
 fn value_to_bolt(
     val: &Value,
@@ -428,10 +428,10 @@ pub fn stats_to_bolt_map(stats: &MutationStats) -> BoltMap {
     map
 }
 
-// ── Bolt params to gql-core params ───────────────────────────────────────────
+// ── Bolt params to cypher-core params ───────────────────────────────────────────
 
 /// Convert a `BoltMap` (from the Bolt RUN message's parameters field) into
-/// a `HashMap<String, Value>` suitable for the gql-core query executor.
+/// a `HashMap<String, Value>` suitable for the cypher-core query executor.
 pub fn bolt_map_to_value_map(bolt_map: &BoltMap) -> HashMap<String, Value> {
     bolt_map
         .iter()
@@ -439,7 +439,7 @@ pub fn bolt_map_to_value_map(bolt_map: &BoltMap) -> HashMap<String, Value> {
         .collect()
 }
 
-/// Convert a single BoltValue to a gql-core Value.
+/// Convert a single BoltValue to a cypher-core Value.
 fn bolt_value_to_gql(bv: &BoltValue) -> Value {
     match bv {
         BoltValue::Null => Value::Null,
@@ -460,9 +460,9 @@ fn bolt_value_to_gql(bv: &BoltValue) -> Value {
     }
 }
 
-// ── Bolt Structure -> gql-core Value decoding ────────────────────────────────
+// ── Bolt Structure -> cypher-core Value decoding ────────────────────────────────
 
-/// Decode a Bolt Structure (temporal or spatial) into a gql-core Value.
+/// Decode a Bolt Structure (temporal or spatial) into a cypher-core Value.
 /// Unrecognized structure tags fall back to Value::Null.
 fn bolt_structure_to_gql(tag: u8, fields: &[BoltValue]) -> Value {
     match tag {
@@ -490,8 +490,8 @@ fn bolt_structure_to_gql(tag: u8, fields: &[BoltValue]) -> Value {
 mod tests {
     use super::*;
     use crate::bridge::types::scalar_value_to_bolt;
-    use gql_core::storage::InMemoryGraphStore;
-    use gql_core::types::value::{Crs, CypherDuration, GeoPoint};
+    use cypher_core::storage::InMemoryGraphStore;
+    use cypher_core::types::value::{Crs, CypherDuration, GeoPoint};
 
     #[test]
     fn execute_query_auto_creates_default_graph() {

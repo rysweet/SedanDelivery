@@ -1,7 +1,7 @@
 //! Embeddable Gremlin query engine backed by [`InMemoryGraphStore`].
 //!
 //! Parses a Gremlin traversal string, compiles it to an operator tree via
-//! [`gremlin_core::GremlinCompiler`], and executes it with the gql-core
+//! [`gremlin_core::GremlinCompiler`], and executes it with the cypher-core
 //! [`QueryExecutor`] in Gremlin mode.
 //!
 //! ```
@@ -12,12 +12,12 @@
 //! store.create_graph("g").unwrap();
 //! ```
 
-pub use gql_core::error::GqlError;
-pub use gql_core::executor::{MutationStats, QueryResult, Row};
-pub use gql_core::storage::{GraphStore, InMemoryGraphStore};
-pub use gql_core::types::Value;
+pub use cypher_core::error::GqlError;
+pub use cypher_core::executor::{MutationStats, QueryResult, Row};
+pub use cypher_core::storage::{GraphStore, InMemoryGraphStore};
+pub use cypher_core::types::Value;
 
-use gql_core::executor::{ExecutionBudget, QueryExecutor};
+use cypher_core::executor::{ExecutionBudget, QueryExecutor};
 use gremlin_core::types::GremlinValue;
 use gremlin_core::{parse_traversal, GremlinCompiler, TextParseError};
 
@@ -90,7 +90,7 @@ mod tests {
     }
 
     fn seed_graph(store: &InMemoryGraphStore) {
-        use gql_core::storage::GraphStore;
+        use cypher_core::storage::GraphStore;
 
         store
             .create_node(

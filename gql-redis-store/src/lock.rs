@@ -19,7 +19,7 @@
 use redis::ConnectionLike;
 use uuid::Uuid;
 
-use gql_core::error::StorageError;
+use cypher_core::error::StorageError;
 
 /// Lua script for atomic compare-and-release.
 ///

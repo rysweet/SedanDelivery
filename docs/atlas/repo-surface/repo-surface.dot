@@ -6,7 +6,7 @@ digraph repo_surface {
     subgraph cluster_core {
         label="Core Engine Crates"
         style=filled fillcolor="#E8F4FD"
-        gql_core [label="gql-core\nParser, planner, executor\nGraphStore trait, Value types" fillcolor="#AED6F1"]
+        cypher_core [label="cypher-core\nParser, planner, executor\nGraphStore trait, Value types" fillcolor="#AED6F1"]
         gql_redis [label="gql-redis-store\nRedis/Valkey GraphStore\n+ FanoutStore" fillcolor="#AED6F1"]
         gql_fabric [label="gql-fabric-store\nMicrosoft Fabric\nGraphStore" fillcolor="#AED6F1"]
     }

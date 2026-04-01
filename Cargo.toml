@@ -1,6 +1,6 @@
 [workspace]
 members = [
-    "gql-core",
+    "cypher-core",
     "gql-redis-store",
     "gql-fabric-store",
     "gql-module",

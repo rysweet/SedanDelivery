@@ -9,19 +9,19 @@ use super::bolt_map;
 
 // -- Plan conversion ---------------------------------------------------------
 
-/// Convert a gql-core Operator tree into a Bolt plan map structure.
+/// Convert a cypher-core Operator tree into a Bolt plan map structure.
 ///
 /// Recursively descends into child operators so EXPLAIN returns a proper tree.
 /// When `estimates` is provided, populates `EstimatedRows` from the cardinality
 /// estimator; otherwise falls back to 1.0.
 #[allow(clippy::only_used_in_recursion)]
 pub(crate) fn operator_to_plan_map(
-    op: &gql_core::planner::Operator,
+    op: &cypher_core::planner::Operator,
     is_profile: bool,
     depth: usize,
-    estimates: Option<&std::collections::HashMap<*const gql_core::planner::Operator, f64>>,
+    estimates: Option<&std::collections::HashMap<*const cypher_core::planner::Operator, f64>>,
 ) -> BoltValue {
-    use gql_core::planner::Operator;
+    use cypher_core::planner::Operator;
 
     let op_type = format!("{:?}", op)
         .split('(')
@@ -62,21 +62,21 @@ pub(crate) fn operator_to_plan_map(
     BoltValue::Map(entries)
 }
 
-/// Convert a gql-core Operator tree into a Bolt plan map structure with
+/// Convert a cypher-core Operator tree into a Bolt plan map structure with
 /// per-operator profiling statistics (rows and dbHits).
 ///
 /// Used when PROFILE is active: each operator node includes actual execution
 /// metrics in addition to estimated rows.
 #[allow(clippy::only_used_in_recursion)]
 pub(crate) fn operator_to_profile_plan_map(
-    op: &gql_core::planner::Operator,
+    op: &cypher_core::planner::Operator,
     depth: usize,
-    estimates: Option<&std::collections::HashMap<*const gql_core::planner::Operator, f64>>,
+    estimates: Option<&std::collections::HashMap<*const cypher_core::planner::Operator, f64>>,
     profile_stats: Option<
-        &std::collections::HashMap<usize, gql_core::executor::OperatorProfileStats>,
+        &std::collections::HashMap<usize, cypher_core::executor::OperatorProfileStats>,
     >,
 ) -> BoltValue {
-    use gql_core::planner::Operator;
+    use cypher_core::planner::Operator;
 
     let op_type = format!("{:?}", op)
         .split('(')
@@ -132,7 +132,7 @@ pub(crate) fn operator_to_profile_plan_map(
 ///
 /// A cartesian product occurs when an `Apply` node joins two independent scans
 /// (no shared variable references). Returns a list of Bolt notification maps.
-pub(crate) fn detect_notifications(op: &gql_core::planner::Operator) -> Vec<BoltValue> {
+pub(crate) fn detect_notifications(op: &cypher_core::planner::Operator) -> Vec<BoltValue> {
     let mut notifications = Vec::new();
     detect_cartesian_products(op, &mut notifications);
     notifications
@@ -143,18 +143,21 @@ pub(crate) fn detect_notifications(op: &gql_core::planner::Operator) -> Vec<Bolt
 ///
 /// Uses `Operator::children()` for recursive descent into non-Apply nodes,
 /// avoiding a duplicated match over every variant.
-fn detect_cartesian_products(op: &gql_core::planner::Operator, notifications: &mut Vec<BoltValue>) {
-    use gql_core::planner::Operator;
+fn detect_cartesian_products(
+    op: &cypher_core::planner::Operator,
+    notifications: &mut Vec<BoltValue>,
+) {
+    use cypher_core::planner::Operator;
 
     if let Operator::Apply { outer, inner } = op {
         // An Apply with two independent scans (both are leaf-level node scans
         // or have no shared aliases) is a cartesian product.
         let outer_aliases: std::collections::HashSet<String> =
-            gql_core::planner::collect_visible_aliases(outer)
+            cypher_core::planner::collect_visible_aliases(outer)
                 .into_iter()
                 .collect();
         let inner_aliases: std::collections::HashSet<String> =
-            gql_core::planner::collect_visible_aliases(inner)
+            cypher_core::planner::collect_visible_aliases(inner)
                 .into_iter()
                 .collect();
         if outer_aliases.is_disjoint(&inner_aliases) {
@@ -197,8 +200,8 @@ fn detect_cartesian_products(op: &gql_core::planner::Operator, notifications: &m
 mod tests {
     use super::*;
     use crate::packstream::value::BoltMapExt;
-    use gql_core::ast::Identifier;
-    use gql_core::planner::Operator;
+    use cypher_core::ast::Identifier;
+    use cypher_core::planner::Operator;
 
     // ── operator_to_plan_map ────────────────────────────────────────────
 
@@ -241,7 +244,7 @@ mod tests {
             alias: Identifier::new("n"),
         };
         let op = Operator::Filter {
-            predicate: gql_core::ast::Expr::Bool(true),
+            predicate: cypher_core::ast::Expr::Bool(true),
             child: Box::new(child),
         };
         let plan = operator_to_plan_map(&op, false, 0, None);
@@ -357,7 +360,7 @@ mod tests {
             inner: Box::new(inner),
         };
         let filter = Operator::Filter {
-            predicate: gql_core::ast::Expr::Bool(true),
+            predicate: cypher_core::ast::Expr::Bool(true),
             child: Box::new(apply),
         };
         let notes = detect_notifications(&filter);

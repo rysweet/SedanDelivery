@@ -1,4 +1,4 @@
-//! openCypher TCK cucumber runner for gql-core.
+//! openCypher TCK cucumber runner for cypher-core.
 //!
 //! Executes the Gherkin `.feature` files in `tests/tck/features/` against
 //! the real parser -> planner -> executor pipeline.  Every scenario runs in
@@ -37,7 +37,7 @@ use std::sync::Arc;
 
 use cucumber::gherkin;
 use cucumber::{given, then, when, World};
-use gql_core::{
+use cypher_core::{
     executor::{ExecutionBudget, QueryExecutor, QueryResult, Row},
     parser::parse_query,
     planner::QueryPlanner,
@@ -1601,7 +1601,7 @@ fn value_matches(
             time_str == s.as_ref() || normalize_time_str(&time_str) == normalize_time_str(s)
         }
         (Value::Duration(sp), Value::Str(s)) => {
-            let actual = gql_core::types::value::format_cypher_duration(sp);
+            let actual = cypher_core::types::value::format_cypher_duration(sp);
             actual == s.as_ref() || normalize_duration_str(&actual) == normalize_duration_str(s)
         }
         // Zoned time: format as time+offset and compare against TCK string
@@ -1624,7 +1624,7 @@ fn value_matches(
 
 /// Check if a node matches a TCK node pattern (stored as Map with __labels__ key).
 fn node_matches_pattern(
-    node_id: gql_core::storage::NodeId,
+    node_id: cypher_core::storage::NodeId,
     expected_map: &indexmap::IndexMap<Box<str>, Value>,
     world: &GqlWorld,
 ) -> bool {
@@ -1672,7 +1672,7 @@ fn node_matches_pattern(
 
 /// Check if an edge matches a TCK relationship pattern (stored as Map with __type__ key).
 fn edge_matches_pattern(
-    edge_id: gql_core::storage::EdgeId,
+    edge_id: cypher_core::storage::EdgeId,
     expected_map: &indexmap::IndexMap<Box<str>, Value>,
     world: &GqlWorld,
 ) -> bool {
@@ -1712,8 +1712,8 @@ fn edge_matches_pattern(
 
 /// Check if a path matches a TCK path pattern.
 fn path_matches_pattern(
-    actual_nodes: &[gql_core::storage::NodeId],
-    actual_edges: &[gql_core::storage::EdgeId],
+    actual_nodes: &[cypher_core::storage::NodeId],
+    actual_edges: &[cypher_core::storage::EdgeId],
     expected_map: &indexmap::IndexMap<Box<str>, Value>,
     world: &GqlWorld,
     _ignore_list_order: bool,

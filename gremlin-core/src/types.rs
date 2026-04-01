@@ -1,7 +1,7 @@
-//! Gremlin value types and conversions to/from gql-core's `Value`.
+//! Gremlin value types and conversions to/from cypher-core's `Value`.
 
-use gql_core::storage::{EdgeId, NodeId};
-use gql_core::types::Value;
+use cypher_core::storage::{EdgeId, NodeId};
+use cypher_core::types::Value;
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 
@@ -55,7 +55,7 @@ impl Traverser {
     }
 }
 
-// ── GremlinValue → gql_core::Value ──────────────────────────────────────────
+// ── GremlinValue → cypher_core::Value ──────────────────────────────────────────
 
 impl From<GremlinValue> for Value {
     fn from(gv: GremlinValue) -> Self {
@@ -76,14 +76,14 @@ impl From<GremlinValue> for Value {
             GremlinValue::Vertex { id, .. } => Value::Node(NodeId(id as u64)),
             GremlinValue::Edge { id, .. } => Value::Edge(EdgeId(id as u64)),
             GremlinValue::Path { objects, .. } => {
-                // Best-effort: store as a list since gql-core Path requires NodeId/EdgeId
+                // Best-effort: store as a list since cypher-core Path requires NodeId/EdgeId
                 Value::List(objects.into_iter().map(Value::from).collect())
             }
         }
     }
 }
 
-// ── gql_core::Value → GremlinValue ──────────────────────────────────────────
+// ── cypher_core::Value → GremlinValue ──────────────────────────────────────────
 
 impl From<Value> for GremlinValue {
     fn from(v: Value) -> Self {

@@ -4,10 +4,10 @@ use indexmap::IndexMap;
 
 use redis::ConnectionLike;
 
-use gql_core::error::StorageError;
-use gql_core::serde_value::json_to_props;
-use gql_core::storage::IndexDescriptor;
-use gql_core::types::Value;
+use cypher_core::error::StorageError;
+use cypher_core::serde_value::json_to_props;
+use cypher_core::storage::IndexDescriptor;
+use cypher_core::types::Value;
 
 use crate::keys::{
     key_indexes, key_label, key_node, key_propidx, key_propidx_manifest, value_to_index_key,
@@ -22,7 +22,9 @@ use crate::{LockedRedisConn, RedisGraphStore};
 /// env var (default 500, minimum 1).
 fn index_batch_size() -> usize {
     static SIZE: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
-    *SIZE.get_or_init(|| gql_core::config::parse_env_min("GQL_REDIS_INDEX_BATCH_SIZE", 500usize, 1))
+    *SIZE.get_or_init(|| {
+        cypher_core::config::parse_env_min("GQL_REDIS_INDEX_BATCH_SIZE", 500usize, 1)
+    })
 }
 
 impl RedisGraphStore {

@@ -2,16 +2,16 @@
 //! complex composition patterns.
 //!
 //! Each test mirrors a Gremlin traversal expressed as an equivalent Cypher query
-//! executed through the gql-core pipeline against the "modern" graph fixture.
+//! executed through the cypher-core pipeline against the "modern" graph fixture.
 
 use std::collections::HashMap;
 use std::time::Duration;
 
-use gql_core::executor::{ExecutionBudget, QueryExecutor, QueryResult};
-use gql_core::parser::parse_query;
-use gql_core::planner::QueryPlanner;
-use gql_core::storage::InMemoryGraphStore;
-use gql_core::types::Value;
+use cypher_core::executor::{ExecutionBudget, QueryExecutor, QueryResult};
+use cypher_core::parser::parse_query;
+use cypher_core::planner::QueryPlanner;
+use cypher_core::storage::InMemoryGraphStore;
+use cypher_core::types::Value;
 
 use crate::modern_graph::create_modern_graph;
 

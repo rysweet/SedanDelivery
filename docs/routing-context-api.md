@@ -20,7 +20,7 @@ explicit:
 
 ### `ReadConsistency`
 
-**Location:** `gql-core/src/storage/mod.rs`
+**Location:** `cypher-core/src/storage/mod.rs`
 
 ```rust
 pub enum ReadConsistency {
@@ -35,7 +35,7 @@ pub enum ReadConsistency {
 
 ### `GraphStore::with_read_consistency(...)`
 
-**Location:** `gql-core/src/storage/mod.rs`
+**Location:** `cypher-core/src/storage/mod.rs`
 
 ```rust
 fn with_read_consistency(

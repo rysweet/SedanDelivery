@@ -49,7 +49,7 @@ pub fn build_limiter(rps: NonZeroU32) -> Arc<KeyedRateLimiter> {
 fn sweep_interval_secs() -> u64 {
     static INTERVAL: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
     *INTERVAL.get_or_init(|| {
-        gql_core::config::parse_env_range("GQL_API_RATE_LIMIT_SWEEP_SECS", 300u64, 1, 86_400)
+        cypher_core::config::parse_env_range("GQL_API_RATE_LIMIT_SWEEP_SECS", 300u64, 1, 86_400)
     })
 }
 

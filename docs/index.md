@@ -5,7 +5,7 @@ title: SedanDelivery Documentation
 
 # SedanDelivery Documentation
 
-A Rust GQL/Cypher query engine — a clean-room, MIT/Apache-2.0-licensed replacement for RedisGraph/FalkorDB.
+A Rust openCypher query engine — a clean-room, MIT/Apache-2.0-licensed replacement for RedisGraph/FalkorDB. GQL (ISO/IEC 39075) compliance is future work.
 
 ## Guides
 
@@ -70,7 +70,7 @@ SedanDelivery supports multiple storage backends via the `GraphStore` trait:
 
 | Backend | Crate | Use Case |
 |---------|-------|----------|
-| `InMemoryGraphStore` | `gql-core` | Default in-module store, tests |
+| `InMemoryGraphStore` | `cypher-core` | Default in-module store, tests |
 | `RedisGraphStore` | `gql-redis-store` | External Redis/Valkey via TCP |
 | `FabricGraphStore` | `gql-fabric-store` | Microsoft Fabric Graph Database |
 | `FanoutStore` | `gql-redis-store` | Write to multiple backends simultaneously |
@@ -170,7 +170,7 @@ See [ADR-004](ADR-004-distributed-redis) for the full architecture decision reco
 | `GQL_API_JWKS_URL` | — | **Deprecated** — has no effect; authentication now uses `GQL_API_ENTRA_TENANT_ID` / `GQL_API_ENTRA_CLIENT_ID` |
 | `GQL_CSV_IMPORT_DIR` | cwd | Directory for CSV import files; defaults to the process working directory |
 
-### GQL Engine Limits
+### Query Engine Limits
 
 | Variable | Default | Description |
 |----------|---------|-------------|

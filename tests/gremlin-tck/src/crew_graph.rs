@@ -12,8 +12,8 @@
 //! queries (e.g. `properties("location").has("startTime", ...)`) require
 //! first-class multi-property support in the store.
 
-use gql_core::storage::{EdgeId, GraphStore, InMemoryGraphStore, NodeId};
-use gql_core::types::Value;
+use cypher_core::storage::{EdgeId, GraphStore, InMemoryGraphStore, NodeId};
+use cypher_core::types::Value;
 use indexmap::IndexMap;
 
 /// Vertex and edge IDs for the crew graph.

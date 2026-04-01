@@ -1,7 +1,7 @@
 // range.rs — Range predicate evaluation helpers.
 
-use gql_core::storage::RangeQuery;
-use gql_core::types::Value;
+use cypher_core::storage::RangeQuery;
+use cypher_core::types::Value;
 
 // ── Range predicate evaluation ──────────────────────────────────────────────
 

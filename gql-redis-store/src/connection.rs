@@ -8,7 +8,7 @@ use redis::{
     Client, Connection, ConnectionLike, FromRedisValue, RedisError, RedisResult, ToRedisArgs,
 };
 
-use gql_core::error::StorageError;
+use cypher_core::error::StorageError;
 
 /// Snapshot of connection pool utilization.
 #[derive(Debug, Clone, Copy)]
@@ -26,7 +26,7 @@ pub struct PoolStats {
 fn stats_interval_secs() -> u64 {
     static INTERVAL: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
     *INTERVAL.get_or_init(|| {
-        gql_core::config::parse_env_range("GQL_REDIS_STATS_INTERVAL_SECS", 15u64, 1, 3600)
+        cypher_core::config::parse_env_range("GQL_REDIS_STATS_INTERVAL_SECS", 15u64, 1, 3600)
     })
 }
 
@@ -58,7 +58,7 @@ struct RedisSocketTimeouts {
 fn socket_connect_timeout_ms() -> u64 {
     static CONNECT_TIMEOUT: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
     *CONNECT_TIMEOUT.get_or_init(|| {
-        gql_core::config::parse_env_range(
+        cypher_core::config::parse_env_range(
             "GQL_REDIS_CONNECT_TIMEOUT_MS",
             DEFAULT_CONNECT_TIMEOUT_MS,
             1,
@@ -70,7 +70,7 @@ fn socket_connect_timeout_ms() -> u64 {
 fn socket_read_timeout_ms() -> u64 {
     static READ_TIMEOUT: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
     *READ_TIMEOUT.get_or_init(|| {
-        gql_core::config::parse_env_range(
+        cypher_core::config::parse_env_range(
             "GQL_REDIS_READ_TIMEOUT_MS",
             DEFAULT_READ_TIMEOUT_MS,
             1,
@@ -82,7 +82,7 @@ fn socket_read_timeout_ms() -> u64 {
 fn socket_write_timeout_ms() -> u64 {
     static WRITE_TIMEOUT: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
     *WRITE_TIMEOUT.get_or_init(|| {
-        gql_core::config::parse_env_range(
+        cypher_core::config::parse_env_range(
             "GQL_REDIS_WRITE_TIMEOUT_MS",
             DEFAULT_WRITE_TIMEOUT_MS,
             1,

@@ -9,7 +9,7 @@ on:
       - "Cargo.toml"
       - "Cargo.lock"
       - "gql-api/**"
-      - "gql-core/**"
+      - "cypher-core/**"
       - "gql-redis-store/**"
       - "sedan-graph-ui/src/sedan-web/**"
   push:
@@ -19,7 +19,7 @@ on:
       - "Cargo.toml"
       - "Cargo.lock"
       - "gql-api/**"
-      - "gql-core/**"
+      - "cypher-core/**"
       - "gql-redis-store/**"
       - "sedan-graph-ui/src/sedan-web/**"
 

@@ -1,9 +1,9 @@
 //! Spatial Bolt structure decoders.
 //!
-//! Decodes Bolt Point2D and Point3D structures into gql-core `Value` types.
+//! Decodes Bolt Point2D and Point3D structures into cypher-core `Value` types.
 
-use gql_core::types::value::{Crs, GeoPoint};
-use gql_core::types::Value;
+use cypher_core::types::value::{Crs, GeoPoint};
+use cypher_core::types::Value;
 
 use crate::bridge::temporal::bolt_int;
 use crate::packstream::value::BoltValue;

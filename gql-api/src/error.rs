@@ -92,10 +92,10 @@ impl IntoResponse for ApiError {
     }
 }
 
-/// Convert a `gql_core::error::GqlError` into an API error.
-impl From<gql_core::error::GqlError> for ApiError {
-    fn from(e: gql_core::error::GqlError) -> Self {
-        use gql_core::error::{GqlError, StorageError};
+/// Convert a `cypher_core::error::GqlError` into an API error.
+impl From<cypher_core::error::GqlError> for ApiError {
+    fn from(e: cypher_core::error::GqlError) -> Self {
+        use cypher_core::error::{GqlError, StorageError};
         match &e {
             GqlError::Storage(StorageError::GraphNotFound { .. }) => {
                 ApiError::not_found(e.to_string())
@@ -134,7 +134,7 @@ impl From<gql_core::error::GqlError> for ApiError {
             GqlError::Parse(_) => ApiError::bad_request(e.to_string()),
             GqlError::Plan(_) => ApiError::bad_request(e.to_string()),
             GqlError::Execution(exec_err) => {
-                use gql_core::error::ExecutionError;
+                use cypher_core::error::ExecutionError;
                 match exec_err {
                     ExecutionError::Timeout { .. } => {
                         ApiError::new(StatusCode::REQUEST_TIMEOUT, e.to_string())
@@ -153,10 +153,10 @@ impl From<gql_core::error::GqlError> for ApiError {
     }
 }
 
-/// Convert a `gql_core::error::StorageError` into an API error.
-impl From<gql_core::error::StorageError> for ApiError {
-    fn from(e: gql_core::error::StorageError) -> Self {
-        ApiError::from(gql_core::error::GqlError::Storage(e))
+/// Convert a `cypher_core::error::StorageError` into an API error.
+impl From<cypher_core::error::StorageError> for ApiError {
+    fn from(e: cypher_core::error::StorageError) -> Self {
+        ApiError::from(cypher_core::error::GqlError::Storage(e))
     }
 }
 
@@ -164,7 +164,7 @@ impl From<gql_core::error::StorageError> for ApiError {
 mod tests {
     use super::*;
     use axum::http::StatusCode;
-    use gql_core::error::{ExecutionError, GqlError, ParseError, PlanError, StorageError};
+    use cypher_core::error::{ExecutionError, GqlError, ParseError, PlanError, StorageError};
 
     // ── Constructor tests ────────────────────────────────────────────────────
 
@@ -358,7 +358,7 @@ mod tests {
 // ── WS-F (#755): DeleteGraphTooLarge → HTTP 413 ──────────────────────────────
 //
 // These tests will FAIL TO COMPILE until:
-//   (a) StorageError::DeleteGraphTooLarge is added to gql-core/src/error.rs
+//   (a) StorageError::DeleteGraphTooLarge is added to cypher-core/src/error.rs
 //   (b) ApiError gains a `detail: Option<String>` field and a
 //       `payload_too_large(code, detail)` constructor
 //   (c) From<GqlError> gains a DeleteGraphTooLarge → HTTP 413 arm
@@ -372,12 +372,12 @@ mod tests {
 mod ws_f_delete_graph_too_large_api_tests {
     use super::*;
     use axum::http::StatusCode;
-    use gql_core::error::{GqlError, StorageError};
+    use cypher_core::error::{GqlError, StorageError};
 
     /// Verify that StorageError::DeleteGraphTooLarge produces HTTP 413 PAYLOAD_TOO_LARGE.
     ///
     /// FAILS TO COMPILE until:
-    ///   - StorageError::DeleteGraphTooLarge variant exists in gql-core
+    ///   - StorageError::DeleteGraphTooLarge variant exists in cypher-core
     ///   - From<GqlError> arm maps it to ApiError::payload_too_large(...)
     #[test]
     fn delete_graph_too_large_maps_to_payload_too_large() {
@@ -408,7 +408,7 @@ mod ws_f_delete_graph_too_large_api_tests {
     /// values that must not be surfaced to API callers (SEC-6 / AC-3 from issue #755).
     ///
     /// FAILS TO COMPILE until:
-    ///   - StorageError::DeleteGraphTooLarge variant exists in gql-core
+    ///   - StorageError::DeleteGraphTooLarge variant exists in cypher-core
     ///   - ApiError has a `detail: Option<String>` field
     ///   - ErrorBody has a `message: Option<String>` field with skip_serializing_if
     ///   - From<GqlError> arm populates detail with the human-readable message

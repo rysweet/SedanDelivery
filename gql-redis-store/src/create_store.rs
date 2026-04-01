@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use gql_core::storage::{GraphStore, InMemoryGraphStore};
+use cypher_core::storage::{GraphStore, InMemoryGraphStore};
 
 use crate::RedisGraphStore;
 

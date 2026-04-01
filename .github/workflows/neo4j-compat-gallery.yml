@@ -8,11 +8,11 @@ on:
     branches: [main]
     paths:
       - 'sedandelivery-bolt/src/**'
-      - 'gql-core/src/executor/**'
-      - 'gql-core/src/parser/**'
-      - 'gql-core/src/planner/**'
-      - 'gql-core/src/storage/**'
-      - 'gql-core/src/types/**'
+      - 'cypher-core/src/executor/**'
+      - 'cypher-core/src/parser/**'
+      - 'cypher-core/src/planner/**'
+      - 'cypher-core/src/storage/**'
+      - 'cypher-core/src/types/**'
       - 'neo4j-compat-gallery/**'
 
 permissions:

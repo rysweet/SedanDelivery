@@ -1,8 +1,8 @@
 //! Event application — translates `ChangeEvent` into `FabricGraphStore` calls.
 
-use gql_core::changelog::{json_map_to_props, ChangeEvent};
-use gql_core::storage::{EdgeId, GraphStore, NodeId};
-use gql_core::types::Value;
+use cypher_core::changelog::{json_map_to_props, ChangeEvent};
+use cypher_core::storage::{EdgeId, GraphStore, NodeId};
+use cypher_core::types::Value;
 use gql_fabric_store::FabricGraphStore;
 
 /// Translate a `ChangeEvent` into the corresponding `FabricGraphStore` call.
@@ -13,7 +13,7 @@ use gql_fabric_store::FabricGraphStore;
 pub(crate) fn apply_event(
     fabric: &FabricGraphStore,
     event: &ChangeEvent,
-) -> Result<(), gql_core::error::StorageError> {
+) -> Result<(), cypher_core::error::StorageError> {
     match event {
         // -- Graph-level ----------------------------------------------------
         ChangeEvent::CreateGraph { name } => {
@@ -32,7 +32,7 @@ pub(crate) fn apply_event(
         } => {
             let mut props = json_map_to_props(properties);
             let id_i64 =
-                i64::try_from(*id).map_err(|_| gql_core::error::StorageError::Backend {
+                i64::try_from(*id).map_err(|_| cypher_core::error::StorageError::Backend {
                     msg: format!("node ID {id} exceeds i64 range — cannot sync to Fabric"),
                 })?;
             props.insert("_sd2_id".to_string(), Value::Int(id_i64));
@@ -76,7 +76,7 @@ pub(crate) fn apply_event(
         } => {
             let mut props = json_map_to_props(properties);
             let eid_i64 =
-                i64::try_from(*id).map_err(|_| gql_core::error::StorageError::Backend {
+                i64::try_from(*id).map_err(|_| cypher_core::error::StorageError::Backend {
                     msg: format!("edge ID {id} exceeds i64 range — cannot sync to Fabric"),
                 })?;
             props.insert("_sd2_eid".to_string(), Value::Int(eid_i64));

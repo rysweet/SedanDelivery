@@ -3,8 +3,8 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use gql_core::storage::{EdgeId, GraphStore, NodeId};
-use gql_core::types::Value;
+use cypher_core::storage::{EdgeId, GraphStore, NodeId};
+use cypher_core::types::Value;
 use indexmap::IndexMap;
 
 use crate::error::ApiError;
@@ -48,7 +48,7 @@ pub fn parse_edge_id(s: &str) -> Result<EdgeId, ApiError> {
         .map_err(|_| ApiError::bad_request(format!("invalid edge id: '{s}'")))
 }
 
-/// Convert a `serde_json::Value` into a `gql_core::types::Value`.
+/// Convert a `serde_json::Value` into a `cypher_core::types::Value`.
 ///
 /// JSON numbers become `Value::Int` if they are integers, `Value::Float` otherwise.
 /// Nested objects become `Value::Map`, arrays become `Value::List`.
@@ -186,8 +186,8 @@ pub(crate) async fn compute_schema_counts_blocking(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gql_core::storage::{EdgeId, InMemoryGraphStore, NodeId};
-    use gql_core::types::Value;
+    use cypher_core::storage::{EdgeId, InMemoryGraphStore, NodeId};
+    use cypher_core::types::Value;
     use serde_json::json;
 
     // ── parse_node_id ────────────────────────────────────────────────────────

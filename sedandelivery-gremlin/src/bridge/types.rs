@@ -1,7 +1,7 @@
-//! Type conversions between gql-core `Value` / `QueryResult` and GraphSON v3 JSON.
+//! Type conversions between cypher-core `Value` / `QueryResult` and GraphSON v3 JSON.
 
-use gql_core::executor::QueryResult;
-use gql_core::types::Value;
+use cypher_core::executor::QueryResult;
+use cypher_core::types::Value;
 
 /// Convert a full `QueryResult` into a vec of GraphSON JSON values.
 ///
@@ -37,7 +37,7 @@ pub fn query_result_to_graphson(result: &QueryResult) -> Vec<serde_json::Value> 
         .collect()
 }
 
-/// Convert a gql-core `Value` to its GraphSON v3 JSON representation.
+/// Convert a cypher-core `Value` to its GraphSON v3 JSON representation.
 pub fn value_to_graphson(val: &Value) -> serde_json::Value {
     match val {
         Value::Null => serde_json::Value::Null,

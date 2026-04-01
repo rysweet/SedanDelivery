@@ -6,7 +6,7 @@
 
 use redis::ConnectionLike;
 
-use gql_core::error::StorageError;
+use cypher_core::error::StorageError;
 
 /// Parsed Redis memory usage snapshot.
 #[derive(Debug, Clone, PartialEq, Eq)]

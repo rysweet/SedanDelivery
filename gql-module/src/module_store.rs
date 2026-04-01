@@ -15,13 +15,13 @@ use std::cell::RefCell;
 use indexmap::IndexMap;
 use redis_module::{Context, RedisValue};
 
-use gql_core::error::StorageError;
-use gql_core::serde_value::{json_to_props, props_to_json};
-use gql_core::storage::{
+use cypher_core::error::StorageError;
+use cypher_core::serde_value::{json_to_props, props_to_json};
+use cypher_core::storage::{
     AdjEntry, ConstraintDescriptor, EdgeData, EdgeId, GraphStats, GraphStore, IndexDescriptor,
     NodeData, NodeId, RangeQuery,
 };
-use gql_core::types::Value;
+use cypher_core::types::Value;
 
 // ── Thread-local context stash ──────────────────────────────────────────────
 
@@ -970,7 +970,7 @@ impl GraphStore for ModuleRedisStore {
     // ── Graph administration ────────────────────────────────────────────────
 
     fn create_graph(&self, name: &str) -> Result<(), StorageError> {
-        gql_core::storage::validate_graph_name(name)?;
+        cypher_core::storage::validate_graph_name(name)?;
         self.with_ctx(|ctx| {
             // Check if graph is being deleted.
             let deleting_key = self.kp(key_graph_deleting(name));

@@ -24,7 +24,7 @@ Hand-written lexer (zero-copy, `&'src str` token slices) combined with a hand-wr
 
 ## Rationale
 
-**Why recursive descent**: Cypher has operator precedence, left-recursive expressions (`n.a.b.c`), and complex pattern syntax. A hand-written Pratt parser handles precedence climbing naturally, produces precise error messages with span information, and requires no build-step code generation. The parser is straightforward to extend for GQL ISO 20030 features such as quantified path patterns.
+**Why recursive descent**: Cypher has operator precedence, left-recursive expressions (`n.a.b.c`), and complex pattern syntax. A hand-written Pratt parser handles precedence climbing naturally, produces precise error messages with span information, and requires no build-step code generation. The parser is straightforward to extend for future GQL (ISO/IEC 39075) features such as quantified path patterns.
 
 **Why hand-written lexer**: A hand-written lexer returns `&'src str` slices from the original query string, enabling zero-copy token representation during parsing. This matters for query latency in a Redis module hot path.
 
@@ -34,8 +34,8 @@ Hand-written lexer (zero-copy, `&'src str` token slices) combined with a hand-wr
 
 **Why not tree-sitter**: Runtime parsing library designed for editor integration, not embedded library use. Too large a dependency for a Redis module `.so`.
 
-**Why not lalrpop**: Originally planned, but the build-step code generation added complexity, error messages were less precise than hand-written alternatives, and extending the grammar for GQL ISO 20030 quantified path patterns would have required GLR support that lalrpop does not provide.
+**Why not lalrpop**: Originally planned, but the build-step code generation added complexity, error messages were less precise than hand-written alternatives, and extending the grammar for future GQL (ISO/IEC 39075) quantified path patterns would have required GLR support that lalrpop does not provide.
 
 ## Consequences
 
-No build-step code generation is required. The parser lives in `gql-core/src/parser/` as plain Rust. Lexer lifetime `'src` must be threaded carefully through parser functions.
+No build-step code generation is required. The parser lives in `cypher-core/src/parser/` as plain Rust. Lexer lifetime `'src` must be threaded carefully through parser functions.

@@ -1,6 +1,6 @@
 // HTTP helpers: query / statement execution against the Fabric Graph REST API.
 
-use gql_core::error::StorageError;
+use cypher_core::error::StorageError;
 use serde_json::{json, Value as JValue};
 use tracing::debug;
 

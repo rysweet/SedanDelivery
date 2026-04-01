@@ -15,7 +15,7 @@ and AST-level static approximation.
 
 ```mermaid
 graph LR
-    subgraph gql_core_exports["gql-core exports"]
+    subgraph cypher_core_exports["cypher-core exports"]
         GraphStore["GraphStore trait"]
         InMemoryGraphStore["InMemoryGraphStore"]
         Value["Value enum"]
@@ -103,7 +103,7 @@ outside their defining crate. Candidates only; human review required.
 
 | Symbol | File | Notes |
 |--------|------|-------|
-| `wal.rs` module | gql-core/src/storage/wal.rs | WAL module exists but write-ahead log is not used by any storage backend currently |
+| `wal.rs` module | cypher-core/src/storage/wal.rs | WAL module exists but write-ahead log is not used by any storage backend currently |
 | `gql-cli` binary | gql-cli/src/main.rs | Demo/development tool only; not referenced by any other crate or deployment |
 | `wide` SIMD dep | Cargo.toml workspace deps | Listed as optional SIMD dependency but usage not confirmed in current code |
 
@@ -119,9 +119,9 @@ outside their defining crate. Candidates only; human review required.
 | Check | Status | Notes |
 |-------|--------|-------|
 | GraphStore trait consistency | PASS | All 4 implementations (InMemory, Redis, Fabric, Fanout) implement the same trait |
-| Value enum coverage | PASS | All crates use the same Value enum from gql-core; no shadow types |
+| Value enum coverage | PASS | All crates use the same Value enum from cypher-core; no shadow types |
 | Parser entry point | PASS | Single `parse_query()` function used by all consumers |
-| Error types | PASS | `thiserror`-based errors in gql-core; storage backends map to StorageError |
+| Error types | PASS | `thiserror`-based errors in cypher-core; storage backends map to StorageError |
 | Newtype wrappers | PASS | NodeId, EdgeId, Label, RelType used consistently across crates |
 
 ## High-Coupling Analysis
@@ -130,9 +130,9 @@ Crates importing from 3+ siblings (potential high coupling):
 
 | Crate | Imports From | Count |
 |-------|-------------|-------|
-| sedandelivery-fabric-sync | gql-core, gql-redis-store, gql-fabric-store | 3 |
-| gql-api | gql-core, gql-redis-store | 2 |
-| sedandelivery-bolt | gql-core, gql-redis-store | 2 |
+| sedandelivery-fabric-sync | cypher-core, gql-redis-store, gql-fabric-store | 3 |
+| gql-api | cypher-core, gql-redis-store | 2 |
+| sedandelivery-bolt | cypher-core, gql-redis-store | 2 |
 
 **Verdict:** `sedandelivery-fabric-sync` has the highest coupling (3 workspace deps), which
 is expected — it bridges Redis and Fabric stores. No excessive coupling detected.

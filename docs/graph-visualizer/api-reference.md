@@ -60,10 +60,10 @@ All errors use a consistent JSON envelope:
 
 ## Value Types
 
-Node and edge properties accept JSON values. The gql-core engine maps them to
+Node and edge properties accept JSON values. The cypher-core engine maps them to
 its internal `Value` type as follows:
 
-| JSON type | gql-core Value |
+| JSON type | cypher-core Value |
 |---|---|
 | `null` | `Value::Null` |
 | `true` / `false` | `Value::Bool` |

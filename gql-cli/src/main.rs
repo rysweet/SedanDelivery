@@ -1,10 +1,10 @@
-/// gql-cli: Interactive demonstration of the gql-core engine.
+/// gql-cli: Interactive demonstration of the cypher-core engine.
 ///
 /// Exercises the full Phase 1 pipeline against InMemoryGraphStore:
 ///   Storage API → Lexer → Parser → Planner → Executor
 ///
 /// Run with: cargo run -p gql-cli
-use gql_core::{
+use cypher_core::{
     executor::{ExecutionBudget, QueryExecutor},
     parser::{lex_query, parse_query, tokenize},
     planner::QueryPlanner,
@@ -17,7 +17,7 @@ fn run_query(
     store: &InMemoryGraphStore,
     graph: &str,
     cypher: &str,
-) -> Result<gql_core::executor::QueryResult, gql_core::error::GqlError> {
+) -> Result<cypher_core::executor::QueryResult, cypher_core::error::GqlError> {
     let ast = parse_query(cypher)?;
     let planner = QueryPlanner::new(store, graph);
     let plan = planner.plan(&ast)?;

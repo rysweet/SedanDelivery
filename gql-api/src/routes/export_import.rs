@@ -11,7 +11,7 @@ use axum::extract::{DefaultBodyLimit, Path, State};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 
-use gql_core::storage::validate_graph_name;
+use cypher_core::storage::validate_graph_name;
 use gql_redis_store::RedisGraphStore;
 
 use crate::error::ApiError;
@@ -218,14 +218,14 @@ async fn import_handler(
     require_graph(&state, &name).await?;
     let graph_name = name.clone();
     let response = run_store_blocking(&state, move |store| {
-        let mut id_map: HashMap<String, gql_core::storage::NodeId> = HashMap::new();
+        let mut id_map: HashMap<String, cypher_core::storage::NodeId> = HashMap::new();
         let mut nodes_created: usize = 0;
 
         let redis_store = store.as_any().downcast_ref::<RedisGraphStore>();
         if let Some(rs) = redis_store {
             let batch_size = redis_batch_size();
             let mut stable_ids: Vec<Option<String>> = Vec::with_capacity(body.nodes.len());
-            let mut batch: Vec<(Vec<String>, IndexMap<String, gql_core::types::Value>)> =
+            let mut batch: Vec<(Vec<String>, IndexMap<String, cypher_core::types::Value>)> =
                 Vec::with_capacity(batch_size);
 
             for import_node in body.nodes.into_iter() {
@@ -355,13 +355,13 @@ async fn import_handler(
 
 fn resolve_import_node_id(
     s: &str,
-    id_map: &HashMap<String, gql_core::storage::NodeId>,
-) -> Result<gql_core::storage::NodeId, ApiError> {
+    id_map: &HashMap<String, cypher_core::storage::NodeId>,
+) -> Result<cypher_core::storage::NodeId, ApiError> {
     if let Some(&id) = id_map.get(s) {
         return Ok(id);
     }
     s.parse::<u64>()
-        .map(gql_core::storage::NodeId)
+        .map(cypher_core::storage::NodeId)
         .map_err(|_| {
             ApiError::bad_request(format!(
                 "cannot resolve node reference '{s}': not in id map and not a valid u64"

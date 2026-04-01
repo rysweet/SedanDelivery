@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::Value as JValue;
 
-use gql_core::error::StorageError;
+use cypher_core::error::StorageError;
 
 use crate::sanitize::urlenc;
 use crate::FabricGraphStore;

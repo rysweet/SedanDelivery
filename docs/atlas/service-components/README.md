@@ -3,16 +3,16 @@
 Per-crate internal module structure for the 5 major SedanDelivery crates.
 Each crate with 3+ internal modules gets its own diagram.
 
-## gql-core — Query Engine Core
+## cypher-core — Query Engine Core
 
-![gql-core](gql-core.svg)
+![cypher-core](cypher-core.svg)
 
 <details>
 <summary>Mermaid source</summary>
 
 ```mermaid
 graph TD
-    subgraph gql_core["gql-core"]
+    subgraph cypher_core["cypher-core"]
         subgraph parser_mod["parser/"]
             lexer["lexer/\ntokens, scan"]
             parser_inner["parser/\nclauses, expressions,\npatterns, subqueries"]
@@ -62,7 +62,7 @@ graph TD
 
 </details>
 
-See [gql-core.mmd](gql-core.mmd) for the Mermaid source.
+See [cypher-core.mmd](cypher-core.mmd) for the Mermaid source.
 
 ## gql-redis-store — Redis Storage Backend
 

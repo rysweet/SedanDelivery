@@ -6,11 +6,11 @@
 // and MERGE.
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
-use gql_core::executor::{ExecutionBudget, QueryExecutor};
-use gql_core::parser::parse_query;
-use gql_core::planner::QueryPlanner;
-use gql_core::storage::{GraphStore, InMemoryGraphStore};
-use gql_core::types::Value;
+use cypher_core::executor::{ExecutionBudget, QueryExecutor};
+use cypher_core::parser::parse_query;
+use cypher_core::planner::QueryPlanner;
+use cypher_core::storage::{GraphStore, InMemoryGraphStore};
+use cypher_core::types::Value;
 use indexmap::IndexMap;
 use std::time::Duration;
 

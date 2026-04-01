@@ -12,14 +12,14 @@
 //! assert_eq!(result.rows.len(), 1);
 //! ```
 
-pub use gql_core::error::GqlError;
-pub use gql_core::executor::{MutationStats, QueryResult, Row};
-pub use gql_core::storage::{GraphStore, InMemoryGraphStore};
-pub use gql_core::types::Value;
+pub use cypher_core::error::GqlError;
+pub use cypher_core::executor::{MutationStats, QueryResult, Row};
+pub use cypher_core::storage::{GraphStore, InMemoryGraphStore};
+pub use cypher_core::types::Value;
 
-use gql_core::executor::{ExecutionBudget, QueryExecutor};
-use gql_core::parser::parse_query;
-use gql_core::planner::QueryPlanner;
+use cypher_core::executor::{ExecutionBudget, QueryExecutor};
+use cypher_core::parser::parse_query;
+use cypher_core::planner::QueryPlanner;
 
 /// A GQL/Cypher query engine that operates entirely in-process.
 pub struct SedanGql {

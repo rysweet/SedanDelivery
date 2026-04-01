@@ -906,6 +906,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "cypher-core"
+version = "0.1.0"
+dependencies = [
+ "criterion",
+ "cucumber",
+ "futures",
+ "indexmap",
+ "insta",
+ "jiff",
+ "petgraph",
+ "proptest",
+ "regex",
+ "rustc-hash 2.1.1",
+ "serde",
+ "serde_json",
+ "smol_str",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "typed-arena",
+ "wide",
+]
+
+[[package]]
 name = "dashmap"
 version = "6.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1461,8 +1486,8 @@ name = "gql-api"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "cypher-core",
  "governor",
- "gql-core",
  "gql-redis-store",
  "http",
  "http-body-util",
@@ -1493,40 +1518,16 @@ dependencies = [
 name = "gql-cli"
 version = "0.1.0"
 dependencies = [
- "gql-core",
+ "cypher-core",
  "indexmap",
  "tracing",
-]
-
-[[package]]
-name = "gql-core"
-version = "0.1.0"
-dependencies = [
- "criterion",
- "cucumber",
- "futures",
- "indexmap",
- "insta",
- "jiff",
- "petgraph",
- "proptest",
- "regex",
- "rustc-hash 2.1.1",
- "serde",
- "serde_json",
- "smol_str",
- "thiserror 2.0.18",
- "tokio",
- "tracing",
- "typed-arena",
- "wide",
 ]
 
 [[package]]
 name = "gql-fabric-store"
 version = "0.1.0"
 dependencies = [
- "gql-core",
+ "cypher-core",
  "indexmap",
  "serde_json",
  "tracing",
@@ -1537,7 +1538,7 @@ dependencies = [
 name = "gql-module"
 version = "0.1.0"
 dependencies = [
- "gql-core",
+ "cypher-core",
  "indexmap",
  "redis-module",
  "serde_json",
@@ -1549,7 +1550,7 @@ name = "gql-redis-store"
 version = "0.1.0"
 dependencies = [
  "criterion",
- "gql-core",
+ "cypher-core",
  "indexmap",
  "metrics",
  "metrics-exporter-prometheus",
@@ -1565,7 +1566,7 @@ dependencies = [
 name = "gremlin-core"
 version = "0.1.0"
 dependencies = [
- "gql-core",
+ "cypher-core",
  "indexmap",
  "serde",
  "serde_json",
@@ -1579,7 +1580,7 @@ name = "gremlin-tck"
 version = "0.1.0"
 dependencies = [
  "cucumber",
- "gql-core",
+ "cypher-core",
  "gremlin-core",
  "indexmap",
  "jiff",
@@ -3720,7 +3721,7 @@ dependencies = [
 name = "sedan-gql-embedded"
 version = "0.1.0"
 dependencies = [
- "gql-core",
+ "cypher-core",
  "indexmap",
 ]
 
@@ -3728,7 +3729,7 @@ dependencies = [
 name = "sedan-gremlin-embedded"
 version = "0.1.0"
 dependencies = [
- "gql-core",
+ "cypher-core",
  "gremlin-core",
  "indexmap",
  "thiserror 2.0.18",
@@ -3741,9 +3742,9 @@ dependencies = [
  "axum",
  "bytes",
  "criterion",
+ "cypher-core",
  "dashmap",
  "futures-util",
- "gql-core",
  "gql-redis-store",
  "http",
  "http-body-util",
@@ -3778,7 +3779,7 @@ name = "sedandelivery-fabric-sync"
 version = "0.1.0"
 dependencies = [
  "ctrlc",
- "gql-core",
+ "cypher-core",
  "gql-fabric-store",
  "hostname",
  "metrics",
@@ -3793,8 +3794,8 @@ name = "sedandelivery-gremlin"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "cypher-core",
  "futures-util",
- "gql-core",
  "gql-redis-store",
  "gremlin-core",
  "indexmap",

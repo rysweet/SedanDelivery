@@ -10,7 +10,7 @@ use futures_util::{SinkExt, StreamExt};
 use tokio::net::TcpStream;
 use tokio_tungstenite::tungstenite::Message;
 
-use gql_core::storage::GraphStore;
+use cypher_core::storage::GraphStore;
 
 use crate::protocol;
 

@@ -1,6 +1,6 @@
 graph TD
     subgraph workspace["Workspace Crates"]
-        gql_core["gql-core<br/><i>lib</i>"]
+        cypher_core["cypher-core<br/><i>lib</i>"]
         gql_redis["gql-redis-store<br/><i>lib</i>"]
         gql_fabric["gql-fabric-store<br/><i>lib</i>"]
         gql_module["gql-module<br/><i>cdylib</i>"]
@@ -23,21 +23,21 @@ graph TD
         tracing_crate["tracing + opentelemetry"]
     end
 
-    gql_redis --> gql_core
-    gql_fabric --> gql_core
-    gql_module --> gql_core
-    gql_cli --> gql_core
-    gql_api --> gql_core
+    gql_redis --> cypher_core
+    gql_fabric --> cypher_core
+    gql_module --> cypher_core
+    gql_cli --> cypher_core
+    gql_api --> cypher_core
     gql_api --> gql_redis
-    bolt --> gql_core
+    bolt --> cypher_core
     bolt --> gql_redis
-    sync --> gql_core
+    sync --> cypher_core
     sync --> gql_redis
     sync --> gql_fabric
-    loadtest --> gql_core
+    loadtest --> cypher_core
 
-    gql_core --> petgraph_crate
-    gql_core --> serde_crate
+    cypher_core --> petgraph_crate
+    cypher_core --> serde_crate
     gql_redis --> redis_crate
     gql_redis --> r2d2_crate
     gql_fabric --> reqwest_crate
@@ -45,4 +45,4 @@ graph TD
     gql_api --> axum_crate
     bolt --> tokio_crate
     sync --> tokio_crate
-    gql_core --> tracing_crate
+    cypher_core --> tracing_crate

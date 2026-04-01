@@ -19,9 +19,9 @@
 <polygon fill="#fff3e0" stroke="black" points="8,-8 8,-83 696,-83 696,-8 8,-8"/>
 <text text-anchor="middle" x="352" y="-67.8" font-family="Times,serif" font-size="14.00">External Dependencies</text>
 </g>
-<!-- gql_core -->
+<!-- cypher_core -->
 <g id="node1" class="node">
-<title>gql_core</title>
+<title>cypher_core</title>
 <polygon fill="#aed6f1" stroke="black" stroke-width="2" points="240,-135 186,-135 186,-99 240,-99 240,-135"/>
 <text text-anchor="middle" x="213" y="-120" font-family="Times,serif" font-size="10.00">gql&#45;core</text>
 <text text-anchor="middle" x="213" y="-109" font-family="Times,serif" font-size="10.00">(lib)</text>
@@ -32,9 +32,9 @@
 <polygon fill="#fad7a0" stroke="black" points="240,-52 186,-52 186,-16 240,-16 240,-52"/>
 <text text-anchor="middle" x="213" y="-31.5" font-family="Times,serif" font-size="10.00">petgraph</text>
 </g>
-<!-- gql_core&#45;&gt;petgraph_crate -->
+<!-- cypher_core&#45;&gt;petgraph_crate -->
 <g id="edge13" class="edge">
-<title>gql_core&#45;&gt;petgraph_crate</title>
+<title>cypher_core&#45;&gt;petgraph_crate</title>
 <path fill="none" stroke="#000000" stroke-dasharray="5,2" d="M213,-98.82C213,-88.19 213,-74.31 213,-62.2"/>
 <polygon fill="#000000" stroke="#000000" points="216.5,-62.15 213,-52.15 209.5,-62.15 216.5,-62.15"/>
 </g>
@@ -45,9 +45,9 @@
 <text text-anchor="middle" x="138" y="-37" font-family="Times,serif" font-size="10.00">serde</text>
 <text text-anchor="middle" x="138" y="-26" font-family="Times,serif" font-size="10.00">serde_json</text>
 </g>
-<!-- gql_core&#45;&gt;serde_crate -->
+<!-- cypher_core&#45;&gt;serde_crate -->
 <g id="edge14" class="edge">
-<title>gql_core&#45;&gt;serde_crate</title>
+<title>cypher_core&#45;&gt;serde_crate</title>
 <path fill="none" stroke="#000000" stroke-dasharray="5,2" d="M193.07,-98.69C187.7,-93.77 182,-88.31 177,-83 170.3,-75.88 163.43,-67.76 157.36,-60.24"/>
 <polygon fill="#000000" stroke="#000000" points="160.09,-58.05 151.13,-52.39 154.61,-62.4 160.09,-58.05"/>
 </g>
@@ -58,9 +58,9 @@
 <text text-anchor="middle" x="53" y="-37" font-family="Times,serif" font-size="10.00">tracing</text>
 <text text-anchor="middle" x="53" y="-26" font-family="Times,serif" font-size="10.00">opentelemetry</text>
 </g>
-<!-- gql_core&#45;&gt;tracing_crate -->
+<!-- cypher_core&#45;&gt;tracing_crate -->
 <g id="edge15" class="edge">
-<title>gql_core&#45;&gt;tracing_crate</title>
+<title>cypher_core&#45;&gt;tracing_crate</title>
 <path fill="none" stroke="#000000" stroke-dasharray="5,2" d="M185.58,-112.2C161.42,-107.92 125.97,-99.32 99,-83 89.12,-77.02 79.94,-68.39 72.42,-60.08"/>
 <polygon fill="#000000" stroke="#000000" points="74.92,-57.63 65.75,-52.32 69.61,-62.19 74.92,-57.63"/>
 </g>
@@ -71,9 +71,9 @@
 <text text-anchor="middle" x="315" y="-192" font-family="Times,serif" font-size="10.00">gql&#45;redis&#45;store</text>
 <text text-anchor="middle" x="315" y="-181" font-family="Times,serif" font-size="10.00">(lib)</text>
 </g>
-<!-- gql_redis&#45;&gt;gql_core -->
+<!-- gql_redis&#45;&gt;cypher_core -->
 <g id="edge1" class="edge">
-<title>gql_redis&#45;&gt;gql_core</title>
+<title>gql_redis&#45;&gt;cypher_core</title>
 <path fill="none" stroke="#2980b9" stroke-width="2" d="M290.05,-170.88C276.96,-161.89 260.74,-150.76 246.56,-141.03"/>
 <polygon fill="#2980b9" stroke="#2980b9" stroke-width="2" points="248.27,-137.96 238.05,-135.19 244.31,-143.73 248.27,-137.96"/>
 </g>
@@ -108,9 +108,9 @@
 <text text-anchor="middle" x="429" y="-192" font-family="Times,serif" font-size="10.00">gql&#45;fabric&#45;store</text>
 <text text-anchor="middle" x="429" y="-181" font-family="Times,serif" font-size="10.00">(lib)</text>
 </g>
-<!-- gql_fabric&#45;&gt;gql_core -->
+<!-- gql_fabric&#45;&gt;cypher_core -->
 <g id="edge2" class="edge">
-<title>gql_fabric&#45;&gt;gql_core</title>
+<title>gql_fabric&#45;&gt;cypher_core</title>
 <path fill="none" stroke="#2980b9" stroke-width="2" d="M389.38,-175.16C349.58,-162.26 288.73,-142.54 249.92,-129.96"/>
 <polygon fill="#2980b9" stroke="#2980b9" stroke-width="2" points="250.66,-126.53 240.07,-126.77 248.5,-133.19 250.66,-126.53"/>
 </g>
@@ -133,9 +133,9 @@
 <text text-anchor="middle" x="519" y="-192" font-family="Times,serif" font-size="10.00">gql&#45;module</text>
 <text text-anchor="middle" x="519" y="-181" font-family="Times,serif" font-size="10.00">(cdylib)</text>
 </g>
-<!-- gql_module&#45;&gt;gql_core -->
+<!-- gql_module&#45;&gt;cypher_core -->
 <g id="edge3" class="edge">
-<title>gql_module&#45;&gt;gql_core</title>
+<title>gql_module&#45;&gt;cypher_core</title>
 <path fill="none" stroke="#2980b9" stroke-width="2" d="M486.99,-174.03C483.98,-172.93 480.95,-171.9 478,-171 398.42,-146.8 301.97,-130.7 250.18,-123.09"/>
 <polygon fill="#2980b9" stroke="#2980b9" stroke-width="2" points="250.53,-119.6 240.14,-121.63 249.53,-126.53 250.53,-119.6"/>
 </g>
@@ -159,9 +159,9 @@
 <text text-anchor="middle" x="226" y="-266.5" font-family="Times,serif" font-size="10.00">gql&#45;api</text>
 <text text-anchor="middle" x="226" y="-255.5" font-family="Times,serif" font-size="10.00">(bin)</text>
 </g>
-<!-- gql_api&#45;&gt;gql_core -->
+<!-- gql_api&#45;&gt;cypher_core -->
 <g id="edge5" class="edge">
-<title>gql_api&#45;&gt;gql_core</title>
+<title>gql_api&#45;&gt;cypher_core</title>
 <path fill="none" stroke="#2980b9" stroke-width="2" d="M198.76,-259.86C167.2,-255.18 116.51,-242.29 93,-207 84.13,-193.68 84.27,-184.41 93,-171 111.21,-143.04 147.88,-129.73 175.92,-123.45"/>
 <polygon fill="#2980b9" stroke="#2980b9" stroke-width="2" points="176.7,-126.86 185.81,-121.44 175.31,-120 176.7,-126.86"/>
 </g>
@@ -190,9 +190,9 @@
 <text text-anchor="middle" x="144" y="-192" font-family="Times,serif" font-size="10.00">gql&#45;cli</text>
 <text text-anchor="middle" x="144" y="-181" font-family="Times,serif" font-size="10.00">(bin)</text>
 </g>
-<!-- gql_cli&#45;&gt;gql_core -->
+<!-- gql_cli&#45;&gt;cypher_core -->
 <g id="edge4" class="edge">
-<title>gql_cli&#45;&gt;gql_core</title>
+<title>gql_cli&#45;&gt;cypher_core</title>
 <path fill="none" stroke="#2980b9" stroke-width="2" d="M161.06,-170.7C169.5,-162.14 179.82,-151.66 189.04,-142.3"/>
 <polygon fill="#2980b9" stroke="#2980b9" stroke-width="2" points="191.61,-144.68 196.14,-135.1 186.63,-139.77 191.61,-144.68"/>
 </g>
@@ -203,9 +203,9 @@
 <text text-anchor="middle" x="318" y="-266.5" font-family="Times,serif" font-size="10.00">sedandelivery&#45;bolt</text>
 <text text-anchor="middle" x="318" y="-255.5" font-family="Times,serif" font-size="10.00">(bin)</text>
 </g>
-<!-- bolt&#45;&gt;gql_core -->
+<!-- bolt&#45;&gt;cypher_core -->
 <g id="edge7" class="edge">
-<title>bolt&#45;&gt;gql_core</title>
+<title>bolt&#45;&gt;cypher_core</title>
 <path fill="none" stroke="#2980b9" stroke-width="2" d="M271.37,-245.85C268.21,-244.85 265.07,-243.89 262,-243 194.49,-223.42 151.68,-262.07 108,-207 98.06,-194.46 99.61,-184.63 108,-171 122.7,-147.11 151.86,-133.6 175.73,-126.2"/>
 <polygon fill="#2980b9" stroke="#2980b9" stroke-width="2" points="176.92,-129.51 185.58,-123.4 175,-122.77 176.92,-129.51"/>
 </g>
@@ -235,9 +235,9 @@
 <text text-anchor="middle" x="426" y="-261" font-family="Times,serif" font-size="10.00">fabric&#45;sync</text>
 <text text-anchor="middle" x="426" y="-250" font-family="Times,serif" font-size="10.00">(bin)</text>
 </g>
-<!-- sync&#45;&gt;gql_core -->
+<!-- sync&#45;&gt;cypher_core -->
 <g id="edge9" class="edge">
-<title>sync&#45;&gt;gql_core</title>
+<title>sync&#45;&gt;cypher_core</title>
 <path fill="none" stroke="#2980b9" stroke-width="2" d="M408.67,-242.85C399.92,-232.52 389.4,-219.44 381,-207 370.75,-191.83 374.95,-182.84 361,-171 329.18,-143.99 282.55,-130.33 250.17,-123.72"/>
 <polygon fill="#2980b9" stroke="#2980b9" stroke-width="2" points="250.67,-120.25 240.19,-121.81 249.36,-127.13 250.67,-120.25"/>
 </g>
@@ -266,9 +266,9 @@
 <text text-anchor="middle" x="224" y="-192" font-family="Times,serif" font-size="10.00">tests/loadtest</text>
 <text text-anchor="middle" x="224" y="-181" font-family="Times,serif" font-size="10.00">(bin)</text>
 </g>
-<!-- loadtest&#45;&gt;gql_core -->
+<!-- loadtest&#45;&gt;cypher_core -->
 <g id="edge12" class="edge">
-<title>loadtest&#45;&gt;gql_core</title>
+<title>loadtest&#45;&gt;cypher_core</title>
 <path fill="none" stroke="#2980b9" d="M221.28,-170.7C220.07,-162.98 218.61,-153.71 217.26,-145.11"/>
 <polygon fill="#2980b9" stroke="#2980b9" points="220.7,-144.44 215.69,-135.1 213.78,-145.53 220.7,-144.44"/>
 </g>

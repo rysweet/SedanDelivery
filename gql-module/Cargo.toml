@@ -9,7 +9,7 @@ crate-type = ["cdylib", "rlib"]
 name       = "gql_module"
 
 [dependencies]
-gql-core        = { path = "../gql-core" }
+cypher-core        = { path = "../cypher-core" }
 indexmap         = { workspace = true }
 serde_json      = { workspace = true }
 tracing         = { workspace = true }

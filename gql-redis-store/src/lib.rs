@@ -116,13 +116,13 @@ pub(crate) fn backend_storage_error<E: std::fmt::Display>(e: E) -> StorageError 
 
 use redis::ConnectionLike;
 
-use gql_core::error::StorageError;
-use gql_core::serde_value::json_to_props;
-use gql_core::storage::{
+use cypher_core::error::StorageError;
+use cypher_core::serde_value::json_to_props;
+use cypher_core::storage::{
     AdjEntry, EdgeData, EdgeId, GraphStats, GraphStore, IndexDescriptor, NodeData, NodeId,
     RangeQuery, ReadConsistency,
 };
-use gql_core::types::Value;
+use cypher_core::types::Value;
 
 use connection::{
     RedisConn, RedisPool, ReplicaPool, DEFAULT_IDLE_TIMEOUT_SECS, DEFAULT_MIN_IDLE,
@@ -347,21 +347,25 @@ impl RedisGraphStore {
     pub fn from_env() -> Result<Self, StorageError> {
         let prefix = env::var("GQL_REDIS_KEY_PREFIX").unwrap_or_default();
         let pool_size: u32 =
-            gql_core::config::parse_env_range("GQL_REDIS_POOL_SIZE", DEFAULT_POOL_SIZE, 1, 1024);
-        let pool_timeout_secs: u64 = gql_core::config::parse_env_range(
+            cypher_core::config::parse_env_range("GQL_REDIS_POOL_SIZE", DEFAULT_POOL_SIZE, 1, 1024);
+        let pool_timeout_secs: u64 = cypher_core::config::parse_env_range(
             "GQL_REDIS_POOL_TIMEOUT_SECS",
             DEFAULT_POOL_TIMEOUT_SECS,
             1,
             300,
         );
-        let idle_timeout_secs: u64 = gql_core::config::parse_env_range(
+        let idle_timeout_secs: u64 = cypher_core::config::parse_env_range(
             "GQL_REDIS_IDLE_TIMEOUT_SECS",
             DEFAULT_IDLE_TIMEOUT_SECS,
             0,
             86400,
         );
-        let min_idle: u32 =
-            gql_core::config::parse_env_range("GQL_REDIS_MIN_IDLE", DEFAULT_MIN_IDLE, 0, pool_size);
+        let min_idle: u32 = cypher_core::config::parse_env_range(
+            "GQL_REDIS_MIN_IDLE",
+            DEFAULT_MIN_IDLE,
+            0,
+            pool_size,
+        );
 
         // Build optional replica pool from GQL_REDIS_REPLICA_URL (comma-separated).
         let replica_pool = if let Ok(replica_str) = env::var("GQL_REDIS_REPLICA_URL") {

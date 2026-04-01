@@ -9,7 +9,7 @@ name = "sedandelivery-bolt"
 path = "src/main.rs"
 
 [dependencies]
-gql-core        = { path = "../gql-core" }
+cypher-core        = { path = "../cypher-core" }
 gql-redis-store = { path = "../gql-redis-store" }
 redis           = { version = "1.0.5", default-features = false, features = ["tokio-comp"] }
 dashmap        = "6"

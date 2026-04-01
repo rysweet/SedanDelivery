@@ -50,12 +50,12 @@ A living architecture document derived from code-first truth. Last rebuilt: 2026
 
 ## Architecture Summary
 
-SedanDelivery is a Rust GQL/Cypher query engine with:
+SedanDelivery is a Rust openCypher query engine with:
 
 - **3 network interfaces**: REST API (axum), Bolt v4.4 protocol, Redis module commands
 - **4 storage backends**: InMemory, Redis/Valkey, Microsoft Fabric, FanoutStore
 - **Core pipeline**: Lexer → Parser → Validator → Planner (28 operators) → Executor
-- **8 workspace crates** with `gql-core` as the foundational library
+- **8 workspace crates** with `cypher-core` as the foundational library
 - **Azure-native deployment**: Container Apps, Bicep IaC, KEDA auto-scaling
 
 ## Staleness

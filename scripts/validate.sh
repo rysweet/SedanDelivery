@@ -36,11 +36,11 @@ cargo fmt --check
 pass "cargo fmt"
 
 step "Tier 1: clippy (zero warnings)"
-cargo clippy -p gql-core -- -D warnings
+cargo clippy -p cypher-core -- -D warnings
 pass "clippy"
 
 step "Tier 1: unit tests (385 tests)"
-cargo test -p gql-core --lib
+cargo test -p cypher-core --lib
 pass "unit tests"
 
 step "Tier 1: sedan-web dependencies"
@@ -74,19 +74,19 @@ pass "sedan-web build"
 # ── Tier 2: integration tests ─────────────────────────────────────────────────
 
 step "Tier 2: end-to-end query pipeline"
-cargo test -p gql-core --test end_to_end
+cargo test -p cypher-core --test end_to_end
 pass "end_to_end"
 
 step "Tier 2: EXISTS / interactive"
-cargo test -p gql-core --test exists_interactive
+cargo test -p cypher-core --test exists_interactive
 pass "exists_interactive"
 
 step "Tier 2: data integrity (23 tests)"
-cargo test -p gql-core --test data_integrity
+cargo test -p cypher-core --test data_integrity
 pass "data_integrity"
 
 step "Tier 2: adversarial queries (11 tests)"
-cargo test -p gql-core --test adversarial
+cargo test -p cypher-core --test adversarial
 pass "adversarial"
 
 if $FAST; then
@@ -98,11 +98,11 @@ fi
 # ── Tier 3: full suite ────────────────────────────────────────────────────────
 
 step "Tier 3: stress tests (8 tests)"
-cargo test -p gql-core --test stress
+cargo test -p cypher-core --test stress
 pass "stress"
 
 step "Tier 3: LDBC SNB benchmark queries (37 tests)"
-cargo test -p gql-core --test ldbc
+cargo test -p cypher-core --test ldbc
 pass "ldbc"
 
 step "Tier 3: Redis module integration (18 tests)"
@@ -115,7 +115,7 @@ pass "compatibility"
 
 if $WITH_TCK; then
   step "Tier 3: openCypher TCK compliance (3903 scenarios — takes ~3 min)"
-  cargo test -p gql-core --test tck
+  cargo test -p cypher-core --test tck
   pass "TCK 3903/3903"
 else
   echo ""
@@ -126,7 +126,7 @@ fi
 
 if $WITH_BENCH; then
   step "Tier 4: benchmark smoke-run (compile + single iteration)"
-  cargo bench -p gql-core -- --test
+  cargo bench -p cypher-core -- --test
   pass "benchmarks compile and run"
 fi
 
@@ -140,6 +140,6 @@ if $WITH_TCK;   then echo "  TCK scenarios:     3903"; fi
 if $WITH_BENCH; then echo "  Benchmarks:        26 (smoke-run only — run without --test for timing)"; fi
 echo ""
 echo "To establish a performance baseline:"
-echo "  cargo bench -p gql-core -- --save-baseline main"
+echo "  cargo bench -p cypher-core -- --save-baseline main"
 echo "To compare against it later:"
-echo "  cargo bench -p gql-core -- --baseline main"
+echo "  cargo bench -p cypher-core -- --baseline main"

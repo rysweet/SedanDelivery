@@ -12,12 +12,12 @@ use indexmap::IndexMap;
 use std::collections::HashMap;
 use std::time::Duration;
 
-use gql_core::error::{ExecutionError, GqlError, ParseError};
-use gql_core::executor::{ExecutionBudget, QueryExecutor};
-use gql_core::parser::{parse_query, parse_query_with_max_size};
-use gql_core::planner::QueryPlanner;
-use gql_core::storage::{GraphStore, InMemoryGraphStore};
-use gql_core::types::Value;
+use cypher_core::error::{ExecutionError, GqlError, ParseError};
+use cypher_core::executor::{ExecutionBudget, QueryExecutor};
+use cypher_core::parser::{parse_query, parse_query_with_max_size};
+use cypher_core::planner::QueryPlanner;
+use cypher_core::storage::{GraphStore, InMemoryGraphStore};
+use cypher_core::types::Value;
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 

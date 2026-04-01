@@ -69,24 +69,24 @@ jobs:
       - name: Check formatting
         run: cargo fmt --check
 
-      - name: Clippy (deny warnings on gql-core)
-        run: cargo clippy -p gql-core -- -D warnings
+      - name: Clippy (deny warnings on cypher-core)
+        run: cargo clippy -p cypher-core -- -D warnings
 
       - name: Run unit tests
-        run: cargo test -p gql-core --lib
+        run: cargo test -p cypher-core --lib
 
       # ── Tier 2: Standard integration tests (< 10 min) ──────────────────────
       - name: Run integration tests (end-to-end)
-        run: cargo test -p gql-core --test end_to_end
+        run: cargo test -p cypher-core --test end_to_end
 
       - name: Run integration tests (exists/interactive)
-        run: cargo test -p gql-core --test exists_interactive
+        run: cargo test -p cypher-core --test exists_interactive
 
       - name: Run data integrity tests
-        run: cargo test -p gql-core --test data_integrity
+        run: cargo test -p cypher-core --test data_integrity
 
       - name: Run adversarial query tests
-        run: cargo test -p gql-core --test adversarial
+        run: cargo test -p cypher-core --test adversarial
 
       # ── sedandelivery-bolt & Fabric sync checks ─────────────────────────
       - name: Build sedandelivery-bolt
@@ -164,13 +164,13 @@ jobs:
       - name: Run TCK compliance suite (3903 scenarios)
         # All 3903 openCypher TCK scenarios pass with zero parse errors.
         # Feature files were fixed to eliminate Gherkin template/parse issues.
-        run: cargo test -p gql-core --test tck
+        run: cargo test -p cypher-core --test tck
 
       - name: Run stress tests
-        run: cargo test -p gql-core --test stress
+        run: cargo test -p cypher-core --test stress
 
       - name: Run LDBC SNB benchmark tests
-        run: cargo test -p gql-core --test ldbc
+        run: cargo test -p cypher-core --test ldbc
 
       - name: Run Redis module simulation tests
         run: cargo test -p gql-module --test integration
@@ -245,7 +245,7 @@ jobs:
         run: cargo install cargo-tarpaulin --locked
 
       - name: Generate coverage
-        run: cargo tarpaulin -p gql-core --lib --out xml --output-dir coverage/ --fail-under 70 -- --test-threads 1
+        run: cargo tarpaulin -p cypher-core --lib --out xml --output-dir coverage/ --fail-under 70 -- --test-threads 1
 
       - name: Upload coverage to GitHub
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
@@ -285,13 +285,13 @@ jobs:
 
       # ── Run all benchmarks ──────────────────────────────────────────────
       - name: Run parser benchmarks
-        run: cargo bench -p gql-core --bench parser -- --output-format bencher | tee bench-parser.txt
+        run: cargo bench -p cypher-core --bench parser -- --output-format bencher | tee bench-parser.txt
 
       - name: Run executor benchmarks
-        run: cargo bench -p gql-core --bench executor -- --output-format bencher | tee bench-executor.txt
+        run: cargo bench -p cypher-core --bench executor -- --output-format bencher | tee bench-executor.txt
 
       - name: Run scale benchmarks
-        run: cargo bench -p gql-core --bench scale -- --output-format bencher | tee bench-scale.txt
+        run: cargo bench -p cypher-core --bench scale -- --output-format bencher | tee bench-scale.txt
 
       - name: Run bolt benchmarks
         run: cargo bench -p sedandelivery-bolt --bench bolt_benchmarks -- --output-format bencher | tee bench-bolt.txt
@@ -372,4 +372,4 @@ jobs:
             target
           key: ${{ runner.os }}-cargo-msrv-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-cargo-msrv-
-      - run: cargo check -p gql-core
+      - run: cargo check -p cypher-core

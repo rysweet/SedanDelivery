@@ -5,8 +5,8 @@
 // you intentionally want to run them against a remote environment.
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
-use gql_core::storage::GraphStore;
-use gql_core::types::Value;
+use cypher_core::storage::GraphStore;
+use cypher_core::types::Value;
 use gql_redis_store::RedisGraphStore;
 use indexmap::IndexMap;
 use std::sync::atomic::{AtomicU64, Ordering};

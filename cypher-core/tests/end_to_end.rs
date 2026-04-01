@@ -12,17 +12,17 @@ use indexmap::IndexMap;
 use std::collections::HashMap;
 use std::time::Duration;
 
-use gql_core::ast::{
+use cypher_core::ast::{
     BinaryOp, Clause, Direction, Expr, Identifier, Label, MatchClause, NodePattern, PathPattern,
     PathStep, Query, RelPattern, RelType, ReturnClause, ReturnItem, SortItem,
 };
-use gql_core::executor::engine::cmp_values;
-use gql_core::executor::{ExecutionBudget, QueryExecutor};
-use gql_core::parser::parse_query;
-use gql_core::planner::{CreatePattern, Operator, QueryPlanner};
-use gql_core::procedure::{ProcedureDefinition, ProcedureParam, ProcedureRegistry};
-use gql_core::storage::{GraphStore, InMemoryGraphStore};
-use gql_core::types::Value;
+use cypher_core::executor::engine::cmp_values;
+use cypher_core::executor::{ExecutionBudget, QueryExecutor};
+use cypher_core::parser::parse_query;
+use cypher_core::planner::{CreatePattern, Operator, QueryPlanner};
+use cypher_core::procedure::{ProcedureDefinition, ProcedureParam, ProcedureRegistry};
+use cypher_core::storage::{GraphStore, InMemoryGraphStore};
+use cypher_core::types::Value;
 use proptest::prelude::*;
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
@@ -266,7 +266,7 @@ fn test_match_relationship() {
 
 #[test]
 fn test_create_query() {
-    use gql_core::planner::Operator;
+    use cypher_core::planner::Operator;
 
     let store = make_store();
 
@@ -620,7 +620,7 @@ fn test_distinct() {
 
 #[test]
 fn test_create_and_traverse() {
-    use gql_core::planner::Operator;
+    use cypher_core::planner::Operator;
 
     let store = make_store();
 
@@ -1868,8 +1868,8 @@ proptest! {
     // so arithmetic expressions must never panic — they may return Ok or Err.
     #[test]
     fn prop_integer_arithmetic_no_panic(a: i64, b: i64) {
-        use gql_core::ast::BinaryOp;
-        use gql_core::executor::filter::{eval_expr, Row};
+        use cypher_core::ast::BinaryOp;
+        use cypher_core::executor::filter::{eval_expr, Row};
 
         let ops = [
             BinaryOp::Add,
@@ -1980,7 +1980,7 @@ fn test_merge_with_parameter_map() {
 
 /// Helper: execute a query using the built-in procedure registry (empty registry,
 /// built-ins are handled dynamically by the executor).
-fn exec_builtin(store: &InMemoryGraphStore, query: &str) -> gql_core::executor::QueryResult {
+fn exec_builtin(store: &InMemoryGraphStore, query: &str) -> cypher_core::executor::QueryResult {
     let registry = ProcedureRegistry::new();
     let params: HashMap<String, Value> = HashMap::new();
     let q = parse_query(query).unwrap();
@@ -2633,8 +2633,8 @@ fn test_batch_merge_edges_creates_and_matches() {
         store
             .create_edge(
                 "test",
-                gql_core::storage::NodeId(i),
-                gql_core::storage::NodeId(i + 1),
+                cypher_core::storage::NodeId(i),
+                cypher_core::storage::NodeId(i + 1),
                 "KNOWS".to_string(),
                 Default::default(),
             )
@@ -2707,8 +2707,8 @@ fn test_batch_merge_edges_with_properties() {
     store
         .create_edge(
             "test",
-            gql_core::storage::NodeId(1),
-            gql_core::storage::NodeId(2),
+            cypher_core::storage::NodeId(1),
+            cypher_core::storage::NodeId(2),
             "LINKS".to_string(),
             props,
         )

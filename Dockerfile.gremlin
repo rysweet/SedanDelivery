@@ -16,7 +16,7 @@ WORKDIR /app
 
 # Copy workspace manifests first for layer caching
 COPY Cargo.toml ./
-COPY gql-core/Cargo.toml ./gql-core/
+COPY cypher-core/Cargo.toml ./cypher-core/
 COPY gql-redis-store/Cargo.toml ./gql-redis-store/
 COPY gql-module/Cargo.toml ./gql-module/
 COPY gql-fabric-store/Cargo.toml ./gql-fabric-store/
@@ -28,10 +28,10 @@ COPY sedandelivery-fabric-sync/Cargo.toml ./sedandelivery-fabric-sync/
 COPY tests/loadtest/Cargo.toml ./tests/loadtest/
 
 # Create stub source files so cargo can resolve the dependency graph.
-RUN mkdir -p gql-core/src gql-redis-store/src gql-fabric-store/src gql-module/src gql-cli/src gql-api/src \
+RUN mkdir -p cypher-core/src gql-redis-store/src gql-fabric-store/src gql-module/src gql-cli/src gql-api/src \
              sedandelivery-bolt/src sedandelivery-bolt/benches sedandelivery-gremlin/src \
              sedandelivery-fabric-sync/src tests/loadtest/src && \
-    echo "pub fn stub() {}" > gql-core/src/lib.rs && \
+    echo "pub fn stub() {}" > cypher-core/src/lib.rs && \
     echo "pub fn stub() {}" > gql-redis-store/src/lib.rs && \
     echo "pub fn stub() {}" > gql-fabric-store/src/lib.rs && \
     echo "pub fn stub() {}" > gql-module/src/lib.rs && \
@@ -46,12 +46,12 @@ RUN mkdir -p gql-core/src gql-redis-store/src gql-fabric-store/src gql-module/sr
     cargo build --release -p sedandelivery-gremlin 2>/dev/null || true
 
 # Copy actual source code
-COPY gql-core/ ./gql-core/
+COPY cypher-core/ ./cypher-core/
 COPY gql-redis-store/ ./gql-redis-store/
 COPY sedandelivery-gremlin/ ./sedandelivery-gremlin/
 
 # Build the gremlin binary
-RUN touch gql-core/src/lib.rs gql-redis-store/src/lib.rs sedandelivery-gremlin/src/main.rs && \
+RUN touch cypher-core/src/lib.rs gql-redis-store/src/lib.rs sedandelivery-gremlin/src/main.rs && \
     cargo build --release -p sedandelivery-gremlin && \
     ls -lh target/release/sedandelivery-gremlin
 

@@ -17,7 +17,7 @@ sequenceDiagram
     participant Conn as Connection Manager<br/>connection/
     participant Handler as Protocol Handler<br/>handler/
     participant Bridge as Bridge<br/>bridge/executor.rs
-    participant QE as QueryExecutor<br/>gql-core
+    participant QE as QueryExecutor<br/>cypher-core
     participant Store as GraphStore<br/>(Redis or InMemory)
 
     User->>TCP: TCP connect :7687
@@ -115,7 +115,7 @@ sequenceDiagram
     actor Client as Redis Client
     participant Redis as Valkey 8.1<br/>main thread
     participant Module as gql-module<br/>libgql_module.so
-    participant QE as QueryExecutor<br/>gql-core
+    participant QE as QueryExecutor<br/>cypher-core
     participant Store as InMemoryGraphStore
 
     Client->>Redis: GQL.QUERY social "MATCH (n) RETURN n.name"

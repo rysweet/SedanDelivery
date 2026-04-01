@@ -70,7 +70,7 @@ After creation, the new graph is selected automatically and the canvas is empty.
 
 Open the graph selector dropdown and click the trash icon beside the graph name.
 A confirmation dialog appears before the delete is executed. Deletion is
-permanent — the graph and all its nodes and edges are removed from gql-core.
+permanent — the graph and all its nodes and edges are removed from cypher-core.
 
 ## Navigating the Canvas
 

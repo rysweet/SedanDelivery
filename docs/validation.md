@@ -22,19 +22,19 @@ bash scripts/validate.sh
 cd sedan-graph-ui/src/sedan-web && npm run lint     # sedan-web lint
 cd sedan-graph-ui/src/sedan-web && npm run test:run # sedan-web unit tests
 cd sedan-graph-ui/src/sedan-web && npm run build    # sedan-web production build
-cargo test -p gql-core --lib                       # unit tests
-cargo test -p gql-core --lib plan_cache            # plan cache semantics + eviction contract
-cargo test -p gql-core --test end_to_end           # query pipeline
-cargo test -p gql-core --test data_integrity       # mutation correctness
-cargo test -p gql-core --test adversarial          # DoS / malformed inputs
-cargo test -p gql-core --test stress               # scale + budget enforcement
-cargo test -p gql-core --test ldbc                 # LDBC SNB benchmark queries
+cargo test -p cypher-core --lib                       # unit tests
+cargo test -p cypher-core --lib plan_cache            # plan cache semantics + eviction contract
+cargo test -p cypher-core --test end_to_end           # query pipeline
+cargo test -p cypher-core --test data_integrity       # mutation correctness
+cargo test -p cypher-core --test adversarial          # DoS / malformed inputs
+cargo test -p cypher-core --test stress               # scale + budget enforcement
+cargo test -p cypher-core --test ldbc                 # LDBC SNB benchmark queries
 cargo test -p gql-api --test api_integration explain_endpoint_returns_plan -- --exact
 cargo test -p gql-api --test api_integration profile_returns_results_and_plan_with_row_counts -- --exact
 cargo test -p gql-module --test integration        # module command pipeline
 cargo test -p gql-module --test compatibility      # wire format / serialization
-cargo test -p gql-core --test tck                  # openCypher TCK (3903 scenarios)
-cargo bench -p gql-core -- --test                  # compile + smoke-run benchmarks
+cargo test -p cypher-core --test tck                  # openCypher TCK (3903 scenarios)
+cargo bench -p cypher-core -- --test                  # compile + smoke-run benchmarks
 ```
 
 ---
@@ -45,7 +45,7 @@ Use these focused checks when changing cache semantics, cache docs, or query
 entry points:
 
 ```bash
-cargo test -p gql-core --lib plan_cache
+cargo test -p cypher-core --lib plan_cache
 cargo test -p gql-api --test api_integration explain_endpoint_returns_plan -- --exact
 cargo test -p gql-api --test api_integration profile_returns_results_and_plan_with_row_counts -- --exact
 ```
@@ -60,7 +60,7 @@ estimate state directly.
 
 | Suite | File | Count | What it proves |
 |-------|------|-------|----------------|
-| gql-core unit | `gql-core/src/**` | 678 | Individual functions: parser, planner, executor, storage, budget, config |
+| cypher-core unit | `cypher-core/src/**` | 678 | Individual functions: parser, planner, executor, storage, budget, config |
 | sedandelivery-bolt unit | `sedandelivery-bolt/src/**` | 399 | PackStream codec, message framing, Bolt state machine, bridge layer |
 | gql-api unit | `gql-api/src/**` | 115 | API handler pure functions |
 | gql-redis-store unit | `gql-redis-store/src/**` | 59 | Redis storage layer logic |
@@ -102,26 +102,26 @@ Vitest suite, and produces a production build.
 ### Tier 1 — every PR (< 2 min)
 ```
 cargo fmt --check
-cargo clippy -p gql-core -- -D warnings
-cargo test -p gql-core --lib
+cargo clippy -p cypher-core -- -D warnings
+cargo test -p cypher-core --lib
 ```
 Blocks merge if formatting, warnings, or unit tests fail.
 
 ### Tier 2 — every PR (< 10 min)
 ```
-cargo test -p gql-core --test end_to_end
-cargo test -p gql-core --test exists_interactive
-cargo test -p gql-core --test data_integrity
-cargo test -p gql-core --test adversarial
+cargo test -p cypher-core --test end_to_end
+cargo test -p cypher-core --test exists_interactive
+cargo test -p cypher-core --test data_integrity
+cargo test -p cypher-core --test adversarial
 cargo check --workspace
 ```
 Validates the query pipeline and mutation correctness on every proposed change.
 
 ### Tier 3 — push to main (< 30 min)
 ```
-cargo test -p gql-core --test tck          # 3903 scenarios
-cargo test -p gql-core --test stress
-cargo test -p gql-core --test ldbc
+cargo test -p cypher-core --test tck          # 3903 scenarios
+cargo test -p cypher-core --test stress
+cargo test -p cypher-core --test ldbc
 cargo test -p gql-module --test integration
 cargo test -p gql-module --test compatibility
 ```
@@ -129,9 +129,9 @@ Full compliance and scale validation after merge.
 
 ### Tier 4 — push to main, artifact upload
 ```
-cargo bench -p gql-core --bench parser   -- --output-format bencher
-cargo bench -p gql-core --bench executor -- --output-format bencher
-cargo bench -p gql-core --bench scale    -- --output-format bencher
+cargo bench -p cypher-core --bench parser   -- --output-format bencher
+cargo bench -p cypher-core --bench executor -- --output-format bencher
+cargo bench -p cypher-core --bench scale    -- --output-format bencher
 ```
 Results uploaded as `benchmark-results` artifact. Download with:
 ```bash
@@ -147,10 +147,10 @@ Criterion supports saved baselines for regression detection.
 
 ```bash
 # 1. Save current performance as baseline "v1" (run after a clean build)
-cargo bench -p gql-core -- --save-baseline v1
+cargo bench -p cypher-core -- --save-baseline v1
 
 # 2. On a future release, compare against the saved baseline
-cargo bench -p gql-core -- --baseline v1
+cargo bench -p cypher-core -- --baseline v1
 
 # Output will flag regressions:
 # node_scan/1000   change: [+14.2% +15.1% +16.0%]  (p = 0.00)
@@ -163,7 +163,7 @@ future runs before `--baseline`.
 
 To re-baseline after a deliberate performance change:
 ```bash
-cargo bench -p gql-core -- --save-baseline v2
+cargo bench -p cypher-core -- --save-baseline v2
 ```
 
 ---
@@ -257,12 +257,12 @@ Proves the JSON wire format used by GQL.QUERY / GQL.MUTATE:
 
 SedanDelivery achieves 100% openCypher TCK compliance: **3903/3903 scenarios**.
 
-The TCK runner is in `gql-core/tests/tck/` and uses the `cucumber` framework
+The TCK runner is in `cypher-core/tests/tck/` and uses the `cucumber` framework
 to execute Gherkin `.feature` files from `tests/tck/features/`.
 
 ```bash
 # Run the full TCK (takes ~3 min)
-cargo test -p gql-core --test tck
+cargo test -p cypher-core --test tck
 
 # Expected output:
 # 195 features
@@ -285,7 +285,7 @@ have been fixed.
 | New PR | Tier 1 + 2 must pass (green) before merge |
 | Merge to main | Tier 3 must pass; Tier 4 uploads benchmark artifact |
 | TCK count drops | Build failure (cargo test exits non-zero) |
-| gql-core unit test count < 678 | Would indicate deleted tests — investigate |
+| cypher-core unit test count < 678 | Would indicate deleted tests — investigate |
 | Benchmark regresses > 10% | Download artifact, run `--baseline` locally, investigate |
 
 The TCK count is self-enforcing: if a previously-passing scenario starts
@@ -321,5 +321,5 @@ bash scripts/validate.sh
 
 - [benchmarks.md](benchmarks.md) — how to run and interpret performance benchmarks
 - [ADR-001](ADR-001-storage-model.md) — storage model decisions
-- [ADR-002](ADR-002-full-gql-compliance.md) — GQL compliance strategy
+- [ADR-002](ADR-002-full-gql-compliance.md) — openCypher compliance strategy
 - [Architecture Overview](architecture.md) — crate map, request flows, storage layer

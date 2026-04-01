@@ -1,17 +1,17 @@
 //! Gremlin-to-Operator compiler.
 //!
-//! `GremlinCompiler` takes a `Vec<GremlinStep>` and builds a `gql_core::planner::Operator`
+//! `GremlinCompiler` takes a `Vec<GremlinStep>` and builds a `cypher_core::planner::Operator`
 //! tree by walking the steps left-to-right, wrapping each subsequent step around the
 //! previous operator (bottom-up construction).
 
 use std::collections::{HashMap, HashSet};
 
-use gql_core::ast::{BinaryOp, Direction, Expr, Identifier, Label, RelType, UnaryOp};
-use gql_core::planner::{
+use cypher_core::ast::{BinaryOp, Direction, Expr, Identifier, Label, RelType, UnaryOp};
+use cypher_core::planner::{
     AggFunction, CreateEdgeSpec, CreatePattern, GremlinPop, GremlinSelectTraversal, Operator,
     SetItem,
 };
-use gql_core::types::Value;
+use cypher_core::types::Value;
 use smol_str::SmolStr;
 
 use crate::bytecode::{GremlinStep, Predicate};
@@ -34,7 +34,7 @@ pub enum CompileError {
     EdgeLabelRequired,
 }
 
-/// Compiles a sequence of Gremlin steps into a gql-core `Operator` tree.
+/// Compiles a sequence of Gremlin steps into a cypher-core `Operator` tree.
 pub struct GremlinCompiler {
     alias_counter: u32,
     /// Maps Gremlin `as()` labels to their operator-level aliases.
@@ -3237,7 +3237,7 @@ impl GremlinCompiler {
                         let count_op = Operator::Aggregate {
                             keys: vec![],
                             aggregations: vec![(
-                                gql_core::planner::AggFunction::Count,
+                                cypher_core::planner::AggFunction::Count,
                                 Expr::Variable(sub_result_alias),
                                 None,
                                 false,
@@ -3288,7 +3288,7 @@ impl GremlinCompiler {
                                 distinct: false,
                             };
                             Expr::UnaryOp {
-                                op: gql_core::ast::UnaryOp::Not,
+                                op: cypher_core::ast::UnaryOp::Not,
                                 expr: Box::new(coalesced),
                             }
                         } else {
@@ -4584,7 +4584,7 @@ impl GremlinCompiler {
                         let count_op = Operator::Aggregate {
                             keys: vec![],
                             aggregations: vec![(
-                                gql_core::planner::AggFunction::Count,
+                                cypher_core::planner::AggFunction::Count,
                                 Expr::Variable(sub_result_alias),
                                 None,
                                 false,
@@ -5042,7 +5042,7 @@ impl GremlinCompiler {
                         let count_op = Operator::Aggregate {
                             keys: vec![],
                             aggregations: vec![(
-                                gql_core::planner::AggFunction::Count,
+                                cypher_core::planner::AggFunction::Count,
                                 Expr::Variable(sub_result_alias),
                                 None,
                                 false,
@@ -6459,7 +6459,7 @@ impl GremlinCompiler {
                     let count_op = Operator::Aggregate {
                         keys: vec![],
                         aggregations: vec![(
-                            gql_core::planner::AggFunction::Count,
+                            cypher_core::planner::AggFunction::Count,
                             Expr::Variable(sub_alias),
                             None,
                             false,
@@ -6560,7 +6560,7 @@ impl GremlinCompiler {
         let count_op = Operator::Aggregate {
             keys: vec![],
             aggregations: vec![(
-                gql_core::planner::AggFunction::Count,
+                cypher_core::planner::AggFunction::Count,
                 Expr::Variable(sub_alias),
                 None,
                 false,
@@ -7631,7 +7631,7 @@ fn predicate_to_expr(pred: &Predicate, alias: &Identifier) -> Expr {
             right: Box::new(Expr::List(vals.iter().map(gremlin_value_to_expr).collect())),
         },
         Predicate::Without(vals) => Expr::UnaryOp {
-            op: gql_core::ast::UnaryOp::Not,
+            op: cypher_core::ast::UnaryOp::Not,
             expr: Box::new(Expr::BinaryOp {
                 op: BinaryOp::In,
                 left: Box::new(var),
@@ -7720,7 +7720,7 @@ fn predicate_to_prop_expr(pred: &Predicate, prop_expr: Expr) -> Expr {
             right: Box::new(Expr::List(vals.iter().map(gremlin_value_to_expr).collect())),
         },
         Predicate::Without(vals) => Expr::UnaryOp {
-            op: gql_core::ast::UnaryOp::Not,
+            op: cypher_core::ast::UnaryOp::Not,
             expr: Box::new(Expr::BinaryOp {
                 op: BinaryOp::In,
                 left: Box::new(prop_expr),
@@ -7760,7 +7760,7 @@ fn predicate_to_prop_expr(pred: &Predicate, prop_expr: Expr) -> Expr {
             distinct: false,
         },
         Predicate::NotContaining(v) => Expr::UnaryOp {
-            op: gql_core::ast::UnaryOp::Not,
+            op: cypher_core::ast::UnaryOp::Not,
             expr: Box::new(Expr::FunctionCall {
                 name: SmolStr::new("gremlin_containing"),
                 args: vec![prop_expr, gremlin_value_to_expr(v)],
@@ -7773,7 +7773,7 @@ fn predicate_to_prop_expr(pred: &Predicate, prop_expr: Expr) -> Expr {
             distinct: false,
         },
         Predicate::NotStartingWith(v) => Expr::UnaryOp {
-            op: gql_core::ast::UnaryOp::Not,
+            op: cypher_core::ast::UnaryOp::Not,
             expr: Box::new(Expr::FunctionCall {
                 name: SmolStr::new("gremlin_startingWith"),
                 args: vec![prop_expr, gremlin_value_to_expr(v)],
@@ -7786,7 +7786,7 @@ fn predicate_to_prop_expr(pred: &Predicate, prop_expr: Expr) -> Expr {
             distinct: false,
         },
         Predicate::NotEndingWith(v) => Expr::UnaryOp {
-            op: gql_core::ast::UnaryOp::Not,
+            op: cypher_core::ast::UnaryOp::Not,
             expr: Box::new(Expr::FunctionCall {
                 name: SmolStr::new("gremlin_endingWith"),
                 args: vec![prop_expr, gremlin_value_to_expr(v)],
@@ -7799,7 +7799,7 @@ fn predicate_to_prop_expr(pred: &Predicate, prop_expr: Expr) -> Expr {
             distinct: false,
         },
         Predicate::NotRegex(v) => Expr::UnaryOp {
-            op: gql_core::ast::UnaryOp::Not,
+            op: cypher_core::ast::UnaryOp::Not,
             expr: Box::new(Expr::FunctionCall {
                 name: SmolStr::new("gremlin_regex"),
                 args: vec![prop_expr, gremlin_value_to_expr(v)],
@@ -7830,7 +7830,7 @@ fn predicate_to_prop_expr(pred: &Predicate, prop_expr: Expr) -> Expr {
             })
         }
         Predicate::Not(inner) => Expr::UnaryOp {
-            op: gql_core::ast::UnaryOp::Not,
+            op: cypher_core::ast::UnaryOp::Not,
             expr: Box::new(predicate_to_prop_expr(inner, prop_expr)),
         },
     }
@@ -7933,7 +7933,7 @@ fn predicate_to_label_aware_expr(
             if let GremlinValue::String(s) = &vals[0] {
                 if let Some(id) = alias_map.get(s.as_str()) {
                     return Expr::UnaryOp {
-                        op: gql_core::ast::UnaryOp::Not,
+                        op: cypher_core::ast::UnaryOp::Not,
                         expr: Box::new(Expr::BinaryOp {
                             op: BinaryOp::In,
                             left: Box::new(left.clone()),
@@ -7943,7 +7943,7 @@ fn predicate_to_label_aware_expr(
                 }
                 if aggregate_keys.contains(s.as_str()) {
                     return Expr::UnaryOp {
-                        op: gql_core::ast::UnaryOp::Not,
+                        op: cypher_core::ast::UnaryOp::Not,
                         expr: Box::new(Expr::BinaryOp {
                             op: BinaryOp::In,
                             left: Box::new(left.clone()),
@@ -7995,7 +7995,7 @@ fn predicate_to_label_aware_expr(
             })
         }
         Predicate::Not(inner) => Expr::UnaryOp {
-            op: gql_core::ast::UnaryOp::Not,
+            op: cypher_core::ast::UnaryOp::Not,
             expr: Box::new(predicate_to_label_aware_expr(
                 inner,
                 left,
@@ -9280,7 +9280,7 @@ mod tests {
             assert!(matches!(
                 predicate,
                 Expr::UnaryOp {
-                    op: gql_core::ast::UnaryOp::Not,
+                    op: cypher_core::ast::UnaryOp::Not,
                     ..
                 }
             ));

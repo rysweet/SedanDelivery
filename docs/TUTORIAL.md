@@ -1,19 +1,19 @@
-# Getting Started with gql-core
+# Getting Started with cypher-core
 
-This tutorial shows how to use the `gql-core` library directly in Rust code.
+This tutorial shows how to use the `cypher-core` library directly in Rust code.
 No Redis instance needed — the `InMemoryGraphStore` provides a full in-process implementation.
 
 ## Add to your Cargo.toml
 
 ```toml
 [dependencies]
-gql-core = { path = "../gql-core" }  # or from crates.io once published
+cypher-core = { path = "../cypher-core" }  # or from crates.io once published
 ```
 
 ## 1. Create a Graph and Add Data
 
 ```rust
-use gql_core::{
+use cypher_core::{
     storage::{GraphStore, InMemoryGraphStore, NodeId, EdgeId, validate_graph_name},
     types::Value,
 };
@@ -87,7 +87,7 @@ let batch = store.get_nodes_batch("social", &[alice, bob]).unwrap();
 ## 3. Property Predicates
 
 ```rust
-use gql_core::storage::RangeQuery;
+use cypher_core::storage::RangeQuery;
 
 // Find all people older than 28
 let older = store.find_nodes_by_label_and_property(
@@ -110,7 +110,7 @@ let alices = store.find_nodes_by_label_and_property(
 ## 4. Expression Evaluation
 
 ```rust
-use gql_core::{
+use cypher_core::{
     ast::{Expr, BinaryOp, Identifier},
     executor::eval_expr,
     types::Value,
@@ -138,7 +138,7 @@ assert_eq!(result, Value::Bool(true));
 Every query execution must have a budget. This prevents unbounded `MATCH (n)-[*]->(m)` from hanging the process:
 
 ```rust
-use gql_core::executor::ExecutionBudget;
+use cypher_core::executor::ExecutionBudget;
 use std::time::Duration;
 
 // Production: 5-second deadline, 1M row limit
@@ -152,7 +152,7 @@ let budget = ExecutionBudget::unlimited();
 ## 6. Tokenize a Cypher Query
 
 ```rust
-use gql_core::parser::lex_query;
+use cypher_core::parser::lex_query;
 
 let tokens = lex_query("MATCH (n:Person {name: 'Alice'})-[:KNOWS]->(m) RETURN m.name")
     .expect("lex error");
@@ -271,7 +271,7 @@ RETURN n.name, m.name
 
 ```rust
 // Parse → Plan → Execute
-use gql_core::parser::parse_query;
+use cypher_core::parser::parse_query;
 
 let ast = parse_query("MATCH (p:Person) WHERE p.age > 25 RETURN p.name ORDER BY p.name")
     .expect("parse error");
@@ -336,7 +336,7 @@ This exercises the storage layer, lexer, and security validation interactively.
 
 ## Using the Client SDKs
 
-The examples above use the low-level `gql-core` Rust library directly.
+The examples above use the low-level `cypher-core` Rust library directly.
 For application code that talks to a running SedanDelivery server over Redis
 protocol, use one of the client SDKs instead. Python is shown as the primary
 example below; the .NET and Rust SDKs expose the same operations with

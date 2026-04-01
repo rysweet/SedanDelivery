@@ -5,7 +5,7 @@
 
 use std::sync::Arc;
 
-use gql_core::storage::GraphStore;
+use cypher_core::storage::GraphStore;
 
 /// Application state shared across all Axum handlers.
 ///

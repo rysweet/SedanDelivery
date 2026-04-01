@@ -10,7 +10,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::task::JoinHandle;
 
-use gql_core::storage::InMemoryGraphStore;
+use cypher_core::storage::InMemoryGraphStore;
 use sedandelivery_bolt::bookmark::BookmarkCounter;
 use sedandelivery_bolt::connection::session::SessionConfig;
 use sedandelivery_bolt::packstream::decoder;
@@ -44,7 +44,7 @@ async fn start_test_server() -> (JoinHandle<()>, u16) {
         .expect("failed to bind test listener");
     let port = listener.local_addr().unwrap().port();
 
-    let store: Arc<dyn gql_core::storage::GraphStore> = Arc::new(InMemoryGraphStore::new());
+    let store: Arc<dyn cypher_core::storage::GraphStore> = Arc::new(InMemoryGraphStore::new());
     store
         .create_graph("neo4j")
         .expect("failed to create default database");

@@ -102,7 +102,7 @@ scenario:
         args:
           - test
           - -p
-          - gql-core
+          - cypher-core
           - --lib
       timeout: 60000
 

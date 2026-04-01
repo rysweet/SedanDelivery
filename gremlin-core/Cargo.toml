@@ -5,7 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-gql-core   = { path = "../gql-core" }
+cypher-core   = { path = "../cypher-core" }
 serde      = { workspace = true }
 serde_json = { workspace = true }
 indexmap    = { workspace = true }

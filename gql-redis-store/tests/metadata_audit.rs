@@ -1,7 +1,7 @@
 use indexmap::IndexMap;
 
-use gql_core::storage::GraphStore;
-use gql_core::types::Value;
+use cypher_core::storage::GraphStore;
+use cypher_core::types::Value;
 use gql_redis_store::RedisGraphStore;
 use redis::Client;
 use uuid::Uuid;

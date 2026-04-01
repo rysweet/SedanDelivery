@@ -10,12 +10,12 @@ use indexmap::IndexMap;
 use std::collections::HashMap;
 use std::time::Duration;
 
-use gql_core::error::{ExecutionError, GqlError};
-use gql_core::executor::{ExecutionBudget, QueryExecutor};
-use gql_core::parser::parse_query;
-use gql_core::planner::QueryPlanner;
-use gql_core::storage::{GraphStore, InMemoryGraphStore};
-use gql_core::types::Value;
+use cypher_core::error::{ExecutionError, GqlError};
+use cypher_core::executor::{ExecutionBudget, QueryExecutor};
+use cypher_core::parser::parse_query;
+use cypher_core::planner::QueryPlanner;
+use cypher_core::storage::{GraphStore, InMemoryGraphStore};
+use cypher_core::types::Value;
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -250,7 +250,7 @@ fn test_expired_budget_returns_timeout_error() {
     // check_or_err() inside execute() actually calls Instant::now().
     let mut budget = ExecutionBudget::new(Duration::from_nanos(1), usize::MAX);
     std::thread::sleep(Duration::from_millis(5));
-    for _ in 0..gql_core::executor::budget::CHECK_INTERVAL - 1 {
+    for _ in 0..cypher_core::executor::budget::CHECK_INTERVAL - 1 {
         let _ = budget.check_or_err();
     }
     let result = executor.execute("test", &plan, &mut budget);

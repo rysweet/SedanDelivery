@@ -12,9 +12,9 @@ use std::sync::mpsc;
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
-use gql_core::error::StorageError;
-use gql_core::storage::{GraphStore, RangeQuery};
-use gql_core::types::Value;
+use cypher_core::error::StorageError;
+use cypher_core::storage::{GraphStore, RangeQuery};
+use cypher_core::types::Value;
 use gql_redis_store::RedisGraphStore;
 use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
 use redis::Client;
@@ -1662,19 +1662,19 @@ fn ci17_missing_graph_reads_return_graph_not_found() {
     let exact = Value::Str("Alice".into());
 
     assert!(matches!(
-        store.get_node(&graph, gql_core::storage::NodeId(1)),
+        store.get_node(&graph, cypher_core::storage::NodeId(1)),
         Err(StorageError::GraphNotFound { .. })
     ));
     assert!(matches!(
-        store.get_edge(&graph, gql_core::storage::EdgeId(1)),
+        store.get_edge(&graph, cypher_core::storage::EdgeId(1)),
         Err(StorageError::GraphNotFound { .. })
     ));
     assert!(matches!(
-        store.get_nodes_batch(&graph, &[gql_core::storage::NodeId(1)]),
+        store.get_nodes_batch(&graph, &[cypher_core::storage::NodeId(1)]),
         Err(StorageError::GraphNotFound { .. })
     ));
     assert!(matches!(
-        store.get_edges_batch(&graph, &[gql_core::storage::EdgeId(1)]),
+        store.get_edges_batch(&graph, &[cypher_core::storage::EdgeId(1)]),
         Err(StorageError::GraphNotFound { .. })
     ));
     assert!(matches!(
@@ -1690,11 +1690,11 @@ fn ci17_missing_graph_reads_return_graph_not_found() {
         Err(StorageError::GraphNotFound { .. })
     ));
     assert!(matches!(
-        store.out_edges(&graph, gql_core::storage::NodeId(1)),
+        store.out_edges(&graph, cypher_core::storage::NodeId(1)),
         Err(StorageError::GraphNotFound { .. })
     ));
     assert!(matches!(
-        store.in_edges(&graph, gql_core::storage::NodeId(1)),
+        store.in_edges(&graph, cypher_core::storage::NodeId(1)),
         Err(StorageError::GraphNotFound { .. })
     ));
     assert!(matches!(
@@ -1748,7 +1748,7 @@ fn ci17b_batch_reads_treat_partial_node_hashes_as_missing() {
         .expect("partial node hash should be created");
 
     let batch = store
-        .get_nodes_batch(&graph, &[gql_core::storage::NodeId(partial_id)])
+        .get_nodes_batch(&graph, &[cypher_core::storage::NodeId(partial_id)])
         .expect("batch read should preserve sparse missing-node semantics");
     assert_eq!(batch.len(), 1);
     assert!(
@@ -1769,7 +1769,7 @@ fn ci17b_batch_reads_treat_partial_node_hashes_as_missing() {
                 &graph,
                 vec![(
                     src,
-                    gql_core::storage::NodeId(partial_id),
+                    cypher_core::storage::NodeId(partial_id),
                     "LINK".to_string(),
                     IndexMap::new(),
                 )],
@@ -1887,7 +1887,10 @@ fn ci17d_batch_create_nodes_raises_node_seq_floor_for_injected_ids() {
         .expect("mixed injected/auto batch_create_nodes should succeed");
     assert_eq!(
         created,
-        vec![gql_core::storage::NodeId(2), gql_core::storage::NodeId(3)],
+        vec![
+            cypher_core::storage::NodeId(2),
+            cypher_core::storage::NodeId(3)
+        ],
         "auto IDs must be allocated above the injected _sd2_id floor"
     );
 
@@ -1900,7 +1903,7 @@ fn ci17d_batch_create_nodes_raises_node_seq_floor_for_injected_ids() {
         .expect("later auto create should succeed");
     assert_eq!(
         auto_after_batch,
-        gql_core::storage::NodeId(4),
+        cypher_core::storage::NodeId(4),
         "node_seq must advance past the maximum injected ID in the batch"
     );
 
@@ -1948,7 +1951,7 @@ fn ci17e_create_node_raises_node_seq_floor_for_injected_ids() {
             ]),
         )
         .expect("injected create_node should succeed");
-    assert_eq!(explicit, gql_core::storage::NodeId(2));
+    assert_eq!(explicit, cypher_core::storage::NodeId(2));
 
     let auto = store
         .create_node(
@@ -1959,7 +1962,7 @@ fn ci17e_create_node_raises_node_seq_floor_for_injected_ids() {
         .expect("subsequent auto create_node should succeed");
     assert_eq!(
         auto,
-        gql_core::storage::NodeId(3),
+        cypher_core::storage::NodeId(3),
         "single injected create must advance node_seq so later auto IDs do not collide"
     );
 
@@ -1999,14 +2002,14 @@ fn ci17f_create_edge_raises_edge_seq_floor_for_injected_ids() {
             props(&[("_sd2_eid", Value::Int(2))]),
         )
         .expect("injected create_edge should succeed");
-    assert_eq!(explicit, gql_core::storage::EdgeId(2));
+    assert_eq!(explicit, cypher_core::storage::EdgeId(2));
 
     let auto = store
         .create_edge(&graph, src, dst, "KNOWS".to_string(), IndexMap::new())
         .expect("subsequent auto create_edge should succeed");
     assert_eq!(
         auto,
-        gql_core::storage::EdgeId(3),
+        cypher_core::storage::EdgeId(3),
         "single injected create_edge must advance edge_seq so later auto IDs do not collide"
     );
 
@@ -2049,17 +2052,17 @@ fn ci17g_large_batch_create_nodes_preserves_late_injected_ids_across_sub_batches
     assert_eq!(created.len(), configured_max_batch_size + 1);
     assert_eq!(
         created[0],
-        gql_core::storage::NodeId(2),
+        cypher_core::storage::NodeId(2),
         "auto IDs in the first logical sub-batch must start above the request-wide injected floor"
     );
     assert_eq!(
         created[configured_max_batch_size - 1],
-        gql_core::storage::NodeId((configured_max_batch_size + 1) as u64),
+        cypher_core::storage::NodeId((configured_max_batch_size + 1) as u64),
         "the last auto-created node in the first logical sub-batch must keep its unique ID"
     );
     assert_eq!(
         *created.last().expect("injected node should exist"),
-        gql_core::storage::NodeId(1),
+        cypher_core::storage::NodeId(1),
         "the later injected node must keep its explicit ID without overwriting earlier auto nodes"
     );
 
@@ -2118,7 +2121,7 @@ fn ci17h_create_node_rejects_injected_existing_id() {
             props(&[("name", Value::Str("existing".into()))]),
         )
         .expect("seed node should be created");
-    assert_eq!(existing, gql_core::storage::NodeId(1));
+    assert_eq!(existing, cypher_core::storage::NodeId(1));
     assert!(
         matches!(
             store.create_node(
@@ -2163,7 +2166,7 @@ fn ci17i_create_edge_rejects_injected_existing_id() {
     let existing = store
         .create_edge(&graph, src, dst, "KNOWS".to_string(), IndexMap::new())
         .expect("seed edge should be created");
-    assert_eq!(existing, gql_core::storage::EdgeId(1));
+    assert_eq!(existing, cypher_core::storage::EdgeId(1));
     assert!(
         matches!(
             store.create_edge(

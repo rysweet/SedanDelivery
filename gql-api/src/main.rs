@@ -28,10 +28,10 @@ use tracing::info;
 use tracing_subscriber::prelude::*;
 use tracing_subscriber::EnvFilter;
 
+use cypher_core::storage::GraphStore;
 use gql_api::auth;
 use gql_api::metrics;
 use gql_api::rate_limit;
-use gql_core::storage::GraphStore;
 
 use gql_api::routes;
 use gql_api::state::AppState;

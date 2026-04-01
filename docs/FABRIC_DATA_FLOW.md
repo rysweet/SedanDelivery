@@ -10,7 +10,7 @@ SedanDelivery is a graph query engine implemented as a Valkey/Redis
 module. Clients write and read graph data via the Redis protocol
 (GQL.MUTATE / GQL.QUERY commands). For analytics and visualization,
 graph data is periodically synced to Microsoft Fabric where it becomes
-queryable through the GQL (Graph Query Language, ISO/IEC 39075) API
+queryable through the Fabric Graph Query API (which uses GQL, ISO/IEC 39075)
 and the Fabric portal.
 
 The sync is a batch process, not real-time streaming. A Python script

@@ -1,11 +1,11 @@
 //! Interactive tests for EXISTS { subquery } and bare pattern predicates.
 //! These tests verify the end-to-end behavior of the existential subquery feature.
 
-use gql_core::executor::{budget::ExecutionBudget, engine::QueryExecutor};
-use gql_core::parser::parse_query;
-use gql_core::planner::QueryPlanner;
-use gql_core::storage::{GraphStore, InMemoryGraphStore};
-use gql_core::types::Value;
+use cypher_core::executor::{budget::ExecutionBudget, engine::QueryExecutor};
+use cypher_core::parser::parse_query;
+use cypher_core::planner::QueryPlanner;
+use cypher_core::storage::{GraphStore, InMemoryGraphStore};
+use cypher_core::types::Value;
 use indexmap::IndexMap;
 use std::collections::HashMap;
 

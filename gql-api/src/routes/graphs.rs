@@ -12,7 +12,7 @@ use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use serde::Deserialize;
 
-use gql_core::storage::validate_graph_name;
+use cypher_core::storage::validate_graph_name;
 
 use crate::error::ApiError;
 use crate::models::{CreateGraphBody, GraphListResponse, GraphStatsResponse};

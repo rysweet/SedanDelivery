@@ -13,7 +13,7 @@ use std::sync::Arc;
 use cucumber::gherkin;
 use cucumber::{given, then, when, World};
 
-use gql_core::executor::{ExecutionBudget, QueryExecutor, QueryResult};
+use cypher_core::executor::{ExecutionBudget, QueryExecutor, QueryResult};
 
 /// Budget for TCK tests — bounded row limit to prevent OOM kills on
 /// exponential repeat/path queries (e.g., repeat(both()).until(loops().is(40))
@@ -24,8 +24,8 @@ use gql_core::executor::{ExecutionBudget, QueryExecutor, QueryResult};
 fn tck_budget() -> ExecutionBudget {
     ExecutionBudget::new(std::time::Duration::from_secs(120), 5_000_000)
 }
-use gql_core::storage::{EdgeId, GraphStore, InMemoryGraphStore, NodeId};
-use gql_core::types::Value;
+use cypher_core::storage::{EdgeId, GraphStore, InMemoryGraphStore, NodeId};
+use cypher_core::types::Value;
 use gremlin_core::bytecode::GremlinStep;
 use gremlin_core::compiler::GremlinCompiler;
 use gremlin_core::text_parser;

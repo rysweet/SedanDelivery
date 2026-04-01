@@ -11,7 +11,7 @@ WORKDIR /app
 
 # Copy workspace manifests for layer caching
 COPY Cargo.toml ./
-COPY gql-core/Cargo.toml ./gql-core/
+COPY cypher-core/Cargo.toml ./cypher-core/
 COPY gql-redis-store/Cargo.toml ./gql-redis-store/
 COPY gql-module/Cargo.toml ./gql-module/
 COPY gql-fabric-store/Cargo.toml ./gql-fabric-store/
@@ -20,9 +20,9 @@ COPY gql-api/Cargo.toml ./gql-api/
 COPY sedandelivery-bolt/Cargo.toml ./sedandelivery-bolt/
 
 # Stub sources for dependency caching
-RUN mkdir -p gql-core/src gql-redis-store/src gql-fabric-store/src \
+RUN mkdir -p cypher-core/src gql-redis-store/src gql-fabric-store/src \
              gql-module/src gql-cli/src gql-api/src sedandelivery-bolt/src && \
-    echo "pub fn stub() {}" > gql-core/src/lib.rs && \
+    echo "pub fn stub() {}" > cypher-core/src/lib.rs && \
     echo "pub fn stub() {}" > gql-redis-store/src/lib.rs && \
     echo "pub fn stub() {}" > gql-fabric-store/src/lib.rs && \
     echo "pub fn stub() {}" > gql-module/src/lib.rs && \
@@ -32,11 +32,11 @@ RUN mkdir -p gql-core/src gql-redis-store/src gql-fabric-store/src \
     cargo build --release -p sedandelivery-bolt 2>/dev/null || true
 
 # Copy real source code
-COPY gql-core/ ./gql-core/
+COPY cypher-core/ ./cypher-core/
 COPY sedandelivery-bolt/ ./sedandelivery-bolt/
 
 # Build Bolt server
-RUN touch gql-core/src/lib.rs sedandelivery-bolt/src/main.rs && \
+RUN touch cypher-core/src/lib.rs sedandelivery-bolt/src/main.rs && \
     cargo build --release -p sedandelivery-bolt && \
     ls -lh target/release/sedandelivery-bolt
 

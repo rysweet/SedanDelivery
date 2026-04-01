@@ -9,7 +9,7 @@ name = "sedandelivery-gremlin"
 path = "src/main.rs"
 
 [dependencies]
-gql-core        = { path = "../gql-core" }
+cypher-core        = { path = "../cypher-core" }
 gql-redis-store = { path = "../gql-redis-store" }
 gremlin-core    = { path = "../gremlin-core" }
 tokio            = { workspace = true }
@@ -29,4 +29,4 @@ tokio-tungstenite = "0.24"
 serde_json       = { workspace = true }
 uuid             = { version = "1", features = ["v4"] }
 tokio            = { workspace = true }
-gql-core         = { path = "../gql-core" }
+cypher-core         = { path = "../cypher-core" }

@@ -4,7 +4,7 @@ use std::io::{BufRead, BufReader, Error, ErrorKind, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
-use gql_core::changelog::{ChangeEvent, CHANGELOG_STREAM};
+use cypher_core::changelog::{ChangeEvent, CHANGELOG_STREAM};
 
 fn test_redis_timeouts() -> crate::RedisTimeouts {
     crate::RedisTimeouts {

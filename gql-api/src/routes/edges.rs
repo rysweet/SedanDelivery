@@ -11,7 +11,7 @@ use axum::http::StatusCode;
 use axum::routing::{delete, get, post, put};
 use axum::{Json, Router};
 
-use gql_core::storage::{validate_graph_name, EdgeId};
+use cypher_core::storage::{validate_graph_name, EdgeId};
 
 use crate::error::ApiError;
 use crate::models::{
@@ -164,7 +164,7 @@ async fn delete_edge(
     let id_lookup = id_str.clone();
     run_store_blocking(&state, move |store| {
         store.delete_edge(&graph_name, id).map_err(|e| {
-            use gql_core::error::StorageError;
+            use cypher_core::error::StorageError;
             match e {
                 StorageError::EdgeNotFound { .. } => {
                     ApiError::not_found(format!("edge {id_lookup} not found"))

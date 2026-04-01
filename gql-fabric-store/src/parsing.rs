@@ -5,10 +5,10 @@ use std::collections::HashMap;
 
 use serde_json::Value as JValue;
 
-use gql_core::error::StorageError;
-use gql_core::serde_value;
-use gql_core::storage::{AdjEntry, EdgeData, EdgeId, NodeData, NodeId};
-use gql_core::types::Value;
+use cypher_core::error::StorageError;
+use cypher_core::serde_value;
+use cypher_core::storage::{AdjEntry, EdgeData, EdgeId, NodeData, NodeId};
+use cypher_core::types::Value;
 
 use crate::{FabricGraphStore, PROP_DST, PROP_EDGE_ID, PROP_LABELS, PROP_NODE_ID, PROP_SRC};
 

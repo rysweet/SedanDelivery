@@ -1,4 +1,4 @@
-//! Gremlin bytecode → gql-core execution bridge.
+//! Gremlin bytecode → cypher-core execution bridge.
 //!
 //! Primary path: deserialize bytecode into `GremlinStep`s, compile to an
 //! `Operator` tree via `GremlinCompiler`, and execute directly.
@@ -8,13 +8,13 @@
 
 use std::collections::HashMap;
 
-use gql_core::error::{ExecutionError, GqlError};
-use gql_core::executor::{ExecutionBudget, QueryExecutor};
-use gql_core::parser::parse_query;
-use gql_core::planner::QueryPlanner;
-use gql_core::procedure::ProcedureRegistry;
-use gql_core::storage::GraphStore;
-use gql_core::types::Value;
+use cypher_core::error::{ExecutionError, GqlError};
+use cypher_core::executor::{ExecutionBudget, QueryExecutor};
+use cypher_core::parser::parse_query;
+use cypher_core::planner::QueryPlanner;
+use cypher_core::procedure::ProcedureRegistry;
+use cypher_core::storage::GraphStore;
+use cypher_core::types::Value;
 use gremlin_core::bytecode::deserialize_bytecode;
 use gremlin_core::compiler::{CompileError, GremlinCompiler};
 

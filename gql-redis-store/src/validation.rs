@@ -4,7 +4,7 @@
 // Redis key schema (null bytes, oversized strings) or break Redis Cluster slot
 // routing (brace characters in graph names).
 
-use gql_core::error::StorageError;
+use cypher_core::error::StorageError;
 
 /// Maximum allowed byte length for a label string.
 pub const LABEL_MAX_LEN: usize = 256;

@@ -6,7 +6,7 @@ license.workspace = true
 description = "Embeddable GQL/Cypher query engine with in-memory graph store"
 
 [dependencies]
-gql-core = { path = "../gql-core" }
+cypher-core = { path = "../cypher-core" }
 indexmap  = { workspace = true }
 
 [dev-dependencies]

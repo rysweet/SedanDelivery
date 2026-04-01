@@ -157,7 +157,7 @@ mod tests {
     use std::sync::atomic::AtomicU64;
     use std::time::{Duration, Instant};
 
-    use gql_core::storage::{InMemoryGraphStore, ReadConsistency};
+    use cypher_core::storage::{InMemoryGraphStore, ReadConsistency};
 
     fn ready_session() -> Session {
         Session {

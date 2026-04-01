@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use crate::packstream::value::{BoltMap, BoltValue};
 use crate::protocol::state::ServerState;
-use gql_core::storage::{GraphStore, ReadConsistency};
+use cypher_core::storage::{GraphStore, ReadConsistency};
 
 use super::ProtocolError;
 
@@ -242,7 +242,7 @@ mod tests {
     use std::net::IpAddr;
     use std::sync::atomic::AtomicU64;
 
-    use gql_core::storage::InMemoryGraphStore;
+    use cypher_core::storage::InMemoryGraphStore;
 
     fn ready_session() -> Session {
         Session {

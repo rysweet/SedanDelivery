@@ -5,7 +5,7 @@ edition = "2021"
 publish = false
 
 [dependencies]
-gql-core     = { path = "../../gql-core" }
+cypher-core     = { path = "../../cypher-core" }
 gremlin-core = { path = "../../gremlin-core" }
 indexmap      = { workspace = true }
 jiff          = { workspace = true }

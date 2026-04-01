@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 
-use gql_core::storage::{EdgeData, EdgeId, GraphStore, NodeData, NodeId};
-use gql_core::types::value::{Crs, GeoPoint};
-use gql_core::types::Value;
+use cypher_core::storage::{EdgeData, EdgeId, GraphStore, NodeData, NodeId};
+use cypher_core::types::value::{Crs, GeoPoint};
+use cypher_core::types::Value;
 use indexmap::IndexMap;
 
 use crate::packstream::value::BoltValue;
@@ -434,7 +434,7 @@ pub(crate) fn path_to_bolt_cached(
 
 // ── Property / scalar conversion ─────────────────────────────────────────────
 
-/// Convert a gql-core property map to a `BoltValue::Map`.
+/// Convert a cypher-core property map to a `BoltValue::Map`.
 ///
 /// Only scalar values appear in property maps (no Node/Edge/Path references).
 pub fn props_to_bolt_map(props: &IndexMap<String, Value>) -> BoltValue {
@@ -445,7 +445,7 @@ pub fn props_to_bolt_map(props: &IndexMap<String, Value>) -> BoltValue {
     BoltValue::Map(entries)
 }
 
-/// Convert a gql-core scalar Value to a BoltValue.
+/// Convert a cypher-core scalar Value to a BoltValue.
 ///
 /// Handles Null, Bool, Int, Float, Str, List, Map, and temporal/spatial types.
 /// Does NOT handle Node, Edge, or Path -- those require a store lookup and are
@@ -624,7 +624,7 @@ fn datetime_to_bolt(zoned: &jiff::Zoned) -> BoltValue {
 }
 
 /// Duration: 4 fields (months, days, seconds, nanoseconds).
-fn duration_to_bolt(dur: &gql_core::types::CypherDuration) -> BoltValue {
+fn duration_to_bolt(dur: &cypher_core::types::CypherDuration) -> BoltValue {
     // CypherDuration stores nanos as i128. Split into seconds + sub-second nanos.
     let total_nanos = dur.nanos;
     let mut seconds = (total_nanos / 1_000_000_000) as i64;
@@ -680,8 +680,8 @@ fn point_to_bolt(p: &GeoPoint) -> BoltValue {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gql_core::storage::InMemoryGraphStore;
-    use gql_core::types::CypherDuration;
+    use cypher_core::storage::InMemoryGraphStore;
+    use cypher_core::types::CypherDuration;
 
     #[test]
     fn null_converts_to_null() {

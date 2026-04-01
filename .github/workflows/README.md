@@ -1,6 +1,6 @@
 # GitHub Actions Workflows
 
-CI/CD workflows for the SedanDelivery Rust workspace (GQL query engine over Redis/Valkey).
+CI/CD workflows for the SedanDelivery Rust workspace (openCypher query engine over Redis/Valkey).
 
 ## Workflows
 

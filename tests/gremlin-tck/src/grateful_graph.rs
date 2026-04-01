@@ -8,8 +8,8 @@
 use indexmap::IndexMap;
 use std::collections::HashMap;
 
-use gql_core::storage::{GraphStore, InMemoryGraphStore, NodeId};
-use gql_core::types::Value;
+use cypher_core::storage::{GraphStore, InMemoryGraphStore, NodeId};
+use cypher_core::types::Value;
 
 /// (name, songType, performances) for each of the 584 songs.
 static SONGS: [(&str, &str, i64); 584] = [

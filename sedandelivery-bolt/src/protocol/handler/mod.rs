@@ -134,7 +134,7 @@ pub async fn handle_message(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gql_core::storage::{GraphStore, InMemoryGraphStore};
+    use cypher_core::storage::{GraphStore, InMemoryGraphStore};
     use std::collections::HashMap;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::Arc;
@@ -261,7 +261,7 @@ mod tests {
         assert_eq!(s2.state, ServerState::TxReady);
         assert_eq!(
             s2.read_consistency(),
-            gql_core::storage::ReadConsistency::TopologyDefault
+            cypher_core::storage::ReadConsistency::TopologyDefault
         );
     }
 
@@ -674,13 +674,13 @@ mod tests {
         run_and_pull(&mut session, "CREATE (:CommitRefreshNode {val: 1})").await;
         assert_eq!(
             session.read_consistency(),
-            gql_core::storage::ReadConsistency::TopologyDefault
+            cypher_core::storage::ReadConsistency::TopologyDefault
         );
 
         transaction::handle_commit(&mut session).await.unwrap();
         assert_eq!(
             session.read_consistency(),
-            gql_core::storage::ReadConsistency::SessionFreshPrimary
+            cypher_core::storage::ReadConsistency::SessionFreshPrimary
         );
     }
 
@@ -699,7 +699,7 @@ mod tests {
 
         assert_eq!(
             session.read_consistency(),
-            gql_core::storage::ReadConsistency::SessionFreshPrimary
+            cypher_core::storage::ReadConsistency::SessionFreshPrimary
         );
     }
 
@@ -749,7 +749,7 @@ mod tests {
 
         assert_eq!(
             s2.read_consistency(),
-            gql_core::storage::ReadConsistency::SessionFreshPrimary
+            cypher_core::storage::ReadConsistency::SessionFreshPrimary
         );
     }
 
@@ -789,7 +789,7 @@ mod tests {
 
         assert_eq!(
             s2.read_consistency(),
-            gql_core::storage::ReadConsistency::SessionFreshPrimary
+            cypher_core::storage::ReadConsistency::SessionFreshPrimary
         );
     }
 
@@ -824,7 +824,7 @@ mod tests {
 
         assert_eq!(
             s2.read_consistency(),
-            gql_core::storage::ReadConsistency::TopologyDefault
+            cypher_core::storage::ReadConsistency::TopologyDefault
         );
     }
 

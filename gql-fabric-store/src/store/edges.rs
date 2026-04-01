@@ -8,9 +8,9 @@ use std::collections::HashMap;
 
 use serde_json::{json, Value as JValue};
 
-use gql_core::error::StorageError;
-use gql_core::storage::{EdgeData, EdgeId, GraphStore, NodeId};
-use gql_core::types::Value;
+use cypher_core::error::StorageError;
+use cypher_core::storage::{EdgeData, EdgeId, GraphStore, NodeId};
+use cypher_core::types::Value;
 
 use crate::parsing::user_props_to_json;
 use crate::sanitize::sanitize_label;

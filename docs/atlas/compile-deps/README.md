@@ -12,7 +12,7 @@ Cargo workspace dependency graph for SedanDelivery — 8 crates plus a loadtest 
 ```mermaid
 graph TD
     subgraph workspace["Workspace Crates"]
-        gql_core["gql-core<br/><i>lib</i>"]
+        cypher_core["cypher-core<br/><i>lib</i>"]
         gql_redis["gql-redis-store<br/><i>lib</i>"]
         gql_fabric["gql-fabric-store<br/><i>lib</i>"]
         gql_module["gql-module<br/><i>cdylib</i>"]
@@ -23,18 +23,18 @@ graph TD
         loadtest["tests/loadtest<br/><i>bin</i>"]
     end
 
-    gql_redis -->|"depends on"| gql_core
-    gql_fabric -->|"depends on"| gql_core
-    gql_module -->|"depends on"| gql_core
-    gql_cli -->|"depends on"| gql_core
-    gql_api -->|"depends on"| gql_core
+    gql_redis -->|"depends on"| cypher_core
+    gql_fabric -->|"depends on"| cypher_core
+    gql_module -->|"depends on"| cypher_core
+    gql_cli -->|"depends on"| cypher_core
+    gql_api -->|"depends on"| cypher_core
     gql_api -->|"depends on"| gql_redis
-    bolt -->|"depends on"| gql_core
+    bolt -->|"depends on"| cypher_core
     bolt -->|"depends on"| gql_redis
-    sync -->|"depends on"| gql_core
+    sync -->|"depends on"| cypher_core
     sync -->|"depends on"| gql_redis
     sync -->|"depends on"| gql_fabric
-    loadtest -->|"depends on"| gql_core
+    loadtest -->|"depends on"| cypher_core
 ```
 
 </details>
@@ -64,13 +64,13 @@ See [dependencies.mmd](dependencies.mmd) and [dependencies.dot](dependencies.dot
 
 | Crate | Key Dependencies |
 |-------|-----------------|
-| gql-core | regex, typed-arena, jiff, smol_str, petgraph, indexmap |
-| gql-redis-store | redis, r2d2, gql-core |
-| gql-fabric-store | reqwest, gql-core |
-| gql-module | redis-module (bindgen, requires libclang), gql-core |
-| gql-api | axum, tower, tower-http, hyper, gql-core, gql-redis-store |
-| sedandelivery-bolt | tokio, gql-core, gql-redis-store |
-| sedandelivery-fabric-sync | tokio, gql-core, gql-redis-store, gql-fabric-store |
+| cypher-core | regex, typed-arena, jiff, smol_str, petgraph, indexmap |
+| gql-redis-store | redis, r2d2, cypher-core |
+| gql-fabric-store | reqwest, cypher-core |
+| gql-module | redis-module (bindgen, requires libclang), cypher-core |
+| gql-api | axum, tower, tower-http, hyper, cypher-core, gql-redis-store |
+| sedandelivery-bolt | tokio, cypher-core, gql-redis-store |
+| sedandelivery-fabric-sync | tokio, cypher-core, gql-redis-store, gql-fabric-store |
 
 ### Dev/Test Dependencies
 
@@ -90,4 +90,4 @@ See [dependencies.mmd](dependencies.mmd) and [dependencies.dot](dependencies.dot
 
 ## Circular Dependencies
 
-**None detected.** The dependency graph is a clean DAG with `gql-core` as the leaf.
+**None detected.** The dependency graph is a clean DAG with `cypher-core` as the leaf.

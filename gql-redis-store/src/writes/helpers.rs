@@ -3,8 +3,8 @@
 use indexmap::IndexMap;
 use redis::ConnectionLike;
 
-use gql_core::error::StorageError;
-use gql_core::types::Value;
+use cypher_core::error::StorageError;
+use cypher_core::types::Value;
 
 /// Extract a FanoutStore-injected ID from properties, if present.
 ///
@@ -95,14 +95,16 @@ pub(crate) fn ensure_key_absent(
 /// create helpers.
 pub(crate) fn max_batch_size() -> usize {
     static SIZE: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
-    *SIZE.get_or_init(|| gql_core::config::parse_env_min("GQL_REDIS_MAX_BATCH_SIZE", 5000usize, 1))
+    *SIZE.get_or_init(|| {
+        cypher_core::config::parse_env_min("GQL_REDIS_MAX_BATCH_SIZE", 5000usize, 1)
+    })
 }
 
 /// Number of batch create items serialized into each Redis pipeline chunk.
 pub(crate) fn batch_pipeline_chunk_size() -> usize {
     static SIZE: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
     *SIZE.get_or_init(|| {
-        gql_core::config::parse_env_min("GQL_REDIS_BATCH_PIPELINE_CHUNK_SIZE", 250usize, 1)
+        cypher_core::config::parse_env_min("GQL_REDIS_BATCH_PIPELINE_CHUNK_SIZE", 250usize, 1)
     })
 }
 

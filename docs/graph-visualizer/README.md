@@ -7,7 +7,7 @@ updated: 2026-02-27
 # Graph Visualizer
 
 The Graph Visualizer is a browser-based tool for exploring, editing, and querying
-property graphs stored in SedanDelivery's gql-core engine. It renders graphs using
+property graphs stored in SedanDelivery's cypher-core engine. It renders graphs using
 WebGL (Sigma.js v3) and handles datasets of 100,000+ nodes at interactive frame rates.
 
 ## Quick Start
@@ -51,7 +51,7 @@ gql-api (port 3001)               ← Rust / Axum
        |
        | in-process
        v
-gql-core InMemoryGraphStore       ← Rust library
+cypher-core InMemoryGraphStore       ← Rust library
   - Parse → Plan → Execute pipeline
   - One store instance per named graph
 ```
@@ -63,7 +63,7 @@ injects service URLs and streams logs from all processes to the Aspire dashboard
 
 ### gql-api (Rust, port 3001)
 
-HTTP REST service built with Axum. Wraps the gql-core library and exposes all
+HTTP REST service built with Axum. Wraps the cypher-core library and exposes all
 graph operations over JSON. Every named graph lives as an `InMemoryGraphStore`
 instance inside a shared `Mutex<HashMap<String, InMemoryGraphStore>>`.
 

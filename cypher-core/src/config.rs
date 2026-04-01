@@ -10,7 +10,7 @@
 //! Call `EngineConfig::from_env()` once at startup and pass the resulting
 //! struct to each subsystem that needs it (budget, parser, …).  For internal
 //! subsystems that are not reachable through a public API parameter, call
-//! `gql_core::config::global()` to obtain a reference to the process-wide
+//! `cypher_core::config::global()` to obtain a reference to the process-wide
 //! instance that is lazily initialised from the environment on first access.
 
 use std::sync::OnceLock;

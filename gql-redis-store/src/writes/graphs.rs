@@ -1,8 +1,8 @@
 // writes/graphs.rs -- Graph lifecycle (create/delete) operations for RedisGraphStore.
 
-use gql_core::error::StorageError;
-use gql_core::serde_value::json_to_props;
-use gql_core::storage::validate_graph_name;
+use cypher_core::error::StorageError;
+use cypher_core::serde_value::json_to_props;
+use cypher_core::storage::validate_graph_name;
 
 use crate::keys::{
     key_edge, key_edge_seq, key_edges_set, key_graph_deleting, key_in, key_indexes, key_label,
@@ -346,7 +346,7 @@ impl RedisGraphStore {
 
 #[cfg(test)]
 mod tests {
-    use gql_core::storage::validate_graph_name;
+    use cypher_core::storage::validate_graph_name;
 
     // ---- Graph name validation (pure logic, no Redis needed) ----------------
 
@@ -524,7 +524,7 @@ mod tests {
 // (not the generic StorageError::Backend) when node/edge counts exceed the limit.
 //
 // FAILS TO COMPILE until StorageError::DeleteGraphTooLarge is added to
-// gql-core/src/error.rs AND delete_graph_impl is updated to use it.
+// cypher-core/src/error.rs AND delete_graph_impl is updated to use it.
 
 #[cfg(test)]
 mod ws_f_typed_error_source_contract_tests {

@@ -1,9 +1,9 @@
-//! Gremlin bytecode types, GraphSON serialization, and compiler to gql-core Operator trees.
+//! Gremlin bytecode types, GraphSON serialization, and compiler to cypher-core Operator trees.
 //!
 //! This crate is pure Rust (no I/O). It provides:
-//! - [`GremlinValue`] — the Gremlin value type with conversions to/from [`gql_core::types::Value`]
+//! - [`GremlinValue`] — the Gremlin value type with conversions to/from [`cypher_core::types::Value`]
 //! - [`GremlinStep`] — typed representations of ~50 Gremlin traversal steps
-//! - [`GremlinCompiler`] — transforms a step list into a [`gql_core::planner::Operator`] tree
+//! - [`GremlinCompiler`] — transforms a step list into a [`cypher_core::planner::Operator`] tree
 //! - GraphSON v3 request/response message types
 
 pub mod bytecode;

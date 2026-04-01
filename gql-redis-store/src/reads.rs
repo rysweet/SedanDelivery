@@ -1,8 +1,8 @@
 // reads.rs — All GraphStore read method implementations for RedisGraphStore.
 
-use gql_core::error::StorageError;
-use gql_core::serde_value::json_to_props;
-use gql_core::storage::{AdjEntry, EdgeData, EdgeId, GraphStats, NodeData, NodeId, RangeQuery};
+use cypher_core::error::StorageError;
+use cypher_core::serde_value::json_to_props;
+use cypher_core::storage::{AdjEntry, EdgeData, EdgeId, GraphStats, NodeData, NodeId, RangeQuery};
 
 use crate::connection::RedisConn;
 use crate::keys::{
@@ -18,7 +18,7 @@ use crate::{LockedRedisConn, RedisGraphStore};
 pub(crate) fn smembers_threshold() -> u64 {
     static THRESHOLD: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
     *THRESHOLD.get_or_init(|| {
-        gql_core::config::parse_env_min("GQL_REDIS_SMEMBERS_THRESHOLD", 10_000u64, 1)
+        cypher_core::config::parse_env_min("GQL_REDIS_SMEMBERS_THRESHOLD", 10_000u64, 1)
     })
 }
 

@@ -4,7 +4,7 @@
 // and deeply-nested expressions.
 
 use criterion::{criterion_group, criterion_main, Criterion};
-use gql_core::parser::{parse_query, tokenize};
+use cypher_core::parser::{parse_query, tokenize};
 
 // ── Existing benchmark (kept for baseline continuity) ─────────────────────────
 

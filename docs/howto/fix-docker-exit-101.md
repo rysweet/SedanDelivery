@@ -35,7 +35,7 @@ of every affected Dockerfile, **before** any `RUN cargo build` instruction.
 
 ```dockerfile
 COPY Cargo.toml ./
-COPY gql-core/Cargo.toml ./gql-core/
+COPY cypher-core/Cargo.toml ./cypher-core/
 # ... more COPY instructions ...
 RUN ... cargo build --release -p my-crate || true
 ```
@@ -44,7 +44,7 @@ RUN ... cargo build --release -p my-crate || true
 
 ```dockerfile
 COPY Cargo.toml Cargo.lock ./
-COPY gql-core/Cargo.toml ./gql-core/
+COPY cypher-core/Cargo.toml ./cypher-core/
 # ... more COPY instructions ...
 RUN ... cargo build --release -p my-crate || true
 ```
@@ -54,7 +54,7 @@ Alternatively, use two separate `COPY` instructions if you prefer explicit lines
 ```dockerfile
 COPY Cargo.toml ./
 COPY Cargo.lock ./
-COPY gql-core/Cargo.toml ./gql-core/
+COPY cypher-core/Cargo.toml ./cypher-core/
 ```
 
 Both forms are equivalent. The single-line form (`COPY Cargo.toml Cargo.lock ./`)

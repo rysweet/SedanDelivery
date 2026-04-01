@@ -1,8 +1,8 @@
 use indexmap::IndexMap;
 
-use gql_core::planner::collect_graph_statistics;
-use gql_core::storage::{GraphStore, RangeQuery};
-use gql_core::types::Value;
+use cypher_core::planner::collect_graph_statistics;
+use cypher_core::storage::{GraphStore, RangeQuery};
+use cypher_core::types::Value;
 use gql_redis_store::RedisGraphStore;
 use uuid::Uuid;
 
@@ -204,7 +204,7 @@ fn cluster_mode_batch_create_edges_honors_injected_edge_ids() {
             )],
         )
         .expect("batch_create_edges should honor injected edge IDs");
-    assert_eq!(edges, vec![gql_core::storage::EdgeId(4242)]);
+    assert_eq!(edges, vec![cypher_core::storage::EdgeId(4242)]);
 
     let edge = store
         .get_edge(&graph, edges[0])

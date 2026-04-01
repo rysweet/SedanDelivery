@@ -7,7 +7,7 @@ use crate::message::types::ServerMessage;
 use crate::metrics as bolt_metrics;
 use crate::packstream::value::{BoltMap, BoltMapExt, BoltValue};
 use crate::protocol::state::ServerState;
-use gql_core::storage::GraphStore;
+use cypher_core::storage::GraphStore;
 
 use super::explain::{detect_notifications, operator_to_plan_map, operator_to_profile_plan_map};
 use super::{
@@ -204,7 +204,7 @@ fn resolve_effective_store(session: &Session) -> Arc<dyn GraphStore> {
 /// Try to handle a query as an admin/DDL command (CREATE/DROP DATABASE,
 /// SHOW DATABASES, CREATE/DROP INDEX/CONSTRAINT).
 ///
-/// These commands are not supported by the gql-core parser, so we intercept
+/// These commands are not supported by the cypher-core parser, so we intercept
 /// them before normal query execution. Returns `Some(response)` if the query
 /// was handled as admin, `None` if it should proceed through normal execution.
 struct AdminInterceptSuccess {
@@ -375,7 +375,7 @@ async fn check_database_exists(
         return Ok(None);
     }
 
-    use gql_core::error::{GqlError, StorageError};
+    use cypher_core::error::{GqlError, StorageError};
     let err = GqlError::Storage(StorageError::GraphNotFound {
         name: graph.to_string(),
     });
@@ -465,7 +465,7 @@ async fn acquire_write_semaphore(
 fn default_explicit_tx_write_timeout_ms() -> u64 {
     static TIMEOUT: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
     *TIMEOUT.get_or_init(|| {
-        gql_core::config::parse_env_range("BOLT_DEFAULT_TX_TIMEOUT_MS", 30_000u64, 1, 300_000)
+        cypher_core::config::parse_env_range("BOLT_DEFAULT_TX_TIMEOUT_MS", 30_000u64, 1, 300_000)
     })
 }
 
@@ -538,7 +538,7 @@ struct ConvertedResult {
     records: Vec<Vec<BoltValue>>,
     query_type: String,
     stats: BoltMap,
-    trailing_err: Option<gql_core::error::GqlError>,
+    trailing_err: Option<cypher_core::error::GqlError>,
 }
 
 /// Build the SUCCESS response from pre-converted query results.
@@ -788,13 +788,13 @@ pub(crate) async fn handle_run(
             &run_metadata
         };
         let meta_value = bridge::executor::bolt_map_to_value_map(effective_meta);
-        let meta_map: indexmap::IndexMap<Box<str>, gql_core::types::Value> = meta_value
+        let meta_map: indexmap::IndexMap<Box<str>, cypher_core::types::Value> = meta_value
             .into_iter()
             .map(|(k, v)| (Box::from(k.as_str()), v))
             .collect();
         value_params.insert(
             "__tx_metadata__".to_string(),
-            gql_core::types::Value::Map(meta_map),
+            cypher_core::types::Value::Map(meta_map),
         );
     }
 
@@ -850,9 +850,9 @@ pub(crate) async fn handle_run(
                 params_for_profile,
                 timeout_ms,
                 |plan, profile_stats| {
-                    let est = gql_core::planner::collect_graph_statistics(store_ref, graph_ref)
+                    let est = cypher_core::planner::collect_graph_statistics(store_ref, graph_ref)
                         .ok()
-                        .map(|gs| gql_core::planner::estimate_cardinality(plan, &gs));
+                        .map(|gs| cypher_core::planner::estimate_cardinality(plan, &gs));
                     operator_to_profile_plan_map(plan, 0, est.as_ref(), profile_stats)
                 },
             )?;
@@ -944,7 +944,7 @@ async fn handle_explain(
     effective_store: &Arc<dyn GraphStore>,
     graph: &str,
     actual_query: &str,
-    value_params: std::collections::HashMap<String, gql_core::types::Value>,
+    value_params: std::collections::HashMap<String, cypher_core::types::Value>,
     run_metadata: BoltMap,
 ) -> Result<Vec<ServerMessage>, ProtocolError> {
     let store = Arc::clone(effective_store);
@@ -956,9 +956,9 @@ async fn handle_explain(
     // I/O) and must not block Tokio worker threads.
     let plan_result = tokio::task::spawn_blocking(move || {
         let operator = bridge::executor::plan_query(&*store, &g, &q, p)?;
-        let estimates = gql_core::planner::collect_graph_statistics(&*store, &g)
+        let estimates = cypher_core::planner::collect_graph_statistics(&*store, &g)
             .ok()
-            .map(|gs| gql_core::planner::estimate_cardinality(&operator, &gs));
+            .map(|gs| cypher_core::planner::estimate_cardinality(&operator, &gs));
         let plan_map = operator_to_plan_map(&operator, false, 0, estimates.as_ref());
         let plan_notifications = detect_notifications(&operator);
         Ok((plan_map, plan_notifications))
@@ -1019,12 +1019,12 @@ mod tests {
     use std::sync::atomic::AtomicU64;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    use gql_core::executor::{MutationStats, QueryResult};
-    use gql_core::storage::{
+    use cypher_core::executor::{MutationStats, QueryResult};
+    use cypher_core::storage::{
         AdjEntry, EdgeData, EdgeId, GraphStats, GraphStore, InMemoryGraphStore, IndexDescriptor,
         NodeData, NodeId, RangeQuery, ReadConsistency,
     };
-    use gql_core::types::Value;
+    use cypher_core::types::Value;
 
     struct TrackingStore {
         inner: Arc<InMemoryGraphStore>,
@@ -1066,7 +1066,7 @@ mod tests {
             &self,
             graph: &str,
             id: NodeId,
-        ) -> Result<Option<NodeData>, gql_core::error::StorageError> {
+        ) -> Result<Option<NodeData>, cypher_core::error::StorageError> {
             self.get_node_calls.fetch_add(1, Ordering::Relaxed);
             self.inner.get_node(graph, id)
         }
@@ -1075,7 +1075,7 @@ mod tests {
             &self,
             graph: &str,
             id: EdgeId,
-        ) -> Result<Option<EdgeData>, gql_core::error::StorageError> {
+        ) -> Result<Option<EdgeData>, cypher_core::error::StorageError> {
             self.get_edge_calls.fetch_add(1, Ordering::Relaxed);
             self.inner.get_edge(graph, id)
         }
@@ -1084,7 +1084,7 @@ mod tests {
             &self,
             graph: &str,
             ids: &[NodeId],
-        ) -> Result<Vec<Option<NodeData>>, gql_core::error::StorageError> {
+        ) -> Result<Vec<Option<NodeData>>, cypher_core::error::StorageError> {
             self.get_nodes_batch_calls.fetch_add(1, Ordering::Relaxed);
             self.inner.get_nodes_batch(graph, ids)
         }
@@ -1093,12 +1093,12 @@ mod tests {
             &self,
             graph: &str,
             ids: &[EdgeId],
-        ) -> Result<Vec<Option<EdgeData>>, gql_core::error::StorageError> {
+        ) -> Result<Vec<Option<EdgeData>>, cypher_core::error::StorageError> {
             self.get_edges_batch_calls.fetch_add(1, Ordering::Relaxed);
             self.inner.get_edges_batch(graph, ids)
         }
 
-        delegate!(find_nodes_by_label(&self, graph: &str, label: &str) -> Result<Vec<NodeId>, gql_core::error::StorageError>);
+        delegate!(find_nodes_by_label(&self, graph: &str, label: &str) -> Result<Vec<NodeId>, cypher_core::error::StorageError>);
 
         fn find_nodes_by_label_and_property(
             &self,
@@ -1106,21 +1106,21 @@ mod tests {
             label: &str,
             property: &str,
             range: RangeQuery<'_>,
-        ) -> Result<Vec<NodeId>, gql_core::error::StorageError> {
+        ) -> Result<Vec<NodeId>, cypher_core::error::StorageError> {
             self.inner
                 .find_nodes_by_label_and_property(graph, label, property, range)
         }
 
-        delegate!(find_edges_by_type(&self, graph: &str, rel_type: &str) -> Result<Vec<EdgeId>, gql_core::error::StorageError>);
-        delegate!(out_edges(&self, graph: &str, node_id: NodeId) -> Result<Vec<AdjEntry>, gql_core::error::StorageError>);
-        delegate!(in_edges(&self, graph: &str, node_id: NodeId) -> Result<Vec<AdjEntry>, gql_core::error::StorageError>);
+        delegate!(find_edges_by_type(&self, graph: &str, rel_type: &str) -> Result<Vec<EdgeId>, cypher_core::error::StorageError>);
+        delegate!(out_edges(&self, graph: &str, node_id: NodeId) -> Result<Vec<AdjEntry>, cypher_core::error::StorageError>);
+        delegate!(in_edges(&self, graph: &str, node_id: NodeId) -> Result<Vec<AdjEntry>, cypher_core::error::StorageError>);
 
         fn out_edges_by_type(
             &self,
             graph: &str,
             node_id: NodeId,
             rel_types: &[&str],
-        ) -> Result<Vec<AdjEntry>, gql_core::error::StorageError> {
+        ) -> Result<Vec<AdjEntry>, cypher_core::error::StorageError> {
             self.inner.out_edges_by_type(graph, node_id, rel_types)
         }
 
@@ -1129,21 +1129,21 @@ mod tests {
             graph: &str,
             node_id: NodeId,
             rel_types: &[&str],
-        ) -> Result<Vec<AdjEntry>, gql_core::error::StorageError> {
+        ) -> Result<Vec<AdjEntry>, cypher_core::error::StorageError> {
             self.inner.in_edges_by_type(graph, node_id, rel_types)
         }
 
-        delegate!(out_edge_ids(&self, graph: &str, node_id: NodeId) -> Result<Vec<EdgeId>, gql_core::error::StorageError>);
-        delegate!(in_edge_ids(&self, graph: &str, node_id: NodeId) -> Result<Vec<EdgeId>, gql_core::error::StorageError>);
-        delegate!(all_node_ids(&self, graph: &str) -> Result<Vec<NodeId>, gql_core::error::StorageError>);
-        delegate!(all_edge_ids(&self, graph: &str) -> Result<Vec<EdgeId>, gql_core::error::StorageError>);
+        delegate!(out_edge_ids(&self, graph: &str, node_id: NodeId) -> Result<Vec<EdgeId>, cypher_core::error::StorageError>);
+        delegate!(in_edge_ids(&self, graph: &str, node_id: NodeId) -> Result<Vec<EdgeId>, cypher_core::error::StorageError>);
+        delegate!(all_node_ids(&self, graph: &str) -> Result<Vec<NodeId>, cypher_core::error::StorageError>);
+        delegate!(all_edge_ids(&self, graph: &str) -> Result<Vec<EdgeId>, cypher_core::error::StorageError>);
 
         fn create_node(
             &self,
             graph: &str,
             labels: Vec<String>,
             properties: IndexMap<String, Value>,
-        ) -> Result<NodeId, gql_core::error::StorageError> {
+        ) -> Result<NodeId, cypher_core::error::StorageError> {
             self.inner.create_node(graph, labels, properties)
         }
 
@@ -1154,7 +1154,7 @@ mod tests {
             dst: NodeId,
             rel_type: String,
             properties: IndexMap<String, Value>,
-        ) -> Result<EdgeId, gql_core::error::StorageError> {
+        ) -> Result<EdgeId, cypher_core::error::StorageError> {
             self.inner
                 .create_edge(graph, src, dst, rel_type, properties)
         }
@@ -1164,7 +1164,7 @@ mod tests {
             graph: &str,
             id: NodeId,
             properties: IndexMap<String, Value>,
-        ) -> Result<(), gql_core::error::StorageError> {
+        ) -> Result<(), cypher_core::error::StorageError> {
             self.inner.set_node_properties(graph, id, properties)
         }
 
@@ -1173,7 +1173,7 @@ mod tests {
             graph: &str,
             id: NodeId,
             properties: IndexMap<String, Value>,
-        ) -> Result<(), gql_core::error::StorageError> {
+        ) -> Result<(), cypher_core::error::StorageError> {
             self.inner.replace_node_properties(graph, id, properties)
         }
 
@@ -1182,7 +1182,7 @@ mod tests {
             graph: &str,
             id: EdgeId,
             properties: IndexMap<String, Value>,
-        ) -> Result<(), gql_core::error::StorageError> {
+        ) -> Result<(), cypher_core::error::StorageError> {
             self.inner.set_edge_properties(graph, id, properties)
         }
 
@@ -1191,19 +1191,19 @@ mod tests {
             graph: &str,
             id: EdgeId,
             properties: IndexMap<String, Value>,
-        ) -> Result<(), gql_core::error::StorageError> {
+        ) -> Result<(), cypher_core::error::StorageError> {
             self.inner.replace_edge_properties(graph, id, properties)
         }
 
-        delegate!(remove_node_property(&self, graph: &str, id: NodeId, key: &str) -> Result<(), gql_core::error::StorageError>);
-        delegate!(remove_edge_property(&self, graph: &str, id: EdgeId, key: &str) -> Result<(), gql_core::error::StorageError>);
+        delegate!(remove_node_property(&self, graph: &str, id: NodeId, key: &str) -> Result<(), cypher_core::error::StorageError>);
+        delegate!(remove_edge_property(&self, graph: &str, id: EdgeId, key: &str) -> Result<(), cypher_core::error::StorageError>);
 
         fn add_node_labels(
             &self,
             graph: &str,
             id: NodeId,
             labels: &[String],
-        ) -> Result<(), gql_core::error::StorageError> {
+        ) -> Result<(), cypher_core::error::StorageError> {
             self.inner.add_node_labels(graph, id, labels)
         }
 
@@ -1212,20 +1212,20 @@ mod tests {
             graph: &str,
             id: NodeId,
             labels: &[String],
-        ) -> Result<(), gql_core::error::StorageError> {
+        ) -> Result<(), cypher_core::error::StorageError> {
             self.inner.remove_node_labels(graph, id, labels)
         }
 
-        delegate!(delete_node(&self, graph: &str, id: NodeId, detach: bool) -> Result<(), gql_core::error::StorageError>);
-        delegate!(delete_edge(&self, graph: &str, id: EdgeId) -> Result<(), gql_core::error::StorageError>);
-        delegate!(list_indexes(&self, graph: &str) -> Result<Vec<IndexDescriptor>, gql_core::error::StorageError>);
+        delegate!(delete_node(&self, graph: &str, id: NodeId, detach: bool) -> Result<(), cypher_core::error::StorageError>);
+        delegate!(delete_edge(&self, graph: &str, id: EdgeId) -> Result<(), cypher_core::error::StorageError>);
+        delegate!(list_indexes(&self, graph: &str) -> Result<Vec<IndexDescriptor>, cypher_core::error::StorageError>);
 
         fn create_index(
             &self,
             graph: &str,
             label: &str,
             property: &str,
-        ) -> Result<(), gql_core::error::StorageError> {
+        ) -> Result<(), cypher_core::error::StorageError> {
             self.inner.create_index(graph, label, property)
         }
 
@@ -1234,16 +1234,16 @@ mod tests {
             graph: &str,
             label: &str,
             property: &str,
-        ) -> Result<(), gql_core::error::StorageError> {
+        ) -> Result<(), cypher_core::error::StorageError> {
             self.inner.drop_index(graph, label, property)
         }
 
-        delegate!(create_graph(&self, name: &str) -> Result<(), gql_core::error::StorageError>);
-        delegate!(delete_graph(&self, name: &str) -> Result<(), gql_core::error::StorageError>);
-        delegate!(graph_exists(&self, name: &str) -> Result<bool, gql_core::error::StorageError>);
-        delegate!(list_graphs(&self) -> Result<Vec<String>, gql_core::error::StorageError>);
-        delegate!(graph_stats(&self, graph: &str) -> Result<GraphStats, gql_core::error::StorageError>);
-        delegate!(all_label_names(&self, graph: &str) -> Result<Vec<String>, gql_core::error::StorageError>);
+        delegate!(create_graph(&self, name: &str) -> Result<(), cypher_core::error::StorageError>);
+        delegate!(delete_graph(&self, name: &str) -> Result<(), cypher_core::error::StorageError>);
+        delegate!(graph_exists(&self, name: &str) -> Result<bool, cypher_core::error::StorageError>);
+        delegate!(list_graphs(&self) -> Result<Vec<String>, cypher_core::error::StorageError>);
+        delegate!(graph_stats(&self, graph: &str) -> Result<GraphStats, cypher_core::error::StorageError>);
+        delegate!(all_label_names(&self, graph: &str) -> Result<Vec<String>, cypher_core::error::StorageError>);
 
         fn with_read_consistency(
             &self,

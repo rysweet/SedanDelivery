@@ -30,7 +30,7 @@ proving drop-in compatibility.
 │         └──────────┬──────────┘                                    │
 │                    │                                                │
 │         ┌──────────▼──────────┐                                    │
-│         │     gql-core         │                                    │
+│         │     cypher-core         │                                    │
 │         │  Rust Graph Engine   │                                    │
 │         │  (InMemoryStore)     │                                    │
 │         └─────────────────────┘                                    │
@@ -421,7 +421,7 @@ az containerapp create \
 
 | Component | Technology | Version |
 |-----------|-----------|---------|
-| Graph Engine | SedanDelivery (gql-core) | Rust, 100% openCypher TCK |
+| Graph Engine | SedanDelivery (cypher-core) | Rust, 100% openCypher TCK |
 | Protocol | Bolt v4.4 | Compatible with Neo4j 4.4+ drivers |
 | Dashboard | Neodash | v2.4 (Neo4j Labs) |
 | JS Visualization | neovis.js | v2.1.0 (neo4j-contrib) |

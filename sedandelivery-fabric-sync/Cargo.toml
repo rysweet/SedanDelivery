@@ -9,7 +9,7 @@ name = "sedandelivery-fabric-sync"
 path = "src/main.rs"
 
 [dependencies]
-gql-core        = { path = "../gql-core" }
+cypher-core        = { path = "../cypher-core" }
 gql-fabric-store = { path = "../gql-fabric-store" }
 serde_json      = { workspace = true }
 tracing         = { workspace = true }

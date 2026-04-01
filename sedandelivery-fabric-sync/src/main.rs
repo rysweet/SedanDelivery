@@ -14,7 +14,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Duration;
 
-use gql_core::changelog::{changelog_stream_for_graph, CHANGELOG_STREAM};
+use cypher_core::changelog::{changelog_stream_for_graph, CHANGELOG_STREAM};
 use gql_fabric_store::FabricGraphStore;
 use redis::{Client, Connection};
 use tracing::{error, info, warn};

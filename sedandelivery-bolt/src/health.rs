@@ -14,7 +14,7 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::Router;
-use gql_core::storage::GraphStore;
+use cypher_core::storage::GraphStore;
 use metrics_exporter_prometheus::PrometheusHandle;
 use serde::Serialize;
 
@@ -91,7 +91,7 @@ async fn health_handler(State(state): State<HealthState>) -> impl IntoResponse {
     let store = Arc::clone(&state.store);
     let probe_result = tokio::task::spawn_blocking(move || store.graph_exists("__health_probe"))
         .await
-        .unwrap_or_else(|e| Err(gql_core::error::StorageError::Backend { msg: e.to_string() }));
+        .unwrap_or_else(|e| Err(cypher_core::error::StorageError::Backend { msg: e.to_string() }));
 
     match probe_result {
         Ok(_) => (
@@ -157,12 +157,12 @@ mod tests {
     use indexmap::IndexMap;
     use std::any::Any;
 
-    use gql_core::error::StorageError;
-    use gql_core::storage::{
+    use cypher_core::error::StorageError;
+    use cypher_core::storage::{
         AdjEntry, EdgeData, EdgeId, GraphStats, InMemoryGraphStore, IndexDescriptor, NodeData,
         NodeId, RangeQuery,
     };
-    use gql_core::types::Value;
+    use cypher_core::types::Value;
     use http_body_util::BodyExt;
     use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
     use tower::ServiceExt;

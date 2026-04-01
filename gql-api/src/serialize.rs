@@ -1,16 +1,16 @@
-//! Serialisation helpers: convert gql-core types to `serde_json::Value`.
+//! Serialisation helpers: convert cypher-core types to `serde_json::Value`.
 
 use indexmap::IndexMap;
 use std::collections::HashMap;
 
 use serde_json::{json, Map, Value as Json};
 
-use gql_core::storage::{EdgeData, EdgeId, GraphStore, NodeData, NodeId};
-use gql_core::types::Value;
+use cypher_core::storage::{EdgeData, EdgeId, GraphStore, NodeData, NodeId};
+use cypher_core::types::Value;
 
 // ── Scalar / property value ───────────────────────────────────────────────────
 
-/// Serialise a single `gql_core::types::Value` to JSON.
+/// Serialise a single `cypher_core::types::Value` to JSON.
 ///
 /// `Value::Node` and `Value::Edge` produce a reference object (`{"$type": "node", "id": N}`).
 /// Callers that want fully resolved data should resolve via `resolve_value`.
@@ -36,7 +36,7 @@ pub fn value_to_json(v: &Value) -> Json {
         }
         Value::LocalDateTime(dt) => Json::String(dt.to_string()),
         Value::DateTime(dt) => Json::String(dt.to_string()),
-        Value::Duration(sp) => Json::String(gql_core::types::value::format_cypher_duration(sp)),
+        Value::Duration(sp) => Json::String(cypher_core::types::value::format_cypher_duration(sp)),
         Value::Bytes(b) => {
             // Hex-encode bytes for JSON output
             let hex: String = b.iter().map(|byte| format!("{:02x}", byte)).collect();
@@ -205,9 +205,9 @@ fn resolve_edge(id: EdgeId, store: &dyn GraphStore, graph: &str) -> Result<Json,
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gql_core::storage::{EdgeData, EdgeId, InMemoryGraphStore, NodeData, NodeId};
-    use gql_core::types::value::{Crs, CypherDuration, GeoPoint};
-    use gql_core::types::Value;
+    use cypher_core::storage::{EdgeData, EdgeId, InMemoryGraphStore, NodeData, NodeId};
+    use cypher_core::types::value::{Crs, CypherDuration, GeoPoint};
+    use cypher_core::types::Value;
     use indexmap::IndexMap;
     use serde_json::json;
     use std::collections::HashMap;

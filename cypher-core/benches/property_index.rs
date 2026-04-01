@@ -1,8 +1,8 @@
 // Benchmarks comparing indexed vs unindexed property lookups on 10K nodes.
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
-use gql_core::storage::{GraphStore, InMemoryGraphStore, RangeQuery};
-use gql_core::types::Value;
+use cypher_core::storage::{GraphStore, InMemoryGraphStore, RangeQuery};
+use cypher_core::types::Value;
 use indexmap::IndexMap;
 
 fn make_store(n: usize, indexed: bool) -> InMemoryGraphStore {

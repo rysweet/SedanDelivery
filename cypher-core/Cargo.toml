@@ -1,5 +1,5 @@
 [package]
-name    = "gql-core"
+name    = "cypher-core"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -30,6 +30,7 @@ criterion = { workspace = true }
 cucumber  = { workspace = true }
 tokio     = { workspace = true }
 futures   = "0.3"
+tempfile = "3.27.0"
 
 [[bench]]
 name    = "parser"

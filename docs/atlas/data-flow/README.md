@@ -20,7 +20,7 @@ flowchart LR
         cli["gql-cli\nREPL input"]
     end
 
-    subgraph pipeline["Query Pipeline — gql-core"]
+    subgraph pipeline["Query Pipeline — cypher-core"]
         lexer["Lexer\nparser::lexer\nCypher text → tokens"]
         parser["Parser\nparser::parser\nTokens → AST"]
         validator["Validator\nplanner::validator\nSemantic checks"]
@@ -109,7 +109,7 @@ flowchart LR
 
 ## Value Type System
 
-The `Value` enum in `gql-core::types::Value` is the unified value type:
+The `Value` enum in `cypher-core::types::Value` is the unified value type:
 
 | Variant | Rust Type | Use |
 |---------|-----------|-----|

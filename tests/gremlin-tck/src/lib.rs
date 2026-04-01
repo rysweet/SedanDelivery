@@ -1,6 +1,6 @@
 //! Gremlin TCK test infrastructure for SedanDelivery.
 //!
-//! These tests exercise the gql-core query pipeline (parse → plan → execute)
+//! These tests exercise the cypher-core query pipeline (parse → plan → execute)
 //! against the standard TinkerPop test graphs (modern, grateful dead, crew),
 //! verifying behaviour equivalent to the Gremlin TCK Gherkin feature files.
 //!

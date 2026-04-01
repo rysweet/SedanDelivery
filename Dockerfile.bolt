@@ -20,7 +20,7 @@ WORKDIR /app
 # Cargo.lock is committed — copy it for reproducible dependency resolution.
 # Fixes #1000: all workspace members must be present for cargo to load the workspace.
 COPY Cargo.toml Cargo.lock ./
-COPY gql-core/Cargo.toml              ./gql-core/
+COPY cypher-core/Cargo.toml              ./cypher-core/
 COPY gql-redis-store/Cargo.toml       ./gql-redis-store/
 COPY gql-module/Cargo.toml            ./gql-module/
 COPY gql-fabric-store/Cargo.toml      ./gql-fabric-store/
@@ -38,12 +38,12 @@ COPY tests/gremlin-tck/Cargo.toml     ./tests/gremlin-tck/
 
 # Create stub source files so cargo can resolve the full workspace dependency graph.
 # libclang not needed for bolt (only needed for gql-module redis-module bindgen).
-RUN mkdir -p gql-core/src gql-redis-store/src gql-fabric-store/src gql-module/src gql-cli/src gql-api/src \
+RUN mkdir -p cypher-core/src gql-redis-store/src gql-fabric-store/src gql-module/src gql-cli/src gql-api/src \
              sedandelivery-bolt/src sedandelivery-bolt/benches sedandelivery-fabric-sync/src \
              sedandelivery-gremlin/src gremlin-core/src sedan-gql-embedded/src \
              sedan-cypher-embedded/src sedan-gremlin-embedded/src \
              tests/loadtest/src tests/gremlin-tck/src && \
-    echo "pub fn stub() {}" > gql-core/src/lib.rs && \
+    echo "pub fn stub() {}" > cypher-core/src/lib.rs && \
     echo "pub fn stub() {}" > gql-redis-store/src/lib.rs && \
     echo "pub fn stub() {}" > gql-fabric-store/src/lib.rs && \
     echo "pub fn stub() {}" > gql-module/src/lib.rs && \
@@ -64,13 +64,13 @@ RUN mkdir -p gql-core/src gql-redis-store/src gql-fabric-store/src gql-module/sr
     cargo build --release -p sedandelivery-bolt || true
 
 # Copy actual source code
-COPY gql-core/ ./gql-core/
+COPY cypher-core/ ./cypher-core/
 COPY gql-redis-store/ ./gql-redis-store/
 COPY sedandelivery-bolt/ ./sedandelivery-bolt/
 
 # Build the bolt binary.
 # --locked pins to committed Cargo.lock versions for reproducible builds (#1000).
-RUN touch gql-core/src/lib.rs gql-redis-store/src/lib.rs sedandelivery-bolt/src/lib.rs sedandelivery-bolt/src/main.rs && \
+RUN touch cypher-core/src/lib.rs gql-redis-store/src/lib.rs sedandelivery-bolt/src/lib.rs sedandelivery-bolt/src/main.rs && \
     cargo build --release --locked -p sedandelivery-bolt && \
     ls -lh target/release/sedandelivery-bolt
 

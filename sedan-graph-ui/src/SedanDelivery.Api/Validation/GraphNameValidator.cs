@@ -4,7 +4,7 @@ namespace SedanDelivery.Api.Validation;
 
 /// <summary>
 /// Validates graph names against the same constraint enforced by the Rust
-/// gql-core engine: <c>[a-zA-Z0-9_.-]</c>, 1–64 characters.
+/// cypher-core engine: <c>[a-zA-Z0-9_.-]</c>, 1–64 characters.
 /// </summary>
 /// <remarks>
 /// This is the single source of truth for graph name validation in the .NET

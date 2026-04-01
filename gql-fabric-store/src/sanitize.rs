@@ -1,8 +1,8 @@
 // Sanitization and Cypher-generation helpers.
 
-use gql_core::serde_value;
-use gql_core::storage::RangeQuery;
-use gql_core::types::Value;
+use cypher_core::serde_value;
+use cypher_core::storage::RangeQuery;
+use cypher_core::types::Value;
 use serde_json::{json, Value as JValue};
 
 /// Sanitise a label / property name: keep alphanumeric + underscore, truncate to 128 chars.

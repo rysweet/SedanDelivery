@@ -9,7 +9,7 @@ use axum::extract::{Path, State};
 use axum::routing::get;
 use axum::{Json, Router};
 
-use gql_core::storage::validate_graph_name;
+use cypher_core::storage::validate_graph_name;
 
 use crate::error::ApiError;
 use crate::models::{LabelInfo, RelTypeInfo, SchemaResponse};

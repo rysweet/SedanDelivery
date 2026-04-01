@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-SedanDelivery is a Rust GQL/Cypher query engine that runs as a Redis/Valkey module. It provides `GQL.QUERY` and `GQL.MUTATE` commands for graph operations over Redis-native data structures.
+SedanDelivery is a Rust openCypher query engine that runs as a Redis/Valkey module. It provides `GQL.QUERY` and `GQL.MUTATE` commands for graph operations over Redis-native data structures.
 
 ## Workspace Structure
 
@@ -10,7 +10,7 @@ Cargo workspace with 8 crates:
 
 | Crate | Type | Purpose |
 |-------|------|---------|
-| `gql-core` | lib | Parser, planner, executor, `GraphStore` trait, `Value` types |
+| `cypher-core` | lib | Parser, planner, executor, `GraphStore` trait, `Value` types |
 | `gql-redis-store` | lib | Redis-backed `GraphStore` implementation |
 | `gql-fabric-store` | lib | Microsoft Fabric-backed `GraphStore` implementation |
 | `gql-module` | cdylib | Redis module entry point (`redis_module!` macro) |
@@ -21,15 +21,15 @@ Cargo workspace with 8 crates:
 
 ## Core Abstractions
 
-- **`GraphStore` trait** (`gql-core::storage`): The central abstraction. All storage backends implement this trait. Use `InMemoryGraphStore` for tests.
-- **`Value` enum** (`gql-core::types::Value`): The unified value type for all property values, query parameters, and results. Do not introduce `Box<dyn Any>` or custom value wrappers.
-- **Serialization**: Use `gql-core::serde_value` for shared serialization logic between storage backends.
+- **`GraphStore` trait** (`cypher-core::storage`): The central abstraction. All storage backends implement this trait. Use `InMemoryGraphStore` for tests.
+- **`Value` enum** (`cypher-core::types::Value`): The unified value type for all property values, query parameters, and results. Do not introduce `Box<dyn Any>` or custom value wrappers.
+- **Serialization**: Use `cypher-core::serde_value` for shared serialization logic between storage backends.
 
 ## Coding Conventions
 
 ### Build Quality
 
-- `cargo clippy -- -D warnings` on `gql-core` (enforced in CI)
+- `cargo clippy -- -D warnings` on `cypher-core` (enforced in CI)
 - `cargo fmt --check` (enforced in CI)
 - Zero warnings policy -- treat all clippy lints as actionable
 
@@ -44,8 +44,8 @@ Cargo workspace with 8 crates:
 ### Testing
 
 - **TCK conformance**: `cargo test --test tck` runs openCypher Technology Compatibility Kit tests
-- **Unit tests**: `cargo test -p gql-core --lib`
-- **Integration tests**: `cargo test -p gql-core --test end_to_end`
+- **Unit tests**: `cargo test -p cypher-core --lib`
+- **Integration tests**: `cargo test -p cypher-core --test end_to_end`
 - Test the contract (inputs/outputs), not implementation details
 - Use `InMemoryGraphStore` for deterministic executor tests
 

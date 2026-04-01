@@ -32,13 +32,13 @@ use std::sync::OnceLock;
 
 use redis_module::{redis_module, Context, NextArg, RedisError, RedisResult, RedisValue};
 
-use gql_core::ast::Clause;
-use gql_core::changelog::{changelog_stream_for_graph, ChangeLogStore};
-use gql_core::executor::{ExecutionBudget, QueryExecutor};
-use gql_core::parser::parse_query;
-use gql_core::planner::QueryPlanner;
-use gql_core::serde_value::value_to_json;
-use gql_core::storage::GraphStore;
+use cypher_core::ast::Clause;
+use cypher_core::changelog::{changelog_stream_for_graph, ChangeLogStore};
+use cypher_core::executor::{ExecutionBudget, QueryExecutor};
+use cypher_core::parser::parse_query;
+use cypher_core::planner::QueryPlanner;
+use cypher_core::serde_value::value_to_json;
+use cypher_core::storage::GraphStore;
 
 use module_store::ModuleRedisStore;
 
@@ -171,7 +171,7 @@ fn module_init(_ctx: &Context, _args: &[redis_module::RedisString]) -> redis_mod
 ///
 /// Used by both GQL.QUERY and GQL.MUTATE to convert `QueryResult.rows`
 /// into the wire format returned to clients.
-fn serialize_rows(result: &gql_core::executor::QueryResult) -> Vec<RedisValue> {
+fn serialize_rows(result: &cypher_core::executor::QueryResult) -> Vec<RedisValue> {
     result
         .rows
         .iter()

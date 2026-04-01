@@ -3,12 +3,12 @@ use std::time::Duration;
 
 use indexmap::IndexMap;
 
-use gql_core::ast::{Expr, Identifier, Label};
-use gql_core::executor::{ExecutionBudget, QueryExecutor};
-use gql_core::planner::{CreatePattern, Operator};
-use gql_core::procedure::ProcedureRegistry;
-use gql_core::storage::{GraphStore, InMemoryGraphStore};
-use gql_core::types::Value;
+use cypher_core::ast::{Expr, Identifier, Label};
+use cypher_core::executor::{ExecutionBudget, QueryExecutor};
+use cypher_core::planner::{CreatePattern, Operator};
+use cypher_core::procedure::ProcedureRegistry;
+use cypher_core::storage::{GraphStore, InMemoryGraphStore};
+use cypher_core::types::Value;
 
 fn make_store() -> InMemoryGraphStore {
     let store = InMemoryGraphStore::new();

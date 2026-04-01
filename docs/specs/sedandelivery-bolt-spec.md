@@ -59,7 +59,7 @@ sedandelivery-bolt/
       handshake.rs       -- Bolt handshake (magic bytes + version negotiation)
     bridge/
       mod.rs             -- pub use executor, types
-      executor.rs        -- calls gql-core Engine, maps results
+      executor.rs        -- calls cypher-core Engine, maps results
       types.rs           -- BoltNode, BoltRelationship, BoltPath structs
       errors.rs          -- GqlError -> FAILURE mapping
   tests/
@@ -88,7 +88,7 @@ name = "sedandelivery-bolt"
 path = "src/main.rs"
 
 [dependencies]
-gql-core      = { path = "../gql-core" }
+cypher-core      = { path = "../cypher-core" }
 tokio         = { version = "1", features = ["full"] }
 tracing       = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
@@ -189,7 +189,7 @@ All multi-byte integers are big-endian. Marker byte is always the first byte.
 
 ### 2.2 Value Variant -> PackStream Encoding
 
-This maps every variant of `gql_core::types::Value` to its PackStream wire format.
+This maps every variant of `cypher_core::types::Value` to its PackStream wire format.
 
 **Value::Null**
 - PackStream: `C0`
@@ -279,7 +279,7 @@ This maps every variant of `gql_core::types::Value` to its PackStream wire forma
 **Value::DateTime(Box<Zoned>)**
 - Structure tag `0x69` (DateTimeZoneId), 3 fields
 - `B3 69` + Int(seconds since epoch) + Int(nanoseconds) + String(tz_id)
-- We use tag `0x69` (zone-by-name) because gql-core stores IANA zone IDs.
+- We use tag `0x69` (zone-by-name) because cypher-core stores IANA zone IDs.
 - Example: 2024-01-15T10:30:00+01:00[Europe/Berlin]
   -> `B3 69` + Int(epoch_secs) + Int(0) + String("Europe/Berlin")
 
@@ -930,39 +930,39 @@ fn handle_hello(session: &mut Session, extra: &BoltMap) -> Vec<ServerMessage> {
 
 ## 6. Query Execution Bridge
 
-### 6.1 Calling gql-core's Engine
+### 6.1 Calling cypher-core's Engine
 
-The bridge module translates between the Bolt protocol layer and gql-core.
-Key insight: gql-core's `InMemoryGraphStore` implements `GraphStore + Send + Sync`,
+The bridge module translates between the Bolt protocol layer and cypher-core.
+Key insight: cypher-core's `InMemoryGraphStore` implements `GraphStore + Send + Sync`,
 so it can be shared across tokio tasks via `Arc<InMemoryGraphStore>`.
 
 ```rust
 // bridge/executor.rs
 
-use gql_core::executor::{ExecutionBudget, QueryExecutor, QueryResult, MutationStats, Row};
-use gql_core::parser::parse_query;
-use gql_core::planner::QueryPlanner;
-use gql_core::storage::InMemoryGraphStore;
-use gql_core::types::Value;
+use cypher_core::executor::{ExecutionBudget, QueryExecutor, QueryResult, MutationStats, Row};
+use cypher_core::parser::parse_query;
+use cypher_core::planner::QueryPlanner;
+use cypher_core::storage::InMemoryGraphStore;
+use cypher_core::types::Value;
 use std::collections::HashMap;
 
 /// Execute a Cypher query against the store.
 ///
 /// This is called from the Bolt protocol handler on a blocking
-/// task (spawn_blocking) because gql-core is synchronous.
+/// task (spawn_blocking) because cypher-core is synchronous.
 pub fn execute_query(
     store: &InMemoryGraphStore,
     graph: &str,
     query: &str,
     params: HashMap<String, Value>,
-) -> Result<QueryResult, gql_core::error::GqlError> {
+) -> Result<QueryResult, cypher_core::error::GqlError> {
     // Ensure graph exists (auto-create "default" graph)
     if !store.graph_exists(graph).unwrap_or(false) {
         if graph == "default" {
             let _ = store.create_graph(graph);
         } else {
-            return Err(gql_core::error::GqlError::Storage(
-                gql_core::error::StorageError::GraphNotFound {
+            return Err(cypher_core::error::GqlError::Storage(
+                cypher_core::error::StorageError::GraphNotFound {
                     name: graph.to_string(),
                 },
             ));
@@ -1013,7 +1013,7 @@ pub fn result_to_records(
     (records, meta)
 }
 
-/// Convert a gql-core Value to a BoltValue.
+/// Convert a cypher-core Value to a BoltValue.
 ///
 /// Node, Edge, and Path values require store access to resolve
 /// the full entity data (labels, properties, endpoints).
@@ -1099,10 +1099,10 @@ fn value_to_bolt(
         }
         Value::Point(p) => {
             let srid = match p.crs {
-                gql_core::types::value::Crs::Wgs84 => 4326i64,
-                gql_core::types::value::Crs::Wgs843d => 4979,
-                gql_core::types::value::Crs::Cartesian => 7203,
-                gql_core::types::value::Crs::Cartesian3d => 9157,
+                cypher_core::types::value::Crs::Wgs84 => 4326i64,
+                cypher_core::types::value::Crs::Wgs843d => 4979,
+                cypher_core::types::value::Crs::Cartesian => 7203,
+                cypher_core::types::value::Crs::Cartesian3d => 9157,
             };
             BoltValue::Structure {
                 tag: 0x58,
@@ -1132,7 +1132,7 @@ fn determine_query_type(stats: &MutationStats) -> &'static str {
 ```rust
 // bridge/types.rs
 
-use gql_core::storage::{GraphStore, InMemoryGraphStore, NodeId, EdgeId, NodeData, EdgeData};
+use cypher_core::storage::{GraphStore, InMemoryGraphStore, NodeId, EdgeId, NodeData, EdgeData};
 use crate::packstream::value::BoltValue;
 
 /// Encode a resolved Node as Bolt Structure (tag 0x4E).
@@ -1248,7 +1248,7 @@ pub fn path_to_bolt(
     }
 }
 
-fn props_to_bolt_map(props: &std::collections::HashMap<String, gql_core::types::Value>) -> BoltValue {
+fn props_to_bolt_map(props: &std::collections::HashMap<String, cypher_core::types::Value>) -> BoltValue {
     // Reuse value_to_bolt for each property value.
     // Properties never contain Node/Edge/Path, so store access is not needed.
     BoltValue::Map(
@@ -1264,7 +1264,7 @@ fn props_to_bolt_map(props: &std::collections::HashMap<String, gql_core::types::
 ```rust
 // bridge/errors.rs
 
-use gql_core::error::*;
+use cypher_core::error::*;
 
 /// Map a GqlError to a Neo4j-compatible error code and message.
 pub fn gql_error_to_bolt(err: &GqlError) -> (String, String) {
@@ -1331,9 +1331,9 @@ pub fn gql_error_to_bolt(err: &GqlError) -> (String, String) {
 }
 ```
 
-### 6.5 Async Bridge (sync gql-core from async tokio)
+### 6.5 Async Bridge (sync cypher-core from async tokio)
 
-gql-core's executor is synchronous. We MUST use `spawn_blocking` to avoid
+cypher-core's executor is synchronous. We MUST use `spawn_blocking` to avoid
 blocking the tokio runtime:
 
 ```rust
@@ -2194,7 +2194,7 @@ RUN apt-get update -q && apt-get install -y -q libclang-dev && rm -rf /var/lib/a
 
 # Copy workspace manifests for layer caching
 COPY Cargo.toml ./
-COPY gql-core/Cargo.toml ./gql-core/
+COPY cypher-core/Cargo.toml ./cypher-core/
 COPY gql-redis-store/Cargo.toml ./gql-redis-store/
 COPY gql-module/Cargo.toml ./gql-module/
 COPY gql-fabric-store/Cargo.toml ./gql-fabric-store/
@@ -2203,9 +2203,9 @@ COPY gql-api/Cargo.toml ./gql-api/
 COPY sedandelivery-bolt/Cargo.toml ./sedandelivery-bolt/
 
 # Create stub source files
-RUN mkdir -p gql-core/src gql-redis-store/src gql-fabric-store/src \
+RUN mkdir -p cypher-core/src gql-redis-store/src gql-fabric-store/src \
     gql-module/src gql-cli/src gql-api/src sedandelivery-bolt/src && \
-    echo "pub fn stub() {}" > gql-core/src/lib.rs && \
+    echo "pub fn stub() {}" > cypher-core/src/lib.rs && \
     echo "pub fn stub() {}" > gql-redis-store/src/lib.rs && \
     echo "pub fn stub() {}" > gql-fabric-store/src/lib.rs && \
     echo "pub fn stub() {}" > gql-module/src/lib.rs && \
@@ -2215,7 +2215,7 @@ RUN mkdir -p gql-core/src gql-redis-store/src gql-fabric-store/src \
     cargo build --release -p gql-module 2>/dev/null || true
 
 # Copy actual source
-COPY gql-core/ ./gql-core/
+COPY cypher-core/ ./cypher-core/
 COPY gql-redis-store/ ./gql-redis-store/
 COPY gql-fabric-store/ ./gql-fabric-store/
 COPY gql-module/ ./gql-module/
@@ -2224,7 +2224,7 @@ COPY gql-api/ ./gql-api/
 COPY sedandelivery-bolt/ ./sedandelivery-bolt/
 
 # Build all binaries
-RUN touch gql-core/src/lib.rs gql-redis-store/src/lib.rs \
+RUN touch cypher-core/src/lib.rs gql-redis-store/src/lib.rs \
     gql-fabric-store/src/lib.rs gql-module/src/lib.rs \
     gql-api/src/main.rs sedandelivery-bolt/src/main.rs && \
     cargo build --release -p gql-module && \
@@ -2353,9 +2353,9 @@ only a single ingress port per Container App. To expose both 6379 and 7687:
 | R1 | **bolt-proto crate incompatibility**: Third-party crate does not support server-side usage | High | N/A | Already mitigated: decision to implement own PackStream codec (Section 1.1). |
 | R2 | **Neo4j driver version skew**: Python driver sends Bolt v5+ messages that we do not understand | High | Medium | Handshake negotiation limits to v4.1. Drivers fall back gracefully. Test with neo4j-python-driver v5.x which supports Bolt 4.1 fallback. Pin test dependency to `neo4j>=5.0,<7.0`. |
 | R3 | **Shared-nothing storage**: Bolt and Redis module have separate InMemoryGraphStore instances | High | Certain | Documented as v1 limitation (Section 8.1). Mitigation: position sedandelivery-bolt as the primary interface and deprecate direct Redis module access. v2 adds shared store. |
-| R4 | **Blocking the tokio runtime**: gql-core executor is synchronous, could block async tasks if not handled | High | High (if not mitigated) | Use `tokio::task::spawn_blocking()` for all engine calls (Section 6.5). The default blocking thread pool (512 threads) provides sufficient parallelism. |
+| R4 | **Blocking the tokio runtime**: cypher-core executor is synchronous, could block async tasks if not handled | High | High (if not mitigated) | Use `tokio::task::spawn_blocking()` for all engine calls (Section 6.5). The default blocking thread pool (512 threads) provides sufficient parallelism. |
 | R5 | **Memory exhaustion from large results**: A query returning millions of rows buffers all records in memory before streaming | Medium | Low | ExecutionBudget already limits result set size (default 100K rows). PULL with `n=-1` sends all at once. Future: implement streaming PULL with cursor. |
-| R6 | **Missing Bolt message types**: BEGIN/COMMIT/ROLLBACK require transaction support that gql-core lacks | Medium | High | Implement BEGIN/COMMIT/ROLLBACK as no-ops that track state but execute each RUN as auto-commit. The Python driver sends BEGIN/COMMIT in explicit transaction mode but this is semantically equivalent when there is no concurrent access. |
+| R6 | **Missing Bolt message types**: BEGIN/COMMIT/ROLLBACK require transaction support that cypher-core lacks | Medium | High | Implement BEGIN/COMMIT/ROLLBACK as no-ops that track state but execute each RUN as auto-commit. The Python driver sends BEGIN/COMMIT in explicit transaction mode but this is semantically equivalent when there is no concurrent access. |
 | R7 | **Temporal type precision loss**: CypherDuration uses i128 nanos but Bolt Duration uses i64 seconds + i32 nanos | Low | Low | Decompose: seconds = nanos / 10^9, remaining = nanos % 10^9. Values exceeding i64 seconds (~292 billion years) are truncated with a warning log. |
 | R8 | **Path encoding complexity**: Bolt Path structure uses a non-obvious index-based encoding | Medium | Medium | Comprehensive unit tests for path encoding (Phase 1). Test with single-hop, multi-hop, and cyclic paths. Reference FalkorDB implementation for validation. |
 | R9 | **Authentication bypass**: If BOLT_PASSWORD is empty/unset, all connections are accepted | Medium | Medium | Document clearly. Default entrypoint inherits VALKEY_PASSWORD. Log a WARNING when running without auth. |

@@ -21,7 +21,7 @@ The workspace contains 8 crates. Arrows point from dependent to dependency.
 
 ```mermaid
 graph TD
-    gql-core["gql-core<br/><i>Parser, planner, executor, storage trait</i>"]
+    cypher-core["cypher-core<br/><i>Parser, planner, executor, storage trait</i>"]
 
     gql-redis-store["gql-redis-store<br/><i>Redis/Valkey GraphStore + FanoutStore</i>"]
     gql-fabric-store["gql-fabric-store<br/><i>Microsoft Fabric GraphStore</i>"]
@@ -32,15 +32,15 @@ graph TD
     sedandelivery-bolt["sedandelivery-bolt<br/><i>Bolt v4.4 TCP server</i>"]
     sedandelivery-fabric-sync["sedandelivery-fabric-sync<br/><i>Changelog replication to Fabric</i>"]
 
-    gql-redis-store --> gql-core
-    gql-fabric-store --> gql-core
-    gql-module --> gql-core
-    gql-cli --> gql-core
-    gql-api --> gql-core
+    gql-redis-store --> cypher-core
+    gql-fabric-store --> cypher-core
+    gql-module --> cypher-core
+    gql-cli --> cypher-core
+    gql-api --> cypher-core
     gql-api --> gql-redis-store
-    sedandelivery-bolt --> gql-core
+    sedandelivery-bolt --> cypher-core
     sedandelivery-bolt --> gql-redis-store
-    sedandelivery-fabric-sync --> gql-core
+    sedandelivery-fabric-sync --> cypher-core
     sedandelivery-fabric-sync --> gql-redis-store
     sedandelivery-fabric-sync --> gql-fabric-store
 ```
@@ -151,7 +151,7 @@ Key pipeline components:
 
 ## Storage Layer
 
-All storage access goes through the `GraphStore` trait defined in `gql-core::storage`. This is the core abstraction boundary -- the engine never talks to Redis, Fabric, or memory directly.
+All storage access goes through the `GraphStore` trait defined in `cypher-core::storage`. This is the core abstraction boundary -- the engine never talks to Redis, Fabric, or memory directly.
 
 ![Storage Layer](images/storage-layer.svg)
 
@@ -324,7 +324,7 @@ See [Deploy Your Own Instance](DEPLOY) for full setup instructions and cost esti
 
 ```
 SedanDelivery/
-  gql-core/                    Core engine (no external dependencies)
+  cypher-core/                    Core engine (no external dependencies)
     src/
       ast/                       Cypher AST types
       parser/

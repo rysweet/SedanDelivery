@@ -11,7 +11,7 @@ use axum::http::StatusCode;
 use axum::routing::{delete, get, post, put};
 use axum::{Json, Router};
 
-use gql_core::storage::{validate_graph_name, NodeId};
+use cypher_core::storage::{validate_graph_name, NodeId};
 
 use crate::error::ApiError;
 use crate::models::{
@@ -154,7 +154,7 @@ async fn delete_node(
     let id_lookup = id_str.clone();
     run_store_blocking(&state, move |store| {
         store.delete_node(&graph_name, id, true).map_err(|e| {
-            use gql_core::error::StorageError;
+            use cypher_core::error::StorageError;
             match &e {
                 StorageError::NodeNotFound { .. } => {
                     ApiError::not_found(format!("node {id_lookup} not found"))

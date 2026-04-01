@@ -1,6 +1,6 @@
 # Repository Surface
 
-Overview of the SedanDelivery repository structure — a Rust GQL/Cypher query engine
+Overview of the SedanDelivery repository structure — a Rust openCypher query engine
 that runs as a Redis/Valkey module with Bolt v4.4 and REST API servers.
 
 ## Repository Structure Diagram
@@ -15,7 +15,7 @@ graph TD
     ROOT["SedanDelivery/"]
     
     subgraph core_crates["Core Engine Crates"]
-        GQL_CORE["gql-core/<br/><i>Parser, planner, executor,<br/>GraphStore trait, Value types</i>"]
+        GQL_CORE["cypher-core/<br/><i>Parser, planner, executor,<br/>GraphStore trait, Value types</i>"]
         GQL_REDIS["gql-redis-store/<br/><i>Redis/Valkey GraphStore impl<br/>+ FanoutStore</i>"]
         GQL_FABRIC["gql-fabric-store/<br/><i>Microsoft Fabric<br/>GraphStore impl</i>"]
     end

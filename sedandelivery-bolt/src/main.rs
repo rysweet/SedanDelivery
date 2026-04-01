@@ -8,7 +8,7 @@ use socket2::SockRef;
 use tokio::net::TcpListener;
 use tokio::sync::Semaphore;
 
-use gql_core::storage::GraphStore;
+use cypher_core::storage::GraphStore;
 
 /// Create the graph store based on environment configuration.
 ///
@@ -158,14 +158,14 @@ async fn main() {
     // traffic across all healthy replicas.
 
     let max_connections: usize =
-        gql_core::config::parse_env_range("BOLT_MAX_CONNECTIONS", 1024, 1, 65535);
+        cypher_core::config::parse_env_range("BOLT_MAX_CONNECTIONS", 1024, 1, 65535);
 
     let idle_timeout_secs: u64 =
-        gql_core::config::parse_env_range("BOLT_IDLE_TIMEOUT_SECS", 300, 1, 86400);
+        cypher_core::config::parse_env_range("BOLT_IDLE_TIMEOUT_SECS", 300, 1, 86400);
     let idle_timeout = Duration::from_secs(idle_timeout_secs);
 
     let max_connection_lifetime_secs: u64 =
-        gql_core::config::parse_env_range("BOLT_MAX_CONNECTION_LIFETIME_SECS", 1800, 0, 86400);
+        cypher_core::config::parse_env_range("BOLT_MAX_CONNECTION_LIFETIME_SECS", 1800, 0, 86400);
     let max_connection_lifetime = if max_connection_lifetime_secs == 0 {
         None
     } else {
@@ -173,7 +173,7 @@ async fn main() {
     };
 
     let write_concurrency: u32 =
-        gql_core::config::parse_env_range("BOLT_WRITE_CONCURRENCY", 128, 1, 10000);
+        cypher_core::config::parse_env_range("BOLT_WRITE_CONCURRENCY", 128, 1, 10000);
 
     // Pre-handshake timeout: max time to complete TLS/WebSocket handshake
     // before the slot is reclaimed. Prevents slot exhaustion from slow clients.
@@ -202,7 +202,7 @@ async fn main() {
     // The kernel sends probes at TCP_KEEPINTVL (30s) intervals up to
     // TCP_KEEPCNT (3) times before declaring the connection dead.
     let keepalive_secs: u64 =
-        gql_core::config::parse_env_range("BOLT_TCP_KEEPALIVE_SECS", 120, 10, 300);
+        cypher_core::config::parse_env_range("BOLT_TCP_KEEPALIVE_SECS", 120, 10, 300);
     let tcp_keepalive = socket2::TcpKeepalive::new()
         .with_time(Duration::from_secs(keepalive_secs))
         .with_interval(Duration::from_secs(30))
@@ -227,7 +227,7 @@ async fn main() {
     // `GraphAlreadyExists` is idempotent and safe to ignore.
     match store.create_graph("neo4j") {
         Ok(()) => {}
-        Err(gql_core::error::StorageError::GraphAlreadyExists { .. }) => {
+        Err(cypher_core::error::StorageError::GraphAlreadyExists { .. }) => {
             tracing::info!("default 'neo4j' graph already exists");
         }
         Err(e) => panic!("failed to create default 'neo4j' database: {e}"),

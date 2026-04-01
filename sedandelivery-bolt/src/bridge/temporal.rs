@@ -1,10 +1,10 @@
 //! Temporal Bolt structure decoders.
 //!
 //! Decodes Bolt Date, LocalTime, Time, LocalDateTime, DateTimeZoneId,
-//! DateTimeOffset, and Duration structures into gql-core `Value` types.
+//! DateTimeOffset, and Duration structures into cypher-core `Value` types.
 
-use gql_core::types::value::CypherDuration;
-use gql_core::types::Value;
+use cypher_core::types::value::CypherDuration;
+use cypher_core::types::Value;
 
 use crate::packstream::value::BoltValue;
 

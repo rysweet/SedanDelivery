@@ -5,12 +5,12 @@
 
 use indexmap::IndexMap;
 
-use gql_core::error::StorageError;
-use gql_core::storage::{
+use cypher_core::error::StorageError;
+use cypher_core::storage::{
     AdjEntry, EdgeData, EdgeId, GraphStats, GraphStore, IndexDescriptor, NodeData, NodeId,
     RangeQuery,
 };
-use gql_core::types::Value;
+use cypher_core::types::Value;
 
 /// Writes to ALL backing stores simultaneously; reads from the first one.
 ///
@@ -368,8 +368,8 @@ mod tests {
     use super::*;
     use std::sync::Arc;
 
-    use gql_core::error::StorageError;
-    use gql_core::storage::InMemoryGraphStore;
+    use cypher_core::error::StorageError;
+    use cypher_core::storage::InMemoryGraphStore;
 
     // ── ArcStore: shared-reference wrapper for verifying both stores ─────────
     //

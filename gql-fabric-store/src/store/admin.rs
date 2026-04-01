@@ -2,8 +2,8 @@
 
 use serde_json::json;
 
-use gql_core::error::StorageError;
-use gql_core::storage::{validate_graph_name, GraphStats, IndexDescriptor};
+use cypher_core::error::StorageError;
+use cypher_core::storage::{validate_graph_name, GraphStats, IndexDescriptor};
 
 use crate::sanitize::sanitize_label;
 use crate::{FabricGraphStore, PROP_GRAPH, SEQ_LABEL};

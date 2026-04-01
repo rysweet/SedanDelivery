@@ -1,7 +1,7 @@
 // keys.rs — Redis key formatting and adjacency encoding helpers.
 
-use gql_core::storage::{AdjEntry, EdgeId, NodeId};
-use gql_core::types::Value;
+use cypher_core::storage::{AdjEntry, EdgeId, NodeId};
+use cypher_core::types::Value;
 
 // ── Adjacency encoding ──────────────────────────────────────────────────────
 

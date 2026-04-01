@@ -2,10 +2,10 @@
 
 use indexmap::IndexMap;
 
-use gql_core::error::StorageError;
-use gql_core::serde_value::props_to_json;
-use gql_core::storage::{EdgeId, NodeId};
-use gql_core::types::Value;
+use cypher_core::error::StorageError;
+use cypher_core::serde_value::props_to_json;
+use cypher_core::storage::{EdgeId, NodeId};
+use cypher_core::types::Value;
 
 use crate::keys::{
     encode_adj, key_batch_edge_write_lock, key_edge, key_edge_id_write_lock, key_edge_seq,
@@ -495,8 +495,8 @@ impl RedisGraphStore {
 #[cfg(test)]
 mod tests {
     use crate::keys::{decode_adj, encode_adj};
-    use gql_core::storage::{EdgeId, NodeId};
-    use gql_core::types::Value;
+    use cypher_core::storage::{EdgeId, NodeId};
+    use cypher_core::types::Value;
     use indexmap::IndexMap;
 
     use super::validate_property_keys;
@@ -546,7 +546,7 @@ mod tests {
     #[test]
     fn extract_edge_id_from_properties() {
         use super::super::helpers::extract_injected_id;
-        use gql_core::types::Value;
+        use cypher_core::types::Value;
         use indexmap::IndexMap;
 
         let mut props = IndexMap::new();
@@ -558,7 +558,7 @@ mod tests {
     #[test]
     fn extract_edge_id_negative_fails() {
         use super::super::helpers::extract_injected_id;
-        use gql_core::types::Value;
+        use cypher_core::types::Value;
         use indexmap::IndexMap;
 
         let mut props = IndexMap::new();

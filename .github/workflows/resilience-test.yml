@@ -5,7 +5,7 @@ on:
   pull_request:
     branches: [main]
     paths:
-      - "gql-core/**"
+      - "cypher-core/**"
       - "gql-redis-store/**"
       - "sedandelivery-bolt/**"
       - "tests/loadtest/**"
@@ -19,7 +19,7 @@ on:
   push:
     branches: [main]
     paths:
-      - "gql-core/**"
+      - "cypher-core/**"
       - "gql-redis-store/**"
       - "sedandelivery-bolt/**"
       - "tests/loadtest/**"

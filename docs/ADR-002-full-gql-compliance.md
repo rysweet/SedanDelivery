@@ -1,4 +1,4 @@
-# ADR-002: Full GQL/openCypher Compliance vs. Limited Subset
+# ADR-002: Full openCypher Compliance vs. Limited Subset
 
 **Status**: Accepted
 **Date**: 2026-02-26
@@ -9,7 +9,7 @@ The originating issue (#431) suggests implementing only: "MATCH, CREATE, MERGE, 
 
 ## Decision
 
-Target full openCypher + ISO 20030 GQL compliance from the grammar level. Execution is implemented incrementally, but the parser accepts the complete language.
+Target full openCypher compliance from the grammar level. Execution is implemented incrementally, but the parser accepts the complete language. GQL (ISO/IEC 39075) is a separate standard and remains future work.
 
 ## Rationale
 

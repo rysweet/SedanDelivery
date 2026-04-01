@@ -6,7 +6,7 @@ license.workspace = true
 description = "Embeddable Gremlin query engine with in-memory graph store"
 
 [dependencies]
-gql-core     = { path = "../gql-core" }
+cypher-core     = { path = "../cypher-core" }
 gremlin-core = { path = "../gremlin-core" }
 thiserror    = { workspace = true }
 

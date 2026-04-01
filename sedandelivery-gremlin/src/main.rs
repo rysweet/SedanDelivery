@@ -2,7 +2,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use gql_core::storage::GraphStore;
+use cypher_core::storage::GraphStore;
 use sedandelivery_gremlin::{connection, health};
 use tokio::net::TcpListener;
 use tokio::sync::Semaphore;
@@ -32,10 +32,10 @@ async fn main() {
     // ── Configuration ────────────────────────────────────────────────────
     let bind_addr = env_or("GREMLIN_BIND_ADDR", "0.0.0.0:8182");
     let max_connections: usize =
-        gql_core::config::parse_env_range("GREMLIN_MAX_CONNECTIONS", 1024usize, 1, 65535);
+        cypher_core::config::parse_env_range("GREMLIN_MAX_CONNECTIONS", 1024usize, 1, 65535);
     let idle_timeout_secs: u64 =
-        gql_core::config::parse_env_range("GREMLIN_IDLE_TIMEOUT_SECS", 300u64, 1, 86400);
-    let max_lifetime_secs: u64 = gql_core::config::parse_env_range(
+        cypher_core::config::parse_env_range("GREMLIN_IDLE_TIMEOUT_SECS", 300u64, 1, 86400);
+    let max_lifetime_secs: u64 = cypher_core::config::parse_env_range(
         "GREMLIN_MAX_CONNECTION_LIFETIME_SECS",
         1800u64,
         0,

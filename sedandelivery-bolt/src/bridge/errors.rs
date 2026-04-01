@@ -1,4 +1,4 @@
-use gql_core::error::*;
+use cypher_core::error::*;
 
 /// Map a GqlError to a (code, message) tuple for Bolt FAILURE responses.
 ///
@@ -206,7 +206,7 @@ mod tests {
 // ── WS-F (#755): DeleteGraphTooLarge → Bolt client-error code ─────────────────
 //
 // These tests will FAIL TO COMPILE until:
-//   (a) StorageError::DeleteGraphTooLarge is added to gql-core/src/error.rs
+//   (a) StorageError::DeleteGraphTooLarge is added to cypher-core/src/error.rs
 //   (b) gql_error_to_bolt() gains an explicit arm for DeleteGraphTooLarge
 //       before the _ catch-all in the GqlError::Storage(e) => match e { ... } block
 //

@@ -1,6 +1,8 @@
 pub mod mem;
+pub mod persistent;
 
 pub use mem::InMemoryGraphStore;
+pub use persistent::{PersistentConfig, PersistentGraphStore, SyncMode};
 
 use indexmap::IndexMap;
 use std::any::Any;

@@ -7,8 +7,8 @@
 use indexmap::IndexMap;
 use std::sync::Arc;
 
-use gql_core::storage::{GraphStore, InMemoryGraphStore};
-use gql_core::types::Value;
+use cypher_core::storage::{GraphStore, InMemoryGraphStore};
+use cypher_core::types::Value;
 use serde_json::json;
 use tokio::net::TcpListener;
 use tokio::task::JoinHandle;

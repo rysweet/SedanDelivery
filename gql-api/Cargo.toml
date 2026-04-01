@@ -19,7 +19,7 @@ tracing-opentelemetry = { workspace = true }
 opentelemetry = { workspace = true }
 opentelemetry_sdk = { workspace = true }
 opentelemetry-otlp = { workspace = true }
-gql-core        = { path = "../gql-core" }
+cypher-core        = { path = "../cypher-core" }
 gql-redis-store = { path = "../gql-redis-store" }
 tower         = { version = "0.5", features = ["limit"] }
 tower-http    = { version = "0.6", features = ["cors", "trace"] }
@@ -39,6 +39,6 @@ tower          = { version = "0.5", features = ["util"] }
 http             = "1"
 http-body-util = "0.1"
 serde_json     = { workspace = true }
-gql-core       = { path = "../gql-core" }
+cypher-core       = { path = "../cypher-core" }
 tokio          = { workspace = true, features = ["macros", "rt-multi-thread"] }
 rcgen          = "0.14"

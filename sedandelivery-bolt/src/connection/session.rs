@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
 
-use gql_core::storage::GraphStore;
+use cypher_core::storage::GraphStore;
 
 use crate::connection::handshake;
 use crate::message::types::ClientMessage;
@@ -224,7 +224,7 @@ mod tests {
     use std::collections::HashMap;
     use std::net::{IpAddr, Ipv4Addr};
 
-    use gql_core::storage::InMemoryGraphStore;
+    use cypher_core::storage::InMemoryGraphStore;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::{TcpListener, TcpStream};
 

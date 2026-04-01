@@ -5,7 +5,7 @@ cargo fmt --all -- --check
 echo '=== pre-commit: cargo clippy (zero warnings) ==='
 cargo clippy --all-targets -- -D warnings
 echo '=== pre-commit: cargo test (unit) ==='
-cargo test -p gql-core --lib
+cargo test -p cypher-core --lib
 echo '=== pre-commit: no PLAN.md ==='
 test ! -f PLAN.md
 echo '=== all pre-commit checks passed ==='
