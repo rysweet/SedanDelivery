@@ -131,6 +131,8 @@ pub fn parse_request(json: &str) -> Result<RequestMessage, String> {
 mod tests {
     use super::*;
 
+    // ── Binary frame parsing ────────────────────────────────────────────
+
     #[test]
     fn parse_binary_graphson_v3() {
         let mime = GRAPHSON_V3_MIME.as_bytes();
@@ -145,6 +147,44 @@ mod tests {
     }
 
     #[test]
+    fn parse_binary_application_json() {
+        let mime = b"application/json";
+        let payload = b"{\"requestId\":\"00000000-0000-0000-0000-000000000002\",\"op\":\"eval\",\"args\":{}}";
+        let mut frame = vec![mime.len() as u8];
+        frame.extend_from_slice(mime);
+        frame.extend_from_slice(payload);
+
+        let result = parse_binary_frame(&frame).unwrap();
+        assert!(result.contains("requestId"));
+    }
+
+    #[test]
+    fn unsupported_mime_rejected() {
+        let mime = b"application/vnd.graphbinary-v1.0";
+        let mut frame = vec![mime.len() as u8];
+        frame.extend_from_slice(mime);
+        frame.extend_from_slice(b"{}");
+        let err = parse_binary_frame(&frame).unwrap_err();
+        assert!(err.contains("unsupported MIME type"));
+    }
+
+    #[test]
+    fn empty_binary_frame_rejected() {
+        let err = parse_binary_frame(&[]).unwrap_err();
+        assert!(err.contains("empty binary frame"));
+    }
+
+    #[test]
+    fn truncated_binary_frame_rejected() {
+        // MIME length says 50 bytes but frame is only 3 bytes total
+        let frame = vec![50, b'a', b'b'];
+        let err = parse_binary_frame(&frame).unwrap_err();
+        assert!(err.contains("too short"));
+    }
+
+    // ── Request parsing ─────────────────────────────────────────────────
+
+    #[test]
     fn parse_text_request() {
         let json = r#"{"requestId":"00000000-0000-0000-0000-000000000001","op":"eval","args":{"gremlin":"g.V().count()"}}"#;
         let req = parse_request(json).unwrap();
@@ -156,13 +196,69 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_mime_rejected() {
-        let mime = b"application/vnd.graphbinary-v1.0";
-        let mut frame = vec![mime.len() as u8];
-        frame.extend_from_slice(mime);
-        frame.extend_from_slice(b"{}");
-        assert!(parse_binary_frame(&frame).is_err());
+    fn parse_request_with_bindings() {
+        let json = r#"{
+            "requestId": "00000000-0000-0000-0000-000000000003",
+            "op": "eval",
+            "args": {
+                "gremlin": "g.V(x)",
+                "bindings": {"x": 1}
+            }
+        }"#;
+        let req = parse_request(json).unwrap();
+        assert_eq!(req.op, "eval");
+        let bindings = req.args.get("bindings").unwrap().as_object().unwrap();
+        assert_eq!(bindings.get("x").unwrap(), &serde_json::json!(1));
     }
+
+    #[test]
+    fn parse_request_with_aliases() {
+        let json = r#"{
+            "requestId": "00000000-0000-0000-0000-000000000004",
+            "op": "eval",
+            "args": {
+                "gremlin": "g.V()",
+                "aliases": {"g": "mygraph"}
+            }
+        }"#;
+        let req = parse_request(json).unwrap();
+        let aliases = req.args.get("aliases").unwrap().as_object().unwrap();
+        assert_eq!(aliases.get("g").unwrap(), "mygraph");
+    }
+
+    #[test]
+    fn parse_request_close_op() {
+        let json = r#"{"requestId":"00000000-0000-0000-0000-000000000005","op":"close","args":{}}"#;
+        let req = parse_request(json).unwrap();
+        assert_eq!(req.op, "close");
+    }
+
+    #[test]
+    fn parse_request_missing_request_id_fails() {
+        let json = r#"{"op":"eval","args":{"gremlin":"g.V()"}}"#;
+        assert!(parse_request(json).is_err());
+    }
+
+    #[test]
+    fn parse_request_malformed_json_fails() {
+        assert!(parse_request("{not json}").is_err());
+    }
+
+    #[test]
+    fn parse_request_defaults_empty_processor() {
+        let json = r#"{"requestId":"00000000-0000-0000-0000-000000000001","op":"eval","args":{}}"#;
+        let req = parse_request(json).unwrap();
+        assert_eq!(req.processor, "");
+    }
+
+    #[test]
+    fn parse_request_defaults_empty_args() {
+        let json = r#"{"requestId":"00000000-0000-0000-0000-000000000001","op":"eval"}"#;
+        let req = parse_request(json).unwrap();
+        assert!(req.args.is_empty());
+    }
+
+    // ── Response serialization ──────────────────────────────────────────
 
     #[test]
     fn success_response_serializes() {
@@ -173,10 +269,58 @@ mod tests {
     }
 
     #[test]
+    fn success_response_omits_empty_message() {
+        let resp = ResponseMessage::success(Uuid::nil(), serde_json::json!([]));
+        let json_str = serde_json::to_string(&resp).unwrap();
+        // "message" should be absent because of skip_serializing_if
+        assert!(!json_str.contains("\"message\""));
+    }
+
+    #[test]
     fn error_response_includes_message() {
         let resp = ResponseMessage::error(Uuid::nil(), 500, "boom".into());
         let json = serde_json::to_value(&resp).unwrap();
         assert_eq!(json["status"]["code"], 500);
         assert_eq!(json["status"]["message"], "boom");
+    }
+
+    #[test]
+    fn no_content_response_has_204() {
+        let id = Uuid::parse_str("12345678-1234-1234-1234-123456789012").unwrap();
+        let resp = ResponseMessage::no_content(id);
+        let json = serde_json::to_value(&resp).unwrap();
+        assert_eq!(json["status"]["code"], 204);
+        assert_eq!(json["result"]["data"], serde_json::Value::Null);
+        assert_eq!(json["requestId"], id.to_string());
+    }
+
+    #[test]
+    fn error_response_preserves_status_codes() {
+        for code in [401, 403, 497, 498, 499, 500, 597, 598] {
+            let resp = ResponseMessage::error(Uuid::nil(), code, "test".into());
+            let json = serde_json::to_value(&resp).unwrap();
+            assert_eq!(json["status"]["code"], code);
+        }
+    }
+
+    #[test]
+    fn response_request_id_roundtrips() {
+        let id = Uuid::new_v4();
+        let resp = ResponseMessage::success(id, serde_json::json!(null));
+        let json = serde_json::to_value(&resp).unwrap();
+        let parsed_id: Uuid = serde_json::from_value(json["requestId"].clone()).unwrap();
+        assert_eq!(parsed_id, id);
+    }
+
+    #[test]
+    fn success_with_vertex_data() {
+        let data = serde_json::json!([{
+            "id": {"@type": "g:Int64", "@value": 1},
+            "label": "person",
+            "type": "vertex"
+        }]);
+        let resp = ResponseMessage::success(Uuid::nil(), data.clone());
+        let json = serde_json::to_value(&resp).unwrap();
+        assert_eq!(json["result"]["data"], data);
     }
 }
