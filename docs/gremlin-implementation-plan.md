@@ -213,47 +213,43 @@ Mutate:     addV(), addE(), property(), drop(), from(), to()
 
 ```
 SedanDelivery/
-├── cypher-core/
-│   └── src/
-│       ├── lib.rs                          # add: pub mod gremlin;
-│       ├── gremlin/                        # NEW — Gremlin language frontend
-│       │   ├── mod.rs                      # Public API: compile_bytecode()
-│       │   ├── ir.rs                       # GremlinStep enum, TraversalFlags
-│       │   ├── bytecode.rs                 # GraphSON bytecode → Vec<GremlinStep>
-│       │   ├── compiler.rs                 # Vec<GremlinStep> → Operator tree
-│       │   ├── parameterize.rs             # Auto-extract literals for plan cache
-│       │   └── text.rs                     # gremlin-lang text parser (Phase 3)
-│       ├── planner/
-│       │   └── mod.rs                      # Operator enum (+5 new variants)
-│       ├── executor/
-│       │   └── engine/
-│       │       ├── gremlin.rs              # NEW — Repeat/Choose/Coalesce/SideEffect/Cap execution
-│       │       └── mod.rs                  # ExecContext extension
-│       └── ...existing unchanged...
-│
-├── sedandelivery-gremlin/                  # NEW CRATE (mirrors sedandelivery-bolt/)
+├── gremlin-core/                           # Gremlin language engine (separate crate)
 │   ├── Cargo.toml
 │   └── src/
-│       ├── main.rs                         # Tokio server entry point
-│       ├── connection/
-│       │   ├── mod.rs                      # WebSocket listener
-│       │   ├── handler.rs                  # Per-connection request multiplexer
-│       │   └── session.rs                  # GremlinSession (optional TX scope)
-│       ├── codec/
-│       │   ├── mod.rs                      # GremlinCodec trait
-│       │   ├── graphson.rs                 # GraphSON v3 (serde_json)
-│       │   └── graphbinary.rs              # GraphBinary v1 (Phase 3)
-│       ├── bridge/
-│       │   ├── executor.rs                 # Bytecode → cypher-core pipeline
-│       │   └── types.rs                    # GremlinValue ↔ Value conversion
-│       ├── message.rs                      # Request/Response types
-│       ├── tls.rs                          # TLS (reuse bolt's pattern)
-│       ├── metrics.rs                      # Prometheus counters
-│       └── health.rs                       # Health check endpoint
+│       ├── lib.rs                          # Public API
+│       ├── bytecode.rs                     # GremlinStep definitions (~50 step types)
+│       ├── compiler.rs                     # GremlinCompiler: steps → cypher-core Operator tree
+│       ├── text_parser.rs                  # Parse Gremlin traversal text strings
+│       ├── graphson.rs                     # GraphSON v3 request/response serialization
+│       ├── steps/                          # Step type definitions
+│       └── types.rs                        # GremlinValue ↔ cypher-core Value conversions
 │
-├── Cargo.toml                              # Add sedandelivery-gremlin to members
+├── sedandelivery-gremlin/                  # Gremlin WebSocket server (bytecode protocol)
+│   ├── Cargo.toml
+│   └── src/
+│       ├── main.rs                         # WebSocket accept loop (:8182)
+│       ├── connection/                     # Per-connection session lifecycle
+│       ├── bridge/                         # Gremlin-to-cypher-core translation
+│       ├── protocol/                       # GraphSON v3 message handling
+│       ├── health.rs                       # Health endpoint (:8183)
+│       └── lib.rs                          # Server library
+│
+├── sedandelivery-gremlin-server/           # Gremlin WebSocket server (text eval protocol)
+│   ├── Cargo.toml
+│   └── src/
+│       ├── main.rs                         # WebSocket accept loop (:8182)
+│       ├── executor.rs                     # Text traversal execution
+│       ├── protocol.rs                     # GraphSON v3 message handling
+│       └── lib.rs                          # Server library
+│
+├── Cargo.toml                              # All three crates in workspace members
 └── ...existing crates unchanged...
 ```
+
+> **Note:** The original plan placed Gremlin IR inside `cypher-core/src/gremlin/`.
+> The actual implementation uses a separate `gremlin-core` crate for the language
+> engine (bytecode, compiler, text parser, types) and two server crates
+> (`sedandelivery-gremlin` for bytecode, `sedandelivery-gremlin-server` for text eval).
 
 **Dependency graph**:
 ```

@@ -1,7 +1,7 @@
 # Repository Surface
 
-Overview of the SedanDelivery repository structure — a Rust openCypher query engine
-that runs as a Redis/Valkey module with Bolt v4.4 and REST API servers.
+Overview of the SedanDelivery repository structure — a multi-language Rust graph database
+engine supporting openCypher, Gremlin, and GQL with Bolt, REST, Gremlin WebSocket, and Redis module interfaces.
 
 ## Repository Structure Diagram
 
@@ -15,17 +15,27 @@ graph TD
     ROOT["SedanDelivery/"]
     
     subgraph core_crates["Core Engine Crates"]
-        GQL_CORE["cypher-core/<br/><i>Parser, planner, executor,<br/>GraphStore trait, Value types</i>"]
-        GQL_REDIS["sd2-redis-store/<br/><i>Redis/Valkey GraphStore impl<br/>+ FanoutStore</i>"]
+        CYPHER_CORE["cypher-core/<br/><i>openCypher parser, planner,<br/>executor, GraphStore trait</i>"]
+        GREMLIN_CORE["gremlin-core/<br/><i>Gremlin bytecode compiler<br/>+ text parser</i>"]
+        GQL_ENGINE["gql-engine/<br/><i>GQL (ISO/IEC 39075)<br/>parser + planner</i>"]
+        SD2_REDIS_STORE["sd2-redis-store/<br/><i>Redis/Valkey GraphStore impl<br/>+ FanoutStore</i>"]
         GQL_FABRIC["gql-fabric-store/<br/><i>Microsoft Fabric<br/>GraphStore impl</i>"]
     end
 
     subgraph entry_points["Entry Point Crates"]
-        GQL_MODULE["sd2-redis-module/<br/><i>Valkey/Redis loadable<br/>module (.so cdylib)</i>"]
-        GQL_API["sd2-api/<br/><i>HTTP REST API<br/>(axum, port 3001)</i>"]
+        SD2_REDIS_MODULE["sd2-redis-module/<br/><i>Valkey/Redis loadable<br/>module (.so cdylib)</i>"]
+        SD2_API["sd2-api/<br/><i>HTTP REST API<br/>(axum, port 3001)</i>"]
         BOLT["sedandelivery-bolt/<br/><i>Neo4j Bolt v4.4<br/>TCP server (port 7687)</i>"]
+        GREMLIN_WS["sedandelivery-gremlin/<br/><i>Gremlin WebSocket<br/>server (port 8182)</i>"]
+        GREMLIN_TEXT["sedandelivery-gremlin-server/<br/><i>Gremlin text eval<br/>server (port 8182)</i>"]
         SYNC["sedandelivery-fabric-sync/<br/><i>Changelog replication<br/>to Fabric</i>"]
         CLI["gql-cli/<br/><i>Interactive REPL<br/>for development</i>"]
+    end
+
+    subgraph embedded_crates["Embeddable Libraries"]
+        CYPHER_EMB["sedan-cypher-embedded/<br/><i>In-process openCypher</i>"]
+        GQL_EMB["sedan-gql-embedded/<br/><i>In-process GQL/Cypher</i>"]
+        GREMLIN_EMB["sedan-gremlin-embedded/<br/><i>In-process Gremlin</i>"]
     end
 
     subgraph sdks["Client SDKs"]
@@ -54,6 +64,7 @@ graph TD
 
     ROOT --> core_crates
     ROOT --> entry_points
+    ROOT --> embedded_crates
     ROOT --> sdks
     ROOT --> infra_deploy
     ROOT --> testing
@@ -67,7 +78,7 @@ See [repo-surface.mmd](repo-surface.mmd) and [repo-surface.dot](repo-surface.dot
 ## Build System
 
 - **Language**: Rust (edition 2021)
-- **Build**: Cargo workspace with 9 members (8 crates + loadtest)
+- **Build**: Cargo workspace with 17 members
 - **License**: MIT OR Apache-2.0
 - **Release profile**: LTO fat, opt-level 3, codegen-units 1, symbols stripped
 - **Dev profile**: opt-level 1 (arena-heavy code)

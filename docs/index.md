@@ -71,7 +71,10 @@ SedanDelivery supports multiple storage backends via the `GraphStore` trait:
 | Backend | Crate | Use Case |
 |---------|-------|----------|
 | `InMemoryGraphStore` | `cypher-core` | Default in-module store, tests |
+| `PersistentGraphStore` | `cypher-core` | WAL-based disk persistence wrapping InMemoryGraphStore |
+| `CachedGraphStore` | `cypher-core` | Write-through in-memory cache wrapping any backend |
 | `RedisGraphStore` | `sd2-redis-store` | External Redis/Valkey via TCP |
+| `ModuleRedisStore` | `sd2-redis-module` | In-process Redis access via Valkey Module API |
 | `FabricGraphStore` | `gql-fabric-store` | Microsoft Fabric Graph Database |
 | `FanoutStore` | `sd2-redis-store` | Write to multiple backends simultaneously |
 

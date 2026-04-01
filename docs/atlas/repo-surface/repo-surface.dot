@@ -6,8 +6,10 @@ digraph repo_surface {
     subgraph cluster_core {
         label="Core Engine Crates"
         style=filled fillcolor="#E8F4FD"
-        cypher_core [label="cypher-core\nParser, planner, executor\nGraphStore trait, Value types" fillcolor="#AED6F1"]
-        gql_redis [label="sd2-redis-store\nRedis/Valkey GraphStore\n+ FanoutStore" fillcolor="#AED6F1"]
+        cypher_core [label="cypher-core\nopenCypher parser, planner,\nexecutor, GraphStore trait" fillcolor="#AED6F1"]
+        gremlin_core [label="gremlin-core\nGremlin bytecode compiler\n+ text parser" fillcolor="#AED6F1"]
+        gql_engine [label="gql-engine\nGQL (ISO/IEC 39075)\nparser + planner" fillcolor="#AED6F1"]
+        sd2_redis_store [label="sd2-redis-store\nRedis/Valkey GraphStore\n+ FanoutStore" fillcolor="#AED6F1"]
         gql_fabric [label="gql-fabric-store\nMicrosoft Fabric\nGraphStore" fillcolor="#AED6F1"]
     }
 
@@ -17,39 +19,49 @@ digraph repo_surface {
         sd2_redis_module [label="sd2-redis-module\nValkey/Redis module (.so)" fillcolor="#A9DFBF"]
         sd2_api [label="sd2-api\nHTTP REST API (axum)\nport 3001" fillcolor="#A9DFBF"]
         bolt [label="sedandelivery-bolt\nBolt v4.4 TCP server\nport 7687" fillcolor="#A9DFBF"]
-        sync [label="sedandelivery-fabric-sync\nChangelog replication" fillcolor="#A9DFBF"]
-        cli [label="gql-cli\nInteractive REPL" fillcolor="#A9DFBF"]
+        gremlin_ws [label="sedandelivery-gremlin\nGremlin WebSocket\nserver (port 8182)" fillcolor="#A9DFBF"]
+        gremlin_text [label="sedandelivery-gremlin-server\nGremlin text eval\nserver (port 8182)" fillcolor="#A9DFBF"]
+        sync [label="sedandelivery-fabric-sync\nChangelog replication\nto Fabric" fillcolor="#A9DFBF"]
+        cli [label="gql-cli\nInteractive REPL\nfor development" fillcolor="#A9DFBF"]
+    }
+
+    subgraph cluster_embedded {
+        label="Embeddable Libraries"
+        style=filled fillcolor="#E0F2F1"
+        cypher_emb [label="sedan-cypher-embedded\nIn-process openCypher" fillcolor="#A3D9D3"]
+        gql_emb [label="sedan-gql-embedded\nIn-process GQL/Cypher" fillcolor="#A3D9D3"]
+        gremlin_emb [label="sedan-gremlin-embedded\nIn-process Gremlin" fillcolor="#A3D9D3"]
     }
 
     subgraph cluster_sdks {
         label="Client SDKs"
         style=filled fillcolor="#FFF3E0"
-        sdk_py [label="sdk/python/" fillcolor="#FAD7A0"]
-        sdk_net [label="sdk/dotnet/" fillcolor="#FAD7A0"]
-        sdk_rs [label="sdk/rust/" fillcolor="#FAD7A0"]
+        sdk_py [label="sdk/python/\nPython client" fillcolor="#FAD7A0"]
+        sdk_net [label="sdk/dotnet/\n.NET client" fillcolor="#FAD7A0"]
+        sdk_rs [label="sdk/rust/\nRust client" fillcolor="#FAD7A0"]
     }
 
     subgraph cluster_infra {
         label="Infrastructure & Deploy"
         style=filled fillcolor="#F3E5F5"
-        infra [label="infra/\nBicep IaC" fillcolor="#D7BDE2"]
+        infra [label="infra/\nmain.bicep, KEDA,\nPrometheus alerts" fillcolor="#D7BDE2"]
         docker [label="Dockerfile.*\n4 container images" fillcolor="#D7BDE2"]
         compose [label="docker-compose*.yml\n5 profiles" fillcolor="#D7BDE2"]
-        scripts [label="scripts/\nTest & provision" fillcolor="#D7BDE2"]
-        gh_actions [label=".github/workflows/\n30+ CI/CD" fillcolor="#D7BDE2"]
+        scripts [label="scripts/\nTest, provision,\nvalidate scripts" fillcolor="#D7BDE2"]
+        gh_actions [label=".github/workflows/\n30+ CI/CD workflows" fillcolor="#D7BDE2"]
     }
 
     subgraph cluster_testing {
         label="Testing"
         style=filled fillcolor="#FFEBEE"
-        tests [label="tests/\nE2E, load, QA" fillcolor="#F5B7B1"]
-        neo4j_compat [label="neo4j-compat-gallery/" fillcolor="#F5B7B1"]
+        tests [label="tests/\nE2E, load tests,\nQA scenarios" fillcolor="#F5B7B1"]
+        neo4j_compat [label="neo4j-compat-gallery/\n4 Neo4j app\ncompatibility tests" fillcolor="#F5B7B1"]
     }
 
     subgraph cluster_docs {
         label="Documentation"
         style=filled fillcolor="#FFFDE7"
-        docs [label="docs/\nArchitecture, ADRs" fillcolor="#F9E79F"]
-        sedan_ui [label="sedan-graph-ui/\n.NET BFF + React" fillcolor="#F9E79F"]
+        docs [label="docs/\nArchitecture, ADRs,\ntutorials, guides" fillcolor="#F9E79F"]
+        sedan_ui [label="sedan-graph-ui/\n.NET BFF + React\ngraph visualizer" fillcolor="#F9E79F"]
     }
 }

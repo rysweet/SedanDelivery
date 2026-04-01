@@ -52,10 +52,11 @@ A living architecture document derived from code-first truth. Last rebuilt: 2026
 
 SedanDelivery is a Rust openCypher query engine with:
 
-- **3 network interfaces**: REST API (axum), Bolt v4.4 protocol, Redis module commands
-- **4 storage backends**: InMemory, Redis/Valkey, Microsoft Fabric, FanoutStore
-- **Core pipeline**: Lexer → Parser → Validator → Planner (28 operators) → Executor
-- **8 workspace crates** with `cypher-core` as the foundational library
+- **3 query engines**: openCypher, Apache TinkerPop Gremlin, GQL (ISO/IEC 39075)
+- **4 network interfaces**: REST API (axum), Bolt v4.4, Gremlin WebSocket, Redis module commands
+- **7 storage backends**: InMemory, PersistentGraphStore (WAL), CachedGraphStore, Redis/Valkey, ModuleRedisStore, Microsoft Fabric, FanoutStore
+- **Core pipeline**: Lexer → Parser → Validator → Planner (28+ operators) → Executor
+- **17 workspace crates** with `cypher-core` as the foundational library
 - **Azure-native deployment**: Container Apps, Bicep IaC, KEDA auto-scaling
 
 ## Staleness

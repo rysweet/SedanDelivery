@@ -1,48 +1,43 @@
 graph TD
     subgraph workspace["Workspace Crates"]
         cypher_core["cypher-core<br/><i>lib</i>"]
+        gremlin_core["gremlin-core<br/><i>lib</i>"]
+        gql_engine["gql-engine<br/><i>lib</i>"]
         gql_redis["sd2-redis-store<br/><i>lib</i>"]
         gql_fabric["gql-fabric-store<br/><i>lib</i>"]
         sd2_redis_module["sd2-redis-module<br/><i>cdylib</i>"]
         sd2_api["sd2-api<br/><i>bin</i>"]
         gql_cli["gql-cli<br/><i>bin</i>"]
         bolt["sedandelivery-bolt<br/><i>bin</i>"]
+        gremlin["sedandelivery-gremlin<br/><i>bin</i>"]
+        gremlin_server["sedandelivery-gremlin-server<br/><i>bin</i>"]
         sync["sedandelivery-fabric-sync<br/><i>bin</i>"]
+        cypher_embedded["sedan-cypher-embedded<br/><i>lib</i>"]
+        gql_embedded["sedan-gql-embedded<br/><i>lib</i>"]
+        gremlin_embedded["sedan-gremlin-embedded<br/><i>lib</i>"]
         loadtest["tests/loadtest<br/><i>bin</i>"]
+        gremlin_tck["tests/gremlin-tck<br/><i>bin</i>"]
     end
 
-    subgraph external["Key External Crates"]
-        redis_crate["redis"]
-        r2d2_crate["r2d2"]
-        axum_crate["axum"]
-        tokio_crate["tokio"]
-        reqwest_crate["reqwest"]
-        redis_module_crate["redis-module"]
-        petgraph_crate["petgraph"]
-        serde_crate["serde + serde_json"]
-        tracing_crate["tracing + opentelemetry"]
-    end
-
-    gql_redis --> cypher_core
-    gql_fabric --> cypher_core
-    sd2_redis_module --> cypher_core
-    gql_cli --> cypher_core
-    sd2_api --> cypher_core
-    sd2_api --> gql_redis
-    bolt --> cypher_core
-    bolt --> gql_redis
-    sync --> cypher_core
-    sync --> gql_redis
-    sync --> gql_fabric
-    loadtest --> cypher_core
-
-    cypher_core --> petgraph_crate
-    cypher_core --> serde_crate
-    gql_redis --> redis_crate
-    gql_redis --> r2d2_crate
-    gql_fabric --> reqwest_crate
-    sd2_redis_module --> redis_module_crate
-    sd2_api --> axum_crate
-    bolt --> tokio_crate
-    sync --> tokio_crate
-    cypher_core --> tracing_crate
+    gremlin_core -->|"depends on"| cypher_core
+    gql_engine -->|"depends on"| cypher_core
+    gql_redis -->|"depends on"| cypher_core
+    gql_fabric -->|"depends on"| cypher_core
+    sd2_redis_module -->|"depends on"| cypher_core
+    gql_cli -->|"depends on"| cypher_core
+    sd2_api -->|"depends on"| cypher_core
+    sd2_api -->|"depends on"| gql_redis
+    bolt -->|"depends on"| cypher_core
+    bolt -->|"depends on"| gql_redis
+    gremlin -->|"depends on"| gremlin_core
+    gremlin -->|"depends on"| gql_redis
+    gremlin_server -->|"depends on"| gremlin_core
+    gremlin_server -->|"depends on"| gql_redis
+    sync -->|"depends on"| cypher_core
+    sync -->|"depends on"| gql_redis
+    sync -->|"depends on"| gql_fabric
+    cypher_embedded -->|"depends on"| cypher_core
+    gql_embedded -->|"depends on"| cypher_core
+    gremlin_embedded -->|"depends on"| gremlin_core
+    gremlin_embedded -->|"depends on"| cypher_core
+    loadtest -->|"depends on"| cypher_core

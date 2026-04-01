@@ -1,6 +1,6 @@
 # Compile-time Dependencies
 
-Cargo workspace dependency graph for SedanDelivery — 8 crates plus a loadtest binary.
+Cargo workspace dependency graph for SedanDelivery — 17 crates.
 
 ## Workspace Dependency Graph
 
@@ -13,16 +13,26 @@ Cargo workspace dependency graph for SedanDelivery — 8 crates plus a loadtest 
 graph TD
     subgraph workspace["Workspace Crates"]
         cypher_core["cypher-core<br/><i>lib</i>"]
+        gremlin_core["gremlin-core<br/><i>lib</i>"]
+        gql_engine["gql-engine<br/><i>lib</i>"]
         gql_redis["sd2-redis-store<br/><i>lib</i>"]
         gql_fabric["gql-fabric-store<br/><i>lib</i>"]
         sd2_redis_module["sd2-redis-module<br/><i>cdylib</i>"]
         sd2_api["sd2-api<br/><i>bin</i>"]
         gql_cli["gql-cli<br/><i>bin</i>"]
         bolt["sedandelivery-bolt<br/><i>bin</i>"]
+        gremlin["sedandelivery-gremlin<br/><i>bin</i>"]
+        gremlin_server["sedandelivery-gremlin-server<br/><i>bin</i>"]
         sync["sedandelivery-fabric-sync<br/><i>bin</i>"]
+        cypher_embedded["sedan-cypher-embedded<br/><i>lib</i>"]
+        gql_embedded["sedan-gql-embedded<br/><i>lib</i>"]
+        gremlin_embedded["sedan-gremlin-embedded<br/><i>lib</i>"]
         loadtest["tests/loadtest<br/><i>bin</i>"]
+        gremlin_tck["tests/gremlin-tck<br/><i>bin</i>"]
     end
 
+    gremlin_core -->|"depends on"| cypher_core
+    gql_engine -->|"depends on"| cypher_core
     gql_redis -->|"depends on"| cypher_core
     gql_fabric -->|"depends on"| cypher_core
     sd2_redis_module -->|"depends on"| cypher_core
@@ -31,9 +41,17 @@ graph TD
     sd2_api -->|"depends on"| gql_redis
     bolt -->|"depends on"| cypher_core
     bolt -->|"depends on"| gql_redis
+    gremlin -->|"depends on"| gremlin_core
+    gremlin -->|"depends on"| gql_redis
+    gremlin_server -->|"depends on"| gremlin_core
+    gremlin_server -->|"depends on"| gql_redis
     sync -->|"depends on"| cypher_core
     sync -->|"depends on"| gql_redis
     sync -->|"depends on"| gql_fabric
+    cypher_embedded -->|"depends on"| cypher_core
+    gql_embedded -->|"depends on"| cypher_core
+    gremlin_embedded -->|"depends on"| gremlin_core
+    gremlin_embedded -->|"depends on"| cypher_core
     loadtest -->|"depends on"| cypher_core
 ```
 
@@ -65,11 +83,15 @@ See [dependencies.mmd](dependencies.mmd) and [dependencies.dot](dependencies.dot
 | Crate | Key Dependencies |
 |-------|-----------------|
 | cypher-core | regex, typed-arena, jiff, smol_str, petgraph, indexmap |
+| gremlin-core | cypher-core, serde_json |
+| gql-engine | cypher-core |
 | sd2-redis-store | redis, r2d2, cypher-core |
 | gql-fabric-store | reqwest, cypher-core |
 | sd2-redis-module | redis-module (bindgen, requires libclang), cypher-core |
 | sd2-api | axum, tower, tower-http, hyper, cypher-core, sd2-redis-store |
 | sedandelivery-bolt | tokio, cypher-core, sd2-redis-store |
+| sedandelivery-gremlin | tokio, tokio-tungstenite, gremlin-core, sd2-redis-store |
+| sedandelivery-gremlin-server | tokio, tokio-tungstenite, gremlin-core, sd2-redis-store |
 | sedandelivery-fabric-sync | tokio, cypher-core, sd2-redis-store, gql-fabric-store |
 
 ### Dev/Test Dependencies

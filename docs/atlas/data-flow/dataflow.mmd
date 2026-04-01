@@ -6,24 +6,27 @@ flowchart LR
         cli["gql-cli\nREPL input"]
     end
 
-    subgraph pipeline["Query Pipeline"]
-        lexer["Lexer\nCypher text to tokens"]
-        parser["Parser\nTokens to AST"]
-        validator["Validator\nSemantic checks"]
-        planner["Planner\nAST to operator tree\n28 physical operators"]
-        executor["Executor\nOperator tree to results"]
-        cache["Plan Cache\nhash-keyed"]
+    subgraph pipeline["Query Pipeline — cypher-core"]
+        lexer["Lexer\nparser::lexer\nCypher text → tokens"]
+        parser["Parser\nparser::parser\nTokens → AST"]
+        validator["Validator\nplanner::validator\nSemantic checks"]
+        planner["Planner\nplanner::QueryPlanner\nAST → operator tree\n28 physical operators"]
+        executor["Executor\nexecutor::QueryExecutor\nOperator tree → results"]
+        cache["Plan Cache\nplan_cache.rs\nHash-keyed, clear-on-capacity"]
     end
 
-    subgraph storage["Storage - GraphStore"]
-        mem["InMemoryGraphStore"]
-        redis_store["RedisGraphStore\nr2d2 pool"]
-        fabric_store["FabricGraphStore\nREST API"]
-        fanout["FanoutStore\nMulti-backend write"]
+    subgraph storage["Storage — GraphStore trait"]
+        mem["InMemoryGraphStore\nArc-based snapshots"]
+        persistent["PersistentGraphStore\nWAL-based disk persistence"]
+        cached["CachedGraphStore\nWrite-through cache"]
+        redis_store["RedisGraphStore\nr2d2 pool + pipeline batch"]
+        module_store["ModuleRedisStore\nIn-process ctx.call()"]
+        fabric_store["FabricGraphStore\nREST + openCypher"]
+        fanout["FanoutStore\nWrite to all backends"]
     end
 
     subgraph output["Output"]
-        result["QueryResult\ncolumns + rows"]
+        result["QueryResult\ncolumns + rows\nValue enum"]
     end
 
     rest --> lexer
@@ -38,10 +41,16 @@ flowchart LR
     validator --> planner
     planner --> executor
     executor --> mem
+    executor --> persistent
+    executor --> cached
     executor --> redis_store
+    executor --> module_store
     executor --> fabric_store
     executor --> fanout
     mem --> result
+    persistent --> result
+    cached --> result
     redis_store --> result
+    module_store --> result
     fabric_store --> result
     fanout --> result

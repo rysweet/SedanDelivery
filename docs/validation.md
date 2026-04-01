@@ -75,9 +75,10 @@ estimate state directly.
 | **Module integration** | `sd2-redis-module/tests/integration.rs` | 18 | GQL.QUERY / GQL.MUTATE pipeline, graph lifecycle, stats format, multi-graph isolation |
 | **Compatibility** | `sd2-redis-module/tests/compatibility.rs` | 28 | JSON wire format: null, bool, int, float, string, list, map, node, edge, path encodings; column ordering |
 | **TCK compliance** | `tests/tck/` | 3903 | 100% openCypher TCK (all 195 feature files, 3903 scenarios, 16 031 steps) |
+| **Gremlin TCK** | `tests/gremlin-tck/` | 1672 | TinkerPop-equivalent scenarios (modern, crew, grateful dead graphs) |
 | **Benchmarks** | `benches/` | 26 | Performance baselines (see [benchmarks.md](benchmarks.md)) |
 | **Total (excluding TCK)** | | **1,673** | |
-| **Total (including TCK)** | | **5,576** | |
+| **Total (including TCK)** | | **7,248** | |
 
 Bold entries were added by issue #189.
 
@@ -278,6 +279,32 @@ have been fixed.
 
 ---
 
+## Gremlin TCK compliance
+
+SedanDelivery includes a Gremlin Technology Compatibility Kit (TCK) suite with
+**1672 scenarios** covering the modern, crew, and grateful dead reference graphs.
+
+The TCK runner is in `tests/gremlin-tck/` and uses the `cucumber` framework
+to execute Gherkin `.feature` files.
+
+```bash
+# Run the full Gremlin TCK
+cargo test -p gremlin-tck --test tck
+
+# Expected output:
+# 1672 scenarios (1672 passed)
+```
+
+The Gremlin TCK validates:
+- All ~116 supported Gremlin step types (traversal, filter, map, branch, mutation)
+- Bytecode compilation to cypher-core Operator trees
+- Text parser traversal string handling
+- GraphSON v3 value type round-trips
+- Side-effect channels (aggregate, store, cap)
+- Path tracking and repeat/until/emit semantics
+
+---
+
 ## Regression policy
 
 | Trigger | Expected result |
@@ -321,5 +348,5 @@ bash scripts/validate.sh
 
 - [benchmarks.md](benchmarks.md) — how to run and interpret performance benchmarks
 - [ADR-001](ADR-001-storage-model.md) — storage model decisions
-- [ADR-002](ADR-002-full-gql-compliance.md) — openCypher compliance strategy
+- [ADR-002](ADR-002-full-opencypher-compliance.md) — openCypher compliance strategy
 - [Architecture Overview](architecture.md) — crate map, request flows, storage layer

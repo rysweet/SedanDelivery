@@ -31,7 +31,10 @@ flowchart LR
 
     subgraph storage["Storage — GraphStore trait"]
         mem["InMemoryGraphStore\nArc-based snapshots"]
+        persistent["PersistentGraphStore\nWAL-based disk persistence"]
+        cached["CachedGraphStore\nWrite-through cache"]
         redis_store["RedisGraphStore\nr2d2 pool + pipeline batch"]
+        module_store["ModuleRedisStore\nIn-process ctx.call()"]
         fabric_store["FabricGraphStore\nREST + openCypher"]
         fanout["FanoutStore\nWrite to all backends"]
     end
@@ -52,11 +55,17 @@ flowchart LR
     validator --> planner
     planner --> executor
     executor --> mem
+    executor --> persistent
+    executor --> cached
     executor --> redis_store
+    executor --> module_store
     executor --> fabric_store
     executor --> fanout
     mem --> result
+    persistent --> result
+    cached --> result
     redis_store --> result
+    module_store --> result
     fabric_store --> result
     fanout --> result
 ```

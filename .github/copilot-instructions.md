@@ -2,22 +2,31 @@
 
 ## Project Overview
 
-SedanDelivery is a Rust openCypher query engine that runs as a Redis/Valkey module. It provides `GQL.QUERY` and `GQL.MUTATE` commands for graph operations over Redis-native data structures.
+SedanDelivery is a multi-language Rust graph database engine supporting openCypher, Apache TinkerPop Gremlin, and GQL (ISO/IEC 39075). It provides four network interfaces: REST API, Neo4j Bolt v4.4, Gremlin WebSocket, and Redis module commands (`GQL.QUERY`, `GQL.MUTATE`). Storage backends include Redis/Valkey, in-memory with WAL persistence, write-through cache, and Microsoft Fabric.
 
 ## Workspace Structure
 
-Cargo workspace with 8 crates:
+Cargo workspace with 17 crates:
 
 | Crate | Type | Purpose |
 |-------|------|---------|
-| `cypher-core` | lib | Parser, planner, executor, `GraphStore` trait, `Value` types |
-| `sd2-redis-store` | lib | Redis-backed `GraphStore` implementation |
+| `cypher-core` | lib | openCypher parser, planner, executor, `GraphStore` trait, `Value` types |
+| `gremlin-core` | lib | Gremlin bytecode compiler + text parser (compiles to cypher-core operators) |
+| `gql-engine` | lib | GQL (ISO/IEC 39075) parser + planner |
+| `sd2-redis-store` | lib | Redis/Valkey-backed `GraphStore` + `FanoutStore` |
 | `gql-fabric-store` | lib | Microsoft Fabric-backed `GraphStore` implementation |
-| `sd2-redis-module` | cdylib | Redis module entry point (`redis_module!` macro) |
+| `sd2-redis-module` | cdylib | Redis module entry point (`redis_module!` macro), `ModuleRedisStore` |
 | `gql-cli` | bin | Standalone REPL for development and debugging |
 | `sd2-api` | bin | HTTP REST API server |
 | `sedandelivery-bolt` | bin | Neo4j Bolt v4.4 protocol server (compatible with all Neo4j drivers) |
-| `sedandelivery-fabric-sync` | bin | Fabric replication sidecar (streams changelog to Microsoft Fabric Graph Database) |
+| `sedandelivery-gremlin` | bin | Gremlin WebSocket server (bytecode protocol) |
+| `sedandelivery-gremlin-server` | bin | Gremlin WebSocket server (text eval protocol) |
+| `sedandelivery-fabric-sync` | bin | Fabric replication sidecar (streams changelog to Microsoft Fabric) |
+| `sedan-cypher-embedded` | lib | Embeddable in-process openCypher engine |
+| `sedan-gql-embedded` | lib | Embeddable in-process GQL/Cypher engine |
+| `sedan-gremlin-embedded` | lib | Embeddable in-process Gremlin engine |
+| `tests/loadtest` | bin | Load testing harness |
+| `tests/gremlin-tck` | bin | Gremlin TCK-equivalent test suite (1672 scenarios) |
 
 ## Core Abstractions
 

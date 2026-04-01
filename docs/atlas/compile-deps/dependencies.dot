@@ -8,14 +8,22 @@ digraph compile_deps {
         style=filled fillcolor="#E8F4FD"
 
         cypher_core [label="cypher-core\n(lib)" fillcolor="#AED6F1" penwidth=2]
+        gremlin_core [label="gremlin-core\n(lib)" fillcolor="#AED6F1"]
+        gql_engine [label="gql-engine\n(lib)" fillcolor="#AED6F1"]
         gql_redis [label="sd2-redis-store\n(lib)" fillcolor="#AED6F1"]
         gql_fabric [label="gql-fabric-store\n(lib)" fillcolor="#AED6F1"]
         sd2_redis_module [label="sd2-redis-module\n(cdylib)" fillcolor="#A9DFBF"]
         sd2_api [label="sd2-api\n(bin)" fillcolor="#A9DFBF"]
         gql_cli [label="gql-cli\n(bin)" fillcolor="#A9DFBF"]
         bolt [label="sedandelivery-bolt\n(bin)" fillcolor="#A9DFBF"]
+        gremlin [label="sedandelivery-gremlin\n(bin)" fillcolor="#A9DFBF"]
+        gremlin_server [label="sedandelivery-\ngremlin-server\n(bin)" fillcolor="#A9DFBF"]
         sync [label="sedandelivery-\nfabric-sync\n(bin)" fillcolor="#A9DFBF"]
+        cypher_embedded [label="sedan-cypher-\nembedded\n(lib)" fillcolor="#A9DFBF"]
+        gql_embedded [label="sedan-gql-\nembedded\n(lib)" fillcolor="#A9DFBF"]
+        gremlin_embedded [label="sedan-gremlin-\nembedded\n(lib)" fillcolor="#A9DFBF"]
         loadtest [label="tests/loadtest\n(bin)" fillcolor="#A9DFBF"]
+        gremlin_tck [label="tests/gremlin-tck\n(bin)" fillcolor="#A9DFBF"]
     }
 
     subgraph cluster_external {
@@ -26,6 +34,7 @@ digraph compile_deps {
         r2d2_crate [label="r2d2" fillcolor="#FAD7A0"]
         axum_crate [label="axum" fillcolor="#FAD7A0"]
         tokio_crate [label="tokio" fillcolor="#FAD7A0"]
+        tungstenite_crate [label="tokio-tungstenite" fillcolor="#FAD7A0"]
         reqwest_crate [label="reqwest" fillcolor="#FAD7A0"]
         redis_module_crate [label="redis-module\n(bindgen)" fillcolor="#FAD7A0"]
         petgraph_crate [label="petgraph" fillcolor="#FAD7A0"]
@@ -34,6 +43,8 @@ digraph compile_deps {
     }
 
     // Internal deps
+    gremlin_core -> cypher_core [color="#2980B9" penwidth=2]
+    gql_engine -> cypher_core [color="#2980B9" penwidth=2]
     gql_redis -> cypher_core [color="#2980B9" penwidth=2]
     gql_fabric -> cypher_core [color="#2980B9" penwidth=2]
     sd2_redis_module -> cypher_core [color="#2980B9" penwidth=2]
@@ -42,20 +53,31 @@ digraph compile_deps {
     sd2_api -> gql_redis [color="#2980B9"]
     bolt -> cypher_core [color="#2980B9" penwidth=2]
     bolt -> gql_redis [color="#2980B9"]
+    gremlin -> gremlin_core [color="#2980B9" penwidth=2]
+    gremlin -> gql_redis [color="#2980B9"]
+    gremlin_server -> gremlin_core [color="#2980B9" penwidth=2]
+    gremlin_server -> gql_redis [color="#2980B9"]
     sync -> cypher_core [color="#2980B9" penwidth=2]
     sync -> gql_redis [color="#2980B9"]
     sync -> gql_fabric [color="#2980B9"]
+    cypher_embedded -> cypher_core [color="#2980B9" penwidth=2]
+    gql_embedded -> cypher_core [color="#2980B9" penwidth=2]
+    gremlin_embedded -> gremlin_core [color="#2980B9" penwidth=2]
+    gremlin_embedded -> cypher_core [color="#2980B9"]
     loadtest -> cypher_core [color="#2980B9"]
 
     // External deps
     cypher_core -> petgraph_crate [style=dashed color="#888"]
     cypher_core -> serde_crate [style=dashed color="#888"]
     cypher_core -> tracing_crate [style=dashed color="#888"]
+    gremlin_core -> serde_crate [style=dashed color="#888"]
     gql_redis -> redis_crate [style=dashed color="#888"]
     gql_redis -> r2d2_crate [style=dashed color="#888"]
     gql_fabric -> reqwest_crate [style=dashed color="#888"]
     sd2_redis_module -> redis_module_crate [style=dashed color="#888"]
     sd2_api -> axum_crate [style=dashed color="#888"]
     bolt -> tokio_crate [style=dashed color="#888"]
+    gremlin -> tungstenite_crate [style=dashed color="#888"]
+    gremlin_server -> tungstenite_crate [style=dashed color="#888"]
     sync -> tokio_crate [style=dashed color="#888"]
 }

@@ -336,7 +336,7 @@ bash scripts/validate.sh --tck     # include TCK 3903 scenarios (~3 min extra)
 | LDBC SNB | 37 | IC1–IC14 complex reads; all 8 insert + 8 delete operations |
 | Module integration | 18 | GQL command pipeline (GQL.QUERY, GQL.MUTATE, etc.) |
 | Wire format | 28 | JSON serialisation for all value types |
-| Gremlin TCK | 201 | TinkerPop-equivalent scenarios (modern, crew, grateful dead graphs) |
+| Gremlin TCK | 1672 | TinkerPop-equivalent scenarios (modern, crew, grateful dead graphs) |
 | openCypher TCK | 3903 | 100% compliance, all 195 feature files |
 | Bolt driver compat | 3 drivers | neo4j (Python), Neo4j.Driver (.NET), neo4rs (Rust) |
 

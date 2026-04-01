@@ -29,7 +29,10 @@ digraph data_flow {
         style=filled fillcolor="#E8F5E9"
 
         mem [label="InMemory\nGraphStore" fillcolor="#A5D6A7"]
+        persistent [label="Persistent\nGraphStore\nWAL persistence" fillcolor="#A5D6A7"]
+        cached [label="Cached\nGraphStore\nwrite-through" fillcolor="#A5D6A7"]
         redis_store [label="Redis\nGraphStore\nr2d2 pool" fillcolor="#A5D6A7"]
+        module_store [label="Module\nRedisStore\nctx.call()" fillcolor="#A5D6A7"]
         fabric_store [label="Fabric\nGraphStore\nREST" fillcolor="#A5D6A7"]
         fanout [label="FanoutStore\nmulti-write" fillcolor="#81C784"]
     }
@@ -56,13 +59,19 @@ digraph data_flow {
 
     // Executor to storage
     executor -> mem [color="#2E7D32"]
+    executor -> persistent [color="#2E7D32"]
+    executor -> cached [color="#2E7D32"]
     executor -> redis_store [color="#2E7D32"]
+    executor -> module_store [color="#2E7D32"]
     executor -> fabric_store [color="#2E7D32"]
     executor -> fanout [color="#2E7D32"]
 
     // Storage to output
     mem -> result [color="#E65100"]
+    persistent -> result [color="#E65100"]
+    cached -> result [color="#E65100"]
     redis_store -> result [color="#E65100"]
+    module_store -> result [color="#E65100"]
     fabric_store -> result [color="#E65100"]
     fanout -> result [color="#E65100"]
 }
