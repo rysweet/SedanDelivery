@@ -1,6 +1,6 @@
 # SedanDelivery
 
-A graph database engine for Valkey/Redis. MIT/Apache-2.0 licensed.
+A multi-language graph database engine for Valkey/Redis. Supports openCypher, Apache TinkerPop Gremlin, and GQL (ISO/IEC 39075) — all sharing the same storage layer and executor. MIT/Apache-2.0 licensed.
 
 ## Getting started
 
@@ -100,6 +100,25 @@ Browser WebSocket clients must set `BOLT_WS_ALLOWED_ORIGINS` to an explicit allo
 **Validated with real-world apps** — see the [Neo4j Compatibility Gallery](https://turbo-adventure-3eloook.pages.github.io/neo4j-compat-gallery) for 4 security-focused open-source apps running against SedanDelivery with zero code modifications.
 
 See [docs/specs/sedandelivery-bolt-spec.md](docs/specs/sedandelivery-bolt-spec.md) for the full Bolt protocol specification.
+
+## Connect via Gremlin WebSocket
+
+Apache TinkerPop Gremlin drivers connect to the WebSocket server on port 8182. Two server binaries are available:
+
+```bash
+# Bytecode protocol — for standard TinkerPop drivers (recommended)
+cargo run -p sedandelivery-gremlin
+# Listens on 0.0.0.0:8182 by default
+
+# Text eval protocol — for Gremlin text queries (eval op)
+cargo run -p sedandelivery-gremlin-server
+# Also listens on 0.0.0.0:8182 by default
+```
+
+- **sedandelivery-gremlin** — Accepts Gremlin bytecode (TinkerPop driver protocol). Decodes GraphSON v3 bytecode messages, compiles steps via `gremlin-core`, and executes through the shared cypher-core pipeline.
+- **sedandelivery-gremlin-server** — Accepts Gremlin text queries (`eval` op). Parses traversal strings, compiles to operator trees, and executes.
+
+Both servers use the same `GraphStore` backend as the Bolt and REST servers. Results are returned in GraphSON v3 format.
 
 ## Use it via Redis protocol
 
@@ -220,6 +239,7 @@ Each environment gets its own resource group (`rg-sd2-{name}`) with:
 - Azure Container Registry (builds Docker images)
 - Valkey 8.1 container with GQL module (Redis :6379)
 - Standalone Bolt server container (Bolt :7687, scalable)
+- Standalone Gremlin server container (WebSocket :8182, scalable)
 - Azure Files persistent volume for RDB/AOF
 - Optional: Azure Cache for Redis (managed HA with TLS and automatic failover)
 - Optional: Redis Cluster mode (horizontal data sharding via `GQL_REDIS_CLUSTER_NODES`)
@@ -288,7 +308,7 @@ Plaintext exposes both to network observers. See
 - [Tutorial](docs/TUTORIAL.md) — full usage guide with code examples
 - [Bolt Protocol Spec](docs/specs/sedandelivery-bolt-spec.md) — Neo4j Bolt v4.4 server implementation details
 - [Docs site](https://turbo-adventure-3eloook.pages.github.io/) — deployment, storage backends, environment variables
-- [Architecture Overview](docs/architecture.md) — crate map, request flows, query pipeline, storage layer
+- [Architecture Overview](docs/architecture.md) — crate map, three query engines, request flows, query pipeline, storage layer
 
 ## Tests
 
@@ -316,6 +336,7 @@ bash scripts/validate.sh --tck     # include TCK 3903 scenarios (~3 min extra)
 | LDBC SNB | 37 | IC1–IC14 complex reads; all 8 insert + 8 delete operations |
 | Module integration | 18 | GQL command pipeline (GQL.QUERY, GQL.MUTATE, etc.) |
 | Wire format | 28 | JSON serialisation for all value types |
+| Gremlin TCK | 201 | TinkerPop-equivalent scenarios (modern, crew, grateful dead graphs) |
 | openCypher TCK | 3903 | 100% compliance, all 195 feature files |
 | Bolt driver compat | 3 drivers | neo4j (Python), Neo4j.Driver (.NET), neo4rs (Rust) |
 

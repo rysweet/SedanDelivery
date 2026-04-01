@@ -1,12 +1,14 @@
 # Architecture Overview
 
-SedanDelivery is a Cypher-compatible graph database engine written in Rust. It provides two network interfaces (REST API and Bolt protocol), a hand-written Cypher parser, a cost-based query planner, and pluggable storage backends including Redis, in-memory, and Microsoft Fabric.
+SedanDelivery is a multi-language graph database engine written in Rust. It supports three query languages — openCypher, Apache TinkerPop Gremlin, and GQL (ISO/IEC 39075) — all sharing the same storage layer and physical executor. It provides four network interfaces (REST API, Bolt protocol, Gremlin WebSocket, and Redis commands), a hand-written Cypher parser, a cost-based query planner, and pluggable storage backends including Redis, in-memory with WAL persistence, cached, and Microsoft Fabric.
 
 ## Contents
 
 - [Crate Map](#crate-map)
+- [Query Engines](#query-engines)
 - [Request Flow -- REST API](#request-flow----rest-api)
 - [Request Flow -- Bolt Protocol](#request-flow----bolt-protocol)
+- [Request Flow -- Gremlin WebSocket](#request-flow----gremlin-websocket)
 - [Query Pipeline](#query-pipeline)
 - [Storage Layer](#storage-layer)
 - [Deployment Topology](#deployment-topology)
@@ -15,23 +17,44 @@ SedanDelivery is a Cypher-compatible graph database engine written in Rust. It p
 
 ## Crate Map
 
-The workspace contains 8 crates. Arrows point from dependent to dependency.
+The workspace contains 17 crates. Arrows point from dependent to dependency.
 
 ![Crate Map](images/crate-map.svg)
 
 ```mermaid
 graph TD
-    cypher-core["cypher-core<br/><i>Parser, planner, executor, storage trait</i>"]
+    subgraph Engines["Query Engines"]
+        cypher-core["cypher-core<br/><i>openCypher parser, planner, executor, storage trait</i>"]
+        gremlin-core["gremlin-core<br/><i>Gremlin bytecode compiler + text parser</i>"]
+        gql-engine["gql-engine<br/><i>GQL (ISO/IEC 39075) parser + planner</i>"]
+    end
 
-    sd2-redis-store["sd2-redis-store<br/><i>Redis/Valkey GraphStore + FanoutStore</i>"]
-    gql-fabric-store["gql-fabric-store<br/><i>Microsoft Fabric GraphStore</i>"]
+    subgraph Storage["Storage Backends"]
+        sd2-redis-store["sd2-redis-store<br/><i>Redis/Valkey GraphStore + FanoutStore</i>"]
+        gql-fabric-store["gql-fabric-store<br/><i>Microsoft Fabric GraphStore</i>"]
+    end
 
-    sd2-redis-module["sd2-redis-module<br/><i>Valkey/Redis loadable module (.so)</i>"]
-    gql-cli["gql-cli<br/><i>Interactive CLI demo</i>"]
-    sd2-api["sd2-api<br/><i>HTTP REST API (axum)</i>"]
-    sedandelivery-bolt["sedandelivery-bolt<br/><i>Bolt v4.4 TCP server</i>"]
-    sedandelivery-fabric-sync["sedandelivery-fabric-sync<br/><i>Changelog replication to Fabric</i>"]
+    subgraph Servers["Protocol Servers"]
+        sd2-redis-module["sd2-redis-module<br/><i>Valkey/Redis loadable module (.so)</i>"]
+        sd2-api["sd2-api<br/><i>HTTP REST API (axum)</i>"]
+        sedandelivery-bolt["sedandelivery-bolt<br/><i>Bolt v4.4 TCP server</i>"]
+        sedandelivery-gremlin["sedandelivery-gremlin<br/><i>Gremlin WebSocket server (bytecode)</i>"]
+        sedandelivery-gremlin-server["sedandelivery-gremlin-server<br/><i>Gremlin WebSocket server (text eval)</i>"]
+    end
 
+    subgraph Embedded["Embeddable Libraries"]
+        sedan-cypher-embedded["sedan-cypher-embedded<br/><i>In-process openCypher engine</i>"]
+        sedan-gql-embedded["sedan-gql-embedded<br/><i>In-process GQL/Cypher engine</i>"]
+        sedan-gremlin-embedded["sedan-gremlin-embedded<br/><i>In-process Gremlin engine</i>"]
+    end
+
+    subgraph Other["Other"]
+        gql-cli["gql-cli<br/><i>Interactive CLI demo</i>"]
+        sedandelivery-fabric-sync["sedandelivery-fabric-sync<br/><i>Changelog replication to Fabric</i>"]
+    end
+
+    gremlin-core --> cypher-core
+    gql-engine --> cypher-core
     sd2-redis-store --> cypher-core
     gql-fabric-store --> cypher-core
     sd2-redis-module --> cypher-core
@@ -40,10 +63,32 @@ graph TD
     sd2-api --> sd2-redis-store
     sedandelivery-bolt --> cypher-core
     sedandelivery-bolt --> sd2-redis-store
+    sedandelivery-gremlin --> gremlin-core
+    sedandelivery-gremlin --> sd2-redis-store
+    sedandelivery-gremlin-server --> gremlin-core
+    sedandelivery-gremlin-server --> sd2-redis-store
     sedandelivery-fabric-sync --> cypher-core
     sedandelivery-fabric-sync --> sd2-redis-store
     sedandelivery-fabric-sync --> gql-fabric-store
+    sedan-cypher-embedded --> cypher-core
+    sedan-gql-embedded --> cypher-core
+    sedan-gremlin-embedded --> gremlin-core
+    sedan-gremlin-embedded --> cypher-core
 ```
+
+## Query Engines
+
+SedanDelivery supports three graph query languages, all sharing the same physical operator tree, executor, and `GraphStore` storage abstraction:
+
+| Engine | Crate | Language | Status |
+|--------|-------|----------|--------|
+| **openCypher** | `cypher-core` | openCypher (Neo4j-compatible) | 100% TCK (3903 scenarios) |
+| **Gremlin** | `gremlin-core` | Apache TinkerPop Gremlin | ~116 step types, bytecode + text, 201 TCK scenarios |
+| **GQL** | `gql-engine` | ISO/IEC 39075 GQL | Initial implementation |
+
+- **cypher-core** — Hand-written lexer/parser, cost-based planner, 28+ physical operators. This is the most mature engine.
+- **gremlin-core** — Compiles Gremlin bytecode steps and text traversals into cypher-core `Operator` trees. Supports ~116 Gremlin steps. No I/O — pure translation layer. 201 TCK scenarios pass.
+- **gql-engine** — GQL standard parser and planner. Handles GQL-specific syntax (`INSERT` vs `CREATE`, `FILTER` vs `WHERE`, path modes, isomorphic matching). Shares the executor and storage layer with cypher-core.
 
 ## Request Flow -- REST API
 
@@ -121,9 +166,38 @@ Connection lifecycle:
 - Write concurrency semaphore (`BOLT_WRITE_CONCURRENCY`, default 128)
 - Distributed write locks, atomic graph deletion, and cross-replica bookmarks -- see [Auto-Scaling Guide](auto-scaling) for write safety details
 
+## Request Flow -- Gremlin WebSocket
+
+Two Gremlin server binaries accept WebSocket connections on port 8182 (default):
+
+- **sedandelivery-gremlin** — Accepts Gremlin bytecode (TinkerPop driver protocol). Decodes GraphSON v3 bytecode messages, compiles steps via `gremlin-core::GremlinCompiler`, and executes through the cypher-core pipeline.
+- **sedandelivery-gremlin-server** — Accepts Gremlin text queries (`eval` op). Parses traversal strings via `gremlin-core::text_parser`, compiles to operator trees, and executes.
+
+Both servers use the same `GraphStore` backend as the Bolt and REST servers (configured via environment variables). Health endpoints are exposed on port 8183.
+
+```mermaid
+sequenceDiagram
+    participant Driver as Gremlin Driver
+    participant WS as WebSocket Listener (:8182)
+    participant Decoder as GraphSON Decoder
+    participant Compiler as GremlinCompiler
+    participant QE as QueryExecutor
+    participant Store as GraphStore
+
+    Driver->>WS: WebSocket connect
+    Driver->>WS: GraphSON v3 request (bytecode or eval)
+    WS->>Decoder: decode request message
+    Decoder->>Compiler: GremlinStep list
+    Compiler->>QE: Operator tree
+    QE->>Store: storage operations
+    Store-->>QE: result rows
+    QE-->>WS: GraphSON v3 response
+    WS-->>Driver: result frame(s)
+```
+
 ## Query Pipeline
 
-Every Cypher query passes through the same pipeline regardless of entry point (REST API, Bolt, Redis module, or CLI).
+Every Cypher query passes through the same pipeline regardless of entry point (REST API, Bolt, Redis module, or CLI). Gremlin and GQL queries enter the pipeline after their respective parsers/compilers produce an Operator tree.
 
 ![Query Pipeline](images/query-pipeline.svg)
 
@@ -173,7 +247,21 @@ classDiagram
     class InMemoryGraphStore {
         Arc-based snapshot isolation
         Copy-on-write for transactions
-        In-process only (not restart-persistent)
+        In-process only (volatile)
+    }
+
+    class PersistentGraphStore {
+        Wraps InMemoryGraphStore
+        WAL-based background disk persistence
+        Snapshot + WAL recovery on startup
+        Zero disk I/O on reads
+    }
+
+    class CachedGraphStore {
+        Write-through in-memory cache
+        Wraps any GraphStore backend
+        Lazy full-graph load on first access
+        Invalidate-on-write strategy
     }
 
     class RedisGraphStore {
@@ -181,6 +269,13 @@ classDiagram
         Pipeline batching
         Cluster hash-tag routing
         Optional read replicas
+    }
+
+    class ModuleRedisStore {
+        Valkey Module API ctx.call()
+        In-process Redis access (no TCP)
+        Same key schema as RedisGraphStore
+        Thread-local context stash
     }
 
     class FabricGraphStore {
@@ -197,16 +292,26 @@ classDiagram
     }
 
     GraphStore <|.. InMemoryGraphStore
+    GraphStore <|.. PersistentGraphStore
+    GraphStore <|.. CachedGraphStore
     GraphStore <|.. RedisGraphStore
+    GraphStore <|.. ModuleRedisStore
     GraphStore <|.. FabricGraphStore
     GraphStore <|.. FanoutStore
+    PersistentGraphStore o-- InMemoryGraphStore : wraps
+    CachedGraphStore o-- GraphStore : wraps any backend
     FanoutStore o-- GraphStore : wraps 1..N
 ```
 
 Backend selection at startup (`sd2-redis-store::create_store`):
-1. `GQL_REDIS_CLUSTER_NODES` set -- `RedisGraphStore` in cluster mode (auto-discovers topology from seed nodes)
-2. `GQL_REDIS_URL` set -- `RedisGraphStore` in standalone mode (also used for Azure Cache for Redis with `rediss://` TLS URLs)
-3. Neither set -- `InMemoryGraphStore` (volatile, for local dev/tests)
+1. `GQL_REDIS_CLUSTER_NODES` set — `RedisGraphStore` in cluster mode (auto-discovers topology from seed nodes)
+2. `GQL_REDIS_URL` set — `RedisGraphStore` in standalone mode (also used for Azure Cache for Redis with `rediss://` TLS URLs)
+3. Neither set — `InMemoryGraphStore` (volatile, for local dev/tests)
+
+Additional storage wrappers:
+- **PersistentGraphStore** (`cypher-core/src/storage/persistent.rs`) — Wraps `InMemoryGraphStore` with WAL-based disk persistence. All reads stay in-memory (zero disk I/O); writes append to a JSON-line WAL. A background thread periodically snapshots the full state and truncates the WAL. On startup, recovers by loading the snapshot then replaying WAL entries.
+- **CachedGraphStore** (`cypher-core/src/storage/cached.rs`) — Write-through in-memory cache wrapping any `GraphStore` backend. Lazily loads the full graph into an `InMemoryGraphStore` cache on first access. Writes go to the backend first, then the cache is invalidated so the next read reloads from the backend.
+- **ModuleRedisStore** (`sd2-redis-module/src/module_store.rs`) — `GraphStore` implementation using the Valkey Module API (`ctx.call()`) for in-process Redis access. Avoids TCP loopback deadlock when running inside the Redis module. Uses the same key schema as `RedisGraphStore`, so the Bolt server, REST API, and module all see the same data.
 
 When `GQL_REDIS_REPLICA_URL` is also set, read methods are routed to a separate replica pool (round-robin across replicas with `READONLY` command). Writes always go to the primary pool. This provides eventual-consistency read scaling for read-heavy workloads.
 
@@ -226,7 +331,7 @@ G:{graph}:in:{node_id}   -- SADD (reverse adjacency)
 
 ## Deployment Topology
 
-SedanDelivery deploys as 2-4 containers in an Azure Container Apps environment. Each component is independently scalable.
+SedanDelivery deploys as 2-5 containers in an Azure Container Apps environment. Each component is independently scalable.
 
 ![Deployment Topology](images/deployment-topology.svg)
 
@@ -236,6 +341,7 @@ graph TD
         PY["Python App<br/><i>neo4j driver</i>"]
         NET[".NET App<br/><i>Neo4j.Driver</i>"]
         JS["Browser / Node.js<br/><i>neo4j-driver</i>"]
+        GREMLIN_CLIENT["Gremlin App<br/><i>TinkerPop driver</i>"]
         REST_CLIENT["REST Client<br/><i>curl / fetch</i>"]
     end
 
@@ -246,6 +352,10 @@ graph TD
 
         subgraph APIContainer["sd2-main-api"]
             API_SRV["sd2-api<br/><b>REST API Server</b><br/>HTTP :3001 / HTTPS :3443"]
+        end
+
+        subgraph GremlinContainer["sd2-main-gremlin"]
+            GREMLIN_SRV["sedandelivery-gremlin<br/><b>Gremlin WebSocket Server</b><br/>WS :8182"]
         end
 
         subgraph RedisContainer["sd2-main-redis"]
@@ -269,10 +379,12 @@ graph TD
     PY -- "bolt://" --> BOLT_SRV
     NET -- "bolt://" --> BOLT_SRV
     JS -- "bolt+wss://" --> BOLT_SRV
+    GREMLIN_CLIENT -- "ws://" --> GREMLIN_SRV
     REST_CLIENT -- "https://" --> API_SRV
 
     BOLT_SRV -- "GQL_REDIS_URL<br/>r2d2 pool" --> VALKEY
     API_SRV -- "GQL_REDIS_URL<br/>r2d2 pool" --> VALKEY
+    GREMLIN_SRV -- "GQL_REDIS_URL<br/>r2d2 pool" --> VALKEY
     VALKEY -- "RDB + AOF" --> AFILES
     VALKEY -- "__sd2:changelog:{graph}<br/>per-graph Redis Streams" --> SYNC
     SYNC -- "HTTPS<br/>openCypher" --> FABRIC
@@ -291,13 +403,15 @@ graph TD
 |-----------|-------|---------|----------|
 | `sd2-main-bolt` | `sedandelivery-bolt` | Bolt v4.4 protocol server. Neo4j drivers connect here. | Yes (stateless) |
 | `sd2-main-api` | `sd2-api` | REST API with auth, rate limiting, metrics. | Yes (stateless) |
+| `sd2-main-gremlin` | `sedandelivery-gremlin` | Gremlin WebSocket server (port 8182). TinkerPop drivers connect here. | Yes (stateless) |
 | `sd2-main-redis` | `sedandelivery` (Valkey + sd2-redis-module) | Graph storage engine. All data lives here. | No (single primary) |
 | `sd2-main-fabric-sync` | `sedandelivery-fabric-sync` | Replicates changes to Microsoft Fabric. | No (single consumer) |
 
 **Connection patterns:**
 - **Bolt clients** connect to the Bolt server via TCP, TLS, or WebSocket on port 7687
+- **Gremlin clients** connect to the Gremlin server via WebSocket on port 8182
 - **REST clients** connect to sd2-api via HTTP/HTTPS on port 3001/3443
-- Both servers connect to Valkey via `GQL_REDIS_URL` using an r2d2 connection pool (or via `GQL_REDIS_CLUSTER_NODES` for cluster mode, or `rediss://` for Azure Cache with TLS)
+- All three servers connect to Valkey via `GQL_REDIS_URL` using an r2d2 connection pool (or via `GQL_REDIS_CLUSTER_NODES` for cluster mode, or `rediss://` for Azure Cache with TLS)
 - When `GQL_REDIS_REPLICA_URL` is set, read-only operations are routed to a separate replica pool (round-robin), while writes go to the primary
 - The Fabric sync sidecar reads from per-graph Redis Streams (`__sd2:changelog:{graph}`) and pushes to Fabric via HTTPS
 - Entra ID JWT validation uses a cached JWKS endpoint (async, non-blocking)
@@ -310,7 +424,9 @@ See [Deploy Your Own Instance](DEPLOY) for full setup instructions and cost esti
 
 - **Hand-written parser, not lalrpop.** Cypher's `|` is context-dependent (label disjunction vs. rel-type disjunction vs. list comprehension pipe). A generated parser cannot resolve this without semantic context. See ADR-003.
 
-- **InMemory today, not restart-persistent yet.** The Redis module runs inside the Redis/Valkey process. The `InMemoryGraphStore` keeps graph data in-process with zero serialization overhead, but that heap state is not yet serialised via Redis module save/load hooks. Redis RDB/AOF does not currently persist module graph state, and the Fabric changelog sidecar is for external replication rather than local restart recovery.
+- **Three engines, one executor.** Gremlin and GQL queries compile down to the same `Operator` tree that openCypher uses. This means all three languages share the same physical executor, budget enforcement, storage layer, and transaction semantics. Adding a language only requires a parser/compiler — not a new execution engine.
+
+- **PersistentGraphStore for standalone durability.** The `InMemoryGraphStore` is volatile; the `PersistentGraphStore` wraps it with WAL-based disk persistence for scenarios that need restart recovery without Redis. The Redis module's in-process `ModuleRedisStore` uses native Redis persistence (RDB/AOF) instead.
 
 - **Bolt v4.4 for Neo4j driver compatibility.** v4.4 is the most widely supported version across Neo4j drivers (Python, .NET, Java, Go, JavaScript, Rust). It supports multi-database, bookmarks, explicit transactions, EXPLAIN/PROFILE, and streaming PULL with qid-based multiplexing.
 
@@ -324,7 +440,7 @@ See [Deploy Your Own Instance](DEPLOY) for full setup instructions and cost esti
 
 ```
 SedanDelivery/
-  cypher-core/                    Core engine (no external dependencies)
+  cypher-core/                    openCypher engine (parser, planner, executor, storage trait)
     src/
       ast/                       Cypher AST types
       parser/
@@ -353,11 +469,29 @@ SedanDelivery/
         budget.rs                Timeout, row-limit, profiling stats
       storage/
         mem/                     InMemoryGraphStore (nodes, edges, indexing, query)
+        persistent.rs            PersistentGraphStore (WAL-based disk persistence)
+        cached.rs                CachedGraphStore (write-through in-memory cache)
         wal.rs                   Write-ahead log for durability
         mod.rs                   GraphStore trait
       config.rs                  Environment variable configuration
       plan_cache.rs              Query plan cache (hash map + clear-on-capacity eviction)
       types/value/               Value type system (display, convert, compare)
+
+  gremlin-core/                Gremlin query engine (bytecode compiler + text parser)
+    src/
+      bytecode.rs                GremlinStep definitions (~50 step types)
+      compiler.rs                GremlinCompiler: steps → cypher-core Operator tree
+      text_parser.rs             Parse Gremlin traversal text strings
+      graphson.rs                GraphSON v3 request/response serialization
+      steps/                     Step type definitions
+      types.rs                   GremlinValue ↔ cypher-core Value conversions
+
+  gql-engine/                  GQL (ISO/IEC 39075) query engine
+    src/
+      parser/                    GQL-specific syntax (INSERT, FILTER, MANDATORY MATCH)
+      planner/                   Path modes (WALK/TRAIL/SIMPLE/ACYCLIC), search modifiers
+      executor/                  Isomorphic matching, MANDATORY MATCH error semantics
+      lib.rs                     Engine entry point
 
   sd2-redis-store/             Redis/Valkey storage backend
     src/
@@ -378,8 +512,10 @@ SedanDelivery/
       parsing.rs                 Fabric JSON response parsing
       sanitize.rs                Cypher injection prevention
 
-  sd2-redis-module/                  Valkey/Redis loadable module (.so)
-    src/lib.rs                   GQL.QUERY, GQL.MUTATE, GQL.CREATE-GRAPH, etc.
+  sd2-redis-module/            Valkey/Redis loadable module (.so)
+    src/
+      lib.rs                     GQL.QUERY, GQL.MUTATE, GQL.CREATE-GRAPH, etc.
+      module_store.rs            ModuleRedisStore (in-process ctx.call() GraphStore)
 
   sd2-api/                     HTTP REST API
     src/
@@ -404,18 +540,41 @@ SedanDelivery/
       health.rs                  Health + metrics HTTP endpoint
       metrics.rs                 Bolt-level Prometheus metrics
 
+  sedandelivery-gremlin/       Gremlin WebSocket server (bytecode protocol)
+    src/
+      main.rs                    WebSocket accept loop (:8182)
+      connection/                Per-connection session lifecycle
+      bridge/                    Gremlin-to-cypher-core translation
+      protocol/                  GraphSON v3 message handling
+      health.rs                  Health endpoint (:8183)
+      lib.rs                     Server library
+
+  sedandelivery-gremlin-server/ Gremlin WebSocket server (text eval protocol)
+    src/
+      main.rs                    WebSocket accept loop (:8182)
+      executor.rs                Text traversal execution
+      protocol.rs                GraphSON v3 message handling
+      lib.rs                     Server library
+
   sedandelivery-fabric-sync/   Changelog replication sidecar
     src/
       main.rs                    Polls Redis changelog stream, pushes to Fabric
       sync_loop.rs               Event processing with DLQ
 
+  sedan-cypher-embedded/       Embeddable openCypher engine (in-process, no I/O)
+  sedan-gql-embedded/          Embeddable GQL/Cypher engine (in-process, no I/O)
+  sedan-gremlin-embedded/      Embeddable Gremlin engine (in-process, no I/O)
+
   gql-cli/                     Interactive CLI demo
     src/main.rs                  REPL for local testing
 
+  sd2-valkey-module/           Standalone Valkey module for MERGE operations
   sdk/                         Client SDKs (Python, .NET, Rust)
   neo4j-compat-gallery/        4 open-source apps validating Bolt compatibility
   docs/                        Documentation + architecture diagrams
   tests/                       E2E integration tests + gadugi scenarios
+    gremlin-tck/               Gremlin TCK-equivalent test suite
+    loadtest/                  Load testing harness
   infra/                       Azure Bicep IaC, KEDA, Prometheus alerts
   scripts/                     Test, provision, and validation scripts
   sedan-graph-ui/              .NET BFF + React graph visualizer
