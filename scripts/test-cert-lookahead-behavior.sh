@@ -16,7 +16,7 @@
 #
 # Exit: 0 if all assertions pass, 1 if any fail.
 
-set -uo pipefail
+set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -118,7 +118,7 @@ fi
 # Create a test harness script.
 # Use printf + append to avoid heredoc variable expansion mangling ${CERT_FN}.
 TEST_HARNESS="$(mktemp --suffix=.sh)"
-printf '%s\n' '#!/usr/bin/env bash' 'set -uo pipefail' 'export TZ=UTC' '' > "$TEST_HARNESS"
+printf '%s\n' '#!/usr/bin/env bash' 'set -euo pipefail' 'export TZ=UTC' '' > "$TEST_HARNESS"
 printf '%s\n' "${CERT_FN}" >> "$TEST_HARNESS"
 printf '%s\n' '' '# Invoke: cert_pem_is_current <pem_value> <lookahead_seconds>' \
     'cert_pem_is_current "$1" "${2:-0}"' >> "$TEST_HARNESS"

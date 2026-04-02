@@ -345,7 +345,16 @@ impl RedisGraphStore {
     /// batches under one graph write lock instead of failing the whole request
     /// once it crosses the pipeline-sized threshold.
     pub fn from_env() -> Result<Self, StorageError> {
-        let prefix = env::var("GQL_REDIS_KEY_PREFIX").unwrap_or_default();
+        let prefix = match env::var("GQL_REDIS_KEY_PREFIX") {
+            Ok(p) => {
+                tracing::info!(prefix = %p, "GQL_REDIS_KEY_PREFIX set");
+                p
+            }
+            Err(_) => {
+                tracing::info!("GQL_REDIS_KEY_PREFIX not set, using empty prefix");
+                String::new()
+            }
+        };
         let pool_size: u32 =
             cypher_core::config::parse_env_range("GQL_REDIS_POOL_SIZE", DEFAULT_POOL_SIZE, 1, 1024);
         let pool_timeout_secs: u64 = cypher_core::config::parse_env_range(

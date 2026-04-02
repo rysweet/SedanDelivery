@@ -16,7 +16,13 @@ fn create_store() -> Arc<dyn GraphStore> {
 }
 
 fn env_or(name: &str, default: &str) -> String {
-    std::env::var(name).unwrap_or_else(|_| default.to_string())
+    match std::env::var(name) {
+        Ok(v) => v,
+        Err(_) => {
+            tracing::info!(%name, %default, "env var not set, using default");
+            default.to_string()
+        }
+    }
 }
 
 #[tokio::main]

@@ -1240,7 +1240,7 @@ mod tests {
             let n2 = store.create_node("g", vec![], IndexMap::new()).unwrap();
 
             let mut ep = IndexMap::new();
-            ep.insert("weight".to_string(), Value::Float(3.14));
+            ep.insert("weight".to_string(), Value::Float(3.25));
             let eid = store
                 .create_edge("g", n1, n2, "LINK".to_string(), ep)
                 .unwrap();
@@ -1255,7 +1255,7 @@ mod tests {
             let store = PersistentGraphStore::open(test_config(dir.path())).unwrap();
             let edge = store.get_edge("g", EdgeId(3)).unwrap().unwrap();
             assert_eq!(edge.rel_type, "LINK");
-            assert_eq!(edge.properties["weight"], Value::Float(3.14));
+            assert_eq!(edge.properties["weight"], Value::Float(3.25));
             assert_eq!(edge.properties["color"], Value::Str("red".into()));
         }
     }

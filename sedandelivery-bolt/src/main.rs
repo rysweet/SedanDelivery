@@ -144,7 +144,10 @@ async fn main() {
         fatal(&e);
     }
 
-    let bind_addr = std::env::var("BOLT_BIND_ADDR").unwrap_or_else(|_| "0.0.0.0:7687".to_string());
+    let bind_addr = std::env::var("BOLT_BIND_ADDR").unwrap_or_else(|_| {
+        tracing::info!("BOLT_BIND_ADDR not set, using default 0.0.0.0:7687");
+        "0.0.0.0:7687".to_string()
+    });
 
     // --- Connection lifecycle configuration ---
     //

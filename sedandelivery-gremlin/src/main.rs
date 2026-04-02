@@ -15,7 +15,13 @@ fn create_store() -> Arc<dyn GraphStore> {
 }
 
 fn env_or(name: &str, default: &str) -> String {
-    std::env::var(name).unwrap_or_else(|_| default.to_string())
+    match std::env::var(name) {
+        Ok(v) => v,
+        Err(_) => {
+            tracing::info!(%name, %default, "env var not set, using default");
+            default.to_string()
+        }
+    }
 }
 
 #[tokio::main]
@@ -43,6 +49,28 @@ async fn main() {
     );
     let idle_timeout = Duration::from_secs(idle_timeout_secs);
     let max_lifetime = Duration::from_secs(max_lifetime_secs);
+
+    // ── Authentication validation ────────────────────────────────────────
+    // Fail fast if GREMLIN_PASSWORD is not set and no explicit opt-out is
+    // provided.  Mirrors the VALKEY_PASSWORD pattern in entrypoint.sh.
+    if std::env::var("GREMLIN_PASSWORD")
+        .unwrap_or_default()
+        .is_empty()
+    {
+        if std::env::var("GREMLIN_ALLOW_NO_AUTH").as_deref() == Ok("true") {
+            tracing::warn!(
+                "GREMLIN_PASSWORD not set — running WITHOUT authentication \
+                 (GREMLIN_ALLOW_NO_AUTH=true). Do NOT use in production!"
+            );
+        } else {
+            eprintln!(
+                "ERROR: GREMLIN_PASSWORD is not set. Refusing to start without authentication.\n\
+                 Set GREMLIN_PASSWORD to a strong secret, or set \
+                 GREMLIN_ALLOW_NO_AUTH=true for local development only."
+            );
+            std::process::exit(1);
+        }
+    }
 
     // ── Store ────────────────────────────────────────────────────────────
     let store = create_store();

@@ -3,6 +3,7 @@
 use cypher_core::error::StorageError;
 use cypher_core::serde_value::json_to_props;
 use cypher_core::storage::{AdjEntry, EdgeData, EdgeId, GraphStats, NodeData, NodeId, RangeQuery};
+use tracing::warn;
 
 use crate::connection::RedisConn;
 use crate::keys::{
@@ -402,7 +403,26 @@ impl RedisGraphStore {
             }
         }
 
-        // Fallback: scan all nodes with the label and filter in-memory.
+        // No property index exists — warn loudly so the performance
+        // degradation is visible.  Exact-match queries without an index
+        // are especially costly on Redis (full label scan + per-node
+        // round-trips) so we emit a higher-severity warning.
+        if matches!(range, RangeQuery::Eq(_)) {
+            warn!(
+                graph,
+                label,
+                property,
+                "PERFORMANCE: no property index for exact-match query — \
+                 falling back to full label scan (create an index to fix)"
+            );
+        } else {
+            warn!(
+                graph,
+                label,
+                property,
+                "no property index — falling back to full label scan for range query"
+            );
+        }
         let node_ids = self.find_nodes_by_label_impl(graph, label)?;
         let mut result = Vec::new();
         for id in node_ids {
