@@ -269,7 +269,10 @@ impl RedisGraphStore {
             ];
 
             // Per-node keys: node hash + out-adjacency + in-adjacency.
-            for id_str in &node_ids {
+            for (index, id_str) in node_ids.iter().enumerate() {
+                if index > 0 && index % 250 == 0 {
+                    conn.renew_lock()?;
+                }
                 match id_str.parse::<u64>() {
                     Ok(id) => {
                         keys.push(self.kp(key_node(name, id)));
@@ -288,7 +291,10 @@ impl RedisGraphStore {
             }
 
             // Per-edge keys: edge hash.
-            for id_str in &edge_ids {
+            for (index, id_str) in edge_ids.iter().enumerate() {
+                if index > 0 && index % 250 == 0 {
+                    conn.renew_lock()?;
+                }
                 match id_str.parse::<u64>() {
                     Ok(id) => {
                         keys.push(self.kp(key_edge(name, id)));
