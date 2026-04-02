@@ -69,7 +69,7 @@ fn bookmark_timestamp_key(tx_id: u64) -> String {
 fn now_unix_millis() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
+        .expect("system clock is before UNIX epoch — cannot generate bookmark timestamps")
         .as_millis() as u64
 }
 

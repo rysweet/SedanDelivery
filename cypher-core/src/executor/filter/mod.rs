@@ -1640,12 +1640,14 @@ pub fn eval_function_with_vals(name: &str, vals: Vec<Value>) -> Result<Value, Gq
                     actual: "null".into(),
                 })),
                 (Value::List(l), Value::List(r)) => {
+                    // Multiset intersection: use swap_remove for O(1) removal
+                    // instead of remove() which is O(N) due to element shifting.
                     let mut result = Vec::new();
                     let mut rhs_remaining: Vec<&Value> = r.iter().collect();
                     for item in l {
                         if let Some(pos) = rhs_remaining.iter().position(|rv| *rv == item) {
                             result.push(item.clone());
-                            rhs_remaining.remove(pos);
+                            rhs_remaining.swap_remove(pos);
                         }
                     }
                     Ok(Value::List(result))
@@ -1673,11 +1675,12 @@ pub fn eval_function_with_vals(name: &str, vals: Vec<Value>) -> Result<Value, Gq
                     actual: "null".into(),
                 })),
                 (Value::List(l), Value::List(r)) => {
+                    // Multiset difference: use swap_remove for O(1) removal
                     let mut result = Vec::new();
                     let mut rhs_remaining: Vec<&Value> = r.iter().collect();
                     for item in l {
                         if let Some(pos) = rhs_remaining.iter().position(|rv| *rv == item) {
-                            rhs_remaining.remove(pos);
+                            rhs_remaining.swap_remove(pos);
                         } else {
                             result.push(item.clone());
                         }
@@ -1707,12 +1710,12 @@ pub fn eval_function_with_vals(name: &str, vals: Vec<Value>) -> Result<Value, Gq
                     actual: "null".into(),
                 })),
                 (Value::List(l), Value::List(r)) => {
-                    // Symmetric difference: items in l not in r, plus items in r not in l
+                    // Symmetric difference: use swap_remove for O(1) removal
                     let mut result = Vec::new();
                     let mut r_remaining: Vec<&Value> = r.iter().collect();
                     for item in l {
                         if let Some(pos) = r_remaining.iter().position(|rv| *rv == item) {
-                            r_remaining.remove(pos);
+                            r_remaining.swap_remove(pos);
                         } else {
                             result.push(item.clone());
                         }

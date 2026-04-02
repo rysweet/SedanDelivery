@@ -64,7 +64,8 @@ estimate state directly.
 | sedandelivery-bolt unit | `sedandelivery-bolt/src/**` | 399 | PackStream codec, message framing, Bolt state machine, bridge layer |
 | sd2-api unit | `sd2-api/src/**` | 115 | API handler pure functions |
 | sd2-redis-store unit | `sd2-redis-store/src/**` | 59 | Redis storage layer logic |
-| gql-fabric-store unit | `gql-fabric-store/src/**` | 45 | Fabric storage layer logic |
+| gql-fabric-store unit | `gql-fabric-store/src/**` | 57 | Fabric storage layer logic |
+| sedandelivery-gremlin unit | `sedandelivery-gremlin/src/**` | 15 | Gremlin bridge types, executor, protocol request/response |
 | sedandelivery-bolt integration | `sedandelivery-bolt/tests/integration/` | 178 | Python neo4j driver: CRUD, transactions, paths, concurrency |
 | End-to-end | `tests/end_to_end.rs` | 42 | Full pipeline: parse → plan → execute → result |
 | Exists/interactive | `tests/exists_interactive.rs` | 6 | EXISTS subqueries and pattern predicates |
@@ -77,8 +78,8 @@ estimate state directly.
 | **TCK compliance** | `tests/tck/` | 3903 | 100% openCypher TCK (all 195 feature files, 3903 scenarios, 16 031 steps) |
 | **Gremlin TCK** | `tests/gremlin-tck/` | 1672 | TinkerPop-equivalent scenarios (modern, crew, grateful dead graphs) |
 | **Benchmarks** | `benches/` | 26 | Performance baselines (see [benchmarks.md](benchmarks.md)) |
-| **Total (excluding TCK)** | | **1,673** | |
-| **Total (including TCK)** | | **7,248** | |
+| **Total (excluding TCK)** | | **1,700** | |
+| **Total (including TCK)** | | **7,275** | |
 
 Bold entries were added by issue #189.
 

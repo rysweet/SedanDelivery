@@ -10,6 +10,7 @@ mod apply;
 mod parse_reply;
 mod sync_loop;
 
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Duration;
@@ -159,9 +160,10 @@ fn discover_changelog_streams(conn: &mut Connection) -> Vec<String> {
             Vec::new()
         });
 
+    let mut seen: HashSet<String> = streams.iter().cloned().collect();
     for graph in graphs {
         let stream = changelog_stream_for_graph(&graph);
-        if !streams.contains(&stream) {
+        if seen.insert(stream.clone()) {
             streams.push(stream);
         }
     }
