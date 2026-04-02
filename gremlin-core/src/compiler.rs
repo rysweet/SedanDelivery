@@ -2483,7 +2483,9 @@ impl GremlinCompiler {
                                             }
                                             // Skip the default handling below
                                         } else {
-                                            // Compilation failed — fall back to expression
+                                            // Compilation failed — use simple property expression.
+                                            // This is correct for by("propName") but may lose
+                                            // semantics for complex by(traversal) modulations.
                                             let by_expr = make_by_expr(key, &pre_project_alias);
                                             if let Some(Operator::Project {
                                                 ref mut items, ..
@@ -2501,7 +2503,7 @@ impl GremlinCompiler {
                                             }
                                         }
                                     } else {
-                                        // Empty steps — fall back
+                                        // Empty by() steps — use simple property expression.
                                         let by_expr = make_by_expr(key, &pre_project_alias);
                                         if let Some(Operator::Project { ref mut items, .. }) =
                                             current
@@ -2517,7 +2519,7 @@ impl GremlinCompiler {
                                         }
                                     }
                                 } else {
-                                    // Parse failed — fall back to expression
+                                    // Parse failed — use simple property expression.
                                     let by_expr = make_by_expr(key, &pre_project_alias);
                                     if let Some(Operator::Project { ref mut items, .. }) = current {
                                         if let Some((expr, _)) = items.get_mut(project_by_count) {
@@ -7237,7 +7239,10 @@ fn step_to_predicate(step: &GremlinStep, alias: &Identifier) -> Expr {
             };
             predicate_to_prop_expr(pred, id_fn)
         }
-        _ => Expr::Bool(true), // fallback for complex sub-traversals
+        // Non-filter steps produce vacuous truth. Complex sub-traversals
+        // are routed through Apply+Count existence checks by callers
+        // (Where/Not) before reaching this function.
+        _ => Expr::Bool(true),
     }
 }
 

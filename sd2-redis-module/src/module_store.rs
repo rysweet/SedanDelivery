@@ -143,6 +143,18 @@ impl ModuleRedisStore {
         }
     }
 
+    /// Return the set of active property indexes for a graph.
+    fn active_indexes(
+        &self,
+        graph: &str,
+    ) -> Result<std::collections::HashSet<String>, StorageError> {
+        self.with_ctx(|ctx| {
+            let key = self.kp(key_indexes(graph));
+            let result = self.call_cmd(ctx, "SMEMBERS", &[&key])?;
+            Ok(Self::extract_string_array(&result).into_iter().collect())
+        })
+    }
+
     // ── Node/edge parsing from Redis replies ─────────────────────────────────
 
     fn parse_node_from_hmget(
@@ -267,6 +279,22 @@ fn key_indexes(g: &str) -> String {
     format!("G:{{{g}}}:indexes")
 }
 
+// Duplicated from sd2-redis-store/src/keys.rs — sd2-redis-module cannot depend
+// on sd2-redis-store without pulling in the TCP client.  Keep in sync manually.
+fn key_propidx(g: &str, label: &str, property: &str, value_key: &str) -> String {
+    format!("G:{{{g}}}:propidx:{label}\x00{property}\x00{value_key}")
+}
+
+fn value_to_index_key(val: &Value) -> String {
+    match val {
+        Value::Int(i) => format!("i:{i}"),
+        Value::Float(f) => format!("f:{}", f.to_bits()),
+        Value::Str(s) => format!("s:{s}"),
+        Value::Bool(b) => format!("b:{b}"),
+        other => format!("j:{other:?}"),
+    }
+}
+
 fn key_graph_deleting(g: &str) -> String {
     format!("G:{{{g}}}:_deleting")
 }
@@ -367,19 +395,33 @@ impl GraphStore for ModuleRedisStore {
         property: &str,
         range: RangeQuery<'_>,
     ) -> Result<Vec<NodeId>, StorageError> {
-        // No property index support in module store — fallback to full scan + filter.
-        let node_ids = self.find_nodes_by_label(graph, label)?;
-        let mut result = Vec::new();
-        for id in node_ids {
-            if let Some(node) = self.get_node(graph, id)? {
-                if let Some(val) = node.properties.get(property) {
-                    if range_matches(val, &range) {
-                        result.push(id);
-                    }
-                }
+        // Use property index for exact-match queries when an index exists.
+        if let RangeQuery::Eq(val) = &range {
+            let indexes = self.active_indexes(graph)?;
+            if indexes.contains(&format!("{label}\x00{property}")) {
+                let vkey = value_to_index_key(val);
+                let idx_key = self.kp(key_propidx(graph, label, property, &vkey));
+                return self.with_ctx(|ctx| {
+                    let result = self.call_cmd(ctx, "SMEMBERS", &[&idx_key])?;
+                    Self::extract_string_array(&result)
+                        .into_iter()
+                        .map(|s| {
+                            s.parse::<u64>()
+                                .map(NodeId)
+                                .map_err(|_| StorageError::Serialization {
+                                    msg: format!("bad node id in propidx: {s}"),
+                                })
+                        })
+                        .collect()
+                });
             }
         }
-        Ok(result)
+
+        // No silent fallback: refuse to scan all nodes.
+        Err(StorageError::NoPropertyIndex {
+            label: label.to_string(),
+            property: property.to_string(),
+        })
     }
 
     fn find_edges_by_type(&self, graph: &str, rel_type: &str) -> Result<Vec<EdgeId>, StorageError> {
@@ -1200,11 +1242,12 @@ impl GraphStore for ModuleRedisStore {
     }
 }
 
-// ── Simple range matching for find_nodes_by_label_and_property ──────────────
+// ── Simple range matching (test-only after property index support added) ─────
 //
 // Duplicated from sd2-redis-store/src/range.rs since we cannot depend on that
 // crate without pulling in the entire Redis TCP client.
 
+#[cfg(test)]
 fn range_matches(val: &Value, range: &RangeQuery<'_>) -> bool {
     match range {
         RangeQuery::Eq(expected) => val == *expected,
@@ -1231,6 +1274,7 @@ fn range_matches(val: &Value, range: &RangeQuery<'_>) -> bool {
     }
 }
 
+#[cfg(test)]
 fn partial_cmp_values(a: &Value, b: &Value) -> Option<std::cmp::Ordering> {
     match (a, b) {
         (Value::Int(a), Value::Int(b)) => a.partial_cmp(b),
@@ -1352,6 +1396,7 @@ mod tests {
         assert!(key_nodes_set(g).contains(&tag));
         assert!(key_edges_set(g).contains(&tag));
         assert!(key_indexes(g).contains(&tag));
+        assert!(key_propidx(g, "Person", "name", "s:Alice").contains(&tag));
         assert!(key_graph_deleting(g).contains(&tag));
         assert!(key_label_names(g).contains(&tag));
         assert!(key_reltype_names(g).contains(&tag));

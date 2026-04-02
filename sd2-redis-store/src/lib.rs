@@ -292,7 +292,7 @@ impl DerefMut for LockedRedisConn {
 ///
 /// Connection configuration:
 /// - `GQL_REDIS_CLUSTER_NODES` — comma-separated seed node URLs for cluster mode
-/// - `GQL_REDIS_URL` / `REDIS_URL` — standalone URL (fallback `redis://127.0.0.1:6379`)
+/// - `GQL_REDIS_URL` / `REDIS_URL` — standalone URL (required if not using cluster mode)
 ///
 /// Pool configuration:
 /// - `GQL_REDIS_POOL_SIZE` — max connections (default 64)
@@ -325,8 +325,8 @@ impl RedisGraphStore {
     /// Create a store from environment variables.
     ///
     /// Cluster mode is selected when `GQL_REDIS_CLUSTER_NODES` is set (comma-separated
-    /// seed-node URLs).  Otherwise falls back to standalone mode using `GQL_REDIS_URL`,
-    /// `REDIS_URL`, or `redis://127.0.0.1:6379`.
+    /// seed-node URLs).  Otherwise uses standalone mode from `GQL_REDIS_URL` or
+    /// `REDIS_URL`.  Returns an error if neither is set.
     ///
     /// The key prefix is read from `GQL_REDIS_KEY_PREFIX` (default empty string).
     /// Set a prefix to isolate multiple deployments sharing a single Redis instance.
@@ -425,13 +425,12 @@ impl RedisGraphStore {
             return Ok(store);
         }
 
-        // Standalone mode.
+        // Standalone mode — require explicit URL.
         let url = env::var("GQL_REDIS_URL")
             .or_else(|_| env::var("REDIS_URL"))
-            .unwrap_or_else(|_| {
-                tracing::warn!("GQL_REDIS_URL not set, falling back to redis://127.0.0.1:6379");
-                "redis://127.0.0.1:6379".into()
-            });
+            .map_err(|_| StorageError::Configuration {
+                msg: "GQL_REDIS_URL or REDIS_URL must be set (no silent localhost fallback)".into(),
+            })?;
         let mut store = Self::from_url_with_options(
             &url,
             &prefix,

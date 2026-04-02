@@ -83,7 +83,7 @@ async fn health_handler(State(state): State<HealthState>) -> impl IntoResponse {
         Ok(Err(e)) => (
             StatusCode::SERVICE_UNAVAILABLE,
             axum::Json(HealthResponse {
-                status: "degraded",
+                status: "error",
                 connections,
                 uptime_seconds,
                 error: Some(e.to_string()),
@@ -92,7 +92,7 @@ async fn health_handler(State(state): State<HealthState>) -> impl IntoResponse {
         Err(e) => (
             StatusCode::SERVICE_UNAVAILABLE,
             axum::Json(HealthResponse {
-                status: "degraded",
+                status: "error",
                 connections,
                 uptime_seconds,
                 error: Some(format!("health probe task panicked: {e}")),

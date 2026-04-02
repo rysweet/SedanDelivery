@@ -166,6 +166,9 @@ pub enum StorageError {
 
     #[error("no property index for label '{label}' property '{property}' — create an index or use a full scan")]
     NoPropertyIndex { label: String, property: String },
+
+    #[error("configuration error: {msg}")]
+    Configuration { msg: String },
 }
 
 // ── Type errors ───────────────────────────────────────────────────────────────
