@@ -164,7 +164,8 @@ pub trait GraphStore: Send + Sync {
     fn find_nodes_by_label(&self, graph: &str, label: &str) -> Result<Vec<NodeId>, StorageError>;
 
     /// Nodes with a given label AND a property satisfying a range predicate.
-    /// Used by the IndexScan operator. Falls back to NodeScan + Filter if no index exists.
+    /// Used by the IndexScan operator. Returns `StorageError::NoPropertyIndex`
+    /// when no index exists — callers must handle this explicitly.
     fn find_nodes_by_label_and_property(
         &self,
         graph: &str,

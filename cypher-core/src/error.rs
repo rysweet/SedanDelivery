@@ -163,6 +163,9 @@ pub enum StorageError {
         resource_count: usize,
         limit: usize,
     },
+
+    #[error("no property index for label '{label}' property '{property}' — create an index or use a full scan")]
+    NoPropertyIndex { label: String, property: String },
 }
 
 // ── Type errors ───────────────────────────────────────────────────────────────

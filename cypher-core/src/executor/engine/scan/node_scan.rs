@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use crate::error::{ExecutionError, GqlError};
+use crate::error::{ExecutionError, GqlError, StorageError};
 use crate::executor::filter::eval_expr;
 use crate::executor::filter::Row as FilterRow;
 use crate::planner::Operator;
@@ -135,25 +135,51 @@ impl<'a> QueryExecutor<'a> {
                 Some(v) => RangeQuery::Eq(v),
                 None => RangeQuery::Gte(&Value::Null),
             };
-            let node_ids = self.store.find_nodes_by_label_and_property(
+            let store_result = self.store.find_nodes_by_label_and_property(
                 cx.graph,
                 label.as_str(),
                 property,
                 range_query,
-            )?;
-            if node_ids.is_empty() && evaluated_value.is_none() {
-                let all_label = self.store.find_nodes_by_label(cx.graph, label.as_str())?;
-                let mut with_prop = Vec::new();
-                for id in all_label {
-                    if let Some(node) = self.store.get_node(cx.graph, id)? {
-                        if node.properties.contains_key(property.as_str()) {
-                            with_prop.push(id);
+            );
+            match store_result {
+                Ok(node_ids) => {
+                    if node_ids.is_empty() && evaluated_value.is_none() {
+                        // Wildcard scan: index returned empty, enumerate nodes
+                        // that have the property at all.
+                        let all_label = self.store.find_nodes_by_label(cx.graph, label.as_str())?;
+                        let mut with_prop = Vec::new();
+                        for id in all_label {
+                            if let Some(node) = self.store.get_node(cx.graph, id)? {
+                                if node.properties.contains_key(property.as_str()) {
+                                    with_prop.push(id);
+                                }
+                            }
                         }
+                        Ok(with_prop)
+                    } else {
+                        Ok(node_ids)
                     }
                 }
-                Ok(with_prop)
-            } else {
-                Ok(node_ids)
+                Err(StorageError::NoPropertyIndex { .. }) => {
+                    // No index available — explicit label scan + filter.
+                    let all_label = self.store.find_nodes_by_label(cx.graph, label.as_str())?;
+                    let mut filtered = Vec::new();
+                    for id in all_label {
+                        if let Some(node) = self.store.get_node(cx.graph, id)? {
+                            if let Some(val) = node.properties.get(property.as_str()) {
+                                let matches = match evaluated_value {
+                                    Some(ev) => val == ev,
+                                    None => true,
+                                };
+                                if matches {
+                                    filtered.push(id);
+                                }
+                            }
+                        }
+                    }
+                    Ok(filtered)
+                }
+                Err(e) => Err(e.into()),
             }
         };
 

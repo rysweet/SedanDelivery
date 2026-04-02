@@ -1,71 +1,69 @@
 // range.rs — Range predicate evaluation helpers.
-
-use cypher_core::storage::RangeQuery;
-use cypher_core::types::Value;
-
-// ── Range predicate evaluation ──────────────────────────────────────────────
-
-pub(crate) fn range_matches(val: &Value, range: &RangeQuery<'_>) -> bool {
-    match range {
-        RangeQuery::Eq(target) => val.cypher_eq(target) == Some(true),
-        RangeQuery::Lt(target) => cmp_values(val, target) == Some(std::cmp::Ordering::Less),
-        RangeQuery::Lte(target) => {
-            matches!(
-                cmp_values(val, target),
-                Some(std::cmp::Ordering::Less | std::cmp::Ordering::Equal)
-            )
-        }
-        RangeQuery::Gt(target) => cmp_values(val, target) == Some(std::cmp::Ordering::Greater),
-        RangeQuery::Gte(target) => {
-            matches!(
-                cmp_values(val, target),
-                Some(std::cmp::Ordering::Greater | std::cmp::Ordering::Equal)
-            )
-        }
-        RangeQuery::Between { lo, hi, inclusive } => {
-            let lo_ok = if *inclusive {
-                matches!(
-                    cmp_values(val, lo),
-                    Some(std::cmp::Ordering::Greater | std::cmp::Ordering::Equal)
-                )
-            } else {
-                cmp_values(val, lo) == Some(std::cmp::Ordering::Greater)
-            };
-            let hi_ok = if *inclusive {
-                matches!(
-                    cmp_values(val, hi),
-                    Some(std::cmp::Ordering::Less | std::cmp::Ordering::Equal)
-                )
-            } else {
-                cmp_values(val, hi) == Some(std::cmp::Ordering::Less)
-            };
-            lo_ok && hi_ok
-        }
-        RangeQuery::StartsWith(prefix) => {
-            if let Value::Str(s) = val {
-                s.starts_with(prefix)
-            } else {
-                false
-            }
-        }
-    }
-}
-
-pub(crate) fn cmp_values(a: &Value, b: &Value) -> Option<std::cmp::Ordering> {
-    match (a, b) {
-        (Value::Int(x), Value::Int(y)) => Some(x.cmp(y)),
-        (Value::Float(x), Value::Float(y)) => x.partial_cmp(y),
-        (Value::Int(x), Value::Float(y)) => (*x as f64).partial_cmp(y),
-        (Value::Float(x), Value::Int(y)) => x.partial_cmp(&(*y as f64)),
-        (Value::Str(x), Value::Str(y)) => Some(x.cmp(y)),
-        _ => None,
-    }
-}
+//
+// These functions were previously used by the silent fallback scan in
+// find_nodes_by_label_and_property. The fallback was removed (#1090) to
+// prevent Cartesian product explosions. The helpers are retained under
+// #[cfg(test)] to validate the range comparison logic.
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use cypher_core::storage::RangeQuery;
+    use cypher_core::types::Value;
     use std::cmp::Ordering;
+
+    fn range_matches(val: &Value, range: &RangeQuery<'_>) -> bool {
+        match range {
+            RangeQuery::Eq(target) => val.cypher_eq(target) == Some(true),
+            RangeQuery::Lt(target) => cmp_values(val, target) == Some(Ordering::Less),
+            RangeQuery::Lte(target) => {
+                matches!(
+                    cmp_values(val, target),
+                    Some(Ordering::Less | Ordering::Equal)
+                )
+            }
+            RangeQuery::Gt(target) => cmp_values(val, target) == Some(Ordering::Greater),
+            RangeQuery::Gte(target) => {
+                matches!(
+                    cmp_values(val, target),
+                    Some(Ordering::Greater | Ordering::Equal)
+                )
+            }
+            RangeQuery::Between { lo, hi, inclusive } => {
+                let lo_ok = if *inclusive {
+                    matches!(
+                        cmp_values(val, lo),
+                        Some(Ordering::Greater | Ordering::Equal)
+                    )
+                } else {
+                    cmp_values(val, lo) == Some(Ordering::Greater)
+                };
+                let hi_ok = if *inclusive {
+                    matches!(cmp_values(val, hi), Some(Ordering::Less | Ordering::Equal))
+                } else {
+                    cmp_values(val, hi) == Some(Ordering::Less)
+                };
+                lo_ok && hi_ok
+            }
+            RangeQuery::StartsWith(prefix) => {
+                if let Value::Str(s) = val {
+                    s.starts_with(prefix)
+                } else {
+                    false
+                }
+            }
+        }
+    }
+
+    fn cmp_values(a: &Value, b: &Value) -> Option<Ordering> {
+        match (a, b) {
+            (Value::Int(x), Value::Int(y)) => Some(x.cmp(y)),
+            (Value::Float(x), Value::Float(y)) => x.partial_cmp(y),
+            (Value::Int(x), Value::Float(y)) => (*x as f64).partial_cmp(y),
+            (Value::Float(x), Value::Int(y)) => x.partial_cmp(&(*y as f64)),
+            (Value::Str(x), Value::Str(y)) => Some(x.cmp(y)),
+            _ => None,
+        }
+    }
 
     // ── cmp_values ──────────────────────────────────────────────────────────
 

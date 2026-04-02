@@ -4,7 +4,7 @@ use indexmap::IndexMap;
 use std::collections::{HashMap, HashSet};
 
 use crate::ast::{Direction, Expr};
-use crate::error::{ExecutionError, GqlError};
+use crate::error::{ExecutionError, GqlError, StorageError};
 use crate::executor::filter::Row as FilterRow;
 use crate::planner::Operator;
 use crate::storage::{AdjEntry, EdgeId, NodeId};
@@ -484,28 +484,54 @@ impl<'a> QueryExecutor<'a> {
                     continue;
                 }
 
-                let candidates: HashSet<u64> = if labels.is_empty() {
-                    self.store
-                        .all_node_ids(cx.graph)?
-                        .into_iter()
-                        .map(|n| n.0)
-                        .collect()
+                // Try indexed lookup; fall back to label scan if no index.
+                let (candidates, skip_first_prop): (HashSet<u64>, bool) = if labels.is_empty() {
+                    (
+                        self.store
+                            .all_node_ids(cx.graph)?
+                            .into_iter()
+                            .map(|n| n.0)
+                            .collect(),
+                        false,
+                    )
                 } else if !prop_vals.is_empty() {
                     let first_label = labels[0].as_str();
                     let (first_prop_key, first_prop_val) = &prop_vals[0];
-                    let indexed_ids = self.store.find_nodes_by_label_and_property(
+                    match self.store.find_nodes_by_label_and_property(
                         cx.graph,
                         first_label,
                         first_prop_key,
                         crate::storage::RangeQuery::Eq(first_prop_val),
-                    )?;
-                    let mut cands: HashSet<u64> = indexed_ids.into_iter().map(|n| n.0).collect();
-                    for label in &labels[1..] {
-                        let ids = self.store.find_nodes_by_label(cx.graph, label.as_str())?;
-                        let id_set: HashSet<u64> = ids.iter().map(|n| n.0).collect();
-                        cands = cands.intersection(&id_set).copied().collect();
+                    ) {
+                        Ok(indexed_ids) => {
+                            let mut cands: HashSet<u64> =
+                                indexed_ids.into_iter().map(|n| n.0).collect();
+                            for label in &labels[1..] {
+                                let ids =
+                                    self.store.find_nodes_by_label(cx.graph, label.as_str())?;
+                                let id_set: HashSet<u64> = ids.iter().map(|n| n.0).collect();
+                                cands = cands.intersection(&id_set).copied().collect();
+                            }
+                            (cands, true)
+                        }
+                        Err(StorageError::NoPropertyIndex { .. }) => {
+                            // No index: fall back to label scan; check ALL props below.
+                            let mut cands: Option<HashSet<u64>> = None;
+                            for label in labels {
+                                let ids =
+                                    self.store.find_nodes_by_label(cx.graph, label.as_str())?;
+                                let id_set: HashSet<u64> = ids.iter().map(|n| n.0).collect();
+                                cands = Some(match cands {
+                                    None => id_set,
+                                    Some(existing) => {
+                                        existing.intersection(&id_set).copied().collect()
+                                    }
+                                });
+                            }
+                            (cands.unwrap_or_default(), false)
+                        }
+                        Err(e) => return Err(e.into()),
                     }
-                    cands
                 } else {
                     let mut cands: Option<HashSet<u64>> = None;
                     for label in labels {
@@ -516,10 +542,8 @@ impl<'a> QueryExecutor<'a> {
                             Some(existing) => existing.intersection(&id_set).copied().collect(),
                         });
                     }
-                    cands.unwrap_or_default()
+                    (cands.unwrap_or_default(), false)
                 };
-
-                let skip_first_prop = !labels.is_empty() && !prop_vals.is_empty();
                 let check_props = if skip_first_prop {
                     &prop_vals[1..]
                 } else {
@@ -623,34 +647,50 @@ impl<'a> QueryExecutor<'a> {
             };
 
             // Try to find existing nodes matching ALL labels and properties.
-            // Fast path: when there is at least one label and one property, use
-            // find_nodes_by_label_and_property for the first (label, property)
-            // pair. This is O(1) when a property index exists (vs O(N) label scan).
-            let candidates: HashSet<u64> = if labels.is_empty() {
-                self.store
-                    .all_node_ids(cx.graph)?
-                    .into_iter()
-                    .map(|n| n.0)
-                    .collect()
+            // Fast path: use index when available; explicit label scan otherwise.
+            let (candidates, skip_first_prop): (HashSet<u64>, bool) = if labels.is_empty() {
+                (
+                    self.store
+                        .all_node_ids(cx.graph)?
+                        .into_iter()
+                        .map(|n| n.0)
+                        .collect(),
+                    false,
+                )
             } else if !prop_vals.is_empty() {
-                // Use indexed lookup on the first property for the first label,
-                // then intersect with remaining labels and verify remaining props.
                 let first_label = labels[0].as_str();
                 let (first_prop_key, first_prop_val) = &prop_vals[0];
-                let indexed_ids = self.store.find_nodes_by_label_and_property(
+                match self.store.find_nodes_by_label_and_property(
                     cx.graph,
                     first_label,
                     first_prop_key,
                     crate::storage::RangeQuery::Eq(first_prop_val),
-                )?;
-                let mut cands: HashSet<u64> = indexed_ids.into_iter().map(|n| n.0).collect();
-                // Intersect with remaining labels.
-                for label in &labels[1..] {
-                    let ids = self.store.find_nodes_by_label(cx.graph, label.as_str())?;
-                    let id_set: HashSet<u64> = ids.iter().map(|n| n.0).collect();
-                    cands = cands.intersection(&id_set).copied().collect();
+                ) {
+                    Ok(indexed_ids) => {
+                        let mut cands: HashSet<u64> =
+                            indexed_ids.into_iter().map(|n| n.0).collect();
+                        for label in &labels[1..] {
+                            let ids = self.store.find_nodes_by_label(cx.graph, label.as_str())?;
+                            let id_set: HashSet<u64> = ids.iter().map(|n| n.0).collect();
+                            cands = cands.intersection(&id_set).copied().collect();
+                        }
+                        (cands, true)
+                    }
+                    Err(StorageError::NoPropertyIndex { .. }) => {
+                        // No index: fall back to label scan; check ALL props below.
+                        let mut cands: Option<HashSet<u64>> = None;
+                        for label in labels {
+                            let ids = self.store.find_nodes_by_label(cx.graph, label.as_str())?;
+                            let id_set: HashSet<u64> = ids.iter().map(|n| n.0).collect();
+                            cands = Some(match cands {
+                                None => id_set,
+                                Some(existing) => existing.intersection(&id_set).copied().collect(),
+                            });
+                        }
+                        (cands.unwrap_or_default(), false)
+                    }
+                    Err(e) => return Err(e.into()),
                 }
-                cands
             } else {
                 let mut cands: Option<HashSet<u64>> = None;
                 for label in labels {
@@ -661,14 +701,13 @@ impl<'a> QueryExecutor<'a> {
                         Some(existing) => existing.intersection(&id_set).copied().collect(),
                     });
                 }
-                cands.unwrap_or_default()
+                (cands.unwrap_or_default(), false)
             };
 
             // Check candidates for matching nodes. MERGE returns one row per
             // match; if no matches are found, it creates a new node instead.
             // When the indexed fast-path was used, candidates are already filtered
             // by the first property — only verify remaining properties.
-            let skip_first_prop = !labels.is_empty() && !prop_vals.is_empty();
             let check_props = if skip_first_prop {
                 &prop_vals[1..]
             } else {

@@ -1,83 +1,4 @@
 //! Read-only query helpers for [`InMemoryGraphStore`].
-//!
-//! Contains: value comparison helpers and the `matches_range` function used
-//! for fallback (non-indexed) property scans.
-
-use crate::storage::RangeQuery;
-use crate::types::Value;
-
-// ── Value comparison helpers for RangeQuery ───────────────────────────────────
-
-/// Total order for Value for range queries.  Returns `None` when the values are
-/// incomparable (e.g. different types, or either is Null).
-fn value_partial_cmp(a: &Value, b: &Value) -> Option<std::cmp::Ordering> {
-    match (a, b) {
-        (Value::Int(x), Value::Int(y)) => x.partial_cmp(y),
-        (Value::Float(x), Value::Float(y)) => x.partial_cmp(y),
-        (Value::Int(x), Value::Float(y)) => (*x as f64).partial_cmp(y),
-        (Value::Float(x), Value::Int(y)) => x.partial_cmp(&(*y as f64)),
-        (Value::Str(x), Value::Str(y)) => Some(x.as_ref().cmp(y.as_ref())),
-        (Value::Bool(x), Value::Bool(y)) => x.partial_cmp(y),
-        _ => None,
-    }
-}
-
-/// Check whether a property value matches the given range predicate.
-///
-/// Used as the fallback path when no BTreeMap index exists for the
-/// (label, property) pair.
-pub(crate) fn matches_range(prop_val: &Value, range: &RangeQuery<'_>) -> bool {
-    match range {
-        RangeQuery::Eq(target) => prop_val.cypher_eq(target).unwrap_or(false),
-        RangeQuery::Lt(bound) => {
-            matches!(
-                value_partial_cmp(prop_val, bound),
-                Some(std::cmp::Ordering::Less)
-            )
-        }
-        RangeQuery::Lte(bound) => matches!(
-            value_partial_cmp(prop_val, bound),
-            Some(std::cmp::Ordering::Less | std::cmp::Ordering::Equal)
-        ),
-        RangeQuery::Gt(bound) => {
-            matches!(
-                value_partial_cmp(prop_val, bound),
-                Some(std::cmp::Ordering::Greater)
-            )
-        }
-        RangeQuery::Gte(bound) => matches!(
-            value_partial_cmp(prop_val, bound),
-            Some(std::cmp::Ordering::Greater | std::cmp::Ordering::Equal)
-        ),
-        RangeQuery::Between { lo, hi, inclusive } => {
-            let ge_lo = matches!(
-                value_partial_cmp(prop_val, lo),
-                Some(std::cmp::Ordering::Greater | std::cmp::Ordering::Equal)
-            );
-            if !ge_lo {
-                return false;
-            }
-            if *inclusive {
-                matches!(
-                    value_partial_cmp(prop_val, hi),
-                    Some(std::cmp::Ordering::Less | std::cmp::Ordering::Equal)
-                )
-            } else {
-                matches!(
-                    value_partial_cmp(prop_val, hi),
-                    Some(std::cmp::Ordering::Less)
-                )
-            }
-        }
-        RangeQuery::StartsWith(prefix) => {
-            if let Value::Str(s) = prop_val {
-                s.starts_with(prefix)
-            } else {
-                false
-            }
-        }
-    }
-}
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
@@ -118,6 +39,7 @@ mod tests {
     #[test]
     fn label_and_property_scan_eq() {
         let store = make_store();
+        store.create_index("test", "Person", "age").unwrap();
         let mut p1 = IndexMap::new();
         p1.insert("age".to_string(), Value::Int(30));
         let a = store
@@ -140,6 +62,7 @@ mod tests {
     #[test]
     fn label_and_property_scan_range() {
         let store = make_store();
+        store.create_index("test", "Person", "age").unwrap();
         let make_person = |age: i64| {
             let mut p = IndexMap::new();
             p.insert("age".to_string(), Value::Int(age));
@@ -176,6 +99,7 @@ mod tests {
     #[test]
     fn label_and_property_scan_starts_with() {
         let store = make_store();
+        store.create_index("test", "Person", "name").unwrap();
         let mut p1 = IndexMap::new();
         p1.insert("name".to_string(), Value::Str("Alice".into()));
         let a = store

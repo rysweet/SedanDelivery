@@ -2462,6 +2462,9 @@ fn test_shortest_path_self_loop() {
 fn regression_1065_unwind_match_merge_edge_selective() {
     let store = make_store();
 
+    // Create an index on Resource.id so the planner emits IndexScan.
+    store.create_index("test", "Resource", "id").unwrap();
+
     // Create 100 Resource nodes with unique `id` and shared `node_type`.
     for i in 0..100u32 {
         let mut props = IndexMap::new();
@@ -2546,6 +2549,9 @@ fn regression_1065_unwind_match_merge_edge_selective() {
 fn regression_1065_scales_linearly_with_large_graph() {
     let store = make_store();
 
+    // Create an index on Resource.id so the planner emits IndexScan.
+    store.create_index("test", "Resource", "id").unwrap();
+
     for i in 0..1000u32 {
         let mut props = IndexMap::new();
         props.insert("id".to_string(), Value::Str(format!("r{i}").into()));
@@ -2609,6 +2615,101 @@ fn regression_1065_scales_linearly_with_large_graph() {
     assert!(
         budget.rows_produced() < 500,
         "with 1000 nodes and 25 edges, selective plan should use < 500 intermediate rows, got {}",
+        budget.rows_produced()
+    );
+}
+
+// ── Regression: issue #1090 — 10M row limit with 5334 nodes ─────────────────
+
+/// Regression test for #1090: with 5334 Resource nodes and a shared `node_type`
+/// property, UNWIND + MATCH must use an index on the *unique* property (`id`)
+/// to stay selective.  Without the fix, a silent fallback scanned all 5334 nodes
+/// per UNWIND row, producing a Cartesian product of 5334 × 5334 × edges ≈ 284M
+/// intermediate rows — blowing the 10M row limit.
+///
+/// With a declared index on `Resource.id`, each correlated lookup returns exactly
+/// 1 node, keeping intermediate rows proportional to the number of edges.
+#[test]
+fn regression_1090_no_cartesian_product_with_5334_nodes() {
+    let store = make_store();
+
+    // Index on the selective property (`id`), NOT the shared `node_type`.
+    store.create_index("test", "Resource", "id").unwrap();
+
+    // Create 5334 Resource nodes with unique `id` and shared `node_type`.
+    for i in 0..5334u32 {
+        let mut props = IndexMap::new();
+        props.insert("id".to_string(), Value::Str(format!("r{i}").into()));
+        props.insert("node_type".to_string(), Value::Str("TypeA".into()));
+        store
+            .create_node("test", vec!["Resource".to_string()], props)
+            .unwrap();
+    }
+
+    // 20 edges, each connecting a distinct pair of existing resources.
+    let edges: Vec<Value> = (0..20u32)
+        .map(|i| {
+            Value::Map(
+                vec![
+                    (
+                        "sourceId".to_string().into_boxed_str(),
+                        Value::Str(format!("r{}", i * 2).into()),
+                    ),
+                    (
+                        "targetId".to_string().into_boxed_str(),
+                        Value::Str(format!("r{}", i * 2 + 1).into()),
+                    ),
+                    (
+                        "nodeType".to_string().into_boxed_str(),
+                        Value::Str("TypeA".into()),
+                    ),
+                    (
+                        "edgeId".to_string().into_boxed_str(),
+                        Value::Str(format!("e{i}").into()),
+                    ),
+                ]
+                .into_iter()
+                .collect(),
+            )
+        })
+        .collect();
+
+    let mut params = HashMap::new();
+    params.insert("edges".to_string(), Value::List(edges));
+
+    let q = parse_query(
+        "UNWIND $edges AS edge \
+         MATCH (a:Resource {id: edge.sourceId, node_type: edge.nodeType}), \
+               (b:Resource {id: edge.targetId, node_type: edge.nodeType}) \
+         MERGE (a)-[e:CONNECTS {edge_id: edge.edgeId}]->(b) \
+         RETURN a.id AS src, b.id AS dst",
+    )
+    .unwrap();
+
+    let registry = ProcedureRegistry::new();
+    let planner = QueryPlanner::with_context(&store, "test", &registry, &params);
+    let plan = planner.plan(&q).unwrap();
+
+    // Verify the plan uses IndexScan (not NodeScan) for selective lookup.
+    let plan_debug = format!("{plan:?}");
+    assert!(
+        plan_debug.contains("IndexScan"),
+        "plan should use IndexScan for correlated MATCH property lookups, got: {plan_debug}"
+    );
+
+    let executor = QueryExecutor::with_context(&store, &registry, params);
+    // Budget: 5000 rows is generous for 20 selective lookups.
+    // A Cartesian product (5334^2 × 20 ≈ 569M) would blow any limit.
+    let mut budget = ExecutionBudget::new(Duration::from_secs(60), 5_000);
+    let result = executor.execute("test", &plan, &mut budget).unwrap();
+
+    assert_eq!(result.rows.len(), 20, "should produce one row per edge");
+    assert_eq!(result.stats.edges_created, 20, "should create 20 new edges");
+
+    // Verify budget usage is sane — well under 5000.
+    assert!(
+        budget.rows_produced() < 500,
+        "selective plan with 5334 nodes should use far fewer than 500 intermediate rows, got {}",
         budget.rows_produced()
     );
 }

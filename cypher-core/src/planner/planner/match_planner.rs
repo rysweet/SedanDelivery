@@ -107,12 +107,10 @@ impl<'s> QueryPlanner<'s> {
         }
 
         // Build the node scan for the first node.
-        // If the node pattern has a label and at least one equality property
-        // filter, prefer a declared index when one exists; otherwise emit
-        // IndexScan on the first property and let the store fall back to a
-        // label+property scan. This keeps correlated MATCH lookups selective
-        // under UNWIND/APPLY even when no declared index exists without
-        // regressing multi-property patterns that already have a declared index.
+        // Only emit IndexScan when a declared property index exists.
+        // Without a declared index the store cannot guarantee selective
+        // lookups, so we fall back to NodeScan + Filter which is honest
+        // about its O(N) cost and properly tracked by the row budget.
         let mut index_consumed_prop: Option<smol_str::SmolStr> = None;
         let start_map_props = match &start.properties {
             Some(Properties::Map(m)) => Some(m.as_slice()),
@@ -129,8 +127,7 @@ impl<'s> QueryPlanner<'s> {
                             idx.label == label.as_str() && idx.property == prop_key.as_str()
                         })
                     })
-                })
-                .or_else(|| props.first());
+                });
             if let Some((prop_key, prop_val)) = selected_prop {
                 index_consumed_prop = Some(prop_key.clone());
                 Operator::IndexScan {

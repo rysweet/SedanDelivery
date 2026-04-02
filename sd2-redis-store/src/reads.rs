@@ -3,14 +3,12 @@
 use cypher_core::error::StorageError;
 use cypher_core::serde_value::json_to_props;
 use cypher_core::storage::{AdjEntry, EdgeData, EdgeId, GraphStats, NodeData, NodeId, RangeQuery};
-use tracing::warn;
 
 use crate::connection::RedisConn;
 use crate::keys::{
     key_edge, key_edges_set, key_in, key_label, key_label_names, key_node, key_nodes_set, key_out,
     key_propidx, key_reltype, key_reltype_names, value_to_index_key, IDX_SEP,
 };
-use crate::range::range_matches;
 use crate::{LockedRedisConn, RedisGraphStore};
 
 /// Default member count threshold above which SSCAN is used instead of SMEMBERS.
@@ -403,39 +401,12 @@ impl RedisGraphStore {
             }
         }
 
-        // No property index exists — warn loudly so the performance
-        // degradation is visible.  Exact-match queries without an index
-        // are especially costly on Redis (full label scan + per-node
-        // round-trips) so we emit a higher-severity warning.
-        if matches!(range, RangeQuery::Eq(_)) {
-            warn!(
-                graph,
-                label,
-                property,
-                "PERFORMANCE: no property index for exact-match query — \
-                 falling back to full label scan (create an index to fix)"
-            );
-        } else {
-            warn!(
-                graph,
-                label,
-                property,
-                "no property index — falling back to full label scan for range query"
-            );
-        }
-        let node_ids = self.find_nodes_by_label_impl(graph, label)?;
-        let mut result = Vec::new();
-        for id in node_ids {
-            let node = self.read_node(conn.as_mut(), graph, id.0)?;
-            if let Some(node) = node {
-                if let Some(val) = node.properties.get(property) {
-                    if range_matches(val, &range) {
-                        result.push(id);
-                    }
-                }
-            }
-        }
-        Ok(result)
+        // No silent fallback: refuse to scan all nodes and pretend it was
+        // selective.  Callers must handle NoPropertyIndex explicitly.
+        Err(StorageError::NoPropertyIndex {
+            label: label.to_string(),
+            property: property.to_string(),
+        })
     }
 
     pub(crate) fn find_edges_by_type_impl(

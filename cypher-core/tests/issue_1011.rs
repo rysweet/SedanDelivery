@@ -132,8 +132,11 @@ fn index_scan_properties(op: &Operator, properties: &mut Vec<String>) {
 }
 
 #[test]
-fn correlated_match_uses_selective_lookup_without_declared_index() {
+fn correlated_match_uses_selective_lookup_with_declared_index() {
     let store = make_store();
+    // A declared index is required for IndexScan — without one the planner
+    // falls back to NodeScan + Filter (no silent degradation).
+    store.create_index("test", "Node", "id").unwrap();
     for i in 0..300 {
         let mut props = IndexMap::new();
         props.insert("id".to_string(), Value::Int(i));
@@ -168,13 +171,14 @@ fn correlated_match_uses_selective_lookup_without_declared_index() {
     assert_eq!(
         count_index_scans(&plan),
         2,
-        "correlated exact-match node lookups should plan as selective IndexScan operators even without declared indexes"
+        "correlated exact-match node lookups should plan as selective IndexScan operators with declared indexes"
     );
 }
 
 #[test]
 fn unwind_match_merge_edges_stays_under_budget() {
     let store = make_store();
+    store.create_index("test", "Node", "id").unwrap();
     for i in 0..300 {
         let mut props = IndexMap::new();
         props.insert("id".to_string(), Value::Int(i));
