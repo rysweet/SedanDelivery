@@ -241,12 +241,322 @@ impl CachedGraphStore {
     }
 
     /// Invalidate (remove) a graph from the cache so the next read reloads it.
+    /// Only used for delete_graph — all other writes use write-through.
     fn invalidate(&self, graph: &str) {
         if let Ok(mut loaded) = self.loaded.write() {
             loaded.remove(graph);
         }
-        // Also remove from cache store to free memory.
         let _ = self.cache.delete_graph(graph);
+    }
+
+    /// Get a mutable reference to a graph's inner data.
+    fn get_graph_mut<'a>(
+        graphs: &'a mut std::collections::HashMap<String, crate::storage::mem::GraphInner>,
+        graph: &str,
+    ) -> Result<&'a mut crate::storage::mem::GraphInner, StorageError> {
+        graphs
+            .get_mut(graph)
+            .ok_or_else(|| StorageError::GraphNotFound {
+                name: graph.to_string(),
+            })
+    }
+
+    /// Update node properties in cache (merge semantics).
+    fn update_node_props_in_cache(
+        &self,
+        graph: &str,
+        id: NodeId,
+        properties: &IndexMap<String, Value>,
+    ) -> Result<(), StorageError> {
+        let mut guard = self
+            .cache
+            .inner
+            .write()
+            .map_err(|e| StorageError::backend(format!("lock poisoned: {e}")))?;
+        let graphs = Arc::make_mut(&mut guard);
+        let g = Self::get_graph_mut(graphs, graph)?;
+        if let Some(node) = g.nodes.get(&id.0) {
+            let old_labels = node.labels.clone();
+            let old_props = node.properties.clone();
+            g.index_remove(id.0, &old_labels, &old_props);
+            let node = g.nodes.get_mut(&id.0).unwrap();
+            for (k, v) in properties {
+                node.properties.insert(k.clone(), v.clone());
+            }
+            let new_labels = node.labels.clone();
+            let new_props = node.properties.clone();
+            g.index_insert(id.0, &new_labels, &new_props);
+        }
+        Ok(())
+    }
+
+    /// Replace all node properties in cache.
+    fn replace_node_props_in_cache(
+        &self,
+        graph: &str,
+        id: NodeId,
+        properties: &IndexMap<String, Value>,
+    ) -> Result<(), StorageError> {
+        let mut guard = self
+            .cache
+            .inner
+            .write()
+            .map_err(|e| StorageError::backend(format!("lock poisoned: {e}")))?;
+        let graphs = Arc::make_mut(&mut guard);
+        let g = Self::get_graph_mut(graphs, graph)?;
+        if let Some(node) = g.nodes.get(&id.0) {
+            let old_labels = node.labels.clone();
+            let old_props = node.properties.clone();
+            g.index_remove(id.0, &old_labels, &old_props);
+            let node = g.nodes.get_mut(&id.0).unwrap();
+            node.properties = properties.clone();
+            let new_labels = node.labels.clone();
+            let new_props = node.properties.clone();
+            g.index_insert(id.0, &new_labels, &new_props);
+        }
+        Ok(())
+    }
+
+    /// Update edge properties in cache (merge semantics).
+    fn update_edge_props_in_cache(
+        &self,
+        graph: &str,
+        id: EdgeId,
+        properties: &IndexMap<String, Value>,
+    ) -> Result<(), StorageError> {
+        let mut guard = self
+            .cache
+            .inner
+            .write()
+            .map_err(|e| StorageError::backend(format!("lock poisoned: {e}")))?;
+        let graphs = Arc::make_mut(&mut guard);
+        let g = Self::get_graph_mut(graphs, graph)?;
+        if let Some(edge) = g.edges.get_mut(&id.0) {
+            for (k, v) in properties {
+                edge.properties.insert(k.clone(), v.clone());
+            }
+        }
+        Ok(())
+    }
+
+    /// Replace all edge properties in cache.
+    fn replace_edge_props_in_cache(
+        &self,
+        graph: &str,
+        id: EdgeId,
+        properties: &IndexMap<String, Value>,
+    ) -> Result<(), StorageError> {
+        let mut guard = self
+            .cache
+            .inner
+            .write()
+            .map_err(|e| StorageError::backend(format!("lock poisoned: {e}")))?;
+        let graphs = Arc::make_mut(&mut guard);
+        let g = Self::get_graph_mut(graphs, graph)?;
+        if let Some(edge) = g.edges.get_mut(&id.0) {
+            edge.properties = properties.clone();
+        }
+        Ok(())
+    }
+
+    /// Remove a single property from a node in cache.
+    fn remove_node_prop_in_cache(
+        &self,
+        graph: &str,
+        id: NodeId,
+        key: &str,
+    ) -> Result<(), StorageError> {
+        let mut guard = self
+            .cache
+            .inner
+            .write()
+            .map_err(|e| StorageError::backend(format!("lock poisoned: {e}")))?;
+        let graphs = Arc::make_mut(&mut guard);
+        let g = Self::get_graph_mut(graphs, graph)?;
+        if let Some(node) = g.nodes.get(&id.0) {
+            let old_labels = node.labels.clone();
+            let old_props = node.properties.clone();
+            g.index_remove(id.0, &old_labels, &old_props);
+            let node = g.nodes.get_mut(&id.0).unwrap();
+            node.properties.shift_remove(key);
+            let new_labels = node.labels.clone();
+            let new_props = node.properties.clone();
+            g.index_insert(id.0, &new_labels, &new_props);
+        }
+        Ok(())
+    }
+
+    /// Remove a single property from an edge in cache.
+    fn remove_edge_prop_in_cache(
+        &self,
+        graph: &str,
+        id: EdgeId,
+        key: &str,
+    ) -> Result<(), StorageError> {
+        let mut guard = self
+            .cache
+            .inner
+            .write()
+            .map_err(|e| StorageError::backend(format!("lock poisoned: {e}")))?;
+        let graphs = Arc::make_mut(&mut guard);
+        let g = Self::get_graph_mut(graphs, graph)?;
+        if let Some(edge) = g.edges.get_mut(&id.0) {
+            edge.properties.shift_remove(key);
+        }
+        Ok(())
+    }
+
+    /// Add labels to a node in cache.
+    fn add_labels_in_cache(
+        &self,
+        graph: &str,
+        id: NodeId,
+        labels: &[String],
+    ) -> Result<(), StorageError> {
+        let mut guard = self
+            .cache
+            .inner
+            .write()
+            .map_err(|e| StorageError::backend(format!("lock poisoned: {e}")))?;
+        let graphs = Arc::make_mut(&mut guard);
+        let g = Self::get_graph_mut(graphs, graph)?;
+        // First update label index (doesn't borrow nodes).
+        for label in labels {
+            g.label_index.entry(label.clone()).or_default().insert(id.0);
+        }
+        // Then update the node's labels.
+        if let Some(node) = g.nodes.get_mut(&id.0) {
+            for label in labels {
+                if !node.labels.contains(label) {
+                    node.labels.push(label.clone());
+                }
+            }
+        }
+        // Re-index: extract data first to avoid borrow conflict.
+        if let Some(node) = g.nodes.get(&id.0) {
+            let lbls = node.labels.clone();
+            let props = node.properties.clone();
+            g.index_insert(id.0, &lbls, &props);
+        }
+        Ok(())
+    }
+
+    /// Remove labels from a node in cache.
+    fn remove_labels_in_cache(
+        &self,
+        graph: &str,
+        id: NodeId,
+        labels: &[String],
+    ) -> Result<(), StorageError> {
+        let mut guard = self
+            .cache
+            .inner
+            .write()
+            .map_err(|e| StorageError::backend(format!("lock poisoned: {e}")))?;
+        let graphs = Arc::make_mut(&mut guard);
+        let g = Self::get_graph_mut(graphs, graph)?;
+        // Extract old state for index removal.
+        let (old_labels, old_props) = match g.nodes.get(&id.0) {
+            Some(node) => (node.labels.clone(), node.properties.clone()),
+            None => return Ok(()),
+        };
+        g.index_remove(id.0, &old_labels, &old_props);
+        // Update the node.
+        if let Some(node) = g.nodes.get_mut(&id.0) {
+            for label in labels {
+                node.labels.retain(|l| l != label);
+                if let Some(set) = g.label_index.get_mut(label) {
+                    set.remove(&id.0);
+                }
+            }
+        }
+        // Re-index with remaining labels.
+        if let Some(node) = g.nodes.get(&id.0) {
+            let new_labels = node.labels.clone();
+            let new_props = node.properties.clone();
+            g.index_insert(id.0, &new_labels, &new_props);
+        }
+        Ok(())
+    }
+
+    /// Remove a node from cache (with optional detach of edges).
+    fn remove_node_from_cache(
+        &self,
+        graph: &str,
+        id: NodeId,
+        detach: bool,
+    ) -> Result<(), StorageError> {
+        let mut guard = self
+            .cache
+            .inner
+            .write()
+            .map_err(|e| StorageError::backend(format!("lock poisoned: {e}")))?;
+        let graphs = Arc::make_mut(&mut guard);
+        let g = Self::get_graph_mut(graphs, graph)?;
+
+        if let Some(node) = g.nodes.remove(&id.0) {
+            for label in &node.labels {
+                if let Some(set) = g.label_index.get_mut(label) {
+                    set.remove(&id.0);
+                }
+            }
+            g.index_remove(id.0, &node.labels, &node.properties);
+
+            if detach {
+                if let Some(out_entries) = g.out_adj.remove(&id.0) {
+                    for entry in &out_entries {
+                        if let Some(edge) = g.edges.remove(&entry.edge_id.0) {
+                            if let Some(set) = g.reltype_index.get_mut(&edge.rel_type) {
+                                set.remove(&entry.edge_id.0);
+                            }
+                        }
+                        if let Some(in_list) = g.in_adj.get_mut(&entry.neighbor_id.0) {
+                            in_list.retain(|e| e.edge_id != entry.edge_id);
+                        }
+                    }
+                }
+                if let Some(in_entries) = g.in_adj.remove(&id.0) {
+                    for entry in &in_entries {
+                        if let Some(edge) = g.edges.remove(&entry.edge_id.0) {
+                            if let Some(set) = g.reltype_index.get_mut(&edge.rel_type) {
+                                set.remove(&entry.edge_id.0);
+                            }
+                        }
+                        if let Some(out_list) = g.out_adj.get_mut(&entry.neighbor_id.0) {
+                            out_list.retain(|e| e.edge_id != entry.edge_id);
+                        }
+                    }
+                }
+            } else {
+                g.out_adj.remove(&id.0);
+                g.in_adj.remove(&id.0);
+            }
+        }
+        Ok(())
+    }
+
+    /// Remove an edge from cache.
+    fn remove_edge_from_cache(&self, graph: &str, id: EdgeId) -> Result<(), StorageError> {
+        let mut guard = self
+            .cache
+            .inner
+            .write()
+            .map_err(|e| StorageError::backend(format!("lock poisoned: {e}")))?;
+        let graphs = Arc::make_mut(&mut guard);
+        let g = Self::get_graph_mut(graphs, graph)?;
+
+        if let Some(edge) = g.edges.remove(&id.0) {
+            if let Some(set) = g.reltype_index.get_mut(&edge.rel_type) {
+                set.remove(&id.0);
+            }
+            if let Some(out_list) = g.out_adj.get_mut(&edge.src.0) {
+                out_list.retain(|e| e.edge_id != id);
+            }
+            if let Some(in_list) = g.in_adj.get_mut(&edge.dst.0) {
+                in_list.retain(|e| e.edge_id != id);
+            }
+        }
+        Ok(())
     }
 }
 
@@ -389,8 +699,17 @@ impl GraphStore for CachedGraphStore {
         labels: Vec<String>,
         properties: IndexMap<String, Value>,
     ) -> Result<NodeId, StorageError> {
-        let id = self.backend.create_node(graph, labels, properties)?;
-        self.invalidate(graph);
+        let id = self
+            .backend
+            .create_node(graph, labels.clone(), properties.clone())?;
+        if self.is_cached(graph) {
+            let node = NodeData {
+                id,
+                labels,
+                properties,
+            };
+            self.inject_node_into_cache(graph, node)?;
+        }
         Ok(id)
     }
 
@@ -399,8 +718,17 @@ impl GraphStore for CachedGraphStore {
         graph: &str,
         nodes: Vec<(Vec<String>, IndexMap<String, Value>)>,
     ) -> Result<Vec<NodeId>, StorageError> {
-        let ids = self.backend.batch_create_nodes(graph, nodes)?;
-        self.invalidate(graph);
+        let ids = self.backend.batch_create_nodes(graph, nodes.clone())?;
+        if self.is_cached(graph) {
+            for (id, (labels, properties)) in ids.iter().zip(nodes) {
+                let node = NodeData {
+                    id: *id,
+                    labels,
+                    properties,
+                };
+                self.inject_node_into_cache(graph, node)?;
+            }
+        }
         Ok(ids)
     }
 
@@ -414,8 +742,17 @@ impl GraphStore for CachedGraphStore {
     ) -> Result<EdgeId, StorageError> {
         let id = self
             .backend
-            .create_edge(graph, src, dst, rel_type, properties)?;
-        self.invalidate(graph);
+            .create_edge(graph, src, dst, rel_type.clone(), properties.clone())?;
+        if self.is_cached(graph) {
+            let edge = EdgeData {
+                id,
+                src,
+                dst,
+                rel_type,
+                properties,
+            };
+            self.inject_edge_into_cache(graph, edge)?;
+        }
         Ok(id)
     }
 
@@ -424,8 +761,19 @@ impl GraphStore for CachedGraphStore {
         graph: &str,
         edges: Vec<(NodeId, NodeId, String, IndexMap<String, Value>)>,
     ) -> Result<Vec<EdgeId>, StorageError> {
-        let ids = self.backend.batch_create_edges(graph, edges)?;
-        self.invalidate(graph);
+        let ids = self.backend.batch_create_edges(graph, edges.clone())?;
+        if self.is_cached(graph) {
+            for (id, (src, dst, rel_type, properties)) in ids.iter().zip(edges) {
+                let edge = EdgeData {
+                    id: *id,
+                    src,
+                    dst,
+                    rel_type,
+                    properties,
+                };
+                self.inject_edge_into_cache(graph, edge)?;
+            }
+        }
         Ok(ids)
     }
 
@@ -435,8 +783,11 @@ impl GraphStore for CachedGraphStore {
         id: NodeId,
         properties: IndexMap<String, Value>,
     ) -> Result<(), StorageError> {
-        self.backend.set_node_properties(graph, id, properties)?;
-        self.invalidate(graph);
+        self.backend
+            .set_node_properties(graph, id, properties.clone())?;
+        if self.is_cached(graph) {
+            self.update_node_props_in_cache(graph, id, &properties)?;
+        }
         Ok(())
     }
 
@@ -447,8 +798,10 @@ impl GraphStore for CachedGraphStore {
         properties: IndexMap<String, Value>,
     ) -> Result<(), StorageError> {
         self.backend
-            .replace_node_properties(graph, id, properties)?;
-        self.invalidate(graph);
+            .replace_node_properties(graph, id, properties.clone())?;
+        if self.is_cached(graph) {
+            self.replace_node_props_in_cache(graph, id, &properties)?;
+        }
         Ok(())
     }
 
@@ -458,8 +811,11 @@ impl GraphStore for CachedGraphStore {
         id: EdgeId,
         properties: IndexMap<String, Value>,
     ) -> Result<(), StorageError> {
-        self.backend.set_edge_properties(graph, id, properties)?;
-        self.invalidate(graph);
+        self.backend
+            .set_edge_properties(graph, id, properties.clone())?;
+        if self.is_cached(graph) {
+            self.update_edge_props_in_cache(graph, id, &properties)?;
+        }
         Ok(())
     }
 
@@ -470,20 +826,26 @@ impl GraphStore for CachedGraphStore {
         properties: IndexMap<String, Value>,
     ) -> Result<(), StorageError> {
         self.backend
-            .replace_edge_properties(graph, id, properties)?;
-        self.invalidate(graph);
+            .replace_edge_properties(graph, id, properties.clone())?;
+        if self.is_cached(graph) {
+            self.replace_edge_props_in_cache(graph, id, &properties)?;
+        }
         Ok(())
     }
 
     fn remove_node_property(&self, graph: &str, id: NodeId, key: &str) -> Result<(), StorageError> {
         self.backend.remove_node_property(graph, id, key)?;
-        self.invalidate(graph);
+        if self.is_cached(graph) {
+            self.remove_node_prop_in_cache(graph, id, key)?;
+        }
         Ok(())
     }
 
     fn remove_edge_property(&self, graph: &str, id: EdgeId, key: &str) -> Result<(), StorageError> {
         self.backend.remove_edge_property(graph, id, key)?;
-        self.invalidate(graph);
+        if self.is_cached(graph) {
+            self.remove_edge_prop_in_cache(graph, id, key)?;
+        }
         Ok(())
     }
 
@@ -494,7 +856,9 @@ impl GraphStore for CachedGraphStore {
         labels: &[String],
     ) -> Result<(), StorageError> {
         self.backend.add_node_labels(graph, id, labels)?;
-        self.invalidate(graph);
+        if self.is_cached(graph) {
+            self.add_labels_in_cache(graph, id, labels)?;
+        }
         Ok(())
     }
 
@@ -505,19 +869,25 @@ impl GraphStore for CachedGraphStore {
         labels: &[String],
     ) -> Result<(), StorageError> {
         self.backend.remove_node_labels(graph, id, labels)?;
-        self.invalidate(graph);
+        if self.is_cached(graph) {
+            self.remove_labels_in_cache(graph, id, labels)?;
+        }
         Ok(())
     }
 
     fn delete_node(&self, graph: &str, id: NodeId, detach: bool) -> Result<(), StorageError> {
         self.backend.delete_node(graph, id, detach)?;
-        self.invalidate(graph);
+        if self.is_cached(graph) {
+            self.remove_node_from_cache(graph, id, detach)?;
+        }
         Ok(())
     }
 
     fn delete_edge(&self, graph: &str, id: EdgeId) -> Result<(), StorageError> {
         self.backend.delete_edge(graph, id)?;
-        self.invalidate(graph);
+        if self.is_cached(graph) {
+            self.remove_edge_from_cache(graph, id)?;
+        }
         Ok(())
     }
 
@@ -530,13 +900,17 @@ impl GraphStore for CachedGraphStore {
 
     fn create_index(&self, graph: &str, label: &str, property: &str) -> Result<(), StorageError> {
         self.backend.create_index(graph, label, property)?;
-        self.invalidate(graph);
+        if self.is_cached(graph) {
+            self.cache.create_index(graph, label, property)?;
+        }
         Ok(())
     }
 
     fn drop_index(&self, graph: &str, label: &str, property: &str) -> Result<(), StorageError> {
         self.backend.drop_index(graph, label, property)?;
-        self.invalidate(graph);
+        if self.is_cached(graph) {
+            self.cache.drop_index(graph, label, property)?;
+        }
         Ok(())
     }
 
@@ -555,8 +929,11 @@ impl GraphStore for CachedGraphStore {
         constraint_type: ConstraintType,
     ) -> Result<(), StorageError> {
         self.backend
-            .create_constraint(graph, label, property, constraint_type)?;
-        self.invalidate(graph);
+            .create_constraint(graph, label, property, constraint_type.clone())?;
+        if self.is_cached(graph) {
+            self.cache
+                .create_constraint(graph, label, property, constraint_type)?;
+        }
         Ok(())
     }
 
@@ -567,7 +944,9 @@ impl GraphStore for CachedGraphStore {
         property: &str,
     ) -> Result<(), StorageError> {
         self.backend.drop_constraint(graph, label, property)?;
-        self.invalidate(graph);
+        if self.is_cached(graph) {
+            self.cache.drop_constraint(graph, label, property)?;
+        }
         Ok(())
     }
 
@@ -730,27 +1109,37 @@ mod tests {
     }
 
     #[test]
-    fn invalidation_after_write() {
+    fn write_through_keeps_cache_valid() {
         let backend = make_backend();
         let cached = CachedGraphStore::new(backend.clone());
 
         cached.create_graph("g").unwrap();
+        // Cache is not loaded yet (create_graph doesn't auto-cache).
+        assert!(!cached.is_cached("g"));
+
+        // First read loads the cache.
+        let _ = cached.all_node_ids("g").unwrap();
+        assert!(cached.is_cached("g"));
+
+        // Create node — write-through keeps cache valid.
         let nid = cached
             .create_node("g", vec!["X".into()], IndexMap::new())
             .unwrap();
-
-        // After create_node, cache should be invalidated.
-        assert!(!cached.is_cached("g"));
-
-        // Reading reloads the cache.
-        let _ = cached.get_node("g", nid).unwrap();
         assert!(cached.is_cached("g"));
 
-        // Mutation invalidates again.
+        // Node is visible through cache without reload.
+        let node = cached.get_node("g", nid).unwrap();
+        assert!(node.is_some());
+
+        // Property update — cache stays valid.
         let mut props = IndexMap::new();
         props.insert("key".to_string(), Value::Str("val".into()));
         cached.set_node_properties("g", nid, props).unwrap();
-        assert!(!cached.is_cached("g"));
+        assert!(cached.is_cached("g"));
+
+        // Property visible through cache.
+        let node = cached.get_node("g", nid).unwrap().unwrap();
+        assert_eq!(node.properties.get("key"), Some(&Value::Str("val".into())));
     }
 
     #[test]

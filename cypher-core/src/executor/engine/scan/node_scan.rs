@@ -131,6 +131,11 @@ impl<'a> QueryExecutor<'a> {
         };
 
         let resolve_ids = |evaluated_value: &Option<Value>| -> Result<Vec<NodeId>, GqlError> {
+            // If the value expression evaluated to NULL (e.g. property access on
+            // a null node), no node can match — return empty immediately.
+            if matches!(evaluated_value, Some(Value::Null)) {
+                return Ok(vec![]);
+            }
             let range_query = match evaluated_value {
                 Some(v) => RangeQuery::Eq(v),
                 None => RangeQuery::Gte(&Value::Null),
@@ -142,24 +147,7 @@ impl<'a> QueryExecutor<'a> {
                 range_query,
             );
             match store_result {
-                Ok(node_ids) => {
-                    if node_ids.is_empty() && evaluated_value.is_none() {
-                        // Wildcard scan: index returned empty, enumerate nodes
-                        // that have the property at all.
-                        let all_label = self.store.find_nodes_by_label(cx.graph, label.as_str())?;
-                        let mut with_prop = Vec::new();
-                        for id in all_label {
-                            if let Some(node) = self.store.get_node(cx.graph, id)? {
-                                if node.properties.contains_key(property.as_str()) {
-                                    with_prop.push(id);
-                                }
-                            }
-                        }
-                        Ok(with_prop)
-                    } else {
-                        Ok(node_ids)
-                    }
-                }
+                Ok(node_ids) => Ok(node_ids),
                 Err(StorageError::NoPropertyIndex { .. }) => {
                     // No index available — explicit label scan + filter.
                     let all_label = self.store.find_nodes_by_label(cx.graph, label.as_str())?;
