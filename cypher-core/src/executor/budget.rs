@@ -26,8 +26,18 @@ use crate::error::{ExecutionError, GqlError};
 /// Default query timeout: 30 seconds. Can be overridden via `GQL.CONFIG SET query-timeout-ms`.
 pub const DEFAULT_TIMEOUT_MS: u64 = 30_000;
 
-/// Default maximum intermediate rows. Can be overridden via `GQL.CONFIG SET query-max-rows`.
-pub const DEFAULT_MAX_ROWS: usize = 10_000_000;
+/// Default maximum intermediate rows. Can be overridden via:
+/// - Environment variable `SD2_QUERY_MAX_ROWS` (e.g. `SD2_QUERY_MAX_ROWS=100000000`)
+/// - `GQL.CONFIG SET query-max-rows`
+pub const DEFAULT_MAX_ROWS: usize = usize::MAX;
+
+/// Read max rows from environment, falling back to `DEFAULT_MAX_ROWS`.
+pub fn configured_max_rows() -> usize {
+    std::env::var("SD2_QUERY_MAX_ROWS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(DEFAULT_MAX_ROWS)
+}
 
 /// Default maximum depth for unbounded variable-length patterns `[*]`.
 /// A query with `[*]` uses this as the effective upper bound.

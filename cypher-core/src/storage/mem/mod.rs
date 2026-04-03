@@ -419,12 +419,24 @@ impl GraphStore for InMemoryGraphStore {
             ));
         }
 
-        // No silent fallback: refuse to scan all nodes and pretend it was
-        // selective.  Callers must handle NoPropertyIndex explicitly.
-        Err(StorageError::NoPropertyIndex {
-            label: label.to_string(),
-            property: property.to_string(),
-        })
+        // No declared index — do in-memory label scan + property filter.
+        let label_nodes = self.find_nodes_by_label(graph, label)?;
+        let mut matched = Vec::new();
+        for id in label_nodes {
+            if let Some(node) = self.get_node(graph, id)? {
+                if let Some(val) = node.properties.get(property) {
+                    let is_match = match &range {
+                        RangeQuery::Eq(expected) => val == *expected,
+                        _ => true,
+                    };
+                    if is_match {
+                        matched.push(id);
+                    }
+                }
+            }
+        }
+
+        Ok(matched)
     }
 
     fn find_edges_by_type(&self, graph: &str, rel_type: &str) -> Result<Vec<EdgeId>, StorageError> {

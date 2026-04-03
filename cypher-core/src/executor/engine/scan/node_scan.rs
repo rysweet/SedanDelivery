@@ -148,24 +148,20 @@ impl<'a> QueryExecutor<'a> {
             );
             match store_result {
                 Ok(node_ids) => Ok(node_ids),
-                Err(StorageError::NoPropertyIndex { .. }) => {
-                    // No index available — explicit label scan + filter.
-                    let all_label = self.store.find_nodes_by_label(cx.graph, label.as_str())?;
-                    let mut filtered = Vec::new();
-                    for id in all_label {
-                        if let Some(node) = self.store.get_node(cx.graph, id)? {
-                            if let Some(val) = node.properties.get(property.as_str()) {
-                                let matches = match evaluated_value {
-                                    Some(ev) => val == ev,
-                                    None => true,
-                                };
-                                if matches {
-                                    filtered.push(id);
-                                }
-                            }
-                        }
-                    }
-                    Ok(filtered)
+                Err(StorageError::NoPropertyIndex {
+                    label: l,
+                    property: p,
+                }) => {
+                    // Stores MUST implement find_nodes_by_label_and_property
+                    // internally (even without declared indexes). The executor
+                    // must NOT fall back to a full label scan — that creates a
+                    // cartesian product in UNWIND + Apply contexts (#1090).
+                    Err(GqlError::Execution(ExecutionError::UnsupportedFeature {
+                        feature: format!(
+                            "Store returned NoPropertyIndex for {l}.{p} — \
+                             store must handle label+property scan internally"
+                        ),
+                    }))
                 }
                 Err(e) => Err(e.into()),
             }

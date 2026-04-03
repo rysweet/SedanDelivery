@@ -70,7 +70,7 @@ impl Default for EngineConfig {
     fn default() -> Self {
         Self {
             query_timeout_ms: 30_000,
-            query_max_rows: 10_000_000,
+            query_max_rows: usize::MAX,
             varlen_max_depth: 30,
             max_query_size: 67_108_864,
             parser_max_depth: 256,
@@ -216,7 +216,7 @@ mod tests {
     fn default_values_match_legacy_constants() {
         let cfg = EngineConfig::default();
         assert_eq!(cfg.query_timeout_ms, 30_000);
-        assert_eq!(cfg.query_max_rows, 10_000_000);
+        assert_eq!(cfg.query_max_rows, usize::MAX);
         assert_eq!(cfg.varlen_max_depth, 30);
         assert_eq!(cfg.max_query_size, 67_108_864);
         assert_eq!(cfg.parser_max_depth, 256);

@@ -401,12 +401,47 @@ impl RedisGraphStore {
             }
         }
 
-        // No silent fallback: refuse to scan all nodes and pretend it was
-        // selective.  Callers must handle NoPropertyIndex explicitly.
-        Err(StorageError::NoPropertyIndex {
-            label: label.to_string(),
-            property: property.to_string(),
-        })
+        // No declared property index — do a label scan + property filter in Redis.
+        // This is slower than a property index but avoids the executor's fallback
+        // which creates a cartesian product when used inside UNWIND + Apply.
+        let label_members = smembers_or_scan(
+            conn.as_mut(),
+            &self.kp(key_label(graph, label)),
+            smembers_threshold(),
+        )?;
+
+        // Parse member strings to u64 IDs, skip invalid ones.
+        let node_ids: Vec<u64> = label_members
+            .iter()
+            .filter_map(|s| s.parse::<u64>().ok())
+            .collect();
+
+        // Pipeline HGET calls for the target property on all label members.
+        let mut pipe = redis::pipe();
+        for &nid in &node_ids {
+            pipe.hget(self.kp(key_node(graph, nid)), "props");
+        }
+        let props_results: Vec<Option<String>> = pipe
+            .query(conn.as_mut())
+            .unwrap_or_else(|_| vec![None; node_ids.len()]);
+
+        let mut matched = Vec::new();
+        for (&node_id, props_json) in node_ids.iter().zip(props_results.iter()) {
+            if let Some(json) = props_json {
+                if let Ok(props) = json_to_props(json) {
+                    if let Some(val) = props.get(property) {
+                        let matches = match &range {
+                            RangeQuery::Eq(expected) => val == *expected,
+                            _ => true, // Non-eq ranges: include all and let executor filter
+                        };
+                        if matches {
+                            matched.push(NodeId(node_id));
+                        }
+                    }
+                }
+            }
+        }
+        Ok(matched)
     }
 
     pub(crate) fn find_edges_by_type_impl(

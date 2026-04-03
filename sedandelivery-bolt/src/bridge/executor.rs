@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
 use cypher_core::error::GqlError;
-use cypher_core::executor::budget::{OperatorProfileStats, DEFAULT_MAX_ROWS};
+use cypher_core::executor::budget::{configured_max_rows, OperatorProfileStats};
 use cypher_core::executor::{ExecutionBudget, MutationStats, QueryExecutor, QueryResult};
 use cypher_core::parser::parse_query;
 use cypher_core::plan_cache;
@@ -80,9 +80,13 @@ pub fn execute_query(
     };
 
     let executor = QueryExecutor::with_context(store, &registry, params);
+    let max_rows = configured_max_rows();
     let mut budget = match timeout_ms {
-        Some(ms) => ExecutionBudget::new(Duration::from_millis(ms), DEFAULT_MAX_ROWS),
-        None => ExecutionBudget::default_budget(),
+        Some(ms) => ExecutionBudget::new(Duration::from_millis(ms), max_rows),
+        None => ExecutionBudget::new(
+            Duration::from_millis(cypher_core::executor::budget::DEFAULT_TIMEOUT_MS),
+            max_rows,
+        ),
     };
     executor.execute(graph, &plan, &mut budget)
 }
@@ -138,9 +142,13 @@ pub fn execute_query_with_profiling<T>(
     };
 
     let executor = QueryExecutor::with_context(store, &registry, params);
+    let max_rows = configured_max_rows();
     let mut budget = match timeout_ms {
-        Some(ms) => ExecutionBudget::new(Duration::from_millis(ms), DEFAULT_MAX_ROWS),
-        None => ExecutionBudget::default_budget(),
+        Some(ms) => ExecutionBudget::new(Duration::from_millis(ms), max_rows),
+        None => ExecutionBudget::new(
+            Duration::from_millis(cypher_core::executor::budget::DEFAULT_TIMEOUT_MS),
+            max_rows,
+        ),
     };
     budget.enable_profiling();
     let result = executor.execute(graph, &plan, &mut budget)?;

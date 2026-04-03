@@ -3043,3 +3043,153 @@ fn test_batch_merge_dedup_identical_rows() {
         assert_eq!(&row["rid"], first_rid);
     }
 }
+
+#[test]
+fn issue_1090_cached_store_property_match() {
+    // Test that CachedGraphStore correctly matches properties after load.
+    use cypher_core::storage::{cached::CachedGraphStore, GraphStore};
+
+    let backend = make_store();
+
+    // Create nodes in backend
+    for i in 0..10u32 {
+        let mut props = IndexMap::new();
+        props.insert("id".to_string(), Value::Str(format!("r{i}").into()));
+        props.insert("node_type".to_string(), Value::Str("Original".into()));
+        backend
+            .create_node("test", vec!["Resource".to_string()], props)
+            .unwrap();
+    }
+
+    // Wrap in CachedGraphStore
+    let cached = CachedGraphStore::new(std::sync::Arc::new(backend));
+
+    // Try find_nodes_by_label_and_property via the cached store
+    let result = cached.find_nodes_by_label_and_property(
+        "test",
+        "Resource",
+        "id",
+        cypher_core::storage::RangeQuery::Eq(&Value::Str("r0".into())),
+    );
+
+    match result {
+        Ok(ids) => {
+            eprintln!("CachedStore returned {} nodes for id=r0", ids.len());
+            assert_eq!(
+                ids.len(),
+                1,
+                "Should find exactly 1 node with id=r0, got {}",
+                ids.len()
+            );
+        }
+        Err(e) => {
+            eprintln!("CachedStore ERROR: {:?}", e);
+            panic!("find_nodes_by_label_and_property failed: {:?}", e);
+        }
+    }
+
+    // Also test with node_type
+    let result2 = cached.find_nodes_by_label_and_property(
+        "test",
+        "Resource",
+        "node_type",
+        cypher_core::storage::RangeQuery::Eq(&Value::Str("Original".into())),
+    );
+    match result2 {
+        Ok(ids) => {
+            eprintln!(
+                "CachedStore returned {} nodes for node_type=Original",
+                ids.len()
+            );
+            assert_eq!(
+                ids.len(),
+                10,
+                "Should find all 10 nodes with node_type=Original, got {}",
+                ids.len()
+            );
+        }
+        Err(e) => panic!("failed: {:?}", e),
+    }
+}
+
+#[test]
+fn issue_1090_cached_store_unwind_merge_5k() {
+    use cypher_core::storage::{cached::CachedGraphStore, GraphStore};
+
+    let backend = make_store();
+
+    // Create 5000 nodes
+    for i in 0..5000u32 {
+        let mut props = IndexMap::new();
+        props.insert("id".to_string(), Value::Str(format!("r{i}").into()));
+        props.insert("node_type".to_string(), Value::Str("Original".into()));
+        backend
+            .create_node("test", vec!["Resource".to_string()], props)
+            .unwrap();
+    }
+
+    let cached = CachedGraphStore::new(std::sync::Arc::new(backend));
+
+    let edges: Vec<Value> = (0..25u32)
+        .map(|i| {
+            Value::Map(
+                vec![
+                    (
+                        "sourceId".to_string().into_boxed_str(),
+                        Value::Str(format!("r{}", i * 2).into()),
+                    ),
+                    (
+                        "targetId".to_string().into_boxed_str(),
+                        Value::Str(format!("r{}", i * 2 + 1).into()),
+                    ),
+                    (
+                        "edgeId".to_string().into_boxed_str(),
+                        Value::Str(format!("e{i}").into()),
+                    ),
+                    (
+                        "edgeType".to_string().into_boxed_str(),
+                        Value::Str("BELONGS_TO_SUBSCRIPTION".into()),
+                    ),
+                    (
+                        "nodeType".to_string().into_boxed_str(),
+                        Value::Str("Original".into()),
+                    ),
+                ]
+                .into_iter()
+                .collect(),
+            )
+        })
+        .collect();
+
+    let mut params = HashMap::new();
+    params.insert("edges".to_string(), Value::List(edges));
+
+    let q = parse_query(
+        "UNWIND $edges AS edge \
+         MATCH (a:Resource {id: edge.sourceId, node_type: edge.nodeType}), \
+               (b:Resource {id: edge.targetId, node_type: edge.nodeType}) \
+         MERGE (a)-[e:BELONGS_TO_SUBSCRIPTION {edge_id: edge.edgeId}]->(b) \
+         SET e.edge_type = edge.edgeType, e.node_type = edge.nodeType",
+    )
+    .unwrap();
+
+    let registry = ProcedureRegistry::new();
+    let planner = QueryPlanner::with_context(&cached, "test", &registry, &params);
+    let plan = planner.plan(&q).unwrap();
+
+    let executor = QueryExecutor::with_context(&cached, &registry, params);
+    let mut budget = ExecutionBudget::new(Duration::from_secs(30), 10_000_000);
+    let result = executor.execute("test", &plan, &mut budget).unwrap();
+
+    eprintln!(
+        "CACHED STORE: edges_created={} budget_rows={}",
+        result.stats.edges_created,
+        budget.rows_produced()
+    );
+    assert_eq!(result.stats.edges_created, 25, "Should create 25 edges");
+    assert!(
+        budget.rows_produced() < 10000,
+        "Budget should be well under 10M, got {}",
+        budget.rows_produced()
+    );
+}

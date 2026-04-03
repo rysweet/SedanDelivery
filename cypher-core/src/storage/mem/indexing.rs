@@ -244,7 +244,6 @@ pub(crate) fn drop_index_impl(
 mod tests {
     use indexmap::IndexMap;
 
-    use crate::error::StorageError;
     use crate::storage::mem::test_helpers::{make_indexed_store, make_store};
     use crate::storage::{GraphStore, RangeQuery};
     use crate::types::Value;
@@ -523,21 +522,22 @@ mod tests {
     fn drop_index_cleans_btreemap() {
         let store = make_indexed_store();
         let p = IndexMap::from([("age".to_string(), Value::Int(30))]);
-        store
+        let nid = store
             .create_node("test", vec!["Person".to_string()], p)
             .unwrap();
 
         store.drop_index("test", "Person", "age").unwrap();
 
-        // After dropping the index, querying by property must return
-        // NoPropertyIndex — no silent fallback.
+        // After dropping the index, the query falls back to label scan +
+        // property filter and still returns the matching node.
         let bound = Value::Int(30);
-        let err = store
+        let result = store
             .find_nodes_by_label_and_property("test", "Person", "age", RangeQuery::Eq(&bound))
-            .unwrap_err();
-        assert!(
-            matches!(err, StorageError::NoPropertyIndex { .. }),
-            "expected NoPropertyIndex after dropping index, got: {err:?}"
+            .unwrap();
+        assert_eq!(
+            result,
+            vec![nid],
+            "fallback scan should still find the node"
         );
     }
 
