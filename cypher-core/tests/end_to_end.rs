@@ -2714,6 +2714,90 @@ fn regression_1090_no_cartesian_product_with_5334_nodes() {
     );
 }
 
+/// Regression test for #1090: same as above but WITHOUT a declared index.
+/// The planner must still emit IndexScan using `.or_else(|| props.first())`
+/// so that `find_nodes_by_label_and_property` filters selectively.
+/// Without the fix, the planner falls through to NodeScan, producing a
+/// Cartesian product of 5334 × 5334 × edges that blows any row budget.
+#[test]
+fn regression_1090_index_scan_without_declared_index() {
+    let store = make_store();
+
+    // NO declared index — the planner must still choose IndexScan.
+
+    for i in 0..5334u32 {
+        let mut props = IndexMap::new();
+        props.insert("id".to_string(), Value::Str(format!("r{i}").into()));
+        props.insert("node_type".to_string(), Value::Str("TypeA".into()));
+        store
+            .create_node("test", vec!["Resource".to_string()], props)
+            .unwrap();
+    }
+
+    let edges: Vec<Value> = (0..20u32)
+        .map(|i| {
+            Value::Map(
+                vec![
+                    (
+                        "sourceId".to_string().into_boxed_str(),
+                        Value::Str(format!("r{}", i * 2).into()),
+                    ),
+                    (
+                        "targetId".to_string().into_boxed_str(),
+                        Value::Str(format!("r{}", i * 2 + 1).into()),
+                    ),
+                    (
+                        "nodeType".to_string().into_boxed_str(),
+                        Value::Str("TypeA".into()),
+                    ),
+                    (
+                        "edgeId".to_string().into_boxed_str(),
+                        Value::Str(format!("e{i}").into()),
+                    ),
+                ]
+                .into_iter()
+                .collect(),
+            )
+        })
+        .collect();
+
+    let mut params = HashMap::new();
+    params.insert("edges".to_string(), Value::List(edges));
+
+    let q = parse_query(
+        "UNWIND $edges AS edge \
+         MATCH (a:Resource {id: edge.sourceId, node_type: edge.nodeType}), \
+               (b:Resource {id: edge.targetId, node_type: edge.nodeType}) \
+         MERGE (a)-[e:CONNECTS {edge_id: edge.edgeId}]->(b) \
+         RETURN a.id AS src, b.id AS dst",
+    )
+    .unwrap();
+
+    let registry = ProcedureRegistry::new();
+    let planner = QueryPlanner::with_context(&store, "test", &registry, &params);
+    let plan = planner.plan(&q).unwrap();
+
+    // Verify the plan uses IndexScan even without a declared index.
+    let plan_debug = format!("{plan:?}");
+    assert!(
+        plan_debug.contains("IndexScan"),
+        "plan should use IndexScan via or_else(props.first()) even without declared index, got: {plan_debug}"
+    );
+
+    let executor = QueryExecutor::with_context(&store, &registry, params);
+    let mut budget = ExecutionBudget::new(Duration::from_secs(60), 5_000);
+    let result = executor.execute("test", &plan, &mut budget).unwrap();
+
+    assert_eq!(result.rows.len(), 20, "should produce one row per edge");
+    assert_eq!(result.stats.edges_created, 20, "should create 20 new edges");
+
+    assert!(
+        budget.rows_produced() < 500,
+        "without declared index, selective plan with 5334 nodes should use < 500 intermediate rows, got {}",
+        budget.rows_produced()
+    );
+}
+
 // ── Batch MERGE edge throughput tests (issue #1078) ─────────────────────────
 
 #[test]

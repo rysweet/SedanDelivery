@@ -1321,9 +1321,11 @@ mod tests {
     }
 
     #[test]
-    fn plan_no_index_uses_node_scan_not_index_scan() {
-        // Without a declared index the planner must NOT emit IndexScan —
-        // it falls back to an honest NodeScan + Filter instead.
+    fn plan_no_declared_index_still_uses_index_scan_with_inline_props() {
+        // Even without a declared index the planner should emit IndexScan
+        // when inline properties are present — find_nodes_by_label_and_property
+        // always filters selectively. Using NodeScan here causes Cartesian
+        // product explosions in multi-pattern MATCH (issue #1090).
         let store = make_store(); // no indexes
         let planner = QueryPlanner::new(&store, "g");
         let query = Query {
@@ -1360,8 +1362,8 @@ mod tests {
         };
         let plan = planner.plan(&query).unwrap();
         assert!(
-            !plan_contains_index_scan(&plan),
-            "Without a declared index, planner should use NodeScan not IndexScan, got: {plan:?}"
+            plan_contains_index_scan(&plan),
+            "With inline properties, planner should use IndexScan even without declared index, got: {plan:?}"
         );
     }
 

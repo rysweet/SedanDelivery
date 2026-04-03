@@ -107,10 +107,9 @@ impl<'s> QueryPlanner<'s> {
         }
 
         // Build the node scan for the first node.
-        // Only emit IndexScan when a declared property index exists.
-        // Without a declared index the store cannot guarantee selective
-        // lookups, so we fall back to NodeScan + Filter which is honest
-        // about its O(N) cost and properly tracked by the row budget.
+        // Prefer declared property index for IndexScan. If no declared index
+        // exists, still use IndexScan on the first property — the store's
+        // find_nodes_by_label_and_property always filters to matching nodes.
         let mut index_consumed_prop: Option<smol_str::SmolStr> = None;
         let start_map_props = match &start.properties {
             Some(Properties::Map(m)) => Some(m.as_slice()),
@@ -127,7 +126,8 @@ impl<'s> QueryPlanner<'s> {
                             idx.label == label.as_str() && idx.property == prop_key.as_str()
                         })
                     })
-                });
+                })
+                .or_else(|| props.first());
             if let Some((prop_key, prop_val)) = selected_prop {
                 index_consumed_prop = Some(prop_key.clone());
                 Operator::IndexScan {
