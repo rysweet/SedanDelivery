@@ -880,7 +880,7 @@ impl<'a> QueryExecutor<'a> {
                                 (*a as f64 - b).abs() < 1e-9
                             }
                             (Some(sel), Some(Value::Str(token))) if token.starts_with("__.") => {
-                                self.eval_choose_map_traversal_option(cx.graph, token, sel)
+                                self.eval_choose_map_traversal_option(cx.graph, token, sel)?
                             }
                             (Some(sel), Some(Value::Str(pred_str)))
                                 if pred_str.starts_with("P.") =>
@@ -1346,13 +1346,13 @@ impl<'a> QueryExecutor<'a> {
                 // Multiple by() keys — collect a map of {key1: val1, key2: val2, ...}
                 let mut map = IndexMap::new();
                 for by_prop in by_keys {
-                    let val = self.eval_gremlin_by_key(cx, row, value_alias, by_prop);
+                    let val = self.eval_gremlin_by_key(cx, row, value_alias, by_prop)?;
                     map.insert(by_prop.clone().into_boxed_str(), val);
                 }
                 collected.push(Value::Map(map));
             } else if let Some(by_prop) = by_keys.first() {
                 // Single by("prop") modulation: resolve property from the node/edge value
-                let projected = self.eval_gremlin_by_key(cx, row, value_alias, by_prop);
+                let projected = self.eval_gremlin_by_key(cx, row, value_alias, by_prop)?;
                 // Skip null values unless ProductiveByStrategy is active
                 if *productive || !matches!(projected, Value::Null) {
                     collected.push(projected);
@@ -1992,23 +1992,20 @@ impl<'a> QueryExecutor<'a> {
         row: &Row,
         value_alias: &Identifier,
         by_key: &str,
-    ) -> Value {
+    ) -> Result<Value, GqlError> {
         if let Some(selected) = row.get(value_alias.as_str()) {
             if by_key.starts_with('~') {
-                return self.resolve_prop_on_value(cx, by_key, selected);
+                return Ok(self.resolve_prop_on_value(cx, by_key, selected));
             }
         }
-        let ctx = self.build_filter_ctx(cx.graph, row).ok();
+        let ctx = self.build_filter_ctx(cx.graph, row)?;
         let prop_expr = Expr::Property(
             Box::new(Expr::Variable(value_alias.clone())),
             smol_str::SmolStr::new(by_key),
         );
-        if let Some(ctx) = ctx {
-            self.eval_with_storage(cx.graph, &prop_expr, row, &ctx)
-                .unwrap_or(Value::Null)
-        } else {
-            Value::Null
-        }
+        Ok(self
+            .eval_with_storage(cx.graph, &prop_expr, row, &ctx)
+            .unwrap_or(Value::Null))
     }
 
     /// For each input row, iterate through patterns. Each pattern is a
@@ -2512,7 +2509,10 @@ impl<'a> QueryExecutor<'a> {
                         }
                     }
                     if found.is_none() {
-                        // Try evaluating as expression (handles parameters, etc.)
+                        // Last-resort variable resolution via expression eval.
+                        // .ok() is intentional: a missing variable here means all
+                        // prior lookup paths failed, which is a valid "not found"
+                        // in Gremlin select() semantics — not an error to propagate.
                         let expr = Expr::Variable(src_var.clone());
                         crate::executor::filter::eval_expr(&expr, &ctx).ok()
                     } else {
@@ -3593,12 +3593,17 @@ impl<'a> QueryExecutor<'a> {
         Ok(out)
     }
 
-    fn eval_choose_map_traversal_option(&self, graph: &str, token: &str, value: &Value) -> bool {
+    fn eval_choose_map_traversal_option(
+        &self,
+        graph: &str,
+        token: &str,
+        value: &Value,
+    ) -> Result<bool, GqlError> {
         let Some(step) = token.strip_prefix("__.") else {
-            return false;
+            return Ok(false);
         };
         if step == "identity()" {
-            return !matches!(value, Value::Null);
+            return Ok(!matches!(value, Value::Null));
         }
         if let Some(args) = step
             .strip_prefix("hasLabel(")
@@ -3606,16 +3611,14 @@ impl<'a> QueryExecutor<'a> {
         {
             let parts = parse_gremlin_option_args(args);
             let Some(label) = parts.first() else {
-                return false;
+                return Ok(false);
             };
             let label = trim_gremlin_option_string(label);
             return match value {
-                Value::Node(node_id) => self
-                    .cached_get_node(graph, *node_id)
-                    .ok()
-                    .flatten()
-                    .is_some_and(|node| node.labels.iter().any(|l| l == label)),
-                _ => false,
+                Value::Node(node_id) => Ok(self
+                    .cached_get_node(graph, *node_id)?
+                    .is_some_and(|node| node.labels.iter().any(|l| l == label))),
+                _ => Ok(false),
             };
         }
         if let Some(args) = step
@@ -3624,32 +3627,28 @@ impl<'a> QueryExecutor<'a> {
         {
             let parts = parse_gremlin_option_args(args);
             if parts.is_empty() {
-                return false;
+                return Ok(false);
             }
             let key = trim_gremlin_option_string(&parts[0]);
             let actual = match value {
                 Value::Node(node_id) => self
-                    .cached_get_node(graph, *node_id)
-                    .ok()
-                    .flatten()
+                    .cached_get_node(graph, *node_id)?
                     .and_then(|node| node.properties.get(key).cloned()),
                 Value::Edge(edge_id) => self
-                    .cached_get_edge(graph, *edge_id)
-                    .ok()
-                    .flatten()
+                    .cached_get_edge(graph, *edge_id)?
                     .and_then(|edge| edge.properties.get(key).cloned()),
                 Value::Map(map) => map.get(key).cloned(),
                 _ => None,
             };
             return if parts.len() == 1 {
-                actual.is_some_and(|v| !matches!(v, Value::Null))
+                Ok(actual.is_some_and(|v| !matches!(v, Value::Null)))
             } else if let Some(actual) = actual {
-                actual == parse_gremlin_option_value(&parts[1])
+                Ok(actual == parse_gremlin_option_value(&parts[1]))
             } else {
-                false
+                Ok(false)
             };
         }
-        false
+        Ok(false)
     }
 }
 
