@@ -76,7 +76,7 @@ jobs:
             if [[ "${RAW_BRANCH}" == "main" ]]; then
               ENV_NAME="main"
             else
-              ENV_NAME=$(echo "${RAW_BRANCH}" | sed 's/[^a-zA-Z0-9-]/-/g' | tr '[:upper:]' '[:lower:]' | cut -c1-20 | sed 's/^-*//;s/-*$//')
+              ENV_NAME=$(echo "${RAW_BRANCH}" | sed 's/[^a-zA-Z0-9-]/-/g' | tr '[:upper:]' '[:lower:]' | sed 's/--*/-/g' | cut -c1-20 | sed 's/^-*//;s/-*$//')
               if [[ -z "${ENV_NAME}" ]]; then
                 ENV_NAME="deploy"
               fi
