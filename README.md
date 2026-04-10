@@ -252,21 +252,21 @@ Cleanup: remove the `deploy` label, or run the **Undeploy** workflow.
 
 ## Fabric Graph Replication
 
-Every deployment automatically replicates graph data to [Microsoft Fabric Graph Database](https://learn.microsoft.com/fabric/). No extra configuration is needed -- `ENABLE_FABRIC` is `true` by default.
+Every deployment automatically replicates graph data to [Microsoft Fabric](https://learn.microsoft.com/fabric/). No extra configuration is needed -- `ENABLE_FABRIC` is `true` by default.
 
 **How it works:**
 
 1. The GQL module writes every mutation to a Valkey stream (`__sd2:changelog`)
-2. A `sedandelivery-fabric-sync` sidecar container reads that stream
-3. The sidecar replays each change against the Fabric Graph Database REST API
+2. The `sd2-{env}-sync` Container App, built from the `sedandelivery-fabric-sync` image, reads that stream
+3. The sidecar refreshes the Fabric GraphModel through the Fabric REST API
 
 This gives you low-latency reads from the co-located Valkey container and a durable, queryable graph in Fabric for analytics, cross-service joins, and the Fabric portal query editor.
 
 **View your data in Fabric:**
 
 1. Open [app.fabric.microsoft.com](https://app.fabric.microsoft.com)
-2. Find the **SedanDelivery-{env}** workspace (e.g., `SedanDelivery-mybranch`)
-3. Open the **sedan-graph** Graph Database
+2. Find the **SD2-{env}** workspace (e.g., `SD2-mybranch`)
+3. Open the **sedangraph** GraphModel
 4. Browse nodes and relationships, or run openCypher queries in the query editor
 
 See [docs/FABRIC_TUTORIAL.md](docs/FABRIC_TUTORIAL.md) for the complete walkthrough: writing data, querying in Fabric, REST API access, and monitoring replication.

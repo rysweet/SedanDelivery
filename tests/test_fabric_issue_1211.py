@@ -13,6 +13,12 @@ ROOT = Path(__file__).resolve().parent.parent
 VALIDATOR = ROOT / "scripts" / "validate-fabric-e2e.py"
 PROVISION_FABRIC_SH = ROOT / "scripts" / "provision-fabric.sh"
 E2E_FABRIC_YML = ROOT / ".github" / "workflows" / "e2e-fabric.yml"
+README_MD = ROOT / "README.md"
+FABRIC_TUTORIAL_MD = ROOT / "docs" / "FABRIC_TUTORIAL.md"
+SECRETS_MD = ROOT / "docs" / "secrets.md"
+INDEX_MD = ROOT / "docs" / "index.md"
+AUTO_SCALING_MD = ROOT / "docs" / "auto-scaling.md"
+ARCHITECTURE_MD = ROOT / "docs" / "architecture.md"
 
 CANONICAL_SANITIZER = (
     "sed 's/[^a-zA-Z0-9-]/-/g' | tr '[:upper:]' '[:lower:]' | "
@@ -56,6 +62,11 @@ class TestWorkflowEnvironmentSanitizationParity:
         text = _squash_whitespace(E2E_FABRIC_YML.read_text())
         assert CANONICAL_SANITIZER in text
         assert LEGACY_SANITIZER not in text
+
+    def test_e2e_workflow_reads_sync_container_app(self) -> None:
+        text = E2E_FABRIC_YML.read_text()
+        assert '--name "sd2-${ENV_NAME}-sync"' in text
+        assert '--name "sd2-${ENV_NAME}-fabric-sync"' not in text
 
 
 class TestOAuthTokenEncoding:
@@ -120,3 +131,33 @@ class TestPointRoundTripValidation:
 
         assert not result.passed
         assert expected_detail in result.detail
+
+
+class TestFabricContractDocumentation:
+    @pytest.mark.parametrize(
+        ("path", "expected", "unexpected"),
+        [
+            (README_MD, "sd2-{env}-sync", "sd2-{env}-fabric-sync"),
+            (FABRIC_TUTORIAL_MD, "sd2-{env}-sync", "sd2-{env}-fabric-sync"),
+            (SECRETS_MD, "sd2-{env}-sync", "sd2-{env}-fabric-sync"),
+            (INDEX_MD, "sd2-env-sync", "sd2-env-fabric-sync"),
+            (AUTO_SCALING_MD, "sd2-main-sync", "sd2-main-fabric-sync"),
+            (ARCHITECTURE_MD, "sd2-main-sync", "sd2-main-fabric-sync"),
+        ],
+    )
+    def test_docs_use_live_sync_container_app_names(
+        self,
+        path: Path,
+        expected: str,
+        unexpected: str,
+    ) -> None:
+        text = path.read_text()
+        assert expected in text
+        assert unexpected not in text
+
+    def test_tutorial_uses_graphmodel_rest_contract(self) -> None:
+        text = FABRIC_TUTORIAL_MD.read_text()
+        assert "GraphModels/{graphmodel-id}/executeQuery?preview=true" in text
+        assert "items?type=GraphModel" in text
+        assert "graphDatabases/{gdb-id}" not in text
+        assert "items?type=GraphQLApi" not in text

@@ -234,10 +234,17 @@ Graph Databases. If your SP was created with `Contributor` role on the subscript
 | `BOLT_TLS_CERT` | Mounted from Container App secret `bolt-tls-cert`, populated from GitHub secret `DEPLOY_BOLT_TLS_CERT_PEM` | `sd2-{env}-bolt` |
 | `BOLT_TLS_KEY` | Mounted from Container App secret `bolt-tls-key`, populated from GitHub secret `DEPLOY_BOLT_TLS_KEY_PEM` | `sd2-{env}-bolt` |
 | `GQL_FABRIC_CHANGELOG` | Set to `1` when Fabric is enabled | `sd2-{env}-redis` (main) |
-| `GQL_FABRIC_ENDPOINT` | Output of `provision-fabric.sh` | `sd2-{env}-fabric-sync` (sidecar) |
-| `GQL_FABRIC_TENANT_ID` | `AZURE_TENANT_ID` secret | `sd2-{env}-fabric-sync` (sidecar) |
-| `GQL_FABRIC_CLIENT_ID` | `AZURE_CLIENT_ID` secret | `sd2-{env}-fabric-sync` (sidecar) |
-| `GQL_FABRIC_CLIENT_SECRET` | `secretref:fabric-client-secret` | `sd2-{env}-fabric-sync` (sidecar) |
+| `GQL_FABRIC_ENDPOINT` | Output of `provision-fabric.sh` | `sd2-{env}-sync` (Fabric sync Container App) |
+| `GQL_FABRIC_TENANT_ID` | `AZURE_TENANT_ID` secret | `sd2-{env}-sync` (Fabric sync Container App) |
+| `GQL_FABRIC_CLIENT_ID` | `AZURE_CLIENT_ID` secret | `sd2-{env}-sync` (Fabric sync Container App) |
+| `GQL_FABRIC_CLIENT_SECRET` | `secretref:fabric-client-secret` | `sd2-{env}-sync` (Fabric sync Container App) |
+
+The deployed Container App name is `sd2-{env}-sync`. The image and executable
+name remain `sedandelivery-fabric-sync`.
+
+For local validation, read `GQL_FABRIC_ENDPOINT` from `sd2-{env}-sync` and
+export the same value as `FABRIC_ENDPOINT` before running
+`scripts/validate-fabric-e2e.py`.
 
 The deploy workflow reuses `bolt-password` on updates so routine image rollouts
 do not silently rotate client credentials. Delete the Container App secret only

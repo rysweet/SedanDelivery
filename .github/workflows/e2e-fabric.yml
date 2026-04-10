@@ -143,9 +143,9 @@ jobs:
             echo "redis_password=${VALKEY_PASS}" >> "$GITHUB_OUTPUT"
           fi
 
-          # Retrieve Fabric IDs from the sync sidecar's env vars
+          # Retrieve Fabric IDs from the sync Container App env vars
           FABRIC_ENDPOINT=$(az containerapp show \
-            --name "sd2-${ENV_NAME}-fabric-sync" \
+            --name "sd2-${ENV_NAME}-sync" \
             --resource-group "${RG}" \
             --query "properties.template.containers[0].env[?name=='GQL_FABRIC_ENDPOINT'].value | [0]" \
             --output tsv 2>/dev/null || echo "")

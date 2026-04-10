@@ -55,13 +55,16 @@ The deployment workflow will:
    **SD2-{env}** with a Lakehouse (**sd2lakehouse**) and GraphModel (**sedangraph**)
 3. Build and deploy the main Valkey+GQL container (`sd2-{env}-redis`)
    with `GQL_FABRIC_CHANGELOG=1` to enable changelog writes
-4. Build and deploy the `sedandelivery-fabric-sync` sidecar (`sd2-{env}-fabric-sync`)
-   which reads the changelog stream
+4. Build and deploy the `sedandelivery-fabric-sync` sidecar as the
+   `sd2-{env}-sync` Container App, which reads the changelog stream
 
 Data is synced to Fabric via `scripts/sync-to-onelake.py` which exports
 graph data as Parquet, uploads to the Lakehouse via OneLake, and refreshes
 the GraphModel. See [FABRIC_DATA_FLOW.md](FABRIC_DATA_FLOW.md) for the
 complete pipeline.
+
+The executable and image name remain `sedandelivery-fabric-sync`. The live
+Azure Container App resource name is `sd2-{env}-sync`.
 
 A bot comment on the PR will post the Redis endpoint when deployment completes
 (approximately 8 minutes).
@@ -131,11 +134,11 @@ After writing data, the sync sidecar replicates it to Fabric within seconds
 
 1. Open [app.fabric.microsoft.com](https://app.fabric.microsoft.com)
 2. In the left navigation, select **Workspaces**
-3. Find and open **SedanDelivery-{env}** (e.g., `SedanDelivery-my-feature`)
+3. Find and open **SD2-{env}** (e.g., `SD2-my-feature`)
 
-### Open the Graph Database
+### Open the GraphModel
 
-1. Inside the workspace, locate the **sedan-graph** item (type: Graph Database)
+1. Inside the workspace, locate the **sedangraph** item (type: GraphModel)
 2. Select it to open the graph explorer
 
 ### Browse nodes and relationships
@@ -165,9 +168,9 @@ MATCH path = (a:Person)-[:KNOWS*1..3]->(b:Person)
 RETURN a.name, b.name, length(path)
 ```
 
-## 4. Query Fabric Graph via REST API
+## 4. Query Fabric GraphModel via REST API
 
-You can query the Fabric Graph Database programmatically using the Fabric REST API.
+You can query the Fabric GraphModel programmatically using the Fabric REST API.
 
 ### Authentication
 
@@ -194,14 +197,22 @@ token = credential.get_token("https://api.fabric.microsoft.com/.default")
 
 ### Query endpoint URL
 
-The Fabric Graph Database endpoint follows this pattern:
+The deployed sync Container App stores `GQL_FABRIC_ENDPOINT` as the Fabric
+GraphModel base URL:
 
 ```
-https://api.fabric.microsoft.com/v1/workspaces/{workspace-id}/graphDatabases/{gdb-id}
+https://api.fabric.microsoft.com/v1/workspaces/{workspace-id}/GraphModels/{graphmodel-id}
 ```
 
-The `provision-fabric.sh` script outputs these IDs during deployment. You can also
-find the workspace ID in the Fabric portal URL.
+The live validator reuses that same value by exporting it as `FABRIC_ENDPOINT`
+and posting queries to:
+
+```
+https://api.fabric.microsoft.com/v1/workspaces/{workspace-id}/GraphModels/{graphmodel-id}/executeQuery?preview=true
+```
+
+The `provision-fabric.sh` script outputs these IDs during deployment. You can
+also find the workspace ID in the Fabric portal URL.
 
 ### Example REST API calls
 
@@ -215,25 +226,25 @@ curl -s -H "Authorization: Bearer ${TOKEN}" \
   | python3 -m json.tool
 ```
 
-**List items in the workspace** to find the graph database ID:
+**List items in the workspace** to find the GraphModel ID:
 
 ```bash
 WORKSPACE_ID="<your-workspace-id>"
 
 curl -s -H "Authorization: Bearer ${TOKEN}" \
-  "https://api.fabric.microsoft.com/v1/workspaces/${WORKSPACE_ID}/items?type=GraphQLApi" \
+  "https://api.fabric.microsoft.com/v1/workspaces/${WORKSPACE_ID}/items?type=GraphModel" \
   | python3 -m json.tool
 ```
 
-**Query the graph database:**
+**Query the GraphModel:**
 
 ```bash
-GDB_ID="<your-gdb-id>"
+GRAPHMODEL_ID="<your-graphmodel-id>"
 
 curl -s -X POST \
   -H "Authorization: Bearer ${TOKEN}" \
   -H "Content-Type: application/json" \
-  "https://api.fabric.microsoft.com/v1/workspaces/${WORKSPACE_ID}/graphDatabases/${GDB_ID}/query" \
+  "https://api.fabric.microsoft.com/v1/workspaces/${WORKSPACE_ID}/GraphModels/${GRAPHMODEL_ID}/executeQuery?preview=true" \
   -d '{"query": "MATCH (p:Person) RETURN p.name, p.age"}' \
   | python3 -m json.tool
 ```
@@ -254,29 +265,70 @@ token = credential.get_token("https://api.fabric.microsoft.com/.default").token
 
 # Query the graph
 workspace_id = "<your-workspace-id>"
-gdb_id = "<your-gdb-id>"
-url = f"https://api.fabric.microsoft.com/v1/workspaces/{workspace_id}/graphDatabases/{gdb_id}/query"
+graphmodel_id = "<your-graphmodel-id>"
+url = (
+    "https://api.fabric.microsoft.com/v1/workspaces/"
+    f"{workspace_id}/GraphModels/{graphmodel_id}/executeQuery?preview=true"
+)
 
 response = requests.post(
     url,
     headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
-    json={"query": "MATCH (p:Person)-[:WORKS_AT]->(c:Company) RETURN p.name, c.name"}
+    json={"query": "MATCH (p:Person)-[:WORKS_AT]->(c:Company) RETURN p.name AS person, c.name AS company"}
 )
-for record in response.json().get("results", []):
-    print(record)
+response.raise_for_status()
+payload = response.json()
+
+for row in payload["result"]["data"]:
+    person = row["person"]
+    company = row["company"]
+    if isinstance(person, dict) and "value" in person:
+        person = person["value"]
+    if isinstance(company, dict) and "value" in company:
+        company = company["value"]
+    print(person, company)
+```
+
+### Reuse the deployed endpoint with the validator
+
+The deploy workflow injects `GQL_FABRIC_ENDPOINT` into the `sd2-{env}-sync`
+Container App. When you run `scripts/validate-fabric-e2e.py` locally, export
+that same value as `FABRIC_ENDPOINT`:
+
+```bash
+ENV_NAME="my-feature"
+RG="rg-sd2-${ENV_NAME}"
+
+export FABRIC_ENDPOINT="$(az containerapp show \
+  --name "sd2-${ENV_NAME}-sync" \
+  --resource-group "${RG}" \
+  --query "properties.template.containers[0].env[?name=='GQL_FABRIC_ENDPOINT'].value | [0]" \
+  -o tsv)"
+export BOLT_URI="bolt://$(az containerapp show \
+  --name "sd2-${ENV_NAME}-bolt" \
+  --resource-group "${RG}" \
+  --query "properties.configuration.ingress.fqdn" \
+  -o tsv):7687"
+export FABRIC_TENANT_ID="<tenant-id>"
+export FABRIC_CLIENT_ID="<client-id>"
+export FABRIC_CLIENT_SECRET="<client-secret>"
+
+python scripts/validate-fabric-e2e.py \
+  --timeout 180 \
+  --report fabric-e2e-report.json
 ```
 
 ## 5. Monitor replication
 
 ### Check the sync sidecar logs
 
-View the `sedandelivery-fabric-sync` container logs in Azure:
+View the `sd2-{env}-sync` Container App logs in Azure:
 
 ```bash
 ENV_NAME="my-feature"
 
 az containerapp logs show \
-  --name "sd2-${ENV_NAME}-fabric-sync" \
+  --name "sd2-${ENV_NAME}-sync" \
   --resource-group "rg-sd2-${ENV_NAME}" \
   --follow
 ```
@@ -285,7 +337,7 @@ Healthy output shows batches being read from the changelog and written to Fabric
 
 ```
 [INFO] Connected to redis://sd2-my-feature-redis...internal:6379
-[INFO] Fabric endpoint: https://api.fabric.microsoft.com/v1/workspaces/.../graphDatabases/...
+[INFO] Fabric endpoint: https://api.fabric.microsoft.com/v1/workspaces/.../GraphModels/...
 [INFO] Batch 1: 5 events synced (12ms)
 [INFO] Batch 2: 3 events synced (8ms)
 ```
@@ -315,7 +367,7 @@ Each changelog entry contains the graph name, operation type (`CREATE_NODE`,
 ```bash
 # Verify the sidecar container is running
 az containerapp show \
-  --name "sd2-${ENV_NAME}-fabric-sync" \
+  --name "sd2-${ENV_NAME}-sync" \
   --resource-group "rg-sd2-${ENV_NAME}" \
   --query "properties.runningStatus" -o tsv
 ```
@@ -343,7 +395,7 @@ or Fabric capacity is not provisioned in the tenant.
 **Cause:** The sidecar may not be running, or it cannot reach the Fabric endpoint.
 
 **Fix:**
-1. Check sidecar logs: `az containerapp logs show --name "sd2-{env}-fabric-sync" --resource-group "rg-sd2-{env}"`
+1. Check sidecar logs: `az containerapp logs show --name "sd2-{env}-sync" --resource-group "rg-sd2-{env}"`
 2. Verify `GQL_FABRIC_ENDPOINT` is set: look for the endpoint URL in the logs
 3. Verify `GQL_FABRIC_CHANGELOG=1` is set on the main container -- without this,
    the GQL module does not write to the `__sd2:changelog` stream
@@ -359,7 +411,7 @@ consuming events.
 1. Check sidecar logs for authentication errors
 2. Verify `AZURE_CLIENT_SECRET` has not expired (rotates every 90 days --
    see [Secrets Configuration](secrets))
-3. Restart the sidecar: `az containerapp revision restart --name "sd2-{env}-fabric-sync" --resource-group "rg-sd2-{env}"`
+3. Restart the sidecar: `az containerapp revision restart --name "sd2-{env}-sync" --resource-group "rg-sd2-{env}"`
 
 ### Authentication failures in REST API calls
 

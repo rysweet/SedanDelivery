@@ -362,7 +362,7 @@ graph TD
             VALKEY["Valkey 8.1<br/>+ sd2-redis-module (.so)<br/><b>Graph Storage</b><br/>Redis :6379"]
         end
 
-        subgraph SyncContainer["sd2-main-fabric-sync<br/><i>(optional)</i>"]
+        subgraph SyncContainer["sd2-main-sync<br/><i>(optional)</i>"]
             SYNC["sedandelivery-fabric-sync<br/><b>Changelog Consumer</b>"]
         end
     end
@@ -372,7 +372,7 @@ graph TD
     end
 
     subgraph External["External Services"]
-        FABRIC["Microsoft Fabric<br/>Graph Database"]
+        FABRIC["Microsoft Fabric<br/>GraphModel"]
         ENTRA["Microsoft Entra ID<br/>JWT Issuer"]
     end
 
@@ -405,7 +405,7 @@ graph TD
 | `sd2-main-api` | `sd2-api` | REST API with auth, rate limiting, metrics. | Yes (stateless) |
 | `sd2-main-gremlin` | `sedandelivery-gremlin` | Gremlin WebSocket server (port 8182). TinkerPop drivers connect here. | Yes (stateless) |
 | `sd2-main-redis` | `sedandelivery` (Valkey + sd2-redis-module) | Graph storage engine. All data lives here. | No (single primary) |
-| `sd2-main-fabric-sync` | `sedandelivery-fabric-sync` | Replicates changes to Microsoft Fabric. | No (single consumer) |
+| `sd2-main-sync` | `sedandelivery-fabric-sync` | Replicates changes to Microsoft Fabric GraphModel. | No (single consumer) |
 
 **Connection patterns:**
 - **Bolt clients** connect to the Bolt server via TCP, TLS, or WebSocket on port 7687
