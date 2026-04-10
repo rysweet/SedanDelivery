@@ -75,7 +75,7 @@ SedanDelivery supports multiple storage backends via the `GraphStore` trait:
 | `CachedGraphStore` | `cypher-core` | Write-through in-memory cache wrapping any backend |
 | `RedisGraphStore` | `sd2-redis-store` | External Redis/Valkey via TCP |
 | `ModuleRedisStore` | `sd2-redis-module` | In-process Redis access via Valkey Module API |
-| `FabricGraphStore` | `gql-fabric-store` | Microsoft Fabric Graph Database |
+| `FabricGraphStore` | `gql-fabric-store` | Microsoft Fabric GraphModel |
 | `FanoutStore` | `sd2-redis-store` | Write to multiple backends simultaneously |
 
 ### Distributed Mode (ADR-004)
@@ -139,7 +139,7 @@ See [ADR-004](ADR-004-distributed-redis) for the full architecture decision reco
 | `GQL_REDIS_INDEX_BATCH_SIZE` | `500` | Batch size for Redis index-building operations (minimum 1) |
 | `GQL_REDIS_SMEMBERS_THRESHOLD` | `10000` | Set member count above which SSCAN is used instead of SMEMBERS to avoid Redis event-loop stalls |
 | `REDIS_URL` | `redis://127.0.0.1:6379` | Fallback Redis URL when `GQL_REDIS_URL` is not set |
-| `GQL_FABRIC_ENDPOINT` | — | Fabric Graph Database REST API URL |
+| `GQL_FABRIC_ENDPOINT` | — | Fabric GraphModel base URL (`.../GraphModels/{id}`) |
 | `GQL_FABRIC_TENANT_ID` | — | Azure AD tenant for Fabric auth |
 | `GQL_FABRIC_CLIENT_ID` | — | Service principal app ID for Fabric |
 | `GQL_FABRIC_CLIENT_SECRET` | — | Service principal secret for Fabric |
@@ -336,10 +336,11 @@ See [sdk/README.md](../sdk/README.md) for the full Redis-protocol SDK API refere
 
 ## Fabric Graph Replication
 
-`ENABLE_FABRIC` is **`true` by default** in `deploy.yml`. Every deployment provisions a
-[Microsoft Fabric Graph Database](https://learn.microsoft.com/fabric/) workspace alongside
-the Container App and deploys a `sedandelivery-fabric-sync` sidecar that continuously
-replicates graph mutations to Fabric.
+`ENABLE_FABRIC` is **`true` by default** in `deploy.yml`. Every deployment provisions an
+[Microsoft Fabric](https://learn.microsoft.com/fabric/) workspace alongside the
+Container App and deploys the `sd2-{env}-sync` Container App from the
+`sedandelivery-fabric-sync` image to continuously replicate graph mutations to
+the Fabric GraphModel.
 
 **Architecture:**
 
@@ -348,11 +349,11 @@ graph TD
     subgraph CAE["Azure Container Apps Environment"]
         BOLT["sd2-env-bolt<br/>Bolt :7687 | Health :7688<br/>GQL_REDIS_URL (r2d2 pool)"]
         VALKEY["sd2-env-redis<br/>Valkey + GQL module<br/>Redis :6379<br/>GQL_FABRIC_CHANGELOG=1"]
-        SYNC["sd2-env-fabric-sync<br/>Changelog consumer"]
+        SYNC["sd2-env-sync<br/>sedandelivery-fabric-sync<br/>Changelog consumer"]
     end
     BOLT -- "GQL_REDIS_URL" --> VALKEY
     VALKEY -- "__sd2:changelog stream" --> SYNC
-    SYNC -- "HTTPS" --> FABRIC["Microsoft Fabric<br/>Graph Database"]
+    SYNC -- "HTTPS" --> FABRIC["Microsoft Fabric<br/>GraphModel"]
 ```
 
 **What you get:**
