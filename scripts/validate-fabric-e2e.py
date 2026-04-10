@@ -29,6 +29,7 @@ import argparse
 import json
 import math
 import os
+import re
 import subprocess
 import sys
 import time
@@ -482,12 +483,70 @@ def validate_property_point(token: str, endpoint: str) -> TestResult:
                             "MATCH (n:E2ETest) RETURN n.point_val AS v")
         rows = parse_fabric_rows(resp)
         val = rows[0][0] if rows else None
-        val_str = str(val) if val is not None else ""
-        # Point may be returned as structured object or string
-        ok = val is not None and ("1.0" in val_str or "1" in val_str)
-        return TestResult("prop_point", ok, f"point_val={val!r}", time.time() - t0)
+        x, y = _extract_point_coordinates(val)
+        checks = []
+        if not math.isclose(x, 1.0, abs_tol=0.001):
+            checks.append(f"x={x!r} (expected 1.0)")
+        if not math.isclose(y, 2.0, abs_tol=0.001):
+            checks.append(f"y={y!r} (expected 2.0)")
+        ok = len(checks) == 0
+        detail = f"point_val={val!r}; x={x}; y={y}" if ok else "; ".join(checks)
+        return TestResult("prop_point", ok, detail, time.time() - t0)
     except Exception as exc:
         return TestResult("prop_point", False, str(exc), time.time() - t0)
+
+
+POINT_WKT_RE = re.compile(
+    r"^\s*POINT\s*\(\s*([-+]?(?:\d+(?:\.\d+)?|\.\d+))\s+([-+]?(?:\d+(?:\.\d+)?|\.\d+))\s*\)\s*$",
+    re.IGNORECASE,
+)
+
+
+def _coerce_point_coordinate(value: Any, name: str) -> float:
+    """Convert a point coordinate to float and reject non-numeric values."""
+    if isinstance(value, bool):
+        raise ValueError(f"{name} must be numeric")
+    try:
+        coordinate = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{name} must be numeric") from exc
+    if not math.isfinite(coordinate):
+        raise ValueError(f"{name} must be finite")
+    return coordinate
+
+
+def _extract_point_coordinates(value: Any) -> tuple[float, float]:
+    """Parse the GraphModel point value into an x/y pair."""
+    if value is None:
+        raise ValueError("point value is missing")
+
+    if isinstance(value, dict):
+        if "x" in value or "y" in value:
+            if "x" not in value or "y" not in value:
+                raise ValueError("point value must include both x and y")
+            return (
+                _coerce_point_coordinate(value["x"], "x"),
+                _coerce_point_coordinate(value["y"], "y"),
+            )
+        if "longitude" in value or "latitude" in value:
+            if "longitude" not in value or "latitude" not in value:
+                raise ValueError("point value must include both longitude and latitude")
+            return (
+                _coerce_point_coordinate(value["longitude"], "longitude"),
+                _coerce_point_coordinate(value["latitude"], "latitude"),
+            )
+        raise ValueError("point value is not point-shaped")
+
+    if isinstance(value, str):
+        match = POINT_WKT_RE.fullmatch(value)
+        if not match:
+            raise ValueError("point value is not point-shaped")
+        return (
+            _coerce_point_coordinate(match.group(1), "x"),
+            _coerce_point_coordinate(match.group(2), "y"),
+        )
+
+    raise ValueError("point value is not point-shaped")
 
 
 def validate_relationship(token: str, endpoint: str, cfg: Config) -> TestResult:

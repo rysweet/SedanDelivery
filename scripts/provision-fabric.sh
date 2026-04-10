@@ -20,7 +20,10 @@ fi
 
 # -- Get access token ------------------------------------------------------
 TOKEN=$(curl -s -X POST "https://login.microsoftonline.com/${TENANT_ID}/oauth2/v2.0/token" \
-  -d "grant_type=client_credentials&client_id=${CLIENT_ID}&client_secret=${CLIENT_SECRET}&scope=https%3A%2F%2Fapi.fabric.microsoft.com%2F.default" \
+  --data-urlencode "grant_type=client_credentials" \
+  --data-urlencode "client_id=${CLIENT_ID}" \
+  --data-urlencode "client_secret=${CLIENT_SECRET}" \
+  --data-urlencode "scope=https://api.fabric.microsoft.com/.default" \
   | python3 -c "import json,sys; print(json.load(sys.stdin)['access_token'])")
 
 if [[ -z "$TOKEN" || "$TOKEN" == "null" ]]; then
