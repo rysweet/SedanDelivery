@@ -86,24 +86,19 @@ let shared = gql.execute(
     "MATCH (n:Person) FILTER n.age >= 25 RETURN n.name",
 )?;
 assert_eq!(shared.rows.len(), 2);
-assert_eq!(
-    shared.rows[0].get("n.name"),
-    Some(&Value::Str("Alice".into()))
-);
-```
-
 let unwound = gql.execute(&store, "demo", "FOR x IN [1, 2, 3] RETURN x")?;
 assert_eq!(unwound.rows.len(), 3);
 
 let mandatory = gql.execute(
     &store,
     "demo",
-    "MANDATORY MATCH (n:Person) RETURN n.name",
+    "MANDATORY MATCH (n:Person {name: 'Alice'}) RETURN n.name",
 )?;
 assert_eq!(
     mandatory.rows[0].get("n.name"),
     Some(&Value::Str("Alice".into()))
 );
+```
 
 **Checkpoint**: `SedanGql` now exposes the native embedded GQL keyword surface through `gql-engine`.
 
@@ -164,7 +159,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mandatory = gql.execute(
         &store,
         "demo",
-        "MANDATORY MATCH (n:Person) RETURN n.name",
+        "MANDATORY MATCH (n:Person {name: 'Alice'}) RETURN n.name",
     )?;
     assert_eq!(
         mandatory.rows[0].get("n.name"),

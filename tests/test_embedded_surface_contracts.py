@@ -12,6 +12,7 @@ CI_YML = ROOT / ".github" / "workflows" / "ci.yml"
 VALIDATE_SH = ROOT / "scripts" / "validate.sh"
 README_MD = ROOT / "README.md"
 PRODUCT_SURFACES_MD = ROOT / "docs" / "reference" / "product-surfaces.md"
+TUTORIAL_MD = ROOT / "docs" / "tutorials" / "embed-sedandelivery.md"
 SEDAN_GQL_LIB = ROOT / "sedan-gql-embedded" / "src" / "lib.rs"
 SEDAN_GQL_TOML = ROOT / "sedan-gql-embedded" / "Cargo.toml"
 SEDAN_CYPHER_LIB = ROOT / "sedan-cypher-embedded" / "src" / "lib.rs"
@@ -68,6 +69,22 @@ class TestProductSurfaceInventory:
         assert "docs/reference/product-surfaces.md" in text
         assert "docs/reference/embedded-engines.md" in text
         assert "docs/tutorials/embed-sedandelivery.md" in text
+
+    def test_embedded_tutorial_keeps_gql_walkthrough_in_single_code_block(self) -> None:
+        text = TUTORIAL_MD.read_text()
+        section_match = re.search(
+            r"## Step 4: Use `SedanGql` for Native GQL Queries.*?```rust\n(.*?)\n```",
+            text,
+            re.DOTALL,
+        )
+        assert section_match, "Step 4 should contain a fenced Rust example"
+
+        section = section_match.group(1)
+        assert 'let shared = gql.execute(' in section
+        assert 'let unwound = gql.execute(&store, "demo", "FOR x IN [1, 2, 3] RETURN x")?;' in section
+        assert (
+            '"MANDATORY MATCH (n:Person {name: \'Alice\'}) RETURN n.name"' in section
+        ), "tutorial should use a deterministic mandatory-match example"
 
 
 class TestEmbeddedWiringContracts:
