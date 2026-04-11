@@ -20,7 +20,7 @@ A Rust openCypher query engine — a clean-room, MIT/Apache-2.0-licensed replace
 - [**Routing Context API**](routing-context-api) — `ReadConsistency`, `GraphStore::with_read_consistency(...)`, `route_read`, `route_read_for_graph`, and `READ_AFTER_WRITE_WINDOW` reference for store implementors and test authors
 - [**Redis Key Schema**](redis-key-schema) — Complete reference for Redis keys, hash-tag contract, adjacency encoding, and metadata registries
 - [Tutorial](TUTORIAL) — Getting started with SedanDelivery
-- [Fabric Graph Tutorial](FABRIC_TUTORIAL) — Deploy, write data, query in Fabric portal, REST API, and monitoring
+- [Fabric Graph Tutorial](FABRIC_TUTORIAL) — Deploy, inspect `sd2-{env}-sync`, reuse `GQL_FABRIC_ENDPOINT`, query Fabric, and monitor replication
 - [Validation Guide](validation) — Full test suite: what was validated, how to re-run, CI tiers, benchmark baselines
 - [Authentication (Entra ID)](auth) — Configure JWT auth for the REST API
 - [Secrets Configuration](secrets) — Repository secrets inventory, creation, rotation, and monitoring
@@ -366,6 +366,13 @@ graph TD
 The Fabric endpoint and credentials are injected as Container App environment variables
 (`GQL_FABRIC_ENDPOINT`, `GQL_FABRIC_TENANT_ID`, `GQL_FABRIC_CLIENT_ID`) with the client
 secret stored as a Container App secret (`secretref:fabric-client-secret`).
+
+Use the Azure Container App name `sd2-{env}-sync` for logs, env inspection, and
+operator commands. The image, executable, and crate name remain
+`sedandelivery-fabric-sync`.
+
+For live validation, read `GQL_FABRIC_ENDPOINT` from `sd2-{env}-sync`, export it
+as `FABRIC_ENDPOINT`, and run `scripts/validate-fabric-e2e.py`.
 
 See the [Fabric Graph Tutorial](FABRIC_TUTORIAL) for a complete walkthrough: deploying,
 writing data, viewing in the Fabric portal, REST API access, and monitoring replication.

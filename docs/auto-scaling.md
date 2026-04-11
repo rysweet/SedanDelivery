@@ -29,7 +29,7 @@ This guide covers everything an operator needs to enable, configure, monitor, an
 | Component | Container | Why |
 |-----------|-----------|-----|
 | Redis / Valkey | `sd2-main-redis` | Single-primary data tier. Horizontal data sharding (Redis Cluster) is supported but requires manual resharding (see [Data Layer](#data-layer)). Azure Cache for Redis provides HA failover, not auto-scale. |
-| Fabric sync | `sd2-main-sync` | Single-instance consumer. Runs one XREADGROUP consumer against the changelog streams. Adding consumers would split the stream, not increase throughput. |
+| Fabric sync | `sd2-main-sync` | Single-instance consumer. Runs one `sedandelivery-fabric-sync` process against the changelog streams. Adding consumers would split the stream, not increase throughput. |
 
 ### Why this design
 

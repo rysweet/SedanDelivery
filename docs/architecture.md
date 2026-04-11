@@ -407,6 +407,9 @@ graph TD
 | `sd2-main-redis` | `sedandelivery` (Valkey + sd2-redis-module) | Graph storage engine. All data lives here. | No (single primary) |
 | `sd2-main-sync` | `sedandelivery-fabric-sync` | Replicates changes to Microsoft Fabric GraphModel. | No (single consumer) |
 
+For Azure operations, target the Container App name (`sd2-main-sync`). Build,
+image, and crate references still use `sedandelivery-fabric-sync`.
+
 **Connection patterns:**
 - **Bolt clients** connect to the Bolt server via TCP, TLS, or WebSocket on port 7687
 - **Gremlin clients** connect to the Gremlin server via WebSocket on port 8182
