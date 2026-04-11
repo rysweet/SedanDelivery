@@ -88,6 +88,12 @@ jobs:
       - name: Run adversarial query tests
         run: cargo test -p cypher-core --test adversarial
 
+      - name: Run embedded engine contract tests
+        run: cargo test -p sedan-cypher-embedded -p sedan-gql-embedded -p sedan-gremlin-embedded
+
+      - name: Run GQL outside-in contract tests
+        run: cargo test -p gql-engine --test outside_in
+
       # ── sedandelivery-bolt & Fabric sync checks ─────────────────────────
       - name: Build sedandelivery-bolt
         run: cargo build -p sedandelivery-bolt

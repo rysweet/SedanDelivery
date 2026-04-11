@@ -3,10 +3,10 @@ name    = "sedan-gql-embedded"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Embeddable GQL/Cypher query engine with in-memory graph store"
+description = "Embeddable GQL/Cypher query engine backed by gql-engine"
 
 [dependencies]
-cypher-core = { path = "../cypher-core" }
+gql-engine = { path = "../gql-engine" }
 indexmap  = { workspace = true }
 
 [dev-dependencies]

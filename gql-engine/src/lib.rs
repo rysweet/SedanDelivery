@@ -35,7 +35,7 @@ pub mod parser;
 pub mod planner;
 
 // Re-export core types that consumers need.
-pub use cypher_core::executor::QueryResult;
+pub use cypher_core::executor::{MutationStats, QueryResult, Row};
 pub use cypher_core::storage::{GraphStore, InMemoryGraphStore};
 pub use cypher_core::types::Value;
 

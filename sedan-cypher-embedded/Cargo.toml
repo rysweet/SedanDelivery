@@ -3,9 +3,9 @@ name    = "sedan-cypher-embedded"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Embeddable openCypher query engine — thin wrapper over sedan-gql-embedded"
+description = "Embeddable openCypher query engine backed by cypher-core"
 
 [dependencies]
-sedan-gql-embedded = { path = "../sedan-gql-embedded" }
+cypher-core = { path = "../cypher-core" }
 
 [dev-dependencies]

@@ -89,6 +89,14 @@ step "Tier 2: adversarial queries (11 tests)"
 cargo test -p cypher-core --test adversarial
 pass "adversarial"
 
+step "Tier 2: embedded engine contract tests"
+cargo test -p sedan-cypher-embedded -p sedan-gql-embedded -p sedan-gremlin-embedded
+pass "embedded engine contracts"
+
+step "Tier 2: GQL outside-in contract tests"
+cargo test -p gql-engine --test outside_in
+pass "gql outside_in"
+
 if $FAST; then
   echo ""
   pass "Tier 1 + 2 complete (--fast mode, skipping Tier 3)"

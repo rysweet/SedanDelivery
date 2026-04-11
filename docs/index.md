@@ -5,11 +5,14 @@ title: SedanDelivery Documentation
 
 # SedanDelivery Documentation
 
-A Rust openCypher query engine — a clean-room, MIT/Apache-2.0-licensed replacement for RedisGraph/FalkorDB. GQL (ISO/IEC 39075) compliance is future work.
+A multi-form-factor Rust graph engine for openCypher, Gremlin, and GQL (ISO/IEC 39075) — spanning embedded libraries, network servers, Redis/Valkey modules, CLI tooling, and deployment surfaces.
 
 ## Guides
 
 - [**Architecture Overview**](architecture) — Crate map, request flows, query pipeline, storage layer, and key design decisions
+- [**Product Surface Reference**](reference/product-surfaces) — Current runtime and distribution surfaces, plus the live embedded comparison baselines
+- [**Embedded Engines Reference**](reference/embedded-engines) — Current public API and wiring for the in-process libraries
+- [**Tutorial: Embed SedanDelivery In-Process**](tutorials/embed-sedandelivery) — Current embedded quick start for Cypher, GQL, and Gremlin
 - [**Deploy Your Own Instance**](DEPLOY) — Full production deployment guide: prerequisites, Azure setup, scaling, HA, troubleshooting
 - [**Auto-Scaling Guide**](auto-scaling) — Horizontal scaling: architecture, write safety, KEDA metrics, connection lifecycle, testing, and configuration reference
 - [**Redis Cluster Mode**](cluster-mode) — Deploy against Redis Cluster: setup, validation, slot-local routing, and resharding checks

@@ -306,6 +306,9 @@ Plaintext exposes both to network observers. See
 - [Authentication (Entra ID)](docs/auth.md) — Configure JWT auth for the REST API
 - [Neo4j Compatibility Gallery](https://turbo-adventure-3eloook.pages.github.io/neo4j-compat-gallery) — 4 security apps validated against SedanDelivery's Bolt protocol
 - [Tutorial](docs/TUTORIAL.md) — full usage guide with code examples
+- [Product Surface Reference](docs/reference/product-surfaces.md) — current runtime/distribution surfaces and the live comparison baselines for embedded engines
+- [Embedded Engines Reference](docs/reference/embedded-engines.md) — current public API and wiring for the in-process crates
+- [Embed SedanDelivery In-Process](docs/tutorials/embed-sedandelivery.md) — current embedded quick start for Cypher, GQL, and Gremlin
 - [Bolt Protocol Spec](docs/specs/sedandelivery-bolt-spec.md) — Neo4j Bolt v4.4 server implementation details
 - [Docs site](https://turbo-adventure-3eloook.pages.github.io/) — deployment, storage backends, environment variables
 - [Architecture Overview](docs/architecture.md) — crate map, three query engines, request flows, query pipeline, storage layer

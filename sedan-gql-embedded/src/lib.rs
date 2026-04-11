@@ -1,6 +1,6 @@
 //! Embeddable GQL/Cypher query engine backed by [`InMemoryGraphStore`].
 //!
-//! No Redis, no Bolt — just parse → plan → execute in-process.
+//! No Redis, no Bolt — just GQL parse → plan → execute in-process.
 //!
 //! ```
 //! use sedan_gql_embedded::{SedanGql, GraphStore, InMemoryGraphStore, Value};
@@ -8,18 +8,15 @@
 //! let engine = SedanGql::new();
 //! let store = InMemoryGraphStore::default();
 //! store.create_graph("g").unwrap();
-//! let result = engine.execute(&store, "g", "RETURN 1 + 2 AS answer").unwrap();
+//! let result = engine
+//!     .execute(&store, "g", "INSERT (n:Person {name: 'Alice'}) RETURN n.name")
+//!     .unwrap();
 //! assert_eq!(result.rows.len(), 1);
 //! ```
 
-pub use cypher_core::error::GqlError;
-pub use cypher_core::executor::{MutationStats, QueryResult, Row};
-pub use cypher_core::storage::{GraphStore, InMemoryGraphStore};
-pub use cypher_core::types::Value;
-
-use cypher_core::executor::{ExecutionBudget, QueryExecutor};
-use cypher_core::parser::parse_query;
-use cypher_core::planner::QueryPlanner;
+pub use gql_engine::{
+    GqlError, GraphStore, InMemoryGraphStore, MutationStats, QueryResult, Row, Value,
+};
 
 /// A GQL/Cypher query engine that operates entirely in-process.
 pub struct SedanGql {
@@ -42,11 +39,7 @@ impl SedanGql {
         graph: &str,
         query: &str,
     ) -> Result<QueryResult, GqlError> {
-        let ast = parse_query(query)?;
-        let planner = QueryPlanner::new(store, graph);
-        let plan = planner.plan(&ast)?;
-        let mut budget = ExecutionBudget::default_budget();
-        QueryExecutor::new(store).execute(graph, &plan, &mut budget)
+        gql_engine::execute(query, store, graph)
     }
 }
 
@@ -131,5 +124,32 @@ mod tests {
             result.rows[0].get("m.title"),
             Some(&Value::Str("The Matrix".into()))
         );
+    }
+
+    #[test]
+    fn gql_only_keywords_work_via_public_api() {
+        let engine = SedanGql::new();
+        let store = test_store();
+
+        let inserted = engine
+            .execute(
+                &store,
+                "test",
+                "INSERT (n:Movie {title: 'Arrival', year: 2016}) RETURN n.title",
+            )
+            .unwrap();
+        assert_eq!(
+            inserted.rows[0].get("n.title"),
+            Some(&Value::Str("Arrival".into()))
+        );
+
+        let filtered = engine
+            .execute(
+                &store,
+                "test",
+                "MATCH (n:Movie) FILTER n.year >= 2016 RETURN n.title",
+            )
+            .unwrap();
+        assert_eq!(filtered.rows.len(), 1);
     }
 }

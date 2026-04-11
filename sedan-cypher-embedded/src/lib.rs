@@ -1,7 +1,7 @@
 //! Embeddable openCypher query engine.
 //!
-//! This is a thin wrapper around [`sedan_gql_embedded`] exposing an
-//! openCypher-branded API.  The underlying engine is identical.
+//! This crate exposes the shared `cypher-core` parser, planner, and executor as
+//! an in-process openCypher API.
 //!
 //! ```
 //! use sedan_cypher_embedded::{CypherEngine, GraphStore, InMemoryGraphStore, Value};
@@ -13,23 +13,22 @@
 //! assert_eq!(result.rows.len(), 1);
 //! ```
 
-pub use sedan_gql_embedded::{
-    GqlError, GraphStore, InMemoryGraphStore, MutationStats, QueryResult, Row, Value,
-};
+pub use cypher_core::error::GqlError;
+pub use cypher_core::executor::{MutationStats, QueryResult, Row};
+pub use cypher_core::storage::{GraphStore, InMemoryGraphStore};
+pub use cypher_core::types::Value;
 
-use sedan_gql_embedded::SedanGql;
+use cypher_core::executor::{ExecutionBudget, QueryExecutor};
+use cypher_core::parser::parse_query;
+use cypher_core::planner::QueryPlanner;
 
 /// An openCypher query engine that operates entirely in-process.
-pub struct CypherEngine {
-    inner: SedanGql,
-}
+pub struct CypherEngine;
 
 impl CypherEngine {
     /// Create a new engine instance.
     pub fn new() -> Self {
-        Self {
-            inner: SedanGql::new(),
-        }
+        Self
     }
 
     /// Parse, plan, and execute an openCypher query against `store`.
@@ -39,7 +38,11 @@ impl CypherEngine {
         graph: &str,
         query: &str,
     ) -> Result<QueryResult, GqlError> {
-        self.inner.execute(store, graph, query)
+        let ast = parse_query(query)?;
+        let planner = QueryPlanner::new(store, graph);
+        let plan = planner.plan(&ast)?;
+        let mut budget = ExecutionBudget::default_budget();
+        QueryExecutor::new(store).execute(graph, &plan, &mut budget)
     }
 }
 
@@ -96,5 +99,18 @@ mod tests {
         let engine = CypherEngine::new();
         let store = test_store();
         assert!(engine.execute(&store, "test", "GARBAGE!!!").is_err());
+    }
+
+    #[test]
+    fn gql_only_insert_is_rejected() {
+        let engine = CypherEngine::new();
+        let store = test_store();
+        assert!(engine
+            .execute(
+                &store,
+                "test",
+                "INSERT (n:Person {name: 'Bob'}) RETURN n.name"
+            )
+            .is_err());
     }
 }

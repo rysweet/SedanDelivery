@@ -18,6 +18,7 @@ SedanDelivery is a multi-language graph database engine written in Rust. It supp
 ## Crate Map
 
 The workspace contains 17 crates. Arrows point from dependent to dependency.
+For the runtime/distribution inventory and the embedded comparison baselines, see the [Product Surface Reference](reference/product-surfaces).
 
 ![Crate Map](images/crate-map.svg)
 
@@ -71,7 +72,7 @@ graph TD
     sedandelivery-fabric-sync --> sd2-redis-store
     sedandelivery-fabric-sync --> gql-fabric-store
     sedan-cypher-embedded --> cypher-core
-    sedan-gql-embedded --> cypher-core
+    sedan-gql-embedded --> gql-engine
     sedan-gremlin-embedded --> gremlin-core
     sedan-gremlin-embedded --> cypher-core
 ```
@@ -88,7 +89,9 @@ SedanDelivery supports three graph query languages, all sharing the same physica
 
 - **cypher-core** — Hand-written lexer/parser, cost-based planner, 28+ physical operators. This is the most mature engine.
 - **gremlin-core** — Compiles Gremlin bytecode steps and text traversals into cypher-core `Operator` trees. Supports ~116 Gremlin steps. No I/O — pure translation layer. 201 TCK scenarios pass.
-- **gql-engine** — GQL standard parser and planner. Handles GQL-specific syntax (`INSERT` vs `CREATE`, `FILTER` vs `WHERE`, path modes, isomorphic matching). Shares the executor and storage layer with cypher-core.
+- **gql-engine** — GQL standard parser and planner. Today it covers GQL-specific syntax such as `INSERT`, `FILTER`, `MANDATORY MATCH`, and `FOR`. Path-mode enforcement and full isomorphic matching are still being completed. It shares the executor and storage layer with cypher-core.
+
+The embedded form factor now follows the same split as the core engines: `sedan-cypher-embedded` fronts `cypher-core`, `sedan-gql-embedded` fronts `gql-engine`, and `sedan-gremlin-embedded` fronts `gremlin-core`.
 
 ## Request Flow -- REST API
 

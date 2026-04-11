@@ -3725,14 +3725,14 @@ dependencies = [
 name = "sedan-cypher-embedded"
 version = "0.1.0"
 dependencies = [
- "sedan-gql-embedded",
+ "cypher-core",
 ]
 
 [[package]]
 name = "sedan-gql-embedded"
 version = "0.1.0"
 dependencies = [
- "cypher-core",
+ "gql-engine",
  "indexmap",
 ]
 
