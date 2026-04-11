@@ -69,6 +69,23 @@ Azure Container App resource name is `sd2-{env}-sync`.
 A bot comment on the PR will post the Redis endpoint when deployment completes
 (approximately 8 minutes).
 
+### Find the deployed sync app
+
+Use the Azure resource name when you inspect the live deployment:
+
+```bash
+ENV_NAME="main"
+
+az containerapp show \
+  --name "sd2-${ENV_NAME}-sync" \
+  --resource-group "rg-sd2-${ENV_NAME}" \
+  --query "{name:name,image:properties.template.containers[0].image}" \
+  -o json
+```
+
+The reported image will still be `sedandelivery-fabric-sync:<tag>`. The Container
+App resource remains `sd2-${ENV_NAME}-sync`.
+
 ## 2. Write graph data
 
 Write data through either the Bolt protocol or the Redis protocol. Both paths write
@@ -210,6 +227,10 @@ and posting queries to:
 ```
 https://api.fabric.microsoft.com/v1/workspaces/{workspace-id}/GraphModels/{graphmodel-id}/executeQuery?preview=true
 ```
+
+This GraphModel URL is the current deployed contract. The validator still keeps
+compatibility handling for older endpoint families during rollout, but new
+deployments should reuse the `GQL_FABRIC_ENDPOINT` value from `sd2-{env}-sync`.
 
 The `provision-fabric.sh` script outputs these IDs during deployment. You can
 also find the workspace ID in the Fabric portal URL.
@@ -435,3 +456,8 @@ consuming events.
    events per batch) on the sidecar container
 2. Wait a few seconds and re-query -- replication is near-real-time but not instant
 3. Check sidecar logs for retry messages indicating transient Fabric API errors
+
+## Related
+
+- [FABRIC_DATA_FLOW.md](FABRIC_DATA_FLOW.md) - deeper explanation of the replication pipeline
+- [secrets.md](secrets.md) - Fabric and Azure credential sources used by the deployment
