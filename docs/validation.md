@@ -56,6 +56,29 @@ estimate state directly.
 
 ---
 
+## Embedded surface matrix contract
+
+Use these commands when you change the embedded in-process crates, the
+documentation that defines their public contract, or the product-surface
+inventory that points readers at them:
+
+```bash
+cargo test -p sedan-cypher-embedded -p sedan-gql-embedded -p sedan-gremlin-embedded
+cargo test -p gql-engine --test outside_in
+pytest -q tests/test_embedded_surface_contracts.py
+```
+
+| Command | What it proves |
+|---------|----------------|
+| `cargo test -p sedan-cypher-embedded -p sedan-gql-embedded -p sedan-gremlin-embedded` | The three embedded crates still provide representative success coverage, multi-store isolation, multi-graph isolation, and stable public error behavior |
+| `cargo test -p gql-engine --test outside_in` | The native GQL baseline used by `SedanGql` still covers `INSERT`, `FILTER`, `MANDATORY MATCH`, `FOR`, and related public behavior |
+| `pytest -q tests/test_embedded_surface_contracts.py` | The workspace inventory, README/doc links, tutorial walkthrough, and documented embedded validation commands still match the embedded surface contract |
+
+This contract is intentionally cache-neutral. It does not require plan-cache
+changes, cache invalidation coverage, or cache-specific setup.
+
+---
+
 ## Test inventory
 
 | Suite | File | Count | What it proves |

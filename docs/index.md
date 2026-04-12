@@ -11,8 +11,8 @@ A multi-form-factor Rust graph engine for openCypher, Gremlin, and GQL (ISO/IEC 
 
 - [**Architecture Overview**](architecture) — Crate map, request flows, query pipeline, storage layer, and key design decisions
 - [**Product Surface Reference**](reference/product-surfaces) — Current runtime and distribution surfaces, plus the live embedded comparison baselines
-- [**Embedded Engines Reference**](reference/embedded-engines) — Current public API and wiring for the in-process libraries
-- [**Tutorial: Embed SedanDelivery In-Process**](tutorials/embed-sedandelivery) — Current embedded quick start for Cypher, GQL, and Gremlin
+- [**Embedded Engines Reference**](reference/embedded-engines) — Current public API, isolation contract, and wiring for the in-process libraries
+- [**Tutorial: Embed SedanDelivery In-Process**](tutorials/embed-sedandelivery) — Embedded quick start for Cypher, GQL, and Gremlin, including isolation and representative error behavior
 - [**Deploy Your Own Instance**](DEPLOY) — Full production deployment guide: prerequisites, Azure setup, scaling, HA, troubleshooting
 - [**Auto-Scaling Guide**](auto-scaling) — Horizontal scaling: architecture, write safety, KEDA metrics, connection lifecycle, testing, and configuration reference
 - [**Redis Cluster Mode**](cluster-mode) — Deploy against Redis Cluster: setup, validation, slot-local routing, and resharding checks
@@ -24,7 +24,7 @@ A multi-form-factor Rust graph engine for openCypher, Gremlin, and GQL (ISO/IEC 
 - [**Redis Key Schema**](redis-key-schema) — Complete reference for Redis keys, hash-tag contract, adjacency encoding, and metadata registries
 - [Tutorial](TUTORIAL) — Getting started with SedanDelivery
 - [Fabric Graph Tutorial](FABRIC_TUTORIAL) — Deploy, inspect `sd2-{env}-sync`, reuse `GQL_FABRIC_ENDPOINT`, query Fabric, and monitor replication
-- [Validation Guide](validation) — Full test suite: what was validated, how to re-run, CI tiers, benchmark baselines
+- [Validation Guide](validation) — Full test suite: what each layer validates, how to re-run, CI tiers, benchmark baselines
 - [Authentication (Entra ID)](auth) — Configure JWT auth for the REST API
 - [Secrets Configuration](secrets) — Repository secrets inventory, creation, rotation, and monitoring
 - [ACR Mirror Workflow](reference/acr-mirror-workflow) — How `ghcr-publish` mirrors every published GHCR tag into `sd2mainend655uvglnfeacr.azurecr.io`

@@ -1,7 +1,7 @@
 ---
 title: Embedded Engines Reference
-description: Current public API and wiring for the SedanDelivery embedded crates.
-last_updated: 2026-04-11
+description: Current public API, isolation contract, and wiring for the SedanDelivery embedded crates.
+last_updated: 2026-04-12
 review_schedule: as-needed
 doc_type: reference
 ---
@@ -20,6 +20,13 @@ SedanDelivery exposes three in-process libraries:
 
 For the broader product inventory and the non-embedded comparison baselines, see the [Product Surface Reference](./product-surfaces.md).
 
+The embedded surface contract is intentionally representative rather than exhaustive. Each surface is expected to keep four public behaviors stable:
+
+1. a successful end-to-end query through the public API
+2. isolation across distinct backing store instances
+3. isolation across named graphs inside one store
+4. a representative public failure shape
+
 ## Common Types
 
 The embedded crates use the same store and result vocabulary as the server and module runtimes.
@@ -35,6 +42,13 @@ The embedded crates use the same store and result vocabulary as the server and m
 
 ## Public API
 
+For all three surfaces, the isolation boundary is caller-controlled:
+
+- `store` selects the backing store instance
+- `graph` selects the namespace inside that store
+
+If you pass a different `GraphStore`, you are asking for a different storage universe. If you reuse the same store with a different graph name, you are asking for a different namespace in that universe.
+
 ### `sedan_cypher_embedded`
 
 #### `CypherEngine::new() -> CypherEngine`
@@ -45,6 +59,8 @@ Creates a new in-process openCypher engine.
 
 Parses, plans, and executes an openCypher query against an existing graph through `cypher-core`.
 
+`graph` must already exist in `store`. A missing graph surfaces a storage-flavored public error.
+
 ### `sedan_gql_embedded`
 
 #### `SedanGql::new() -> SedanGql`
@@ -54,6 +70,8 @@ Creates a new in-process GQL engine.
 #### `SedanGql::execute(&self, store: &dyn GraphStore, graph: &str, query: &str) -> Result<QueryResult, gql_engine::GqlError>`
 
 Parses, plans, and executes a GQL or Cypher-compatible query through `gql-engine`.
+
+`graph` must already exist in `store`. GQL-only constructs such as `INSERT`, `FILTER`, `MANDATORY MATCH`, and `FOR` are part of this public surface.
 
 #### `sedan_gql_embedded::GqlError`
 
@@ -75,6 +93,8 @@ Creates a new in-process Gremlin engine.
 
 Parses a Gremlin traversal string, compiles it through `gremlin-core`, and executes it with the shared executor.
 
+`graph` must already exist in `store`. Invalid traversal text preserves a Gremlin-specific public error prefix.
+
 #### `GremlinError`
 
 | Variant | Source |
@@ -82,6 +102,18 @@ Parses a Gremlin traversal string, compiles it through `gremlin-core`, and execu
 | `Parse` | Gremlin text parsing failures |
 | `Compile` | Gremlin-to-operator compilation failures |
 | `Execution` | Shared executor/runtime failures |
+
+## Representative Surface Matrix
+
+The matrix below is the stable public contract covered across the three embedded crates.
+
+| Surface | Representative success | Multi-store isolation | Multi-graph isolation | Representative public failure |
+| --- | --- | --- | --- | --- |
+| `CypherEngine` | `CREATE` followed by `MATCH` returns the inserted row | Writing to one `InMemoryGraphStore` instance does not affect another instance, including `graph_stats` | Writing to graph `alpha` does not affect graph `beta` inside the same store | Missing graph errors preserve the `storage error:` prefix and describe the missing graph |
+| `SedanGql` | `INSERT` followed by `MATCH ... FILTER ... RETURN` returns the expected row set | Separate `GraphStore` instances do not share rows, metadata, or mutation side effects | Graph `alpha` and graph `beta` remain independent inside one store | `MANDATORY MATCH` without rows returns an error whose public text mentions `mandatory` |
+| `GremlinEngine` | A traversal such as `g.V().hasLabel("Person")` returns the expected rows | Seeding one store instance does not affect another store instance | The same traversal sees only the selected graph namespace | Invalid traversal text preserves the `parse error:` prefix |
+
+For Gremlin, setup code may seed data through existing `GraphStore` APIs when that is the most direct public setup path. The assertion target still remains `GremlinEngine::execute`.
 
 ## Behavior Contract
 
@@ -102,7 +134,10 @@ Parses a Gremlin traversal string, compiles it through `gremlin-core`, and execu
 
 1. Construct a `GraphStore`.
 2. Create the target graph before running queries.
-3. Reuse the store across engine calls when you want shared state inside the process.
+3. Choose the isolation boundary you want:
+   - reuse one store when you want shared state inside the process
+   - create a second store when you want full isolation of data, graph metadata, and side effects
+   - create multiple graph names in one store when you want isolated namespaces over shared storage
 
 ```rust
 use sedan_gql_embedded::{GraphStore, InMemoryGraphStore};
@@ -118,12 +153,15 @@ Embedded crates do not require server-specific deployment configuration, but the
 | Topic | Embedded behavior |
 | --- | --- |
 | Environment variables | No server-specific env vars are required, but engine limit env vars such as `GQL_QUERY_TIMEOUT_MS`, `GQL_QUERY_MAX_ROWS`, `GQL_PLAN_CACHE_SIZE`, and `GQL_BUDGET_CHECK_INTERVAL` still affect the process |
+| Isolation controls | Store instance chooses the backing store boundary; graph name chooses the namespace inside that store |
 | Ports and listeners | None |
 | Background tasks | None |
 | Authentication | Caller-owned concern |
 | Storage backend choice | Determined by the `GraphStore` implementation you pass in |
 
 Server-only variables such as `BOLT_BIND_ADDR` and `GQL_API_BIND_ADDR` belong to the runtime form factors, not the embedded library surface.
+
+The embedded surface matrix is cache-neutral. It does not add cache invalidation hooks, cache clearing steps, or any special plan-cache configuration beyond the existing process-wide engine limits.
 
 ## Packaging and Runtime Presence
 
@@ -146,11 +184,14 @@ Server-only variables such as `BOLT_BIND_ADDR` and `GQL_API_BIND_ADDR` belong to
 ## Validation
 
 ```bash
-cargo check --workspace
-cargo test -p cypher-core --test end_to_end
 cargo test -p sedan-cypher-embedded -p sedan-gql-embedded -p sedan-gremlin-embedded
 cargo test -p gql-engine --test outside_in
+pytest -q tests/test_embedded_surface_contracts.py
 ```
+
+The embedded-crate command covers representative success flows, multi-store isolation, multi-graph isolation, and stable public error behavior. The `gql-engine` command keeps the native GQL keyword contract aligned with the embedded GQL surface described here. The Python guardrail checks the workspace inventory, documentation links, and validation text that define this public surface.
+
+See the [Validation Guide](../validation.md) for the broader workspace suite.
 
 ## Examples
 
@@ -204,6 +245,40 @@ let result = engine
     .unwrap();
 
 assert_eq!(result.rows.len(), 1);
+```
+
+### Isolation by graph name
+
+```rust
+use sedan_gql_embedded::{GraphStore, InMemoryGraphStore, SedanGql};
+
+let engine = SedanGql::new();
+let store = InMemoryGraphStore::default();
+store.create_graph("alpha").unwrap();
+store.create_graph("beta").unwrap();
+
+engine
+    .execute(&store, "alpha", "INSERT (n:City {name: 'London'})")
+    .unwrap();
+
+let beta = engine
+    .execute(&store, "beta", "MATCH (n:City) RETURN n.name")
+    .unwrap();
+
+assert_eq!(beta.rows.len(), 0);
+```
+
+### Representative public errors
+
+```rust
+use sedan_cypher_embedded::{CypherEngine, GraphStore, InMemoryGraphStore};
+
+let engine = CypherEngine::new();
+let store = InMemoryGraphStore::default();
+store.create_graph("g").unwrap();
+
+let err = engine.execute(&store, "missing", "RETURN 1 AS n").unwrap_err();
+assert!(err.to_string().contains("storage error:"));
 ```
 
 ## See Also
